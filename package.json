@@ -13,7 +13,11 @@
   },
   "files": [
     "dist/",
-    "skills/"
+    "skills/",
+    "docs/usage.md",
+    "docs/design/history-support.md",
+    "docs/design/baseline-rules.md",
+    "docs/design/matching-rules.md"
   ],
   "scripts": {
     "build": "npm run build:server && npm run build:web",
