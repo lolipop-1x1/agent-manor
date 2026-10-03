@@ -105,6 +105,16 @@ function numberedRead(content: string, path: string, expectedStart?: number): To
   return { kind: "read", path, fragments, reason: returned.truncated ? "range_unknown: 返回截断，仅保留完整编号行" : undefined };
 }
 
+function visibleReadLines(content: string): { lineNumber: number; content: string }[] | undefined {
+  const lines: { lineNumber: number; content: string }[] = [];
+  for (const line of physicalLines(content)) {
+    const match = /^\s*(\d+)\t(.*)$/.exec(line);
+    if (!match || Number(match[1]) < 1) return undefined;
+    lines.push({ lineNumber: Number(match[1]), content: match[2]! });
+  }
+  return lines;
+}
+
 export function shellEvidence(command: string, output: string): ToolEvidence[] {
   const tokens = words(command);
   if (!tokens?.length) return [{ kind: "other", fragments: [], reason: "unsupported_tool: 复杂 Shell 语法未解析" }];
@@ -209,15 +219,25 @@ export function toolEvidence(tool: string, inputValue: unknown, resultValue: unk
       const requestedStart = number(input.offset);
       const requestedLimit = number(input.limit);
       const returnedPath = string(file.filePath);
-      if (content === undefined || start === undefined || count === undefined || !Number.isInteger(start) || !Number.isInteger(count) || start < 1 || count < 0 || physicalLines(content).length !== count
+      if (content === undefined || start === undefined || count === undefined || !Number.isInteger(start) || !Number.isInteger(count) || start < 1 || count < 0
         || (total !== undefined && start + count - 1 > total) || returned.truncated || returnedText(content).truncated) {
         return [{ kind: "read", path, fragments: [], reason: "range_unknown: Read 结构化范围与实际返回内容无法校验" }];
       }
       if ((path && returnedPath && path !== returnedPath) || (requestedStart !== undefined && start !== Math.max(1, requestedStart)) || (requestedLimit !== undefined && count > requestedLimit)) {
         return [{ kind: "read", path, fragments: [], reason: "range_unknown: Read 返回路径或范围与请求不一致" }];
       }
-      const numbered = numberedRead(visibleOutput, path ?? string(file.filePath) ?? "", start);
-      if (/^\s*\d+\t/m.test(visibleOutput) && (numbered.reason || numbered.fragments.flatMap((fragment) => physicalLines(fragment.content)).join("\n") !== physicalLines(content).join("\n"))) {
+      const sourceLines = physicalLines(content);
+      const sdkLines = content.replace(/\r\n/g, "\n").split("\n");
+      const numbered = /^\s*\d+\t/m.test(visibleOutput) ? visibleReadLines(visibleOutput) : undefined;
+      const virtualEof = content.endsWith("\n") && count === sourceLines.length + 1 && total === start + count - 1
+        && numbered?.length === count && numbered.at(-1)?.content === ""
+        && numbered.every((line, index) => line.lineNumber === start + index && line.content === sdkLines[index]);
+      if (count !== sourceLines.length && !virtualEof) {
+        return [{ kind: "read", path, fragments: [], reason: "range_unknown: Read 结构化行数不符，未确认 SDK 虚拟 EOF 空行" }];
+      }
+      const visibleSourceLines = virtualEof ? numbered!.slice(0, -1) : numbered;
+      if (/^\s*\d+\t/m.test(visibleOutput) && (!visibleSourceLines || visibleSourceLines.length !== sourceLines.length
+        || visibleSourceLines.some((line, index) => line.lineNumber !== start + index || line.content !== sourceLines[index]))) {
         return [{ kind: "read", path, fragments: [], reason: "range_unknown: Read 行号文本与结构化内容不一致" }];
       }
       return [{ kind: "read", path: path ?? string(file.filePath), fragments: content ? [{ content, kind: "read", historicalStart: start, completeLines: true }] : [] }];
