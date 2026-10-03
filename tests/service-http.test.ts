@@ -57,6 +57,43 @@ async function wait(service: Awaited<ReturnType<typeof startService>>, jobId: st
   throw new Error("测试刷新超时");
 }
 
+test("真实 HTTP 可查询并回读已删编辑、目录及无路径搜索，不增加当前覆盖", async () => fixture(async ({ service, register, source, repository }) => {
+  const base = `/repositories/${register.repository.id}`;
+  const timestamp = "2026-02-01T00:00:00Z";
+  await appendFile(source, encode([
+    { timestamp, type: "event_msg", payload: { type: "item_completed", item: { id: "deleted", type: "FileChange", status: "completed", changes: { "src/deleted.ts": { type: "delete" } } } } },
+    ...["rg -n alpha src", "rg alpha"].flatMap((command, index) => [
+      { timestamp, type: "response_item", payload: { type: "function_call", name: "shell_command", call_id: `search-${index}`, arguments: JSON.stringify({ command, workdir: index ? join(repository, "src") : repository }) } },
+      { timestamp, type: "response_item", payload: { type: "function_call_output", call_id: `search-${index}`, output: "Exit code: 0\nOutput:\nsrc/a.ts:1:alpha\n" } },
+    ]),
+  ]));
+  const refresh = await apiRequest<JobResponse>(service.instance, `${base}/refresh`, "POST");
+  await wait(service, refresh.job.id);
+  const coverage = await apiRequest<CoverageResult>(service.instance, `${base}/coverage`);
+  assert.equal(coverage.summary.fileCount, 2);
+  assert.equal(coverage.summary.lineCount, 3);
+  assert.deepEqual(coverage.summary.readExact, { files: 1, lines: 2 });
+  assert.equal(coverage.summary.editExact.lines, 0);
+  const key = `version=${coverage.version}&from=${timestamp}&categories=source,config,docs,unknown`;
+  const events = await apiRequest<EventsResponse>(service.instance, `${base}/events?${key}`);
+  assert.equal(events.total, 3);
+  for (const event of events.events) {
+    const evidence = await apiRequest<EvidenceResponse>(service.instance, `${base}/evidence/${encodeURIComponent(event.id)}?${key}`);
+    assert.equal(evidence.event.id, event.id);
+    assert.equal(evidence.records.length, event.sources.length);
+    assert.equal(evidence.unavailable.length, 0);
+  }
+  const searches = await apiRequest<EventsResponse>(service.instance, `${base}/events?version=${coverage.version}&categories=unknown&kind=search`);
+  assert.equal(searches.total, 1);
+  const scoped = await apiRequest<EventsResponse>(service.instance, `${base}/events?version=${coverage.version}&categories=unknown&directory=src&kind=search`);
+  assert.equal(scoped.total, 1);
+  assert.equal(scoped.events[0]!.cwd, join(repository, "src"));
+  const outside = await apiRequest<EventsResponse>(service.instance, `${base}/events?version=${coverage.version}&categories=unknown&directory=src-other&kind=search`);
+  assert.equal(outside.total, 0);
+  const deleted = await apiRequest<EventsResponse>(service.instance, `${base}/events?version=${coverage.version}&path=src/deleted.ts`);
+  assert.equal(deleted.total, 1);
+}));
+
 test("真实 HTTP 版本、筛选、文件与证据闭环；追加后原记录仍可回查", async () => fixture(async ({ service, register, source }) => {
   const base = `/repositories/${register.repository.id}`;
   const coverage = await apiRequest<CoverageResult>(service.instance, `${base}/coverage?client=codex&directory=src`);

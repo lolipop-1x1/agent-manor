@@ -3,6 +3,7 @@ import type {
   AnalysisSnapshot, BaselineFile, CoverageResult, FileCoverage, Filters, Gap, HistoryEvent, Mapping, Repository,
 } from "../contracts.js";
 import { countRangeLines, mergeRanges, subtractRanges } from "./ranges.js";
+import { classifyFile } from "./baseline.js";
 
 /** 这里只处理已经可靠归属的当前 worktree 路径，不猜测其他 clone/worktree。 */
 export function eventFilePaths(event: HistoryEvent, repository: Repository): string[] {
@@ -45,6 +46,38 @@ export function filterEvents(snapshot: AnalysisSnapshot, filters: Filters = {}):
     if (!selectedEvent(event, filters)) continue;
     const paths = [...eventFilePaths(event, snapshot.repository), ...(mappings.get(event.id) ?? [])];
     if (paths.some((path) => files.has(path)) && !result.has(event.id)) result.set(event.id, event);
+  }
+  return [...result.values()];
+}
+
+/** 历史活动不要求文件仍在分母中；目录搜索按相关文件类别，无路径活动归未知类别。 */
+export function filterHistoricalEvents(snapshot: AnalysisSnapshot, filters: Filters = {}): HistoryEvent[] {
+  const categories = filters.categories ?? ["source"];
+  const directory = filters.directory?.replaceAll("\\", "/").replace(/^\.\//, "").replace(/\/+$/, "");
+  const selectedPath = (path: string) => !directory || directory === "." || path === directory || path.startsWith(`${directory}/`);
+  const files = new Map(snapshot.baseline.files.map(file => [file.path, file.category]));
+  const pathsByEvent = new Map(snapshot.events.map(event => [event.id, eventFilePaths(event, snapshot.repository)]));
+  for (const mapping of snapshot.mappings) {
+    const paths = pathsByEvent.get(mapping.eventId);
+    if (paths && !paths.includes(mapping.filePath)) paths.push(mapping.filePath);
+  }
+  const knownPaths = [...new Set([...files.keys(), ...[...pathsByEvent.values()].flat()])];
+  const selectedCategory = (path: string) => categories.includes(files.get(path) ?? classifyFile(path));
+  const result = new Map<string, HistoryEvent>();
+  for (const event of snapshot.events) {
+    if (!selectedEvent(event, filters)) continue;
+    const paths = pathsByEvent.get(event.id) ?? [];
+    let selected = paths.some(path => {
+      if (files.has(path)) return selectedPath(path) && selectedCategory(path);
+      const descendants = knownPaths.filter(candidate => candidate.startsWith(`${path}/`));
+      return descendants.length ? descendants.some(candidate => selectedPath(candidate) && selectedCategory(candidate))
+        : selectedPath(path) && selectedCategory(path);
+    });
+    if (!paths.length && !event.path && !event.fragments.some(fragment => fragment.path) && event.cwd && isAbsolute(event.cwd) && categories.includes("unknown")) {
+      const scope = relative(snapshot.repository.path, resolve(event.cwd));
+      selected = scope !== ".." && !scope.startsWith(`..${sep}`) && !isAbsolute(scope) && selectedPath(scope.split(sep).join("/"));
+    }
+    if (selected && !result.has(event.id)) result.set(event.id, event);
   }
   return [...result.values()];
 }

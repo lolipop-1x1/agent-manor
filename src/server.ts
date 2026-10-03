@@ -5,7 +5,7 @@ import { existsSync, lstatSync, realpathSync } from "node:fs";
 import { join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { AnalysisSnapshot, ApiErrorCode, CoverageQuery, FileDetail, Filters, ServiceInstance } from "./contracts.js";
-import { buildCoverage, eventFilePaths, filterEvents, getHotspots, getUnreadFiles } from "./analysis/coverage.js";
+import { buildCoverage, eventFilePaths, filterEvents, filterHistoricalEvents, getHotspots, getUnreadFiles } from "./analysis/coverage.js";
 import type { DiscoverRoots } from "./history/index.js";
 import { AnalysisStore, StoreError, WorkerManager } from "./index/index.js";
 import { VERSION } from "./version.js";
@@ -147,7 +147,7 @@ export async function startService(options: ServiceOptions = {}) {
     app.get<{ Params: RepositoryParams; Querystring: Query }>(`${base}/events`, async (request) => {
       const query = eventsQuery(request.query);
       const snapshot = snapshotFor(request.params.id, query);
-      const events = filterEvents(snapshot, filtersOf(query)).filter((event) => (!query.kind || event.kind === query.kind)
+      const events = filterHistoricalEvents(snapshot, filtersOf(query)).filter((event) => (!query.kind || event.kind === query.kind)
         && (!query.path || hasEventPath(snapshot, event.id, query.path)));
       const start = (query.page! - 1) * query.pageSize!;
       return { version: snapshot.version, events: events.slice(start, start + query.pageSize!), total: events.length, page: query.page, pageSize: query.pageSize };
@@ -155,7 +155,7 @@ export async function startService(options: ServiceOptions = {}) {
     app.get<{ Params: RepositoryParams & { eventId: string }; Querystring: Query }>(`${base}/evidence/:eventId`, async (request) => {
       const query = coverageQuery(request.query);
       const snapshot = snapshotFor(request.params.id, query);
-      const event = filterEvents(snapshot, filtersOf(query)).find((candidate) => candidate.id === request.params.eventId);
+      const event = filterHistoricalEvents(snapshot, filtersOf(query)).find((candidate) => candidate.id === request.params.eventId);
       if (!event) throw new ServiceError("EVENT_NOT_FOUND", "活动不在所选分析范围内");
       const records = [];
       const unavailable = [];
