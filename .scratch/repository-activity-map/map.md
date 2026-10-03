@@ -32,6 +32,7 @@ Status: resolved
 
 ## 已作决策
 
+- 2026-10-03：[基础工程与共享契约](issues/02-foundation.md) 已合并到正式集成分支，合并提交 `87f658d8cd8a716d45c1d42744851f7d7ff090eb`；Node 24 下服务端类型检查和 SQLite 加载检查通过。
 - T1：用户选择“不复用，自行开发”。竞品只作为行为和格式研究材料，不成为工程基础。
 - T2：用户允许依赖 Node.js 等运行时。
 - T3、T4：用户同意 TypeScript 全栈加 Node.js，以及本地 SQLite 分析索引；取舍见 [ADR 0003](../../docs/adr/0003-typescript-and-sqlite.md)。
