@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { Command } from "commander";
 import { spawn } from "node:child_process";
+import { realpathSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { resolve } from "node:path";
 import type { CoverageResult, JobResponse, ServiceInstance } from "./contracts.js";
@@ -152,7 +153,14 @@ export function createProgram(): Command {
   return program;
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+function isEntrypoint(): boolean {
+  if (!process.argv[1]) return false;
+  // npm 的 bin 是符号链接，以真实路径判断；普通导入不触发 CLI。
+  try { return realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url)); }
+  catch { return false; }
+}
+
+if (isEntrypoint()) {
   const program = createProgram();
   if (process.argv.length === 3 && process.argv[2] === "--version") process.stdout.write(`${VERSION}\n`);
   else void program.parseAsync().catch((error: unknown) => {
