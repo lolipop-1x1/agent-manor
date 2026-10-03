@@ -1,7 +1,7 @@
 # 本地 API、后台生命周期与 CLI
 
 Type: task
-Status: ready-for-agent
+Status: claimed
 Blocked by: 02, 05
 
 ## Scope
