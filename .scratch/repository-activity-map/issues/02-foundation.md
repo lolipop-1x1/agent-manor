@@ -1,7 +1,7 @@
 # 基础工程与共享契约
 
 Type: task
-Status: ready-for-agent
+Status: claimed
 Blocked by:
 
 ## Scope
