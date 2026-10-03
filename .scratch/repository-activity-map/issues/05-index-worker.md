@@ -1,7 +1,7 @@
 # SQLite 索引、增量分析与完整版本发布
 
 Type: task
-Status: ready-for-agent
+Status: claimed
 Blocked by: 03, 04
 
 ## Scope
