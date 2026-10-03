@@ -1,7 +1,7 @@
 # npm 交付与 Agent 查询 Skill
 
 Type: task
-Status: ready-for-agent
+Status: claimed
 Blocked by: 06, 07
 
 ## Scope
