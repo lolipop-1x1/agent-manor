@@ -1,0 +1,81 @@
+import type { CoverageQuery, FileCategory, FileCoverage, FileDetail, Filters, GapKind, LineRange } from "../src/contracts";
+
+export type Metric = "read" | "edit" | "activity";
+export type Theme = "light" | "dark";
+export const metricNames: Record<Metric, string> = { read: "精确读取", edit: "历史修改", activity: "活动次数" };
+export const categoryNames: Record<FileCategory, string> = { source: "源码", config: "配置", docs: "文档", unknown: "未知类别" };
+export const gapNames: Record<GapKind, string> = {
+  source_missing: "来源缺失", source_unavailable: "来源不可读", range_unknown: "范围未知",
+  unsupported_format: "格式不支持", unsupported_tool: "工具不支持", ambiguous: "对应歧义",
+  unassociated: "未关联会话", parse_error: "解析失败", incomplete_record: "记录未完整",
+  unpaired_call: "调用结果未配对", budget_exceeded: "匹配预算不足",
+};
+export const fmt = (value: number) => value.toLocaleString("zh-CN");
+export const percent = (numerator: number, denominator: number) => denominator ? `${(numerator / denominator * 100).toFixed(1)}%` : "—";
+export const filename = (path: string) => path.split("/").at(-1) ?? path;
+export const rangesLabel = (ranges: LineRange[]) => ranges.map(range => range.start === range.end ? `L${range.start}` : `L${range.start}–${range.end}`).join("、");
+export const dateLabel = (value?: string) => value ? new Date(value).toLocaleString("zh-CN", { hour12: false }) : "时间未知";
+
+/** 每次下钻使用已发布的版本和原筛选，目录以显式参数覆盖。 */
+export function boundQuery(filters: Filters, version: string, directory?: string): CoverageQuery {
+  return { ...filters, version, directory: directory ?? filters.directory };
+}
+
+export function timeFilters(window: string, from: string, to: string, now = Date.now()): Pick<Filters, "from" | "to"> {
+  if (window === "custom") {
+    return {
+      from: from ? new Date(`${from}T00:00:00`).toISOString() : undefined,
+      to: to ? new Date(`${to}T23:59:59.999`).toISOString() : undefined,
+    };
+  }
+  return window === "all" ? {} : { from: new Date(now - Number(window) * 86_400_000).toISOString() };
+}
+
+export interface MapNode { name: string; path: string; file?: FileCoverage; children?: MapNode[] }
+
+/** 地图保留目录层级，零行文件留在文件列表中，不虚构矩形面积。 */
+export function mapTree(files: FileCoverage[], directory: string): MapNode {
+  const root: MapNode = { name: directory || "整个仓库", path: directory, children: [] };
+  for (const file of files) {
+    if (!file.lineCount || (directory && !file.path.startsWith(`${directory}/`))) continue;
+    const relative = directory ? file.path.slice(directory.length + 1) : file.path;
+    const parts = relative.split("/");
+    let parent = root;
+    for (let i = 0; i < parts.length; i += 1) {
+      const name = parts[i]!;
+      const path = [directory, ...parts.slice(0, i + 1)].filter(Boolean).join("/");
+      if (i === parts.length - 1) parent.children!.push({ name, path, file });
+      else {
+        let child = parent.children!.find(node => node.path === path && !node.file);
+        if (!child) { child = { name, path, children: [] }; parent.children!.push(child); }
+        parent = child;
+      }
+    }
+  }
+  return root;
+}
+
+export function directories(files: FileCoverage[]): { path: string; count: number; depth: number }[] {
+  const counts = new Map<string, number>();
+  for (const file of files) {
+    const parts = file.path.split("/").slice(0, -1);
+    for (let i = 1; i <= parts.length; i += 1) {
+      const path = parts.slice(0, i).join("/");
+      counts.set(path, (counts.get(path) ?? 0) + 1);
+    }
+  }
+  return [...counts].sort(([a], [b]) => a.localeCompare(b)).map(([path, count]) => ({ path, count, depth: path.split("/").length }));
+}
+
+export function metricValue(file: FileCoverage, metric: Metric): number {
+  return metric === "activity" ? file.activityCount
+    : metric === "edit" ? file.editExactLines : file.readExactLines;
+}
+
+export function fileHighlights(detail: FileDetail, metric: Metric, showNear: boolean): { exact: LineRange[]; near: LineRange[] } {
+  if (detail.contentStale || detail.content === null) return { exact: [], near: [] };
+  return {
+    exact: metric === "edit" ? detail.file.editExactRanges : detail.file.readExactRanges,
+    near: showNear ? metric === "edit" ? detail.file.editNearRanges : detail.file.readNearRanges : [],
+  };
+}
