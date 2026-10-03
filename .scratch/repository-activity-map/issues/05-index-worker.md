@@ -1,7 +1,7 @@
 # SQLite 索引、增量分析与完整版本发布
 
 Type: task
-Status: claimed
+Status: resolved
 Blocked by: 03, 04
 
 ## Scope
@@ -16,3 +16,9 @@ SQLite WAL、迁移、仓库登记、手动关联、来源缓存／内容变化�
 ## Comments
 
 - 2026-10-03：采用已确认首版规格，自行实现。
+
+## Answer
+
+- SQLite 索引、增量分析与长期 Worker 提交：`9be564c59c83cb5c16dbca0cad3a80e631e3b0c8`；独立分支以 `--no-ff` 合并，合并提交：`d010615ecc9262125c063c2027cf383ad4c5c737`。已有解析规则版本内容自动合并，未产生额外差异。
+- `npm run check:server`、`npm run build:server`、`npm test`（72/72，包含新增历史兼容测试及 12 项索引／Worker 测试）和合并差异 `git diff --check` 均通过。
+- 验证覆盖 WAL／迁移、完整版本与手动关联、解析及对应复用、跨轮后补与完整记录边界、来源移动／缺失／恢复、临时读取失败、事务发布回滚、长期 Worker 串行与停止后保留旧版。索引接口已核对；真实本机服务／CLI／Web 端到端验收留到后续集成阶段。
