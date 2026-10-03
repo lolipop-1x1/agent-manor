@@ -34,6 +34,7 @@ Status: resolved
 
 - 2026-10-04：[npm 交付与 Agent 查询 Skill](issues/08-delivery-skill.md) 已合并，合并提交 `0a4286ef99d061f0ce26c50d2a14ebcac82050a9`；macOS arm64 真实 tarball 包外安装、npm bin／Worker／Web／SQLite 与独立 Agent 的 Skill 查询证据闭环通过，同树类型检查、构建及 83 项测试通过。08 已完成，可进入 09 的最终集成验收与审查；授权扩展的 CLI 入口修复与文档白名单范围见票据 Answer。
 - 2026-10-04：[真实历史归属查询性能](issues/10-association-performance.md) 已合并，合并提交 `dceb66b6d15d83f7b5fd259cbb27ee90784c890a`；36 项历史测试、服务端检查和生产构建通过。冻结 A 单次关联结果指纹不变，`--show-toplevel` 查询从 580 次降至 1 次；单次关联观测约 17.15 秒降至 0.285 秒。该结果不代表完整刷新提速，数据库与 RSS 边界见[归属性能说明](../../docs/design/association-performance.md)。
+- 2026-10-04：[真实闭环验收与性能记录](issues/09-acceptance-review.md) 业务验收完成，验收提交 `d7de67f0c62127c7c492e1da4e75ac89f5fbff3c` 以 `--no-ff` 合入，合并提交 `051b13133cc144035476d2856f254ec6e5f1c69c`。选定的真实 A/G 来源已完成 CLI/API、Web 与安装包 Skill 下钻；性能与支持边界见[验收记录](../../docs/validation/acceptance.md)。完整索引中的删除行无法对应 gap 仍保留；最终两轴 code-review 与修复由主流程继续处理。
 - 2026-10-04：[本地 API、后台生命周期与 CLI](issues/06-service-cli.md) 已合并，合并提交 `961db84ebe0bbc42d602501856344c70c35ab3ad`；同树全量类型检查、服务／正式 Web 构建与 77 项测试通过，编译后台可从包外 cwd 提供正式静态资源。06 已完成，可进入 08 的 npm 安装、真实浏览器与业务交付验收。
 - 2026-10-04：[SQLite 索引、增量分析与完整版本发布](issues/05-index-worker.md) 已合并，合并提交 `d010615ecc9262125c063c2027cf383ad4c5c737`；服务端类型与构建、全量 72 项测试通过，可进入服务／CLI 实现。
 - 2026-10-04：[历史适配器兼容补充](issues/03-history-adapters.md) 已合并，合并提交 `51662d3eb619c22f54bc665ddaf059a55e6cb221`；服务端类型与 32 项历史测试通过，Claude SDK 虚拟 EOF 空行仅在证据一致时兼容。

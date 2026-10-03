@@ -10,7 +10,7 @@
 | Abort 时响应体解析 | 通过 | 使用未完成 JSON 的真实流式 `Response` body，让 `Response.json()` 在读取中遇到 AbortSignal；旧行为会误报 `INVALID_RESPONSE`，修复后保留 AbortError。没有 mock `response.json()`。 |
 | npm 包与安装入口 | 通过 | Node 24 macOS arm64 的包外安装包含 77 个文件、476,313 字节及 74 个运行依赖；从实际 npm bin 运行 CLI、后台、Worker 和 Web 静态资源。未发布到 npm。 |
 | 独立安装包 Skill | 通过 | 独立验收者按包内 Skill 执行 repositories → coverage → file → events → evidence，所有查询固定同一版本。独立合成仓库为 3 文件 / 6 行，读取精确 2 文件 / 5 行，所选文件有 1 个成功读取事件，2 条原始证据均可回读；未保存或打印正文，随后停止服务。 |
-| 合成 fixture 的核心分析 | 通过 | Codex 与 Claude 合成历史经 scan → parse → resolve → associate → match → coverage，6 个事件和映射、无 gap；人工期望与结果相符：15 行基线、8 行精确读取、1 行精确编辑。搜索、失败状态和活动次数单独核对。 |
+| 合成 fixture 的核心分析 | 通过 | Codex 与 Claude 合成历史的核心逐事件 match 得到 6 个映射，解析与关联 gap 为 0；完整索引 fixture 实际发布 5 个 mapping，并保留 1 个删除行无法对应的 `range_unknown` gap。人工期望与结果相符：15 行基线、8 行精确读取、1 行精确编辑；搜索、失败状态和活动次数单独核对。 |
 | CLI / API 下钻 | 通过 | 注册、覆盖、来源、事件、文件、证据查询均可用；文件 → 活动 → 原始记录链路绑定同一版本。G 的 refresh 与 cacheclear 后，归一化后的摘要、文件范围/计数、事件身份/状态/片段、gap 和 baselineHash 一致。版本、时间及缓存统计不参加语义比较。 |
 | 真实历史来源索引 | 通过，限 A 与 G | A（Codex）冻结输入为 2,587 条完整 JSONL 物理记录；G（Claude）为 127 条。A 登记到与集成项目相同的 Git commonDir；G 由其冻结 cwd 元数据归属到另一个实际 Git 仓库。H 只在先前解析兼容探针出现，本次没有登记真实服务。 |
 | 真实 Web 交互 | 通过，限选定来源 | 修复后首次载入成功。真实页面完成 A/G 筛选、地图、目录、文件、事件及原始证据下钻；UI 的仓库与版本保持一致。仅将独立合成 fixture 截图收入仓库。 |
