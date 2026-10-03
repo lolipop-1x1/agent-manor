@@ -30,7 +30,13 @@ export async function request<T>(path: string, options: { method?: string; body?
     if (error instanceof Error && error.name === "AbortError") throw error;
     throw new ApiError("CONNECTION_FAILED", "无法连接本地分析服务，请确认服务正在运行后重试。");
   }
-  const body = await response.json().catch(() => null) as T | ApiErrorResponse | null;
+  let body: T | ApiErrorResponse | null;
+  try {
+    body = await response.json() as T | ApiErrorResponse;
+  } catch (error) {
+    if (isAborted(error)) throw error;
+    body = null;
+  }
   if (!response.ok) {
     if (body && typeof body === "object" && "error" in body) {
       const failure = body as ApiErrorResponse;
