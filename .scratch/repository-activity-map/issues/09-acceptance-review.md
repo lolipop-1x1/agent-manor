@@ -1,7 +1,7 @@
 # 真实闭环、性能记录与最终审查
 
 Type: task
-Status: ready-for-agent
+Status: claimed
 Blocked by: 08, 10
 
 ## Scope
@@ -17,3 +17,5 @@ Blocked by: 08, 10
 ## Comments
 
 - 2026-10-03：采用已确认首版规格，自行实现。
+
+- 2026-10-04：08与10均resolved，开始整合真实CLI／Web／Skill闭环与性能证据。
