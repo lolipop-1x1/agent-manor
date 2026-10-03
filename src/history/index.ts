@@ -406,6 +406,7 @@ export async function associateSource(source: ParsedSource, baseline: Baseline):
   const repositoryCommonDir = await canonicalPath(resolve(baseline.repository.commonDir));
   const available = new Set(baseline.files.map((file) => file.path));
   const commonCache = new Map<string, string | undefined>();
+  const worktreeRootCache = new Map<string, string>();
   async function relativePath(path: string | undefined, cwd: string | undefined): Promise<string | undefined> {
     const normalized = normalizeHistoryPath(path);
     const working = normalizeHistoryPath(cwd);
@@ -417,9 +418,14 @@ export async function associateSource(source: ParsedSource, baseline: Baseline):
     if (working && isAbsolute(working)) {
       if (!commonCache.has(working)) commonCache.set(working, await commonDir(working));
       if (commonCache.get(working) === repositoryCommonDir) {
-        let worktreeRoot: string | undefined;
-        try { worktreeRoot = (await git("git", ["-C", working, "rev-parse", "--show-toplevel"], { timeout: 5_000 })).stdout.trim(); } catch { return undefined; }
-        if (worktreeRoot) worktreeRoot = await canonicalPath(worktreeRoot);
+        let worktreeRoot = worktreeRootCache.get(working);
+        if (!worktreeRoot) {
+          try { worktreeRoot = (await git("git", ["-C", working, "rev-parse", "--show-toplevel"], { timeout: 5_000 })).stdout.trim(); } catch { return undefined; }
+          if (worktreeRoot) {
+            worktreeRoot = await canonicalPath(worktreeRoot);
+            worktreeRootCache.set(working, worktreeRoot);
+          }
+        }
         if (worktreeRoot && inside(worktreeRoot, absolute)) return relative(worktreeRoot, absolute).split(sep).join("/");
       }
     }
