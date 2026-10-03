@@ -32,6 +32,8 @@ Status: resolved
 
 ## 已作决策
 
+- 2026-10-04：首版实现与最终两轴审查已完成；两项规格 P2 在提交 `cd6d8c7` 修复，以 `1846f07` 合入。类型检查、构建与 87 项全量测试通过，包含真实 npm 包外安装。规格标为 resolved，结果见[审查记录](../../docs/validation/review.md)与[验收记录](../../docs/validation/acceptance.md)。原型分支保留；未公开发包，Windows/Linux 安装仍未验收。
+
 - 2026-10-04：[npm 交付与 Agent 查询 Skill](issues/08-delivery-skill.md) 已合并，合并提交 `0a4286ef99d061f0ce26c50d2a14ebcac82050a9`；macOS arm64 真实 tarball 包外安装、npm bin／Worker／Web／SQLite 与独立 Agent 的 Skill 查询证据闭环通过，同树类型检查、构建及 83 项测试通过。08 已完成，可进入 09 的最终集成验收与审查；授权扩展的 CLI 入口修复与文档白名单范围见票据 Answer。
 - 2026-10-04：[真实历史归属查询性能](issues/10-association-performance.md) 已合并，合并提交 `dceb66b6d15d83f7b5fd259cbb27ee90784c890a`；36 项历史测试、服务端检查和生产构建通过。冻结 A 单次关联结果指纹不变，`--show-toplevel` 查询从 580 次降至 1 次；单次关联观测约 17.15 秒降至 0.285 秒。该结果不代表完整刷新提速，数据库与 RSS 边界见[归属性能说明](../../docs/design/association-performance.md)。
 - 2026-10-04：[真实闭环验收与性能记录](issues/09-acceptance-review.md) 业务验收完成，验收提交 `d7de67f0c62127c7c492e1da4e75ac89f5fbff3c` 以 `--no-ff` 合入，合并提交 `051b13133cc144035476d2856f254ec6e5f1c69c`。选定的真实 A/G 来源已完成 CLI/API、Web 与安装包 Skill 下钻；性能与支持边界见[验收记录](../../docs/validation/acceptance.md)。完整索引中的删除行无法对应 gap 仍保留；最终两轴 code-review 与修复由主流程继续处理。

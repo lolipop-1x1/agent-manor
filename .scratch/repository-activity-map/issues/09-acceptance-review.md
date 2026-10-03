@@ -26,3 +26,5 @@ Blocked by: 08, 10
 - 集成检查、构建与 83 项测试通过；包外 npm 安装及独立 Skill 查询完成；真实来源 A（Codex）与 G（Claude）分别在其实际 Git 仓库归属下完成 CLI/API 与 Web 下钻、刷新和缓存重建核对。H 仅有解析兼容探针，不算真实服务验收。
 - 核心逐事件 match 样本得到 6 个映射、解析和关联 gap 为 0；完整索引 fixture 实际发布 5 个 mapping，并保留 1 个删除行无法对应的 `range_unknown` gap。该缺口是预期边界，不能将核心函数探针描述成完整索引无 gap。
 - 首次／无变／追加／单文件变化及大文件匹配的测量、输入规模和边界见验收记录。两轴 code-review、统一修复及是否转 PR ready 仍由 implement-spec 主流程处理，本票据不标记 review 通过或 ready。
+
+- 2026-10-04：主流程最终审查闭合：Standards 0 项，Spec 两项 P2 均由单个 implementer 修复并独立复核。合并提交 `1846f07` 的全量 87/87、类型检查、构建与实际 npm 包外安装通过；详见[审查记录](../../../docs/validation/review.md)。
