@@ -1,0 +1,61 @@
+{
+  "name": "agent-manor",
+  "version": "0.1.0",
+  "private": true,
+  "description": "本地优先的 Agent 历史与仓库代码活动分析工具",
+  "type": "module",
+  "license": "UNLICENSED",
+  "engines": {
+    "node": ">=24.0.0 <25"
+  },
+  "bin": {
+    "agent-manor": "dist/cli.js"
+  },
+  "files": [
+    "dist/",
+    "skills/"
+  ],
+  "scripts": {
+    "build": "npm run build:server && npm run build:web",
+    "build:server": "tsc -p tsconfig.server.json",
+    "build:web": "vite build",
+    "check": "npm run check:server && npm run check:web",
+    "check:server": "tsc -p tsconfig.server.json --noEmit",
+    "check:web": "tsc -p tsconfig.web.json",
+    "test": "node --import tsx --test tests/*.test.ts",
+    "test:sqlite": "node scripts/check-sqlite.mjs",
+    "dev:web": "vite",
+    "prepack": "npm run build && node scripts/check-package.mjs"
+  },
+  "dependencies": {
+    "@fastify/static": "10.1.5",
+    "better-sqlite3": "13.0.3",
+    "commander": "15.0.0",
+    "diff": "9.0.0",
+    "fastify": "5.12.5"
+  },
+  "devDependencies": {
+    "@codemirror/lang-javascript": "6.2.5",
+    "@codemirror/lang-json": "6.0.2",
+    "@codemirror/state": "6.7.6",
+    "@codemirror/view": "6.43.13",
+    "@fontsource-variable/geist": "5.3.0",
+    "@phosphor-icons/react": "2.1.10",
+    "@radix-ui/react-dialog": "1.1.23",
+    "@radix-ui/react-dropdown-menu": "2.1.24",
+    "@radix-ui/react-tooltip": "1.2.16",
+    "@types/better-sqlite3": "9.6.0",
+    "@types/d3": "7.4.3",
+    "@types/node": "24.19.1",
+    "@types/react": "19.3.0",
+    "@types/react-dom": "19.3.0",
+    "@vitejs/plugin-react": "6.1.1",
+    "codemirror": "6.0.2",
+    "d3": "7.9.0",
+    "react": "19.3.0",
+    "react-dom": "19.3.0",
+    "tsx": "4.23.15",
+    "typescript": "7.0.2",
+    "vite": "8.3.2"
+  }
+}
