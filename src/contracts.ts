@@ -169,6 +169,8 @@ export interface FileCoverage {
   editNearLines: number;
   readCount: number;
   editCount: number;
+  /** 按事件身份去重的总活动次数，各状态与类型计数可能重叠。 */
+  activityCount: number;
   searchCount: number;
   failedCount: number;
   unknownCount: number;
