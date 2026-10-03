@@ -1,6 +1,6 @@
 # 历史解析支持与证据边界
 
-规则版本：`PARSER_RULE_VERSION`。当前测试样本全部合成；格式结构参考本机只读取证笔记，本文不复制个人来源路径、日志或代码。格式兼容采用结构判断，不宣称整个客户端版本已验证。真实仓库端到端验收由交付阶段另外记录。
+规则版本：`PARSER_RULE_VERSION = "2"`，定义在 `src/version.ts`；旧规则游标重建。当前测试样本全部合成；格式结构参考本机只读取证笔记，本文不复制个人来源路径、日志或代码。格式兼容采用结构判断，不宣称整个客户端版本已验证。真实仓库端到端验收由交付阶段另外记录。
 
 ## 来源、身份与续读
 
@@ -27,7 +27,7 @@ fork 保存父 session、原始 ordinal 与 endByteOffset。ordinal 的准确客
 | Codex direct shell_command | JSON arguments 与文本 Exit code／Output 头 | 旧版结构实样核对；direct exec_command 按相同 shape 合成验证；缺终态保留 unknown |
 | Codex direct Read/Edit/Write | 结构化结果按直接工具 shape 提取 | 尚无对应本机 direct 实样；不能把普通返回文本当结构化读取范围 |
 | Codex apply_patch | 成功结果与 Add/Update/Delete File 内容 | 可提取变化，非标准 hunk 缺少可靠历史行号时保持未知；失败不产生片段 |
-| Claude Read | 实际 file.content/startLine/numLines/totalLines 与编号文本校验 | 结构实样核对；is_error 可省略但需要结构化成功结果；字段矛盾不产生覆盖片段 |
+| Claude Read | 实际 file.content/startLine/numLines/totalLines 与编号文本校验 | 结构实样核对；is_error 可省略但需要结构化成功结果；字段矛盾不产生覆盖片段；可确认的 SDK 虚拟 EOF 空行排除覆盖 |
 | Claude Edit | structuredPatch 的变化行与上下文 | 结构实样核对，纯删除保留活动；无结构化位置时只保留变化内容，不虚构历史行号 |
 | Claude Write create/overwrite | create 的内容，overwrite 的 originalFile/content 差异 | create 结构实样核对；overwrite 合成验证；未确认新建或旧内容则范围未知 |
 | Claude Bash | tool_result.is_error 与实际 content | 实样结构；持久化输出和截断不补读 stdout/旁路文件；后台接收状态为 unknown，后续后台终态通知尚未适配 |
@@ -52,6 +52,12 @@ fork 保存父 session、原始 ordinal 与 endByteOffset。ordinal 的准确客
 | `&&`、`;`、重定向、变量、glob、子命令、多行脚本、其他管道、字节截取 | unknown other 与 unsupported_tool 缺口；不根据最后退出码推前面子命令成功 |
 
 普通源码里的 truncated 单词不会触发截断；只识别支持的工具包装标记。明确中间省略标记前的完整返回行可保留；只有头部提示截断而无法知道输出布局时，不推断行范围。末尾未换行的完整工具返回可代表完整物理末行；JSONL 自身未完成则整体等待。
+
+Claude SDK 部分完整 Read 用 `content.split("\n")` 计数，尾换行会生成额外编号 EOF 空行。只在结构化内容尾 LF、`numLines = 物理行数 + 1`、实际编号输出逐行连续且与结构化内容一致、最后编号等于 `totalLines` 且内容为空时确认这个虚拟末行。片段保留原始结构化源码，因此覆盖只包含物理行；真实的末尾空白行仍保留。缺失可见末行、非 EOF、末行有内容或计数字段矛盾时继续保留范围未知。无尾 LF 和既有物理行计数形式继续支持。
+
+新版命令事件中的多段 `nl ... && nl ...` 即使呈现多个编号段，也继续按复杂 Shell 缺口处理；本轮没有为多段输出增加猜测性归属规则。单个新版命令的结构、file URI cwd 和编号内容已有合成回归验证。
+
+本轮额外只读核对两个真实 Claude 来源的全部 6 个 Read：全部获得与实际内容相同的物理行片段；两个完整返回的 SDK 计数分别为 185／362，覆盖片段分别保留 184／361 个物理行，未包含虚拟 EOF 行。120 行的无尾 LF 局部返回仍正常支持。这个来源级回读统计不等同于本项目 Claude 端到端验收，也不扩展未知客户端格式的支持声明。
 
 ## 片段与仓库归属
 
