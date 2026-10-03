@@ -1,33 +1,56 @@
 # AgentManor
 
-本地优先的 Agent 管家：看懂 Agent 的历史，打理 Agent 的环境。
+在本机分析 Codex／Claude Code 历史，查看它们在当前 Git 仓库中的读取与修改活动。
 
-面向使用多种 AI 编程客户端的开发者，统一查看配置与使用历史，并根据可回查的证据整理 Skill、MCP 和项目活动。
+首版提供目录代码地图、文件与行覆盖率、活动和原始证据回查，以及共用一个本地后台的 Web、CLI 和 Agent Skill。精确对应与近似对应分别展示；不能确定的范围保留采集缺口。
 
-## 项目状态
+当前是 `0.1.0` 本地交付版本，npm 包保持 `private`，尚未发布到 npm。运行目标为 Node.js 24 和 Git，先验证 macOS Apple Silicon；Windows／Linux 尚未完成安装验收。许可证尚未选定。
 
-项目处于初始化和需求研究阶段，尚无可运行功能。本文档中的产品能力是方向或候选范围，不是已实现功能。开源许可证尚未选定。
+## 安装与启动
 
-已确定项目名称、独立仓库和本地优先定位。首版产品规格已确认：聚焦 Codex／Claude Code 历史在当前仓库中的代码活动地图，采用本地后台、Web、CLI 与 Skill，先在 macOS 验收。语言、存储和 UI 技术尚未选择。
+取得构建好的 `agent-manor-0.1.0.tgz` 后，可安装到独立目录：
 
-## 文档导航
+```sh
+mkdir -p ~/agent-manor-local
+cd ~/agent-manor-local
+npm install /absolute/path/agent-manor-0.1.0.tgz
+./node_modules/.bin/agent-manor register /absolute/path/to/repository --wait --json
+./node_modules/.bin/agent-manor web
+```
 
-| 阅读目的 | 文档 |
+安装产物包含编译后的 CLI、后台、Worker、Web 和 Skill，安装用户无需再构建。SQLite 依赖 `better-sqlite3` 原生扩展：若目标平台没有可用预编译包，安装过程可能需要本机编译工具链。
+
+开发者在源码仓库使用 Node 24 执行 `npm ci`、`npm run check`、`npm test`、`npm pack`；`npm pack` 会先构建并检查交付入口。
+
+登记成功后，将 JSON 中的 `repository.id` 用于后续查询：
+
+```sh
+agent-manor coverage <repositoryId> --json
+agent-manor file <repositoryId> src/example.ts --version <analysisVersion> --json
+agent-manor refresh <repositoryId> --wait --json
+agent-manor status --json
+agent-manor stop --json
+```
+
+`agent-manor` 需在 PATH 中，或换成安装目录的 `./node_modules/.bin/agent-manor`。第一次需要服务时自动启动后台；关闭网页后后台继续提供查询，`stop` 显式停止。
+
+## 数据与统计
+
+- 默认发现 `~/.codex/sessions`、`~/.codex/archived_sessions`、`~/.claude/projects`；无法可靠归属的来源单独列出，可手动关联。
+- 默认统计当前工作区源码，包含未提交修改；配置与文档可切换。行数包括注释和空白行，依赖、生成物、二进制及链接目标默认排除。
+- 成功读取且内容、范围可对应时进入覆盖；搜索、失败、缺失结果和未知范围单列。历史编辑次数不等于最终 Git diff。
+- 分析索引默认在 `~/.agent-manor`。原始历史只读，索引保存所需历史源码片段；分析在本机完成，无需调用模型或上传历史。
+- 所有下钻保持同一分析结果版本和筛选。当前代码改变时返回过期状态，刷新后再查看对应范围。
+
+## 文档与 Agent 使用
+
+| 内容 | 入口 |
 | --- | --- |
-| 理解目标用户、产品方向、首版建议和验证标准 | [产品定位与范围](docs/product/vision-and-scope.md) |
-| 查看当前代码活动地图的首版规格与验收标准 | [首版规格](.scratch/repository-activity-map/spec.md) |
-| 统一需求、统计和界面用语 | [领域术语](CONTEXT.md) |
-| 了解独立于外传保护的项目边界 | [ADR 0001](docs/adr/0001-independent-project-boundary.md) |
-| 了解 Web、CLI 和 Skill 共用本地后台的决定 | [ADR 0002](docs/adr/0002-local-analysis-service.md) |
-| 查看市场已有能力和差异化假设 | [竞品全景](docs/research/competitive-landscape-2026-10-03.md) |
-| 深入了解 agentsview、cass 的功能与证据 | [重点项目分析](docs/research/agentsview-and-cass.md) |
-| 比较历史驱动的 Skill/MCP 管理项目 | [Skill/MCP 管理调研](docs/research/skill-mcp-management.md) |
-| 定义调用、文件活动、覆盖率和成本统计 | [指标与证据口径](docs/design/metrics-and-evidence.md) |
-| 评估 agent-guardian 中可复用部分 | [复用评估](docs/research/guardian-reuse-assessment.md) |
-| 导入 XMind 查看功能结构 | [agentsview 导图](docs/research/function-maps/agentsview.md)、[cass 导图](docs/research/function-maps/cass.md) |
+| 完整 CLI、筛选、数据目录、停止与缓存重建 | [使用指南](docs/usage.md) |
+| Agent 的 JSON 查询与证据回查流程 | [agent-manor Skill](skills/agent-manor/SKILL.md) |
+| 历史格式与 Shell 支持边界 | [历史支持矩阵](docs/design/history-support.md) |
+| 文件分母、分类与排除规则 | [仓库基线规则](docs/design/baseline-rules.md) |
+| 精确／近似对应与覆盖口径 | [匹配规则](docs/design/matching-rules.md) |
+| 产品规格、领域术语与架构决定 | [源码仓库](https://github.com/lolipop-1x1/agent-manor) |
 
-## 阅读约定
-
-研究文档标注调查日期，并区分项目声明、源码核验和运行验证。Star 与创建时间是元数据快照；当前没有竞品运行验收或用户需求验证的结论。
-
-术语由 `CONTEXT.md` 定义，统计规则由指标文档定义，项目边界由 ADR 记录。工程协作和本地任务跟踪沿用 [AGENTS.md](AGENTS.md)。
+包内 Skill 位于 `node_modules/agent-manor/skills/agent-manor/`。按所用客户端的 Skill 安装方式引用或复制该目录；包安装不会自动修改客户端配置。

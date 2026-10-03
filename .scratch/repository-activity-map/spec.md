@@ -1,8 +1,12 @@
 # 仓库代码活动地图：首版规格
 
-Status: ready-for-agent
+Status: resolved
 
-确认日期：2026-10-03。五轮需求讨论的产品决定已确认，当前尚无业务实现。技术路线已收敛为 [技术方案](technical-design.md)，讨论记录见 [技术决策讨论](map.md)。历史格式矩阵、具体版本和近似门槛数值在首个实施阶段核对校准。
+实施入口：[任务图与共享契约](implementation-contract.md)，任务为 issues/02 至 issues/10。
+用户于 2026-10-03 认可原型并要求按方案开发；正式页面默认采用 A 地图优先。
+完整三种探索布局保留在 `codex/activity-map-prototype`，正式实现不包含原型切换器或示例数据。
+
+确认日期：2026-10-03。首版实现、本地 npm 交付、选定真实历史验收与最终两轴审查已完成。技术路线见[技术方案](technical-design.md)，讨论记录见[技术决策讨论](map.md)；历史格式、规则版本及近似门槛见[历史支持矩阵](../../docs/design/history-support.md)与[匹配规则](../../docs/design/matching-rules.md)。验收范围与未验证边界见[验收记录](../../docs/validation/acceptance.md)。
 
 ## 已明确的核心诉求
 
@@ -111,6 +115,12 @@ agent-guardian 的 `core/src/analysis.rs:433` 与 `:491` 使用原样行索引�
 ## 讨论约束
 
 术语遵循根目录 `CONTEXT.md`，证据解释遵循 `docs/design/metrics-and-evidence.md`。当前文件记录已确认的首版产品规格；实现选择与运行验收结果需另外记录，不能将规格确认描述为产品已可用。
+
+## Answer
+
+- 2026-10-04：任务 02–10 已全部 resolved；正式页面采用 A 地图优先，并接入共用的后台、CLI 与 Skill。原型保留在 `codex/activity-map-prototype`。
+- 历史解析、当前工作区基线、精确／近似覆盖、版本发布、增量刷新、来源缺失解释、证据回读及 macOS npm 包安装均有可核对结果；选定真实来源完成 CLI/API/Web 闭环，详见[验收记录](../../docs/validation/acceptance.md)。
+- 最终两轴审查与单个 implementer 修复完成，集成提交 `1846f07` 的类型检查、构建和 87 项测试通过，详见[审查记录](../../docs/validation/review.md)。未公开发包，Windows/Linux 安装尚未验收。
 
 ## Comments
 

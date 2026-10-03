@@ -1,0 +1,4 @@
+interface:
+  display_name: "AgentManor"
+  short_description: "查询本机代码读取与修改活动，固定分析版本并回查原始证据"
+  default_prompt: "使用 $agent-manor 查询这个仓库的代码覆盖率，并回查一个文件的活动证据。"
