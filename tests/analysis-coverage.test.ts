@@ -5,6 +5,7 @@ import {
   buildCoverage, countRangeLines, eventFilePaths, filterEvents, getHotspots, getUnreadFiles, hashContent,
   MATCHING_RULE_VERSION, mergeRanges, subtractRanges,
 } from "../src/analysis/index.js";
+import { filterHistoricalEvents } from "../src/analysis/coverage.js";
 
 function fixture(): AnalysisSnapshot {
   const files: BaselineFile[] = [
@@ -124,4 +125,28 @@ test("失败与未配对结果即使有伪造映射也不覆盖当前行", () =>
   assert.equal(result.files[0]?.activityCount, 2);
   assert.equal(result.files[0]?.readCount, 0);
   assert.deepEqual(getUnreadFiles(result).map((file) => file.path), ["src/main.ts", "src/unread.ts"]);
+});
+
+test("历史查询保留已删文件和目录／无路径搜索，类别与目录筛选不制造当前覆盖", () => {
+  const snapshot = fixture();
+  const common = { ...snapshot.events[0]!, fragments: [], cwd: snapshot.repository.path };
+  snapshot.events = [
+    { ...common, id: "deleted", kind: "edit", path: "deleted.ts" },
+    { ...common, id: "directory-search", kind: "search", path: "src" },
+    { ...common, id: "pathless-search", kind: "search", path: undefined, cwd: "/tmp/repository/src" },
+  ];
+  snapshot.mappings = [];
+  const all = { categories: ["source", "config", "docs", "unknown"] as const };
+  assert.deepEqual(filterHistoricalEvents(snapshot, { categories: [...all.categories] }).map(event => event.id), ["deleted", "directory-search", "pathless-search"]);
+  assert.deepEqual(filterHistoricalEvents(snapshot).map(event => event.id), ["deleted", "directory-search"]);
+  assert.deepEqual(filterHistoricalEvents(snapshot, { categories: ["unknown"], directory: "src" }).map(event => event.id), ["pathless-search"]);
+  assert.deepEqual(filterHistoricalEvents(snapshot, { categories: ["unknown"], directory: "docs" }), []);
+  snapshot.events.push({ ...common, id: "deleted-doc", kind: "edit", path: "docs/deleted.md" });
+  assert.deepEqual(filterHistoricalEvents(snapshot, { categories: ["docs"] }).map(event => event.id), ["deleted-doc"]);
+  const coverage = buildCoverage(snapshot, { categories: [...all.categories] });
+  assert.equal(coverage.summary.fileCount, 4);
+  assert.equal(coverage.summary.lineCount, 9);
+  assert.equal(coverage.summary.readExact.lines, 0);
+  assert.equal(coverage.summary.editExact.lines, 0);
+  assert.ok(coverage.files.every(file => file.activityCount === 0));
 });

@@ -132,8 +132,8 @@ export async function refreshRepository(store: AnalysisStore, jobId: string, roo
         sources.push(summary(source, manual.has(source.sourceId) ? "manual" : "automatic"));
         gaps.push(...source.gaps, ...association.gaps.filter((gap) => gap.kind !== "unassociated"));
         for (const event of association.events) {
-          // 关联后的路径已经相对当前仓库，覆盖模块不能再按旧 worktree cwd 解析。
-          events.set(event.id, { ...event, cwd: repository.path });
+          // 文件路径已相对仓库；无路径活动保留已验证 cwd，供历史目录筛选。
+          events.set(event.id, { ...event, cwd: event.path ? repository.path : event.cwd });
         }
       } else {
         unassociated.push(summary(source));

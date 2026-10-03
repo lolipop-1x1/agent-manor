@@ -60,8 +60,15 @@ export async function discoverSources(roots: DiscoverRoots = {}): Promise<Source
           for (const line of buffer.subarray(0, bytesRead).toString("utf8").split("\n").slice(0, 32)) {
             try {
               const record = object(JSON.parse(line));
-              if ((client === "codex" && record.type === "session_meta") || (client === "claude" && record.sessionId)) {
+              if (client === "codex" && record.type === "session_meta") {
                 metadata = sourceMetadata(record, client, child); break;
+              }
+              if (client === "claude" && record.sessionId) {
+                const candidate = sourceMetadata(record, client, child);
+                if (!candidate.sourceId) continue;
+                if (!metadata.sourceId) metadata = { ...candidate, cwd: undefined };
+                if (candidate.sourceId !== metadata.sourceId) continue;
+                if (candidate.cwd && isAbsolute(candidate.cwd)) { metadata.cwd = candidate.cwd; break; }
               }
             } catch { /* 发现阶段不把坏行误认为有效元数据。 */ }
           }
@@ -214,11 +221,11 @@ export async function parseSource(path: string, client: Client, previous?: Parse
     }
     if (client === "codex" && record.type === "turn_context") { cursor.cwd = normalizeHistoryPath(string(payload.cwd)) ?? cursor.cwd; continue; }
     if (client === "claude" && record.sessionId) {
+      const metadata = sourceMetadata(record, client, absolutePath);
       if (source.sessionId.startsWith("unknown:")) {
-        const metadata = sourceMetadata(record, client, absolutePath);
         source.sourceId = metadata.sourceId ?? source.sourceId;
         source.sessionId = metadata.sessionId ?? source.sessionId;
-        source.cwd = metadata.cwd;
+        source.cwd = metadata.cwd && isAbsolute(metadata.cwd) ? metadata.cwd : undefined;
         source.parentSessionId = metadata.parentSessionId;
         cursor.relationships = relations(record);
         source.relationships = cursor.relationships;
@@ -227,7 +234,10 @@ export async function parseSource(path: string, client: Client, previous?: Parse
           cursor.relationships.push({ kind: "subagent", parentSessionId: string(record.sessionId)!, agentId: string(record.agentId) });
         }
       }
-      cursor.cwd = normalizeHistoryPath(string(record.cwd)) ?? cursor.cwd;
+      if (metadata.sourceId === source.sourceId && metadata.cwd && isAbsolute(metadata.cwd)) {
+        source.cwd ??= metadata.cwd;
+        cursor.cwd = metadata.cwd;
+      }
     }
     if (client === "codex" && record.type === "event_msg" && payload.type === "item_completed") {
       const item = object(payload.item);

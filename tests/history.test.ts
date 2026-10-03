@@ -6,6 +6,7 @@ import test from "node:test";
 import type { Baseline, ParsedSource } from "../src/contracts.js";
 import { associateSource, discoverSources, normalizeHistoryPath, parseSource, resolveSharedHistory } from "../src/history/index.js";
 import { returnedText, shellEvidence } from "../src/history/extraction.js";
+import { PARSER_RULE_VERSION } from "../src/version.js";
 
 const fixture = (name: string) => new URL(`./fixtures/history/${name}`, import.meta.url).pathname;
 const meta = (id = "synthetic-session", extra = {}) => ({ timestamp: "2026-01-01T00:00:00Z", type: "session_meta", payload: { id, cwd: "/synthetic/repo", ...extra } });
@@ -17,6 +18,46 @@ async function temporary(run: (directory: string) => Promise<void>) {
   const directory = await mkdtemp(join(tmpdir(), "manor-history-test-"));
   try { await run(directory); } finally { await rm(directory, { recursive: true, force: true }); }
 }
+
+test("Claude 同会话后续 cwd 补齐发现和来源，metadata-only 会话自动关联", async () => temporary(async (directory) => {
+  const path = join(directory, "metadata.jsonl");
+  await writeFile(path, encode([
+    { type: "file-history-snapshot", sessionId: "metadata-session" },
+    { type: "user", sessionId: "different-session", cwd: "/synthetic/other" },
+    { type: "user", sessionId: "metadata-session", cwd: directory },
+    { type: "user", sessionId: "metadata-session", cwd: "/synthetic/later" },
+  ]));
+  const [discovered] = await discoverSources({ codex: [], claude: [directory] });
+  assert.equal(discovered!.cwd, directory);
+  const parsed = await parseSource(path, "claude");
+  assert.equal(parsed.cwd, directory);
+  assert.equal(parsed.events.length, 0);
+  assert.equal((parsed.cursor as { cwd: string }).cwd, "/synthetic/later");
+  const repository = { id: "metadata", path: directory, commonDir: directory, name: "metadata", stale: false };
+  const baseline: Baseline = { repository, hash: "metadata", createdAt: "2026-01-01T00:00:00Z", git: { dirty: false }, files: [], excluded: [] };
+  assert.equal((await associateSource(parsed, baseline)).associated, true);
+}));
+
+test("Claude 规则升级重建旧空 cwd 游标，来源首个 cwd 不覆盖逐事件 cwd", async () => temporary(async (directory) => {
+  const path = join(directory, "metadata.jsonl");
+  await writeFile(path, encode([
+    { type: "file-history-snapshot", sessionId: "metadata-session" },
+    { type: "user", sessionId: "metadata-session", cwd: directory },
+    { type: "assistant", sessionId: "metadata-session", cwd: "/synthetic/later", uuid: "later-request", message: { content: [{ type: "tool_use", id: "later", name: "Read", input: { file_path: "later.ts" } }] } },
+  ]));
+  const previous = JSON.parse(JSON.stringify(await parseSource(path, "claude"))) as ParsedSource;
+  previous.cwd = undefined;
+  (previous.cursor as { ruleVersion: string }).ruleVersion = "2";
+  const parsed = await parseSource(path, "claude", previous);
+  assert.equal(PARSER_RULE_VERSION, "3");
+  assert.equal((parsed.cursor as { parsedRecords: number }).parsedRecords, 3);
+  assert.equal(parsed.cwd, directory);
+  assert.equal(parsed.events[0]!.cwd, "/synthetic/later");
+  assert.equal(parsed.sourceId, previous.sourceId);
+  const repository = { id: "metadata", path: directory, commonDir: directory, name: "metadata", stale: false };
+  const baseline: Baseline = { repository, hash: "metadata", createdAt: "2026-01-01T00:00:00Z", git: { dirty: false }, files: [], excluded: [] };
+  assert.equal((await associateSource(parsed, baseline)).associated, true);
+}));
 
 test("新版具体命令与 FileChange 优先，wrapper 不双算，重复文本的新调用保留", async () => {
   const parsed = await parseSource(fixture("codex-modern.jsonl"), "codex");
