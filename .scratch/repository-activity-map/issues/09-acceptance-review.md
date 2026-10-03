@@ -2,7 +2,7 @@
 
 Type: task
 Status: ready-for-agent
-Blocked by: 08
+Blocked by: 08, 10
 
 ## Scope
 
@@ -11,7 +11,8 @@ Blocked by: 08
 
 ## Acceptance
 
-所有规格验收项有执行证据与边界。两轴 code-review 的问题全部修复，PR 转 ready。本机缺来源时明确真实可取得来源和样本边界，不能假称双客户端真实验收。工作区变化使用临时 clone。
+所有规格验收项有执行证据与边界。本机缺来源时明确真实可取得来源和样本边界，不能假称双客户端真实验收。工作区变化使用临时 clone。
+任务完成后的两轴 code-review、统一修复与 PR 转 ready 由 implement-spec 主流程执行。
 
 ## Comments
 
