@@ -1,7 +1,7 @@
 # 地图优先 Web 与证据下钻
 
 Type: task
-Status: ready-for-agent
+Status: claimed
 Blocked by: 02
 
 ## Scope

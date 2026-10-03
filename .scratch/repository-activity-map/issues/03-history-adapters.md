@@ -1,7 +1,7 @@
 # 历史发现、格式解析与证据提取
 
 Type: task
-Status: ready-for-agent
+Status: claimed
 Blocked by: 02
 
 ## Scope

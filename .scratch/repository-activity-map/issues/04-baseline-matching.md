@@ -1,7 +1,7 @@
 # 仓库基线、内容对应与覆盖统计
 
 Type: task
-Status: ready-for-agent
+Status: claimed
 Blocked by: 02
 
 ## Scope
