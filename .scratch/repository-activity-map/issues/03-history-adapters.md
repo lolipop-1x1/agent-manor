@@ -1,7 +1,7 @@
 # 历史发现、格式解析与证据提取
 
 Type: task
-Status: claimed
+Status: resolved
 Blocked by: 02
 
 ## Scope
@@ -16,3 +16,9 @@ Codex／Claude JSONL、来源发现、调用结果配对、成功内容提取、
 ## Comments
 
 - 2026-10-03：采用已确认首版规格，自行实现。
+
+## Answer
+
+- 历史发现、格式解析与证据提取提交：`45352d3d4df58e631392ea8c41f58a7190abf4e1`；独立分支以 `--no-ff` 合并，合并提交：`4d418e6e8e35bb538d60c31691881e7455825fbe`。
+- `npm run check:server`、`node --import tsx --test tests/history*.test.ts`（27/27）和合并差异 `git diff --check` 均通过。
+- 测试覆盖 Codex／Claude 新旧格式、直接读写与 Shell 支持矩阵、成功／失败／缺失／截断、ID 重用、分叉与重复调用、只读发现、增量完整边界和逐事件归属。供索引 Worker 使用的接口已核对；真实本机端到端验收留到集成验收阶段。
