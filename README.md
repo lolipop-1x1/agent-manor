@@ -8,15 +8,17 @@
 
 项目处于初始化和需求研究阶段，尚无可运行功能。本文档中的产品能力是方向或候选范围，不是已实现功能。开源许可证尚未选定。
 
-已确定项目名称、独立仓库和本地优先定位。首版支持的客户端、交付形态、语言、存储和具体管理操作仍需确认。
+已确定项目名称、独立仓库和本地优先定位。首版产品规格已确认：聚焦 Codex／Claude Code 历史在当前仓库中的代码活动地图，采用本地后台、Web、CLI 与 Skill，先在 macOS 验收。语言、存储和 UI 技术尚未选择。
 
 ## 文档导航
 
 | 阅读目的 | 文档 |
 | --- | --- |
 | 理解目标用户、产品方向、首版建议和验证标准 | [产品定位与范围](docs/product/vision-and-scope.md) |
+| 查看当前代码活动地图的首版规格与验收标准 | [首版规格](.scratch/repository-activity-map/spec.md) |
 | 统一需求、统计和界面用语 | [领域术语](CONTEXT.md) |
 | 了解独立于外传保护的项目边界 | [ADR 0001](docs/adr/0001-independent-project-boundary.md) |
+| 了解 Web、CLI 和 Skill 共用本地后台的决定 | [ADR 0002](docs/adr/0002-local-analysis-service.md) |
 | 查看市场已有能力和差异化假设 | [竞品全景](docs/research/competitive-landscape-2026-10-03.md) |
 | 深入了解 agentsview、cass 的功能与证据 | [重点项目分析](docs/research/agentsview-and-cass.md) |
 | 比较历史驱动的 Skill/MCP 管理项目 | [Skill/MCP 管理调研](docs/research/skill-mcp-management.md) |
