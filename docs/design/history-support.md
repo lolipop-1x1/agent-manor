@@ -1,16 +1,18 @@
 # 历史解析支持与证据边界
 
-规则版本：`PARSER_RULE_VERSION = "4"`，定义在 `src/version.ts`；旧规则游标重建。当前测试样本全部合成；格式结构参考本机只读取证笔记，本文不复制个人来源路径、日志或代码。格式兼容采用结构判断，不宣称整个客户端版本已验证。真实仓库端到端验收由交付阶段另外记录。
+规则版本：`PARSER_RULE_VERSION = "5"`，定义在 `src/version.ts`；旧规则游标重建。当前测试样本全部合成；格式结构参考本机只读取证笔记，本文不复制个人来源路径、日志或代码。格式兼容采用结构判断，不宣称整个客户端版本已验证。真实仓库端到端验收由交付阶段另外记录。
 
 ## 来源、身份与续读
 
-`discoverSources()` 默认发现 `~/.codex/sessions`、`~/.codex/archived_sessions`、`~/.claude/projects`，接受显式目录或 `AGENT_MANOR_CODEX_DIR`／`AGENT_MANOR_CLAUDE_DIR`。只递归普通目录与 JSONL 普通文件，不跟随发现目录中的符号链接；每个候选至多读取 64 KiB 头部和其中前 32 行。头部含超长指令时可能无法获取 Claude 元数据，候选仍保留，完整解析或手动关联可继续核对。
+新增内置 Agent 时，在 [客户端目录](../../src/clients.ts) 声明稳定 ID、显示名称与缩写，在 [Node 来源与格式注册](../../src/history/adapters/index.ts) 声明发现根、环境变量、来源过滤和格式 ID，再按 [HistoryAdapter 接口](../../src/history/adapters/types.ts) 实现元数据、配对、续读与证据转换，并增加匿名格式测试。来源和格式分别注册，适配器接收实际客户端身份；统计、仓库归属、Web 筛选与 CLI 校验继续消费共用声明和通用事件，不逐客户端添加判断。
+
+`discoverSources()` 默认发现 `~/.codex/sessions`、`~/.codex/archived_sessions`、`~/.claude/projects`、`~/.codeflicker/projects`，接受显式目录或 `AGENT_MANOR_CODEX_DIR`／`AGENT_MANOR_CLAUDE_DIR`／`AGENT_MANOR_CODEFLICKER_DIR`。只递归普通目录与 JSONL 普通文件，不跟随发现目录中的符号链接；每个候选至多读取 64 KiB 头部和其中前 32 行。头部含超长指令时可能无法获取元数据，候选仍保留，完整解析或手动关联可继续核对。CodeFlicker 排除 `requests/` 与 `file-history/`，不将模型请求重放、工具声明或文件快照当作工具执行。
 
 来源身份与事件身份分开。Codex 元数据中的线程 ID、初始时间与 cwd，Claude sessionId 与 agentId，构成来源身份依据；来源路径和当前完整文件哈希属于来源版本。没有可确认元数据时使用路径身份并保留未知 session，不声称移动能够识别。相同元数据的文件副本与活跃文件移动到归档目录可保留身份。
 
 `SourceReference.hash` 是单条原始 JSONL 记录哈希；`ParsedSource.hash` 是完整来源文件字节哈希，两者不能互换。证据引用保存一基物理记录行，追加不会使旧记录哈希失效。来源移动后的续读引用指向新路径。
 
-`parseSource(path, client, previous?)` 保存完整换行结尾的字节边界、旧完整前缀哈希、物理行号和待配对调用。旧前缀内容一致且规则版本相同才解析追加记录；不完整尾行和半个 UTF-8 字符等待下一轮。截断、替换、前缀改变或规则升级均重建。完整文件需要读取并哈希；增量节省 JSON 解析与证据提取，不宣称无需读取旧字节。`cursor.parsedRecords` 记录本轮实际解析记录数，游标和解析产物均可 JSON 序列化。
+`parseSource(path, client, previous?, format?)` 保存完整换行结尾的字节边界、旧完整前缀哈希、物理行号和待配对调用。旧前缀内容一致且规则版本与格式相同才解析追加记录；不完整尾行和半个 UTF-8 字符等待下一轮。截断、替换、前缀改变或规则升级均重建。完整文件需要读取并哈希；增量节省 JSON 解析与证据提取，不宣称无需读取旧字节。`cursor.parsedRecords` 记录本轮实际解析记录数，游标和解析产物均可 JSON 序列化。
 
 请求 ID 可重用：有 Claude uuid 或 Codex response item id 时保存请求出现身份；没有时保存来源内出现位置。两个同时待配对的同 ID 请求且缺少更强关联字段时保留歧义。相同内容的新调用增加活动次数，只有相同消息身份或同具体事件身份的重复记录才合并。process_id 不作为全局事件身份。
 
@@ -33,6 +35,15 @@ fork 保存父 session、原始 ordinal 与 endByteOffset。ordinal 的准确客
 | Claude Write create/overwrite | create 的内容，overwrite 的 originalFile/content 差异 | create 结构实样核对；overwrite 合成验证；未确认新建或旧内容则范围未知 |
 | Claude Bash | tool_result.is_error 与实际 content | 实样结构；持久化输出和截断不补读 stdout/旁路文件；后台接收状态为 unknown，后续后台终态通知尚未适配 |
 | Claude Agent／非工具快照 | 真实子来源独立解析，非工具记录跳过 | 不将摘要、totalToolUseCount、file-history-snapshot 等计为读取成功 |
+| CodeFlicker 原生 `message.content[]` | assistant 的 `tool_use` 与 tool 的 `tool-result` 按 ID 配对 | 保留原始小写工具名与参数、uuid 身份、物理行与哈希；新的 uuid 重用 call ID 是新活动；并发同 ID 无强关联字段时保持歧义；system/user/hook 内容不制造工具活动 |
+| CodeFlicker read | `llmContent` JSON 的 type/filePath/content/offset/limit/actualLinesRead/totalLines | 原生 CLI 执行器成功模板已核对；路径、范围与 split 计数须一致；末尾 SDK EOF 空项不计物理行，范围内真正的末尾空行保留；不凭缺少 isError 判成功 |
+| CodeFlicker write/edit | 固定执行完成模板、returnDisplay 的 structuredPatch | 模板在文件写入完成后产生；标准 hunk 校验行数，仅新增／删除行算修改，context 只定位；write 无 patch 时依据实际写入语义补末尾 LF，不推断原文件一定为新建；edit 无位置时仅保留变化片段并列范围缺口 |
+| CodeFlicker bash | Command/Directory/Stdout/Stderr/Error/Exit Code 的原生返回包装 | 最终退出码与 Error 校验状态，读取仅消费白名单命令的实际 Stdout；截断标记、持久化旁路、后台状态或未知包装不补齐；复杂命令仍产生 unsupported_tool |
+| CodeFlicker grep/glob/ls/todoWrite | 搜索单列、列举与任务列表 other | grep/glob 完整 JSON 返回与 todo_write 结构可证实终态；搜索不产生主要读取覆盖；其他缺少已确认成功模板的结果保留 unknown |
+
+CodeFlicker 的来源身份由原始 sessionId 与显式 agentId 构成，并始终带实际客户端身份；目录 slug 不用于还原 cwd。缺少 cwd 的来源可用实际绝对文件路径逐活动归属仓库。`agent-*.jsonl` 可独立发现和解析；显式 parentSessionId／parent_thread_id／forked_from_id 才建立关系，没有确认父字段的候选保留歧义缺口，不因文件名、parentUuid 消息链、同一 call ID 或相同内容合并历史。SQLite、MyFlicker、未核对归档格式和补全／编辑预测未纳入本轮支持。
+
+本轮原生只读探针覆盖一个 1,708,528 字节、726 条物理记录的真实主来源，与独立原始工具计数核对得到 113 次调用：read 18、write 9、edit 7、bash 49、grep 14、glob 2、todoWrite 3、skill 6、AskUserQuestion 4、Agent 1。18 次原生 read、9 次 write、7 次 edit 均获得范围／差异片段；其余工具的未知状态与不支持命令按缺口保留。此探针不是全量历史或真实仓库端到端验收。本机默认根可能包含数千个来源且原生记录没有 cwd，首次刷新需要完整读取候选；可将 `AGENT_MANOR_CODEFLICKER_DIR` 设为单个项目目录，明确限定来源规模后刷新。本文不宣称已验证全量刷新性能。
 
 具体事件的 `formatted_output` 是工具返回口径。外层 `exec` 选择性 `text()` 或再次截断可能限制实际向模型呈现的内容；外层原始证据可回读，但当前主覆盖不声称代表逐字模型可见内容。长期进程轮询、chunk 重叠、任意脚本或动态包装缺少明确事件关系时不猜测。
 
