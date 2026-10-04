@@ -180,6 +180,27 @@ try {
     await rename(join(directory, "missing.jsonl"), source);
     assert.deepEqual((await refresh()).summary, before.summary);
   });
+  await step("SDK隐式长行截断不计近似，Shell执行目录支持相对读取", async () => {
+    const before = await coverage();
+    const prefix = 'export const longText = "' + "abcdefghijklmno".repeat(140);
+    const content = prefix.slice(0, 2000) + "TAIL!\n";
+    await writeFile(absolute("src/d.ts"), content);
+    await appendFile(source, encode([
+      ...pair("d-clipped", "read", { file_path: absolute("src/d.ts") }, readResult("src/d.ts", content.slice(0, 2000) + "...\n")),
+      ...pair("c-shell", "bash", { command: "cat src/c.ts" }, {
+        llmContent: `Command: cat src/c.ts\nDirectory: ${repository}\nStdout: ${files["src/c.ts"]}\nStderr: (empty)\nError: (none)\nExit Code: 0`, truncated: false,
+      }),
+    ]));
+    const result = await refresh();
+    const clipped = result.files.find(file => file.path === "src/d.ts");
+    assert.equal(clipped.readExactLines, 0);
+    assert.equal(clipped.readNearLines, 0);
+    assert.equal(result.files.find(file => file.path === "src/c.ts").readExactLines, 1);
+    assert.equal(result.summary.readExact.lines, 4);
+    await rm(absolute("src/d.ts"));
+    await writeFile(source, raw);
+    assert.deepEqual(semantic(await refresh()), semantic(before));
+  });
   assert.equal(createHash("sha256").update(await readFile(source)).digest("hex"), sourceHash);
   const state = { directory, repository, repositoryId, home, codex, claude, codeflicker, source, sourceHash, cli, url, version: (await coverage()).version, results };
   await writeFile(join(directory, "state.json"), JSON.stringify(state, null, 2));
