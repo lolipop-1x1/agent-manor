@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import type { Client } from "../../contracts.js";
 import { json, number, object, returnedText, shellEvidence, shellResult, string, textContent, unifiedFragments } from "../extraction.js";
 import type { SourceLocation } from "../types.js";
-import { defaultToolEvidence, historyRelationships, normalizeHistoryPath } from "./common.js";
+import { defaultToolEvidence, historyRelationships, normalizeHistoryPath, registerRequest } from "./common.js";
 import { readJsonlEvidence } from "./jsonl.js";
 import type { HistoryAdapter } from "./types.js";
 
@@ -14,7 +14,7 @@ function sourceMetadata(raw: unknown, client: Client, path: string): SourceLocat
   const sessionId = string(payload.id) ?? string(payload.session_id);
   const agentId = string(record.agentId);
   const cwd = normalizeHistoryPath(string(payload.cwd));
-  const parentSessionId = string(payload.forked_from_id) ?? string(payload.parent_thread_id) ?? string(record.parentSessionId);
+  const parentSessionId = historyRelationships(record)[0]?.parentSessionId;
   return {
     path, client, format: "codex-jsonl", cwd, sessionId: agentId && sessionId ? `${sessionId}/agent/${agentId}` : sessionId,
     parentSessionId,
@@ -128,11 +128,7 @@ export const codexAdapter: HistoryAdapter = {
           try { input = JSON.parse(payload.arguments); } catch { gap("unsupported_format", `调用 ${row} arguments 不是有效 JSON`); }
         }
         const key = payload.id ? `request:${payload.id}:${callId}:${hash(JSON.stringify(input))}` : undefined;
-        if (key && cursor.seen[key]) { findEvent(cursor.seen[key])?.sources.push(reference(row, raw, callId)); return; }
-        const event = createEvent(tool, input, row, raw, occurredAt, string(object(input).workdir), key);
-        event.sources[0]!.callId = callId;
-        if (key) cursor.seen[key] = event.id;
-        cursor.pending.push({ eventId: event.id, callId, tool, input: json(input), recordLine: row, wrapper: tool === "exec", turnId: string(payload.turn_id) });
+        registerRequest(context, { callId, tool, input, cwd: string(object(input).workdir), key, wrapper: tool === "exec", turnId: string(payload.turn_id) });
       } else if (type === "function_call_output" || type === "custom_tool_call_output") {
         const callId = string(payload.call_id) ?? "";
         const outputKey = `output:${callId}:${hash(raw)}`;

@@ -1,6 +1,6 @@
-import type { Client, EvidenceRecord, Gap, HistoryEvent, SourceReference } from "../../contracts.js";
+import type { Client, EvidenceRecord, Gap, HistoryEvent, ParsedSource, SourceReference } from "../../contracts.js";
 import type { ToolEvidence } from "../extraction.js";
-import type { HistoryCursor, ParsedHistorySource, PendingCall, SourceLocation } from "../types.js";
+import type { HistoryCursor, HistoryRelationship, ParsedHistorySource, PendingCall, SourceLocation } from "../types.js";
 
 export interface HistoryClient {
   client: Client;
@@ -34,5 +34,7 @@ export interface HistoryAdapter {
   processRecord(record: Record<string, unknown>, context: HistoryAdapterContext): void;
   extract(tool: string, input: unknown, result: unknown, visible: string, context: HistoryAdapterContext): ToolEvidence[];
   finalizeCall?(context: HistoryAdapterContext, call: PendingCall, event: HistoryEvent, result: unknown, visible: string, row: number, raw: string): boolean;
+  /** 只关联已解析来源，原始格式规则不散落到跨来源核心。 */
+  resolveRelationships?(source: ParsedSource, sources: readonly ParsedSource[]): { relationships: HistoryRelationship[]; gaps?: Gap[] };
   readEvidence(source: SourceReference): Promise<EvidenceRecord | undefined>;
 }

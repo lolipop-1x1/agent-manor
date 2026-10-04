@@ -1,10 +1,10 @@
 import { createHash } from "node:crypto";
-import { basename, isAbsolute, resolve } from "node:path";
-import type { Client, HistoryEvent } from "../../contracts.js";
-import { changedFragments, json, number, object, patchFragments, shellEvidence, string } from "../extraction.js";
+import { basename, dirname, isAbsolute, resolve } from "node:path";
+import type { Client, EvidenceFragment, HistoryEvent } from "../../contracts.js";
+import { changedFragments, json, number, object, patchFragments, physicalLines, shellEvidence, string } from "../extraction.js";
 import type { ToolEvidence } from "../extraction.js";
 import type { SourceLocation } from "../types.js";
-import { historyRelationships, normalizeHistoryPath } from "./common.js";
+import { historyRelationships, normalizeHistoryPath, registerRequest } from "./common.js";
 import { readJsonlEvidence } from "./jsonl.js";
 import type { HistoryAdapter, HistoryAdapterContext } from "./types.js";
 
@@ -17,7 +17,7 @@ function sourceMetadata(record: Record<string, unknown>, client: Client, path: s
   return {
     client, path, format: "codeflicker-jsonl", cwd: normalizeHistoryPath(string(record.cwd)),
     sessionId: sessionId && agentId ? `${sessionId}/agent/${agentId}` : sessionId,
-    parentSessionId: string(record.parentSessionId) ?? string(record.parent_thread_id) ?? string(record.forked_from_id),
+    parentSessionId: historyRelationships(record)[0]?.parentSessionId,
     sourceId: sessionId ? `${client}:${hash(JSON.stringify({ sessionId, agentId })).slice(0, 24)}` : undefined,
   };
 }
@@ -26,15 +26,15 @@ function readPayload(result: unknown): Record<string, unknown> {
   try { return object(JSON.parse(string(object(result).llmContent) ?? "")); } catch { return {}; }
 }
 
-function bashResult(input: unknown, result: unknown): { status: HistoryEvent["status"]; output: string; truncated: boolean } | undefined {
+function bashResult(input: unknown, result: unknown): { status: HistoryEvent["status"]; output: string; truncated: boolean; cwd?: string } | undefined {
   const command = string(object(input).command);
   const visible = string(object(result).llmContent);
   if (!command || !visible?.startsWith(`Command: ${command}\nDirectory: `)) return undefined;
-  const parts = /^Directory: [^\n]*\nStdout: ([\s\S]*)\nStderr: ([\s\S]*)\nError: ([^\n]*)\nExit Code: (-?\d+)(?:\nExit Code Interpretation: [^\n]*)?$/.exec(visible.slice(`Command: ${command}\n`.length));
-  if (!parts || (parts[1]!.match(/\nStderr:/g) ?? []).length || (parts[2]!.match(/\nError:/g) ?? []).length) return undefined;
-  return { status: Number(parts[4]) === 0 && parts[3] === "(none)" ? "success" : "failure",
-    output: parts[1] === "(empty)" ? "" : parts[1]!,
-    truncated: /(?:\.\.\. \[\d+ lines truncated\] \.\.\.|\[Output too large|Full output saved to:)/.test(parts[1]!) };
+  const parts = /^Directory: ([^\n]*)\nStdout: ([\s\S]*)\nStderr: ([\s\S]*)\nError: ([^\n]*)\nExit Code: (-?\d+)(?:\nExit Code Interpretation: [^\n]*)?$/.exec(visible.slice(`Command: ${command}\n`.length));
+  if (!parts || (parts[2]!.match(/\nStderr:/g) ?? []).length || (parts[3]!.match(/\nError:/g) ?? []).length) return undefined;
+  return { status: Number(parts[5]) === 0 && parts[4] === "(none)" ? "success" : "failure",
+    output: parts[2] === "(empty)" ? "" : parts[2]!, cwd: isAbsolute(parts[1]!) ? resolve(parts[1]!) : undefined,
+    truncated: /(?:\.\.\. \[\d+ lines truncated\] \.\.\.|\[Output too large|Full output saved to:)/.test(parts[2]!) };
 }
 
 function samePath(requested: string | undefined, returned: string | undefined, context: HistoryAdapterContext): boolean {
@@ -93,6 +93,24 @@ export const codeflickerAdapter: HistoryAdapter = {
     return { source, complete: Boolean(source.cwd && isAbsolute(source.cwd)) };
   },
   readEvidence: readJsonlEvidence,
+  resolveRelationships(source, sources) {
+    if (!basename(source.path).startsWith("agent-")) return { relationships: [] };
+    const candidates = new Map(sources.filter(candidate => candidate.client === source.client && candidate.format === source.format
+      && dirname(candidate.path) === dirname(source.path) && basename(candidate.path) === `${source.sessionId}.jsonl` && candidate.sessionId === source.sessionId)
+      .map(candidate => [candidate.sourceId, candidate]));
+    const parents = sources.filter(parent => parent.client === source.client && parent.format === source.format && dirname(parent.path) === dirname(source.path) && parent.sourceId !== source.sourceId);
+    const proofs = parents.flatMap(parent => parent.events.filter(event => event.tool === "Agent" && event.status === "success"
+      && `agent-${string(object(event.output).agentId) ?? ""}` === source.sessionId)
+      .map(event => ({ parentSessionId: parent.sessionId, agentId: string(object(event.output).agentId), sources: event.sources })));
+    const parentIds = new Set(proofs.map(proof => proof.parentSessionId));
+    if (candidates.size === 1 && parentIds.size === 1 && (!source.parentSessionId || parentIds.has(source.parentSessionId))) {
+      return { relationships: [{ kind: "subagent", parentSessionId: proofs[0]!.parentSessionId, agentId: proofs[0]!.agentId,
+        sources: [...new Map(proofs.flatMap(proof => proof.sources).map(reference => [JSON.stringify(reference), reference])).values()] }] };
+    }
+    if (source.parentSessionId && !proofs.length) return { relationships: [] };
+    return { relationships: [], gaps: [{ kind: "ambiguous", sourceId: source.sourceId,
+      message: proofs.length ? "子会话原生身份或父结果存在多个／矛盾候选，未建立关系" : "子会话候选缺少可确认的父关系，独立保留调用而不合并父历史" }] };
+  },
   extract(tool, inputValue, resultValue, _visible, context) {
     const input = object(inputValue);
     const result = object(resultValue);
@@ -120,6 +138,18 @@ export const codeflickerAdapter: HistoryAdapter = {
       // split 的 EOF 空项不是物理源码行；范围内真正的末尾空行仍保留。
       const virtualEof = content.endsWith("\n") && start + count - 1 === total;
       const sourceContent = content.endsWith("\n") && !virtualEof ? `${content}\n` : content;
+      const sourceLines = physicalLines(sourceContent);
+      if (sourceLines.some(line => line.length === 2003 && line.endsWith("..."))) {
+        const fragments: EvidenceFragment[] = [];
+        let current: EvidenceFragment | undefined;
+        sourceLines.forEach((line, index) => {
+          if (line.length === 2003 && line.endsWith("...")) { current = undefined; return; }
+          const complete = `${line}${index < sourceLines.length - 1 || sourceContent.endsWith("\n") ? "\n" : ""}`;
+          if (current) current.content += complete;
+          else { current = { kind: "read", content: complete, historicalStart: start + index, completeLines: true, path }; fragments.push(current); }
+        });
+        return [{ kind: "read", path, fragments, reason: "range_unknown: read 存在 SDK 单行隐藏截断，仅保留完整前后行" }];
+      }
       return [{ kind: "read", path, fragments: sourceContent ? [{ kind: "read", content: sourceContent, historicalStart: start, completeLines: true, path }] : [] }];
     }
     if (["edit", "write"].includes(tool)) {
@@ -146,11 +176,11 @@ export const codeflickerAdapter: HistoryAdapter = {
       const evidence = shellEvidence(string(input.command) ?? "", bash?.output ?? "");
       return bash?.truncated ? evidence.map(part => ({ ...part, fragments: [], reason: "range_unknown: bash 输出截断或存入旁路文件" })) : evidence;
     }
-    if (["grep", "glob", "ls", "todoWrite"].includes(tool)) return [{ kind, path, fragments: [] }];
+    if (["grep", "glob", "ls", "todoWrite", "Agent"].includes(tool)) return [{ kind, path, fragments: [] }];
     return [{ kind: "other", path, fragments: [], reason: `unsupported_tool: ${tool} 未提取代码范围` }];
   },
   processRecord(record, context) {
-    const { client, path, source, cursor, row, raw, occurredAt, gap, reference, findEvent, createEvent, finish, pair } = context;
+    const { client, path, source, cursor, row, raw, gap, reference, findEvent, finish, pair } = context;
     if (["config", "message"].includes(string(record.type) ?? "") && record.sessionId) {
       const metadata = sourceMetadata(record, client, path);
       if (source.sessionId.startsWith("unknown:")) {
@@ -159,7 +189,6 @@ export const codeflickerAdapter: HistoryAdapter = {
         source.parentSessionId = metadata.parentSessionId;
         cursor.relationships = historyRelationships(record);
         source.relationships = cursor.relationships;
-        if (basename(path).startsWith("agent-") && !source.parentSessionId) gap("ambiguous", "子会话候选缺少可确认的父关系，独立保留调用而不合并父历史");
       }
       if (metadata.sourceId === source.sourceId && metadata.cwd && isAbsolute(metadata.cwd)) {
         source.cwd ??= metadata.cwd;
@@ -178,11 +207,7 @@ export const codeflickerAdapter: HistoryAdapter = {
         const callId = string(block.id) ?? `record:${row}:${index}`;
         const uuid = string(record.uuid);
         const key = uuid ? `request:${uuid}:${index}:${callId}:${hash(JSON.stringify(block))}` : undefined;
-        if (key && cursor.seen[key]) { findEvent(cursor.seen[key])?.sources.push(reference(row, raw, callId)); return; }
-        const event = createEvent(tool, block.input, row, raw, occurredAt, string(record.cwd), key);
-        event.sources[0]!.callId = callId;
-        if (key) cursor.seen[key] = event.id;
-        cursor.pending.push({ eventId: event.id, callId, requestUuid: uuid, tool, input: json(block.input), recordLine: row });
+        registerRequest(context, { callId, requestUuid: uuid, tool, input: block.input, cwd: string(record.cwd), key });
       } else if (record.role === "tool" && block.type === "tool-result") {
         const callId = string(block.toolCallId) ?? "";
         const key = `result:${record.uuid ?? row}:${index}:${callId}:${hash(JSON.stringify(block))}`;
@@ -199,6 +224,9 @@ export const codeflickerAdapter: HistoryAdapter = {
           : result.truncated === true ? "range_unknown: CodeFlicker 返回截断，未补读旁路内容"
           : status === "unknown" ? "range_unknown: CodeFlicker 结果未确认成功终态" : undefined;
         finish(call, result, visible, status, row, raw, reason);
+        const event = findEvent(call.eventId);
+        if (event && bash?.cwd) event.cwd = bash.cwd;
+        if (event && call.tool === "Agent" && status === "success" && typeof block.agentId === "string") event.output = json({ ...object(event.output), agentId: block.agentId });
         cursor.seen[key] = call.eventId;
       }
     });
