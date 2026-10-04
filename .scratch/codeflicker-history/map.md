@@ -39,6 +39,7 @@ Status: claimed
 - 2026-10-05：用户授权开始开发，采用 C4 推荐范围；要求扩展性、数据正确性、端到端测试与完成后推送。按照此前直接在 main 开发的要求集成，子任务使用隔离 worktree。
 
 - 2026-10-05：02 完成客户端声明与格式适配边界；[客户端接口](../../src/clients.ts)、[格式接口与内置注册](../../src/history/adapters/index.ts) 供 03 / 04 扩展。Codex / Claude 解析身份与证据保持基线一致，历史与索引 60 项回归通过；CodeFlicker 具体格式和端到端验收由后续任务完成。
+- 2026-10-05：04 完成 [API 校验](../../src/service/input.ts)、[CLI](../../src/cli.ts) 与 [Web](../../web/App.tsx) 的共享客户端声明接入，并更新 [使用指南](../../docs/usage.md) 和 [查询 Skill](../../skills/agent-manor/SKILL.md)。查询入口与 Web 模型／请求 17 项回归、server／web 检查通过；原生格式和真实 Web／安装包闭环继续由 03／05 验收。
 
 ## 待澄清问题
 

@@ -6,8 +6,12 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import test from "node:test";
-import type { CoverageResult, EvidenceResponse, EventsResponse, JobResponse, RegisterRepositoryResponse, StatusResponse } from "../src/contracts.js";
-import { delay } from "../src/service/runtime.js";
+import type { CoverageResult, EvidenceResponse, EventsResponse, FileDetail, JobResponse, RegisterRepositoryResponse, SourcesResponse, StatusResponse } from "../src/contracts.js";
+import { clientIds } from "../src/clients.js";
+import { createProgram } from "../src/cli.js";
+import { startService } from "../src/server.js";
+import { apiRequest, delay } from "../src/service/runtime.js";
+import { publishClientQueryFixture } from "./client-query-fixture.js";
 
 const run = promisify(execFile);
 const repositoryRoot = fileURLToPath(new URL("../", import.meta.url));
@@ -20,6 +24,60 @@ async function stopped(home: string): Promise<void> {
   }
   throw new Error("后台未完成停止");
 }
+
+test("全部查询命令的客户端帮助来自共享声明", () => {
+  const program = createProgram();
+  const commands = program.commands.filter(command => command.options.some(option => option.long === "--client"));
+  assert.equal(commands.length, 7);
+  for (const command of commands) {
+    assert.equal(command.options.find(option => option.long === "--client")!.description, clientIds.join(" 或 "));
+  }
+});
+
+test("CodeFlicker 的 CLI 与 API 使用同一分析版本、覆盖、来源及原始证据", async () => {
+  const directory = await realpath(await mkdtemp(join(tmpdir(), "manor-cli-client-")));
+  const home = join(directory, "data");
+  const repository = join(directory, "repo");
+  await mkdir(join(repository, "src"), { recursive: true });
+  await run("git", ["init", "-q", repository]);
+  await writeFile(join(repository, "src/a.ts"), "alpha\nbeta\n");
+  await writeFile(join(repository, "src/b.ts"), "unread\n");
+  const service = await startService({ home, roots: { codex: [], claude: [], codeflicker: [] }, startupRefresh: false });
+  const cli = fileURLToPath(new URL("../src/cli.ts", import.meta.url));
+  const hook = fileURLToPath(import.meta.resolve("tsx/esm"));
+  const env = { ...process.env, AGENT_MANOR_HOME: home };
+  const command = async <T>(args: string[]): Promise<T> => JSON.parse((await run(process.execPath, ["--import", hook, cli, ...args, "--json"], { cwd: tmpdir(), env, timeout: 30_000 })).stdout) as T;
+  try {
+    const snapshot = await publishClientQueryFixture(home, repository, join(directory, "query-history"));
+    const id = snapshot.repository.id;
+    const query = ["--version", snapshot.version, "--client", "codeflicker", "--directory", "src"];
+    const key = `version=${snapshot.version}&client=codeflicker&directory=src`;
+    const base = `/repositories/${id}`;
+    const coverage = await command<CoverageResult>(["coverage", id, ...query]);
+    assert.deepEqual(coverage, await apiRequest(service.instance, `${base}/coverage?${key}`));
+    assert.deepEqual(coverage.summary.readExact, { files: 1, lines: 2 });
+    assert.deepEqual(coverage.summary.editExact, { files: 1, lines: 1 });
+    const events = await command<EventsResponse>(["events", id, ...query]);
+    assert.deepEqual(events, await apiRequest(service.instance, `${base}/events?${key}`));
+    assert.equal(events.total, 2);
+    assert.ok(events.events.every(event => event.client === "codeflicker"));
+    const evidence = await command<EvidenceResponse>(["evidence", id, events.events[0]!.id, ...query]);
+    assert.deepEqual(evidence, await apiRequest(service.instance, `${base}/evidence/${events.events[0]!.id}?${key}`));
+    assert.equal(evidence.records.length, 1);
+    assert.equal(evidence.unavailable.length, 0);
+    const file = await command<FileDetail>(["file", id, "src/a.ts", ...query]);
+    assert.deepEqual(file, await apiRequest(service.instance, `${base}/file?path=src/a.ts&${key}`));
+    const sources = await command<SourcesResponse>(["sources", id, ...query]);
+    assert.deepEqual(sources, await apiRequest(service.instance, `${base}/sources?${key}`));
+    assert.deepEqual(sources.sources.map(source => source.client), ["codeflicker"]);
+    for (const name of ["hotspots", "unobserved"]) {
+      assert.deepEqual(await command([name, id, ...query]), await apiRequest(service.instance, `${base}/${name}?${key}`));
+    }
+  } finally {
+    await service.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
 
 test("编译产物在包外cwd并发按需启动单实例，CLI/API JSON一致、Worker刷新、重启检查、静态Web与停止", async () => {
   const directory = await realpath(await mkdtemp(join(tmpdir(), "manor-cli-")));
@@ -44,7 +102,7 @@ test("编译产物在包外cwd并发按需启动单实例，CLI/API JSON一致�
     { type: "response_item", payload: { type: "function_call_output", call_id: "read", output: "Exit code: 0\nOutput:\nalpha\nbeta\n" } },
   ]));
   const cli = join(build, "cli.js");
-  const env = { ...process.env, AGENT_MANOR_HOME: home, AGENT_MANOR_CODEX_DIR: history, AGENT_MANOR_CLAUDE_DIR: join(directory, "missing-claude") };
+  const env = { ...process.env, AGENT_MANOR_HOME: home, AGENT_MANOR_CODEX_DIR: history, AGENT_MANOR_CLAUDE_DIR: join(directory, "missing-claude"), AGENT_MANOR_CODEFLICKER_DIR: join(directory, "missing-codeflicker") };
   const command = async <T>(args: string[]): Promise<T> => {
     const result = await run(process.execPath, [cli, ...args, "--json"], { cwd: tmpdir(), env, timeout: 30_000 });
     assert.equal(result.stderr, "");
@@ -103,7 +161,7 @@ test("源码CLI从外部cwd启动Worker；错误实例状态不会误杀其他PI
   const home = join(directory, "data");
   const cli = fileURLToPath(new URL("../src/cli.ts", import.meta.url));
   const hook = fileURLToPath(import.meta.resolve("tsx/esm"));
-  const env = { ...process.env, AGENT_MANOR_HOME: home, AGENT_MANOR_CODEX_DIR: join(directory, "empty"), AGENT_MANOR_CLAUDE_DIR: join(directory, "empty") };
+  const env = { ...process.env, AGENT_MANOR_HOME: home, AGENT_MANOR_CODEX_DIR: join(directory, "empty"), AGENT_MANOR_CLAUDE_DIR: join(directory, "empty"), AGENT_MANOR_CODEFLICKER_DIR: join(directory, "empty") };
   const command = async <T>(args: string[]): Promise<T> => JSON.parse((await run(process.execPath, ["--import", hook, cli, ...args, "--json"], { cwd: tmpdir(), env, timeout: 30_000 })).stdout) as T;
   const other = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" });
   try {

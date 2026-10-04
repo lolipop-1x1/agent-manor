@@ -1,4 +1,5 @@
 import type { ApiErrorCode, Client, CoverageQuery, EventKind, EventsQuery, FileCategory } from "../contracts.js";
+import { clientIds } from "../clients.js";
 
 export class ServiceError extends Error {
   constructor(readonly code: ApiErrorCode, message: string) { super(message); }
@@ -35,7 +36,7 @@ export function coverageQuery(raw: Record<string, unknown>): CoverageQuery {
   const version = textValue(raw.version, "version");
   if (version) query.version = version;
   const client = textValue(raw.client, "client");
-  if (client && client !== "codex" && client !== "claude") throw new ServiceError("INVALID_INPUT", "未知客户端");
+  if (client && !clientIds.includes(client as Client)) throw new ServiceError("INVALID_INPUT", "未知客户端");
   if (client) query.client = client as Client;
   for (const key of ["from", "to"] as const) {
     const value = textValue(raw[key], key);

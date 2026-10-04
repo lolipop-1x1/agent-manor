@@ -5,6 +5,7 @@ import { realpathSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { resolve } from "node:path";
 import type { CoverageResult, JobResponse, ServiceInstance } from "./contracts.js";
+import { clientIds } from "./clients.js";
 import { startService } from "./server.js";
 import { apiRequest, connectService, dataHome, delay, RequestError, serviceUrl } from "./service/runtime.js";
 import { VERSION } from "./version.js";
@@ -78,7 +79,7 @@ export function createProgram(): Command {
     return result;
   }
   const filters = (command: Command) => command.option("--version <id>", "分析结果版本")
-    .option("--client <client>", "codex 或 claude").option("--from <time>", "ISO 8601 起始时间")
+    .option("--client <client>", clientIds.join(" 或 ")).option("--from <time>", "ISO 8601 起始时间")
     .option("--to <time>", "ISO 8601 截止时间").option("--categories <list>", "逗号分隔文件类别")
     .option("--directory <path>", "仓库内相对目录");
   const waiting = (command: Command) => command.option("--wait", "等待刷新完成").option("--timeout <seconds>", "等待秒数，默认 120");
