@@ -1,6 +1,6 @@
 # CodeFlicker 历史接入讨论
 
-Type: grilling
+Type: task
 Status: claimed
 
 日期：2026-10-04。目标是在现有代码活动地图中支持 CodeFlicker；本轮先明确需求与证据边界，不代表已经实现。
@@ -24,8 +24,8 @@ Status: claimed
    - 集中客户端声明与内置适配器注册，共用统计、匹配和查询层。
    - 同一历史格式可以复用，客户端身份保持独立。
    - 本轮不支持可单独安装的第三方插件。
-6. 首版历史范围：待确认 C4。
-   - 推荐先覆盖 `~/.codeflicker/projects` 主会话及能确认关系的子会话。
+6. 首版历史范围：本次实施授权采用推荐 C4。
+   - 先覆盖 `~/.codeflicker/projects` 主会话及能确认关系的子会话。
    - `requests/` 不独立计数，SQLite 与 MyFlicker 作为后续独立格式候选。
 
 ## 已作决策
@@ -36,11 +36,12 @@ Status: claimed
 - C2：只读已有本机历史，缺失保留采集缺口；本轮不增加采集 Hook。
 - 用户要求整体架构方便后续接入更多 Code Agent，纳入本次接入设计。
 - C3：采用内置适配器注册，统一贯通各入口；历史格式与客户端身份分别表示，暂不增加第三方插件加载机制。
+- 2026-10-05：用户授权开始开发，采用 C4 推荐范围；要求扩展性、数据正确性、端到端测试与完成后推送。按照此前直接在 main 开发的要求集成，子任务使用隔离 worktree。
 
 ## 待澄清问题
 
 - 格式相关问题先核对环境事实，再确定下一轮需要用户选择的事项。
-- C4：先完成 CodeFlicker 项目会话闭环，还是首版同时覆盖 SQLite 与 MyFlicker。
+- C4 推荐范围已作为本次实施范围；SQLite 与 MyFlicker 后续独立适配。
 
 ## 已核对事实
 
@@ -74,3 +75,7 @@ Status: claimed
 ## 任务
 
 - [01：来源核查与接入需求](issues/01-requirements.md)
+- [02：客户端与格式适配边界](issues/02-client-adapters.md)
+- [03：CodeFlicker 原始历史](issues/03-codeflicker-parser.md)，依赖 02。
+- [04：查询入口](issues/04-query-entrypoints.md)，依赖 02。
+- [05：数据正确性与端到端验收](issues/05-validation.md)，依赖 03、04。
