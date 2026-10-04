@@ -1,9 +1,9 @@
-# CodeFlicker 历史接入讨论
+# CodeFlicker 历史接入
 
 Type: task
-Status: claimed
+Status: resolved
 
-日期：2026-10-04。目标是在现有代码活动地图中支持 CodeFlicker；本轮先明确需求与证据边界，不代表已经实现。
+日期：2026-10-04 开始讨论，2026-10-05 完成原生历史接入、扩展适配架构与验收。目标是在现有代码活动地图中支持 CodeFlicker。
 
 ## 设计树
 
@@ -13,11 +13,11 @@ Status: claimed
 2. 采集边界：已确认 C2。
    - 只读分析已有本机历史，缺少证据时保留采集缺口。
    - 本轮不增加采集 Hook；额外采集作为后续独立功能。
-3. 历史来源与格式：正在只读核查。
+3. 历史来源与格式：已完成代表来源只读核查与原生适配。
    - 本机持久会话来源、格式版本、工具调用与结果配对。
    - 客户端归属、父子会话、分叉与跨仓库活动。
    - 原始证据能够支持的读取内容和修改范围。
-4. 接入方案和真实验收：依赖以上结论。
+4. 接入方案和真实验收：已完成。
    - 新客户端贯通发现、解析、API、CLI、Web 与证据回查。
    - 已知样本与真实仓库分别验收，重复刷新不增加同一活动次数。
 5. 更多客户端扩展：已确认 C3。
@@ -44,10 +44,12 @@ Status: claimed
 
 ## 待澄清问题
 
-- 格式相关问题先核对环境事实，再确定下一轮需要用户选择的事项。
+- 本次实施范围没有待澄清问题。
 - C4 推荐范围已作为本次实施范围；SQLite 与 MyFlicker 后续独立适配。
 
-## 已核对事实
+## 初期来源核查记录
+
+以下记录保留需求讨论时的观察；当时尚未核对的成功语义、工具范围与父关系现已完成适配与验证。当前实现以 [支持矩阵](../../docs/design/history-support.md) 和 [验收记录](../../docs/validation/codeflicker.md) 为准。
 
 - 当前 `Client` 只有 `codex` 和 `claude`；发现根、解析分支、API 客户端校验、CLI 帮助及 Web 筛选均需贯通第三客户端。
 - Web 的部分客户端标签把所有非 Codex 值显示成 Claude Code；新增客户端时须显式处理显示名称，避免错误归属。
@@ -63,7 +65,7 @@ Status: claimed
 - 来源根配置以普通对象经 `workerData` 传给 Worker。适配器实现由 Worker 加载，不将函数放入 Worker 配置。
 - 当前证据回查使用物理行与记录哈希；适配边界需要包含来源引用与原始证据回读，避免以后在查询层写入更多格式分支。
 
-相关代码：`src/contracts.ts`、`src/history/types.ts`、`src/history/index.ts`、`src/service/input.ts`、`src/cli.ts`、`web/App.tsx`。本轮尚未运行 CodeFlicker 解析或真实仓库验收。
+相关代码：`src/contracts.ts`、`src/history/types.ts`、`src/history/index.ts`、`src/service/input.ts`、`src/cli.ts`、`web/App.tsx`。上述“尚未确认”描述的是初期调查，不代表当前未实现。
 
 来源核查是代表样本调查，没有全量解析历史；目录清点不代表这些记录均可进入覆盖统计。验收仓库须从实际来源元数据或路径证据确定，不能只反解项目目录 slug。本轮发现 AgentManor 名称未匹配到 CodeFlicker 项目目录，不能用本仓库现有 Codex 结果代替 CodeFlicker 验收。
 
@@ -87,3 +89,11 @@ Status: claimed
 - [03：CodeFlicker 原始历史](issues/03-codeflicker-parser.md)，依赖 02。
 - [04：查询入口](issues/04-query-entrypoints.md)，依赖 02。
 - [05：数据正确性与端到端验收](issues/05-validation.md)，依赖 03、04。
+
+## Answer
+
+- 01—05 均完成；集中客户端目录和格式适配注册贯通发现、解析、API、CLI、Web 与查询 Skill。
+- 原生成功模板、隐式截断、事件执行目录、跨来源子关系及冲突撤销均有回归；解析规则为 7。
+- 125 项完整测试、最终安装包的 8＋18 组端到端通过；真实 14 份历史完成只读核对和浏览器验收。
+- Standards／Spec 两轴发现的问题已由同一实现者修复并独立复核。具体证据、已验范围及全量性能限制见 [验收记录](../../docs/validation/codeflicker.md)。
+- 按此前约定集成 main，本次交付执行推送及远端回读；子任务 worktree 在交付后归档。
