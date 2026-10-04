@@ -1,4 +1,5 @@
-export type Client = "codex" | "claude";
+import type { Client } from "./clients.js";
+export type { Client } from "./clients.js";
 export type FileCategory = "source" | "config" | "docs" | "unknown";
 export type EventKind = "read" | "edit" | "search" | "other";
 export type EventStatus = "success" | "failure" | "unknown";
@@ -21,6 +22,8 @@ export interface Repository {
 
 export interface SourceReference {
   sourceId: string;
+  /** 原始记录的历史格式，与客户端身份分别保存。 */
+  format?: string;
   path: string;
   recordLine: number;
   /** 原始记录内容哈希；文件追加不会使旧记录失效。 */
@@ -78,6 +81,7 @@ export interface Gap {
 export interface HistorySource {
   sourceId: string;
   client: Client;
+  format?: string;
   path: string;
   /** 当前来源文件的完整内容哈希。 */
   hash: string;
@@ -138,7 +142,7 @@ export interface Mapping {
   ruleVersion: string;
 }
 
-/** 未提供时使用两客户端、全部历史和 source 类别。 */
+/** 未提供时使用全部客户端、全部历史和 source 类别。 */
 export interface Filters {
   client?: Client;
   from?: string;

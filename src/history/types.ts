@@ -9,6 +9,7 @@ export interface HistoricalWorktree {
 
 export interface SourceLocation {
   client: Client;
+  format?: string;
   path: string;
   sourceId?: string;
   sessionId?: string;
@@ -16,10 +17,7 @@ export interface SourceLocation {
   parentSessionId?: string;
 }
 
-export interface DiscoverRoots {
-  codex?: string | string[];
-  claude?: string | string[];
-}
+export type DiscoverRoots = Partial<Record<Client, string | string[]>>;
 
 export interface HistoryRelationship {
   kind: "fork" | "subagent";
@@ -60,6 +58,8 @@ export interface PendingCall {
 
 export interface HistoryCursor {
   ruleVersion: string;
+  format: string;
+  adapterState?: JsonValue;
   prefixHash: string;
   completeBytes: number;
   recordLine: number;

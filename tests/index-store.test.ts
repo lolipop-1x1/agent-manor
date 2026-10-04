@@ -30,7 +30,7 @@ async function fixture(run: (context: { directory: string; repositoryPath: strin
     const repository = await store.registerRepository(repositoryPath);
     const refresh = async (clear = false) => {
       const job = store.createJob(repository.id);
-      await refreshRepository(store, job.id, { codex: history, claude: [] }, clear);
+      await refreshRepository(store, job.id, { codex: history, claude: [], codeflicker: [] }, clear);
       assert.equal(store.getJob(job.id).status, "completed", store.getJob(job.id).error);
       return store.getJob(job.id).version!;
     };
@@ -57,6 +57,7 @@ test("SQLite迁移与WAL；登记、完整版本和手动关联重开后保留",
     assert.equal(second.getRepository(repositoryId).version, version);
     assert.ok(second.getManualAssociations(repositoryId).has(unknown.sourceId));
     assert.equal(second.getSnapshot(repositoryId).events.length, 2);
+    assert.ok(second.getTrackedSources(repositoryId).every(source => source.format === "codex-jsonl"));
     const database = new Database(second.dbPath);
     assert.equal(database.pragma("journal_mode", { simple: true }), "wal");
     assert.equal(database.pragma("user_version", { simple: true }), 3);
@@ -165,7 +166,7 @@ test("临时I/O失败不当来源缺失；清缓存失败仍保留旧版和可�
   await rename(history, `${history}-saved`);
   await writeFile(history, "temporary IO failure");
   const job = store.createJob(repositoryId);
-  await refreshRepository(store, job.id, { codex: history, claude: [] }, true);
+  await refreshRepository(store, job.id, { codex: history, claude: [], codeflicker: [] }, true);
   assert.equal(store.getJob(job.id).status, "failed");
   assert.equal(store.getRepository(repositoryId).version, first);
   assert.equal(store.getRepository(repositoryId).stale, true);
@@ -189,7 +190,7 @@ test("事务发布失败不泄漏新版、缓存或完成任务；已有version�
   const partsBefore = database.prepare("SELECT kind,owner,field,part,json FROM payload_parts ORDER BY kind,owner,field,part").all();
   database.exec("CREATE TRIGGER reject_publish BEFORE UPDATE OF version ON repositories BEGIN SELECT RAISE(ABORT,'synthetic publish failure'); END;");
   const job = store.createJob(repositoryId);
-  await refreshRepository(store, job.id, { codex: join(sourcePath, ".."), claude: [] });
+  await refreshRepository(store, job.id, { codex: join(sourcePath, ".."), claude: [], codeflicker: [] });
   assert.equal(store.getJob(job.id).status, "failed");
   assert.equal(store.getRepository(repositoryId).version, first);
   assert.equal(store.getSnapshot(repositoryId).events.length, 1);
@@ -314,7 +315,7 @@ test("SQLite v2旧JSON版本与解析缓存升级后可查询并续读", async (
     assert.ok(upgraded.getSnapshot(repositoryId).sources.every((source) => !("events" in source)));
     await appendFile(sourcePath, encode([call(repositoryPath, "second"), output("second")]));
     const job = upgraded.createJob(repositoryId);
-    await refreshRepository(upgraded, job.id, { codex: join(sourcePath, ".."), claude: [] });
+    await refreshRepository(upgraded, job.id, { codex: join(sourcePath, ".."), claude: [], codeflicker: [] });
     assert.equal(upgraded.getJob(job.id).status, "completed", upgraded.getJob(job.id).error);
     assert.equal(upgraded.getRefreshStats(repositoryId).parsedRecords, 2);
     assert.equal(upgraded.getSnapshot(repositoryId).events.length, 2);

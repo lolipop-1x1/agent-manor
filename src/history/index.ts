@@ -2,83 +2,61 @@ import { createHash } from "node:crypto";
 import { lstat, open, readFile, readdir, realpath } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
-import { fileURLToPath } from "node:url";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import type { Baseline, Client, EvidenceFragment, Gap, HistoryEvent, JsonValue, ParsedSource, SourceReference } from "../contracts.js";
+import type { Baseline, Client, EvidenceFragment, Gap, HistoryEvent, ParsedSource, SourceReference } from "../contracts.js";
 import { PARSER_RULE_VERSION } from "../version.js";
-import { json, number, object, physicalLines, returnedText, shellEvidence, shellResult, string, textContent, toolEvidence, unifiedFragments, words } from "./extraction.js";
+import { json, object, returnedText, string, words } from "./extraction.js";
+import { normalizeHistoryPath } from "./adapters/common.js";
+import { HISTORY_CLIENTS, historyAdapter, historyClient } from "./adapters/index.js";
+import type { HistoryAdapterContext, HistoryClient } from "./adapters/types.js";
+
 import type { DiscoverRoots, HistoricalWorktree, HistoryCursor, HistoryRelationship, ParsedHistorySource, PendingCall, SharedHistoryResult, SourceAssociation, SourceLocation } from "./types.js";
+
+export { normalizeHistoryPath } from "./adapters/common.js";
 
 export type { DiscoverRoots, HistoryRelationship, ParsedHistorySource, SharedHistoryResult, SourceAssociation, SourceLocation } from "./types.js";
 
 const hash = (value: string | Uint8Array) => createHash("sha256").update(value).digest("hex");
 const git = promisify(execFile);
 
-export function normalizeHistoryPath(value: string | undefined): string | undefined {
-  if (!value) return undefined;
-  if (value.startsWith("file:")) {
-    try { return fileURLToPath(value); } catch { return undefined; }
-  }
-  return isAbsolute(value) ? resolve(value) : value;
-}
-
-function sourceMetadata(raw: unknown, client: Client, path: string): SourceLocation {
-  const record = object(raw);
-  const payload = client === "codex" ? object(record.payload) : record;
-  const sessionId = client === "codex" ? string(payload.id) ?? string(payload.session_id) : string(record.sessionId);
-  const agentId = string(record.agentId);
-  const cwd = normalizeHistoryPath(string(payload.cwd));
-  const parentSessionId = string(payload.forked_from_id) ?? string(payload.parent_thread_id) ?? string(record.parentSessionId);
-  return {
-    path, client, cwd, sessionId: agentId && sessionId ? `${sessionId}/agent/${agentId}` : sessionId,
-    parentSessionId,
-    sourceId: sessionId ? `${client}:${hash(JSON.stringify({ sessionId, agentId, timestamp: client === "codex" ? payload.timestamp ?? record.timestamp : undefined, cwd: client === "codex" ? cwd : undefined })).slice(0, 24)}` : undefined,
-  };
-}
-
 /** 发现只读至多 64 KiB 的头部；正文留给已选来源的 parseSource。 */
 export async function discoverSources(roots: DiscoverRoots = {}): Promise<SourceLocation[]> {
-  const codex = roots.codex ?? (process.env.AGENT_MANOR_CODEX_DIR ? [process.env.AGENT_MANOR_CODEX_DIR] : [join(homedir(), ".codex/sessions"), join(homedir(), ".codex/archived_sessions")]);
-  const claude = roots.claude ?? (process.env.AGENT_MANOR_CLAUDE_DIR ? [process.env.AGENT_MANOR_CLAUDE_DIR] : [join(homedir(), ".claude/projects")]);
   const found: SourceLocation[] = [];
   const paths = new Set<string>();
-  async function walk(path: string, client: Client): Promise<void> {
+  async function walk(path: string, declaration: HistoryClient): Promise<void> {
     let entries;
     try { entries = await readdir(path, { withFileTypes: true }); }
     catch (error) { if (object(error).code === "ENOENT") return; throw error; }
+    const adapter = historyAdapter(declaration.format);
     for (const entry of entries.sort((left, right) => left.name.localeCompare(right.name))) {
       const child = join(path, entry.name);
-      if (entry.isDirectory()) await walk(child, client);
-      else if (entry.isFile() && entry.name.endsWith(".jsonl") && !paths.has(child)) {
+      if (entry.isDirectory()) await walk(child, declaration);
+      else if (entry.isFile() && (declaration.acceptsFile?.(child) ?? entry.name.endsWith(".jsonl")) && !paths.has(child)) {
         paths.add(child);
-        const handle = await open(child, "r");
-        let metadata: SourceLocation = { path: child, client };
-        try {
-          const buffer = Buffer.alloc(65_536);
-          const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
-          for (const line of buffer.subarray(0, bytesRead).toString("utf8").split("\n").slice(0, 32)) {
-            try {
-              const record = object(JSON.parse(line));
-              if (client === "codex" && record.type === "session_meta") {
-                metadata = sourceMetadata(record, client, child); break;
-              }
-              if (client === "claude" && record.sessionId) {
-                const candidate = sourceMetadata(record, client, child);
-                if (!candidate.sourceId) continue;
-                if (!metadata.sourceId) metadata = { ...candidate, cwd: undefined };
-                if (candidate.sourceId !== metadata.sourceId) continue;
-                if (candidate.cwd && isAbsolute(candidate.cwd)) { metadata.cwd = candidate.cwd; break; }
-              }
-            } catch { /* 发现阶段不把坏行误认为有效元数据。 */ }
-          }
-        } finally { await handle.close(); }
+        let metadata: SourceLocation = { path: child, client: declaration.client, format: declaration.format };
+        if (adapter) {
+          const handle = await open(child, "r");
+          try {
+            const buffer = Buffer.alloc(65_536);
+            const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
+            for (const line of buffer.subarray(0, bytesRead).toString("utf8").split("\n").slice(0, 32)) {
+              try {
+                const candidate = adapter.discover(object(JSON.parse(line)), metadata);
+                if (candidate) { metadata = candidate.source; if (candidate.complete) break; }
+              } catch { /* 发现阶段不把坏行误认为有效元数据。 */ }
+            }
+          } finally { await handle.close(); }
+        }
         found.push(metadata);
       }
     }
   }
-  for (const root of typeof codex === "string" ? [codex] : codex) await walk(resolve(root), "codex");
-  for (const root of typeof claude === "string" ? [claude] : claude) await walk(resolve(root), "claude");
+  for (const declaration of HISTORY_CLIENTS) {
+    const environment = process.env[declaration.environmentVariable];
+    const configured = roots[declaration.client] ?? (environment ? [environment] : declaration.defaultRoots.map(path => join(homedir(), path)));
+    for (const root of typeof configured === "string" ? [configured] : configured) await walk(resolve(root), declaration);
+  }
   return found;
 }
 
@@ -89,45 +67,36 @@ function cursorOf(source: ParsedSource | undefined): HistoryCursor | undefined {
   return cursor as unknown as HistoryCursor;
 }
 
-function relations(record: Record<string, unknown>): HistoryRelationship[] {
-  const payload = object(record.payload);
-  const history = object(payload.history_base);
-  const forkParent = string(history.thread_id) ?? string(payload.forked_from_id);
-  if (forkParent) return [{ kind: "fork", parentSessionId: forkParent, endByteOffset: number(history.end_byte_offset), endOrdinalExclusive: number(history.end_ordinal_exclusive) ?? number(payload.forked_from_ordinal_exclusive) }];
-  const source = object(payload.source);
-  const spawn = object(object(source.subagent).thread_spawn);
-  const parent = string(payload.parent_thread_id) ?? string(spawn.parent_thread_id) ?? string(record.parentSessionId);
-  return parent ? [{ kind: "subagent", parentSessionId: parent, agentId: string(record.agentId) }] : [];
-}
-
 /** prefixHash 验证完整旧前缀后只解析追加记录；尾部不完整 JSONL 保留至下一轮。 */
-export async function parseSource(path: string, client: Client, previous?: ParsedSource): Promise<ParsedHistorySource> {
+export async function parseSource(path: string, client: Client, previous?: ParsedSource, format = historyClient(client).format): Promise<ParsedHistorySource> {
   const absolutePath = resolve(path);
+  const adapter = historyAdapter(format);
   const bytes = await readFile(absolutePath);
   const oldCursor = cursorOf(previous);
-  const appended = oldCursor && previous?.client === client && bytes.length >= oldCursor.completeBytes
+  const appended = oldCursor && oldCursor.format === format && previous?.client === client && bytes.length >= oldCursor.completeBytes
     && hash(bytes.subarray(0, oldCursor.completeBytes)) === oldCursor.prefixHash;
   const cursor: HistoryCursor = appended ? structuredClone(oldCursor) : {
-    ruleVersion: PARSER_RULE_VERSION, prefixHash: hash(""), completeBytes: 0, recordLine: 0,
+    ruleVersion: PARSER_RULE_VERSION, format, prefixHash: hash(""), completeBytes: 0, recordLine: 0,
     pending: [], seen: {}, occurrences: {}, recordEnds: [], relationships: [], parsedRecords: 0,
   };
   cursor.parsedRecords = 0;
   const source: ParsedHistorySource = appended && previous ? {
     ...structuredClone(previous), path: absolutePath, hash: hash(bytes), relationships: cursor.relationships,
     gaps: previous.gaps.filter((gap) => !["unpaired_call", "incomplete_record"].includes(gap.kind)),
-  } : { sourceId: `${client}:unidentified:${hash(absolutePath).slice(0, 24)}`, client, path: absolutePath, hash: hash(bytes), sessionId: `unknown:${hash(absolutePath).slice(0, 16)}`, events: [], gaps: [], completeBytes: 0, relationships: [] };
+  } : { sourceId: `${client}:unidentified:${hash(absolutePath).slice(0, 24)}`, client, format, path: absolutePath, hash: hash(bytes), sessionId: `unknown:${hash(absolutePath).slice(0, 16)}`, events: [], gaps: [], completeBytes: 0, relationships: [] };
   for (const event of source.events) for (const reference of event.sources) reference.path = absolutePath;
   const eventById = new Map(source.events.map((event) => [event.id, event]));
   const gap = (kind: Gap["kind"], message: string) => source.gaps.push({ kind, message, sourceId: source.sourceId });
-  const reference = (recordLine: number, raw: string, callId?: string): SourceReference => ({ sourceId: source.sourceId, path: absolutePath, recordLine, hash: hash(raw), callId });
+  const reference = (recordLine: number, raw: string, callId?: string): SourceReference => ({ sourceId: source.sourceId, format, path: absolutePath, recordLine, hash: hash(raw), callId });
   const findEvent = (id: string) => eventById.get(id);
+  let activeContext: HistoryAdapterContext;
   const identity = (key: string): string => {
     const occurrence = (cursor.occurrences[key] ?? 0) + 1;
     cursor.occurrences[key] = occurrence;
     return `${source.sourceId}:${hash(`${key}:${occurrence}`).slice(0, 24)}`;
   };
   function createEvent(tool: string, input: unknown, row: number, raw: string, occurredAt?: string, cwd?: string, key?: string): HistoryEvent {
-    const extracted = tool === "apply_patch" ? patchEvidence(string(input) ?? string(object(input).patch) ?? "")[0]! : toolEvidence(tool, input, {}, "")[0]!;
+    const extracted = adapter!.extract(tool, input, {}, "", activeContext)[0]!;
     const event: HistoryEvent = {
       id: identity(key ?? `${tool}:${row}:${hash(raw)}`), client, sessionId: source.sessionId, parentSessionId: source.parentSessionId,
       occurredAt, tool, kind: extracted.kind, status: "unknown", cwd: normalizeHistoryPath(cwd) ?? cursor.cwd ?? source.cwd,
@@ -144,35 +113,8 @@ export async function parseSource(path: string, client: Client, previous?: Parse
     event.sources.push(resultRef);
     event.output = json({ result, visibleOutput: visible });
     event.status = status;
-    if (call.wrapper) {
-      const concrete = source.events.filter((candidate) => candidate.id !== event.id && ["CommandExecution", "FileChange"].includes(candidate.tool)
-        && candidate.sources.some((ref) => ref.recordLine > call.recordLine && ref.recordLine < row));
-      if (concrete.length) {
-        for (const candidate of concrete) candidate.sources.push(...event.sources);
-        source.events = source.events.filter((candidate) => candidate.id !== event.id);
-      } else {
-        event.reason = "unsupported_tool: exec 包装未发现具体事件，未执行或猜测 JavaScript";
-        gap("unsupported_tool", event.reason);
-      }
-      return;
-    }
-    if (["shell_command", "exec_command"].includes(call.tool)) {
-      const requested = string(object(call.input).cmd) ?? string(object(call.input).command);
-      const concrete = source.events.filter((candidate) => candidate.tool === "CommandExecution"
-        && candidate.sources.some((ref) => ref.recordLine > call.recordLine && ref.recordLine < row)
-        && string((Array.isArray(object(candidate.input).command) ? object(candidate.input).command as unknown[] : []).at(-1)) === requested
-        && candidate.cwd === event.cwd
-        && returnedText(string(object(candidate.output).formatted_output) ?? "").content === returnedText(visible).content);
-      const identities = new Set(concrete.map(candidate => candidate.id.replace(/:file:\d+$/, "")));
-      if (identities.size === 1) {
-        for (const candidate of concrete) candidate.sources.push(...event.sources);
-        source.events = source.events.filter((candidate) => candidate.id !== event.id);
-        return;
-      }
-      if (identities.size > 1) gap("ambiguous", "直接调用与具体命令事件存在多个对应候选，未合并身份");
-    }
-    let extracted = toolEvidence(call.tool, call.input, result, visible);
-    if (call.tool === "apply_patch") extracted = patchEvidence(string(call.input) ?? string(object(call.input).patch) ?? "");
+    if (adapter!.finalizeCall?.(activeContext, call, event, result, visible, row, raw)) return;
+    const extracted = adapter!.extract(call.tool, call.input, result, visible, activeContext);
     extracted.forEach((evidence, index) => {
       const target = index === 0 ? event : { ...event, id: `${event.id}:file:${index}`, sources: [...event.sources] };
       target.kind = evidence.kind;
@@ -194,6 +136,7 @@ export async function parseSource(path: string, client: Client, previous?: Parse
     cursor.pending = cursor.pending.filter((candidate) => candidate !== call);
     return call;
   }
+  if (!adapter && !source.gaps.some(item => item.kind === "unsupported_format")) gap("unsupported_format", `历史格式 ${format} 尚未注册适配器`);
   let position = cursor.completeBytes;
   while (position < bytes.length) {
     const newline = bytes.indexOf(10, position);
@@ -207,159 +150,11 @@ export async function parseSource(path: string, client: Client, previous?: Parse
     let record: Record<string, unknown>;
     try { record = object(JSON.parse(raw)); }
     catch { gap("parse_error", `物理记录 ${row} 不是有效 JSON`); continue; }
-    const payload = object(record.payload);
-    const occurredAt = string(record.timestamp);
-    if (client === "codex" && record.type === "session_meta") {
-      const metadata = sourceMetadata(record, client, absolutePath);
-      source.sourceId = metadata.sourceId ?? source.sourceId;
-      source.sessionId = metadata.sessionId ?? source.sessionId;
-      source.cwd = metadata.cwd;
-      source.parentSessionId = metadata.parentSessionId;
-      cursor.cwd = metadata.cwd;
-      cursor.relationships = relations(record);
-      source.relationships = cursor.relationships;
-      continue;
+    if (adapter) {
+      activeContext = { client, path: absolutePath, row, raw, occurredAt: string(record.timestamp), source, cursor,
+        hash, gap, reference, findEvent, createEvent, finish, pair };
+      adapter.processRecord(record, activeContext);
     }
-    if (client === "codex" && record.type === "turn_context") { cursor.cwd = normalizeHistoryPath(string(payload.cwd)) ?? cursor.cwd; continue; }
-    if (client === "claude" && record.sessionId) {
-      const metadata = sourceMetadata(record, client, absolutePath);
-      if (source.sessionId.startsWith("unknown:")) {
-        source.sourceId = metadata.sourceId ?? source.sourceId;
-        source.sessionId = metadata.sessionId ?? source.sessionId;
-        source.cwd = metadata.cwd && isAbsolute(metadata.cwd) ? metadata.cwd : undefined;
-        source.parentSessionId = metadata.parentSessionId;
-        cursor.relationships = relations(record);
-        source.relationships = cursor.relationships;
-        if (record.agentId && !source.parentSessionId) {
-          source.parentSessionId = string(record.sessionId);
-          cursor.relationships.push({ kind: "subagent", parentSessionId: string(record.sessionId)!, agentId: string(record.agentId) });
-        }
-      }
-      if (metadata.sourceId === source.sourceId && metadata.cwd && isAbsolute(metadata.cwd)) {
-        source.cwd ??= metadata.cwd;
-        cursor.cwd = metadata.cwd;
-      }
-    }
-    if (client === "codex" && record.type === "event_msg" && payload.type === "item_completed") {
-      const item = object(payload.item);
-      if (!["CommandExecution", "FileChange"].includes(string(item.type) ?? "")) continue;
-      const key = `concrete:${string(payload.thread_id) ?? source.sessionId}:${string(item.id) ?? row}:${payload.started_at_ms ?? ""}:${payload.completed_at_ms ?? ""}:${occurredAt ?? ""}:${hash(JSON.stringify(item))}`;
-      const existingId = cursor.seen[key];
-      if (existingId) { findEvent(existingId)?.sources.push(reference(row, raw)); continue; }
-      const event = createEvent(string(item.type)!, {}, row, raw, occurredAt, string(item.cwd), key);
-      cursor.seen[key] = event.id;
-      event.input = json(item.type === "CommandExecution" ? { command: item.command, cwd: item.cwd } : item.changes);
-      const exitCode = number(item.exit_code);
-      event.status = item.status === "failed" || (exitCode !== undefined && exitCode !== 0) ? "failure" : item.status === "completed" && (item.type === "FileChange" || exitCode === 0) ? "success" : "unknown";
-      const output = string(item.formatted_output);
-      event.output = json({ formatted_output: output, exit_code: exitCode, status: item.status });
-      if (item.type === "CommandExecution") {
-        const commandArray = Array.isArray(item.command) ? item.command : [];
-        const command = string(commandArray.at(-1)) ?? string(item.command) ?? "";
-        const evidence = shellEvidence(command, output ?? "");
-        evidence.forEach((part, index) => {
-          const target = index ? { ...event, id: `${event.id}:file:${index}`, sources: [...event.sources] } : event;
-          target.kind = part.kind; target.path = part.path;
-          target.fragments = event.status === "success" && output !== undefined ? part.fragments : [];
-          target.reason = output === undefined ? "range_unknown: 具体命令缺少 formatted_output；未采用 stdout 补足" : event.status !== "success" ? "命令未成功完成" : part.reason;
-          if (index) source.events.push(target);
-          if (target.reason?.startsWith("range_unknown:")) gap("range_unknown", target.reason);
-          if (target.reason?.startsWith("unsupported_tool:")) gap("unsupported_tool", target.reason);
-        });
-      } else {
-        event.kind = "edit";
-        const changes = object(item.changes);
-        const entries = Object.entries(changes);
-        entries.forEach(([changedPath, value], index) => {
-          const change = object(value);
-          const target = index ? { ...event, id: `${event.id}:file:${index}`, sources: [...event.sources] } : event;
-          target.kind = "edit"; target.path = normalizeHistoryPath(string(change.move_path)) ?? changedPath;
-          target.fragments = event.status === "success" ? change.type === "add" && typeof change.content === "string" ? [{ kind: "added", content: change.content, historicalStart: 1, path: target.path, completeLines: true }]
-            : change.type === "update" ? unifiedFragments(string(change.unified_diff) ?? "", target.path) : [] : [];
-          target.reason = event.status !== "success" ? "文件修改未成功" : change.type === "delete" ? "range_unknown: 文件删除保留编辑活动，无当前新增行" : change.move_path ? "range_unknown: move_path 关系保留在输入；路径移动不证明当前内容对应" : undefined;
-          if (index) source.events.push(target);
-          if (target.reason) gap("range_unknown", target.reason);
-        });
-      }
-      continue;
-    }
-    if (client === "codex" && record.type === "response_item") {
-      const type = string(payload.type);
-      if (type === "function_call" || type === "custom_tool_call") {
-        const tool = string(payload.name) ?? "unknown";
-        const callId = string(payload.call_id) ?? `record:${row}`;
-        let input: unknown = payload.input ?? {};
-        if (typeof payload.arguments === "string") {
-          try { input = JSON.parse(payload.arguments); } catch { gap("unsupported_format", `调用 ${row} arguments 不是有效 JSON`); }
-        }
-        const key = payload.id ? `request:${payload.id}:${callId}:${hash(JSON.stringify(input))}` : undefined;
-        if (key && cursor.seen[key]) { findEvent(cursor.seen[key])?.sources.push(reference(row, raw, callId)); continue; }
-        const event = createEvent(tool, input, row, raw, occurredAt, string(object(input).workdir), key);
-        event.sources[0]!.callId = callId;
-        if (key) cursor.seen[key] = event.id;
-        cursor.pending.push({ eventId: event.id, callId, tool, input: json(input), recordLine: row, wrapper: tool === "exec", turnId: string(payload.turn_id) });
-      } else if (type === "function_call_output" || type === "custom_tool_call_output") {
-        const callId = string(payload.call_id) ?? "";
-        const outputKey = `output:${callId}:${hash(raw)}`;
-        if (cursor.seen[outputKey] && !cursor.pending.some((pending) => pending.callId === callId)) { findEvent(cursor.seen[outputKey])?.sources.push(reference(row, raw, callId)); continue; }
-        const call = pair(callId);
-        if (call) {
-          let structuredOutput: unknown = payload.output;
-          if (typeof structuredOutput === "string") {
-            try { structuredOutput = JSON.parse(structuredOutput); } catch { /* 旧 shell 输出仍按文本头处理。 */ }
-          }
-          const result = shellResult(structuredOutput);
-          let status = result.status;
-          const structured = object(structuredOutput);
-          if (structured.is_error === true || structured.success === false) status = "failure";
-          else if (structured.success === true || structured.file || Array.isArray(structured.structuredPatch) || structured.type === "create") status = "success";
-          if (call.tool === "apply_patch" && /^(?:Success\.|Done!|\{\})/.test(textContent(payload.output))) status = "success";
-          finish(call, structuredOutput, result.output || textContent(payload.output), status, row, raw, status === "unknown" ? result.reason : undefined);
-          cursor.seen[outputKey] = call.eventId;
-        }
-      }
-      continue;
-    }
-    if (client === "claude") {
-      const message = object(record.message);
-      const blocks = Array.isArray(message.content) ? message.content : [];
-      const results = blocks.filter((block) => object(block).type === "tool_result");
-      blocks.forEach((value, index) => {
-        const block = object(value);
-        if (block.type === "tool_use") {
-          const callId = string(block.id) ?? `record:${row}:${index}`;
-          const uuid = string(record.uuid);
-          const key = uuid ? `request:${uuid}:${callId}:${index}:${hash(JSON.stringify(block))}` : undefined;
-          if (key && cursor.seen[key]) { findEvent(cursor.seen[key])?.sources.push(reference(row, raw, callId)); return; }
-          const tool = string(block.name) ?? "unknown";
-          const event = createEvent(tool, block.input, row, raw, occurredAt, string(record.cwd), key);
-          event.sources[0]!.callId = callId;
-          if (key) cursor.seen[key] = event.id;
-          cursor.pending.push({ eventId: event.id, callId, requestUuid: uuid, tool, input: json(block.input), recordLine: row });
-        } else if (block.type === "tool_result") {
-          const callId = string(block.tool_use_id) ?? "";
-          const key = `result:${record.uuid ?? row}:${callId}:${hash(JSON.stringify(block))}`;
-          if (cursor.seen[key]) { findEvent(cursor.seen[key])?.sources.push(reference(row, raw, callId)); return; }
-          const call = pair(callId, string(record.sourceToolAssistantUUID));
-          if (!call) return;
-          const result = results.length === 1 ? record.toolUseResult : undefined;
-          const structured = object(result);
-          const visible = textContent(block.content);
-          let status: HistoryEvent["status"] = block.is_error === true ? "failure" : block.is_error === false ? "success" : "unknown";
-          if (block.is_error !== true && (structured.file || Array.isArray(structured.structuredPatch) || ["create", "update"].includes(string(structured.type) ?? ""))) status = "success";
-          if (structured.backgroundTaskId || structured.timedOutAfterMs || structured.interrupted === true) status = "unknown";
-          const reason = structured.backgroundTaskId ? "后台任务尚无完成结果" : returnedText(visible).truncated ? "range_unknown: 持久化或截断输出未补读旁路文件" : undefined;
-          finish(call, result, visible, status, row, raw, reason);
-          if (structured.backgroundTaskId) gap("unpaired_call", "后台任务返回仅确认已接收；后续通知形态未适配，当前活动保持 unknown");
-          cursor.seen[key] = call.eventId;
-        }
-      });
-    }
-    // 已知非工具记录不影响源码证据；未知类型仍保留可定位的缺口。
-    const supportedRecords = client === "codex" ? ["session_meta", "turn_context", "event_msg", "response_item", "compacted", "compaction", "token_usage_record", "world_state", "inter_agent_communication_metadata"]
-      : ["assistant", "user", "system", "progress", "summary", "file-history-snapshot", "file-history-delta", "attachment", "mode", "permission-mode", "last-prompt", "queue-operation"];
-    const recordType = string(record.type) ?? "<缺少类型>";
-    if (!supportedRecords.includes(recordType)) gap("unsupported_format", `物理记录 ${row} 的顶层类型 ${recordType} 尚未适配`);
   }
   cursor.completeBytes = position;
   cursor.prefixHash = hash(bytes.subarray(0, position));
@@ -368,26 +163,6 @@ export async function parseSource(path: string, client: Client, previous?: Parse
   if (position < bytes.length) gap("incomplete_record", "末尾记录尚未以换行完成，等待下一轮补齐");
   for (const call of cursor.pending) gap("unpaired_call", `调用 ${call.callId} 的出现位置 ${call.recordLine} 尚无可确认结果`);
   return source;
-}
-
-function patchEvidence(patch: string) {
-  const evidence: { kind: "edit"; path?: string; fragments: EvidenceFragment[]; reason?: string }[] = [];
-  let current: typeof evidence[number] | undefined;
-  let diff: string[] = [];
-  const flush = () => {
-    if (!current) return;
-    if (current.reason !== "add") current.fragments = unifiedFragments(diff.join("\n"), current.path).map((fragment) => ({ ...fragment, historicalStart: undefined }));
-    else current.fragments = [{ kind: "added", content: diff.filter((line) => line.startsWith("+")).map((line) => `${line.slice(1)}\n`).join(""), historicalStart: 1, path: current.path, completeLines: true }];
-    current.reason = current.reason === "delete" ? "range_unknown: 删除文件无当前新增行" : current.reason === "add" ? undefined : "range_unknown: apply_patch 无标准 hunk 行号，仅保留变化内容";
-    evidence.push(current); diff = [];
-  };
-  for (const line of physicalLines(patch)) {
-    const file = /^\*\*\* (Add|Update|Delete) File: (.+)$/.exec(line);
-    if (file) { flush(); current = { kind: "edit", path: file[2], fragments: [], reason: file[1]!.toLowerCase() }; }
-    else if (current && !line.startsWith("***")) diff.push(line);
-  }
-  flush();
-  return evidence.length ? evidence : [{ kind: "edit" as const, fragments: [], reason: "range_unknown: apply_patch 格式不支持" }];
 }
 
 function inside(root: string, path: string): boolean {
