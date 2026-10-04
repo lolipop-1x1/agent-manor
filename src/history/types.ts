@@ -25,6 +25,8 @@ export interface HistoryRelationship {
   endByteOffset?: number;
   endOrdinalExclusive?: number;
   agentId?: string;
+  /** 证明跨来源关系的原始执行记录，不表示历史调用重放。 */
+  sources?: SourceReference[];
 }
 
 export interface ParsedHistorySource extends ParsedSource {

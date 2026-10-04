@@ -170,7 +170,7 @@ test("发现主会话与显式子来源，排除 requests；不反解项目 slug
   await writeFile(join(project, "agent-unconfirmed.jsonl"), encode([call("unconfirmed", "read", "read", {}, { sessionId: "agent-unconfirmed" })]));
   const unconfirmed = await parseSource(join(project, "agent-unconfirmed.jsonl"), "codeflicker");
   assert.equal(unconfirmed.parentSessionId, undefined);
-  assert.ok(unconfirmed.gaps.some(gap => gap.kind === "ambiguous"));
+  assert.ok(resolveSharedHistory([parent, unconfirmed]).gaps.some(gap => gap.kind === "ambiguous"));
   assert.equal(resolveSharedHistory([parent, child, unconfirmed]).events.length, 3);
 }));
 

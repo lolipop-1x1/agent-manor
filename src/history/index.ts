@@ -352,13 +352,21 @@ export function resolveSharedHistory(sources: ParsedSource[]): SharedHistoryResu
   }
   for (const source of sources) {
     const cursor = cursorOf(source);
-    const shared = (source as ParsedHistorySource).relationships ?? cursor?.relationships ?? [];
+    const resolvedRelationships = historyAdapter(source.format ?? historyClient(source.client).format)?.resolveRelationships?.(source, sources);
+    const shared = [...((source as ParsedHistorySource).relationships ?? cursor?.relationships ?? []), ...(resolvedRelationships?.relationships ?? [])];
+    gaps.push(...(resolvedRelationships?.gaps ?? []));
+    const parentProofs: SourceReference[] = [];
+    const relatedParents = new Set<string>();
     const copied = new Map<string, { event: HistoryEvent; identity?: string }>();
     for (const relationship of shared) {
-      const parents = bySession.get(relationship.parentSessionId) ?? [];
+      const parents = (bySession.get(relationship.parentSessionId) ?? []).filter(parent => parent.client === source.client);
       const parent = parents.find((candidate) => relationship.endByteOffset !== undefined && cursorOf(candidate)?.recordEnds.includes(relationship.endByteOffset));
       const resolved = relationship.kind === "subagent" ? parents.length > 0 : Boolean(parent);
       relationships.push({ sourceId: source.sourceId, relationship, resolved });
+      if (resolved && relationship.kind === "subagent") {
+        relatedParents.add(relationship.parentSessionId);
+        parentProofs.push(...(relationship.sources ?? []));
+      }
       if (!resolved) gaps.push({ kind: parents.length ? "ambiguous" : "source_missing", sourceId: source.sourceId, message: relationship.kind === "fork" ? "fork 父来源缺失或引用字节位置不是完整记录边界；未重造共享调用" : "子会话父来源缺失" });
       if (parent && relationship.kind === "fork") {
         const endRow = cursorOf(parent)!.recordEnds.indexOf(relationship.endByteOffset!) + 1;
@@ -372,13 +380,16 @@ export function resolveSharedHistory(sources: ParsedSource[]): SharedHistoryResu
         }
       }
     }
+    if (relatedParents.size > 1) gaps.push({ kind: "ambiguous", sourceId: source.sourceId, message: "子会话存在多个已解析父身份，未选择父关系" });
     for (const event of source.events) {
       const proof = [...new Set(event.sources.filter((reference) => reference.sourceId === source.sourceId).map((reference) => reference.hash))].sort().join(":");
       const candidate = copied.get(proof);
       const identity = candidate ? eventIdentity(source, event) : undefined;
       const original = candidate?.identity && identity === candidate.identity ? candidate.event : undefined;
       if (candidate && !original) gaps.push({ kind: "ambiguous", sourceId: source.sourceId, message: "fork 记录内容相同但缺少可确认的原事件身份，未按文本去重" });
-      mergeEvent(events, original ? { ...event, id: original.id, sessionId: original.sessionId } : event, gaps);
+      const related = relatedParents.size === 1 ? { ...event, parentSessionId: [...relatedParents][0],
+        sources: [...new Map([...event.sources, ...parentProofs].map(reference => [JSON.stringify(reference), reference])).values()] } : event;
+      mergeEvent(events, original ? { ...related, id: original.id, sessionId: original.sessionId } : related, gaps);
     }
   }
   return { events: [...events.values()], gaps, relationships };

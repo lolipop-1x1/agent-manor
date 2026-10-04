@@ -1,9 +1,9 @@
 import { createHash } from "node:crypto";
 import { isAbsolute } from "node:path";
 import type { Client, HistoryEvent } from "../../contracts.js";
-import { json, object, returnedText, string, textContent } from "../extraction.js";
+import { object, returnedText, string, textContent } from "../extraction.js";
 import type { SourceLocation } from "../types.js";
-import { defaultToolEvidence, historyRelationships, normalizeHistoryPath } from "./common.js";
+import { defaultToolEvidence, historyRelationships, normalizeHistoryPath, registerRequest } from "./common.js";
 import { readJsonlEvidence } from "./jsonl.js";
 import type { HistoryAdapter } from "./types.js";
 
@@ -14,7 +14,7 @@ function sourceMetadata(raw: unknown, client: Client, path: string): SourceLocat
   const sessionId = string(record.sessionId);
   const agentId = string(record.agentId);
   const cwd = normalizeHistoryPath(string(record.cwd));
-  const parentSessionId = string(record.forked_from_id) ?? string(record.parent_thread_id) ?? string(record.parentSessionId);
+  const parentSessionId = historyRelationships(record)[0]?.parentSessionId;
   return {
     path, client, format: "claude-jsonl", cwd, sessionId: agentId && sessionId ? `${sessionId}/agent/${agentId}` : sessionId,
     parentSessionId,
@@ -36,7 +36,7 @@ export const claudeAdapter: HistoryAdapter = {
   extract: defaultToolEvidence,
   readEvidence: readJsonlEvidence,
   processRecord(record, context) {
-    const { client, path: absolutePath, source, cursor, row, raw, occurredAt, gap, reference, findEvent, createEvent, finish, pair } = context;
+    const { client, path: absolutePath, source, cursor, row, raw, gap, reference, findEvent, finish, pair } = context;
     if (record.sessionId) {
       const metadata = sourceMetadata(record, client, absolutePath);
       if (source.sessionId.startsWith("unknown:")) {
@@ -65,12 +65,8 @@ export const claudeAdapter: HistoryAdapter = {
         const callId = string(block.id) ?? `record:${row}:${index}`;
         const uuid = string(record.uuid);
         const key = uuid ? `request:${uuid}:${callId}:${index}:${hash(JSON.stringify(block))}` : undefined;
-        if (key && cursor.seen[key]) { findEvent(cursor.seen[key])?.sources.push(reference(row, raw, callId)); return; }
         const tool = string(block.name) ?? "unknown";
-        const event = createEvent(tool, block.input, row, raw, occurredAt, string(record.cwd), key);
-        event.sources[0]!.callId = callId;
-        if (key) cursor.seen[key] = event.id;
-        cursor.pending.push({ eventId: event.id, callId, requestUuid: uuid, tool, input: json(block.input), recordLine: row });
+        registerRequest(context, { callId, requestUuid: uuid, tool, input: block.input, cwd: string(record.cwd), key });
       } else if (block.type === "tool_result") {
         const callId = string(block.tool_use_id) ?? "";
         const key = `result:${record.uuid ?? row}:${callId}:${hash(JSON.stringify(block))}`;

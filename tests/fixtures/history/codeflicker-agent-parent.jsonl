@@ -1,0 +1,2 @@
+{"type":"message","role":"assistant","sessionId":"synthetic-parent","uuid":"agent-request","content":[{"type":"tool_use","id":"agent-call","name":"Agent","input":{"description":"匿名子任务"}}]}
+{"type":"message","role":"tool","sessionId":"synthetic-parent","uuid":"agent-result","content":[{"type":"tool-result","toolCallId":"agent-call","toolName":"Agent","agentId":"child-a","result":{"isError":false,"llmContent":"匿名完成摘要","returnDisplay":{"type":"agent_result","agentId":"child-a","status":"completed"},"truncated":false}}]}

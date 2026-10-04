@@ -126,12 +126,17 @@ export async function refreshRepository(store: AnalysisStore, jobId: string, roo
       }
     }
     const shared = resolveSharedHistory(parsed);
+    const describedSources = parsed.map(source => {
+      const parents = new Set(shared.relationships.filter(item => item.sourceId === source.sourceId && item.resolved && item.relationship.kind === "subagent")
+        .map(item => item.relationship.parentSessionId));
+      return parents.size === 1 ? { ...source, parentSessionId: [...parents][0] } : source;
+    });
     worktrees = await historicalWorktrees(shared.events, baseline);
     const events = new Map<string, HistoryEvent>();
     const associated = new Set<string>();
     const sources: SourceSummary[] = [];
     const unassociated: SourceSummary[] = [];
-    for (const source of parsed) {
+    for (const source of describedSources) {
       const relevant = shared.events.filter((event) => event.sources.some((reference) => reference.sourceId === source.sourceId));
       // 手动关联只补无 cwd 的相对路径，不覆盖已有工作目录或外部绝对路径。
       const constrained = manual.has(source.sourceId) ? relevant.map((event) => ({ ...event, cwd: event.cwd ?? source.cwd ?? repository.path })) : relevant;
@@ -154,7 +159,7 @@ export async function refreshRepository(store: AnalysisStore, jobId: string, roo
     }
     const relatedParents = new Set(shared.relationships.filter((relationship) => associated.has(relationship.sourceId))
       .map((relationship) => relationship.relationship.parentSessionId));
-    const snapshotSources = parsed.filter((source) => associated.has(source.sourceId) || relatedParents.has(source.sessionId));
+    const snapshotSources = describedSources.filter((source) => associated.has(source.sourceId) || relatedParents.has(source.sessionId));
     gaps.push(...shared.gaps.filter((gap) => !gap.sourceId || associated.has(gap.sourceId)));
     const mappingEntries: { key: string; mapping: ReturnType<typeof matchEvent> }[] = [];
     const files = new Map(baseline.files.map((file) => [file.path, file]));

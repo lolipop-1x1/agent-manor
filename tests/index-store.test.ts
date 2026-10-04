@@ -89,6 +89,43 @@ test("无变化只核对哈希，真实复用解析游标和对应缓存；当�
   assert.equal(await readFile(sourcePath, "utf8"), original);
 }));
 
+test("原生 Agent 跨来源关系贯通来源列表与快照，重复刷新不增加调用且缓存保持原始元数据", async () => fixture(async ({ repositoryPath, history, sourcePath, store, repositoryId }) => {
+  const fixturePath = (name: string) => new URL(`./fixtures/history/${name}`, import.meta.url).pathname;
+  const parent = await readFile(fixturePath("codeflicker-agent-parent.jsonl"), "utf8");
+  const child = (await readFile(fixturePath("agent-child-a.jsonl"), "utf8")).replaceAll("/synthetic/repo", repositoryPath);
+  const childPath = join(history, "agent-child-a.jsonl");
+  await writeFile(sourcePath, parent);
+  await writeFile(childPath, child);
+  const refresh = async () => {
+    const job = store.createJob(repositoryId);
+    await refreshRepository(store, job.id, { codex: [], claude: [], codeflicker: history });
+    assert.equal(store.getJob(job.id).status, "completed", store.getJob(job.id).error);
+  };
+  await refresh();
+  const first = store.getSnapshot(repositoryId);
+  assert.equal(first.events.length, 1);
+  assert.equal(first.events[0]!.sessionId, "agent-child-a");
+  assert.equal(first.events[0]!.parentSessionId, "synthetic-parent");
+  assert.ok(first.events[0]!.sources.some(reference => reference.path === sourcePath && reference.recordLine === 2));
+  assert.equal(first.sources.find(source => source.sessionId === "agent-child-a")!.parentSessionId, "synthetic-parent");
+  assert.equal(store.listSources(repositoryId).sources.find(source => source.sessionId === "agent-child-a")!.parentSessionId, "synthetic-parent");
+  assert.equal(store.getParsedSources(repositoryId).find(source => source.sessionId === "agent-child-a")!.parentSessionId, undefined);
+  assert.equal(buildCoverage(first).files[0]!.readCount, 1);
+  await refresh();
+  const next = store.getSnapshot(repositoryId);
+  assert.deepEqual(next.events.map(event => event.id), first.events.map(event => event.id));
+  assert.equal(store.getRefreshStats(repositoryId).parsedRecords, 0);
+  assert.equal(buildCoverage(next).files[0]!.readCount, 1);
+  await rm(sourcePath);
+  await refresh();
+  const orphan = store.getSnapshot(repositoryId);
+  assert.equal(orphan.events.length, 1);
+  assert.equal(orphan.events[0]!.parentSessionId, undefined);
+  assert.equal(orphan.sources.find(source => source.sessionId === "agent-child-a")!.parentSessionId, undefined);
+  assert.ok(orphan.gaps.some(gap => gap.kind === "ambiguous"));
+  assert.ok(!orphan.events[0]!.sources.some(reference => reference.path === sourcePath));
+}));
+
 test("跨刷新补结果与未完整Unicode尾部，只续读完整新增记录且不累加同一调用", async () => fixture(async ({ repositoryPath, sourcePath, store, repositoryId, refresh }) => {
   await writeFile(join(repositoryPath, "a.ts"), "你好\n");
   await writeFile(sourcePath, encode([meta(repositoryPath), call(repositoryPath, "pending")]));
