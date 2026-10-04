@@ -164,7 +164,8 @@ try {
     assert.equal((await refresh()).summary.readExact.lines, 3);
     await appendFile(source, response.slice(40) + "\n");
     assert.equal((await refresh()).summary.readExact.lines, 4);
-    assert.equal((await refresh()).files.find(file => file.path === "src/c.ts").readCount, 1);
+    // 截断读取已成功但范围未知；新增完整结果只再增加一次成功读取。
+    assert.equal((await refresh()).files.find(file => file.path === "src/c.ts").readCount, 2);
     await writeFile(source, raw);
     assert.equal((await refresh()).summary.readExact.lines, 3);
   });

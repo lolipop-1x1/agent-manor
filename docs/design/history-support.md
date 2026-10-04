@@ -4,7 +4,7 @@
 
 ## 来源、身份与续读
 
-新增内置 Agent 时，在 [客户端目录](../../src/clients.ts) 声明稳定 ID、显示名称与缩写，在 [Node 来源与格式注册](../../src/history/adapters/index.ts) 声明发现根、环境变量、来源过滤和格式 ID，再按 [HistoryAdapter 接口](../../src/history/adapters/types.ts) 实现元数据、配对、续读与证据转换，并增加匿名格式测试。来源和格式分别注册，适配器接收实际客户端身份；统计、仓库归属、Web 筛选与 CLI 校验继续消费共用声明和通用事件，不逐客户端添加判断。
+新增内置 Agent 时，在源码 `src/clients.ts` 声明稳定 ID、显示名称与缩写，在 `src/history/adapters/index.ts` 声明发现根、环境变量、来源过滤和格式 ID，再按 `src/history/adapters/types.ts` 的 HistoryAdapter 接口实现元数据、配对、续读与证据转换，并增加匿名格式测试。这些源码路径供仓库开发使用，安装包交付对应的已编译模块。来源和格式分别注册，适配器接收实际客户端身份；统计、仓库归属、Web 筛选与 CLI 校验继续消费共用声明和通用事件，不逐客户端添加判断。
 
 `discoverSources()` 默认发现 `~/.codex/sessions`、`~/.codex/archived_sessions`、`~/.claude/projects`、`~/.codeflicker/projects`，接受显式目录或 `AGENT_MANOR_CODEX_DIR`／`AGENT_MANOR_CLAUDE_DIR`／`AGENT_MANOR_CODEFLICKER_DIR`。只递归普通目录与 JSONL 普通文件，不跟随发现目录中的符号链接；每个候选至多读取 64 KiB 头部和其中前 32 行。头部含超长指令时可能无法获取元数据，候选仍保留，完整解析或手动关联可继续核对。CodeFlicker 排除 `requests/` 与 `file-history/`，不将模型请求重放、工具声明或文件快照当作工具执行。
 
