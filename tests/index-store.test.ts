@@ -126,6 +126,33 @@ test("原生 Agent 跨来源关系贯通来源列表与快照，重复刷新不�
   assert.ok(!orphan.events[0]!.sources.some(reference => reference.path === sourcePath));
 }));
 
+test("矛盾 Agent 父关系不发布到来源列表与快照，重复刷新仍保留缺口和原始声明", async () => fixture(async ({ repositoryPath, history, sourcePath, store, repositoryId }) => {
+  const fixturePath = (name: string) => new URL(`./fixtures/history/${name}`, import.meta.url).pathname;
+  await writeFile(sourcePath, await readFile(fixturePath("codeflicker-agent-parent.jsonl")));
+  await writeFile(join(history, "second.jsonl"), encode([{ type: "message", role: "assistant", sessionId: "second", content: [] }]));
+  const childRecords = (await readFile(fixturePath("agent-child-a.jsonl"), "utf8")).replaceAll("/synthetic/repo", repositoryPath)
+    .trim().split("\n").map(line => ({ ...JSON.parse(line), parentSessionId: "second" }));
+  await writeFile(join(history, "agent-child-a.jsonl"), encode(childRecords));
+  let eventIds: string[] | undefined;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const job = store.createJob(repositoryId);
+    await refreshRepository(store, job.id, { codex: [], claude: [], codeflicker: history });
+    assert.equal(store.getJob(job.id).status, "completed", store.getJob(job.id).error);
+    const snapshot = store.getSnapshot(repositoryId);
+    const child = snapshot.sources.find(source => source.sessionId === "agent-child-a")!;
+    assert.equal(child.parentSessionId, undefined);
+    assert.equal(snapshot.events[0]!.parentSessionId, undefined);
+    assert.ok(snapshot.gaps.some(gap => gap.sourceId === child.sourceId && gap.kind === "ambiguous"));
+    assert.equal(store.listSources(repositoryId).sources.find(source => source.sourceId === child.sourceId)!.parentSessionId, undefined);
+    assert.equal(store.getParsedSources(repositoryId).find(source => source.sourceId === child.sourceId)!.parentSessionId, "second");
+    assert.equal(buildCoverage(snapshot).files[0]!.readCount, 1);
+    if (eventIds) {
+      assert.deepEqual(snapshot.events.map(event => event.id), eventIds);
+      assert.equal(store.getRefreshStats(repositoryId).parsedRecords, 0);
+    } else eventIds = snapshot.events.map(event => event.id);
+  }
+}));
+
 test("跨刷新补结果与未完整Unicode尾部，只续读完整新增记录且不累加同一调用", async () => fixture(async ({ repositoryPath, sourcePath, store, repositoryId, refresh }) => {
   await writeFile(join(repositoryPath, "a.ts"), "你好\n");
   await writeFile(sourcePath, encode([meta(repositoryPath), call(repositoryPath, "pending")]));
