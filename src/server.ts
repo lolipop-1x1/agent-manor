@@ -73,7 +73,16 @@ export async function startService(options: ServiceOptions = {}) {
       if (origin) {
         let source: URL;
         try { source = new URL(origin); } catch { throw new ServiceError("FORBIDDEN", "无效 Origin"); }
-        if (source.origin !== host.origin || source.pathname !== "/" || source.search || source.hash) {
+        let sameOrigin = source.origin === host.origin;
+        // 兼容 Origin 丢失端口；浏览器同源标记与完整 Referer 必须同时匹配。
+        if (!sameOrigin && !source.port && source.protocol === host.protocol && source.hostname === host.hostname
+          && request.headers["sec-fetch-site"] === "same-origin") {
+          try {
+            const referrer = new URL(request.headers.referer ?? "");
+            sameOrigin = referrer.origin === host.origin && !referrer.username && !referrer.password;
+          } catch { /* 没有完整同源来源时继续拒绝。 */ }
+        }
+        if (!sameOrigin || source.pathname !== "/" || source.search || source.hash || source.username || source.password) {
           throw new ServiceError("FORBIDDEN", "仅允许同服务页面请求");
         }
       }

@@ -159,6 +159,31 @@ test("当前内容变化不给旧高亮；路径穿越、文件及父目录符�
   assert.equal((await fetch(`${serviceUrl(service.instance)}/api/v1${base}/file?path=src/a.ts`)).status, 403);
 }));
 
+test("Origin 丢失端口仅兼容有完整同源证据的浏览器请求", async () => fixture(async ({ service, register }) => {
+  const url = serviceUrl(service.instance);
+  const headers = { origin: "http://127.0.0.1", referer: `${url}/`, "sec-fetch-site": "same-origin" };
+  assert.equal((await fetch(url, { headers })).status, 200);
+  assert.equal((await fetch(`${url}/api/v1/status`, { headers })).status, 200);
+  const refresh = await fetch(`${url}/api/v1/repositories/${register.repository.id}/refresh`, { method: "POST", headers });
+  assert.equal(refresh.status, 200);
+  await wait(service, (await refresh.json() as { job: { id: string } }).job.id);
+  for (const changed of [
+    { "sec-fetch-site": "cross-site" }, { "sec-fetch-site": "same-site" }, { "sec-fetch-site": "" },
+    { referer: "" }, { referer: "not-a-url" }, { referer: "http://127.0.0.1:1/" },
+    { referer: "https://evil.example/" }, { origin: "http://127.0.0.1:1" },
+    { origin: "http://localhost" }, { origin: "https://127.0.0.1" },
+    { origin: "https://evil.example" }, { origin: "null" },
+    { origin: "http://user@127.0.0.1" }, { origin: "http://127.0.0.1/path" },
+    { referer: `${url.replace("://", "://user@")}/` },
+  ]) {
+    const invalid = { ...headers, ...changed };
+    for (const method of ["GET", "POST"]) {
+      const path = method === "GET" ? "/status" : `/repositories/${register.repository.id}/refresh`;
+      assert.equal((await fetch(`${url}/api/v1${path}`, { method, headers: invalid })).status, 403, JSON.stringify(invalid));
+    }
+  }
+}));
+
 test("Host、Origin、JSON 与静态路径安全边界；错误契约稳定", async () => fixture(async ({ directory, service, register }) => {
   const url = serviceUrl(service.instance);
   assert.equal((await fetch(url)).status, 200);
