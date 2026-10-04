@@ -127,6 +127,7 @@ export async function refreshRepository(store: AnalysisStore, jobId: string, roo
     }
     const shared = resolveSharedHistory(parsed);
     const describedSources = parsed.map(source => {
+      if (shared.invalidatedParentSourceIds.includes(source.sourceId)) return { ...source, parentSessionId: undefined };
       const parents = new Set(shared.relationships.filter(item => item.sourceId === source.sourceId && item.resolved && item.relationship.kind === "subagent")
         .map(item => item.relationship.parentSessionId));
       return parents.size === 1 ? { ...source, parentSessionId: [...parents][0] } : source;

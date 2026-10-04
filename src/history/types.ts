@@ -45,6 +45,8 @@ export interface SharedHistoryResult {
   events: HistoryEvent[];
   gaps: Gap[];
   relationships: { sourceId: string; relationship: HistoryRelationship; resolved: boolean }[];
+  /** 矛盾执行证据使当前父关系失效，原始声明仍保存在解析缓存中。 */
+  invalidatedParentSourceIds: string[];
 }
 
 export interface PendingCall {

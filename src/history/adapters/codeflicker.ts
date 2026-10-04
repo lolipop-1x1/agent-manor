@@ -3,7 +3,7 @@ import { basename, dirname, isAbsolute, resolve } from "node:path";
 import type { Client, EvidenceFragment, HistoryEvent } from "../../contracts.js";
 import { changedFragments, json, number, object, patchFragments, physicalLines, shellEvidence, string } from "../extraction.js";
 import type { ToolEvidence } from "../extraction.js";
-import type { SourceLocation } from "../types.js";
+import type { ParsedHistorySource, SourceLocation } from "../types.js";
 import { historyRelationships, normalizeHistoryPath, registerRequest } from "./common.js";
 import { readJsonlEvidence } from "./jsonl.js";
 import type { HistoryAdapter, HistoryAdapterContext } from "./types.js";
@@ -103,12 +103,15 @@ export const codeflickerAdapter: HistoryAdapter = {
       && `agent-${string(object(event.output).agentId) ?? ""}` === source.sessionId)
       .map(event => ({ parentSessionId: parent.sessionId, agentId: string(object(event.output).agentId), sources: event.sources })));
     const parentIds = new Set(proofs.map(proof => proof.parentSessionId));
-    if (candidates.size === 1 && parentIds.size === 1 && (!source.parentSessionId || parentIds.has(source.parentSessionId))) {
+    const declaredParents = new Set([source.parentSessionId, ...((source as ParsedHistorySource).relationships ?? []).map(relationship => relationship.parentSessionId)]
+      .filter((parent): parent is string => typeof parent === "string"));
+    const conflictingParent = proofs.length > 0 && (parentIds.size > 1 || [...declaredParents].some(parent => !parentIds.has(parent)));
+    if (candidates.size === 1 && parentIds.size === 1 && !conflictingParent) {
       return { relationships: [{ kind: "subagent", parentSessionId: proofs[0]!.parentSessionId, agentId: proofs[0]!.agentId,
         sources: [...new Map(proofs.flatMap(proof => proof.sources).map(reference => [JSON.stringify(reference), reference])).values()] }] };
     }
     if (source.parentSessionId && !proofs.length) return { relationships: [] };
-    return { relationships: [], gaps: [{ kind: "ambiguous", sourceId: source.sourceId,
+    return { relationships: [], invalidateParent: conflictingParent, gaps: [{ kind: "ambiguous", sourceId: source.sourceId,
       message: proofs.length ? "子会话原生身份或父结果存在多个／矛盾候选，未建立关系" : "子会话候选缺少可确认的父关系，独立保留调用而不合并父历史" }] };
   },
   extract(tool, inputValue, resultValue, _visible, context) {
@@ -223,9 +226,9 @@ export const codeflickerAdapter: HistoryAdapter = {
         const reason = mismatchedTool ? "range_unknown: CodeFlicker 结果工具名与请求不符"
           : result.truncated === true ? "range_unknown: CodeFlicker 返回截断，未补读旁路内容"
           : status === "unknown" ? "range_unknown: CodeFlicker 结果未确认成功终态" : undefined;
-        finish(call, result, visible, status, row, raw, reason);
         const event = findEvent(call.eventId);
         if (event && bash?.cwd) event.cwd = bash.cwd;
+        finish(call, result, visible, status, row, raw, reason);
         if (event && call.tool === "Agent" && status === "success" && typeof block.agentId === "string") event.output = json({ ...object(event.output), agentId: block.agentId });
         cursor.seen[key] = call.eventId;
       }

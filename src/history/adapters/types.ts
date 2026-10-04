@@ -34,7 +34,7 @@ export interface HistoryAdapter {
   processRecord(record: Record<string, unknown>, context: HistoryAdapterContext): void;
   extract(tool: string, input: unknown, result: unknown, visible: string, context: HistoryAdapterContext): ToolEvidence[];
   finalizeCall?(context: HistoryAdapterContext, call: PendingCall, event: HistoryEvent, result: unknown, visible: string, row: number, raw: string): boolean;
-  /** 只关联已解析来源，原始格式规则不散落到跨来源核心。 */
-  resolveRelationships?(source: ParsedSource, sources: readonly ParsedSource[]): { relationships: HistoryRelationship[]; gaps?: Gap[] };
+  /** 只关联已解析来源；矛盾证据可使原父声明失效，格式规则不散落到核心。 */
+  resolveRelationships?(source: ParsedSource, sources: readonly ParsedSource[]): { relationships: HistoryRelationship[]; gaps?: Gap[]; invalidateParent?: boolean };
   readEvidence(source: SourceReference): Promise<EvidenceRecord | undefined>;
 }

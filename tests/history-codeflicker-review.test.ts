@@ -52,10 +52,10 @@ test("read 隐藏长行截断不形成近似覆盖，完整前后行保持真实
   const natural = coverage(baseline(directory, observed), associated.events);
   assert.equal(natural.value.files[0]!.readExactLines, 2);
   const previous = structuredClone(parsed);
-  (previous.cursor as { ruleVersion: string }).ruleVersion = "5";
+  (previous.cursor as { ruleVersion: string }).ruleVersion = "6";
   previous.events[0]!.fragments = [{ kind: "read", content: observed, historicalStart: 1, completeLines: true, path: file }];
   const rebuilt = await parseSource(path, "codeflicker", previous);
-  assert.equal((rebuilt.cursor as { ruleVersion: string }).ruleVersion, "6");
+  assert.equal((rebuilt.cursor as { ruleVersion: string }).ruleVersion, "7");
   assert.equal((rebuilt.cursor as { parsedRecords: number }).parsedRecords, 2);
   assert.deepEqual(rebuilt.events[0]!.fragments, parsed.events[0]!.fragments);
 }));
@@ -131,6 +131,33 @@ test("原生成功 Agent 结果与同项目唯一子身份建立关系，保留�
   assert.equal(copied.gaps.length, 0);
 }));
 
+test("bash 固定多文件 sed 派生活动继承本次绝对执行目录并分别进入覆盖", async () => temporary(async directory => {
+  const path = join(directory, "session.jsonl");
+  const command = "sed -n '1,1p' a.ts\nsed -n '1,1p' b.ts";
+  await writeFile(path, encode([call("bundle", "bash", { command }), result("bundle", "bash", {
+    llmContent: `Command: ${command}\nDirectory: ${directory}\nStdout: alpha\nbeta\n\nStderr: (empty)\nError: (none)\nExit Code: 0`, truncated: false,
+  })]));
+  const parsed = await parseSource(path, "codeflicker");
+  assert.equal(parsed.events.length, 2);
+  assert.ok(parsed.events.every(event => event.cwd === directory));
+  assert.equal(parsed.cwd, undefined);
+  assert.equal((parsed.cursor as { cwd?: string }).cwd, undefined);
+  const base = baseline(directory, "alpha\n");
+  base.files.push({ path: "b.ts", category: "source", lineCount: 1, hash: "synthetic-b", content: "beta\n" });
+  const associated = await associateSource(parsed, base);
+  assert.deepEqual(associated.events.map(event => event.path), ["a.ts", "b.ts"]);
+  const mappings = associated.events.map(event => matchEvent(event, base.files.find(file => file.path === event.path)!));
+  const covered = buildCoverage({ repository: base.repository, version: "synthetic", baseline: base, sources: [], events: associated.events, mappings, gaps: [], createdAt: base.createdAt });
+  assert.deepEqual(covered.files.map(file => [file.path, file.readCount, file.readExactLines]), [["a.ts", 1, 1], ["b.ts", 1, 1]]);
+  const previous = structuredClone(parsed);
+  (previous.cursor as { ruleVersion: string }).ruleVersion = "6";
+  delete previous.events[1]!.cwd;
+  const rebuilt = await parseSource(path, "codeflicker", previous);
+  assert.equal((rebuilt.cursor as { ruleVersion: string; parsedRecords: number }).ruleVersion, "7");
+  assert.equal((rebuilt.cursor as { parsedRecords: number }).parsedRecords, 2);
+  assert.deepEqual(rebuilt.events, parsed.events);
+}));
+
 test("失败、未知、跨项目、身份不符及多父候选不能建立原生子关系", async () => temporary(async directory => {
   const parentText = await readFile(fixture("codeflicker-agent-parent.jsonl"), "utf8");
   const parentPath = join(directory, "parent.jsonl");
@@ -179,4 +206,30 @@ test("三个格式登记重构后保持既有事件 ID；顶层父关系字段�
       assert.equal(parsed.relationships[0]!.kind, field === "forked_from_id" ? "fork" : "subagent");
     }
   }
+}));
+
+test("显式父字段与成功 Agent 父证明矛盾时撤销当前父关系，保留原始声明与缺口", async () => temporary(async directory => {
+  const parentPath = join(directory, "parent.jsonl");
+  const secondPath = join(directory, "second.jsonl");
+  const childPath = join(directory, "agent-child-a.jsonl");
+  await writeFile(parentPath, await readFile(fixture("codeflicker-agent-parent.jsonl")));
+  await writeFile(secondPath, encode([message("second", "assistant", [], { sessionId: "second" })]));
+  const childRecords = (await readFile(fixture("agent-child-a.jsonl"), "utf8")).trim().split("\n").map(line => ({ ...JSON.parse(line), parentSessionId: "second" }));
+  await writeFile(childPath, encode(childRecords));
+  const sources = await Promise.all([parentPath, secondPath, childPath].map(path => parseSource(path, "codeflicker")));
+  const child = sources[2]!;
+  assert.equal(child.parentSessionId, "second");
+  assert.equal(child.events[0]!.parentSessionId, "second");
+  const relationshipOnly = { ...child, parentSessionId: undefined };
+  const fieldOnly = { ...child, relationships: [] };
+  for (const candidate of [child, relationshipOnly, fieldOnly]) {
+    const shared = resolveSharedHistory([sources[0]!, sources[1]!, candidate]);
+    assert.ok(shared.gaps.some(gap => gap.sourceId === child.sourceId && gap.kind === "ambiguous"));
+    assert.equal(shared.relationships.filter(item => item.sourceId === child.sourceId).length, 0);
+    assert.deepEqual(shared.invalidatedParentSourceIds, [child.sourceId]);
+    assert.equal(shared.events.find(event => event.sessionId === child.sessionId)!.parentSessionId, undefined);
+  }
+  assert.equal(child.parentSessionId, "second");
+  assert.equal(child.relationships[0]!.parentSessionId, "second");
+  assert.equal(child.events[0]!.parentSessionId, "second");
 }));

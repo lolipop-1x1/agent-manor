@@ -343,6 +343,9 @@ export function resolveSharedHistory(sources: ParsedSource[]): SharedHistoryResu
   const events = new Map<string, HistoryEvent>();
   const gaps: Gap[] = [];
   const relationships: SharedHistoryResult["relationships"] = [];
+  const resolvedSources = sources.map(source => ({ source,
+    resolution: historyAdapter(source.format ?? historyClient(source.client).format)?.resolveRelationships?.(source, sources) }));
+  const invalidatedParents = new Set(resolvedSources.filter(item => item.resolution?.invalidateParent).map(item => item.source.sourceId));
   const identities = new Map<ParsedSource, Map<string, string>>();
   function eventIdentity(source: ParsedSource, event: HistoryEvent): string | undefined {
     if (!identities.has(source)) {
@@ -350,10 +353,10 @@ export function resolveSharedHistory(sources: ParsedSource[]): SharedHistoryResu
     }
     return identities.get(source)!.get(event.id.replace(/:file:\d+$/, ""));
   }
-  for (const source of sources) {
+  for (const { source, resolution: resolvedRelationships } of resolvedSources) {
     const cursor = cursorOf(source);
-    const resolvedRelationships = historyAdapter(source.format ?? historyClient(source.client).format)?.resolveRelationships?.(source, sources);
-    const shared = [...((source as ParsedHistorySource).relationships ?? cursor?.relationships ?? []), ...(resolvedRelationships?.relationships ?? [])];
+    const invalidatedParent = invalidatedParents.has(source.sourceId);
+    const shared = invalidatedParent ? [] : [...((source as ParsedHistorySource).relationships ?? cursor?.relationships ?? []), ...(resolvedRelationships?.relationships ?? [])];
     gaps.push(...(resolvedRelationships?.gaps ?? []));
     const parentProofs: SourceReference[] = [];
     const relatedParents = new Set<string>();
@@ -387,12 +390,12 @@ export function resolveSharedHistory(sources: ParsedSource[]): SharedHistoryResu
       const identity = candidate ? eventIdentity(source, event) : undefined;
       const original = candidate?.identity && identity === candidate.identity ? candidate.event : undefined;
       if (candidate && !original) gaps.push({ kind: "ambiguous", sourceId: source.sourceId, message: "fork 记录内容相同但缺少可确认的原事件身份，未按文本去重" });
-      const related = relatedParents.size === 1 ? { ...event, parentSessionId: [...relatedParents][0],
+      const related = invalidatedParent ? { ...event, parentSessionId: undefined } : relatedParents.size === 1 ? { ...event, parentSessionId: [...relatedParents][0],
         sources: [...new Map([...event.sources, ...parentProofs].map(reference => [JSON.stringify(reference), reference])).values()] } : event;
       mergeEvent(events, original ? { ...related, id: original.id, sessionId: original.sessionId } : related, gaps);
     }
   }
-  return { events: [...events.values()], gaps, relationships };
+  return { events: [...events.values()], gaps, relationships, invalidatedParentSourceIds: [...invalidatedParents] };
 }
 
 function mergeEvent(events: Map<string, HistoryEvent>, event: HistoryEvent, gaps: Gap[]) {
