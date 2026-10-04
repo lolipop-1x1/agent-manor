@@ -209,7 +209,7 @@ tbody tr:hover, tbody tr.selected { background: var(--accent-soft); }
 .dropdown-separator { height: 1px; background: var(--border); margin: 5px; }
 .tooltip { max-width: 300px; padding: 8px 10px; color: var(--surface); background: var(--text); border-radius: 4px; font-size: 11px; line-height: 1.6; z-index: 30; overflow-wrap: anywhere; }
 .tooltip svg { fill: var(--text); }
-.source-summary { display: flex; justify-content: space-between; gap: 16px; margin: 22px 0; }
+.source-summary { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 16px; margin: 22px 0; }
 .source-summary strong { font-size: 27px; font-weight: 500; color: var(--accent); display: block; }
 .source-summary span { font-size: 11px; color: var(--muted); display: block; margin-top: 5px; }
 .source-list { max-height: 300px; overflow-y: auto; scrollbar-width: thin; }

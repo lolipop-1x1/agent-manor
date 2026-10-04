@@ -7,8 +7,10 @@ import { join } from "node:path";
 import { promisify } from "node:util";
 import test from "node:test";
 import type { CoverageResult, EvidenceResponse, EventsResponse, FileDetail, JobResponse, RegisterRepositoryResponse, SourcesResponse } from "../src/contracts.js";
+import { clientIds } from "../src/clients.js";
 import { startService } from "../src/server.js";
 import { apiRequest, delay, serviceUrl } from "../src/service/runtime.js";
+import { publishClientQueryFixture } from "./client-query-fixture.js";
 
 const run = promisify(execFile);
 const encode = (records: unknown[]) => records.map((record) => JSON.stringify(record) + "\n").join("");
@@ -37,7 +39,7 @@ async function fixture(runFixture: (context: { directory: string; repository: st
   const source = join(sources, "source.jsonl");
   await writeFile(source, history(repository));
   await writeFile(join(sources, "orphan.jsonl"), history(undefined, "orphan"));
-  const service = await startService({ home: join(directory, "data"), roots: { codex: sources, claude: [] }, staticRoot });
+  const service = await startService({ home: join(directory, "data"), roots: { codex: sources, claude: [], codeflicker: [] }, staticRoot });
   try {
     const register = await apiRequest<RegisterRepositoryResponse>(service.instance, "/repositories", "POST", { path: repository });
     await wait(service, register.job.id);
@@ -92,6 +94,48 @@ test("真实 HTTP 可查询并回读已删编辑、目录及无路径搜索，�
   assert.equal(outside.total, 0);
   const deleted = await apiRequest<EventsResponse>(service.instance, `${base}/events?version=${coverage.version}&path=src/deleted.ts`);
   assert.equal(deleted.total, 1);
+}));
+
+test("共享声明中的客户端均可查询，CodeFlicker 按同一版本筛选覆盖、文件、活动、来源与证据", async () => fixture(async ({ service, directory, repository }) => {
+  const snapshot = await publishClientQueryFixture(join(directory, "data"), repository, join(directory, "query-history"));
+  const base = `/repositories/${snapshot.repository.id}`;
+  for (const client of clientIds) {
+    const result = await apiRequest<CoverageResult>(service.instance, `${base}/coverage?version=${snapshot.version}&client=${client}`);
+    assert.equal(result.version, snapshot.version);
+    assert.equal(result.filters.client, client);
+  }
+  const key = `version=${snapshot.version}&client=codeflicker&directory=src`;
+  const coverage = await apiRequest<CoverageResult>(service.instance, `${base}/coverage?${key}`);
+  assert.deepEqual(coverage.summary.readExact, { files: 1, lines: 2 });
+  assert.deepEqual(coverage.summary.editExact, { files: 1, lines: 1 });
+  assert.equal(coverage.summary.fileCount, 2);
+  assert.equal(coverage.summary.lineCount, 3);
+  assert.equal(coverage.files.find(file => file.path === "src/b.ts")!.readCount, 0);
+  const file = await apiRequest<FileDetail>(service.instance, `${base}/file?path=src/a.ts&${key}`);
+  assert.equal(file.version, snapshot.version);
+  assert.equal(file.content, "alpha\nbeta\n");
+  assert.deepEqual(file.file.readExactRanges, [{ start: 1, end: 2 }]);
+  assert.ok(file.events.every(event => event.client === "codeflicker"));
+  const events = await apiRequest<EventsResponse>(service.instance, `${base}/events?${key}`);
+  assert.equal(events.version, snapshot.version);
+  assert.equal(events.total, 2);
+  assert.ok(events.events.every(event => event.client === "codeflicker"));
+  for (const event of events.events) {
+    const evidence = await apiRequest<EvidenceResponse>(service.instance, `${base}/evidence/${event.id}?${key}`);
+    assert.equal(evidence.version, snapshot.version);
+    assert.equal(evidence.event.client, "codeflicker");
+    assert.equal(evidence.records.length, 1);
+    assert.equal(evidence.unavailable.length, 0);
+    assert.equal(JSON.parse(evidence.records[0]!.raw).client, "codeflicker");
+  }
+  const sources = await apiRequest<SourcesResponse>(service.instance, `${base}/sources?${key}`);
+  assert.equal(sources.version, snapshot.version);
+  assert.equal(sources.sources.length, 1);
+  assert.equal(sources.sources[0]!.client, "codeflicker");
+  const claude = await apiRequest<CoverageResult>(service.instance, `${base}/coverage?version=${snapshot.version}&client=claude`);
+  assert.deepEqual(claude.summary.readExact, { files: 1, lines: 1 });
+  assert.deepEqual(claude.summary.editExact, { files: 0, lines: 0 });
+  await assert.rejects(apiRequest(service.instance, `${base}/evidence/claude-read?${key}`), error => error instanceof Error && "code" in error && error.code === "EVENT_NOT_FOUND");
 }));
 
 test("真实 HTTP 版本、筛选、文件与证据闭环；追加后原记录仍可回查", async () => fixture(async ({ service, register, source }) => {

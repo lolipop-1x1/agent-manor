@@ -2,22 +2,25 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { hierarchy } from "d3";
 import type { FileCoverage, FileDetail } from "../src/contracts.ts";
+import { clientIds } from "../src/clients.ts";
 import { queryString } from "../web/api.ts";
 import { boundQuery, directories, fileHighlights, mapTree, metricValue, timeFilters } from "../web/model.ts";
 
 const file = (path: string, lineCount: number): FileCoverage => ({ path, lineCount, category: "source", hash: "hash", readExactLines: 1, readNearLines: 1, editExactLines: 0, editNearLines: 0, readCount: 2, editCount: 0, searchCount: 0, failedCount: 0, unknownCount: 0, activityCount: 2, readExactRanges: [{ start: 1, end: 1 }], readNearRanges: [{ start: 2, end: 2 }], editExactRanges: [], editNearRanges: [] });
 
-test("文件与证据查询保留版本和原筛选，路径单独编码", () => {
-  const filters = { client: "claude" as const, from: "2026-10-01T00:00:00Z", to: "2026-10-02T23:59:59Z", categories: ["source", "config"] as const, directory: "src/a b" };
-  const query = boundQuery({ ...filters, categories: [...filters.categories] }, "version-1");
-  const params = new URLSearchParams(queryString(query, { path: "src/a b/a&b.ts" }));
-  assert.equal(params.get("version"), "version-1");
-  assert.equal(params.get("client"), "claude");
-  assert.equal(params.get("categories"), "source,config");
-  assert.equal(params.get("directory"), "src/a b");
-  assert.equal(params.get("path"), "src/a b/a&b.ts");
-  assert.equal(params.get("from"), filters.from);
-  assert.equal(params.get("to"), filters.to);
+test("全部已声明客户端的文件与证据查询保留版本和原筛选，路径单独编码", () => {
+  for (const client of clientIds) {
+    const filters = { client, from: "2026-10-01T00:00:00Z", to: "2026-10-02T23:59:59Z", categories: ["source", "config"] as const, directory: "src/a b" };
+    const query = boundQuery({ ...filters, categories: [...filters.categories] }, "version-1");
+    const params = new URLSearchParams(queryString(query, { path: "src/a b/a&b.ts" }));
+    assert.equal(params.get("version"), "version-1");
+    assert.equal(params.get("client"), client);
+    assert.equal(params.get("categories"), "source,config");
+    assert.equal(params.get("directory"), "src/a b");
+    assert.equal(params.get("path"), "src/a b/a&b.ts");
+    assert.equal(params.get("from"), filters.from);
+    assert.equal(params.get("to"), filters.to);
+  }
 });
 
 test("地图面积只来自行数，保留层级且不为零行文件制造面积", () => {
