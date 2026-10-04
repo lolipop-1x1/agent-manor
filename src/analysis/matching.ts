@@ -4,7 +4,7 @@ import type { BaselineFile, EvidenceFragment, HistoryEvent, LineRange, Mapping }
 import { hashContent, textLines } from "./baseline.js";
 import { mergeRanges, subtractRanges } from "./ranges.js";
 
-export const MATCHING_RULE_VERSION = "matching-v1";
+export const MATCHING_RULE_VERSION = "matching-v2";
 export const MATCHING_LIMITS = {
   maxFragmentCodePoints: 200_000,
   maxFragmentLines: 3_000,
@@ -265,6 +265,39 @@ function approximateCandidates(oldLines: string[], lines: string[], index: Map<s
   return [...candidates.values()];
 }
 
+/** 整块无法定位时，独立保留两侧有唯一内容锚点的未变子块，不扩展近似门槛。 */
+function unchangedBlocks(oldLines: string[], lines: string[], index: Map<string, number[]>, context: { before?: ContextAnchor; after?: ContextAnchor }): FragmentMatch {
+  const oldCounts = new Map<string, number>();
+  for (const line of oldLines) oldCounts.set(line, (oldCounts.get(line) ?? 0) + 1);
+  const unique = oldLines.map(line => oldCounts.get(line) === 1 && index.get(line)?.length === 1
+    && Array.from(line.trim()).length >= MATCHING_LIMITS.uniqueRunCodePoints);
+  const seen = new Set<number>();
+  const exact: LineRange[] = [];
+  let comparisons = 0;
+  for (let row = 0; row < oldLines.length; row++) {
+    if (!unique[row] || seen.has(row)) continue;
+    const currentRow = index.get(oldLines[row]!)![0]!;
+    let first = row;
+    let last = row;
+    while (first > 0 && currentRow - row + first > 0 && oldLines[first - 1] === lines[currentRow - row + first - 1]) {
+      if (++comparisons > MATCHING_LIMITS.maxExactComparisons) return { exact: mergeRanges(exact), near: [], reason: "budget_exceeded: 精确子块比较超限" };
+      first--;
+    }
+    while (last + 1 < oldLines.length && currentRow - row + last + 1 < lines.length && oldLines[last + 1] === lines[currentRow - row + last + 1]) {
+      if (++comparisons > MATCHING_LIMITS.maxExactComparisons) return { exact: mergeRanges(exact), near: [], reason: "budget_exceeded: 精确子块比较超限" };
+      last++;
+    }
+    // 重复短行不能靠某一次 diff 选位；只保留唯一锚点之间的完整相同内容。
+    while (!unique[first]) first++;
+    while (!unique[last]) last--;
+    const candidate = { start: currentRow - row + first, end: currentRow - row + last };
+    if (!respectsContext(candidate, context)) continue;
+    exact.push({ start: candidate.start + 1, end: candidate.end + 1 });
+    for (let oldRow = first; oldRow <= last; oldRow++) seen.add(oldRow);
+  }
+  return { exact: mergeRanges(exact), near: [], reason: seen.size < oldLines.length ? "range_unknown: 部分历史内容未能唯一精确对应当前子块" : undefined };
+}
+
 function matchFragment(fragment: EvidenceFragment, fragmentIndex: number, lines: string[], index: Map<string, number[]>, anchors: ContextAnchor[]): FragmentMatch {
   if (!fragment.completeLines) return { exact: [], near: [], reason: "range_unknown: 片段包含不完整行" };
   const oldLines = textLines(fragment.content);
@@ -302,6 +335,8 @@ function matchFragment(fragment: EvidenceFragment, fragmentIndex: number, lines:
   }
   if (accepted.length > 1) return { exact: [], near: [], reason: "ambiguous: 多个局部候选满足对应门槛" };
   if (accepted.length === 1) return accepted[0]!;
+  const unchanged = unchangedBlocks(oldLines, lines, index, context);
+  if (unchanged.exact.length) return unchanged;
   return { exact: [], near: [], reason: exceeded ? "budget_exceeded: 局部差异超限" : "range_unknown: 缺少唯一上下文或局部差异超过近似门槛" };
 }
 

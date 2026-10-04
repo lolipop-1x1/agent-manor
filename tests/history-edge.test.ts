@@ -125,6 +125,52 @@ test("空白读取与变化行按物理行保留，不把上下文计入新增",
   assert.equal(fragments.filter((fragment) => fragment.kind === "context").length, 1);
 });
 
+test("已知非工具状态记录不制造格式缺口，未知顶层记录显示具体类型", async () => temporary(async (directory) => {
+  const path = join(directory, "metadata.jsonl");
+  await writeFile(path, encode([meta(),
+    { type: "token_usage_record", payload: {} },
+    { type: "world_state", payload: {} },
+    { type: "inter_agent_communication_metadata", payload: {} },
+    { type: "synthetic-unsupported", payload: {} },
+    command(),
+  ]));
+  const parsed = await parseSource(path, "codex");
+  const gaps = parsed.gaps.filter(gap => gap.kind === "unsupported_format");
+  assert.equal(gaps.length, 1);
+  assert.match(gaps[0]!.message, /物理记录 5.*synthetic-unsupported/);
+  assert.equal(parsed.events.length, 1);
+  assert.equal(parsed.events[0]!.fragments[0]!.content, "alpha\n");
+}));
+
+test("固定范围多段 sed 完整返回时按顺序切分，缺行或截断不猜边界", async () => temporary(async (directory) => {
+  const path = join(directory, "bundle.jsonl");
+  const script = "sed -n '1,2p' tests/history.test.ts\nsed -n '7p' tests/history.test.ts\nsed -n '3,4p' src/history/index.ts";
+  const invocation = `/bin/zsh -lc "${script}"`;
+  await writeFile(path, encode([meta(), command({ command: ["/bin/zsh", "-lc", invocation], formatted_output: "one\ntwo\nseven\nthree\nfour\n" })]));
+  const parsed = await parseSource(path, "codex");
+  assert.equal(parsed.events.length, 3);
+  assert.deepEqual(parsed.events.map(event => [event.path, event.fragments[0]!.historicalStart, event.fragments[0]!.content]), [
+    ["tests/history.test.ts", 1, "one\ntwo\n"],
+    ["tests/history.test.ts", 7, "seven\n"],
+    ["src/history/index.ts", 3, "three\nfour\n"],
+  ]);
+  for (const output of ["one\ntwo\nseven\nthree\n", "one\ntwo\n...20 tokens truncated...\nthree\nfour\n"]) {
+    const evidence = shellEvidence(invocation, output);
+    assert.ok(evidence.every(part => part.fragments.length === 0));
+    assert.ok(evidence.every(part => part.reason?.startsWith("range_unknown:")));
+  }
+  assert.equal(shellEvidence("sed -n '1,2p' a.ts\ncat b.ts", "one\ntwo\nthree\n")[0]!.kind, "other");
+  assert.equal(shellEvidence("/bin/zsh -lc 'cat a.ts && cat b.ts'", "one\ntwo\n")[0]!.kind, "other");
+  await writeFile(path, encode([meta(),
+    { type: "response_item", payload: { type: "function_call", name: "exec_command", call_id: "bundle", arguments: JSON.stringify({ cmd: invocation, workdir: "/synthetic/repo" }) } },
+    command({ command: ["/bin/zsh", "-lc", invocation], formatted_output: "one\ntwo\nseven\nthree\nfour\n" }),
+    { type: "response_item", payload: { type: "function_call_output", call_id: "bundle", output: JSON.stringify({ output: "one\ntwo\nseven\nthree\nfour\n", exit_code: 0 }) } },
+  ]));
+  const paired = await parseSource(path, "codex");
+  assert.equal(paired.events.length, 3);
+  assert.ok(paired.events.every(event => event.tool === "CommandExecution" && event.sources.length === 3));
+}));
+
 test("发现嵌套归档、缺失默认根不报错，未知记录保留 unsupported_format", async () => temporary(async (directory) => {
   await mkdir(join(directory, "archived"));
   await mkdir(join(directory, "active", "year"), { recursive: true });

@@ -41,6 +41,26 @@ test("读取块内部插入行，只有历史原有行归精确", () => {
   assert.deepEqual(result.nearRanges, []);
 });
 
+test("历史块内部新增超过 32 行，仍保留唯一未变内容的精确对应", () => {
+  const old = "const firstKnownAnchor = true;\nconst lastKnownAnchor = true;\n";
+  const current = old.replace("const lastKnownAnchor", Array.from({ length: 33 }, (_, index) => `const inserted${index} = true;\n`).join("") + "const lastKnownAnchor");
+  for (const kind of ["read", "edit"] as const) {
+    const result = matchEvent(event([fragment(old, kind === "read" ? "read" : "added", 1)], kind), file(current));
+    assert.deepEqual(result.exactRanges, [{ start: 1, end: 1 }, { start: 35, end: 35 }]);
+    assert.deepEqual(result.nearRanges, []);
+  }
+});
+
+test("首尾变化后唯一内部子块仍精确，变化行与重复边界保持未知", () => {
+  const old = "const firstKnownAnchor = true;\n}\nconst middleKnownAnchor = true;\nconst lastKnownAnchor = true;\n";
+  const inserted = Array.from({ length: 33 }, (_, index) => `const inserted${index} = true;\n`).join("");
+  const current = "const changedFirstAnchor = false;\n}\n}\nconst middleKnownAnchor = true;\n" + inserted + "const changedLastAnchor = false;\n";
+  const result = matchEvent(event([fragment(old)]), file(current));
+  assert.deepEqual(result.exactRanges, [{ start: 4, end: 4 }]);
+  assert.deepEqual(result.nearRanges, []);
+  assert.match(result.unknownReason!, /^range_unknown:/);
+});
+
 test("单字符变化按局部行归近似，未变上下文保持精确", () => {
   const old = "const firstAnchor = true;\nconst value = 1;\nconst lastAnchor = true;\n";
   const current = old.replace("value = 1", "value = 2");

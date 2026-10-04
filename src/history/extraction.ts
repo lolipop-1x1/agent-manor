@@ -119,8 +119,42 @@ function visibleReadLines(content: string): { lineNumber: number; content: strin
   return lines;
 }
 
+/** 仅所有子命令都是固定行数的 sed 且完整返回达到总行数时，才按顺序切分。 */
+function fixedSedBundle(command: string, output: string): ToolEvidence[] | undefined {
+  const commands = command.trim().split(/\r?\n/);
+  if (commands.length < 2) return undefined;
+  const ranges: { path: string; start: number; count: number }[] = [];
+  for (const command of commands) {
+    const tokens = words(command);
+    if (tokens?.length !== 4 || tokens[0]!.split("/").at(-1) !== "sed" || tokens[1] !== "-n" || tokens[3]!.startsWith("-")) return undefined;
+    const range = /^(\d+)(?:,(\d+))?p$/.exec(tokens[2]!);
+    if (!range) return undefined;
+    const start = Number(range[1]);
+    const end = Number(range[2] ?? range[1]);
+    if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || start < 1 || end < start) return undefined;
+    ranges.push({ path: tokens[3]!, start, count: end - start + 1 });
+  }
+  const returned = returnedText(output);
+  const lines = physicalLines(returned.content);
+  if (returned.truncated || lines.length !== ranges.reduce((sum, range) => sum + range.count, 0)) {
+    return ranges.map(range => ({ kind: "read", path: range.path, fragments: [], reason: "range_unknown: 多段 sed 返回截断或行数不符，无法确认分段边界" }));
+  }
+  let offset = 0;
+  return ranges.map(range => {
+    const content = lines.slice(offset, offset + range.count).join("\n") + "\n";
+    offset += range.count;
+    return { kind: "read", path: range.path, fragments: [{ kind: "read", content, historicalStart: range.start, completeLines: true }] };
+  });
+}
+
 export function shellEvidence(command: string, output: string): ToolEvidence[] {
-  const tokens = words(command);
+  let tokens = words(command);
+  if (tokens?.length === 3 && ["sh", "bash", "zsh"].includes(tokens[0]!.split("/").at(-1)!) && ["-c", "-lc"].includes(tokens[1]!)) {
+    command = tokens[2]!;
+    tokens = words(command);
+  }
+  const bundle = fixedSedBundle(command, output);
+  if (bundle) return bundle;
   if (!tokens?.length) return [{ kind: "other", fragments: [], reason: "unsupported_tool: 复杂 Shell 语法未解析" }];
   const executable = tokens[0]!.split("/").at(-1)!;
   if (executable === "rg") {

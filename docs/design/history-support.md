@@ -1,6 +1,6 @@
 # 历史解析支持与证据边界
 
-规则版本：`PARSER_RULE_VERSION = "3"`，定义在 `src/version.ts`；旧规则游标重建。当前测试样本全部合成；格式结构参考本机只读取证笔记，本文不复制个人来源路径、日志或代码。格式兼容采用结构判断，不宣称整个客户端版本已验证。真实仓库端到端验收由交付阶段另外记录。
+规则版本：`PARSER_RULE_VERSION = "4"`，定义在 `src/version.ts`；旧规则游标重建。当前测试样本全部合成；格式结构参考本机只读取证笔记，本文不复制个人来源路径、日志或代码。格式兼容采用结构判断，不宣称整个客户端版本已验证。真实仓库端到端验收由交付阶段另外记录。
 
 ## 来源、身份与续读
 
@@ -27,6 +27,7 @@ fork 保存父 session、原始 ordinal 与 endByteOffset。ordinal 的准确客
 | Codex direct shell_command | JSON arguments 与文本 Exit code／Output 头 | 旧版结构实样核对；direct exec_command 按相同 shape 合成验证；缺终态保留 unknown |
 | Codex direct Read/Edit/Write | 结构化结果按直接工具 shape 提取 | 尚无对应本机 direct 实样；不能把普通返回文本当结构化读取范围 |
 | Codex apply_patch | 成功结果与 Add/Update/Delete File 内容 | 可提取变化，非标准 hunk 缺少可靠历史行号时保持未知；失败不产生片段 |
+| Codex `token_usage_record`／`world_state`／`inter_agent_communication_metadata` | 已知非工具元数据跳过 | 真实关联来源中核对为用量、状态和通信元数据；不含读写证据，不制造格式缺口；未知顶层类型继续保留缺口并显示类型名 |
 | Claude Read | 实际 file.content/startLine/numLines/totalLines 与编号文本校验 | 结构实样核对；is_error 可省略但需要结构化成功结果；字段矛盾不产生覆盖片段；可确认的 SDK 虚拟 EOF 空行排除覆盖 |
 | Claude Edit | structuredPatch 的变化行与上下文 | 结构实样核对，纯删除保留活动；无结构化位置时只保留变化内容，不虚构历史行号 |
 | Claude Write create/overwrite | create 的内容，overwrite 的 originalFile/content 差异 | create 结构实样核对；overwrite 合成验证；未确认新建或旧内容则范围未知 |
@@ -42,6 +43,7 @@ fork 保存父 session、原始 ordinal 与 endByteOffset。ordinal 的准确客
 | `cat file` | 成功实际返回，历史起始行 1 |
 | `cat file1 file2` | 保留各文件活动；无输出边界，不生成读取片段 |
 | `sed -n 'a,bp' file`／`sed -n 'ap' file` | 只支持正整数选择器，返回行数不得超过所选范围 |
+| 多行脚本内仅有上述固定范围 `sed`，可外包一层 `sh/bash/zsh -c/-lc` | 成功、无截断且实际总行数等于所有范围长度之和时，按命令顺序确定切分；缺行、混入其他命令或截断不补齐；不执行脚本 |
 | `head -n N file`／`head -N file` | 起始行 1；仅完整实际返回行，不超过 N |
 | `tail -n N file`／`tail -N file` | 保存返回内容用于匹配，历史起始行未知；不使用当前文件行数反推 |
 | `tail -n +N file` | 起始行 N |
@@ -55,7 +57,7 @@ fork 保存父 session、原始 ordinal 与 endByteOffset。ordinal 的准确客
 
 Claude SDK 部分完整 Read 用 `content.split("\n")` 计数，尾换行会生成额外编号 EOF 空行。只在结构化内容尾 LF、`numLines = 物理行数 + 1`、实际编号输出逐行连续且与结构化内容一致、最后编号等于 `totalLines` 且内容为空时确认这个虚拟末行。片段保留原始结构化源码，因此覆盖只包含物理行；真实的末尾空白行仍保留。缺失可见末行、非 EOF、末行有内容或计数字段矛盾时继续保留范围未知。无尾 LF 和既有物理行计数形式继续支持。
 
-新版命令事件中的多段 `nl ... && nl ...` 即使呈现多个编号段，也继续按复杂 Shell 缺口处理；本轮没有为多段输出增加猜测性归属规则。单个新版命令的结构、file URI cwd 和编号内容已有合成回归验证。
+新版命令事件中的多段 `nl ... && nl ...` 即使呈现多个编号段，也继续按复杂 Shell 缺口处理。多段读取仅新增上述固定范围 `sed` 的严格切分：其可输出行数各有上界，只有总返回达到所有上界之和才能确定边界；任一片段不足或存在截断，整组读取范围保持未知。单个新版命令的结构、file URI cwd 和编号内容已有合成回归验证。
 
 本轮额外只读核对两个真实 Claude 来源的全部 6 个 Read：全部获得与实际内容相同的物理行片段；两个完整返回的 SDK 计数分别为 185／362，覆盖片段分别保留 184／361 个物理行，未包含虚拟 EOF 行。120 行的无尾 LF 局部返回仍正常支持。这个来源级回读统计不等同于本项目 Claude 端到端验收，也不扩展未知客户端格式的支持声明。
 

@@ -163,12 +163,13 @@ export async function parseSource(path: string, client: Client, previous?: Parse
         && string((Array.isArray(object(candidate.input).command) ? object(candidate.input).command as unknown[] : []).at(-1)) === requested
         && candidate.cwd === event.cwd
         && returnedText(string(object(candidate.output).formatted_output) ?? "").content === returnedText(visible).content);
-      if (concrete.length === 1) {
-        concrete[0]!.sources.push(...event.sources);
+      const identities = new Set(concrete.map(candidate => candidate.id.replace(/:file:\d+$/, "")));
+      if (identities.size === 1) {
+        for (const candidate of concrete) candidate.sources.push(...event.sources);
         source.events = source.events.filter((candidate) => candidate.id !== event.id);
         return;
       }
-      if (concrete.length > 1) gap("ambiguous", "直接调用与具体命令事件存在多个对应候选，未合并身份");
+      if (identities.size > 1) gap("ambiguous", "直接调用与具体命令事件存在多个对应候选，未合并身份");
     }
     let extracted = toolEvidence(call.tool, call.input, result, visible);
     if (call.tool === "apply_patch") extracted = patchEvidence(string(call.input) ?? string(object(call.input).patch) ?? "");
@@ -354,9 +355,11 @@ export async function parseSource(path: string, client: Client, previous?: Parse
         }
       });
     }
-    const supportedRecords = client === "codex" ? ["session_meta", "turn_context", "event_msg", "response_item", "compacted", "compaction"]
+    // 已知非工具记录不影响源码证据；未知类型仍保留可定位的缺口。
+    const supportedRecords = client === "codex" ? ["session_meta", "turn_context", "event_msg", "response_item", "compacted", "compaction", "token_usage_record", "world_state", "inter_agent_communication_metadata"]
       : ["assistant", "user", "system", "progress", "summary", "file-history-snapshot", "file-history-delta", "attachment", "mode", "permission-mode", "last-prompt", "queue-operation"];
-    if (!supportedRecords.includes(string(record.type) ?? "")) gap("unsupported_format", `物理记录 ${row} 的顶层类型尚未适配`);
+    const recordType = string(record.type) ?? "<缺少类型>";
+    if (!supportedRecords.includes(recordType)) gap("unsupported_format", `物理记录 ${row} 的顶层类型 ${recordType} 尚未适配`);
   }
   cursor.completeBytes = position;
   cursor.prefixHash = hash(bytes.subarray(0, position));
