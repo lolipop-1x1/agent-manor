@@ -40,6 +40,7 @@ Status: claimed
 
 - 2026-10-05：02 完成客户端声明与格式适配边界；[客户端接口](../../src/clients.ts)、[格式接口与内置注册](../../src/history/adapters/index.ts) 供 03 / 04 扩展。Codex / Claude 解析身份与证据保持基线一致，历史与索引 60 项回归通过；CodeFlicker 具体格式和端到端验收由后续任务完成。
 - 2026-10-05：04 完成 [API 校验](../../src/service/input.ts)、[CLI](../../src/cli.ts) 与 [Web](../../web/App.tsx) 的共享客户端声明接入，并更新 [使用指南](../../docs/usage.md) 和 [查询 Skill](../../skills/agent-manor/SKILL.md)。查询入口与 Web 模型／请求 17 项回归、server／web 检查通过；原生格式和真实 Web／安装包闭环继续由 03／05 验收。
+- 2026-10-05：03 完成 [原生 CodeFlicker 适配器](../../src/history/adapters/codeflicker.ts)、来源过滤及匿名测试；原生＋适配接口 16 项测试与 server 类型检查通过。真实代表来源 726 记录／113 调用与独立计数一致，18 read／9 write／7 edit 获得片段；成功模板来自实际 CLI 执行器，未知结果和不确定父关系保留缺口。[支持矩阵与内置 Agent 接入指南](../../docs/design/history-support.md) 已更新；端到端与全量性能由 05 继续验收。
 
 ## 待澄清问题
 
