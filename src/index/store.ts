@@ -31,6 +31,8 @@ export interface PublishInput {
 
 interface JsonRow { json: string }
 interface RepositoryRow { json: string; version: string | null; stale: number }
+type PayloadKind = "snapshot" | "sources" | "parsed";
+const PART_SIZE = 1024 * 1024;
 
 /** 查询只读取完整已发布版本；可复用缓存与版本发布在同一事务提交。 */
 export class AnalysisStore {
@@ -49,8 +51,8 @@ export class AnalysisStore {
 
   private migrate(): void {
     const version = this.database.pragma("user_version", { simple: true }) as number;
-    if (version > 2) throw new Error(`不支持的索引版本 ${version}`);
-    if (version === 2) return;
+    if (version > 3) throw new Error(`不支持的索引版本 ${version}`);
+    if (version === 3) return;
     this.database.transaction(() => {
       if (version === 0) this.database.exec(`
         CREATE TABLE repositories (id TEXT PRIMARY KEY, json TEXT NOT NULL, version TEXT, stale INTEGER NOT NULL);
@@ -62,15 +64,75 @@ export class AnalysisStore {
         CREATE TABLE mapping_cache (repository_id TEXT NOT NULL REFERENCES repositories(id), key TEXT NOT NULL, json TEXT NOT NULL, PRIMARY KEY(repository_id, key));
         PRAGMA user_version = 1;
       `);
-      this.database.exec("CREATE TABLE tracked_sources (repository_id TEXT NOT NULL REFERENCES repositories(id), source_id TEXT NOT NULL, json TEXT NOT NULL, PRIMARY KEY(repository_id, source_id));");
-      const save = this.database.prepare("INSERT OR REPLACE INTO tracked_sources(repository_id,source_id,json) VALUES(?,?,?)");
-      const rows = this.database.prepare("SELECT versions.snapshot AS json FROM versions JOIN repositories ON versions.repository_id=repositories.id AND versions.version=repositories.version").all() as JsonRow[];
-      for (const row of rows) {
-        const snapshot = JSON.parse(row.json) as AnalysisSnapshot;
-        for (const source of snapshot.sources) save.run(snapshot.repository.id, source.sourceId, JSON.stringify(this.sourceMetadata(source)));
+      if (version < 2) {
+        this.database.exec("CREATE TABLE tracked_sources (repository_id TEXT NOT NULL REFERENCES repositories(id), source_id TEXT NOT NULL, json TEXT NOT NULL, PRIMARY KEY(repository_id, source_id));");
+        const save = this.database.prepare("INSERT OR REPLACE INTO tracked_sources(repository_id,source_id,json) VALUES(?,?,?)");
+        const rows = this.database.prepare("SELECT versions.snapshot AS json FROM versions JOIN repositories ON versions.repository_id=repositories.id AND versions.version=repositories.version").all() as JsonRow[];
+        for (const row of rows) {
+          const snapshot = JSON.parse(row.json) as AnalysisSnapshot;
+          for (const source of snapshot.sources) save.run(snapshot.repository.id, source.sourceId, JSON.stringify(this.sourceMetadata(source)));
+        }
       }
-      this.database.pragma("user_version = 2");
+      this.database.exec("CREATE TABLE payload_parts (repository_id TEXT NOT NULL REFERENCES repositories(id), kind TEXT NOT NULL, owner TEXT NOT NULL, field TEXT NOT NULL, part INTEGER NOT NULL, json TEXT NOT NULL, PRIMARY KEY(repository_id,kind,owner,field,part));");
+      this.database.pragma("user_version = 3");
     })();
+  }
+
+  /** 大集合逐项编码，读回也逐块恢复，不拼接整版 JSON 字符串。 */
+  private writePayload(value: object, repositoryId: string, kind: PayloadKind, owner: string, fields: string[]): string {
+    const header = { ...value } as Record<string, unknown>;
+    const save = this.database.prepare("INSERT INTO payload_parts(repository_id,kind,owner,field,part,json) VALUES(?,?,?,?,?,?)");
+    for (const field of fields) {
+      const path = field.split(".");
+      let target = header;
+      for (const key of path.slice(0, -1)) {
+        if (!target[key] || typeof target[key] !== "object") break;
+        target[key] = { ...target[key] as object };
+        target = target[key] as Record<string, unknown>;
+      }
+      const key = path.at(-1)!;
+      const collection = target[key];
+      if (!collection || typeof collection !== "object") continue;
+      const array = Array.isArray(collection);
+      target[key] = array ? [] : {};
+      let parts: string[] = [];
+      let size = 0;
+      let part = 0;
+      const flush = () => {
+        if (!parts.length) return;
+        save.run(repositoryId, kind, owner, field, part++, (array ? "[" : "{") + parts.join(",") + (array ? "]" : "}"));
+        parts = [];
+        size = 0;
+      };
+      for (const itemKey of Object.keys(collection)) {
+        const encoded = JSON.stringify((collection as Record<string, unknown>)[itemKey]);
+        if (encoded === undefined && !array) continue;
+        const item = array ? encoded ?? "null" : JSON.stringify(itemKey) + ":" + encoded;
+        if (size + item.length > PART_SIZE) flush();
+        parts.push(item);
+        size += item.length + 1;
+      }
+      flush();
+    }
+    return JSON.stringify({ partsFormat: 3, value: header });
+  }
+
+  private readPayload<T>(json: string, repositoryId: string, kind: PayloadKind, owner: string): T {
+    const decoded = JSON.parse(json) as { partsFormat?: number; value: Record<string, unknown> };
+    if (decoded.partsFormat !== 3) return decoded as T;
+    const rows = this.database.prepare("SELECT field,json FROM payload_parts WHERE repository_id=? AND kind=? AND owner=? ORDER BY field,part")
+      .iterate(repositoryId, kind, owner) as Iterable<{ field: string; json: string }>;
+    for (const row of rows) {
+      const path = row.field.split(".");
+      let target = decoded.value;
+      for (const key of path.slice(0, -1)) target = target[key] as Record<string, unknown>;
+      const collection = target[path.at(-1)!];
+      const part = JSON.parse(row.json) as unknown[] | Record<string, unknown>;
+      if (Array.isArray(collection) && Array.isArray(part)) {
+        for (const item of part) collection.push(item);
+      } else Object.assign(collection as object, part);
+    }
+    return decoded.value as T;
   }
 
   private sourceMetadata(source: HistorySource): HistorySource {
@@ -107,17 +169,19 @@ export class AnalysisStore {
     const row = this.database.prepare("SELECT snapshot AS json FROM versions WHERE repository_id=? AND version=?")
       .get(repositoryId, selected) as JsonRow | undefined;
     if (!row) throw new StoreError("VERSION_NOT_FOUND", "分析结果版本不存在");
-    const snapshot = JSON.parse(row.json) as AnalysisSnapshot;
+    const snapshot = this.readPayload<AnalysisSnapshot>(row.json, repositoryId, "snapshot", selected);
+    snapshot.sources = snapshot.sources.map((source) => this.sourceMetadata(source));
     snapshot.repository.stale = repository.stale || selected !== repository.version;
     snapshot.baseline.repository = { ...snapshot.repository };
     return snapshot;
   }
 
   listSources(repositoryId: string, version?: string): SourcesResponse {
-    const snapshot = this.getSnapshot(repositoryId, version);
+    const selected = this.selectVersion(repositoryId, version);
     const row = this.database.prepare("SELECT sources AS json FROM versions WHERE repository_id=? AND version=?")
-      .get(repositoryId, snapshot.version) as JsonRow;
-    return JSON.parse(row.json) as SourcesResponse;
+      .get(repositoryId, selected) as JsonRow | undefined;
+    if (!row) throw new StoreError("VERSION_NOT_FOUND", "分析结果版本不存在");
+    return this.readPayload<SourcesResponse>(row.json, repositoryId, "sources", selected);
   }
 
   associateSource(repositoryId: string, sourceId: string): void {
@@ -137,8 +201,9 @@ export class AnalysisStore {
   }
 
   getParsedSources(repositoryId: string): ParsedSource[] {
-    return (this.database.prepare("SELECT json FROM source_cache WHERE repository_id=? ORDER BY path")
-      .all(repositoryId) as JsonRow[]).map((row) => JSON.parse(row.json) as ParsedSource);
+    const rows = this.database.prepare("SELECT source_id,path,json FROM source_cache WHERE repository_id=? ORDER BY path")
+      .iterate(repositoryId) as Iterable<JsonRow & { source_id: string; path: string }>;
+    return Array.from(rows, (row) => this.readPayload<ParsedSource>(row.json, repositoryId, "parsed", JSON.stringify([row.source_id, row.path])));
   }
 
   getTrackedSources(repositoryId: string): HistorySource[] {
@@ -153,10 +218,18 @@ export class AnalysisStore {
   }
 
   getRefreshStats(repositoryId: string, version?: string): RefreshStats {
-    const snapshot = this.getSnapshot(repositoryId, version);
+    const selected = this.selectVersion(repositoryId, version);
     const row = this.database.prepare("SELECT stats AS json FROM versions WHERE repository_id=? AND version=?")
-      .get(repositoryId, snapshot.version) as JsonRow;
+      .get(repositoryId, selected) as JsonRow | undefined;
+    if (!row) throw new StoreError("VERSION_NOT_FOUND", "分析结果版本不存在");
     return JSON.parse(row.json) as RefreshStats;
+  }
+
+  private selectVersion(repositoryId: string, version?: string): string {
+    const selected = version ?? this.getRepository(repositoryId).version;
+    if (!selected) throw new StoreError("ANALYSIS_NOT_READY", "仓库尚无完整分析结果");
+    this.getRepository(repositoryId);
+    return selected;
   }
 
   createJob(repositoryId: string): Job {
@@ -201,16 +274,23 @@ export class AnalysisStore {
   publish(input: PublishInput): void {
     this.database.transaction(() => {
       const { snapshot } = input;
+      const repositoryId = snapshot.repository.id;
+      const savedSnapshot = { ...snapshot, sources: snapshot.sources.map((source) => this.sourceMetadata(source)) };
       // 相同 version 不允许覆盖，旧证据与创建时间保持不可变。
       this.database.prepare("INSERT INTO versions(repository_id,version,snapshot,sources,stats) VALUES(?,?,?,?,?)")
-        .run(snapshot.repository.id, snapshot.version, JSON.stringify(snapshot), JSON.stringify(input.sources), JSON.stringify(input.stats));
+        .run(repositoryId, snapshot.version,
+          this.writePayload(savedSnapshot, repositoryId, "snapshot", snapshot.version, ["baseline.files", "baseline.excluded", "sources", "events", "mappings", "gaps"]),
+          this.writePayload(input.sources, repositoryId, "sources", snapshot.version, ["sources", "unassociated", "gaps"]), JSON.stringify(input.stats));
       if (input.clearCache) {
         this.database.prepare("DELETE FROM mapping_cache WHERE repository_id=?").run(snapshot.repository.id);
       }
       const saveSource = this.database.prepare("INSERT OR REPLACE INTO source_cache(repository_id,source_id,path,json) VALUES(?,?,?,?)");
       // 清理移动、替换和缺失来源的旧游标；当前来源才参与下一轮续读。
       this.database.prepare("DELETE FROM source_cache WHERE repository_id=?").run(snapshot.repository.id);
-      for (const source of input.parsed) saveSource.run(snapshot.repository.id, source.sourceId, source.path, JSON.stringify(source));
+      this.database.prepare("DELETE FROM payload_parts WHERE repository_id=? AND kind='parsed'").run(repositoryId);
+      for (const source of input.parsed) saveSource.run(repositoryId, source.sourceId, source.path,
+        this.writePayload(source, repositoryId, "parsed", JSON.stringify([source.sourceId, source.path]),
+          ["events", "gaps", "relationships", "cursor.pending", "cursor.recordEnds", "cursor.relationships", "cursor.seen", "cursor.occurrences"]));
       const trackSource = this.database.prepare("INSERT OR REPLACE INTO tracked_sources(repository_id,source_id,json) VALUES(?,?,?)");
       for (const source of snapshot.sources) trackSource.run(snapshot.repository.id, source.sourceId, JSON.stringify(this.sourceMetadata(source)));
       const saveMapping = this.database.prepare("INSERT OR REPLACE INTO mapping_cache(repository_id,key,json) VALUES(?,?,?)");

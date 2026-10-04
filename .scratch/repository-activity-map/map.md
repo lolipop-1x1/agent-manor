@@ -32,6 +32,8 @@ Status: resolved
 
 ## 已作决策
 
+- 2026-10-04：[首版逐项端到端验收与问题修复](issues/11-e2e-complete.md) 已完成。实际安装包 18 组 CLI/HTTP、真实浏览器交互和独立 Skill 查询链通过；大历史聚合溢出、弹窗焦点与窄屏入口名称已修复，89/89 回归、类型与构建通过。默认约 3.31 GB 历史关联到三实际仓库发布成功，大来源缓存重复刷新语义一致；矩阵与边界见 [端到端验收](../../docs/validation/e2e.md)。本轮直接在 main 开发。
+
 - 2026-10-04：首版实现与最终两轴审查已完成；两项规格 P2 在提交 `cd6d8c7` 修复，以 `1846f07` 合入。类型检查、构建与 87 项全量测试通过，包含真实 npm 包外安装。规格标为 resolved，结果见[审查记录](../../docs/validation/review.md)与[验收记录](../../docs/validation/acceptance.md)。原型分支保留；未公开发包，Windows/Linux 安装仍未验收。
 
 - 2026-10-04：[npm 交付与 Agent 查询 Skill](issues/08-delivery-skill.md) 已合并，合并提交 `0a4286ef99d061f0ce26c50d2a14ebcac82050a9`；macOS arm64 真实 tarball 包外安装、npm bin／Worker／Web／SQLite 与独立 Agent 的 Skill 查询证据闭环通过，同树类型检查、构建及 83 项测试通过。08 已完成，可进入 09 的最终集成验收与审查；授权扩展的 CLI 入口修复与文档白名单范围见票据 Answer。

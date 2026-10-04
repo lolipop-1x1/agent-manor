@@ -59,7 +59,7 @@ test("SQLite迁移与WAL；登记、完整版本和手动关联重开后保留",
     assert.equal(second.getSnapshot(repositoryId).events.length, 2);
     const database = new Database(second.dbPath);
     assert.equal(database.pragma("journal_mode", { simple: true }), "wal");
-    assert.equal(database.pragma("user_version", { simple: true }), 2);
+    assert.equal(database.pragma("user_version", { simple: true }), 3);
     database.close();
   } finally { second.close(); }
 }));
@@ -152,7 +152,7 @@ test("截断、同大小替换和解析规则变化重算受影响来源", async
   await refresh();
   assert.equal(store.getRefreshStats(repositoryId).parsedRecords, 3);
   const database = new Database(store.dbPath);
-  database.exec("UPDATE source_cache SET json=json_set(json,'$.cursor.ruleVersion','obsolete')");
+  database.exec("UPDATE source_cache SET json=json_set(json,'$.value.cursor.ruleVersion','obsolete')");
   database.close();
   await refresh();
   assert.equal(store.getRefreshStats(repositoryId).parsedRecords, 3);
@@ -186,6 +186,7 @@ test("事务发布失败不泄漏新版、缓存或完成任务；已有version�
   const first = await refresh();
   await appendFile(sourcePath, encode([call(repositoryPath, "second"), output("second")]));
   const database = new Database(store.dbPath);
+  const partsBefore = database.prepare("SELECT kind,owner,field,part,json FROM payload_parts ORDER BY kind,owner,field,part").all();
   database.exec("CREATE TRIGGER reject_publish BEFORE UPDATE OF version ON repositories BEGIN SELECT RAISE(ABORT,'synthetic publish failure'); END;");
   const job = store.createJob(repositoryId);
   await refreshRepository(store, job.id, { codex: join(sourcePath, ".."), claude: [] });
@@ -194,6 +195,7 @@ test("事务发布失败不泄漏新版、缓存或完成任务；已有version�
   assert.equal(store.getSnapshot(repositoryId).events.length, 1);
   assert.equal(store.getParsedSources(repositoryId)[0]!.events.length, 1);
   assert.equal((database.prepare("SELECT count(*) AS count FROM versions").get() as { count: number }).count, 1);
+  assert.deepEqual(database.prepare("SELECT kind,owner,field,part,json FROM payload_parts ORDER BY kind,owner,field,part").all(), partsBefore);
   database.exec("DROP TRIGGER reject_publish");
   const snapshot = store.getSnapshot(repositoryId);
   const duplicateJob = store.createJob(repositoryId);
@@ -203,6 +205,44 @@ test("事务发布失败不泄漏新版、缓存或完成任务；已有version�
   database.close();
   await refresh();
   assert.equal(store.getSnapshot(repositoryId).events.length, 2);
+}));
+
+test("大结果分块发布，来源汇总与解析游标完整往返，重开和清缓存保留旧版", async () => fixture(async ({ directory, repositoryPath, sourcePath, store, repositoryId, refresh }) => {
+  await writeFile(sourcePath, encode([meta(repositoryPath), call(repositoryPath, "first"), output("first")]));
+  await refresh();
+  const snapshot = store.getSnapshot(repositoryId);
+  const parsed = store.getParsedSources(repositoryId);
+  snapshot.version = "large-synthetic-version";
+  snapshot.events = Array.from({ length: 80 }, (_, index) => ({ ...snapshot.events[0]!, id: `large-${index}`, output: "证据".repeat(4096) }));
+  parsed[0]!.events = snapshot.events;
+  parsed[0]!.cursor = { pending: [], recordEnds: Array.from({ length: 30000 }, (_, index) => index),
+    seen: Object.fromEntries(Array.from({ length: 10000 }, (_, index) => [`request:${index}`, `event:${index}`])), occurrences: {}, relationships: [] };
+  const sources = store.listSources(repositoryId);
+  sources.version = snapshot.version;
+  sources.gaps = Array.from({ length: 80 }, () => ({ kind: "range_unknown", message: "范围".repeat(4096) }));
+  const job = store.createJob(repositoryId);
+  const stringify = JSON.stringify;
+  // 缩小字符串上限复现聚合溢出，避免回归测试为此分配半 GB 以上内存。
+  JSON.stringify = ((...args: Parameters<typeof JSON.stringify>) => {
+    const value = stringify(...args);
+    if (value && value.length > 128 * 1024) throw new RangeError("Invalid string length (synthetic limit)");
+    return value;
+  }) as typeof JSON.stringify;
+  try {
+    store.publish({ snapshot, sources, parsed, mappings: [], stats: { sourcesParsed: 1, parsedRecords: 0, mappingsComputed: 0, mappingsReused: 0 }, clearCache: true, jobId: job.id });
+  } finally { JSON.stringify = stringify; }
+  const reopened = new AnalysisStore(join(directory, "index.sqlite"));
+  try {
+    assert.deepEqual(reopened.getSnapshot(repositoryId).events, snapshot.events);
+    assert.ok(reopened.getSnapshot(repositoryId).sources.every((source) => !("events" in source) && !("cursor" in source)));
+    assert.deepEqual(reopened.listSources(repositoryId), sources);
+    assert.deepEqual(reopened.getParsedSources(repositoryId), parsed);
+    const version = snapshot.version;
+    await refresh(true);
+    assert.equal(reopened.getParsedSources(repositoryId)[0]!.events.length, 1);
+    assert.deepEqual(reopened.getSnapshot(repositoryId, version).events, snapshot.events);
+    assert.deepEqual(reopened.listSources(repositoryId, version), sources);
+  } finally { reopened.close(); }
 }));
 
 test("先解析fork父来源再逐事件关联；初始cwd和manual都不能混入外部活动", async () => fixture(async ({ repositoryPath, history, sourcePath, store, repositoryId, refresh }) => {
@@ -242,12 +282,42 @@ test("从SQLite v1迁移补来源登记，缺失状态不会因升级丢失", as
   await writeFile(sourcePath, encode([meta(repositoryPath), call(repositoryPath, "first"), output("first")]));
   await refresh();
   const database = new Database(store.dbPath);
-  database.exec("DROP TABLE tracked_sources; PRAGMA user_version=1;");
+  // 还原旧版实际存储格式，避免把新版分块格式伪装成 v1。
+  database.prepare("UPDATE versions SET snapshot=?,sources=?").run(JSON.stringify(store.getSnapshot(repositoryId)), JSON.stringify(store.listSources(repositoryId)));
+  for (const source of store.getParsedSources(repositoryId)) database.prepare("UPDATE source_cache SET json=? WHERE source_id=?").run(JSON.stringify(source), source.sourceId);
+  database.exec("DROP TABLE payload_parts; DROP TABLE tracked_sources; PRAGMA user_version=1;");
   database.close();
   const upgraded = new AnalysisStore(join(directory, "index.sqlite"));
   try {
     assert.equal(upgraded.getTrackedSources(repositoryId).length, 1);
     assert.ok(!("events" in upgraded.getTrackedSources(repositoryId)[0]!));
     assert.equal(upgraded.getSnapshot(repositoryId).events.length, 1);
+  } finally { upgraded.close(); }
+}));
+
+test("SQLite v2旧JSON版本与解析缓存升级后可查询并续读", async () => fixture(async ({ directory, repositoryPath, sourcePath, store, repositoryId, refresh }) => {
+  await writeFile(sourcePath, encode([meta(repositoryPath), call(repositoryPath, "first"), output("first")]));
+  const oldVersion = await refresh();
+  const snapshot = store.getSnapshot(repositoryId);
+  const sources = store.listSources(repositoryId);
+  const parsed = store.getParsedSources(repositoryId);
+  const database = new Database(store.dbPath);
+  database.prepare("UPDATE versions SET snapshot=?,sources=?").run(JSON.stringify({ ...snapshot, sources: parsed }), JSON.stringify(sources));
+  for (const source of parsed) database.prepare("UPDATE source_cache SET json=? WHERE source_id=?").run(JSON.stringify(source), source.sourceId);
+  database.exec("DROP TABLE payload_parts; PRAGMA user_version=2;");
+  database.close();
+  const upgraded = new AnalysisStore(join(directory, "index.sqlite"));
+  try {
+    assert.deepEqual(upgraded.getParsedSources(repositoryId), parsed);
+    assert.deepEqual(upgraded.listSources(repositoryId), sources);
+    assert.deepEqual(upgraded.getSnapshot(repositoryId).events, snapshot.events);
+    assert.ok(upgraded.getSnapshot(repositoryId).sources.every((source) => !("events" in source)));
+    await appendFile(sourcePath, encode([call(repositoryPath, "second"), output("second")]));
+    const job = upgraded.createJob(repositoryId);
+    await refreshRepository(upgraded, job.id, { codex: join(sourcePath, ".."), claude: [] });
+    assert.equal(upgraded.getJob(job.id).status, "completed", upgraded.getJob(job.id).error);
+    assert.equal(upgraded.getRefreshStats(repositoryId).parsedRecords, 2);
+    assert.equal(upgraded.getSnapshot(repositoryId).events.length, 2);
+    assert.equal(upgraded.getSnapshot(repositoryId, oldVersion).events.length, 1);
   } finally { upgraded.close(); }
 }));

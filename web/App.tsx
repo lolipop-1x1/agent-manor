@@ -1,4 +1,4 @@
-import { lazy, Suspense, useCallback, useEffect, useMemo, useState, type FormEvent, type ReactNode } from "react";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode, type RefObject } from "react";
 import * as Dialog from "@radix-ui/react-dialog";
 import * as Dropdown from "@radix-ui/react-dropdown-menu";
 import * as Tooltip from "@radix-ui/react-tooltip";
@@ -21,10 +21,16 @@ function Empty({ title, children, action }: { title: string; children: ReactNode
   return <div className="empty-state"><MapTrifold size={32} /><h2>{title}</h2><p>{children}</p>{action}</div>;
 }
 
-function Modal({ open, onOpenChange, title, description, children, wide = false }: {
-  open: boolean; onOpenChange: (open: boolean) => void; title: string; description: string; children: ReactNode; wide?: boolean;
+function Modal({ open, onOpenChange, title, description, children, wide = false, fallbackFocus }: {
+  open: boolean; onOpenChange: (open: boolean) => void; title: string; description: string; children: ReactNode; wide?: boolean; fallbackFocus?: RefObject<HTMLElement | null>;
 }) {
-  return <Dialog.Root open={open} onOpenChange={onOpenChange}><Dialog.Portal><Dialog.Overlay className="dialog-overlay" /><Dialog.Content className={`dialog-content${wide ? " wide" : ""}`}>
+  const returnFocus = useRef<HTMLElement | null>(null);
+  return <Dialog.Root open={open} onOpenChange={onOpenChange}><Dialog.Portal><Dialog.Overlay className="dialog-overlay" /><Dialog.Content className={`dialog-content${wide ? " wide" : ""}`}
+    onOpenAutoFocus={() => { returnFocus.current = document.activeElement instanceof HTMLElement ? document.activeElement : null; }}
+    onCloseAutoFocus={event => {
+      const target = returnFocus.current?.isConnected && returnFocus.current !== document.body ? returnFocus.current : fallbackFocus?.current;
+      if (target?.isConnected) { event.preventDefault(); target.focus(); }
+    }}>
     <Dialog.Title>{title}</Dialog.Title><Dialog.Description className="dialog-description">{description}</Dialog.Description>
     <Dialog.Close asChild><button className="icon-button dialog-close" aria-label="关闭对话框"><X size={18} /></button></Dialog.Close>{children}
   </Dialog.Content></Dialog.Portal></Dialog.Root>;
@@ -62,7 +68,7 @@ function SourcesDialog({ repo, query, gaps, onJob }: { repo: Repository; query?:
     finally { setAssociating(null); }
   };
   return <>
-    <button className="button subtle" onClick={() => setOpen(true)}><Stack size={17} /><span className="desktop-text">来源与缺口</span>{gaps.length > 0 && <span className="count-badge">{gaps.length}</span>}</button>
+    <button className="button subtle" aria-label="来源与缺口" onClick={() => setOpen(true)}><Stack size={17} /><span className="desktop-text">来源与缺口</span>{gaps.length > 0 && <span className="count-badge">{gaps.length}</span>}</button>
     <Modal open={open} onOpenChange={setOpen} title="采集来源与缺口" description="查看本版本的来源、支持边界和无法自动归属的会话。手动关联后将重新分析。">
       {!query?.version && <p className="muted">分析结果尚未就绪。完成刷新后可查看来源与手动关联。</p>}
       {loading && <p className="muted" role="status">正在读取来源…</p>}
@@ -164,6 +170,7 @@ function FilePane({ repoId, detail, loading, error, retry, close, metric, theme,
 }
 
 export function App() {
+  const repositoryTrigger = useRef<HTMLButtonElement>(null);
   const [theme, setTheme] = useState<Theme>(() => {
     const stored = localStorage.getItem("agent-manor-theme");
     return stored === "light" || stored === "dark" ? stored : matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
@@ -318,7 +325,7 @@ export function App() {
     </div>}
     {coverage?.stale && !jobActive(job) && job?.status !== "failed" && <Notice action={<button className="text-button" onClick={() => void runRefresh()}>刷新分析</button>}>当前统计已过期，基于 {dateLabel(coverage.createdAt)} 的仓库基线。</Notice>}
     {initialLoading && !repository ? <Empty title="连接本地分析服务">正在读取已登记仓库与分析任务…</Empty> : !repository ? <Empty title="开始查看代码活动">登记一个本机 Git 仓库，发现属于它的 Codex 与 Claude Code 历史会话。<br />分析在本机完成，原始历史只读。</Empty> : <div className="workspace">
-      <aside className="sidebar"><div className="repository-picker"><Dropdown.Root><Dropdown.Trigger className="repository-trigger"><Folder size={19} weight="duotone" /><strong>{repository.name}</strong><CaretDown size={14} /></Dropdown.Trigger><Dropdown.Portal><Dropdown.Content className="dropdown-content" sideOffset={6}>{repositories.map(repo => <Dropdown.Item key={repo.id} className="dropdown-item" onSelect={() => chooseRepo(repo.id)}>{repo.id === repoId && <Check size={14} />}<span>{repo.name}<small>{repo.path}</small></span></Dropdown.Item>)}<Dropdown.Separator className="dropdown-separator" /><Dropdown.Item className="dropdown-item" onSelect={() => setRegisterOpen(true)}><Plus size={15} />登记仓库</Dropdown.Item></Dropdown.Content></Dropdown.Portal></Dropdown.Root></div>
+      <aside className="sidebar"><div className="repository-picker"><Dropdown.Root><Dropdown.Trigger ref={repositoryTrigger} className="repository-trigger"><Folder size={19} weight="duotone" /><strong>{repository.name}</strong><CaretDown size={14} /></Dropdown.Trigger><Dropdown.Portal><Dropdown.Content className="dropdown-content" sideOffset={6}>{repositories.map(repo => <Dropdown.Item key={repo.id} className="dropdown-item" onSelect={() => chooseRepo(repo.id)}>{repo.id === repoId && <Check size={14} />}<span>{repo.name}<small>{repo.path}</small></span></Dropdown.Item>)}<Dropdown.Separator className="dropdown-separator" /><Dropdown.Item className="dropdown-item" onSelect={() => setRegisterOpen(true)}><Plus size={15} />登记仓库</Dropdown.Item></Dropdown.Content></Dropdown.Portal></Dropdown.Root></div>
         <p className="repo-path" title={repository.path}>{repository.path}</p><div className="sidebar-label">仓库目录</div><nav className="directory-nav" aria-label="仓库目录"><button className={`directory-row${!directory ? " active" : ""}`} onClick={() => browse("")}><MapTrifold size={17} /><span>整个仓库</span><small>{rootCoverage?.files.length ?? "—"}</small></button>
           {dirList.map(dir => <button key={dir.path} className={`directory-row${directory === dir.path ? " active" : ""}`} style={{ paddingLeft: `${9 + Math.min(4, dir.depth - 1) * 10}px` }} onClick={() => browse(dir.path)} title={dir.path}><Folder size={15} /><span>{filename(dir.path)}</span><small>{dir.count}</small></button>)}
         </nav><div className="sidebar-bottom"><span className="sidebar-label">统计口径</span><p>当前工作区内容<br />成功返回且可定位的范围<br />精确与近似分别统计</p><button className="text-button" onClick={() => setRegisterOpen(true)}><Plus size={14} />登记其他仓库</button></div>
@@ -343,7 +350,7 @@ export function App() {
       <FilePane repoId={repoId} detail={detail} loading={detailLoading} error={detailError} retry={() => setDetailRetry(value => value + 1)} close={() => setSelected(null)} metric={metric} theme={theme} query={query} />
     </div>}
     {!repository && !initialLoading && <div className="first-register"><button className="button primary" onClick={() => setRegisterOpen(true)}><Plus size={17} />登记本机仓库</button></div>}
-    <Modal open={registerOpen} onOpenChange={setRegisterOpen} title="登记本机 Git 仓库" description="输入当前工作区的绝对路径。登记后自动发现历史并创建分析任务。">
+    <Modal open={registerOpen} onOpenChange={setRegisterOpen} fallbackFocus={repositoryTrigger} title="登记本机 Git 仓库" description="输入当前工作区的绝对路径。登记后自动发现历史并创建分析任务。">
       <form className="register-form" onSubmit={event => void register(event)}><label>仓库绝对路径<input value={registerPath} onChange={event => setRegisterPath(event.target.value)} placeholder="/workspace/projects/仓库" autoComplete="off" required /></label>{registerError && <Notice danger>{registerError}</Notice>}<p className="muted small">当前工作区包含未提交修改；同一仓库的 worktree 分别建立内容基线。</p><div className="dialog-end"><button type="button" className="button subtle" onClick={() => setRegisterOpen(false)}>取消</button><button type="submit" className="button primary" disabled={registering || !registerPath.trim()}>{registering ? "正在登记…" : "登记并分析"}</button></div></form>
     </Modal>
   </Tooltip.Provider>;

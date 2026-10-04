@@ -242,7 +242,7 @@ export interface AnalysisSnapshot {
   repository: Repository;
   version: string;
   baseline: Baseline;
-  sources: ParsedSource[];
+  sources: HistorySource[];
   events: HistoryEvent[];
   mappings: Mapping[];
   gaps: Gap[];

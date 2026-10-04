@@ -118,6 +118,8 @@ agent-guardian 的 `core/src/analysis.rs:433` 与 `:491` 使用原样行索引�
 
 ## Answer
 
+- 2026-10-04：补充完整路径验收与三类修复，任务 11 resolved；实际安装包 18 组端到端、完整 Web 交互和大历史重复刷新通过，类型检查、构建及 89 项回归通过，见 [端到端验收](../../docs/validation/e2e.md)。本轮直接在 main 开发。
+
 - 2026-10-04：任务 02–10 已全部 resolved；正式页面采用 A 地图优先，并接入共用的后台、CLI 与 Skill。原型保留在 `codex/activity-map-prototype`。
 - 历史解析、当前工作区基线、精确／近似覆盖、版本发布、增量刷新、来源缺失解释、证据回读及 macOS npm 包安装均有可核对结果；选定真实来源完成 CLI/API/Web 闭环，详见[验收记录](../../docs/validation/acceptance.md)。
 - 最终两轴审查与单个 implementer 修复完成，集成提交 `1846f07` 的类型检查、构建和 87 项测试通过，详见[审查记录](../../docs/validation/review.md)。未公开发包，Windows/Linux 安装尚未验收。
