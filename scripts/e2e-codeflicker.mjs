@@ -180,7 +180,7 @@ try {
     await rename(join(directory, "missing.jsonl"), source);
     assert.deepEqual((await refresh()).summary, before.summary);
   });
-  await step("SDK隐式长行截断不计近似，Shell执行目录支持相对读取", async () => {
+  await step("SDK隐式长行截断不计近似，Shell执行目录贯通单文件和多文件读取", async () => {
     const before = await coverage();
     const prefix = 'export const longText = "' + "abcdefghijklmno".repeat(140);
     const content = prefix.slice(0, 2000) + "TAIL!\n";
@@ -197,6 +197,17 @@ try {
     assert.equal(clipped.readNearLines, 0);
     assert.equal(result.files.find(file => file.path === "src/c.ts").readExactLines, 1);
     assert.equal(result.summary.readExact.lines, 4);
+    const bundle = "sed -n '1,1p' src/a.ts\nsed -n '1,1p' src/b.ts";
+    await appendFile(source, encode(pair("ab-shell", "bash", { command: bundle }, {
+      llmContent: `Command: ${bundle}\nDirectory: ${repository}\nStdout: ${files["src/a.ts"].split("\n")[0]}\n${files["src/b.ts"].split("\n")[0]}\n\nStderr: (empty)\nError: (none)\nExit Code: 0`, truncated: false,
+    })));
+    const bundled = await refresh();
+    assert.equal(bundled.files.find(file => file.path === "src/b.ts").readExactLines, 1);
+    assert.equal(bundled.summary.readExact.lines, 5);
+    const events = await command(["events", repositoryId, "--client", "codeflicker"]);
+    const parts = events.events.filter(event => event.tool === "bash" && event.input.command === bundle);
+    assert.equal(parts.length, 2);
+    assert.ok(parts.every(event => event.cwd === repository));
     await rm(absolute("src/d.ts"));
     await writeFile(source, raw);
     assert.deepEqual(semantic(await refresh()), semantic(before));
