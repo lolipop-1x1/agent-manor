@@ -23,11 +23,12 @@ test("npm tarball真实包外安装，原生SQLite与CLI/Worker/Web/Skill无需�
   const home = join(directory, "data");
   const codex = join(directory, "codex");
   const claude = join(directory, "claude");
+  const codeflicker = join(directory, "codeflicker");
   const npm = process.platform === "win32" ? "npm.cmd" : "npm";
   let cli: string | undefined;
   let bin: string | undefined;
   let completed = false;
-  const env = { ...process.env, AGENT_MANOR_HOME: home, AGENT_MANOR_PORT: "0", AGENT_MANOR_CODEX_DIR: codex, AGENT_MANOR_CLAUDE_DIR: claude };
+  const env = { ...process.env, AGENT_MANOR_HOME: home, AGENT_MANOR_PORT: "0", AGENT_MANOR_CODEX_DIR: codex, AGENT_MANOR_CLAUDE_DIR: claude, AGENT_MANOR_CODEFLICKER_DIR: codeflicker };
   const command = async <T>(args: string[]): Promise<T> => {
     assert.ok(bin);
     const result = await run(bin, [...args, "--json"], { cwd, env, timeout: 30_000 });
@@ -35,7 +36,7 @@ test("npm tarball真实包外安装，原生SQLite与CLI/Worker/Web/Skill无需�
     return JSON.parse(result.stdout) as T;
   };
   try {
-    for (const path of [install, cwd, join(repository, "src"), codex, claude]) await mkdir(path, { recursive: true });
+    for (const path of [install, cwd, join(repository, "src"), codex, claude, codeflicker]) await mkdir(path, { recursive: true });
     const packed = await run(npm, ["pack", "--json", "--pack-destination", directory, "--cache", cache], { cwd: root, timeout: 60_000, maxBuffer: 5 * 1024 * 1024 });
     // prepack 的构建日志也可能写入 stdout，最终独立数组才是 npm pack 元数据。
     const metadataStart = packed.stdout.search(/^\[\s*$/m);
