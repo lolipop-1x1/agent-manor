@@ -44,7 +44,7 @@ test("npm tarball真实包外安装，原生SQLite与CLI/Worker/Web/Skill无需�
     const [pack] = JSON.parse(packed.stdout.slice(metadataStart)) as { filename: string; files: { path: string }[]; integrity: string; size: number }[];
     assert.ok(pack);
     const paths = new Set(pack.files.map((file) => file.path));
-    for (const file of ["dist/cli.js", "dist/server.js", "dist/worker.js", "dist/web/index.html", "skills/agent-manor/SKILL.md", "docs/usage.md"]) assert.ok(paths.has(file), file);
+    for (const file of ["dist/cli.js", "dist/server.js", "dist/worker.js", "dist/clients.js", "dist/history/adapters/codeflicker.js", "dist/web/index.html", "skills/agent-manor/SKILL.md", "docs/usage.md"]) assert.ok(paths.has(file), file);
     assert.ok([...paths].some((path) => path.startsWith("dist/web/assets/") && path.endsWith(".js")));
     assert.ok(![...paths].some((path) => path.startsWith("src/") || path.startsWith("tests/") || path.startsWith(".scratch/")));
     const tarball = join(directory, pack.filename);
@@ -83,6 +83,7 @@ test("npm tarball真实包外安装，原生SQLite与CLI/Worker/Web/Skill无需�
     await writeFile(join(repository, "src/c.ts"), "export const unread = true;\n");
     const codexSource = join(codex, "source.jsonl");
     const claudeSource = join(claude, "source.jsonl");
+    const codeflickerSource = join(codeflicker, "source.jsonl");
     await writeFile(codexSource, encode([
       { type: "session_meta", payload: { id: "install-codex", cwd: repository } },
       { timestamp: "2026-01-01T00:00:01Z", type: "response_item", payload: { type: "function_call", name: "shell_command", call_id: "read", arguments: JSON.stringify({ command: "cat src/a.ts", workdir: repository }) } },
@@ -92,14 +93,24 @@ test("npm tarball真实包外安装，原生SQLite与CLI/Worker/Web/Skill无需�
       { type: "assistant", uuid: "read-request", timestamp: "2026-01-02T00:00:01Z", cwd: repository, sessionId: "install-claude", message: { content: [{ type: "tool_use", id: "read", name: "Read", input: { file_path: join(repository, "src/b.ts") } }] } },
       { type: "user", uuid: "read-result", sourceToolAssistantUUID: "read-request", cwd: repository, sessionId: "install-claude", message: { content: [{ type: "tool_result", tool_use_id: "read", content: "1\texport const delta = 4;\n2\texport const epsilon = 5;\n" }] }, toolUseResult: { type: "text", file: { filePath: join(repository, "src/b.ts"), content: beta, numLines: 2, startLine: 1, totalLines: 2 } } },
     ]));
-    const sourceBytes = [await readFile(codexSource), await readFile(claudeSource)];
+    const codeflickerInput = { file_path: join(repository, "src/c.ts") };
+    await writeFile(codeflickerSource, encode([
+      { type: "message", role: "assistant", uuid: "cf-read-request", sessionId: "install-codeflicker", timestamp: "2026-01-03T00:00:01Z",
+        content: [{ type: "tool_use", id: "cf-read", name: "read", input: codeflickerInput }] },
+      { type: "message", role: "tool", uuid: "cf-read-result", sessionId: "install-codeflicker",
+        content: [{ type: "tool-result", toolCallId: "cf-read", toolName: "read", input: codeflickerInput, result: {
+          llmContent: JSON.stringify({ type: "text", filePath: codeflickerInput.file_path, content: "export const unread = true;\n", offset: 1, limit: 2, totalLines: 2, actualLinesRead: 2 }),
+          returnDisplay: "文件读取完成", truncated: false,
+        } }] },
+    ]));
+    const sourceBytes = [await readFile(codexSource), await readFile(claudeSource), await readFile(codeflickerSource)];
     const registered = await command<RegisterRepositoryResponse>(["register", repository, "--wait"]);
     assert.equal(registered.job.status, "completed", registered.job.error);
     const id = registered.repository.id;
     const coverage = await command<CoverageResult>(["coverage", id, "--directory", "src"]);
     assert.equal(coverage.summary.fileCount, 3);
     assert.equal(coverage.summary.lineCount, 6);
-    assert.deepEqual(coverage.summary.readExact, { files: 2, lines: 5 });
+    assert.deepEqual(coverage.summary.readExact, { files: 3, lines: 6 });
     const query = ["--version", coverage.version, "--directory", "src"];
     const file = await command<FileDetail>(["file", id, "src/a.ts", ...query]);
     assert.equal(file.content, alpha);
@@ -110,6 +121,15 @@ test("npm tarball真实包外安装，原生SQLite与CLI/Worker/Web/Skill无需�
     assert.equal(evidence.version, coverage.version);
     const claudeCoverage = await command<CoverageResult>(["coverage", id, "--client", "claude"]);
     assert.deepEqual(claudeCoverage.summary.readExact, { files: 1, lines: 2 });
+    const codeflickerCoverage = await command<CoverageResult>(["coverage", id, "--client", "codeflicker"]);
+    assert.deepEqual(codeflickerCoverage.summary.readExact, { files: 1, lines: 1 });
+    const codeflickerEvents = await command<EventsResponse>(["events", id, "--client", "codeflicker"]);
+    assert.equal(codeflickerEvents.total, 1);
+    assert.equal(codeflickerEvents.events[0]!.client, "codeflicker");
+    const codeflickerEvidence = await command<EvidenceResponse>(["evidence", id, codeflickerEvents.events[0]!.id, "--client", "codeflicker", "--version", coverage.version]);
+    assert.equal(codeflickerEvidence.records.length, 2);
+    assert.equal(codeflickerEvidence.unavailable.length, 0);
+    assert.ok(codeflickerEvidence.records.every(record => record.source.format === "codeflicker-jsonl"));
     assert.equal((await command<JobResponse>(["refresh", id, "--wait"])).job.status, "completed");
     assert.equal((await command<JobResponse>(["cacheclear", id, "--wait"])).job.status, "completed");
     assert.deepEqual((await command<CoverageResult>(["coverage", id])).summary, coverage.summary);
@@ -126,8 +146,9 @@ test("npm tarball真实包外安装，原生SQLite与CLI/Worker/Web/Skill无需�
     assert.deepEqual(await command(["stop"]), { stopping: false, running: false });
     assert.deepEqual(await readFile(codexSource), sourceBytes[0]);
     assert.deepEqual(await readFile(claudeSource), sourceBytes[1]);
+    assert.deepEqual(await readFile(codeflickerSource), sourceBytes[2]);
     const evidenceSummary = { directory, tarball, integrity: pack.integrity, bytes: pack.size, fileCount: paths.size, platform: process.platform, architecture: process.arch, node: process.version, sqlite: sqlite.sqlite, installMilliseconds,
-      cli, bin, skill: join(packageRoot, "skills/agent-manor/SKILL.md"), home, codex, claude, repository, repositoryId: id, npmOutput: installation.stdout.trim(), npmWarnings: installation.stderr.trim() };
+      cli, bin, skill: join(packageRoot, "skills/agent-manor/SKILL.md"), home, codex, claude, codeflicker, repository, repositoryId: id, npmOutput: installation.stdout.trim(), npmWarnings: installation.stderr.trim() };
     if (process.env.AGENT_MANOR_INSTALL_EVIDENCE) await writeFile(process.env.AGENT_MANOR_INSTALL_EVIDENCE, JSON.stringify(evidenceSummary, null, 2));
     console.log(`包外安装：${process.platform}/${process.arch} ${process.version}，${paths.size} 个交付文件，${installMilliseconds} ms，CLI/Worker/Web/SQLite/Skill 闭环通过`);
     completed = true;
