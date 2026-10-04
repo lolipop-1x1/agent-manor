@@ -16,8 +16,8 @@ function inside(root: string, path: string): boolean {
 }
 
 function summary(source: ParsedSource, association?: "automatic" | "manual"): SourceSummary {
-  const { sourceId, client, path, hash, sessionId, cwd, parentSessionId, completeBytes } = source;
-  return { sourceId, client, path, hash, sessionId, cwd, parentSessionId, completeBytes, eventCount: source.events.length, association };
+  const { sourceId, client, format, path, hash, sessionId, cwd, parentSessionId, completeBytes } = source;
+  return { sourceId, client, format, path, hash, sessionId, cwd, parentSessionId, completeBytes, eventCount: source.events.length, association };
 }
 
 function candidateSummary(location: SourceLocation): SourceSummary {
@@ -74,7 +74,7 @@ export async function refreshRepository(store: AnalysisStore, jobId: string, roo
       parsedPaths.add(location.path);
       try {
         const old = byPath.get(location.path) ?? (location.sourceId ? byId.get(location.sourceId) : undefined);
-        const source = await parseSource(location.path, location.client, old);
+        const source = await parseSource(location.path, location.client, old, location.format);
         parsed.push(source);
         stats.sourcesParsed++;
         const cursor = source.cursor as { parsedRecords?: number } | undefined;
@@ -99,7 +99,7 @@ export async function refreshRepository(store: AnalysisStore, jobId: string, roo
       if (gaps.some((gap) => gap.sourceId === old.sourceId && gap.kind === "source_missing")) continue;
       try {
         // 已移出发现目录但仍在原路径的来源可续读；真正 ENOENT 才从新版排除。
-        const source = await parseSource(old.path, old.client, clearCache ? undefined : byPath.get(old.path));
+        const source = await parseSource(old.path, old.client, clearCache ? undefined : byPath.get(old.path), old.format);
         parsed.push(source);
         availableIds.add(source.sourceId);
         stats.sourcesParsed++;

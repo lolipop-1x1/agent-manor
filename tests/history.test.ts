@@ -29,7 +29,7 @@ test("Claude 同会话后续 cwd 补齐发现和来源，metadata-only 会话自
     { type: "user", sessionId: "metadata-session", cwd: directory },
     { type: "user", sessionId: "metadata-session", cwd: "/synthetic/later" },
   ]));
-  const [discovered] = await discoverSources({ codex: [], claude: [directory] });
+  const [discovered] = await discoverSources({ codex: [], claude: [directory], codeflicker: [] });
   assert.equal(discovered!.cwd, directory);
   const parsed = await parseSource(path, "claude");
   assert.equal(parsed.cwd, directory);
@@ -51,7 +51,7 @@ test("Claude 规则升级重建旧空 cwd 游标，来源首个 cwd 不覆盖逐
   previous.cwd = undefined;
   (previous.cursor as { ruleVersion: string }).ruleVersion = "2";
   const parsed = await parseSource(path, "claude", previous);
-  assert.equal(PARSER_RULE_VERSION, "4");
+  assert.equal(PARSER_RULE_VERSION, "5");
   assert.equal((parsed.cursor as { parsedRecords: number }).parsedRecords, 3);
   assert.equal(parsed.cwd, directory);
   assert.equal(parsed.events[0]!.cwd, "/synthetic/later");
@@ -201,7 +201,7 @@ test("无 fork 来源证明的相同请求和结果不会跨来源合并", async
 test("读取源文件只读，发现嵌套与归档目录，头部候选含 cwd", async () => temporary(async (directory) => {
   await writeFile(join(directory, "source.jsonl"), encode([meta()]));
   await writeFile(join(directory, "ignore.txt"), "not a source");
-  const sources = await discoverSources({ codex: directory, claude: [] });
+  const sources = await discoverSources({ codex: directory, claude: [], codeflicker: [] });
   assert.equal(sources.length, 1);
   assert.equal(sources[0]!.cwd, "/synthetic/repo");
   assert.equal(sources[0]!.sessionId, "synthetic-session");
