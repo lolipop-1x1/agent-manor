@@ -184,6 +184,45 @@ test("Origin 丢失端口仅兼容有完整同源证据的浏览器请求", asyn
   }
 }));
 
+test("已删除 worktree 的创建和 Git 清单证据恢复跨会话读写，清缓存后结果一致", async () => fixture(async ({ directory, repository, source, service, register }) => {
+  await run("git", ["-C", repository, "add", "."]);
+  await run("git", ["-C", repository, "-c", "user.name=fixture", "-c", "user.email=fixture@example.test", "commit", "-qm", "fixture"]);
+  const worktree = join(directory, "old-worktree");
+  const created = await run("git", ["-C", repository, "worktree", "add", "-b", "history-fixture", worktree]);
+  const listed = await run("git", ["-C", repository, "worktree", "list", "--porcelain"]);
+  const command = (id: string, cmd: string, output: string, timestamp: string) => ({ type: "event_msg", timestamp,
+    payload: { type: "item_completed", item: { type: "CommandExecution", id, cwd: repository,
+      command: ["/bin/sh", "-c", cmd], status: "completed", exit_code: 0, formatted_output: output } } });
+  await appendFile(source, encode([
+    command("created", `git worktree add -b history-fixture ${worktree}`, created.stderr + created.stdout, "2026-01-01T00:00:02Z"),
+    { type: "event_msg", timestamp: "2026-01-01T00:00:03Z", payload: { type: "item_completed", item: { type: "FileChange", id: "changed", status: "completed",
+      changes: { [join(worktree, "src/b.ts")]: { type: "add", content: "unread\n" } } } } },
+    command("listed", "git worktree list --porcelain", listed.stdout, "2026-01-01T00:00:05Z"),
+  ]));
+  await writeFile(join(directory, "history/child.jsonl"), encode([
+    { type: "session_meta", payload: { id: "old-worktree-child", cwd: worktree } },
+    { type: "event_msg", timestamp: "2026-01-01T00:00:04Z", payload: { type: "item_completed", item: { type: "CommandExecution", id: "read", cwd: worktree,
+      command: ["/bin/sh", "-c", "cat src/b.ts"], status: "completed", exit_code: 0, formatted_output: "unread\n" } } },
+  ]));
+  await run("git", ["-C", repository, "worktree", "remove", worktree]);
+  const base = `/repositories/${register.repository.id}`;
+  const refresh = await apiRequest<{ job: { id: string } }>(service.instance, `${base}/refresh`, "POST");
+  await wait(service, refresh.job.id);
+  const coverage = await apiRequest<CoverageResult>(service.instance, `${base}/coverage`);
+  const file = coverage.files.find(file => file.path === "src/b.ts")!;
+  assert.equal(file.editCount, 1);
+  assert.equal(file.readCount, 1);
+  assert.equal(file.editExactLines, 1);
+  assert.equal(file.readExactLines, 1);
+  const events = await apiRequest<EventsResponse>(service.instance, `${base}/events?path=src/b.ts`);
+  assert.equal(events.total, 2);
+  for (const event of events.events) assert.ok(event.sources.length >= 3, "保留调用与历史 worktree 归属证据");
+  const clear = await apiRequest<{ job: { id: string } }>(service.instance, `${base}/cache`, "DELETE");
+  await wait(service, clear.job.id);
+  const rebuilt = await apiRequest<CoverageResult>(service.instance, `${base}/coverage`);
+  assert.deepEqual(rebuilt.summary, coverage.summary);
+}));
+
 test("Host、Origin、JSON 与静态路径安全边界；错误契约稳定", async () => fixture(async ({ directory, service, register }) => {
   const url = serviceUrl(service.instance);
   assert.equal((await fetch(url)).status, 200);

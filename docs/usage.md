@@ -86,6 +86,8 @@ Claude 头部发现仍限于 64 KiB／前 32 条记录，会在同一会话中�
 
 历史目录环境变量须在后台启动前设置；已有后台使用它启动时的环境。需要切换时先显式 `stop`，再以新环境启动。隔离测试应使用独立 `AGENT_MANOR_HOME`，防止连接日常后台。
 
+已有开发历史却全零时，先用 `sources <repositoryId> --json` 核对是否只接入了测试样本，再检查启动环境中的历史目录覆盖。使用默认目录后重启并刷新；仓库目录的文件清单正常不代表开发会话已经接入。已删除 worktree 的恢复需要会话中的成功创建与 Git 清单证据，支持边界见 [历史支持矩阵](design/history-support.md)。
+
 ```sh
 agent-manor refresh <repositoryId> --wait --json
 agent-manor cacheclear <repositoryId> --wait --json

@@ -3,7 +3,7 @@ import { realpath } from "node:fs/promises";
 import { isAbsolute, relative, resolve, sep } from "node:path";
 import type { AnalysisSnapshot, Gap, HistoryEvent, ParsedSource, SourceSummary } from "../contracts.js";
 import { eventFilePaths, getRepository, hashContent, mappingCacheKey, matchEvent, scanRepository } from "../analysis/index.js";
-import { associateSource, discoverSources, normalizeHistoryPath, parseSource, resolveSharedHistory } from "../history/index.js";
+import { associateSource, canonicalPath, discoverSources, historicalWorktrees, normalizeHistoryPath, parseSource, resolveSharedHistory } from "../history/index.js";
 import type { DiscoverRoots, ParsedHistorySource, SourceLocation } from "../history/index.js";
 import { AnalysisStore } from "./store.js";
 import type { RefreshStats } from "./store.js";
@@ -117,7 +117,16 @@ export async function refreshRepository(store: AnalysisStore, jobId: string, roo
       for (const location of locations) if (location.sessionId && parents.has(location.sessionId)) await parse(location);
     }
 
+    let worktrees = await historicalWorktrees(parsed.flatMap(source => source.events), baseline);
+    for (const location of locations) {
+      const cwd = normalizeHistoryPath(location.cwd);
+      if (!parsedPaths.has(location.path) && cwd && isAbsolute(cwd)) {
+        const canonical = await canonicalPath(resolve(cwd));
+        if (worktrees.some(tree => inside(tree.path, canonical))) await parse(location);
+      }
+    }
     const shared = resolveSharedHistory(parsed);
+    worktrees = await historicalWorktrees(shared.events, baseline);
     const events = new Map<string, HistoryEvent>();
     const associated = new Set<string>();
     const sources: SourceSummary[] = [];
@@ -126,7 +135,7 @@ export async function refreshRepository(store: AnalysisStore, jobId: string, roo
       const relevant = shared.events.filter((event) => event.sources.some((reference) => reference.sourceId === source.sourceId));
       // 手动关联只补无 cwd 的相对路径，不覆盖已有工作目录或外部绝对路径。
       const constrained = manual.has(source.sourceId) ? relevant.map((event) => ({ ...event, cwd: event.cwd ?? source.cwd ?? repository.path })) : relevant;
-      const association = await associateSource({ ...source, events: constrained }, baseline);
+      const association = await associateSource({ ...source, events: constrained }, baseline, worktrees);
       if (association.associated || manual.has(source.sourceId)) {
         associated.add(source.sourceId);
         sources.push(summary(source, manual.has(source.sourceId) ? "manual" : "automatic"));

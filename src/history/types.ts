@@ -1,4 +1,11 @@
-import type { Client, Gap, HistoryEvent, JsonValue, ParsedSource } from "../contracts.js";
+import type { Client, Gap, HistoryEvent, JsonValue, ParsedSource, SourceReference } from "../contracts.js";
+
+export interface HistoricalWorktree {
+  path: string;
+  from: number;
+  until: number;
+  sources: SourceReference[];
+}
 
 export interface SourceLocation {
   client: Client;

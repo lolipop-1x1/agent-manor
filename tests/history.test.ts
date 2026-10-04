@@ -1,10 +1,12 @@
 import assert from "node:assert/strict";
 import { appendFile, mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import type { Baseline, ParsedSource } from "../src/contracts.js";
-import { associateSource, discoverSources, normalizeHistoryPath, parseSource, resolveSharedHistory } from "../src/history/index.js";
+import type { Baseline, HistoryEvent, ParsedSource } from "../src/contracts.js";
+import { associateSource, discoverSources, historicalWorktrees, normalizeHistoryPath, parseSource, resolveSharedHistory } from "../src/history/index.js";
 import { returnedText, shellEvidence } from "../src/history/extraction.js";
 import { PARSER_RULE_VERSION } from "../src/version.js";
 
@@ -219,6 +221,42 @@ test("会话 cwd 不把外部工具路径归给仓库；URI 规范化并拒绝�
   assert.equal(normalizeHistoryPath("file:///synthetic/repo/a%20b.ts"), "/synthetic/repo/a b.ts");
   assert.equal(normalizeHistoryPath("file://remotehost/repo"), undefined);
 });
+
+test("历史 worktree 创建与清单交叉确认，只关联已确认时间内的活动", async () => temporary(async directory => {
+  const root = join(directory, "repo");
+  const worktree = join(directory, "old-worktree");
+  const nested = join(directory, "child-worktree");
+  const baseline: Baseline = { repository: { id: "repo", path: root, commonDir: join(root, ".git"), name: "repo", stale: false },
+    hash: "base", createdAt: "2026-01-01T00:00:00Z", git: { dirty: false }, excluded: [], files: [{ path: "src/a.ts", content: "alpha\n", hash: "file", category: "source", lineCount: 1 }] };
+  const source = await parseSource(fixture("codex-modern.jsonl"), "codex");
+  const command = (id: string, cmd: string, content: string, seconds: number, cwd = root): HistoryEvent => ({ ...source.events[0]!, id,
+    tool: "CommandExecution", kind: "other", path: undefined, fragments: [], cwd, status: "success",
+    occurredAt: `2026-01-01T00:00:0${seconds}Z`, input: { command: ["/bin/sh", "-c", cmd] }, output: { formatted_output: content } });
+  const created = command("created", `mkdir -p '${join(directory, "notes")}' && git worktree add '${worktree}' -b first`,
+    "Preparing worktree (new branch 'first')\nHEAD is now at abc123 fixture\n", 2);
+  const child = command("child", `git worktree add -b second '${nested}'`, "Preparing worktree (new branch 'second')\nHEAD is now at abc123 fixture\n", 3, worktree);
+  const porcelain = (paths: string[]) => paths.map(path => `worktree ${path}\nHEAD ${"a".repeat(40)}\nbranch refs/heads/main\n\n`).join("");
+  const listed = command("listed", "git worktree list --porcelain", porcelain([root, worktree, nested]), 5);
+  const trees = await historicalWorktrees([listed, child, created], baseline);
+  assert.equal(trees.length, 2);
+  const read = { ...source.events[0]!, cwd: root, path: join(worktree, "src/a.ts"), occurredAt: "2026-01-01T00:00:04Z" };
+  const associated = await associateSource({ ...source, cwd: root, events: [read] }, baseline, trees);
+  assert.equal(associated.events[0]!.path, "src/a.ts");
+  assert.deepEqual(associated.events[0]!.fragments, read.fragments.map(fragment => ({ ...fragment, path: "src/a.ts" })));
+  for (const time of ["2026-01-01T00:00:01Z", "2026-01-01T00:00:06Z", undefined]) {
+    assert.equal((await associateSource({ ...source, events: [{ ...read, occurredAt: time }] }, baseline, trees)).events.length, 0);
+  }
+  for (const [create, list] of [
+    [{ ...created, status: "failure" }, listed], [created, { ...listed, status: "failure" }],
+    [{ ...created, output: { formatted_output: "HEAD is now at abc123 fixture\n" } }, listed],
+    [created, { ...listed, output: { formatted_output: "Warning: truncated output\n" + porcelain([root, worktree]) } }],
+    [created, { ...listed, output: { formatted_output: porcelain([join(directory, "other-repo"), worktree]) } }],
+    [created, { ...listed, input: { command: ["/bin/sh", "-c", "cat note && git worktree list --porcelain"] } }],
+    [created, { ...listed, input: { command: ["python", "-c", "git worktree list --porcelain"] } }],
+  ] as [HistoryEvent, HistoryEvent][]) assert.equal((await historicalWorktrees([create, list], baseline)).length, 0);
+  await promisify(execFile)("git", ["init", "--quiet", worktree]);
+  assert.equal((await historicalWorktrees([created, listed], baseline)).length, 0, "路径被独立仓库占用时不合并");
+}));
 
 test("Read 结构化内容行数或显示文本不一致不产生主要覆盖片段", async () => temporary(async (directory) => {
   const path = join(directory, "bad-read.jsonl");

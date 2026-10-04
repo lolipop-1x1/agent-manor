@@ -50,7 +50,7 @@ export function shellResult(value: unknown): { status: EventStatus; output: stri
   return { status: match ? Number(match[1]) === 0 ? "success" : "failure" : "unknown", output: text, reason: match ? undefined : "未找到执行终态" };
 }
 
-function words(command: string): string[] | undefined {
+export function words(command: string, allowAnd = false): string[] | undefined {
   const tokens: string[] = [];
   let token = "";
   let quote = "";
@@ -67,6 +67,10 @@ function words(command: string): string[] | undefined {
     else if (character === "\n" || character === "\r") return undefined;
     else if (/\s/.test(character)) { if (active) { tokens.push(token); token = ""; active = false; } }
     else if (character === "|") { if (active) { tokens.push(token); token = ""; active = false; } tokens.push("|"); }
+    else if (allowAnd && character === "&" && command[index + 1] === "&") {
+      if (active) { tokens.push(token); token = ""; active = false; }
+      tokens.push("&&"); index += 1;
+    }
     else if (/[;&<>$`\\()*?{}~]/.test(character)) return undefined;
     else { token += character; active = true; }
   }

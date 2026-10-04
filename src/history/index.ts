@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { open, readFile, readdir, realpath } from "node:fs/promises";
+import { lstat, open, readFile, readdir, realpath } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -7,8 +7,8 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import type { Baseline, Client, EvidenceFragment, Gap, HistoryEvent, JsonValue, ParsedSource, SourceReference } from "../contracts.js";
 import { PARSER_RULE_VERSION } from "../version.js";
-import { json, number, object, physicalLines, returnedText, shellEvidence, shellResult, string, textContent, toolEvidence, unifiedFragments } from "./extraction.js";
-import type { DiscoverRoots, HistoryCursor, HistoryRelationship, ParsedHistorySource, PendingCall, SharedHistoryResult, SourceAssociation, SourceLocation } from "./types.js";
+import { json, number, object, physicalLines, returnedText, shellEvidence, shellResult, string, textContent, toolEvidence, unifiedFragments, words } from "./extraction.js";
+import type { DiscoverRoots, HistoricalWorktree, HistoryCursor, HistoryRelationship, ParsedHistorySource, PendingCall, SharedHistoryResult, SourceAssociation, SourceLocation } from "./types.js";
 
 export type { DiscoverRoots, HistoryRelationship, ParsedHistorySource, SharedHistoryResult, SourceAssociation, SourceLocation } from "./types.js";
 
@@ -399,7 +399,7 @@ async function commonDir(path: string): Promise<string | undefined> {
   } catch { return undefined; }
 }
 
-async function canonicalPath(path: string): Promise<string> {
+export async function canonicalPath(path: string): Promise<string> {
   let ancestor = path;
   while (true) {
     try { return resolve(await realpath(ancestor), relative(ancestor, path)); }
@@ -407,8 +407,94 @@ async function canonicalPath(path: string): Promise<string> {
   }
 }
 
-/** 仅映射实际属于基线的路径；同 commonDir worktree 以相对路径映射。 */
-export async function associateSource(source: ParsedSource, baseline: Baseline): Promise<SourceAssociation> {
+/** 只采用成功创建与完整 Git 清单交叉确认的历史关系，不执行历史命令。 */
+export async function historicalWorktrees(events: HistoryEvent[], baseline: Baseline): Promise<HistoricalWorktree[]> {
+  const root = await canonicalPath(baseline.repository.path);
+  const repositoryCommonDir = await canonicalPath(baseline.repository.commonDir);
+  const lists: { at: number; paths: string[]; event: HistoryEvent }[] = [];
+  const creations: { at: number; cwd: string; path: string; event: HistoryEvent }[] = [];
+  for (const event of new Map(events.map(event => [event.id, event])).values()) {
+    if (event.tool !== "CommandExecution" || event.status !== "success") continue;
+    const at = Date.parse(event.occurredAt ?? "");
+    const cwd = normalizeHistoryPath(event.cwd);
+    const command = object(event.input).command;
+    const text = Array.isArray(command) && ["sh", "bash", "zsh", "dash"].includes(String(command[0]).split("/").at(-1) ?? "")
+      && ["-c", "-lc"].includes(String(command.at(-2))) ? string(command.at(-1)) : undefined;
+    const tokens = text ? words(text, true) : undefined;
+    const output = returnedText(string(object(event.output).formatted_output) ?? "");
+    if (!Number.isFinite(at) || !cwd || !isAbsolute(cwd) || !tokens?.length || output.truncated) continue;
+    const parts: string[][] = [[]];
+    for (const token of tokens) {
+      if (token === "&&") parts.push([]);
+      else parts.at(-1)!.push(token);
+    }
+    const commands: { cwd: string; args: string[] }[] = [];
+    let valid = true;
+    for (const [index, part] of parts.entries()) {
+      if (index === 0 && parts.length > 1 && part[0] === "mkdir" && part[1] === "-p" && part.length > 2
+        && part.slice(2).every(path => !path.startsWith("-") && path !== "|")) continue;
+      if (!["git", "/usr/bin/git"].includes(part[0] ?? "")) { valid = false; break; }
+      let working = cwd;
+      let args = part.slice(1);
+      if (args[0] === "-C" && args[1]) { working = resolve(cwd, args[1]); args = args.slice(2); }
+      if (args[0] !== "worktree") { valid = false; break; }
+      commands.push({ cwd: await canonicalPath(working), args: args.slice(1) });
+    }
+    if (!valid || !commands.length) continue;
+    if (parts.length === 1 && commands[0]!.args.join(" ") === "list --porcelain" && output.content.endsWith("\n")) {
+      const paths: string[] = [];
+      for (const block of output.content.trim().split(/\n\n+/)) {
+        const lines = block.split("\n");
+        const path = lines[0]?.startsWith("worktree ") ? lines[0].slice(9) : undefined;
+        if (!path || !isAbsolute(path) || !/^HEAD [a-f\d]{40}(?:[a-f\d]{24})?$/.test(lines[1] ?? "")
+          || !lines.slice(2).some(line => line === "detached" || line.startsWith("branch refs/heads/"))
+          || lines.slice(2).some(line => !/^(?:branch refs\/heads\/.+|detached|locked(?: .*)?|prunable(?: .*)?)$/.test(line))) { valid = false; break; }
+        paths.push(await canonicalPath(path));
+      }
+      if (valid && paths.includes(root)) lists.push({ at, paths, event });
+      continue;
+    }
+    const added: { cwd: string; path: string; branch: string }[] = [];
+    for (const { cwd: working, args } of commands) {
+      if (args[0] !== "add") { valid = false; break; }
+      const operands: string[] = [];
+      let branch: string | undefined;
+      for (let index = 1; index < args.length; index++) {
+        if (args[index] === "-b" && args[index + 1] && !branch) branch = args[++index];
+        else if (args[index]!.startsWith("-") || args[index] === "|") { valid = false; break; }
+        else operands.push(args[index]!);
+      }
+      if (!valid || !branch || !operands.length || operands.length > 2) { valid = false; break; }
+      added.push({ cwd: working, path: await canonicalPath(resolve(working, operands[0]!)), branch });
+    }
+    const prepared = [...output.content.matchAll(/^Preparing worktree \(new branch '([^']+)'\)$/gm)].map(match => match[1]);
+    const heads = [...output.content.matchAll(/^HEAD is now at [a-f\d]+ .+$/gm)];
+    if (valid && prepared.length === added.length && heads.length === added.length && added.every(item => prepared.includes(item.branch))) {
+      for (const item of added) creations.push({ at, cwd: item.cwd, path: item.path, event });
+    }
+  }
+  const result: HistoricalWorktree[] = [];
+  const live = new Map<string, boolean>();
+  for (const creation of creations.sort((left, right) => left.at - right.at)) {
+    const next = creations.find(item => item.path === creation.path && item.at > creation.at);
+    const confirmation = lists.filter(list => list.at >= creation.at && (!next || list.at < next.at)
+      && list.paths.includes(creation.path)).sort((left, right) => right.at - left.at)[0];
+    if (!confirmation || (!inside(root, creation.cwd) && !result.some(tree => inside(tree.path, creation.cwd)
+      && creation.at >= tree.from && creation.at <= tree.until))) continue;
+    if (!live.has(creation.path)) {
+      try {
+        await lstat(creation.path);
+        live.set(creation.path, await commonDir(creation.path) === repositoryCommonDir);
+      } catch (error) { live.set(creation.path, object(error).code === "ENOENT"); }
+    }
+    if (!live.get(creation.path)) continue;
+    result.push({ path: creation.path, from: creation.at, until: confirmation.at, sources: [...creation.event.sources, ...confirmation.event.sources] });
+  }
+  return result;
+}
+
+/** 仅映射实际属于基线的路径；历史 worktree 必须有对应时间的 Git 证据。 */
+export async function associateSource(source: ParsedSource, baseline: Baseline, worktrees: HistoricalWorktree[] = []): Promise<SourceAssociation> {
   const parsed: ParsedHistorySource = { ...source, relationships: (source as ParsedHistorySource).relationships ?? cursorOf(source)?.relationships ?? [] };
   const events: HistoryEvent[] = [];
   const gaps: Gap[] = [];
@@ -417,7 +503,7 @@ export async function associateSource(source: ParsedSource, baseline: Baseline):
   const available = new Set(baseline.files.map((file) => file.path));
   const commonCache = new Map<string, string | undefined>();
   const worktreeRootCache = new Map<string, string>();
-  async function relativePath(path: string | undefined, cwd: string | undefined): Promise<string | undefined> {
+  async function relativePath(path: string | undefined, cwd: string | undefined, at: number, proof: SourceReference[]): Promise<string | undefined> {
     const normalized = normalizeHistoryPath(path);
     const working = normalizeHistoryPath(cwd);
     if (!normalized) return undefined;
@@ -425,6 +511,11 @@ export async function associateSource(source: ParsedSource, baseline: Baseline):
     if (!rawAbsolute) return undefined;
     const absolute = await canonicalPath(rawAbsolute);
     if (inside(root, absolute)) return relative(root, absolute).split(sep).join("/");
+    const historical = worktrees.find(tree => inside(tree.path, absolute) && at >= tree.from && at <= tree.until);
+    if (historical) {
+      proof.push(...historical.sources);
+      return relative(historical.path, absolute).split(sep).join("/");
+    }
     if (working && isAbsolute(working)) {
       if (!commonCache.has(working)) commonCache.set(working, await commonDir(working));
       if (commonCache.get(working) === repositoryCommonDir) {
@@ -447,14 +538,17 @@ export async function associateSource(source: ParsedSource, baseline: Baseline):
       if (cwd && isAbsolute(cwd) && inside(root, await canonicalPath(cwd))) events.push({ ...event, fragments: [] });
       continue;
     }
-    const path = await relativePath(event.path, event.cwd ?? source.cwd);
+    const proof: SourceReference[] = [];
+    const at = Date.parse(event.occurredAt ?? "");
+    const path = await relativePath(event.path, event.cwd ?? source.cwd, at, proof);
     if (path === undefined) continue;
     const fragments: EvidenceFragment[] = [];
     for (const fragment of event.fragments) {
-      const fragmentPath = fragment.path ? await relativePath(fragment.path, event.cwd ?? source.cwd) : path;
+      const fragmentPath = fragment.path ? await relativePath(fragment.path, event.cwd ?? source.cwd, at, proof) : path;
       if (fragmentPath !== undefined) fragments.push({ ...fragment, path: fragmentPath });
     }
-    events.push({ ...event, path, fragments });
+    const sources = [...new Map([...event.sources, ...proof].map(reference => [JSON.stringify(reference), reference])).values()];
+    events.push({ ...event, path, fragments, sources });
     if (!available.has(path)) gaps.push({ kind: "range_unknown", message: `历史文件 ${path} 不在当前仓库基线中`, sourceId: source.sourceId });
   }
   const cwd = normalizeHistoryPath(source.cwd);

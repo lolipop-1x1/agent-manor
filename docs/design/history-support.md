@@ -64,3 +64,7 @@ Claude SDK 部分完整 Read 用 `content.split("\n")` 计数，尾换行会生�
 片段 `read` 用实际读取行号；`added` 用编辑后的新视图行号；`deleted` 用旧视图行号；`context` 用新视图行号。不同视图不能凭数字邻接推断关系，删除不计当前修改覆盖，context 仅用于定位。多文件修改拆成独立活动，并在 fragment.path 保存具体文件。
 
 `associateSource` 返回新的相对路径活动，不修改输入来源。每条实际文件路径与 cwd 独立确认。初始 session cwd 属于仓库不表示外部路径活动也属于仓库。相同 Git commonDir 的 worktree 可按其根目录相对路径关联；相同 remote 的独立 clone 不合并。历史文件在当前基线缺失仍保留活动并记录范围缺口。复杂命令的 pathless 活动只在 cwd 可靠属于仓库时保留。手动关联来源也必须继续逐事件约束路径。
+
+已删除的 worktree 不再能查询当前 Git commonDir。此时只用成功的具体 `CommandExecution` 记录交叉确认：在已知仓库／worktree 内执行字面 `git worktree add -b`，返回对应新分支的 `Preparing worktree` 与 `HEAD is now at`，并在后续完整、未截断的 `git worktree list --porcelain` 中同时看到登记仓库和目标目录。创建支持纯 `&&` 连接的多个 add，以及开头的字面 `mkdir -p`；这项 Git 关系提取不改变复杂 Shell 读取的覆盖规则。只关联从成功创建到最后一次清单确认之间、具有明确时间的文件活动；同路径再创建会分开时间区间。当前路径被独立仓库或其他目录占用时不采用历史关系。
+
+历史关系用于发现该 worktree 的其他会话，并把绝对文件路径和相对 cwd 路径映射到当前仓库。原始调用与创建／清单证明均保留在事件的证据引用中；内容仍须通过原有精确／近似对应规则。目录名字、相同 remote、父 Agent 总结及仅有退出码均不足以恢复归属；缺少上述记录、清单确认之后的活动或其他 Git 命令形式继续保留归属未知。
