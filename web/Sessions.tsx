@@ -489,10 +489,10 @@ export default function Sessions({ active, target, onMap }: { active: boolean; t
           <div className="session-filters">
             <label><span className="sr-only">客户端</span><select aria-label="筛选客户端" value={client} onChange={event => setClient(event.target.value as Client | "all")}>
               <option value="all">全部客户端</option>{CLIENTS.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}
-            </select></label>
+            </select><CaretDown size={12} aria-hidden="true" /></label>
             <label><span className="sr-only">项目</span><select aria-label="筛选项目" value={project} onChange={event => setProject(event.target.value)}><option value="all">全部项目</option><option value="none">无项目</option>
               {status?.projects.map(path => <option key={path} value={path}>{shortProject(path)}</option>)}
-            </select></label>
+            </select><CaretDown size={12} aria-hidden="true" /></label>
           </div>
           <div className="session-date-filters"><label>从<input aria-label="起始日期" type="date" value={from} onChange={event => setFrom(event.target.value)} /></label><label>到<input aria-label="截止日期" type="date" value={to} onChange={event => setTo(event.target.value)} /></label></div>
           {invalidDates && <p className="session-filter-error" role="alert">起始日期不能晚于截止日期。</p>}
@@ -527,7 +527,7 @@ export default function Sessions({ active, target, onMap }: { active: boolean; t
           <div className="session-compact-actions"><button className="button subtle" aria-expanded={compactPanel === "list"} onClick={() => { setLeftCollapsed(false); setCompactPanel(value => value === "list" ? null : "list"); }}>会话列表</button><button className="button subtle" aria-expanded={compactPanel === "profile"} onClick={() => { setRightCollapsed(false); setCompactPanel(value => value === "profile" ? null : "profile"); }}>会话统计</button></div>
           {selectedSession?.parentSessionId && selectedSession.parentTitle && <button className="text-button session-parent-link" title={selectedSession.parentTitle} onClick={() => selectSession(selectedSession.parentSessionId!)}><CaretLeft size={13} />返回父会话</button>}
           <div className="sessions-main-heading">
-            <div><p className="eyebrow" title={selectedSession?.project}>{selectedSession ? <>{clientName(selectedSession.client)} · {shortProject(selectedSession.project)}{selectedSession.projectOrigin === "tool_path" && <span className="session-project-evidence">文件活动关联</span>}</> : "全部本机历史"}</p>
+            <div><p className="eyebrow" title={selectedSession?.project}>{selectedSession ? <>{clientName(selectedSession.client)} · {shortProject(selectedSession.project)}{selectedSession.projectOrigin === "tool_path" && <span className="session-project-evidence">文件活动关联</span>}{selectedSession.projectOrigin === "client_metadata" && <span className="session-project-evidence">客户端项目元数据</span>}</> : "全部本机历史"}</p>
               <h1 title={selectedSession?.title}>{selectedSession?.title ?? (selectedSessionId ? "正在加载会话…" : "选择会话查看历史")}</h1>
               {selectedSession && <p className="session-main-meta">{dateLabel(selectedSession.startedAt)} · {formatCount(selectedSession.messageCount)} 条消息 · {formatCount(selectedSession.turnCount)} 轮{selectedSession.relationship ? ` · ${selectedSession.relationship === "fork" ? "分叉会话" : "子会话"}` : ""}</p>}
               {selectedSession?.relationship && <p className="session-main-meta">标题来源：{titleOrigins[selectedSession.titleOrigin]} · {selectedSession.parentTitle ? `父会话：${selectedSession.parentTitle}` : "父会话不可用或关系尚未确认"}</p>}

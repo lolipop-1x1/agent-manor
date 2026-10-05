@@ -13,7 +13,7 @@ const directory = await realpath(await mkdtemp(join(tmpdir(), "manor-workspace-e
 const session = `mw${process.pid}`;
 const artifacts = fileURLToPath(new URL("../.local/workspace-e2e/", import.meta.url));
 const env = { ...process.env, AGENT_MANOR_HOME: join(directory, "data"), AGENT_MANOR_PORT: "0",
-  AGENT_MANOR_CODEX_DIR: join(directory, "codex"), AGENT_MANOR_CLAUDE_DIR: join(directory, "claude"), AGENT_MANOR_CODEFLICKER_DIR: join(directory, "codeflicker") };
+  AGENT_MANOR_CODEX_DIR: join(directory, "codex"), AGENT_MANOR_CLAUDE_DIR: join(directory, "claude"), AGENT_MANOR_CODEFLICKER_DESKTOP_DIR: join(directory, "missing-desktop"), AGENT_MANOR_CODEFLICKER_DIR: join(directory, "codeflicker") };
 const command = async args => JSON.parse((await run(process.execPath, [cli, ...args, "--json"], { cwd: directory, env, timeout: 30_000 })).stdout);
 const browser = async args => {
   // macOS Unix socket 有路径长度限制，浏览器控制套接字使用短临时目录。

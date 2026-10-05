@@ -42,7 +42,7 @@ test("CodeFlicker 的 CLI 与 API 使用同一分析版本、覆盖、来源及�
   await run("git", ["init", "-q", repository]);
   await writeFile(join(repository, "src/a.ts"), "alpha\nbeta\n");
   await writeFile(join(repository, "src/b.ts"), "unread\n");
-  const service = await startService({ home, roots: { codex: [], claude: [], codeflicker: [] }, startupRefresh: false });
+  const service = await startService({ home, roots: { codex: [], claude: [], codeflicker: [], "codeflicker-desktop": [] }, startupRefresh: false });
   const cli = fileURLToPath(new URL("../src/cli.ts", import.meta.url));
   const hook = fileURLToPath(import.meta.resolve("tsx/esm"));
   const env = { ...process.env, AGENT_MANOR_HOME: home };
@@ -102,7 +102,7 @@ test("编译产物在包外cwd并发按需启动单实例，CLI/API JSON一致�
     { type: "response_item", payload: { type: "function_call_output", call_id: "read", output: "Exit code: 0\nOutput:\nalpha\nbeta\n" } },
   ]));
   const cli = join(build, "cli.js");
-  const env = { ...process.env, AGENT_MANOR_HOME: home, AGENT_MANOR_CODEX_DIR: history, AGENT_MANOR_CLAUDE_DIR: join(directory, "missing-claude"), AGENT_MANOR_CODEFLICKER_DIR: join(directory, "missing-codeflicker") };
+  const env = { ...process.env, AGENT_MANOR_HOME: home, AGENT_MANOR_CODEX_DIR: history, AGENT_MANOR_CLAUDE_DIR: join(directory, "missing-claude"), AGENT_MANOR_CODEFLICKER_DESKTOP_DIR: join(directory, "missing-desktop"), AGENT_MANOR_CODEFLICKER_DIR: join(directory, "missing-codeflicker") };
   const command = async <T>(args: string[]): Promise<T> => {
     const result = await run(process.execPath, [cli, ...args, "--json"], { cwd: tmpdir(), env, timeout: 30_000 });
     assert.equal(result.stderr, "");
@@ -161,7 +161,7 @@ test("源码CLI从外部cwd启动Worker；错误实例状态不会误杀其他PI
   const home = join(directory, "data");
   const cli = fileURLToPath(new URL("../src/cli.ts", import.meta.url));
   const hook = fileURLToPath(import.meta.resolve("tsx/esm"));
-  const env = { ...process.env, AGENT_MANOR_HOME: home, AGENT_MANOR_CODEX_DIR: join(directory, "empty"), AGENT_MANOR_CLAUDE_DIR: join(directory, "empty"), AGENT_MANOR_CODEFLICKER_DIR: join(directory, "empty") };
+  const env = { ...process.env, AGENT_MANOR_HOME: home, AGENT_MANOR_CODEX_DIR: join(directory, "empty"), AGENT_MANOR_CLAUDE_DIR: join(directory, "empty"), AGENT_MANOR_CODEFLICKER_DESKTOP_DIR: join(directory, "missing-desktop"), AGENT_MANOR_CODEFLICKER_DIR: join(directory, "empty") };
   const command = async <T>(args: string[]): Promise<T> => JSON.parse((await run(process.execPath, ["--import", hook, cli, ...args, "--json"], { cwd: tmpdir(), env, timeout: 30_000 })).stdout) as T;
   const other = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" });
   try {

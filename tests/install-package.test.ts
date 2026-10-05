@@ -28,7 +28,7 @@ test("npm tarball真实包外安装，原生SQLite与CLI/Worker/Web/Skill无需�
   let cli: string | undefined;
   let bin: string | undefined;
   let completed = false;
-  const env = { ...process.env, AGENT_MANOR_HOME: home, AGENT_MANOR_PORT: "0", AGENT_MANOR_CODEX_DIR: codex, AGENT_MANOR_CLAUDE_DIR: claude, AGENT_MANOR_CODEFLICKER_DIR: codeflicker };
+  const env = { ...process.env, AGENT_MANOR_HOME: home, AGENT_MANOR_PORT: "0", AGENT_MANOR_CODEX_DIR: codex, AGENT_MANOR_CLAUDE_DIR: claude, AGENT_MANOR_CODEFLICKER_DESKTOP_DIR: join(directory, "missing-desktop"), AGENT_MANOR_CODEFLICKER_DIR: codeflicker };
   const command = async <T>(args: string[]): Promise<T> => {
     assert.ok(bin);
     const result = await run(bin, [...args, "--json"], { cwd, env, timeout: 30_000 });

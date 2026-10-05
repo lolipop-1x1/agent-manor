@@ -10,8 +10,10 @@
 .session-process-toggle { display: grid; grid-template-columns: 14px 1fr; align-items: center; gap: 1px 7px; margin: 9px 0 10px; color: var(--text); font-size: 10px; }
 .session-process-toggle input { grid-row: span 2; accent-color: var(--accent); }
 .session-process-toggle small { grid-column: 2; color: var(--muted); font-size: 9px; }
-.session-filters { display: grid; grid-template-columns: 1fr 1fr; gap: 7px; }
-.session-filters select { width: 100%; min-width: 0; height: 32px; border: 1px solid var(--border); border-radius: 5px; padding: 0 6px; color: var(--text); background: var(--surface); font-size: 10px; }
+.session-filters { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 7px; }
+.session-filters > label { position: relative; min-width: 0; }
+.session-filters select { display: block; appearance: none; width: 100%; min-width: 0; height: 32px; border: 1px solid var(--border); border-radius: 5px; padding: 0 28px 0 10px; color: var(--text); background: var(--surface); font-size: 10px; text-overflow: ellipsis; }
+.session-filters > label > svg { position: absolute; right: 10px; top: 50%; transform: translateY(-50%); color: var(--muted); pointer-events: none; }
 .session-filters option { background: var(--surface); }
 .session-date-filters { display: grid; grid-template-columns: 1fr 1fr; gap: 7px; padding-top: 8px; }
 .session-date-filters label { display: grid; gap: 4px; color: var(--muted); font-size: 9px; }

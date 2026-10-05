@@ -48,13 +48,14 @@ export async function discoverSources(roots: DiscoverRoots = {}): Promise<Source
             }
           } finally { await handle.close(); }
         }
-        found.push(metadata);
+        found.push(await adapter?.readSourceMetadata?.(metadata) ?? metadata);
       }
     }
   }
   for (const declaration of HISTORY_CLIENTS) {
     const environment = process.env[declaration.environmentVariable];
-    const configured = roots[declaration.client] ?? (environment ? [environment] : declaration.defaultRoots.map(path => join(homedir(), path)));
+    const clientHome = declaration.homeEnvironmentVariable ? process.env[declaration.homeEnvironmentVariable] : undefined;
+    const configured = roots[declaration.client] ?? (environment ? [environment] : clientHome ? [join(clientHome, "sessions")] : declaration.defaultRoots.map(path => join(homedir(), path)));
     for (const root of typeof configured === "string" ? [configured] : configured) await walk(resolve(root), declaration);
   }
   return found;
@@ -72,8 +73,14 @@ export async function parseSource(path: string, client: Client, previous?: Parse
   options: { allowAssociationMetadata?: boolean } = {}): Promise<ParsedHistorySource> {
   const absolutePath = resolve(path);
   const adapter = historyAdapter(format);
+  const metadata = await adapter?.readSourceMetadata?.({ path: absolutePath, client, format });
   const bytes = await readFile(absolutePath);
   let oldCursor = cursorOf(previous);
+  // 旁路 cwd 改变时重建事件，不能沿用旧归属或相对路径解析。
+  if (metadata && previous && (metadata.cwd !== previous.cwd || metadata.sessionId !== previous.sessionId)) {
+    previous = undefined;
+    oldCursor = undefined;
+  }
   if (oldCursor?.associationOnly) {
     if (options.allowAssociationMetadata && previous?.client === client && oldCursor.format === format && previous.hash === hash(bytes)) {
       const source = structuredClone(previous) as ParsedHistorySource;
@@ -96,6 +103,7 @@ export async function parseSource(path: string, client: Client, previous?: Parse
     ...structuredClone(previous), path: absolutePath, hash: hash(bytes), relationships: cursor.relationships,
     gaps: previous.gaps.filter((gap) => !["unpaired_call", "incomplete_record"].includes(gap.kind)),
   } : { sourceId: `${client}:unidentified:${hash(absolutePath).slice(0, 24)}`, client, format, path: absolutePath, hash: hash(bytes), sessionId: `unknown:${hash(absolutePath).slice(0, 16)}`, events: [], gaps: [], completeBytes: 0, relationships: [] };
+  if (metadata) Object.assign(source, metadata);
   for (const event of source.events) for (const reference of event.sources) reference.path = absolutePath;
   const eventById = new Map(source.events.map((event) => [event.id, event]));
   const gap = (kind: Gap["kind"], message: string) => source.gaps.push({ kind, message, sourceId: source.sourceId });

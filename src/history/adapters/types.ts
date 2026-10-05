@@ -7,6 +7,8 @@ export interface HistoryClient {
   format: string;
   environmentVariable: string;
   defaultRoots: readonly string[];
+  /** 客户端自身的 home 覆盖，优先级低于 AgentManor 的显式 roots。 */
+  homeEnvironmentVariable?: string;
   acceptsFile?: (path: string) => boolean;
 }
 
@@ -30,6 +32,8 @@ export interface HistoryAdapterContext {
 /** 格式适配器接收实际客户端身份，不据格式推断客户端。 */
 export interface HistoryAdapter {
   id: string;
+  /** 只读旁路元数据；普通 JSONL 格式无需实现。 */
+  readSourceMetadata?(location: SourceLocation): Promise<SourceLocation>;
   discover(record: Record<string, unknown>, location: SourceLocation): { source: SourceLocation; complete?: boolean } | undefined;
   processRecord(record: Record<string, unknown>, context: HistoryAdapterContext): void;
   extract(tool: string, input: unknown, result: unknown, visible: string, context: HistoryAdapterContext): ToolEvidence[];

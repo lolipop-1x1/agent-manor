@@ -9,6 +9,8 @@ import type { MessageKind, SessionMessage, SessionSink, SessionSourceMeta } from
 import { object, string, tokens, UsageParser } from "./parser-usage.js";
 import { projectFromToolPaths } from "./parser-project.js";
 import { sessionTitle } from "./title.js";
+import { DESKTOP_FORMAT, desktopCalls, desktopIdentity, desktopResult, desktopTimestamp } from "../history/adapters/codeflicker-desktop.js";
+import type { DesktopModelRecord } from "./codeflicker-desktop.js";
 
 const digest = (value: string) => createHash("sha256").update(value).digest("hex").slice(0, 24);
 const MAX_RECORD_BYTES = 16 * 1024 * 1024;
@@ -68,7 +70,7 @@ function filePaths(input: unknown): string[] | undefined {
 function resource(tool: string, input: unknown, paths: string[] | undefined): SessionMessage["resource"] {
   const mcp = /^mcp__(.+?)__(.+)$/.exec(tool) ?? /^mcp__([^.]+)\.(.+)$/.exec(tool);
   if (mcp) return { kind: "mcp", name: mcp[2]!, server: mcp[1] };
-  if (/^(?:Skill|skill)$/.test(tool)) return { kind: "skill_call", name: string(object(input).skill) ?? string(object(input).name) ?? "未记录名称" };
+  if (/^(?:Skill|skill|use_skill)$/.test(tool)) return { kind: "skill_call", name: string(object(input).skill) ?? string(object(input).name) ?? string(object(input).skill_directory)?.split(/[/\\]/).filter(Boolean).at(-1) ?? "未记录名称" };
   if (/^(?:Read|read|read_file)$/.test(tool) && paths?.some(path => basename(path) === "SKILL.md")) {
     const path = paths.find(path => basename(path) === "SKILL.md")!;
     return { kind: "skill_read", name: path.replace(/[/\\]SKILL\.md$/, "").split(/[/\\]/).at(-1) ?? "SKILL.md" };
@@ -94,7 +96,7 @@ function userTitle(body: string): string {
   return value.replace(/\s+/g, " ").slice(0, 120);
 }
 
-export async function parseSessionSource(source: SourceLocation, sink: SessionSink, options: { byteLimit?: number; title?: string } = {}): Promise<SessionSourceMeta> {
+export async function parseSessionSource(source: SourceLocation, sink: SessionSink, options: { byteLimit?: number; title?: string; projectMetadata?: { project?: string; ambiguous?: boolean }; desktopModels?: Map<string, DesktopModelRecord> } = {}): Promise<SessionSourceMeta> {
   const gaps = new Map<string, Gap>();
   const gap = (kind: GapKind, message: string) => {
     const key = `${kind}:${message}`;
@@ -129,6 +131,7 @@ export async function parseSessionSource(source: SourceLocation, sink: SessionSi
   let currentModel: string | undefined;
   let candidate: SessionMessage | undefined;
   let interrupted = false;
+  let desktopTurn: string | undefined;
   let copyBeforeOrdinal: number | undefined;
   let hasResponseTranscript = false;
   let projectedReasoning: { key: string; text: string; turnId: string } | undefined;
@@ -226,7 +229,7 @@ export async function parseSessionSource(source: SourceLocation, sink: SessionSi
   for await (const { record, line } of records(source.path, gap, options.byteLimit)) {
     currentRecordLine = line;
     const payload = object(record.payload);
-    const occurredAt = string(record.timestamp) ?? string(payload.timestamp);
+    const occurredAt = source.format === DESKTOP_FORMAT ? desktopTimestamp(record) : string(record.timestamp) ?? string(payload.timestamp);
     if (occurredAt) {
       if (!meta.startedAt || occurredAt < meta.startedAt) meta.startedAt = occurredAt;
       if (!meta.updatedAt || occurredAt > meta.updatedAt) meta.updatedAt = occurredAt;
@@ -248,6 +251,66 @@ export async function parseSessionSource(source: SourceLocation, sink: SessionSi
     const extra: Partial<SessionMessage> = { occurredAt, copied };
     const title = string(record.aiTitle) ?? string(record.title) ?? (record.type === "session_meta" ? string(payload.title) : undefined);
     if (title) { meta.title = title; meta.titleOrigin = "recorded"; }
+    if (source.format === DESKTOP_FORMAT) {
+      const key = `desktop:${desktopIdentity(record.id) ?? line}`;
+      const native = options.desktopModels?.get(string(object(object(record.extra)["claude-code"]).lastEntryUuid) ?? "");
+      const model = string(record.model) ?? native?.model;
+      extra.model = model;
+      // duration 是桌面累计运行时长，不能当作单次工具耗时。
+      if (record.op === "turn_terminal") {
+        const last = desktopIdentity(record.lastMessageId);
+        const matches = (!last || candidate?.id === `${id}:message:${digest(`desktop:${last}`)}`)
+          && (!desktopTurn || record.turnId === desktopTurn);
+        if (record.outcome === "completed" && candidate && !pending.size && matches) {
+          candidate = { ...candidate, final: "explicit" };
+          sink.message(candidate);
+        }
+        else interrupted = true;
+        if (!matches) gap("ambiguous", "桌面终态引用与当前助手消息不符，未认定最终回答");
+        finishTurn();
+        continue;
+      }
+      if (record.kind !== "message" && !record.role) { gap("unsupported_format", "桌面历史存在尚未适配的记录类型"); continue; }
+      const role = string(record.role);
+      const nativeTurn = string(record.turnId) ?? string(object(record.extra).turnId);
+      let emitted: SessionMessage | undefined;
+      if (role === "user") {
+        const newTurn = nativeTurn === undefined || nativeTurn !== desktopTurn;
+        if (newTurn) desktopTurn = nativeTurn;
+        emitted = message(key, record.isSilence === true ? "system" : "user", text(record.content), line, extra, newTurn);
+      } else if (role === "assistant") {
+        if (text(record.content)) emitted = message(key, "assistant", text(record.content), line, extra);
+        const calls = desktopCalls(record);
+        for (const call of calls) toolCall(`${key}:call:${call.id}`, call.name, call.input, call.id, line, extra);
+        const recorded = object(record.usage);
+        const normalized = { input_tokens: recorded.inputTokens, output_tokens: recorded.outputTokens,
+          cache_read_input_tokens: recorded.cacheReadInputTokens, cache_creation_input_tokens: recorded.cacheCreationInputTokens,
+          reasoning_output_tokens: recorded.reasoningOutputTokens ?? recorded.reasoningTokens };
+        const backend = string(object(object(record.extra).backend).type);
+        if (Object.keys(recorded).length) {
+          const nonCached = ["CLAUDE_CODE", "DEEPSEEK_HARNESS"].includes(backend ?? "");
+          if (!nonCached && !["MY_FLICKER", "CODEX"].includes(backend ?? "")) {
+            normalized.input_tokens = undefined;
+            gap("unsupported_format", "桌面用量缺少已确认的执行后端，未计算总输入与缓存比例");
+          }
+          usage.native(nonCached ? "claude" : "codeflicker", normalized, native?.requestId ?? string(record.messageId) ?? key,
+            { messageId: emitted?.id ?? (calls[0] ? `${id}:message:${digest(`${key}:call:${calls[0].id}`)}` : undefined), turnId, model, occurredAt });
+        }
+      } else if (role === "tool") {
+        const result = desktopResult(record);
+        const callId = string(record.toolCallId);
+        if (callId) toolResult(key, callId, text(record.content), line, result.status, { ...extra, tool: string(object(record.extra).toolName) });
+        else { gap("unpaired_call", "桌面工具结果缺少调用身份"); message(key, "tool_result", text(record.content), line, extra); }
+      } else if (role === "reasoning") message(key, "thinking", text(record.content), line, extra);
+      else if (role === "system") message(key, "system", text(record.content), line, extra);
+      else if (role === "activity") {
+        const compaction = object(object(record.extra).compaction);
+        const body = [text(record.content), text(compaction.summary)].filter(Boolean).join("\n\n");
+        message(key, Object.keys(compaction).length ? "compression" : "system", body || display(record.extra), line, extra);
+      }
+      else gap("unsupported_format", "桌面历史存在尚未适配的消息角色");
+      continue;
+    }
     if (source.client === "codex") {
       const passthrough = object(payload.internal_chat_message_metadata_passthrough);
       if (record.type === "session_meta") {
@@ -381,7 +444,7 @@ export async function parseSessionSource(source: SourceLocation, sink: SessionSi
     if (!blocks.length && typeof record.text === "string") firstMessage = message(`native:${nativeId}:text`, role === "assistant" ? "assistant" : human ? "user" : "system", record.text, line, extra, human);
     if (role === "assistant") {
       const requestId = source.client === "codeflicker" ? string(object(object(record.metadata).requestTokenBaseline).requestId) ?? nativeId : string(native.id) ?? nativeId;
-      if (!copied) usage.native(source.client, native.usage, requestId, { messageId: firstMessage?.id, turnId, model: recordedModel, occurredAt });
+      if (!copied) usage.native(source.client === "claude" ? "claude" : "codeflicker", native.usage, requestId, { messageId: firstMessage?.id, turnId, model: recordedModel, occurredAt });
     }
     if (record.interruptedMessageId || record.isApiErrorMessage === true) interrupted = true;
   }
@@ -389,7 +452,12 @@ export async function parseSessionSource(source: SourceLocation, sink: SessionSi
   if (pending.size) gap("unpaired_call", "历史结束时仍有工具调用未记录完成结果");
   if (meta.relationship === "fork" && copyBeforeOrdinal === undefined) gap("ambiguous", "分叉来源缺少共享历史边界，未猜测或排除复制消息");
   if (source.client === "codeflicker" && basename(source.path).startsWith("agent-") && !meta.parentSessionId) gap("ambiguous", "子会话来源缺少明确父关系，作为独立会话保留");
-  if (!meta.project && targets.size && !targetsLimited) {
+  if (!meta.project && options.projectMetadata?.project && isAbsolute(options.projectMetadata.project)) {
+    meta.project = options.projectMetadata.project;
+    meta.projectOrigin = "client_metadata";
+  }
+  if (!meta.project && options.projectMetadata?.ambiguous) gap("ambiguous", "客户端项目元数据对应多个完整路径，未选择单一项目归属");
+  if (!meta.project && !options.projectMetadata?.ambiguous && targets.size && !targetsLimited) {
     const association = await projectFromToolPaths([...targets.values()].flatMap(paths => [...paths]));
     if (association.project) { meta.project = association.project; meta.projectOrigin = "tool_path"; }
     if (association.ambiguous) gap("ambiguous", "工具目标对应多个 Git 项目，未选择单一项目归属");

@@ -44,7 +44,7 @@ export interface SessionSummary {
   taskName?: string;
   agentName?: string;
   project?: string;
-  projectOrigin?: "cwd" | "tool_path";
+  projectOrigin?: "cwd" | "client_metadata" | "tool_path";
   parentSessionId?: string;
   parentTitle?: string;
   relationship?: "child" | "fork";

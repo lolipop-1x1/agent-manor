@@ -17,7 +17,7 @@ const codex = join(directory, "codex");
 const claude = join(directory, "claude");
 const home = join(directory, "data");
 const env = { ...process.env, AGENT_MANOR_HOME: home, AGENT_MANOR_PORT: "0", AGENT_MANOR_CODEX_DIR: codex,
-  AGENT_MANOR_CLAUDE_DIR: claude, AGENT_MANOR_CODEFLICKER_DIR: codeflicker };
+  AGENT_MANOR_CLAUDE_DIR: claude, AGENT_MANOR_CODEFLICKER_DESKTOP_DIR: join(directory, "missing-desktop"), AGENT_MANOR_CODEFLICKER_DIR: codeflicker };
 const files = {
   "src/a.ts": "export const firstAnchor = true;\nexport const value = 1;\nexport const lastAnchor = false;\n",
   "src/b.ts": "export const createdFirst = 2;\nexport const createdSecond = 3;\n",

@@ -15,7 +15,7 @@ const codex = join(directory, "codex");
 const claude = join(directory, "claude");
 const codeflicker = join(directory, "codeflicker");
 const home = join(directory, "data");
-const env = { ...process.env, AGENT_MANOR_HOME: home, AGENT_MANOR_PORT: "0", AGENT_MANOR_CODEX_DIR: codex, AGENT_MANOR_CLAUDE_DIR: claude, AGENT_MANOR_CODEFLICKER_DIR: codeflicker };
+const env = { ...process.env, AGENT_MANOR_HOME: home, AGENT_MANOR_PORT: "0", AGENT_MANOR_CODEX_DIR: codex, AGENT_MANOR_CLAUDE_DIR: claude, AGENT_MANOR_CODEFLICKER_DESKTOP_DIR: join(directory, "missing-desktop"), AGENT_MANOR_CODEFLICKER_DIR: codeflicker };
 const encode = (records) => records.map((record) => JSON.stringify(record) + "\n").join("");
 const pause = (ms) => new Promise((done) => setTimeout(done, ms));
 const files = {

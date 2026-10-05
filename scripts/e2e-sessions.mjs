@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { execFile } from "node:child_process";
 import { copyFile, mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -13,9 +14,11 @@ const cli = fileURLToPath(new URL("../dist/cli.js", import.meta.url));
 const directory = await realpath(await mkdtemp(join(tmpdir(), "manor-sessions-e2e-")));
 const artifacts = fileURLToPath(new URL("../.local/session-e2e/", import.meta.url));
 const repository = join(directory, "sample-workspace");
+const projectSlug = repository.replace(/^\/+|\/+$/g, "").replace(/[^a-zA-Z0-9]/g, "-").replace(/-+/g, "-").toLowerCase();
+const projectFolder = projectSlug.length <= 80 ? projectSlug : `${projectSlug.slice(0, 80)}-${createHash("sha1").update(repository).digest("hex").slice(0, 8)}`;
 const session = `ms${process.pid}`;
 const env = { ...process.env, AGENT_MANOR_HOME: join(directory, "data"), AGENT_MANOR_PORT: "0",
-  AGENT_MANOR_CODEX_DIR: join(directory, "codex"), AGENT_MANOR_CLAUDE_DIR: join(directory, "claude"), AGENT_MANOR_CODEFLICKER_DIR: join(directory, "codeflicker") };
+  AGENT_MANOR_CODEX_DIR: join(directory, "codex"), AGENT_MANOR_CLAUDE_DIR: join(directory, "claude"), AGENT_MANOR_CODEFLICKER_DESKTOP_DIR: join(directory, "missing-desktop"), AGENT_MANOR_CODEFLICKER_DIR: join(directory, "codeflicker", "projects", projectFolder) };
 const command = async args => JSON.parse((await run(process.execPath, [cli, ...args, "--json"], { cwd: directory, env, timeout: 60_000, maxBuffer: 4 * 1024 * 1024 })).stdout);
 const browser = async args => {
   const result = await run("playwright-cli", [`-s=${session}`, ...args], { cwd: directory, env: { ...process.env, TMPDIR: "/tmp" }, timeout: 60_000, maxBuffer: 4 * 1024 * 1024 });
@@ -30,13 +33,23 @@ try {
   await run("git", ["init", "-q", repository]);
   await run("git", ["-C", repository, "add", "src/entry.ts"]);
   const fixture = sessionFixture(repository);
+  fixture.codeflicker = fixture.codeflicker.map(({ cwd, ...record }) => record);
+  const reference = join(directory, "reference-workspace");
+  await mkdir(reference);
+  await run("git", ["init", "-q", reference]);
+  await writeFile(join(reference, "entry.ts"), "export const reference = true;\n");
+  for (const [index, path] of [join(repository, "src/entry.ts"), join(reference, "entry.ts")].entries()) {
+    fixture.codeflicker.push({ type: "message", role: "assistant", uuid: `cf-read-${index}`, sessionId: "demo-flicker",
+      content: [{ type: "tool_use", id: `cf-read-${index}`, name: "read", input: { file_path: path } }] });
+  }
   fixture.codex[0].payload.title = "日志中的旧标题";
   const titleIndex = join(directory, "session_index.jsonl");
   await writeFile(titleIndex, encodeSession([{ id: "demo-codex", thread_name: "实现状态检查" }]));
   for (const client of ["codex", "claude", "codeflicker"]) {
-    await mkdir(env[`AGENT_MANOR_${client.toUpperCase()}_DIR`]);
+    await mkdir(env[`AGENT_MANOR_${client.toUpperCase()}_DIR`], { recursive: true });
     await writeFile(join(env[`AGENT_MANOR_${client.toUpperCase()}_DIR`], "demo.jsonl"), encodeSession(fixture[client]));
   }
+  await writeFile(join(directory, "codeflicker", "data.json"), JSON.stringify({ projects: { [repository]: { history: [] } } }));
   await writeFile(join(env.AGENT_MANOR_CODEX_DIR, "orphan.jsonl"), encodeSession(fixture.orphan));
   await writeFile(join(env.AGENT_MANOR_CODEX_DIR, "long.jsonl"), encodeSession(longSessionFixture(repository)));
   await writeFile(join(env.AGENT_MANOR_CODEX_DIR, "child.jsonl"), encodeSession([
@@ -56,6 +69,9 @@ try {
   const codex = list.sessions.find(item => item.clientSessionId === "demo-codex");
   assert.ok(codex);
   assert.equal(codex.title, "实现状态检查", "CLI 应使用旁路索引的正式标题");
+  const flicker = list.sessions.find(item => item.clientSessionId === "demo-flicker");
+  assert.equal(flicker.project, repository, "跨仓库读取不改变正式项目归属");
+  assert.equal(flicker.projectOrigin, "client_metadata");
   for (const item of list.sessions.filter(item => ["demo-codex", "demo-claude", "demo-flicker"].includes(item.clientSessionId))) {
     const profile = await command(["sessions", "profile", item.id]);
     assert.equal(profile.usage.inputTokens, 100);
@@ -114,6 +130,14 @@ try {
     await page.getByRole("tab", { name: "简易", exact: true }).click();
     await page.getByLabel("搜索会话标题和消息").fill("");
     await page.locator(".session-list-item").first().waitFor();
+    await page.getByLabel("筛选客户端").selectOption("codeflicker");
+    await page.waitForFunction(() => document.querySelectorAll(".session-list-item").length === 1);
+    await page.locator(".session-list-item").click();
+    await page.locator(".session-project-evidence").filter({ hasText: "客户端项目元数据" }).waitFor();
+    expect((await page.locator(".sessions-main-heading .eyebrow").innerText()).includes("sample-workspace"), "CodeFlicker 详情应显示正式项目");
+    const flickerProject = await page.getByLabel("筛选项目").locator("option").filter({ hasText: "sample-workspace" }).getAttribute("value");
+    await page.getByLabel("筛选项目").selectOption(flickerProject);
+    expect((await page.locator(".session-list-item").innerText()).includes("优化示例代码的结构"), "正式项目筛选应保留会话");
     await page.getByLabel("筛选客户端").selectOption("codex");
     await page.getByLabel("筛选项目").selectOption("none");
     await page.waitForFunction(() => document.querySelectorAll(".session-list-item").length === 1);

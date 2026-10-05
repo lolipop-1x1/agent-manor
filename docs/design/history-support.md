@@ -1,6 +1,6 @@
 # 历史解析支持与证据边界
 
-规则版本：`PARSER_RULE_VERSION = "7"`，定义在 `src/version.ts`；旧规则游标重建。仓库中的测试样本全部匿名合成；格式结构参考本机只读取证笔记，本文不复制个人来源路径、日志或代码。格式兼容采用结构判断，不宣称整个客户端版本已验证。真实 CodeFlicker 仓库端到端验收见源码仓库的 `docs/validation/codeflicker.md`。
+规则版本：`PARSER_RULE_VERSION = "8"`，定义在 `src/version.ts`；旧规则游标重建。仓库中的测试样本全部匿名合成；格式结构参考本机只读取证笔记，本文不复制个人来源路径、日志或代码。格式兼容采用结构判断，不宣称整个客户端版本已验证。真实 CodeFlicker 仓库端到端验收见源码仓库的 `docs/validation/codeflicker.md`。
 
 ## 来源、身份与续读
 
@@ -8,7 +8,7 @@
 
 必要请求登记复用 `src/history/adapters/common.ts` 的 `registerRequest`，格式适配器仍提供各自身份 key 和原始参数，现有事件 ID 保持兼容。需要跨来源关系时实现可选 `resolveRelationships`，仅检查本轮已经解析的来源并返回关系与证据；通用合并和刷新消费结果，不读取额外私有路径或据格式推断客户端。
 
-`discoverSources()` 默认发现 `~/.codex/sessions`、`~/.codex/archived_sessions`、`~/.claude/projects`、`~/.codeflicker/projects`，接受显式目录或 `AGENT_MANOR_CODEX_DIR`／`AGENT_MANOR_CLAUDE_DIR`／`AGENT_MANOR_CODEFLICKER_DIR`。只递归普通目录与 JSONL 普通文件，不跟随发现目录中的符号链接；每个候选至多读取 64 KiB 头部和其中前 32 行。头部含超长指令时可能无法获取元数据，候选仍保留，完整解析或手动关联可继续核对。CodeFlicker 排除 `requests/` 与 `file-history/`，不将模型请求重放、工具声明或文件快照当作工具执行。
+`discoverSources()` 默认发现 `~/.codex/sessions`、`~/.codex/archived_sessions`、`~/.claude/projects`、`~/.codeflicker/projects`、`~/.myflicker/sessions`，接受显式目录或 `AGENT_MANOR_CODEX_DIR`／`AGENT_MANOR_CLAUDE_DIR`／`AGENT_MANOR_CODEFLICKER_DIR`。只递归普通目录与 JSONL 普通文件，不跟随发现目录中的符号链接；每个候选至多读取 64 KiB 头部和其中前 32 行。头部含超长指令时可能无法获取元数据，候选仍保留，完整解析或手动关联可继续核对。CodeFlicker 排除 `requests/` 与 `file-history/`，不将模型请求重放、工具声明或文件快照当作工具执行。
 
 来源身份与事件身份分开。Codex 元数据中的线程 ID、初始时间与 cwd，Claude sessionId 与 agentId，构成来源身份依据；来源路径和当前完整文件哈希属于来源版本。没有可确认元数据时使用路径身份并保留未知 session，不声称移动能够识别。相同元数据的文件副本与活跃文件移动到归档目录可保留身份。
 
@@ -43,7 +43,7 @@ fork 保存父 session、原始 ordinal 与 endByteOffset。ordinal 的准确客
 | CodeFlicker bash | Command/Directory/Stdout/Stderr/Error/Exit Code 的原生返回包装 | 最终退出码与 Error 校验状态，读取仅消费白名单命令的实际 Stdout；绝对 Directory 只归属本次事件，不改会话 cwd，也不推断命令内 cd；截断标记、持久化旁路、后台状态或未知包装不补齐；复杂命令仍产生 unsupported_tool |
 | CodeFlicker grep/glob/ls/todoWrite | 搜索单列、列举与任务列表 other | grep/glob 完整 JSON 返回与 todo_write 结构可证实终态；搜索不产生主要读取覆盖；其他缺少已确认成功模板的结果保留 unknown |
 
-CodeFlicker 的来源身份由原始 sessionId 与显式 agentId 构成，并始终带实际客户端身份；目录 slug 不用于还原 cwd。缺少 cwd 的来源可用实际绝对文件路径逐活动归属仓库。`agent-*.jsonl` 可独立发现和解析；显式 parentSessionId／parent_thread_id／forked_from_id 统一转换为来源关系。原生成功 Agent 结果块的 agentId 也可与同一实际客户端、同项目目录、唯一子 sessionId=`agent-<agentId>` 和同名 JSONL 交叉确认父关系；文件副本具有相同来源身份时不算多个父身份。子事件保留父结果原始引用和父 session，来源列表／结果来源同步表示关系，原始解析缓存不改写。失败、未知、跨目录、跨客户端、身份不符或多个不同父身份不建立推导关系并保留缺口；文件名、parentUuid 消息链、摘要、同一 call ID 或相同内容不能单独证明关系或重放。SQLite、MyFlicker、未核对归档格式和补全／编辑预测未纳入本轮支持。
+CodeFlicker 的来源身份由原始 sessionId 与显式 agentId 构成，并始终带实际客户端身份；目录 slug 不用于还原 cwd。缺少 cwd 的来源可用实际绝对文件路径逐活动归属仓库。`agent-*.jsonl` 可独立发现和解析；显式 parentSessionId／parent_thread_id／forked_from_id 统一转换为来源关系。原生成功 Agent 结果块的 agentId 也可与同一实际客户端、同项目目录、唯一子 sessionId=`agent-<agentId>` 和同名 JSONL 交叉确认父关系；文件副本具有相同来源身份时不算多个父身份。子事件保留父结果原始引用和父 session，来源列表／结果来源同步表示关系，原始解析缓存不改写。失败、未知、跨目录、跨客户端、身份不符或多个不同父身份不建立推导关系并保留缺口；文件名、parentUuid 消息链、摘要、同一 call ID 或相同内容不能单独证明关系或重放。旧 IDE 的 SQLite、未核对归档格式和补全／编辑预测未纳入本轮支持。
 
 缺少可靠 cwd 的相对 read/edit/write 请求，可用原生 read 的 `filePath` 或 edit/write 的 `returnDisplay.absoluteFilePath` 确认本次目标：返回须为绝对路径，且以规范化后的完整相对请求路径为后缀；`.`、仍以 `..` 越出父目录的路径及后缀冲突不接受。已有可靠 cwd 时仍要求解析后路径完全相同。返回路径只属于该次活动，不用于猜测会话或后续请求的 cwd；成功终态、实际范围和补丁校验继续独立执行。解析规则 8 重建旧缓存以恢复这类活动，事件身份保持不变。
 
@@ -85,3 +85,11 @@ Claude SDK 部分完整 Read 用 `content.split("\n")` 计数，尾换行会生�
 已删除的 worktree 不再能查询当前 Git commonDir。此时只用成功的具体 `CommandExecution` 记录交叉确认：在已知仓库／worktree 内执行字面 `git worktree add -b`，返回对应新分支的 `Preparing worktree` 与 `HEAD is now at`，并在后续完整、未截断的 `git worktree list --porcelain` 中同时看到登记仓库和目标目录。创建支持纯 `&&` 连接的多个 add，以及开头的字面 `mkdir -p`；这项 Git 关系提取不改变复杂 Shell 读取的覆盖规则。只关联从成功创建到最后一次清单确认之间、具有明确时间的文件活动；同路径再创建会分开时间区间。当前路径被独立仓库或其他目录占用时不采用历史关系。
 
 历史关系用于发现该 worktree 的其他会话，并把绝对文件路径和相对 cwd 路径映射到当前仓库。原始调用与创建／清单证明均保留在事件的证据引用中；内容仍须通过原有精确／近似对应规则。目录名字、相同 remote、父 Agent 总结及仅有退出码均不足以恢复归属；缺少上述记录、清单确认之后的活动或其他 Git 命令形式继续保留归属未知。
+
+## CodeFlicker 桌面版
+
+新版 MyFlicker 桌面客户端独立注册为 `codeflicker-desktop`；原 `codeflicker` 身份保留并展示为 CodeFlicker CLI。桌面只发现 `message/cache.jsonl`，不把 `claude-session` 的镜像正文作为另一份来源。会话 ID 来自桌面会话目录，cwd 来自身份一致的 `checkpoints/registry.json`；不由项目目录名反向猜测。格式扩展可实现只读旁路元数据钩子，通用发现、Worker、统计与证据回读保留客户端身份。
+
+缓存的 OpenAI 形态 `toolCalls` 与 `toolCallId` 配对，原始工具名不改写。`read_file` 的编号内容或结构化起始行与实际行数共同校验；返回计数、请求范围、终止行和截断标记矛盾时无覆盖。`execute_command` 仅明确退出码确认终态，白名单命令消费实际 stdout。`replace_in_file` 的 `replaced=true` 与返回路径确认成功，无补丁位置时只保留变化片段；`write_to_file` 的成功结果及一致路径确认实际写入快照，这个范围不表示相对原文件的净差异。搜索单列，其他工具和缺少终态的结果保留 unknown。原始记录按物理行与哈希回读，来源缺失或改写时不补造证据。
+
+会话的数值／文本消息 ID 用于去重；`turn_terminal` 的完成状态、轮次和最后消息身份共同认定明确最终回答。活动角色的压缩记录保留压缩信息，其上下文估算不计为请求 Token。模型旁路最多读取单文件 64 MiB、关联 50,000 条消息元信息，超出时列缺口；它不参与正文或工具次数的双重计数。

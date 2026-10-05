@@ -16,9 +16,9 @@ async function temporary(run: (directory: string) => Promise<void>) {
 }
 
 test("客户端身份与 Node 来源声明分别注册，查询入口共享稳定名称与缩写", () => {
-  assert.deepEqual(clientIds, ["codex", "claude", "codeflicker"]);
+  assert.deepEqual(clientIds, ["codex", "claude", "codeflicker", "codeflicker-desktop"]);
   assert.deepEqual(HISTORY_CLIENTS.map(item => item.client), clientIds);
-  assert.equal(clientName("codeflicker"), "CodeFlicker");
+  assert.equal(clientName("codeflicker"), "CodeFlicker CLI");
   assert.equal(CLIENTS.find(item => item.id === "codeflicker")!.abbreviation, "CF");
 });
 
@@ -54,12 +54,12 @@ test("显式停用 roots 与缺省客户端环境变量同时生效，来源 for
   const previous = process.env.AGENT_MANOR_CODEFLICKER_DIR;
   process.env.AGENT_MANOR_CODEFLICKER_DIR = directory;
   try {
-    const sources = await discoverSources({ codex: [], claude: [] });
+    const sources = await discoverSources({ codex: [], claude: [], "codeflicker-desktop": [] });
     assert.equal(sources.length, 1);
     assert.equal(sources[0]!.client, "codeflicker");
     assert.equal(sources[0]!.format, "codeflicker-jsonl");
     assert.deepEqual(JSON.parse(JSON.stringify(sources)), sources);
-    assert.deepEqual(await discoverSources({ codex: [], claude: [], codeflicker: [] }), []);
+    assert.deepEqual(await discoverSources({ codex: [], claude: [], codeflicker: [], "codeflicker-desktop": [] }), []);
   } finally {
     if (previous === undefined) delete process.env.AGENT_MANOR_CODEFLICKER_DIR;
     else process.env.AGENT_MANOR_CODEFLICKER_DIR = previous;

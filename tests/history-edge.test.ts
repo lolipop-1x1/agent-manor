@@ -176,7 +176,7 @@ test("发现嵌套归档、缺失默认根不报错，未知记录保留 unsuppo
   await mkdir(join(directory, "active", "year"), { recursive: true });
   await writeFile(join(directory, "archived", "old.jsonl"), encode([meta()]));
   await writeFile(join(directory, "active", "year", "new.jsonl"), encode([meta(), { type: "synthetic-unsupported" }]));
-  const found = await discoverSources({ codex: [join(directory, "archived"), join(directory, "active"), join(directory, "missing")], claude: [], codeflicker: [] });
+  const found = await discoverSources({ codex: [join(directory, "archived"), join(directory, "active"), join(directory, "missing")], claude: [], codeflicker: [], "codeflicker-desktop": [] });
   assert.equal(found.length, 2);
   const parsed = await parseSource(join(directory, "active", "year", "new.jsonl"), "codex");
   assert.ok(parsed.gaps.some((gap) => gap.kind === "unsupported_format"));

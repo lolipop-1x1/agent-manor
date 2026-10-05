@@ -2,7 +2,8 @@
 export const CLIENTS = [
   { id: "codex", name: "Codex", abbreviation: "CX" },
   { id: "claude", name: "Claude Code", abbreviation: "CC" },
-  { id: "codeflicker", name: "CodeFlicker", abbreviation: "CF" },
+  { id: "codeflicker", name: "CodeFlicker CLI", abbreviation: "CF" },
+  { id: "codeflicker-desktop", name: "CodeFlicker 桌面版", abbreviation: "FD" },
 ] as const;
 
 export type Client = typeof CLIENTS[number]["id"];

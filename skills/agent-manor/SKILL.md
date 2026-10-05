@@ -1,6 +1,6 @@
 ---
 name: agent-manor
-description: 使用本机 AgentManor CLI 查询 Codex、Claude Code 或 CodeFlicker 在 Git 仓库中的历史读取、修改、覆盖率与原始证据；适用于需要可回查代码活动的任务。
+description: 使用本机 AgentManor CLI 查询 Codex、Claude Code、CodeFlicker CLI 或 CodeFlicker 桌面版在 Git 仓库中的历史读取、修改、覆盖率与原始证据；适用于需要可回查代码活动的任务。
 ---
 
 # AgentManor 查询
@@ -9,8 +9,8 @@ description: 使用本机 AgentManor CLI 查询 Codex、Claude Code 或 CodeFlic
 
 ## 查询到证据
 
-1. 用 `repositories --json` 查找用户指定的仓库。未登记时执行 `register <绝对仓库路径> --wait --json`，取 `repository.id`，确认 `job.status === "completed"`。若需要隔离测试，在启动前设置独立的 `AGENT_MANOR_HOME`，并把 `AGENT_MANOR_CODEX_DIR`、`AGENT_MANOR_CLAUDE_DIR`、`AGENT_MANOR_CODEFLICKER_DIR` 全部指向测试目录或空目录。
-2. 按用户范围执行 `coverage <repositoryId> --json`，可加 `--client codex|claude|codeflicker`、`--from/--to <ISO时间>`、`--categories source,config,docs,unknown`、`--directory <相对目录>`。默认全部客户端、全部历史、源码；可用 `coverage --help` 核对当前支持的客户端。保存返回的 `version` 和全部筛选。
+1. 用 `repositories --json` 查找用户指定的仓库。未登记时执行 `register <绝对仓库路径> --wait --json`，取 `repository.id`，确认 `job.status === "completed"`。若需要隔离测试，在启动前设置独立的 `AGENT_MANOR_HOME`，并把 `AGENT_MANOR_CODEX_DIR`、`AGENT_MANOR_CLAUDE_DIR`、`AGENT_MANOR_CODEFLICKER_DIR`、`AGENT_MANOR_CODEFLICKER_DESKTOP_DIR` 全部指向测试目录或空目录。
+2. 按用户范围执行 `coverage <repositoryId> --json`，可加 `--client codex|claude|codeflicker|codeflicker-desktop`、`--from/--to <ISO时间>`、`--categories source,config,docs,unknown`、`--directory <相对目录>`。默认全部客户端、全部历史、源码；可用 `coverage --help` 核对当前支持的客户端。保存返回的 `version` 和全部筛选。
 3. 选择返回的文件，执行 `file <repositoryId> <相对路径> --version <version> <相同筛选> --json`。查询活动用 `events <repositoryId> --path <相对路径> --version <version> <相同筛选> --page 1 --page-size 50 --json`；结果超过一页时按 `total` 翻页。
 4. 用返回活动的 `id` 执行 `evidence <repositoryId> <eventId> --version <version> <相同筛选> --json`，核对 `records[].raw` 和来源引用。只通过 event ID 回读索引证据，不自行读取或执行历史命令。
 
@@ -25,7 +25,7 @@ agent-manor evidence <repositoryId> <eventId> --version <version> --client codex
 
 `--version` 是查询绑定的分析结果版本；程序版本用 `--cli-version`。`ANALYSIS_NOT_READY` 时执行 `refresh <repositoryId> --wait --json`，或从 `status --json` 取得正在执行的 job 后用 `jobs <jobId> --wait --json` 等待。普通查询会自动启动后台，关闭网页不会停止它；只有用户要求停止或隔离测试收尾时使用 `stop --json`。
 
-CodeFlicker 查询使用 `--client codeflicker`，保持返回的版本与后续筛选一致。当前历史范围仅为 `~/.codeflicker/projects` 主会话及能够确认关系的子会话；`requests/` 不独立计数，SQLite 和 `~/.myflicker` 暂未接入。来源没有可靠仓库关系时保留待关联，不根据目录名称猜测归属。
+CodeFlicker CLI 查询使用 `--client codeflicker`，保持返回的版本与后续筛选一致。当前历史范围仅为 `~/.codeflicker/projects` 主会话及能够确认关系的子会话；`requests/` 不独立计数，旧 IDE 的 SQLite 历史暂未接入。新版 MyFlicker 桌面历史使用 `--client codeflicker-desktop`，主来源为 `~/.myflicker/sessions/<会话ID>/message/cache.jsonl`；与 CLI 身份独立，底层轨迹不另行重复计数。来源没有可靠仓库关系时保留待关联，不根据目录名称猜测归属。
 
 ## 解读与报告
 

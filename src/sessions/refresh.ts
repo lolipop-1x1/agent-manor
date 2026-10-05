@@ -8,6 +8,8 @@ import { parseSessionSource } from "./parser.js";
 import { SessionStore } from "./store.js";
 import type { SessionRevision } from "./store.js";
 import { loadCodexTitles } from "./codex-titles.js";
+import { loadCodeFlickerProjects } from "./codeflicker-projects.js";
+import { desktopModels, loadDesktopTitles } from "./codeflicker-desktop.js";
 
 // 会话规范化规则升级时使来源缓存失效，独立于地图索引迁移。
 const SESSION_INDEX_RULE_VERSION = "3";
@@ -30,6 +32,8 @@ export async function refreshSessions(store: SessionStore, jobId: string, roots?
   try {
     const sources = await discoverSources(roots);
     const codexTitles = sources.some(source => source.client === "codex") ? await loadCodexTitles(roots) : new Map<string, string>();
+    const codeflickerProjects = await loadCodeFlickerProjects(sources);
+    const desktopTitles = await loadDesktopTitles(sources);
     const cached = new Map(store.cachedRevisions().map(item => [item.path, item]));
     const current: SessionRevision[] = [];
     const gaps: Gap[] = [];
@@ -43,17 +47,22 @@ export async function refreshSessions(store: SessionStore, jobId: string, roots?
         if ((error as NodeJS.ErrnoException).code === "ENOENT") { missing += 1; continue; }
         throw error;
       }
-      const title = source.client === "codex" && source.sessionId ? codexTitles.get(source.sessionId) : undefined;
+      const title = source.sessionId ? (source.client === "codex" ? codexTitles : source.client === "codeflicker-desktop" ? desktopTitles : new Map<string, string>()).get(source.sessionId) : undefined;
       // Codex 标题与正文分别更新；只失效对应来源，其他客户端沿用现有缓存。
-      const titleFingerprint = source.client === "codex" ? `:title-v1:${createHash("sha256").update(JSON.stringify(title ?? null)).digest("hex")}` : "";
+      const titleFingerprint = ["codex", "codeflicker-desktop"].includes(source.client) ? `:title-v1:${createHash("sha256").update(JSON.stringify(title ?? null)).digest("hex")}` : "";
       // 新增子任务标题只失效 Codex 子来源，保留未改变的长主会话及其他客户端缓存。
       const childTitleFingerprint = source.client === "codex" && source.parentSessionId ? ":child-title-v1" : "";
-      const sourceFingerprint = `${source.client}:${source.format ?? "default"}:${digest.hash}${titleFingerprint}${childTitleFingerprint}`;
+      const projectMetadata = codeflickerProjects.get(source.path);
+      const projectFingerprint = source.client === "codeflicker" ? `:project-v1:${createHash("sha256").update(JSON.stringify(projectMetadata ?? null)).digest("hex")}` : "";
+      const nativeModels = source.client === "codeflicker-desktop" ? await desktopModels(source.path) : undefined;
+      const desktopFingerprint = nativeModels ? `:desktop-v3:${source.cwd ?? ""}:${nativeModels.fingerprint}:${nativeModels.limited}` : "";
+      const sourceFingerprint = `${source.client}:${source.format ?? "default"}:${digest.hash}${titleFingerprint}${childTitleFingerprint}${projectFingerprint}${desktopFingerprint}`;
       const previous = cached.get(source.path);
       if (!clearCache && previous?.fingerprint === sourceFingerprint) { current.push(previous); continue; }
       const pending = store.createRevision(source.path, sourceFingerprint);
       try {
-        const meta = await parseSessionSource(source, pending.sink, { byteLimit: digest.bytes, title });
+        const meta = await parseSessionSource(source, pending.sink, { byteLimit: digest.bytes, title, projectMetadata, desktopModels: nativeModels?.entries });
+        if (nativeModels?.limited) meta.gaps.push({ kind: "budget_exceeded", message: "原生模型旁路日志超过有界读取上限，部分模型信息未关联", sourceId: meta.sourceId });
         pending.flush();
         // 允许活动日志追加；发布的始终是开始检查时的同一字节前缀。
         const after = await fingerprint(source.path, digest.bytes);
