@@ -1,0 +1,36 @@
+.filter-trigger { display: inline-flex; align-items: center; justify-content: space-between; gap: 9px; min-width: 0; width: 100%; height: 34px; padding: 0 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--surface); color: var(--text); font-size: 11px; text-align: left; }
+.filter-trigger > span:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.filter-trigger svg { display: block; color: var(--muted); }
+.filter-trigger:hover, .filter-trigger[data-state="open"] { border-color: var(--muted); background: var(--surface-alt); }
+.filter-trigger:focus:not(:focus-visible) { outline: none; }
+.filter-trigger:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.filter-menu { z-index: 40; width: max-content; min-width: var(--radix-select-trigger-width); max-width: min(400px, calc(100vw - 24px)); max-height: min(320px, var(--radix-select-content-available-height)); padding: 4px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); color: var(--text); box-shadow: 0 6px 24px #00000018; font-size: 12px; }
+.filter-options { padding: 1px; }
+.filter-option { position: relative; display: flex; align-items: center; justify-content: space-between; gap: 16px; min-height: 34px; padding: 8px 10px; border-radius: 5px; cursor: pointer; user-select: none; outline: none; overflow-wrap: anywhere; }
+.filter-option[data-state="checked"], .filter-option[data-checked="true"] { background: var(--accent-soft); color: var(--accent); }
+.filter-option[data-highlighted], .project-picker-option[data-selected="true"] { background: var(--surface-alt); box-shadow: inset 0 0 0 1px var(--border); }
+.filter-option[data-highlighted][data-state="checked"], .project-picker-option[data-selected="true"][data-checked="true"] { background: var(--accent-soft); }
+.filter-check { margin-left: auto; flex-shrink: 0; color: var(--accent); }
+.filter-scroll { display: flex; justify-content: center; align-items: center; height: 22px; color: var(--muted); }
+.project-picker-menu { width: min(380px, calc(100vw - 24px)); min-width: var(--radix-popover-trigger-width); max-height: var(--radix-popover-content-available-height); overflow: hidden; padding: 0; }
+.project-picker-search { display: flex; align-items: center; gap: 8px; padding: 10px 12px; border-bottom: 1px solid var(--border); color: var(--muted); }
+.project-picker-search input { width: 100%; min-width: 0; border: 0; padding: 0; outline: none; background: transparent; color: var(--text); font-size: 12px; }
+.project-picker-options { max-height: min(280px, calc(var(--radix-popover-content-available-height) - 44px)); overflow: auto; overscroll-behavior: contain; padding: 4px; scroll-padding: 4px; scrollbar-width: thin; }
+.project-picker-copy { display: grid; min-width: 0; gap: 4px; }
+.project-picker-copy small { color: var(--muted); font-size: 10px; line-height: 1.5; overflow-wrap: anywhere; }
+.project-picker-empty { padding: 18px 12px; color: var(--muted); text-align: center; }
+.select-field .filter-trigger { width: auto; min-width: 110px; max-width: 200px; }
+.session-filters .filter-trigger { height: 34px; font-size: 10px; }
+.date-picker-menu { width: 260px; min-width: 0; max-height: var(--radix-popover-content-available-height); padding: 12px; overflow: auto; }
+.date-picker-placeholder { color: var(--muted); }
+.date-picker-menu .rdp-root { --rdp-accent-color: var(--accent); --rdp-accent-background-color: var(--accent-soft); --rdp-day-height: 32px; --rdp-day-width: 32px; --rdp-day_button-height: 30px; --rdp-day_button-width: 30px; --rdp-day_button-border-radius: 5px; --rdp-nav_button-height: 28px; --rdp-nav_button-width: 28px; --rdp-nav-height: 36px; font-size: 12px; }
+.date-picker-menu .rdp-caption_label { font-size: 13px; font-weight: 600; }
+.date-picker-menu .rdp-day_button:hover, .date-picker-actions button:hover { background: var(--surface-alt); }
+.date-picker-menu .rdp-selected .rdp-day_button { background: var(--accent-soft); color: var(--accent); }
+.date-picker-menu button:focus:not(:focus-visible) { outline: none; }
+.date-picker-menu button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.date-picker-actions { display: flex; justify-content: space-between; border-top: 1px solid var(--border); margin-top: 8px; padding-top: 8px; }
+.date-picker-actions button { padding: 5px 8px; border: 0; border-radius: 4px; background: transparent; color: var(--accent); font-size: 11px; }
+.date-picker-actions button:disabled { color: var(--muted); cursor: default; opacity: .5; }
+.date-range .date-picker-trigger { width: 145px; }
+.session-date-filters .date-picker-trigger { font-size: 10px; }

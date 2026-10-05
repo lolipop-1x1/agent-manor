@@ -9,6 +9,9 @@ import { groupedTurns, localDateBoundary, PAGE_SIZE, TURN_PAGE_SIZE, type Eviden
 import { MessageCard, kindLabels } from "./SessionMessage";
 import { Notice, Pager } from "./SessionControls";
 import { SessionProfilePane } from "./SessionProfile";
+import { FilterSelect } from "./FilterSelect";
+import { ProjectPicker } from "./ProjectPicker";
+import { DatePicker } from "./DatePicker";
 import "./session.css";
 
 type Mode = "brief" | "full" | "trace";
@@ -473,7 +476,7 @@ export default function Sessions({ active, target, onMap }: { active: boolean; t
     if (active && selectedSessionId && !new URLSearchParams(location.hash.split("?")[1]).get("id")) updateAddress(selectedSessionId, { mode }, true);
   }, [active, selectedSessionId]);
   useEffect(() => {
-    const close = (event: KeyboardEvent) => { if (event.key === "Escape") { setCompactPanel(null); setShowLocalHits(false); } };
+    const close = (event: KeyboardEvent) => { if (event.key === "Escape" && !event.defaultPrevented) { setCompactPanel(null); setShowLocalHits(false); } };
     if (active) document.addEventListener("keydown", close);
     return () => document.removeEventListener("keydown", close);
   }, [active]);
@@ -487,14 +490,11 @@ export default function Sessions({ active, target, onMap }: { active: boolean; t
           <label className="session-process-toggle"><input type="checkbox" checked={includeProcess} onChange={event => setIncludeProcess(event.target.checked)} /><span>搜索过程记录</span><small>思考、工具、系统与压缩</small></label>
           <label className="session-process-toggle"><input type="checkbox" aria-label="显示子 Agent 会话" checked={includeSubagents} onChange={event => setIncludeSubagents(event.target.checked)} /><span>显示子 Agent 会话</span><small>仅影响列表，搜索始终包含子会话</small></label>
           <div className="session-filters">
-            <label><span className="sr-only">客户端</span><select aria-label="筛选客户端" value={client} onChange={event => setClient(event.target.value as Client | "all")}>
-              <option value="all">全部客户端</option>{CLIENTS.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}
-            </select><CaretDown size={12} aria-hidden="true" /></label>
-            <label><span className="sr-only">项目</span><select aria-label="筛选项目" value={project} onChange={event => setProject(event.target.value)}><option value="all">全部项目</option><option value="none">无项目</option>
-              {status?.projects.map(path => <option key={path} value={path}>{shortProject(path)}</option>)}
-            </select><CaretDown size={12} aria-hidden="true" /></label>
+            <FilterSelect label="筛选客户端" value={client} options={[{ value: "all", label: "全部客户端" }, ...CLIENTS.map(item => ({ value: item.id, label: item.name }))]} onChange={value => setClient(value as Client | "all")} />
+            <ProjectPicker value={project} options={[{ value: "all", label: "全部项目" }, { value: "none", label: "无项目" },
+              ...(status?.projects.map(path => ({ value: path, label: shortProject(path), description: path })) ?? [])]} onChange={setProject} />
           </div>
-          <div className="session-date-filters"><label>从<input aria-label="起始日期" type="date" value={from} onChange={event => setFrom(event.target.value)} /></label><label>到<input aria-label="截止日期" type="date" value={to} onChange={event => setTo(event.target.value)} /></label></div>
+          <div className="session-date-filters"><div><span>从</span><DatePicker label="起始日期" value={from} onChange={setFrom} /></div><div><span>到</span><DatePicker label="截止日期" value={to} onChange={setTo} /></div></div>
           {invalidDates && <p className="session-filter-error" role="alert">起始日期不能晚于截止日期。</p>}
           <div className="session-list-meta"><span>{debouncedGlobalQuery ? visibleGlobalSearch ? `${formatCount(visibleGlobalSearch.total)} 条命中` : "搜索历史" : sessionList ? `${formatCount(sessionList.total)} 个会话` : "会话列表"}</span>
             <button className="icon-button" aria-label="刷新会话索引" title="刷新会话索引" disabled={refreshing || activeJob(sessionJob)} onClick={submitRefresh}><ArrowClockwise size={16} className={refreshing || activeJob(sessionJob) ? "is-spinning" : ""} /></button>

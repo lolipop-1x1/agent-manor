@@ -92,7 +92,7 @@ async function verify(page, fixture) {
   const snapshot = async () => ({
     metrics: await page.locator(".metrics").innerText(),
     version: await page.locator(".baseline-note").innerText(),
-    filters: await page.locator(".filters select").evaluateAll(elements => elements.map(element => element.value)),
+    filters: await page.getByRole("combobox").evaluateAll(elements => elements.map(element => ({ label: element.getAttribute("aria-label"), value: element.textContent }))),
   });
   const summaryMatches = async summary => {
     const fmt = value => value.toLocaleString("zh-CN");
