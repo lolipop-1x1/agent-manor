@@ -36,5 +36,7 @@ export interface HistoryAdapter {
   finalizeCall?(context: HistoryAdapterContext, call: PendingCall, event: HistoryEvent, result: unknown, visible: string, row: number, raw: string): boolean;
   /** 只关联已解析来源；矛盾证据可使原父声明失效，格式规则不散落到核心。 */
   resolveRelationships?(source: ParsedSource, sources: readonly ParsedSource[]): { relationships: HistoryRelationship[]; gaps?: Gap[]; invalidateParent?: boolean };
+  /** 未关联来源只保留判断跨会话关系所需的工具字段，正文在确认相关后重新读取。 */
+  relationshipEvidence?(event: HistoryEvent): Pick<HistoryEvent, "input" | "output">;
   readEvidence(source: SourceReference): Promise<EvidenceRecord | undefined>;
 }

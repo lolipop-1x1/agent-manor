@@ -10,32 +10,42 @@ export interface WorkerManagerOptions {
 
 /** 一个长期 Worker 串行分析全部仓库，主线程只登记任务和查询完整版本。 */
 export class WorkerManager {
-  private readonly worker: Worker;
+  private worker: Worker;
   private readonly pending = new Map<string, ((job: Job) => void)[]>();
   private readonly active = new Set<string>();
   private closed = false;
   private failure?: string;
 
-  constructor(private readonly store: AnalysisStore, options: WorkerManagerOptions = {}) {
+  constructor(private readonly store: AnalysisStore, private readonly options: WorkerManagerOptions = {}) {
     store.recoverJobs();
+    this.worker = this.createWorker();
+  }
+
+  private createWorker(): Worker {
+    const { store, options } = this;
     const extension = import.meta.url.endsWith(".ts") ? "ts" : "js";
     const workerUrl = options.workerUrl ?? new URL(`../worker.${extension}`, import.meta.url);
     // tsx 的源码入口需要在 Worker 自己的隔离环境中安装 ESM 解析钩子。
-    this.worker = extension === "ts" && !options.workerUrl
+    const worker = extension === "ts" && !options.workerUrl
       ? new Worker(`import('tsx/esm/api').then(({register}) => { register(); return import(${JSON.stringify(workerUrl.href)}); });`, { eval: true, workerData: { dbPath: store.dbPath, roots: options.roots } })
       : new Worker(workerUrl, { workerData: { dbPath: store.dbPath, roots: options.roots } });
-    this.worker.on("message", (message: { jobId?: string }) => {
-      if (message.jobId) this.finished(message.jobId);
+    worker.on("message", (message: { jobId?: string }) => {
+      if (this.worker === worker && message.jobId) this.finished(message.jobId);
     });
-    this.worker.on("error", (error) => this.failed(error.message));
-    this.worker.on("exit", (code) => {
-      if (!this.closed) this.failed(`分析 Worker 意外停止（${code}）`);
+    worker.on("error", (error) => { if (this.worker === worker && !this.closed) this.failed(error.message); });
+    worker.on("exit", (code) => {
+      if (this.worker === worker && !this.closed) this.failed(`分析 Worker 意外停止（${code}）`);
     });
+    return worker;
   }
 
   private enqueue(repositoryId: string, clearCache: boolean): Job {
     if (this.closed) throw new Error("分析 Worker 已关闭");
-    if (this.failure) throw new Error(this.failure);
+    if (this.failure) {
+      // 失败任务保持失败；仅在下一次明确刷新时重建，避免自动重试同一溢出任务。
+      this.worker = this.createWorker();
+      this.failure = undefined;
+    }
     const job = this.store.createJob(repositoryId);
     this.active.add(job.id);
     this.worker.postMessage({ type: "refresh", jobId: job.id, clearCache });

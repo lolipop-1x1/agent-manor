@@ -68,14 +68,26 @@ function cursorOf(source: ParsedSource | undefined): HistoryCursor | undefined {
 }
 
 /** prefixHash 验证完整旧前缀后只解析追加记录；尾部不完整 JSONL 保留至下一轮。 */
-export async function parseSource(path: string, client: Client, previous?: ParsedSource, format = historyClient(client).format): Promise<ParsedHistorySource> {
+export async function parseSource(path: string, client: Client, previous?: ParsedSource, format = historyClient(client).format,
+  options: { allowAssociationMetadata?: boolean } = {}): Promise<ParsedHistorySource> {
   const absolutePath = resolve(path);
   const adapter = historyAdapter(format);
   const bytes = await readFile(absolutePath);
-  const oldCursor = cursorOf(previous);
+  let oldCursor = cursorOf(previous);
+  if (oldCursor?.associationOnly) {
+    if (options.allowAssociationMetadata && previous?.client === client && oldCursor.format === format && previous.hash === hash(bytes)) {
+      const source = structuredClone(previous) as ParsedHistorySource;
+      source.path = absolutePath;
+      source.cursor = json({ ...oldCursor, parsedRecords: 0 });
+      for (const event of source.events) for (const reference of event.sources) reference.path = absolutePath;
+      return source;
+    }
+    previous = undefined;
+    oldCursor = undefined;
+  }
   const appended = oldCursor && oldCursor.format === format && previous?.client === client && bytes.length >= oldCursor.completeBytes
     && hash(bytes.subarray(0, oldCursor.completeBytes)) === oldCursor.prefixHash;
-  const cursor: HistoryCursor = appended ? structuredClone(oldCursor) : {
+  const cursor: HistoryCursor = appended ? structuredClone(oldCursor!) : {
     ruleVersion: PARSER_RULE_VERSION, format, prefixHash: hash(""), completeBytes: 0, recordLine: 0,
     pending: [], seen: {}, occurrences: {}, recordEnds: [], relationships: [], parsedRecords: 0,
   };
@@ -175,6 +187,21 @@ async function commonDir(path: string): Promise<string | undefined> {
     const result = await git("git", ["-C", path, "rev-parse", "--path-format=absolute", "--git-common-dir"], { timeout: 5_000 });
     return canonicalPath(resolve(result.stdout.trim()));
   } catch { return undefined; }
+}
+
+/** 保留事件身份、路径、fork 边界和关系证明，避免未关联来源正文贯穿整轮分析。 */
+export function associationMetadata(source: ParsedHistorySource): ParsedHistorySource {
+  const adapter = historyAdapter(source.format ?? historyClient(source.client).format);
+  const cursor = cursorOf(source);
+  return { ...source, cursor: cursor ? json({ ...cursor, associationOnly: true, pending: [], adapterState: undefined }) : undefined,
+    events: source.events.map(event => {
+      const command = object(event.input).command;
+      const worktreeProof = event.tool === "CommandExecution" && Array.isArray(command)
+        && command.some(part => typeof part === "string" && /\bworktree\b/.test(part));
+      return { ...event, input: undefined, output: undefined,
+        fragments: event.fragments.map(fragment => ({ ...fragment, content: "" })),
+        ...(worktreeProof ? { input: event.input, output: event.output } : adapter?.relationshipEvidence?.(event)) };
+    }) };
 }
 
 export async function canonicalPath(path: string): Promise<string> {

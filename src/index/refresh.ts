@@ -3,7 +3,7 @@ import { realpath } from "node:fs/promises";
 import { isAbsolute, relative, resolve, sep } from "node:path";
 import type { AnalysisSnapshot, Gap, HistoryEvent, ParsedSource, SourceSummary } from "../contracts.js";
 import { eventFilePaths, getRepository, hashContent, mappingCacheKey, matchEvent, scanRepository } from "../analysis/index.js";
-import { associateSource, canonicalPath, discoverSources, historicalWorktrees, normalizeHistoryPath, parseSource, resolveSharedHistory } from "../history/index.js";
+import { associateSource, associationMetadata, canonicalPath, discoverSources, historicalWorktrees, normalizeHistoryPath, parseSource, resolveSharedHistory } from "../history/index.js";
 import type { DiscoverRoots, ParsedHistorySource, SourceLocation } from "../history/index.js";
 import { AnalysisStore } from "./store.js";
 import type { RefreshStats } from "./store.js";
@@ -26,6 +26,16 @@ function candidateSummary(location: SourceLocation): SourceSummary {
     hash: "", eventCount: 0, completeBytes: 0 };
 }
 
+function eventsBySource(events: HistoryEvent[]): Map<string, HistoryEvent[]> {
+  const grouped = new Map<string, HistoryEvent[]>();
+  for (const event of events) for (const sourceId of new Set(event.sources.map(reference => reference.sourceId))) {
+    const collection = grouped.get(sourceId);
+    if (collection) collection.push(event);
+    else grouped.set(sourceId, [event]);
+  }
+  return grouped;
+}
+
 /** 增量计算写入内存；成功后才提交缓存、结果版本和任务完成状态。 */
 export async function refreshRepository(store: AnalysisStore, jobId: string, roots?: DiscoverRoots, clearCache = false): Promise<void> {
   const job = store.getJob(jobId);
@@ -41,16 +51,24 @@ export async function refreshRepository(store: AnalysisStore, jobId: string, roo
       locations = await discoverSources(roots);
     }
     const tracked = store.getTrackedSources(repository.id);
-    const cached = clearCache ? [] : store.getParsedSources(repository.id);
+    const cached = clearCache ? [] : store.getParsedSourceLocations(repository.id);
     const manual = store.getManualAssociations(repository.id);
     const byPath = new Map(cached.map((source) => [source.path, source]));
     const byId = new Map(cached.map((source) => [source.sourceId, source]));
     const parsed: ParsedHistorySource[] = [];
     const parsedPaths = new Set<string>();
+    const metadataPaths = new Set<string>();
     const gaps: Gap[] = [];
     const stats: RefreshStats = { sourcesParsed: 0, parsedRecords: 0, mappingsComputed: 0, mappingsReused: 0 };
     const cwdAssociation = new Map<string, boolean>();
     const monitored = new Set(tracked.map((source) => source.sourceId));
+
+    async function retain(source: ParsedHistorySource): Promise<void> {
+      if ((source.cursor as { associationOnly?: boolean } | undefined)?.associationOnly) {
+        parsed.push(source); metadataPaths.add(source.path);
+      } else if (manual.has(source.sourceId) || monitored.has(source.sourceId) || (await associateSource(source, baseline)).associated) parsed.push(source);
+      else { parsed.push(associationMetadata(source)); metadataPaths.add(source.path); }
+    }
 
     async function possible(location: SourceLocation): Promise<boolean> {
       if (byPath.has(location.path) || (location.sourceId && (byId.has(location.sourceId) || manual.has(location.sourceId) || monitored.has(location.sourceId)))) return true;
@@ -73,9 +91,11 @@ export async function refreshRepository(store: AnalysisStore, jobId: string, roo
       if (parsedPaths.has(location.path)) return;
       parsedPaths.add(location.path);
       try {
-        const old = byPath.get(location.path) ?? (location.sourceId ? byId.get(location.sourceId) : undefined);
-        const source = await parseSource(location.path, location.client, old, location.format);
-        parsed.push(source);
+        const previous = byPath.get(location.path) ?? (location.sourceId ? byId.get(location.sourceId) : undefined);
+        const old = previous ? store.getParsedSource(repository.id, previous.sourceId, previous.path) : undefined;
+        const source = await parseSource(location.path, location.client, old, location.format,
+          { allowAssociationMetadata: !old || (!manual.has(old.sourceId) && !monitored.has(old.sourceId)) });
+        await retain(source);
         stats.sourcesParsed++;
         const cursor = source.cursor as { parsedRecords?: number } | undefined;
         stats.parsedRecords += cursor?.parsedRecords ?? 0;
@@ -99,8 +119,9 @@ export async function refreshRepository(store: AnalysisStore, jobId: string, roo
       if (gaps.some((gap) => gap.sourceId === old.sourceId && gap.kind === "source_missing")) continue;
       try {
         // 已移出发现目录但仍在原路径的来源可续读；真正 ENOENT 才从新版排除。
-        const source = await parseSource(old.path, old.client, clearCache ? undefined : byPath.get(old.path), old.format);
-        parsed.push(source);
+        const previous = byPath.get(old.path);
+        const source = await parseSource(old.path, old.client, previous ? store.getParsedSource(repository.id, previous.sourceId, previous.path) : undefined, old.format);
+        await retain(source);
         availableIds.add(source.sourceId);
         stats.sourcesParsed++;
         stats.parsedRecords += (source.cursor as { parsedRecords?: number } | undefined)?.parsedRecords ?? 0;
@@ -125,7 +146,35 @@ export async function refreshRepository(store: AnalysisStore, jobId: string, roo
         if (worktrees.some(tree => inside(tree.path, canonical))) await parse(location);
       }
     }
-    const shared = resolveSharedHistory(parsed);
+    // 历史 worktree 与跨会话证明可能使先前未知的来源相关；确认后再读完整正文。
+    let shared = resolveSharedHistory(parsed);
+    let grouped = eventsBySource(shared.events);
+    const required = new Set<string>();
+    for (const source of parsed) {
+      const relevant = grouped.get(source.sourceId) ?? [];
+      if (manual.has(source.sourceId) || (await associateSource({ ...source, events: relevant }, baseline, worktrees)).associated) required.add(source.sourceId);
+    }
+    for (;;) {
+      const size = required.size;
+      for (const relationship of shared.relationships) {
+        if (required.has(relationship.sourceId)) for (const parent of parsed) {
+          if (parent.sessionId === relationship.relationship.parentSessionId
+            && parent.client === parsed.find(source => source.sourceId === relationship.sourceId)?.client) required.add(parent.sourceId);
+        }
+      }
+      if (required.size === size) break;
+    }
+    let hydrated = false;
+    for (let index = 0; index < parsed.length; index++) {
+      const source = parsed[index]!;
+      if (metadataPaths.has(source.path) && required.has(source.sourceId)) {
+        parsed[index] = await parseSource(source.path, source.client, undefined, source.format);
+        metadataPaths.delete(source.path);
+        hydrated = true;
+        stats.parsedRecords += (parsed[index]!.cursor as { parsedRecords?: number } | undefined)?.parsedRecords ?? 0;
+      }
+    }
+    if (hydrated) { shared = resolveSharedHistory(parsed); grouped = eventsBySource(shared.events); }
     const describedSources = parsed.map(source => {
       if (shared.invalidatedParentSourceIds.includes(source.sourceId)) return { ...source, parentSessionId: undefined };
       const parents = new Set(shared.relationships.filter(item => item.sourceId === source.sourceId && item.resolved && item.relationship.kind === "subagent")
@@ -138,7 +187,7 @@ export async function refreshRepository(store: AnalysisStore, jobId: string, roo
     const sources: SourceSummary[] = [];
     const unassociated: SourceSummary[] = [];
     for (const source of describedSources) {
-      const relevant = shared.events.filter((event) => event.sources.some((reference) => reference.sourceId === source.sourceId));
+      const relevant = grouped.get(source.sourceId) ?? [];
       // 手动关联只补无 cwd 的相对路径，不覆盖已有工作目录或外部绝对路径。
       const constrained = manual.has(source.sourceId) ? relevant.map((event) => ({ ...event, cwd: event.cwd ?? source.cwd ?? repository.path })) : relevant;
       const association = await associateSource({ ...source, events: constrained }, baseline, worktrees);
@@ -186,7 +235,8 @@ export async function refreshRepository(store: AnalysisStore, jobId: string, roo
       sources: snapshotSources, events: selectedEvents, mappings: mappingEntries.map((entry) => entry.mapping),
       gaps: [...new Map(gaps.map((gap) => [JSON.stringify(gap), gap])).values()], createdAt: new Date().toISOString(), previousVersion: repository.version };
     store.updateJob(jobId, { phase: "发布完整结果", progress: 0.95 });
-    store.publish({ snapshot, sources: { version, sources, unassociated, gaps: snapshot.gaps }, parsed, mappings: mappingEntries, stats, clearCache, jobId });
+    store.publish({ snapshot, sources: { version, sources, unassociated, gaps: snapshot.gaps },
+      parsed, mappings: mappingEntries, stats, clearCache, jobId });
   } catch (error) {
     store.failJob(jobId, error instanceof Error ? error.message : String(error));
   }

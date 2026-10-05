@@ -93,6 +93,9 @@ export const codeflickerAdapter: HistoryAdapter = {
     return { source, complete: Boolean(source.cwd && isAbsolute(source.cwd)) };
   },
   readEvidence: readJsonlEvidence,
+  relationshipEvidence(event) {
+    return event.tool === "Agent" ? { output: { agentId: string(object(event.output).agentId) ?? null } } : {};
+  },
   resolveRelationships(source, sources) {
     if (!basename(source.path).startsWith("agent-")) return { relationships: [] };
     const candidates = new Map(sources.filter(candidate => candidate.client === source.client && candidate.format === source.format

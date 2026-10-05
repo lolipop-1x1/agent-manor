@@ -61,6 +61,8 @@ export interface PendingCall {
 }
 
 export interface HistoryCursor {
+  /** 只有归属元数据，不能作为完整证据续读；来源改变或确认相关时重新解析。 */
+  associationOnly?: boolean;
   ruleVersion: string;
   format: string;
   adapterState?: JsonValue;

@@ -206,6 +206,20 @@ export class AnalysisStore {
     return Array.from(rows, (row) => this.readPayload<ParsedSource>(row.json, repositoryId, "parsed", JSON.stringify([row.source_id, row.path])));
   }
 
+  getParsedSourceLocations(repositoryId: string): HistorySource[] {
+    const rows = this.database.prepare("SELECT json FROM source_cache WHERE repository_id=? ORDER BY path").iterate(repositoryId) as Iterable<JsonRow>;
+    return Array.from(rows, row => {
+      const decoded = JSON.parse(row.json) as ParsedSource & { partsFormat?: number; value: ParsedSource };
+      return this.sourceMetadata(decoded.partsFormat === 3 ? decoded.value : decoded);
+    });
+  }
+
+  getParsedSource(repositoryId: string, sourceId: string, path: string): ParsedSource | undefined {
+    const row = this.database.prepare("SELECT json FROM source_cache WHERE repository_id=? AND source_id=? AND path=?")
+      .get(repositoryId, sourceId, path) as JsonRow | undefined;
+    return row ? this.readPayload<ParsedSource>(row.json, repositoryId, "parsed", JSON.stringify([sourceId, path])) : undefined;
+  }
+
   getTrackedSources(repositoryId: string): HistorySource[] {
     return (this.database.prepare("SELECT json FROM tracked_sources WHERE repository_id=? ORDER BY source_id")
       .all(repositoryId) as JsonRow[]).map((row) => JSON.parse(row.json) as HistorySource);

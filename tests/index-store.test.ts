@@ -343,6 +343,37 @@ test("同commonDir worktree历史映射到当前相对路径，独立clone候选
   assert.equal(store.getSnapshot(repositoryId).events[0]!.path, "a.ts");
 }));
 
+test("未关联元数据在追加相关读取或后补历史 worktree 证明后恢复完整证据", async () => fixture(async ({ directory, repositoryPath, history, sourcePath, store, repositoryId, refresh }) => {
+  const worktree = join(directory, "deleted-worktree");
+  const orphan = join(history, "orphan.jsonl");
+  const concrete = (id: string, command: string, content: string, seconds: number, cwd?: string) => ({
+    type: "event_msg", timestamp: `2026-01-01T00:00:0${seconds}Z`, payload: { type: "item_completed", item: {
+      id, type: "CommandExecution", command: ["/bin/sh", "-c", command], cwd, status: "completed", exit_code: 0, formatted_output: content,
+    } },
+  });
+  await writeFile(orphan, encode([meta(undefined, "orphan"), concrete("read", `cat '${join(worktree, "a.ts")}'`, "alpha\nbeta\n", 3)]));
+  await refresh();
+  assert.equal(store.getSnapshot(repositoryId).events.length, 0);
+  assert.equal((store.getParsedSources(repositoryId)[0]!.cursor as { associationOnly: boolean }).associationOnly, true);
+  const porcelain = [repositoryPath, worktree].map(path => `worktree ${path}\nHEAD ${"a".repeat(40)}\nbranch refs/heads/main\n\n`).join("");
+  await writeFile(sourcePath, encode([meta(repositoryPath),
+    concrete("create", `git worktree add -b synthetic '${worktree}'`, "Preparing worktree (new branch 'synthetic')\nHEAD is now at abc123 fixture\n", 2, repositoryPath),
+    concrete("list", "git worktree list --porcelain", porcelain, 4, repositoryPath),
+  ]));
+  await refresh();
+  let coverage = buildCoverage(store.getSnapshot(repositoryId));
+  assert.equal(coverage.files[0]!.readCount, 1);
+  assert.equal(coverage.summary.readExact.lines, 2);
+  assert.equal(store.getSnapshot(repositoryId).events.find(event => event.kind === "read")!.fragments[0]!.content, "alpha\nbeta\n");
+  await appendFile(orphan, encode([concrete("new-read", `cat '${join(repositoryPath, "a.ts")}'`, "alpha\nbeta\n", 5)]));
+  await refresh();
+  coverage = buildCoverage(store.getSnapshot(repositoryId));
+  assert.equal(coverage.files[0]!.readCount, 2);
+  const eventIds = store.getSnapshot(repositoryId).events.map(event => event.id);
+  await refresh(true);
+  assert.deepEqual(store.getSnapshot(repositoryId).events.map(event => event.id), eventIds);
+}));
+
 test("从SQLite v1迁移补来源登记，缺失状态不会因升级丢失", async () => fixture(async ({ directory, repositoryPath, sourcePath, store, repositoryId, refresh }) => {
   await writeFile(sourcePath, encode([meta(repositoryPath), call(repositoryPath, "first"), output("first")]));
   await refresh();
