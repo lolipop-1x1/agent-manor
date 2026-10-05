@@ -1,0 +1,17 @@
+name: Public content
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  public-content:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4，固定已核验的提交
+      - run: node scripts/check-public-content.mjs
+        env:
+          AGENT_MANOR_PUBLIC_DENYLIST: ${{ secrets.PUBLIC_CONTENT_DENYLIST }}

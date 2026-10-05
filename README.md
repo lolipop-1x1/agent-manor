@@ -22,6 +22,8 @@ npm install /absolute/path/agent-manor-0.1.0.tgz
 
 开发者在源码仓库使用 Node 24 执行 `npm ci`、`npm run check`、`npm test`、`npm pack`；`npm pack` 会先构建并检查交付入口。
 
+贡献前执行 `npm run check:public`，公开示例使用人工合成数据。个人与业务资料、真实历史和数据库不得提交；详细边界及本地禁用词配置见 [公开内容约定](docs/agents/public-content.md)。
+
 登记成功后，将 JSON 中的 `repository.id` 用于后续查询：
 
 ```sh

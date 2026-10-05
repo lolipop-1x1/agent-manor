@@ -2,3 +2,9 @@
 node_modules/
 dist/
 *.tgz
+.local/
+.env
+.env.*
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm

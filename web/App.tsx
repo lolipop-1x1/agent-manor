@@ -352,7 +352,7 @@ export function App() {
     </div>}
     {!repository && !initialLoading && <div className="first-register"><button className="button primary" onClick={() => setRegisterOpen(true)}><Plus size={17} />登记本机仓库</button></div>}
     <Modal open={registerOpen} onOpenChange={setRegisterOpen} fallbackFocus={repositoryTrigger} title="登记本机 Git 仓库" description="输入当前工作区的绝对路径。登记后自动发现历史并创建分析任务。">
-      <form className="register-form" onSubmit={event => void register(event)}><label>仓库绝对路径<input value={registerPath} onChange={event => setRegisterPath(event.target.value)} placeholder="/workspace/projects/仓库" autoComplete="off" required /></label>{registerError && <Notice danger>{registerError}</Notice>}<p className="muted small">当前工作区包含未提交修改；同一仓库的 worktree 分别建立内容基线。</p><div className="dialog-end"><button type="button" className="button subtle" onClick={() => setRegisterOpen(false)}>取消</button><button type="submit" className="button primary" disabled={registering || !registerPath.trim()}>{registering ? "正在登记…" : "登记并分析"}</button></div></form>
+      <form className="register-form" onSubmit={event => void register(event)}><label>仓库绝对路径<input value={registerPath} onChange={event => setRegisterPath(event.target.value)} placeholder="/absolute/path/to/repository" autoComplete="off" required /></label>{registerError && <Notice danger>{registerError}</Notice>}<p className="muted small">当前工作区包含未提交修改；同一仓库的 worktree 分别建立内容基线。</p><div className="dialog-end"><button type="button" className="button subtle" onClick={() => setRegisterOpen(false)}>取消</button><button type="submit" className="button primary" disabled={registering || !registerPath.trim()}>{registering ? "正在登记…" : "登记并分析"}</button></div></form>
     </Modal>
   </Tooltip.Provider>;
 }

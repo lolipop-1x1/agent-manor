@@ -32,7 +32,9 @@ Status: resolved
 
 ## 已作决策
 
-- 2026-10-05：[配置中心 CodeFlicker 数据复核](issues/16-private-data-audit.md) 已完成。全仓读取 62.9%、biz 子目录 64.4% 与独立范围并集一致；规则 8 修复无 cwd 的相对请求归属，恢复两条真实修改活动。130/130 回归、类型与构建通过，真实后台重建／增量刷新、CLI/API 和页面验收一致；证据边界见 [数据复核记录](../../docs/validation/private-data-audit.md)。
+- 2026-10-05：[开源内容边界与当前文件清理](issues/17-public-content.md) 已完成。真实身份、业务资料与分析标识不进入公开内容；保留公开客户端及依赖名称。锁文件使用公开 registry，新增公开检查及本地禁用词，131 项测试、公开安装与打包验收通过。Git 历史和公开发布仍须按独立方案处理，不能以普通提交代替历史清理。
+
+- 2026-10-05：[CodeFlicker 数据复核](issues/16-codeflicker-data-audit.md) 已完成。客户端与目录筛选、当前基线及读取范围均与独立并集一致；规则 8 修复无 cwd 的相对请求归属，恢复两条真实修改活动。130/130 回归、类型与构建通过，真实后台重建／增量刷新、CLI/API 和页面验收一致；证据边界见 [数据复核记录](../../docs/validation/codeflicker-data-audit.md)。
 
 - 2026-10-05：[真实历史刷新 Worker 内存耗尽](issues/15-refresh-worker-memory.md) 已修复。未关联来源只缓存归属元数据，确认相关后恢复完整证据；旧缓存按来源读取、事件按来源查询，Worker 异常后下一次刷新可重建。128/128 回归、类型与构建通过，默认真实历史首次重建及约 74 秒增量刷新成功，CLI/API 和页面验收一致；记录见 [内存修复验收](../../docs/validation/refresh-worker-memory.md)。
 
@@ -97,7 +99,7 @@ Status: resolved
 
 ## 已核对的事实
 
-参考仓库：`/workspace/codestudy/agentsview`，HEAD 为 `1148d7f25e0cd89e3fc1c716e092d76172770a99`。本轮只读源码，未运行产品、构建、测试或读取个人历史。
+参考仓库：`agentsview` 的本地检出，HEAD 为 `1148d7f25e0cd89e3fc1c716e092d76172770a99`。本轮只读源码，未运行产品、构建、测试或读取个人历史。
 
 - 技术栈是 Go、SQLite、Svelte 和 TypeScript。前端资源通过 `internal/web/embed.go` 编译嵌入；正式构建使用 CGO 和 FTS5 标签。
 - 主档案数据库使用 `mattn/go-sqlite3`。`modernc.org/sqlite` 仅用于特定向量数据库后端，不能据此说主程序不依赖 CGO。
