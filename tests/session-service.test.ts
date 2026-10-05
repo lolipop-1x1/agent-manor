@@ -63,7 +63,7 @@ test("全局 HTTP 和串行 Worker 完整发布三客户端、无项目会话及
     const locate = await apiRequest<{ target: { sessionId: string; messageId?: string } }>(service.instance, "/sessions/locate?client=codex&clientSessionId=demo-codex&callId=read-entry");
     assert.equal(locate.target.sessionId, codex.id);
     assert.ok(locate.target.messageId);
-    for (const query of ["page=0", "kinds=unknown", "client=unknown", "from=invalid", "pageSize=999"]) {
+    for (const query of ["page=0", "kinds=unknown", "client=unknown", "from=invalid", "pageSize=999", "includeSubagents=wrong"]) {
       await assert.rejects(apiRequest(service.instance, `/sessions?${query}`), { code: "INVALID_INPUT" });
     }
     await assert.rejects(apiRequest(service.instance, "/sessions/search"), { code: "INVALID_INPUT" });

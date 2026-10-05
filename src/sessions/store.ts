@@ -5,6 +5,7 @@ import { dirname, resolve } from "node:path";
 import type { Gap } from "../contracts.js";
 import type { SessionIndexStatus, SessionJob, SessionListResult, SessionMessage, SessionMessageQuery, SessionMessageResult, SessionProfile, SessionQuery, SessionSearchResult, SessionSink, SessionSourceMeta, SessionSummary, SessionUsage } from "../session-contracts.js";
 import { StoreError } from "../index/store.js";
+import { sessionTitle } from "./title.js";
 
 interface JsonRow { json: string }
 interface MessageRow extends JsonRow { text: string }
@@ -155,9 +156,9 @@ export class SessionStore {
 
   finishRevision(id: string, meta: SessionSourceMeta): void {
     const counts = this.database.prepare("SELECT COUNT(*) AS messages,COUNT(DISTINCT CASE WHEN kind='user' THEN turn_id END) AS turns FROM session_messages WHERE revision=?").get(id) as { messages: number; turns: number };
-    const summary = { ...meta, messageCount: counts.messages, turnCount: counts.turns };
+    const summary = sessionTitle({ ...meta, messageCount: counts.messages, turnCount: counts.turns });
     this.database.prepare("UPDATE session_revisions SET session_id=?,client=?,project=?,title=?,started_at=?,updated_at=?,json=? WHERE id=?")
-      .run(meta.id, meta.client, meta.project ?? null, meta.title, meta.startedAt ?? null, meta.updatedAt ?? null, JSON.stringify(summary), id);
+      .run(meta.id, meta.client, meta.project ?? null, summary.title, meta.startedAt ?? null, meta.updatedAt ?? null, JSON.stringify(summary), id);
   }
 
   removeRevision(id: string): void { this.database.prepare("DELETE FROM session_revisions WHERE id=?").run(id); }
@@ -262,9 +263,19 @@ export class SessionStore {
 
   private summary(row: JsonRow, version: string): SessionSummary {
     const { path: _path, sourceId: _sourceId, ...summary } = decode<SessionSourceMeta>(row);
-    const relation = this.database.prepare("SELECT parent FROM session_version_relations WHERE version=? AND child=?").get(version, summary.id) as { parent: string } | undefined;
-    if (relation) { summary.parentSessionId = relation.parent; summary.relationship = "child"; }
-    return summary;
+    const relation = this.database.prepare(`SELECT relation.parent,r.json FROM session_version_relations relation
+      JOIN session_version_sessions v ON v.version=relation.version AND v.session_id=relation.parent
+      JOIN session_revisions r ON r.id=v.revision WHERE relation.version=? AND relation.child=?`)
+      .get(version, summary.id) as (JsonRow & { parent: string }) | undefined;
+    if (relation) {
+      summary.parentSessionId = relation.parent; summary.relationship = "child";
+      summary.parentTitle = sessionTitle(decode<SessionSummary>(relation)).title;
+    } else if (summary.relationship === "fork" && summary.parentSessionId) {
+      const parent = this.database.prepare(`SELECT r.json FROM session_version_sessions v JOIN session_revisions r ON r.id=v.revision
+        WHERE v.version=? AND v.session_id=?`).get(version, summary.parentSessionId) as JsonRow | undefined;
+      if (parent) summary.parentTitle = sessionTitle(decode<SessionSummary>(parent)).title;
+    }
+    return sessionTitle(summary);
   }
 
   private filters(query: SessionQuery): { sql: string; values: SqlValue[] } {
@@ -283,6 +294,8 @@ export class SessionStore {
     const version = this.version(query.version);
     const { page, pageSize } = paging(query);
     const filter = this.filters(query);
+    if (!query.includeSubagents) filter.sql += ` AND NOT EXISTS (SELECT 1 FROM session_version_relations relation
+      WHERE relation.version=v.version AND relation.child=v.session_id)`;
     if (query.q?.trim()) {
       const kinds = kindsOf(query);
       filter.sql += ` AND (r.title LIKE ? ESCAPE '\\' OR EXISTS(SELECT 1 FROM session_messages m WHERE m.revision=r.id AND m.kind IN (${kinds.map(() => "?").join(",") || "NULL"}) AND m.text LIKE ? ESCAPE '\\'))`;
@@ -484,8 +497,11 @@ export class SessionStore {
           resources.set(key, resource);
         }
       }
+      // 分开按消息身份和轮次关联，让每次排除检查命中现有索引，避免反复扫描整个会话。
       const usageRows = this.database.prepare(`SELECT u.json FROM session_usage u WHERE u.revision=? AND NOT EXISTS
-        (SELECT 1 FROM session_messages m WHERE m.revision=u.revision AND m.copied=1 AND (m.id=u.message_id OR (u.message_id IS NULL AND m.turn_id=u.turn_id))) ORDER BY u.rowid`).iterate(revision) as Iterable<JsonRow>;
+        (SELECT 1 FROM session_messages m WHERE m.revision=u.revision AND m.copied=1 AND m.id=u.message_id)
+        AND (u.message_id IS NOT NULL OR NOT EXISTS
+          (SELECT 1 FROM session_messages m WHERE m.revision=u.revision AND m.copied=1 AND m.turn_id=u.turn_id)) ORDER BY u.rowid`).iterate(revision) as Iterable<JsonRow>;
       for (const row of usageRows) {
         const usage = decode<SessionUsage>(row);
         profile.usage.requests += 1;

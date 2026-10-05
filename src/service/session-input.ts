@@ -6,6 +6,7 @@ export function sessionQuery(raw: Record<string, unknown>): SessionQuery {
   const query: SessionQuery = { client, from, to, version, page: integer(raw.page, "page", 1, 1_000_000),
     pageSize: integer(raw.pageSize, "pageSize", 50, 200) };
   for (const key of ["project", "q"] as const) query[key] = textValue(raw[key], key);
+  if (raw.includeSubagents !== undefined) query.includeSubagents = queryBoolean(raw.includeSubagents, "includeSubagents");
   const kinds = textValue(raw.kinds, "kinds");
   if (kinds) {
     const values = kinds.split(",");

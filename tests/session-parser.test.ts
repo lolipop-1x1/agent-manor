@@ -61,6 +61,29 @@ test("Codex 响应正文优先于事件投影，保留明确终答、模型、�
   assert.ok(sample.messages.some(message => message.id === sample.usages[0]?.messageId));
 });
 
+test("子任务标题沿用正式名称或请求，缺失时采用原生任务路径、昵称与编号", async () => {
+  const spawn = { parent_thread_id: "synthetic-parent", agent_path: "/root/check_queries", agent_nickname: "Fixture Agent" };
+  const context = user("context", "# AGENTS.md instructions\n<INSTRUCTIONS>合成项目规则</INSTRUCTIONS>");
+  const native = meta({ source: { subagent: { thread_spawn: spawn } } });
+  const task = await parsed("codex", [native, context]);
+  assert.equal(task.summary.title, "check_queries");
+  assert.equal(task.summary.titleOrigin, "task");
+  assert.equal(task.summary.agentName, "Fixture Agent");
+  const named = await parsed("codex", [meta({ parent_thread_id: "synthetic-parent", agent_nickname: "Fixture Agent" }), context]);
+  assert.equal(named.summary.title, "Fixture Agent");
+  assert.equal(named.summary.titleOrigin, "agent");
+  const numbered = await parsed("codex", [meta({ parent_thread_id: "synthetic-parent" }), context]);
+  assert.equal(numbered.summary.title, "子会话 -session");
+  const recorded = await parsed("codex", [{ ...native, payload: { ...native.payload, title: "正式子任务" } }, context]);
+  assert.equal(recorded.summary.title, "正式子任务");
+  assert.equal(recorded.summary.titleOrigin, "recorded");
+  const request = await parsed("codex", [native, user("task", "核对缓存查询")]);
+  assert.equal(request.summary.title, "核对缓存查询");
+  assert.equal(request.summary.titleOrigin, "first_user");
+  const main = await parsed("codex", [meta({ agent_path: "/root", agent_nickname: "Fixture Agent" }), context]);
+  assert.equal(main.summary.title, "未命名会话", "没有子关系时不把 Agent 身份当作会话标题");
+});
+
 test("Codex 后备标题跳过自动注入的项目说明，保留原始消息", async () => {
   const instructions = "# AGENTS.md instructions for /workspace/demo\n\n<INSTRUCTIONS>\n使用中文回答\n</INSTRUCTIONS>";
   const sample = await parsed("codex", [meta(), user("instructions", instructions), user("request", "检查标题显示")]);

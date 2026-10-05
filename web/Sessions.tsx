@@ -20,6 +20,15 @@ const activeJob = (job?: SessionJob) => job?.status === "queued" || job?.status 
 const formatCount = (value: number) => value.toLocaleString("zh-CN");
 const dateLabel = (value?: string) => value ? new Date(value).toLocaleString("zh-CN", { hour12: false }) : "时间未记录";
 const shortProject = (value?: string) => value ? value.split(/[\\/]/).filter(Boolean).at(-1) ?? value : "无项目";
+const titleOrigins: Record<SessionSummary["titleOrigin"], string> = { recorded: "记录标题", first_user: "首条有效请求", task: "任务路径名称", agent: "Agent 名称", fallback: "后备编号" };
+
+function SessionRelationship({ session }: { session: SessionSummary }) {
+  if (!session.relationship) return null;
+  return <small className="session-relationship" title={session.parentTitle ? `父会话：${session.parentTitle}` : "父会话不可用或关系尚未确认"}>
+    <span className="session-badge">{session.relationship === "fork" ? "分叉" : "子会话"}</span>
+    <span>{session.parentTitle ? `属于 ${session.parentTitle}` : "父关系未确认"}</span>
+  </small>;
+}
 
 function SearchHitList({ hits, total, page, pageSize, onPage, onSelect, title }: {
   hits: SessionSearchHit[]; total: number; page: number; pageSize: number; onPage: (page: number) => void; onSelect: (hit: SessionSearchHit) => void; title: string;
@@ -29,6 +38,7 @@ function SearchHitList({ hits, total, page, pageSize, onPage, onSelect, title }:
     {hits.map((hit, index) => <button className="session-hit" key={`${hit.session.id}-${hit.messageId ?? hit.kind}-${index}`} onClick={() => onSelect(hit)}>
       <span className="session-hit-kind">{hit.kind === "title" ? "标题" : kindLabels[hit.kind]}</span>
       <strong>{hit.session.title}</strong>
+      <SessionRelationship session={hit.session} />
       <small>{clientName(hit.session.client)} · {shortProject(hit.session.project)} · {dateLabel(hit.session.updatedAt)}</small>
       <span className="session-hit-snippet">{hit.snippet}</span>
     </button>)}
@@ -60,6 +70,7 @@ function TurnTimeline({ turn, position, mode, focusMessageId, project, onMap, on
 
 export default function Sessions({ active, target, onMap }: { active: boolean; target?: Target; onMap: (path?: string, project?: string) => void }) {
   const [status, setStatus] = useState<SessionIndexStatus | null>(null);
+  const [statusReload, setStatusReload] = useState(-1);
   const [statusLoading, setStatusLoading] = useState(false);
   const [statusError, setStatusError] = useState<string | null>(null);
   const [sessionJob, setSessionJob] = useState<SessionJob | undefined>();
@@ -102,6 +113,7 @@ export default function Sessions({ active, target, onMap }: { active: boolean; t
   const [profileLoading, setProfileLoading] = useState(false);
   const [profileError, setProfileError] = useState<string | null>(null);
   const [includeChildren, setIncludeChildren] = useState(false);
+  const [includeSubagents, setIncludeSubagents] = useState(false);
   const [profileRetry, setProfileRetry] = useState(0);
   const [leftCollapsed, setLeftCollapsed] = useState(false);
   const [rightCollapsed, setRightCollapsed] = useState(false);
@@ -121,6 +133,7 @@ export default function Sessions({ active, target, onMap }: { active: boolean; t
   const pendingHit = useRef<"first" | "last" | undefined>(undefined);
   const pageScroll = useRef(true);
   const evidenceRequest = useRef<AbortController | undefined>(undefined);
+  const previousJob = useRef<SessionJob | undefined>(undefined);
   useEffect(() => () => evidenceRequest.current?.abort(), []);
 
   useEffect(() => {
@@ -131,7 +144,7 @@ export default function Sessions({ active, target, onMap }: { active: boolean; t
     const timer = setTimeout(() => setDebouncedLocalQuery(localQuery.trim()), 200);
     return () => clearTimeout(timer);
   }, [localQuery]);
-  useEffect(() => { setListPage(1); setGlobalSearchPage(1); }, [client, project, from, to, debouncedGlobalQuery, includeProcess]);
+  useEffect(() => { setListPage(1); setGlobalSearchPage(1); }, [client, project, from, to, debouncedGlobalQuery, includeProcess, includeSubagents]);
   useEffect(() => { setLocalSearchPage(1); }, [selectedSessionId, debouncedLocalQuery, includeProcess]);
 
   useEffect(() => {
@@ -142,14 +155,17 @@ export default function Sessions({ active, target, onMap }: { active: boolean; t
     void request<SessionIndexStatus>("/sessions/status", { signal: controller.signal })
       .then(result => {
         setStatus(result);
+        setStatusReload(reload);
         setSessionJob(current => activeJob(current) ? current : result.job);
       })
-      .catch(error => { if (!isAborted(error)) setStatusError(errorMessage(error)); })
+      .catch(error => { if (!isAborted(error)) { setStatusError(errorMessage(error)); setStatusReload(reload); } })
       .finally(() => { if (!controller.signal.aborted) setStatusLoading(false); });
     return () => controller.abort();
   }, [active, reload]);
 
   const invalidDates = !!from && !!to && from > to;
+  // 先确认本次加载的结果版本，避免无版本请求被随后到达的状态响应取消并重复计算。
+  const indexReady = !!status?.version && statusReload === reload;
   const queryKinds = useMemo(() => debouncedGlobalQuery ? searchKinds(includeProcess) : undefined, [debouncedGlobalQuery, includeProcess]);
   const listQuery = useMemo(() => sessionParams({
     client: client === "all" ? undefined : client,
@@ -161,10 +177,11 @@ export default function Sessions({ active, target, onMap }: { active: boolean; t
     page: listPage,
     pageSize: PAGE_SIZE,
     version: status?.version,
-  }), [client, project, from, to, debouncedGlobalQuery, queryKinds, listPage, status?.version]);
+    includeSubagents,
+  }), [client, project, from, to, debouncedGlobalQuery, queryKinds, listPage, status?.version, includeSubagents]);
 
   useEffect(() => {
-    if (!active || invalidDates) return;
+    if (!active || !indexReady || invalidDates) return;
     const controller = new AbortController();
     setListLoading(true);
     setListError(null);
@@ -173,7 +190,7 @@ export default function Sessions({ active, target, onMap }: { active: boolean; t
       .catch(error => { if (!isAborted(error)) setListError(errorMessage(error)); })
       .finally(() => { if (!controller.signal.aborted) setListLoading(false); });
     return () => controller.abort();
-  }, [active, invalidDates, listQuery, reload]);
+  }, [active, indexReady, invalidDates, listQuery, reload]);
 
   const globalSearchQuery = useMemo(() => sessionParams({
     client: client === "all" ? undefined : client,
@@ -188,7 +205,7 @@ export default function Sessions({ active, target, onMap }: { active: boolean; t
   }), [client, project, from, to, debouncedGlobalQuery, includeProcess, globalSearchPage, status?.version]);
 
   useEffect(() => {
-    if (!active || !debouncedGlobalQuery || invalidDates) { setGlobalSearch(null); setGlobalSearchError(null); return; }
+    if (!active || !indexReady || !debouncedGlobalQuery || invalidDates) { setGlobalSearch(null); setGlobalSearchError(null); return; }
     const controller = new AbortController();
     setGlobalSearchLoading(true);
     setGlobalSearchError(null);
@@ -197,7 +214,7 @@ export default function Sessions({ active, target, onMap }: { active: boolean; t
       .catch(error => { if (!isAborted(error)) setGlobalSearchError(errorMessage(error)); })
       .finally(() => { if (!controller.signal.aborted) setGlobalSearchLoading(false); });
     return () => controller.abort();
-  }, [active, debouncedGlobalQuery, globalSearchQuery, invalidDates, reload]);
+  }, [active, indexReady, debouncedGlobalQuery, globalSearchQuery, invalidDates, reload]);
 
   const messageQuery = useMemo(() => sessionParams({
     version: status?.version,
@@ -210,6 +227,7 @@ export default function Sessions({ active, target, onMap }: { active: boolean; t
   }), [status?.version, focusMessageId, messagePage, mode, turnPosition]);
   useEffect(() => {
     if (!active || !selectedSessionId) { setMessageData(null); setMessageLoading(false); setMessageError(null); return; }
+    if (!indexReady) return;
     const controller = new AbortController();
     setMessageLoading(true);
     setMessageError(null);
@@ -234,7 +252,7 @@ export default function Sessions({ active, target, onMap }: { active: boolean; t
       .catch(error => { if (!isAborted(error)) setMessageError(errorMessage(error)); })
       .finally(() => { if (!controller.signal.aborted) setMessageLoading(false); });
     return () => controller.abort();
-  }, [active, selectedSessionId, messageQuery, focusMessageId, reload, messageRetry]);
+  }, [active, indexReady, selectedSessionId, messageQuery, focusMessageId, reload, messageRetry]);
 
   useLayoutEffect(() => {
     if (!active || !messageData || messageData.session.id !== selectedSessionId || messageDataKey !== `${selectedSessionId}${messageQuery}` || !readingPane.current) return;
@@ -259,7 +277,7 @@ export default function Sessions({ active, target, onMap }: { active: boolean; t
   const localSearchQuery = useMemo(() => sessionParams({ q: debouncedLocalQuery || undefined, kinds: searchKinds(includeProcess),
     sessionId: selectedSessionId, page: localSearchPage, pageSize: 12, version: status?.version }), [debouncedLocalQuery, includeProcess, selectedSessionId, localSearchPage, status?.version]);
   useEffect(() => {
-    if (!active || !selectedSessionId || !debouncedLocalQuery) { setLocalSearch(null); setLocalSearchError(null); return; }
+    if (!active || !indexReady || !selectedSessionId || !debouncedLocalQuery) { setLocalSearch(null); setLocalSearchError(null); return; }
     const controller = new AbortController();
     setLocalSearchLoading(true);
     setLocalSearchError(null);
@@ -268,11 +286,12 @@ export default function Sessions({ active, target, onMap }: { active: boolean; t
       .catch(error => { if (!isAborted(error)) setLocalSearchError(errorMessage(error)); })
       .finally(() => { if (!controller.signal.aborted) setLocalSearchLoading(false); });
     return () => controller.abort();
-  }, [active, selectedSessionId, debouncedLocalQuery, localSearchQuery, reload]);
+  }, [active, indexReady, selectedSessionId, debouncedLocalQuery, localSearchQuery, reload]);
 
   const profileQuery = useMemo(() => sessionParams({ version: status?.version, includeChildren }), [status?.version, includeChildren]);
   useEffect(() => {
     if (!active || !selectedSessionId) { setProfile(null); setProfileLoading(false); setProfileError(null); return; }
+    if (!indexReady) return;
     const controller = new AbortController();
     setProfileLoading(true);
     setProfileError(null);
@@ -282,7 +301,7 @@ export default function Sessions({ active, target, onMap }: { active: boolean; t
       .catch(error => { if (!isAborted(error)) setProfileError(errorMessage(error)); })
       .finally(() => { if (!controller.signal.aborted) setProfileLoading(false); });
     return () => controller.abort();
-  }, [active, selectedSessionId, profileQuery, reload, profileRetry]);
+  }, [active, indexReady, selectedSessionId, profileQuery, reload, profileRetry]);
 
   useEffect(() => {
     const job = sessionJob;
@@ -301,7 +320,9 @@ export default function Sessions({ active, target, onMap }: { active: boolean; t
   }, [active, sessionJob?.id, sessionJob?.status]);
 
   useEffect(() => {
-    if (sessionJob?.status === "complete") setReload(value => value + 1);
+    // 已完成的旧任务只是状态，只有本次观察到的刷新完成才重新读取索引。
+    if (sessionJob?.status === "complete" && previousJob.current?.id === sessionJob.id && activeJob(previousJob.current)) setReload(value => value + 1);
+    previousJob.current = sessionJob;
   }, [sessionJob?.id, sessionJob?.status]);
 
   useEffect(() => {
@@ -325,7 +346,7 @@ export default function Sessions({ active, target, onMap }: { active: boolean; t
   }, [target?.sessionId, selectedSessionId, sessionList]);
 
   const selectedMessageData = messageData?.session.id === selectedSessionId ? messageData : undefined;
-  const selectedSession = selectedMessageData?.session ?? selectedSummary;
+  const selectedSession = selectedMessageData?.session ?? selectedSummary ?? sessionList?.sessions.find(session => session.id === selectedSessionId);
   const turns = useMemo(() => groupedTurns(selectedMessageData?.messages ?? []), [selectedMessageData]);
   const currentMessage = selectedMessageData?.messages.find(message => message.id === focusMessageId);
   const visibleGlobalSearch = globalQuery.trim() === debouncedGlobalQuery && globalSearchKey === globalSearchQuery ? globalSearch : null;
@@ -464,6 +485,7 @@ export default function Sessions({ active, target, onMap }: { active: boolean; t
         <div id="session-list-content" className="sidebar-content" hidden={leftCollapsed}>
           <label className="session-search-field"><MagnifyingGlass size={16} aria-hidden="true" /><span className="sr-only">搜索会话标题和消息</span><input value={globalQuery} onChange={event => setGlobalQuery(event.target.value)} placeholder="搜索标题或消息" />{globalQuery && <button type="button" aria-label="清除搜索" onClick={() => setGlobalQuery("")}>×</button>}</label>
           <label className="session-process-toggle"><input type="checkbox" checked={includeProcess} onChange={event => setIncludeProcess(event.target.checked)} /><span>搜索过程记录</span><small>思考、工具、系统与压缩</small></label>
+          <label className="session-process-toggle"><input type="checkbox" aria-label="显示子 Agent 会话" checked={includeSubagents} onChange={event => setIncludeSubagents(event.target.checked)} /><span>显示子 Agent 会话</span><small>仅影响列表，搜索始终包含子会话</small></label>
           <div className="session-filters">
             <label><span className="sr-only">客户端</span><select aria-label="筛选客户端" value={client} onChange={event => setClient(event.target.value as Client | "all")}>
               <option value="all">全部客户端</option>{CLIENTS.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}
@@ -474,11 +496,11 @@ export default function Sessions({ active, target, onMap }: { active: boolean; t
           </div>
           <div className="session-date-filters"><label>从<input aria-label="起始日期" type="date" value={from} onChange={event => setFrom(event.target.value)} /></label><label>到<input aria-label="截止日期" type="date" value={to} onChange={event => setTo(event.target.value)} /></label></div>
           {invalidDates && <p className="session-filter-error" role="alert">起始日期不能晚于截止日期。</p>}
-          <div className="session-list-meta"><span>{sessionList ? `${formatCount(sessionList.total)} 个会话` : status ? `${formatCount(status.sessionCount)} 个会话` : "会话列表"}</span>
+          <div className="session-list-meta"><span>{debouncedGlobalQuery ? visibleGlobalSearch ? `${formatCount(visibleGlobalSearch.total)} 条命中` : "搜索历史" : sessionList ? `${formatCount(sessionList.total)} 个会话` : "会话列表"}</span>
             <button className="icon-button" aria-label="刷新会话索引" title="刷新会话索引" disabled={refreshing || activeJob(sessionJob)} onClick={submitRefresh}><ArrowClockwise size={16} className={refreshing || activeJob(sessionJob) ? "is-spinning" : ""} /></button>
           </div>
           {status?.stale && <Notice>当前索引已过期，保留上一版可用结果；刷新完成后切换到新版本。</Notice>}
-          {(statusError || jobError) && <Notice danger>{statusError ?? jobError}</Notice>}
+          {(statusError || jobError) && <Notice danger action={statusError ? <button className="text-button" onClick={() => setReload(value => value + 1)}>重试</button> : undefined}>{statusError ?? jobError}</Notice>}
           {statusLoading && !status && <p className="muted" role="status">正在读取索引状态…</p>}
           {(sessionJob && activeJob(sessionJob)) && <div className="session-job" role="status"><span>{sessionJob.phase || "正在刷新会话"}</span><progress max="1" value={sessionJob.progress} /><small>{Math.round(sessionJob.progress * 100)}%</small></div>}
           {sessionJob?.status === "failed" && <Notice danger>{sessionJob.error ?? "会话刷新失败；上次成功索引仍可查看。"}</Notice>}
@@ -489,7 +511,7 @@ export default function Sessions({ active, target, onMap }: { active: boolean; t
             {globalSearchLoading && debouncedGlobalQuery && <p className="session-search-status" role="status">正在搜索历史…</p>}
             {visibleGlobalSearch && debouncedGlobalQuery && <SearchHitList title="全局搜索命中" hits={visibleGlobalSearch.hits} total={visibleGlobalSearch.total} page={visibleGlobalSearch.page} pageSize={visibleGlobalSearch.pageSize} onPage={setGlobalSearchPage} onSelect={selectHit} />}
             {!debouncedGlobalQuery && sessionList?.sessions.map(session => <button key={session.id} className={`session-list-item${session.id === selectedSessionId ? " is-selected" : ""}`} aria-current={session.id === selectedSessionId ? "true" : undefined} onClick={() => selectSession(session)}>
-              <ChatCircle size={17} aria-hidden="true" /><span className="session-list-copy"><strong>{session.title}</strong><small>{clientName(session.client)} · {shortProject(session.project)} · {dateLabel(session.updatedAt)}</small><small>{formatCount(session.messageCount)} 条消息 · {formatCount(session.turnCount)} 轮{session.models.length ? ` · ${session.models.join("、")}` : ""}</small></span><CaretRight size={15} aria-hidden="true" />
+              <ChatCircle size={17} aria-hidden="true" /><span className="session-list-copy"><strong title={session.title}>{session.title}</strong><SessionRelationship session={session} /><small>{clientName(session.client)} · {shortProject(session.project)} · {dateLabel(session.updatedAt)}</small><small>{formatCount(session.messageCount)} 条消息 · {formatCount(session.turnCount)} 轮{session.models.length ? ` · ${session.models.join("、")}` : ""}</small></span><CaretRight size={15} aria-hidden="true" />
             </button>)}
             {!debouncedGlobalQuery && !listLoading && !listError && sessionList?.sessions.length === 0 && <div className="session-empty-list"><ChatCircle size={26} aria-hidden="true" /><strong>{debouncedGlobalQuery || client !== "all" || project !== "all" || from || to ? "没有匹配的会话" : "还没有会话记录"}</strong>
               <p>{status?.sessionCount ? "调整筛选或搜索条件。" : "刷新本机可发现的会话来源以建立索引。"}</p>{!status?.sessionCount && <button className="button primary" disabled={refreshing || activeJob(sessionJob)} onClick={() => void refresh()}>刷新历史</button>}
@@ -503,11 +525,12 @@ export default function Sessions({ active, target, onMap }: { active: boolean; t
       <main className="sessions-main" aria-label="会话消息">
         <div className="session-main-controls">
           <div className="session-compact-actions"><button className="button subtle" aria-expanded={compactPanel === "list"} onClick={() => { setLeftCollapsed(false); setCompactPanel(value => value === "list" ? null : "list"); }}>会话列表</button><button className="button subtle" aria-expanded={compactPanel === "profile"} onClick={() => { setRightCollapsed(false); setCompactPanel(value => value === "profile" ? null : "profile"); }}>会话统计</button></div>
-          {selectedSession?.parentSessionId && <button className="text-button session-parent-link" onClick={() => selectSession(selectedSession.parentSessionId!)}><CaretLeft size={13} />返回父会话</button>}
+          {selectedSession?.parentSessionId && selectedSession.parentTitle && <button className="text-button session-parent-link" title={selectedSession.parentTitle} onClick={() => selectSession(selectedSession.parentSessionId!)}><CaretLeft size={13} />返回父会话</button>}
           <div className="sessions-main-heading">
             <div><p className="eyebrow" title={selectedSession?.project}>{selectedSession ? <>{clientName(selectedSession.client)} · {shortProject(selectedSession.project)}{selectedSession.projectOrigin === "tool_path" && <span className="session-project-evidence">文件活动关联</span>}</> : "全部本机历史"}</p>
-              <h1 title={selectedSession?.title}>{selectedSession?.title ?? "选择会话查看历史"}</h1>
+              <h1 title={selectedSession?.title}>{selectedSession?.title ?? (selectedSessionId ? "正在加载会话…" : "选择会话查看历史")}</h1>
               {selectedSession && <p className="session-main-meta">{dateLabel(selectedSession.startedAt)} · {formatCount(selectedSession.messageCount)} 条消息 · {formatCount(selectedSession.turnCount)} 轮{selectedSession.relationship ? ` · ${selectedSession.relationship === "fork" ? "分叉会话" : "子会话"}` : ""}</p>}
+              {selectedSession?.relationship && <p className="session-main-meta">标题来源：{titleOrigins[selectedSession.titleOrigin]} · {selectedSession.parentTitle ? `父会话：${selectedSession.parentTitle}` : "父会话不可用或关系尚未确认"}</p>}
             </div><button className="button subtle session-map-button" onClick={() => onMap(undefined, selectedSession?.project)} disabled={!selectedSession?.project}><MapTrifold size={16} />查看代码地图</button>
           </div>
           <div className="session-view-toolbar">
@@ -544,6 +567,10 @@ export default function Sessions({ active, target, onMap }: { active: boolean; t
           {selectedSessionId ? <>
             {messageError && <Notice danger action={<button className="text-button" onClick={() => setMessageRetry(value => value + 1)}>重试</button>}>{messageError}</Notice>}
             {messageLoading && <p className="session-message-loading" role="status">正在加载{modeLabels[mode]}消息…</p>}
+            {mode === "trace" && profile?.sessionIds[0] === selectedSessionId && profile.children.length > 0 && <details className="session-trace-children">
+              <summary>关联子会话 · {profile.children.length}</summary>
+              {profile.children.map(child => <button className="session-child" key={child.id} onClick={() => selectSession(child)}><strong>{child.title}</strong><small>查看子任务过程</small></button>)}
+            </details>}
             {selectedMessageData && <>
               {!selectedMessageData.messages.length && !messageLoading ? <div className="session-message-empty"><h2>此会话没有可显示的记录</h2><p className="muted">来源可能只保留元数据，或当前模式下没有对应内容。</p></div> : <>
                 {mode === "trace" && <p className="session-trace-note">轨迹仅展示来源留存的事件。展开轮次及过程内容查看详情。</p>}

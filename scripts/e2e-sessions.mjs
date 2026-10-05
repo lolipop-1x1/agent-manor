@@ -40,12 +40,19 @@ try {
   await writeFile(join(env.AGENT_MANOR_CODEX_DIR, "orphan.jsonl"), encodeSession(fixture.orphan));
   await writeFile(join(env.AGENT_MANOR_CODEX_DIR, "long.jsonl"), encodeSession(longSessionFixture(repository)));
   await writeFile(join(env.AGENT_MANOR_CODEX_DIR, "child.jsonl"), encodeSession([
-    { type: "session_meta", payload: { id: "demo-child", cwd: repository, title: "关联子任务", parent_thread_id: "demo-long" } },
-    { type: "response_item", payload: { type: "message", role: "user", content: [{ type: "input_text", text: "执行子任务" }] } },
+    { type: "session_meta", payload: { id: "demo-child", cwd: repository, source: { subagent: { thread_spawn: {
+      parent_thread_id: "demo-long", agent_path: "/root/check_queries", agent_nickname: "Fixture Agent" } } } } },
+    { type: "response_item", payload: { type: "message", role: "user", content: [{ type: "input_text", text: "# AGENTS.md instructions\n<INSTRUCTIONS>合成项目规则</INSTRUCTIONS>" }] } },
+    { type: "response_item", payload: { type: "message", role: "assistant", channel: "final", content: [{ type: "output_text", text: "子任务搜索标记：查询已核对" }] } },
   ]));
   assert.equal((await command(["sessions", "refresh", "--wait"])).job.status, "complete");
   const list = await command(["sessions", "list"]);
-  assert.equal(list.total, 6);
+  assert.equal(list.total, 5);
+  const allSessions = await command(["sessions", "list", "--include-subagents"]);
+  assert.equal(allSessions.total, 6);
+  const child = allSessions.sessions.find(item => item.clientSessionId === "demo-child");
+  assert.equal(child.title, "check_queries");
+  assert.equal(child.parentTitle, "长会话工作区验收");
   const codex = list.sessions.find(item => item.clientSessionId === "demo-codex");
   assert.ok(codex);
   assert.equal(codex.title, "实现状态检查", "CLI 应使用旁路索引的正式标题");
@@ -67,9 +74,46 @@ try {
     page.on("pageerror", error => errors.push(error.message));
     const expect = (condition, message) => { if (!condition) throw new Error(message); };
     await page.setViewportSize({ width: 1560, height: 1080 });
+    const initialRequests = [];
+    const recordInitialRequest = request => {
+      const url = request.url();
+      if (url.includes("/api/v1/sessions")) initialRequests.push({ path: url.split("?")[0], versioned: url.includes("version=") });
+    };
+    page.on("request", recordInitialRequest);
     await page.getByRole("button", { name: "会话库", exact: true }).click();
     await page.locator(".session-list-item").first().waitFor();
-    expect(await page.locator(".session-list-item").count() === 6, "应展示六个会话，包括无项目和父子任务");
+    await page.locator(".session-message").first().waitFor();
+    await page.locator(".session-usage-grid").first().waitFor();
+    page.off("request", recordInitialRequest);
+    for (const suffix of ["/sessions/status", "/sessions", "/messages", "/profile"]) {
+      expect(initialRequests.filter(request => request.path.endsWith(suffix)).length === 1, `首次加载 ${suffix} 应只请求一次`);
+    }
+    expect(initialRequests.filter(request => !request.path.endsWith("/status")).every(request => request.versioned), "列表、消息与画像应使用同一确认版本");
+    expect(await page.locator(".session-list-item").count() === 5, "默认收起已确认子任务，保留无项目主会话");
+    await page.getByLabel("显示子 Agent 会话", { exact: true }).check();
+    await page.waitForFunction(() => document.querySelectorAll(".session-list-item").length === 6);
+    expect((await page.locator(".session-list-item").filter({ hasText: "check_queries" }).innerText()).includes("属于 长会话工作区验收"), "子列表应标识父会话");
+    await page.getByLabel("显示子 Agent 会话", { exact: true }).uncheck();
+    await page.waitForFunction(() => document.querySelectorAll(".session-list-item").length === 5);
+    await page.getByLabel("搜索会话标题和消息").fill("子任务搜索标记");
+    const childHit = page.getByRole("region", { name: "全局搜索命中", exact: true }).locator(".session-hit").filter({ hasText: "check_queries" });
+    await childHit.waitFor();
+    expect((await childHit.innerText()).includes("属于 长会话工作区验收"), "默认搜索仍包含子消息并标识父会话");
+    await childHit.click();
+    await page.getByRole("button", { name: "返回父会话", exact: true }).waitFor();
+    expect((await page.locator(".sessions-main-heading h1").innerText()) === "check_queries", "子标题应采用原生任务名称");
+    expect((await page.locator(".session-main-controls").innerText()).includes("标题来源：任务路径名称"), "子标题应显示来源");
+    await page.getByRole("button", { name: "返回父会话", exact: true }).click();
+    await page.waitForFunction(() => document.querySelector(".sessions-main h1")?.textContent === "长会话工作区验收");
+    await page.getByRole("tab", { name: "轨迹", exact: true }).click();
+    await page.locator(".session-trace-children > summary").click();
+    await page.locator(".session-trace-children .session-child").filter({ hasText: "check_queries" }).click();
+    await page.getByRole("button", { name: "返回父会话", exact: true }).waitFor();
+    await page.getByRole("button", { name: "返回父会话", exact: true }).click();
+    await page.waitForFunction(() => document.querySelector(".sessions-main h1")?.textContent === "长会话工作区验收");
+    await page.getByRole("tab", { name: "简易", exact: true }).click();
+    await page.getByLabel("搜索会话标题和消息").fill("");
+    await page.locator(".session-list-item").first().waitFor();
     await page.getByLabel("筛选客户端").selectOption("codex");
     await page.getByLabel("筛选项目").selectOption("none");
     await page.waitForFunction(() => document.querySelectorAll(".session-list-item").length === 1);
@@ -78,7 +122,7 @@ try {
     await page.getByLabel("搜索会话标题和消息").fill("状态检查");
     await page.getByRole("region", { name: "全局搜索命中", exact: true }).locator(".session-hit").filter({ hasText: "实现状态检查" }).first().click();
     await page.locator(".session-message").first().waitFor();
-    expect((await page.locator(".sessions-main h1").innerText()) === "实现状态检查", "详情应显示正式标题");
+    expect((await page.locator(".sessions-main-heading h1").innerText()) === "实现状态检查", "详情应显示正式标题");
     expect((await page.locator(".session-profile-content").innerText()).includes("60.0%"), "画像缓存应为60%");
     expect((await page.locator(".session-profile-content").innerText()).includes("总输入 Token"), "输入统计标签必须使用归一化的总输入");
     await page.getByRole("tab", { name: "用量", exact: true }).click();
@@ -91,9 +135,8 @@ try {
     await page.locator(".session-message-detail[open]").first().waitFor();
     await page.getByLabel("搜索会话标题和消息").fill("局部轨迹标记");
     await page.getByLabel("搜索过程记录").check();
-    await page.locator(".session-hit").first().waitFor();
-    await page.locator(".session-hit").first().click();
-    await page.locator(".session-message.is-focused").waitFor();
+    await page.locator(".session-hit").filter({ hasText: "局部轨迹标记" }).first().click();
+    await page.locator(".session-message.is-focused").filter({ hasText: "局部轨迹标记" }).waitFor();
     expect((await page.locator(".session-message.is-focused").innerText()).includes("局部轨迹标记"), "隐藏工具响应未展开定位");
     await page.getByLabel("搜索会话标题和消息").fill("");
     await page.getByLabel("在当前会话搜索").fill("局部轨迹标记");
@@ -205,12 +248,12 @@ try {
     await page.waitForFunction(saved => Math.abs(document.querySelector(".session-message-scroll").scrollTop - saved) < 2, bookmark).catch(() => { throw new Error(`清除搜索未恢复阅读位置 ${bookmark}`); });
     const parentAddress = page.url();
     await page.getByRole("tab", { name: "概览", exact: true }).click();
-    await page.locator(".session-child").filter({ hasText: "关联子任务" }).click();
+    await page.locator(".session-profile-content .session-child").filter({ hasText: "check_queries" }).click();
     await page.getByRole("button", { name: "返回父会话", exact: true }).waitFor();
     expect(page.url() !== parentAddress, "子会话地址未更新");
     await page.goBack();
     await page.locator(".sessions-main h1").filter({ hasText: "长会话工作区验收" }).waitFor();
-    await page.locator(".session-child").filter({ hasText: "关联子任务" }).click();
+    await page.locator(".session-profile-content .session-child").filter({ hasText: "check_queries" }).click();
     await page.getByRole("button", { name: "返回父会话", exact: true }).click();
     await page.locator(".sessions-main h1").filter({ hasText: "长会话工作区验收" }).waitFor();
     await page.setViewportSize({ width: 760, height: 1024 });

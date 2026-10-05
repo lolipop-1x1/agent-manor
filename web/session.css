@@ -26,6 +26,11 @@
 .session-list-item > svg:first-child { margin-top: 2px; }
 .session-list-item > svg:last-child { margin: 2px 0 0 auto; color: var(--muted); }
 .session-list-copy { display: grid; min-width: 0; gap: 4px; flex: 1; }
+.session-relationship { display: flex; align-items: center; gap: 5px; color: var(--muted); min-width: 0; }
+.session-relationship > span:last-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.session-badge { flex-shrink: 0; padding: 2px 4px; border-radius: 3px; color: var(--accent); background: var(--accent-soft); font-size: 9px; }
+.session-trace-children { border: 1px solid var(--border); border-radius: 5px; padding: 10px; margin-bottom: 12px; }
+.session-trace-children > summary { cursor: pointer; color: var(--accent); font-size: 11px; }
 .session-list-copy strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; font-weight: 600; }
 .session-list-copy small { overflow: hidden; color: var(--muted); text-overflow: ellipsis; white-space: nowrap; font-size: 9px; line-height: 1.5; }
 .session-empty-list { display: grid; justify-items: center; gap: 10px; padding: 32px 12px; color: var(--muted); text-align: center; }

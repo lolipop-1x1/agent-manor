@@ -40,10 +40,13 @@ export interface SessionSummary {
   client: Client;
   clientSessionId: string;
   title: string;
-  titleOrigin: "recorded" | "first_user" | "fallback";
+  titleOrigin: "recorded" | "first_user" | "task" | "agent" | "fallback";
+  taskName?: string;
+  agentName?: string;
   project?: string;
   projectOrigin?: "cwd" | "tool_path";
   parentSessionId?: string;
+  parentTitle?: string;
   relationship?: "child" | "fork";
   /** 工具返回或元数据明确记录的子会话身份，不根据正文猜测。 */
   childSessionIds?: string[];
@@ -63,6 +66,8 @@ export interface SessionSink {
   usage(usage: SessionUsage): void;
 }
 export interface SessionQuery {
+  /** 仅控制列表；搜索与直接访问始终保留子会话。 */
+  includeSubagents?: boolean;
   client?: Client;
   project?: string;
   from?: string;

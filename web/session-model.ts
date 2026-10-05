@@ -66,6 +66,7 @@ export function sessionParams(query: Partial<SessionQuery> & {
     messageId: query.messageId,
     sessionId: query.sessionId,
     includeChildren: query.includeChildren,
+    includeSubagents: query.includeSubagents,
     pageUnit: query.pageUnit,
     turnPosition: query.turnPosition,
     toolName: query.toolName,

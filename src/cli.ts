@@ -102,8 +102,10 @@ export function createProgram(): Command {
   };
   sessions.command("status").description("会话索引状态与采集缺口")
     .action(async (_options: Options, command: Command) => { await request(command, "/sessions/status"); });
-  sessionFilters(sessions.command("list").description("分页列出全部会话")).option("--q <text>", "标题及正文关键词")
-    .action(async (_options: Options, command: Command) => { await request(command, `/sessions${sessionQueryString(command)}`); });
+  sessionFilters(sessions.command("list").description("分页列出主会话及独立记录")).option("--q <text>", "标题及正文关键词")
+    .option("--include-subagents", "同时列出已确认父关系的子 Agent 会话")
+    .action(async (_options: Options, command: Command) => { await request(command, `/sessions${sessionQueryString(command,
+      { includeSubagents: command.optsWithGlobals<Options>().includeSubagents ? "true" : undefined })}`); });
   sessionFilters(sessions.command("search <text>").description("搜索全部有效索引，返回消息定位")).option("--session-id <id>", "仅搜索指定会话")
     .action(async (q: string, _options: Options, command: Command) => { await request(command, `/sessions/search${sessionQueryString(command, { q })}`); });
   sessionFilters(sessions.command("messages <id>").description("分页浏览简易、完整或轨迹消息"))

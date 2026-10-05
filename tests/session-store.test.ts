@@ -3,6 +3,7 @@ import { appendFile, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { appendFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { performance } from "node:perf_hooks";
 import test from "node:test";
 import Database from "better-sqlite3";
 import type { SessionMessage, SessionSourceMeta, SessionUsage } from "../src/session-contracts.js";
@@ -79,6 +80,82 @@ function source(store: SessionStore, summary: SessionSourceMeta, messages: Sessi
   store.finishRevision(pending.revision, summary);
   return { path: summary.path, revision: pending.revision, fingerprint: "synthetic-fingerprint" };
 }
+
+test("默认列表收起已确认子会话，保留分叉、缺失父来源和冲突关系，搜索仍命中子记录", async () => fixture(store => {
+  const parent = source(store, meta("parent", { title: "合成主任务" }), [message("parent", 0)]);
+  const child = source(store, meta("child", { parentSessionId: "parent", relationship: "child", titleOrigin: "fallback", taskName: "检查索引" }),
+    [message("child", 0, { text: "子任务搜索标记" })]);
+  const orphan = source(store, meta("orphan", { parentSessionId: "missing", relationship: "child" }), [message("orphan", 0)]);
+  const fork = source(store, meta("fork", { parentSessionId: "parent", relationship: "fork" }), [message("fork", 0)]);
+  const competingA = source(store, meta("competing-a", { childSessionIds: ["uncertain"] }), []);
+  const competingB = source(store, meta("competing-b", { childSessionIds: ["uncertain"] }), []);
+  const uncertain = source(store, meta("uncertain"), []);
+  store.publish(store.createJob().id, [parent, child, orphan, fork, competingA, competingB, uncertain], []);
+  assert.equal(store.status().sessionCount, 7, "列表筛选不删除子记录");
+  assert.equal(store.list().total, 6);
+  assert.ok(!store.list().sessions.some(item => item.id === "child"));
+  assert.equal(store.list({ includeSubagents: true }).total, 7);
+  const paged = store.list({ pageSize: 2 });
+  assert.equal(paged.total, 6);
+  assert.equal(paged.sessions.length, 2);
+  const summary = store.messages("child").session;
+  assert.equal(summary.parentTitle, "合成主任务");
+  assert.equal(summary.title, "检查索引");
+  assert.equal(store.messages("orphan").session.parentTitle, undefined);
+  assert.equal(store.messages("fork").session.parentTitle, "合成主任务");
+  const hit = store.search({ q: "子任务搜索标记" }).hits[0]!;
+  assert.equal(hit.session.id, "child");
+  assert.equal(hit.session.parentTitle, "合成主任务");
+  assert.equal(store.search({ q: "检查索引" }).hits[0]?.kind, "title");
+  store.publish(store.createJob().id, [child, orphan, fork], []);
+  assert.equal(store.list().total, 3, "父来源消失后子会话恢复独立入口");
+}));
+
+test("子标题规则升级刷新旧子修订，未变化的主会话继续复用", async () => fixture(async (store, dbPath) => {
+  const directory = join(dbPath, "..");
+  const parentPath = join(directory, "parent.jsonl");
+  const childPath = join(directory, "child.jsonl");
+  const encode = (records: unknown[]) => records.map(value => JSON.stringify(value) + "\n").join("");
+  await writeFile(parentPath, encode([{ type: "session_meta", payload: { id: "parent-demo", title: "合成主会话" } }]));
+  await writeFile(childPath, encode([{ type: "session_meta", payload: { id: "child-demo", parent_thread_id: "parent-demo", agent_path: "/root/check_queries" } }]));
+  const roots = { codex: directory, claude: [], codeflicker: [] };
+  await refreshSessions(store, store.createJob().id, roots);
+  const revisions = store.cachedRevisions();
+  const cachedChild = revisions.find(item => item.path === childPath)!;
+  const cachedParent = revisions.find(item => item.path === parentPath)!;
+  const child = store.list({ includeSubagents: true }).sessions.find(item => item.clientSessionId === "child-demo")!;
+  const old = store.createRevision(childPath, cachedChild.fingerprint.replace(":child-title-v1", ""));
+  old.flush();
+  store.finishRevision(old.revision, { ...child, title: "未命名会话", titleOrigin: "fallback", taskName: undefined, agentName: undefined,
+    path: childPath, sourceId: "synthetic-child" });
+  store.publish(store.createJob().id, [cachedParent, { ...cachedChild, revision: old.revision, fingerprint: cachedChild.fingerprint.replace(":child-title-v1", "") }], []);
+  await refreshSessions(store, store.createJob().id, roots);
+  assert.equal(store.messages(child.id).session.title, "check_queries");
+  assert.equal(store.cachedRevisions().find(item => item.path === parentPath)?.revision, cachedParent.revision);
+  assert.notEqual(store.cachedRevisions().find(item => item.path === childPath)?.revision, old.revision);
+}));
+
+test("长会话画像按消息身份排除复制用量，查询不随请求数反复扫描全部消息", async () => fixture(store => {
+  const id = "long-profile";
+  const messages = Array.from({ length: 20_000 }, (_, ordinal) => message(id, ordinal, {
+    kind: "tool_result", turnId: `turn-${Math.floor(ordinal / 20)}`, text: "合成过程正文".repeat(40),
+  }));
+  messages[0] = message(id, 0, { copied: true, turnId: "copied-turn" });
+  const usages: SessionUsage[] = Array.from({ length: 5_000 }, (_, index) => ({ id: `usage-${index}`, messageId: `message-${index + 1}`, inputTokens: 1 }));
+  usages.push({ id: "copied-message", messageId: "message-0", inputTokens: 999 },
+    { id: "copied-turn", turnId: "copied-turn", inputTokens: 999 },
+    { id: "retained-explicit", messageId: "missing-message", turnId: "copied-turn", inputTokens: 2 },
+    { id: "retained-turn", turnId: "turn-2", inputTokens: 3 },
+    { id: "unassociated", inputTokens: 4 });
+  store.publish(store.createJob().id, [source(store, meta(id), messages, usages)], []);
+  const start = performance.now();
+  const profile = store.profile(id);
+  const elapsed = performance.now() - start;
+  assert.equal(profile.messageCount, 19_999);
+  assert.equal(profile.usage.requests, 5_003);
+  assert.equal(profile.usage.inputTokens, 5_009);
+  assert.ok(elapsed < 1_000, `长会话画像耗时 ${Math.round(elapsed)} 毫秒，超过 1 秒预算`);
+}));
 
 test("独立表保留地图迁移版本，首次未就绪、发布及失败只读上一完整版本", async () => fixture((store, path) => {
   const database = new Database(path);

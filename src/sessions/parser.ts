@@ -8,6 +8,7 @@ import type { SourceLocation } from "../history/types.js";
 import type { MessageKind, SessionMessage, SessionSink, SessionSourceMeta } from "../session-contracts.js";
 import { object, string, tokens, UsageParser } from "./parser-usage.js";
 import { projectFromToolPaths } from "./parser-project.js";
+import { sessionTitle } from "./title.js";
 
 const digest = (value: string) => createHash("sha256").update(value).digest("hex").slice(0, 24);
 const MAX_RECORD_BYTES = 16 * 1024 * 1024;
@@ -250,6 +251,10 @@ export async function parseSessionSource(source: SourceLocation, sink: SessionSi
     if (source.client === "codex") {
       const passthrough = object(payload.internal_chat_message_metadata_passthrough);
       if (record.type === "session_meta") {
+        const spawn = object(object(object(payload.source).subagent).thread_spawn);
+        const agentPath = string(payload.agent_path) ?? string(spawn.agent_path);
+        meta.taskName = agentPath?.split("/").filter(Boolean).at(-1);
+        meta.agentName = string(payload.agent_nickname) ?? string(spawn.agent_nickname);
         const instructions = text(object(payload.base_instructions).text ?? payload.base_instructions);
         if (instructions) message("base-instructions", "system", instructions, line, extra);
         continue;
@@ -397,5 +402,5 @@ export async function parseSessionSource(source: SourceLocation, sink: SessionSi
     meta.title = options.title || firstUserTitle || "未命名会话";
     meta.titleOrigin = options.title ? "recorded" : firstUserTitle ? "first_user" : "fallback";
   }
-  return meta;
+  return sessionTitle(meta);
 }

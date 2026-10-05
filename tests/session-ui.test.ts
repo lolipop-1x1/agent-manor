@@ -16,7 +16,7 @@ const message = (id: string, ordinal: number, turnId: string, kind: SessionMessa
 
 test("会话查询编码保留筛选、类型列表和消息精确定位", () => {
   const params = new URLSearchParams(sessionParams({ client: "codex", project: "none", q: "缓存 命中&模型", kinds: ["user", "tool_call"],
-    page: 3, pageSize: 40, version: "version-7", mode: "trace", messageId: "message / 9", sessionId: summary.id }));
+    page: 3, pageSize: 40, version: "version-7", mode: "trace", messageId: "message / 9", sessionId: summary.id, includeSubagents: true }));
   assert.equal(params.get("client"), "codex");
   assert.equal(params.get("project"), "none");
   assert.equal(params.get("q"), "缓存 命中&模型");
@@ -27,6 +27,7 @@ test("会话查询编码保留筛选、类型列表和消息精确定位", () =>
   assert.equal(params.get("mode"), "trace");
   assert.equal(params.get("messageId"), "message / 9");
   assert.equal(params.get("sessionId"), summary.id);
+  assert.equal(params.get("includeSubagents"), "true");
 });
 
 test("默认搜索只包含用户与 AI 正文，过程选项加入完整记录类型", () => {

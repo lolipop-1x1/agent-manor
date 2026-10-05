@@ -46,7 +46,9 @@ export async function refreshSessions(store: SessionStore, jobId: string, roots?
       const title = source.client === "codex" && source.sessionId ? codexTitles.get(source.sessionId) : undefined;
       // Codex 标题与正文分别更新；只失效对应来源，其他客户端沿用现有缓存。
       const titleFingerprint = source.client === "codex" ? `:title-v1:${createHash("sha256").update(JSON.stringify(title ?? null)).digest("hex")}` : "";
-      const sourceFingerprint = `${source.client}:${source.format ?? "default"}:${digest.hash}${titleFingerprint}`;
+      // 新增子任务标题只失效 Codex 子来源，保留未改变的长主会话及其他客户端缓存。
+      const childTitleFingerprint = source.client === "codex" && source.parentSessionId ? ":child-title-v1" : "";
+      const sourceFingerprint = `${source.client}:${source.format ?? "default"}:${digest.hash}${titleFingerprint}${childTitleFingerprint}`;
       const previous = cached.get(source.path);
       if (!clearCache && previous?.fingerprint === sourceFingerprint) { current.push(previous); continue; }
       const pending = store.createRevision(source.path, sourceFingerprint);
