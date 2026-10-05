@@ -16,7 +16,7 @@ Blocked by:
 
 ## Comments
 
-- 2026-10-05：4317 服务中仓库 historical-source-redacted 尚无结果版本；任务 historical-source-redacted 在约 55 秒后报 Worker terminated due to reaching memory limit: JS heap out of memory。
+- 2026-10-05：4317 服务中的本机仓库尚无结果版本；刷新任务在约 55 秒后报 Worker terminated due to reaching memory limit: JS heap out of memory。实际仓库及任务标识不公开。
 - 2026-10-05：受限堆回归先复现同样错误；未关联会话完整正文、批量旧缓存与共享事件副本造成内存放大。新增归属元数据缓存和按来源读缓存／查事件，相关来源完整证据重读；Worker 失败后下一次刷新可恢复。
 
 ## Answer
