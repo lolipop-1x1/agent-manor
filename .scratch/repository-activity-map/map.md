@@ -32,6 +32,7 @@ Status: resolved
 
 ## 已作决策
 
+- 2026-10-05：[分隔线拖动出现多条线](issues/26-panel-resizer-focus.md) 已修复。仅取消分隔线的全局焦点外框，保留单条键盘与拖动高亮；新增断言先复现失败，再通过实际仓库 14 组 Chrome 回归。
 - 2026-10-05：[左右面板拖动宽度](issues/25-resizable-panels.md) 已完成。分隔线支持独立拖动、键盘调整、宽度约束和收起恢复；窗口压缩保留偏好，地图局部和统计不变。146 项回归及实际仓库 14 组 Chrome 验收通过，复查的宽度偏好与临时约束问题均已修复；记录见[验收](../../docs/validation/map-zoom.md)。
 - 2026-10-05：[大仓库地图的连续缩放与全屏浏览](issues/20-map-zoom-design.md) 已实现。浮点几何、滚轮缩放、平移、定位、全屏及固定一像素间隔保持统计口径；142 项测试与实际仓库 13 组 Chrome 验收通过，两轴审查问题均修复。任务见 [21](issues/21-map-geometry.md)、[22](issues/22-map-interaction.md)、[23](issues/23-map-zoom-e2e.md)、[24](issues/24-map-zoom-review.md)，方法与边界见 [验收记录](../../docs/validation/map-zoom.md)。真实输入仅留在本机忽略目录。
 - 2026-10-05：[目录展开与地图面板收起](issues/19-collapsible-workspace.md) 已完成。目录箭头与范围选择独立，左右面板保留选择并释放地图宽度；7 项前端测试、类型、构建和隔离 Chrome 验收通过，覆盖键盘、明暗主题及桌面／窄屏布局。

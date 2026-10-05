@@ -62,6 +62,7 @@ progress::-webkit-progress-value { background: var(--accent); border-radius: 3px
 progress::-moz-progress-bar { background: var(--accent); border-radius: 3px; }
 .workspace { position: relative; display: grid; grid-template-columns: var(--sidebar-width) minmax(0, 1fr) var(--details-width); min-height: calc(100dvh - 66px); }
 .panel-resizer { position: absolute; top: 0; bottom: 0; width: 9px; z-index: 12; cursor: col-resize; touch-action: none; }
+.panel-resizer:focus-visible { outline: none; }
 .sidebar-resizer { left: calc(var(--sidebar-width) - 5px); }
 .details-resizer { right: calc(var(--details-width) - 5px); }
 .panel-resizer::after { content: ""; position: absolute; top: 0; bottom: 0; left: 4px; width: 2px; background: transparent; }

@@ -401,6 +401,11 @@ async function verify(page, fixture) {
     const left = page.getByRole("separator", { name: "调整仓库导航宽度" });
     const right = page.getByRole("separator", { name: "调整文件详情宽度" });
     const paneWidth = async selector => (await page.locator(selector).boundingBox()).width;
+    const singleIndicator = async handle => handle.evaluate(element => {
+      const outline = getComputedStyle(element), line = getComputedStyle(element, "::after");
+      return (outline.outlineStyle === "none" || parseFloat(outline.outlineWidth) === 0)
+        && parseFloat(line.width) <= 2 && line.backgroundColor !== "rgba(0, 0, 0, 0)";
+    });
     const dragResize = async (handle, delta) => {
       const rect = await handle.boundingBox();
       const height = await page.evaluate(() => innerHeight);
@@ -409,12 +414,18 @@ async function verify(page, fixture) {
       await page.mouse.down();
       await page.mouse.move(x + delta, y, { steps: 6 });
       ensure(await page.locator("body").evaluate(element => element.classList.contains("resizing-panels")), "拖动没有进入调整状态。");
+      ensure(await singleIndicator(handle), "拖动分隔线出现额外焦点外框。");
       await page.mouse.up();
       await settle();
       ensure(await page.locator("body").evaluate(element => !element.classList.contains("resizing-panels")), "释放后残留调整状态。");
     };
     const before = await view();
     const initialLeft = await paneWidth(".sidebar"), initialRight = await paneWidth(".evidence-pane");
+    await left.focus();
+    await page.keyboard.press("ArrowRight");
+    await page.keyboard.press("ArrowLeft");
+    ensure(await left.evaluate(element => element.matches(":focus-visible")), "未建立键盘焦点复现条件。");
+    ensure(await singleIndicator(left), "键盘焦点分隔线出现多条边线。");
     await dragResize(left, 100);
     ensure(Math.abs(await paneWidth(".sidebar") - initialLeft - 100) < 2, "导航没有随向右拖动加宽。");
     ensure(Math.abs(await paneWidth(".evidence-pane") - initialRight) < 2, "导航拖动影响了详情宽度。");
@@ -443,6 +454,7 @@ async function verify(page, fixture) {
     ensure(Math.abs(await paneWidth(".evidence-pane") - 260) < 2, "详情未限制最小宽度。");
     await right.focus();
     await page.keyboard.press("ArrowLeft");
+    ensure(await singleIndicator(right), "详情分隔线键盘焦点出现多条边线。");
     ensure(Math.abs(await paneWidth(".evidence-pane") - 270) < 2, "详情键盘方向无效。");
     await page.keyboard.press("Shift+ArrowLeft");
     ensure(Math.abs(await paneWidth(".evidence-pane") - 310) < 2, "详情键盘加速无效。");
