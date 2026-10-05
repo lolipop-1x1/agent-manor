@@ -70,8 +70,14 @@ export function CodeMap({ files, directory, metric, selected, browse, select, he
   }, [layout]);
   useEffect(() => {
     const changed = () => { setFullscreen(document.fullscreenElement === explorer.current); setHint(null); };
+    const escape = (event: globalThis.KeyboardEvent) => {
+      if (event.key !== "Escape" || !document.fullscreenElement || document.fullscreenElement !== explorer.current) return;
+      event.preventDefault();
+      void document.exitFullscreen().catch(() => setFullscreenError("无法退出全屏，请使用浏览器的退出全屏操作。"));
+    };
     document.addEventListener("fullscreenchange", changed);
-    return () => document.removeEventListener("fullscreenchange", changed);
+    document.addEventListener("keydown", escape);
+    return () => { document.removeEventListener("fullscreenchange", changed); document.removeEventListener("keydown", escape); };
   }, []);
   const toggleFullscreen = async () => {
     setFullscreenError("");
@@ -90,7 +96,7 @@ export function CodeMap({ files, directory, metric, selected, browse, select, he
     const result = ["", "", "", "", ""];
     for (const { tile, visible: rect } of visible) {
       // 只绘制屏幕内的浮点几何，不把超大坐标或屏幕外节点交给 DOM。
-      const gap = rect.width > 8 && rect.height > 8 ? 1 : 0;
+      const gap = rect.width > 8 && rect.height > 8 ? .5 : 0;
       const width = rect.width - gap * 2;
       const height = rect.height - gap * 2;
       result[tone(tile.file)] += `M${rect.x + gap},${rect.y + gap}h${width}v${height}h${-width}Z`;

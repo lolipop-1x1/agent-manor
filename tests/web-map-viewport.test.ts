@@ -32,6 +32,23 @@ test("文件标签避让屏幕目录标题，原始面积与无关标签位置�
   assert.ok(fileLabelRect(tiny, [heading]).width > 0);
 });
 
+test("悬殊行数的小文件定位后，目录标题下仍可显示名称、指标和行数", () => {
+  const layout = layoutMap([file("large.ts", 90_000), file("medium.ts", 10_000), file("small/tiny.ts", 1)], "");
+  const viewport = { width: 800, height: 500 };
+  const tiny = layout.files.find(tile => tile.path === "small/tiny.ts")!;
+  const original = { ...tiny };
+  const camera = locateCamera(tiny, viewport, fitCamera(layout.bounds, viewport).scale, layout.maxScale);
+  const visible = clipRect(projectRect(tiny, camera), viewport)!;
+  const headings = layout.directories.filter(node => node.depth === 1).map(node => {
+    const rect = clipRect(projectRect(node, camera), viewport)!;
+    return { x: rect.x + 5, y: rect.y + 3, width: rect.width - 10, height: 22 };
+  });
+  const labels = fileLabelRect(visible, headings);
+  assert.ok(labels.width >= 102);
+  assert.ok(labels.height >= 78);
+  assert.deepEqual(tiny, original);
+});
+
 test("逻辑布局保持目录和行数比例，零行文件不获得面积", () => {
   const files = [file("src/a.ts", 10), file("src/deep/b.ts", 30), file("src/empty.ts", 0), file("docs/a.md", 20)];
   const snapshot = structuredClone(files);
@@ -59,7 +76,7 @@ test("一万个合成文件包含悬殊行数和长文件名，全部非空叶�
       assert.ok(tile.x + tile.width <= layout.bounds.width + 1e-7);
       assert.ok(tile.y + tile.height <= layout.bounds.height + 1e-7);
       assert.ok(tile.width * layout.maxScale >= 160 - 1e-6);
-      assert.ok(tile.height * layout.maxScale >= 84 - 1e-6);
+      assert.ok(tile.height * layout.maxScale >= 128 - 1e-6);
     }
   }
 });
@@ -73,7 +90,7 @@ test("深目录不消耗叶子面积，极端行数仍保留有限的正面积",
   for (const tile of layout.files) {
     valid(tile);
     assert.ok(tile.width * layout.maxScale >= 160 - 1);
-    assert.ok(tile.height * layout.maxScale >= 84 - 1);
+    assert.ok(tile.height * layout.maxScale >= 128 - 1);
   }
   const tiny = layout.files.find(tile => tile.path === deep)!;
   const deepest = layout.directories.find(node => node.depth === 180)!;
@@ -90,7 +107,7 @@ test("单文件和少量文件的上限保留充足余量，完整适应和文�
     assert.ok(layout.maxScale > fitted.scale * 16);
     assert.equal(zoomCamera(fitted, 16, focus, fitted.scale, layout.maxScale).scale, fitted.scale * 16);
     for (const tile of layout.files) {
-      const readable = Math.max(160 / tile.width, 84 / tile.height);
+      const readable = Math.max(160 / tile.width, 128 / tile.height);
       assert.ok(layout.maxScale >= readable * 16);
       const located = locateCamera(tile, viewport, fitted.scale, layout.maxScale);
       assert.ok(zoomCamera(located, 2, focus, fitted.scale, layout.maxScale).scale > located.scale);
@@ -145,7 +162,7 @@ test("极小文件定位进入可读局部，裁剪与可见叶子不改变原�
   const projected = projectRect(tiny, camera);
   close(projected.x + projected.width / 2, viewport.width / 2);
   close(projected.y + projected.height / 2, viewport.height / 2);
-  assert.ok(projected.width >= 160 && projected.height >= 84 - 1e-7);
+  assert.ok(projected.width >= 160 && projected.height >= 128 - 1e-7);
   const visible = visibleTiles(layout.files, camera, viewport);
   assert.ok(visible.some(item => item.tile === tiny));
   for (const item of visible) {

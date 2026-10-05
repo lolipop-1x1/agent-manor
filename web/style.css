@@ -162,6 +162,7 @@ input::placeholder { color: var(--muted); }
 .tone-2 { background: var(--map-2); }
 .tone-3 { background: var(--map-3); }
 .tone-4 { background: var(--map-4); }
+.map-file { background: transparent; }
 .map-file.tone-3, .map-file.tone-4 { color: #102e24; }
 :root:not([data-theme="dark"]) .map-file.tone-4 { color: #f2fbf6; }
 .tile-name { font-size: 12px; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%; }

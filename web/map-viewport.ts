@@ -12,7 +12,7 @@ export interface MapLayout { bounds: MapRect; files: MapTile[]; directories: Map
 export interface VisibleMapTile { tile: MapTile; rect: MapRect; visible: MapRect }
 
 const worldSize: MapSize = { width: 1000, height: 650 };
-const readableSize: MapSize = { width: 160, height: 84 };
+const readableSize: MapSize = { width: 160, height: 128 };
 const maximumScale = Number.MAX_SAFE_INTEGER / Math.max(worldSize.width, worldSize.height);
 const positive = (value: number, fallback: number) => Number.isFinite(value) && value > 0 ? value : fallback;
 const dimension = (value: number) => Number.isFinite(value) ? Math.max(0, value) : 0;

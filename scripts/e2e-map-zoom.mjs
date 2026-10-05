@@ -239,6 +239,7 @@ async function verify(page, fixture) {
   ensure(readableCount <= locatedVisible && locatedVisible <= fixture.nonemptyCount, "可读节点与可见几何计数不一致。");
   if (fixture.nonemptyCount > 1) ensure(locatedVisible < initialVisible, "局部视野没有裁掉屏幕外几何。");
   const smallTile = await fileTile(fixture.small.path);
+  ensure(await smallTile.evaluate(element => getComputedStyle(element).backgroundColor === "rgba(0, 0, 0, 0)"), "文件按钮背景覆盖了 SVG 色块间隔。");
   const originalFonts = await fonts(smallTile);
   ensure(originalFonts.name >= 12 && originalFonts.name <= 20, "文件名不在正常阅读字号范围。");
   ensure(originalFonts.value >= 22 && originalFonts.value <= 36, "百分比不在正常阅读字号范围。");
@@ -363,18 +364,22 @@ async function verify(page, fixture) {
     ensure(await page.locator(".breadcrumbs").isVisible() && await page.locator(".map-legend").isVisible(), "全屏缺失目录或图例。");
     ensure(await textIsUnobscured(smallTile), "全屏文件名称或百分比被其他控件遮挡。");
     await explorer.screenshot({ path: `${fixture.artifacts}/fullscreen.png` });
+    await mark("fullscreen-exit-button");
     await button("退出地图全屏").click();
     await button("全屏查看地图").waitFor({ state: "visible" });
     await settle();
     preserved(before, await view(), "全屏退出");
+    await mark("fullscreen-exit-button", "passed");
     await button("全屏查看地图").click();
     await button("退出地图全屏").waitFor({ state: "visible" });
+    await mark("fullscreen-exit-escape");
     await page.keyboard.press("Escape");
     await button("全屏查看地图").waitFor({ state: "visible" });
     await settle();
     ensure(await page.evaluate(() => document.fullscreenElement === null), "Esc 没有退出地图全屏。");
     ensure(await selected() === fixture.small.path, "全屏切换丢失文件选择。");
     preserved(before, await view(), "Esc 退出");
+    await mark("fullscreen-exit-escape", "passed");
   });
 
   await withoutQuery("侧栏切换保留局部", async () => {
