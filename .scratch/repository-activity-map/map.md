@@ -32,6 +32,7 @@ Status: resolved
 
 ## 已作决策
 
+- 2026-10-05：[大仓库地图的连续缩放与全屏浏览](issues/20-map-zoom-design.md) 已实现。浮点几何、滚轮缩放、平移、定位、全屏及固定一像素间隔保持统计口径；142 项测试与实际仓库 13 组 Chrome 验收通过，两轴审查问题均修复。任务见 [21](issues/21-map-geometry.md)、[22](issues/22-map-interaction.md)、[23](issues/23-map-zoom-e2e.md)、[24](issues/24-map-zoom-review.md)，方法与边界见 [验收记录](../../docs/validation/map-zoom.md)。真实输入仅留在本机忽略目录。
 - 2026-10-05：[目录展开与地图面板收起](issues/19-collapsible-workspace.md) 已完成。目录箭头与范围选择独立，左右面板保留选择并释放地图宽度；7 项前端测试、类型、构建和隔离 Chrome 验收通过，覆盖键盘、明暗主题及桌面／窄屏布局。
 - 2026-10-05：[开源内容边界与当前文件清理](issues/17-public-content.md) 已完成。真实身份、业务资料与分析标识不进入公开内容；保留公开客户端及依赖名称。锁文件使用公开 registry，新增公开检查及本地禁用词，131 项测试、公开安装与打包验收通过。Git 历史和公开发布仍须按独立方案处理，不能以普通提交代替历史清理。
 - 2026-10-05：经用户明确授权，已配置仓库禁用词 Secret，并重跑 Public content 验证注入和检查成功；词表不进入 Git，记录见 [任务 17](issues/17-public-content.md)。
