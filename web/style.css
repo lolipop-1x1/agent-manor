@@ -60,8 +60,17 @@ progress { appearance: none; height: 4px; width: 110px; border: 0; background: v
 progress::-webkit-progress-bar { background: var(--border); border-radius: 3px; }
 progress::-webkit-progress-value { background: var(--accent); border-radius: 3px; }
 progress::-moz-progress-bar { background: var(--accent); border-radius: 3px; }
-.workspace { display: grid; grid-template-columns: 200px minmax(0, 1fr) 320px; max-width: 1700px; margin: 0 auto; min-height: calc(100dvh - 66px); }
+.workspace { --sidebar-width: 200px; --details-width: 320px; display: grid; grid-template-columns: var(--sidebar-width) minmax(0, 1fr) var(--details-width); min-height: calc(100dvh - 66px); }
+.workspace[data-sidebar-collapsed="true"] { --sidebar-width: 44px; }
+.workspace[data-details-collapsed="true"] { --details-width: 44px; }
 .sidebar { display: flex; flex-direction: column; border-right: 1px solid var(--border); padding: 24px 13px 20px; min-width: 0; background: var(--surface); }
+.sidebar-content { display: flex; flex-direction: column; flex: 1; min-width: 0; }
+[hidden] { display: none !important; }
+.sidebar.panel-collapsed, .evidence-pane.panel-collapsed { padding-left: 5px; padding-right: 5px; }
+.panel-collapsed .pane-heading > span { display: none; }
+.panel-toggle { flex-shrink: 0; border: 1px solid var(--border); color: var(--muted); }
+.panel-toggle:hover { color: var(--accent); }
+.panel-toggle:active, .directory-toggle:active { transform: scale(.96); }
 .repository-trigger { display: flex; align-items: center; gap: 8px; width: 100%; text-align: left; border: 0; background: none; border-radius: 5px; padding: 7px 5px; font-size: 13px; }
 .repository-trigger:hover { background: var(--surface-alt); }
 .repository-trigger > strong { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 550; }
@@ -69,10 +78,17 @@ progress::-moz-progress-bar { background: var(--accent); border-radius: 3px; }
 .repo-path { margin: 9px 5px 28px; font-size: 10px; color: var(--muted); line-height: 1.7; overflow-wrap: anywhere; }
 .sidebar-label { display: block; margin: 0 8px 10px; font-size: 10px; color: var(--muted); }
 .directory-nav { max-height: 58dvh; overflow: auto; scrollbar-width: thin; }
-.directory-row { border: 0; background: none; display: flex; align-items: center; gap: 8px; width: 100%; padding: 8px 9px; border-radius: 4px; margin-bottom: 3px; text-align: left; font-size: 11px; }
+.directory-branch { list-style: none; padding: 0; margin: 0; }
+.directory-branch .directory-branch { margin-left: 12px; }
+.directory-row { display: flex; align-items: center; min-width: 148px; width: 100%; border-radius: 4px; margin-bottom: 3px; font-size: 11px; }
 .directory-row svg { color: var(--muted); }
-.directory-row span { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.directory-select { display: flex; align-items: center; gap: 7px; flex: 1; min-width: 0; border: 0; background: none; padding: 8px 5px 8px 0; text-align: left; font-size: inherit; border-radius: 4px; }
+.directory-select span { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .directory-row small { color: var(--muted); font-size: 9px; }
+.directory-toggle, .directory-toggle-spacer { flex: 0 0 24px; width: 24px; height: 30px; }
+.directory-toggle { display: flex; align-items: center; justify-content: center; border: 0; border-radius: 4px; background: none; padding: 0; }
+.directory-toggle:hover { background: var(--accent-soft); }
+.directory-root { padding-left: 7px; }
 .directory-row:hover { background: var(--surface-alt); }
 .directory-row.active { background: var(--accent-soft); color: var(--accent); }
 .directory-row.active svg { color: var(--accent); }
@@ -240,9 +256,8 @@ input[type="checkbox"] { accent-color: var(--accent); }
 .code-viewer .cm-scroller { overflow: auto; }
 .spinning { animation: spin 1.4s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
-@media (min-width: 1700px) { .workspace { border-left: 1px solid var(--border); border-right: 1px solid var(--border); } }
 @media (max-width: 1250px) {
-  .workspace { grid-template-columns: 175px minmax(0, 1fr) 285px; }
+  .workspace { --sidebar-width: 175px; --details-width: 285px; }
   .map-main { padding: 27px 22px; }
   .evidence-pane { padding: 22px 17px; }
   .search-box { width: 100%; flex-basis: 100%; margin-left: 0; }
@@ -251,9 +266,12 @@ input[type="checkbox"] { accent-color: var(--accent); }
   .metric-context strong { font-size: 25px; }
 }
 @media (max-width: 1023px) {
-  .workspace { grid-template-columns: 170px minmax(0, 1fr); }
+  .workspace { --sidebar-width: 170px; grid-template-columns: var(--sidebar-width) minmax(0, 1fr); }
   .sidebar { grid-row: span 2; }
   .evidence-pane { grid-column: 2; border-left: 0; border-top: 1px solid var(--border); }
+  .workspace[data-details-collapsed="true"] { grid-template-columns: var(--sidebar-width) minmax(0, 1fr) var(--details-width); }
+  .workspace[data-details-collapsed="true"] .sidebar { grid-row: 1; }
+  .workspace[data-details-collapsed="true"] .evidence-pane { grid-column: 3; grid-row: 1; border-left: 1px solid var(--border); border-top: 0; }
   .no-selection { padding: 20px 0; }
   .event-list { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .event-detail { max-width: 580px; }
@@ -273,13 +291,15 @@ input[type="checkbox"] { accent-color: var(--accent); }
   .notice { padding: 11px 14px; }
   .workspace { display: flex; flex-direction: column; }
   .sidebar { border-right: 0; border-bottom: 1px solid var(--border); padding: 10px 14px; }
+  .sidebar.panel-collapsed, .evidence-pane.panel-collapsed { padding: 10px 14px; }
+  .panel-collapsed .pane-heading > span { display: block; }
+  .sidebar .pane-heading, .evidence-pane.panel-collapsed .pane-heading { margin-bottom: 0; }
+  .sidebar-content { padding-top: 7px; }
+  .workspace[data-details-collapsed="true"] .evidence-pane { border-left: 0; border-top: 1px solid var(--border); }
   .repository-picker { margin-bottom: 7px; }
   .repository-trigger { max-width: 350px; }
   .sidebar-label, .repo-path, .sidebar-bottom { display: none; }
-  .directory-nav { display: flex; gap: 4px; overflow-x: auto; max-height: none; padding: 2px; margin: -2px; }
-  .directory-row { width: auto; flex-shrink: 0; padding: 7px 9px !important; margin: 0; }
-  .directory-row span { overflow: visible; }
-  .directory-row small { display: none; }
+  .directory-nav { max-height: 35dvh; padding: 2px; margin: -2px; }
   .map-main { padding: 25px 16px; }
   h1 { font-size: 24px; }
   .page-heading p { font-size: 11px; }

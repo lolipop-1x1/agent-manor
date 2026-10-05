@@ -67,6 +67,21 @@ export function directories(files: FileCoverage[]): { path: string; count: numbe
   return [...counts].sort(([a], [b]) => a.localeCompare(b)).map(([path, count]) => ({ path, count, depth: path.split("/").length }));
 }
 
+export interface DirectoryNode { path: string; count: number; children: DirectoryNode[] }
+
+/** 目录计数包含全部后代文件，按真实父子路径组织选择层级。 */
+export function directoryTree(files: FileCoverage[]): DirectoryNode[] {
+  const root: DirectoryNode[] = [];
+  const nodes = new Map<string, DirectoryNode>();
+  for (const directory of directories(files)) {
+    const node: DirectoryNode = { path: directory.path, count: directory.count, children: [] };
+    nodes.set(node.path, node);
+    const parent = node.path.slice(0, node.path.lastIndexOf("/"));
+    (directory.depth === 1 ? root : nodes.get(parent)!.children).push(node);
+  }
+  return root;
+}
+
 export function metricValue(file: FileCoverage, metric: Metric): number {
   return metric === "activity" ? file.activityCount
     : metric === "edit" ? file.editExactLines : file.readExactLines;

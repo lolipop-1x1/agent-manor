@@ -4,7 +4,7 @@ import { hierarchy } from "d3";
 import type { FileCoverage, FileDetail } from "../src/contracts.ts";
 import { clientIds } from "../src/clients.ts";
 import { queryString } from "../web/api.ts";
-import { boundQuery, directories, fileHighlights, mapTree, metricValue, timeFilters } from "../web/model.ts";
+import { boundQuery, directories, directoryTree, fileHighlights, mapTree, metricValue, timeFilters } from "../web/model.ts";
 
 const file = (path: string, lineCount: number): FileCoverage => ({ path, lineCount, category: "source", hash: "hash", readExactLines: 1, readNearLines: 1, editExactLines: 0, editNearLines: 0, readCount: 2, editCount: 0, searchCount: 0, failedCount: 0, unknownCount: 0, activityCount: 2, readExactRanges: [{ start: 1, end: 1 }], readNearRanges: [{ start: 2, end: 2 }], editExactRanges: [], editNearRanges: [] });
 
@@ -31,6 +31,15 @@ test("地图面积只来自行数，保留层级且不为零行文件制造面�
   assert.deepEqual(root.leaves().map(node => node.data.path).sort(), ["src/a.ts", "src/deep/b.ts"]);
   assert.equal(tree.children?.find(node => node.path === "src/deep")?.children?.[0]?.file?.path, "src/deep/b.ts");
   assert.deepEqual(directories(files), [{ path: "docs", count: 1, depth: 1 }, { path: "src", count: 3, depth: 1 }, { path: "src/deep", count: 1, depth: 2 }]);
+});
+
+test("目录树区分同名分支，计数包含空文件和全部后代", () => {
+  const files = [file("root.ts", 3), file("src/a.ts", 10), file("src/deep/b.ts", 30), file("src/deep/empty.ts", 0), file("tests/deep/c.ts", 12)];
+  assert.deepEqual(directoryTree(files), [
+    { path: "src", count: 3, children: [{ path: "src/deep", count: 2, children: [] }] },
+    { path: "tests", count: 1, children: [{ path: "tests/deep", count: 1, children: [] }] },
+  ]);
+  assert.deepEqual(directoryTree([]), []);
 });
 
 test("代码内容过期或不可读时禁止旧范围高亮，近似独立可关闭", () => {

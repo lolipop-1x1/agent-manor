@@ -2,12 +2,13 @@ import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type
 import * as Dialog from "@radix-ui/react-dialog";
 import * as Dropdown from "@radix-ui/react-dropdown-menu";
 import * as Tooltip from "@radix-ui/react-tooltip";
-import { ArrowClockwise, ArrowSquareOut, CaretDown, CaretRight, Check, Code, FileCode, Folder, MagnifyingGlass, MapTrifold, Moon, Plus, Stack, Sun, WarningCircle, X } from "@phosphor-icons/react";
+import { ArrowClockwise, ArrowSquareOut, CaretDown, CaretLeft, CaretRight, Check, Code, FileCode, Folder, MagnifyingGlass, MapTrifold, Moon, Plus, Stack, Sun, WarningCircle, X } from "@phosphor-icons/react";
 import type { Client, CoverageQuery, CoverageResult, EvidenceResponse, FileCategory, FileDetail, FileEvent, Filters, Gap, HistoryEvent, Job, JobResponse, RegisterRepositoryResponse, Repository, SourcesResponse, StatusResponse } from "../src/contracts";
 import { CLIENTS, clientName } from "../src/clients";
 import { ApiError, errorMessage, isAborted, queryString, repositoryPath, request } from "./api";
 import { CodeMap, Hint } from "./CodeMap";
-import { boundQuery, categoryNames, dateLabel, directories, fileHighlights, filename, fmt, gapNames, metricNames, metricValue, percent, rangesLabel, timeFilters, type Metric, type Theme } from "./model";
+import { DirectoryTree } from "./DirectoryTree";
+import { boundQuery, categoryNames, dateLabel, fileHighlights, filename, fmt, gapNames, metricNames, metricValue, percent, rangesLabel, timeFilters, type Metric, type Theme } from "./model";
 
 const kindNames = { read: "读取", edit: "修改", search: "搜索", other: "其他" };
 const statusNames = { success: "成功", failure: "失败", unknown: "结果未知" };
@@ -126,8 +127,8 @@ function EventDetails({ event, openEvidence, openCode, stale }: { event: FileEve
   </div>;
 }
 
-function FilePane({ repoId, detail, loading, error, retry, close, metric, theme, query }: {
-  repoId: string; detail: FileDetail | null; loading: boolean; error: string | null; retry: () => void; close: () => void;
+function FilePane({ repoId, detail, loading, error, retry, collapsed, toggle, metric, theme, query }: {
+  repoId: string; detail: FileDetail | null; loading: boolean; error: string | null; retry: () => void; collapsed: boolean; toggle: () => void;
   metric: Metric; theme: Theme; query?: CoverageQuery;
 }) {
   const [selectedEvent, setSelectedEvent] = useState<string | null>(null);
@@ -141,8 +142,9 @@ function FilePane({ repoId, detail, loading, error, retry, close, metric, theme,
   const highlights = useMemo(() => detail ? fileHighlights(detail, metric, showNear) : { exact: [], near: [] }, [detail, metric, showNear]);
   const active = detail?.events.find(event => event.id === selectedEvent) ?? detail?.events[0] ?? null;
   const openCode = (line?: number) => { setJumpLine(line); if (line) setLineInput(String(line)); setCodeOpen(true); };
-  return <aside className="evidence-pane" aria-label="文件详情">
-    <div className="pane-heading"><span>文件详情</span><button className="icon-button" aria-label="关闭文件详情" onClick={close}><X size={16} /></button></div>
+  return <aside className={`evidence-pane${collapsed ? " panel-collapsed" : ""}`} aria-label="文件详情">
+    <div className="pane-heading"><span>文件详情</span><Hint label={collapsed ? "展开文件详情" : "收起文件详情"}><button className="icon-button panel-toggle" aria-label={collapsed ? "展开文件详情" : "收起文件详情"} aria-expanded={!collapsed} aria-controls="file-details-content" onClick={toggle}>{collapsed ? <CaretLeft size={17} /> : <CaretRight size={17} />}</button></Hint></div>
+    <div id="file-details-content" hidden={collapsed}>
     {loading ? <p className="muted" role="status">正在查询文件与活动…</p> : error ? <Notice danger action={<button className="button subtle" onClick={retry}>重试</button>}>{error}</Notice> : !detail ? <div className="no-selection"><FileCode size={30} /><h2>选择一个文件</h2><p>查看当前代码的覆盖范围与历史活动，再回查对应的原始证据。</p></div> : <>
       <h2>{filename(detail.file.path)}</h2><p className="file-path">{detail.file.path}</p>
       <div className="file-stats"><div><strong>{percent(detail.file.readExactLines, detail.file.lineCount)}</strong><span>精确读取</span></div><div><strong>{fmt(detail.file.readNearLines)}</strong><span>近似读取行</span></div><div><strong>{fmt(detail.file.editExactLines)}</strong><span>精确修改行</span></div></div>
@@ -167,11 +169,14 @@ function FilePane({ repoId, detail, loading, error, retry, close, metric, theme,
         <p className="version-note">分析结果版本 {detail.version} · 基线 {detail.file.hash}{detail.contentHash ? ` · 当前内容 ${detail.contentHash}` : ""}</p>
       </Modal>
     </>}
+    </div>
   </aside>;
 }
 
 export function App() {
   const repositoryTrigger = useRef<HTMLButtonElement>(null);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [detailsCollapsed, setDetailsCollapsed] = useState(false);
   const [theme, setTheme] = useState<Theme>(() => {
     const stored = localStorage.getItem("agent-manor-theme");
     return stored === "light" || stored === "dark" ? stored : matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
@@ -287,6 +292,7 @@ export function App() {
     if (job?.status === "completed") { setVersion(job.version); setReload(value => value + 1); }
   }, [job?.id, job?.status, job?.version]);
   const browse = (path: string) => { setDirectory(path); setSelected(null); };
+  const selectFile = (path: string) => { setSelected(path); setDetailsCollapsed(false); };
   const clearFilters = () => { setClient("all"); setWindow("all"); setCategory("source"); setDirectory(""); setSearch(""); setSelected(null); };
   const runRefresh = async () => {
     if (!repoId) return;
@@ -309,7 +315,6 @@ export function App() {
   const editing = metric === "edit";
   const exact = s ? editing ? s.editExact : s.readExact : null;
   const near = s ? editing ? s.editNear : s.readNear : null;
-  const dirList = directories(rootCoverage?.files ?? []);
   return <Tooltip.Provider delayDuration={350}>
     <header className="app-header"><a className="brand" href="/" aria-label="AgentManor 首页"><Stack size={25} weight="duotone" /><span>AgentManor</span></a><span className="header-divider" /><span className="product-name">代码活动地图</span>
       <div className="header-actions">{repository && <SourcesDialog repo={repository} query={query} gaps={coverage?.gaps ?? []} onJob={recordJob} />}
@@ -325,11 +330,12 @@ export function App() {
           : <><Check size={16} /><span>刷新完成</span><small>{dateLabel(job.finishedAt)}</small></>}
     </div>}
     {coverage?.stale && !jobActive(job) && job?.status !== "failed" && <Notice action={<button className="text-button" onClick={() => void runRefresh()}>刷新分析</button>}>当前统计已过期，基于 {dateLabel(coverage.createdAt)} 的仓库基线。</Notice>}
-    {initialLoading && !repository ? <Empty title="连接本地分析服务">正在读取已登记仓库与分析任务…</Empty> : !repository ? <Empty title="开始查看代码活动">登记一个本机 Git 仓库，发现属于它的 {CLIENTS.map(client => client.name).join("、")} 历史会话。<br />分析在本机完成，原始历史只读。</Empty> : <div className="workspace">
-      <aside className="sidebar"><div className="repository-picker"><Dropdown.Root><Dropdown.Trigger ref={repositoryTrigger} className="repository-trigger"><Folder size={19} weight="duotone" /><strong>{repository.name}</strong><CaretDown size={14} /></Dropdown.Trigger><Dropdown.Portal><Dropdown.Content className="dropdown-content" sideOffset={6}>{repositories.map(repo => <Dropdown.Item key={repo.id} className="dropdown-item" onSelect={() => chooseRepo(repo.id)}>{repo.id === repoId && <Check size={14} />}<span>{repo.name}<small>{repo.path}</small></span></Dropdown.Item>)}<Dropdown.Separator className="dropdown-separator" /><Dropdown.Item className="dropdown-item" onSelect={() => setRegisterOpen(true)}><Plus size={15} />登记仓库</Dropdown.Item></Dropdown.Content></Dropdown.Portal></Dropdown.Root></div>
-        <p className="repo-path" title={repository.path}>{repository.path}</p><div className="sidebar-label">仓库目录</div><nav className="directory-nav" aria-label="仓库目录"><button className={`directory-row${!directory ? " active" : ""}`} onClick={() => browse("")}><MapTrifold size={17} /><span>整个仓库</span><small>{rootCoverage?.files.length ?? "—"}</small></button>
-          {dirList.map(dir => <button key={dir.path} className={`directory-row${directory === dir.path ? " active" : ""}`} style={{ paddingLeft: `${9 + Math.min(4, dir.depth - 1) * 10}px` }} onClick={() => browse(dir.path)} title={dir.path}><Folder size={15} /><span>{filename(dir.path)}</span><small>{dir.count}</small></button>)}
-        </nav><div className="sidebar-bottom"><span className="sidebar-label">统计口径</span><p>当前工作区内容<br />成功返回且可定位的范围<br />精确与近似分别统计</p><button className="text-button" onClick={() => setRegisterOpen(true)}><Plus size={14} />登记其他仓库</button></div>
+    {initialLoading && !repository ? <Empty title="连接本地分析服务">正在读取已登记仓库与分析任务…</Empty> : !repository ? <Empty title="开始查看代码活动">登记一个本机 Git 仓库，发现属于它的 {CLIENTS.map(client => client.name).join("、")} 历史会话。<br />分析在本机完成，原始历史只读。</Empty> : <div className="workspace" data-sidebar-collapsed={sidebarCollapsed} data-details-collapsed={detailsCollapsed}>
+      <aside className={`sidebar${sidebarCollapsed ? " panel-collapsed" : ""}`} aria-label="仓库导航">
+        <div className="pane-heading"><span>仓库导航</span><Hint label={sidebarCollapsed ? "展开仓库导航" : "收起仓库导航"}><button className="icon-button panel-toggle" aria-label={sidebarCollapsed ? "展开仓库导航" : "收起仓库导航"} aria-expanded={!sidebarCollapsed} aria-controls="repository-navigation-content" onClick={() => setSidebarCollapsed(value => !value)}>{sidebarCollapsed ? <CaretRight size={17} /> : <CaretLeft size={17} />}</button></Hint></div>
+        <div id="repository-navigation-content" className="sidebar-content" hidden={sidebarCollapsed}><div className="repository-picker"><Dropdown.Root><Dropdown.Trigger ref={repositoryTrigger} className="repository-trigger"><Folder size={19} weight="duotone" /><strong>{repository.name}</strong><CaretDown size={14} /></Dropdown.Trigger><Dropdown.Portal><Dropdown.Content className="dropdown-content" sideOffset={6}>{repositories.map(repo => <Dropdown.Item key={repo.id} className="dropdown-item" onSelect={() => chooseRepo(repo.id)}>{repo.id === repoId && <Check size={14} />}<span>{repo.name}<small>{repo.path}</small></span></Dropdown.Item>)}<Dropdown.Separator className="dropdown-separator" /><Dropdown.Item className="dropdown-item" onSelect={() => setRegisterOpen(true)}><Plus size={15} />登记仓库</Dropdown.Item></Dropdown.Content></Dropdown.Portal></Dropdown.Root></div>
+        <p className="repo-path" title={repository.path}>{repository.path}</p><div className="sidebar-label">仓库目录</div><DirectoryTree key={repoId} files={rootCoverage?.files ?? []} selected={directory} browse={browse} />
+        <div className="sidebar-bottom"><span className="sidebar-label">统计口径</span><p>当前工作区内容<br />成功返回且可定位的范围<br />精确与近似分别统计</p><button className="text-button" onClick={() => setRegisterOpen(true)}><Plus size={14} />登记其他仓库</button></div></div>
       </aside>
       <main className="map-main"><div className="page-heading"><div><h1>代码活动地图</h1><p>从仓库分布，回到每一次读取与修改的证据。</p></div></div>
         <div className="filters"><label className="select-field"><span>客户端</span><select value={client} onChange={event => setClient(event.target.value as Client | "all")}><option value="all">全部客户端</option>{CLIENTS.map(client => <option key={client.id} value={client.id}>{client.name}</option>)}</select></label><label className="select-field"><span>时间</span><select value={window} onChange={event => { setWindow(event.target.value); setTimeAnchor(Date.now()); }}><option value="all">全部历史</option><option value="7">最近 7 天</option><option value="30">最近 30 天</option><option value="custom">自定义</option></select></label><label className="select-field"><span>文件</span><select value={category} onChange={event => { setCategory(event.target.value as FileCategory | "all"); setSelected(null); }}><option value="source">源码</option><option value="config">配置</option><option value="docs">文档</option><option value="unknown">未知类别</option><option value="all">全部文本</option></select></label>
@@ -340,15 +346,15 @@ export function App() {
         {coverageLoading ? <div className="query-loading" role="status">正在查询所选范围…</div> : coverageError ? <Empty title="统计暂不可用" action={<div className="empty-actions"><button className="button" onClick={() => { setVersion(undefined); setReload(value => value + 1); }}>加载最新结果</button><button className="button subtle" onClick={() => void runRefresh()} disabled={jobActive(job)}>刷新分析</button></div>}>{coverageError}</Empty> : s && exact && near && !invalidTime && <>
           <div className="metrics"><div className="metric-primary"><span>{editing ? "精确修改行覆盖率" : "精确读取行覆盖率"}</span><strong>{percent(exact.lines, s.lineCount)}</strong><small><b>{fmt(exact.lines)}</b> / {fmt(s.lineCount)} 行</small></div><div><span>{editing ? "精确修改文件覆盖率" : "精确读取文件覆盖率"}</span><strong>{percent(exact.files, s.fileCount)}</strong><small><b>{fmt(exact.files)}</b> / {fmt(s.fileCount)} 个文件</small></div><div className="metric-context"><span>另有近似对应</span><strong>{fmt(near.lines)}<em>行</em></strong><small>{fmt(near.files)} 个文件 · 不计入精确覆盖</small></div></div>
           <div className="map-heading"><div className="breadcrumbs"><button onClick={() => browse("")}><Folder size={16} />{repository.name}</button>{directory.split("/").filter(Boolean).map((part, i, parts) => <span key={i}><CaretRight size={12} /><button onClick={() => browse(parts.slice(0, i + 1).join("/"))}>{part}</button></span>)}<small>{fmt(visible.length)} 个文件</small></div><div className="metric-picker" role="group" aria-label="地图着色指标">{(["read", "edit", "activity"] as const).map(value => <button key={value} aria-pressed={metric === value} className={metric === value ? "active" : ""} onClick={() => setMetric(value)}>{metricNames[value]}</button>)}</div></div>
-          {visible.some(file => file.lineCount > 0) ? <CodeMap files={visible} directory={directory} metric={metric} selected={selected} browse={browse} select={setSelected} /> : <Empty title={visible.length ? "当前范围只有空文件" : "没有符合筛选的文件"} action={<button className="button subtle" onClick={clearFilters}>重置筛选</button>}>{visible.length ? "空文件为 0 行，没有地图面积。可从下方文件列表查看活动。" : "尝试切换类别、客户端、时间或目录；文件搜索只影响地图与文件列表。"}</Empty>}
+          {visible.some(file => file.lineCount > 0) ? <CodeMap files={visible} directory={directory} metric={metric} selected={selected} browse={browse} select={selectFile} /> : <Empty title={visible.length ? "当前范围只有空文件" : "没有符合筛选的文件"} action={<button className="button subtle" onClick={clearFilters}>重置筛选</button>}>{visible.length ? "空文件为 0 行，没有地图面积。可从下方文件列表查看活动。" : "尝试切换类别、客户端、时间或目录；文件搜索只影响地图与文件列表。"}</Empty>}
           <div className="map-legend"><span>{metric === "activity" ? "活动次数" : "精确覆盖率"}</span><span className="legend-scale">{[0, 1, 2, 3, 4].map(tone => <i key={tone} className={`tone-${tone}`} />)}</span><span>{metric === "activity" ? `0 → ${fmt(Math.max(0, ...visible.map(file => metricValue(file, metric))))} 次` : "0 → 100%"}</span><span className="near-key legend-near" /><span>虚线标记另有近似</span><small>面积为文件行数</small></div>
           {search && <p className="muted small">文件搜索筛选地图与列表；上方统计仍基于当前目录和所选历史范围。</p>}
-          <details className="file-table" open={!!search || visible.some(file => !file.lineCount)}><summary>文件列表 · {fmt(visible.length)} 个</summary><div className="file-table-scroll"><table><thead><tr><th>文件</th><th>行数</th><th>精确</th><th>近似行</th><th>次数</th></tr></thead><tbody>{visible.map(file => <tr key={file.path} className={selected === file.path ? "selected" : ""}><td><button onClick={() => setSelected(file.path)}>{file.path}</button></td><td>{fmt(file.lineCount)}</td><td>{percent(metric === "edit" ? file.editExactLines : file.readExactLines, file.lineCount)}</td><td>{fmt(metric === "edit" ? file.editNearLines : file.readNearLines)}</td><td>{fmt(metricValue(file, "activity"))}</td></tr>)}</tbody></table></div></details>
+          <details className="file-table" open={!!search || visible.some(file => !file.lineCount)}><summary>文件列表 · {fmt(visible.length)} 个</summary><div className="file-table-scroll"><table><thead><tr><th>文件</th><th>行数</th><th>精确</th><th>近似行</th><th>次数</th></tr></thead><tbody>{visible.map(file => <tr key={file.path} className={selected === file.path ? "selected" : ""}><td><button onClick={() => selectFile(file.path)}>{file.path}</button></td><td>{fmt(file.lineCount)}</td><td>{percent(metric === "edit" ? file.editExactLines : file.readExactLines, file.lineCount)}</td><td>{fmt(metric === "edit" ? file.editNearLines : file.readNearLines)}</td><td>{fmt(metricValue(file, "activity"))}</td></tr>)}</tbody></table></div></details>
           {coverage!.gaps.length > 0 && <details className="coverage-gaps"><summary><WarningCircle size={15} />{coverage!.gaps.length} 项采集缺口与范围限制</summary><Gaps gaps={coverage!.gaps} /></details>}
           <p className="baseline-note">分析于 {dateLabel(coverage!.createdAt)} · 结果版本 {coverage!.version}<br />基线 {coverage!.baselineHash}{coverage!.previousVersion && <> · 上一版 {coverage!.previousVersion}</>}</p>
         </>}
       </main>
-      <FilePane repoId={repoId} detail={detail} loading={detailLoading} error={detailError} retry={() => setDetailRetry(value => value + 1)} close={() => setSelected(null)} metric={metric} theme={theme} query={query} />
+      <FilePane repoId={repoId} detail={detail} loading={detailLoading} error={detailError} retry={() => setDetailRetry(value => value + 1)} collapsed={detailsCollapsed} toggle={() => setDetailsCollapsed(value => !value)} metric={metric} theme={theme} query={query} />
     </div>}
     {!repository && !initialLoading && <div className="first-register"><button className="button primary" onClick={() => setRegisterOpen(true)}><Plus size={17} />登记本机仓库</button></div>}
     <Modal open={registerOpen} onOpenChange={setRegisterOpen} fallbackFocus={repositoryTrigger} title="登记本机 Git 仓库" description="输入当前工作区的绝对路径。登记后自动发现历史并创建分析任务。">
