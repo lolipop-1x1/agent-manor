@@ -30,6 +30,9 @@ try {
   await run("git", ["init", "-q", repository]);
   await run("git", ["-C", repository, "add", "src/entry.ts"]);
   const fixture = sessionFixture(repository);
+  fixture.codex[0].payload.title = "日志中的旧标题";
+  const titleIndex = join(directory, "session_index.jsonl");
+  await writeFile(titleIndex, encodeSession([{ id: "demo-codex", thread_name: "实现状态检查" }]));
   for (const client of ["codex", "claude", "codeflicker"]) {
     await mkdir(env[`AGENT_MANOR_${client.toUpperCase()}_DIR`]);
     await writeFile(join(env[`AGENT_MANOR_${client.toUpperCase()}_DIR`], "demo.jsonl"), encodeSession(fixture[client]));
@@ -45,6 +48,7 @@ try {
   assert.equal(list.total, 6);
   const codex = list.sessions.find(item => item.clientSessionId === "demo-codex");
   assert.ok(codex);
+  assert.equal(codex.title, "实现状态检查", "CLI 应使用旁路索引的正式标题");
   for (const item of list.sessions.filter(item => ["demo-codex", "demo-claude", "demo-flicker"].includes(item.clientSessionId))) {
     const profile = await command(["sessions", "profile", item.id]);
     assert.equal(profile.usage.inputTokens, 100);
@@ -74,6 +78,7 @@ try {
     await page.getByLabel("搜索会话标题和消息").fill("状态检查");
     await page.getByRole("region", { name: "全局搜索命中", exact: true }).locator(".session-hit").filter({ hasText: "实现状态检查" }).first().click();
     await page.locator(".session-message").first().waitFor();
+    expect((await page.locator(".sessions-main h1").innerText()) === "实现状态检查", "详情应显示正式标题");
     expect((await page.locator(".session-profile-content").innerText()).includes("60.0%"), "画像缓存应为60%");
     expect((await page.locator(".session-profile-content").innerText()).includes("总输入 Token"), "输入统计标签必须使用归一化的总输入");
     await page.getByRole("tab", { name: "用量", exact: true }).click();
@@ -239,6 +244,16 @@ try {
   console.log((await browser(["run-code", code.toString()])).split("### Ran Playwright code")[0].trim());
   await Promise.all(["chart-tooltip-light.png", "chart-tooltip-dark.png"].map(name => copyFile(join(directory, name), join(artifacts, name))));
   await browser(["screenshot", `--filename=${join(artifacts, "session-library.png")}`]);
+  await writeFile(titleIndex, encodeSession([{ id: "demo-codex", thread_name: "状态检查改名验收" }]));
+  console.log((await browser(["run-code", `async page => {
+    await page.goto(${JSON.stringify(`http://127.0.0.1:${status.instance.port}/#sessions?id=${encodeURIComponent(codex.id)}`)});
+    await page.locator(".sessions-main h1").filter({ hasText: "实现状态检查" }).waitFor();
+    await page.getByRole("button", { name: "刷新会话索引", exact: true }).click();
+    await page.locator(".sessions-main h1").filter({ hasText: "状态检查改名验收" }).waitFor();
+    await page.locator(".session-list-item").filter({ hasText: "状态检查改名验收" }).waitFor();
+    return { titleRenamePassed: true };
+  }`])).split("### Ran Playwright code")[0].trim());
+  assert.equal((await command(["sessions", "messages", codex.id])).session.title, "状态检查改名验收");
   console.log("PASS 全局会话 CLI／HTTP／Chrome 端到端");
 } catch (error) {
   await browser(["screenshot", `--filename=${join(artifacts, "failure.png")}`]).catch(() => {});

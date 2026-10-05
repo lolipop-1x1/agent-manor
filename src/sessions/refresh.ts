@@ -7,6 +7,7 @@ import type { Gap } from "../contracts.js";
 import { parseSessionSource } from "./parser.js";
 import { SessionStore } from "./store.js";
 import type { SessionRevision } from "./store.js";
+import { loadCodexTitles } from "./codex-titles.js";
 
 // 会话规范化规则升级时使来源缓存失效，独立于地图索引迁移。
 const SESSION_INDEX_RULE_VERSION = "3";
@@ -28,6 +29,7 @@ export async function refreshSessions(store: SessionStore, jobId: string, roots?
   store.updateJob(jobId, { status: "running", phase: "discover", progress: 0 });
   try {
     const sources = await discoverSources(roots);
+    const codexTitles = sources.some(source => source.client === "codex") ? await loadCodexTitles(roots) : new Map<string, string>();
     const cached = new Map(store.cachedRevisions().map(item => [item.path, item]));
     const current: SessionRevision[] = [];
     const gaps: Gap[] = [];
@@ -41,12 +43,15 @@ export async function refreshSessions(store: SessionStore, jobId: string, roots?
         if ((error as NodeJS.ErrnoException).code === "ENOENT") { missing += 1; continue; }
         throw error;
       }
-      const sourceFingerprint = `${source.client}:${source.format ?? "default"}:${digest.hash}`;
+      const title = source.client === "codex" && source.sessionId ? codexTitles.get(source.sessionId) : undefined;
+      // Codex 标题与正文分别更新；只失效对应来源，其他客户端沿用现有缓存。
+      const titleFingerprint = source.client === "codex" ? `:title-v1:${createHash("sha256").update(JSON.stringify(title ?? null)).digest("hex")}` : "";
+      const sourceFingerprint = `${source.client}:${source.format ?? "default"}:${digest.hash}${titleFingerprint}`;
       const previous = cached.get(source.path);
       if (!clearCache && previous?.fingerprint === sourceFingerprint) { current.push(previous); continue; }
       const pending = store.createRevision(source.path, sourceFingerprint);
       try {
-        const meta = await parseSessionSource(source, pending.sink, { byteLimit: digest.bytes });
+        const meta = await parseSessionSource(source, pending.sink, { byteLimit: digest.bytes, title });
         pending.flush();
         // 允许活动日志追加；发布的始终是开始检查时的同一字节前缀。
         const after = await fingerprint(source.path, digest.bytes);

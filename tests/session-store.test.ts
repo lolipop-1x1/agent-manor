@@ -355,3 +355,62 @@ test("真实刷新调用链：未变来源复用、追加重建、清缓存原�
   assert.equal(store.status().gaps.find(gap => gap.kind === "source_missing")?.count, 1);
   assert.equal(store.messages(id, { version: rebuilt.version }).total, 3);
 }));
+
+test("Codex 标题索引按线程身份关联，改名在正文未变时更新并可检索", async () => fixture(async (store, path) => {
+  const home = join(path, "..", "codex-home");
+  const sessions = join(home, "sessions");
+  const archive = join(home, "archived_sessions");
+  await mkdir(sessions, { recursive: true }); await mkdir(archive);
+  const encode = (value: unknown) => `${JSON.stringify(value)}\n`;
+  const sourcePath = join(archive, "sample.jsonl");
+  const content = encode({ type: "session_meta", payload: { id: "synthetic-title" } })
+    + encode({ type: "response_item", payload: { type: "message", role: "user", content: [{ type: "input_text", text: "原始请求" }] } });
+  await writeFile(sourcePath, content);
+  const index = join(home, "session_index.jsonl");
+  await writeFile(index, encode({ id: "unrelated", thread_name: "其他会话" })
+    + encode({ id: "synthetic-title", thread_name: "旧标题" }) + "无效索引记录\n"
+    + encode({ id: "synthetic-title", thread_name: "索引中的正式名称" }));
+  const roots = { codex: [sessions, archive], claude: [], codeflicker: [] };
+  const refresh = async () => { const job = store.createJob(); await refreshSessions(store, job.id, roots); };
+  await refresh();
+  const before = store.list().sessions[0]!;
+  assert.equal(before.title, "索引中的正式名称");
+  assert.equal(before.titleOrigin, "recorded");
+  assert.equal(store.list().total, 1, "标题索引不能被当作额外会话");
+  const firstRevision = store.cachedRevisions()[0]!.revision;
+  await refresh();
+  assert.equal(store.cachedRevisions()[0]!.revision, firstRevision);
+  const firstVersion = store.status().version;
+  await appendFile(index, encode({ id: "synthetic-title", thread_name: "改名后的正式名称" }));
+  await refresh();
+  assert.equal(store.messages(before.id).session.title, "改名后的正式名称");
+  assert.equal(store.list({ version: firstVersion }).sessions[0]?.title, "索引中的正式名称");
+  assert.equal(store.search({ q: "改名后的正式名称" }).hits[0]?.kind, "title");
+  assert.equal(store.messages(before.id).total, 1);
+  await appendFile(index, encode({ id: "synthetic-title", thread_name: "" }));
+  await refresh();
+  assert.equal(store.list().sessions[0]?.title, "原始请求", "明确空标题不能沿用旧索引名称");
+}));
+
+test("Codex 状态库的 name 优先于旧 title，改名刷新且不改写来源", async () => fixture(async (store, path) => {
+  const home = join(path, "..", "codex-state-home");
+  const sessions = join(home, "sessions");
+  await mkdir(sessions, { recursive: true });
+  const encode = (value: unknown) => `${JSON.stringify(value)}\n`;
+  await writeFile(join(sessions, "sample.jsonl"), encode({ type: "session_meta", payload: { id: "synthetic-state-title" } })
+    + encode({ type: "response_item", payload: { type: "message", role: "user", content: [{ type: "input_text", text: "原始请求" }] } }));
+  const state = new Database(join(home, "state_5.sqlite"));
+  try {
+    state.exec("CREATE TABLE threads (id TEXT PRIMARY KEY,title TEXT,name TEXT)");
+    state.prepare("INSERT INTO threads VALUES (?,?,?)").run("synthetic-state-title", "较旧的标题", "状态库正式名称");
+    const roots = { codex: sessions, claude: [], codeflicker: [] };
+    const refresh = async () => { const job = store.createJob(); await refreshSessions(store, job.id, roots); };
+    await refresh();
+    assert.equal(store.list().sessions[0]?.title, "状态库正式名称");
+    assert.equal(state.prepare("SELECT name FROM threads").get()?.name, "状态库正式名称");
+    await writeFile(join(home, "session_index.jsonl"), encode({ id: "synthetic-state-title", thread_name: "尚未更新的索引名称" }));
+    state.prepare("UPDATE threads SET name=?").run("状态库改名结果");
+    await refresh();
+    assert.equal(store.list().sessions[0]?.title, "状态库改名结果");
+  } finally { state.close(); }
+}));

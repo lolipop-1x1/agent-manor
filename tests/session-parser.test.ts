@@ -61,6 +61,29 @@ test("Codex 响应正文优先于事件投影，保留明确终答、模型、�
   assert.ok(sample.messages.some(message => message.id === sample.usages[0]?.messageId));
 });
 
+test("Codex 后备标题跳过自动注入的项目说明，保留原始消息", async () => {
+  const instructions = "# AGENTS.md instructions for /workspace/demo\n\n<INSTRUCTIONS>\n使用中文回答\n</INSTRUCTIONS>";
+  const sample = await parsed("codex", [meta(), user("instructions", instructions), user("request", "检查标题显示")]);
+  assert.equal(sample.summary.title, "检查标题显示");
+  assert.equal(sample.summary.titleOrigin, "first_user");
+  assert.equal(sample.messages[0]?.text, instructions);
+});
+
+test("Codex 后备标题提取浏览器包装中的真实请求，跳过环境与 Skill 内容", async () => {
+  const request = '<in-app-browser-context source="ambient-ui-state">\n当前浏览器上下文\n</in-app-browser-context>\n\n## My request:\n检查中文标题';
+  const sample = await parsed("codex", [meta(), user("environment", "<environment_context>\n工作环境\n</environment_context>"),
+    user("skill", "<skill>\n技能说明\n</skill>"), user("request", request)]);
+  assert.equal(sample.summary.title, "检查中文标题");
+  assert.equal(sample.messages.at(-1)?.text, request);
+  assert.equal((await parsed("codex", [meta({ title: "明确保存的标题" }), user("request", request)])).summary.title, "明确保存的标题");
+});
+
+test("Codex 没有真实请求时保留未命名，普通用户正文不误删", async () => {
+  const environment = "<environment_context>\n工作环境\n</environment_context>";
+  assert.equal((await parsed("codex", [meta(), user("environment", environment)])).summary.titleOrigin, "fallback");
+  assert.equal((await parsed("codex", [meta(), user("request", "请解释 AGENTS.md 的用途")])).summary.title, "请解释 AGENTS.md 的用途");
+});
+
 test("Codex 有正文响应时仍保留事件中已记录的思考，不将加密响应当作正文缺失", async () => {
   const sample = await parsed("codex", [meta(), user(),
     { type: "event_msg", payload: { type: "agent_reasoning", text: "实际留存的合成思考" } },

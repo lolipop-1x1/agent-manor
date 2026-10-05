@@ -77,7 +77,23 @@ function resource(tool: string, input: unknown, paths: string[] | undefined): Se
 
 interface Pending { message: SessionMessage; bytes: number; input: unknown }
 
-export async function parseSessionSource(source: SourceLocation, sink: SessionSink, options: { byteLimit?: number } = {}): Promise<SessionSourceMeta> {
+/** 只清理标题候选中的完整注入包，消息正文与轮次保持原样。 */
+function userTitle(body: string): string {
+  let value = body.trim();
+  const request = /(?:^|\n)## My request:\s*\n/.exec(value);
+  if (request && /(?:^|\n)<in-app-browser-context\b/.test(value.slice(0, request.index))) value = value.slice(request.index + request[0].length).trim();
+  while (value) {
+    const tag = value.startsWith("# AGENTS.md") ? "INSTRUCTIONS"
+      : /^<(INSTRUCTIONS|environment_context|in-app-browser-context|skill|recommended_plugins|turn_aborted)(?:\s[^>]*)?>/.exec(value)?.[1];
+    if (!tag) break;
+    const end = value.indexOf(`</${tag}>`);
+    if (end < 0) break;
+    value = value.slice(end + tag.length + 3).trim();
+  }
+  return value.replace(/\s+/g, " ").slice(0, 120);
+}
+
+export async function parseSessionSource(source: SourceLocation, sink: SessionSink, options: { byteLimit?: number; title?: string } = {}): Promise<SessionSourceMeta> {
   const gaps = new Map<string, Gap>();
   const gap = (kind: GapKind, message: string) => {
     const key = `${kind}:${message}`;
@@ -115,6 +131,7 @@ export async function parseSessionSource(source: SourceLocation, sink: SessionSi
   let copyBeforeOrdinal: number | undefined;
   let hasResponseTranscript = false;
   let projectedReasoning: { key: string; text: string; turnId: string } | undefined;
+  let firstUserTitle: string | undefined;
   // Codex 同时保存响应项与 UI 事件投影；存在响应正文时采用响应项，避免把同一消息计两遍。
   if (source.client === "codex") {
     for await (const { record } of records(source.path, () => {}, options.byteLimit)) {
@@ -153,8 +170,9 @@ export async function parseSessionSource(source: SourceLocation, sink: SessionSi
     const value: SessionMessage = { id: `${id}:message:${digest(key)}`, sessionId: id, ordinal: identity.ordinal,
       recordLine: row, turnId: identity.turnId, kind, text: body, ...extra };
     if (value.model) models.add(value.model);
-    if (kind === "user" && body.trim() && meta.titleOrigin === "fallback") {
-      meta.title = body.replace(/\s+/g, " ").trim().slice(0, 120); meta.titleOrigin = "first_user";
+    if (kind === "user" && !firstUserTitle) {
+      firstUserTitle = (source.client === "codex" ? userTitle(body) : body.replace(/\s+/g, " ").trim().slice(0, 120)) || undefined;
+      if (firstUserTitle && meta.titleOrigin === "fallback") { meta.title = firstUserTitle; meta.titleOrigin = "first_user"; }
     }
     sink.message(value);
     if (kind === "assistant") candidate = value;
@@ -375,5 +393,9 @@ export async function parseSessionSource(source: SourceLocation, sink: SessionSi
   if (!meta.project && targetsLimited) gap("budget_exceeded", "工具目标目录超过项目关联检查上限，未推断项目归属");
   meta.models = [...models];
   meta.gaps = [...gaps.values()].map(item => ({ ...item, sourceId: meta.sourceId }));
+  if (options.title !== undefined) {
+    meta.title = options.title || firstUserTitle || "未命名会话";
+    meta.titleOrigin = options.title ? "recorded" : firstUserTitle ? "first_user" : "fallback";
+  }
   return meta;
 }
