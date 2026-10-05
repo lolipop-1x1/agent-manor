@@ -5,6 +5,16 @@ export const PAGE_SIZE = 40;
 export const TURN_PAGE_SIZE = 10;
 export type EvidenceTarget = { toolName?: string; resourceKind?: "mcp" | "skill_call" | "skill_read"; resourceName?: string; resourceServer?: string };
 
+export function usageAxis(value: number): { max: number; ticks: number[] } {
+  const target = Math.max(1, value) / 4;
+  const power = 10 ** Math.floor(Math.log10(target));
+  const fraction = target / power;
+  const factor = fraction >= Math.sqrt(50) ? 10 : fraction >= Math.sqrt(10) ? 5 : fraction >= Math.sqrt(2) ? 2 : 1;
+  const step = Math.max(1, factor * power);
+  const intervals = Math.ceil(Math.max(1, value) / step);
+  return { max: intervals * step, ticks: Array.from({ length: intervals + 1 }, (_, index) => index * step) };
+}
+
 export function usageSegments(steps: SessionUsage[], key: "inputTokens" | "outputTokens" | "cachedInputTokens", max: number): string[] {
   const segments: string[] = [];
   let points: string[] = [];

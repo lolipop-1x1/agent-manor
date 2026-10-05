@@ -1,8 +1,8 @@
-import { useEffect, useState } from "react";
+import { useEffect, useId, useState } from "react";
 import { CaretLeft, CaretRight } from "@phosphor-icons/react";
 import { clientName } from "../src/clients";
 import type { SessionProfile, SessionSummary } from "../src/session-contracts";
-import { displayRecorded, usageSegments, type EvidenceTarget } from "./session-model";
+import { displayRecorded, usageAxis, usageSegments, type EvidenceTarget } from "./session-model";
 import { kindLabels, resourceLabels } from "./SessionMessage";
 import { Notice, Pager } from "./SessionControls";
 
@@ -18,22 +18,58 @@ function ProfileBar({ label, count, max, suffix = "" }: { label: string; count: 
 
 function UsageChart({ profile, onFocusStep }: { profile: SessionProfile; onFocusStep: (step: SessionProfile["steps"][number]) => void }) {
   const series = [["inputTokens", "输入"], ["cachedInputTokens", "缓存读取"], ["outputTokens", "输出"]] as const;
-  const max = Math.max(1, ...profile.steps.flatMap(step => series.map(([key]) => step[key] ?? 0)));
+  const { max, ticks } = usageAxis(Math.max(0, ...profile.steps.flatMap(step => series.map(([key]) => step[key] ?? 0))));
+  const [hovered, setHovered] = useState<number>();
+  const [focused, setFocused] = useState<number>();
+  const tooltipId = useId();
+  const selected = hovered ?? focused;
+  const active = selected === undefined ? undefined : profile.steps[selected];
+  const x = (index: number) => profile.steps.length <= 1 ? 50 : index / (profile.steps.length - 1) * 100;
   return <div className="session-usage-chart">
     <div className="session-chart-legend">{series.map(([key, label]) => <span key={key}><i className={`series-${key}`} />{label}</span>)}</div>
-    <small>{formatCount(max)} Token</small>
-    <svg viewBox="-2 -2 104 106" preserveAspectRatio="none" aria-label="输入、缓存读取和输出 Token 的请求趋势">
-      {[0, 50, 100].map(y => <line key={y} x1="0" x2="100" y1={y} y2={y} className="session-chart-grid" vectorEffect="non-scaling-stroke" />)}
-      {series.flatMap(([key]) => usageSegments(profile.steps, key, max).map((points, index) => points.includes(" ")
-        ? <polyline key={`${key}-${index}`} points={points} className={`series-${key}`} fill="none" strokeWidth="1.5" vectorEffect="non-scaling-stroke" />
-        : <circle key={`${key}-${index}`} cx={points.split(",")[0]} cy={points.split(",")[1]} r="1" className={`series-${key}`} />))}
-      {profile.steps.map((step, index) => <rect key={step.id} x={index / profile.steps.length * 100} y="0" width={100 / profile.steps.length} height="100" className="session-chart-hit"
-        role={step.messageId ? "button" : undefined} tabIndex={step.messageId ? 0 : undefined}
-        aria-label={`请求 ${index + 1}，输入 ${displayRecorded(step.inputTokens)}，输出 ${displayRecorded(step.outputTokens)}，缓存读取 ${displayRecorded(step.cachedInputTokens)}${step.messageId ? "，定位记录" : ""}`}
-        onClick={() => step.messageId && onFocusStep(step)} onKeyDown={event => { if (step.messageId && ["Enter", " "].includes(event.key)) { event.preventDefault(); onFocusStep(step); } }}>
-        <title>{step.model ?? "模型未记录"} · {dateLabel(step.occurredAt)} · 输入 {displayRecorded(step.inputTokens)} · 输出 {displayRecorded(step.outputTokens)} · 缓存读取 {displayRecorded(step.cachedInputTokens)}</title>
-      </rect>)}
-    </svg><div className="session-chart-axis"><span>请求 1</span><span>请求 {profile.steps.length}</span></div>
+    <div className="session-chart-unit">Token</div>
+    <div className="session-chart-body">
+      <div className="session-chart-y-axis" aria-label="Token 纵轴刻度">{ticks.map(value => <span key={value} style={{ top: `${100 - value / max * 100}%` }} title={`${formatCount(value)} Token`}>
+        {value.toLocaleString("en", { notation: "compact", maximumFractionDigits: 1 })}
+      </span>)}</div>
+      <div className="session-chart-plot">
+        <svg viewBox="-2 0 104 100" preserveAspectRatio="none" aria-label="输入、缓存读取和输出 Token 的请求趋势"
+          onPointerLeave={() => setHovered(undefined)} onBlur={event => { if (!event.currentTarget.contains(event.relatedTarget)) setFocused(undefined); }}>
+          {ticks.map(value => <line key={value} x1="0" x2="100" y1={100 - value / max * 100} y2={100 - value / max * 100} className="session-chart-grid" vectorEffect="non-scaling-stroke" />)}
+          {series.flatMap(([key]) => usageSegments(profile.steps, key, max).map((points, index) => points.includes(" ")
+            ? <polyline key={`${key}-${index}`} points={points} className={`series-${key}`} fill="none" strokeWidth="1.5" vectorEffect="non-scaling-stroke" />
+            : <circle key={`${key}-${index}`} cx={points.split(",")[0]} cy={points.split(",")[1]} r="1" className={`series-${key}`} />))}
+          {active && selected !== undefined && <g className="session-chart-reference">
+            <line x1={x(selected)} x2={x(selected)} y1="0" y2="100" vectorEffect="non-scaling-stroke" />
+            {series.map(([key]) => active[key] === undefined ? null : <circle key={key} cx={x(selected)} cy={100 - active[key] / max * 100} r="1.2" className={`series-${key}`} />)}
+          </g>}
+          {profile.steps.map((step, index) => {
+            const half = profile.steps.length <= 1 ? 50 : 50 / (profile.steps.length - 1);
+            const left = index === 0 ? -2 : x(index) - half;
+            const right = index === profile.steps.length - 1 ? 102 : x(index) + half;
+            return <rect key={step.id} x={left} y="0" width={right - left} height="100" className="session-chart-hit"
+              data-step-index={index} role={step.messageId ? "button" : "img"} tabIndex={index === (focused ?? 0) ? 0 : -1}
+              aria-describedby={selected === index ? tooltipId : undefined}
+              aria-label={`请求 ${index + 1}，输入 ${displayRecorded(step.inputTokens)}，输出 ${displayRecorded(step.outputTokens)}，缓存读取 ${displayRecorded(step.cachedInputTokens)}${step.messageId ? "，定位记录" : ""}`}
+              onPointerEnter={() => setHovered(index)} onFocus={() => setFocused(index)} onClick={() => step.messageId && onFocusStep(step)} onKeyDown={event => {
+                if (["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) {
+                  event.preventDefault();
+                  setHovered(undefined);
+                  const next = event.key === "Home" ? 0 : event.key === "End" ? profile.steps.length - 1 : Math.max(0, Math.min(profile.steps.length - 1, index + (event.key === "ArrowRight" ? 1 : -1)));
+                  event.currentTarget.parentElement?.querySelector<SVGRectElement>(`[data-step-index="${next}"]`)?.focus();
+                } else if (step.messageId && ["Enter", " "].includes(event.key)) { event.preventDefault(); onFocusStep(step); }
+              }} />;
+          })}
+        </svg>
+        {active && selected !== undefined && <div id={tooltipId} role="tooltip" className="session-chart-tooltip" style={x(selected) < 50 ? { right: 8 } : { left: 8 }}>
+          <strong>请求 {selected + 1}{active.sessionId !== profile.sessionIds[0] ? " · 子会话" : ""}</strong>
+          <span className="session-chart-tooltip-model">{active.model ?? "模型未记录"}</span>
+          <dl>{series.map(([key, label]) => <div key={key}><dt><i className={`series-${key}`} />{label}</dt><dd>{displayRecorded(active[key])}{active[key] === undefined ? "" : " Token"}</dd></div>)}</dl>
+          <small>{dateLabel(active.occurredAt)}</small>
+        </div>}
+      </div>
+      <span /><div className="session-chart-axis"><span>请求 1</span>{profile.steps.length > 1 && <span>请求 {profile.steps.length}</span>}</div>
+    </div>
   </div>;
 }
 

@@ -41,6 +41,8 @@ agent-manor evidence <repositoryId> <eventId> --version <analysisVersion> --clie
 
 对话每页显示 10 个完整消息组，使用首末组、上一轮／下一轮、组编号或页码导航。初始上下文和未知轮次也可能单独成组，因此组位置与用户轮次编号可能不同。完整／轨迹默认折叠过程，搜索或请求定位会自动展开。用户与 AI 正文支持 Markdown，长内容可展开；图片只显示替代文字。全局搜索默认覆盖标题及用户／AI 正文，过程内容可额外选入；会话内命中显示在浮层中，清除搜索恢复原阅读位置。点击用量图、请求编号、工具或资源名称可回到证据记录。
 
+请求用量趋势显示从零开始的 Token 纵轴。鼠标悬浮查看请求编号、模型、时间和输入／缓存读取／输出数值；未记录与零值分开。Tab 聚焦图表后，可用左右方向键切换请求、Home／End 到首末请求、Enter／空格定位消息。
+
 ```sh
 agent-manor sessions refresh --wait --json
 agent-manor sessions status --json

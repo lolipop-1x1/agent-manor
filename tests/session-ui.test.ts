@@ -3,7 +3,7 @@ import { test } from "node:test";
 import type { Client } from "../src/clients.ts";
 import type { SessionMessage, SessionSearchHit } from "../src/session-contracts.ts";
 import { panelSemantics } from "../web/workspace-layout.ts";
-import { displayRecorded, groupedTurns, searchHitMode, searchKinds, sessionParams, turnTitle, usageSegments, workspaceSessionSemantics } from "../web/session-model.ts";
+import { displayRecorded, groupedTurns, searchHitMode, searchKinds, sessionParams, turnTitle, usageAxis, usageSegments, workspaceSessionSemantics } from "../web/session-model.ts";
 
 const summary = {
   id: "session-a", client: "codex" as Client, clientSessionId: "external-a", title: "合成会话", titleOrigin: "recorded" as const,
@@ -63,6 +63,18 @@ test("用量趋势保留零值，并在缺失记录处断开曲线", () => {
   assert.deepEqual(usageSegments([{ id: "a", inputTokens: 0 }, { id: "b" }, { id: "c", inputTokens: 100 }], "inputTokens", 100), ["0,100", "100,0"]);
   assert.deepEqual(usageSegments([{ id: "a" }], "inputTokens", 0), []);
   assert.deepEqual(usageSegments([{ id: "a", inputTokens: 10 }], "inputTokens", 10), ["50,0"]);
+});
+
+test("用量纵轴覆盖最大值，以零为起点并使用整数 Token 刻度", () => {
+  assert.deepEqual(usageAxis(224776), { max: 250000, ticks: [0, 50000, 100000, 150000, 200000, 250000] });
+  assert.deepEqual(usageAxis(0), { max: 1, ticks: [0, 1] });
+  for (const value of [1, 7, 999, 1000000]) {
+    const axis = usageAxis(value);
+    assert.ok(axis.max >= value);
+    assert.equal(axis.ticks[0], 0);
+    assert.equal(axis.ticks.at(-1), axis.max);
+    assert.ok(axis.ticks.every(tick => Number.isInteger(tick)));
+  }
 });
 
 test("轮次分页和画像定位参数保留精确查询", () => {
