@@ -138,7 +138,7 @@ input::placeholder { color: var(--muted); }
 .map-tool-button:hover:not(:disabled) { background: var(--surface-alt); }
 .map-gesture-help { font-size: 10px; color: var(--muted); margin-left: auto; }
 .map-error { color: var(--danger); font-size: 12px; margin-bottom: 8px; }
-.code-map { height: 450px; position: relative; background: var(--surface-alt); border: 1px solid var(--border); border-radius: 5px; overflow: hidden; touch-action: none; cursor: grab; user-select: none; }
+.code-map { height: clamp(450px, 65dvh, 850px); position: relative; background: var(--surface-alt); border: 1px solid var(--border); border-radius: 5px; overflow: hidden; touch-action: none; cursor: grab; user-select: none; }
 .code-map.dragging, .code-map.dragging * { cursor: grabbing; }
 .map-colors { position: absolute; inset: 0; pointer-events: none; }
 .map-colors .tone-0 { fill: var(--map-0); }
@@ -339,7 +339,6 @@ input[type="checkbox"] { accent-color: var(--accent); }
   .map-toolbar { gap: 6px; }
   .map-gesture-help { display: none; }
   .map-explorer:fullscreen { padding: 10px; }
-  .tile-name { font-size: 9px; }
   .map-directory { font-size: 9px; }
   .map-legend small { margin-left: 0; width: 100%; }
   .evidence-pane { padding: 23px 16px; }
