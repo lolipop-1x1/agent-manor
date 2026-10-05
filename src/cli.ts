@@ -9,6 +9,7 @@ import { clientIds } from "./clients.js";
 import { startService } from "./server.js";
 import { apiRequest, connectService, dataHome, delay, RequestError, serviceUrl } from "./service/runtime.js";
 import { VERSION } from "./version.js";
+import type { SessionJob } from "./session-contracts.js";
 
 type Options = Record<string, string | boolean | undefined>;
 const repositoryPath = (id: string) => `/repositories/${encodeURIComponent(id)}`;
@@ -41,7 +42,7 @@ function humanOutput(value: unknown): string {
   return JSON.stringify(value, null, 2);
 }
 
-async function waitJob(instance: ServiceInstance, value: JobResponse, timeout: string | boolean | undefined): Promise<JobResponse> {
+async function waitJob(instance: ServiceInstance, value: JobResponse | { job: SessionJob }, timeout: string | boolean | undefined): Promise<JobResponse | { job: SessionJob }> {
   const seconds = timeout === undefined ? 120 : Number(timeout);
   if (!Number.isFinite(seconds) || seconds <= 0 || seconds > 3600) throw new RequestError("INVALID_INPUT", "timeout 必须是 0 到 3600 秒之间的数值");
   const deadline = Date.now() + seconds * 1000;
@@ -71,7 +72,7 @@ export function createProgram(): Command {
     }
     let result = await apiRequest<unknown>(instance, path, method, body);
     if (options.wait && typeof result === "object" && result !== null && "job" in result) {
-      const finished = await waitJob(instance, result as JobResponse, options.timeout);
+      const finished = await waitJob(instance, result as JobResponse | { job: SessionJob }, options.timeout);
       result = { ...result, job: finished.job };
       if (finished.job.status === "failed") process.exitCode = 1;
     }
@@ -83,6 +84,38 @@ export function createProgram(): Command {
     .option("--to <time>", "ISO 8601 截止时间").option("--categories <list>", "逗号分隔文件类别")
     .option("--directory <path>", "仓库内相对目录");
   const waiting = (command: Command) => command.option("--wait", "等待刷新完成").option("--timeout <seconds>", "等待秒数，默认 120");
+  const sessions = program.command("sessions").description("全局会话库、搜索、消息轨迹及画像");
+  const sessionFilters = (command: Command) => command.option("--client <client>", clientIds.join(" 或 "))
+    .option("--project <path>", "项目绝对路径；none 表示无项目").option("--from <time>", "ISO 8601 起始时间")
+    .option("--to <time>", "ISO 8601 截止时间").option("--version <id>", "完整会话索引版本")
+    .option("--page <number>", "页码").option("--page-size <number>", "每页条数，最多 200")
+    .option("--kinds <list>", "逗号分隔 user、assistant、thinking、tool_call、tool_result、system、compression");
+  const sessionQueryString = (command: Command, extra: Record<string, string | undefined> = {}) => {
+    const opts = command.optsWithGlobals<Options>();
+    const params = new URLSearchParams();
+    for (const key of ["client", "project", "from", "to", "version", "page", "kinds", "q", "mode", "messageId", "sessionId"]) {
+      if (typeof opts[key] === "string") params.set(key, opts[key] as string);
+    }
+    if (typeof opts.pageSize === "string") params.set("pageSize", opts.pageSize);
+    for (const [key, value] of Object.entries(extra)) if (value !== undefined) params.set(key, value);
+    return params.size ? `?${params}` : "";
+  };
+  sessions.command("status").description("会话索引状态与采集缺口")
+    .action(async (_options: Options, command: Command) => { await request(command, "/sessions/status"); });
+  sessionFilters(sessions.command("list").description("分页列出全部会话")).option("--q <text>", "标题及正文关键词")
+    .action(async (_options: Options, command: Command) => { await request(command, `/sessions${sessionQueryString(command)}`); });
+  sessionFilters(sessions.command("search <text>").description("搜索全部有效索引，返回消息定位")).option("--session-id <id>", "仅搜索指定会话")
+    .action(async (q: string, _options: Options, command: Command) => { await request(command, `/sessions/search${sessionQueryString(command, { q })}`); });
+  sessionFilters(sessions.command("messages <id>").description("分页浏览简易、完整或轨迹消息"))
+    .option("--mode <mode>", "brief、full 或 trace，默认 full").option("--message-id <id>", "定位消息所在页")
+    .action(async (id: string, _options: Options, command: Command) => { await request(command, `/sessions/${encodeURIComponent(id)}/messages${sessionQueryString(command)}`); });
+  sessionFilters(sessions.command("profile <id>").description("会话画像、记录用量与留存内容估算"))
+    .option("--include-children", "包含明确关联的子会话")
+    .action(async (id: string, _options: Options, command: Command) => { await request(command, `/sessions/${encodeURIComponent(id)}/profile${sessionQueryString(command, { includeChildren: command.optsWithGlobals<Options>().includeChildren ? "true" : undefined })}`); });
+  for (const name of ["refresh", "cacheclear"] as const) {
+    waiting(sessions.command(name).description(name === "refresh" ? "检查并刷新全部历史" : "清除派生会话缓存后重建"))
+      .action(async (_options: Options, command: Command) => { await request(command, `/sessions/${name === "refresh" ? "refresh" : "cache"}`, name === "refresh" ? "POST" : "DELETE"); });
+  }
   program.command("serve").description("前台运行本地后台服务").option("--port <number>", "监听端口，默认随机空闲端口")
     .action(async (options: Options, command: Command) => {
       const global = command.optsWithGlobals<Options>();

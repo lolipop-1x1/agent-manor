@@ -18,7 +18,8 @@
     "docs/agents/public-content.md",
     "docs/design/history-support.md",
     "docs/design/baseline-rules.md",
-    "docs/design/matching-rules.md"
+    "docs/design/matching-rules.md",
+    "docs/design/session-history.md"
   ],
   "scripts": {
     "check:public": "node scripts/check-public-content.mjs",
@@ -60,6 +61,8 @@
     "d3": "7.9.0",
     "react": "19.3.0",
     "react-dom": "19.3.0",
+    "react-markdown": "10.1.0",
+    "remark-gfm": "4.0.1",
     "tsx": "4.23.15",
     "typescript": "7.0.2",
     "vite": "8.3.2"

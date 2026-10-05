@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState, type CSSProperties, type KeyboardEvent, type PointerEvent, type ReactNode } from "react";
-import { panelWidthRange, workspaceWidths, type PanelSide, type PanelWidths } from "./workspace-layout";
+import { panelSemantics, panelWidthRange, workspaceWidths, type PanelSemantics, type PanelSide, type PanelWidths } from "./workspace-layout";
 
-export function ResizableWorkspace({ sidebarCollapsed, detailsCollapsed, children }: {
-  sidebarCollapsed: boolean; detailsCollapsed: boolean; children: ReactNode;
+export function ResizableWorkspace({ sidebarCollapsed, detailsCollapsed, children, semantics }: {
+  sidebarCollapsed: boolean; detailsCollapsed: boolean; children: ReactNode; semantics?: PanelSemantics;
 }) {
   const workspace = useRef<HTMLDivElement>(null);
   const drag = useRef<{ side: PanelSide; x: number; width: number; pointerId: number } | null>(null);
@@ -17,7 +17,7 @@ export function ResizableWorkspace({ sidebarCollapsed, detailsCollapsed, childre
   useEffect(() => {
     const observer = new ResizeObserver(entries => {
       const entry = entries[0];
-      if (entry) {
+      if (entry && entry.contentRect.width > 0) {
         setViewport(entry.contentRect.width);
         setPinned(current => current?.viewport === entry.contentRect.width ? current : null);
       }
@@ -71,9 +71,9 @@ export function ResizableWorkspace({ sidebarCollapsed, detailsCollapsed, childre
     {(["sidebar", "details"] as const).map(side => {
       const hidden = side === "sidebar" ? sidebarCollapsed || viewport < 768 : detailsCollapsed || viewport < 1024;
       const range = panelWidthRange(side, viewport, widths);
+      const accessible = panelSemantics(side, semantics);
       return <div key={side} className={`panel-resizer ${side}-resizer`} role="separator" tabIndex={0} hidden={hidden}
-        aria-label={side === "sidebar" ? "调整仓库导航宽度" : "调整文件详情宽度"} aria-orientation="vertical"
-        aria-controls={side === "sidebar" ? "repository-navigation-content" : "file-details-content"}
+        aria-label={accessible.label} aria-orientation="vertical" aria-controls={accessible.controls}
         aria-valuemin={range.min} aria-valuemax={Math.round(range.max)} aria-valuenow={Math.round(widths[side])}
         aria-valuetext={`${Math.round(widths[side])} 像素`} title="拖动调整宽度；左右键微调，Shift 加速，Home / End 到边界"
         onPointerDown={event => start(event, side)} onPointerMove={move} onPointerUp={finish} onPointerCancel={finish}

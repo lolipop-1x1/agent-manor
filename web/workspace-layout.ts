@@ -1,6 +1,16 @@
 export type PanelSide = "sidebar" | "details";
 export type PanelWidths = Record<PanelSide, number>;
 export type CollapsedPanels = Record<PanelSide, boolean>;
+export type PanelSemantics = Partial<Record<PanelSide, { label: string; controls: string }>>;
+
+const defaultPanelSemantics: Record<PanelSide, { label: string; controls: string }> = {
+  sidebar: { label: "调整仓库导航宽度", controls: "repository-navigation-content" },
+  details: { label: "调整文件详情宽度", controls: "file-details-content" },
+};
+
+export function panelSemantics(side: PanelSide, overrides: PanelSemantics = {}) {
+  return overrides[side] ?? defaultPanelSemantics[side];
+}
 
 const limits = { sidebar: { min: 160, max: 480 }, details: { min: 260, max: 640 } };
 const mapMinimum = 360;

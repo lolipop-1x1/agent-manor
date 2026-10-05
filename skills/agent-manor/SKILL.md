@@ -37,3 +37,11 @@ CodeFlicker 查询使用 `--client codeflicker`，保持返回的版本与后续
 - `sources <repositoryId> --version <version> --json` 查看来源与归属缺口。只有用户已确认关系时用 `associate <repositoryId> <sourceId> --wait --json`；原始历史始终只读。`cacheclear <repositoryId> --wait --json` 清派生缓存并重建，保留登记与关联。
 
 完整命令、环境变量和支持边界见包内 [使用指南](../../docs/usage.md)。分析索引包含历史源码片段；不要把个人源码或原始会话复制到提交、PR 或外部服务中。
+
+## 全局会话查询
+
+使用同一服务的 `agent-manor sessions` 命令，不直接打开或修改客户端历史。先 `sessions refresh --wait --json` 并确认 `job.status=complete`，再 `sessions list --json` 或 `sessions search "关键词" --json`。默认搜标题和用户／AI 正文；工具过程显式加 `--kinds user,assistant,tool_call,tool_result`，思考另加 `thinking`。结果分页但检索整个索引。
+
+取得会话 id 和 version 后，使用 `sessions messages <id> --version <version> --mode brief|full|trace --json`，搜索命中可带 `--message-id <id>` 定位页。`sessions profile <id> --version <version> --json` 默认自身，`--include-children` 才汇总明确子关系。缺失不是零；估算针对留存文本，与实际请求 Token 分开；Skill 读取不等于明确调用。遵守日志证据边界，不能从会话体量推断账单、缓存或代码作者归属。
+
+`sessions status --json` 查看进度与缺口，`sessions cacheclear --wait --json` 从现有来源重建。来源删除后新版不再计入，可使用上版版本对照；失败保留旧版。公开输出只使用匿名合成示例，不能转发本机消息、项目路径或原始会话身份。

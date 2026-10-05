@@ -1,0 +1,215 @@
+import assert from "node:assert/strict";
+import { execFile } from "node:child_process";
+import { mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { promisify } from "node:util";
+import { encodeSession, sessionFixture, longSessionFixture } from "./session-fixture.mjs";
+
+// 独立后台、人工历史和真实 Chrome；不读取日常历史或连接日常后台。
+const run = promisify(execFile);
+const cli = fileURLToPath(new URL("../dist/cli.js", import.meta.url));
+const directory = await realpath(await mkdtemp(join(tmpdir(), "manor-sessions-e2e-")));
+const artifacts = fileURLToPath(new URL("../.local/session-e2e/", import.meta.url));
+const repository = join(directory, "sample-workspace");
+const session = `ms${process.pid}`;
+const env = { ...process.env, AGENT_MANOR_HOME: join(directory, "data"), AGENT_MANOR_PORT: "0",
+  AGENT_MANOR_CODEX_DIR: join(directory, "codex"), AGENT_MANOR_CLAUDE_DIR: join(directory, "claude"), AGENT_MANOR_CODEFLICKER_DIR: join(directory, "codeflicker") };
+const command = async args => JSON.parse((await run(process.execPath, [cli, ...args, "--json"], { cwd: directory, env, timeout: 60_000, maxBuffer: 4 * 1024 * 1024 })).stdout);
+const browser = async args => {
+  const result = await run("playwright-cli", [`-s=${session}`, ...args], { cwd: directory, env: { ...process.env, TMPDIR: "/tmp" }, timeout: 60_000, maxBuffer: 4 * 1024 * 1024 });
+  if (result.stdout.includes("### Error")) throw new Error(result.stdout);
+  return result.stdout;
+};
+
+try {
+  await mkdir(artifacts, { recursive: true });
+  await mkdir(join(repository, "src"), { recursive: true });
+  await writeFile(join(repository, "src/entry.ts"), "export const healthy = true;\n局部轨迹标记\n");
+  await run("git", ["init", "-q", repository]);
+  await run("git", ["-C", repository, "add", "src/entry.ts"]);
+  const fixture = sessionFixture(repository);
+  for (const client of ["codex", "claude", "codeflicker"]) {
+    await mkdir(env[`AGENT_MANOR_${client.toUpperCase()}_DIR`]);
+    await writeFile(join(env[`AGENT_MANOR_${client.toUpperCase()}_DIR`], "demo.jsonl"), encodeSession(fixture[client]));
+  }
+  await writeFile(join(env.AGENT_MANOR_CODEX_DIR, "orphan.jsonl"), encodeSession(fixture.orphan));
+  await writeFile(join(env.AGENT_MANOR_CODEX_DIR, "long.jsonl"), encodeSession(longSessionFixture(repository)));
+  await writeFile(join(env.AGENT_MANOR_CODEX_DIR, "child.jsonl"), encodeSession([
+    { type: "session_meta", payload: { id: "demo-child", cwd: repository, title: "关联子任务", parent_thread_id: "demo-long" } },
+    { type: "response_item", payload: { type: "message", role: "user", content: [{ type: "input_text", text: "执行子任务" }] } },
+  ]));
+  assert.equal((await command(["sessions", "refresh", "--wait"])).job.status, "complete");
+  const list = await command(["sessions", "list"]);
+  assert.equal(list.total, 6);
+  const codex = list.sessions.find(item => item.clientSessionId === "demo-codex");
+  assert.ok(codex);
+  for (const item of list.sessions.filter(item => ["demo-codex", "demo-claude", "demo-flicker"].includes(item.clientSessionId))) {
+    const profile = await command(["sessions", "profile", item.id]);
+    assert.equal(profile.usage.inputTokens, 100);
+    assert.equal(profile.usage.cachedInputTokens, 60);
+    assert.equal(profile.usage.cacheReadRatio, 0.6);
+  }
+  const search = await command(["sessions", "search", "局部轨迹标记", "--kinds", "user,assistant,tool_result"]);
+  assert.equal(search.total, 1);
+  const located = await command(["sessions", "messages", codex.id, "--mode", "trace", "--message-id", search.hits[0].messageId]);
+  assert.ok(located.messages.some(item => item.id === search.hits[0].messageId));
+  assert.equal((await command(["register", repository, "--wait"])).job.status, "completed");
+  const status = await command(["status"]);
+  await browser(["open", `http://127.0.0.1:${status.instance.port}`, "--headed", "--browser=chrome"]);
+  const code = async page => {
+    const errors = [];
+    page.on("pageerror", error => errors.push(error.message));
+    const expect = (condition, message) => { if (!condition) throw new Error(message); };
+    await page.setViewportSize({ width: 1560, height: 1080 });
+    await page.getByRole("button", { name: "会话库", exact: true }).click();
+    await page.locator(".session-list-item").first().waitFor();
+    expect(await page.locator(".session-list-item").count() === 6, "应展示六个会话，包括无项目和父子任务");
+    await page.getByLabel("筛选客户端").selectOption("codex");
+    await page.getByLabel("筛选项目").selectOption("none");
+    await page.waitForFunction(() => document.querySelectorAll(".session-list-item").length === 1);
+    expect((await page.locator(".session-list-item").innerText()).includes("无项目会话仍然可见"), "无项目筛选错误");
+    await page.getByLabel("筛选项目").selectOption("all");
+    await page.getByLabel("搜索会话标题和消息").fill("状态检查");
+    await page.getByRole("region", { name: "全局搜索命中", exact: true }).locator(".session-hit").filter({ hasText: "实现状态检查" }).first().click();
+    await page.locator(".session-message").first().waitFor();
+    expect((await page.locator(".session-profile-content").innerText()).includes("60.0%"), "画像缓存应为60%");
+    expect((await page.locator(".session-profile-content").innerText()).includes("总输入 Token"), "输入统计标签必须使用归一化的总输入");
+    await page.getByRole("tab", { name: "用量", exact: true }).click();
+    await page.locator(".session-step-table button").first().click();
+    await page.locator(".session-message.is-focused.kind-system").waitFor();
+    expect((await page.locator(".session-message.is-focused").innerText()).includes("请求用量（记录值）"), "请求步骤未定位到实际用量记录");
+    await page.getByRole("tab", { name: "完整", exact: true }).click();
+    await page.getByRole("tab", { name: "轨迹", exact: true }).click();
+    await page.locator(".session-message-detail summary").first().click();
+    await page.locator(".session-message-detail[open]").first().waitFor();
+    await page.getByLabel("搜索会话标题和消息").fill("局部轨迹标记");
+    await page.getByLabel("搜索过程记录").check();
+    await page.locator(".session-hit").first().waitFor();
+    await page.locator(".session-hit").first().click();
+    await page.locator(".session-message.is-focused").waitFor();
+    expect((await page.locator(".session-message.is-focused").innerText()).includes("局部轨迹标记"), "隐藏工具响应未展开定位");
+    await page.getByLabel("搜索会话标题和消息").fill("");
+    await page.getByLabel("在当前会话搜索").fill("局部轨迹标记");
+    await page.getByRole("region", { name: "当前会话命中", exact: true }).locator(".session-hit").first().click();
+    expect((await page.locator(".session-message.is-focused").innerText()).includes("局部轨迹标记"), "会话内搜索未定位过程记录");
+    await page.locator(".session-file-links summary").first().click();
+    await page.locator(".session-file-link").first().click();
+    await page.locator(".map-main").waitFor({ state: "visible" });
+    await page.getByRole("button", { name: "查看所属会话", exact: true }).waitFor();
+    expect((await page.locator(".evidence-pane h2").innerText()).includes("entry.ts"), "会话关联文件未选择地图文件");
+    await page.getByRole("button", { name: "查看所属会话", exact: true }).click();
+    await page.locator(".session-message.is-focused").waitFor();
+    await page.getByRole("button", { name: "收起会话列表", exact: true }).click();
+    await page.getByRole("button", { name: "收起会话画像", exact: true }).click();
+    await page.getByRole("button", { name: "展开会话列表", exact: true }).click();
+    await page.getByRole("button", { name: "展开会话画像", exact: true }).click();
+    await page.getByRole("separator", { name: "调整会话列表宽度", exact: true }).focus();
+    await page.keyboard.press("ArrowRight");
+    await page.getByRole("separator", { name: "调整会话画像宽度", exact: true }).focus();
+    await page.keyboard.press("ArrowLeft");
+    await page.getByRole("button", { name: "切换主题", exact: true }).click();
+    await page.getByRole("button", { name: "代码地图", exact: true }).click();
+    await page.locator(".map-main").waitFor({ state: "visible" });
+    const originalScale = await page.locator(".code-map").getAttribute("data-scale");
+    await page.getByRole("button", { name: "放大地图", exact: true }).click();
+    await page.waitForFunction(initial => document.querySelector(".code-map").getAttribute("data-scale") !== initial, originalScale);
+    const scale = await page.locator(".code-map").getAttribute("data-scale");
+    await page.getByRole("button", { name: "会话库", exact: true }).click();
+    await page.getByRole("button", { name: "代码地图", exact: true }).click();
+    const returnedScale = await page.locator(".code-map").getAttribute("data-scale");
+    expect(returnedScale === scale, `功能切换未保留地图缩放状态：${scale} → ${returnedScale}`);
+    await page.locator(".file-table summary").click();
+    await page.locator(".file-table button").first().click();
+    await page.getByRole("button", { name: "查看所属会话", exact: true }).click();
+    await page.locator(".sessions-shell").waitFor({ state: "visible" });
+    expect(await page.locator(".session-message.is-focused").count() === 1, "地图活动不能定位会话");
+    await page.getByLabel("搜索会话标题和消息").fill("");
+    await page.locator(".session-list-item").filter({ hasText: "长会话工作区验收" }).click();
+    await page.waitForFunction(() => document.querySelectorAll(".session-turn").length === 10);
+    expect(await page.locator(".session-message-text h2").count() === 10, "Markdown 标题没有渲染");
+    expect(await page.locator(".session-message-text table").count() === 10, "Markdown 表格没有渲染");
+    expect(await page.locator(".session-message-text img, .session-message-text script").count() === 0, "历史正文不应执行 HTML 或加载外部图片");
+    expect((await page.locator(".session-message-text").nth(1).innerText()).includes("<script>window.fixtureUnsafe = true</script>"), "历史中的 HTML 标签应作为文本保留");
+    const initialLayout = await page.evaluate(() => ({ height: innerHeight, body: document.documentElement.scrollHeight,
+      controls: document.querySelector(".session-main-controls").getBoundingClientRect().top,
+      pane: document.querySelector(".session-message-scroll").clientHeight }));
+    expect(initialLayout.body <= initialLayout.height + 1, `长会话撑大了页面：${JSON.stringify(initialLayout)}`);
+    expect(initialLayout.pane > 300, "正文阅读空间不足");
+    await page.locator(".session-message-scroll").evaluate(el => { el.scrollTop = 700; });
+    expect(await page.evaluate(() => scrollY) === 0, "阅读时整个页面发生了滚动");
+    expect(Math.abs(await page.locator(".session-main-controls").evaluate(el => el.getBoundingClientRect().top) - initialLayout.controls) < 1, "操作区没有固定");
+    await page.getByRole("tab", { name: "用量", exact: true }).click();
+    await page.locator(".session-step-table tbody tr").first().waitFor();
+    expect(await page.locator(".session-step-table tbody tr").count() === 12, "请求明细应每页12条");
+    expect(await page.locator(".session-usage-chart svg").count() === 1, "用量趋势图缺失");
+    expect(await page.locator(".session-steps").count() === 0, "仍在连续铺开全部请求卡片");
+    await page.getByRole("navigation", { name: "请求明细分页", exact: true }).getByRole("button", { name: "下一页", exact: true }).click();
+    expect((await page.locator(".session-step-table tbody tr").first().innerText()).includes("#13"), "明细分页编号错误");
+    await page.locator(".session-step-table tbody button").first().click();
+    await page.locator(".session-message.is-focused.kind-system").waitFor();
+    expect(page.url().includes("message="), "消息定位未同步地址");
+    await page.locator(".session-message-scroll").evaluate(el => { el.scrollTop = el.scrollHeight; });
+    await page.locator(".session-step-table tbody button").first().click();
+    await page.waitForFunction(() => {
+      const node = document.querySelector(".session-message.is-focused").getBoundingClientRect();
+      const pane = document.querySelector(".session-message-scroll").getBoundingClientRect();
+      return node.top < pane.bottom && node.bottom > pane.top;
+    });
+    await page.getByRole("tab", { name: "调用", exact: true }).click();
+    await page.getByRole("button", { name: "sample_tool", exact: true }).click();
+    await page.locator(".session-message.is-focused.kind-tool_call").waitFor();
+    await page.getByRole("button", { name: "末组", exact: true }).click();
+    await page.getByLabel("跳转轮次").waitFor();
+    await page.waitForFunction(() => document.querySelector('[aria-label="跳转轮次"]').value === "35");
+    expect((await page.locator(".session-turn[open] > summary").innerText()).includes("第 35 轮"), "末轮跳转未展开完整轮次");
+    await page.getByRole("tab", { name: "简易", exact: true }).click();
+    await page.waitForFunction(() => document.querySelectorAll(".session-turn").length === 5 && document.querySelector('[aria-label="跳转轮次"]').value === "35").catch(() => { throw new Error("切换简易模式未保留末轮位置"); });
+    await page.locator(".session-message-scroll").evaluate(el => { el.scrollTop = 500; });
+    const bookmark = await page.locator(".session-message-scroll").evaluate(el => el.scrollTop);
+    await page.getByLabel("在当前会话搜索").fill("过程标记-35-6");
+    await page.getByRole("region", { name: "当前会话命中", exact: true }).locator(".session-hit").first().click();
+    await page.locator(".session-message.is-focused.kind-tool_result").waitFor();
+    await page.getByRole("button", { name: "清除会话内搜索", exact: true }).click();
+    await page.waitForFunction(() => document.querySelector('[role="tab"][aria-selected="true"]').textContent === "简易");
+    await page.waitForFunction(saved => Math.abs(document.querySelector(".session-message-scroll").scrollTop - saved) < 2, bookmark).catch(() => { throw new Error(`清除搜索未恢复阅读位置 ${bookmark}`); });
+    const parentAddress = page.url();
+    await page.getByRole("tab", { name: "概览", exact: true }).click();
+    await page.locator(".session-child").filter({ hasText: "关联子任务" }).click();
+    await page.getByRole("button", { name: "返回父会话", exact: true }).waitFor();
+    expect(page.url() !== parentAddress, "子会话地址未更新");
+    await page.goBack();
+    await page.locator(".sessions-main h1").filter({ hasText: "长会话工作区验收" }).waitFor();
+    await page.locator(".session-child").filter({ hasText: "关联子任务" }).click();
+    await page.getByRole("button", { name: "返回父会话", exact: true }).click();
+    await page.locator(".sessions-main h1").filter({ hasText: "长会话工作区验收" }).waitFor();
+    await page.setViewportSize({ width: 760, height: 1024 });
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1 && document.documentElement.scrollHeight <= innerHeight + 1), "窄屏存在页面溢出");
+    await page.getByRole("button", { name: "会话统计", exact: true }).click();
+    await page.locator(".session-profile").waitFor({ state: "visible" });
+    await page.keyboard.press("Escape");
+    await page.locator(".session-profile").waitFor({ state: "hidden" });
+    await page.getByRole("button", { name: "会话列表", exact: true }).click();
+    await page.locator(".session-sidebar").waitFor({ state: "visible" });
+    await page.getByRole("button", { name: "返回对话", exact: true }).click();
+    expect(errors.length === 0, `浏览器异常：${errors.join(";")}`);
+    await page.setViewportSize({ width: 1560, height: 1080 });
+    await page.getByRole("button", { name: "首组", exact: true }).click();
+    await page.waitForFunction(() => document.querySelectorAll(".session-turn").length === 10 && document.querySelector('[aria-label="跳转轮次"]').value === "1");
+    await page.getByRole("tab", { name: "用量", exact: true }).click();
+    await page.getByRole("button", { name: "切换主题", exact: true }).click();
+    return { passed: true };
+  };
+  console.log((await browser(["run-code", code.toString()])).split("### Ran Playwright code")[0].trim());
+  await browser(["screenshot", `--filename=${join(artifacts, "session-library.png")}`]);
+  console.log("PASS 全局会话 CLI／HTTP／Chrome 端到端");
+} catch (error) {
+  await browser(["screenshot", `--filename=${join(artifacts, "failure.png")}`]).catch(() => {});
+  await writeFile(join(artifacts, "failure-state.txt"), await browser(["run-code", "async page => ({url:page.url(), text:(await page.locator('body').innerText()).slice(0,12000)})"]).catch(() => "状态无法读取"));
+  throw error;
+} finally {
+  await browser(["close"]).catch(() => {});
+  await command(["stop"]).catch(() => {});
+  await rm(directory, { recursive: true, force: true });
+}

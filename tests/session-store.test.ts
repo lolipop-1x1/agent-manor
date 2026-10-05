@@ -1,0 +1,357 @@
+import assert from "node:assert/strict";
+import { appendFile, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { appendFileSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import test from "node:test";
+import Database from "better-sqlite3";
+import type { SessionMessage, SessionSourceMeta, SessionUsage } from "../src/session-contracts.js";
+import { AnalysisStore, StoreError } from "../src/index/store.js";
+import { SessionStore } from "../src/sessions/store.js";
+import { refreshSessions } from "../src/sessions/refresh.js";
+
+async function fixture(run: (store: SessionStore, path: string) => Promise<void> | void): Promise<void> {
+  const directory = await mkdtemp(join(tmpdir(), "manor-session-store-"));
+  const path = join(directory, "index.sqlite");
+  const mapStore = new AnalysisStore(path);
+  mapStore.close();
+  const store = new SessionStore(path);
+  try { await run(store, path); }
+  finally { store.close(); await rm(directory, { recursive: true, force: true }); }
+}
+
+test("活动日志追加只索引固定前缀，已有内容改写拒绝发布且保留前版", async () => fixture(async (store, dbPath) => {
+  const sourcePath = join(dbPath, "..", "active.jsonl");
+  const encode = (value: unknown) => `${JSON.stringify(value)}\n`;
+  const user = (id: string, text: string) => ({ type: "response_item", payload: { type: "message", id, role: "user", content: [{ type: "input_text", text }] } });
+  const initial = encode({ type: "session_meta", payload: { id: "active-demo" } }) + encode(user("first", "第一个问题"));
+  await writeFile(sourcePath, initial);
+  const original = store.createRevision.bind(store);
+  let changed = false;
+  store.createRevision = (path, fingerprint) => {
+    const pending = original(path, fingerprint);
+    return { ...pending, sink: { usage: pending.sink.usage, message: value => {
+      pending.sink.message(value);
+      if (!changed) {
+        changed = true;
+        appendFileSync(sourcePath, encode(user("second", "第二个问题")));
+      }
+    } } };
+  };
+  const roots = { codex: join(dbPath, ".."), claude: [], codeflicker: [] };
+  const first = store.createJob();
+  await refreshSessions(store, first.id, roots);
+  const id = store.list().sessions[0]!.id;
+  assert.equal(store.messages(id).total, 1);
+  store.createRevision = original;
+  const second = store.createJob();
+  await refreshSessions(store, second.id, roots);
+  assert.equal(store.messages(id).total, 2);
+  const version = store.status().version;
+  changed = false;
+  // 强制重建才会进入 sink；此时同步改写用于确定性复现校验失败。
+  const wrapping = store.createRevision;
+  store.createRevision = (path, fingerprint) => {
+    const pending = wrapping(path, fingerprint);
+    return { ...pending, sink: { usage: pending.sink.usage, message: value => {
+      pending.sink.message(value);
+      if (!changed) { changed = true; writeFileSync(sourcePath, initial.replace("第一个问题", "改写的问题")); }
+    } } };
+  };
+  const third = store.createJob();
+  await assert.rejects(refreshSessions(store, third.id, roots, true));
+  assert.equal(store.status().version, version);
+  assert.equal(store.status().stale, true);
+}));
+
+function meta(id: string, extra: Partial<SessionSourceMeta> = {}): SessionSourceMeta {
+  return { id, client: "codex", clientSessionId: id, title: "人工合成会话", titleOrigin: "recorded", path: `/workspace/history/${id}.jsonl`, sourceId: `codex:${id}`,
+    messageCount: 0, turnCount: 0, models: [], gaps: [], startedAt: "2026-01-01T00:00:00Z", updatedAt: "2026-01-02T00:00:00Z", ...extra };
+}
+function message(id: string, ordinal: number, extra: Partial<SessionMessage> = {}): SessionMessage {
+  return { id: `message-${ordinal}`, sessionId: id, ordinal, recordLine: ordinal + 1, turnId: "turn-1", kind: "user", text: "合成正文", ...extra };
+}
+function source(store: SessionStore, summary: SessionSourceMeta, messages: SessionMessage[], usages: SessionUsage[] = []) {
+  const pending = store.createRevision(summary.path, "synthetic-fingerprint");
+  for (const value of messages) pending.sink.message(value);
+  for (const value of usages) pending.sink.usage(value);
+  pending.flush();
+  store.finishRevision(pending.revision, summary);
+  return { path: summary.path, revision: pending.revision, fingerprint: "synthetic-fingerprint" };
+}
+
+test("独立表保留地图迁移版本，首次未就绪、发布及失败只读上一完整版本", async () => fixture((store, path) => {
+  const database = new Database(path);
+  assert.equal(database.pragma("user_version", { simple: true }), 3);
+  assert.equal(database.pragma("journal_mode", { simple: true }), "wal");
+  database.close();
+  assert.throws(() => store.list(), (error: unknown) => error instanceof StoreError && error.code === "ANALYSIS_NOT_READY");
+  assert.throws(() => store.getJob("missing"), (error: unknown) => error instanceof StoreError && error.code === "JOB_NOT_FOUND");
+  const first = source(store, meta("first"), [message("first", 1)]);
+  const version = store.publish(store.createJob().id, [first], []);
+  assert.equal(store.list().total, 1);
+  source(store, meta("pending"), [message("pending", 1)]);
+  assert.equal(store.list().total, 1);
+  const failed = store.createJob();
+  store.failJob(failed.id, "合成读取失败");
+  assert.equal(store.status().version, version);
+  assert.equal(store.status().stale, true);
+  assert.equal(store.getJob(failed.id).status, "failed");
+  assert.equal(store.messages("first").messages[0]?.text, "合成正文");
+}));
+
+test("中文全索引搜索包含标题及正文，工具可选，百分号下划线按字面匹配，定位到未加载页", async () => fixture(store => {
+  const values = Array.from({ length: 1005 }, (_, index) => message("search", index, { text: index === 1001 ? "中文边界关键词 50%_命中" : "没有目标" }));
+  values.push(message("search", 1006, { kind: "tool_call", text: "工具隐藏关键词", callId: "synthetic-call", tool: "shell" }));
+  const revision = source(store, meta("search", { title: "中文标题关键词" }), values);
+  store.publish(store.createJob().id, [revision], []);
+  assert.equal(store.search({ q: "中文" }).total, 2);
+  assert.equal(store.search({ q: "50%_" }).total, 1);
+  assert.equal(store.search({ q: "工具隐藏" }).total, 0);
+  assert.equal(store.search({ q: "工具隐藏", kinds: ["tool_call"] }).total, 1);
+  assert.equal(store.list({ q: "工具隐藏" }).total, 0);
+  assert.equal(store.list({ q: "工具隐藏", kinds: ["tool_call"] }).total, 1);
+  const result = store.messages("search", { messageId: "message-1001", pageSize: 20 });
+  assert.equal(result.page, 51);
+  assert.ok(result.messages.some(item => item.id === "message-1001"));
+  assert.equal(store.locate({ client: "codex", clientSessionId: "search", callId: "synthetic-call" })?.messageId, "message-1006");
+  assert.equal(store.list({ q: "边界关键词" }).total, 1);
+}));
+
+test("明确子工具目标关联完整identity，前版关系不漂移，多父冲突及循环不扩大汇总", async () => fixture(store => {
+  const parent = source(store, meta("parent-target", { childSessionIds: ["target-child"] }), [message("parent-target", 0)]);
+  const child = source(store, meta("target-child"), [message("target-child", 0)]);
+  const firstVersion = store.publish(store.createJob().id, [parent, child], []);
+  assert.equal(store.messages("target-child").session.parentSessionId, "parent-target");
+  assert.equal(store.profile("parent-target", { includeChildren: true }).messageCount, 2);
+  const competing = source(store, meta("competing-parent", { childSessionIds: ["target-child"] }), [message("competing-parent", 0)]);
+  store.publish(store.createJob().id, [parent, child, competing], []);
+  assert.equal(store.messages("target-child").session.parentSessionId, undefined);
+  assert.equal(store.profile("parent-target", { includeChildren: true }).messageCount, 1);
+  assert.equal(store.messages("target-child", { version: firstVersion }).session.parentSessionId, "parent-target");
+  assert.ok(store.status().gaps.some(gap => gap.kind === "ambiguous"));
+  const cycleA = source(store, meta("cycle-a", { parentSessionId: "cycle-b", relationship: "child" }), [message("cycle-a", 0)]);
+  const cycleB = source(store, meta("cycle-b", { parentSessionId: "cycle-a", relationship: "child" }), [message("cycle-b", 0)]);
+  store.publish(store.createJob().id, [cycleA, cycleB], []);
+  assert.deepEqual(store.profile("cycle-a", { includeChildren: true }).sessionIds, ["cycle-a"]);
+  assert.ok(store.status().gaps.some(gap => gap.message.includes("循环")));
+}));
+
+test("消息upsert支持流式更新；简易模式只含用户及有依据最终回答", async () => fixture(store => {
+  const pending = store.createRevision("/workspace/history/upsert.jsonl", "synthetic");
+  pending.sink.message(message("upsert", 0));
+  pending.sink.message(message("upsert", 1, { kind: "assistant", text: "部分" }));
+  pending.sink.message(message("upsert", 1, { kind: "assistant", text: "完整回答", final: "explicit" }));
+  pending.sink.message(message("upsert", 2, { kind: "thinking", text: "思考内容" }));
+  pending.sink.message(message("upsert", 3, { kind: "assistant", text: "过程回复" }));
+  pending.flush(); store.finishRevision(pending.revision, meta("upsert"));
+  store.publish(store.createJob().id, [{ path: "/workspace/history/upsert.jsonl", revision: pending.revision, fingerprint: "synthetic" }], []);
+  assert.equal(store.list().sessions[0]?.messageCount, 4);
+  const brief = store.messages("upsert", { mode: "brief" });
+  assert.equal(brief.total, 2);
+  assert.equal(brief.messages[1]?.text, "完整回答");
+}));
+
+test("完整轮次分页保留初始、未知及超大单轮，首末和消息定位不截断过程", async () => fixture(store => {
+  const id = "turn-paging";
+  const values = [
+    message(id, 0, { turnId: `${id}:turn:0`, kind: "system" }),
+    message(id, 1, { turnId: `${id}:turn:0`, kind: "thinking" }),
+    message(id, 2, { turnId: "", kind: "assistant", final: "explicit" }),
+    message(id, 3, { turnId: "large-turn" }),
+    ...Array.from({ length: 65 }, (_, index) => message(id, index + 4, { turnId: "large-turn", kind: "tool_call",
+      tool: index === 40 ? "patch" : "read", resource: index === 5 ? { kind: "skill_read", name: "synthetic-skill" }
+        : index === 30 ? { kind: "mcp", name: "lookup", server: "synthetic-server" } : undefined })),
+    message(id, 69, { turnId: "large-turn", kind: "assistant", final: "explicit" }),
+    message(id, 70, { turnId: "process-only", kind: "thinking" }),
+    message(id, 71, { turnId: "last-complete" }),
+    message(id, 72, { turnId: "last-complete", kind: "assistant", final: "inferred" }),
+    message(id, 73, { turnId: "unfinished" }),
+  ];
+  const revision = source(store, meta(id), values);
+  const empty = source(store, meta("empty-turns"), []);
+  store.publish(store.createJob().id, [revision, empty], []);
+  const first = store.messages(id, { pageUnit: "turn", pageSize: 1 });
+  assert.equal(first.total, 74);
+  assert.equal(first.totalTurns, 6);
+  assert.deepEqual(first.turns, [{ id: `${id}:turn:0`, position: 1, messageCount: 2 }]);
+  assert.equal(first.messages.length, 2);
+  const unknown = store.messages(id, { pageUnit: "turn", pageSize: 1, turnPosition: 2 });
+  assert.deepEqual(unknown.turns, [{ id: "unknown", position: 2, messageCount: 1 }]);
+  assert.equal(unknown.messages[0]?.turnId, "", "原始轮次身份不伪造");
+  const large = store.messages(id, { pageUnit: "turn", pageSize: 1, page: 1, messageId: "message-60" });
+  assert.equal(large.page, 3);
+  assert.equal(large.focusMessageId, "message-60");
+  assert.equal(large.messages.length, 67);
+  assert.equal(large.messages[0]?.id, "message-3");
+  assert.equal(large.messages.at(-1)?.id, "message-69");
+  const last = store.messages(id, { pageUnit: "turn", pageSize: 2, turnPosition: first.totalTurns });
+  assert.equal(last.page, 3);
+  assert.deepEqual(last.turns?.map(turn => turn.position), [5, 6]);
+  assert.equal(last.messages.at(-1)?.id, "message-73");
+  assert.equal(store.messages(id, { pageUnit: "turn", pageSize: 1, page: 999 }).page, 6);
+  assert.equal(store.messages(id, { pageUnit: "turn", turnPosition: 1, messageId: "message-73", pageSize: 1 }).page, 6, "消息定位优先于轮次位置");
+  const brief = store.messages(id, { mode: "brief", pageUnit: "turn", pageSize: 2 });
+  assert.equal(brief.total, 6);
+  assert.equal(brief.totalTurns, 4);
+  assert.deepEqual(brief.turns, [{ id: "unknown", position: 1, messageCount: 1 }, { id: "large-turn", position: 2, messageCount: 2 }]);
+  assert.deepEqual(brief.messages.map(item => item.id), ["message-2", "message-3", "message-69"]);
+  const lastBrief = store.messages(id, { mode: "brief", pageUnit: "turn", turnPosition: 4, pageSize: 1 });
+  assert.equal(lastBrief.page, 4);
+  assert.equal(lastBrief.messages[0]?.id, "message-73");
+  assert.equal(store.messages(id, { pageSize: 1 }).messages.length, 1, "缺省仍按消息分页");
+  const emptyResult = store.messages("empty-turns", { pageUnit: "turn" });
+  assert.equal(emptyResult.totalTurns, 0);
+  assert.equal(emptyResult.pageSize, 10);
+  assert.deepEqual(emptyResult.turns, []);
+  for (const query of [{ pageUnit: "turn", turnPosition: 7 }, { pageUnit: "turn", messageId: "missing-message" },
+    { pageUnit: "turn", mode: "brief", messageId: "message-60" }, { turnPosition: 1 }] as const) {
+    assert.throws(() => store.messages(id, query), StoreError);
+  }
+  assert.throws(() => store.messages("missing-session", { pageUnit: "turn" }), { code: "SOURCE_NOT_FOUND" });
+  const read = store.messages(id, { pageUnit: "turn", pageSize: 1, toolName: "read" });
+  assert.equal(read.focusMessageId, "message-4");
+  assert.equal(read.page, 3);
+  const skill = store.messages(id, { pageUnit: "turn", resourceKind: "skill_read", resourceName: "synthetic-skill" });
+  assert.equal(skill.focusMessageId, "message-9");
+  const mcp = store.messages(id, { pageUnit: "turn", resourceKind: "mcp", resourceName: "lookup", resourceServer: "synthetic-server" });
+  assert.equal(mcp.focusMessageId, "message-34");
+  assert.throws(() => store.messages(id, { toolName: "missing-tool" }), { code: "SOURCE_NOT_FOUND" });
+  assert.throws(() => store.messages(id, { mode: "brief", toolName: "read" }), { code: "INVALID_INPUT" });
+}));
+
+test("简易视图轮次顺序依据完整消息，过程和最终回复的交错不改变组序号", async () => fixture(store => {
+  const revision = source(store, meta("interleaved-turns"), [
+    message("interleaved-turns", 0, { turnId: "first", kind: "thinking" }),
+    message("interleaved-turns", 1, { turnId: "second" }),
+    message("interleaved-turns", 2, { turnId: "first", kind: "assistant", final: "explicit" }),
+  ]);
+  store.publish(store.createJob().id, [revision], []);
+  const result = store.messages("interleaved-turns", { mode: "brief", pageUnit: "turn", pageSize: 1 });
+  assert.deepEqual(result.turns, [{ id: "first", position: 1, messageCount: 1 }]);
+  assert.equal(result.messages[0]?.ordinal, 2);
+}));
+
+test("留存文本估算使用Unicode字符数，按单条向上取整并排除复制正文", async () => fixture(store => {
+  const revision = source(store, meta("unicode-estimate"), [
+    message("unicode-estimate", 0, { text: "😀中文A" }),
+    message("unicode-estimate", 1, { kind: "assistant", text: "😀😀😀😀😀", final: "explicit" }),
+    message("unicode-estimate", 2, { kind: "tool_result", text: "" }),
+    message("unicode-estimate", 3, { kind: "tool_result", text: "😀".repeat(100), copied: true }),
+  ]);
+  store.publish(store.createJob().id, [revision], []);
+  const profile = store.profile("unicode-estimate");
+  assert.equal(profile.estimate.total, 3);
+  assert.deepEqual(profile.estimate.byKind, [{ kind: "assistant", tokens: 2 }, { kind: "tool_result", tokens: 0 }, { kind: "user", tokens: 1 }]);
+  assert.equal(profile.messageCount, 3);
+}));
+
+test("来源identity优先定位子会话，找不到来源时回退原始会话identity", async () => fixture(store => {
+  const parent = source(store, meta("locate-parent", { clientSessionId: "shared-raw", sourceId: "codex:parent-source" }), [
+    message("locate-parent", 0, { kind: "tool_call", callId: "shared-call", text: "父调用" }),
+  ]);
+  const child = source(store, meta("locate-child", { clientSessionId: "shared-raw", sourceId: "codex:child-source", parentSessionId: "locate-parent", relationship: "child" }), [
+    message("locate-child", 1, { kind: "tool_call", callId: "shared-call", text: "子调用" }),
+  ]);
+  store.publish(store.createJob().id, [parent, child], []);
+  assert.deepEqual(store.locate({ client: "codex", clientSessionId: "shared-raw", sourceId: "codex:child-source", callId: "shared-call" }),
+    { sessionId: "locate-child", messageId: "message-1" });
+  assert.deepEqual(store.locate({ client: "codex", clientSessionId: "shared-raw", sourceId: "codex:parent-source", callId: "shared-call" }),
+    { sessionId: "locate-parent", messageId: "message-0" });
+  assert.equal(store.locate({ client: "codex", clientSessionId: "shared-raw", sourceId: "missing-source" }), null);
+  const standalone = source(store, meta("locate-standalone", { clientSessionId: "standalone-raw" }), [message("locate-standalone", 2)]);
+  store.publish(store.createJob().id, [parent, child, standalone], []);
+  assert.deepEqual(store.locate({ client: "codex", clientSessionId: "standalone-raw", sourceId: "missing-source", recordLine: 3 }),
+    { sessionId: "locate-standalone", messageId: "message-2" });
+}));
+
+test("画像采用同批缓存分母，未知保持null，reasoning不重复加输出，明确子关系与复制排除", async () => fixture(store => {
+  const first = source(store, meta("parent", { childSessionIds: ["child", "missing-child"] }), [
+    message("parent", 0, { model: "synthetic-model" }),
+    message("parent", 1, { kind: "tool_call", tool: "mcp__example__read", status: "success", durationMs: 50,
+      resource: { kind: "mcp", name: "read", server: "example" } }),
+    message("parent", 2, { kind: "compression" }),
+  ], [
+    { id: "request-1", inputTokens: 100, cachedInputTokens: 50, outputTokens: 20, reasoningOutputTokens: 10, contextTokens: 100 },
+    { id: "request-2", inputTokens: 200, outputTokens: 30 },
+  ]);
+  const child = source(store, meta("child", { parentSessionId: "parent", relationship: "child" }), [
+    message("child", 0, { copied: true }), message("child", 1, { kind: "assistant", final: "explicit", text: "独立子回复" }),
+  ], [{ id: "copied-usage", messageId: "message-0", inputTokens: 999 }, { id: "child-usage", messageId: "message-1", inputTokens: 30, cachedInputTokens: 15 }]);
+  const fork = source(store, meta("fork", { parentSessionId: "parent", relationship: "fork" }), [message("fork", 0)], [{ id: "fork-usage", inputTokens: 900 }]);
+  const unknown = source(store, meta("unknown"), [message("unknown", 0)]);
+  store.publish(store.createJob().id, [first, child, fork, unknown], []);
+  const own = store.profile("parent");
+  assert.equal(own.usage.requests, 2); assert.equal(own.usage.inputTokens, 300); assert.equal(own.usage.outputTokens, 50);
+  assert.equal(own.usage.cacheReadRatio, 0.5); assert.equal(own.usage.cacheRecordedRequests, 1);
+  assert.equal(own.usage.reasoningOutputTokens, 10); assert.equal(own.usage.peakContextTokens, 100);
+  assert.equal(own.usage.peakInputTokens, 200);
+  assert.equal(own.tools[0]?.durationMs, 50); assert.equal(own.resources[0]?.count, 1); assert.equal(own.compressions, 1);
+  assert.equal(own.missingChildren, 1);
+  const tree = store.profile("parent", { includeChildren: true });
+  for (const step of tree.steps) {
+    assert.ok(tree.sessionIds.includes(step.sessionId));
+    if (step.messageId) assert.ok(store.messages(step.sessionId, { messageId: step.messageId }).messages.some(item => item.id === step.messageId));
+  }
+  assert.deepEqual(tree.sessionIds, ["parent", "child"]);
+  assert.equal(tree.messageCount, 4); assert.equal(tree.usage.inputTokens, 330); assert.equal(tree.usage.requests, 3);
+  assert.equal(store.profile("unknown").usage.inputTokens, null);
+  assert.equal(store.profile("unknown").usage.cacheReadRatio, null);
+  assert.equal(store.profile("unknown").turnCount, 1);
+}));
+
+test("来源缺失排除新版，前版可比较，GC只留两版，活动与归档副本不重复", async () => fixture((store, path) => {
+  const first = source(store, meta("first"), [message("first", 0)]);
+  const older = source(store, meta("first", { path: "/workspace/archive/first.jsonl", updatedAt: "2025-01-01T00:00:00Z" }), [message("first", 0)]);
+  const firstVersion = store.publish(store.createJob().id, [first, older], []);
+  assert.equal(store.status().sourceCount, 2); assert.equal(store.list().total, 1);
+  assert.equal(store.profile("first").messageCount, 1);
+  const secondVersion = store.publish(store.createJob().id, [], [{ kind: "source_missing", message: "合成来源已移走", count: 2 }]);
+  assert.equal(store.list().total, 0); assert.equal(store.list({ version: firstVersion }).total, 1);
+  assert.equal(store.status().previousVersion, firstVersion); assert.equal(store.status().gaps[0]?.count, 2);
+  store.publish(store.createJob().id, [], []);
+  assert.throws(() => store.list({ version: firstVersion }), (error: unknown) => error instanceof StoreError && error.code === "VERSION_NOT_FOUND");
+  assert.equal(store.list({ version: secondVersion }).total, 0);
+  const database = new Database(path);
+  assert.equal((database.prepare("SELECT COUNT(*) AS count FROM session_revisions").get() as { count: number }).count, 0);
+  database.close();
+}));
+
+test("真实刷新调用链：未变来源复用、追加重建、清缓存原子重建、缺失排除和读取失败留上版", async () => fixture(async (store, path) => {
+  const directory = join(path, "..", "history");
+  await mkdir(directory);
+  const sourcePath = join(directory, "synthetic.jsonl");
+  const encode = (value: unknown) => JSON.stringify(value) + "\n";
+  await writeFile(sourcePath, encode({ type: "session_meta", payload: { id: "synthetic-refresh" } })
+    + encode({ type: "response_item", payload: { type: "message", role: "user", content: [{ type: "input_text", text: "人工合成问句" }] } })
+    + encode({ type: "response_item", payload: { type: "message", role: "assistant", phase: "final_answer", content: [{ type: "output_text", text: "人工合成最终回答" }] } }));
+  const roots = { codex: directory, claude: [], codeflicker: [] };
+  const refresh = async (clear = false) => { const job = store.createJob(); await refreshSessions(store, job.id, roots, clear); return store.getJob(job.id); };
+  const first = await refresh();
+  assert.equal(first.status, "complete");
+  assert.equal(store.list({ project: "none" }).total, 1);
+  const id = store.list().sessions[0]!.id;
+  assert.equal(store.messages(id).total, 2);
+  const cached = store.cachedRevisions()[0]!.revision;
+  await refresh();
+  assert.equal(store.cachedRevisions()[0]!.revision, cached);
+  await appendFile(sourcePath, encode({ type: "response_item", payload: { type: "message", role: "user", content: [{ type: "input_text", text: "追加问句" }] } }));
+  const appended = await refresh();
+  const appendedRevision = store.cachedRevisions()[0]!.revision;
+  assert.notEqual(appendedRevision, cached);
+  assert.equal(store.messages(id).total, 3);
+  const rebuilt = await refresh(true);
+  assert.notEqual(store.cachedRevisions()[0]!.revision, appendedRevision);
+  assert.equal(store.messages(id).total, 3);
+  assert.equal(store.messages(id, { version: appended.version }).total, 3);
+  const failed = store.createJob();
+  await assert.rejects(refreshSessions(store, failed.id, { ...roots, codex: sourcePath }));
+  assert.equal(store.status().version, rebuilt.version);
+  assert.equal(store.status().stale, true);
+  assert.equal(store.getJob(failed.id).status, "failed");
+  await rm(sourcePath);
+  await refresh();
+  assert.equal(store.list().total, 0);
+  assert.equal(store.status().gaps.find(gap => gap.kind === "source_missing")?.count, 1);
+  assert.equal(store.messages(id, { version: rebuilt.version }).total, 3);
+}));

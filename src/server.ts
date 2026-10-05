@@ -12,6 +12,11 @@ import { VERSION } from "./version.js";
 import { bodyText, coverageQuery, emptyBody, eventsQuery, integer, relativePath, ServiceError } from "./service/input.js";
 import { contentHash, readCurrentFile, readEvidence } from "./service/files.js";
 import { acquireLock, dataHome, removeInstance, writeInstance } from "./service/runtime.js";
+import { SessionStore } from "./sessions/store.js";
+import { queryBoolean, sessionMessageQuery, sessionQuery } from "./service/session-input.js";
+import { textValue } from "./service/input.js";
+import { clientIds } from "./clients.js";
+import type { Client } from "./contracts.js";
 
 export interface ServiceOptions {
   home?: string;
@@ -43,16 +48,20 @@ export async function startService(options: ServiceOptions = {}) {
   const release = await acquireLock(home, "service.lock");
   let store: AnalysisStore | undefined;
   let manager: WorkerManager | undefined;
+  let sessions: SessionStore | undefined;
   const app = Fastify({ logger: false, bodyLimit: 65_536 });
   const instance: ServiceInstance = { id: randomUUID(), pid: process.pid, host: "127.0.0.1", port: requestedPort, startedAt: new Date().toISOString() };
   try {
     store = new AnalysisStore(join(home, "index.sqlite"));
-    manager = new WorkerManager(store, { roots: options.roots });
+    sessions = new SessionStore(store.dbPath);
+    manager = new WorkerManager(store, { roots: options.roots }, sessions);
     const index = store;
+    const library = sessions;
     const worker = manager;
     app.addHook("onClose", async () => {
       await worker.close();
       index.close();
+      library.close();
       await removeInstance(home, instance);
       await release();
     });
@@ -95,7 +104,7 @@ export async function startService(options: ServiceOptions = {}) {
         if (Number(request.headers["content-length"] ?? 0) > 0 && !contentType) throw new ServiceError("INVALID_INPUT", "请求体需要 application/json");
       }
     });
-    app.get("/api/v1/status", async () => ({ instance, version: VERSION, repositories: index.listRepositories(), jobs: index.listJobs() }));
+    app.get("/api/v1/status", async () => ({ instance, version: VERSION, repositories: index.listRepositories(), jobs: index.listJobs(), sessions: library.status() }));
     app.post("/api/v1/stop", async (request, reply) => {
       emptyBody(request.body);
       reply.send({ stopping: true });
@@ -112,6 +121,28 @@ export async function startService(options: ServiceOptions = {}) {
     const base = "/api/v1/repositories/:id";
     type RepositoryParams = { id: string };
     type Query = Record<string, unknown>;
+    app.get("/api/v1/sessions/status", async () => library.status());
+    app.get<{ Querystring: Query }>("/api/v1/sessions", async request => library.list(sessionQuery(request.query)));
+    app.get<{ Querystring: Query }>("/api/v1/sessions/search", async request => {
+      const query = sessionQuery(request.query);
+      if (!query.q) throw new ServiceError("INVALID_INPUT", "搜索需要 q");
+      return library.search({ ...query, sessionId: textValue(request.query.sessionId, "sessionId") });
+    });
+    app.get<{ Querystring: Query }>("/api/v1/sessions/locate", async request => {
+      const client = textValue(request.query.client, "client", true)!;
+      if (!clientIds.includes(client as Client)) throw new ServiceError("INVALID_INPUT", "未知客户端");
+      const target = library.locate({ client: client as Client, clientSessionId: textValue(request.query.clientSessionId, "clientSessionId", true)!,
+        sourceId: textValue(request.query.sourceId, "sourceId"),
+        recordLine: request.query.recordLine === undefined ? undefined : integer(request.query.recordLine, "recordLine", 1, 1_000_000_000),
+        callId: textValue(request.query.callId, "callId") });
+      return { target };
+    });
+    app.get<{ Params: { id: string }; Querystring: Query }>("/api/v1/sessions/:id/messages", async request => library.messages(request.params.id, sessionMessageQuery(request.query)));
+    app.get<{ Params: { id: string }; Querystring: Query }>("/api/v1/sessions/:id/profile", async request => library.profile(request.params.id, {
+      ...sessionQuery(request.query), includeChildren: queryBoolean(request.query.includeChildren, "includeChildren"),
+    }));
+    app.post("/api/v1/sessions/refresh", async request => { emptyBody(request.body); return { job: worker.refreshSessions() }; });
+    app.delete("/api/v1/sessions/cache", async request => { emptyBody(request.body); return { job: worker.refreshSessions(true) }; });
     const snapshotFor = (id: string, query: CoverageQuery) => index.getSnapshot(id, query.version);
     app.get<{ Params: RepositoryParams; Querystring: Query }>(`${base}/coverage`, async (request) => {
       const query = coverageQuery(request.query);
@@ -196,7 +227,11 @@ export async function startService(options: ServiceOptions = {}) {
       index.getRepository(request.params.id);
       return { job: worker.clearCache(request.params.id) };
     });
-    app.get<{ Params: { id: string } }>("/api/v1/jobs/:id", async (request) => ({ job: index.getJob(request.params.id) }));
+    app.get<{ Params: { id: string } }>("/api/v1/jobs/:id", async request => {
+      try { return { job: index.getJob(request.params.id) }; }
+      catch (error) { if (!(error instanceof StoreError) || error.code !== "JOB_NOT_FOUND") throw error; }
+      return { job: library.getJob(request.params.id) };
+    });
     const staticRoot = resolve(options.staticRoot ?? fileURLToPath(new URL("./web/", import.meta.url)));
     if (existsSync(staticRoot)) {
       await app.register(fastifyStatic, { root: staticRoot, allowedPath: (path) => {
@@ -218,12 +253,16 @@ export async function startService(options: ServiceOptions = {}) {
     if (!address || typeof address === "string") throw new Error("未取得本地监听端口");
     instance.port = address.port;
     await writeInstance(home, instance);
-    if (options.startupRefresh !== false) for (const repository of index.listRepositories()) worker.refresh(repository.id);
+    if (options.startupRefresh !== false) {
+      worker.refreshSessions();
+      for (const repository of index.listRepositories()) worker.refresh(repository.id);
+    }
     return { app, instance, close: () => app.close() };
   } catch (error) {
     await app.close().catch(() => undefined);
     await manager?.close().catch(() => undefined);
     try { store?.close(); } catch { /* 初始化失败时可能已关闭。 */ }
+    try { sessions?.close(); } catch { /* 初始化失败时可能已关闭。 */ }
     await release();
     throw error;
   }

@@ -1,0 +1,379 @@
+import { createHash } from "node:crypto";
+import { createReadStream } from "node:fs";
+import { basename, dirname, isAbsolute, resolve } from "node:path";
+import type { Client, Gap, GapKind } from "../contracts.js";
+import { historyRelationships, normalizeHistoryPath } from "../history/adapters/common.js";
+import { shellEvidence, shellResult } from "../history/extraction.js";
+import type { SourceLocation } from "../history/types.js";
+import type { MessageKind, SessionMessage, SessionSink, SessionSourceMeta } from "../session-contracts.js";
+import { object, string, tokens, UsageParser } from "./parser-usage.js";
+import { projectFromToolPaths } from "./parser-project.js";
+
+const digest = (value: string) => createHash("sha256").update(value).digest("hex").slice(0, 24);
+const MAX_RECORD_BYTES = 16 * 1024 * 1024;
+const MAX_PENDING_BYTES = 32 * 1024 * 1024;
+export const sessionKey = (client: Client, rawId: string): string => `${client}:${digest(rawId)}`;
+
+/** 分段读取并限制单条记录大小；不完整末行留待下次刷新，不能当作完整消息。 */
+async function* records(path: string, gap: (kind: GapKind, message: string) => void, byteLimit?: number) {
+  if (byteLimit === 0) return;
+  let parts: Buffer[] = [];
+  let length = 0;
+  let line = 0;
+  let oversized = false;
+  for await (const value of createReadStream(path, { highWaterMark: 65_536, end: byteLimit === undefined ? undefined : byteLimit - 1 })) {
+    const chunk = value as Buffer;
+    let start = 0;
+    while (start < chunk.length) {
+      const newline = chunk.indexOf(10, start);
+      const end = newline < 0 ? chunk.length : newline;
+      const part = chunk.subarray(start, end);
+      length += part.length;
+      if (!oversized && length <= MAX_RECORD_BYTES) parts.push(part);
+      else { oversized = true; parts = []; }
+      if (newline < 0) break;
+      line += 1;
+      if (oversized) gap("budget_exceeded", "单条历史记录超过 16 MiB，正文未索引");
+      else if (length) {
+        const raw = Buffer.concat(parts, length).toString("utf8");
+        try { yield { record: object(JSON.parse(raw)), line }; }
+        catch { gap("parse_error", "历史存在无效 JSON 记录，已跳过并保留缺口"); }
+      }
+      parts = []; length = 0; oversized = false; start = newline + 1;
+    }
+  }
+  if (length || oversized) gap("incomplete_record", "历史末尾尚无完整 JSONL 换行，等待来源追加");
+}
+
+function text(value: unknown): string {
+  if (typeof value === "string") return value;
+  if (!Array.isArray(value)) return "";
+  return value.map(item => {
+    const block = object(item);
+    return string(block.text) ?? string(block.thinking) ?? (block.type === "input_image" || block.type === "image" ? "[图片]" : "");
+  }).filter(Boolean).join("\n");
+}
+
+function display(value: unknown): string {
+  return typeof value === "string" ? value : value === undefined ? "" : JSON.stringify(value, null, 2);
+}
+
+function filePaths(input: unknown): string[] | undefined {
+  const value = object(input);
+  const paths = [value.file_path, value.filePath, value.path, value.absoluteFilePath].filter((path): path is string => typeof path === "string");
+  return paths.length ? [...new Set(paths)] : undefined;
+}
+
+function resource(tool: string, input: unknown, paths: string[] | undefined): SessionMessage["resource"] {
+  const mcp = /^mcp__(.+?)__(.+)$/.exec(tool) ?? /^mcp__([^.]+)\.(.+)$/.exec(tool);
+  if (mcp) return { kind: "mcp", name: mcp[2]!, server: mcp[1] };
+  if (/^(?:Skill|skill)$/.test(tool)) return { kind: "skill_call", name: string(object(input).skill) ?? string(object(input).name) ?? "未记录名称" };
+  if (/^(?:Read|read|read_file)$/.test(tool) && paths?.some(path => basename(path) === "SKILL.md")) {
+    const path = paths.find(path => basename(path) === "SKILL.md")!;
+    return { kind: "skill_read", name: path.replace(/[/\\]SKILL\.md$/, "").split(/[/\\]/).at(-1) ?? "SKILL.md" };
+  }
+  return undefined;
+}
+
+interface Pending { message: SessionMessage; bytes: number; input: unknown }
+
+export async function parseSessionSource(source: SourceLocation, sink: SessionSink, options: { byteLimit?: number } = {}): Promise<SessionSourceMeta> {
+  const gaps = new Map<string, Gap>();
+  const gap = (kind: GapKind, message: string) => {
+    const key = `${kind}:${message}`;
+    const previous = gaps.get(key);
+    if (previous) previous.count = (previous.count ?? 1) + 1;
+    else gaps.set(key, { kind, message, sourceId: source.sourceId, count: 1 });
+  };
+  let rawId = source.sessionId;
+  if (!rawId) {
+    for await (const { record } of records(source.path, () => {}, options.byteLimit)) {
+      const payload = object(record.payload);
+      rawId = string(record.sessionId) ?? string(payload.session_id) ?? (record.type === "session_meta" ? string(payload.id) : undefined);
+      if (rawId) { if (string(record.agentId)) rawId += `/agent/${record.agentId}`; break; }
+    }
+  }
+  rawId ??= `unknown:${digest(resolve(source.path))}`;
+  const id = sessionKey(source.client, rawId);
+  const meta: SessionSourceMeta = { id, client: source.client, clientSessionId: rawId, path: source.path,
+    sourceId: source.sourceId ?? `${source.client}:unidentified:${digest(resolve(source.path))}`,
+    title: "未命名会话", titleOrigin: "fallback", project: source.cwd && isAbsolute(source.cwd) ? source.cwd : undefined,
+    projectOrigin: source.cwd && isAbsolute(source.cwd) ? "cwd" : undefined,
+    parentSessionId: source.parentSessionId ? sessionKey(source.client, source.parentSessionId) : undefined,
+    relationship: source.parentSessionId ? "child" : undefined, messageCount: 0, turnCount: 0, models: [], gaps: [] };
+  const seen = new Map<string, { ordinal: number; turnId: string }>();
+  const pending = new Map<string, Pending>();
+  const completed = new Map<string, Pick<SessionMessage, "status" | "durationMs" | "resource" | "filePaths">>();
+  const models = new Set<string>();
+  const targets = new Map<string, Set<string>>();
+  let targetsLimited = false;
+  let pendingBytes = 0;
+  let turnId = `${id}:turn:0`;
+  let currentModel: string | undefined;
+  let candidate: SessionMessage | undefined;
+  let interrupted = false;
+  let copyBeforeOrdinal: number | undefined;
+  let hasResponseTranscript = false;
+  let projectedReasoning: { key: string; text: string; turnId: string } | undefined;
+  // Codex 同时保存响应项与 UI 事件投影；存在响应正文时采用响应项，避免把同一消息计两遍。
+  if (source.client === "codex") {
+    for await (const { record } of records(source.path, () => {}, options.byteLimit)) {
+      const payload = object(record.payload);
+      if (record.type === "response_item" && ["message", "agent_message"].includes(string(payload.type) ?? "")) { hasResponseTranscript = true; break; }
+    }
+  }
+  let currentRecordLine = 0;
+  const usage = new UsageParser(id, { message: sink.message, usage: value => {
+    if (source.client !== "codex") { sink.usage(value); return; }
+    // 用量定位到实际保存该用量的记录，不猜测它属于哪段助手正文。
+    const event = message(`usage:${value.id}`, "system", `请求用量（记录值）\n${display(value)}`, currentRecordLine,
+      { occurredAt: value.occurredAt, model: value.model });
+    sink.usage({ ...value, messageId: event.id });
+  } }, gap);
+  const childReference = (tool: string | undefined, result: unknown, nativeAgentId?: string) => {
+    const output = object(result);
+    const agent = source.client === "codex" && /(?:^|\.)spawn_agent$/.test(tool ?? "") ? string(output.agent_id)
+      : /^(?:Task|Agent)$/.test(tool ?? "") ? nativeAgentId ?? string(output.agentId) : undefined;
+    if (!agent) return;
+    const childRaw = source.client === "claude" ? `${rawId}/agent/${agent}` : source.client === "codeflicker" ? `agent-${agent}` : agent;
+    meta.childSessionIds = [...new Set([...(meta.childSessionIds ?? []), sessionKey(source.client, childRaw)])];
+  };
+  const finishTurn = () => {
+    if (candidate && !candidate.final && !pending.size && !interrupted) sink.message({ ...candidate, final: "inferred" });
+    candidate = undefined;
+    interrupted = false;
+  };
+  const message = (key: string, kind: MessageKind, body: string, row: number, extra: Partial<SessionMessage> = {}, newTurn = false): SessionMessage => {
+    let identity = seen.get(key);
+    if (!identity) {
+      if (newTurn) { finishTurn(); meta.turnCount += 1; turnId = `${id}:turn:${meta.turnCount}`; }
+      identity = { ordinal: ++meta.messageCount, turnId };
+      seen.set(key, identity);
+    }
+    const value: SessionMessage = { id: `${id}:message:${digest(key)}`, sessionId: id, ordinal: identity.ordinal,
+      recordLine: row, turnId: identity.turnId, kind, text: body, ...extra };
+    if (value.model) models.add(value.model);
+    if (kind === "user" && body.trim() && meta.titleOrigin === "fallback") {
+      meta.title = body.replace(/\s+/g, " ").trim().slice(0, 120); meta.titleOrigin = "first_user";
+    }
+    sink.message(value);
+    if (kind === "assistant") candidate = value;
+    if (kind === "tool_call") candidate = undefined;
+    return value;
+  };
+  const toolCall = (key: string, tool: string, input: unknown, callId: string, row: number, extra: Partial<SessionMessage>) => {
+    const paths = filePaths(input);
+    if (!meta.project) for (const path of paths ?? []) {
+      if (!isAbsolute(path)) continue;
+      const directory = dirname(path);
+      if (!targets.has(directory) && targets.size >= 512) { targetsLimited = true; continue; }
+      const samples = targets.get(directory) ?? new Set<string>();
+      if (samples.size < 4) samples.add(path);
+      targets.set(directory, samples);
+    }
+    const detectedResource = resource(tool, input, paths);
+    const value = message(key, "tool_call", display(input), row, { ...extra, callId, tool, filePaths: paths,
+      resource: detectedResource?.kind === "skill_read" ? undefined : detectedResource, status: "unknown" });
+    const previousCompletion = completed.get(value.id);
+    if (previousCompletion) { sink.message({ ...value, ...previousCompletion }); return; }
+    const previous = pending.get(callId);
+    if (previous?.message.id === value.id) { pendingBytes -= previous.bytes; pending.delete(callId); }
+    else if (previous) { gap("ambiguous", "同一调用身份存在多个未完成请求，结果未强行配对"); pendingBytes -= previous.bytes; pending.delete(callId); return; }
+    const bytes = Buffer.byteLength(value.text);
+    if (pendingBytes + bytes > MAX_PENDING_BYTES || pending.size >= 1024) { gap("budget_exceeded", "未完成工具请求超过有界配对缓存，调用保持未知状态"); return; }
+    pending.set(callId, { message: value, bytes, input }); pendingBytes += bytes;
+  };
+  const toolResult = (key: string, callId: string, body: string, row: number, status: SessionMessage["status"], extra: Partial<SessionMessage>) => {
+    const repeated = seen.has(key);
+    const call = pending.get(callId);
+    const value = message(key, "tool_result", body, row, { ...extra, callId, status, tool: extra.tool ?? call?.message.tool,
+      filePaths: extra.filePaths ?? call?.message.filePaths });
+    if (call) {
+      const command = string(object(call.input).cmd) ?? string(object(call.input).command) ?? string(call.input)
+        ?? (Array.isArray(call.input) ? string(call.input.at(-1)) : undefined);
+      const readPaths = status === "success" && command ? shellEvidence(command, shellResult(body).output || body)
+        .filter(part => part.kind === "read" && part.path && part.fragments.length).map(part => part.path!) : undefined;
+      const paths = [...new Set([...(call.message.filePaths ?? []), ...(readPaths ?? [])])];
+      const skillPath = status === "success" && body.trim() ? paths.find(path => basename(path) === "SKILL.md") : undefined;
+      const readResource = skillPath ? resource("read", { file_path: skillPath }, [skillPath]) : undefined;
+      const completion = { status, filePaths: paths.length ? paths : undefined,
+        resource: call.message.resource ?? readResource, durationMs: extra.durationMs ?? call.message.durationMs };
+      sink.message({ ...call.message, ...completion });
+      completed.set(call.message.id, completion);
+      pendingBytes -= call.bytes; pending.delete(callId);
+    } else if (!repeated) gap("unpaired_call", "工具结果缺少可唯一配对的请求，已保留原结果");
+    return value;
+  };
+  for await (const { record, line } of records(source.path, gap, options.byteLimit)) {
+    currentRecordLine = line;
+    const payload = object(record.payload);
+    const occurredAt = string(record.timestamp) ?? string(payload.timestamp);
+    if (occurredAt) {
+      if (!meta.startedAt || occurredAt < meta.startedAt) meta.startedAt = occurredAt;
+      if (!meta.updatedAt || occurredAt > meta.updatedAt) meta.updatedAt = occurredAt;
+    }
+    const project = normalizeHistoryPath(string(record.cwd) ?? string(payload.cwd));
+    if (!meta.project && project && isAbsolute(project)) { meta.project = project; meta.projectOrigin = "cwd"; }
+    const relations = historyRelationships(record);
+    if (relations[0]) {
+      const relationship = relations[0];
+      meta.parentSessionId = sessionKey(source.client, relationship.parentSessionId);
+      meta.relationship = relationship.kind === "fork" ? "fork" : "child";
+      copyBeforeOrdinal = relationship.endOrdinalExclusive ?? tokens(payload.subagent_history_start_ordinal);
+    }
+    if (string(record.agentId) && string(record.sessionId) && !meta.parentSessionId) {
+      meta.parentSessionId = sessionKey(source.client, string(record.sessionId)!); meta.relationship = "child";
+    }
+    const ordinal = tokens(record.ordinal);
+    const copied = copyBeforeOrdinal !== undefined && ordinal !== undefined && ordinal < copyBeforeOrdinal ? true : undefined;
+    const extra: Partial<SessionMessage> = { occurredAt, copied };
+    const title = string(record.aiTitle) ?? string(record.title) ?? (record.type === "session_meta" ? string(payload.title) : undefined);
+    if (title) { meta.title = title; meta.titleOrigin = "recorded"; }
+    if (source.client === "codex") {
+      const passthrough = object(payload.internal_chat_message_metadata_passthrough);
+      if (record.type === "session_meta") {
+        const instructions = text(object(payload.base_instructions).text ?? payload.base_instructions);
+        if (instructions) message("base-instructions", "system", instructions, line, extra);
+        continue;
+      }
+      if (record.type === "turn_context") { currentModel = string(payload.model) ?? currentModel; if (currentModel) models.add(currentModel); continue; }
+      if (record.type === "token_usage_record") {
+        if (!copied) usage.codex(payload.usage, payload.thread_token_usage, string(payload.response_id), { turnId, model: currentModel, occurredAt }); continue;
+      }
+      if (["compacted", "compaction"].includes(string(record.type) ?? "")) {
+        message(`compression:${line}`, "compression", text(payload.message ?? payload.summary), line, extra); continue;
+      }
+      if (record.type === "event_msg") {
+        if (payload.type === "token_count") {
+          const info = object(payload.info);
+          if (!copied) usage.codex(info.last_token_usage, info.total_token_usage, undefined, { turnId, model: currentModel, occurredAt });
+        } else if (payload.type === "agent_reasoning") {
+          const key = `event:${string(payload.id) ?? line}`;
+          const body = text(payload.message ?? payload.text);
+          message(key, "thinking", body, line, { ...extra, model: currentModel });
+          projectedReasoning = { key, text: body, turnId };
+        } else if (!hasResponseTranscript && ["user_message", "agent_message"].includes(string(payload.type) ?? "")) {
+          const kind = payload.type === "user_message" ? "user" : payload.type === "agent_reasoning" ? "thinking" : "assistant";
+          message(`event:${string(payload.id) ?? line}`, kind, text(payload.message ?? payload.text), line, { ...extra, model: kind === "user" ? undefined : currentModel }, kind === "user");
+        } else if (["task_aborted", "turn_aborted", "error"].includes(string(payload.type) ?? "")) {
+          interrupted = true; message(`event:${line}`, "system", display(payload), line, extra);
+        } else if (payload.type === "item_completed") {
+          const item = object(payload.item);
+          if (["CommandExecution", "FileChange"].includes(string(item.type) ?? "")) {
+            const callId = string(item.id) ?? `item:${line}`;
+            const command = Array.isArray(item.command) ? item.command.at(-1) : item.command;
+            const matching = [...pending.entries()].find(([, call]) => ["exec_command", "shell_command", "functions.exec_command", "functions.shell_command"].includes(call.message.tool ?? "")
+              && (object(call.input).cmd ?? object(call.input).command) === command);
+            const status = item.status === "failed" || (typeof item.exit_code === "number" && item.exit_code !== 0) ? "failure"
+              : item.status === "completed" && (item.type === "FileChange" || item.exit_code === 0) ? "success" : "unknown";
+            if (!matching) toolCall(`item:${callId}:call`, string(item.type)!, item.command ?? item.changes, callId, line, { ...extra, model: currentModel });
+            const duration = typeof payload.started_at_ms === "number" && typeof payload.completed_at_ms === "number" && payload.completed_at_ms >= payload.started_at_ms ? payload.completed_at_ms - payload.started_at_ms : undefined;
+            toolResult(`item:${callId}:result`, matching?.[0] ?? callId, display(item.formatted_output ?? item.changes), line, status, { ...extra, durationMs: duration });
+          }
+        }
+        continue;
+      }
+      if (record.type !== "response_item") continue;
+      const type = string(payload.type);
+      const key = string(payload.id) ? `response:${payload.id}` : `response:${line}`;
+      extra.model = string(payload.model) ?? currentModel;
+      if (type === "message" || type === "agent_message") {
+        const role = type === "agent_message" ? "assistant" : string(payload.role);
+        const kind: MessageKind = role === "user" ? "user" : role === "assistant" ? "assistant" : "system";
+        const phase = string(payload.phase) ?? string(payload.channel) ?? string(passthrough.channel);
+        message(key, kind, text(payload.content), line, { ...extra, final: kind === "assistant" && ["final", "final_answer"].includes(phase ?? "") ? "explicit" : undefined }, kind === "user");
+      } else if (type === "reasoning") {
+        const body = text(payload.summary) || text(payload.content);
+        if (!body && payload.encrypted_content && projectedReasoning?.turnId !== turnId) gap("unsupported_format", "思考正文仅有加密内容，未解密或补造");
+        if (body) message(projectedReasoning?.turnId === turnId && projectedReasoning.text === body ? projectedReasoning.key : key, "thinking", body, line, extra);
+        else if (projectedReasoning?.turnId !== turnId) message(key, "thinking", "", line, extra);
+        projectedReasoning = undefined;
+      } else if (type === "function_call" || type === "custom_tool_call") {
+        let input: unknown = payload.input;
+        if (typeof payload.arguments === "string") { try { input = JSON.parse(payload.arguments); } catch { input = payload.arguments; } }
+        const name = string(payload.name) ?? "unknown";
+        const namespace = string(payload.namespace);
+        toolCall(key, namespace ? `${namespace}.${name}` : name, input, string(payload.call_id) ?? key, line, extra);
+      } else if (type === "function_call_output" || type === "custom_tool_call_output") {
+        let output: unknown = payload.output;
+        if (typeof output === "string") { try { output = JSON.parse(output); } catch { /* 文本输出按已记录内容展示。 */ } }
+        const result = object(output);
+        const state = shellResult(output);
+        const status = result.is_error === true || result.success === false ? "failure" : result.success === true ? "success" : state.status;
+        if (!copied && status !== "failure") childReference(pending.get(string(payload.call_id) ?? key)?.message.tool, output);
+        toolResult(key, string(payload.call_id) ?? key, display(payload.output), line, status, { ...extra,
+          durationMs: tokens(result.duration_ms) ?? tokens(result.durationMs) ?? (typeof result.wall_time_seconds === "number" ? result.wall_time_seconds * 1000 : undefined) });
+      } else if (type === "compaction") {
+        message(key, "compression", text(payload.content ?? payload.summary), line, extra);
+        if (payload.encrypted_content) gap("unsupported_format", "压缩记录未保存可读正文");
+      }
+      continue;
+    }
+    const native = source.client === "claude" ? object(record.message) : record;
+    const role = string(native.role) ?? string(record.role) ?? string(record.type);
+    const nativeId = string(record.uuid) ?? string(native.id) ?? `row:${line}`;
+    const model = string(native.model);
+    const recordedModel = model && model !== "<synthetic>" ? model : undefined;
+    if (recordedModel) models.add(recordedModel);
+    extra.model = recordedModel;
+    if (record.type === "system" || record.type === "summary") {
+      const compression = record.subtype === "compact_boundary" || record.type === "summary";
+      message(`native:${nativeId}`, compression ? "compression" : "system", text(record.content ?? record.summary ?? native.content), line, extra); continue;
+    }
+    if (source.client === "codeflicker" && record.type !== "message") continue;
+    const content = native.content;
+    const blocks = Array.isArray(content) ? content : typeof content === "string" ? [{ type: "text", text: content }] : [];
+    let firstMessage: SessionMessage | undefined;
+    const hasResult = blocks.some(value => ["tool_result", "tool-result"].includes(string(object(value).type) ?? ""));
+    const human = role === "user" && !hasResult && record.isMeta !== true;
+    for (const [index, value] of blocks.entries()) {
+      const block = object(value);
+      const key = `native:${nativeId}:${index}`;
+      const type = string(block.type);
+      let emitted: SessionMessage | undefined;
+      if (type === "text") {
+        const kind: MessageKind = human ? "user" : role === "assistant" ? "assistant" : "system";
+        emitted = message(key, kind, text(block.text), line, { ...extra, final: kind === "assistant" && ["end_turn", "stop_sequence"].includes(string(native.stop_reason) ?? "") ? "explicit" : undefined }, human && !firstMessage);
+      } else if (["thinking", "reasoning", "redacted_thinking"].includes(type ?? "")) {
+        emitted = message(key, "thinking", text(block.text ?? block.thinking), line, extra);
+        if (type === "redacted_thinking") gap("unsupported_format", "思考正文已由客户端隐藏，未补造内容");
+      } else if (type === "tool_use" && role === "assistant") {
+        const callId = string(block.id) ?? key;
+        toolCall(key, string(block.name) ?? "unknown", block.input, callId, line, extra);
+      } else if (type === "tool_result" || type === "tool-result") {
+        const result = object(type === "tool-result" ? block.result : record.toolUseResult);
+        const body = type === "tool-result" ? text(result.llmContent) : text(block.content);
+        const error = type === "tool-result" ? result.isError : block.is_error;
+        const status = error === true ? "failure" : error === false ? "success" : typeof result.exitCode === "number" ? result.exitCode === 0 ? "success" : "failure"
+          : type === "tool-result" && /^(?:File successfully written to |File .+ successfully edited\.)/.test(body) ? "success"
+          : type === "tool-result" && object((() => { try { return JSON.parse(body); } catch { return {}; } })()).type === "text" ? "success" : "unknown";
+        if (!copied && status !== "failure") childReference(pending.get(string(block.tool_use_id) ?? string(block.toolCallId) ?? key)?.message.tool, result, string(block.agentId));
+        emitted = toolResult(key, string(block.tool_use_id) ?? string(block.toolCallId) ?? key, body, line,
+          result.interrupted === true || result.backgroundTaskId ? "unknown" : status,
+          { ...extra, tool: string(block.toolName), durationMs: tokens(result.durationMs) ?? tokens(object(record.metadata).durationMs) });
+      } else if (type === "image" || type === "input_image") emitted = message(key, human ? "user" : "system", "[图片]", line, extra, human && !firstMessage);
+      else if (type) gap("unsupported_format", "历史存在尚未适配的消息内容块，未补造正文");
+      firstMessage ??= emitted;
+    }
+    if (!blocks.length && typeof record.text === "string") firstMessage = message(`native:${nativeId}:text`, role === "assistant" ? "assistant" : human ? "user" : "system", record.text, line, extra, human);
+    if (role === "assistant") {
+      const requestId = source.client === "codeflicker" ? string(object(object(record.metadata).requestTokenBaseline).requestId) ?? nativeId : string(native.id) ?? nativeId;
+      if (!copied) usage.native(source.client, native.usage, requestId, { messageId: firstMessage?.id, turnId, model: recordedModel, occurredAt });
+    }
+    if (record.interruptedMessageId || record.isApiErrorMessage === true) interrupted = true;
+  }
+  finishTurn();
+  if (pending.size) gap("unpaired_call", "历史结束时仍有工具调用未记录完成结果");
+  if (meta.relationship === "fork" && copyBeforeOrdinal === undefined) gap("ambiguous", "分叉来源缺少共享历史边界，未猜测或排除复制消息");
+  if (source.client === "codeflicker" && basename(source.path).startsWith("agent-") && !meta.parentSessionId) gap("ambiguous", "子会话来源缺少明确父关系，作为独立会话保留");
+  if (!meta.project && targets.size && !targetsLimited) {
+    const association = await projectFromToolPaths([...targets.values()].flatMap(paths => [...paths]));
+    if (association.project) { meta.project = association.project; meta.projectOrigin = "tool_path"; }
+    if (association.ambiguous) gap("ambiguous", "工具目标对应多个 Git 项目，未选择单一项目归属");
+    if (association.limited) gap("budget_exceeded", "工具目标目录超过项目关联检查上限，未推断项目归属");
+  }
+  if (!meta.project && targetsLimited) gap("budget_exceeded", "工具目标目录超过项目关联检查上限，未推断项目归属");
+  meta.models = [...models];
+  meta.gaps = [...gaps.values()].map(item => ({ ...item, sourceId: meta.sourceId }));
+  return meta;
+}

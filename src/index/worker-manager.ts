@@ -2,6 +2,8 @@ import { Worker } from "node:worker_threads";
 import type { Job } from "../contracts.js";
 import type { DiscoverRoots } from "../history/index.js";
 import { AnalysisStore } from "./store.js";
+import { SessionStore } from "../sessions/store.js";
+import type { SessionJob } from "../session-contracts.js";
 
 export interface WorkerManagerOptions {
   roots?: DiscoverRoots;
@@ -13,11 +15,13 @@ export class WorkerManager {
   private worker: Worker;
   private readonly pending = new Map<string, ((job: Job) => void)[]>();
   private readonly active = new Set<string>();
+  private readonly sessionActive = new Set<string>();
   private closed = false;
   private failure?: string;
 
-  constructor(private readonly store: AnalysisStore, private readonly options: WorkerManagerOptions = {}) {
+  constructor(private readonly store: AnalysisStore, private readonly options: WorkerManagerOptions = {}, private readonly sessions?: SessionStore) {
     store.recoverJobs();
+    sessions?.recoverJobs();
     this.worker = this.createWorker();
   }
 
@@ -55,6 +59,19 @@ export class WorkerManager {
   refresh(repositoryId: string): Job { return this.enqueue(repositoryId, false); }
   clearCache(repositoryId: string): Job { return this.enqueue(repositoryId, true); }
 
+  refreshSessions(clearCache = false): SessionJob {
+    if (this.closed || !this.sessions) throw new Error("会话索引 Worker 不可用");
+    if (!clearCache) {
+      const id = this.sessionActive.values().next().value;
+      if (id) return this.sessions.getJob(id);
+    }
+    if (this.failure) { this.worker = this.createWorker(); this.failure = undefined; }
+    const job = this.sessions.createJob();
+    this.sessionActive.add(job.id);
+    this.worker.postMessage({ type: "sessions", jobId: job.id, clearCache });
+    return job;
+  }
+
   waitForJob(jobId: string): Promise<Job> {
     const job = this.store.getJob(jobId);
     if (job.status === "completed" || job.status === "failed") return Promise.resolve(job);
@@ -64,6 +81,7 @@ export class WorkerManager {
   }
 
   private finished(jobId: string): void {
+    if (this.sessionActive.delete(jobId)) return;
     this.active.delete(jobId);
     const job = this.store.getJob(jobId);
     for (const resolve of this.pending.get(jobId) ?? []) resolve(job);
@@ -72,6 +90,11 @@ export class WorkerManager {
 
   private failed(error: string): void {
     this.failure = error;
+    for (const id of [...this.sessionActive]) {
+      const job = this.sessions!.getJob(id);
+      if (job.status !== "complete" && job.status !== "failed") this.sessions!.failJob(id, error);
+      this.sessionActive.delete(id);
+    }
     for (const id of [...this.active]) {
       const job = this.store.getJob(id);
       if (job.status !== "completed" && job.status !== "failed") this.store.failJob(id, error);

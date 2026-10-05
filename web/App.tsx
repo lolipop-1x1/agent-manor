@@ -1,4 +1,4 @@
-import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode, type RefObject } from "react";
+import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type FormEvent, type ReactNode, type RefObject } from "react";
 import * as Dialog from "@radix-ui/react-dialog";
 import * as Dropdown from "@radix-ui/react-dropdown-menu";
 import * as Tooltip from "@radix-ui/react-tooltip";
@@ -9,6 +9,8 @@ import { ApiError, errorMessage, isAborted, queryString, repositoryPath, request
 import { CodeMap, Hint } from "./CodeMap";
 import { DirectoryTree } from "./DirectoryTree";
 import { ResizableWorkspace } from "./ResizableWorkspace";
+import Sessions from "./Sessions";
+import "./session-navigation.css";
 import { boundQuery, categoryNames, dateLabel, fileHighlights, filename, fmt, gapNames, metricNames, metricValue, percent, rangesLabel, timeFilters, type Metric, type Theme } from "./model";
 
 const kindNames = { read: "读取", edit: "修改", search: "搜索", other: "其他" };
@@ -117,20 +119,21 @@ function EvidenceDialog({ repoId, event, query, open, onOpenChange }: { repoId: 
   </Modal>;
 }
 
-function EventDetails({ event, openEvidence, openCode, stale }: { event: FileEvent; openEvidence: () => void; openCode: (line?: number) => void; stale: boolean }) {
+function EventDetails({ event, openEvidence, openCode, openSession, stale }: { event: FileEvent; openEvidence: () => void; openCode: (line?: number) => void; openSession: () => void; stale: boolean }) {
   return <div className="event-detail"><h3>{event.tool}</h3><dl><dt>结果</dt><dd>{statusNames[event.status]}</dd><dt>会话</dt><dd>{event.sessionId}</dd><dt>发生时间</dt><dd>{dateLabel(event.occurredAt)}</dd></dl>
     {event.mapping?.unknownReason && <p className="muted small">范围未知：{event.mapping.unknownReason}</p>}
     {event.reason && <p className="muted small">{event.reason}</p>}
     {!!event.mapping?.exactRanges.length && <button className="range-link" disabled={stale} onClick={() => openCode(event.mapping!.exactRanges[0]!.start)}>精确 {rangesLabel(event.mapping.exactRanges)}</button>}
     {!!event.mapping?.nearRanges.length && <button className="range-link near-label" disabled={stale} onClick={() => openCode(event.mapping!.nearRanges[0]!.start)}>近似 {rangesLabel(event.mapping.nearRanges)}</button>}
+    <button className="button subtle" onClick={openSession}><ArrowSquareOut size={15} />查看所属会话</button>
     <button className="button evidence-button" onClick={openEvidence}><ArrowSquareOut size={15} />回查原始记录 · {event.sources.length}</button>
     <details className="event-payload"><summary>工具参数与结果</summary><h4>请求</h4><pre tabIndex={0}>{JSON.stringify(event.input ?? null, null, 2)}</pre><h4>结果</h4><pre tabIndex={0}>{JSON.stringify(event.output ?? null, null, 2)}</pre></details>
   </div>;
 }
 
-function FilePane({ repoId, detail, loading, error, retry, collapsed, toggle, metric, theme, query }: {
+function FilePane({ repoId, detail, loading, error, retry, collapsed, toggle, metric, theme, query, openSession }: {
   repoId: string; detail: FileDetail | null; loading: boolean; error: string | null; retry: () => void; collapsed: boolean; toggle: () => void;
-  metric: Metric; theme: Theme; query?: CoverageQuery;
+  metric: Metric; theme: Theme; query?: CoverageQuery; openSession: (event: HistoryEvent) => void;
 }) {
   const [selectedEvent, setSelectedEvent] = useState<string | null>(null);
   const [rawOpen, setRawOpen] = useState(false);
@@ -160,7 +163,7 @@ function FilePane({ repoId, detail, loading, error, retry, collapsed, toggle, me
         <span className="event-range">{event.mapping?.exactRanges.length ? rangesLabel(event.mapping.exactRanges) : event.kind === "search" || event.kind === "other" ? "不计入行覆盖" : event.mapping?.nearRanges.length ? "无精确对应" : "当前范围未知"}{!!event.mapping?.nearRanges.length && <em>近似 {rangesLabel(event.mapping.nearRanges)}</em>}</span><small>{dateLabel(event.occurredAt)}</small>
       </button>)}</div>
       {eventLimit < detail.events.length && <button className="button subtle" onClick={() => setEventLimit(value => value + 30)}>显示更多活动</button>}
-      {active && <EventDetails event={active} stale={detail.contentStale || detail.content === null} openCode={openCode} openEvidence={() => setRawOpen(true)} />}
+      {active && <EventDetails event={active} stale={detail.contentStale || detail.content === null} openCode={openCode} openEvidence={() => setRawOpen(true)} openSession={() => openSession(active)} />}
       {query && <EvidenceDialog repoId={repoId} event={active} query={query} open={rawOpen} onOpenChange={setRawOpen} />}
       <Modal open={codeOpen} onOpenChange={setCodeOpen} title={detail.file.path} description={`当前工作区代码 · ${fmt(detail.file.lineCount)} 行。精确与近似对应分开展示。`} wide>
         {detail.contentStale && <Notice>文件内容已过期，已禁用旧版范围高亮和事件范围跳转。</Notice>}
@@ -175,6 +178,32 @@ function FilePane({ repoId, detail, loading, error, retry, collapsed, toggle, me
 }
 
 export function App() {
+  const [view, setView] = useState<"map" | "sessions">(() => location.hash.startsWith("#sessions") ? "sessions" : "map");
+  const viewScroll = useRef({ map: 0, sessions: 0 });
+  const activeView = useRef(view);
+  const activateView = useCallback((next: "map" | "sessions") => {
+    if (activeView.current !== next) viewScroll.current[activeView.current] = globalThis.scrollY;
+    activeView.current = next;
+    setView(next);
+  }, []);
+  useLayoutEffect(() => { globalThis.scrollTo(0, viewScroll.current[view]); }, [view]);
+  useEffect(() => { document.title = `AgentManor · ${view === "sessions" ? "会话库" : "代码活动地图"}`; }, [view]);
+  const [sessionTarget, setSessionTarget] = useState<{ sessionId: string; messageId?: string; mode?: "brief" | "full" | "trace"; page?: number; turnPosition?: number }>();
+  useEffect(() => {
+    const navigate = () => {
+      activateView(location.hash.startsWith("#sessions") ? "sessions" : "map");
+      const params = new URLSearchParams(location.hash.split("?")[1]);
+      const sessionId = params.get("id");
+      const mode = params.get("mode");
+      const positive = (name: string) => { const value = Number(params.get(name)); return Number.isSafeInteger(value) && value > 0 ? value : undefined; };
+      if (sessionId) setSessionTarget({ sessionId, messageId: params.get("message") ?? undefined,
+        mode: mode === "brief" || mode === "full" || mode === "trace" ? mode : undefined, page: positive("page"), turnPosition: positive("turn") });
+    };
+    navigate();
+    globalThis.addEventListener("hashchange", navigate);
+    return () => globalThis.removeEventListener("hashchange", navigate);
+  }, [activateView]);
+  const switchView = (next: "map" | "sessions") => { activateView(next); location.hash = next; };
   const repositoryTrigger = useRef<HTMLButtonElement>(null);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [detailsCollapsed, setDetailsCollapsed] = useState(false);
@@ -292,6 +321,30 @@ export function App() {
   useEffect(() => {
     if (job?.status === "completed") { setVersion(job.version); setReload(value => value + 1); }
   }, [job?.id, job?.status, job?.version]);
+  const openSession = async (event: HistoryEvent) => {
+    try {
+      const source = event.sources[0];
+      const params = new URLSearchParams({ client: event.client, clientSessionId: event.sessionId });
+      if (source?.sourceId) params.set("sourceId", source.sourceId);
+      if (source?.callId) params.set("callId", source.callId);
+      if (source?.recordLine) params.set("recordLine", String(source.recordLine));
+      const result = await request<{ target: { sessionId: string; messageId?: string } | null }>(`/sessions/locate?${params}`);
+      if (!result.target) throw new Error("所属会话尚未进入全局索引，请在会话库刷新历史后重试。");
+      setSessionTarget(result.target); activateView("sessions");
+      const destination = new URLSearchParams({ id: result.target.sessionId });
+      if (result.target.messageId) destination.set("message", result.target.messageId);
+      location.hash = `sessions?${destination}`;
+    } catch (failure) { setActionError(errorMessage(failure)); }
+  };
+  const openMap = (path?: string, project?: string) => {
+    const repo = [...repositories].sort((a, b) => b.path.length - a.path.length).find(candidate =>
+      project === candidate.path || project?.startsWith(`${candidate.path}/`) || path?.startsWith(`${candidate.path}/`));
+    if (!repo) { setActionError("此会话项目尚未登记代码地图，请先登记本机仓库。"); activateView("map"); location.hash = "map"; return; }
+    if (repo.id !== repoId) chooseRepo(repo.id);
+    const local = path?.startsWith(`${repo.path}/`) ? path.slice(repo.path.length + 1) : path?.startsWith("/") ? undefined : path;
+    setDirectory(""); setCategory("all"); setClient("all"); setWindow("all"); setSearch("");
+    setSelected(local ?? null); setDetailsCollapsed(false); activateView("map"); location.hash = "map";
+  };
   const browse = (path: string) => { setDirectory(path); setSelected(null); };
   const selectFile = (path: string) => { setSelected(path); setDetailsCollapsed(false); };
   const clearFilters = () => { setClient("all"); setWindow("all"); setCategory("source"); setDirectory(""); setSearch(""); setSelected(null); };
@@ -319,12 +372,13 @@ export function App() {
   const mapHeading = repository ? <div className="map-heading"><div className="breadcrumbs"><button onClick={() => browse("")}><Folder size={16} />{repository.name}</button>{directory.split("/").filter(Boolean).map((part, i, parts) => <span key={i}><CaretRight size={12} /><button onClick={() => browse(parts.slice(0, i + 1).join("/"))}>{part}</button></span>)}<small>{fmt(visible.length)} 个文件</small></div><div className="metric-picker" role="group" aria-label="地图着色指标">{(["read", "edit", "activity"] as const).map(value => <button key={value} aria-pressed={metric === value} className={metric === value ? "active" : ""} onClick={() => setMetric(value)}>{metricNames[value]}</button>)}</div></div> : null;
   const mapLegend = <div className="map-legend"><span>{metric === "activity" ? "活动次数" : "精确覆盖率"}</span><span className="legend-scale">{[0, 1, 2, 3, 4].map(tone => <i key={tone} className={`tone-${tone}`} />)}</span><span>{metric === "activity" ? `0 → ${fmt(visible.reduce((max, file) => Math.max(max, metricValue(file, metric)), 0))} 次` : "0 → 100%"}</span><span className="near-key legend-near" /><span>虚线标记另有近似</span><small>面积为文件行数</small></div>;
   return <Tooltip.Provider delayDuration={350}>
-    <header className="app-header"><a className="brand" href="/" aria-label="AgentManor 首页"><Stack size={25} weight="duotone" /><span>AgentManor</span></a><span className="header-divider" /><span className="product-name">代码活动地图</span>
-      <div className="header-actions">{repository && <SourcesDialog repo={repository} query={query} gaps={coverage?.gaps ?? []} onJob={recordJob} />}
+    <header className="app-header"><a className="brand" href="/" aria-label="AgentManor 首页"><Stack size={25} weight="duotone" /><span>AgentManor</span></a><span className="header-divider" /><nav className="product-nav" aria-label="功能导航"><button aria-current={view === "map" ? "page" : undefined} onClick={() => switchView("map")}>代码地图</button><button aria-current={view === "sessions" ? "page" : undefined} onClick={() => switchView("sessions")}>会话库</button></nav>
+      <div className="header-actions">{view === "map" && repository && <SourcesDialog repo={repository} query={query} gaps={coverage?.gaps ?? []} onJob={recordJob} />}
         <Hint label={theme === "light" ? "切换深色主题" : "切换浅色主题"}><button className="icon-button" aria-label="切换主题" onClick={() => setTheme(current => current === "light" ? "dark" : "light")}>{theme === "light" ? <Moon size={19} /> : <Sun size={19} />}</button></Hint>
-        <button className="button primary refresh-button" onClick={() => void runRefresh()} disabled={!repository || actionPending || jobActive(job)} aria-label={jobActive(job) ? "分析中" : "刷新分析"}><ArrowClockwise size={16} className={jobActive(job) ? "spinning" : ""} /><span className="refresh-label">{jobActive(job) ? "分析中" : "刷新分析"}</span></button>
+        <button hidden={view !== "map"} className="button primary refresh-button" onClick={() => void runRefresh()} disabled={!repository || actionPending || jobActive(job)} aria-label={jobActive(job) ? "分析中" : "刷新分析"}><ArrowClockwise size={16} className={jobActive(job) ? "spinning" : ""} /><span className="refresh-label">{jobActive(job) ? "分析中" : "刷新分析"}</span></button>
       </div>
     </header>
+    <section className="product-view" hidden={view !== "map"} aria-label="代码地图视图">
     {initialError && <Notice danger action={<button className="button subtle" onClick={() => setStatusRetry(value => value + 1)}>重试连接</button>}>{initialError}</Notice>}
     {actionError && <Notice danger action={<button className="button subtle" onClick={() => setActionError(null)}>关闭</button>}>{actionError}</Notice>}
     {job && <div className={`result-status${job.status === "failed" ? " failed" : ""}`} role="status">
@@ -355,11 +409,13 @@ export function App() {
           <p className="baseline-note">分析于 {dateLabel(coverage!.createdAt)} · 结果版本 {coverage!.version}<br />基线 {coverage!.baselineHash}{coverage!.previousVersion && <> · 上一版 {coverage!.previousVersion}</>}</p>
         </>}
       </main>
-      <FilePane repoId={repoId} detail={detail} loading={detailLoading} error={detailError} retry={() => setDetailRetry(value => value + 1)} collapsed={detailsCollapsed} toggle={() => setDetailsCollapsed(value => !value)} metric={metric} theme={theme} query={query} />
+      <FilePane repoId={repoId} detail={detail} loading={detailLoading} error={detailError} retry={() => setDetailRetry(value => value + 1)} collapsed={detailsCollapsed} toggle={() => setDetailsCollapsed(value => !value)} metric={metric} theme={theme} query={query} openSession={event => void openSession(event)} />
     </ResizableWorkspace>}
     {!repository && !initialLoading && <div className="first-register"><button className="button primary" onClick={() => setRegisterOpen(true)}><Plus size={17} />登记本机仓库</button></div>}
     <Modal open={registerOpen} onOpenChange={setRegisterOpen} fallbackFocus={repositoryTrigger} title="登记本机 Git 仓库" description="输入当前工作区的绝对路径。登记后自动发现历史并创建分析任务。">
       <form className="register-form" onSubmit={event => void register(event)}><label>仓库绝对路径<input value={registerPath} onChange={event => setRegisterPath(event.target.value)} placeholder="/absolute/path/to/repository" autoComplete="off" required /></label>{registerError && <Notice danger>{registerError}</Notice>}<p className="muted small">当前工作区包含未提交修改；同一仓库的 worktree 分别建立内容基线。</p><div className="dialog-end"><button type="button" className="button subtle" onClick={() => setRegisterOpen(false)}>取消</button><button type="submit" className="button primary" disabled={registering || !registerPath.trim()}>{registering ? "正在登记…" : "登记并分析"}</button></div></form>
     </Modal>
+    </section>
+    <section className="product-view" hidden={view !== "sessions"} aria-label="会话库视图"><Sessions active={view === "sessions"} target={sessionTarget} onMap={openMap} /></section>
   </Tooltip.Provider>;
 }

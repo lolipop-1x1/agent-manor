@@ -1,0 +1,69 @@
+import { createHash } from "node:crypto";
+import { createReadStream } from "node:fs";
+import { lstat } from "node:fs/promises";
+import { discoverSources } from "../history/index.js";
+import type { DiscoverRoots } from "../history/types.js";
+import type { Gap } from "../contracts.js";
+import { parseSessionSource } from "./parser.js";
+import { SessionStore } from "./store.js";
+import type { SessionRevision } from "./store.js";
+
+// 会话规范化规则升级时使来源缓存失效，独立于地图索引迁移。
+const SESSION_INDEX_RULE_VERSION = "3";
+
+async function fingerprint(path: string, byteLimit?: number): Promise<{ hash: string; bytes: number }> {
+  const before = await lstat(path);
+  if (!before.isFile() || before.isSymbolicLink()) throw new Error("会话来源必须为普通文件");
+  const bytes = byteLimit ?? before.size;
+  if (before.size < bytes) throw new Error("会话来源在解析期间被截短，请重新刷新");
+  const digest = createHash("sha256");
+  if (bytes) for await (const chunk of createReadStream(path, { start: 0, end: bytes - 1 })) digest.update(chunk);
+  const after = await lstat(path);
+  if (after.size < bytes) throw new Error("会话来源在检查期间被截短，请重新刷新");
+  return { hash: `${SESSION_INDEX_RULE_VERSION}:${digest.digest("hex")}`, bytes };
+}
+
+/** 来源解析逐记录落库；完整发布前不改变任何正在查询的版本。 */
+export async function refreshSessions(store: SessionStore, jobId: string, roots?: DiscoverRoots, clearCache = false): Promise<void> {
+  store.updateJob(jobId, { status: "running", phase: "discover", progress: 0 });
+  try {
+    const sources = await discoverSources(roots);
+    const cached = new Map(store.cachedRevisions().map(item => [item.path, item]));
+    const current: SessionRevision[] = [];
+    const gaps: Gap[] = [];
+    const discovered = new Set(sources.map(item => item.path));
+    let missing = [...cached.keys()].filter(path => !discovered.has(path)).length;
+    for (const [index, source] of sources.entries()) {
+      store.updateJob(jobId, { phase: "index", progress: sources.length ? index / sources.length : 0 });
+      let digest: { hash: string; bytes: number };
+      try { digest = await fingerprint(source.path); }
+      catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "ENOENT") { missing += 1; continue; }
+        throw error;
+      }
+      const sourceFingerprint = `${source.client}:${source.format ?? "default"}:${digest.hash}`;
+      const previous = cached.get(source.path);
+      if (!clearCache && previous?.fingerprint === sourceFingerprint) { current.push(previous); continue; }
+      const pending = store.createRevision(source.path, sourceFingerprint);
+      try {
+        const meta = await parseSessionSource(source, pending.sink, { byteLimit: digest.bytes });
+        pending.flush();
+        // 允许活动日志追加；发布的始终是开始检查时的同一字节前缀。
+        const after = await fingerprint(source.path, digest.bytes);
+        if (after.hash !== digest.hash) throw new Error("会话来源已有内容在解析期间被改写，请重新刷新");
+        store.finishRevision(pending.revision, meta);
+        current.push({ path: source.path, revision: pending.revision, fingerprint: sourceFingerprint });
+      } catch (error) {
+        store.removeRevision(pending.revision);
+        if ((error as NodeJS.ErrnoException).code === "ENOENT") { missing += 1; continue; }
+        throw error;
+      }
+    }
+    if (missing) gaps.push({ kind: "source_missing", message: "已有来源已删除或移走，新版统计已排除；上一版保留供对照", count: missing });
+    store.updateJob(jobId, { phase: "publish", progress: 0.99 });
+    store.publish(jobId, current, gaps);
+  } catch (error) {
+    store.failJob(jobId, error instanceof Error ? error.message : String(error));
+    throw error;
+  }
+}

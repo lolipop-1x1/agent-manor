@@ -1,0 +1,516 @@
+import Database from "better-sqlite3";
+import { randomUUID } from "node:crypto";
+import { mkdirSync } from "node:fs";
+import { dirname, resolve } from "node:path";
+import type { Gap } from "../contracts.js";
+import type { SessionIndexStatus, SessionJob, SessionListResult, SessionMessage, SessionMessageQuery, SessionMessageResult, SessionProfile, SessionQuery, SessionSearchResult, SessionSink, SessionSourceMeta, SessionSummary, SessionUsage } from "../session-contracts.js";
+import { StoreError } from "../index/store.js";
+
+interface JsonRow { json: string }
+interface MessageRow extends JsonRow { text: string }
+interface RevisionRow extends JsonRow { id: string; path: string; fingerprint: string }
+type SqlValue = string | number;
+export interface SessionRevision { path: string; revision: string; fingerprint: string }
+const decode = <T>(row: JsonRow): T => JSON.parse(row.json) as T;
+const decodeMessage = (row: MessageRow): SessionMessage => ({ ...decode<SessionMessage>(row), text: row.text });
+const literal = (value: string) => `%${value.replace(/[\\%_]/g, "\\$&")}%`;
+const paging = (query: SessionQuery) => ({ page: Math.max(1, Math.floor(query.page ?? 1)), pageSize: Math.min(200, Math.max(1, Math.floor(query.pageSize ?? 50))) });
+const kindsOf = (query: SessionQuery) => (query.kinds?.length ? query.kinds : ["user", "assistant"])
+  .filter(kind => ["user", "assistant", "tool_call", "tool_result", "thinking", "system", "compression"].includes(kind));
+
+/** 全局正文按来源修订保存，读者只访问最后完整发布的版本。 */
+export class SessionStore {
+  readonly dbPath: string;
+  private readonly database: Database.Database;
+
+  constructor(dbPath: string) {
+    this.dbPath = resolve(dbPath);
+    mkdirSync(dirname(this.dbPath), { recursive: true });
+    this.database = new Database(this.dbPath);
+    this.database.pragma("journal_mode = WAL");
+    this.database.pragma("foreign_keys = ON");
+    this.database.pragma("busy_timeout = 5000");
+    // 独立表不修改既有代码地图迁移版本。
+    this.database.exec(`
+      CREATE TABLE IF NOT EXISTS session_state (id INTEGER PRIMARY KEY CHECK(id=1), json TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS session_jobs (id TEXT PRIMARY KEY, created_at TEXT NOT NULL, json TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS session_revisions (id TEXT PRIMARY KEY, path TEXT NOT NULL, fingerprint TEXT NOT NULL,
+        session_id TEXT, client TEXT, project TEXT, title TEXT, started_at TEXT, updated_at TEXT, json TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS session_messages (revision TEXT NOT NULL REFERENCES session_revisions(id) ON DELETE CASCADE,
+        id TEXT NOT NULL, ordinal INTEGER NOT NULL, record_line INTEGER NOT NULL, turn_id TEXT NOT NULL, kind TEXT NOT NULL,
+        final TEXT, call_id TEXT, copied INTEGER NOT NULL, text TEXT NOT NULL, json TEXT NOT NULL, PRIMARY KEY(revision,id));
+      CREATE INDEX IF NOT EXISTS session_message_order ON session_messages(revision,ordinal,id);
+      CREATE INDEX IF NOT EXISTS session_message_call ON session_messages(revision,call_id);
+      CREATE INDEX IF NOT EXISTS session_message_turn ON session_messages(revision,turn_id,ordinal,id);
+      CREATE TABLE IF NOT EXISTS session_usage (revision TEXT NOT NULL REFERENCES session_revisions(id) ON DELETE CASCADE,
+        id TEXT NOT NULL, message_id TEXT, turn_id TEXT, json TEXT NOT NULL, PRIMARY KEY(revision,id));
+      CREATE TABLE IF NOT EXISTS session_versions (id TEXT PRIMARY KEY, created_at TEXT NOT NULL, gaps TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS session_version_sources (version TEXT NOT NULL REFERENCES session_versions(id) ON DELETE CASCADE,
+        path TEXT NOT NULL, revision TEXT NOT NULL REFERENCES session_revisions(id), PRIMARY KEY(version,path));
+      CREATE TABLE IF NOT EXISTS session_version_sessions (version TEXT NOT NULL REFERENCES session_versions(id) ON DELETE CASCADE,
+        session_id TEXT NOT NULL, revision TEXT NOT NULL REFERENCES session_revisions(id), PRIMARY KEY(version,session_id));
+      CREATE TABLE IF NOT EXISTS session_version_relations (version TEXT NOT NULL REFERENCES session_versions(id) ON DELETE CASCADE,
+        child TEXT NOT NULL, parent TEXT NOT NULL, PRIMARY KEY(version,child));
+      CREATE INDEX IF NOT EXISTS session_relation_parent ON session_version_relations(version,parent);
+    `);
+    this.database.prepare("INSERT OR IGNORE INTO session_state(id,json) VALUES(1,?)").run(JSON.stringify({ stale: false }));
+  }
+
+  close(): void { this.database.close(); }
+
+  private state(): Partial<SessionIndexStatus> {
+    return decode(this.database.prepare("SELECT json FROM session_state WHERE id=1").get() as JsonRow);
+  }
+
+  private saveState(state: Partial<SessionIndexStatus>): void {
+    this.database.prepare("UPDATE session_state SET json=? WHERE id=1").run(JSON.stringify(state));
+  }
+
+  status(): SessionIndexStatus {
+    const state = this.state();
+    const latestJob = this.database.prepare("SELECT json FROM session_jobs ORDER BY created_at DESC,rowid DESC LIMIT 1").get() as JsonRow | undefined;
+    const result: SessionIndexStatus = { ...state, stale: state.stale ?? false, sessionCount: 0, sourceCount: 0, gaps: state.gaps ?? [], projects: [] };
+    if (state.version) {
+      result.sessionCount = (this.database.prepare("SELECT COUNT(*) AS count FROM session_version_sessions WHERE version=?").get(state.version) as { count: number }).count;
+      result.sourceCount = (this.database.prepare("SELECT COUNT(*) AS count FROM session_version_sources WHERE version=?").get(state.version) as { count: number }).count;
+      result.projects = (this.database.prepare(`SELECT DISTINCT r.project FROM session_version_sessions v JOIN session_revisions r ON r.id=v.revision
+        WHERE v.version=? AND r.project IS NOT NULL ORDER BY r.project`).all(state.version) as { project: string }[]).map(row => row.project);
+    }
+    if (latestJob) result.job = decode(latestJob);
+    return result;
+  }
+
+  createJob(): SessionJob {
+    const job: SessionJob = { id: randomUUID(), status: "queued", phase: "queued", progress: 0, createdAt: new Date().toISOString() };
+    this.database.prepare("INSERT INTO session_jobs(id,created_at,json) VALUES(?,?,?)").run(job.id, job.createdAt, JSON.stringify(job));
+    return job;
+  }
+
+  getJob(id: string): SessionJob {
+    const row = this.database.prepare("SELECT json FROM session_jobs WHERE id=?").get(id) as JsonRow | undefined;
+    if (!row) throw new StoreError("JOB_NOT_FOUND", "会话索引任务不存在");
+    return decode(row);
+  }
+
+  updateJob(id: string, patch: Partial<SessionJob>): SessionJob {
+    const job = { ...this.getJob(id), ...patch };
+    this.database.prepare("UPDATE session_jobs SET json=? WHERE id=?").run(JSON.stringify(job), id);
+    return job;
+  }
+
+  failJob(id: string, error: string): void {
+    this.database.transaction(() => {
+      this.updateJob(id, { status: "failed", phase: "failed", error, finishedAt: new Date().toISOString() });
+      this.saveState({ ...this.state(), stale: true });
+    })();
+    this.removeUnpublishedRevisions();
+  }
+
+  recoverJobs(): void {
+    const jobs = this.database.prepare("SELECT json FROM session_jobs").iterate() as Iterable<JsonRow>;
+    const unfinished: string[] = [];
+    for (const row of jobs) { const job = decode<SessionJob>(row); if (["queued", "running"].includes(job.status)) unfinished.push(job.id); }
+    for (const id of unfinished) this.failJob(id, "服务中断，未完成的会话索引保留上一版");
+    this.removeUnpublishedRevisions();
+  }
+
+  cachedRevisions(): SessionRevision[] {
+    const version = this.state().version;
+    if (!version) return [];
+    return (this.database.prepare(`SELECT r.path,r.id AS revision,r.fingerprint FROM session_version_sources v JOIN session_revisions r ON r.id=v.revision
+      WHERE v.version=?`).all(version) as SessionRevision[]);
+  }
+
+  createRevision(path: string, fingerprint: string): { revision: string; sink: SessionSink; flush: () => void } {
+    const revision = randomUUID();
+    this.database.prepare("INSERT INTO session_revisions(id,path,fingerprint,json) VALUES(?,?,?,?)").run(revision, path, fingerprint, "{}");
+    const message = this.database.prepare(`INSERT INTO session_messages(revision,id,ordinal,record_line,turn_id,kind,final,call_id,copied,text,json)
+      VALUES(?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(revision,id) DO UPDATE SET ordinal=excluded.ordinal,record_line=excluded.record_line,
+      turn_id=excluded.turn_id,kind=excluded.kind,final=excluded.final,call_id=excluded.call_id,copied=excluded.copied,text=excluded.text,json=excluded.json`);
+    const usage = this.database.prepare(`INSERT INTO session_usage(revision,id,message_id,turn_id,json) VALUES(?,?,?,?,?)
+      ON CONFLICT(revision,id) DO UPDATE SET message_id=excluded.message_id,turn_id=excluded.turn_id,json=excluded.json`);
+    let pending: ({ type: "message"; value: SessionMessage } | { type: "usage"; value: SessionUsage })[] = [];
+    let bytes = 0;
+    const flush = this.database.transaction(() => {
+      for (const item of pending) {
+        if (item.type === "message") {
+          const value = item.value;
+          const { text: _text, ...metadata } = value;
+          message.run(revision, value.id, value.ordinal, value.recordLine, value.turnId, value.kind, value.final ?? null,
+            value.callId ?? null, value.copied ? 1 : 0, value.text, JSON.stringify(metadata));
+        } else {
+          const value = item.value;
+          usage.run(revision, value.id, value.messageId ?? null, value.turnId ?? null, JSON.stringify(value));
+        }
+      }
+      pending = [];
+      bytes = 0;
+    });
+    const sink: SessionSink = {
+      message: value => { pending.push({ type: "message", value }); bytes += value.text.length * 2; if (pending.length >= 200 || bytes >= 2_000_000) flush(); },
+      usage: value => { pending.push({ type: "usage", value }); if (pending.length >= 200) flush(); },
+    };
+    return { revision, sink, flush };
+  }
+
+  finishRevision(id: string, meta: SessionSourceMeta): void {
+    const counts = this.database.prepare("SELECT COUNT(*) AS messages,COUNT(DISTINCT CASE WHEN kind='user' THEN turn_id END) AS turns FROM session_messages WHERE revision=?").get(id) as { messages: number; turns: number };
+    const summary = { ...meta, messageCount: counts.messages, turnCount: counts.turns };
+    this.database.prepare("UPDATE session_revisions SET session_id=?,client=?,project=?,title=?,started_at=?,updated_at=?,json=? WHERE id=?")
+      .run(meta.id, meta.client, meta.project ?? null, meta.title, meta.startedAt ?? null, meta.updatedAt ?? null, JSON.stringify(summary), id);
+  }
+
+  removeRevision(id: string): void { this.database.prepare("DELETE FROM session_revisions WHERE id=?").run(id); }
+
+  private removeUnpublishedRevisions(): void {
+    this.database.prepare("DELETE FROM session_revisions WHERE id NOT IN (SELECT revision FROM session_version_sources)").run();
+  }
+
+  publish(jobId: string, revisions: SessionRevision[], gaps: Gap[]): string {
+    const version = randomUUID();
+    const createdAt = new Date().toISOString();
+    this.database.transaction(() => {
+      this.database.prepare("INSERT INTO session_versions(id,created_at,gaps) VALUES(?,?,?)").run(version, createdAt, "[]");
+      const addSource = this.database.prepare("INSERT INTO session_version_sources(version,path,revision) VALUES(?,?,?)");
+      for (const item of revisions) addSource.run(version, item.path, item.revision);
+      // 同一会话存在活动／归档副本时择完整且较新的副本，不重复统计。
+      this.database.prepare(`INSERT INTO session_version_sessions(version,session_id,revision)
+        SELECT ?,session_id,id FROM (SELECT r.*,ROW_NUMBER() OVER (PARTITION BY session_id ORDER BY CAST(json_extract(r.json,'$.messageCount') AS INTEGER) DESC,
+          COALESCE(updated_at,started_at,'') DESC,r.path ASC) AS rank
+          FROM session_revisions r JOIN session_version_sources s ON s.revision=r.id WHERE s.version=?) WHERE rank=1`).run(version, version);
+      // 全局状态按原因聚合，详细来源缺口保留在单会话画像中。
+      const aggregated = new Map<string, Gap>();
+      const addGap = (gap: Gap) => {
+        const key = `${gap.kind}:${gap.message}`;
+        const previous = aggregated.get(key);
+        if (previous) previous.count = (previous.count ?? 1) + (gap.count ?? 1);
+        else aggregated.set(key, { kind: gap.kind, message: gap.message, count: gap.count ?? 1 });
+      };
+      for (const gap of gaps) addGap(gap);
+      // 精确会话身份和原生声明建立关系，关系随版本发布，不回写可共享修订。
+      this.database.prepare(`INSERT INTO session_version_relations(version,child,parent)
+        SELECT ?,c.session_id,p.session_id FROM session_version_sessions c JOIN session_revisions r ON r.id=c.revision
+          JOIN session_version_sessions p ON p.version=c.version AND p.session_id=json_extract(r.json,'$.parentSessionId')
+        WHERE c.version=? AND json_extract(r.json,'$.relationship')='child' AND c.session_id<>p.session_id`).run(version, version);
+      const targets = this.database.prepare(`SELECT c.session_id AS child,MIN(p.session_id) AS parent,COUNT(DISTINCT p.session_id) AS parents
+        FROM session_version_sessions p JOIN session_revisions pr ON pr.id=p.revision JOIN json_each(pr.json,'$.childSessionIds') target
+        JOIN session_version_sessions c ON c.version=p.version AND c.session_id=target.value JOIN session_revisions cr ON cr.id=c.revision
+        WHERE p.version=? AND pr.client=cr.client AND p.session_id<>c.session_id AND json_extract(cr.json,'$.parentSessionId') IS NULL
+          AND COALESCE(json_extract(cr.json,'$.relationship'),'')<>'fork' GROUP BY c.session_id`).all(version) as { child: string; parent: string; parents: number }[];
+      const addRelation = this.database.prepare("INSERT OR IGNORE INTO session_version_relations(version,child,parent) VALUES(?,?,?)");
+      for (const target of targets) {
+        if (target.parents === 1) addRelation.run(version, target.child, target.parent);
+        else addGap({ kind: "ambiguous", message: "多个父会话声明同一子目标，未任意建立父子关联", count: 1 });
+      }
+      const conflicts = (this.database.prepare(`SELECT COUNT(DISTINCT c.session_id) AS count FROM session_version_sessions p
+        JOIN session_revisions pr ON pr.id=p.revision JOIN json_each(pr.json,'$.childSessionIds') target
+        JOIN session_version_sessions c ON c.version=p.version AND c.session_id=target.value JOIN session_revisions cr ON cr.id=c.revision
+        WHERE p.version=? AND json_extract(cr.json,'$.parentSessionId') IS NOT NULL
+          AND json_extract(cr.json,'$.parentSessionId')<>p.session_id`).get(version) as { count: number }).count;
+      if (conflicts) addGap({ kind: "ambiguous", message: "父工具目标与子会话显式父声明冲突，保留显式声明，不扩大汇总", count: conflicts });
+      const relationRows = this.database.prepare("SELECT child,parent FROM session_version_relations WHERE version=?").all(version) as { child: string; parent: string }[];
+      const relationships = new Map(relationRows.map(item => [item.child, item.parent]));
+      const checked = new Set<string>();
+      const cycles = new Set<string>();
+      for (const start of relationships.keys()) {
+        if (checked.has(start)) continue;
+        const path: string[] = [];
+        const positions = new Map<string, number>();
+        let next: string | undefined = start;
+        while (next && !checked.has(next)) {
+          const position = positions.get(next);
+          if (position !== undefined) { for (const node of path.slice(position)) cycles.add(node); break; }
+          positions.set(next, path.length); path.push(next); next = relationships.get(next);
+        }
+        for (const node of path) checked.add(node);
+      }
+      if (cycles.size) {
+        const remove = this.database.prepare("DELETE FROM session_version_relations WHERE version=? AND child=?");
+        for (const node of cycles) remove.run(version, node);
+        addGap({ kind: "ambiguous", message: "父子声明形成循环，循环中的关系未纳入汇总", count: cycles.size });
+      }
+      const duplicate = (this.database.prepare(`SELECT COALESCE(SUM(count-1),0) AS count FROM
+        (SELECT COUNT(*) AS count FROM session_version_sources v JOIN session_revisions r ON r.id=v.revision WHERE v.version=? GROUP BY r.session_id HAVING COUNT(*)>1)`)
+        .get(version) as { count: number }).count;
+      if (duplicate) addGap({ kind: "ambiguous", message: "同一会话存在多个来源副本，采用消息较完整、时间较新的副本；不重复累计", count: duplicate });
+      for (const row of this.database.prepare(`SELECT r.json FROM session_version_sessions v JOIN session_revisions r ON r.id=v.revision
+        WHERE v.version=?`).iterate(version) as Iterable<JsonRow>) for (const gap of decode<SessionSourceMeta>(row).gaps) addGap(gap);
+      const publishedGaps = [...aggregated.values()];
+      this.database.prepare("UPDATE session_versions SET gaps=? WHERE id=?").run(JSON.stringify(publishedGaps), version);
+      const previousVersion = this.state().version;
+      this.saveState({ version, previousVersion, createdAt, stale: false, gaps: publishedGaps });
+      this.updateJob(jobId, { status: "complete", phase: "complete", progress: 1, version, finishedAt: createdAt });
+      this.database.prepare("DELETE FROM session_versions WHERE id<>? AND id<>?").run(version, previousVersion ?? version);
+      this.removeUnpublishedRevisions();
+    })();
+    return version;
+  }
+
+  private version(requested?: string): string {
+    const version = requested ?? this.state().version;
+    if (!version) throw new StoreError("ANALYSIS_NOT_READY", "会话索引尚未完成");
+    if (!this.database.prepare("SELECT 1 FROM session_versions WHERE id=?").get(version)) throw new StoreError("VERSION_NOT_FOUND", "会话索引版本不存在");
+    return version;
+  }
+
+  private session(id: string, version: string): { revision: string; summary: SessionSummary } {
+    const row = this.database.prepare(`SELECT r.id,r.json FROM session_version_sessions v JOIN session_revisions r ON r.id=v.revision
+      WHERE v.version=? AND v.session_id=?`).get(version, id) as RevisionRow | undefined;
+    if (!row) throw new StoreError("SOURCE_NOT_FOUND", "会话不存在于当前索引版本");
+    return { revision: row.id, summary: this.summary(row, version) };
+  }
+
+  private summary(row: JsonRow, version: string): SessionSummary {
+    const { path: _path, sourceId: _sourceId, ...summary } = decode<SessionSourceMeta>(row);
+    const relation = this.database.prepare("SELECT parent FROM session_version_relations WHERE version=? AND child=?").get(version, summary.id) as { parent: string } | undefined;
+    if (relation) { summary.parentSessionId = relation.parent; summary.relationship = "child"; }
+    return summary;
+  }
+
+  private filters(query: SessionQuery): { sql: string; values: SqlValue[] } {
+    const parts: string[] = [];
+    const values: SqlValue[] = [];
+    for (const [column, value] of [["r.client", query.client], ["r.project", query.project]] as const) {
+      if (column === "r.project" && value === "none") parts.push("r.project IS NULL");
+      else if (value !== undefined) { parts.push(`${column}=?`); values.push(value); }
+    }
+    if (query.from) { parts.push("COALESCE(r.updated_at,r.started_at,'')>=?"); values.push(query.from); }
+    if (query.to) { parts.push("COALESCE(r.started_at,r.updated_at,'')<=?"); values.push(query.to); }
+    return { sql: parts.length ? " AND " + parts.join(" AND ") : "", values };
+  }
+
+  list(query: SessionQuery = {}): SessionListResult {
+    const version = this.version(query.version);
+    const { page, pageSize } = paging(query);
+    const filter = this.filters(query);
+    if (query.q?.trim()) {
+      const kinds = kindsOf(query);
+      filter.sql += ` AND (r.title LIKE ? ESCAPE '\\' OR EXISTS(SELECT 1 FROM session_messages m WHERE m.revision=r.id AND m.kind IN (${kinds.map(() => "?").join(",") || "NULL"}) AND m.text LIKE ? ESCAPE '\\'))`;
+      filter.values.push(literal(query.q.trim()), ...kinds, literal(query.q.trim()));
+    }
+    const from = `FROM session_version_sessions v JOIN session_revisions r ON r.id=v.revision WHERE v.version=?${filter.sql}`;
+    const total = (this.database.prepare(`SELECT COUNT(*) AS count ${from}`).get(version, ...filter.values) as { count: number }).count;
+    const rows = this.database.prepare(`SELECT r.json ${from} ORDER BY COALESCE(r.updated_at,r.started_at,'') DESC,v.session_id ASC LIMIT ? OFFSET ?`)
+      .all(version, ...filter.values, pageSize, (page - 1) * pageSize) as JsonRow[];
+    const sessions = rows.map(row => this.summary(row, version));
+    return { version, sessions, total, page, pageSize };
+  }
+
+  messages(id: string, query: SessionMessageQuery = {}): SessionMessageResult {
+    const version = this.version(query.version);
+    const { revision, summary: session } = this.session(id, version);
+    const pagination = paging(query.pageUnit === "turn" ? { ...query, pageSize: query.pageSize ?? 10 } : query);
+    const condition = query.mode === "brief" ? " AND (kind='user' OR (kind='assistant' AND final IS NOT NULL))" : "";
+    const targetParts: string[] = [];
+    const targetValues: SqlValue[] = [];
+    if (query.messageId) { targetParts.push("id=?"); targetValues.push(query.messageId); }
+    else {
+      if (query.toolName) { targetParts.push("kind='tool_call' AND json_extract(json,'$.tool')=?"); targetValues.push(query.toolName); }
+      for (const [key, value] of [["kind", query.resourceKind], ["name", query.resourceName], ["server", query.resourceServer]] as const) {
+        if (value) { targetParts.push(`json_extract(json,'$.resource.${key}')=?`); targetValues.push(value); }
+      }
+    }
+    const target = targetParts.length ? this.database.prepare(`SELECT ordinal,id,turn_id,kind,final FROM session_messages
+      WHERE revision=? AND ${targetParts.join(" AND ")} ORDER BY ordinal,id LIMIT 1`).get(revision, ...targetValues) as
+      { ordinal: number; id: string; turn_id: string; kind: string; final: string | null } | undefined : undefined;
+    if (!target && targetParts.length && (!query.messageId || query.pageUnit === "turn")) throw new StoreError("SOURCE_NOT_FOUND", "定位消息不存在于当前会话");
+    if (target && query.mode === "brief" && target.kind !== "user" && !(target.kind === "assistant" && target.final)) {
+      throw new StoreError("INVALID_INPUT", "定位消息不在简易视图中，请切换完整或轨迹视图");
+    }
+    if (query.pageUnit === "turn") {
+      // 只聚合消息元信息，轮次顺序来自完整历史，避免加载全部正文。
+      const visible = query.mode === "brief" ? "kind='user' OR (kind='assistant' AND final IS NOT NULL)" : "1";
+      const groups = this.database.prepare(`WITH ordered AS (
+        SELECT CASE WHEN turn_id='' THEN 'unknown' ELSE turn_id END AS normalized_turn,kind,final,
+          ROW_NUMBER() OVER (ORDER BY ordinal,id) AS sequence FROM session_messages WHERE revision=?
+      ) SELECT normalized_turn AS id,SUM(CASE WHEN ${visible} THEN 1 ELSE 0 END) AS messageCount
+        FROM ordered GROUP BY normalized_turn HAVING messageCount>0 ORDER BY MIN(sequence)`)
+        .all(revision) as { id: string; messageCount: number }[];
+      const totalTurns = groups.length;
+      const total = groups.reduce((sum, turn) => sum + turn.messageCount, 0);
+      const targetPosition = target ? groups.findIndex(turn => turn.id === (target.turn_id || "unknown")) + 1 : query.turnPosition;
+      if (targetPosition !== undefined) {
+        if (targetPosition < 1 || targetPosition > totalTurns) throw new StoreError("INVALID_INPUT", "轮次位置超出当前视图范围");
+        pagination.page = Math.floor((targetPosition - 1) / pagination.pageSize) + 1;
+      }
+      pagination.page = Math.min(pagination.page, Math.max(1, Math.ceil(totalTurns / pagination.pageSize)));
+      const turns = groups.slice((pagination.page - 1) * pagination.pageSize, pagination.page * pagination.pageSize)
+        .map((turn, index) => ({ ...turn, position: (pagination.page - 1) * pagination.pageSize + index + 1 }));
+      const turnIds = turns.flatMap(turn => turn.id === "unknown" ? ["", "unknown"] : [turn.id]);
+      const messages = turns.length ? (this.database.prepare(`SELECT json,text FROM session_messages WHERE revision=?${condition}
+        AND turn_id IN (${turnIds.map(() => "?").join(",")}) ORDER BY ordinal,id`)
+        .all(revision, ...turnIds) as MessageRow[]).map(decodeMessage) : [];
+      return { version, session, messages, total, ...pagination, pageUnit: "turn", totalTurns, turns, focusMessageId: target?.id };
+    }
+    if (query.turnPosition !== undefined) throw new StoreError("INVALID_INPUT", "turnPosition 仅支持完整轮次分页");
+    if (target) {
+      const preceding = (this.database.prepare(`SELECT COUNT(*) AS count FROM session_messages WHERE revision=?${condition} AND (ordinal<? OR (ordinal=? AND id<?))`)
+        .get(revision, target.ordinal, target.ordinal, target.id) as { count: number }).count;
+      pagination.page = Math.floor(preceding / pagination.pageSize) + 1;
+    }
+    const total = (this.database.prepare(`SELECT COUNT(*) AS count FROM session_messages WHERE revision=?${condition}`).get(revision) as { count: number }).count;
+    const messages = (this.database.prepare(`SELECT json,text FROM session_messages WHERE revision=?${condition} ORDER BY ordinal,id LIMIT ? OFFSET ?`)
+      .all(revision, pagination.pageSize, (pagination.page - 1) * pagination.pageSize) as MessageRow[]).map(decodeMessage);
+    return { version, session, messages, total, ...pagination, focusMessageId: target?.id };
+  }
+
+  search(query: SessionQuery & { sessionId?: string } = {}): SessionSearchResult {
+    const version = this.version(query.version);
+    const { page, pageSize } = paging(query);
+    if (!query.q?.trim()) return { version, hits: [], total: 0, page, pageSize };
+    const filter = this.filters(query);
+    if (query.sessionId) { filter.sql += " AND v.session_id=?"; filter.values.push(query.sessionId); }
+    const selectedKinds = kindsOf(query);
+    const common = `FROM session_version_sessions v JOIN session_revisions r ON r.id=v.revision WHERE v.version=?${filter.sql}`;
+    const pattern = literal(query.q.trim());
+    const title = `SELECT v.session_id,NULL AS message_id,NULL AS turn_id,'title' AS kind,r.id AS revision,
+      r.json,COALESCE(r.updated_at,r.started_at,'') AS updated_at,0 AS ordinal ${common} AND r.title LIKE ? ESCAPE '\\'`;
+    const messages = `SELECT v.session_id,m.id AS message_id,m.turn_id,m.kind,r.id AS revision,
+      r.json,COALESCE(r.updated_at,r.started_at,'') AS updated_at,m.ordinal
+      FROM session_version_sessions v JOIN session_revisions r ON r.id=v.revision JOIN session_messages m ON m.revision=r.id
+      WHERE v.version=?${filter.sql} AND m.kind IN (${selectedKinds.map(() => "?").join(",") || "NULL"}) AND m.text LIKE ? ESCAPE '\\'`;
+    const union = `${title} UNION ALL ${messages}`;
+    const needle = query.q.trim();
+    const values = [version, ...filter.values, pattern, version, ...filter.values, ...selectedKinds, pattern];
+    const total = (this.database.prepare(`SELECT COUNT(*) AS count FROM (${union})`).get(...values) as { count: number }).count;
+    // 先选出当前页，避免为全部命中正文计算摘要和大小写转换。
+    const rows = this.database.prepare(`WITH page AS MATERIALIZED (
+      SELECT * FROM (${union}) ORDER BY updated_at DESC,session_id,ordinal,message_id LIMIT ? OFFSET ?
+    ), bodies AS MATERIALIZED (
+      SELECT page.*,CASE WHEN page.message_id IS NULL THEN r.title ELSE m.text END AS body FROM page
+        JOIN session_revisions r ON r.id=page.revision LEFT JOIN session_messages m ON m.revision=page.revision AND m.id=page.message_id
+    ) SELECT session_id,message_id,turn_id,kind,json,substr(body,MAX(1,instr(lower(body),lower(?))-70),240) AS text,length(body) AS text_length,
+      MAX(1,instr(lower(body),lower(?))-70) AS text_start FROM bodies ORDER BY updated_at DESC,session_id,ordinal,message_id`)
+      .all(...values, pageSize, (page - 1) * pageSize, needle, needle) as (JsonRow & { message_id?: string; turn_id?: string; kind: SessionSearchResult["hits"][number]["kind"]; text: string; text_start: number; text_length: number })[];
+    const hits = rows.map(row => {
+      const session = this.summary(row, version);
+      return { session, messageId: row.message_id ?? undefined, turnId: row.turn_id ?? undefined, kind: row.kind,
+        snippet: (row.text_start > 1 ? "…" : "") + row.text + (row.text_length > row.text_start - 1 + 240 ? "…" : "") };
+    });
+    return { version, hits, total, page, pageSize };
+  }
+
+  locate(input: { client: string; clientSessionId: string; sourceId?: string; recordLine?: number; callId?: string }): { sessionId: string; messageId?: string } | null {
+    const version = this.state().version;
+    if (!version) return null;
+    let row: { session_id: string; id: string } | undefined;
+    if (input.sourceId) {
+      const candidates = this.database.prepare(`SELECT v.session_id,r.id FROM session_version_sessions v JOIN session_revisions r ON r.id=v.revision
+        WHERE v.version=? AND r.client=? AND json_extract(r.json,'$.sourceId')=? LIMIT 2`).all(version, input.client, input.sourceId) as { session_id: string; id: string }[];
+      if (candidates.length > 1) return null;
+      row = candidates[0];
+    }
+    if (!row) {
+      const candidates = this.database.prepare(`SELECT v.session_id,r.id FROM session_version_sessions v JOIN session_revisions r ON r.id=v.revision
+        WHERE v.version=? AND r.client=? AND json_extract(r.json,'$.clientSessionId')=? LIMIT 2`).all(version, input.client, input.clientSessionId) as { session_id: string; id: string }[];
+      if (candidates.length > 1) return null;
+      row = candidates[0];
+    }
+    if (!row) return null;
+    let message: { id: string } | undefined;
+    if (input.callId) message = this.database.prepare("SELECT id FROM session_messages WHERE revision=? AND call_id=? ORDER BY ordinal LIMIT 1").get(row.id, input.callId) as { id: string } | undefined;
+    if (!message && input.recordLine) message = this.database.prepare("SELECT id FROM session_messages WHERE revision=? AND record_line=? ORDER BY ordinal LIMIT 1").get(row.id, input.recordLine) as { id: string } | undefined;
+    return { sessionId: row.session_id, messageId: message?.id };
+  }
+
+  profile(id: string, query: SessionQuery & { includeChildren?: boolean } = {}): SessionProfile {
+    return this.buildProfile(id, query);
+  }
+
+  private buildProfile(id: string, query: SessionQuery & { includeChildren?: boolean }): SessionProfile {
+    const version = this.version(query.version);
+    const root = this.session(id, version);
+    const getChildren = (parent: string) => (this.database.prepare(`SELECT r.json FROM session_version_relations relation
+      JOIN session_version_sessions v ON v.version=relation.version AND v.session_id=relation.child JOIN session_revisions r ON r.id=v.revision
+      WHERE relation.version=? AND relation.parent=? ORDER BY v.session_id`)
+      .all(version, parent) as JsonRow[]).map(row => this.summary(row, version));
+    const directChildren = getChildren(id);
+    const included = new Set([id]);
+    if (query.includeChildren) {
+      const parents = [id];
+      for (let index = 0; index < parents.length; index += 1) for (const child of getChildren(parents[index]!)) {
+        if (!included.has(child.id)) { included.add(child.id); parents.push(child.id); }
+      }
+    }
+    const profile: SessionProfile = { version, scope: query.includeChildren ? "tree" : "self", sessionIds: [...included], missingChildren: 0,
+      messageCount: 0, turnCount: 0, models: [], usage: { requests: 0, inputTokens: null, outputTokens: null, cachedInputTokens: null,
+        cacheWriteTokens: null, reasoningOutputTokens: null, cacheReadRatio: null, peakInputTokens: null, peakContextTokens: null, inputRecordedRequests: 0, cacheRecordedRequests: 0 },
+      estimate: { method: "留存文本字符数 ÷ 4 向上取整；仅为内容体量估算，非计费用量", total: 0, byKind: [] }, tools: [], resources: [], compressions: 0,
+      children: directChildren, steps: [], gaps: [...root.summary.gaps] };
+    const models = new Map<string, number>();
+    const estimates = new Map<SessionMessage["kind"], number>();
+    const tools = new Map<string, SessionProfile["tools"][number]>();
+    const resources = new Map<string, SessionProfile["resources"][number]>();
+    const turns = new Set<string>();
+    let pairedInput = 0;
+    let pairedCache = 0;
+    let stepCount = 0;
+    const sum = (key: "inputTokens" | "outputTokens" | "cachedInputTokens" | "cacheWriteTokens" | "reasoningOutputTokens", value: number | undefined) => {
+      if (value !== undefined) profile.usage[key] = (profile.usage[key] ?? 0) + value;
+    };
+    for (const sessionId of included) {
+      const { revision, summary } = this.session(sessionId, version);
+      if (sessionId !== id) profile.gaps.push(...summary.gaps);
+      const confirmedChildren = new Set(getChildren(sessionId).map(child => child.id));
+      const missing = new Set(summary.childSessionIds?.filter(child => !confirmedChildren.has(child)) ?? []);
+      if (missing.size) {
+        profile.missingChildren += missing.size;
+        profile.gaps.push({ kind: "unassociated", message: "明确子会话目标缺少来源或父子关联尚未确认，未纳入汇总", count: missing.size });
+      }
+      const retained = this.database.prepare(`SELECT kind,SUM(CAST((length(text)+3)/4 AS INTEGER)) AS tokens
+        FROM session_messages WHERE revision=? AND copied=0 GROUP BY kind`).all(revision) as { kind: SessionMessage["kind"]; tokens: number }[];
+      for (const item of retained) {
+        estimates.set(item.kind, (estimates.get(item.kind) ?? 0) + item.tokens);
+        profile.estimate.total += item.tokens;
+      }
+      for (const row of this.database.prepare("SELECT json FROM session_messages WHERE revision=? AND copied=0 ORDER BY ordinal,id").iterate(revision) as Iterable<JsonRow>) {
+        const message = decode<Omit<SessionMessage, "text">>(row);
+        profile.messageCount += 1;
+        if (message.kind === "user" && message.turnId) turns.add(`${sessionId}:${message.turnId}`);
+        if (message.model) models.set(message.model, (models.get(message.model) ?? 0) + 1);
+        if (message.kind === "compression") profile.compressions += 1;
+        if (message.kind === "tool_call") {
+          const name = message.tool ?? "未记录工具名称";
+          const tool = tools.get(name) ?? { name, calls: 0, success: 0, failure: 0, unknown: 0, durationMs: null };
+          tool.calls += 1;
+          tool[message.status ?? "unknown"] += 1;
+          if (message.durationMs !== undefined) tool.durationMs = (tool.durationMs ?? 0) + message.durationMs;
+          tools.set(name, tool);
+        }
+        if (message.resource) {
+          const key = JSON.stringify(message.resource);
+          const resource = resources.get(key) ?? { ...message.resource, count: 0 };
+          resource.count += 1;
+          resources.set(key, resource);
+        }
+      }
+      const usageRows = this.database.prepare(`SELECT u.json FROM session_usage u WHERE u.revision=? AND NOT EXISTS
+        (SELECT 1 FROM session_messages m WHERE m.revision=u.revision AND m.copied=1 AND (m.id=u.message_id OR (u.message_id IS NULL AND m.turn_id=u.turn_id))) ORDER BY u.rowid`).iterate(revision) as Iterable<JsonRow>;
+      for (const row of usageRows) {
+        const usage = decode<SessionUsage>(row);
+        profile.usage.requests += 1;
+        sum("inputTokens", usage.inputTokens); sum("outputTokens", usage.outputTokens); sum("cachedInputTokens", usage.cachedInputTokens);
+        sum("cacheWriteTokens", usage.cacheWriteTokens); sum("reasoningOutputTokens", usage.reasoningOutputTokens);
+        if (usage.inputTokens !== undefined) {
+          profile.usage.inputRecordedRequests += 1;
+          profile.usage.peakInputTokens = Math.max(profile.usage.peakInputTokens ?? 0, usage.inputTokens);
+        }
+        if (usage.inputTokens !== undefined && usage.cachedInputTokens !== undefined) {
+          profile.usage.cacheRecordedRequests += 1;
+          pairedInput += usage.inputTokens; pairedCache += usage.cachedInputTokens;
+        }
+        if (usage.contextTokens !== undefined) profile.usage.peakContextTokens = Math.max(profile.usage.peakContextTokens ?? 0, usage.contextTokens);
+        if (usage.model && !models.has(usage.model)) models.set(usage.model, 0);
+        if (stepCount++ < 200) profile.steps.push({ ...usage, sessionId });
+      }
+    }
+    profile.turnCount = turns.size;
+    profile.usage.cacheReadRatio = pairedInput > 0 ? pairedCache / pairedInput : null;
+    profile.models = [...models].map(([model, count]) => ({ model, count })).sort((left, right) => right.count - left.count || left.model.localeCompare(right.model));
+    profile.estimate.byKind = [...estimates].map(([kind, tokens]) => ({ kind, tokens }));
+    profile.tools = [...tools.values()].sort((left, right) => right.calls - left.calls || left.name.localeCompare(right.name));
+    profile.resources = [...resources.values()].sort((left, right) => right.count - left.count);
+    if (stepCount > 200) profile.gaps.push({ kind: "budget_exceeded", message: `逐步用量展示前 200 条，汇总包含全部 ${stepCount} 条`, count: stepCount - 200 });
+    return profile;
+  }
+}

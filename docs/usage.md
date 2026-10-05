@@ -35,7 +35,33 @@ agent-manor evidence <repositoryId> <eventId> --version <analysisVersion> --clie
 
 查询参数 `--version` 是分析结果版本；程序版本用 `--cli-version`／`-V`，单独执行 `agent-manor --version` 也支持。
 
-## 命令表
+## 全局会话库
+
+网页顶部选择“会话库”。左侧筛选客户端、项目与时间，中间切换简易／完整／轨迹，右侧以“概览／调用／用量”查看统计。三栏各自滚动，操作区保持可见；侧栏可以折叠与拖动调宽，小窗口通过“会话列表／会话统计”打开抽屉。
+
+对话每页显示 10 个完整消息组，使用首末组、上一轮／下一轮、组编号或页码导航。初始上下文和未知轮次也可能单独成组，因此组位置与用户轮次编号可能不同。完整／轨迹默认折叠过程，搜索或请求定位会自动展开。用户与 AI 正文支持 Markdown，长内容可展开；图片只显示替代文字。全局搜索默认覆盖标题及用户／AI 正文，过程内容可额外选入；会话内命中显示在浮层中，清除搜索恢复原阅读位置。点击用量图、请求编号、工具或资源名称可回到证据记录。
+
+```sh
+agent-manor sessions refresh --wait --json
+agent-manor sessions status --json
+agent-manor sessions list --client codeflicker --page 1 --page-size 50 --json
+agent-manor sessions search "状态检查" --json
+agent-manor sessions search "工具关键词" --kinds user,assistant,tool_call,tool_result --json
+agent-manor sessions messages <sessionId> --mode brief --json
+agent-manor sessions messages <sessionId> --mode trace --message-id <messageId> --json
+agent-manor sessions profile <sessionId> --include-children --json
+agent-manor sessions cacheclear --wait --json
+```
+
+会话刷新任务完成状态为 `complete`，与仓库任务的 `completed` 区分。首次启动会自动检查全部历史，无须先登记仓库；首次索引未完成可通过 `sessions status` 查看进度，或 `sessions refresh --wait` 等待。列表／搜索／消息和画像支持 `--version`，同一浏览流程沿用返回的完整版本。`--project none` 筛选无项目会话。
+
+API 为 `GET /api/v1/sessions`、`/sessions/search`、`/sessions/:id/messages`、`/sessions/:id/profile`、`/sessions/status`，刷新用 `POST /sessions/refresh`，清除并重建用 `DELETE /sessions/cache`；会话任务沿用 `/jobs/:id` 查询。默认消息每页 50 条，最多 200。查询参数为 `client/project/from/to/q/kinds/page/pageSize/version`；`kinds` 只限定列表匹配与搜索范围，不删减消息上下文；消息另有 `mode/messageId`，画像另有 `includeChildren=true`。
+
+消息 API 可选择 `pageUnit=turn`，此时默认每页 10 组，返回 `totalTurns`、当前页的 `turns` 元信息和完整消息；`total` 仍为当前视图消息数。`turnPosition` 为当前视图的一基组位置，`messageId` 定位优先于组位置。`toolName` 或 `resourceKind/resourceName/resourceServer` 可以定位首条调用／资源证据，返回 `focusMessageId`；过程记录不属于简易模式，需要完整或轨迹模式。未指定 `pageUnit` 时沿用按消息分页，现有 CLI 查询保持原有行为。
+
+浏览所需正文仅存本机索引，不上传、不调用模型；原始来源消失后新版排除，刷新失败继续显示上一完整版本。记录值、估算值与缺失的含义见 [会话统计口径](design/session-history.md)。
+
+## 代码地图命令
 
 | 命令 | 结果与常用选项 |
 | --- | --- |
