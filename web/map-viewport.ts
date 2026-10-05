@@ -63,7 +63,7 @@ export function layoutMap(files: FileCoverage[], directory: string): MapLayout {
       maxScale = Math.max(maxScale, readableSize.width / tile.width, readableSize.height / tile.height);
     } else if (node.depth) directories.push({ ...rect(node), path: node.data.path, name: node.data.name, depth: node.depth });
   });
-  return { bounds: { x: 0, y: 0, ...worldSize }, files: tiles, directories, maxScale: Math.min(maximumScale, maxScale) };
+  return { bounds: { x: 0, y: 0, ...worldSize }, files: tiles, directories, maxScale: Math.min(maximumScale, Math.max(1024, maxScale * 16)) };
 }
 
 /** 相机平移使用屏幕像素，缩放以给定屏幕焦点为中心。 */

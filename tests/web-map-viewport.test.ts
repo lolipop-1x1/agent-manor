@@ -63,6 +63,24 @@ test("深目录不消耗叶子面积，极端行数仍保留有限的正面积",
   assert.deepEqual({ x: tiny.x, y: tiny.y, width: tiny.width, height: tiny.height }, { x: deepest.x, y: deepest.y, width: deepest.width, height: deepest.height });
 });
 
+test("单文件和少量文件的上限保留充足余量，完整适应和文件可读后仍能继续放大", () => {
+  const viewport = { width: 2800, height: 1800 };
+  const focus = { x: viewport.width / 2, y: viewport.height / 2 };
+  for (const files of [[file("single.ts", 20)], [file("large.ts", 100_000), file("tiny.ts", 1)]]) {
+    const layout = layoutMap(files, "");
+    const fitted = fitCamera(layout.bounds, viewport);
+    assert.ok(layout.maxScale >= 1024);
+    assert.ok(layout.maxScale > fitted.scale * 16);
+    assert.equal(zoomCamera(fitted, 16, focus, fitted.scale, layout.maxScale).scale, fitted.scale * 16);
+    for (const tile of layout.files) {
+      const readable = Math.max(160 / tile.width, 84 / tile.height);
+      assert.ok(layout.maxScale >= readable * 16);
+      const located = locateCamera(tile, viewport, fitted.scale, layout.maxScale);
+      assert.ok(zoomCamera(located, 2, focus, fitted.scale, layout.maxScale).scale > located.scale);
+    }
+  }
+});
+
 test("焦点缩放保持同一个逻辑点，倍率在动态边界处稳定", () => {
   const camera = { x: -75, y: 22, scale: 1.4 };
   const focus = { x: 317, y: 193 };
@@ -128,7 +146,7 @@ test("空布局与暂时不可测量的视口保留有限相机，异常平移�
   const layout = layoutMap([file("empty.ts", 0)], "");
   assert.deepEqual(layout.files, []);
   assert.deepEqual(layout.directories, []);
-  assert.equal(layout.maxScale, 1);
+  assert.equal(layout.maxScale, 1024);
   const camera = fitCamera(layout.bounds, { width: 0, height: 0 });
   assert.ok(camera.scale > 0 && Number.isFinite(camera.scale));
   assert.deepEqual(visibleTiles([], camera, { width: 0, height: 0 }), []);
