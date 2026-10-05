@@ -8,6 +8,7 @@ import { CLIENTS, clientName } from "../src/clients";
 import { ApiError, errorMessage, isAborted, queryString, repositoryPath, request } from "./api";
 import { CodeMap, Hint } from "./CodeMap";
 import { DirectoryTree } from "./DirectoryTree";
+import { ResizableWorkspace } from "./ResizableWorkspace";
 import { boundQuery, categoryNames, dateLabel, fileHighlights, filename, fmt, gapNames, metricNames, metricValue, percent, rangesLabel, timeFilters, type Metric, type Theme } from "./model";
 
 const kindNames = { read: "读取", edit: "修改", search: "搜索", other: "其他" };
@@ -332,7 +333,7 @@ export function App() {
           : <><Check size={16} /><span>刷新完成</span><small>{dateLabel(job.finishedAt)}</small></>}
     </div>}
     {coverage?.stale && !jobActive(job) && job?.status !== "failed" && <Notice action={<button className="text-button" onClick={() => void runRefresh()}>刷新分析</button>}>当前统计已过期，基于 {dateLabel(coverage.createdAt)} 的仓库基线。</Notice>}
-    {initialLoading && !repository ? <Empty title="连接本地分析服务">正在读取已登记仓库与分析任务…</Empty> : !repository ? <Empty title="开始查看代码活动">登记一个本机 Git 仓库，发现属于它的 {CLIENTS.map(client => client.name).join("、")} 历史会话。<br />分析在本机完成，原始历史只读。</Empty> : <div className="workspace" data-sidebar-collapsed={sidebarCollapsed} data-details-collapsed={detailsCollapsed}>
+    {initialLoading && !repository ? <Empty title="连接本地分析服务">正在读取已登记仓库与分析任务…</Empty> : !repository ? <Empty title="开始查看代码活动">登记一个本机 Git 仓库，发现属于它的 {CLIENTS.map(client => client.name).join("、")} 历史会话。<br />分析在本机完成，原始历史只读。</Empty> : <ResizableWorkspace sidebarCollapsed={sidebarCollapsed} detailsCollapsed={detailsCollapsed}>
       <aside className={`sidebar${sidebarCollapsed ? " panel-collapsed" : ""}`} aria-label="仓库导航">
         <div className="pane-heading"><span>仓库导航</span><Hint label={sidebarCollapsed ? "展开仓库导航" : "收起仓库导航"}><button className="icon-button panel-toggle" aria-label={sidebarCollapsed ? "展开仓库导航" : "收起仓库导航"} aria-expanded={!sidebarCollapsed} aria-controls="repository-navigation-content" onClick={() => setSidebarCollapsed(value => !value)}>{sidebarCollapsed ? <CaretRight size={17} /> : <CaretLeft size={17} />}</button></Hint></div>
         <div id="repository-navigation-content" className="sidebar-content" hidden={sidebarCollapsed}><div className="repository-picker"><Dropdown.Root><Dropdown.Trigger ref={repositoryTrigger} className="repository-trigger"><Folder size={19} weight="duotone" /><strong>{repository.name}</strong><CaretDown size={14} /></Dropdown.Trigger><Dropdown.Portal><Dropdown.Content className="dropdown-content" sideOffset={6}>{repositories.map(repo => <Dropdown.Item key={repo.id} className="dropdown-item" onSelect={() => chooseRepo(repo.id)}>{repo.id === repoId && <Check size={14} />}<span>{repo.name}<small>{repo.path}</small></span></Dropdown.Item>)}<Dropdown.Separator className="dropdown-separator" /><Dropdown.Item className="dropdown-item" onSelect={() => setRegisterOpen(true)}><Plus size={15} />登记仓库</Dropdown.Item></Dropdown.Content></Dropdown.Portal></Dropdown.Root></div>
@@ -355,7 +356,7 @@ export function App() {
         </>}
       </main>
       <FilePane repoId={repoId} detail={detail} loading={detailLoading} error={detailError} retry={() => setDetailRetry(value => value + 1)} collapsed={detailsCollapsed} toggle={() => setDetailsCollapsed(value => !value)} metric={metric} theme={theme} query={query} />
-    </div>}
+    </ResizableWorkspace>}
     {!repository && !initialLoading && <div className="first-register"><button className="button primary" onClick={() => setRegisterOpen(true)}><Plus size={17} />登记本机仓库</button></div>}
     <Modal open={registerOpen} onOpenChange={setRegisterOpen} fallbackFocus={repositoryTrigger} title="登记本机 Git 仓库" description="输入当前工作区的绝对路径。登记后自动发现历史并创建分析任务。">
       <form className="register-form" onSubmit={event => void register(event)}><label>仓库绝对路径<input value={registerPath} onChange={event => setRegisterPath(event.target.value)} placeholder="/absolute/path/to/repository" autoComplete="off" required /></label>{registerError && <Notice danger>{registerError}</Notice>}<p className="muted small">当前工作区包含未提交修改；同一仓库的 worktree 分别建立内容基线。</p><div className="dialog-end"><button type="button" className="button subtle" onClick={() => setRegisterOpen(false)}>取消</button><button type="submit" className="button primary" disabled={registering || !registerPath.trim()}>{registering ? "正在登记…" : "登记并分析"}</button></div></form>
