@@ -51,7 +51,7 @@ test("Claude 规则升级重建旧空 cwd 游标，来源首个 cwd 不覆盖逐
   previous.cwd = undefined;
   (previous.cursor as { ruleVersion: string }).ruleVersion = "2";
   const parsed = await parseSource(path, "claude", previous);
-  assert.equal(PARSER_RULE_VERSION, "7");
+  assert.equal(PARSER_RULE_VERSION, "8");
   assert.equal((parsed.cursor as { parsedRecords: number }).parsedRecords, 3);
   assert.equal(parsed.cwd, directory);
   assert.equal(parsed.events[0]!.cwd, "/synthetic/later");

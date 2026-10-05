@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { basename, dirname, isAbsolute, resolve } from "node:path";
+import { basename, dirname, isAbsolute, normalize, resolve, sep } from "node:path";
 import type { Client, EvidenceFragment, HistoryEvent } from "../../contracts.js";
 import { changedFragments, json, number, object, patchFragments, physicalLines, shellEvidence, string } from "../extraction.js";
 import type { ToolEvidence } from "../extraction.js";
@@ -40,6 +40,11 @@ function bashResult(input: unknown, result: unknown): { status: HistoryEvent["st
 function samePath(requested: string | undefined, returned: string | undefined, context: HistoryAdapterContext): boolean {
   if (!requested || !returned) return false;
   const cwd = context.cursor.cwd ?? context.source.cwd;
+  if ((!cwd || !isAbsolute(cwd)) && !isAbsolute(requested) && isAbsolute(returned)) {
+    // 返回绝对路径可确认本次目标，但不能用它猜测会话 cwd。
+    const local = normalize(requested);
+    return local !== "." && local !== ".." && !local.startsWith(`..${sep}`) && resolve(returned).endsWith(`${sep}${local}`);
+  }
   const absolute = (path: string) => isAbsolute(path) ? resolve(path) : cwd && isAbsolute(cwd) ? resolve(cwd, path) : path;
   return absolute(requested) === absolute(returned);
 }
@@ -122,7 +127,8 @@ export const codeflickerAdapter: HistoryAdapter = {
     const result = object(resultValue);
     const requested = string(input.file_path) ?? string(input.path) ?? string(input.dir_path);
     const display = object(result.returnDisplay);
-    const path = samePath(requested, string(display.absoluteFilePath), context) ? string(display.absoluteFilePath) : requested;
+    const returned = tool === "read" ? string(readPayload(resultValue).filePath) : string(display.absoluteFilePath);
+    const path = samePath(requested, returned, context) ? returned : requested;
     const kind = tool === "read" ? "read" : ["edit", "write"].includes(tool) ? "edit" : ["grep", "glob"].includes(tool) ? "search" : "other";
     const unknown = (message: string): ToolEvidence[] => [{ kind, path, fragments: [], reason: `range_unknown: ${message}` }];
     if (result.truncated === true) return unknown("CodeFlicker 返回截断，未补读旁路内容");

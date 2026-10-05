@@ -45,6 +45,8 @@ fork 保存父 session、原始 ordinal 与 endByteOffset。ordinal 的准确客
 
 CodeFlicker 的来源身份由原始 sessionId 与显式 agentId 构成，并始终带实际客户端身份；目录 slug 不用于还原 cwd。缺少 cwd 的来源可用实际绝对文件路径逐活动归属仓库。`agent-*.jsonl` 可独立发现和解析；显式 parentSessionId／parent_thread_id／forked_from_id 统一转换为来源关系。原生成功 Agent 结果块的 agentId 也可与同一实际客户端、同项目目录、唯一子 sessionId=`agent-<agentId>` 和同名 JSONL 交叉确认父关系；文件副本具有相同来源身份时不算多个父身份。子事件保留父结果原始引用和父 session，来源列表／结果来源同步表示关系，原始解析缓存不改写。失败、未知、跨目录、跨客户端、身份不符或多个不同父身份不建立推导关系并保留缺口；文件名、parentUuid 消息链、摘要、同一 call ID 或相同内容不能单独证明关系或重放。SQLite、MyFlicker、未核对归档格式和补全／编辑预测未纳入本轮支持。
 
+缺少可靠 cwd 的相对 read/edit/write 请求，可用原生 read 的 `filePath` 或 edit/write 的 `returnDisplay.absoluteFilePath` 确认本次目标：返回须为绝对路径，且以规范化后的完整相对请求路径为后缀；`.`、仍以 `..` 越出父目录的路径及后缀冲突不接受。已有可靠 cwd 时仍要求解析后路径完全相同。返回路径只属于该次活动，不用于猜测会话或后续请求的 cwd；成功终态、实际范围和补丁校验继续独立执行。解析规则 8 重建旧缓存以恢复这类活动，事件身份保持不变。
+
 本轮原生只读探针覆盖一个 1,708,528 字节、726 条物理记录的真实主来源，与独立原始工具计数核对得到 113 次调用：read 18、write 9、edit 7、bash 49、grep 14、glob 2、todoWrite 3、skill 6、AskUserQuestion 4、Agent 1。18 次原生 read、9 次 write、7 次 edit 均获得范围／差异片段；其余工具的未知状态与不支持命令按缺口保留。此探针不是全量历史或真实仓库端到端验收。本机默认根可能包含数千个来源且原生记录没有 cwd，首次刷新需要完整读取候选；可将 `AGENT_MANOR_CODEFLICKER_DIR` 设为单个项目目录，明确限定来源规模后刷新。本文不宣称已验证全量刷新性能。
 
 具体事件的 `formatted_output` 是工具返回口径。外层 `exec` 选择性 `text()` 或再次截断可能限制实际向模型呈现的内容；外层原始证据可回读，但当前主覆盖不声称代表逐字模型可见内容。长期进程轮询、chunk 重叠、任意脚本或动态包装缺少明确事件关系时不猜测。

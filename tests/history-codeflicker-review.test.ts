@@ -52,10 +52,10 @@ test("read 隐藏长行截断不形成近似覆盖，完整前后行保持真实
   const natural = coverage(baseline(directory, observed), associated.events);
   assert.equal(natural.value.files[0]!.readExactLines, 2);
   const previous = structuredClone(parsed);
-  (previous.cursor as { ruleVersion: string }).ruleVersion = "6";
+  (previous.cursor as { ruleVersion: string }).ruleVersion = "7";
   previous.events[0]!.fragments = [{ kind: "read", content: observed, historicalStart: 1, completeLines: true, path: file }];
   const rebuilt = await parseSource(path, "codeflicker", previous);
-  assert.equal((rebuilt.cursor as { ruleVersion: string }).ruleVersion, "7");
+  assert.equal((rebuilt.cursor as { ruleVersion: string }).ruleVersion, "8");
   assert.equal((rebuilt.cursor as { parsedRecords: number }).parsedRecords, 2);
   assert.deepEqual(rebuilt.events[0]!.fragments, parsed.events[0]!.fragments);
 }));
@@ -150,10 +150,10 @@ test("bash 固定多文件 sed 派生活动继承本次绝对执行目录并分�
   const covered = buildCoverage({ repository: base.repository, version: "synthetic", baseline: base, sources: [], events: associated.events, mappings, gaps: [], createdAt: base.createdAt });
   assert.deepEqual(covered.files.map(file => [file.path, file.readCount, file.readExactLines]), [["a.ts", 1, 1], ["b.ts", 1, 1]]);
   const previous = structuredClone(parsed);
-  (previous.cursor as { ruleVersion: string }).ruleVersion = "6";
+  (previous.cursor as { ruleVersion: string }).ruleVersion = "7";
   delete previous.events[1]!.cwd;
   const rebuilt = await parseSource(path, "codeflicker", previous);
-  assert.equal((rebuilt.cursor as { ruleVersion: string; parsedRecords: number }).ruleVersion, "7");
+  assert.equal((rebuilt.cursor as { ruleVersion: string; parsedRecords: number }).ruleVersion, "8");
   assert.equal((rebuilt.cursor as { parsedRecords: number }).parsedRecords, 2);
   assert.deepEqual(rebuilt.events, parsed.events);
 }));

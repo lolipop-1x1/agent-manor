@@ -7,6 +7,7 @@ import type { Baseline } from "../src/contracts.js";
 import { associateSource, discoverSources, parseSource, resolveSharedHistory } from "../src/history/index.js";
 import { readHistoryEvidence } from "../src/history/adapters/index.js";
 import { physicalLines } from "../src/history/extraction.js";
+import { matchEvent } from "../src/analysis/matching.js";
 
 const fixture = new URL("./fixtures/history/codeflicker-native.jsonl", import.meta.url).pathname;
 const encode = (records: unknown[]) => records.map(record => `${JSON.stringify(record)}\n`).join("");
@@ -191,6 +192,50 @@ test("无 cwd 来源仍按实际绝对文件路径归属，Hook 和用户内容�
   assert.equal(associated.events.length, 1);
   assert.equal(associated.events[0]!.path, "a.ts");
   assert.equal(parsed.cwd, undefined);
+}));
+
+test("无 cwd 的相对读写请求按已核验的工具返回绝对路径归属，不推断后续调用目录", async () => temporary(async directory => {
+  const path = join(directory, "relative.jsonl");
+  const contents = ["const readContent = true;\n", "const stableContext = true;\nconst changedContent = true;\n", "const writtenContent = true;\n"];
+  const files = contents.map((content, index) => ({ path: `src/${index}.ts`, content, category: "source" as const, lineCount: physicalLines(content).length, hash: `file-${index}` }));
+  await writeFile(path, encode([
+    call("relative-read", "read", "read", { file_path: "./src/0.ts" }),
+    output("relative-read-result", "read", readResult(contents[0], { filePath: join(directory, "src/0.ts"), totalLines: 2, limit: 2, actualLinesRead: 2 })),
+    call("relative-edit", "edit", "edit", { file_path: "src/1.ts", old_string: "oldContent", new_string: "changedContent" }),
+    output("relative-edit-result", "edit", { llmContent: "File src/1.ts successfully edited.", returnDisplay: { absoluteFilePath: join(directory, "src/1.ts"), structuredPatch: [
+      { oldStart: 1, newStart: 1, oldLines: 2, newLines: 2, lines: [" const stableContext = true;", "-const oldContent = true;", "+const changedContent = true;"] },
+    ] } }, "edit"),
+    call("relative-write", "write", "write", { file_path: "src/2.ts", content: contents[2] }),
+    output("relative-write-result", "write", { llmContent: "File successfully written to src/2.ts", returnDisplay: { absoluteFilePath: join(directory, "src/2.ts") } }, "write"),
+    call("no-return", "missing", "read", { file_path: "src/0.ts" }),
+  ]));
+  const parsed = await parseSource(path, "codeflicker");
+  assert.deepEqual(parsed.events.slice(0, 3).map(event => event.path), files.map(file => join(directory, file.path)));
+  assert.ok(parsed.events.slice(0, 3).every(event => event.fragments.length > 0));
+  assert.equal(parsed.cwd, undefined);
+  assert.equal(parsed.events[3]!.cwd, undefined);
+  const baseline: Baseline = { repository: { id: "synthetic", path: directory, commonDir: directory, name: "synthetic", stale: false }, hash: "synthetic", createdAt: "2026-01-01T00:00:00Z", git: { dirty: false }, files, excluded: [] };
+  const associated = await associateSource(parsed, baseline);
+  assert.equal(associated.events.length, 3);
+  assert.deepEqual(associated.events.map((event, index) => matchEvent(event, files[index]!).exactRanges), [[{ start: 1, end: 1 }], [{ start: 2, end: 2 }], [{ start: 1, end: 1 }]]);
+}));
+
+test("工具返回路径不能绕过请求后缀、父目录或已知 cwd 的校验", async () => temporary(async directory => {
+  for (const [index, requested, returned, cwd] of [
+    [0, "src/a.ts", join(directory, "other/a.ts"), undefined],
+    [1, "../a.ts", join(directory, "a.ts"), undefined],
+    [2, "src/a.ts", join(directory, "other/src/a.ts"), directory],
+  ] as const) {
+    const path = join(directory, `${index}.jsonl`);
+    await writeFile(path, encode([
+      call(`mismatch-${index}`, "read", "read", { file_path: requested }, { cwd }),
+      output(`mismatch-result-${index}`, "read", readResult("alpha\nbeta\n", { filePath: returned })),
+    ]));
+    const parsed = await parseSource(path, "codeflicker");
+    assert.equal(parsed.events[0]!.path, requested);
+    assert.equal(parsed.events[0]!.fragments.length, 0);
+    assert.ok(parsed.gaps.some(gap => gap.kind === "range_unknown"));
+  }
 }));
 
 test("同一原生格式用于不同客户端时保留身份，内容相同不合并真实调用", async () => {
