@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
@@ -11,7 +10,7 @@ const run = promisify(execFile);
 const url = process.env.AGENT_MANOR_E2E_URL ?? "http://127.0.0.1:4317";
 const target = process.env.AGENT_MANOR_E2E_REPOSITORY;
 const artifacts = fileURLToPath(new URL("../.local/map-zoom-e2e/", import.meta.url));
-const directory = await mkdtemp(join(tmpdir(), "manor-map-browser-"));
+const directory = await mkdtemp("/tmp/manor-map-");
 const session = `mz${process.pid}-${Date.now().toString(36)}`;
 let browserOpened = false;
 
@@ -26,15 +25,15 @@ async function browser(args) {
   try {
     // 独立会话与短套接字路径，不操作已有浏览器标签页。
     result = await run("playwright-cli", [`-s=${session}`, ...args], {
-      cwd: directory, env: { ...process.env, TMPDIR: "/tmp" },
+      cwd: directory, env: { ...process.env, TMPDIR: "/tmp", PLAYWRIGHT_DAEMON_SESSION_DIR: join(directory, "daemon") },
       timeout: 120_000, maxBuffer: 4 * 1024 * 1024,
     });
   } catch (error) {
-    await writeFile(join(artifacts, "private-browser-output.txt"), `${error.stdout ?? ""}\n${error.stderr ?? ""}`);
+    await writeFile(join(artifacts, `private-${args[0]}-output.txt`), `${error.stdout ?? ""}\n${error.stderr ?? ""}`);
     throw new Error("浏览器命令失败；详细输出已留在本机忽略目录。");
   }
   if (result.stdout.includes("### Error")) {
-    await writeFile(join(artifacts, "private-browser-output.txt"), result.stdout);
+    await writeFile(join(artifacts, `private-${args[0]}-output.txt`), result.stdout);
     throw new Error("浏览器断言失败；详细输出已留在本机忽略目录。");
   }
   return result.stdout;
@@ -42,20 +41,29 @@ async function browser(args) {
 
 async function verify(page, fixture) {
   const ensure = (condition, message) => { if (!condition) throw new Error(message); };
-  const errors = { page: 0, console: 0, http: 0, request: 0 };
+  const errors = { page: 0, console: 0, http: 0, request: 0, listener: 0 };
   const requests = [];
   const steps = [];
+  // CLI VM 没有 URL 等 Node 全局；事件异常也不能冒泡到 daemon。
+  const guarded = handler => value => { try { return handler(value); } catch { errors.listener += 1; return false; } };
+  const mark = async (stage, state = "begin") => page.evaluate(data => {
+    console.info(`MAP_ZOOM_E2E ${JSON.stringify(data)}`);
+  }, { stage, state, time: Date.now() });
   page.setDefaultTimeout(20_000);
   page.on("pageerror", () => { errors.page += 1; });
-  page.on("console", message => { if (message.type() === "error") errors.console += 1; });
-  page.on("response", response => { if (response.status() >= 400) errors.http += 1; });
-  page.on("requestfailed", request => {
-    if (!request.failure()?.errorText.includes("ERR_ABORTED")) errors.request += 1;
-  });
-  page.on("request", request => {
-    if (new URL(request.url()).pathname.startsWith("/api/v1/")) requests.push(request.method());
-  });
+  page.on("console", guarded(message => { if (message.type() === "error") errors.console += 1; }));
+  page.on("response", guarded(response => { if (response.status() >= 400) errors.http += 1; }));
+  page.on("requestfailed", guarded(request => {
+    if (!String(request.failure()?.errorText).includes("ERR_ABORTED")) errors.request += 1;
+  }));
+  page.on("request", guarded(request => {
+    if (request.url().split("?")[0].includes("/api/v1/")) requests.push(request.method());
+  }));
   const button = name => page.getByRole("button", { name, exact: true });
+  const chooseRepository = async path => {
+    await page.locator(".repository-trigger").click();
+    await page.getByRole("menuitem").filter({ has: page.getByText(path, { exact: true }) }).click();
+  };
   const map = page.locator(".code-map");
   const explorer = page.locator(".map-explorer");
   const scale = async () => Number(await map.getAttribute("data-scale"));
@@ -94,6 +102,7 @@ async function verify(page, fixture) {
     ensure(fileText.replace(/\s+/g, " ").trim() === `${fmt(summary.readExact.files)} / ${fmt(summary.fileCount)} 个文件`, "界面文件统计与 HTTP 结果不一致。");
   };
   const withoutQuery = async (name, action, compareMetrics = true) => {
+    await mark(name);
     await settle();
     const before = await snapshot();
     const requestCount = requests.length;
@@ -106,6 +115,7 @@ async function verify(page, fixture) {
     ensure(JSON.stringify(after.filters) === JSON.stringify(before.filters), `${name}改变了统计筛选。`);
     if (compareMetrics) ensure(after.metrics === before.metrics, `${name}改变了统计摘要。`);
     steps.push({ name, milliseconds: Date.now() - started });
+    await mark(name, "passed");
   };
   const fonts = async tile => tile.evaluate(element => {
     const name = element.querySelector(".tile-name"), value = element.querySelector("strong");
@@ -115,12 +125,34 @@ async function verify(page, fixture) {
       nameText: name?.textContent ?? "", valueText: value?.textContent ?? "",
     };
   });
+  const textIsUnobscured = async tile => {
+    await map.scrollIntoViewIfNeeded();
+    await page.mouse.move(0, 0);
+    return tile.evaluate(element => [".tile-name", "strong"].every(selector => {
+      const text = element.querySelector(selector);
+      if (!text?.textContent) return false;
+      const range = document.createRange();
+      range.selectNodeContents(text);
+      const rects = [range.getBoundingClientRect(), text.getBoundingClientRect(), text.parentElement.getBoundingClientRect(), element.getBoundingClientRect(), element.closest(".code-map").getBoundingClientRect()];
+      const left = Math.max(0, ...rects.map(rect => rect.left));
+      const top = Math.max(0, ...rects.map(rect => rect.top));
+      const right = Math.min(innerWidth, ...rects.map(rect => rect.right));
+      const bottom = Math.min(innerHeight, ...rects.map(rect => rect.bottom));
+      if (right - left < 2 || bottom - top < 2) return false;
+      for (const x of [left + 1, (left + right) / 2, right - 1]) {
+        for (const y of [top + 1, (top + bottom) / 2, bottom - 1]) {
+          if (document.elementFromPoint(x, y)?.closest(".map-file") !== element) return false;
+        }
+      }
+      return true;
+    }));
+  };
 
+  await mark("加载目标仓库");
   await page.setViewportSize({ width: 1440, height: 1000 });
   // 监听在重新导航前安装，初始资源和 API 的错误也纳入验收。
   await page.goto(fixture.url);
-  await page.locator(".repository-trigger").click();
-  await page.getByRole("menuitem").filter({ has: page.getByText(fixture.repository.path, { exact: true }) }).click();
+  await chooseRepository(fixture.repository.path);
   await settle();
   ensure((await page.locator(".baseline-note").innerText()).includes(fixture.version), "界面没有绑定独立查询的结果版本。");
   ensure(Number(await map.getAttribute("data-file-count")) === fixture.nonemptyCount, "地图非空文件总数与 API 不一致。");
@@ -155,7 +187,32 @@ async function verify(page, fixture) {
     ensure(Math.abs(await scale() / fitScale - 1) < .001, "0 键没有适应窗口。");
   });
 
+  await mark("实际单击文件选择");
+  const beforeClick = await snapshot();
+  await map.scrollIntoViewIfNeeded();
+  const clickTarget = await map.locator(".map-file").evaluateAll((elements, selectedPath) => {
+    for (const element of elements) {
+      if (element.getAttribute("data-path") === selectedPath) continue;
+      const rect = element.getBoundingClientRect();
+      for (const fraction of [.5, .75]) {
+        const point = { x: rect.x + rect.width / 2, y: rect.y + rect.height * fraction };
+        if (document.elementFromPoint(point.x, point.y)?.closest(".map-file") === element) {
+          return { path: element.getAttribute("data-path"), point };
+        }
+      }
+    }
+    return null;
+  }, fixture.small.path);
+  ensure(clickTarget, "完整视野没有可供实际单击的其他文件。");
+  await page.mouse.click(clickTarget.point.x, clickTarget.point.y);
+  await page.locator(".file-path").waitFor({ state: "visible" });
+  await settle();
+  ensure(await selected() === clickTarget.path && await page.locator(".file-path").innerText() === clickTarget.path, "实际单击没有选择对应文件。");
+  ensure(JSON.stringify(await snapshot()) === JSON.stringify(beforeClick), "文件选择改变了覆盖范围或摘要。");
+  await mark("实际单击文件选择", "passed");
+
   // 文件列表是小文件入口；清空搜索恢复全仓几何后才测定位能力。
+  await mark("列表选择小文件");
   await page.getByRole("textbox", { name: "搜索文件或路径" }).fill(fixture.small.path);
   await page.locator(".file-table tbody").getByRole("button", { name: fixture.small.path, exact: true }).click();
   await page.locator(".file-path").waitFor({ state: "visible" });
@@ -183,8 +240,9 @@ async function verify(page, fixture) {
   if (fixture.nonemptyCount > 1) ensure(locatedVisible < initialVisible, "局部视野没有裁掉屏幕外几何。");
   const smallTile = await fileTile(fixture.small.path);
   const originalFonts = await fonts(smallTile);
-  ensure(originalFonts.name >= 9 && originalFonts.name <= 20, "文件名不在正常阅读字号范围。");
-  ensure(originalFonts.value >= 10 && originalFonts.value <= 36, "百分比不在正常阅读字号范围。");
+  ensure(originalFonts.name >= 12 && originalFonts.name <= 20, "文件名不在正常阅读字号范围。");
+  ensure(originalFonts.value >= 22 && originalFonts.value <= 36, "百分比不在正常阅读字号范围。");
+  ensure(await textIsUnobscured(smallTile), "所选小文件名称或百分比被其他控件遮挡。");
   ensure(originalFonts.valueText === fixture.small.percent, "地图百分比与 API 精确读取行数不一致。");
   ensure((await smallTile.getAttribute("aria-label")).includes(fixture.small.path), "键盘标签没有完整路径。");
   await smallTile.focus();
@@ -208,6 +266,17 @@ async function verify(page, fixture) {
     ensure(currentFonts.name === originalFonts.name && currentFonts.value === originalFonts.value, "文字字号随几何缩放发生变化。");
     ensure(currentFonts.nameText === originalFonts.nameText && currentFonts.valueText === originalFonts.valueText, "放大后标签丢失。");
     await page.mouse.wheel(0, 80);
+  });
+  await withoutQuery("地图外滚轮滚动页面", async () => {
+    await page.locator(".app-header").scrollIntoViewIfNeeded();
+    const previousScale = await scale();
+    const scroll = await page.evaluate(() => scrollY);
+    const bounds = await page.locator(".app-header").boundingBox();
+    await page.mouse.move(bounds.x + bounds.width / 2, bounds.y + bounds.height / 2);
+    await page.mouse.wheel(0, 220);
+    await page.waitForFunction(previous => scrollY > previous, scroll);
+    ensure(await scale() === previousScale, "地图外滚轮改变了地图倍率。");
+    await map.scrollIntoViewIfNeeded();
   });
 
   await withoutQuery("鼠标焦点稳定", async () => {
@@ -264,6 +333,24 @@ async function verify(page, fixture) {
     ensure(after.rect && Math.hypot(after.rect.x - before.rect.x, after.rect.y - before.rect.y) > 8, "拖动没有平移局部。");
     await button("定位所选文件").click();
   });
+  await withoutQuery("目录标题附近拖动不下钻", async () => {
+    await button("适应窗口").click();
+    await settle();
+    await map.scrollIntoViewIfNeeded();
+    const title = map.locator(".map-directory").first();
+    if (await title.count()) {
+      const bounds = await title.boundingBox();
+      const previous = await selected();
+      await page.mouse.move(bounds.x + bounds.width / 2, bounds.y + bounds.height / 2);
+      await page.mouse.down();
+      await page.mouse.move(bounds.x + bounds.width / 2 + 32, bounds.y + bounds.height / 2 + 28, { steps: 6 });
+      await page.mouse.up();
+      await settle();
+      ensure(await selected() === previous, "目录标题附近拖动改变了文件选择。");
+      ensure(await page.getByRole("button", { name: /^整个仓库/ }).getAttribute("aria-current") === "location", "目录标题拖动误触了下钻。");
+    }
+    await button("定位所选文件").click();
+  });
 
   await withoutQuery("全屏退出按钮与 Esc", async () => {
     const before = await view();
@@ -274,6 +361,7 @@ async function verify(page, fixture) {
     preserved(before, await view(), "全屏进入");
     ensure(await page.getByRole("group", { name: "地图着色指标" }).isVisible(), "全屏缺失着色指标。");
     ensure(await page.locator(".breadcrumbs").isVisible() && await page.locator(".map-legend").isVisible(), "全屏缺失目录或图例。");
+    ensure(await textIsUnobscured(smallTile), "全屏文件名称或百分比被其他控件遮挡。");
     await explorer.screenshot({ path: `${fixture.artifacts}/fullscreen.png` });
     await button("退出地图全屏").click();
     await button("全屏查看地图").waitFor({ state: "visible" });
@@ -325,6 +413,9 @@ async function verify(page, fixture) {
       await settle();
       ensure(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), "窄屏页面横向溢出。");
       ensure(await button("放大地图").isVisible() && await button("适应窗口").isVisible(), "窄屏缩放入口不可用。");
+      const currentFonts = await fonts(smallTile);
+      ensure(currentFonts.name >= 12 && currentFonts.value >= 22, "窄屏降低了所选文件名称或指标字号。");
+      ensure(await textIsUnobscured(smallTile), "窄屏文件名称或指标被其他控件遮挡。");
     }
     await explorer.screenshot({ path: `${fixture.artifacts}/narrow.png` });
     await page.setViewportSize({ width: 1440, height: 1000 });
@@ -336,13 +427,20 @@ async function verify(page, fixture) {
   const rootAfter = await page.evaluate(async endpoint => (await fetch(endpoint)).json(), fixture.endpoint);
   ensure(JSON.stringify(rootAfter) === JSON.stringify(rootBefore), "缩放、平移和界面切换改变了固定版本覆盖响应。");
   await explorer.screenshot({ path: `${fixture.artifacts}/located.png` });
+  let directoryEntryClicked = false;
   if (fixture.directory) {
     const started = Date.now();
-    const scopedResponse = page.waitForResponse(response => {
-      const address = new URL(response.url());
-      return address.pathname.endsWith("/coverage") && address.searchParams.get("directory") === fixture.directory;
-    });
-    await button(`选择目录 ${fixture.directory}`).click();
+    await mark("显式目录切换与范围统计");
+    const scopedResponse = page.waitForResponse(guarded(response => {
+      const [path, query = ""] = response.url().split("?");
+      return path.endsWith("/coverage") && query.split("&").some(pair => pair.startsWith("directory=")
+        && decodeURIComponent(pair.slice(10).replace(/\+/g, " ")) === fixture.directory);
+    }));
+    await button("适应窗口").click();
+    await settle();
+    const mapEntry = button(`进入目录 ${fixture.directory}`);
+    directoryEntryClicked = await mapEntry.isVisible();
+    await (directoryEntryClicked ? mapEntry : button(`选择目录 ${fixture.directory}`)).click();
     const scoped = await (await scopedResponse).json();
     await settle();
     ensure(scoped.version === fixture.version && scoped.filters.directory === fixture.directory, "显式目录查询没有绑定范围和版本。");
@@ -357,14 +455,42 @@ async function verify(page, fixture) {
     await settle();
     ensure(Number(await map.getAttribute("data-file-count")) === fixture.nonemptyCount, "返回仓库未恢复文件范围。");
     steps.push({ name: "显式目录切换与范围统计", milliseconds: Date.now() - started });
+    await mark("显式目录切换与范围统计", "passed");
+  }
+  if (fixture.secondary) {
+    await mark("切换仓库并恢复完整视野");
+    const started = Date.now();
+    await chooseRepository(fixture.secondary.path);
+    await page.waitForLoadState("networkidle");
+    await page.locator(".query-loading").waitFor({ state: "hidden" });
+    if (await map.isVisible()) {
+      await settle();
+      const beforeFit = await scale();
+      await button("适应窗口").click();
+      await settle();
+      ensure(Math.abs(await scale() / beforeFit - 1) < .001, "切换仓库未适应新范围。");
+    }
+    await chooseRepository(fixture.repository.path);
+    await settle();
+    ensure(Number(await map.getAttribute("data-file-count")) === fixture.nonemptyCount, "切回目标仓库未恢复文件集合。");
+    ensure((await page.locator(".baseline-note").innerText()).includes(fixture.version), "切回仓库改变了结果版本。");
+    const restored = await scale();
+    await button("适应窗口").click();
+    await settle();
+    ensure(Math.abs(await scale() / restored - 1) < .001, "切回仓库未适应完整视野。");
+    await summaryMatches(fixture.summary);
+    steps.push({ name: "切换仓库并恢复完整视野", milliseconds: Date.now() - started });
+    await mark("切换仓库并恢复完整视野", "passed");
   }
   ensure(requests.every(method => method === "GET"), "只读验收发出了修改请求。");
   ensure(Object.values(errors).every(count => count === 0), "浏览器发生运行、控制台、HTTP 或网络错误。");
+  await mark("验收完成", "passed");
   return {
     status: "passed", fileCount: fixture.fileCount, nonemptyCount: fixture.nonemptyCount,
     smallFileLines: fixture.small.lineCount, locateScaleRatio: Number((locatedScale / fitScale).toFixed(2)),
     initialVisible, locatedVisible, readableCount, locateMilliseconds, wheelMilliseconds, dragMilliseconds,
-    errors, steps, directoryChecked: Boolean(fixture.directory),
+    errors, steps, directoryChecked: Boolean(fixture.directory), directoryEntryClicked,
+    secondaryRepositoryChecked: Boolean(fixture.secondary),
   };
 }
 
@@ -381,19 +507,23 @@ try {
   const positive = coverage.files.filter(file => file.lineCount > 0);
   assert.ok(positive.length, "指定仓库没有可供地图验收的非空源码文件。");
   const small = [...positive].sort((a, b) => a.lineCount - b.lineCount || b.readExactLines - a.readExactLines || a.path.length - b.path.length)[0];
-  const directoryPath = positive.find(file => file.path.includes("/"))?.path.split("/")[0];
+  const directoryPath = [...positive].filter(file => file.path.includes("/")).sort((a, b) => b.lineCount - a.lineCount)[0]?.path.split("/")[0];
   const boundEndpoint = `${endpoint}&version=${encodeURIComponent(coverage.version)}`;
   const scoped = directoryPath ? await api(`${boundEndpoint}&directory=${encodeURIComponent(directoryPath)}`) : null;
+  const secondary = status.repositories.find(candidate => candidate.id !== repository.id);
   const fixture = {
     url: address.href, artifacts, repository: { path: repository.path }, endpoint: boundEndpoint, version: coverage.version,
     summary: coverage.summary, fileCount: coverage.files.length, nonemptyCount: positive.length,
     small: { path: small.path, lineCount: small.lineCount, percent: `${(small.readExactLines / small.lineCount * 100).toFixed(1)}%` },
     directory: directoryPath, directorySummary: scoped?.summary,
+    secondary: secondary ? { path: secondary.path } : undefined,
   };
   const codePath = join(directory, "verify.mjs");
   await writeFile(codePath, `async page => (${verify.toString()})(page, ${JSON.stringify(fixture)})`);
+  const configPath = join(directory, "playwright.json");
+  await writeFile(configPath, JSON.stringify({ outputDir: join(artifacts, "private-cli") }));
   browserOpened = true;
-  await browser(["open", address.href, "--headed", "--browser=chrome"]);
+  await browser(["open", address.href, "--headed", "--browser=chrome", `--config=${configPath}`]);
   const output = await browser(["run-code", `--filename=${codePath}`]);
   await writeFile(join(artifacts, "private-browser-output.txt"), output);
   const result = output.match(/### Result\s*\n([\s\S]*?)\n### /)?.[1]?.trim();
@@ -407,6 +537,14 @@ try {
   console.error("FAIL 地图只读浏览器验收；诊断与截图仅保存在 .local/map-zoom-e2e/。");
   process.exitCode = 1;
 } finally {
-  if (browserOpened) await browser(["close"]).catch(() => {});
+  if (browserOpened) {
+    // 只收集本次独立会话的控制台和 daemon 错误，不读取其他会话缓存。
+    await browser(["console", "info"]).then(output => writeFile(join(artifacts, "private-console.txt"), output)).catch(() => {});
+    await browser(["close"]).catch(() => {});
+    for (const name of await readdir(join(directory, "daemon")).catch(() => [])) {
+      const data = await readFile(join(directory, "daemon", name, `${session}.err`), "utf8").catch(() => null);
+      if (data !== null) await writeFile(join(artifacts, "private-daemon.err"), data);
+    }
+  }
   await rm(directory, { recursive: true, force: true });
 }

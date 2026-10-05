@@ -1,10 +1,9 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { hierarchy } from "d3";
 import type { FileCoverage, FileDetail } from "../src/contracts.ts";
 import { clientIds } from "../src/clients.ts";
 import { queryString } from "../web/api.ts";
-import { boundQuery, directories, directoryTree, fileHighlights, mapTree, metricValue, timeFilters } from "../web/model.ts";
+import { boundQuery, directories, directoryTree, fileHighlights, metricValue, timeFilters } from "../web/model.ts";
 
 const file = (path: string, lineCount: number): FileCoverage => ({ path, lineCount, category: "source", hash: "hash", readExactLines: 1, readNearLines: 1, editExactLines: 0, editNearLines: 0, readCount: 2, editCount: 0, searchCount: 0, failedCount: 0, unknownCount: 0, activityCount: 2, readExactRanges: [{ start: 1, end: 1 }], readNearRanges: [{ start: 2, end: 2 }], editExactRanges: [], editNearRanges: [] });
 
@@ -23,13 +22,8 @@ test("全部已声明客户端的文件与证据查询保留版本和原筛选�
   }
 });
 
-test("地图面积只来自行数，保留层级且不为零行文件制造面积", () => {
+test("目录统计保留层级且包含零行文件", () => {
   const files = [file("src/a.ts", 10), file("src/deep/b.ts", 30), file("src/empty.ts", 0), file("docs/c.ts", 12)];
-  const tree = mapTree(files, "src");
-  const root = hierarchy(tree).sum(node => node.file?.lineCount ?? 0);
-  assert.equal(root.value, 40);
-  assert.deepEqual(root.leaves().map(node => node.data.path).sort(), ["src/a.ts", "src/deep/b.ts"]);
-  assert.equal(tree.children?.find(node => node.path === "src/deep")?.children?.[0]?.file?.path, "src/deep/b.ts");
   assert.deepEqual(directories(files), [{ path: "docs", count: 1, depth: 1 }, { path: "src", count: 3, depth: 1 }, { path: "src/deep", count: 1, depth: 2 }]);
 });
 

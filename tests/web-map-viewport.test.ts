@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { FileCoverage } from "../src/contracts.ts";
+import { fileLabelRect } from "../web/model.ts";
 import {
   clipRect, fitCamera, layoutMap, locateCamera, panCamera, projectRect, resizeCamera, visibleTiles, zoomCamera,
   type MapCamera, type MapPoint, type MapRect, type MapSize,
@@ -14,6 +15,22 @@ const valid = (bounds: MapRect) => {
   assert.ok(bounds.width > 0);
   assert.ok(bounds.height > 0);
 };
+
+test("文件标签避让屏幕目录标题，原始面积与无关标签位置不变", () => {
+  const rect = { x: 20, y: 30, width: 160, height: 120 };
+  const original = { ...rect };
+  const heading = { x: 25, y: 33, width: 150, height: 22 };
+  const labels = fileLabelRect(rect, [heading]);
+  assert.ok(labels.y >= heading.y + heading.height + 4);
+  assert.ok(labels.y + labels.height <= rect.y + rect.height);
+  assert.ok(labels.x >= rect.x && labels.x + labels.width <= rect.x + rect.width);
+  assert.deepEqual(rect, original);
+  assert.deepEqual(fileLabelRect(rect, [{ ...heading, x: 200 }]), fileLabelRect(rect, []));
+  assert.deepEqual(fileLabelRect(rect, [{ ...heading, y: 200 }]), fileLabelRect(rect, []));
+  const tiny = { x: 20, y: 30, width: 40, height: 20 };
+  assert.equal(fileLabelRect(tiny, [heading]).height, 0);
+  assert.ok(fileLabelRect(tiny, [heading]).width > 0);
+});
 
 test("逻辑布局保持目录和行数比例，零行文件不获得面积", () => {
   const files = [file("src/a.ts", 10), file("src/deep/b.ts", 30), file("src/empty.ts", 0), file("docs/a.md", 20)];

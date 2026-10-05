@@ -1,4 +1,5 @@
 import type { CoverageQuery, FileCategory, FileCoverage, FileDetail, Filters, GapKind, LineRange } from "../src/contracts";
+import type { MapRect } from "./map-viewport";
 
 export type Metric = "read" | "edit" | "activity";
 export type Theme = "light" | "dark";
@@ -33,26 +34,18 @@ export function timeFilters(window: string, from: string, to: string, now = Date
 
 export interface MapNode { name: string; path: string; file?: FileCoverage; children?: MapNode[] }
 
-/** 地图保留目录层级，零行文件留在文件列表中，不虚构矩形面积。 */
-export function mapTree(files: FileCoverage[], directory: string): MapNode {
-  const root: MapNode = { name: directory || "整个仓库", path: directory, children: [] };
-  for (const file of files) {
-    if (!file.lineCount || (directory && !file.path.startsWith(`${directory}/`))) continue;
-    const relative = directory ? file.path.slice(directory.length + 1) : file.path;
-    const parts = relative.split("/");
-    let parent = root;
-    for (let i = 0; i < parts.length; i += 1) {
-      const name = parts[i]!;
-      const path = [directory, ...parts.slice(0, i + 1)].filter(Boolean).join("/");
-      if (i === parts.length - 1) parent.children!.push({ name, path, file });
-      else {
-        let child = parent.children!.find(node => node.path === path && !node.file);
-        if (!child) { child = { name, path, children: [] }; parent.children!.push(child); }
-        parent = child;
-      }
+/** 只给屏幕上的文字避让目录标题，不改变文件的逻辑面积或点击区域。 */
+export function fileLabelRect(rect: MapRect, headings: MapRect[], inset = 10): MapRect {
+  const x = rect.x + inset;
+  const right = rect.x + rect.width - inset;
+  const bottom = rect.y + rect.height - inset;
+  let y = rect.y + inset;
+  for (const heading of headings) {
+    if (heading.x < right && heading.x + heading.width > x && heading.y < bottom && heading.y + heading.height > y) {
+      y = Math.max(y, heading.y + heading.height + 4);
     }
   }
-  return root;
+  return { x, y: Math.min(y, bottom), width: Math.max(0, right - x), height: Math.max(0, bottom - y) };
 }
 
 export function directories(files: FileCoverage[]): { path: string; count: number; depth: number }[] {

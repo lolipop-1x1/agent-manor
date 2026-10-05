@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState, type CSSProperties, type Keyboard
 import { ArrowsIn, ArrowsOut, CaretRight, Crosshair, Folder, Minus, Plus, Resize } from "@phosphor-icons/react";
 import * as Tooltip from "@radix-ui/react-tooltip";
 import type { FileCoverage } from "../src/contracts";
-import { fmt, metricNames, metricValue, percent, type Metric } from "./model";
+import { fileLabelRect, fmt, metricNames, metricValue, percent, type Metric } from "./model";
 import { clipRect, fitCamera, layoutMap, locateCamera, panCamera, projectRect, resizeCamera, visibleTiles, zoomCamera, type MapCamera, type MapPoint, type MapRect, type MapTile } from "./map-viewport";
 
 export function Hint({ label, children }: { label: string; children: ReactNode }) {
@@ -98,6 +98,11 @@ export function CodeMap({ files, directory, metric, selected, browse, select, he
     return result;
   }, [visible, metric, maxCount]);
   const readable = useMemo(() => visible.filter(({ visible: rect }) => rect.width >= 28 && rect.height >= 16), [visible]);
+  const headings = useMemo(() => layout.directories.filter(node => node.depth === 1).flatMap(node => {
+    const rect = clipRect(projectRect(node, camera), size);
+    return rect && rect.width >= 80 && rect.height >= 35
+      ? [{ node, rect: { x: rect.x + 5, y: rect.y + 3, width: rect.width - 10, height: 22 } }] : [];
+  }), [layout, camera, size]);
   const localPoint = (event: { clientX: number; clientY: number }) => {
     const bounds = host.current!.getBoundingClientRect();
     return { x: event.clientX - bounds.left, y: event.clientY - bounds.top };
@@ -109,10 +114,11 @@ export function CodeMap({ files, directory, metric, selected, browse, select, he
     return layout.files.find(tile => x >= tile.x && x <= tile.x + tile.width && y >= tile.y && y <= tile.y + tile.height);
   };
   const startPointer = (event: PointerEvent<HTMLDivElement>) => {
-    if (event.button !== 0 || (event.target as HTMLElement).closest(".map-directory")) return;
+    if (event.button !== 0) return;
     const point = localPoint(event);
     pointers.current.set(event.pointerId, point);
-    host.current!.setPointerCapture(event.pointerId);
+    // 目录按钮的普通单击保持原目标；超过相同的拖动阈值后再捕获指针。
+    if (!(event.target as Element).closest(".map-directory")) host.current!.setPointerCapture(event.pointerId);
     const points = [...pointers.current.values()];
     gesture.current = { start: point, last: point, moved: points.length > 1,
       distance: points.length > 1 ? Math.hypot(points[0]!.x - points[1]!.x, points[0]!.y - points[1]!.y) : undefined };
@@ -123,6 +129,7 @@ export function CodeMap({ files, directory, metric, selected, browse, select, he
     const point = localPoint(event);
     const current = gesture.current;
     if (!current || !pointers.current.has(event.pointerId)) {
+      if ((event.target as Element).closest(".map-directory")) { setHint(null); return; }
       if (event.pointerType === "mouse") { const tile = tileAt(point); setHint(tile ? { tile, point } : null); }
       return;
     }
@@ -136,7 +143,10 @@ export function CodeMap({ files, directory, metric, selected, browse, select, he
       current.last = center; current.distance = distance; current.moved = true;
     } else {
       if (Math.hypot(point.x - current.start.x, point.y - current.start.y) > 4) current.moved = true;
-      if (current.moved) updateCamera(panCamera(cameraRef.current, { x: point.x - current.last.x, y: point.y - current.last.y }));
+      if (current.moved) {
+        if (!host.current!.hasPointerCapture(event.pointerId)) host.current!.setPointerCapture(event.pointerId);
+        updateCamera(panCamera(cameraRef.current, { x: point.x - current.last.x, y: point.y - current.last.y }));
+      }
       current.last = point;
     }
     if (current.moved) { setDragging(true); setHint(null); }
@@ -178,26 +188,28 @@ export function CodeMap({ files, directory, metric, selected, browse, select, he
     </div><span className="map-gesture-help">滚轮缩放 · 拖动平移</span><button className="map-tool-button" aria-label={fullscreen ? "退出地图全屏" : "全屏查看地图"} onClick={() => void toggleFullscreen()}>{fullscreen ? <ArrowsIn size={16} /> : <ArrowsOut size={16} />}<span>{fullscreen ? "退出全屏" : "全屏"}</span></button></div>
     {fullscreenError && <p className="map-error" role="alert">{fullscreenError}</p>}
     <div ref={host} className={`code-map${dragging ? " dragging" : ""}`} role="group" tabIndex={0} aria-label="文件行数决定面积的代码活动地图" aria-description="滚轮缩放，拖动平移；聚焦地图后可用加减键缩放、方向键平移、0 适应窗口。" data-scale={camera.scale} data-visible-count={visible.length} data-file-count={layout.files.length}
-      onPointerDown={startPointer} onPointerMove={movePointer} onPointerUp={endPointer} onPointerCancel={endPointer} onPointerLeave={() => { if (!gesture.current) setHint(null); }} onKeyDown={keyboard}
+      onPointerDown={startPointer} onPointerMove={movePointer} onPointerUp={endPointer} onPointerCancel={endPointer} onPointerLeave={event => {
+        if (!host.current!.hasPointerCapture(event.pointerId)) { pointers.current.delete(event.pointerId); gesture.current = null; }
+        if (!gesture.current) setHint(null);
+      }} onKeyDown={keyboard}
       onClickCapture={event => { if (suppressClick.current) { event.preventDefault(); event.stopPropagation(); } }}
       onClick={event => { if (!(event.target as HTMLElement).closest("button") && event.detail !== 0) { const tile = tileAt(localPoint(event)); if (tile) { select(tile.path); setHint(null); } } }}>
       <svg className="map-colors" width={size.width} height={size.height} aria-hidden="true">{paths.map((path, i) => <path key={i} className={`tone-${i}`} d={path} />)}</svg>
       {readable.map(({ tile, visible: rect }) => {
         const file = tile.file;
         const near = metric === "edit" ? file.editNearLines : file.readNearLines;
-        const nameVisible = rect.width >= 55 && rect.height >= 22;
-        const metricVisible = rect.width >= 85 && rect.height >= 58;
-        const roomy = rect.width >= 120 && rect.height >= 88;
+        const labels = fileLabelRect(rect, headings.map(heading => heading.rect));
+        const nameVisible = labels.width >= 37 && labels.height >= 18;
+        const metricVisible = labels.width >= 67 && labels.height >= 54;
+        const roomy = labels.width >= 102 && labels.height >= 78;
         return <button key={file.path} data-path={file.path} className={`map-file tone-${tone(file)}${selected === file.path ? " selected" : ""}${metric !== "activity" && near ? " has-near" : ""}`} style={position(rect)} aria-label={fileLabel(file, metric)}
-          onClick={() => { select(file.path); setHint(null); }} onFocus={() => setHint({ tile, point: { x: rect.x + 8, y: rect.y + 8 } })} onBlur={() => setHint(null)}>
-          {nameVisible && <span className="tile-name">{tile.name}</span>}{metricVisible && <strong>{valueLabel(file, metric)}</strong>}{roomy && <span className="tile-meta">{fmt(file.lineCount)} 行{metric !== "activity" && near > 0 && <em>+{fmt(near)} 近似</em>}</span>}
+          onClick={() => { select(file.path); setHint(null); }} onFocus={() => setHint({ tile, point: { x: labels.x, y: labels.y } })} onBlur={() => setHint(null)}>
+          <span className="map-file-labels" style={{ top: labels.y - rect.y - 1 }}>
+            {nameVisible && <span className="tile-name">{tile.name}</span>}{metricVisible && <strong>{valueLabel(file, metric)}</strong>}{roomy && <span className="tile-meta">{fmt(file.lineCount)} 行{metric !== "activity" && near > 0 && <em>+{fmt(near)} 近似</em>}</span>}
+          </span>
         </button>;
       })}
-      {layout.directories.filter(node => node.depth === 1).map(node => {
-        const rect = clipRect(projectRect(node, camera), size);
-        if (!rect || rect.width < 80 || rect.height < 35) return null;
-        return <button key={node.path} className="map-directory" style={{ left: rect.x + 5, top: rect.y + 3, maxWidth: rect.width - 10 }} onClick={() => browse(node.path)} aria-label={`进入目录 ${node.path}`}><Folder size={13} /><span>{node.name}</span><CaretRight size={12} /></button>;
-      })}
+      {headings.map(({ node, rect }) => <button key={node.path} className="map-directory" style={{ left: rect.x, top: rect.y, maxWidth: rect.width }} onClick={() => browse(node.path)} aria-label={`进入目录 ${node.path}`}><Folder size={13} /><span>{node.name}</span><CaretRight size={12} /></button>)}
       {hint && !dragging && <div className="map-hover-hint" role="tooltip" style={{ left: Math.max(4, Math.min(hint.point.x + 12, size.width - Math.min(310, size.width - 8))), top: Math.max(4, Math.min(hint.point.y + 16, size.height - 78)), maxWidth: Math.min(310, size.width - 8) }}><span>{hint.tile.path}</span><strong>{metricNames[metric]} {valueLabel(hint.tile.file, metric)}</strong><small>{fmt(hint.tile.file.lineCount)} 行</small></div>}
     </div>
     {legend}
