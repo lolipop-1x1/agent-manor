@@ -11,6 +11,7 @@ interface JsonRow { json: string }
 interface MessageRow extends JsonRow { text: string }
 interface RevisionRow extends JsonRow { id: string; path: string; fingerprint: string }
 type SqlValue = string | number;
+/** path 沿用 SQL 列名但表示来源缓存键；真实文件路径保存在 SessionSourceMeta.path。 */
 export interface SessionRevision { path: string; revision: string; fingerprint: string }
 const decode = <T>(row: JsonRow): T => JSON.parse(row.json) as T;
 const decodeMessage = (row: MessageRow): SessionMessage => ({ ...decode<SessionMessage>(row), text: row.text });

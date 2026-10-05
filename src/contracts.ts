@@ -21,6 +21,8 @@ export interface Repository {
 }
 
 export interface SourceReference {
+  /** SQLite 原生会话键；recordLine 为键内消息数组的一基序号。 */
+  selector?: string;
   sourceId: string;
   /** 原始记录的历史格式，与客户端身份分别保存。 */
   format?: string;
@@ -79,6 +81,7 @@ export interface Gap {
 }
 
 export interface HistorySource {
+  selector?: string;
   sourceId: string;
   client: Client;
   format?: string;

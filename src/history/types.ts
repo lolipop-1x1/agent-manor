@@ -8,6 +8,7 @@ export interface HistoricalWorktree {
 }
 
 export interface SourceLocation {
+  selector?: string;
   client: Client;
   format?: string;
   path: string;
@@ -16,6 +17,10 @@ export interface SourceLocation {
   cwd?: string;
   parentSessionId?: string;
 }
+
+/** 文件路径仍是真实来源路径；多会话容器另用原生选择器区分缓存身份。 */
+export const sourceLocationKey = (source: { path: string; selector?: string }): string =>
+  source.selector ? JSON.stringify([source.path, source.selector]) : source.path;
 
 export type DiscoverRoots = Partial<Record<Client, string | string[]>>;
 

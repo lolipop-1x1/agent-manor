@@ -6,12 +6,12 @@ import { isAbsolute, join, relative } from "node:path";
 import { createInterface } from "node:readline";
 import Database from "better-sqlite3";
 import type { SourceLocation } from "../history/types.js";
-import { desktopSessionDirectory } from "../history/adapters/codeflicker-desktop.js";
+import { DESKTOP_FORMAT, desktopSessionDirectory } from "../history/adapters/codeflicker-desktop.js";
 import { object, string } from "./parser-usage.js";
 
 /** 只查询桌面标题缓存；不读认证命名空间，不把服务端分页缓存当作完整历史。 */
 export async function loadDesktopTitles(sources: readonly SourceLocation[]): Promise<Map<string, string>> {
-  const desktop = sources.filter(source => source.client === "codeflicker-desktop");
+  const desktop = sources.filter(source => source.format === DESKTOP_FORMAT);
   const titles = new Map<string, string>();
   if (!desktop.length) return titles;
   const defaultRoot = join(process.env.MYFLICKER_HOME ?? join(homedir(), ".myflicker"), "sessions");

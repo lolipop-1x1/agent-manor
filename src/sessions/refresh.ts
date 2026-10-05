@@ -2,6 +2,10 @@ import { createHash } from "node:crypto";
 import { createReadStream } from "node:fs";
 import { lstat } from "node:fs/promises";
 import { discoverSources } from "../history/index.js";
+import { sourceLocationKey } from "../history/types.js";
+import { DESKTOP_FORMAT } from "../history/adapters/codeflicker-desktop.js";
+import { IDE_FORMAT, readIdeSnapshot } from "../history/adapters/codeflicker-ide.js";
+import type { IdeSnapshot } from "../history/adapters/codeflicker-ide.js";
 import type { DiscoverRoots } from "../history/types.js";
 import type { Gap } from "../contracts.js";
 import { parseSessionSource } from "./parser.js";
@@ -37,12 +41,17 @@ export async function refreshSessions(store: SessionStore, jobId: string, roots?
     const cached = new Map(store.cachedRevisions().map(item => [item.path, item]));
     const current: SessionRevision[] = [];
     const gaps: Gap[] = [];
-    const discovered = new Set(sources.map(item => item.path));
+    const discovered = new Set(sources.map(sourceLocationKey));
     let missing = [...cached.keys()].filter(path => !discovered.has(path)).length;
     for (const [index, source] of sources.entries()) {
       store.updateJob(jobId, { phase: "index", progress: sources.length ? index / sources.length : 0 });
+      const sourceKey = sourceLocationKey(source);
+      let nativeSnapshot: IdeSnapshot | undefined;
       let digest: { hash: string; bytes: number };
-      try { digest = await fingerprint(source.path); }
+      try {
+        nativeSnapshot = source.format === IDE_FORMAT ? await readIdeSnapshot(source) : undefined;
+        digest = nativeSnapshot ? { hash: `${SESSION_INDEX_RULE_VERSION}:${nativeSnapshot.hash}`, bytes: 0 } : await fingerprint(source.path);
+      }
       catch (error) {
         if ((error as NodeJS.ErrnoException).code === "ENOENT") { missing += 1; continue; }
         throw error;
@@ -54,21 +63,21 @@ export async function refreshSessions(store: SessionStore, jobId: string, roots?
       const childTitleFingerprint = source.client === "codex" && source.parentSessionId ? ":child-title-v1" : "";
       const projectMetadata = codeflickerProjects.get(source.path);
       const projectFingerprint = source.client === "codeflicker" ? `:project-v1:${createHash("sha256").update(JSON.stringify(projectMetadata ?? null)).digest("hex")}` : "";
-      const nativeModels = source.client === "codeflicker-desktop" ? await desktopModels(source.path) : undefined;
+      const nativeModels = source.format === DESKTOP_FORMAT ? await desktopModels(source.path) : undefined;
       const desktopFingerprint = nativeModels ? `:desktop-v3:${source.cwd ?? ""}:${nativeModels.fingerprint}:${nativeModels.limited}` : "";
       const sourceFingerprint = `${source.client}:${source.format ?? "default"}:${digest.hash}${titleFingerprint}${childTitleFingerprint}${projectFingerprint}${desktopFingerprint}`;
-      const previous = cached.get(source.path);
+      const previous = cached.get(sourceKey);
       if (!clearCache && previous?.fingerprint === sourceFingerprint) { current.push(previous); continue; }
-      const pending = store.createRevision(source.path, sourceFingerprint);
+      const pending = store.createRevision(sourceKey, sourceFingerprint);
       try {
-        const meta = await parseSessionSource(source, pending.sink, { byteLimit: digest.bytes, title, projectMetadata, desktopModels: nativeModels?.entries });
+        const meta = await parseSessionSource(source, pending.sink, { byteLimit: digest.bytes, title, projectMetadata, desktopModels: nativeModels?.entries, nativeSnapshot });
         if (nativeModels?.limited) meta.gaps.push({ kind: "budget_exceeded", message: "原生模型旁路日志超过有界读取上限，部分模型信息未关联", sourceId: meta.sourceId });
         pending.flush();
         // 允许活动日志追加；发布的始终是开始检查时的同一字节前缀。
-        const after = await fingerprint(source.path, digest.bytes);
+        const after = nativeSnapshot ? { hash: `${SESSION_INDEX_RULE_VERSION}:${(await readIdeSnapshot(source)).hash}` } : await fingerprint(source.path, digest.bytes);
         if (after.hash !== digest.hash) throw new Error("会话来源已有内容在解析期间被改写，请重新刷新");
         store.finishRevision(pending.revision, meta);
-        current.push({ path: source.path, revision: pending.revision, fingerprint: sourceFingerprint });
+        current.push({ path: sourceKey, revision: pending.revision, fingerprint: sourceFingerprint });
       } catch (error) {
         store.removeRevision(pending.revision);
         if ((error as NodeJS.ErrnoException).code === "ENOENT") { missing += 1; continue; }

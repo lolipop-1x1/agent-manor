@@ -136,8 +136,8 @@ export class AnalysisStore {
   }
 
   private sourceMetadata(source: HistorySource): HistorySource {
-    const { sourceId, client, format, path, hash, sessionId, cwd, parentSessionId } = source;
-    return { sourceId, client, format, path, hash, sessionId, cwd, parentSessionId };
+    const { sourceId, client, format, path, selector, hash, sessionId, cwd, parentSessionId } = source;
+    return { sourceId, client, format, path, selector, hash, sessionId, cwd, parentSessionId };
   }
 
   async registerRepository(path: string): Promise<Repository> {

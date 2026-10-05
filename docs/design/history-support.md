@@ -43,7 +43,7 @@ fork 保存父 session、原始 ordinal 与 endByteOffset。ordinal 的准确客
 | CodeFlicker bash | Command/Directory/Stdout/Stderr/Error/Exit Code 的原生返回包装 | 最终退出码与 Error 校验状态，读取仅消费白名单命令的实际 Stdout；绝对 Directory 只归属本次事件，不改会话 cwd，也不推断命令内 cd；截断标记、持久化旁路、后台状态或未知包装不补齐；复杂命令仍产生 unsupported_tool |
 | CodeFlicker grep/glob/ls/todoWrite | 搜索单列、列举与任务列表 other | grep/glob 完整 JSON 返回与 todo_write 结构可证实终态；搜索不产生主要读取覆盖；其他缺少已确认成功模板的结果保留 unknown |
 
-CodeFlicker 的来源身份由原始 sessionId 与显式 agentId 构成，并始终带实际客户端身份；目录 slug 不用于还原 cwd。缺少 cwd 的来源可用实际绝对文件路径逐活动归属仓库。`agent-*.jsonl` 可独立发现和解析；显式 parentSessionId／parent_thread_id／forked_from_id 统一转换为来源关系。原生成功 Agent 结果块的 agentId 也可与同一实际客户端、同项目目录、唯一子 sessionId=`agent-<agentId>` 和同名 JSONL 交叉确认父关系；文件副本具有相同来源身份时不算多个父身份。子事件保留父结果原始引用和父 session，来源列表／结果来源同步表示关系，原始解析缓存不改写。失败、未知、跨目录、跨客户端、身份不符或多个不同父身份不建立推导关系并保留缺口；文件名、parentUuid 消息链、摘要、同一 call ID 或相同内容不能单独证明关系或重放。旧 IDE 的 SQLite、未核对归档格式和补全／编辑预测未纳入本轮支持。
+CodeFlicker 的来源身份由原始 sessionId 与显式 agentId 构成，并始终带实际客户端身份；目录 slug 不用于还原 cwd。缺少 cwd 的来源可用实际绝对文件路径逐活动归属仓库。`agent-*.jsonl` 可独立发现和解析；显式 parentSessionId／parent_thread_id／forked_from_id 统一转换为来源关系。原生成功 Agent 结果块的 agentId 也可与同一实际客户端、同项目目录、唯一子 sessionId=`agent-<agentId>` 和同名 JSONL 交叉确认父关系；文件副本具有相同来源身份时不算多个父身份。子事件保留父结果原始引用和父 session，来源列表／结果来源同步表示关系，原始解析缓存不改写。失败、未知、跨目录、跨客户端、身份不符或多个不同父身份不建立推导关系并保留缺口；文件名、parentUuid 消息链、摘要、同一 call ID 或相同内容不能单独证明关系或重放。CLI 格式不读取旧 IDE SQLite；桌面版的 SQLite 支持见下文。未核对归档格式和补全／编辑预测未纳入支持。
 
 缺少可靠 cwd 的相对 read/edit/write 请求，可用原生 read 的 `filePath` 或 edit/write 的 `returnDisplay.absoluteFilePath` 确认本次目标：返回须为绝对路径，且以规范化后的完整相对请求路径为后缀；`.`、仍以 `..` 越出父目录的路径及后缀冲突不接受。已有可靠 cwd 时仍要求解析后路径完全相同。返回路径只属于该次活动，不用于猜测会话或后续请求的 cwd；成功终态、实际范围和补丁校验继续独立执行。解析规则 8 重建旧缓存以恢复这类活动，事件身份保持不变。
 
@@ -88,8 +88,16 @@ Claude SDK 部分完整 Read 用 `content.split("\n")` 计数，尾换行会生�
 
 ## CodeFlicker 桌面版
 
-新版 MyFlicker 桌面客户端独立注册为 `codeflicker-desktop`；原 `codeflicker` 身份保留并展示为 CodeFlicker CLI。桌面只发现 `message/cache.jsonl`，不把 `claude-session` 的镜像正文作为另一份来源。会话 ID 来自桌面会话目录，cwd 来自身份一致的 `checkpoints/registry.json`；不由项目目录名反向猜测。格式扩展可实现只读旁路元数据钩子，通用发现、Worker、统计与证据回读保留客户端身份。
+新版 MyFlicker 桌面客户端独立注册为 `codeflicker-desktop`；原 `codeflicker` 身份保留并展示为 CodeFlicker CLI。新版格式发现 `message/cache.jsonl`，不把 `claude-session` 的镜像正文作为另一份来源。会话 ID 来自桌面会话目录，cwd 来自身份一致的 `checkpoints/registry.json`；不由项目目录名反向猜测。格式扩展可实现只读旁路元数据钩子，通用发现、Worker、统计与证据回读保留客户端身份。
 
 缓存的 OpenAI 形态 `toolCalls` 与 `toolCallId` 配对，原始工具名不改写。`read_file` 的编号内容或结构化起始行与实际行数共同校验；返回计数、请求范围、终止行和截断标记矛盾时无覆盖。`execute_command` 仅明确退出码确认终态，白名单命令消费实际 stdout。`replace_in_file` 的 `replaced=true` 与返回路径确认成功，无补丁位置时只保留变化片段；`write_to_file` 的成功结果及一致路径确认实际写入快照，这个范围不表示相对原文件的净差异。搜索单列，其他工具和缺少终态的结果保留 unknown。原始记录按物理行与哈希回读，来源缺失或改写时不补造证据。
 
 会话的数值／文本消息 ID 用于去重；`turn_terminal` 的完成状态、轮次和最后消息身份共同认定明确最终回答。活动角色的压缩记录保留压缩信息，其上下文估算不计为请求 Token。模型旁路最多读取单文件 64 MiB、关联 50,000 条消息元信息，超出时列缺口；它不参与正文或工具次数的双重计数。
+
+### 旧桌面／IDE SQLite
+
+`codeflicker-ide-sqlite` 与新版 JSONL 同属 CodeFlicker 桌面版。默认目录为 `~/.codeflicker/data/codeflicker/`；`session_data.sqlite`、`composer_data.sqlite` 的 `KwaipilotKV` 中，`composerData:<会话ID>` 的 `localMessages` 为主记录。同目录 `index.sqlite` 的 `composerMeta:<会话ID>` 提供正式标题；新库的同身份迁移副本优先，API 上下文副本不重复作为用户或工具消息导入。早期 `session`／`message` 表的问答也保留。
+
+容器适配器注册原生发现、记录快照和来源选择规则；查询管道不按文件后缀猜测客户端。实际文件路径不改变，`selector` 保留原生会话键，`recordLine` 是键内数组的一基序号。证据直接查询 SQLite 对应记录并验哈希，不创建临时 JSONL。来源缓存按路径与选择器区分，读事务可见已提交 WAL，指纹由当前会话及正式元数据计算；其他会话更新不使所有缓存失效。单个会话键删除时从新版排除。
+
+IDE 的 `workspaceUri` 可能指向工作区缓存；仅正式 `workspace.json` 的单一目录可直接认定项目，缺失或多目录不强行选择。`readFile` 只提取连续 Tab／竖线编号的实际返回前缀，包装说明不计入源码，编号与请求不符不计覆盖。`editFile` 需已接受且路径一致的前后快照，提案或拒绝没有覆盖。工具错误单独返回时优先使用实际结果；MCP 与 Skill 按结构化名称识别，名称提及不算调用。

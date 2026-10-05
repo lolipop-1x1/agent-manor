@@ -8,7 +8,7 @@ import type { Baseline, Client, EvidenceFragment, Gap, HistoryEvent, ParsedSourc
 import { PARSER_RULE_VERSION } from "../version.js";
 import { json, object, returnedText, string, words } from "./extraction.js";
 import { normalizeHistoryPath } from "./adapters/common.js";
-import { HISTORY_CLIENTS, historyAdapter, historyClient } from "./adapters/index.js";
+import { HISTORY_ADAPTERS, HISTORY_CLIENTS, historyAdapter, historyClient } from "./adapters/index.js";
 import type { HistoryAdapterContext, HistoryClient } from "./adapters/types.js";
 
 import type { DiscoverRoots, HistoricalWorktree, HistoryCursor, HistoryRelationship, ParsedHistorySource, PendingCall, SharedHistoryResult, SourceAssociation, SourceLocation } from "./types.js";
@@ -32,6 +32,11 @@ export async function discoverSources(roots: DiscoverRoots = {}): Promise<Source
     for (const entry of entries.sort((left, right) => left.name.localeCompare(right.name))) {
       const child = join(path, entry.name);
       if (entry.isDirectory()) await walk(child, declaration);
+      else if (entry.isFile() && declaration.acceptsContainer?.(child) && !paths.has(child)) {
+        paths.add(child);
+        const container = historyAdapter(declaration.containerFormat!);
+        found.push(...await container!.discoverFile!({ path: child, client: declaration.client, format: declaration.containerFormat }));
+      }
       else if (entry.isFile() && (declaration.acceptsFile?.(child) ?? entry.name.endsWith(".jsonl")) && !paths.has(child)) {
         paths.add(child);
         let metadata: SourceLocation = { path: child, client: declaration.client, format: declaration.format };
@@ -55,10 +60,10 @@ export async function discoverSources(roots: DiscoverRoots = {}): Promise<Source
   for (const declaration of HISTORY_CLIENTS) {
     const environment = process.env[declaration.environmentVariable];
     const clientHome = declaration.homeEnvironmentVariable ? process.env[declaration.homeEnvironmentVariable] : undefined;
-    const configured = roots[declaration.client] ?? (environment ? [environment] : clientHome ? [join(clientHome, "sessions")] : declaration.defaultRoots.map(path => join(homedir(), path)));
+    const configured = roots[declaration.client] ?? (environment ? [environment] : clientHome ? [join(clientHome, "sessions"), ...declaration.defaultRoots.slice(1).map(path => join(homedir(), path))] : declaration.defaultRoots.map(path => join(homedir(), path)));
     for (const root of typeof configured === "string" ? [configured] : configured) await walk(resolve(root), declaration);
   }
-  return found;
+  return HISTORY_ADAPTERS.reduce((sources, adapter) => adapter.selectSources?.(sources) ?? sources, found);
 }
 
 function cursorOf(source: ParsedSource | undefined): HistoryCursor | undefined {
@@ -70,19 +75,30 @@ function cursorOf(source: ParsedSource | undefined): HistoryCursor | undefined {
 
 /** prefixHash 验证完整旧前缀后只解析追加记录；尾部不完整 JSONL 保留至下一轮。 */
 export async function parseSource(path: string, client: Client, previous?: ParsedSource, format = historyClient(client).format,
-  options: { allowAssociationMetadata?: boolean } = {}): Promise<ParsedHistorySource> {
+  options: { allowAssociationMetadata?: boolean; location?: SourceLocation } = {}): Promise<ParsedHistorySource> {
   const absolutePath = resolve(path);
   const adapter = historyAdapter(format);
-  const metadata = await adapter?.readSourceMetadata?.({ path: absolutePath, client, format });
-  const bytes = await readFile(absolutePath);
+  const container = await adapter?.readRecords?.({ ...options.location, path: absolutePath, client, format });
+  const metadata = container?.source ?? await adapter?.readSourceMetadata?.({ path: absolutePath, client, format });
+  // 原生容器直接消费记录快照，没有 JSONL 字节前缀游标。
+  const bytes = container ? Buffer.alloc(0) : await readFile(absolutePath);
+  const sourceHash = container?.hash ?? hash(bytes);
   let oldCursor = cursorOf(previous);
+  if (container && previous?.hash === sourceHash && previous.client === client && oldCursor?.format === format && (!oldCursor.associationOnly || options.allowAssociationMetadata)) {
+    const reused = structuredClone(previous) as ParsedHistorySource;
+    Object.assign(reused, metadata);
+    for (const event of reused.events) for (const reference of event.sources) reference.path = absolutePath;
+    reused.cursor = json({ ...oldCursor, parsedRecords: 0 });
+    return reused;
+  }
+  if (container) { previous = undefined; oldCursor = undefined; }
   // 旁路 cwd 改变时重建事件，不能沿用旧归属或相对路径解析。
   if (metadata && previous && (metadata.cwd !== previous.cwd || metadata.sessionId !== previous.sessionId)) {
     previous = undefined;
     oldCursor = undefined;
   }
   if (oldCursor?.associationOnly) {
-    if (options.allowAssociationMetadata && previous?.client === client && oldCursor.format === format && previous.hash === hash(bytes)) {
+    if (options.allowAssociationMetadata && previous?.client === client && oldCursor.format === format && previous.hash === sourceHash) {
       const source = structuredClone(previous) as ParsedHistorySource;
       source.path = absolutePath;
       source.cursor = json({ ...oldCursor, parsedRecords: 0 });
@@ -100,14 +116,14 @@ export async function parseSource(path: string, client: Client, previous?: Parse
   };
   cursor.parsedRecords = 0;
   const source: ParsedHistorySource = appended && previous ? {
-    ...structuredClone(previous), path: absolutePath, hash: hash(bytes), relationships: cursor.relationships,
+    ...structuredClone(previous), path: absolutePath, hash: sourceHash, relationships: cursor.relationships,
     gaps: previous.gaps.filter((gap) => !["unpaired_call", "incomplete_record"].includes(gap.kind)),
-  } : { sourceId: `${client}:unidentified:${hash(absolutePath).slice(0, 24)}`, client, format, path: absolutePath, hash: hash(bytes), sessionId: `unknown:${hash(absolutePath).slice(0, 16)}`, events: [], gaps: [], completeBytes: 0, relationships: [] };
+  } : { sourceId: `${client}:unidentified:${hash(absolutePath).slice(0, 24)}`, client, format, path: absolutePath, hash: sourceHash, sessionId: `unknown:${hash(absolutePath).slice(0, 16)}`, events: [], gaps: [], completeBytes: 0, relationships: [] };
   if (metadata) Object.assign(source, metadata);
   for (const event of source.events) for (const reference of event.sources) reference.path = absolutePath;
   const eventById = new Map(source.events.map((event) => [event.id, event]));
   const gap = (kind: Gap["kind"], message: string) => source.gaps.push({ kind, message, sourceId: source.sourceId });
-  const reference = (recordLine: number, raw: string, callId?: string): SourceReference => ({ sourceId: source.sourceId, format, path: absolutePath, recordLine, hash: hash(raw), callId });
+  const reference = (recordLine: number, raw: string, callId?: string): SourceReference => ({ sourceId: source.sourceId, format, path: absolutePath, selector: metadata?.selector, recordLine, hash: hash(raw), callId });
   const findEvent = (id: string) => eventById.get(id);
   let activeContext: HistoryAdapterContext;
   const identity = (key: string): string => {
@@ -158,17 +174,19 @@ export async function parseSource(path: string, client: Client, previous?: Parse
   }
   if (!adapter && !source.gaps.some(item => item.kind === "unsupported_format")) gap("unsupported_format", `历史格式 ${format} 尚未注册适配器`);
   let position = cursor.completeBytes;
-  while (position < bytes.length) {
-    const newline = bytes.indexOf(10, position);
-    if (newline < 0) break;
-    const raw = bytes.subarray(position, newline).toString("utf8");
-    position = newline + 1;
-    cursor.recordLine += 1;
+  let nativePosition = 0;
+  while (container ? nativePosition < container.records.length : position < bytes.length) {
+    const nativeRecord = container?.records[nativePosition++];
+    const newline = nativeRecord ? 0 : bytes.indexOf(10, position);
+    if (!nativeRecord && newline < 0) break;
+    const raw = nativeRecord?.raw ?? bytes.subarray(position, newline).toString("utf8");
+    if (!nativeRecord) position = newline + 1;
+    cursor.recordLine = nativeRecord?.line ?? cursor.recordLine + 1;
     cursor.parsedRecords += 1;
-    cursor.recordEnds.push(position);
+    if (!nativeRecord) cursor.recordEnds.push(position);
     const row = cursor.recordLine;
     let record: Record<string, unknown>;
-    try { record = object(JSON.parse(raw)); }
+    try { record = nativeRecord?.record ?? object(JSON.parse(raw)); }
     catch { gap("parse_error", `物理记录 ${row} 不是有效 JSON`); continue; }
     if (adapter) {
       activeContext = { client, path: absolutePath, row, raw, occurredAt: string(record.timestamp), source, cursor,

@@ -10,6 +10,8 @@ export interface HistoryClient {
   /** 客户端自身的 home 覆盖，优先级低于 AgentManor 的显式 roots。 */
   homeEnvironmentVariable?: string;
   acceptsFile?: (path: string) => boolean;
+  containerFormat?: string;
+  acceptsContainer?: (path: string) => boolean;
 }
 
 export interface HistoryAdapterContext {
@@ -32,6 +34,10 @@ export interface HistoryAdapterContext {
 /** 格式适配器接收实际客户端身份，不据格式推断客户端。 */
 export interface HistoryAdapter {
   id: string;
+  /** 多会话容器直接发现原生选择器，不按文本文件头猜测。 */
+  discoverFile?(location: SourceLocation): Promise<SourceLocation[]>;
+  readRecords?(location: SourceLocation): Promise<HistoryRecordSnapshot>;
+  selectSources?(locations: SourceLocation[]): SourceLocation[];
   /** 只读旁路元数据；普通 JSONL 格式无需实现。 */
   readSourceMetadata?(location: SourceLocation): Promise<SourceLocation>;
   discover(record: Record<string, unknown>, location: SourceLocation): { source: SourceLocation; complete?: boolean } | undefined;
@@ -43,4 +49,10 @@ export interface HistoryAdapter {
   /** 未关联来源只保留判断跨会话关系所需的工具字段，正文在确认相关后重新读取。 */
   relationshipEvidence?(event: HistoryEvent): Pick<HistoryEvent, "input" | "output">;
   readEvidence(source: SourceReference): Promise<EvidenceRecord | undefined>;
+}
+
+export interface HistoryRecordSnapshot {
+  source: SourceLocation;
+  hash: string;
+  records: { record: Record<string, unknown>; raw: string; line: number }[];
 }

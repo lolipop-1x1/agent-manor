@@ -11,6 +11,9 @@ import { projectFromToolPaths } from "./parser-project.js";
 import { sessionTitle } from "./title.js";
 import { DESKTOP_FORMAT, desktopCalls, desktopIdentity, desktopResult, desktopTimestamp } from "../history/adapters/codeflicker-desktop.js";
 import type { DesktopModelRecord } from "./codeflicker-desktop.js";
+import { IDE_FORMAT, readIdeSnapshot } from "../history/adapters/codeflicker-ide.js";
+import type { IdeSnapshot } from "../history/adapters/codeflicker-ide.js";
+import { ideSessionRecords } from "./codeflicker-ide.js";
 
 const digest = (value: string) => createHash("sha256").update(value).digest("hex").slice(0, 24);
 const MAX_RECORD_BYTES = 16 * 1024 * 1024;
@@ -96,7 +99,10 @@ function userTitle(body: string): string {
   return value.replace(/\s+/g, " ").slice(0, 120);
 }
 
-export async function parseSessionSource(source: SourceLocation, sink: SessionSink, options: { byteLimit?: number; title?: string; projectMetadata?: { project?: string; ambiguous?: boolean }; desktopModels?: Map<string, DesktopModelRecord> } = {}): Promise<SessionSourceMeta> {
+export async function parseSessionSource(source: SourceLocation, sink: SessionSink, options: { byteLimit?: number; title?: string; projectMetadata?: { project?: string; ambiguous?: boolean }; desktopModels?: Map<string, DesktopModelRecord>; nativeSnapshot?: IdeSnapshot } = {}): Promise<SessionSourceMeta> {
+  const ideSnapshot = options.nativeSnapshot ?? (source.format === IDE_FORMAT ? await readIdeSnapshot(source) : undefined);
+  if (ideSnapshot) { source = ideSnapshot.source; options = { ...options, title: ideSnapshot.title }; }
+  const inputRecords = (onGap: (kind: GapKind, message: string) => void) => ideSnapshot ? ideSessionRecords(ideSnapshot) : records(source.path, onGap, options.byteLimit);
   const gaps = new Map<string, Gap>();
   const gap = (kind: GapKind, message: string) => {
     const key = `${kind}:${message}`;
@@ -106,7 +112,7 @@ export async function parseSessionSource(source: SourceLocation, sink: SessionSi
   };
   let rawId = source.sessionId;
   if (!rawId) {
-    for await (const { record } of records(source.path, () => {}, options.byteLimit)) {
+    for await (const { record } of inputRecords(() => {})) {
       const payload = object(record.payload);
       rawId = string(record.sessionId) ?? string(payload.session_id) ?? (record.type === "session_meta" ? string(payload.id) : undefined);
       if (rawId) { if (string(record.agentId)) rawId += `/agent/${record.agentId}`; break; }
@@ -117,7 +123,7 @@ export async function parseSessionSource(source: SourceLocation, sink: SessionSi
   const meta: SessionSourceMeta = { id, client: source.client, clientSessionId: rawId, path: source.path,
     sourceId: source.sourceId ?? `${source.client}:unidentified:${digest(resolve(source.path))}`,
     title: "未命名会话", titleOrigin: "fallback", project: source.cwd && isAbsolute(source.cwd) ? source.cwd : undefined,
-    projectOrigin: source.cwd && isAbsolute(source.cwd) ? "cwd" : undefined,
+    projectOrigin: source.cwd && isAbsolute(source.cwd) ? ideSnapshot ? "client_metadata" : "cwd" : undefined,
     parentSessionId: source.parentSessionId ? sessionKey(source.client, source.parentSessionId) : undefined,
     relationship: source.parentSessionId ? "child" : undefined, messageCount: 0, turnCount: 0, models: [], gaps: [] };
   const seen = new Map<string, { ordinal: number; turnId: string }>();
@@ -138,7 +144,7 @@ export async function parseSessionSource(source: SourceLocation, sink: SessionSi
   let firstUserTitle: string | undefined;
   // Codex 同时保存响应项与 UI 事件投影；存在响应正文时采用响应项，避免把同一消息计两遍。
   if (source.client === "codex") {
-    for await (const { record } of records(source.path, () => {}, options.byteLimit)) {
+    for await (const { record } of inputRecords(() => {})) {
       const payload = object(record.payload);
       if (record.type === "response_item" && ["message", "agent_message"].includes(string(payload.type) ?? "")) { hasResponseTranscript = true; break; }
     }
@@ -226,10 +232,10 @@ export async function parseSessionSource(source: SourceLocation, sink: SessionSi
     } else if (!repeated) gap("unpaired_call", "工具结果缺少可唯一配对的请求，已保留原结果");
     return value;
   };
-  for await (const { record, line } of records(source.path, gap, options.byteLimit)) {
+  for await (const { record, line } of inputRecords(gap)) {
     currentRecordLine = line;
     const payload = object(record.payload);
-    const occurredAt = source.format === DESKTOP_FORMAT ? desktopTimestamp(record) : string(record.timestamp) ?? string(payload.timestamp);
+    const occurredAt = source.format === DESKTOP_FORMAT || ideSnapshot ? desktopTimestamp(record) : string(record.timestamp) ?? string(payload.timestamp);
     if (occurredAt) {
       if (!meta.startedAt || occurredAt < meta.startedAt) meta.startedAt = occurredAt;
       if (!meta.updatedAt || occurredAt > meta.updatedAt) meta.updatedAt = occurredAt;
@@ -251,7 +257,7 @@ export async function parseSessionSource(source: SourceLocation, sink: SessionSi
     const extra: Partial<SessionMessage> = { occurredAt, copied };
     const title = string(record.aiTitle) ?? string(record.title) ?? (record.type === "session_meta" ? string(payload.title) : undefined);
     if (title) { meta.title = title; meta.titleOrigin = "recorded"; }
-    if (source.format === DESKTOP_FORMAT) {
+    if (source.format === DESKTOP_FORMAT || ideSnapshot) {
       const key = `desktop:${desktopIdentity(record.id) ?? line}`;
       const native = options.desktopModels?.get(string(object(object(record.extra)["claude-code"]).lastEntryUuid) ?? "");
       const model = string(record.model) ?? native?.model;
@@ -449,6 +455,7 @@ export async function parseSessionSource(source: SourceLocation, sink: SessionSi
     if (record.interruptedMessageId || record.isApiErrorMessage === true) interrupted = true;
   }
   finishTurn();
+  if (ideSnapshot) gap("unsupported_format", "IDE 主历史未保存逐请求 Token 用量，累计缓存不能重建请求趋势；未补造记录值");
   if (pending.size) gap("unpaired_call", "历史结束时仍有工具调用未记录完成结果");
   if (meta.relationship === "fork" && copyBeforeOrdinal === undefined) gap("ambiguous", "分叉来源缺少共享历史边界，未猜测或排除复制消息");
   if (source.client === "codeflicker" && basename(source.path).startsWith("agent-") && !meta.parentSessionId) gap("ambiguous", "子会话来源缺少明确父关系，作为独立会话保留");
