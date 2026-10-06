@@ -198,9 +198,10 @@ export class SessionStore {
         SELECT ?,c.session_id,p.session_id FROM session_version_sessions c JOIN session_revisions r ON r.id=c.revision
           JOIN session_version_sessions p ON p.version=c.version AND p.session_id=json_extract(r.json,'$.parentSessionId')
         WHERE c.version=? AND json_extract(r.json,'$.relationship')='child' AND c.session_id<>p.session_id`).run(version, version);
+      // 固定先展开实际子目标，再按完整身份查找，避免父子会话的无关两两扫描。
       const targets = this.database.prepare(`SELECT c.session_id AS child,MIN(p.session_id) AS parent,COUNT(DISTINCT p.session_id) AS parents
-        FROM session_version_sessions p JOIN session_revisions pr ON pr.id=p.revision JOIN json_each(pr.json,'$.childSessionIds') target
-        JOIN session_version_sessions c ON c.version=p.version AND c.session_id=target.value JOIN session_revisions cr ON cr.id=c.revision
+        FROM session_version_sessions p JOIN session_revisions pr ON pr.id=p.revision CROSS JOIN json_each(pr.json,'$.childSessionIds') target
+        CROSS JOIN session_version_sessions c ON c.version=p.version AND c.session_id=target.value JOIN session_revisions cr ON cr.id=c.revision
         WHERE p.version=? AND pr.client=cr.client AND p.session_id<>c.session_id AND json_extract(cr.json,'$.parentSessionId') IS NULL
           AND COALESCE(json_extract(cr.json,'$.relationship'),'')<>'fork' GROUP BY c.session_id`).all(version) as { child: string; parent: string; parents: number }[];
       const addRelation = this.database.prepare("INSERT OR IGNORE INTO session_version_relations(version,child,parent) VALUES(?,?,?)");
@@ -209,8 +210,8 @@ export class SessionStore {
         else addGap({ kind: "ambiguous", message: "多个父会话声明同一子目标，未任意建立父子关联", count: 1 });
       }
       const conflicts = (this.database.prepare(`SELECT COUNT(DISTINCT c.session_id) AS count FROM session_version_sessions p
-        JOIN session_revisions pr ON pr.id=p.revision JOIN json_each(pr.json,'$.childSessionIds') target
-        JOIN session_version_sessions c ON c.version=p.version AND c.session_id=target.value JOIN session_revisions cr ON cr.id=c.revision
+        JOIN session_revisions pr ON pr.id=p.revision CROSS JOIN json_each(pr.json,'$.childSessionIds') target
+        CROSS JOIN session_version_sessions c ON c.version=p.version AND c.session_id=target.value JOIN session_revisions cr ON cr.id=c.revision
         WHERE p.version=? AND json_extract(cr.json,'$.parentSessionId') IS NOT NULL
           AND json_extract(cr.json,'$.parentSessionId')<>p.session_id`).get(version) as { count: number }).count;
       if (conflicts) addGap({ kind: "ambiguous", message: "父工具目标与子会话显式父声明冲突，保留显式声明，不扩大汇总", count: conflicts });

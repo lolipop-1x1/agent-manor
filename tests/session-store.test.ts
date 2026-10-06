@@ -82,6 +82,28 @@ function source(store: SessionStore, summary: SessionSourceMeta, messages: Sessi
   return { path: summary.path, revision: pending.revision, fingerprint: "synthetic-fingerprint" };
 }
 
+test("多会话增量发布按真实子目标关联，避免无关会话两两扫描", async () => fixture(store => {
+  const revisions = Array.from({ length: 2000 }, (_, index) => {
+    const id = `publish-scale-${index}`;
+    return source(store, meta(id, index < 20 ? { childSessionIds: [`publish-scale-${index + 100}`] } : {}), [message(id, index)]);
+  });
+  const first = store.publish(store.createJob().id, revisions, []);
+  const start = performance.now();
+  store.publish(store.createJob().id, revisions, []);
+  const elapsed = performance.now() - start;
+  assert.equal(store.status().sessionCount, 2000);
+  assert.equal(store.status().sourceCount, 2000);
+  assert.equal(store.status().previousVersion, first);
+  assert.equal(store.list().total, 1980);
+  assert.equal(store.list({ includeSubagents: true }).total, 2000);
+  assert.equal(store.search({ q: "合成正文" }).total, 2000);
+  assert.equal(store.messages("publish-scale-100").session.parentSessionId, "publish-scale-0");
+  assert.equal(store.profile("publish-scale-0", { includeChildren: true }).messageCount, 2);
+  assert.equal(store.list({ version: first }).total, 1980);
+  assert.deepEqual(store.status().gaps, []);
+  assert.ok(elapsed < 1000, `2000 个未变会话的发布耗时 ${Math.round(elapsed)} 毫秒，超过 1 秒预算`);
+}));
+
 test("默认列表排除 Quiet，类型筛选、分页、搜索与直接访问保持一致", async () => fixture(store => {
   const quiet = source(store, meta("quiet-demo", { client: "codeflicker", executionMode: "quiet", title: "入口合成样例" }), [message("quiet-demo", 1, { text: "Quiet 检索样例" })]);
   const regular = source(store, meta("regular-demo"), [message("regular-demo", 2)]);
