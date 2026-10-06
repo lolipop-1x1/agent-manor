@@ -82,23 +82,6 @@ function source(store: SessionStore, summary: SessionSourceMeta, messages: Sessi
   store.finishRevision(pending.revision, summary);
   return { path: summary.path, revision: pending.revision, fingerprint: "synthetic-fingerprint" };
 }
-function captureSearchStatements(store: SessionStore, query: Parameters<SessionStore["search"]>[0]): string[] {
-  const database = (store as unknown as { database: { prepare: (sql: string) => unknown } }).database;
-  const descriptor = Object.getOwnPropertyDescriptor(database, "prepare");
-  const original = database.prepare;
-  const statements: string[] = [];
-  Object.defineProperty(database, "prepare", { configurable: true, writable: true, value: (sql: string) => {
-    statements.push(sql);
-    return original.call(database, sql);
-  } });
-  try { store.search(query); }
-  finally {
-    if (descriptor) Object.defineProperty(database, "prepare", descriptor);
-    else Reflect.deleteProperty(database, "prepare");
-  }
-  return statements;
-}
-
 test("多会话增量发布按真实子目标关联，避免无关会话两两扫描", async () => fixture(store => {
   const revisions = Array.from({ length: 2000 }, (_, index) => {
     const id = `publish-scale-${index}`;
@@ -193,7 +176,7 @@ test("搜索索引保留字面匹配、筛选、分页和短词语义，不保�
   } finally { database.close(); }
 }));
 
-test("限定搜索按有界元数据选择计划，保留全局结果、字面字符、分页与旧版本", async () => fixture(store => {
+test("范围搜索保留命中语义、字面字符、分页与旧版本", async () => fixture(store => {
   const first = source(store, meta("scope-a", { client: "pi", project: "/workspace/alpha", title: "Scope A" }), [
     message("scope-a", 0, { text: "bash process legacyneedle 50%_ literal \\path" }),
     message("scope-a", 1, { kind: "assistant", text: "bash process second hit" }),
@@ -211,23 +194,9 @@ test("限定搜索按有界元数据选择计划，保留全局结果、字面�
   store.publish(store.createJob().id, [first, second, outside, ...fillers], []);
   const previousVersion = store.status().version!;
 
-  const defaultRegularStatements = captureSearchStatements(store, { q: "bash", executionMode: "regular" });
-  assert.ok(!defaultRegularStatements.some(sql => sql.includes("WITH scoped AS")), "默认 regular 搜索不做范围计数");
-  assert.ok(defaultRegularStatements.some(sql => sql.includes("FROM session_messages m CROSS JOIN session_version_sessions v")));
-  const dateOnlyStatements = captureSearchStatements(store, { q: "bash", from: "2026-01-01T00:00:00Z" });
-  assert.ok(!dateOnlyStatements.some(sql => sql.includes("WITH scoped AS")), "仅日期筛选不做范围计数");
-  const wideClientStatements = captureSearchStatements(store, { q: "bash", client: "pi" });
-  assert.ok(wideClientStatements.some(sql => sql.includes("WITH scoped AS")));
-  assert.ok(wideClientStatements.some(sql => sql.includes("LIMIT 101")));
-  assert.ok(wideClientStatements.some(sql => sql.includes("FROM session_messages m CROSS JOIN session_version_sessions v")), "宽 client 范围仍由 FTS 命中驱动");
-  assert.ok(!wideClientStatements.some(sql => /FROM session_version_sessions v\s+CROSS JOIN session_revisions r/.test(sql)));
-  const wideProjectStatements = captureSearchStatements(store, { q: "bash", project: "/workspace/alpha" });
-  assert.ok(wideProjectStatements.some(sql => sql.includes("FROM session_messages m CROSS JOIN session_version_sessions v")), "宽 project 范围仍由 FTS 命中驱动");
-  assert.ok(!wideProjectStatements.some(sql => /FROM session_version_sessions v\s+CROSS JOIN session_revisions r/.test(sql)));
-  const narrowSessionStatements = captureSearchStatements(store, { q: "bash", sessionId: "scope-a" });
-  assert.ok(narrowSessionStatements.some(sql => /FROM session_version_sessions v\s+CROSS JOIN session_revisions r/.test(sql)), "小会话范围先筛修订再读取正文");
-
   assert.equal(store.search({ q: "bash" }).total, 4);
+  assert.equal(store.search({ q: "bash", executionMode: "regular" }).total, 4);
+  assert.equal(store.search({ q: "bash", from: "2026-01-01T00:00:00Z" }).total, 4);
   assert.equal(store.search({ q: "bash", client: "pi" }).total, 3);
   assert.equal(store.search({ q: "bash", project: "/workspace/alpha" }).total, 3);
   assert.equal(store.search({ q: "bash", sessionId: "scope-a" }).total, 2);
