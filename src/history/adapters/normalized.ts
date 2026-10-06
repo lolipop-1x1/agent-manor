@@ -83,7 +83,7 @@ export function normalizedRecord(event: NormalizedEvent, raw: string, line: numb
 
 export function normalizedSnapshot(source: SourceLocation, records: RawHistoryRecord[], meta: NormalizedSessionMetadata = {}, fingerprint?: string): NormalizedSnapshot {
   const digest = createHash("sha256").update(JSON.stringify([fingerprint, source.sessionId, source.cwd, meta]));
-  for (const row of records) digest.update(JSON.stringify([row.raw, row.record]));
+  for (const row of records) digest.update(JSON.stringify([row.line, row.raw, row.record]));
   const hash = digest.digest("hex");
   return { source, hash, meta, records: [{ record: { normalizedMeta: meta }, raw: "", line: 0 }, ...records] };
 }

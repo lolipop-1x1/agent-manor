@@ -56,3 +56,11 @@ test("并发复用调用身份保留歧义，不把结果配给最后一个请�
   assert.ok([...messages.values()].filter(value => value.kind === "tool_call").every(value => !value.status));
   assert.equal([...messages.values()].find(value => value.kind === "assistant")?.final, undefined);
 });
+
+
+test("原始物理位置变动使来源指纹失效，不能复用旧证据行号", () => {
+  const source = { client: "pi" as const, path: "/workspace/demo.jsonl", sessionId: "demo" };
+  const event = { key: "request", kind: "user" as const, text: "检查" };
+  assert.notEqual(normalizedSnapshot(source, [normalizedRecord(event, "{}", 1)]).hash,
+    normalizedSnapshot(source, [normalizedRecord(event, "{}", 2)]).hash);
+});
