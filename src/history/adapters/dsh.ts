@@ -393,7 +393,11 @@ const dshBaseAdapter = createNormalizedAdapter({
       const current = selected.get(key);
       const version = Number(/^v(\d+)$/.exec(source.selector ?? "")?.[1] ?? /\.v(\d+)\.jsonl(?:\.(?:zstd|zst))?$/.exec(source.path)?.[1] ?? 0);
       const currentVersion = Number(/^v(\d+)$/.exec(current?.selector ?? "")?.[1] ?? /\.v(\d+)\.jsonl(?:\.(?:zstd|zst))?$/.exec(current?.path ?? "")?.[1] ?? 0);
-      if (!current || version > currentVersion || version === currentVersion && source.path.endsWith(".zstd") && !current.path.endsWith(".zstd")) selected.set(key, source);
+      const supported = version === 3 || version === 4;
+      const currentSupported = currentVersion === 3 || currentVersion === 4;
+      if (!current || supported && !currentSupported
+        || supported === currentSupported && (version > currentVersion
+          || version === currentVersion && source.path.endsWith(".zstd") && !current.path.endsWith(".zstd"))) selected.set(key, source);
     }
     const dshKeys = new Set(selected.keys());
     return [...sources.filter(source => source.client !== "dsh" || source.format !== DSH_FORMAT || !source.sessionId), ...[...dshKeys].map(key => selected.get(key)!)];

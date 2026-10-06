@@ -145,6 +145,8 @@ test("DSH 未知代际仍保留来源并显式标记 unsupported_format", async 
   assert.equal(source?.sessionId, "synthetic-v5");
   assert.equal(source?.selector, "v5");
   assert.equal(dshAdapter.selectSources!([source!]).length, 1);
+  assert.deepEqual(dshAdapter.selectSources!([source!, { ...source!, selector: "v4", path: join(directory, "session.v4.jsonl") }])
+    .map(selected => selected.selector), ["v4"]);
   const snapshot = await dshAdapter.readRecords!({ client: "dsh", format: DSH_FORMAT, path });
   assert.ok((snapshot as NormalizedSnapshot).meta.gaps?.some(gap => gap.kind === "unsupported_format"));
 }));
