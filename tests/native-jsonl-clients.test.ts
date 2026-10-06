@@ -4,6 +4,8 @@ import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { parseSource } from "../src/history/index.js";
+import { readHistoryEvidence } from "../src/history/adapters/index.js";
 import type { SessionMessage, SessionUsage } from "../src/session-contracts.js";
 import type { HistoryAdapterContext } from "../src/history/adapters/types.js";
 import { codebuddyAdapter } from "../src/history/adapters/codebuddy.js";
@@ -42,11 +44,11 @@ test("WorkBuddy 用 sessions 精确补齐无正文 sessionId，并保留会话�
   const firstPath = join(project, "wb-session-1.jsonl");
   const records = [
     { type: "message", id: "u1", sessionId: "wb-session-1", role: "user", content: "inspect the file", cwd: "/workspace/workbuddy", timestamp: "2026-10-06T01:00:00.000Z" },
-    { type: "message", id: "a1", sessionId: "wb-session-1", role: "assistant", content: "I will inspect it.", cwd: "/workspace/workbuddy", timestamp: "2026-10-06T01:00:01.000Z",
+    { type: "message", id: "a1", sessionId: "wb-session-1", role: "assistant", content: "I will inspect it.", status: "completed", cwd: "/workspace/workbuddy", timestamp: "2026-10-06T01:00:01.000Z",
       providerData: { model: "synthetic-model", conversationRequestId: "request-1", usage: { input_tokens: 60, output_tokens: 8, cache_read_input_tokens: 12 } } },
     { type: "reasoning", id: "r1", sessionId: "wb-session-1", content: "synthetic reasoning", timestamp: "2026-10-06T01:00:02.000Z" },
     { type: "function_call", id: "c-edit", sessionId: "wb-session-1", callId: "call-edit", name: "Edit",
-      arguments: { filePath: "src/example.ts", old_string: "before", new_string: "after" }, timestamp: "2026-10-06T01:00:03.000Z",
+      arguments: JSON.stringify({ filePath: "src/example.ts", old_string: "before", new_string: "after" }), timestamp: "2026-10-06T01:00:03.000Z",
       providerData: { model: "synthetic-model", messageId: "request-message-2", conversationRequestId: "same-conversation",
         usage: { inputTokens: 100, inputTokensDetails: { cachedTokens: 20 }, outputTokens: 10, totalTokens: 110 } } },
     { type: "function_call_result", id: "r-edit", sessionId: "wb-session-1", callId: "call-edit", name: "Edit", output: "edited",
@@ -85,9 +87,10 @@ test("WorkBuddy 用 sessions 精确补齐无正文 sessionId，并保留会话�
   assert.ok(collected.usage.every(usage => usage.inputTokens === undefined));
   assert.deepEqual(collected.usage.map(usage => usage.cachedInputTokens).sort(), [12, 20]);
   assert.ok(meta.gaps.some(gap => gap.kind === "ambiguous" && gap.message.includes("分母")));
+  assert.equal(collected.messages.find(message => message.kind === "assistant")?.final, undefined);
 
   const extract = workbuddyAdapter.extract.bind(workbuddyAdapter);
-  const evidence = extract("Read", { filePath: "src/example.ts" }, { path: "src/example.ts" }, "1\talpha\n2\tbeta", {} as HistoryAdapterContext);
+  const evidence = extract("Read", { filePath: "src/example.ts" }, { read_file_result: { content: "alpha\nbeta", hasMore: false, totalLineCount: 2 } }, "alpha\nbeta", {} as HistoryAdapterContext);
   assert.equal(evidence[0]?.kind, "read");
   assert.equal(evidence[0]?.fragments[0]?.historicalStart, 1);
   assert.equal(evidence[0]?.path, "src/example.ts");
@@ -98,7 +101,7 @@ test("WorkBuddy 用 sessions 精确补齐无正文 sessionId，并保留会话�
   const bash = extract("Bash", { command: "sed -n '4,5p' src/example.ts" }, { exitCode: 0, stdout: "four\nfive" }, "four\nfive", {} as HistoryAdapterContext);
   assert.equal(bash[0]?.kind, "read");
   assert.equal(bash[0]?.fragments[0]?.historicalStart, 4);
-  const unknownRead = extract("Read", { filePath: "src/example.ts" }, {}, "alpha\nbeta", {} as HistoryAdapterContext);
+  const unknownRead = extract("Read", { filePath: "src/example.ts" }, { read_file_result: { content: "alpha\nbeta", hasMore: true, totalLineCount: 12 } }, "alpha\nbeta", {} as HistoryAdapterContext);
   assert.ok(unknownRead[0]?.reason?.includes("range_unknown"));
 
   const targetRow = raw.split("\n")[0]!;
@@ -114,6 +117,121 @@ test("WorkBuddy 用 sessions 精确补齐无正文 sessionId，并保留会话�
   const secondSnapshot = await workbuddyAdapter.readRecords!(second[0]!);
   assert.equal(second[0]!.sessionId, "wb-session-2");
   assert.ok(!secondSnapshot.meta.gaps.some(gap => gap.message.includes("未能与 sessions")));
+}));
+
+test("WorkBuddy JSON 参数字符串可提取已证实读写，未知终态和未知事件保留缺口", async () => temporary(async directory => {
+  const path = join(directory, "synthetic-session.jsonl");
+  const rows = [
+    { type: "message", id: "user", sessionId: "wb-synthetic", role: "user", content: "inspect sample" },
+    { type: "message", id: "assistant", sessionId: "wb-synthetic", role: "assistant", status: "completed", content: "I will inspect it." },
+    { type: "function_call", id: "read-call", sessionId: "wb-synthetic", callId: "read-id", name: "Read",
+      arguments: JSON.stringify({ filePath: "src/sample.ts", offset: 1 }) },
+    { type: "function_call_result", id: "read-result", sessionId: "wb-synthetic", callId: "read-id", name: "Read", output: "alpha\nbeta",
+      providerData: { workbuddyToolResult: { path: "src/sample.ts", read_file_result: { content: "alpha\nbeta", hasMore: false, totalLineCount: 2 } } } },
+    { type: "function_call", id: "edit-call", sessionId: "wb-synthetic", callId: "edit-id", name: "Edit",
+      arguments: JSON.stringify({ filePath: "src/sample.ts", old_string: "before", new_string: "after" }) },
+    { type: "function_call_result", id: "edit-result", sessionId: "wb-synthetic", callId: "edit-id", name: "Edit", output: "changed",
+      providerData: { workbuddyToolResult: { type: "text", content: "changed" } } },
+    { type: "future-event", id: "unknown", sessionId: "wb-synthetic", payload: "before" },
+  ];
+  await writeFile(path, serialized(rows));
+  const [source] = await workbuddyAdapter.discoverFile!({ path, client: "workbuddy", format: "workbuddy-jsonl" });
+  const parsed = await parseSource(path, "workbuddy", undefined, "workbuddy-jsonl", { location: source });
+  const read = parsed.events.find(event => event.tool === "Read");
+  const edit = parsed.events.find(event => event.tool === "Edit");
+  assert.equal(read?.status, "success");
+  assert.equal(read?.fragments[0]?.historicalStart, 1);
+  assert.equal(read?.fragments[0]?.content, "alpha\nbeta");
+  assert.equal(edit?.status, "unknown");
+  assert.equal(edit?.fragments.length, 0);
+  const requestEvidence = await readHistoryEvidence(read!.sources[0]!);
+  assert.equal(JSON.parse(requestEvidence!.raw).arguments, JSON.stringify({ filePath: "src/sample.ts", offset: 1 }));
+
+  const before = await workbuddyAdapter.readRecords!(source!);
+  const eventRows = before.records.flatMap(row => row.record.normalizedEvent ? [row.record.normalizedEvent] : []);
+  assert.ok(eventRows.some(event => event.kind === "context" && event.text === "未适配记录类型 future-event"));
+  rows[6] = { ...rows[6]!, payload: "after" };
+  await writeFile(path, serialized(rows));
+  assert.notEqual((await workbuddyAdapter.readRecords!(source!)).hash, before.hash);
+}));
+
+test("Qoder userType 缺失仍按原生 user 计轮次；max_tokens 不推终答并保留未知事件", async () => temporary(async directory => {
+  const path = join(directory, "synthetic-qoder.jsonl");
+  const rows = [
+    { type: "user", sessionId: "q-synthetic", uuid: "q-user", message: { role: "user", content: [{ type: "text", text: "real prompt" }] } },
+    { type: "assistant", sessionId: "q-synthetic", uuid: "q-assistant", message: { role: "assistant", stop_reason: "max_tokens",
+      content: [{ type: "text", text: "truncated answer" }, { type: "tool_use", id: "q-write", name: "Write",
+        input: { file_path: "src/new.ts", content: "synthetic file content" } }] } },
+    { type: "user", sessionId: "q-synthetic", uuid: "q-write-result", message: { role: "user",
+      content: [{ type: "tool_result", tool_use_id: "q-write", content: "created" }] },
+      toolUseResult: { content: "synthetic file content", filePath: "src/new.ts", originalFile: null } },
+    { type: "future-event", sessionId: "q-synthetic", payload: "before" },
+  ];
+  await writeFile(path, serialized(rows));
+  const [source] = await qoderAdapter.discoverFile!({ path, client: "qoder", format: "qoder-jsonl" });
+  const snapshot = await qoderAdapter.readRecords!(source!);
+  const collected = sink();
+  const meta = parseNormalizedSession(snapshot, collected.value);
+  assert.equal(meta.turnCount, 1);
+  assert.ok(collected.messages.some(message => message.kind === "user" && message.text === "real prompt"));
+  assert.equal(collected.messages.find(message => message.text === "truncated answer")?.final, undefined);
+  assert.ok(meta.gaps.some(gap => gap.kind === "unsupported_format"));
+  assert.ok(snapshot.records.some(row => row.record.normalizedEvent?.text === "未适配记录类型 future-event"));
+  const parsed = await parseSource(path, "qoder", undefined, "qoder-jsonl", { location: source });
+  const write = parsed.events.find(event => event.tool === "Write");
+  assert.equal(write?.status, "unknown");
+  assert.equal(write?.fragments.length, 0);
+  rows[2] = { ...rows[2]!, payload: "after" };
+  await writeFile(path, serialized(rows));
+  assert.notEqual((await qoderAdapter.readRecords!(source!)).hash, snapshot.hash);
+}));
+
+test("CodeBuddy 未知事件原始改变反映到快照；多会话文件不合并正文", async () => temporary(async directory => {
+  const unknownPath = join(directory, "unknown.jsonl");
+  const unknown = [
+    { type: "message", id: "user", sessionId: "cb-synthetic", role: "user", content: "prompt" },
+    { type: "future-event", id: "future", sessionId: "cb-synthetic", payload: "before" },
+  ];
+  await writeFile(unknownPath, serialized(unknown));
+  const [unknownSource] = await codebuddyAdapter.discoverFile!({ path: unknownPath, client: "codebuddy", format: "codebuddy-jsonl" });
+  const snapshot = await codebuddyAdapter.readRecords!(unknownSource!);
+  assert.ok(snapshot.records.some(row => row.record.normalizedEvent?.kind === "context" && row.record.normalizedEvent.text?.includes("future-event")));
+  unknown[1] = { ...unknown[1]!, payload: "after" };
+  await writeFile(unknownPath, serialized(unknown));
+  assert.notEqual((await codebuddyAdapter.readRecords!(unknownSource!)).hash, snapshot.hash);
+
+  const mixedPath = join(directory, "mixed.jsonl");
+  await writeFile(mixedPath, serialized([
+    { type: "message", id: "user-a", sessionId: "cb-a", role: "user", content: "first session body" },
+    { type: "message", id: "user-b", sessionId: "cb-b", role: "user", content: "second session body" },
+  ]));
+  const [mixedSource] = await codebuddyAdapter.discoverFile!({ path: mixedPath, client: "codebuddy", format: "codebuddy-jsonl" });
+  const mixedSnapshot = await codebuddyAdapter.readRecords!(mixedSource!);
+  assert.equal(mixedSnapshot.source.sessionId, undefined);
+  assert.equal(mixedSnapshot.records.filter(row => row.record.normalizedEvent).length, 0);
+  assert.ok(mixedSnapshot.meta.gaps?.some(gap => gap.kind === "ambiguous"));
+
+  const workbuddyMixedPath = join(directory, "workbuddy-mixed.jsonl");
+  await writeFile(workbuddyMixedPath, serialized([
+    { type: "message", id: "wb-user-a", sessionId: "wb-a", role: "user", content: "first session body" },
+    { type: "message", id: "wb-user-b", sessionId: "wb-b", role: "user", content: "second session body" },
+  ]));
+  const [workbuddySource] = await workbuddyAdapter.discoverFile!({ path: workbuddyMixedPath, client: "workbuddy", format: "workbuddy-jsonl" });
+  const workbuddySnapshot = await workbuddyAdapter.readRecords!(workbuddySource!);
+  assert.equal(workbuddySnapshot.source.sessionId, undefined);
+  assert.equal(workbuddySnapshot.records.filter(row => row.record.normalizedEvent).length, 0);
+  assert.ok(workbuddySnapshot.meta.gaps?.some(gap => gap.kind === "ambiguous"));
+
+  const qoderMixedPath = join(directory, "qoder-mixed.jsonl");
+  await writeFile(qoderMixedPath, serialized([
+    { type: "user", sessionId: "q-a", uuid: "q-user-a", message: { role: "user", content: "first session body" } },
+    { type: "user", sessionId: "q-b", uuid: "q-user-b", message: { role: "user", content: "second session body" } },
+  ]));
+  const [qoderSource] = await qoderAdapter.discoverFile!({ path: qoderMixedPath, client: "qoder", format: "qoder-jsonl" });
+  const qoderSnapshot = await qoderAdapter.readRecords!(qoderSource!);
+  assert.equal(qoderSnapshot.source.sessionId, undefined);
+  assert.equal(qoderSnapshot.records.filter(row => row.record.normalizedEvent).length, 0);
+  assert.ok(qoderSnapshot.meta.gaps?.some(gap => gap.kind === "ambiguous"));
 }));
 
 test("CodeBuddy 只把已记录 user 作为用户消息，不补造 assistant 与工具", async () => temporary(async directory => {

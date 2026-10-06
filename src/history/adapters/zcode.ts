@@ -3,12 +3,19 @@ import type { NormalizedEvent, NormalizedSessionMetadata, NormalizedSnapshot, Ra
 import { createNormalizedAdapter, normalizedRecord, normalizedSessionKey, normalizedSnapshot } from "./normalized.js";
 import { number, object, string, textContent, toolEvidence } from "../extraction.js";
 import { normalizeHistoryPath } from "./common.js";
-import { readOnlySqlite, sqliteJson, sqliteTableExists } from "./sqlite-readonly.js";
+import { createSqliteReadBudget, readOnlySqlite, readSqliteRows, sqliteJson, sqliteTableExists } from "./sqlite-readonly.js";
 import type { SourceLocation } from "../types.js";
 
 export const ZCODE_FORMAT = "zcode-sqlite";
 const missing = () => Object.assign(new Error("ZCode 会话来源已缺失"), { code: "ENOENT" });
+const UNSUPPORTED_SCHEMA = "__unsupported_schema__";
+const READ_BUDGET_EXCEEDED = "__read_budget_exceeded__";
 const rowRaw = (row: Record<string, unknown>) => JSON.stringify(row);
+
+function diagnosticSnapshot(location: SourceLocation, kind: "unsupported_format" | "budget_exceeded", message: string): NormalizedSnapshot {
+  const { adapterGap: _adapterGap, ...source } = location;
+  return normalizedSnapshot(source, [], { gaps: [{ kind, message }] });
+}
 
 function timestamp(value: unknown): string | undefined {
   if (typeof value === "number" && Number.isFinite(value)) return new Date(value).toISOString();
@@ -17,34 +24,34 @@ function timestamp(value: unknown): string | undefined {
 }
 
 function buildRecords(messages: Record<string, unknown>[], parts: Record<string, unknown>[], modelUsage: Record<string, unknown>[], meta: NormalizedSessionMetadata) {
+  const gaps = meta.gaps ?? (meta.gaps = []);
   const byMessage = new Map<string, { row: Record<string, unknown>; data: Record<string, unknown>; raw: string }[]>();
   for (const row of parts) {
     const messageId = string(row.message_id);
     if (!messageId) continue;
-    const value = { row, data: sqliteJson(row.data), raw: rowRaw(row) };
+    const value = { row, data: sqliteJson(row.data, gaps), raw: rowRaw(row) };
     byMessage.set(messageId, [...(byMessage.get(messageId) ?? []), value]);
   }
   const messagesById = new Map(messages.map(row => [String(row.id), row]));
-  const messageTextById = new Map<string, string>();
   const staged: { event: NormalizedEvent; raw: string; order: number }[] = [];
   const turnByMessage = new Map<string, string>();
 
   for (const [messageIndex, row] of messages.entries()) {
     const id = string(row.id);
     if (!id) continue;
-    const data = sqliteJson(row.data);
+    const data = sqliteJson(row.data, gaps);
     const role = string(data.role);
     const grouped = byMessage.get(id) ?? [];
     const partTexts = grouped.filter(part => part.data.type === "text").map(part => string(part.data.text) ?? "").filter(Boolean);
     const text = [textContent(data.content), ...partTexts].filter(Boolean).join("\n");
-    messageTextById.set(id, text);
     const created = timestamp(object(data.time).created ?? row.time_created);
     const model = string(object(data.model).modelID) ?? string(object(data.model).model) ?? string(data.model);
     const turnKey = string(data.turnId) ?? id;
     turnByMessage.set(id, turnKey);
     const raw = JSON.stringify({ message: row, textParts: grouped.filter(part => part.data.type === "text").map(part => part.row) });
     if (role === "user" || role === "assistant" || role === "system") {
-      staged.push({ event: { key: `message:${id}`, kind: role, text, occurredAt: created, model, turnKey }, raw, order: messageIndex * 1_000 });
+      staged.push({ event: { key: `message:${id}`, kind: role, text, occurredAt: created, model, turnKey,
+        ...(role === "assistant" ? { allowInferredFinal: false } : {}) }, raw, order: messageIndex * 1_000 });
     }
 
     for (const [partIndex, part] of grouped.entries()) {
@@ -82,10 +89,10 @@ function buildRecords(messages: Record<string, unknown>[], parts: Record<string,
     const messageId = string(row.assistant_message_id);
     const parentUser = string(row.parent_user_message_id);
     const message = messageId ? messagesById.get(messageId) : undefined;
-    const messageData = sqliteJson(message?.data);
-    const messageKey = messageId && message ? `message:${messageId}` : `model-usage:${id ?? usageIndex}`;
-    const rawUsage = sqliteJson(row.raw_usage_json);
-    const providerMetadata = sqliteJson(row.provider_metadata_json);
+    const messageData = sqliteJson(message?.data, gaps);
+    const messageKey = messageId && message ? `message:${messageId}` : undefined;
+    const rawUsage = sqliteJson(row.raw_usage_json, gaps);
+    const providerMetadata = sqliteJson(row.provider_metadata_json, gaps);
     const anthropicUsage = object(object(providerMetadata.anthropic).usage);
     const input = number(row.input_tokens);
     const read = number(row.cache_read_input_tokens);
@@ -107,11 +114,12 @@ function buildRecords(messages: Record<string, unknown>[], parts: Record<string,
       meta.gaps.push({ kind: "ambiguous", message: "ZCode reasoning_tokens 与 output_tokens 的包含关系未核验，保留原字段且不相加" });
     }
     const usageEvent: NormalizedEvent = {
-      key: messageKey,
-      kind: message ? "assistant" : "context",
-      text: message ? messageTextById.get(messageId!) ?? "" : "",
+      key: `model-usage:${id ?? usageIndex}`,
+      kind: "context",
+      ...(message ? { text: "model usage attempt" } : {}),
       occurredAt: timestamp(row.started_at),
       model: string(row.model_id) ?? string(messageData.model),
+      usageMessageKey: messageKey,
       usageKey: `attempt:${id ?? `${string(row.logical_request_id) ?? "request"}:${number(row.attempt_index) ?? usageIndex}`}`,
       turnKey: parentUser ? turnByMessage.get(parentUser) ?? parentUser : string(row.turn_id),
       usage: {
@@ -135,12 +143,12 @@ function buildRecords(messages: Record<string, unknown>[], parts: Record<string,
   return records;
 }
 
-function getSession(database: import("better-sqlite3").Database, id: string) {
+function getSession(database: import("better-sqlite3").Database, id: string, gaps: NonNullable<NormalizedSessionMetadata["gaps"]>, budget: ReturnType<typeof createSqliteReadBudget>) {
   const session = database.prepare("SELECT * FROM session WHERE id=?").get(id) as Record<string, unknown> | undefined;
   if (!session) throw missing();
-  const messages = database.prepare("SELECT * FROM message WHERE session_id=? ORDER BY rowid").all(id) as Record<string, unknown>[];
-  const parts = database.prepare("SELECT * FROM part WHERE session_id=? ORDER BY rowid").all(id) as Record<string, unknown>[];
-  const modelUsage = database.prepare("SELECT * FROM model_usage WHERE session_id=? ORDER BY started_at, id").all(id) as Record<string, unknown>[];
+  const messages = readSqliteRows(database, "SELECT * FROM message WHERE session_id=? ORDER BY rowid", gaps, budget, id);
+  const parts = readSqliteRows(database, "SELECT * FROM part WHERE session_id=? ORDER BY rowid", gaps, budget, id);
+  const modelUsage = readSqliteRows(database, "SELECT * FROM model_usage WHERE session_id=? ORDER BY started_at, id", gaps, budget, id);
   return { session, messages, parts, modelUsage };
 }
 
@@ -162,11 +170,16 @@ async function taskFor(databasePath: string, id: string): Promise<Record<string,
 
 async function discoverFile(location: SourceLocation): Promise<SourceLocation[]> {
   const sessions = await readOnlySqlite(location.path, database => {
-    if (!["session", "message", "part", "model_usage"].every(table => sqliteTableExists(database, table))) return [];
-    return database.prepare("SELECT * FROM session ORDER BY id").all() as Record<string, unknown>[];
+    if (!["session", "message", "part", "model_usage"].every(table => sqliteTableExists(database, table))) {
+      return { rows: [], gap: { kind: "unsupported_format" as const, message: "ZCode SQLite 表结构尚未适配，保留来源并标记缺口" } };
+    }
+    const gaps: NonNullable<NormalizedSessionMetadata["gaps"]> = [];
+    const budget = createSqliteReadBudget();
+    const rows = readSqliteRows(database, "SELECT * FROM session ORDER BY id", gaps, budget);
+    return { rows, gap: budget.exceeded ? gaps[0] : undefined };
   });
   const result: SourceLocation[] = [];
-  for (const row of sessions) {
+  for (const row of sessions.rows) {
     const id = string(row.id);
     if (!id) continue;
     const task = await taskFor(location.path, id);
@@ -174,14 +187,21 @@ async function discoverFile(location: SourceLocation): Promise<SourceLocation[]>
     result.push({ ...location, format: ZCODE_FORMAT, selector: id, sessionId: id,
       sourceId: normalizedSessionKey(location.client, id), cwd });
   }
+  if (sessions.gap) result.push({ ...location, format: ZCODE_FORMAT, selector: sessions.gap.kind === "unsupported_format" ? UNSUPPORTED_SCHEMA : READ_BUDGET_EXCEEDED,
+    adapterGap: sessions.gap });
   return result;
 }
 
 async function readSnapshot(location: SourceLocation): Promise<NormalizedSnapshot> {
+  if (location.adapterGap) return diagnosticSnapshot(location, location.adapterGap.kind === "budget_exceeded" ? "budget_exceeded" : "unsupported_format", location.adapterGap.message);
+  if (location.selector === UNSUPPORTED_SCHEMA) return diagnosticSnapshot(location, "unsupported_format", "ZCode SQLite 表结构尚未适配，保留来源并标记缺口");
+  if (location.selector === READ_BUDGET_EXCEEDED) return diagnosticSnapshot(location, "budget_exceeded", "ZCode 会话目录超过 SQLite 有界读取上限");
   if (!location.selector) throw new Error("ZCode 来源缺少原生会话选择器");
+  const gaps: NonNullable<NormalizedSessionMetadata["gaps"]> = [];
+  const budget = createSqliteReadBudget();
   const snapshot = await readOnlySqlite(location.path, database => {
     if (!["session", "message", "part", "model_usage"].every(table => sqliteTableExists(database, table))) throw missing();
-    return getSession(database, location.selector!);
+    return getSession(database, location.selector!, gaps, budget);
   });
   const id = string(snapshot.session.id);
   if (!id || id !== location.selector) throw missing();
@@ -190,10 +210,10 @@ async function readSnapshot(location: SourceLocation): Promise<NormalizedSnapsho
   const cwd = taskPath ?? normalizeHistoryPath(string(snapshot.session.directory));
   const source: SourceLocation = { ...location, format: ZCODE_FORMAT, selector: id, sessionId: id,
     sourceId: normalizedSessionKey(location.client, id), cwd };
-  const meta: NormalizedSessionMetadata = { title: string(task?.title) ?? string(snapshot.session.title),
+  const meta: NormalizedSessionMetadata = { title: string(task?.title) ?? string(snapshot.session.title), gaps,
     titleOrigin: task?.title ? "task" : snapshot.session.title ? "recorded" : undefined };
   if (string(snapshot.session.parent_id) || string(task?.forked_from_task_id)) {
-    meta.gaps = [{ kind: "ambiguous", message: "ZCode parent_id/forked_from_task_id 语义未核验，未判断子 Agent 或分叉关系" }];
+    gaps.push({ kind: "ambiguous", message: "ZCode parent_id/forked_from_task_id 语义未核验，未判断子 Agent 或分叉关系" });
   }
   const records = buildRecords(snapshot.messages, snapshot.parts, snapshot.modelUsage, meta);
   const fingerprint = JSON.stringify({ session: rowRaw(snapshot.session), task: task ? rowRaw(task) : null });

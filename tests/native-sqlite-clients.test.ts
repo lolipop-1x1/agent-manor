@@ -10,6 +10,7 @@ import type { HistoryAdapter } from "../src/history/adapters/types.js";
 import { opencodeAdapter, OPENCODE_FORMAT } from "../src/history/adapters/opencode.js";
 import { parseNormalizedSession } from "../src/history/adapters/normalized.js";
 import { zcodeAdapter, ZCODE_FORMAT } from "../src/history/adapters/zcode.js";
+import { createSqliteReadBudget, readSqliteRows, sqliteJson } from "../src/history/adapters/sqlite-readonly.js";
 import type { SessionMessage, SessionUsage } from "../src/session-contracts.js";
 
 const registry = HISTORY_ADAPTERS as unknown as HistoryAdapter[];
@@ -240,6 +241,89 @@ test("OpenCode 缺失读取编号或 Bash exit 不补造范围和成功终态", 
   database.close();
 })));
 
+test("OpenCode 顶层模型字段与合成压缩过程不会制造用户轮次或截断终答", async () => temporary(directory => registerAdapters(async () => {
+  const path = join(directory, "opencode.db");
+  const database = new Database(path);
+  createOpenCodeSchema(database);
+  insertOpenCodeSession(database, { id: "turn-boundaries", directory: "/synthetic/repo" });
+  insertOpenCodeMessage(database, "turn-boundaries", "synthetic-user", "user", 1,
+    { synthetic: true, metadata: { compaction_continue: true } });
+  insertOpenCodePart(database, "turn-boundaries", "synthetic-user", "synthetic-text", 1,
+    { type: "text", text: "synthetic compaction continuation" });
+  insertOpenCodeMessage(database, "turn-boundaries", "real-user", "user", 2);
+  insertOpenCodePart(database, "turn-boundaries", "real-user", "real-user-text", 2, { type: "text", text: "real prompt" });
+  insertOpenCodeMessage(database, "turn-boundaries", "truncated", "assistant", 3,
+    { parentID: "real-user", providerID: "provider-x", modelID: "model-x", finish: "max_tokens", time: { created: 3, completed: 4 } });
+  insertOpenCodePart(database, "turn-boundaries", "truncated", "truncated-text", 3, { type: "text", text: "truncated answer" });
+  insertOpenCodeMessage(database, "turn-boundaries", "error", "assistant", 4,
+    { parentID: "real-user", providerID: "provider-e", modelID: "model-e", error: { message: "synthetic failure" }, time: { created: 4, completed: 5 } });
+  insertOpenCodePart(database, "turn-boundaries", "error", "error-text", 4, { type: "text", text: "failed answer" });
+  insertOpenCodeMessage(database, "turn-boundaries", "unfinished", "assistant", 5,
+    { parentID: "real-user", providerID: "provider-u", modelID: "model-u", time: { created: 5 } });
+  insertOpenCodePart(database, "turn-boundaries", "unfinished", "unfinished-text", 5, { type: "text", text: "unfinished answer" });
+  insertOpenCodeMessage(database, "turn-boundaries", "complete", "assistant", 6,
+    { parentID: "real-user", providerID: "provider-y", modelID: "model-y", time: { created: 6, completed: 7 } });
+  insertOpenCodePart(database, "turn-boundaries", "complete", "complete-text", 6, { type: "text", text: "complete answer" });
+  insertOpenCodeMessage(database, "turn-boundaries", "summary", "assistant", 7,
+    { parentID: "real-user", summary: true, time: { created: 7, completed: 8 } });
+  insertOpenCodePart(database, "turn-boundaries", "summary", "summary-part", 7,
+    { type: "compaction", summary: "compressed context" });
+
+  const snapshot = await opencodeAdapter.readRecords!({ path, client: "opencode", format: OPENCODE_FORMAT,
+    selector: "turn-boundaries", sessionId: "turn-boundaries" });
+  const messages = new Map<string, SessionMessage>();
+  const summary = parseNormalizedSession(snapshot, { message: message => messages.set(message.id, message), usage: () => undefined });
+  assert.equal(summary.turnCount, 1);
+  assert.equal([...messages.values()].find(message => message.text === "synthetic compaction continuation")?.kind, "compression");
+  assert.equal([...messages.values()].find(message => message.text === "truncated answer")?.final, undefined);
+  assert.equal([...messages.values()].find(message => message.text === "failed answer")?.final, undefined);
+  assert.equal([...messages.values()].find(message => message.text === "unfinished answer")?.final, undefined);
+  assert.equal([...messages.values()].find(message => message.text === "complete answer")?.final, "inferred");
+  assert.equal([...messages.values()].find(message => message.text === "complete answer")?.model, "provider-y/model-y");
+  assert.ok([...messages.values()].some(message => message.kind === "compression" && message.text === "compressed context"));
+  database.close();
+})));
+
+test("SQLite JSON 损坏、未知 schema 与迭代预算均显式保留缺口", async () => temporary(directory => registerAdapters(async () => {
+  const gaps: { kind: string; message: string }[] = [];
+  assert.deepEqual(sqliteJson("{invalid", gaps), {});
+  assert.ok(gaps.some(gap => gap.kind === "parse_error"));
+
+  const budgetDatabase = new Database(":memory:");
+  budgetDatabase.exec("CREATE TABLE rows(id INTEGER,value TEXT); INSERT INTO rows VALUES(1,'ok'),(2,'this row crosses the byte budget');");
+  const recordGaps: { kind: string; message: string }[] = [];
+  const recordBudget = createSqliteReadBudget(1, 10_000);
+  const recordRows = readSqliteRows(budgetDatabase, "SELECT * FROM rows ORDER BY id", recordGaps, recordBudget);
+  assert.deepEqual(recordRows.map(row => row.id), [1]);
+  assert.equal(recordBudget.exceeded, true);
+  assert.ok(recordGaps.some(gap => gap.kind === "budget_exceeded"));
+  const budgetGaps: { kind: string; message: string }[] = [];
+  const budget = createSqliteReadBudget(10, 32);
+  const rows = readSqliteRows(budgetDatabase, "SELECT * FROM rows ORDER BY id", budgetGaps, budget);
+  assert.deepEqual(rows.map(row => row.id), [1]);
+  assert.equal(budget.exceeded, true);
+  assert.ok(budgetGaps.some(gap => gap.kind === "budget_exceeded"));
+  budgetDatabase.close();
+
+  const openCodePath = join(directory, "unknown-opencode.db");
+  const openCode = new Database(openCodePath);
+  openCode.exec("CREATE TABLE unfamiliar(value TEXT)");
+  openCode.close();
+  const openCodeSources = await opencodeAdapter.discoverFile!({ path: openCodePath, client: "opencode", format: OPENCODE_FORMAT });
+  assert.equal(openCodeSources.length, 1);
+  assert.ok(openCodeSources[0]?.adapterGap?.kind === "unsupported_format");
+  assert.ok((await opencodeAdapter.readRecords!(openCodeSources[0]!)).meta.gaps?.some(gap => gap.kind === "unsupported_format"));
+
+  const zcodePath = join(directory, "unknown-zcode.db");
+  const zcode = new Database(zcodePath);
+  zcode.exec("CREATE TABLE unfamiliar(value TEXT)");
+  zcode.close();
+  const zcodeSources = await zcodeAdapter.discoverFile!({ path: zcodePath, client: "zcode", format: ZCODE_FORMAT });
+  assert.equal(zcodeSources.length, 1);
+  assert.ok(zcodeSources[0]?.adapterGap?.kind === "unsupported_format");
+  assert.ok((await zcodeAdapter.readRecords!(zcodeSources[0]!)).meta.gaps?.some(gap => gap.kind === "unsupported_format"));
+})));
+
 test("ZCode 任务索引按 session.id 关联；model_usage 按尝试计数，忽略消息与 turn_usage 汇总", async () => temporary(async directory => registerAdapters(async () => {
   const paths = await createZCodeSchema(directory);
   paths.db.pragma("journal_mode = WAL");
@@ -272,6 +356,13 @@ test("ZCode 任务索引按 session.id 关联；model_usage 按尝试计数，�
   assert.equal([...usage.values()].filter(item => item.inputTokens === 1_000).length, 0);
   assert.equal([...messages.values()].filter(item => item.kind === "tool_call").length, 1);
   assert.equal([...messages.values()].find(item => item.kind === "tool_call")?.status, "success");
+  const assistants = [...messages.values()].filter(item => item.kind === "assistant");
+  assert.equal(assistants.length, 1);
+  assert.equal(assistants[0]?.text, "synthetic response");
+  assert.equal(assistants[0]?.model, "fixture-model");
+  assert.equal(assistants[0]?.recordLine, 2);
+  assert.equal(assistants[0]?.final, undefined);
+  assert.equal([...messages.values()].filter(item => item.text === "model usage attempt").length, 3);
   assert.ok(summary.gaps.some(gap => gap.message.includes("包含关系未核验")));
   assert.ok(summary.gaps.some(gap => gap.message.includes("未充分对照")));
   paths.index.prepare("UPDATE tasks SET title=? WHERE task_id=?").run("Changed title", "session-one");

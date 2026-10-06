@@ -8,6 +8,7 @@ import test from "node:test";
 import type { Baseline, ParsedSource } from "../src/contracts.js";
 import { associateSource, discoverSources, parseSource, resolveSharedHistory } from "../src/history/index.js";
 import { patchFragments, physicalLines, shellEvidence } from "../src/history/extraction.js";
+import { isolatedHistoryRoots } from "./helpers/history-roots.js";
 
 const run = promisify(execFile);
 const encode = (records: unknown[]) => records.map((record) => JSON.stringify(record) + "\n").join("");
@@ -176,7 +177,7 @@ test("发现嵌套归档、缺失默认根不报错，未知记录保留 unsuppo
   await mkdir(join(directory, "active", "year"), { recursive: true });
   await writeFile(join(directory, "archived", "old.jsonl"), encode([meta()]));
   await writeFile(join(directory, "active", "year", "new.jsonl"), encode([meta(), { type: "synthetic-unsupported" }]));
-  const found = await discoverSources({ codex: [join(directory, "archived"), join(directory, "active"), join(directory, "missing")], claude: [], codeflicker: [], "codeflicker-desktop": [], dsh: [], pi: [], workbuddy: [], opencode: [], zcode: [], codebuddy: [], qoder: [] });
+  const found = await discoverSources(isolatedHistoryRoots({ codex: [join(directory, "archived"), join(directory, "active"), join(directory, "missing")] }));
   assert.equal(found.length, 2);
   const parsed = await parseSource(join(directory, "active", "year", "new.jsonl"), "codex");
   assert.ok(parsed.gaps.some((gap) => gap.kind === "unsupported_format"));

@@ -24,10 +24,13 @@ export interface NormalizedEvent {
   result?: unknown;
   status?: HistoryEvent["status"];
   final?: "explicit" | "inferred";
+  /** 原生状态不足以确认终答时，禁止共享管道从最后一条 assistant 消息推断 final。 */
+  allowInferredFinal?: boolean;
   interrupted?: boolean;
   durationMs?: number;
   /** 用原生请求身份去重；inputTokens 为包含缓存的归一化总输入。 */
   usageKey?: string;
+  usageMessageKey?: string;
   usage?: Omit<SessionUsage, "id" | "messageId" | "turnId" | "occurredAt" | "model">;
   turnKey?: string;
   branchIds?: string[];
@@ -35,6 +38,8 @@ export interface NormalizedEvent {
   copied?: boolean;
   filePaths?: string[];
   resource?: SessionMessage["resource"];
+  nativeOrdinal?: number;
+  nativeIdentityHash?: string;
 }
 
 export interface NormalizedSessionMetadata {
@@ -78,8 +83,8 @@ export async function readBoundedJsonl(path: string, gaps: Gap[], stream: AsyncI
   return rows;
 }
 
-export function normalizedRecord(event: NormalizedEvent, raw: string, line: number): RawHistoryRecord {
-  return { record: { normalizedEvent: event }, raw, line };
+export function normalizedRecord(event: NormalizedEvent, raw: string, line: number, nativeOrdinal?: number): RawHistoryRecord {
+  return { record: { normalizedEvent: nativeOrdinal === undefined ? event : { ...event, nativeOrdinal } }, raw, line };
 }
 
 export function normalizedSnapshot(source: SourceLocation, records: RawHistoryRecord[], meta: NormalizedSessionMetadata = {}, fingerprint?: string): NormalizedSnapshot {
@@ -125,6 +130,8 @@ export function createNormalizedAdapter(config: {
       const event = record.normalizedEvent as NormalizedEvent | undefined;
       if (!event || event.copied) return;
       context.occurredAt = event.occurredAt;
+      context.nativeOrdinal = event.nativeOrdinal;
+      context.nativeIdentityHash = event.nativeIdentityHash;
       if (event.kind === "tool_call") {
         registerRequest(context, { key: event.key, callId: event.callId ?? event.key, tool: event.tool ?? "unknown", input: event.input, cwd: context.source.cwd });
       } else if (event.kind === "tool_result") {
@@ -159,8 +166,9 @@ export function parseNormalizedSession(snapshot: NormalizedSnapshot, sink: Sessi
     relationship: native.relationship, branches: native.branches, childSessionIds: native.childSessionIds?.map(child => normalizedSessionKey(source.client, child)),
     messageCount: 0, turnCount: 0, models: [], gaps: [...(native.gaps ?? [])] };
   const messages = new Map<string, number>(); const pending = new Map<string, SessionMessage[]>(); const inputs = new Map<string, unknown>();
-  const candidates = new Map<string, SessionMessage>(); const interrupted = new Set<string>();
+  const candidates = new Map<string, { message: SessionMessage; allowInferredFinal: boolean }>(); const interrupted = new Set<string>();
   const turns = new Map<string, string>(); const models = new Set<string>(); let turn = `${id}:turn:0`;
+  const messageIds = new Map<string, string>();
   for (const row of snapshot.records) {
     const event = row.record.normalizedEvent as NormalizedEvent | undefined;
     if (!event) continue;
@@ -179,11 +187,15 @@ export function parseNormalizedSession(snapshot: NormalizedSnapshot, sink: Sessi
       filePaths: paths.length ? paths : undefined, resource: event.resource ?? resourceOf(event.tool, event.input, paths) };
     if (value.resource?.kind === "skill_read") value.resource = undefined;
     messages.set(event.key, value.ordinal);
+    messageIds.set(event.key, value.id);
     if (event.model) models.add(event.model);
     if (event.occurredAt) { meta.startedAt = !meta.startedAt || event.occurredAt < meta.startedAt ? event.occurredAt : meta.startedAt; meta.updatedAt = !meta.updatedAt || event.occurredAt > meta.updatedAt ? event.occurredAt : meta.updatedAt; }
     if (event.kind === "user" && !event.copied && meta.titleOrigin === "fallback" && event.text?.trim()) { meta.title = event.text.trim().replace(/\s+/g, " ").slice(0, 120); meta.titleOrigin = "first_user"; }
     if (event.interrupted) interrupted.add(turn);
-    if (event.kind === "assistant") candidates.set(turn, value);
+    if (event.kind === "assistant") {
+      if (!event.interrupted) interrupted.delete(turn);
+      candidates.set(turn, { message: value, allowInferredFinal: event.allowInferredFinal !== false });
+    }
     if (event.kind === "tool_call") {
       candidates.delete(turn);
       const key = event.callId ?? event.key;
@@ -193,6 +205,7 @@ export function parseNormalizedSession(snapshot: NormalizedSnapshot, sink: Sessi
       pending.set(key, calls); inputs.set(value.id, event.input);
     }
     if (event.kind === "tool_result") {
+      candidates.delete(turn);
       const calls = pending.get(event.callId ?? "") ?? [];
       const call = calls.length === 1 ? calls[0] : undefined;
       value.tool ??= call?.tool;
@@ -204,11 +217,14 @@ export function parseNormalizedSession(snapshot: NormalizedSnapshot, sink: Sessi
     }
     sink.message(value);
     if (event.usage) sink.usage({ ...event.usage, id: `${id}:usage:${normalizedHash(event.usageKey ?? event.key).slice(0, 24)}`,
-      messageId: value.id, turnId: value.turnId, model: event.model, occurredAt: event.occurredAt });
+      messageId: messageIds.get(event.usageMessageKey ?? event.key) ?? value.id,
+      turnId: event.turnKey && turns.has(event.turnKey) ? turns.get(event.turnKey) : value.turnId,
+      model: event.model, occurredAt: event.occurredAt });
   }
   const pendingCalls = [...pending.values()].flat();
   const pendingTurns = new Set(pendingCalls.map(value => value.turnId));
-  for (const [key, candidate] of candidates) if (!candidate.final && !pendingTurns.has(key) && !interrupted.has(key)) sink.message({ ...candidate, final: "inferred" });
+  for (const [key, candidate] of candidates) if (candidate.allowInferredFinal && !candidate.message.final
+    && !pendingTurns.has(key) && !interrupted.has(key)) sink.message({ ...candidate.message, final: "inferred" });
   if (pendingCalls.length) meta.gaps.push({ kind: "unpaired_call", message: "部分原生工具请求尚未记录结果", count: pendingCalls.length, sourceId: meta.sourceId });
   meta.models = [...models];
   return meta;

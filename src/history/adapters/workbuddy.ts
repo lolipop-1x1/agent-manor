@@ -1,7 +1,7 @@
 import Database from "better-sqlite3";
 import { isAbsolute } from "node:path";
 import type { Client, Gap, HistoryEvent } from "../../contracts.js";
-import { object, string, textContent, toolEvidence } from "../extraction.js";
+import { number, object, physicalLines, string, textContent, toolEvidence } from "../extraction.js";
 import type { SourceLocation } from "../types.js";
 import type { HistoryAdapter } from "./types.js";
 import { createNormalizedAdapter, normalizedHash, normalizedRecord, normalizedSnapshot } from "./normalized.js";
@@ -71,6 +71,15 @@ function modelOf(record: Record<string, unknown>): string | undefined {
   return string(provider.model) ?? string(provider.requestModelName) ?? string(message.model);
 }
 
+function parseArguments(value: unknown, gaps: Gap[]): unknown {
+  if (typeof value !== "string") return value;
+  try { return JSON.parse(value) as unknown; }
+  catch {
+    addGap(gaps, "parse_error", "WorkBuddy 工具参数不是有效 JSON 字符串");
+    return value;
+  }
+}
+
 function eventFor(record: Record<string, unknown>, row: RawHistoryRecord, metaGaps: Gap[], usageSeen: Map<string, { event: NormalizedEvent; fingerprint: string }>): NormalizedEvent[] {
   const type = string(record.type) ?? "<缺少类型>";
   const id = string(record.id) ?? `${type}:${row.line}:${normalizedHash(row.raw).slice(0, 16)}`;
@@ -110,7 +119,7 @@ function eventFor(record: Record<string, unknown>, row: RawHistoryRecord, metaGa
     const contextual = provider.isMeta === true || string(record.role) === "user" && provider.startsNewUserRequest === false;
     const kind = compacted ? "compression" : contextual ? "context"
       : record.role === "user" ? "user" : record.role === "assistant" ? "assistant" : "system";
-    const event = make("message", kind, { text: content, final: record.status === "completed" && record.role === "assistant" ? "explicit" : undefined });
+    const event = make("message", kind, { text: content, allowInferredFinal: record.role !== "assistant" });
     useUsage(event);
     events.push(event);
   } else if (type === "reasoning") {
@@ -120,7 +129,7 @@ function eventFor(record: Record<string, unknown>, row: RawHistoryRecord, metaGa
     const event = make(`call:${callId ?? row.line}`, "tool_call", {
       callId,
       tool: string(record.name) ?? "unknown",
-      input: record.arguments,
+      input: parseArguments(record.arguments, metaGaps),
       turnKey: string(record.logicalParentId) ?? undefined,
     });
     useUsage(event);
@@ -133,14 +142,19 @@ function eventFor(record: Record<string, unknown>, row: RawHistoryRecord, metaGa
     const visible = textOf(record.output) || textOf(providerResult.stdout) || textOf(providerResult.content) || textOf(providerResult.stderr);
     const exitCode = typeof providerResult.exitCode === "number" ? providerResult.exitCode : undefined;
     const success = typeof providerResult.success === "boolean" ? providerResult.success : undefined;
+    const readFileResult = object(providerResult.read_file_result);
+    const readResultComplete = typeof readFileResult.content === "string" && typeof readFileResult.hasMore === "boolean"
+      && typeof readFileResult.totalLineCount === "number";
     const status: HistoryEvent["status"] = string(genericResult.error) ? "failure"
       : exitCode !== undefined ? exitCode === 0 ? "success" : "failure"
-      : success === true ? "success" : success === false || Boolean(providerResult.errorMessage) ? "failure" : "unknown";
+      : success === true ? "success" : success === false || Boolean(providerResult.errorMessage) ? "failure"
+        : readResultComplete ? "success" : "unknown";
     const result = {
       exit_code: exitCode,
       output: string(providerResult.stdout) ?? visible,
       filePath: string(providerResult.path),
       content: string(providerResult.content),
+      read_file_result: providerResult.read_file_result,
       originalFile: providerResult.oldContent === undefined ? undefined : providerResult.oldContent,
       type: providerResult.isNewFile === true ? "create" : string(providerResult.type),
       success,
@@ -155,6 +169,7 @@ function eventFor(record: Record<string, unknown>, row: RawHistoryRecord, metaGa
     if (!callId) addGap(metaGaps, "unpaired_call", "WorkBuddy 工具结果缺少原生 callId，无法可靠配对");
   } else if (!["ai-title", "custom-title", "file-history-snapshot"].includes(type)) {
     addGap(metaGaps, "unsupported_format", `WorkBuddy 记录类型 ${type} 尚未适配`);
+    events.push(make("unknown", "context", { text: `未适配记录类型 ${type}`, allowInferredFinal: false }));
   }
   return events;
 }
@@ -165,13 +180,14 @@ async function readWorkbuddySnapshot(location: SourceLocation): Promise<Normaliz
   const fileId = fileSessionId(location.path);
   const bodyIds = sessionIds(rows);
   const provisionalId = location.sessionId ?? location.selector ?? (bodyIds.length === 1 ? bodyIds[0] : undefined);
-  const metadata = await readMetadata(location.path, provisionalId ?? fileId);
-  const sessionId = provisionalId ?? (metadata.found ? fileId : undefined);
+  const metadata = await readMetadata(location.path, bodyIds.length > 1 ? undefined : provisionalId ?? fileId);
+  const sessionId = bodyIds.length > 1 ? undefined : provisionalId ?? (metadata.found ? fileId : undefined);
   if (bodyIds.length > 1) addGap(gaps, "ambiguous", "单个 WorkBuddy 文件包含多个 sessionId，未合并跨会话正文");
   if (sessionId && bodyIds.some(id => id !== sessionId)) addGap(gaps, "ambiguous", "WorkBuddy 正文身份与文件／元数据身份不一致，仅保留匹配记录");
   if (!sessionId) addGap(gaps, "unassociated", "WorkBuddy 正文没有 sessionId，且文件名未能与 sessions 元数据精确关联");
   if (fileId && sessionId && fileId !== sessionId) addGap(gaps, "ambiguous", "WorkBuddy 文件名与原生 sessionId 不一致");
-  const recordRows = sessionId ? rows.filter(row => !string(row.record.sessionId) || row.record.sessionId === sessionId) : rows;
+  const recordRows = bodyIds.length > 1 ? [] : sessionId
+    ? rows.filter(row => !string(row.record.sessionId) || row.record.sessionId === sessionId) : rows;
   const cwdValues = [...new Set(recordRows.map(row => string(row.record.cwd)).filter((value): value is string => typeof value === "string" && isAbsolute(value)))];
   const dbCwd = metadata.cwd && isAbsolute(metadata.cwd) ? metadata.cwd : undefined;
   const cwd = dbCwd ?? (cwdValues.length === 1 ? cwdValues[0] : undefined);
@@ -198,9 +214,9 @@ async function discoverWorkbuddyFile(location: SourceLocation): Promise<SourceLo
   const header = await readJsonlHeader(location.path);
   const ids = sessionIds(header);
   const fileId = fileSessionId(location.path);
-  const candidate = ids.length === 1 ? ids[0] : fileId;
+  const candidate = ids.length === 1 ? ids[0] : ids.length > 1 ? undefined : fileId;
   const metadata = await readMetadata(location.path, candidate);
-  const sessionId = ids.length === 1 ? ids[0] : metadata.found ? fileId : undefined;
+  const sessionId = ids.length === 1 ? ids[0] : ids.length === 0 && metadata.found ? fileId : undefined;
   const cwd = metadata.cwd && isAbsolute(metadata.cwd) ? metadata.cwd : undefined;
   const source = sourceFor(location, "workbuddy", WORKBUDDY_FORMAT, sessionId, cwd);
   source.selector = sessionId;
@@ -220,7 +236,7 @@ export const workbuddyAdapter: HistoryAdapter = createNormalizedAdapter({
     const input = object(inputValue);
     const result = object(resultValue);
     const name = tool === "Bash" ? "Bash" : tool;
-    const mappedInput = name === "Bash"
+    const mappedInput: Record<string, unknown> = name === "Bash"
       ? { ...input, cmd: string(input.command) ?? string(input.cmd) }
       : { ...input, file_path: string(input.file_path) ?? string(input.filePath) ?? string(input.path) };
     const mappedResult = name === "Bash"
@@ -230,6 +246,19 @@ export const workbuddyAdapter: HistoryAdapter = createNormalizedAdapter({
         originalFile: result.originalFile ?? result.oldContent,
         type: result.isNewFile === true ? "create" : result.type };
     const output = visible || visibleResult(resultValue);
+    if (["Read", "read_file"].includes(name)) {
+      const readResult = object(result.read_file_result);
+      const content = string(readResult.content);
+      const totalLines = number(readResult.totalLineCount);
+      const offset = number(input.offset);
+      const returnedLines = content === undefined ? [] : physicalLines(content);
+      const completeFile = readResult.hasMore === false && content !== undefined && totalLines !== undefined
+        && returnedLines.length === totalLines && (offset === undefined || offset === 1);
+      if (!completeFile) return [{ kind: "read", path: mappedInput.file_path as string | undefined,
+        fragments: [], reason: "range_unknown: WorkBuddy Read 缺少完整文件边界或可信起始行" }];
+      return toolEvidence(name, mappedInput, { file: { filePath: mappedInput.file_path, startLine: 1,
+        numLines: returnedLines.length, totalLines, content } }, output);
+    }
     return toolEvidence(name, mappedInput, mappedResult, output);
   },
 });

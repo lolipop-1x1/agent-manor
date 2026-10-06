@@ -11,6 +11,7 @@ import type { SessionMessage, SessionSourceMeta, SessionUsage } from "../src/ses
 import { AnalysisStore, StoreError } from "../src/index/store.js";
 import { SessionStore } from "../src/sessions/store.js";
 import { refreshSessions } from "../src/sessions/refresh.js";
+import { isolatedHistoryRoots } from "./helpers/history-roots.js";
 
 async function fixture(run: (store: SessionStore, path: string) => Promise<void> | void): Promise<void> {
   const directory = await mkdtemp(join(tmpdir(), "manor-session-store-"));
@@ -40,7 +41,7 @@ test("活动日志追加只索引固定前缀，已有内容改写拒绝发布�
       }
     } } };
   };
-  const roots = { codex: join(dbPath, ".."), claude: [], codeflicker: [], "codeflicker-desktop": [], dsh: [], pi: [], workbuddy: [], opencode: [], zcode: [], codebuddy: [], qoder: [] };
+  const roots = isolatedHistoryRoots({ codex: join(dbPath, "..") });
   const first = store.createJob();
   await refreshSessions(store, first.id, roots);
   const id = store.list().sessions[0]!.id;
@@ -277,7 +278,7 @@ test("子标题规则升级刷新旧子修订，未变化的主会话继续复�
     parent_thread_id: "parent-demo", subagent_history_start_ordinal: 2,
     source: { subagent: { thread_spawn: { parent_thread_id: "parent-demo", agent_path: "/root/check_queries" } } } } },
   { type: "session_meta", ordinal: 1, payload: { id: "parent-demo", title: "复制的父标题" } }]));
-  const roots = { codex: directory, claude: [], codeflicker: [], "codeflicker-desktop": [], dsh: [], pi: [], workbuddy: [], opencode: [], zcode: [], codebuddy: [], qoder: [] };
+  const roots = isolatedHistoryRoots({ codex: directory });
   await refreshSessions(store, store.createJob().id, roots);
   const revisions = store.cachedRevisions();
   const cachedChild = revisions.find(item => item.path === childPath)!;
@@ -564,7 +565,7 @@ test("真实刷新调用链：未变来源复用、追加重建、清缓存原�
   await writeFile(sourcePath, encode({ type: "session_meta", payload: { id: "synthetic-refresh" } })
     + encode({ type: "response_item", payload: { type: "message", role: "user", content: [{ type: "input_text", text: "人工合成问句" }] } })
     + encode({ type: "response_item", payload: { type: "message", role: "assistant", phase: "final_answer", content: [{ type: "output_text", text: "人工合成最终回答" }] } }));
-  const roots = { codex: directory, claude: [], codeflicker: [], "codeflicker-desktop": [], dsh: [], pi: [], workbuddy: [], opencode: [], zcode: [], codebuddy: [], qoder: [] };
+  const roots = isolatedHistoryRoots({ codex: directory });
   const refresh = async (clear = false) => { const job = store.createJob(); await refreshSessions(store, job.id, roots, clear); return store.getJob(job.id); };
   const first = await refresh();
   assert.equal(first.status, "complete");
@@ -609,7 +610,7 @@ test("Codex 标题索引按线程身份关联，改名在正文未变时更新�
   await writeFile(index, encode({ id: "unrelated", thread_name: "其他会话" })
     + encode({ id: "synthetic-title", thread_name: "旧标题" }) + "无效索引记录\n"
     + encode({ id: "synthetic-title", thread_name: "索引中的正式名称" }));
-  const roots = { codex: [sessions, archive], claude: [], codeflicker: [], "codeflicker-desktop": [], dsh: [], pi: [], workbuddy: [], opencode: [], zcode: [], codebuddy: [], qoder: [] };
+  const roots = isolatedHistoryRoots({ codex: [sessions, archive] });
   const refresh = async () => { const job = store.createJob(); await refreshSessions(store, job.id, roots); };
   await refresh();
   const before = store.list().sessions[0]!;
@@ -642,7 +643,7 @@ test("Codex 状态库的 name 优先于旧 title，改名刷新且不改写来�
   try {
     state.exec("CREATE TABLE threads (id TEXT PRIMARY KEY,title TEXT,name TEXT)");
     state.prepare("INSERT INTO threads VALUES (?,?,?)").run("synthetic-state-title", "较旧的标题", "状态库正式名称");
-    const roots = { codex: sessions, claude: [], codeflicker: [], "codeflicker-desktop": [], dsh: [], pi: [], workbuddy: [], opencode: [], zcode: [], codebuddy: [], qoder: [] };
+    const roots = isolatedHistoryRoots({ codex: sessions });
     const refresh = async () => { const job = store.createJob(); await refreshSessions(store, job.id, roots); };
     await refresh();
     assert.equal(store.list().sessions[0]?.title, "状态库正式名称");

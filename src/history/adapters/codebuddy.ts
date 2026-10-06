@@ -24,11 +24,12 @@ async function readCodebuddySnapshot(location: SourceLocation): Promise<Normaliz
   const gaps: Gap[] = [];
   const rows = await readJsonlRows(location.path, gaps);
   const bodyIds = sessionIds(rows);
-  const sessionId = location.sessionId ?? location.selector ?? (bodyIds.length === 1 ? bodyIds[0] : undefined);
+  const sessionId = bodyIds.length > 1 ? undefined : location.sessionId ?? location.selector ?? (bodyIds.length === 1 ? bodyIds[0] : undefined);
   if (bodyIds.length > 1) addGap(gaps, "ambiguous", "单个 CodeBuddy 文件包含多个 sessionId，未合并跨会话正文");
   if (sessionId && bodyIds.some(id => id !== sessionId)) addGap(gaps, "ambiguous", "CodeBuddy 正文身份与发现身份不一致，仅保留匹配记录");
   if (!sessionId) addGap(gaps, "unassociated", "CodeBuddy 正文缺少可确认的原生 sessionId");
-  const selected = sessionId ? rows.filter(row => !string(row.record.sessionId) || row.record.sessionId === sessionId) : rows;
+  const selected = bodyIds.length > 1 ? [] : sessionId
+    ? rows.filter(row => !string(row.record.sessionId) || row.record.sessionId === sessionId) : rows;
   const cwdValues = [...new Set(selected.map(row => string(row.record.cwd)).filter((value): value is string => typeof value === "string" && isAbsolute(value)))];
   const cwd = location.cwd && isAbsolute(location.cwd) ? location.cwd : cwdValues.length === 1 ? cwdValues[0] : undefined;
   if (cwdValues.length > 1) addGap(gaps, "ambiguous", "CodeBuddy 正文记录了多个 cwd，无法确认单一项目目录");
@@ -40,6 +41,8 @@ async function readCodebuddySnapshot(location: SourceLocation): Promise<Normaliz
     const type = string(row.record.type);
     if (type !== "message") {
       addGap(gaps, "unsupported_format", `CodeBuddy 记录类型 ${type ?? "<缺少类型>"} 尚未适配`);
+      records.push(normalizedRecord({ key: `unknown:${row.line}`, kind: "context",
+        text: `未适配记录类型 ${type ?? "<缺少类型>"}` }, row.raw, row.line));
       continue;
     }
     const role = string(row.record.role);

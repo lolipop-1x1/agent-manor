@@ -3,12 +3,19 @@ import type { NormalizedEvent, NormalizedSessionMetadata, NormalizedSnapshot, Ra
 import { createNormalizedAdapter, normalizedHash, normalizedRecord, normalizedSessionKey, normalizedSnapshot } from "./normalized.js";
 import { number, object, physicalLines, string, toolEvidence } from "../extraction.js";
 import { normalizeHistoryPath } from "./common.js";
-import { readOnlySqlite, sqliteJson, sqliteTableExists } from "./sqlite-readonly.js";
+import { createSqliteReadBudget, readOnlySqlite, readSqliteRows, sqliteJson, sqliteTableExists } from "./sqlite-readonly.js";
 import type { SourceLocation } from "../types.js";
 
 export const OPENCODE_FORMAT = "opencode-sqlite";
 const missing = () => Object.assign(new Error("OpenCode 会话来源已缺失"), { code: "ENOENT" });
+const UNSUPPORTED_SCHEMA = "__unsupported_schema__";
+const READ_BUDGET_EXCEEDED = "__read_budget_exceeded__";
 const rowRaw = (row: Record<string, unknown>) => JSON.stringify(row);
+
+function diagnosticSnapshot(location: SourceLocation, kind: "unsupported_format" | "budget_exceeded", message: string): NormalizedSnapshot {
+  const { adapterGap: _adapterGap, ...source } = location;
+  return normalizedSnapshot(source, [], { gaps: [{ kind, message }] });
+}
 
 function timestamp(value: unknown): string | undefined {
   if (typeof value === "number" && Number.isFinite(value)) return new Date(value).toISOString();
@@ -23,7 +30,9 @@ function total(values: (number | undefined)[]): number | undefined {
 
 function modelName(message: Record<string, unknown>): string | undefined {
   const model = object(message.model);
-  return string(model.modelID) ?? string(model.model);
+  const providerId = string(message.providerID) ?? string(model.providerID);
+  const modelId = string(message.modelID) ?? string(model.modelID) ?? string(model.model);
+  return providerId && modelId ? `${providerId}/${modelId}` : modelId;
 }
 
 function usageEvent(key: string, tokensValue: unknown, model: string | undefined, occurredAt: string | undefined,
@@ -44,7 +53,7 @@ function usageEvent(key: string, tokensValue: unknown, model: string | undefined
     meta.gaps.push({ kind: "unsupported_format", message: "OpenCode 用量缺少 reasoning 分项，未计算总输出" });
   }
   const event: NormalizedEvent = {
-    key, kind: "assistant", text, model, occurredAt,
+    key, kind: "context", text, model, occurredAt,
     usageKey: key,
     usage: {
       inputTokens: total([input, read, write]),
@@ -62,11 +71,12 @@ function textParts(parts: { row: Record<string, unknown>; data: Record<string, u
 }
 
 function buildRecords(sessionId: string, messages: Record<string, unknown>[], parts: Record<string, unknown>[], meta: NormalizedSessionMetadata) {
+  const gaps = meta.gaps ?? (meta.gaps = []);
   const byMessage = new Map<string, { row: Record<string, unknown>; data: Record<string, unknown>; raw: string }[]>();
   for (const row of parts) {
     const messageId = string(row.message_id);
     if (!messageId) continue;
-    const value = { row, data: sqliteJson(row.data), raw: rowRaw(row) };
+    const value = { row, data: sqliteJson(row.data, gaps), raw: rowRaw(row) };
     byMessage.set(messageId, [...(byMessage.get(messageId) ?? []), value]);
   }
 
@@ -75,7 +85,7 @@ function buildRecords(sessionId: string, messages: Record<string, unknown>[], pa
   for (const [messageIndex, row] of messages.entries()) {
     const id = string(row.id);
     if (!id) continue;
-    const data = sqliteJson(row.data);
+    const data = sqliteJson(row.data, gaps);
     const role = string(data.role);
     const grouped = byMessage.get(id) ?? [];
     const text = textParts(grouped);
@@ -84,9 +94,24 @@ function buildRecords(sessionId: string, messages: Record<string, unknown>[], pa
     const parentMessage = string(data.parentID) ?? string(data.parent_id);
     const turnKey = parentMessage ?? id;
     const messageRaw = JSON.stringify({ message: row, parts: grouped.filter(part => part.data.type === "text").map(part => part.row) });
+    const messageMetadata = object(data.metadata);
+    const compactionContinue = messageMetadata.compaction_continue === true;
+    const synthetic = data.synthetic === true || messageMetadata.synthetic === true;
+    const summarized = data.summary === true || messageMetadata.summary === true;
+    const finishedAt = timestamp(object(data.time).completed ?? row.time_completed);
+    const finishReason = (string(data.finish) ?? string(data.stopReason) ?? string(data.finishReason) ?? "").toLowerCase();
+    const terminalFailure = (data.error !== undefined && data.error !== null)
+      || ["error", "length", "max_tokens", "aborted", "cancelled", "canceled", "interrupted"].includes(finishReason);
+    const hasToolPart = grouped.some(part => part.data.type === "tool");
+    const hasCompressionPart = grouped.some(part => part.data.type === "compaction" || part.data.type === "summary");
+    const allowInferredFinal = role === "assistant" && Boolean(finishedAt) && !terminalFailure
+      && !hasToolPart && !hasCompressionPart && !synthetic && !compactionContinue && !summarized;
 
     if (role === "user" || role === "assistant" || role === "system") {
-      const event: NormalizedEvent = { key: `message:${id}`, kind: role, text, model, occurredAt: created, turnKey };
+      const kind: NormalizedEvent["kind"] = compactionContinue || summarized ? "compression"
+        : synthetic ? "context" : role;
+      const event: NormalizedEvent = { key: `message:${id}`, kind, text, model, occurredAt: created, turnKey,
+        ...(role === "assistant" ? { allowInferredFinal } : {}) };
       staged.push({ event, raw: messageRaw, order: messageIndex * 1_000 });
     }
 
@@ -101,8 +126,13 @@ function buildRecords(sessionId: string, messages: Record<string, unknown>[], pa
         if (value) staged.push({ event: { key: `reasoning:${partId}`, kind: "thinking", text: value, model, occurredAt: partTime, turnKey }, raw: partRaw, order: partOrder });
       }
       if (type === "step-finish") {
-        staged.push({ event: { ...usageEvent(`step:${partId}`, part.data.tokens, model, partTime, text, partRaw, 0, meta).record.normalizedEvent as NormalizedEvent,
-          key: `message:${id}`, turnKey }, raw: partRaw, order: partOrder });
+        staged.push({ event: { ...usageEvent(`usage:step:${partId}`, part.data.tokens, model, partTime, "", partRaw, 0, meta).record.normalizedEvent as NormalizedEvent,
+          usageMessageKey: `message:${id}`, turnKey }, raw: partRaw, order: partOrder });
+      }
+      if (type === "compaction" || type === "summary") {
+        const summary = string(part.data.summary) ?? string(part.data.text) ?? string(part.data.content);
+        staged.push({ event: { key: `compression:${partId}`, kind: "compression", ...(summary ? { text: summary } : {}),
+          model, occurredAt: partTime, turnKey, allowInferredFinal: false }, raw: partRaw, order: partOrder });
       }
       if (type !== "tool") continue;
       const callId = string(part.data.callID) ?? string(object(part.data.state).callID) ?? partId;
@@ -134,8 +164,8 @@ function buildRecords(sessionId: string, messages: Record<string, unknown>[], pa
 
     const hasStepUsage = grouped.some(part => part.data.type === "step-finish");
     if (role === "assistant" && !hasStepUsage && data.tokens !== undefined) {
-      const usage = usageEvent(`message:${id}`, data.tokens, model, created, text, rowRaw(row), 0, meta).record.normalizedEvent as NormalizedEvent;
-      staged.push({ event: { ...usage, key: `message:${id}`, turnKey }, raw: rowRaw(row), order: messageIndex * 1_000 + 999 });
+      const usage = usageEvent(`usage:message:${id}`, data.tokens, model, created, "", rowRaw(row), 0, meta).record.normalizedEvent as NormalizedEvent;
+      staged.push({ event: { ...usage, usageMessageKey: `message:${id}`, turnKey }, raw: rowRaw(row), order: messageIndex * 1_000 + 999 });
     }
   }
 
@@ -152,18 +182,18 @@ function buildRecords(sessionId: string, messages: Record<string, unknown>[], pa
   return { records, partLines };
 }
 
-function sessionRows(database: import("better-sqlite3").Database, id: string) {
+function sessionRows(database: import("better-sqlite3").Database, id: string, gaps: NonNullable<NormalizedSessionMetadata["gaps"]>, budget: ReturnType<typeof createSqliteReadBudget>) {
   const session = database.prepare("SELECT * FROM session WHERE id=?").get(id) as Record<string, unknown> | undefined;
   if (!session) throw missing();
-  const messages = database.prepare("SELECT * FROM message WHERE session_id=? ORDER BY time_created ASC, id ASC").all(id) as Record<string, unknown>[];
-  const parts = database.prepare("SELECT * FROM part WHERE session_id=? ORDER BY time_created ASC, id ASC").all(id) as Record<string, unknown>[];
+  const messages = readSqliteRows(database, "SELECT * FROM message WHERE session_id=? ORDER BY time_created ASC, id ASC", gaps, budget, id);
+  const parts = readSqliteRows(database, "SELECT * FROM part WHERE session_id=? ORDER BY time_created ASC, id ASC", gaps, budget, id);
   return { session, messages, parts };
 }
 
-function taskChildIds(sessionId: string, parts: Record<string, unknown>[]): string[] {
+function taskChildIds(sessionId: string, parts: Record<string, unknown>[], gaps: NonNullable<NormalizedSessionMetadata["gaps"]>): string[] {
   const ids = new Set<string>();
   for (const row of parts) {
-    const part = sqliteJson(row.data);
+    const part = sqliteJson(row.data, gaps);
     if (part.type !== "tool" || part.tool !== "task") continue;
     const state = object(part.state);
     const metadata = object(state.metadata);
@@ -174,20 +204,34 @@ function taskChildIds(sessionId: string, parts: Record<string, unknown>[]): stri
 
 async function discoverFile(location: SourceLocation): Promise<SourceLocation[]> {
   return readOnlySqlite(location.path, database => {
-    if (!["session", "message", "part"].every(table => sqliteTableExists(database, table))) return [];
-    const rows = database.prepare("SELECT id FROM session ORDER BY id").all() as { id: string }[];
-    return rows.filter(row => typeof row.id === "string").map(row => ({ ...location, format: OPENCODE_FORMAT,
-      selector: row.id, sessionId: row.id, sourceId: normalizedSessionKey(location.client, row.id) }));
+    if (!["session", "message", "part"].every(table => sqliteTableExists(database, table))) {
+      return [{ ...location, format: OPENCODE_FORMAT, selector: UNSUPPORTED_SCHEMA,
+        adapterGap: { kind: "unsupported_format", message: "OpenCode SQLite 表结构尚未适配，保留来源并标记缺口" } }];
+    }
+    const gaps: NonNullable<NormalizedSessionMetadata["gaps"]> = [];
+    const budget = createSqliteReadBudget();
+    const rows = readSqliteRows(database, "SELECT id FROM session ORDER BY id", gaps, budget);
+    const sources: SourceLocation[] = rows.filter(row => typeof row.id === "string").map(row => ({ ...location, format: OPENCODE_FORMAT,
+      selector: String(row.id), sessionId: String(row.id), sourceId: normalizedSessionKey(location.client, String(row.id)) }));
+    if (budget.exceeded) sources.push({ ...location, format: OPENCODE_FORMAT, selector: READ_BUDGET_EXCEEDED,
+      adapterGap: gaps[0] ?? { kind: "budget_exceeded", message: "OpenCode 会话目录超过 SQLite 有界读取上限" } });
+    return sources;
   });
 }
 
 async function readSnapshot(location: SourceLocation): Promise<NormalizedSnapshot> {
+  if (location.adapterGap) return diagnosticSnapshot(location, location.adapterGap.kind === "budget_exceeded" ? "budget_exceeded" : "unsupported_format", location.adapterGap.message);
+  if (location.selector === UNSUPPORTED_SCHEMA) return diagnosticSnapshot(location, "unsupported_format", "OpenCode SQLite 表结构尚未适配，保留来源并标记缺口");
+  if (location.selector === READ_BUDGET_EXCEEDED) return diagnosticSnapshot(location, "budget_exceeded", "OpenCode 会话目录超过 SQLite 有界读取上限");
   if (!location.selector) throw new Error("OpenCode 来源缺少原生会话选择器");
+  const gaps: NonNullable<NormalizedSessionMetadata["gaps"]> = [];
+  const budget = createSqliteReadBudget();
   const selected = await readOnlySqlite(location.path, database => {
     if (!["session", "message", "part"].every(table => sqliteTableExists(database, table))) throw missing();
-    const current = sessionRows(database, location.selector!);
+    const current = sessionRows(database, location.selector!, gaps, budget);
     const parentId = string(current.session.parent_id);
-    const parent = parentId ? (database.prepare("SELECT id FROM session WHERE id=?").get(parentId) ? sessionRows(database, parentId) : undefined) : undefined;
+    const parent = parentId ? (database.prepare("SELECT id FROM session WHERE id=?").get(parentId)
+      ? sessionRows(database, parentId, gaps, budget) : undefined) : undefined;
     return { current, parent };
   });
   const id = string(selected.current.session.id);
@@ -199,17 +243,17 @@ async function readSnapshot(location: SourceLocation): Promise<NormalizedSnapsho
   const agent = string(sessionData.agent);
   const title = string(sessionData.title);
   const parentId = string(sessionData.parent_id);
-  const metadata: NormalizedSessionMetadata = { title };
+  const metadata: NormalizedSessionMetadata = { title, gaps };
   if (parentId && selected.parent) {
-    const parentMeta: NormalizedSessionMetadata = { childSessionIds: taskChildIds(parentId, selected.parent.parts) };
+    const parentMeta: NormalizedSessionMetadata = { childSessionIds: taskChildIds(parentId, selected.parent.parts, gaps), gaps };
     const parentRecords = buildRecords(parentId, selected.parent.messages, selected.parent.parts, parentMeta);
     const taskRow = selected.parent.parts.find(row => {
-      const part = sqliteJson(row.data);
+      const part = sqliteJson(row.data, gaps);
       const state = object(part.state);
       const partMeta = object(state.metadata);
       return part.type === "tool" && part.tool === "task" && string(partMeta.parentSessionId) === parentId && string(partMeta.sessionId) === id;
     });
-    const taskId = taskRow ? string(sqliteJson(taskRow.data).id) ?? string(taskRow.id) : undefined;
+    const taskId = taskRow ? string(sqliteJson(taskRow.data, gaps).id) ?? string(taskRow.id) : undefined;
     const proofLine = taskId ? parentRecords.partLines.get(taskId) : undefined;
     if (taskRow && proofLine !== undefined) {
       const raw = rowRaw(taskRow);
@@ -225,12 +269,12 @@ async function readSnapshot(location: SourceLocation): Promise<NormalizedSnapsho
     metadata.parentSessionId = parentId;
     metadata.relationships = [{ kind: "subagent", parentSessionId: parentId, agentId: agent }];
   } else if (!metadata.relationship && parentId) {
-    metadata.gaps = [{ kind: "ambiguous", message: "OpenCode parent_id 可由通用 Session.create 输入设置，未找到 Task 子会话证据，父类型未确认" }];
+    gaps.push({ kind: "ambiguous", message: "OpenCode parent_id 可由通用 Session.create 输入设置，未找到 Task 子会话证据，父类型未确认" });
   }
   const records = buildRecords(id, selected.current.messages, selected.current.parts, metadata).records;
   const sessionRaw = rowRaw(selected.current.session);
   const fingerprint = JSON.stringify({ session: sessionRaw, parent: selected.parent ? rowRaw(selected.parent.session) : undefined,
-    parentTaskIds: taskChildIds(id, selected.current.parts) });
+    parentTaskIds: taskChildIds(id, selected.current.parts, gaps) });
   return normalizedSnapshot(source, records, metadata, fingerprint);
 }
 

@@ -9,7 +9,7 @@ description: 使用本机 AgentManor CLI 查询已接入 Code Agent 在 Git 仓�
 
 ## 查询到证据
 
-1. 用 `repositories --json` 查找用户指定的仓库。未登记时执行 `register <绝对仓库路径> --wait --json`，取 `repository.id`，确认 `job.status === "completed"`。若需要隔离测试，在启动前设置独立的 `AGENT_MANOR_HOME`，并把 `AGENT_MANOR_CODEX_DIR`、`AGENT_MANOR_CLAUDE_DIR`、`AGENT_MANOR_CODEFLICKER_DIR`、`AGENT_MANOR_CODEFLICKER_DESKTOP_DIR` 全部指向测试目录或空目录。
+1. 用 `repositories --json` 查找用户指定的仓库。未登记时执行 `register <绝对仓库路径> --wait --json`，取 `repository.id`，确认 `job.status === "completed"`。若需要隔离测试，在启动前设置独立的 `AGENT_MANOR_HOME`，并把每个已注册客户端对应的 `AGENT_MANOR_<CLIENT_ID>_DIR` 都指向测试目录或空目录；变量名由稳定 ID 大写并将连字符换成下划线，客户端列表以 `coverage --help` 中的稳定 ID 为准。
 2. 按用户范围执行 `coverage <repositoryId> --json`，可加 `--client <客户端ID>`、`--from/--to <ISO时间>`、`--categories source,config,docs,unknown`、`--directory <相对目录>`。默认全部客户端、全部历史、源码；用 `coverage --help` 核对当前支持的客户端及稳定 ID。保存返回的 `version` 和全部筛选。
 3. 选择返回的文件，执行 `file <repositoryId> <相对路径> --version <version> <相同筛选> --json`。查询活动用 `events <repositoryId> --path <相对路径> --version <version> <相同筛选> --page 1 --page-size 50 --json`；结果超过一页时按 `total` 翻页。
 4. 用返回活动的 `id` 执行 `evidence <repositoryId> <eventId> --version <version> <相同筛选> --json`，核对 `records[].raw` 和来源引用。只通过 event ID 回读索引证据，不自行读取或执行历史命令。

@@ -20,6 +20,8 @@ export interface HistoryAdapterContext {
   row: number;
   raw: string;
   occurredAt?: string;
+  nativeOrdinal?: number;
+  nativeIdentityHash?: string;
   source: ParsedHistorySource;
   cursor: HistoryCursor;
   hash(value: string | Uint8Array): string;

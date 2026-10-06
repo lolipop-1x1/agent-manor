@@ -4,12 +4,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { zstdCompressSync } from "node:zlib";
 import test from "node:test";
-import { parseSource } from "../src/history/index.js";
+import { parseSource, resolveSharedHistory } from "../src/history/index.js";
 import { HISTORY_ADAPTERS, readHistoryEvidence } from "../src/history/adapters/index.js";
 import type { HistoryAdapter } from "../src/history/adapters/types.js";
 import { dshAdapter } from "../src/history/adapters/dsh.js";
 import { piAdapter } from "../src/history/adapters/pi.js";
-import { parseNormalizedSession } from "../src/history/adapters/normalized.js";
+import { normalizedRecord, normalizedSnapshot, parseNormalizedSession } from "../src/history/adapters/normalized.js";
 import type { NormalizedSnapshot } from "../src/history/adapters/normalized.js";
 import type { SessionMessage, SessionUsage } from "../src/session-contracts.js";
 
@@ -85,6 +85,13 @@ test("DSH 解码压缩代际副本、继承边界、失败尝试、工具证据�
   assert.equal(parsed.sessionId, id);
   assert.equal(parsed.relationships[0]?.kind, "subagent");
   assert.equal(parsed.relationships.find(relationship => relationship.kind === "fork")?.endOrdinalExclusive, 1);
+  const parentPath = join(directory, "parent.jsonl");
+  await writeFile(parentPath, encode([dshHeader(4, "synthetic-parent"),
+    dshEvent("user/message", 0, { turn: 0, message: { role: "user", source: { kind: "user" }, content: [{ type: "text", text: "parent prompt" }] } })]));
+  const [parentSource] = await dshAdapter.discoverFile!({ client: "dsh", format: DSH_FORMAT, path: parentPath });
+  const parent = await parseSource(parentPath, "dsh", undefined, DSH_FORMAT, { location: parentSource });
+  const shared = resolveSharedHistory([parent, parsed]);
+  assert.equal(shared.relationships.find(item => item.sourceId === parsed.sourceId && item.relationship.kind === "fork")?.resolved, true);
   const snapshot = await dshAdapter.readRecords!({ client: "dsh", format: DSH_FORMAT, path: v4 });
   const session = sink(snapshot as NormalizedSnapshot);
   assert.equal(session.metadata.turnCount, 2);
@@ -140,16 +147,101 @@ test("DSH 未知代际仍保留来源并显式标记 unsupported_format", async 
   await writeFile(path, encode([
     dshHeader(5, "synthetic-v5"),
     dshEvent("user/message", 0, { turn: 0, message: { role: "user", source: { kind: "user" }, content: [{ type: "text", text: "future format" }] } }),
+    dshEvent("future/native-event", 1, { turn: 0, payload: "unknown but retained" }),
   ]));
   const [source] = await dshAdapter.discoverFile!({ client: "dsh", format: DSH_FORMAT, path });
   assert.equal(source?.sessionId, "synthetic-v5");
   assert.equal(source?.selector, "v5");
   assert.equal(dshAdapter.selectSources!([source!]).length, 1);
-  assert.deepEqual(dshAdapter.selectSources!([source!, { ...source!, selector: "v4", path: join(directory, "session.v4.jsonl") }])
+  const supportedCopy = { ...source!, selector: "v4", path: join(directory, "session.v4.jsonl"),
+    sourceCompleteness: { version: 4, supported: true, complete: true, fingerprint: "synthetic-complete" } };
+  assert.deepEqual(dshAdapter.selectSources!([source!, supportedCopy])
     .map(selected => selected.selector), ["v4"]);
   const snapshot = await dshAdapter.readRecords!({ client: "dsh", format: DSH_FORMAT, path });
   assert.ok((snapshot as NormalizedSnapshot).meta.gaps?.some(gap => gap.kind === "unsupported_format"));
+  assert.ok((snapshot as NormalizedSnapshot).records.some(row => row.record.normalizedEvent?.kind === "context"
+    && row.record.normalizedEvent.text === "未适配事件 future/native-event"));
 }));
+
+test("DSH 同身份副本优先选择完整旧代际，记录不完整新副本缺口", async () => temporary(async directory => {
+  register(dshAdapter);
+  const id = "synthetic-duplicate";
+  const v3 = join(directory, "session.v3.jsonl");
+  const v4 = join(directory, "session.v4.jsonl");
+  await writeFile(v3, encode([dshHeader(3, id), dshEvent("user/message", 0,
+    { turn: 0, message: { role: "user", source: { kind: "user" }, content: [{ type: "text", text: "complete v3" }] } })]));
+  await writeFile(v4, `${encode([dshHeader(4, id)])}{"type":"user/message","seq":1,"data":`);
+  const [oldSource] = await dshAdapter.discoverFile!({ client: "dsh", format: DSH_FORMAT, path: v3 });
+  const [newSource] = await dshAdapter.discoverFile!({ client: "dsh", format: DSH_FORMAT, path: v4 });
+  const [selected] = dshAdapter.selectSources!([newSource!, oldSource!]);
+  assert.equal(selected?.path, v3);
+  assert.match(selected?.adapterGap?.message ?? "", /v4.*v3/);
+  assert.match(selected?.adapterGap?.message ?? "", /不完整副本未用于覆盖完整来源/);
+
+  const conflictV3 = join(directory, "conflict.v3.jsonl");
+  const conflictV4 = join(directory, "conflict.v4.jsonl");
+  await writeFile(conflictV3, encode([dshHeader(3, "synthetic-conflict"), dshEvent("user/message", 0,
+    { turn: 0, message: { role: "user", source: { kind: "user" }, content: [{ type: "text", text: "version three" }] } })]));
+  await writeFile(conflictV4, encode([dshHeader(4, "synthetic-conflict"), dshEvent("user/message", 0,
+    { turn: 0, message: { role: "user", source: { kind: "user" }, content: [{ type: "text", text: "version four" }] } })]));
+  const [conflictSourceV3] = await dshAdapter.discoverFile!({ client: "dsh", format: DSH_FORMAT, path: conflictV3 });
+  const [conflictSourceV4] = await dshAdapter.discoverFile!({ client: "dsh", format: DSH_FORMAT, path: conflictV4 });
+  const [conflictSelected] = dshAdapter.selectSources!([conflictSourceV3!, conflictSourceV4!]);
+  assert.equal(conflictSelected?.path, conflictV4);
+  assert.equal(conflictSelected?.adapterGap?.kind, "ambiguous");
+  assert.match(conflictSelected?.adapterGap?.message ?? "", /完整副本的规范化事件存在冲突/);
+  assert.match(conflictSelected?.adapterGap?.message ?? "", /选择完整且已适配的来源 v4/);
+}));
+
+test("DSH 和 Pi 来源缺失时传播 I/O 错误，不返回空快照", async () => temporary(async directory => {
+  register(dshAdapter);
+  register(piAdapter);
+  const missing = join(directory, "missing.jsonl");
+  await assert.rejects(dshAdapter.readRecords!({ client: "dsh", format: DSH_FORMAT, path: missing }));
+  await assert.rejects(piAdapter.readRecords!({ client: "pi", format: PI_FORMAT, path: missing }));
+  const child = join(directory, "2026-10-06T01-00-00-000Z_pi-child-synthetic.jsonl");
+  await writeFile(child, encode([{ type: "session", version: 3, id: "pi-child-synthetic", cwd: "/synthetic/repo",
+    parentSession: join(directory, "2026-10-06T00-00-00-000Z_pi-missing-parent.jsonl") }]));
+  const snapshot = await piAdapter.readRecords!({ client: "pi", format: PI_FORMAT, path: child });
+  assert.ok((snapshot as NormalizedSnapshot).meta.gaps?.some(gap => gap.kind === "source_missing"));
+}));
+
+test("DSH 未完成、错误或中断的原生轮次不推断最终回答", async () => temporary(async directory => {
+  register(dshAdapter);
+  const path = join(directory, "session.v4.jsonl");
+  await writeFile(path, encode([
+    dshHeader(4, "synthetic-incomplete"),
+    dshEvent("user/message", 0, { turn: 0, message: { role: "user", source: { kind: "user" }, content: [{ type: "text", text: "prompt" }] } }),
+    dshEvent("assistant/message", 1, { turn: 0, message: { role: "assistant", source: { kind: "model" }, content: [{ type: "text", text: "failed attempt" }] } }),
+    dshEvent("turn/end", 2, { turn: 0, reason: { kind: "error" } }),
+    dshEvent("assistant/message", 3, { turn: 0, interrupted: true,
+      message: { role: "assistant", source: { kind: "model" }, content: [{ type: "text", text: "interrupted attempt" }] } }),
+  ]));
+  const session = sink(await dshAdapter.readRecords!({ client: "dsh", format: DSH_FORMAT, path }) as NormalizedSnapshot);
+  assert.ok(session.messages.filter(message => message.kind === "assistant").every(message => message.final === undefined));
+}));
+
+test("共享 final 推断在工具请求或结果后使更早 assistant 候选失效", () => {
+  const source = { path: "/synthetic/tool-history.jsonl", client: "codex" as const, format: "fixture", sessionId: "tool-history" };
+  const events = [
+    { key: "user", kind: "user" as const, text: "inspect file" },
+    { key: "early-answer", kind: "assistant" as const, text: "I will inspect it first." },
+    { key: "call", kind: "tool_call" as const, callId: "call-1", tool: "Read", input: { filePath: "src/a.ts" } },
+    { key: "result", kind: "tool_result" as const, callId: "call-1", status: "success" as const, result: { content: "alpha" } },
+  ];
+  const snapshot = normalizedSnapshot(source, events.map((event, index) => normalizedRecord(event, JSON.stringify(event), index + 1)));
+  const session = sink(snapshot);
+  assert.equal(session.messages.find(message => message.kind === "assistant")?.final, undefined);
+  assert.equal(session.metadata.turnCount, 1);
+
+  const retrySnapshot = normalizedSnapshot(source, [
+    normalizedRecord({ key: "retry-user", kind: "user", text: "retry this" }, "user", 1),
+    normalizedRecord({ key: "failed-attempt", kind: "assistant", text: "failed attempt", interrupted: true }, "failed", 2),
+    normalizedRecord({ key: "successful-retry", kind: "assistant", text: "successful retry" }, "success", 3),
+  ]);
+  const retry = sink(retrySnapshot);
+  assert.equal(retry.messages.filter(message => message.text === "successful retry").at(-1)?.final, "inferred");
+});
 
 function piEntry(type: string, id: string, parentId: string | null, body: Record<string, unknown> = {}) {
   return { type, id, parentId, timestamp: "2026-10-06T01:00:00.000Z", ...body };
@@ -192,6 +284,11 @@ test("Pi 分支各自保留 final、当前叶定位、复制继承、注入与�
     { client: "pi", format: PI_FORMAT, path: childPath });
   assert.equal(discovered?.source.parentSessionId, "pi-parent-synthetic");
   const parsed = await parseSource(childPath, "pi", undefined, PI_FORMAT, { location: discovered?.source });
+  const parent = await parseSource(parentPath, "pi", undefined, PI_FORMAT, { location: {
+    client: "pi", format: PI_FORMAT, path: parentPath, sessionId: "pi-parent-synthetic", cwd: "/synthetic/repo",
+  } });
+  const shared = resolveSharedHistory([parent, parsed]);
+  assert.equal(shared.relationships.find(item => item.sourceId === parsed.sourceId)?.resolved, true);
   const session = sink(await piAdapter.readRecords!({ client: "pi", format: PI_FORMAT, path: childPath }) as NormalizedSnapshot);
   assert.equal(session.metadata.turnCount, 1);
   assert.equal(session.messages.find(message => message.text === "shared question")?.copied, true);
@@ -218,4 +315,17 @@ test("Pi 分支各自保留 final、当前叶定位、复制继承、注入与�
   assert.ok(evidence?.raw.includes('"type":"toolCall"'));
   const evidenceResult = await readHistoryEvidence(read!.sources[1]!);
   assert.ok(evidenceResult?.raw.includes('"role":"toolResult"'));
+}));
+
+test("Pi length 与 error stopReason 不成为分支最终回答", async () => temporary(async directory => {
+  register(piAdapter);
+  const path = join(directory, "2026-10-06T01-00-00-000Z_pi-failure-synthetic.jsonl");
+  await writeFile(path, encode([
+    { type: "session", version: 3, id: "pi-failure-synthetic", timestamp: "2026-10-06T01:00:00.000Z", cwd: "/synthetic/repo" },
+    piEntry("message", "user", null, { message: { role: "user", content: [{ type: "text", text: "prompt" }] } }),
+    piAssistant("error", "user", "error attempt", "error"),
+    piAssistant("length", "error", "truncated attempt", "length"),
+  ]));
+  const session = sink(await piAdapter.readRecords!({ client: "pi", format: PI_FORMAT, path }) as NormalizedSnapshot);
+  assert.ok(session.messages.filter(message => message.kind === "assistant").every(message => message.final === undefined));
 }));

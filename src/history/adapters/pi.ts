@@ -2,7 +2,7 @@ import { createReadStream } from "node:fs";
 import { isAbsolute, basename } from "node:path";
 import { changedFragments, number, object, physicalLines, shellEvidence, string, textContent, toolEvidence, unifiedFragments } from "../extraction.js";
 import { normalizeHistoryPath } from "./common.js";
-import { createNormalizedAdapter, normalizedRecord, normalizedSnapshot, readBoundedJsonl, type NormalizedEvent, type NormalizedSessionMetadata, type NormalizedSnapshot, type RawHistoryRecord } from "./normalized.js";
+import { createNormalizedAdapter, normalizedHash, normalizedRecord, normalizedSnapshot, readBoundedJsonl, type NormalizedEvent, type NormalizedSessionMetadata, type NormalizedSnapshot, type RawHistoryRecord } from "./normalized.js";
 import type { SourceLocation } from "../types.js";
 
 const PI_FORMAT = "pi-jsonl";
@@ -130,12 +130,7 @@ function inheritedParentIds(parentPath: string, gaps: NonNullable<NormalizedSess
 
 async function snapshot(location: SourceLocation): Promise<NormalizedSnapshot> {
   const gaps: NonNullable<NormalizedSessionMetadata["gaps"]> = [];
-  let rows: NativeRow[];
-  try { rows = await readBoundedJsonl(location.path, gaps, createReadStream(location.path)) as NativeRow[]; }
-  catch {
-    gaps.push({ kind: "unsupported_format", message: "Pi 来源无法按 JSONL 格式读取" });
-    return normalizedSnapshot(location, [], { gaps });
-  }
+  const rows = await readBoundedJsonl(location.path, gaps, createReadStream(location.path)) as NativeRow[];
   const header = rows[0]?.record.type === "session" ? rows[0]!.record : undefined;
   if (!header) {
     gaps.push({ kind: "unsupported_format", message: "Pi 来源缺少会话头记录" });
@@ -153,7 +148,10 @@ async function snapshot(location: SourceLocation): Promise<NormalizedSnapshot> {
       const parent = await inheritedParentIds(parentPath, []);
       inheritedIds = parent.ids;
       parentFingerprint = parent.fingerprint;
-    } catch { gaps.push({ kind: "source_missing", message: "Pi 分叉父文件不可用，无法核验复制记录" }); }
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      gaps.push({ kind: "source_missing", message: "Pi 分叉父文件已缺失，无法核验复制记录" });
+    }
   } else if (parentPath) gaps.push({ kind: "source_missing", message: "Pi 分叉父文件路径缺少可核验的绝对来源" });
   if (parentPath && !parentId) gaps.push({ kind: "ambiguous", message: "Pi 分叉父文件名不能解析成原生会话身份" });
   const entries = rows.slice(1).filter(row => string(row.record.id));
@@ -243,7 +241,8 @@ async function snapshot(location: SourceLocation): Promise<NormalizedSnapshot> {
   for (const row of entries) if (row.record.type === "session_info") title = string(row.record.name)?.trim() || title;
   const metadata: NormalizedSessionMetadata = {
     ...(title ? { title, titleOrigin: "recorded" as const } : {}),
-    ...(parentId ? { parentSessionId: parentId, relationship: "fork" as const, relationships: [{ kind: "fork" as const, parentSessionId: parentId }] } : {}),
+    ...(parentId ? { parentSessionId: parentId, relationship: "fork" as const, relationships: [{ kind: "fork" as const, parentSessionId: parentId,
+      ...(inheritedIds.size ? { copiedRecordIdentityHashes: [...inheritedIds].map(normalizedHash) } : {}) }] } : {}),
     branches,
     gaps,
   };
@@ -256,7 +255,7 @@ async function snapshot(location: SourceLocation): Promise<NormalizedSnapshot> {
     const turnKey = turnKeys.get(id) || undefined;
     const occurredAt = dateValue(entry.timestamp);
     const copied = inheritedIds.has(id);
-    const base = { occurredAt, turnKey, branchIds: treeBranches, currentBranch, copied };
+    const base = { occurredAt, turnKey, branchIds: treeBranches, currentBranch, copied, nativeIdentityHash: normalizedHash(id) };
     const add = (event: NormalizedEvent, keySuffix = "") => records.push(normalizedRecord({ ...base, ...event, key: `pi:${id}${keySuffix}` }, row.raw, row.line));
     if (entry.type === "message") {
       const message = object(entry.message);
@@ -271,7 +270,7 @@ async function snapshot(location: SourceLocation): Promise<NormalizedSnapshot> {
         const usage = assistantUsage(message);
         const model = string(message.model);
         const final = finalIds.has(id) ? "inferred" : undefined;
-        add({ key: "", kind: "assistant", ...(visible ? { text: visible } : {}), model, final,
+        add({ key: "", kind: "assistant", ...(visible ? { text: visible } : {}), model, final, allowInferredFinal: false,
           interrupted: interruptedIds.has(id) || undefined, status: ["error"].includes(string(message.stopReason) ?? "") ? "failure" : undefined,
           usageKey: usage ? `${id}:usage` : undefined, usage }, ":assistant");
         if (thinking) add({ key: "", kind: "thinking", text: thinking, model }, ":thinking");

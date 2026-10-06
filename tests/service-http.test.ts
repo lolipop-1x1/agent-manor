@@ -11,6 +11,7 @@ import { clientIds } from "../src/clients.js";
 import { startService } from "../src/server.js";
 import { apiRequest, delay, serviceUrl } from "../src/service/runtime.js";
 import { publishClientQueryFixture } from "./client-query-fixture.js";
+import { isolatedHistoryRoots } from "./helpers/history-roots.js";
 
 const run = promisify(execFile);
 const encode = (records: unknown[]) => records.map((record) => JSON.stringify(record) + "\n").join("");
@@ -39,7 +40,7 @@ async function fixture(runFixture: (context: { directory: string; repository: st
   const source = join(sources, "source.jsonl");
   await writeFile(source, history(repository));
   await writeFile(join(sources, "orphan.jsonl"), history(undefined, "orphan"));
-  const service = await startService({ home: join(directory, "data"), roots: { codex: sources, claude: [], codeflicker: [], "codeflicker-desktop": [], dsh: [], pi: [], workbuddy: [], opencode: [], zcode: [], codebuddy: [], qoder: [] }, staticRoot });
+  const service = await startService({ home: join(directory, "data"), roots: isolatedHistoryRoots({ codex: sources }), staticRoot });
   try {
     const register = await apiRequest<RegisterRepositoryResponse>(service.instance, "/repositories", "POST", { path: repository });
     await wait(service, register.job.id);

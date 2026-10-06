@@ -71,6 +71,7 @@ function normalizeQoderRows(rows: readonly RawHistoryRecord[], gaps: Gap[]): { r
     }
     if (type !== "user" && type !== "assistant") {
       addGap(gaps, "unsupported_format", `Qoder 记录类型 ${type} 尚未适配`);
+      normalized.push(normalizedRecord({ key: `unknown:${row.line}`, kind: "context", text: `未适配记录类型 ${type}` }, row.raw, row.line));
       continue;
     }
     const message = object(record.message);
@@ -81,7 +82,7 @@ function normalizeQoderRows(rows: readonly RawHistoryRecord[], gaps: Gap[]): { r
     const blocks = content.map(value => object(value));
     const textBlocks = blocks.filter(block => block.type === "text").map(block => string(block.text) ?? "").filter(Boolean);
     const resultBlocks = blocks.filter(block => block.type === "tool_result");
-    const hasMetaUser = type === "user" && (record.isMeta === true || record.userType !== "external"
+    const hasMetaUser = type === "user" && (record.isMeta === true || record.userType === "meta" || record.userType === "internal"
       || object(record.origin).kind === "task-notification");
     const hasUsage = type === "assistant" ? object(message.usage) : {};
     const usage = normalizeUsage([hasUsage], gap => addGap(gaps, gap.kind, gap.message));
@@ -99,7 +100,7 @@ function normalizeQoderRows(rows: readonly RawHistoryRecord[], gaps: Gap[]): { r
       normalized.push(normalizedRecord(event, row.raw, row.line));
     }
     if (type === "assistant" && !content.length) {
-      const event: NormalizedEvent = { key: `${recordId}:assistant`, kind: "assistant", text: "", occurredAt, model };
+      const event: NormalizedEvent = { key: `${recordId}:assistant`, kind: "assistant", text: "", occurredAt, model, allowInferredFinal: false };
       if (message.stop_reason === "end_turn") event.final = "explicit";
       attachUsage(event);
       normalized.push(normalizedRecord(event, row.raw, row.line));
@@ -108,7 +109,7 @@ function normalizeQoderRows(rows: readonly RawHistoryRecord[], gaps: Gap[]): { r
       const key = `${recordId}:${index}`;
       if (type === "assistant" && block.type === "text") {
         const event: NormalizedEvent = { key, kind: "assistant", text: string(block.text) ?? "", occurredAt, model,
-          final: message.stop_reason === "end_turn" ? "explicit" : undefined };
+          final: message.stop_reason === "end_turn" ? "explicit" : undefined, allowInferredFinal: false };
         attachUsage(event);
         normalized.push(normalizedRecord(event, row.raw, row.line));
       } else if (type === "assistant" && block.type === "thinking") {
@@ -154,11 +155,12 @@ async function readQoderSnapshot(location: SourceLocation): Promise<NormalizedSn
   const gaps: Gap[] = [];
   const rawRows = await readJsonlRows(location.path, gaps);
   const ids = sessionIds(rawRows);
-  const sessionId = location.sessionId ?? location.selector ?? (ids.length === 1 ? ids[0] : undefined);
+  const sessionId = ids.length > 1 ? undefined : location.sessionId ?? location.selector ?? (ids.length === 1 ? ids[0] : undefined);
   if (ids.length > 1) addGap(gaps, "ambiguous", "单个 Qoder 文件包含多个 sessionId，未合并跨会话正文");
   if (sessionId && ids.some(id => id !== sessionId)) addGap(gaps, "ambiguous", "Qoder 正文身份与发现身份不一致，仅保留匹配记录");
   if (!sessionId) addGap(gaps, "unassociated", "Qoder 正文缺少可确认的原生 sessionId");
-  const selected = sessionId ? rawRows.filter(row => !string(row.record.sessionId) || row.record.sessionId === sessionId) : rawRows;
+  const selected = ids.length > 1 ? [] : sessionId
+    ? rawRows.filter(row => !string(row.record.sessionId) || row.record.sessionId === sessionId) : rawRows;
   const normalized = normalizeQoderRows(selected, gaps);
   const source = sourceFor(location, "qoder", QODER_FORMAT, sessionId, normalized.cwd);
   source.selector = sessionId;

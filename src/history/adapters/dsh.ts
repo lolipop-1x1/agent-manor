@@ -3,7 +3,7 @@ import { zstdDecompressSync } from "node:zlib";
 import type { HistoryEvent } from "../../contracts.js";
 import { changedFragments, object, number, shellEvidence, string, textContent, toolEvidence } from "../extraction.js";
 import { normalizeHistoryPath } from "./common.js";
-import { createNormalizedAdapter, normalizedRecord, normalizedSnapshot, readBoundedJsonl } from "./normalized.js";
+import { createNormalizedAdapter, normalizedHash, normalizedRecord, normalizedSnapshot, readBoundedJsonl } from "./normalized.js";
 import type { NormalizedEvent, NormalizedSessionMetadata, NormalizedSnapshot, RawHistoryRecord } from "./normalized.js";
 import type { SourceLocation } from "../types.js";
 
@@ -112,10 +112,11 @@ function callInput(value: unknown): unknown {
 }
 
 function headerSource(header: Record<string, unknown>, location: SourceLocation, version?: number): SourceLocation {
+  const { sourceCompleteness: _sourceCompleteness, adapterGap: _adapterGap, ...sourceLocation } = location;
   const id = string(header.id) ?? location.sessionId;
   const parentSessionId = string(header.parentSession);
   return {
-    ...location,
+    ...sourceLocation,
     format: DSH_FORMAT,
     selector: version === undefined ? location.selector : `v${version}`,
     sessionId: id,
@@ -243,12 +244,8 @@ async function readRows(path: string, gaps: NormalizedSessionMetadata["gaps"]): 
 
 async function snapshot(location: SourceLocation): Promise<NormalizedSnapshot> {
   const gaps: NonNullable<NormalizedSessionMetadata["gaps"]> = [];
-  let rows: NativeRow[];
-  try { rows = await readRows(location.path, gaps); }
-  catch {
-    gaps.push({ kind: "unsupported_format", message: "DSH 来源无法按支持的 JSONL/Zstandard 格式解码" });
-    return normalizedSnapshot(location, [], { gaps });
-  }
+  const rows = await readRows(location.path, gaps);
+  if (location.adapterGap) gaps.push({ ...location.adapterGap });
   const headerRow = rows[0];
   const header = headerRow?.record.type === "session" ? headerRow.record : undefined;
   if (!header) {
@@ -307,7 +304,7 @@ async function snapshot(location: SourceLocation): Promise<NormalizedSnapshot> {
       const kind = type === "system/message" ? "system" : type === "developer/message" ? "context"
         : sourceKind === "user" && appendSurface ? "user" : "context";
       const text = contentText(content);
-      records.push(normalizedRecord({ key, kind, ...(text ? { text } : {}), occurredAt, turnKey, copied }, row.raw, row.line));
+      records.push(normalizedRecord({ key, kind, ...(text ? { text } : {}), occurredAt, turnKey, copied }, row.raw, row.line, seq));
       continue;
     }
     if (type === "assistant/message") {
@@ -322,14 +319,15 @@ async function snapshot(location: SourceLocation): Promise<NormalizedSnapshot> {
       const final = turn && completedTurns.has(turn) && candidate?.seq === seq && !candidate.hasToolCall && !candidate.interrupted ? "inferred" : undefined;
       const interrupted = data.interrupted === true && candidate?.seq === seq;
       records.push(normalizedRecord({ key: `${key}:assistant`, kind: "assistant", ...(text ? { text } : {}), occurredAt, model, turnKey,
-        usageKey: usage ? `${key}:usage` : undefined, usage, final, interrupted: interrupted || undefined, copied }, row.raw, row.line));
-      if (reasoning) records.push(normalizedRecord({ key: `${key}:reasoning`, kind: "thinking", text: reasoning, occurredAt, model, turnKey, copied }, row.raw, row.line));
+        usageKey: usage ? `${key}:usage` : undefined, usage, final, allowInferredFinal: false,
+        interrupted: interrupted || undefined, copied }, row.raw, row.line, seq));
+      if (reasoning) records.push(normalizedRecord({ key: `${key}:reasoning`, kind: "thinking", text: reasoning, occurredAt, model, turnKey, copied }, row.raw, row.line, seq));
       for (const block of content.filter(block => block.type === "tool-call")) {
         const callId = string(block.id);
         if (!callId || knownCallIds.has(callId)) continue;
         const tool = string(block.name) ?? "unknown";
         records.push(normalizedRecord({ key: `${key}:call:${callId}`, kind: "tool_call", callId, tool,
-          input: callInput(block.arguments), occurredAt, turnKey, copied }, row.raw, row.line));
+          input: callInput(block.arguments), occurredAt, turnKey, copied }, row.raw, row.line, seq));
       }
       continue;
     }
@@ -340,14 +338,14 @@ async function snapshot(location: SourceLocation): Promise<NormalizedSnapshot> {
       const value = reasoning || text;
       const usage = dshUsage(data.usage);
       records.push(normalizedRecord({ key, kind: "thinking", ...(value ? { text: value } : {}), occurredAt, turnKey, status: "unknown",
-        usageKey: usage ? `${key}:usage` : undefined, usage, copied }, row.raw, row.line));
+        usageKey: usage ? `${key}:usage` : undefined, usage, copied }, row.raw, row.line, seq));
       continue;
     }
     if (type === "tool/call") {
       const callId = string(data.callId);
       if (!callId) { gaps.push({ kind: "unpaired_call", message: "DSH 工具请求缺少原生 callId" }); continue; }
       records.push(normalizedRecord({ key, kind: "tool_call", callId, tool: string(data.name) ?? "unknown",
-        input: callInput(data.arguments), occurredAt, turnKey, copied }, row.raw, row.line));
+        input: callInput(data.arguments), occurredAt, turnKey, copied }, row.raw, row.line, seq));
       continue;
     }
     if (type === "tool/result") {
@@ -359,20 +357,23 @@ async function snapshot(location: SourceLocation): Promise<NormalizedSnapshot> {
       const resultContent = legacy?.content ?? message.content;
       const error = message.isError === true || legacy?.isError === true;
       records.push(normalizedRecord({ key, kind: "tool_result", callId, tool: string(message.toolName) ?? string(legacy?.toolName),
-        result: data, text: contentText(resultContent), occurredAt, turnKey, status: message.isError === undefined && legacy?.isError === undefined ? "unknown" : error ? "failure" : "success", copied }, row.raw, row.line));
+        result: data, text: contentText(resultContent), occurredAt, turnKey, status: message.isError === undefined && legacy?.isError === undefined ? "unknown" : error ? "failure" : "success", copied }, row.raw, row.line, seq));
       continue;
     }
     if (type === "compaction/summary" || type === "branch_summary") {
       const summary = contentText(data.summary);
       const usage = dshUsage(data.usage);
       records.push(normalizedRecord({ key, kind: "compression", ...(summary ? { text: summary } : {}), occurredAt,
-        model: string(data.model), turnKey, usageKey: usage ? `${key}:usage` : undefined, usage, copied }, row.raw, row.line));
+        model: string(data.model), turnKey, usageKey: usage ? `${key}:usage` : undefined, usage, copied }, row.raw, row.line, seq));
       continue;
     }
-    if (type === "turn/end") {
+    if (type === "turn/end" || type === "session/end-seed") {
       const reason = string(object(data.reason).kind);
-      records.push(normalizedRecord({ key, kind: "context", ...(reason ? { text: reason } : { text: type }), occurredAt, turnKey, copied }, row.raw, row.line));
+      records.push(normalizedRecord({ key, kind: "context", ...(reason ? { text: reason } : { text: type }), occurredAt, turnKey, copied }, row.raw, row.line, seq));
+      continue;
     }
+    records.push(normalizedRecord({ key, kind: "context", text: `未适配事件 ${type}`, occurredAt, turnKey, copied }, row.raw, row.line, seq));
+    gaps.push({ kind: "unsupported_format", message: `DSH 事件类型 ${type} 尚未适配` });
   }
   if (version !== 3 && version !== 4) gaps.push({ kind: "unsupported_format", message: "DSH 会话头声明了尚未适配的格式代际" });
   return normalizedSnapshot(source, records, metadata, JSON.stringify({ version, inheritedCut, relationships }));
@@ -383,24 +384,52 @@ const dshBaseAdapter = createNormalizedAdapter({
   async readSnapshot(location) { return snapshot(location); },
   async discoverFile(location) {
     const value = await snapshot(location);
-    return value.source.sessionId ? [value.source] : [];
+    if (!value.source.sessionId) return [];
+    const version = Number(/^v(\d+)$/.exec(value.source.selector ?? "")?.[1] ?? 0) || undefined;
+    const complete = !value.meta.gaps?.some(gap => ["parse_error", "incomplete_record", "budget_exceeded", "unsupported_format"].includes(gap.kind));
+    const fingerprint = normalizedHash(JSON.stringify(value.records.filter(row => row.record.normalizedEvent)
+      .map(row => row.record.normalizedEvent)));
+    return [{ ...value.source, sourceCompleteness: { version, supported: version === 3 || version === 4, complete, fingerprint } }];
   },
   selectSources(sources) {
-    const selected = new Map<string, SourceLocation>();
+    const groups = new Map<string, SourceLocation[]>();
+    const passthrough = sources.filter(source => source.client !== "dsh" || source.format !== DSH_FORMAT || !source.sessionId);
     for (const source of sources) {
       if (source.client !== "dsh" || source.format !== DSH_FORMAT || !source.sessionId) continue;
       const key = `${source.client}:${source.sessionId}`;
-      const current = selected.get(key);
-      const version = Number(/^v(\d+)$/.exec(source.selector ?? "")?.[1] ?? /\.v(\d+)\.jsonl(?:\.(?:zstd|zst))?$/.exec(source.path)?.[1] ?? 0);
-      const currentVersion = Number(/^v(\d+)$/.exec(current?.selector ?? "")?.[1] ?? /\.v(\d+)\.jsonl(?:\.(?:zstd|zst))?$/.exec(current?.path ?? "")?.[1] ?? 0);
-      const supported = version === 3 || version === 4;
-      const currentSupported = currentVersion === 3 || currentVersion === 4;
-      if (!current || supported && !currentSupported
-        || supported === currentSupported && (version > currentVersion
-          || version === currentVersion && source.path.endsWith(".zstd") && !current.path.endsWith(".zstd"))) selected.set(key, source);
+      groups.set(key, [...(groups.get(key) ?? []), source]);
     }
-    const dshKeys = new Set(selected.keys());
-    return [...sources.filter(source => source.client !== "dsh" || source.format !== DSH_FORMAT || !source.sessionId), ...[...dshKeys].map(key => selected.get(key)!)];
+    const selected: SourceLocation[] = [];
+    for (const candidates of groups.values()) {
+      const versionOf = (source: SourceLocation) => source.sourceCompleteness?.version
+        ?? Number(/^v(\d+)$/.exec(source.selector ?? "")?.[1] ?? /\.v(\d+)\.jsonl(?:\.(?:zstd|zst))?$/.exec(source.path)?.[1] ?? 0);
+      const rankOf = (source: SourceLocation) => {
+        const supported = source.sourceCompleteness?.supported ?? [3, 4].includes(versionOf(source));
+        return supported ? source.sourceCompleteness?.complete ? 3 : 2 : 1;
+      };
+      const ordered = [...candidates].sort((left, right) => rankOf(right) - rankOf(left)
+        || versionOf(right) - versionOf(left)
+        || Number(right.path.endsWith(".zstd")) - Number(left.path.endsWith(".zstd")));
+      const winner = { ...ordered[0]! };
+      if (ordered.length > 1) {
+        const complete = ordered.filter(source => source.sourceCompleteness?.complete);
+        const fingerprints = new Set(complete.map(source => source.sourceCompleteness?.fingerprint));
+        const conflict = fingerprints.size > 1;
+        const versions = ordered.map(source => `v${versionOf(source) || "?"}`).join(", ");
+        const selectedVersion = versionOf(winner) || "unknown";
+        const reason = winner.sourceCompleteness?.supported && winner.sourceCompleteness.complete
+          ? "选择完整且已适配的来源"
+          : winner.sourceCompleteness?.supported ? "没有完整副本，选择已适配代际"
+            : "没有可用的已适配副本，保留最高可识别来源并标记缺口";
+        const comparison = conflict ? "完整副本的规范化事件存在冲突"
+          : complete.length > 1 ? "完整副本的规范化事件一致" : "未能在多个完整副本之间核对内容";
+        const rejectedIncomplete = ordered.some(source => !source.sourceCompleteness?.complete);
+        winner.adapterGap = { kind: conflict ? "ambiguous" : rejectedIncomplete ? "incomplete_record" : "ambiguous",
+          message: `DSH 同身份副本 ${versions}；${reason} v${selectedVersion}；${comparison}${rejectedIncomplete ? "；不完整副本未用于覆盖完整来源" : ""}` };
+      }
+      selected.push(winner);
+    }
+    return [...passthrough, ...selected];
   },
   extract: dshExtract,
 });

@@ -16,6 +16,9 @@ export interface SourceLocation {
   sessionId?: string;
   cwd?: string;
   parentSessionId?: string;
+  /** 仅供来源选择器比较副本完整度；解析完成后不写入历史元数据。 */
+  sourceCompleteness?: { version?: number; supported: boolean; complete: boolean; fingerprint: string };
+  adapterGap?: Gap;
 }
 
 /** 文件路径仍是真实来源路径；多会话容器另用原生选择器区分缓存身份。 */
@@ -29,6 +32,7 @@ export interface HistoryRelationship {
   parentSessionId: string;
   endByteOffset?: number;
   endOrdinalExclusive?: number;
+  copiedRecordIdentityHashes?: string[];
   agentId?: string;
   /** 证明跨来源关系的原始执行记录，不表示历史调用重放。 */
   sources?: SourceReference[];
