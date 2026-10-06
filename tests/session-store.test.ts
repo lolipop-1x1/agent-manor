@@ -546,6 +546,36 @@ test("来源identity优先定位子会话，找不到来源时回退原始会话
     { sessionId: "locate-standalone", messageId: "message-2" });
 }));
 
+test("画像返回超过 200 条的全部请求，父子明细与汇总共同排除复制记录", async () => fixture(store => {
+  const usages = Array.from({ length: 257 }, (_, index): SessionUsage => ({
+    id: `request-${index}`, messageId: `message-${index}`, inputTokens: index, outputTokens: 0,
+    ...(index % 2 === 0 ? { cachedInputTokens: 0 } : {}),
+  }));
+  const parent = source(store, meta("usage-parent", { childSessionIds: ["usage-child"] }),
+    usages.map((_, index) => message("usage-parent", index, { kind: "assistant" })), usages);
+  const child = source(store, meta("usage-child", { parentSessionId: "usage-parent", relationship: "child" }), [
+    message("usage-child", 0, { copied: true }), message("usage-child", 1, { kind: "assistant" }),
+  ], [{ id: "copied-request", messageId: "message-0", inputTokens: 999 }, { id: "child-request", messageId: "message-1", inputTokens: 42 }]);
+  store.publish(store.createJob().id, [parent, child], []);
+
+  const own = store.profile("usage-parent");
+  assert.equal(own.usage.requests, 257);
+  assert.equal(own.steps.length, own.usage.requests);
+  assert.deepEqual(own.steps, usages.map(usage => ({ ...usage, sessionId: "usage-parent" })));
+  assert.equal(own.steps[0]?.inputTokens, 0);
+  assert.equal(own.steps[255]?.cachedInputTokens, undefined);
+  assert.equal(own.usage.inputTokens, 256 * 257 / 2);
+  assert.equal(own.usage.outputTokens, 0);
+  assert.ok(!own.gaps.some(gap => gap.kind === "budget_exceeded"));
+
+  const tree = store.profile("usage-parent", { includeChildren: true });
+  assert.equal(tree.steps.length, 258);
+  assert.equal(tree.steps.length, tree.usage.requests);
+  assert.deepEqual(tree.steps.at(-1), { id: "child-request", messageId: "message-1", inputTokens: 42, sessionId: "usage-child" });
+  assert.ok(!tree.steps.some(step => step.id === "copied-request"));
+  assert.equal(tree.usage.inputTokens, own.usage.inputTokens! + 42);
+}));
+
 test("画像采用同批缓存分母，未知保持null，reasoning不重复加输出，明确子关系与复制排除", async () => fixture(store => {
   const first = source(store, meta("parent", { childSessionIds: ["child", "missing-child"] }), [
     message("parent", 0, { model: "synthetic-model" }),

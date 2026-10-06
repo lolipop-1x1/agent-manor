@@ -560,7 +560,6 @@ export class SessionStore {
     const turns = new Set<string>();
     let pairedInput = 0;
     let pairedCache = 0;
-    let stepCount = 0;
     const sum = (key: "inputTokens" | "outputTokens" | "cachedInputTokens" | "cacheWriteTokens" | "reasoningOutputTokens", value: number | undefined) => {
       if (value !== undefined) profile.usage[key] = (profile.usage[key] ?? 0) + value;
     };
@@ -620,7 +619,7 @@ export class SessionStore {
         }
         if (usage.contextTokens !== undefined) profile.usage.peakContextTokens = Math.max(profile.usage.peakContextTokens ?? 0, usage.contextTokens);
         if (usage.model && !models.has(usage.model)) models.set(usage.model, 0);
-        if (stepCount++ < 200) profile.steps.push({ ...usage, sessionId });
+        profile.steps.push({ ...usage, sessionId });
       }
     }
     profile.turnCount = turns.size;
@@ -629,7 +628,6 @@ export class SessionStore {
     profile.estimate.byKind = [...estimates].map(([kind, tokens]) => ({ kind, tokens }));
     profile.tools = [...tools.values()].sort((left, right) => right.calls - left.calls || left.name.localeCompare(right.name));
     profile.resources = [...resources.values()].sort((left, right) => right.count - left.count);
-    if (stepCount > 200) profile.gaps.push({ kind: "budget_exceeded", message: `逐步用量展示前 200 条，汇总包含全部 ${stepCount} 条`, count: stepCount - 200 });
     return profile;
   }
 }

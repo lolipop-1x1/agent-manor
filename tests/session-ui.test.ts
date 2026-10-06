@@ -3,7 +3,7 @@ import { test } from "node:test";
 import type { Client } from "../src/clients.ts";
 import type { SessionMessage, SessionSearchHit } from "../src/session-contracts.ts";
 import { panelSemantics } from "../web/workspace-layout.ts";
-import { displayRecorded, executionEntryLabel, groupedTurns, searchHitMode, searchKinds, sessionParams, turnTitle, usageAxis, usageSegments, workspaceSessionSemantics } from "../web/session-model.ts";
+import { displayRecorded, executionEntryLabel, groupedTurns, searchHitMode, searchKinds, sessionParams, turnTitle, usageAxis, usageIndexAt, usageSegments, workspaceSessionSemantics } from "../web/session-model.ts";
 
 const summary = {
   id: "session-a", client: "codex" as Client, clientSessionId: "external-a", title: "合成会话", titleOrigin: "recorded" as const,
@@ -86,6 +86,25 @@ test("用量纵轴覆盖最大值，以零为起点并使用整数 Token 刻度"
     assert.equal(axis.ticks.at(-1), axis.max);
     assert.ok(axis.ticks.every(tick => Number.isInteger(tick)));
   }
+});
+
+test("长用量曲线保留全部请求，包括末尾峰值与中途缺失", () => {
+  const steps = Array.from({ length: 513 }, (_, index) => ({ id: `request-${index}`, ...(index === 256 ? {} : { inputTokens: index === 512 ? 1000 : 0 }) }));
+  const segments = usageSegments(steps, "inputTokens", 1000);
+  assert.equal(segments.length, 2);
+  assert.equal(segments.reduce((count, points) => count + points.split(" ").length, 0), 512);
+  assert.equal(segments[0]?.split(" ")[0], "0,100");
+  assert.equal(segments.at(-1)?.split(" ").at(-1), "100,0");
+});
+
+test("共用图表交互层按横轴定位全部请求，首末边界与单请求正确", () => {
+  assert.equal(usageIndexAt(0, 5369), 0);
+  assert.equal(usageIndexAt(1, 5369), 5368);
+  assert.equal(usageIndexAt(0.5, 5369), 2684);
+  assert.equal(usageIndexAt(201 / 5368, 5369), 201);
+  assert.equal(usageIndexAt(-0.1, 5369), 0);
+  assert.equal(usageIndexAt(1.1, 5369), 5368);
+  assert.equal(usageIndexAt(0.7, 1), 0);
 });
 
 test("轮次分页和画像定位参数保留精确查询", () => {

@@ -33,6 +33,10 @@ export function usageSegments(steps: SessionUsage[], key: "inputTokens" | "outpu
   return segments;
 }
 
+export function usageIndexAt(position: number, count: number): number {
+  return Math.round(Math.max(0, Math.min(1, position)) * Math.max(0, count - 1));
+}
+
 export function turnTitle(id: string, position: number): string {
   const match = /:turn:(\d+)$/.exec(id);
   if (match) return Number(match[1]) === 0 ? "初始上下文" : `第 ${Number(match[1])} 轮`;

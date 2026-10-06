@@ -1,8 +1,8 @@
-import { useEffect, useId, useState } from "react";
+import { useEffect, useId, useMemo, useState } from "react";
 import { CaretLeft, CaretRight } from "@phosphor-icons/react";
 import { clientName } from "../src/clients";
 import type { SessionProfile, SessionSummary } from "../src/session-contracts";
-import { displayRecorded, usageAxis, usageSegments, type EvidenceTarget } from "./session-model";
+import { displayRecorded, usageAxis, usageIndexAt, usageSegments, type EvidenceTarget } from "./session-model";
 import { kindLabels, resourceLabels } from "./SessionMessage";
 import { Notice, Pager } from "./SessionControls";
 import { HelpPopover } from "./HelpPopover";
@@ -11,6 +11,7 @@ const formatCount = (value: number) => value.toLocaleString("zh-CN");
 const dateLabel = (value?: string) => value ? new Date(value).toLocaleString("zh-CN", { hour12: false }) : "时间未记录";
 const shortProject = (value?: string) => value ? value.split(/[\\/]/).filter(Boolean).at(-1) ?? value : "无项目";
 const normalizedRatio = (value: number | null) => value === null ? "未记录" : `${(value * 100).toFixed(1)}%`;
+const usageSeries = [["inputTokens", "输入"], ["cachedInputTokens", "缓存读取"], ["outputTokens", "输出"]] as const;
 
 function ProfileBar({ label, count, max, suffix = "" }: { label: string; count: number; max: number; suffix?: string }) {
   const width = max > 0 ? Math.max(2, count / max * 100) : 0;
@@ -18,16 +19,26 @@ function ProfileBar({ label, count, max, suffix = "" }: { label: string; count: 
 }
 
 function UsageChart({ profile, onFocusStep }: { profile: SessionProfile; onFocusStep: (step: SessionProfile["steps"][number]) => void }) {
-  const series = [["inputTokens", "输入"], ["cachedInputTokens", "缓存读取"], ["outputTokens", "输出"]] as const;
-  const { max, ticks } = usageAxis(Math.max(0, ...profile.steps.flatMap(step => series.map(([key]) => step[key] ?? 0))));
+  const { max, ticks, curves } = useMemo(() => {
+    const maximum = profile.steps.reduce((value, step) => Math.max(value, step.inputTokens ?? 0, step.cachedInputTokens ?? 0, step.outputTokens ?? 0), 0);
+    const axis = usageAxis(maximum);
+    return { ...axis, curves: usageSeries.map(([key]) => ({ key, segments: usageSegments(profile.steps, key, axis.max) })) };
+  }, [profile.steps]);
   const [hovered, setHovered] = useState<number>();
   const [focused, setFocused] = useState<number>();
+  useEffect(() => { setHovered(undefined); setFocused(undefined); }, [profile.steps]);
   const tooltipId = useId();
   const selected = hovered ?? focused;
   const active = selected === undefined ? undefined : profile.steps[selected];
+  const controlStep = active ?? profile.steps[0]!;
   const x = (index: number) => profile.steps.length <= 1 ? 50 : index / (profile.steps.length - 1) * 100;
+  const requestAt = (clientX: number, target: SVGRectElement) => {
+    const bounds = target.getBoundingClientRect();
+    // 视口两端各有 2 个单位的绘图留白，先还原到实际横轴再定位请求。
+    return usageIndexAt(((clientX - bounds.left) / bounds.width * 104 - 2) / 100, profile.steps.length);
+  };
   return <div className="session-usage-chart">
-    <div className="session-chart-legend">{series.map(([key, label]) => <span key={key}><i className={`series-${key}`} />{label}</span>)}</div>
+    <div className="session-chart-legend">{usageSeries.map(([key, label]) => <span key={key}><i className={`series-${key}`} />{label}</span>)}</div>
     <div className="session-chart-unit">Token</div>
     <div className="session-chart-body">
       <div className="session-chart-y-axis" aria-label="Token 纵轴刻度">{ticks.map(value => <span key={value} style={{ top: `${100 - value / max * 100}%` }} title={`${formatCount(value)} Token`}>
@@ -37,35 +48,41 @@ function UsageChart({ profile, onFocusStep }: { profile: SessionProfile; onFocus
         <svg viewBox="-2 0 104 100" preserveAspectRatio="none" aria-label="输入、缓存读取和输出 Token 的请求趋势"
           onPointerLeave={() => setHovered(undefined)} onBlur={event => { if (!event.currentTarget.contains(event.relatedTarget)) setFocused(undefined); }}>
           {ticks.map(value => <line key={value} x1="0" x2="100" y1={100 - value / max * 100} y2={100 - value / max * 100} className="session-chart-grid" vectorEffect="non-scaling-stroke" />)}
-          {series.flatMap(([key]) => usageSegments(profile.steps, key, max).map((points, index) => points.includes(" ")
+          {curves.flatMap(({ key, segments }) => segments.map((points, index) => points.includes(" ")
             ? <polyline key={`${key}-${index}`} points={points} className={`series-${key}`} fill="none" strokeWidth="1.5" vectorEffect="non-scaling-stroke" />
             : <circle key={`${key}-${index}`} cx={points.split(",")[0]} cy={points.split(",")[1]} r="1" className={`series-${key}`} />))}
           {active && selected !== undefined && <g className="session-chart-reference">
             <line x1={x(selected)} x2={x(selected)} y1="0" y2="100" vectorEffect="non-scaling-stroke" />
-            {series.map(([key]) => active[key] === undefined ? null : <circle key={key} cx={x(selected)} cy={100 - active[key] / max * 100} r="1.2" className={`series-${key}`} />)}
+            {usageSeries.map(([key]) => active[key] === undefined ? null : <circle key={key} cx={x(selected)} cy={100 - active[key] / max * 100} r="1.2" className={`series-${key}`} />)}
           </g>}
-          {profile.steps.map((step, index) => {
-            const half = profile.steps.length <= 1 ? 50 : 50 / (profile.steps.length - 1);
-            const left = index === 0 ? -2 : x(index) - half;
-            const right = index === profile.steps.length - 1 ? 102 : x(index) + half;
-            return <rect key={step.id} x={left} y="0" width={right - left} height="100" className="session-chart-hit"
-              data-step-index={index} role={step.messageId ? "button" : "img"} tabIndex={index === (focused ?? 0) ? 0 : -1}
-              aria-describedby={selected === index ? tooltipId : undefined}
-              aria-label={`请求 ${index + 1}，输入 ${displayRecorded(step.inputTokens)}，输出 ${displayRecorded(step.outputTokens)}，缓存读取 ${displayRecorded(step.cachedInputTokens)}${step.messageId ? "，定位记录" : ""}`}
-              onPointerEnter={() => setHovered(index)} onFocus={() => setFocused(index)} onClick={() => step.messageId && onFocusStep(step)} onKeyDown={event => {
-                if (["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) {
-                  event.preventDefault();
-                  setHovered(undefined);
-                  const next = event.key === "Home" ? 0 : event.key === "End" ? profile.steps.length - 1 : Math.max(0, Math.min(profile.steps.length - 1, index + (event.key === "ArrowRight" ? 1 : -1)));
-                  event.currentTarget.parentElement?.querySelector<SVGRectElement>(`[data-step-index="${next}"]`)?.focus();
-                } else if (step.messageId && ["Enter", " "].includes(event.key)) { event.preventDefault(); onFocusStep(step); }
-              }} />;
-          })}
+          <rect x="-2" y="0" width="104" height="100" className="session-chart-hit" role="slider" tabIndex={0}
+            aria-label="选择用量请求" aria-orientation="horizontal" aria-valuemin={1} aria-valuemax={profile.steps.length} aria-valuenow={(selected ?? 0) + 1}
+            aria-valuetext={`请求 ${(selected ?? 0) + 1}，输入 ${displayRecorded(controlStep.inputTokens)}，输出 ${displayRecorded(controlStep.outputTokens)}，缓存读取 ${displayRecorded(controlStep.cachedInputTokens)}${controlStep.messageId ? "，回车定位记录" : ""}`}
+            aria-describedby={active ? tooltipId : undefined}
+            onPointerMove={event => setHovered(requestAt(event.clientX, event.currentTarget))}
+            onPointerDown={event => setHovered(requestAt(event.clientX, event.currentTarget))}
+            onFocus={() => setFocused(value => value ?? hovered ?? 0)}
+            onClick={() => {
+              const index = selected ?? 0;
+              setFocused(index);
+              const step = profile.steps[index]!;
+              if (step.messageId) onFocusStep(step);
+            }}
+            onKeyDown={event => {
+              if (["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Home", "End"].includes(event.key)) {
+                event.preventDefault();
+                setHovered(undefined);
+                const direction = event.key === "ArrowRight" || event.key === "ArrowUp" ? 1 : -1;
+                setFocused(event.key === "Home" ? 0 : event.key === "End" ? profile.steps.length - 1 : Math.max(0, Math.min(profile.steps.length - 1, (selected ?? 0) + direction)));
+              } else if (controlStep.messageId && ["Enter", " "].includes(event.key)) {
+                event.preventDefault(); onFocusStep(controlStep);
+              }
+            }} />
         </svg>
         {active && selected !== undefined && <div id={tooltipId} role="tooltip" className="session-chart-tooltip" style={x(selected) < 50 ? { right: 8 } : { left: 8 }}>
           <strong>请求 {selected + 1}{active.sessionId !== profile.sessionIds[0] ? " · 子会话" : ""}</strong>
           <span className="session-chart-tooltip-model">{active.model ?? "模型未记录"}</span>
-          <dl>{series.map(([key, label]) => <div key={key}><dt><i className={`series-${key}`} />{label}</dt><dd>{displayRecorded(active[key])}{active[key] === undefined ? "" : " Token"}</dd></div>)}</dl>
+          <dl>{usageSeries.map(([key, label]) => <div key={key}><dt><i className={`series-${key}`} />{label}</dt><dd>{displayRecorded(active[key])}{active[key] === undefined ? "" : " Token"}</dd></div>)}</dl>
           <small>{dateLabel(active.occurredAt)}</small>
         </div>}
       </div>
@@ -136,10 +153,10 @@ export function SessionProfilePane({ profile, loading, error, includeChildren, s
           </div>) : <p className="muted small">没有明确的 Skill 或 MCP 事件证据。</p>}
         </section>
         <section className="session-profile-section" hidden={tab !== "usage"}><div className="session-section-heading"><h3>请求用量趋势</h3><div className="section-actions"><span>{profile.steps.length} 条</span><HelpPopover label="图表说明">
-          <dl><div><dt>坐标与明细</dt><dd>横轴是返回明细的请求顺序，纵轴为 Token；缺失值留空。最多展示 200 条明细，汇总用量仍包含全部已记录请求。</dd></div>
+          <dl><div><dt>坐标与明细</dt><dd>横轴覆盖当前画像范围的全部已记录请求，纵轴为 Token；缺失值留空，真实零值保留。请求明细分页展示。</dd></div>
             <div><dt>查看与定位</dt><dd>悬停或聚焦图表可看请求数值，左右方向键切换请求。点击图表或请求编号可定位有对应消息的记录。</dd></div></dl>
         </HelpPopover></div></div>
-          {profile.steps.length ? <>
+          {tab === "usage" && (profile.steps.length ? <>
             <UsageChart profile={profile} onFocusStep={onFocusStep} />
             <div className="session-step-table"><table><thead><tr><th>请求</th><th>输入</th><th>输出</th><th>缓存读取</th></tr></thead><tbody>
               {profile.steps.slice((stepPage - 1) * 12, stepPage * 12).map((step, index) => <tr key={step.id}>
@@ -147,8 +164,8 @@ export function SessionProfilePane({ profile, loading, error, includeChildren, s
                 <td>{displayRecorded(step.inputTokens)}</td><td>{displayRecorded(step.outputTokens)}</td><td>{displayRecorded(step.cachedInputTokens)}</td>
               </tr>)}
             </tbody></table></div>
-            <Pager page={stepPage} pageSize={12} total={profile.steps.length} onChange={setStepPage} label="请求明细分页" />
-          </> : <p className="muted small">逐步用量未记录。</p>}
+            <Pager page={stepPage} pageSize={12} total={profile.steps.length} onChange={setStepPage} label="请求明细分页" showEnds />
+          </> : <p className="muted small">逐步用量未记录。</p>)}
         </section>
         {profile.children.length > 0 && <section className="session-profile-section" hidden={tab !== "overview"}><div className="session-section-heading"><h3>关联子会话</h3><span>{profile.children.length} 个</span></div>
           {profile.children.map(child => <button className="session-child" key={child.id} onClick={() => onSelectChild(child)}><strong>{child.title}</strong><small>{clientName(child.client)} · {shortProject(child.project)} · {child.relationship === "fork" ? "分叉" : "子会话"}</small></button>)}

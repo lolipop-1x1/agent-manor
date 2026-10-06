@@ -218,9 +218,8 @@
 .session-usage-chart circle { fill: var(--series-color); }
 .session-usage-chart small, .session-chart-axis { color: var(--muted); font-size: 10px; }
 .session-chart-grid { stroke: var(--border); }
-.session-chart-hit { fill: transparent; }
-.session-chart-hit[role="button"] { cursor: pointer; }
-.session-chart-hit:hover, .session-chart-hit:focus { fill: color-mix(in srgb, var(--accent) 12%, transparent); outline: 0; }
+.session-chart-hit { fill: transparent; cursor: crosshair; }
+.session-chart-hit:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 .session-chart-reference { pointer-events: none; }
 .session-chart-reference > line { stroke: var(--muted); stroke-width: 1; stroke-dasharray: 3 3; }
 .session-chart-axis { display: flex; justify-content: space-between; margin-top: 10px; }
