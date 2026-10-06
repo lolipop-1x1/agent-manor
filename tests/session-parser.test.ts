@@ -63,6 +63,27 @@ test("CodeFlicker 附件保留为过程记录，不新增对话、模型请求�
   assert.equal(sample.messages.filter(message => message.kind === "assistant" && message.final).length, 1);
 });
 
+test("CodeFlicker CLI 显式压缩摘要是过程记录，不产生用户轮次或额外用量", async () => {
+  const sample = await parsed("codeflicker", [
+    { type: "message", sessionId: "compact-demo", uuid: "request", role: "user", content: "合成问题" },
+    { type: "message", sessionId: "compact-demo", uuid: "answer", role: "assistant", content: "合成回答" },
+    { type: "message", sessionId: "compact-demo", uuid: "compact", parentUuid: "answer", role: "user", isCompactSummary: true,
+      content: [{ type: "text", text: "## Objective\n合成压缩摘要" }], uiContent: "会话已压缩", timestamp,
+      metadata: { compactCheckpoint: { version: 1, recent: [], recentUserTurns: 1, recentTokens: 100 } } },
+    { type: "message", sessionId: "compact-demo", uuid: "ordinary", role: "user", isCompactSummary: false, content: "## Objective\n讨论如何压缩数据" },
+    { type: "message", sessionId: "compact-demo", uuid: "unmarked", role: "user", content: "这里提到压缩摘要，但仍是普通用户正文" },
+  ]);
+  assert.equal(sample.messages.filter(message => message.kind === "compression").length, 1);
+  const compact = sample.messages.find(message => message.kind === "compression")!;
+  assert.equal(compact.recordLine, 3);
+  assert.equal(compact.text, "## Objective\n合成压缩摘要");
+  assert.equal(compact.turnId, sample.messages[0]?.turnId);
+  assert.equal(sample.summary.turnCount, 3);
+  assert.equal(sample.messages.length, 5);
+  assert.equal(sample.messages.filter(message => message.kind === "user").length, 3);
+  assert.equal(sample.usages.length, 0);
+});
+
 test("CodeFlicker CLI 保留原始入口和版本，去重且不覆盖恢复后的混合入口", async () => {
   const native = (uuid: string, entrypoint?: string, version?: string) => ({ type: "message", sessionId: "entry-demo", uuid,
     role: "user", content: "合成请求", entrypoint, version });

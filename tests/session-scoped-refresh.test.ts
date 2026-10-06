@@ -119,6 +119,35 @@ test("旧快检记录缺失时退回内容检查，旧成功时间不由版本�
   assert.equal((await refresh(store, roots, { client: "codex" })).counts!.quickReused, 1);
 }));
 
+test("CLI 压缩规则升级重解析旧分类，之后恢复快检且保留其他客户端", async () => fixture(async (store, directory) => {
+  const root = join(directory, "sessions"); await mkdir(root);
+  const cli = join(root, "compact.jsonl");
+  const codex = join(directory, "codex"); await mkdir(codex);
+  await writeFile(cli, encode({ type: "message", sessionId: "compact-demo", uuid: "request", role: "user", content: "合成请求" })
+    + encode({ type: "message", sessionId: "compact-demo", uuid: "compact", role: "user", isCompactSummary: true, content: "合成压缩摘要" }));
+  await writeFile(join(codex, "sample.jsonl"), codexSource("other-demo", "其他客户端"));
+  const roots = isolatedHistoryRoots({ codeflicker: root, codex });
+  await refresh(store, roots);
+  const previous = store.cachedRevisions().find(item => item.client === "codeflicker")!;
+  const other = store.cachedRevisions().find(item => item.client === "codex")!;
+  const session = store.list({ client: "codeflicker" }).sessions[0]!;
+  // 模拟旧解析器把原生压缩标记当成用户消息，来源正文保持不变。
+  const db = new Database(store.dbPath);
+  try {
+    db.prepare("UPDATE session_messages SET kind='user',json=json_set(json,'$.kind','user') WHERE revision=? AND kind='compression'").run(previous.revision);
+    db.prepare("UPDATE session_revisions SET fingerprint=replace(fingerprint,':compression-v1',''),metadata_fingerprint=NULL WHERE id=?").run(previous.revision);
+  } finally { db.close(); }
+  assert.equal(store.profile(session.id).compressions, 0);
+  const upgraded = await refresh(store, roots, { client: "codeflicker" });
+  assert.equal(upgraded.status, "complete");
+  assert.equal(upgraded.counts!.parsed, 1);
+  assert.equal(upgraded.counts!.verifiedReused, 0);
+  assert.equal(store.profile(session.id).compressions, 1);
+  assert.notEqual(store.cachedRevisions().find(item => item.client === "codeflicker")!.revision, previous.revision);
+  assert.equal(store.cachedRevisions().find(item => item.client === "codex")!.revision, other.revision);
+  assert.equal((await refresh(store, roots, { client: "codeflicker" })).counts!.quickReused, 1);
+}));
+
 test("正文、标题及规则变化使快检失效，完整校验能发现错误变化指示", async () => fixture(async (store, directory) => {
   const home = join(directory, "client"); const root = join(home, "sessions"); await mkdir(root, { recursive: true });
   const path = join(root, "sample.jsonl");

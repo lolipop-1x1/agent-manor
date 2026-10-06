@@ -437,6 +437,9 @@ export async function parseSessionSource(source: SourceLocation, sink: SessionSi
       const compression = record.subtype === "compact_boundary" || record.type === "summary";
       message(`native:${nativeId}`, compression ? "compression" : "system", text(record.content ?? record.summary ?? native.content), line, extra); continue;
     }
+    if (source.client === "codeflicker" && record.type === "message" && record.isCompactSummary === true) {
+      message(`native:${nativeId}`, "compression", text(native.content), line, extra); continue;
+    }
     if (source.client === "codeflicker" && record.type !== "message") continue;
     const content = native.content;
     if (source.client === "codeflicker" && role === "attachment") {
