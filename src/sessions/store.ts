@@ -423,10 +423,15 @@ export class SessionStore {
     const candidates = match ? " AND m.rowid IN (SELECT rowid FROM session_message_search WHERE session_message_search MATCH ?)" : "";
     const title = `SELECT v.session_id,NULL AS message_id,NULL AS turn_id,'title' AS kind,r.id AS revision,
       r.json,COALESCE(r.updated_at,r.started_at,'') AS updated_at,0 AS ordinal ${common} AND r.title LIKE ? ESCAPE '\\'`;
-    // 有候选时先按 rowid 读取命中消息，避免优化器仍从每个会话遍历全部消息。
-    const messageFrom = match ? `FROM session_messages m CROSS JOIN session_version_sessions v ON v.revision=m.revision
-      JOIN session_revisions r ON r.id=v.revision` : `FROM session_version_sessions v
-      JOIN session_revisions r ON r.id=v.revision JOIN session_messages m ON m.revision=r.id`;
+    // 全局搜索按 FTS rowid 读取命中消息；窄范围搜索先筛活动修订再检查正文。
+    const scoped = Boolean(query.client || query.project !== undefined || query.sessionId || query.from || query.to
+      || query.executionMode === "quiet" || query.executionMode === "regular");
+    const messageFrom = match && scoped ? `FROM session_version_sessions v
+      CROSS JOIN session_revisions r ON r.id=v.revision
+      CROSS JOIN session_messages m INDEXED BY session_message_order ON m.revision=r.id`
+      : match ? `FROM session_messages m CROSS JOIN session_version_sessions v ON v.revision=m.revision
+        JOIN session_revisions r ON r.id=v.revision` : `FROM session_version_sessions v
+        JOIN session_revisions r ON r.id=v.revision JOIN session_messages m ON m.revision=r.id`;
     const messages = `SELECT v.session_id,m.id AS message_id,m.turn_id,m.kind,r.id AS revision,
       r.json,COALESCE(r.updated_at,r.started_at,'') AS updated_at,m.ordinal ${messageFrom}
       WHERE v.version=?${filter.sql}${candidates} AND m.kind IN (${selectedKinds.map(() => "?").join(",") || "NULL"}) AND m.text LIKE ? ESCAPE '\\'`;

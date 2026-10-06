@@ -177,6 +177,42 @@ test("搜索索引保留字面匹配、筛选、分页和短词语义，不保�
   } finally { database.close(); }
 }));
 
+test("限定搜索过滤活跃修订，保留全局结果、字面字符、分页与旧版本", async () => fixture(store => {
+  const first = source(store, meta("scope-a", { client: "pi", project: "/workspace/alpha", title: "Scope A" }), [
+    message("scope-a", 0, { text: "bash process legacyneedle 50%_ literal \\path" }),
+    message("scope-a", 1, { kind: "assistant", text: "bash process second hit" }),
+  ]);
+  const second = source(store, meta("scope-b", { client: "pi", project: "/workspace/alpha", title: "Scope B" }), [
+    message("scope-b", 0, { text: "bash process other hit" }),
+  ]);
+  const outside = source(store, meta("scope-c", { client: "claude", project: "/workspace/beta", title: "Scope C" }), [
+    message("scope-c", 0, { text: "bash process outside" }),
+  ]);
+  store.publish(store.createJob().id, [first, second, outside], []);
+  const previousVersion = store.status().version!;
+
+  assert.equal(store.search({ q: "bash" }).total, 4);
+  assert.equal(store.search({ q: "bash", client: "pi" }).total, 3);
+  assert.equal(store.search({ q: "bash", project: "/workspace/alpha" }).total, 3);
+  assert.equal(store.search({ q: "bash", sessionId: "scope-a" }).total, 2);
+  assert.equal(store.search({ q: "50%_", sessionId: "scope-a" }).total, 1);
+  assert.ok(store.search({ q: "50%_", sessionId: "scope-a" }).hits[0]?.snippet.includes("50%_"));
+  const firstPage = store.search({ q: "bash", client: "pi", project: "/workspace/alpha", page: 1, pageSize: 1 });
+  const secondPage = store.search({ q: "bash", client: "pi", project: "/workspace/alpha", page: 2, pageSize: 1 });
+  assert.equal(firstPage.total, 3);
+  assert.equal(secondPage.total, 3);
+  assert.equal(firstPage.hits.length, 1);
+  assert.equal(secondPage.hits.length, 1);
+  assert.notEqual(firstPage.hits[0]?.messageId, secondPage.hits[0]?.messageId);
+
+  const replacement = source(store, meta("scope-a", { client: "pi", project: "/workspace/alpha", title: "Scope A" }), [
+    message("scope-a", 0, { text: "current revision only" }),
+  ]);
+  store.publish(store.createJob().id, [replacement, second, outside], []);
+  assert.equal(store.search({ q: "legacyneedle", sessionId: "scope-a" }).total, 0);
+  assert.equal(store.search({ q: "legacyneedle", sessionId: "scope-a", version: previousVersion }).total, 1);
+}));
+
 test("旧数据库后台补索引可中断续建，修改删除及历史版本保持一致", async () => fixture(async (store, path) => {
   const first = source(store, meta("migration"), Array.from({ length: 450 }, (_, index) => message("migration", index, { text: `防小偷合成内容 ${index}` })));
   const version = store.publish(store.createJob().id, [first], []);
