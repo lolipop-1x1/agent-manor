@@ -120,7 +120,9 @@ function buildRecords(sessionId: string, messages: Record<string, unknown>[], pa
       meta.gaps ??= [];
       meta.gaps.push({ kind: "unsupported_format", message: `OpenCode message role ${role ?? "<缺少角色>"} 尚未适配` });
     }
-    const onlySyntheticUserText = role === "user" && !synthetic && syntheticTextParts.length > 0 && ordinaryTextParts.length === 0;
+    const allPartsSynthetic = syntheticTextParts.length > 0
+      && grouped.every(part => part.data.synthetic === true || object(part.data.metadata).synthetic === true);
+    const onlySyntheticUserText = role === "user" && !synthetic && allPartsSynthetic;
     const kind: NormalizedEvent["kind"] = !knownRole || onlySyntheticUserText ? "context" : hasCompressionPart ? "compression"
       : synthetic ? "context" : role as NormalizedEvent["kind"];
     const event: NormalizedEvent = { key: `message:${id}`, kind, text, model, occurredAt: created, turnKey,

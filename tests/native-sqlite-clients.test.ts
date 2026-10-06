@@ -329,19 +329,32 @@ test("OpenCode 混合 user 正文与 synthetic text part 保留真实用户轮�
     { type: "text", text: "explain attached file" });
   insertOpenCodePart(database, "mixed-synthetic", "mixed-user", "attachment-part", 2,
     { type: "text", text: "contents of attached file", synthetic: true });
+  insertOpenCodeMessage(database, "mixed-synthetic", "file-user", "user", 3);
+  insertOpenCodePart(database, "mixed-synthetic", "file-user", "file-text-part", 3,
+    { type: "text", text: "text/plain attachment contents", synthetic: true });
+  insertOpenCodePart(database, "mixed-synthetic", "file-user", "file-part", 4,
+    { type: "file", mime: "text/plain", url: "data:text/plain;base64,eA==", filename: "synthetic.txt" });
+  insertOpenCodeMessage(database, "mixed-synthetic", "synthetic-only-user", "user", 5);
+  insertOpenCodePart(database, "mixed-synthetic", "synthetic-only-user", "synthetic-only-part", 5,
+    { type: "text", text: "only injected content", synthetic: true });
 
   const snapshot = await opencodeAdapter.readRecords!({ path, client: "opencode", format: OPENCODE_FORMAT,
     selector: "mixed-synthetic", sessionId: "mixed-synthetic" });
   const messages = new Map<string, SessionMessage>();
   const summary = parseNormalizedSession(snapshot, { message: message => messages.set(message.id, message), usage: () => undefined });
-  assert.equal(summary.turnCount, 1);
+  assert.equal(summary.turnCount, 2);
   assert.ok([...messages.values()].some(message => message.kind === "user" && message.text === "explain attached file"));
   assert.ok([...messages.values()].some(message => message.kind === "context" && message.text === "contents of attached file"));
+  assert.ok([...messages.values()].some(message => message.kind === "user" && message.text === ""));
+  assert.ok([...messages.values()].some(message => message.kind === "context" && message.text === "text/plain attachment contents"));
+  assert.ok([...messages.values()].some(message => message.kind === "context" && message.text === "only injected content"));
   const userRow = snapshot.records.find(row => row.record.normalizedEvent?.key === "message:mixed-user")!;
   const userRaw = JSON.parse(userRow.raw) as { parts: { id: string }[] };
   assert.deepEqual(userRaw.parts.map(part => part.id), ["body-part"]);
   const syntheticRow = snapshot.records.find(row => row.record.normalizedEvent?.key === "synthetic-part:attachment-part")!;
   assert.equal(JSON.parse(syntheticRow.raw).id, "attachment-part");
+  assert.equal(snapshot.records.find(row => row.record.normalizedEvent?.key === "message:file-user")?.record.normalizedEvent?.kind, "user");
+  assert.equal(snapshot.records.find(row => row.record.normalizedEvent?.key === "message:synthetic-only-user")?.record.normalizedEvent?.kind, "context");
   database.close();
 })));
 
