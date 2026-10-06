@@ -598,6 +598,48 @@ test("来源缺失排除新版，前版可比较，GC只留两版，活动与归
   database.close();
 }));
 
+test("仅有 CodeFlicker 启停 Hook 的来源可回查过程，简易对话与模型用量保持空", async () => fixture(async (store, path) => {
+  const directory = join(path, "..", "hook-history");
+  await mkdir(directory);
+  const sourcePath = join(directory, "synthetic-hooks.jsonl");
+  const records = ["SessionStart", "SessionStart", "SessionStart", "SessionEnd", "SessionEnd"].map((hookEvent, index) => ({
+    type: "message", role: "attachment", sessionId: "hook-only-demo", uuid: `hook-${index}`, entrypoint: "cli", model: "fixture-inherited-model",
+    content: { type: "hook_success", hookEvent, hookName: "fixture-hook", command: "printf fixture", stdout: "", stderr: "", exitCode: 0, durationMs: index + 1 },
+  }));
+  await writeFile(sourcePath, records.map(record => JSON.stringify(record)).join("\n") + "\n");
+  const roots = isolatedHistoryRoots({ codeflicker: directory });
+  const refresh = () => refreshSessions(store, store.createJob().id, roots);
+  await refresh();
+  assert.equal(store.list().total, 0, "仅启停 Hook 不出现在默认对话列表");
+  const summary = store.list({ executionMode: "all" }).sessions[0]!;
+  assert.equal(summary.messageCount, 5);
+  assert.equal(summary.turnCount, 0);
+  assert.equal(store.messages(summary.id, { mode: "brief", pageUnit: "turn" }).total, 0);
+  const full = store.messages(summary.id, { mode: "full", pageUnit: "turn" });
+  assert.equal(full.total, 5);
+  assert.deepEqual(full.messages.map(message => message.recordLine), [1, 2, 3, 4, 5]);
+  assert.ok(full.messages.every(message => message.kind === "context" && message.contextSource === "hook"));
+  assert.equal(store.timeline(summary.id).events.length, 5);
+  const profile = store.profile(summary.id);
+  assert.equal(profile.messageCount, 5);
+  assert.equal(profile.turnCount, 0);
+  assert.deepEqual(profile.tools, []);
+  assert.deepEqual(profile.models, []);
+  assert.equal(profile.usage.requests, 0);
+  assert.equal(profile.usage.inputTokens, null);
+  assert.equal(store.search({ q: "SessionStart", sessionId: summary.id }).total, 0);
+  assert.equal(store.search({ q: "SessionStart", sessionId: summary.id, kinds: ["context"] }).total, 3);
+  const revision = store.cachedRevisions()[0]!.revision;
+  await refresh();
+  assert.equal(store.cachedRevisions()[0]!.revision, revision);
+  assert.equal(store.messages(summary.id, { mode: "full" }).total, 5);
+  await appendFile(sourcePath, JSON.stringify({ type: "message", role: "user", sessionId: "hook-only-demo", uuid: "real-request", entrypoint: "cli", content: "合成用户问题" }) + "\n");
+  await refresh();
+  assert.equal(store.list().total, 1, "来源后续出现真实对话后恢复默认展示");
+  assert.equal(store.list().sessions[0]?.turnCount, 1);
+  assert.equal(store.messages(summary.id, { mode: "full" }).total, 6);
+}));
+
 test("真实刷新调用链：未变来源复用、追加重建、清缓存原子重建、缺失排除和读取失败留上版", async () => fixture(async (store, path) => {
   const directory = join(path, "..", "history");
   await mkdir(directory);

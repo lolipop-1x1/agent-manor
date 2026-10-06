@@ -53,7 +53,7 @@ export const MessageCard = memo(function MessageCard({ message, mode, focused, p
       {message.final && <span className={`session-final is-${message.final}`}>{message.final === "explicit" ? "明确最终回答" : "推断最终回答"}</span>}
       {message.currentBranch === false && <span className="session-evidence-label">其他分支</span>}
       {message.copied && <span className="session-evidence-label">已识别复制记录</span>}
-      {message.contextSource && <span className="session-evidence-label">{message.contextSource === "agents_md" ? "AGENTS.md 注入" : "客户端注入包"}</span>}
+      {message.contextSource && <span className="session-evidence-label">{message.contextSource === "hook" ? "本地 Hook" : message.contextSource === "agents_md" ? "AGENTS.md 注入" : "客户端注入包"}</span>}
       {message.status && <span className={`session-status is-${message.status}`}>{statusLabels[message.status]}</span>}
       {message.durationMs !== undefined && <span className="session-duration"><Clock size={12} />{displayRecorded(message.durationMs)} ms</span>}
       <time>{message.occurredAt ? new Date(message.occurredAt).toLocaleString("zh-CN", { hour12: false }) : "时间未记录"}</time>

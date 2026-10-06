@@ -430,7 +430,7 @@ export async function parseSessionSource(source: SourceLocation, sink: SessionSi
     const role = string(native.role) ?? string(record.role) ?? string(record.type);
     const nativeId = string(record.uuid) ?? string(native.id) ?? `row:${line}`;
     const model = string(native.model);
-    const recordedModel = model && model !== "<synthetic>" ? model : undefined;
+    const recordedModel = model && model !== "<synthetic>" && !(source.client === "codeflicker" && role === "attachment") ? model : undefined;
     if (recordedModel) models.add(recordedModel);
     extra.model = recordedModel;
     if (record.type === "system" || record.type === "summary") {
@@ -439,6 +439,17 @@ export async function parseSessionSource(source: SourceLocation, sink: SessionSi
     }
     if (source.client === "codeflicker" && record.type !== "message") continue;
     const content = native.content;
+    if (source.client === "codeflicker" && role === "attachment") {
+      const attachment = object(content);
+      const type = string(attachment.type) ?? "未记录类型";
+      const hook = ["hook_success", "hook_blocking_error", "hook_error_during_execution", "hook_cancelled", "hook_non_blocking_error", "hook_stopped_continuation"].includes(type);
+      if (!hook) gap("unsupported_format", "CodeFlicker 附件类型尚未适配，已保留原始过程记录");
+      message(`native:${nativeId}:attachment`, "context", `${hook ? "本地 Hook" : "附件过程记录"}\n${display(content ?? record)}`, line,
+        { ...extra, contextSource: hook ? "hook" : undefined,
+          status: !hook ? undefined : type === "hook_success" ? "success" : ["hook_blocking_error", "hook_error_during_execution", "hook_non_blocking_error"].includes(type) ? "failure" : "unknown",
+          durationMs: hook ? tokens(attachment.durationMs) : undefined });
+      continue;
+    }
     const blocks = Array.isArray(content) ? content : typeof content === "string" ? [{ type: "text", text: content }] : [];
     let firstMessage: SessionMessage | undefined;
     const hasResult = blocks.some(value => ["tool_result", "tool-result"].includes(string(object(value).type) ?? ""));

@@ -24,8 +24,8 @@ export interface SessionMessage {
   currentBranch?: boolean;
   resource?: { kind: "mcp" | "skill_call" | "skill_read"; name: string; server?: string };
   filePaths?: string[];
-  /** Codex 注入上下文的来源；正文仍保留原记录。 */
-  contextSource?: "agents_md" | "environment" | "client";
+  /** 注入上下文或本地 Hook 的来源；正文仍保留原记录。 */
+  contextSource?: "agents_md" | "environment" | "client" | "hook";
   contextEvidence?: "client_metadata" | "wrapper";
 }
 /** 总览只返回定位和显示所需元信息，不加载正文。 */

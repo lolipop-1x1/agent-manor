@@ -35,6 +35,34 @@ async function parsed(client: Client, records: unknown[], extra = "") {
   } finally { await rm(directory, { recursive: true, force: true }); }
 }
 
+test("CodeFlicker 附件保留为过程记录，不新增对话、模型请求或工具调用", async () => {
+  const attachment = (uuid: string, content: unknown) => ({ type: "message", sessionId: "attachment-demo", uuid,
+    role: "attachment", content, timestamp, entrypoint: "cli", model: "fixture-inherited-model" });
+  const success = attachment("started", { type: "hook_success", hookEvent: "SessionStart", hookName: "fixture-start",
+    command: "printf fixture", stdout: "", stderr: "", exitCode: 0, durationMs: 12 });
+  const sample = await parsed("codeflicker", [success, success,
+    { type: "message", sessionId: "attachment-demo", uuid: "request", role: "user", content: "合成请求" },
+    attachment("blocked", { type: "hook_blocking_error", hookEvent: "PreToolUse", stderr: "合成错误", exitCode: 2 }),
+    attachment("unknown", { type: "fixture_attachment", value: "原始附件内容" }),
+    { type: "message", sessionId: "attachment-demo", uuid: "answer", role: "assistant", content: "合成回答" },
+  ]);
+  assert.equal(sample.summary.messageCount, 5);
+  assert.equal(sample.summary.turnCount, 1);
+  assert.deepEqual(sample.summary.models, []);
+  assert.equal(sample.usages.length, 0);
+  assert.equal(sample.messages.filter(message => message.kind === "tool_call" || message.kind === "tool_result").length, 0);
+  const hooks = sample.messages.filter(message => message.contextSource === "hook");
+  assert.equal(hooks.length, 2, "相同原始身份的重复附件不增加记录数");
+  assert.equal(hooks[0]?.status, "success");
+  assert.equal(hooks[0]?.durationMs, 12);
+  assert.equal(hooks[0]?.recordLine, 2);
+  assert.equal(hooks[1]?.status, "failure");
+  assert.ok(hooks[0]?.text.includes("SessionStart"));
+  assert.ok(sample.messages.some(message => message.kind === "context" && message.text.includes("原始附件内容")));
+  assert.ok(sample.summary.gaps.some(gap => gap.kind === "unsupported_format"));
+  assert.equal(sample.messages.filter(message => message.kind === "assistant" && message.final).length, 1);
+});
+
 test("CodeFlicker CLI 保留原始入口和版本，去重且不覆盖恢复后的混合入口", async () => {
   const native = (uuid: string, entrypoint?: string, version?: string) => ({ type: "message", sessionId: "entry-demo", uuid,
     role: "user", content: "合成请求", entrypoint, version });

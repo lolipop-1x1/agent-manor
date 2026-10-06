@@ -302,6 +302,11 @@ export class SessionStore {
     const version = this.version(query.version);
     const { page, pageSize } = paging(query);
     const filter = this.filters({ ...query, executionMode: query.executionMode ?? "regular" });
+    // 仅有本地 Hook 的来源保留回查，但默认列表不当作对话展示。
+    if (query.executionMode !== "all") filter.sql += ` AND (r.client<>'codeflicker'
+      OR COALESCE(json_extract(r.json,'$.messageCount'),0)=0 OR COALESCE(json_extract(r.json,'$.turnCount'),0)>0
+      OR EXISTS (SELECT 1 FROM session_messages m WHERE m.revision=r.id
+        AND (m.kind<>'context' OR COALESCE(json_extract(m.json,'$.contextSource'),'')<>'hook')))`;
     if (!query.includeSubagents) filter.sql += ` AND COALESCE(json_extract(r.json,'$.relationship'),'')<>'child'
       AND NOT EXISTS (SELECT 1 FROM session_version_relations relation WHERE relation.version=v.version AND relation.child=v.session_id)`;
     if (query.q?.trim()) {

@@ -536,7 +536,7 @@ export default function Sessions({ active, target, onMap }: { active: boolean; t
               ...(status?.projects.map(path => ({ value: path, label: shortProject(path), description: path })) ?? [])]} onChange={setProject} />
           </div>
           <div className="session-date-filters"><div><span>从</span><DatePicker label="起始日期" value={from} onChange={setFrom} /></div><div><span>到</span><DatePicker label="截止日期" value={to} onChange={setTo} /></div></div>
-          <div className="session-execution-filter"><FilterSelect label="筛选会话类型" value={executionMode} options={[{ value: "regular", label: "常规会话" }, { value: "quiet", label: "仅 Quiet 模式" }, { value: "all", label: "全部会话" }]} onChange={value => setExecutionMode(value as NonNullable<SessionQuery["executionMode"]>)} /><small>默认隐藏 Quiet 模式，可按类型查看</small></div>
+          <div className="session-execution-filter"><FilterSelect label="筛选会话类型" value={executionMode} options={[{ value: "regular", label: "常规会话" }, { value: "quiet", label: "仅 Quiet 模式" }, { value: "all", label: "全部会话" }]} onChange={value => setExecutionMode(value as NonNullable<SessionQuery["executionMode"]>)} /><small>默认隐藏 Quiet 及仅 Hook 记录，选择全部会话可查看</small></div>
           {invalidDates && <p className="session-filter-error" role="alert">起始日期不能晚于截止日期。</p>}
           <div className="session-list-meta"><span>{debouncedGlobalQuery ? visibleGlobalSearch ? `${formatCount(visibleGlobalSearch.total)} 条命中` : "搜索历史" : sessionList ? `${formatCount(sessionList.total)} 个会话` : "会话列表"}</span>
             <button className="icon-button" aria-label="刷新会话索引" title="刷新会话索引" disabled={refreshing || activeJob(sessionJob)} onClick={submitRefresh}><ArrowClockwise size={16} className={refreshing || activeJob(sessionJob) ? "is-spinning" : ""} /></button>
@@ -620,7 +620,13 @@ export default function Sessions({ active, target, onMap }: { active: boolean; t
               {profile.children.map(child => <button className="session-child" key={child.id} onClick={() => selectSession(child)}><strong>{child.title}</strong><small>查看子任务过程</small></button>)}
             </details>}
             {selectedMessageData && <>
-              {!selectedMessageData.messages.length && !messageLoading ? <div className="session-message-empty"><h2>此会话没有可显示的记录</h2><p className="muted">来源可能只保留元数据，或当前模式下没有对应内容。</p></div> : <>
+              {!selectedMessageData.messages.length && !messageLoading ? <div className="session-message-empty">
+                <h2>{mode === "brief" && selectedMessageData.session.messageCount > 0 ? "简易版没有对话记录" : "此会话没有可显示的记录"}</h2>
+                <p className="muted">{mode === "brief" && selectedMessageData.session.messageCount > 0
+                  ? "此视图只展示用户消息与 AI 最终回答。切换完整或轨迹可查看已保存的过程记录。"
+                  : "来源可能只保留元数据，或当前模式下没有对应内容。"}</p>
+                {mode === "brief" && selectedMessageData.session.messageCount > 0 && <button className="text-button" onClick={() => changeMode("full")}>查看完整记录</button>}
+              </div> : <>
                 {mode === "trace" ? <SessionTrace key={selectedMessageData.session.id} messages={selectedMessageData.messages} steps={profile?.steps ?? []} focusMessageId={focusMessageId} focusRequest={traceFocusRequest} focusTurnId={selectedMessageData.turns?.find(turn => turn.position === turnPosition)?.id}
                   timeline={timeline?.sessionId === selectedMessageData.session.id ? timeline.data.events : []} timelineLoading={timelineLoading} timelineError={timelineError} onRetryTimeline={() => setTimelineRetry(value => value + 1)} onTimelineSelect={event => focusStep({ id: event.id, sessionId: event.sessionId, messageId: event.id })}
                   project={selectedMessageData.session.project} onMap={onMap} onInspect={inspectTrace} onViewTurn={trackTraceTurn} /> :
