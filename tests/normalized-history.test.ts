@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { Readable } from "node:stream";
-import { normalizedRecord, normalizedSnapshot, parseNormalizedSession, readBoundedJsonl } from "../src/history/adapters/normalized.js";
+import { HISTORY_ADAPTERS } from "../src/history/adapters/index.js";
+import type { HistoryAdapter } from "../src/history/adapters/types.js";
+import { parseSource } from "../src/history/index.js";
+import { createNormalizedAdapter, normalizedRecord, normalizedSnapshot, parseNormalizedSession, readBoundedJsonl } from "../src/history/adapters/normalized.js";
 import type { SessionMessage, SessionUsage } from "../src/session-contracts.js";
 
 test("规范化保留分支及实际用量，失败工具不会产生 Skill 读取证据", () => {
@@ -63,4 +66,26 @@ test("原始物理位置变动使来源指纹失效，不能复用旧证据行�
   const event = { key: "request", kind: "user" as const, text: "检查" };
   assert.notEqual(normalizedSnapshot(source, [normalizedRecord(event, "{}", 1)]).hash,
     normalizedSnapshot(source, [normalizedRecord(event, "{}", 2)]).hash);
+});
+
+
+test("原生容器变更重建活动，未变快照复用且不保留已删除调用", async () => {
+  const location = { client: "pi" as const, path: "/workspace/native-container", sessionId: "demo", cwd: "/workspace/app" };
+  const records = [normalizedRecord({ key: "call", kind: "tool_call" as const, callId: "read-1", tool: "Read", input: { file_path: "src/a.ts" } }, "请求", 1),
+    normalizedRecord({ key: "result", kind: "tool_result" as const, callId: "read-1", status: "success" as const, text: "1: alpha", result: { file: { filePath: "src/a.ts", content: "alpha", startLine: 1, numLines: 1, totalLines: 1 } } }, "结果", 2)];
+  let snapshot = normalizedSnapshot(location, records);
+  const adapter = createNormalizedAdapter({ id: "synthetic-native", readSnapshot: async () => snapshot });
+  // 测试进程内临时注册，产品注册表不暴露动态加载入口。
+  const adapters = HISTORY_ADAPTERS as HistoryAdapter[]; adapters.push(adapter);
+  try {
+    const first = await parseSource(location.path, location.client, undefined, adapter.id);
+    assert.equal(first.events.length, 1);
+    assert.equal(first.events[0]?.status, "success");
+    const unchanged = await parseSource(location.path, location.client, first, adapter.id);
+    assert.equal((unchanged.cursor as { parsedRecords: number }).parsedRecords, 0);
+    snapshot = normalizedSnapshot(location, []);
+    const changed = await parseSource(location.path, location.client, unchanged, adapter.id);
+    assert.equal(changed.events.length, 0);
+    assert.notEqual(changed.hash, first.hash);
+  } finally { adapters.splice(adapters.indexOf(adapter), 1); }
 });
