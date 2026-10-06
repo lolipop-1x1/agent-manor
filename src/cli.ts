@@ -128,6 +128,73 @@ export function createProgram(): Command {
     });
   waiting(sessions.command("cacheclear").description("清除全部派生会话缓存后重建"))
     .action(async (_options: Options, command: Command) => { await request(command, "/sessions/cache", "DELETE"); });
+  const resources = program.command("resources").description("Skill / MCP 使用统计与可恢复本地管理");
+  const resourceFilters = (command: Command) => command.option("--kind <kind>", "skill 或 mcp")
+    .option("--client <client>", clientIds.join(" 或 ")).option("--project <path>", "项目绝对路径；none 表示无项目")
+    .option("--q <text>", "名称或路径关键词").option("--from <time>", "ISO 8601 起始时间")
+    .option("--to <time>", "ISO 8601 截止时间").option("--sort <sort>", "sessions、calls、reads、recent 或 name")
+    .option("--page <number>", "页码").option("--page-size <number>", "每页条数，最多 200").option("--version <id>", "会话索引版本");
+  const resourceQueryString = (command: Command) => {
+    const opts = command.optsWithGlobals<Options>();
+    const params = new URLSearchParams();
+    for (const key of ["kind", "client", "project", "q", "from", "to", "sort", "page", "version", "candidate", "tool", "state"]) {
+      if (typeof opts[key] === "string") params.set(key, opts[key] as string);
+    }
+    for (const key of ["pageSize", "lowSessions", "inactiveDays", "evidenceKind"]) if (typeof opts[key] === "string") params.set(key, opts[key] as string);
+    if (opts.favorite) params.set("favorite", "true");
+    return params.size ? `?${params}` : "";
+  };
+  resources.command("status").description("资源来源、能力与盘点状态")
+    .action(async (_options: Options, command: Command) => { await request(command, "/resources/status"); });
+  resources.command("refresh").description("重新盘点已声明来源，不修改资源")
+    .action(async (_options: Options, command: Command) => { await request(command, "/resources/refresh", "POST", {}); });
+  resourceFilters(resources.command("usage").description("完整历史使用排行")).option("--favorite", "仅已收藏资源")
+    .action(async (_options: Options, command: Command) => { await request(command, `/resources/usage${resourceQueryString(command)}`); });
+  resourceFilters(resources.command("local").description("本地资源本体与客户端入口"))
+    .option("--candidate <filter>", "all、unused、low、old、broken、duplicate、favorite 或 review")
+    .option("--low-sessions <number>", "低频会话数阈值，默认 2").option("--inactive-days <number>", "长期未用天数阈值，默认 90")
+    .action(async (_options: Options, command: Command) => { await request(command, `/resources/local${resourceQueryString(command)}`); });
+  resourceFilters(resources.command("detail <id>").description("资源统计或本地来源详情")).option("--view <view>", "usage 或 local，默认 usage")
+    .action(async (id: string, _options: Options, command: Command) => {
+      const view = command.optsWithGlobals<Options>().view ?? "usage";
+      if (view !== "usage" && view !== "local") throw new RequestError("INVALID_INPUT", "view 必须是 usage 或 local");
+      await request(command, `/resources/${view}/${encodeURIComponent(id)}${resourceQueryString(command)}`);
+    });
+  resourceFilters(resources.command("evidence <id>").description("分页回查实际使用事件"))
+    .option("--tool <name>", "MCP 工具名称").option("--evidence-kind <kind>", "skill_call、skill_read 或 mcp")
+    .action(async (id: string, _options: Options, command: Command) => { await request(command, `/resources/usage/${encodeURIComponent(id)}/evidence${resourceQueryString(command)}`); });
+  resources.command("favorite <id>").description("收藏资源；不改变使用统计").option("--off", "取消收藏")
+    .action(async (id: string, _options: Options, command: Command) => { await request(command, "/resources/favorites", "POST", { id, value: !command.optsWithGlobals<Options>().off }); });
+  resourceFilters(resources.command("archives").description("备用、回收与可恢复停用记录")).option("--state <state>", "disabled、standby、trash、restored 或 purged")
+    .action(async (_options: Options, command: Command) => { await request(command, `/resources/archives${resourceQueryString(command)}`); });
+  resourceFilters(resources.command("operations").description("分页操作记录"))
+    .action(async (_options: Options, command: Command) => { await request(command, `/resources/operations${resourceQueryString(command)}`); });
+  resources.command("source-add <path>").description("登记手动来源，不执行资源或连接服务")
+    .requiredOption("--client <client>", clientIds.join(" 或 ")).requiredOption("--kind <kind>", "skill 或 mcp")
+    .option("--project <path>", "项目作用范围").option("--format <format>", "skill-directory、skill-files、json、jsonc 或 toml")
+    .option("--key-path <json>", "注册 map 的 JSON 路径数组")
+    .action(async (path: string, _options: Options, command: Command) => {
+      const opts = command.optsWithGlobals<Options>();
+      let keyPath: unknown;
+      try { keyPath = opts.keyPath === undefined ? undefined : JSON.parse(String(opts.keyPath)); }
+      catch { throw new RequestError("INVALID_INPUT", "key-path 必须是 JSON 数组"); }
+      await request(command, "/resources/sources", "POST", { path: resolve(path), client: opts.client, kind: opts.kind,
+        project: typeof opts.project === "string" ? resolve(opts.project) : undefined, format: opts.format, keyPath });
+    });
+  resources.command("source-remove <id>").description("移除手动扫描来源，不删除资源")
+    .action(async (id: string, _options: Options, command: Command) => { await request(command, `/resources/sources/${encodeURIComponent(id)}`, "DELETE"); });
+  resources.command("preview <action>").description("生成具体管理预览，不执行修改")
+    .option("--entry-id <id>", "盘点入口身份").option("--operation-id <id>", "恢复或清除的原操作身份")
+    .action(async (action: string, _options: Options, command: Command) => {
+      const opts = command.optsWithGlobals<Options>();
+      await request(command, "/resources/preview", "POST", { action, entryId: opts.entryId, operationId: opts.operationId });
+    });
+  resources.command("apply <previewId>").description("确认并执行已审阅的具体预览；来源变化时拒绝")
+    .requiredOption("--confirm", "明确确认此 previewId")
+    .action(async (previewId: string, _options: Options, command: Command) => {
+      if (command.optsWithGlobals<Options>().confirm !== true) throw new RequestError("INVALID_INPUT", "需要明确确认当前预览");
+      await request(command, "/resources/apply", "POST", { previewId, confirmed: true });
+    });
   program.command("serve").description("前台运行本地后台服务").option("--port <number>", "监听端口，默认随机空闲端口")
     .action(async (options: Options, command: Command) => {
       const global = command.optsWithGlobals<Options>();

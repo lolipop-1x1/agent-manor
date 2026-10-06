@@ -1,0 +1,29 @@
+import type { ResourceLocalQuery } from "../resource-service-contracts.js";
+import type { ResourceUsageEvidenceQuery } from "../resource-contracts.js";
+import { coverageQuery, integer, ServiceError, textValue } from "./input.js";
+import { queryBoolean } from "./session-input.js";
+
+export function resourceQuery(raw: Record<string, unknown>): ResourceLocalQuery & ResourceUsageEvidenceQuery {
+  const { client, from, to, version } = coverageQuery(raw);
+  const query: ResourceLocalQuery & ResourceUsageEvidenceQuery = { client, from, to, version,
+    page: integer(raw.page, "page", 1, 1_000_000), pageSize: integer(raw.pageSize, "pageSize", 30, 200),
+    lowSessions: integer(raw.lowSessions, "lowSessions", 2, 10_000), inactiveDays: integer(raw.inactiveDays, "inactiveDays", 90, 3650) };
+  query.favorite = queryBoolean(raw.favorite, "favorite");
+  for (const key of ["project", "q", "tool"] as const) query[key] = textValue(raw[key], key);
+  const enums = { kind: ["skill", "mcp"], sort: ["sessions", "calls", "reads", "recent", "name"],
+    candidate: ["all", "unused", "low", "old", "broken", "duplicate", "favorite", "review"],
+    evidenceKind: ["skill_call", "skill_read", "mcp"] };
+  for (const [key, values] of Object.entries(enums)) {
+    const value = textValue(raw[key], key);
+    if (value && !values.includes(value)) throw new ServiceError("INVALID_INPUT", `未知 ${key}`);
+    if (value) Object.assign(query, { [key]: value });
+  }
+  return query;
+}
+
+export function resourceBody(body: unknown, allowed: readonly string[]): Record<string, unknown> {
+  if (!body || typeof body !== "object" || Array.isArray(body) || Object.keys(body).some(key => !allowed.includes(key))) {
+    throw new ServiceError("INVALID_INPUT", `请求体只接受 ${allowed.join("、")}`);
+  }
+  return body as Record<string, unknown>;
+}

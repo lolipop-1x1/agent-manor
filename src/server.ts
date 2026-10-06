@@ -17,6 +17,10 @@ import { queryBoolean, sessionMessageQuery, sessionQuery, sessionRefreshOptions 
 import { textValue } from "./service/input.js";
 import { clientIds } from "./clients.js";
 import type { Client } from "./contracts.js";
+import type { ResourceInventoryOptions } from "./resource-inventory-contracts.js";
+import { ResourceManager } from "./resources/management.js";
+import { ResourceService } from "./resources/service.js";
+import { registerResourceRoutes } from "./service/resource-routes.js";
 
 export interface ServiceOptions {
   home?: string;
@@ -24,6 +28,7 @@ export interface ServiceOptions {
   roots?: DiscoverRoots;
   staticRoot?: string;
   startupRefresh?: boolean;
+  resourceInventory?: ResourceInventoryOptions;
 }
 
 function statusCode(code: ApiErrorCode): number {
@@ -49,7 +54,8 @@ export async function startService(options: ServiceOptions = {}) {
   let store: AnalysisStore | undefined;
   let manager: WorkerManager | undefined;
   let sessions: SessionStore | undefined;
-  const app = Fastify({ logger: false, bodyLimit: 65_536 });
+  let resourceManager: ResourceManager | undefined;
+  const app = Fastify({ logger: false, bodyLimit: 65_536, forceCloseConnections: true });
   const instance: ServiceInstance = { id: randomUUID(), pid: process.pid, host: "127.0.0.1", port: requestedPort, startedAt: new Date().toISOString() };
   try {
     store = new AnalysisStore(join(home, "index.sqlite"));
@@ -58,10 +64,15 @@ export async function startService(options: ServiceOptions = {}) {
     const index = store;
     const library = sessions;
     const worker = manager;
+    resourceManager = new ResourceManager(home);
+    const management = resourceManager;
+    const resources = new ResourceService(library, management, options.resourceInventory ?? { environment: process.env }, () =>
+      [...new Set([...index.listRepositories().map(repository => repository.path), ...library.status().projects])]);
     app.addHook("onClose", async () => {
       await worker.close();
       index.close();
       library.close();
+      management.close();
       await removeInstance(home, instance);
       await release();
     });
@@ -143,6 +154,7 @@ export async function startService(options: ServiceOptions = {}) {
       ...sessionQuery(request.query), includeChildren: queryBoolean(request.query.includeChildren, "includeChildren"),
     }));
     app.post("/api/v1/sessions/refresh", async request => ({ job: worker.refreshSessions(false, sessionRefreshOptions(request.body)) }));
+    registerResourceRoutes(app, resources);
     app.delete("/api/v1/sessions/cache", async request => { emptyBody(request.body); return { job: worker.refreshSessions(true) }; });
     const snapshotFor = (id: string, query: CoverageQuery) => index.getSnapshot(id, query.version);
     app.get<{ Params: RepositoryParams; Querystring: Query }>(`${base}/coverage`, async (request) => {
@@ -264,6 +276,7 @@ export async function startService(options: ServiceOptions = {}) {
     await manager?.close().catch(() => undefined);
     try { store?.close(); } catch { /* 初始化失败时可能已关闭。 */ }
     try { sessions?.close(); } catch { /* 初始化失败时可能已关闭。 */ }
+    try { resourceManager?.close(); } catch { /* 初始化失败时可能已关闭。 */ }
     await release();
     throw error;
   }

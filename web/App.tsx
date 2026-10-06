@@ -13,6 +13,7 @@ import { FilterSelect } from "./FilterSelect";
 import { DatePicker } from "./DatePicker";
 import { HelpPopover } from "./HelpPopover";
 import Sessions from "./Sessions";
+import Resources from "./Resources";
 import "./session-navigation.css";
 import { boundQuery, categoryNames, dateLabel, fileHighlights, filename, fmt, gapNames, metricNames, metricValue, percent, rangesLabel, timeFilters, type Metric, type Theme } from "./model";
 
@@ -181,20 +182,24 @@ function FilePane({ repoId, detail, loading, error, retry, collapsed, toggle, me
 }
 
 export function App() {
-  const [view, setView] = useState<"map" | "sessions">(() => location.hash.startsWith("#sessions") ? "sessions" : "map");
-  const viewScroll = useRef({ map: 0, sessions: 0 });
+  type ProductView = "map" | "sessions" | "resources";
+  const hashView = (): ProductView => location.hash.startsWith("#sessions") ? "sessions" : location.hash.startsWith("#resources") ? "resources" : "map";
+  const [view, setView] = useState<ProductView>(hashView);
+  const viewScroll = useRef({ map: 0, sessions: 0, resources: 0 });
+  const resourceAddress = useRef(location.hash.startsWith("#resources") ? location.hash : "#resources");
   const activeView = useRef(view);
-  const activateView = useCallback((next: "map" | "sessions") => {
+  const activateView = useCallback((next: ProductView) => {
     if (activeView.current !== next) viewScroll.current[activeView.current] = globalThis.scrollY;
     activeView.current = next;
     setView(next);
   }, []);
   useLayoutEffect(() => { globalThis.scrollTo(0, viewScroll.current[view]); }, [view]);
-  useEffect(() => { document.title = `AgentManor · ${view === "sessions" ? "会话库" : "代码活动地图"}`; }, [view]);
+  useEffect(() => { document.title = `AgentManor · ${{ map: "代码活动地图", sessions: "会话库", resources: "资源管理" }[view]}`; }, [view]);
   const [sessionTarget, setSessionTarget] = useState<{ sessionId: string; messageId?: string; mode?: "brief" | "full" | "trace"; page?: number; turnPosition?: number; branch?: string }>();
   useEffect(() => {
     const navigate = () => {
-      activateView(location.hash.startsWith("#sessions") ? "sessions" : "map");
+      activateView(hashView());
+      if (!location.hash.startsWith("#sessions")) return;
       const params = new URLSearchParams(location.hash.split("?")[1]);
       const sessionId = params.get("id");
       const mode = params.get("mode");
@@ -206,7 +211,15 @@ export function App() {
     globalThis.addEventListener("hashchange", navigate);
     return () => globalThis.removeEventListener("hashchange", navigate);
   }, [activateView]);
-  const switchView = (next: "map" | "sessions") => { activateView(next); location.hash = next; };
+  const switchView = (next: ProductView) => {
+    if (location.hash.startsWith("#resources")) resourceAddress.current = location.hash;
+    activateView(next); location.hash = next === "resources" ? resourceAddress.current : next;
+  };
+  const openResourceSession = (target: { sessionId: string; messageId: string }) => {
+    resourceAddress.current = location.hash;
+    setSessionTarget({ ...target, mode: "trace", branch: "all" }); activateView("sessions");
+    location.hash = `sessions?${new URLSearchParams({ id: target.sessionId, message: target.messageId, mode: "trace", branch: "all" })}`;
+  };
   const repositoryTrigger = useRef<HTMLButtonElement>(null);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [detailsCollapsed, setDetailsCollapsed] = useState(false);
@@ -375,7 +388,7 @@ export function App() {
   const mapHeading = repository ? <div className="map-heading"><div className="breadcrumbs"><button onClick={() => browse("")}><Folder size={16} />{repository.name}</button>{directory.split("/").filter(Boolean).map((part, i, parts) => <span key={i}><CaretRight size={12} /><button onClick={() => browse(parts.slice(0, i + 1).join("/"))}>{part}</button></span>)}<small>{fmt(visible.length)} 个文件</small></div><div className="metric-picker" role="group" aria-label="地图着色指标">{(["read", "edit", "activity"] as const).map(value => <button key={value} aria-pressed={metric === value} className={metric === value ? "active" : ""} onClick={() => setMetric(value)}>{metricNames[value]}</button>)}</div></div> : null;
   const mapLegend = <div className="map-legend"><span>{metric === "activity" ? "活动次数" : "精确覆盖率"}</span><span className="legend-scale">{[0, 1, 2, 3, 4].map(tone => <i key={tone} className={`tone-${tone}`} />)}</span><span>{metric === "activity" ? `0 → ${fmt(visible.reduce((max, file) => Math.max(max, metricValue(file, metric)), 0))} 次` : "0 → 100%"}</span><span className="near-key legend-near" /><span>近似</span><small>面积＝行数</small></div>;
   return <Tooltip.Provider delayDuration={350}>
-    <header className="app-header"><a className="brand" href="/" aria-label="AgentManor 首页"><Stack size={25} weight="duotone" /><span>AgentManor</span></a><span className="header-divider" /><nav className="product-nav" aria-label="功能导航"><button aria-current={view === "map" ? "page" : undefined} onClick={() => switchView("map")}>代码地图</button><button aria-current={view === "sessions" ? "page" : undefined} onClick={() => switchView("sessions")}>会话库</button></nav>
+    <header className="app-header"><a className="brand" href="/" aria-label="AgentManor 首页"><Stack size={25} weight="duotone" /><span>AgentManor</span></a><span className="header-divider" /><nav className="product-nav" aria-label="功能导航"><button aria-current={view === "map" ? "page" : undefined} onClick={() => switchView("map")}>代码地图</button><button aria-current={view === "sessions" ? "page" : undefined} onClick={() => switchView("sessions")}>会话库</button><button aria-current={view === "resources" ? "page" : undefined} onClick={() => switchView("resources")}>资源管理</button></nav>
       <div className="header-actions">{view === "map" && repository && <SourcesDialog repo={repository} query={query} gaps={coverage?.gaps ?? []} onJob={recordJob} />}
         <Hint label={theme === "light" ? "切换深色主题" : "切换浅色主题"}><button className="icon-button" aria-label="切换主题" onClick={() => setTheme(current => current === "light" ? "dark" : "light")}>{theme === "light" ? <Moon size={19} /> : <Sun size={19} />}</button></Hint>
         <button hidden={view !== "map"} className="button primary refresh-button" onClick={() => void runRefresh()} disabled={!repository || actionPending || jobActive(job)} aria-label={jobActive(job) ? "分析中" : "刷新分析"}><ArrowClockwise size={16} className={jobActive(job) ? "spinning" : ""} /><span className="refresh-label">{jobActive(job) ? "分析中" : "刷新分析"}</span></button>
@@ -425,5 +438,6 @@ export function App() {
     </Modal>
     </section>
     <section className="product-view" hidden={view !== "sessions"} aria-label="会话库视图"><Sessions active={view === "sessions"} target={sessionTarget} onMap={openMap} /></section>
+    <section className="product-view" hidden={view !== "resources"} aria-label="资源管理视图"><Resources active={view === "resources"} onSession={openResourceSession} /></section>
   </Tooltip.Provider>;
 }

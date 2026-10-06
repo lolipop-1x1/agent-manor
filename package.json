@@ -19,7 +19,8 @@
     "docs/design/history-support.md",
     "docs/design/baseline-rules.md",
     "docs/design/matching-rules.md",
-    "docs/design/session-history.md"
+    "docs/design/session-history.md",
+    "docs/design/resource-support.md"
   ],
   "scripts": {
     "check:public": "node scripts/check-public-content.mjs",
@@ -39,7 +40,10 @@
     "better-sqlite3": "13.0.3",
     "commander": "15.0.0",
     "diff": "9.0.0",
-    "fastify": "5.12.5"
+    "fastify": "5.12.5",
+    "jsonc-parser": "3.3.1",
+    "smol-toml": "1.9.0",
+    "yaml": "2.9.1"
   },
   "devDependencies": {
     "@codemirror/lang-javascript": "6.2.5",

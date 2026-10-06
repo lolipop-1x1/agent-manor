@@ -6,6 +6,7 @@ import type { Gap } from "../contracts.js";
 import { clientIds } from "../clients.js";
 import type { Client } from "../clients.js";
 import type { SourceLocation } from "../history/types.js";
+import type { ResourceEventStream, ResourceHistoryIdentity, ResourceUsageEvent, ResourceUsageQuery } from "../resource-contracts.js";
 import type { SessionIndexStatus, SessionJob, SessionListResult, SessionMessage, SessionMessageQuery, SessionMessageResult, SessionProfile, SessionQuery, SessionRefreshOptions, SessionSearchResult, SessionSink, SessionSourceMeta, SessionSummary, SessionTimelineEvent, SessionTimelineResult, SessionUsage } from "../session-contracts.js";
 import { StoreError } from "../index/store.js";
 import { sessionTitle } from "./title.js";
@@ -56,6 +57,11 @@ export class SessionStore {
       CREATE INDEX IF NOT EXISTS session_message_order ON session_messages(revision,ordinal,id);
       CREATE INDEX IF NOT EXISTS session_message_call ON session_messages(revision,call_id);
       CREATE INDEX IF NOT EXISTS session_message_turn ON session_messages(revision,turn_id,ordinal,id);
+      CREATE INDEX IF NOT EXISTS session_message_resource_event
+        ON session_messages(revision,json_extract(json,'$.resource.kind'),ordinal,id)
+        WHERE kind='tool_call' AND copied=0 AND json_extract(json,'$.resource.kind') IN ('mcp','skill_call','skill_read');
+      CREATE INDEX IF NOT EXISTS session_message_resource_call ON session_messages(revision,call_id,kind,copied)
+        WHERE kind='tool_call' AND copied=0;
       CREATE TABLE IF NOT EXISTS session_usage (revision TEXT NOT NULL REFERENCES session_revisions(id) ON DELETE CASCADE,
         id TEXT NOT NULL, message_id TEXT, turn_id TEXT, json TEXT NOT NULL, PRIMARY KEY(revision,id));
       CREATE TABLE IF NOT EXISTS session_versions (id TEXT PRIMARY KEY, created_at TEXT NOT NULL, gaps TEXT NOT NULL);
@@ -330,6 +336,79 @@ export class SessionStore {
     if (query.executionMode === "quiet") parts.push("json_extract(r.json,'$.executionMode')='quiet'");
     if (query.executionMode === "regular") parts.push("COALESCE(json_extract(r.json,'$.executionMode'),'')<>'quiet'");
     return { sql: parts.length ? " AND " + parts.join(" AND ") : "", values };
+  }
+
+  /** 资源查询只读取已发布调用的元信息；配对命中调用索引，不读取消息正文。 */
+  resourceEvents(query: ResourceUsageQuery = {}, identity?: ResourceHistoryIdentity): ResourceEventStream {
+    const version = this.version(query.version);
+    const parts = ["v.version=?"];
+    const values: SqlValue[] = [version];
+    for (const [column, value] of [["r.client", query.client ?? identity?.client], ["r.project", query.project ?? identity?.project]] as const) {
+      if (column === "r.project" && value === "none") parts.push("r.project IS NULL");
+      else if (value !== undefined) { parts.push(`${column}=?`); values.push(value); }
+    }
+    if (identity && identity.project === undefined) parts.push("r.project IS NULL");
+    const sessionFilter = parts.join(" AND ");
+    const sessionCount = (this.database.prepare(`SELECT COUNT(*) AS count FROM session_version_sessions v
+      JOIN session_revisions r ON r.id=v.revision WHERE ${sessionFilter}`).get(...values) as { count: number }).count;
+    const clients = (this.database.prepare(`SELECT DISTINCT r.client FROM session_version_sessions v
+      JOIN session_revisions r ON r.id=v.revision WHERE ${sessionFilter} ORDER BY r.client`).all(...values) as { client: Client }[]).map(row => row.client);
+    const kind = query.kind ?? identity?.kind;
+    if (kind) parts.push(kind === "mcp" ? "json_extract(m.json,'$.resource.kind')='mcp'" : "json_extract(m.json,'$.resource.kind') IN ('skill_call','skill_read')");
+    if (identity) {
+      parts.push(identity.kind === "mcp" ? "json_extract(m.json,'$.resource.server') IS ?" : "json_extract(m.json,'$.resource.name')=?");
+      if (identity.kind === "mcp" && identity.server === undefined) {
+        parts[parts.length - 1] = "json_extract(m.json,'$.resource.server') IS NULL";
+      } else values.push(identity.kind === "mcp" ? identity.server! : identity.name);
+    }
+    const rows = this.database.prepare(`SELECT m.id AS message_id,m.ordinal,m.turn_id,m.record_line,r.session_id,r.client,r.project,
+      r.id AS revision,r.fingerprint,json_extract(r.json,'$.path') AS source_path,json_extract(r.json,'$.sourceId') AS source_id,
+      json_extract(m.json,'$.resource.kind') AS resource_kind,json_extract(m.json,'$.resource.name') AS resource_name,
+      json_extract(m.json,'$.resource.server') AS resource_server,json_extract(m.json,'$.resource.path') AS resource_path,
+      json_extract(m.json,'$.filePaths') AS file_paths,json_extract(m.json,'$.tool') AS tool,
+      json_extract(m.json,'$.occurredAt') AS occurred_at,
+      COALESCE(CASE WHEN json_extract(m.json,'$.status') IN ('success','failure') THEN json_extract(m.json,'$.status') END,
+        CASE WHEN (SELECT COUNT(*) FROM session_messages c WHERE c.revision=m.revision AND c.call_id=m.call_id
+          AND c.kind='tool_call' AND c.copied=0)=1 THEN json_extract(result.json,'$.status') END,'unknown') AS status,
+      COALESCE(json_extract(m.json,'$.durationMs'),json_extract(result.json,'$.durationMs')) AS duration_ms,
+      result.id AS result_id,
+      (SELECT COUNT(*) FROM session_messages z WHERE z.revision=m.revision AND z.call_id=m.call_id
+        AND z.kind='tool_result' AND z.copied=0) AS result_count,
+      (SELECT COUNT(*) FROM session_messages c WHERE c.revision=m.revision AND c.call_id=m.call_id
+        AND c.kind='tool_call' AND c.copied=0) AS call_count
+      FROM session_version_sessions v JOIN session_revisions r ON r.id=v.revision
+      JOIN session_messages m INDEXED BY session_message_resource_event ON m.revision=r.id AND m.kind='tool_call' AND m.copied=0
+      LEFT JOIN session_messages result ON result.revision=m.revision AND result.id=(SELECT MIN(z.id) FROM session_messages z
+        WHERE z.revision=m.revision AND z.call_id=m.call_id AND z.kind='tool_result' AND z.copied=0 HAVING COUNT(*)=1)
+      AND (SELECT COUNT(*) FROM session_messages c WHERE c.revision=m.revision AND c.call_id=m.call_id
+        AND c.kind='tool_call' AND c.copied=0)=1
+      WHERE ${parts.join(" AND ")} AND json_extract(m.json,'$.resource.kind') IN ('mcp','skill_call','skill_read')
+      ORDER BY r.session_id,m.ordinal,m.id`).iterate(...values) as Iterable<{
+        message_id: string; ordinal: number; turn_id: string; record_line: number; session_id: string; client: Client; project: string | null;
+        revision: string; fingerprint: string; source_path: string; source_id: string; resource_kind: ResourceUsageEvent["kind"];
+        resource_name: string | null; resource_server: string | null; resource_path: string | null; file_paths: string | null;
+        tool: string | null; occurred_at: string | null; status: ResourceUsageEvent["status"]; duration_ms: number | null;
+        result_id: string | null; result_count: number; call_count: number;
+      }>;
+    const events = (function* (): Iterable<ResourceUsageEvent> {
+      for (const row of rows) {
+        const paths = row.file_paths ? JSON.parse(row.file_paths) as string[] : [];
+        const skillPath = paths.find(path => /(?:^|[/\\])SKILL\.md$/.test(path));
+        const path = row.resource_path ?? (row.resource_kind === "mcp" ? undefined : skillPath
+          ?? (row.resource_kind === "skill_call" ? paths[0] : undefined));
+        yield { id: `${row.session_id}:${row.message_id}`, sessionId: row.session_id, messageId: row.message_id,
+          turnId: row.turn_id, ordinal: row.ordinal, client: row.client, project: row.project ?? undefined,
+          kind: row.resource_kind, name: row.resource_name ?? "未记录名称", server: row.resource_server ?? undefined,
+          path, tool: row.tool ?? undefined, occurredAt: row.occurred_at ?? undefined,
+          status: row.status === "success" || row.status === "failure" ? row.status : "unknown",
+          durationMs: typeof row.duration_ms === "number" && Number.isFinite(row.duration_ms) && row.duration_ms >= 0 ? row.duration_ms : undefined,
+          resultMessageId: row.result_id ?? undefined,
+          pairing: row.call_count > 1 || row.result_count > 1 ? "ambiguous" : row.result_id ? "unique" : "missing",
+          source: { path: row.source_path, sourceId: row.source_id, revision: row.revision, fingerprint: row.fingerprint, recordLine: row.record_line } };
+      }
+    })();
+    const gaps = JSON.parse((this.database.prepare("SELECT gaps FROM session_versions WHERE id=?").get(version) as { gaps: string }).gaps) as Gap[];
+    return { version, events, sessionCount, clients, gaps };
   }
 
   list(query: SessionQuery = {}): SessionListResult {

@@ -158,3 +158,33 @@ agent-manor stop --json
 ## 将查询能力交给 Agent
 
 包内 `skills/agent-manor/SKILL.md` 给出固定版本的 JSON 查询、文件与证据回读流程。将整个 `skills/agent-manor/` 目录按客户端约定复制或引用到 Skill 发现目录，并保证 `agent-manor` 命令或安装后的 CLI 绝对路径可用。安装包不会自动改写客户端 Skill／MCP 配置。
+
+## 资源管理
+
+顶部「资源管理」切换 Skill／MCP，分别查看使用排行、本地资源、已停用、备用、回收和操作记录。排行依据已索引的实际事件；Skill 调用与成功读取分列，使用会话数取并集。MCP 可下钻工具，统计已记录结果和执行耗时，并从证据跳回会话轨迹。请求 Token 不归因到资源。
+
+默认全部已索引历史，可按客户端、项目和事件时间筛选。来源、时间或安装归属缺失保持未知／部分记录；历史名称不能证明属于当前同名资源。整理候选提供使用会话数和未使用天数阈值，收藏与受管理资源受保护。首次发现不代表安装时间；新发现但观测不足的资源列为待检查。文档指纹只识别 `SKILL.md` 相同，不证明整个资源包相同。
+
+本地盘点只读取已核验来源、已知项目和手动路径，不执行 Skill、启动 MCP 或全盘扫描。支持范围见 [资源来源矩阵](design/resource-support.md)。每个入口显示自身可用动作；未经核验的来源与插件缓存只读。停用使用已核验原生设置，备用／回收是入口隔离或所选注册移除，不卸载服务。符号链接操作保留其共享目标。
+
+```sh
+agent-manor resources status --json
+agent-manor resources usage --kind skill --sort sessions --json
+agent-manor resources usage --kind mcp --client codex --json
+agent-manor resources local --candidate review --json
+agent-manor resources detail <historyResourceId> --json
+agent-manor resources evidence <historyResourceId> --page 2 --json
+agent-manor resources favorite <resourceId> --json
+agent-manor resources source-add /workspace/skills --kind skill --client codex --json
+agent-manor resources preview standby --entry-id <entryId> --json
+agent-manor resources apply <previewId> --confirm --json
+agent-manor resources archives --state standby --json
+agent-manor resources preview restore --operation-id <operationId> --json
+agent-manor resources operations --json
+```
+
+写入必须先审阅该资源的具体预览，再确认对应 `previewId`；预览有效期为 15 分钟，执行前核验来源、共享入口和恢复材料。恢复不会覆盖原位置或目标注册中的新内容；冲突须重新检查。永久清除另行生成和确认 `purge` 预览，不自动清空回收区。成功仅表示本地修改完成，客户端显示待重新加载，不自动重启或探活。
+
+资源 API 位于 `/api/v1/resources`，与 Web／CLI 共用服务：`status`、`usage`、`usage/:id`、`usage/:id/evidence`、`local`、`local/:id`、`archives`、`operations`，以及 `refresh`、`favorites`、`sources`、`preview`、`apply`。分页只影响返回明细；所有历史事件参与相应范围统计。管理记录按资源范围筛选，不把历史使用日期当成操作日期。
+
+管理状态保存于数据目录的 `resources.sqlite`，恢复材料位于 `resource-vault/`，独立于 `index.sqlite`；收藏、手动来源、记录与恢复材料不随历史清缓存删除。管理库及材料使用受限权限，可能包含恢复所需的私密配置；不要上传或加入发布包。清除回收材料不声称其他系统备份也已清除。

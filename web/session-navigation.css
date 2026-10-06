@@ -7,3 +7,9 @@
   .app-header { flex-wrap: wrap; gap: 10px; }
   .product-nav button { padding: 8px 10px; }
 }
+@media (max-width: 599px) {
+  .app-header { flex-wrap: nowrap; gap: 6px; }
+  .app-header .brand span { display: none; }
+  .app-header .product-nav { gap: 2px; }
+  .app-header .product-nav button { padding: 8px 7px; font-size: 11px; }
+}

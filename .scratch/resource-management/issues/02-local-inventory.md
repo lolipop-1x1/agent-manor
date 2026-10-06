@@ -1,8 +1,7 @@
 # 本地盘点与来源能力矩阵
 
 Type: task
-Status: ready-for-agent
-Blocked by: 01
+Status: resolved
 
 ## 目标
 
@@ -19,3 +18,13 @@ Blocked by: 01
 ## Comments
 
 规格：[spec.md](../spec.md)。不得执行资源脚本、启动 MCP 或全盘扫描来盘点。
+
+盘点与历史查询的契约已明确，可以独立实现来源发现；与历史实例的关联在任务 01 完成后整合。管理任务仍依赖 01 与 02，避免未验证来源提前开放写操作。
+
+## Answer
+
+新增独立盘点契约与 `scanResourceInventory`。已核验用户／项目 Skill、JSON／JSONC／TOML MCP、手动来源及已确认插件根只读发现，入口按真实目标归并本体；同名／同文档不同路径不合并。保留断链、缺失项目、读取及格式缺口，系统／插件保护与配置设置状态；快照不包含原始 MCP 注册值。盘点层写操作能力均为 false，后续管理层逐项开放。
+
+来源矩阵与原生开关定位见 `docs/design/resource-support.md`。JSONC 和 YAML 使用正式 parser。`SKILL.md` 指纹明确为文档范围，不能证明整包相同。未知产品标准来源、Cordis YAML／overlay、插件 URL／bundle／混合形态维持待适配；不会从历史目录或第三方目录线索推断 loader。
+
+验证：`node --import tsx --test tests/resource-inventory.test.ts` 7 项通过；独立盘点实现完成时 `npm run check:server` 通过。与并行服务／管理模块整合后的最终 typecheck 由集成验收复核。尚未通过真实本机写入或客户端启动验证，真实资源没有修改。
