@@ -4,6 +4,7 @@ import { appendFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { performance } from "node:perf_hooks";
+import { Worker } from "node:worker_threads";
 import test from "node:test";
 import Database from "better-sqlite3";
 import type { SessionMessage, SessionSourceMeta, SessionUsage } from "../src/session-contracts.js";
@@ -80,6 +81,91 @@ function source(store: SessionStore, summary: SessionSourceMeta, messages: Sessi
   store.finishRevision(pending.revision, summary);
   return { path: summary.path, revision: pending.revision, fingerprint: "synthetic-fingerprint" };
 }
+
+test("搜索索引保留字面匹配、筛选、分页和短词语义，不保存正文副本", async () => fixture((store, path) => {
+  const texts = ["防小偷合成场景", "甲乙丙x乙丙丁", "甲乙丙丁", "50%_ literal \\path \"Quoted\"", "Alpha BETA 😄中文测试", "短词防小", "中文隐藏过程"];
+  const first = source(store, meta("search-a", { title: "标题防小偷", project: "/workspace/demo" }), texts.map((text, index) =>
+    message("search-a", index, { text, kind: index === 6 ? "tool_result" : index % 2 ? "assistant" : "user" })));
+  const second = source(store, meta("search-b", { client: "claude", updatedAt: "2026-01-03T00:00:00Z" }), [message("search-b", 0, { text: "防小偷另一个场景" })]);
+  store.publish(store.createJob().id, [first, second], []);
+  const database = new Database(path);
+  try {
+    assert.equal(database.prepare("SELECT text FROM session_message_search LIMIT 1").get()?.text, null);
+    for (const q of ["防小偷", "甲乙丙丁", "50%_", "\\path", '"Quoted"', "alpha", "😄中文", "防小", "防", "中文隐藏过程", "不存在的关键词"]) {
+      for (const options of [{}, { client: "codex" as const, project: "/workspace/demo", page: 2, pageSize: 1 },
+        { kinds: ["tool_result"] as const, sessionId: "search-a" }, { from: "2026-01-03T00:00:00Z" }]) {
+        const query = { ...options, kinds: options.kinds ? [...options.kinds] : undefined, q };
+        database.prepare("UPDATE session_search_state SET complete=0").run();
+        const scanned = { search: store.search(query), list: store.list(query) };
+        database.prepare("UPDATE session_search_state SET complete=1").run();
+        assert.deepEqual({ search: store.search(query), list: store.list(query) }, scanned, q);
+      }
+    }
+    const plan = database.prepare("EXPLAIN QUERY PLAN SELECT rowid FROM session_message_search WHERE session_message_search MATCH ?").all('"防小偷"') as { detail: string }[];
+    assert.ok(plan.some(row => row.detail.includes("VIRTUAL TABLE INDEX")));
+  } finally { database.close(); }
+}));
+
+test("旧数据库后台补索引可中断续建，修改删除及历史版本保持一致", async () => fixture(async (store, path) => {
+  const first = source(store, meta("migration"), Array.from({ length: 450 }, (_, index) => message("migration", index, { text: `防小偷合成内容 ${index}` })));
+  const version = store.publish(store.createJob().id, [first], []);
+  const database = new Database(path);
+  database.exec(`DROP TRIGGER session_search_insert; DROP TRIGGER session_search_update; DROP TRIGGER session_search_delete;
+    DROP TABLE session_message_search; DROP TABLE session_search_state;`);
+  const migrated = new SessionStore(path);
+  try {
+    const expected = migrated.search({ q: "防小偷" });
+    await assert.rejects(migrated.prepareSearchIndex(() => { throw new Error("合成中断"); }), /合成中断/);
+    assert.deepEqual(migrated.search({ q: "防小偷" }), expected, "未完成时继续使用完整扫描，不能漏结果");
+    const cursor = (database.prepare("SELECT cursor FROM session_search_state").get() as { cursor: number }).cursor;
+    assert.ok(cursor > 0 && cursor < 450);
+    await migrated.prepareSearchIndex();
+    assert.deepEqual(migrated.search({ q: "防小偷" }), expected);
+    database.prepare("UPDATE session_messages SET text=? WHERE revision=? AND id=?").run("更新后唯一关键词", first.revision, "message-0");
+    assert.equal(migrated.search({ q: "更新后唯一关键词" }).total, 1);
+    assert.equal(migrated.search({ q: "防小偷" }).total, 449);
+    const next = source(migrated, meta("migration"), [message("migration", 0, { text: "新版唯一关键词" })]);
+    migrated.publish(migrated.createJob().id, [next], []);
+    assert.equal(migrated.search({ q: "防小偷" }).total, 0);
+    assert.equal(migrated.search({ q: "防小偷", version }).total, 449);
+    migrated.publish(migrated.createJob().id, [], []);
+    assert.equal(database.prepare('SELECT count(*) AS count FROM session_message_search WHERE session_message_search MATCH ?').get('"防小偷"')?.count, 0);
+  } finally { migrated.close(); database.close(); }
+}));
+
+test("后台补搜索索引与主连接登记任务并发时不会发生读事务写锁升级冲突", async () => fixture(async (store, path) => {
+  const current = source(store, meta("concurrent-search"), Array.from({ length: 10_000 }, (_, index) =>
+    message("concurrent-search", index, { text: "合成并发索引内容".repeat(20) })));
+  store.publish(store.createJob().id, [current], []);
+  const database = new Database(path);
+  database.exec(`DROP TRIGGER session_search_insert; DROP TRIGGER session_search_update; DROP TRIGGER session_search_delete;
+    DROP TABLE session_message_search; DROP TABLE session_search_state;`);
+  const worker = new Worker(`
+    const {parentPort,workerData}=require('node:worker_threads');
+    import('tsx/esm/api').then(async ({register})=>{
+      register();
+      const {SessionStore}=await import(${JSON.stringify(new URL("../src/sessions/store.ts", import.meta.url).href)});
+      const store=new SessionStore(workerData);
+      parentPort.postMessage('ready');
+      await store.prepareSearchIndex();
+      store.close();
+      parentPort.postMessage('complete');
+    }).catch(error=>{throw error});
+  `, { eval: true, workerData: path });
+  const ready = new Promise<void>((resolve, reject) => { worker.on("message", message => { if (message === "ready") resolve(); }); worker.on("error", reject); });
+  const complete = new Promise<void>((resolve, reject) => { worker.on("message", message => { if (message === "complete") resolve(); }); worker.on("error", reject); });
+  try {
+    await ready;
+    await Promise.all([complete, (async () => {
+      for (let index = 0; index < 100; index += 1) {
+        store.createJob();
+        await new Promise(resolve => setTimeout(resolve, 1));
+      }
+    })()]);
+    assert.equal(store.search({ q: "合成并发索引内容" }).total, 10_000);
+    assert.equal((database.prepare("SELECT complete FROM session_search_state").get() as { complete: number }).complete, 1);
+  } finally { await worker.terminate(); database.close(); }
+}));
 
 test("默认列表收起已确认子会话，保留分叉、缺失父来源和冲突关系，搜索仍命中子记录", async () => fixture(store => {
   const parent = source(store, meta("parent", { title: "合成主任务" }), [message("parent", 0)]);

@@ -6,6 +6,7 @@ import type { Gap } from "../contracts.js";
 import type { SessionIndexStatus, SessionJob, SessionListResult, SessionMessage, SessionMessageQuery, SessionMessageResult, SessionProfile, SessionQuery, SessionSearchResult, SessionSink, SessionSourceMeta, SessionSummary, SessionTimelineEvent, SessionTimelineResult, SessionUsage } from "../session-contracts.js";
 import { StoreError } from "../index/store.js";
 import { sessionTitle } from "./title.js";
+import { initializeSearchIndex, prepareSearchIndex, searchMatch } from "./search-index.js";
 
 interface JsonRow { json: string }
 interface MessageRow extends JsonRow { text: string }
@@ -56,9 +57,12 @@ export class SessionStore {
       CREATE INDEX IF NOT EXISTS session_relation_parent ON session_version_relations(version,parent);
     `);
     this.database.prepare("INSERT OR IGNORE INTO session_state(id,json) VALUES(1,?)").run(JSON.stringify({ stale: false }));
+    initializeSearchIndex(this.database);
   }
 
   close(): void { this.database.close(); }
+
+  prepareSearchIndex(onProgress?: (progress: number) => void): Promise<void> { return prepareSearchIndex(this.database, onProgress); }
 
   private state(): Partial<SessionIndexStatus> {
     return decode(this.database.prepare("SELECT json FROM session_state WHERE id=1").get() as JsonRow);
@@ -299,8 +303,13 @@ export class SessionStore {
       WHERE relation.version=v.version AND relation.child=v.session_id)`;
     if (query.q?.trim()) {
       const kinds = kindsOf(query);
-      filter.sql += ` AND (r.title LIKE ? ESCAPE '\\' OR EXISTS(SELECT 1 FROM session_messages m WHERE m.revision=r.id AND m.kind IN (${kinds.map(() => "?").join(",") || "NULL"}) AND m.text LIKE ? ESCAPE '\\'))`;
-      filter.values.push(literal(query.q.trim()), ...kinds, literal(query.q.trim()));
+      const match = searchMatch(this.database, query.q.trim());
+      const candidates = match ? "m.rowid IN (SELECT rowid FROM session_message_search WHERE session_message_search MATCH ?) AND " : "";
+      const body = `m.kind IN (${kinds.map(() => "?").join(",") || "NULL"}) AND m.text LIKE ? ESCAPE '\\'`;
+      const matched = match ? `r.id IN (SELECT m.revision FROM session_messages m WHERE ${candidates}${body})`
+        : `EXISTS(SELECT 1 FROM session_messages m WHERE m.revision=r.id AND ${body})`;
+      filter.sql += ` AND (r.title LIKE ? ESCAPE '\\' OR ${matched})`;
+      filter.values.push(literal(query.q.trim()), ...(match ? [match] : []), ...kinds, literal(query.q.trim()));
     }
     const from = `FROM session_version_sessions v JOIN session_revisions r ON r.id=v.revision WHERE v.version=?${filter.sql}`;
     const total = (this.database.prepare(`SELECT COUNT(*) AS count ${from}`).get(version, ...filter.values) as { count: number }).count;
@@ -398,15 +407,20 @@ export class SessionStore {
     const selectedKinds = kindsOf(query);
     const common = `FROM session_version_sessions v JOIN session_revisions r ON r.id=v.revision WHERE v.version=?${filter.sql}`;
     const pattern = literal(query.q.trim());
+    const match = searchMatch(this.database, query.q.trim());
+    const candidates = match ? " AND m.rowid IN (SELECT rowid FROM session_message_search WHERE session_message_search MATCH ?)" : "";
     const title = `SELECT v.session_id,NULL AS message_id,NULL AS turn_id,'title' AS kind,r.id AS revision,
       r.json,COALESCE(r.updated_at,r.started_at,'') AS updated_at,0 AS ordinal ${common} AND r.title LIKE ? ESCAPE '\\'`;
+    // 有候选时先按 rowid 读取命中消息，避免优化器仍从每个会话遍历全部消息。
+    const messageFrom = match ? `FROM session_messages m CROSS JOIN session_version_sessions v ON v.revision=m.revision
+      JOIN session_revisions r ON r.id=v.revision` : `FROM session_version_sessions v
+      JOIN session_revisions r ON r.id=v.revision JOIN session_messages m ON m.revision=r.id`;
     const messages = `SELECT v.session_id,m.id AS message_id,m.turn_id,m.kind,r.id AS revision,
-      r.json,COALESCE(r.updated_at,r.started_at,'') AS updated_at,m.ordinal
-      FROM session_version_sessions v JOIN session_revisions r ON r.id=v.revision JOIN session_messages m ON m.revision=r.id
-      WHERE v.version=?${filter.sql} AND m.kind IN (${selectedKinds.map(() => "?").join(",") || "NULL"}) AND m.text LIKE ? ESCAPE '\\'`;
+      r.json,COALESCE(r.updated_at,r.started_at,'') AS updated_at,m.ordinal ${messageFrom}
+      WHERE v.version=?${filter.sql}${candidates} AND m.kind IN (${selectedKinds.map(() => "?").join(",") || "NULL"}) AND m.text LIKE ? ESCAPE '\\'`;
     const union = `${title} UNION ALL ${messages}`;
     const needle = query.q.trim();
-    const values = [version, ...filter.values, pattern, version, ...filter.values, ...selectedKinds, pattern];
+    const values = [version, ...filter.values, pattern, version, ...filter.values, ...(match ? [match] : []), ...selectedKinds, pattern];
     const total = (this.database.prepare(`SELECT COUNT(*) AS count FROM (${union})`).get(...values) as { count: number }).count;
     // 先选出当前页，避免为全部命中正文计算摘要和大小写转换。
     const rows = this.database.prepare(`WITH page AS MATERIALIZED (

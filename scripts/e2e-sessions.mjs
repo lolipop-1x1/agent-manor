@@ -113,9 +113,17 @@ try {
     expect((await page.locator(".session-list-item").filter({ hasText: "check_queries" }).innerText()).includes("属于 长会话工作区验收"), "子列表应标识父会话");
     await page.getByLabel("显示子 Agent 会话", { exact: true }).uncheck();
     await page.waitForFunction(() => document.querySelectorAll(".session-list-item").length === 5);
+    const searchRequests = [];
+    const recordSearchRequest = request => {
+      const url = request.url();
+      if (url.includes("/api/v1/sessions") && /[?&]q=/.test(url)) searchRequests.push(url.split("?")[0]);
+    };
+    page.on("request", recordSearchRequest);
     await page.getByLabel("搜索会话标题和消息").fill("子任务搜索标记");
     const childHit = page.getByRole("region", { name: "全局搜索命中", exact: true }).locator(".session-hit").filter({ hasText: "check_queries" });
     await childHit.waitFor();
+    page.off("request", recordSearchRequest);
+    expect(searchRequests.length === 1 && searchRequests[0].endsWith("/sessions/search"), "搜索只请求显示的命中结果，不计算隐藏会话列表");
     expect((await childHit.innerText()).includes("属于 长会话工作区验收"), "默认搜索仍包含子消息并标识父会话");
     await childHit.click();
     await page.getByRole("button", { name: "返回父会话", exact: true }).waitFor();

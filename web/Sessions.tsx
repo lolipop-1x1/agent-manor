@@ -186,7 +186,9 @@ export default function Sessions({ active, target, onMap }: { active: boolean; t
     includeSubagents,
   }), [client, project, from, to, debouncedGlobalQuery, queryKinds, listPage, status?.version, includeSubagents]);
 
+  const searchOnly = !!debouncedGlobalQuery && !!selectedSessionId;
   useEffect(() => {
+    if (searchOnly) { setListLoading(false); setListError(null); return; }
     if (!active || !indexReady || invalidDates) return;
     const controller = new AbortController();
     setListLoading(true);
@@ -196,7 +198,7 @@ export default function Sessions({ active, target, onMap }: { active: boolean; t
       .catch(error => { if (!isAborted(error)) setListError(errorMessage(error)); })
       .finally(() => { if (!controller.signal.aborted) setListLoading(false); });
     return () => controller.abort();
-  }, [active, indexReady, invalidDates, listQuery, reload]);
+  }, [active, indexReady, invalidDates, listQuery, reload, searchOnly]);
 
   const globalSearchQuery = useMemo(() => sessionParams({
     client: client === "all" ? undefined : client,

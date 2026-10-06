@@ -34,6 +34,8 @@ async function fingerprint(path: string, byteLimit?: number): Promise<{ hash: st
 export async function refreshSessions(store: SessionStore, jobId: string, roots?: DiscoverRoots, clearCache = false): Promise<void> {
   store.updateJob(jobId, { status: "running", phase: "discover", progress: 0 });
   try {
+    await store.prepareSearchIndex(progress => store.updateJob(jobId, { phase: "建立搜索索引", progress }));
+    store.updateJob(jobId, { phase: "discover", progress: 0 });
     const sources = await discoverSources(roots);
     const codexTitles = sources.some(source => source.client === "codex") ? await loadCodexTitles(roots) : new Map<string, string>();
     const codeflickerProjects = await loadCodeFlickerProjects(sources);
