@@ -1,7 +1,7 @@
 # 共享规范化与来源注册
 
 Type: task
-Status: ready-for-agent
+Status: resolved
 Blocked by: 01, 02
 
 ## Scope
@@ -17,3 +17,7 @@ Blocked by: 01, 02
 ## Comments
 
 实现文件为共享 contracts、registry、规范化 helper、parser／refresh 集成。具体原生解码由 04–06 负责。
+
+## Answer
+
+共享规范化事件、快照、读取限额、会话／地图消费 helper 及客户端身份已提供。类型检查与工具失败、中断、分支和坏行回归通过。parser／refresh 的实际入口绑定随 07 完成，原生解码由 04–06 负责。

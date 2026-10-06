@@ -1,12 +1,14 @@
 # 查询与分支界面整合
 
 Type: task
-Status: ready-for-agent
+Status: claimed
 Blocked by: 03
 
 ## Scope
 
 贯通客户端筛选、分支阅读与子 Agent 列表规则，使用现有统一组件。保留所有现有入口、分页、时间线与证据定位。
+
+绑定共享规范化 helper 到 parser／refresh、来源注册和公共查询入口，保持旧格式消费路径。
 
 ## Acceptance
 
