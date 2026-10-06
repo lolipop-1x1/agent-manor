@@ -8,6 +8,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import test from "node:test";
 import type { CoverageResult, EventsResponse, EvidenceResponse, FileDetail, JobResponse, RegisterRepositoryResponse, StatusResponse } from "../src/contracts.js";
+import { isolatedHistoryEnvironment } from "./helpers/history-roots.js";
 
 const run = promisify(execFile);
 const root = fileURLToPath(new URL("../", import.meta.url));
@@ -28,7 +29,13 @@ test("npm tarball真实包外安装，原生SQLite与CLI/Worker/Web/Skill无需�
   let cli: string | undefined;
   let bin: string | undefined;
   let completed = false;
-  const env = { ...process.env, AGENT_MANOR_HOME: home, AGENT_MANOR_PORT: "0", AGENT_MANOR_CODEX_DIR: codex, AGENT_MANOR_CLAUDE_DIR: claude, AGENT_MANOR_CODEFLICKER_DESKTOP_DIR: join(directory, "missing-desktop"), AGENT_MANOR_CODEFLICKER_DIR: codeflicker, ...Object.fromEntries(["DSH", "PI", "WORKBUDDY", "OPENCODE", "ZCODE", "CODEBUDDY", "QODER"].map(client => [`AGENT_MANOR_${client}_DIR`, join(directory, "missing-" + client)])) };
+  const env = isolatedHistoryEnvironment(directory, {
+    AGENT_MANOR_HOME: home,
+    AGENT_MANOR_PORT: "0",
+    AGENT_MANOR_CODEX_DIR: codex,
+    AGENT_MANOR_CLAUDE_DIR: claude,
+    AGENT_MANOR_CODEFLICKER_DIR: codeflicker,
+  });
   const command = async <T>(args: string[]): Promise<T> => {
     assert.ok(bin);
     const result = await run(bin, [...args, "--json"], { cwd, env, timeout: 30_000 });

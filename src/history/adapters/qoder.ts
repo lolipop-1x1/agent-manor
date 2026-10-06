@@ -136,8 +136,9 @@ function normalizeQoderRows(rows: readonly RawHistoryRecord[], gaps: Gap[]): { r
         addGap(gaps, "ambiguous", "Qoder assistant 记录包含 tool_result，未据角色将其当作用户消息");
       }
     });
-    if (type === "user" && !hasMetaUser && !textBlocks.length && !resultBlocks.length) {
-      const event: NormalizedEvent = { key: `${recordId}:user`, kind: "user", text: textOf(message.content), occurredAt, model };
+    if (type === "user" && !textBlocks.length && !resultBlocks.length) {
+      const event: NormalizedEvent = { key: `${recordId}:user`, kind: hasMetaUser ? "context" : "user",
+        text: textOf(message.content), occurredAt, model };
       normalized.push(normalizedRecord(event, row.raw, row.line));
     }
     if (record.agentId && !record.parentSessionId) {

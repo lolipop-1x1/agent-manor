@@ -367,6 +367,13 @@ async function snapshot(location: SourceLocation): Promise<NormalizedSnapshot> {
         model: string(data.model), turnKey, usageKey: usage ? `${key}:usage` : undefined, usage, copied }, row.raw, row.line, seq));
       continue;
     }
+    if (type === "turn/start" || type === "step/start" || type === "step/end") {
+      const turn = tokenCount(data.turn);
+      const step = tokenCount(data.step);
+      const detail = [type, ...(turn === undefined ? [] : [`turn=${turn}`]), ...(step === undefined ? [] : [`step=${step}`])].join(" ");
+      records.push(normalizedRecord({ key, kind: "context", text: `DSH 过程事件 ${detail}`, occurredAt, turnKey, copied }, row.raw, row.line, seq));
+      continue;
+    }
     if (type === "turn/end" || type === "session/end-seed") {
       const reason = string(object(data.reason).kind);
       records.push(normalizedRecord({ key, kind: "context", ...(reason ? { text: reason } : { text: type }), occurredAt, turnKey, copied }, row.raw, row.line, seq));

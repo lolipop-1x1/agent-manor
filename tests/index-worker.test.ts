@@ -7,7 +7,7 @@ import { promisify } from "node:util";
 import test from "node:test";
 import { AnalysisStore, WorkerManager } from "../src/index/index.js";
 import { refreshRepository } from "../src/index/refresh.js";
-import { isolatedHistoryRoots } from "./helpers/history-roots.js";
+import { isolatedHistoryEnvironment, isolatedHistoryRoots } from "./helpers/history-roots.js";
 
 const git = promisify(execFile);
 
@@ -35,7 +35,9 @@ test("大量无 cwd 外部返回不占满 Worker 堆，相关范围和未关联�
       await writeFile(join(history, `${sessionId}.jsonl`), records.map(record => JSON.stringify(record) + "\n").join(""));
     }
     const helper = new URL("./fixtures/worker-memory.ts", import.meta.url).pathname;
-    const result = await git(process.execPath, ["--max-old-space-size=96", "--import", "tsx", helper, repository, history, directory], { timeout: 30_000 });
+    const result = await git(process.execPath, ["--max-old-space-size=96", "--import", "tsx", helper, repository, history, directory], {
+      timeout: 30_000, env: isolatedHistoryEnvironment(directory),
+    });
     assert.match(result.stdout, /首次分析与增量刷新通过/);
   } finally { await rm(directory, { recursive: true, force: true }); }
 });

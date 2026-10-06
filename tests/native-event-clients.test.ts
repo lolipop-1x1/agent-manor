@@ -141,6 +141,38 @@ test("DSH V3 工具结果包装保留调用配对，缺失缓存桶时不伪造�
   assert.equal(session.usage[0]?.outputTokens, 4);
 }));
 
+test("DSH 官方 turn/step 起止只保留过程 context，不令完整 V3 输给损坏 V4", async () => temporary(async directory => {
+  register(dshAdapter);
+  const id = "synthetic-dsh-boundaries";
+  const v3 = join(directory, "session.v3.jsonl");
+  const v4 = join(directory, "session.v4.jsonl");
+  await writeFile(v3, encode([
+    dshHeader(3, id),
+    dshEvent("turn/start", 0, { turn: 1 }),
+    dshEvent("step/start", 1, { turn: 1, step: 1 }),
+    dshEvent("user/message", 2, { turn: 1, message: { role: "user", source: { kind: "user" }, content: [{ type: "text", text: "synthetic prompt" }] } }),
+    dshEvent("assistant/message", 3, { turn: 1, step: 1, message: { role: "assistant", source: { kind: "model" }, content: [{ type: "text", text: "synthetic answer" }] } }),
+    dshEvent("step/end", 4, { turn: 1, step: 1 }),
+    dshEvent("turn/end", 5, { turn: 1, reason: { kind: "completed" } }),
+  ]));
+  await writeFile(v4, `${JSON.stringify(dshHeader(4, id))}\n{invalid}\n`);
+  const [sourceV3] = await dshAdapter.discoverFile!({ client: "dsh", format: DSH_FORMAT, path: v3 });
+  const [sourceV4] = await dshAdapter.discoverFile!({ client: "dsh", format: DSH_FORMAT, path: v4 });
+  assert.equal(sourceV3?.sourceCompleteness?.complete, true);
+  assert.equal(sourceV4?.sourceCompleteness?.complete, false);
+  assert.deepEqual(dshAdapter.selectSources!([sourceV4!, sourceV3!]).map(source => source.path), [v3]);
+  const snapshot = await dshAdapter.readRecords!({ ...sourceV3! });
+  const processEvents = snapshot.records.flatMap(row => row.record.normalizedEvent ? [row.record.normalizedEvent] : [])
+    .filter(event => event.text?.startsWith("DSH 过程事件"));
+  assert.deepEqual(processEvents.map(event => event.text), [
+    "DSH 过程事件 turn/start turn=1",
+    "DSH 过程事件 step/start turn=1 step=1",
+    "DSH 过程事件 step/end turn=1 step=1",
+  ]);
+  assert.ok(!snapshot.meta.gaps?.some(gap => gap.kind === "unsupported_format"));
+  assert.equal(sink(snapshot as NormalizedSnapshot).metadata.turnCount, 1);
+}));
+
 test("DSH 未知代际仍保留来源并显式标记 unsupported_format", async () => temporary(async directory => {
   register(dshAdapter);
   const path = join(directory, "session.v5.jsonl");

@@ -50,8 +50,17 @@ function buildRecords(messages: Record<string, unknown>[], parts: Record<string,
     turnByMessage.set(id, turnKey);
     const raw = JSON.stringify({ message: row, textParts: grouped.filter(part => part.data.type === "text").map(part => part.row) });
     if (role === "user" || role === "assistant" || role === "system") {
+      const finishReason = (string(data.finish) ?? string(data.stopReason) ?? string(data.finishReason) ?? "")
+        .toLowerCase().replaceAll("-", "_");
+      const completedAt = timestamp(object(data.time).completed);
+      const normalFinish = ["stop", "end_turn", "complete", "completed", "success"].includes(finishReason);
+      const failed = data.error !== undefined && data.error !== null || data.interrupted === true
+        || ["error", "failed", "failure", "interrupted", "cancelled", "canceled", "max_tokens", "length"].includes(finishReason);
+      const hasToolPart = grouped.some(part => part.data.type === "tool");
+      const allowInferredFinal = role === "assistant" && !failed && !hasToolPart
+        && (normalFinish || Boolean(completedAt) && !finishReason);
       staged.push({ event: { key: `message:${id}`, kind: role, text, occurredAt: created, model, turnKey,
-        ...(role === "assistant" ? { allowInferredFinal: false } : {}) }, raw, order: messageIndex * 1_000 });
+        ...(role === "assistant" ? { allowInferredFinal } : {}) }, raw, order: messageIndex * 1_000 });
     }
 
     for (const [partIndex, part] of grouped.entries()) {

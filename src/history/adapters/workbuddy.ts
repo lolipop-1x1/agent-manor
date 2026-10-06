@@ -80,6 +80,18 @@ function parseArguments(value: unknown, gaps: Gap[]): unknown {
   }
 }
 
+function canInferAssistantFinal(record: Record<string, unknown>): boolean {
+  const status = (string(record.status) ?? "").toLowerCase().replaceAll("-", "_");
+  const finish = (string(record.finishReason) ?? string(record.finish_reason) ?? string(record.stopReason) ?? "")
+    .toLowerCase().replaceAll("-", "_");
+  const failureStates = ["error", "failed", "failure", "interrupted", "cancelled", "canceled", "max_tokens", "length"];
+  const failed = record.error !== undefined && record.error !== null || record.interrupted === true
+    || failureStates.includes(status) || failureStates.includes(finish);
+  const completed = ["completed", "complete", "success", "succeeded"].includes(status)
+    || ["stop", "end_turn", "completed", "complete"].includes(finish);
+  return completed && !failed;
+}
+
 function eventFor(record: Record<string, unknown>, row: RawHistoryRecord, metaGaps: Gap[], usageSeen: Map<string, { event: NormalizedEvent; fingerprint: string }>): NormalizedEvent[] {
   const type = string(record.type) ?? "<缺少类型>";
   const id = string(record.id) ?? `${type}:${row.line}:${normalizedHash(row.raw).slice(0, 16)}`;
@@ -119,7 +131,8 @@ function eventFor(record: Record<string, unknown>, row: RawHistoryRecord, metaGa
     const contextual = provider.isMeta === true || string(record.role) === "user" && provider.startsNewUserRequest === false;
     const kind = compacted ? "compression" : contextual ? "context"
       : record.role === "user" ? "user" : record.role === "assistant" ? "assistant" : "system";
-    const event = make("message", kind, { text: content, allowInferredFinal: record.role !== "assistant" });
+    const event = make("message", kind, { text: content,
+      ...(record.role === "assistant" ? { allowInferredFinal: !compacted && canInferAssistantFinal(record) } : {}) });
     useUsage(event);
     events.push(event);
   } else if (type === "reasoning") {

@@ -95,20 +95,24 @@ function buildRecords(sessionId: string, messages: Record<string, unknown>[], pa
     const turnKey = parentMessage ?? id;
     const messageRaw = JSON.stringify({ message: row, parts: grouped.filter(part => part.data.type === "text").map(part => part.row) });
     const messageMetadata = object(data.metadata);
-    const compactionContinue = messageMetadata.compaction_continue === true;
-    const synthetic = data.synthetic === true || messageMetadata.synthetic === true;
-    const summarized = data.summary === true || messageMetadata.summary === true;
+    const compactionContinue = messageMetadata.compaction_continue === true
+      || grouped.some(part => object(part.data.metadata).compaction_continue === true);
+    const synthetic = data.synthetic === true || messageMetadata.synthetic === true
+      || grouped.some(part => part.data.synthetic === true || object(part.data.metadata).synthetic === true);
+    const summarized = data.summary === true || messageMetadata.summary === true
+      || grouped.some(part => part.data.summary === true || object(part.data.metadata).summary === true);
     const finishedAt = timestamp(object(data.time).completed ?? row.time_completed);
     const finishReason = (string(data.finish) ?? string(data.stopReason) ?? string(data.finishReason) ?? "").toLowerCase();
     const terminalFailure = (data.error !== undefined && data.error !== null)
       || ["error", "length", "max_tokens", "aborted", "cancelled", "canceled", "interrupted"].includes(finishReason);
     const hasToolPart = grouped.some(part => part.data.type === "tool");
-    const hasCompressionPart = grouped.some(part => part.data.type === "compaction" || part.data.type === "summary");
+    const hasCompressionPart = compactionContinue || summarized
+      || grouped.some(part => part.data.type === "compaction" || part.data.type === "summary");
     const allowInferredFinal = role === "assistant" && Boolean(finishedAt) && !terminalFailure
       && !hasToolPart && !hasCompressionPart && !synthetic && !compactionContinue && !summarized;
 
     if (role === "user" || role === "assistant" || role === "system") {
-      const kind: NormalizedEvent["kind"] = compactionContinue || summarized ? "compression"
+      const kind: NormalizedEvent["kind"] = hasCompressionPart ? "compression"
         : synthetic ? "context" : role;
       const event: NormalizedEvent = { key: `message:${id}`, kind, text, model, occurredAt: created, turnKey,
         ...(role === "assistant" ? { allowInferredFinal } : {}) };
@@ -134,7 +138,15 @@ function buildRecords(sessionId: string, messages: Record<string, unknown>[], pa
         staged.push({ event: { key: `compression:${partId}`, kind: "compression", ...(summary ? { text: summary } : {}),
           model, occurredAt: partTime, turnKey, allowInferredFinal: false }, raw: partRaw, order: partOrder });
       }
-      if (type !== "tool") continue;
+      if (type !== "tool") {
+        if (!["text", "reasoning", "step-finish", "compaction", "summary"].includes(type ?? "")) {
+          meta.gaps ??= [];
+          meta.gaps.push({ kind: "unsupported_format", message: `OpenCode part 类型 ${type ?? "<缺少类型>"} 尚未适配` });
+          staged.push({ event: { key: `unknown-part:${partId}`, kind: "context", text: `未适配 OpenCode part 类型 ${type ?? "<缺少类型>"}`,
+            model, occurredAt: partTime, turnKey, allowInferredFinal: false }, raw: partRaw, order: partOrder });
+        }
+        continue;
+      }
       const callId = string(part.data.callID) ?? string(object(part.data.state).callID) ?? partId;
       const state = object(part.data.state);
       const tool = string(part.data.tool) ?? "unknown";

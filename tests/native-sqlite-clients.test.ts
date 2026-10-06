@@ -117,6 +117,26 @@ function insertZCodeConversation(database: Database.Database) {
     JSON.stringify({ type: "tool", id: "tool-part", callID: "tool-call", tool: "read_file", state: {
       status: "completed", input: { file_path: "/synthetic/repo/src/file.ts" }, output: { file: { filePath: "/synthetic/repo/src/file.ts", content: "export const ok = true;" } },
     } }));
+  database.prepare("INSERT INTO message VALUES(?,?,?,?,?)").run("assistant-final", "session-one", 4, 4,
+    JSON.stringify({ role: "assistant", content: "", turnId: "turn-one", model: { modelID: "fixture-model" },
+      finish: "stop", time: { created: 4, completed: 5 } }));
+  database.prepare("INSERT INTO part VALUES(?,?,?,?,?,?)").run("assistant-final-text", "assistant-final", "session-one", 5, 5,
+    JSON.stringify({ type: "text", id: "assistant-final-text", text: "synthetic final answer" }));
+  database.prepare("INSERT INTO message VALUES(?,?,?,?,?)").run("user-two", "session-one", 6, 6,
+    JSON.stringify({ role: "user", content: "second synthetic request", turnId: "turn-two", time: { created: 6 } }));
+  database.prepare("INSERT INTO message VALUES(?,?,?,?,?)").run("assistant-truncated", "session-one", 7, 7,
+    JSON.stringify({ role: "assistant", content: "truncated response", turnId: "turn-two", finish: "length",
+      time: { created: 7, completed: 8 } }));
+  database.prepare("INSERT INTO message VALUES(?,?,?,?,?)").run("user-three", "session-one", 9, 9,
+    JSON.stringify({ role: "user", content: "third synthetic request", turnId: "turn-three", time: { created: 9 } }));
+  database.prepare("INSERT INTO message VALUES(?,?,?,?,?)").run("assistant-interrupted", "session-one", 10, 10,
+    JSON.stringify({ role: "assistant", content: "interrupted response", turnId: "turn-three", finish: "stop", interrupted: true,
+      time: { created: 10, completed: 11 } }));
+  database.prepare("INSERT INTO message VALUES(?,?,?,?,?)").run("user-four", "session-one", 12, 12,
+    JSON.stringify({ role: "user", content: "fourth synthetic request", turnId: "turn-four", time: { created: 12 } }));
+  database.prepare("INSERT INTO message VALUES(?,?,?,?,?)").run("assistant-failed", "session-one", 13, 13,
+    JSON.stringify({ role: "assistant", content: "failed response", turnId: "turn-four", finish: "stop", error: { message: "synthetic failure" },
+      time: { created: 13, completed: 14 } }));
   const rawUsage = JSON.stringify({ inputTokens: 10, outputTokens: 4, cacheReadTokens: 2, cacheWriteTokens: 3, totalTokens: 14 });
   const metadata = JSON.stringify({ anthropic: { usage: { input_tokens: 10, output_tokens: 4 } } });
   const insertUsage = database.prepare("INSERT INTO model_usage VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)");
@@ -246,27 +266,34 @@ test("OpenCode 顶层模型字段与合成压缩过程不会制造用户轮次�
   const database = new Database(path);
   createOpenCodeSchema(database);
   insertOpenCodeSession(database, { id: "turn-boundaries", directory: "/synthetic/repo" });
-  insertOpenCodeMessage(database, "turn-boundaries", "synthetic-user", "user", 1,
-    { synthetic: true, metadata: { compaction_continue: true } });
+  insertOpenCodeMessage(database, "turn-boundaries", "synthetic-user", "user", 1);
   insertOpenCodePart(database, "turn-boundaries", "synthetic-user", "synthetic-text", 1,
-    { type: "text", text: "synthetic compaction continuation" });
-  insertOpenCodeMessage(database, "turn-boundaries", "real-user", "user", 2);
-  insertOpenCodePart(database, "turn-boundaries", "real-user", "real-user-text", 2, { type: "text", text: "real prompt" });
-  insertOpenCodeMessage(database, "turn-boundaries", "truncated", "assistant", 3,
+    { type: "text", text: "synthetic compaction continuation", metadata: { compaction_continue: true } });
+  insertOpenCodeMessage(database, "turn-boundaries", "injected-user", "user", 2);
+  insertOpenCodePart(database, "turn-boundaries", "injected-user", "injected-text", 2,
+    { type: "text", text: "synthetic injected context", metadata: { synthetic: true } });
+  insertOpenCodeMessage(database, "turn-boundaries", "compressed-user", "user", 3);
+  insertOpenCodePart(database, "turn-boundaries", "compressed-user", "user-summary", 3,
+    { type: "compaction", summary: "user-role compression" });
+  insertOpenCodeMessage(database, "turn-boundaries", "real-user", "user", 4);
+  insertOpenCodePart(database, "turn-boundaries", "real-user", "real-user-text", 4, { type: "text", text: "real prompt" });
+  insertOpenCodeMessage(database, "turn-boundaries", "truncated", "assistant", 5,
     { parentID: "real-user", providerID: "provider-x", modelID: "model-x", finish: "max_tokens", time: { created: 3, completed: 4 } });
-  insertOpenCodePart(database, "turn-boundaries", "truncated", "truncated-text", 3, { type: "text", text: "truncated answer" });
-  insertOpenCodeMessage(database, "turn-boundaries", "error", "assistant", 4,
+  insertOpenCodePart(database, "turn-boundaries", "truncated", "truncated-text", 5, { type: "text", text: "truncated answer" });
+  insertOpenCodeMessage(database, "turn-boundaries", "error", "assistant", 6,
     { parentID: "real-user", providerID: "provider-e", modelID: "model-e", error: { message: "synthetic failure" }, time: { created: 4, completed: 5 } });
-  insertOpenCodePart(database, "turn-boundaries", "error", "error-text", 4, { type: "text", text: "failed answer" });
-  insertOpenCodeMessage(database, "turn-boundaries", "unfinished", "assistant", 5,
+  insertOpenCodePart(database, "turn-boundaries", "error", "error-text", 6, { type: "text", text: "failed answer" });
+  insertOpenCodeMessage(database, "turn-boundaries", "unfinished", "assistant", 7,
     { parentID: "real-user", providerID: "provider-u", modelID: "model-u", time: { created: 5 } });
-  insertOpenCodePart(database, "turn-boundaries", "unfinished", "unfinished-text", 5, { type: "text", text: "unfinished answer" });
-  insertOpenCodeMessage(database, "turn-boundaries", "complete", "assistant", 6,
+  insertOpenCodePart(database, "turn-boundaries", "unfinished", "unfinished-text", 7, { type: "text", text: "unfinished answer" });
+  insertOpenCodeMessage(database, "turn-boundaries", "complete", "assistant", 8,
     { parentID: "real-user", providerID: "provider-y", modelID: "model-y", time: { created: 6, completed: 7 } });
-  insertOpenCodePart(database, "turn-boundaries", "complete", "complete-text", 6, { type: "text", text: "complete answer" });
-  insertOpenCodeMessage(database, "turn-boundaries", "summary", "assistant", 7,
+  insertOpenCodePart(database, "turn-boundaries", "complete", "complete-text", 8, { type: "text", text: "complete answer" });
+  insertOpenCodePart(database, "turn-boundaries", "complete", "future-part", 9,
+    { type: "future-part", payload: "before" });
+  insertOpenCodeMessage(database, "turn-boundaries", "summary", "assistant", 10,
     { parentID: "real-user", summary: true, time: { created: 7, completed: 8 } });
-  insertOpenCodePart(database, "turn-boundaries", "summary", "summary-part", 7,
+  insertOpenCodePart(database, "turn-boundaries", "summary", "summary-part", 10,
     { type: "compaction", summary: "compressed context" });
 
   const snapshot = await opencodeAdapter.readRecords!({ path, client: "opencode", format: OPENCODE_FORMAT,
@@ -275,12 +302,20 @@ test("OpenCode 顶层模型字段与合成压缩过程不会制造用户轮次�
   const summary = parseNormalizedSession(snapshot, { message: message => messages.set(message.id, message), usage: () => undefined });
   assert.equal(summary.turnCount, 1);
   assert.equal([...messages.values()].find(message => message.text === "synthetic compaction continuation")?.kind, "compression");
+  assert.equal([...messages.values()].find(message => message.text === "synthetic injected context")?.kind, "context");
+  assert.equal([...messages.values()].find(message => message.text === "user-role compression")?.kind, "compression");
   assert.equal([...messages.values()].find(message => message.text === "truncated answer")?.final, undefined);
   assert.equal([...messages.values()].find(message => message.text === "failed answer")?.final, undefined);
   assert.equal([...messages.values()].find(message => message.text === "unfinished answer")?.final, undefined);
   assert.equal([...messages.values()].find(message => message.text === "complete answer")?.final, "inferred");
   assert.equal([...messages.values()].find(message => message.text === "complete answer")?.model, "provider-y/model-y");
   assert.ok([...messages.values()].some(message => message.kind === "compression" && message.text === "compressed context"));
+  assert.ok(summary.gaps.some(gap => gap.kind === "unsupported_format" && gap.message.includes("future-part")));
+  const unknownPart = snapshot.records.find(row => row.record.normalizedEvent?.text?.includes("future-part"));
+  assert.equal(JSON.parse(unknownPart!.raw).id, "future-part");
+  database.prepare("UPDATE part SET data=? WHERE id=?").run(JSON.stringify({ id: "future-part", type: "future-part", payload: "after" }), "future-part");
+  assert.notEqual((await opencodeAdapter.readRecords!({ path, client: "opencode", format: OPENCODE_FORMAT,
+    selector: "turn-boundaries", sessionId: "turn-boundaries" })).hash, snapshot.hash);
   database.close();
 })));
 
@@ -339,6 +374,8 @@ test("ZCode 任务索引按 session.id 关联；model_usage 按尝试计数，�
   const snapshot = await zcodeAdapter.readRecords!({ ...found[0]! });
   assert.equal(snapshot.meta.title, "Indexed title");
   assert.equal(snapshot.source.cwd, "/synthetic/zcode-task");
+  const finalEvent = snapshot.records.find(row => row.record.normalizedEvent?.text === "synthetic final answer")?.record.normalizedEvent as { allowInferredFinal?: boolean } | undefined;
+  assert.equal(finalEvent?.allowInferredFinal, true);
   const messages = new Map<string, SessionMessage>();
   const usage = new Map<string, SessionUsage>();
   const summary = parseNormalizedSession(snapshot, { message: value => messages.set(value.id, value), usage: value => usage.set(value.id, value) });
@@ -357,11 +394,14 @@ test("ZCode 任务索引按 session.id 关联；model_usage 按尝试计数，�
   assert.equal([...messages.values()].filter(item => item.kind === "tool_call").length, 1);
   assert.equal([...messages.values()].find(item => item.kind === "tool_call")?.status, "success");
   const assistants = [...messages.values()].filter(item => item.kind === "assistant");
-  assert.equal(assistants.length, 1);
-  assert.equal(assistants[0]?.text, "synthetic response");
-  assert.equal(assistants[0]?.model, "fixture-model");
-  assert.equal(assistants[0]?.recordLine, 2);
-  assert.equal(assistants[0]?.final, undefined);
+  assert.equal(assistants.length, 5);
+  assert.equal(assistants.find(item => item.text === "synthetic response")?.model, "fixture-model");
+  assert.equal(assistants.find(item => item.text === "synthetic response")?.recordLine, 2);
+  assert.equal(assistants.find(item => item.text === "synthetic response")?.final, undefined);
+  assert.equal(assistants.find(item => item.text === "synthetic final answer")?.final, "inferred");
+  assert.equal(assistants.find(item => item.text === "truncated response")?.final, undefined);
+  assert.equal(assistants.find(item => item.text === "interrupted response")?.final, undefined);
+  assert.equal(assistants.find(item => item.text === "failed response")?.final, undefined);
   assert.equal([...messages.values()].filter(item => item.text === "model usage attempt").length, 3);
   assert.ok(summary.gaps.some(gap => gap.message.includes("包含关系未核验")));
   assert.ok(summary.gaps.some(gap => gap.message.includes("未充分对照")));

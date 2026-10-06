@@ -155,9 +155,36 @@ test("WorkBuddy JSON 参数字符串可提取已证实读写，未知终态和�
   assert.notEqual((await workbuddyAdapter.readRecords!(source!)).hash, before.hash);
 }));
 
+test("WorkBuddy completed 只结束消息；工具活动取消早期候选，截断状态不推终答", async () => temporary(async directory => {
+  const path = join(directory, "workbuddy-final.jsonl");
+  const rows = [
+    { type: "message", id: "user-one", sessionId: "wb-final", role: "user", content: "first prompt" },
+    { type: "message", id: "assistant-before-tool", sessionId: "wb-final", role: "assistant", status: "completed", content: "checking first" },
+    { type: "function_call", id: "call-one", sessionId: "wb-final", callId: "call-one", name: "Read", arguments: { filePath: "src/sample.ts" } },
+    { type: "function_call_result", id: "result-one", sessionId: "wb-final", callId: "call-one", name: "Read", output: "denied",
+      providerData: { toolResult: { error: "synthetic failure" } } },
+    { type: "message", id: "user-two", sessionId: "wb-final", role: "user", content: "second prompt" },
+    { type: "message", id: "assistant-final", sessionId: "wb-final", role: "assistant", status: "completed", content: "completed answer" },
+    { type: "message", id: "user-three", sessionId: "wb-final", role: "user", content: "third prompt" },
+    { type: "message", id: "assistant-truncated", sessionId: "wb-final", role: "assistant", status: "max_tokens", content: "truncated answer" },
+  ];
+  await writeFile(path, serialized(rows));
+  const [source] = await workbuddyAdapter.discoverFile!({ path, client: "workbuddy", format: "workbuddy-jsonl" });
+  const collected = sink();
+  const meta = parseNormalizedSession(await workbuddyAdapter.readRecords!(source!), collected.value);
+  assert.equal(meta.turnCount, 3);
+  assert.equal(collected.messages.find(message => message.text === "checking first")?.final, undefined);
+  assert.ok(collected.messages.some(message => message.text === "completed answer" && message.final === "inferred"));
+  assert.equal(collected.messages.find(message => message.text === "truncated answer")?.final, undefined);
+  assert.ok(collected.messages.some(message => message.kind === "tool_result" && message.status === "failure"));
+}));
+
 test("Qoder userType 缺失仍按原生 user 计轮次；max_tokens 不推终答并保留未知事件", async () => temporary(async directory => {
   const path = join(directory, "synthetic-qoder.jsonl");
   const rows = [
+    { type: "user", sessionId: "q-synthetic", uuid: "q-string-user", message: { role: "user", content: "ordinary string prompt" } },
+    { type: "user", sessionId: "q-synthetic", uuid: "q-injected", isMeta: true,
+      message: { role: "user", content: "synthetic injected context" } },
     { type: "user", sessionId: "q-synthetic", uuid: "q-user", message: { role: "user", content: [{ type: "text", text: "real prompt" }] } },
     { type: "assistant", sessionId: "q-synthetic", uuid: "q-assistant", message: { role: "assistant", stop_reason: "max_tokens",
       content: [{ type: "text", text: "truncated answer" }, { type: "tool_use", id: "q-write", name: "Write",
@@ -172,7 +199,9 @@ test("Qoder userType 缺失仍按原生 user 计轮次；max_tokens 不推终答
   const snapshot = await qoderAdapter.readRecords!(source!);
   const collected = sink();
   const meta = parseNormalizedSession(snapshot, collected.value);
-  assert.equal(meta.turnCount, 1);
+  assert.equal(meta.turnCount, 2);
+  assert.ok(collected.messages.some(message => message.kind === "user" && message.text === "ordinary string prompt"));
+  assert.ok(collected.messages.some(message => message.kind === "context" && message.text === "synthetic injected context"));
   assert.ok(collected.messages.some(message => message.kind === "user" && message.text === "real prompt"));
   assert.equal(collected.messages.find(message => message.text === "truncated answer")?.final, undefined);
   assert.ok(meta.gaps.some(gap => gap.kind === "unsupported_format"));
@@ -181,7 +210,7 @@ test("Qoder userType 缺失仍按原生 user 计轮次；max_tokens 不推终答
   const write = parsed.events.find(event => event.tool === "Write");
   assert.equal(write?.status, "unknown");
   assert.equal(write?.fragments.length, 0);
-  rows[2] = { ...rows[2]!, payload: "after" };
+  rows[5] = { ...rows[5]!, payload: "after" };
   await writeFile(path, serialized(rows));
   assert.notEqual((await qoderAdapter.readRecords!(source!)).hash, snapshot.hash);
 }));
