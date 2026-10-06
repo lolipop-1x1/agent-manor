@@ -1,12 +1,14 @@
 # 查询与分支界面整合
 
 Type: task
-Status: ready-for-agent
+Status: resolved
 Blocked by: 03
 
 ## Scope
 
 贯通客户端筛选、分支阅读与子 Agent 列表规则，使用现有统一组件。保留所有现有入口、分页、时间线与证据定位。
+
+绑定共享规范化 helper 到 parser／refresh、来源注册和公共查询入口，保持旧格式消费路径。
 
 ## Acceptance
 
@@ -14,3 +16,7 @@ Blocked by: 03
 - 明确子 Agent 即使父来源缺失也默认隐藏，筛选／搜索／直接链接仍可访问；标注父会话未记录。
 - Web／CLI／API 查询语义一致，新客户端身份由共享声明提供。
 - 已记录真实用户消息不被压缩摘要替代，缺少元信息不伪造统计。
+
+## Answer
+
+Web／CLI／API 已贯通七类客户端和分支阅读，统一声明驱动各入口。真实浏览器逐客户端验证简易／完整／轨迹、搜索、画像及子会话筛选，Pi 阅读切换保留统计范围；原生 API／CLI 核对 117 个会话一致。明确委派子会话默认隐藏，直接链接仍可访问，见 [验收记录](../../../docs/validation/additional-agent-history.md)。

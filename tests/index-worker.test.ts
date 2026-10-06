@@ -7,6 +7,7 @@ import { promisify } from "node:util";
 import test from "node:test";
 import { AnalysisStore, WorkerManager } from "../src/index/index.js";
 import { refreshRepository } from "../src/index/refresh.js";
+import { isolatedHistoryEnvironment, isolatedHistoryRoots } from "./helpers/history-roots.js";
 
 const git = promisify(execFile);
 
@@ -34,7 +35,9 @@ test("大量无 cwd 外部返回不占满 Worker 堆，相关范围和未关联�
       await writeFile(join(history, `${sessionId}.jsonl`), records.map(record => JSON.stringify(record) + "\n").join(""));
     }
     const helper = new URL("./fixtures/worker-memory.ts", import.meta.url).pathname;
-    const result = await git(process.execPath, ["--max-old-space-size=96", "--import", "tsx", helper, repository, history, directory], { timeout: 30_000 });
+    const result = await git(process.execPath, ["--max-old-space-size=96", "--import", "tsx", helper, repository, history, directory], {
+      timeout: 30_000, env: isolatedHistoryEnvironment(directory),
+    });
     assert.match(result.stdout, /首次分析与增量刷新通过/);
   } finally { await rm(directory, { recursive: true, force: true }); }
 });
@@ -47,7 +50,7 @@ test("Worker 异常后保留旧版与失败任务，下一次刷新重新创建 
   await writeFile(join(repositoryPath, "a.ts"), "alpha\n");
   const store = new AnalysisStore(join(directory, "index.sqlite"));
   const repository = await store.registerRepository(repositoryPath);
-  const roots = { codex: [], claude: [], codeflicker: [], "codeflicker-desktop": [] };
+  const roots = isolatedHistoryRoots();
   const initial = store.createJob(repository.id);
   await refreshRepository(store, initial.id, roots);
   const version = store.getRepository(repository.id).version;
@@ -85,7 +88,7 @@ await import(${JSON.stringify(workerUrl)});
 test("源码入口长期Worker串行跨仓库刷新，查询仍绑定已发布版", async () => {
   const directory = await mkdtemp(join(tmpdir(), "manor-worker-test-"));
   const store = new AnalysisStore(join(directory, "index.sqlite"));
-  const manager = new WorkerManager(store, { roots: { codex: [], claude: [], codeflicker: [], "codeflicker-desktop": [] } });
+  const manager = new WorkerManager(store, { roots: isolatedHistoryRoots() });
   try {
     const repositories = [];
     for (const name of ["first", "second"]) {
@@ -129,7 +132,7 @@ test("构造恢复遗留任务，停止等待刷新标失败且旧完整结果�
   const repository = await store.registerRepository(path);
   const abandoned = store.createJob(repository.id);
   store.updateJob(abandoned.id, { status: "running" });
-  const manager = new WorkerManager(store, { roots: { codex: [], claude: [], codeflicker: [], "codeflicker-desktop": [] } });
+  const manager = new WorkerManager(store, { roots: isolatedHistoryRoots() });
   try {
     assert.equal(store.getJob(abandoned.id).status, "failed");
     assert.equal(store.getRepository(repository.id).stale, true);

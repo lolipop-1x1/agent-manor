@@ -4,6 +4,13 @@ export const CLIENTS = [
   { id: "claude", name: "Claude Code", abbreviation: "CC" },
   { id: "codeflicker", name: "CodeFlicker CLI", abbreviation: "CF" },
   { id: "codeflicker-desktop", name: "CodeFlicker 桌面版", abbreviation: "FD" },
+  { id: "dsh", name: "DeepSeek Harness", abbreviation: "DH" },
+  { id: "pi", name: "Pi", abbreviation: "PI" },
+  { id: "workbuddy", name: "WorkBuddy", abbreviation: "WB" },
+  { id: "opencode", name: "OpenCode", abbreviation: "OC" },
+  { id: "zcode", name: "ZCode", abbreviation: "ZC" },
+  { id: "codebuddy", name: "CodeBuddy", abbreviation: "CB" },
+  { id: "qoder", name: "Qoder", abbreviation: "QD" },
 ] as const;
 
 export type Client = typeof CLIENTS[number]["id"];

@@ -190,7 +190,7 @@ export function App() {
   }, []);
   useLayoutEffect(() => { globalThis.scrollTo(0, viewScroll.current[view]); }, [view]);
   useEffect(() => { document.title = `AgentManor · ${view === "sessions" ? "会话库" : "代码活动地图"}`; }, [view]);
-  const [sessionTarget, setSessionTarget] = useState<{ sessionId: string; messageId?: string; mode?: "brief" | "full" | "trace"; page?: number; turnPosition?: number }>();
+  const [sessionTarget, setSessionTarget] = useState<{ sessionId: string; messageId?: string; mode?: "brief" | "full" | "trace"; page?: number; turnPosition?: number; branch?: string }>();
   useEffect(() => {
     const navigate = () => {
       activateView(location.hash.startsWith("#sessions") ? "sessions" : "map");
@@ -199,7 +199,7 @@ export function App() {
       const mode = params.get("mode");
       const positive = (name: string) => { const value = Number(params.get(name)); return Number.isSafeInteger(value) && value > 0 ? value : undefined; };
       if (sessionId) setSessionTarget({ sessionId, messageId: params.get("message") ?? undefined,
-        mode: mode === "brief" || mode === "full" || mode === "trace" ? mode : undefined, page: positive("page"), turnPosition: positive("turn") });
+        mode: mode === "brief" || mode === "full" || mode === "trace" ? mode : undefined, page: positive("page"), turnPosition: positive("turn"), branch: params.get("branch") ?? undefined });
     };
     navigate();
     globalThis.addEventListener("hashchange", navigate);

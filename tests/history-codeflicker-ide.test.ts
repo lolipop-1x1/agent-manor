@@ -15,10 +15,11 @@ import { AnalysisStore } from "../src/index/store.js";
 import { refreshRepository } from "../src/index/refresh.js";
 import { parseSessionSource } from "../src/sessions/parser.js";
 import type { SessionMessage } from "../src/session-contracts.js";
+import { isolatedHistoryRoots } from "./helpers/history-roots.js";
 // @ts-ignore 人工样本共用于端到端验收。
 import { ideFixture } from "../scripts/ide-fixture.mjs";
 
-const roots = (path: string) => ({ codex: [], claude: [], codeflicker: [], "codeflicker-desktop": path });
+const roots = (path: string) => isolatedHistoryRoots({ "codeflicker-desktop": path });
 async function fixture(run: (directory: string, repository: string, data: ReturnType<typeof ideFixture>) => Promise<void>) {
   const directory = await mkdtemp(join(tmpdir(), "manor-ide-test-"));
   const repository = join(directory, "repo");

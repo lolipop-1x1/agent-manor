@@ -101,3 +101,23 @@ Claude SDK 部分完整 Read 用 `content.split("\n")` 计数，尾换行会生�
 容器适配器注册原生发现、记录快照和来源选择规则；查询管道不按文件后缀猜测客户端。实际文件路径不改变，`selector` 保留原生会话键，`recordLine` 是键内数组的一基序号。证据直接查询 SQLite 对应记录并验哈希，不创建临时 JSONL。来源缓存按路径与选择器区分，读事务可见已提交 WAL，指纹由当前会话及正式元数据计算；其他会话更新不使所有缓存失效。单个会话键删除时从新版排除。
 
 IDE 的 `workspaceUri` 可能指向工作区缓存；仅正式 `workspace.json` 的单一目录可直接认定项目，缺失或多目录不强行选择。`readFile` 只提取连续 Tab／竖线编号的实际返回前缀，包装说明不计入源码，编号与请求不符不计覆盖。`editFile` 需已接受且路径一致的前后快照，提案或拒绝没有覆盖。工具错误单独返回时优先使用实际结果；MCP 与 Skill 按结构化名称识别，名称提及不算调用。
+
+## 新增原生历史来源
+
+| 客户端 ID／展示名 | 默认根 | 已核验结构 |
+| --- | --- | --- |
+| `dsh`／DeepSeek Harness | `~/.dsh/sessions` | V3／V4 Zstandard 事件流，同原生身份的代际副本选择完整来源 |
+| `pi`／Pi | `~/.pi/agent/sessions` | V3 JSONL 事件树，按持久化父链保留当前与其他叶分支 |
+| `workbuddy`／WorkBuddy | `~/.workbuddy/projects` | JSONL 正文，与同身份的 SQLite 会话元信息关联 |
+| `opencode`／OpenCode | `~/.local/share/opencode` | `opencode.db` 中 session、message、part |
+| `zcode`／ZCode | `~/.zcode/cli/db` | `db.sqlite` 消息与模型请求，按身份关联桌面任务索引 |
+| `codebuddy`／CodeBuddy | `~/.codebuddy/projects` | JSONL 转录；已发现样本只有用户正文，其他能力按未记录展示 |
+| `qoder`／Qoder | `~/.qoder/projects` | JSONL 转录及 workspace 元信息，不将 workspace 首记录过滤掉 |
+
+对应 `AGENT_MANOR_DSH_DIR`、`AGENT_MANOR_PI_DIR`、`AGENT_MANOR_WORKBUDDY_DIR`、`AGENT_MANOR_OPENCODE_DIR`、`AGENT_MANOR_ZCODE_DIR`、`AGENT_MANOR_CODEBUDDY_DIR`、`AGENT_MANOR_QODER_DIR` 可覆盖发现目录。显式 roots 中传空数组可以禁用该来源；测试须对所有客户端明确隔离来源，避免读到本机真实历史。
+
+新格式通过 `normalized.ts` 生成保留原始位置与哈希的规范化事件，代码地图和会话库共同消费。工具名、输入和原始输出仍保留；失败及缺失结果不会生成精确覆盖。SQLite 快照包含已提交 WAL，元信息参与来源指纹；不执行客户端迁移，不创建原生数据副本作为另一份会话。
+
+压缩事件流的证据位置是解压后 JSONL 的一基物理行，哈希来自该行原始文本。原生 SQLite 的证据位置由适配器的选择器及快照记录顺序确定，回查时重新选择相同原生记录并校验哈希；不是数据库页号。来源缺失、位置或内容改变时显示证据不可用，不补造旧内容。
+
+缓存、reasoning 与输入／输出的互斥或子集关系按来源格式核验，工具专用用量不并入模型请求，会话／轮次累计值不与请求用量相加。无法确认的分母、委派身份、继承边界或正文留存范围列为缺口。未知事件保留为过程，不按 native user 角色直接增加用户轮次。

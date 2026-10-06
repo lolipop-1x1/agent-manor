@@ -11,6 +11,7 @@ import type { SessionMessage, SessionSourceMeta, SessionUsage } from "../src/ses
 import { AnalysisStore, StoreError } from "../src/index/store.js";
 import { SessionStore } from "../src/sessions/store.js";
 import { refreshSessions } from "../src/sessions/refresh.js";
+import { isolatedHistoryRoots } from "./helpers/history-roots.js";
 
 async function fixture(run: (store: SessionStore, path: string) => Promise<void> | void): Promise<void> {
   const directory = await mkdtemp(join(tmpdir(), "manor-session-store-"));
@@ -40,7 +41,7 @@ test("活动日志追加只索引固定前缀，已有内容改写拒绝发布�
       }
     } } };
   };
-  const roots = { codex: join(dbPath, ".."), claude: [], codeflicker: [], "codeflicker-desktop": [] };
+  const roots = isolatedHistoryRoots({ codex: join(dbPath, "..") });
   const first = store.createJob();
   await refreshSessions(store, first.id, roots);
   const id = store.list().sessions[0]!.id;
@@ -81,7 +82,6 @@ function source(store: SessionStore, summary: SessionSourceMeta, messages: Sessi
   store.finishRevision(pending.revision, summary);
   return { path: summary.path, revision: pending.revision, fingerprint: "synthetic-fingerprint" };
 }
-
 test("多会话增量发布按真实子目标关联，避免无关会话两两扫描", async () => fixture(store => {
   const revisions = Array.from({ length: 2000 }, (_, index) => {
     const id = `publish-scale-${index}`;
@@ -102,6 +102,37 @@ test("多会话增量发布按真实子目标关联，避免无关会话两两�
   assert.equal(store.list({ version: first }).total, 1980);
   assert.deepEqual(store.status().gaps, []);
   assert.ok(elapsed < 1000, `2000 个未变会话的发布耗时 ${Math.round(elapsed)} 毫秒，超过 1 秒预算`);
+}));
+
+test("分支阅读不改变全活动统计，简易保留当前分支的真实历史", async () => fixture(store => {
+  const id = "branch-demo";
+  const summary = meta(id, { client: "pi", branches: [{ id: "old", label: "尝试", current: false }, { id: "live", label: "当前", current: true }] });
+  const rows = [message(id, 1, { turnId: `${id}:turn:1`, text: "共同请求", branchIds: ["old", "live"], currentBranch: true }),
+    message(id, 2, { turnId: `${id}:turn:1`, kind: "assistant", text: "旧回答", final: "explicit", branchIds: ["old"], currentBranch: false }),
+    message(id, 3, { turnId: `${id}:turn:1`, kind: "compression", text: "摘要", branchIds: ["live"], currentBranch: true }),
+    message(id, 4, { turnId: `${id}:turn:1`, kind: "assistant", text: "新回答", final: "explicit", branchIds: ["live"], currentBranch: true })];
+  const revision = source(store, summary, rows, [{ id: "usage-old", messageId: rows[1]!.id, inputTokens: 100, outputTokens: 20 }, { id: "usage-live", messageId: rows[3]!.id, inputTokens: 150, outputTokens: 30 }]);
+  store.publish(store.createJob().id, [revision], []);
+  const profile = store.profile(id);
+  assert.deepEqual(store.messages(id, { mode: "brief" }).messages.map(row => row.text), ["共同请求", "新回答"]);
+  assert.deepEqual(store.messages(id, { mode: "brief", branch: "old", pageUnit: "turn", messageId: rows[1]!.id }).messages.map(row => row.text), ["共同请求", "旧回答"]);
+  assert.equal(store.messages(id, { mode: "full" }).total, 4);
+  assert.equal(store.messages(id, { mode: "trace", branch: "current", pageSize: 1, page: 3 }).messages[0]?.text, "新回答");
+  assert.equal(store.messages(id, { mode: "brief", branch: "all" }).total, 3);
+  assert.equal(store.search({ q: "旧回答" }).total, 1);
+  assert.throws(() => store.messages(id, { branch: "unknown" }), /分支不存在/);
+  assert.deepEqual(store.profile(id), profile, "阅读切换不得改变请求和 Token 统计");
+}));
+
+test("明确委派的孤立子 Agent 默认隐藏，搜索和直接访问可用", async () => fixture(store => {
+  const child = source(store, meta("orphan-child", { relationship: "child", parentSessionId: "missing-parent" }), [message("orphan-child", 1, { text: "委派检索样例" })]);
+  const independent = source(store, meta("independent"), [message("independent", 2)]);
+  store.publish(store.createJob().id, [child, independent], []);
+  assert.equal(store.list().total, 1);
+  assert.equal(store.list({ includeSubagents: true }).total, 2);
+  assert.equal(store.search({ q: "委派检索" }).total, 1);
+  assert.equal(store.messages("orphan-child").session.relationship, "child");
+  assert.equal(store.messages("orphan-child").session.parentTitle, undefined);
 }));
 
 test("默认列表排除 Quiet，类型筛选、分页、搜索与直接访问保持一致", async () => fixture(store => {
@@ -143,6 +174,48 @@ test("搜索索引保留字面匹配、筛选、分页和短词语义，不保�
     const plan = database.prepare("EXPLAIN QUERY PLAN SELECT rowid FROM session_message_search WHERE session_message_search MATCH ?").all('"防小偷"') as { detail: string }[];
     assert.ok(plan.some(row => row.detail.includes("VIRTUAL TABLE INDEX")));
   } finally { database.close(); }
+}));
+
+test("范围搜索保留命中语义、字面字符、分页与旧版本", async () => fixture(store => {
+  const first = source(store, meta("scope-a", { client: "pi", project: "/workspace/alpha", title: "Scope A" }), [
+    message("scope-a", 0, { text: "bash process legacyneedle 50%_ literal \\path" }),
+    message("scope-a", 1, { kind: "assistant", text: "bash process second hit" }),
+  ]);
+  const second = source(store, meta("scope-b", { client: "pi", project: "/workspace/alpha", title: "Scope B" }), [
+    message("scope-b", 0, { text: "bash process other hit" }),
+  ]);
+  const outside = source(store, meta("scope-c", { client: "claude", project: "/workspace/beta", title: "Scope C" }), [
+    message("scope-c", 0, { text: "bash process outside" }),
+  ]);
+  const fillers = Array.from({ length: 100 }, (_, index) => {
+    const id = `scope-filler-${index}`;
+    return source(store, meta(id, { client: "pi", project: "/workspace/alpha" }), [message(id, 0, { text: "filler only" })]);
+  });
+  store.publish(store.createJob().id, [first, second, outside, ...fillers], []);
+  const previousVersion = store.status().version!;
+
+  assert.equal(store.search({ q: "bash" }).total, 4);
+  assert.equal(store.search({ q: "bash", executionMode: "regular" }).total, 4);
+  assert.equal(store.search({ q: "bash", from: "2026-01-01T00:00:00Z" }).total, 4);
+  assert.equal(store.search({ q: "bash", client: "pi" }).total, 3);
+  assert.equal(store.search({ q: "bash", project: "/workspace/alpha" }).total, 3);
+  assert.equal(store.search({ q: "bash", sessionId: "scope-a" }).total, 2);
+  assert.equal(store.search({ q: "50%_", sessionId: "scope-a" }).total, 1);
+  assert.ok(store.search({ q: "50%_", sessionId: "scope-a" }).hits[0]?.snippet.includes("50%_"));
+  const firstPage = store.search({ q: "bash", client: "pi", project: "/workspace/alpha", page: 1, pageSize: 1 });
+  const secondPage = store.search({ q: "bash", client: "pi", project: "/workspace/alpha", page: 2, pageSize: 1 });
+  assert.equal(firstPage.total, 3);
+  assert.equal(secondPage.total, 3);
+  assert.equal(firstPage.hits.length, 1);
+  assert.equal(secondPage.hits.length, 1);
+  assert.notEqual(firstPage.hits[0]?.messageId, secondPage.hits[0]?.messageId);
+
+  const replacement = source(store, meta("scope-a", { client: "pi", project: "/workspace/alpha", title: "Scope A" }), [
+    message("scope-a", 0, { text: "current revision only" }),
+  ]);
+  store.publish(store.createJob().id, [replacement, second, outside], []);
+  assert.equal(store.search({ q: "legacyneedle", sessionId: "scope-a" }).total, 0);
+  assert.equal(store.search({ q: "legacyneedle", sessionId: "scope-a", version: previousVersion }).total, 1);
 }));
 
 test("旧数据库后台补索引可中断续建，修改删除及历史版本保持一致", async () => fixture(async (store, path) => {
@@ -206,7 +279,7 @@ test("后台补搜索索引与主连接登记任务并发时不会发生读事�
   } finally { await worker.terminate(); database.close(); }
 }));
 
-test("默认列表收起已确认子会话，保留分叉、缺失父来源和冲突关系，搜索仍命中子记录", async () => fixture(store => {
+test("默认列表收起明确委派子会话，保留分叉及未确认冲突，搜索仍命中子记录", async () => fixture(store => {
   const parent = source(store, meta("parent", { title: "合成主任务" }), [message("parent", 0)]);
   const child = source(store, meta("child", { parentSessionId: "parent", relationship: "child", titleOrigin: "fallback", taskName: "检查索引" }),
     [message("child", 0, { text: "子任务搜索标记" })]);
@@ -217,11 +290,11 @@ test("默认列表收起已确认子会话，保留分叉、缺失父来源和�
   const uncertain = source(store, meta("uncertain"), []);
   store.publish(store.createJob().id, [parent, child, orphan, fork, competingA, competingB, uncertain], []);
   assert.equal(store.status().sessionCount, 7, "列表筛选不删除子记录");
-  assert.equal(store.list().total, 6);
+  assert.equal(store.list().total, 5);
   assert.ok(!store.list().sessions.some(item => item.id === "child"));
   assert.equal(store.list({ includeSubagents: true }).total, 7);
   const paged = store.list({ pageSize: 2 });
-  assert.equal(paged.total, 6);
+  assert.equal(paged.total, 5);
   assert.equal(paged.sessions.length, 2);
   const summary = store.messages("child").session;
   assert.equal(summary.parentTitle, "合成主任务");
@@ -233,7 +306,7 @@ test("默认列表收起已确认子会话，保留分叉、缺失父来源和�
   assert.equal(hit.session.parentTitle, "合成主任务");
   assert.equal(store.search({ q: "检查索引" }).hits[0]?.kind, "title");
   store.publish(store.createJob().id, [child, orphan, fork], []);
-  assert.equal(store.list().total, 3, "父来源消失后子会话恢复独立入口");
+  assert.equal(store.list().total, 1, "父来源消失不取消已确认的委派身份");
 }));
 
 test("子标题规则升级刷新旧子修订，未变化的主会话继续复用", async () => fixture(async (store, dbPath) => {
@@ -246,7 +319,7 @@ test("子标题规则升级刷新旧子修订，未变化的主会话继续复�
     parent_thread_id: "parent-demo", subagent_history_start_ordinal: 2,
     source: { subagent: { thread_spawn: { parent_thread_id: "parent-demo", agent_path: "/root/check_queries" } } } } },
   { type: "session_meta", ordinal: 1, payload: { id: "parent-demo", title: "复制的父标题" } }]));
-  const roots = { codex: directory, claude: [], codeflicker: [], "codeflicker-desktop": [] };
+  const roots = isolatedHistoryRoots({ codex: directory });
   await refreshSessions(store, store.createJob().id, roots);
   const revisions = store.cachedRevisions();
   const cachedChild = revisions.find(item => item.path === childPath)!;
@@ -533,7 +606,7 @@ test("真实刷新调用链：未变来源复用、追加重建、清缓存原�
   await writeFile(sourcePath, encode({ type: "session_meta", payload: { id: "synthetic-refresh" } })
     + encode({ type: "response_item", payload: { type: "message", role: "user", content: [{ type: "input_text", text: "人工合成问句" }] } })
     + encode({ type: "response_item", payload: { type: "message", role: "assistant", phase: "final_answer", content: [{ type: "output_text", text: "人工合成最终回答" }] } }));
-  const roots = { codex: directory, claude: [], codeflicker: [], "codeflicker-desktop": [] };
+  const roots = isolatedHistoryRoots({ codex: directory });
   const refresh = async (clear = false) => { const job = store.createJob(); await refreshSessions(store, job.id, roots, clear); return store.getJob(job.id); };
   const first = await refresh();
   assert.equal(first.status, "complete");
@@ -578,7 +651,7 @@ test("Codex 标题索引按线程身份关联，改名在正文未变时更新�
   await writeFile(index, encode({ id: "unrelated", thread_name: "其他会话" })
     + encode({ id: "synthetic-title", thread_name: "旧标题" }) + "无效索引记录\n"
     + encode({ id: "synthetic-title", thread_name: "索引中的正式名称" }));
-  const roots = { codex: [sessions, archive], claude: [], codeflicker: [], "codeflicker-desktop": [] };
+  const roots = isolatedHistoryRoots({ codex: [sessions, archive] });
   const refresh = async () => { const job = store.createJob(); await refreshSessions(store, job.id, roots); };
   await refresh();
   const before = store.list().sessions[0]!;
@@ -611,7 +684,7 @@ test("Codex 状态库的 name 优先于旧 title，改名刷新且不改写来�
   try {
     state.exec("CREATE TABLE threads (id TEXT PRIMARY KEY,title TEXT,name TEXT)");
     state.prepare("INSERT INTO threads VALUES (?,?,?)").run("synthetic-state-title", "较旧的标题", "状态库正式名称");
-    const roots = { codex: sessions, claude: [], codeflicker: [], "codeflicker-desktop": [] };
+    const roots = isolatedHistoryRoots({ codex: sessions });
     const refresh = async () => { const job = store.createJob(); await refreshSessions(store, job.id, roots); };
     await refresh();
     assert.equal(store.list().sessions[0]?.title, "状态库正式名称");

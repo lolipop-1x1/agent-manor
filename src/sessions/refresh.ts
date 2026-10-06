@@ -14,6 +14,8 @@ import type { SessionRevision } from "./store.js";
 import { loadCodexTitles } from "./codex-titles.js";
 import { loadCodeFlickerProjects } from "./codeflicker-projects.js";
 import { desktopModels, loadDesktopTitles } from "./codeflicker-desktop.js";
+import { historyAdapter, historyClient } from "../history/adapters/index.js";
+import type { NormalizedSnapshot } from "../history/adapters/normalized.js";
 
 // 会话规范化规则升级时使来源缓存失效，独立于地图索引迁移。
 const SESSION_INDEX_RULE_VERSION = "5";
@@ -49,10 +51,14 @@ export async function refreshSessions(store: SessionStore, jobId: string, roots?
       store.updateJob(jobId, { phase: "index", progress: sources.length ? index / sources.length : 0 });
       const sourceKey = sourceLocationKey(source);
       let nativeSnapshot: IdeSnapshot | undefined;
+      let normalizedSnapshot: NormalizedSnapshot | undefined;
+      const adapter = historyAdapter(source.format ?? historyClient(source.client).format);
       let digest: { hash: string; bytes: number };
       try {
         nativeSnapshot = source.format === IDE_FORMAT ? await readIdeSnapshot(source) : undefined;
-        digest = nativeSnapshot ? { hash: `${SESSION_INDEX_RULE_VERSION}:${nativeSnapshot.hash}`, bytes: 0 } : await fingerprint(source.path);
+        normalizedSnapshot = adapter?.normalized ? await adapter.readRecords!(source) as NormalizedSnapshot : undefined;
+        digest = normalizedSnapshot ? { hash: `normalized-1:${normalizedSnapshot.hash}`, bytes: 0 }
+          : nativeSnapshot ? { hash: `${SESSION_INDEX_RULE_VERSION}:${nativeSnapshot.hash}`, bytes: 0 } : await fingerprint(source.path);
       }
       catch (error) {
         if ((error as NodeJS.ErrnoException).code === "ENOENT") { missing += 1; continue; }
@@ -72,11 +78,12 @@ export async function refreshSessions(store: SessionStore, jobId: string, roots?
       if (!clearCache && previous?.fingerprint === sourceFingerprint) { current.push(previous); continue; }
       const pending = store.createRevision(sourceKey, sourceFingerprint);
       try {
-        const meta = await parseSessionSource(source, pending.sink, { byteLimit: digest.bytes, title, projectMetadata, desktopModels: nativeModels?.entries, nativeSnapshot });
+        const meta = await parseSessionSource(source, pending.sink, { byteLimit: digest.bytes, title, projectMetadata, desktopModels: nativeModels?.entries, nativeSnapshot, normalizedSnapshot });
         if (nativeModels?.limited) meta.gaps.push({ kind: "budget_exceeded", message: "原生模型旁路日志超过有界读取上限，部分模型信息未关联", sourceId: meta.sourceId });
         pending.flush();
         // 允许活动日志追加；发布的始终是开始检查时的同一字节前缀。
-        const after = nativeSnapshot ? { hash: `${SESSION_INDEX_RULE_VERSION}:${(await readIdeSnapshot(source)).hash}` } : await fingerprint(source.path, digest.bytes);
+        const after = normalizedSnapshot ? { hash: `normalized-1:${(await adapter!.readRecords!(source)).hash}` }
+          : nativeSnapshot ? { hash: `${SESSION_INDEX_RULE_VERSION}:${(await readIdeSnapshot(source)).hash}` } : await fingerprint(source.path, digest.bytes);
         if (after.hash !== digest.hash) throw new Error("会话来源已有内容在解析期间被改写，请重新刷新");
         store.finishRevision(pending.revision, meta);
         current.push({ path: sourceKey, revision: pending.revision, fingerprint: sourceFingerprint });

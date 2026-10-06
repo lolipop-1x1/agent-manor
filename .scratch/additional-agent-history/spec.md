@@ -1,6 +1,6 @@
 # 新增 Code Agent 历史来源
 
-Status: ready-for-agent
+Status: resolved
 
 ## 已确认范围
 
@@ -66,7 +66,7 @@ Status: ready-for-agent
 
 ## 实现任务
 
-用户已确认开始开发。任务关系见 [任务地图](map.md)；尚未确认的原生字段语义按上述缺失／限制规则处理，不作为产品问题转交用户猜测。
+实现及核验已完成，任务关系见 [任务地图](map.md)，验收结果见 [公开验收记录](../../docs/validation/additional-agent-history.md)。尚未确认的原生字段语义按上述缺失／限制规则处理，不补造统计。
 
 ## 已有决定
 

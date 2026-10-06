@@ -12,6 +12,7 @@ import { desktopModels } from "../src/sessions/codeflicker-desktop.js";
 import { AnalysisStore } from "../src/index/store.js";
 import { SessionStore } from "../src/sessions/store.js";
 import { refreshSessions } from "../src/sessions/refresh.js";
+import { isolatedHistoryRoots } from "./helpers/history-roots.js";
 // @ts-ignore 人工样例共用于真实 CLI／浏览器验收。
 import { desktopFixture, desktopNativeFixture, encodeDesktop } from "../scripts/desktop-fixture.mjs";
 
@@ -28,7 +29,7 @@ async function fixture(run: (directory: string, path: string) => Promise<void>) 
     await run(directory, path);
   } finally { await rm(directory, { recursive: true, force: true }); }
 }
-const roots = (directory: string) => ({ codex: [], claude: [], codeflicker: [], "codeflicker-desktop": join(directory, "sessions") });
+const roots = (directory: string) => isolatedHistoryRoots({ "codeflicker-desktop": join(directory, "sessions") });
 
 async function session(path: string) {
   const metadata = (await discoverSources(roots(dirname(dirname(dirname(dirname(path)))))))[0]!;

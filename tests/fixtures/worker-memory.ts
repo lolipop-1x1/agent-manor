@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
 import { join } from "node:path";
 import { AnalysisStore, WorkerManager } from "../../src/index/index.js";
+import { isolatedHistoryRoots } from "../helpers/history-roots.js";
 
 const [repositoryPath, history, directory] = process.argv.slice(2) as [string, string, string];
 const store = new AnalysisStore(join(directory, "index.sqlite"));
 const repository = await store.registerRepository(repositoryPath);
-const manager = new WorkerManager(store, { roots: { codex: [], claude: [], codeflicker: history, "codeflicker-desktop": [] } });
+const manager = new WorkerManager(store, { roots: isolatedHistoryRoots({ codeflicker: history }) });
 try {
   for (let attempt = 0; attempt < 2; attempt++) {
     const job = await manager.waitForJob(manager.refresh(repository.id).id);

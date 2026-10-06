@@ -28,6 +28,9 @@ export interface SourceReference {
   format?: string;
   path: string;
   recordLine: number;
+  /** 原生事件序号或事件身份摘要，仅用于验证原生 fork 复制边界。 */
+  recordOrdinal?: number;
+  recordIdentityHash?: string;
   /** 原始记录内容哈希；文件追加不会使旧记录失效。 */
   hash: string;
   callId?: string;

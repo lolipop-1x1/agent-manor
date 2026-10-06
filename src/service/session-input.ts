@@ -38,7 +38,7 @@ export function sessionMessageQuery(raw: Record<string, unknown>): SessionMessag
     if (pageUnit !== "turn") throw new ServiceError("INVALID_INPUT", "turnPosition 仅支持完整轮次分页");
     query.turnPosition = integer(raw.turnPosition, "turnPosition", 1, 1_000_000_000);
   }
-  for (const key of ["messageId", "toolName", "resourceName", "resourceServer"] as const) query[key] = textValue(raw[key], key);
+  for (const key of ["messageId", "toolName", "resourceName", "resourceServer", "branch"] as const) query[key] = textValue(raw[key], key);
   const resourceKind = textValue(raw.resourceKind, "resourceKind");
   if (resourceKind !== undefined && !["mcp", "skill_call", "skill_read"].includes(resourceKind)) throw new ServiceError("INVALID_INPUT", "未知资源证据类型");
   if (resourceKind) query.resourceKind = resourceKind as SessionMessageQuery["resourceKind"];

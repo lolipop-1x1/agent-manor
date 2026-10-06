@@ -9,6 +9,7 @@ import Database from "better-sqlite3";
 import { buildCoverage } from "../src/analysis/index.js";
 import { AnalysisStore, StoreError } from "../src/index/index.js";
 import { refreshRepository } from "../src/index/refresh.js";
+import { isolatedHistoryRoots } from "./helpers/history-roots.js";
 
 const git = promisify(execFile);
 const encode = (records: unknown[]) => records.map((record) => JSON.stringify(record) + "\n").join("");
@@ -30,7 +31,7 @@ async function fixture(run: (context: { directory: string; repositoryPath: strin
     const repository = await store.registerRepository(repositoryPath);
     const refresh = async (clear = false) => {
       const job = store.createJob(repository.id);
-      await refreshRepository(store, job.id, { codex: history, claude: [], codeflicker: [], "codeflicker-desktop": [] }, clear);
+      await refreshRepository(store, job.id, isolatedHistoryRoots({ codex: history }), clear);
       assert.equal(store.getJob(job.id).status, "completed", store.getJob(job.id).error);
       return store.getJob(job.id).version!;
     };
@@ -98,7 +99,7 @@ test("原生 Agent 跨来源关系贯通来源列表与快照，重复刷新不�
   await writeFile(childPath, child);
   const refresh = async () => {
     const job = store.createJob(repositoryId);
-    await refreshRepository(store, job.id, { codex: [], claude: [], codeflicker: history, "codeflicker-desktop": [] });
+    await refreshRepository(store, job.id, isolatedHistoryRoots({ codeflicker: history }));
     assert.equal(store.getJob(job.id).status, "completed", store.getJob(job.id).error);
   };
   await refresh();
@@ -136,7 +137,7 @@ test("矛盾 Agent 父关系不发布到来源列表与快照，重复刷新仍�
   let eventIds: string[] | undefined;
   for (let attempt = 0; attempt < 2; attempt++) {
     const job = store.createJob(repositoryId);
-    await refreshRepository(store, job.id, { codex: [], claude: [], codeflicker: history, "codeflicker-desktop": [] });
+    await refreshRepository(store, job.id, isolatedHistoryRoots({ codeflicker: history }));
     assert.equal(store.getJob(job.id).status, "completed", store.getJob(job.id).error);
     const snapshot = store.getSnapshot(repositoryId);
     const child = snapshot.sources.find(source => source.sessionId === "agent-child-a")!;
@@ -230,7 +231,7 @@ test("临时I/O失败不当来源缺失；清缓存失败仍保留旧版和可�
   await rename(history, `${history}-saved`);
   await writeFile(history, "temporary IO failure");
   const job = store.createJob(repositoryId);
-  await refreshRepository(store, job.id, { codex: history, claude: [], codeflicker: [], "codeflicker-desktop": [] }, true);
+  await refreshRepository(store, job.id, isolatedHistoryRoots({ codex: history }), true);
   assert.equal(store.getJob(job.id).status, "failed");
   assert.equal(store.getRepository(repositoryId).version, first);
   assert.equal(store.getRepository(repositoryId).stale, true);
@@ -254,7 +255,7 @@ test("事务发布失败不泄漏新版、缓存或完成任务；已有version�
   const partsBefore = database.prepare("SELECT kind,owner,field,part,json FROM payload_parts ORDER BY kind,owner,field,part").all();
   database.exec("CREATE TRIGGER reject_publish BEFORE UPDATE OF version ON repositories BEGIN SELECT RAISE(ABORT,'synthetic publish failure'); END;");
   const job = store.createJob(repositoryId);
-  await refreshRepository(store, job.id, { codex: join(sourcePath, ".."), claude: [], codeflicker: [], "codeflicker-desktop": [] });
+  await refreshRepository(store, job.id, isolatedHistoryRoots({ codex: join(sourcePath, "..") }));
   assert.equal(store.getJob(job.id).status, "failed");
   assert.equal(store.getRepository(repositoryId).version, first);
   assert.equal(store.getSnapshot(repositoryId).events.length, 1);
@@ -410,7 +411,7 @@ test("SQLite v2旧JSON版本与解析缓存升级后可查询并续读", async (
     assert.ok(upgraded.getSnapshot(repositoryId).sources.every((source) => !("events" in source)));
     await appendFile(sourcePath, encode([call(repositoryPath, "second"), output("second")]));
     const job = upgraded.createJob(repositoryId);
-    await refreshRepository(upgraded, job.id, { codex: join(sourcePath, ".."), claude: [], codeflicker: [], "codeflicker-desktop": [] });
+    await refreshRepository(upgraded, job.id, isolatedHistoryRoots({ codex: join(sourcePath, "..") }));
     assert.equal(upgraded.getJob(job.id).status, "completed", upgraded.getJob(job.id).error);
     assert.equal(upgraded.getRefreshStats(repositoryId).parsedRecords, 2);
     assert.equal(upgraded.getSnapshot(repositoryId).events.length, 2);

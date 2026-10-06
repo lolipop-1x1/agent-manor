@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile, spawn } from "node:child_process";
+import { existsSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -12,6 +13,7 @@ import { createProgram } from "../src/cli.js";
 import { startService } from "../src/server.js";
 import { apiRequest, delay } from "../src/service/runtime.js";
 import { publishClientQueryFixture } from "./client-query-fixture.js";
+import { isolatedHistoryEnvironment, isolatedHistoryRoots } from "./helpers/history-roots.js";
 
 const run = promisify(execFile);
 const repositoryRoot = fileURLToPath(new URL("../", import.meta.url));
@@ -34,6 +36,23 @@ test("全部查询命令的客户端帮助来自共享声明", () => {
   }
 });
 
+test("CLI 子进程历史环境按全部客户端隔离，并允许显式覆盖 fixture 来源", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "manor-isolated-history-env-"));
+  try {
+    const env = isolatedHistoryEnvironment(directory, { AGENT_MANOR_CODEX_DIR: join(directory, "codex-fixture") });
+    for (const client of clientIds) {
+      const variable = `AGENT_MANOR_${client.toUpperCase().replaceAll("-", "_")}_DIR`;
+      assert.ok(env[variable]);
+      if (variable !== "AGENT_MANOR_CODEX_DIR") assert.equal(existsSync(env[variable]!), false);
+    }
+    assert.equal(env.AGENT_MANOR_CODEX_DIR, join(directory, "codex-fixture"));
+    assert.equal(env.MYFLICKER_HOME, join(directory, "isolated-history", "myflicker"));
+    assert.equal(existsSync(env.MYFLICKER_HOME!), false);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("CodeFlicker 的 CLI 与 API 使用同一分析版本、覆盖、来源及原始证据", async () => {
   const directory = await realpath(await mkdtemp(join(tmpdir(), "manor-cli-client-")));
   const home = join(directory, "data");
@@ -42,10 +61,10 @@ test("CodeFlicker 的 CLI 与 API 使用同一分析版本、覆盖、来源及�
   await run("git", ["init", "-q", repository]);
   await writeFile(join(repository, "src/a.ts"), "alpha\nbeta\n");
   await writeFile(join(repository, "src/b.ts"), "unread\n");
-  const service = await startService({ home, roots: { codex: [], claude: [], codeflicker: [], "codeflicker-desktop": [] }, startupRefresh: false });
+  const service = await startService({ home, roots: isolatedHistoryRoots(), startupRefresh: false });
   const cli = fileURLToPath(new URL("../src/cli.ts", import.meta.url));
   const hook = fileURLToPath(import.meta.resolve("tsx/esm"));
-  const env = { ...process.env, AGENT_MANOR_HOME: home };
+  const env = isolatedHistoryEnvironment(directory, { AGENT_MANOR_HOME: home });
   const command = async <T>(args: string[]): Promise<T> => JSON.parse((await run(process.execPath, ["--import", hook, cli, ...args, "--json"], { cwd: tmpdir(), env, timeout: 30_000 })).stdout) as T;
   try {
     const snapshot = await publishClientQueryFixture(home, repository, join(directory, "query-history"));
@@ -102,7 +121,7 @@ test("编译产物在包外cwd并发按需启动单实例，CLI/API JSON一致�
     { type: "response_item", payload: { type: "function_call_output", call_id: "read", output: "Exit code: 0\nOutput:\nalpha\nbeta\n" } },
   ]));
   const cli = join(build, "cli.js");
-  const env = { ...process.env, AGENT_MANOR_HOME: home, AGENT_MANOR_CODEX_DIR: history, AGENT_MANOR_CLAUDE_DIR: join(directory, "missing-claude"), AGENT_MANOR_CODEFLICKER_DESKTOP_DIR: join(directory, "missing-desktop"), AGENT_MANOR_CODEFLICKER_DIR: join(directory, "missing-codeflicker") };
+  const env = isolatedHistoryEnvironment(directory, { AGENT_MANOR_HOME: home, AGENT_MANOR_CODEX_DIR: history });
   const command = async <T>(args: string[]): Promise<T> => {
     const result = await run(process.execPath, [cli, ...args, "--json"], { cwd: tmpdir(), env, timeout: 30_000 });
     assert.equal(result.stderr, "");
@@ -161,7 +180,7 @@ test("源码CLI从外部cwd启动Worker；错误实例状态不会误杀其他PI
   const home = join(directory, "data");
   const cli = fileURLToPath(new URL("../src/cli.ts", import.meta.url));
   const hook = fileURLToPath(import.meta.resolve("tsx/esm"));
-  const env = { ...process.env, AGENT_MANOR_HOME: home, AGENT_MANOR_CODEX_DIR: join(directory, "empty"), AGENT_MANOR_CLAUDE_DIR: join(directory, "empty"), AGENT_MANOR_CODEFLICKER_DESKTOP_DIR: join(directory, "missing-desktop"), AGENT_MANOR_CODEFLICKER_DIR: join(directory, "empty") };
+  const env = isolatedHistoryEnvironment(directory, { AGENT_MANOR_HOME: home });
   const command = async <T>(args: string[]): Promise<T> => JSON.parse((await run(process.execPath, ["--import", hook, cli, ...args, "--json"], { cwd: tmpdir(), env, timeout: 30_000 })).stdout) as T;
   const other = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" });
   try {

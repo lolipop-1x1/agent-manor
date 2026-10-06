@@ -39,6 +39,10 @@ export async function discoverSources(roots: DiscoverRoots = {}): Promise<Source
       }
       else if (entry.isFile() && (declaration.acceptsFile?.(child) ?? entry.name.endsWith(".jsonl")) && !paths.has(child)) {
         paths.add(child);
+        if (adapter?.discoverFile) {
+          found.push(...await adapter.discoverFile({ path: child, client: declaration.client, format: declaration.format }));
+          continue;
+        }
         let metadata: SourceLocation = { path: child, client: declaration.client, format: declaration.format };
         if (adapter) {
           const handle = await open(child, "r");
@@ -123,9 +127,12 @@ export async function parseSource(path: string, client: Client, previous?: Parse
   for (const event of source.events) for (const reference of event.sources) reference.path = absolutePath;
   const eventById = new Map(source.events.map((event) => [event.id, event]));
   const gap = (kind: Gap["kind"], message: string) => source.gaps.push({ kind, message, sourceId: source.sourceId });
-  const reference = (recordLine: number, raw: string, callId?: string): SourceReference => ({ sourceId: source.sourceId, format, path: absolutePath, selector: metadata?.selector, recordLine, hash: hash(raw), callId });
-  const findEvent = (id: string) => eventById.get(id);
   let activeContext: HistoryAdapterContext;
+  const reference = (recordLine: number, raw: string, callId?: string): SourceReference => ({ sourceId: source.sourceId, format, path: absolutePath,
+    selector: metadata?.selector, recordLine, hash: hash(raw), callId,
+    ...(activeContext.nativeOrdinal !== undefined ? { recordOrdinal: activeContext.nativeOrdinal } : {}),
+    ...(activeContext.nativeIdentityHash ? { recordIdentityHash: activeContext.nativeIdentityHash } : {}) });
+  const findEvent = (id: string) => eventById.get(id);
   const identity = (key: string): string => {
     const occurrence = (cursor.occurrences[key] ?? 0) + 1;
     cursor.occurrences[key] = occurrence;
@@ -416,19 +423,31 @@ export function resolveSharedHistory(sources: ParsedSource[]): SharedHistoryResu
     const copied = new Map<string, { event: HistoryEvent; identity?: string }>();
     for (const relationship of shared) {
       const parents = (bySession.get(relationship.parentSessionId) ?? []).filter(parent => parent.client === source.client);
-      const parent = parents.find((candidate) => relationship.endByteOffset !== undefined && cursorOf(candidate)?.recordEnds.includes(relationship.endByteOffset));
+      const hasDshOrdinalProof = source.format === "dsh-jsonl" && relationship.endOrdinalExclusive !== undefined
+        && Number.isSafeInteger(relationship.endOrdinalExclusive) && relationship.endOrdinalExclusive >= 0;
+      const copiedIdentities = new Set(relationship.copiedRecordIdentityHashes ?? []);
+      const hasPiCopyProof = source.format === "pi-jsonl" && copiedIdentities.size > 0;
+      const parent = parents.length === 1 && (relationship.endByteOffset !== undefined
+        && cursorOf(parents[0])?.recordEnds.includes(relationship.endByteOffset)
+        || hasDshOrdinalProof || hasPiCopyProof) ? parents[0] : undefined;
       const resolved = relationship.kind === "subagent" ? parents.length > 0 : Boolean(parent);
       relationships.push({ sourceId: source.sourceId, relationship, resolved });
-      if (resolved && relationship.kind === "subagent") {
+      if (resolved) {
         relatedParents.add(relationship.parentSessionId);
         parentProofs.push(...(relationship.sources ?? []));
       }
-      if (!resolved) gaps.push({ kind: parents.length ? "ambiguous" : "source_missing", sourceId: source.sourceId, message: relationship.kind === "fork" ? "fork 父来源缺失或引用字节位置不是完整记录边界；未重造共享调用" : "子会话父来源缺失" });
+      if (!resolved) gaps.push({ kind: parents.length ? "ambiguous" : "source_missing", sourceId: source.sourceId,
+        message: relationship.kind === "fork" ? "fork 缺少可核验的完整记录边界或原生复制身份；未按文本推断共享调用" : "子会话父来源缺失" });
       if (parent && relationship.kind === "fork") {
-        const endRow = cursorOf(parent)!.recordEnds.indexOf(relationship.endByteOffset!) + 1;
         for (const event of parent.events) {
           const parentRefs = event.sources.filter((reference) => reference.sourceId === parent.sourceId);
-          if (parentRefs.length && parentRefs.every((reference) => reference.recordLine <= endRow)) {
+          const withinByteCut = relationship.endByteOffset !== undefined
+            && parentRefs.every(reference => reference.recordLine <= cursorOf(parent)!.recordEnds.indexOf(relationship.endByteOffset!) + 1);
+          const withinOrdinalCut = hasDshOrdinalProof
+            && parentRefs.every(reference => reference.recordOrdinal !== undefined && reference.recordOrdinal < relationship.endOrdinalExclusive!);
+          const copiedByIdentity = hasPiCopyProof
+            && parentRefs.every(reference => reference.recordIdentityHash !== undefined && copiedIdentities.has(reference.recordIdentityHash));
+          if (parentRefs.length && (withinByteCut || withinOrdinalCut || copiedByIdentity)) {
             const proof = [...new Set(parentRefs.map((reference) => reference.hash))].sort().join(":");
             copied.set(proof, { event, identity: eventIdentity(parent, event) });
             mergeEvent(events, event, gaps);

@@ -20,6 +20,8 @@ export interface HistoryAdapterContext {
   row: number;
   raw: string;
   occurredAt?: string;
+  nativeOrdinal?: number;
+  nativeIdentityHash?: string;
   source: ParsedHistorySource;
   cursor: HistoryCursor;
   hash(value: string | Uint8Array): string;
@@ -34,6 +36,8 @@ export interface HistoryAdapterContext {
 /** 格式适配器接收实际客户端身份，不据格式推断客户端。 */
 export interface HistoryAdapter {
   id: string;
+  /** 新来源使用共享规范化事件，同时供地图和会话库消费。 */
+  normalized?: boolean;
   /** 多会话容器直接发现原生选择器，不按文本文件头猜测。 */
   discoverFile?(location: SourceLocation): Promise<SourceLocation[]>;
   readRecords?(location: SourceLocation): Promise<HistoryRecordSnapshot>;
