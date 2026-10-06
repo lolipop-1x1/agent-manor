@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent, type PointerEvent, type ReactNode } from "react";
 import { ArrowsIn, ArrowsOut, CaretRight, Crosshair, Folder, Minus, Plus, Resize } from "@phosphor-icons/react";
 import * as Tooltip from "@radix-ui/react-tooltip";
+import { HelpPopover } from "./HelpPopover";
 import type { FileCoverage } from "../src/contracts";
 import { fileLabelRect, fmt, metricNames, metricValue, percent, type Metric } from "./model";
 import { clipRect, fitCamera, layoutMap, locateCamera, panCamera, projectRect, resizeCamera, visibleTiles, zoomCamera, type MapCamera, type MapPoint, type MapRect, type MapTile } from "./map-viewport";
@@ -191,7 +192,9 @@ export function CodeMap({ files, directory, metric, selected, browse, select, he
       <button className="icon-button" aria-label="放大地图" disabled={camera.scale >= layout.maxScale} onClick={() => zoom(1.4)}><Plus size={16} /></button>
       <button className="map-tool-button" aria-label="适应窗口" onClick={reset}><Resize size={16} /><span>适应窗口</span></button>
       <button className="map-tool-button" aria-label="定位所选文件" disabled={!selectedTile} onClick={locate}><Crosshair size={16} /><span>定位所选文件</span></button>
-    </div><span className="map-gesture-help">滚轮缩放 · 拖动平移</span><button className="map-tool-button" aria-label={fullscreen ? "退出地图全屏" : "全屏查看地图"} onClick={() => void toggleFullscreen()}>{fullscreen ? <ArrowsIn size={16} /> : <ArrowsOut size={16} />}<span>{fullscreen ? "退出全屏" : "全屏"}</span></button></div>
+    </div><HelpPopover label="地图操作" container={fullscreen ? explorer.current : undefined}><dl>
+      <div><dt>缩放与平移</dt><dd>地图内滚轮缩放，拖动平移；触屏可双指缩放。放大后逐步显示文件名、百分比与行数，缩放只改变视野。</dd></div>
+      <div><dt>定位与键盘</dt><dd>选择文件后可定位到它，适应窗口恢复全图。聚焦地图后用加减键缩放、方向键平移、0 适应窗口。</dd></div></dl></HelpPopover><button className="map-tool-button" aria-label={fullscreen ? "退出地图全屏" : "全屏查看地图"} onClick={() => void toggleFullscreen()}>{fullscreen ? <ArrowsIn size={16} /> : <ArrowsOut size={16} />}<span>{fullscreen ? "退出全屏" : "全屏"}</span></button></div>
     {fullscreenError && <p className="map-error" role="alert">{fullscreenError}</p>}
     <div ref={host} className={`code-map${dragging ? " dragging" : ""}`} role="group" tabIndex={0} aria-label="文件行数决定面积的代码活动地图" aria-description="滚轮缩放，拖动平移；聚焦地图后可用加减键缩放、方向键平移、0 适应窗口。" data-scale={camera.scale} data-visible-count={visible.length} data-file-count={layout.files.length}
       onPointerDown={startPointer} onPointerMove={movePointer} onPointerUp={endPointer} onPointerCancel={endPointer} onPointerLeave={event => {

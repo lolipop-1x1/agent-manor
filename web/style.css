@@ -98,11 +98,9 @@ progress::-moz-progress-bar { background: var(--accent); border-radius: 3px; }
 .directory-row.active { background: var(--accent-soft); color: var(--accent); }
 .directory-row.active svg { color: var(--accent); }
 .sidebar-bottom { padding: 28px 6px 0; margin-top: auto; }
-.sidebar-bottom .sidebar-label { margin-left: 0; }
-.sidebar-bottom p { font-size: 10px; color: var(--muted); line-height: 2; margin-bottom: 16px; }
 .sidebar-bottom .text-button { font-size: 10px; }
 .map-main { min-width: 0; padding: 31px 28px 28px; }
-.page-heading p { color: var(--muted); font-size: 12px; margin-top: 9px; }
+.page-heading { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px; }
 .filters { display: flex; align-items: center; flex-wrap: wrap; gap: 13px; margin-top: 28px; min-height: 36px; border-bottom: 1px solid var(--border); padding-bottom: 12px; }
 .select-field { display: inline-flex; align-items: center; gap: 7px; font-size: 11px; }
 .select-field > span { color: var(--muted); }
@@ -137,7 +135,7 @@ input::placeholder { color: var(--muted); }
 .map-zoom-controls output { font-size: 12px; min-width: 62px; text-align: center; font-variant-numeric: tabular-nums; }
 .map-tool-button { display: inline-flex; align-items: center; gap: 5px; padding: 6px 8px; background: var(--surface); border: 1px solid var(--border); border-radius: 4px; font-size: 11px; }
 .map-tool-button:hover:not(:disabled) { background: var(--surface-alt); }
-.map-gesture-help { font-size: 10px; color: var(--muted); margin-left: auto; }
+.map-toolbar > .help-trigger { margin-left: auto; }
 .map-error { color: var(--danger); font-size: 12px; margin-bottom: 8px; }
 .code-map { height: clamp(450px, 65dvh, 850px); position: relative; background: var(--surface-alt); border: 1px solid var(--border); border-radius: 5px; overflow: hidden; touch-action: none; cursor: grab; user-select: none; }
 .code-map.dragging, .code-map.dragging * { cursor: grabbing; }
@@ -194,6 +192,8 @@ th:first-child, td:first-child { text-align: left; }
 td button { text-align: left; border: 0; background: none; padding: 3px 0; font-size: 10px; overflow-wrap: anywhere; }
 tbody tr:hover, tbody tr.selected { background: var(--accent-soft); }
 .baseline-note { font-size: 9px; line-height: 1.8; color: var(--muted); overflow-wrap: anywhere; margin-top: 22px; }
+.baseline-note summary, .version-note summary { cursor: pointer; }
+.content-format { display: inline-block; margin-top: 8px; border: 1px solid var(--border); border-radius: 4px; padding: 2px 5px; color: var(--muted); font-size: 10px; }
 .evidence-pane { min-width: 0; padding: 23px 21px; background: var(--surface); border-left: 1px solid var(--border); }
 .pane-heading { display: flex; align-items: center; justify-content: space-between; color: var(--muted); font-size: 10px; margin-bottom: 13px; }
 .evidence-pane h2 { overflow-wrap: anywhere; }
@@ -325,7 +325,6 @@ input[type="checkbox"] { accent-color: var(--accent); }
   .directory-nav { max-height: 35dvh; padding: 2px; margin: -2px; }
   .map-main { padding: 25px 16px; }
   h1 { font-size: 24px; }
-  .page-heading p { font-size: 11px; }
   .filters { gap: 12px; margin-top: 22px; }
   .select-field { gap: 4px; font-size: 10px; }
   .select-field .filter-trigger { font-size: 10px; min-width: 100px; }
@@ -339,7 +338,6 @@ input[type="checkbox"] { accent-color: var(--accent); }
   .map-file-labels { left: 7px; right: 7px; bottom: 7px; }
   .map-file strong { font-size: 22px; }
   .map-toolbar { gap: 6px; }
-  .map-gesture-help { display: none; }
   .map-explorer:fullscreen { padding: 10px; }
   .map-directory { font-size: 9px; }
   .map-legend small { margin-left: 0; width: 100%; }

@@ -5,6 +5,7 @@ import type { SessionProfile, SessionSummary } from "../src/session-contracts";
 import { displayRecorded, usageAxis, usageSegments, type EvidenceTarget } from "./session-model";
 import { kindLabels, resourceLabels } from "./SessionMessage";
 import { Notice, Pager } from "./SessionControls";
+import { HelpPopover } from "./HelpPopover";
 
 const formatCount = (value: number) => value.toLocaleString("zh-CN");
 const dateLabel = (value?: string) => value ? new Date(value).toLocaleString("zh-CN", { hour12: false }) : "时间未记录";
@@ -68,7 +69,7 @@ function UsageChart({ profile, onFocusStep }: { profile: SessionProfile; onFocus
           <small>{dateLabel(active.occurredAt)}</small>
         </div>}
       </div>
-      <span /><div className="session-chart-axis"><span>请求 1</span>{profile.steps.length > 1 && <span>请求 {profile.steps.length}</span>}</div>
+      <span /><div className="session-chart-axis"><span>1</span><span>请求序号</span><span>{profile.steps.length > 1 ? profile.steps.length : ""}</span></div>
     </div>
   </div>;
 }
@@ -92,13 +93,18 @@ export function SessionProfilePane({ profile, loading, error, includeChildren, s
     <div id="session-profile-content" className="session-profile-content" hidden={collapsed}>
       {loading && <p className="muted" role="status">正在计算画像…</p>}
       {error && <Notice danger action={<button className="text-button" onClick={onRetry}>重试</button>}>{error}</Notice>}
-      {!loading && !error && !profile && <div className="session-profile-empty"><h3>选择会话查看画像</h3><p className="muted">画像只展示索引中有记录的模型、用量与工具证据。</p></div>}
+      {!loading && !error && !profile && <div className="session-profile-empty"><h3>选择会话查看画像</h3></div>}
       {profile && <>
         {profile.missingChildren > 0 && <Notice>{profile.missingChildren} 个关联子会话缺少可用记录，未计入当前画像。</Notice>}
         <section className="session-profile-section" hidden={tab !== "overview"}><div className="session-section-heading"><h3>模型记录</h3><span>{profile.models.length} 种</span></div>
           {profile.models.length ? profile.models.map(item => <ProfileBar key={item.model} label={item.model} count={item.count} max={Math.max(...profile.models.map(model => model.count))} suffix=" 条记录" />) : <p className="muted small">模型未记录</p>}
         </section>
-        <section className="session-profile-section" hidden={tab === "calls"}><div className="session-section-heading"><h3>请求用量</h3><span>用量记录请求 {displayRecorded(profile.usage.requests)} 条</span></div>
+        <section className="session-profile-section" hidden={tab === "calls"}><div className="session-section-heading"><h3>请求用量</h3><div className="section-actions"><span>{displayRecorded(profile.usage.requests)} 条</span><HelpPopover label="统计口径">
+          <dl><div><dt>缓存读取占比</dt><dd>仅对同时记录总输入与缓存读取的请求计算：缓存读取 Token ÷ 总输入 Token。输出与推理字段不相加。</dd></div>
+            <div><dt>用量记录覆盖</dt><dd>输入记录 {formatCount(profile.usage.inputRecordedRequests)} / {formatCount(profile.usage.requests)} 个请求；同时记录输入与缓存读取 {formatCount(profile.usage.cacheRecordedRequests)} / {formatCount(profile.usage.inputRecordedRequests)} 个输入记录请求。</dd></div>
+            <div><dt>留存内容估算</dt><dd>{profile.estimate.method}。只估算留存文本，与模型请求用量分开。</dd></div>
+            <div><dt>统计范围</dt><dd>{profile.scope === "tree" ? "自身与明确关联的子会话" : "当前会话自身"}的全部已记录活动；阅读分支不改变统计范围。缺少记录的字段显示“未记录”。</dd></div></dl>
+        </HelpPopover></div></div>
           <div className="session-usage-grid">
             <div><strong>{displayRecorded(profile.usage.inputTokens)}</strong><span>总输入 Token</span></div>
             <div><strong>{displayRecorded(profile.usage.outputTokens)}</strong><span>输出 Token</span></div>
@@ -109,14 +115,12 @@ export function SessionProfilePane({ profile, loading, error, includeChildren, s
             <div hidden={tab !== "usage"}><strong>{displayRecorded(profile.usage.peakContextTokens)}</strong><span>峰值上下文 Token</span></div>
           </div>
           <div className="session-cache-ratio"><div><span>缓存读取占比</span><strong>{normalizedRatio(profile.usage.cacheReadRatio)}</strong></div>
-            <small>只按同批可确认的缓存读取与总输入计算；输出与推理字段不相加。</small>
-            <small>输入记录覆盖 {formatCount(profile.usage.inputRecordedRequests)} / {formatCount(profile.usage.requests)} 个用量记录请求 · 可确认缓存读取 {formatCount(profile.usage.cacheRecordedRequests)} / {formatCount(profile.usage.inputRecordedRequests)} 个输入记录请求</small>
+            {profile.usage.cacheReadRatio !== null && (profile.usage.inputRecordedRequests < profile.usage.requests || profile.usage.cacheRecordedRequests < profile.usage.inputRecordedRequests) && <span className="session-partial-badge">部分记录</span>}
           </div>
         </section>
         <section className="session-profile-section" hidden={tab !== "overview"}><div className="session-section-heading"><h3>会话内容</h3><span>{profile.scope === "tree" ? "自身与关联子会话" : "自身"}</span></div>
           <div className="session-usage-grid compact"><div><strong>{formatCount(profile.messageCount)}</strong><span>消息</span></div><div><strong>{formatCount(profile.turnCount)}</strong><span>轮次</span></div>
             <div><strong>{formatCount(profile.estimate.total)}</strong><span>留存内容估算 Token</span></div><div><strong>{formatCount(profile.compressions)}</strong><span>压缩事件</span></div></div>
-          <small className="session-estimate-note">估算方法：{profile.estimate.method}。这是留存文本估算，与模型请求计费用量分开。</small>
           <details className="session-stat-details"><summary>按记录类型查看估算</summary>{profile.estimate.byKind.map(item => <ProfileBar key={item.kind} label={kindLabels[item.kind]} count={item.tokens} max={Math.max(1, ...profile.estimate.byKind.map(value => value.tokens))} suffix=" Token" />)}</details>
         </section>
         <section className="session-profile-section" hidden={tab !== "calls"}><div className="session-section-heading"><h3>工具调用</h3><span>{formatCount(profile.tools.reduce((total, item) => total + item.calls, 0))} 次</span></div>
@@ -131,10 +135,12 @@ export function SessionProfilePane({ profile, loading, error, includeChildren, s
             <span className={`session-resource-kind is-${item.kind}`}>{resourceLabels[item.kind]}</span><button className="session-stat-link" title="定位首条资源证据" onClick={() => onFind({ resourceKind: item.kind, resourceName: item.name, resourceServer: item.server })}>{item.server ? `${item.server} / ` : ""}{item.name}</button><b>{formatCount(item.count)}</b>
           </div>) : <p className="muted small">没有明确的 Skill 或 MCP 事件证据。</p>}
         </section>
-        <section className="session-profile-section" hidden={tab !== "usage"}><div className="session-section-heading"><h3>请求用量趋势</h3><span>{profile.steps.length} 条明细</span></div>
+        <section className="session-profile-section" hidden={tab !== "usage"}><div className="session-section-heading"><h3>请求用量趋势</h3><div className="section-actions"><span>{profile.steps.length} 条</span><HelpPopover label="图表说明">
+          <dl><div><dt>坐标与明细</dt><dd>横轴是返回明细的请求顺序，纵轴为 Token；缺失值留空。最多展示 200 条明细，汇总用量仍包含全部已记录请求。</dd></div>
+            <div><dt>查看与定位</dt><dd>悬停或聚焦图表可看请求数值，左右方向键切换请求。点击图表或请求编号可定位有对应消息的记录。</dd></div></dl>
+        </HelpPopover></div></div>
           {profile.steps.length ? <>
             <UsageChart profile={profile} onFocusStep={onFocusStep} />
-            <p className="session-estimate-note">横轴为返回明细的请求顺序；缺失值留空。点击图表或请求编号定位记录。</p>
             <div className="session-step-table"><table><thead><tr><th>请求</th><th>输入</th><th>输出</th><th>缓存读取</th></tr></thead><tbody>
               {profile.steps.slice((stepPage - 1) * 12, stepPage * 12).map((step, index) => <tr key={step.id}>
                 <td>{step.messageId ? <button onClick={() => onFocusStep(step)} title={`${step.model ?? "模型未记录"} · ${dateLabel(step.occurredAt)}`}>#{(stepPage - 1) * 12 + index + 1}{step.sessionId !== profile.sessionIds[0] ? " 子" : ""}</button> : <span>#{(stepPage - 1) * 12 + index + 1}</span>}</td>

@@ -58,7 +58,8 @@ export function TraceTimeline({ events, selectedId, loading, error, onSelect, on
           {hovered.event.model && <span>{hovered.event.model}</span>}{hovered.event.durationMs !== undefined && <span>记录耗时 {hovered.event.durationMs.toLocaleString("zh-CN")} ms</span>}
         </div>}
       </div>
-      <div className="trace-timeline-foot"><span>{mode === "time" ? spans.length ? `${time(start)} → ${time(end)}` : "没有已记录时间" : "点击任意轨道定位节点 · ← → 切换"}</span><span>{missing ? `${missing} 个节点时间未记录` : "蓝：用户 · 绿：上下文 · 紫：模型 · 金：工具"}</span></div>
+      <div className="trace-timeline-foot"><div className="trace-timeline-legend"><span><i className="key-user" />用户</span><span><i className="key-context" />上下文</span><span><i className="key-model" />模型</span><span><i className="key-tool" />工具</span></div>
+        {mode === "time" && <span>{spans.length ? `${time(start)} → ${time(end)}` : "没有已记录时间"}</span>}{missing > 0 && <span>{missing} 个节点时间未记录</span>}</div>
     </>}
   </section>;
 }

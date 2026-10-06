@@ -34,3 +34,15 @@
 .date-picker-actions button:disabled { color: var(--muted); cursor: default; opacity: .5; }
 .date-range .date-picker-trigger { width: 145px; }
 .session-date-filters .date-picker-trigger { font-size: 10px; }
+.help-trigger { display: inline-flex; flex-shrink: 0; align-items: center; gap: 4px; padding: 4px 0; border: 0; background: transparent; color: var(--muted); font-size: 10px; white-space: nowrap; }
+.help-trigger:hover, .help-trigger[data-state="open"] { color: var(--accent); }
+.help-trigger:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; border-radius: 3px; }
+.help-popover { width: min(320px, calc(100vw - 24px)); min-width: 0; max-height: min(420px, var(--radix-popover-content-available-height)); padding: 12px; overflow: auto; overscroll-behavior: contain; }
+.help-popover header { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 8px; }
+.help-popover header strong { font-size: 13px; }
+.help-popover-body { display: grid; gap: 12px; font-size: 12px; line-height: 1.7; overflow-wrap: anywhere; }
+.help-popover-body dl { display: grid; gap: 10px; margin: 0; }
+.help-popover-body dt { font-weight: 600; }
+.help-popover-body dd { margin: 2px 0 0; color: var(--muted); }
+.section-actions { display: flex; align-items: center; justify-content: flex-end; gap: 10px; }
+.section-actions > span { color: var(--muted); font-size: 10px; }

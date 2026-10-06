@@ -3,6 +3,7 @@ import { CaretDown, X } from "@phosphor-icons/react";
 import type { SessionMessage, SessionProfile, SessionTimelineEvent } from "../src/session-contracts";
 import { MessageBody, kindLabels, resourceLabels } from "./SessionMessage";
 import { TraceTimeline } from "./TraceTimeline";
+import { HelpPopover } from "./HelpPopover";
 import { displayRecorded, turnTitle } from "./session-model";
 import { TRACE_ROW_HEIGHT, tracePreview, traceTurns, traceWindow, type TraceRecord } from "./session-trace-model";
 import "./session-trace.css";
@@ -82,7 +83,9 @@ export function SessionTrace({ messages, steps, focusMessageId, focusRequest, fo
   return <section className="session-trace" aria-label="执行轨迹">
     <TraceTimeline events={timeline} selectedId={selectedId} loading={timelineLoading} error={timelineError} onSelect={onTimelineSelect} onRetry={onRetryTimeline} />
     <div className="trace-toolbar"><span><strong>{records.length.toLocaleString("zh-CN")}</strong> 个执行节点 <small>· 本页 {messages.length.toLocaleString("zh-CN")} 条原始记录</small></span>
-      <div><button className="text-button" onClick={() => setCollapsed(new Set())}>展开全部</button><button className="text-button" onClick={() => setCollapsed(new Set(turns.map(turn => turn.id)))}>折叠全部</button></div></div>
+      <div><HelpPopover label="轨迹说明"><dl><div><dt>轨迹总览</dt><dd>按事件顺序、轮次或记录时间排列，点击轨道定位节点，← → 切换节点。上下文、模型和工具分别呈现在轨道中。</dd></div>
+        <div><dt>执行节点</dt><dd>选择节点查看正文与关联结果，↑ ↓ 切换节点。仅展示已保存的事件，用量仅关联已返回的明细。</dd></div>
+        <div><dt>上下文记录</dt><dd>AGENTS.md、环境与客户端上下文注入不计为用户提问；保留识别依据与原始角色供核对。本地 Hook 记录不计为模型工具调用。</dd></div></dl></HelpPopover><button className="text-button" onClick={() => setCollapsed(new Set())}>展开全部</button><button className="text-button" onClick={() => setCollapsed(new Set(turns.map(turn => turn.id)))}>折叠全部</button></div></div>
     <div className="trace-ledger" role="table" aria-label="事件轨迹表" aria-rowcount={entries.length + 1} aria-colcount={6}>
       <div className="trace-columns" role="row"><span role="columnheader">序号</span><span role="columnheader">事件 / 模型</span><span role="columnheader">输入 / 参数</span><span role="columnheader">输出 / 结果</span><span role="columnheader">时间 / 耗时</span><span role="columnheader">Token 输入 / 输出</span></div>
       <div ref={viewport} className="trace-ledger-scroll" role="rowgroup" onScroll={event => {
@@ -125,8 +128,8 @@ export function SessionTrace({ messages, steps, focusMessageId, focusRequest, fo
       <div className="trace-inspector-scroll" key={selectedMessage.id}>
         <div className="trace-detail-meta"><span className={`session-kind kind-${selectedMessage.kind}`}>{kindLabels[selectedMessage.kind]}</span>{selectedMessage.model && <span>{selectedMessage.model}</span>}{selectedMessage.final && <span>{selectedMessage.final === "explicit" ? "明确最终回答" : "推断最终回答"}</span>}{selectedMessage.status && <span>{statuses[selectedMessage.status]}</span>}<time>{timeLabel(selectedMessage.occurredAt)}</time>
           <button className="text-button" aria-pressed={raw} onClick={() => setRaw(value => !value)}>{raw ? "查看预览" : "原始正文"}</button></div>
-        {selectedMessage.contextSource && <p className="trace-context-note">{selectedMessage.contextSource === "hook" ? "本地 Hook 执行记录；原始角色为 attachment，不计为用户提问或模型工具调用。" : <>{selectedMessage.contextSource === "agents_md" ? "AGENTS.md 指令注入" : selectedMessage.contextSource === "environment" ? "环境上下文注入" : "客户端上下文注入"} · {selectedMessage.contextEvidence === "client_metadata" ? "客户端元信息明确标记" : "按完整包格式推断"}；原始角色为 user，不计为用户提问。</>}</p>}
-        <details className="trace-source"><summary>记录来源 · 第 {selectedMessage.recordLine} 条</summary><div>消息序号 {selectedMessage.ordinal}{selectedMessage.callId && <> · 调用 {selectedMessage.callId}</>}</div>{selectedMessage.resource && <div>{resourceLabels[selectedMessage.resource.kind]} · {selectedMessage.resource.name}</div>}</details>
+        {selectedMessage.contextSource && <p className="trace-context-note">{selectedMessage.contextSource === "hook" ? "本地 Hook" : <>{selectedMessage.contextSource === "agents_md" ? "AGENTS.md 指令注入" : selectedMessage.contextSource === "environment" ? "环境上下文注入" : "客户端上下文注入"} · {selectedMessage.contextEvidence === "client_metadata" ? "明确标记" : "推断"}</>}</p>}
+        <details className="trace-source"><summary>记录来源 · 第 {selectedMessage.recordLine} 条</summary><div>消息序号 {selectedMessage.ordinal}{selectedMessage.callId && <> · 调用 {selectedMessage.callId}</>}</div>{selectedMessage.contextSource && <div>原始角色：{selectedMessage.contextSource === "hook" ? "attachment" : "user"}</div>}{selectedMessage.resource && <div>{resourceLabels[selectedMessage.resource.kind]} · {selectedMessage.resource.name}</div>}</details>
         {!!selected.usage.length && <div className="trace-usage">{selected.usage.map(usage => <div key={usage.id}><strong>{usage.model ?? "模型未记录"} · 用量记录</strong>{tokenFields.map(([key, label]) => <span key={key}>{label} <b>{displayRecorded(usage[key])}</b></span>)}</div>)}</div>}
         <article id={`session-message-${selectedMessage.id}`} className={`trace-detail-body kind-${selectedMessage.kind}`} data-message-id={selectedMessage.id}>
           {raw ? <pre className="trace-raw-content">{selectedMessage.text || "（没有正文）"}</pre> : <MessageBody message={selectedMessage} focused flat project={project} onMap={onMap} />}
@@ -135,6 +138,6 @@ export function SessionTrace({ messages, steps, focusMessageId, focusRequest, fo
           {linkedFiles.map(path => <button className="session-file-link" key={path} onClick={() => onMap(path, project)}>{path}</button>)}
         </div></details>}
       </div>
-    </section> : <p className="trace-hint">选择节点查看正文与关联结果；↑ ↓ 切换节点。仅展示已保存的事件，用量仅关联已返回的明细。</p>}
+    </section> : <p className="trace-hint">选择一个执行节点</p>}
   </section>;
 }

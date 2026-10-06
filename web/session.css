@@ -8,8 +8,7 @@
 .session-search-field input { width: 100%; min-width: 0; border: 0; outline: 0; padding: 0; background: transparent; color: var(--text); font-size: 11px; }
 .session-search-field button { border: 0; background: transparent; color: var(--muted); padding: 1px 3px; font-size: 17px; line-height: 1; }
 .session-process-toggle { display: grid; grid-template-columns: 14px 1fr; align-items: center; gap: 1px 7px; margin: 9px 0 10px; color: var(--text); font-size: 10px; }
-.session-process-toggle input { grid-row: span 2; accent-color: var(--accent); }
-.session-process-toggle small { grid-column: 2; color: var(--muted); font-size: 9px; }
+.session-process-toggle input { accent-color: var(--accent); }
 .session-filters { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 7px; }
 .session-date-filters { display: grid; grid-template-columns: 1fr 1fr; gap: 7px; padding-top: 8px; }
 .session-date-filters > div { display: grid; gap: 4px; color: var(--muted); font-size: 9px; }
@@ -51,7 +50,6 @@
 .session-badge { flex-shrink: 0; padding: 2px 4px; border-radius: 3px; color: var(--accent); background: var(--accent-soft); font-size: 9px; }
 .session-quiet-tag { justify-self: start; display: inline-flex; align-items: center; border: 1px solid var(--border); padding: 2px 6px; }
 .session-execution-filter { display: grid; gap: 5px; margin-top: 10px; }
-.session-execution-filter small { color: var(--muted); font-size: 9px; }
 .session-trace-children { border: 1px solid var(--border); border-radius: 5px; padding: 10px; margin-bottom: 12px; }
 .session-trace-children > summary { cursor: pointer; color: var(--accent); font-size: 11px; }
 .session-list-copy strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; font-weight: 600; }
@@ -154,7 +152,7 @@
 .session-cache-ratio > div { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .session-cache-ratio span { font-size: 10px; }
 .session-cache-ratio strong { color: var(--accent); font-size: 17px; }
-.session-cache-ratio small, .session-estimate-note { color: var(--muted); font-size: 9px; line-height: 1.6; }
+.session-partial-badge { justify-self: start; padding: 2px 5px; border: 1px solid var(--border); border-radius: 4px; color: var(--text); background: var(--surface); }
 .session-tool-stat { margin: 5px 0; border-bottom: 1px solid var(--border); padding: 5px 0; }
 .session-tool-title { display: flex; justify-content: space-between; gap: 6px; }
 .session-tool-title strong { font-size: 10px; }
@@ -262,7 +260,7 @@
 .session-message-head strong { font-size: 12px; }
 .session-message { padding: 12px 14px; }
 .session-profile-section .session-section-heading h3 { font-size: 12px; }
-.session-bar-row > span:first-child, .session-bar-row strong, .session-usage-grid span, .session-cache-ratio small, .session-estimate-note { font-size: 10px; }
+.session-bar-row > span:first-child, .session-bar-row strong, .session-usage-grid span { font-size: 10px; }
 .session-search-field input { font-size: 12px; }
 .session-list-copy strong { font-size: 12px; }
 .session-list-copy small { font-size: 10px; }

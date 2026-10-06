@@ -13,6 +13,7 @@ import { SessionProfilePane } from "./SessionProfile";
 import { FilterSelect } from "./FilterSelect";
 import { ProjectPicker } from "./ProjectPicker";
 import { DatePicker } from "./DatePicker";
+import { HelpPopover } from "./HelpPopover";
 import { SessionClientChecks, SessionRefreshActions, SessionRefreshStatus } from "./SessionRefresh";
 import "./session.css";
 
@@ -525,18 +526,22 @@ export default function Sessions({ active, target, onMap }: { active: boolean; t
     {compactPanel && <button className="session-mobile-backdrop" aria-label="返回对话" onClick={() => setCompactPanel(null)} /> }
     <ResizableWorkspace sidebarCollapsed={leftCollapsed} detailsCollapsed={rightCollapsed} semantics={workspaceSessionSemantics()}>
       <aside className={`sidebar session-sidebar${leftCollapsed ? " panel-collapsed" : ""}`} aria-label="会话列表">
-        <div className="pane-heading"><span>会话库</span><button className="icon-button panel-toggle" aria-label={leftCollapsed ? "展开会话列表" : "收起会话列表"} aria-expanded={!leftCollapsed} aria-controls="session-list-content" onClick={() => { setLeftCollapsed(value => !value); setCompactPanel(null); }}>{leftCollapsed ? <CaretRight size={16} /> : <CaretLeft size={16} />}</button></div>
+        <div className="pane-heading"><span>会话库</span><div className="section-actions"><div hidden={leftCollapsed}><HelpPopover label="筛选说明">
+          <dl><div><dt>会话类型</dt><dd>常规会话默认隐藏已确认的 Quiet 模式与仅 Hook 记录；“仅 Quiet 模式”只展示已确认的 Quiet 会话；“全部会话”包含这些记录。</dd></div>
+            <div><dt>搜索与子 Agent</dt><dd>默认搜索标题、用户与 AI 正文；勾选过程记录后包含思考、工具、系统和压缩。显示子 Agent 的开关只影响列表，搜索始终包含子会话。</dd></div>
+            <div><dt>日期与刷新</dt><dd>日期使用本机时区。刷新主按钮对当前客户端做快速检查，选择全部客户端则刷新全部；项目、日期与搜索不影响刷新范围。菜单可选择刷新全部或完整校验。</dd></div></dl>
+        </HelpPopover></div><button className="icon-button panel-toggle" aria-label={leftCollapsed ? "展开会话列表" : "收起会话列表"} aria-expanded={!leftCollapsed} aria-controls="session-list-content" onClick={() => { setLeftCollapsed(value => !value); setCompactPanel(null); }}>{leftCollapsed ? <CaretRight size={16} /> : <CaretLeft size={16} />}</button></div></div>
         <div id="session-list-content" className="sidebar-content" hidden={leftCollapsed}>
           <label className="session-search-field"><MagnifyingGlass size={16} aria-hidden="true" /><span className="sr-only">搜索会话标题和消息</span><input value={globalQuery} onChange={event => setGlobalQuery(event.target.value)} placeholder="搜索标题或消息" />{globalQuery && <button type="button" aria-label="清除搜索" onClick={() => setGlobalQuery("")}>×</button>}</label>
-          <label className="session-process-toggle"><input type="checkbox" checked={includeProcess} onChange={event => setIncludeProcess(event.target.checked)} /><span>搜索过程记录</span><small>思考、工具、系统与压缩</small></label>
-          <label className="session-process-toggle"><input type="checkbox" aria-label="显示子 Agent 会话" checked={includeSubagents} onChange={event => setIncludeSubagents(event.target.checked)} /><span>显示子 Agent 会话</span><small>仅影响列表，搜索始终包含子会话</small></label>
+          <label className="session-process-toggle"><input type="checkbox" checked={includeProcess} onChange={event => setIncludeProcess(event.target.checked)} /><span>搜索过程记录</span></label>
+          <label className="session-process-toggle"><input type="checkbox" aria-label="显示子 Agent 会话" checked={includeSubagents} onChange={event => setIncludeSubagents(event.target.checked)} /><span>显示子 Agent 会话</span></label>
           <div className="session-filters">
             <FilterSelect label="筛选客户端" value={client} options={[{ value: "all", label: "全部客户端" }, ...CLIENTS.map(item => ({ value: item.id, label: item.name }))]} onChange={value => setClient(value as Client | "all")} />
             <ProjectPicker value={project} options={[{ value: "all", label: "全部项目" }, { value: "none", label: "无项目" },
               ...(status?.projects.map(path => ({ value: path, label: shortProject(path), description: path })) ?? [])]} onChange={setProject} />
           </div>
           <div className="session-date-filters"><div><span>从</span><DatePicker label="起始日期" value={from} onChange={setFrom} /></div><div><span>到</span><DatePicker label="截止日期" value={to} onChange={setTo} /></div></div>
-          <div className="session-execution-filter"><FilterSelect label="筛选会话类型" value={executionMode} options={[{ value: "regular", label: "常规会话" }, { value: "quiet", label: "仅 Quiet 模式" }, { value: "all", label: "全部会话" }]} onChange={value => setExecutionMode(value as NonNullable<SessionQuery["executionMode"]>)} /><small>默认隐藏 Quiet 及仅 Hook 记录，选择全部会话可查看</small></div>
+          <div className="session-execution-filter"><FilterSelect label="筛选会话类型" value={executionMode} options={[{ value: "regular", label: "常规会话" }, { value: "quiet", label: "仅 Quiet 模式" }, { value: "all", label: "全部会话" }]} onChange={value => setExecutionMode(value as NonNullable<SessionQuery["executionMode"]>)} /></div>
           {invalidDates && <p className="session-filter-error" role="alert">起始日期不能晚于截止日期。</p>}
           <div className="session-list-meta"><span>{debouncedGlobalQuery ? visibleGlobalSearch ? `${formatCount(visibleGlobalSearch.total)} 条命中` : "搜索历史" : sessionList ? `${formatCount(sessionList.total)} 个会话` : "会话列表"}</span>
             <SessionRefreshActions client={client === "all" ? undefined : client} disabled={refreshing || activeJob(sessionJob)} onRefresh={options => void refresh(options)} />
@@ -579,12 +584,14 @@ export default function Sessions({ active, target, onMap }: { active: boolean; t
           </div>
           <div className="session-view-toolbar">
             <div className="session-mode-tabs" role="tablist" aria-label="消息查看方式">{(["brief", "full", "trace"] as const).map(item => <button key={item} role="tab" aria-selected={mode === item} className={mode === item ? "is-selected" : ""} onClick={() => changeMode(item)}>{modeLabels[item]}</button>)}</div>
+            <HelpPopover label="阅读说明"><dl><div><dt>消息视图</dt><dd>简易版显示真实用户消息与 AI 最终回答；完整与轨迹保留已保存的过程。上下文注入和压缩摘要不算用户新一轮发言。</dd></div>
+              <div><dt>轮次与分支</dt><dd>每页 {TURN_PAGE_SIZE} 轮，可按轮次跳转。简易版默认当前分支，过程视图默认全部分支；切换分支只改变阅读范围，统计仍包含全部已记录活动。</dd></div></dl></HelpPopover>
             <label className="session-search-field local"><MagnifyingGlass size={15} aria-hidden="true" /><span className="sr-only">在当前会话搜索</span><input value={localQuery} onChange={event => changeLocalQuery(event.target.value)} onFocus={() => localQuery && setShowLocalHits(true)} placeholder="会话内搜索" disabled={!selectedSessionId} />{localQuery && <button aria-label="清除会话内搜索" onClick={() => changeLocalQuery("")}>×</button>}</label>
           </div>
           {!!selectedSession?.branches?.length && <div className="session-branch-navigation"><FilterSelect label="阅读分支" value={branch ?? (mode === "brief" ? "current" : "all")} options={[{ value: "current", label: "当前分支" }, { value: "all", label: "全部分支" }, ...selectedSession.branches.map(item => ({ value: item.id, label: item.label + (item.current ? " · 当前" : "") }))]} onChange={value => {
             setBranch(value); setFocusMessageId(undefined); setTraceSelection(undefined); setTurnPosition(undefined); setMessagePage(1); pageScroll.current = true;
             if (selectedSessionId) updateAddress(selectedSessionId, { mode, branch: value });
-          }} /><small>阅读范围 · 统计包含全部实际活动</small></div>}
+          }} /><small>统计：全部活动</small></div>}
           {localQuery && <div className="session-local-navigation"><span>{localSearchLoading ? "搜索中…" : visibleLocalSearch ? `${localHitIndex < 0 ? 0 : (visibleLocalSearch.page - 1) * visibleLocalSearch.pageSize + localHitIndex + 1} / ${formatCount(visibleLocalSearch.total)} 条命中` : "等待搜索"}</span>
             <button className="icon-button" aria-label="上一个搜索命中" disabled={!visibleLocalSearch?.hits.length || visibleLocalSearch.page === 1 && localHitIndex <= 0} onClick={() => moveLocalHit(-1)}><CaretLeft size={14} /></button>
             <button className="icon-button" aria-label="下一个搜索命中" disabled={!visibleLocalSearch?.hits.length || (localHitIndex + 1 >= visibleLocalSearch.hits.length && visibleLocalSearch.page * visibleLocalSearch.pageSize >= visibleLocalSearch.total)} onClick={() => moveLocalHit(1)}><CaretRight size={14} /></button>
@@ -597,7 +604,7 @@ export default function Sessions({ active, target, onMap }: { active: boolean; t
             <form onSubmit={event => { event.preventDefault(); if (turnInput) jumpTurn(Number(turnInput)); }}><label>第<input aria-label="跳转轮次" type="number" min="1" max={selectedMessageData.totalTurns || 1} value={turnInput === "0" ? "" : turnInput} placeholder="上下文" onChange={event => setTurnInput(event.target.value)} /> 轮 / 共 {formatCount(selectedMessageData.totalTurns ?? 0)} 轮</label><button className="text-button" type="submit">跳转</button></form>
             <button className="icon-button" aria-label="下一轮" disabled={currentTurn >= (selectedMessageData.totalTurns ?? 0)} onClick={() => jumpTurn(currentTurn + 1)}><CaretRight size={14} /></button>
             <button className="text-button" disabled={currentTurn >= (selectedMessageData.totalTurns ?? 0)} onClick={() => jumpTurn(selectedMessageData.totalTurns!)}>末轮</button>
-            <span className="session-turn-range">{currentTurn === 0 ? "正在查看初始上下文" : `每页 ${TURN_PAGE_SIZE} 轮 · 上下文不计入轮次`}</span>
+            <span className="session-turn-range">{currentTurn === 0 ? "初始上下文" : `${TURN_PAGE_SIZE} 轮 / 页`}</span>
           </nav>}
         </div>
         <div ref={readingPane} className={`session-message-scroll${mode === "trace" ? " is-trace" : ""}`} aria-label="对话阅读区" onScroll={() => {
@@ -618,7 +625,7 @@ export default function Sessions({ active, target, onMap }: { active: boolean; t
             {messageLoading && <p className="session-message-loading" role="status">正在加载{modeLabels[mode]}消息…</p>}
             {mode === "trace" && profile?.sessionIds[0] === selectedSessionId && profile.children.length > 0 && <details className="session-trace-children">
               <summary>关联子会话 · {profile.children.length}</summary>
-              {profile.children.map(child => <button className="session-child" key={child.id} onClick={() => selectSession(child)}><strong>{child.title}</strong><small>查看子任务过程</small></button>)}
+              {profile.children.map(child => <button className="session-child" key={child.id} onClick={() => selectSession(child)}><strong>{child.title}</strong></button>)}
             </details>}
             {selectedMessageData && <>
               {!selectedMessageData.messages.length && !messageLoading ? <div className="session-message-empty">
