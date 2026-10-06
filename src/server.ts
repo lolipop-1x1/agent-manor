@@ -13,7 +13,7 @@ import { bodyText, coverageQuery, emptyBody, eventsQuery, integer, relativePath,
 import { contentHash, readCurrentFile, readEvidence } from "./service/files.js";
 import { acquireLock, dataHome, removeInstance, writeInstance } from "./service/runtime.js";
 import { SessionStore } from "./sessions/store.js";
-import { queryBoolean, sessionMessageQuery, sessionQuery } from "./service/session-input.js";
+import { queryBoolean, sessionMessageQuery, sessionQuery, sessionRefreshOptions } from "./service/session-input.js";
 import { textValue } from "./service/input.js";
 import { clientIds } from "./clients.js";
 import type { Client } from "./contracts.js";
@@ -142,7 +142,7 @@ export async function startService(options: ServiceOptions = {}) {
     app.get<{ Params: { id: string }; Querystring: Query }>("/api/v1/sessions/:id/profile", async request => library.profile(request.params.id, {
       ...sessionQuery(request.query), includeChildren: queryBoolean(request.query.includeChildren, "includeChildren"),
     }));
-    app.post("/api/v1/sessions/refresh", async request => { emptyBody(request.body); return { job: worker.refreshSessions() }; });
+    app.post("/api/v1/sessions/refresh", async request => ({ job: worker.refreshSessions(false, sessionRefreshOptions(request.body)) }));
     app.delete("/api/v1/sessions/cache", async request => { emptyBody(request.body); return { job: worker.refreshSessions(true) }; });
     const snapshotFor = (id: string, query: CoverageQuery) => index.getSnapshot(id, query.version);
     app.get<{ Params: RepositoryParams; Querystring: Query }>(`${base}/coverage`, async (request) => {

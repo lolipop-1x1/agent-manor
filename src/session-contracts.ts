@@ -104,6 +104,17 @@ export interface SessionMessageQuery extends SessionQuery {
   resourceName?: string;
   resourceServer?: string;
 }
+export type SessionCheckMode = "quick" | "full";
+export interface SessionRefreshOptions { client?: Client; mode?: SessionCheckMode }
+export interface SessionRefreshCounts {
+  discovered: number;
+  quickReused: number;
+  verifiedReused: number;
+  parsed: number;
+  missing: number;
+  fallbacks: { reason: string; count: number }[];
+}
+export interface SessionClientCheck { client: Client; checkedAt: string; mode: SessionCheckMode }
 export interface SessionIndexStatus {
   version?: string;
   previousVersion?: string;
@@ -113,6 +124,7 @@ export interface SessionIndexStatus {
   sourceCount: number;
   gaps: Gap[];
   projects: string[];
+  clientChecks?: SessionClientCheck[];
   job?: SessionJob;
 }
 export interface SessionJob {
@@ -124,6 +136,9 @@ export interface SessionJob {
   finishedAt?: string;
   error?: string;
   version?: string;
+  client?: Client;
+  mode?: SessionCheckMode;
+  counts?: SessionRefreshCounts;
 }
 export interface SessionListResult {
   version: string;

@@ -10,6 +10,7 @@ import { startService } from "./server.js";
 import { apiRequest, connectService, dataHome, delay, RequestError, serviceUrl } from "./service/runtime.js";
 import { VERSION } from "./version.js";
 import type { SessionJob } from "./session-contracts.js";
+import { sessionRefreshOptions } from "./service/session-input.js";
 
 type Options = Record<string, string | boolean | undefined>;
 const repositoryPath = (id: string) => `/repositories/${encodeURIComponent(id)}`;
@@ -117,10 +118,16 @@ export function createProgram(): Command {
   sessionFilters(sessions.command("profile <id>").description("会话画像、记录用量与留存内容估算"))
     .option("--include-children", "包含明确关联的子会话")
     .action(async (id: string, _options: Options, command: Command) => { await request(command, `/sessions/${encodeURIComponent(id)}/profile${sessionQueryString(command, { includeChildren: command.optsWithGlobals<Options>().includeChildren ? "true" : undefined })}`); });
-  for (const name of ["refresh", "cacheclear"] as const) {
-    waiting(sessions.command(name).description(name === "refresh" ? "检查并刷新全部历史" : "清除派生会话缓存后重建"))
-      .action(async (_options: Options, command: Command) => { await request(command, `/sessions/${name === "refresh" ? "refresh" : "cache"}`, name === "refresh" ? "POST" : "DELETE"); });
-  }
+  waiting(sessions.command("refresh").description("检查并刷新会话索引，默认全部客户端快速检查"))
+    .option("--client <client>", `仅刷新指定客户端：${clientIds.join("、")}`)
+    .option("--mode <mode>", "quick 或 full，默认 quick；full 完整校验但不清缓存")
+    .action(async (_options: Options, command: Command) => {
+      const options = command.optsWithGlobals<Options>();
+      const body = sessionRefreshOptions({ client: options.client, mode: options.mode });
+      await request(command, "/sessions/refresh", "POST", body);
+    });
+  waiting(sessions.command("cacheclear").description("清除全部派生会话缓存后重建"))
+    .action(async (_options: Options, command: Command) => { await request(command, "/sessions/cache", "DELETE"); });
   program.command("serve").description("前台运行本地后台服务").option("--port <number>", "监听端口，默认随机空闲端口")
     .action(async (options: Options, command: Command) => {
       const global = command.optsWithGlobals<Options>();

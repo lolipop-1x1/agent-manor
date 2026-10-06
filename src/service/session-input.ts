@@ -1,5 +1,20 @@
-import type { MessageKind, SessionMessageQuery, SessionQuery } from "../session-contracts.js";
+import type { MessageKind, SessionMessageQuery, SessionQuery, SessionRefreshOptions } from "../session-contracts.js";
+import { clientIds } from "../clients.js";
+import type { Client } from "../clients.js";
 import { coverageQuery, integer, ServiceError, textValue } from "./input.js";
+
+export function sessionRefreshOptions(body: unknown): SessionRefreshOptions {
+  if (body === undefined) return {};
+  if (!body || typeof body !== "object" || Array.isArray(body)
+    || Object.keys(body).some(key => key !== "client" && key !== "mode")) {
+    throw new ServiceError("INVALID_INPUT", "刷新请求体只能包含 client 和 mode");
+  }
+  const raw = body as Record<string, unknown>;
+  const client = textValue(raw.client, "client");
+  if (client && !clientIds.includes(client as Client)) throw new ServiceError("INVALID_INPUT", "未知客户端");
+  if (raw.mode !== undefined && raw.mode !== "quick" && raw.mode !== "full") throw new ServiceError("INVALID_INPUT", "检查方式必须是 quick 或 full");
+  return { client: client as Client | undefined, mode: raw.mode as SessionRefreshOptions["mode"] };
+}
 
 export function sessionQuery(raw: Record<string, unknown>): SessionQuery {
   const { client, from, to, version } = coverageQuery(raw);

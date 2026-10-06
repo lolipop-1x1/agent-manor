@@ -171,6 +171,7 @@ async function readQoderSnapshot(location: SourceLocation): Promise<NormalizedSn
 
 export const qoderAdapter: HistoryAdapter = createNormalizedAdapter({
   id: QODER_FORMAT,
+  quickCheck: { version: "1", dependencies: () => [] },
   discoverFile: discoverQoderFile,
   readSnapshot: readQoderSnapshot,
   extract(tool, inputValue, resultValue, visible) {

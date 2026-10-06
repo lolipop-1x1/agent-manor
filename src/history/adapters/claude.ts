@@ -24,6 +24,7 @@ function sourceMetadata(raw: unknown, client: Client, path: string): SourceLocat
 
 export const claudeAdapter: HistoryAdapter = {
   id: "claude-jsonl",
+  quickCheck: { version: "1", dependencies: () => [] },
   discover(record, location) {
     if (!record.sessionId) return undefined;
     const candidate = sourceMetadata(record, location.client, location.path);

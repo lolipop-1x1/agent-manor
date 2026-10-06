@@ -74,6 +74,7 @@ async function readCodebuddySnapshot(location: SourceLocation): Promise<Normaliz
 
 export const codebuddyAdapter: HistoryAdapter = createNormalizedAdapter({
   id: CODEBUDDY_FORMAT,
+  quickCheck: { version: "1", dependencies: () => [] },
   discoverFile: discoverCodebuddyFile,
   readSnapshot: readCodebuddySnapshot,
 });

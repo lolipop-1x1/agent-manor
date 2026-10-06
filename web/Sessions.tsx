@@ -1,8 +1,8 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, type FormEvent } from "react";
-import { ArrowClockwise, CaretDown, CaretLeft, CaretRight, ChatCircle, MagnifyingGlass, MapTrifold } from "@phosphor-icons/react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { CaretDown, CaretLeft, CaretRight, ChatCircle, MagnifyingGlass, MapTrifold } from "@phosphor-icons/react";
 import type { Client } from "../src/clients";
 import { CLIENTS, clientName } from "../src/clients";
-import type { MessageKind, SessionIndexStatus, SessionJob, SessionListResult, SessionMessage, SessionMessageResult, SessionProfile, SessionQuery, SessionSearchHit, SessionSearchResult, SessionSummary, SessionTimelineResult } from "../src/session-contracts";
+import type { MessageKind, SessionIndexStatus, SessionJob, SessionListResult, SessionMessage, SessionMessageResult, SessionProfile, SessionQuery, SessionRefreshOptions, SessionSearchHit, SessionSearchResult, SessionSummary, SessionTimelineResult } from "../src/session-contracts";
 import { ApiError, errorMessage, isAborted, request } from "./api";
 import { ResizableWorkspace } from "./ResizableWorkspace";
 import { executionEntryLabel, groupedTurns, localDateBoundary, PAGE_SIZE, TURN_PAGE_SIZE, type EvidenceTarget, searchHitMode, searchKinds, sessionParams, turnTitle, workspaceSessionSemantics } from "./session-model";
@@ -13,6 +13,7 @@ import { SessionProfilePane } from "./SessionProfile";
 import { FilterSelect } from "./FilterSelect";
 import { ProjectPicker } from "./ProjectPicker";
 import { DatePicker } from "./DatePicker";
+import { SessionClientChecks, SessionRefreshActions, SessionRefreshStatus } from "./SessionRefresh";
 import "./session.css";
 
 type Mode = "brief" | "full" | "trace";
@@ -502,16 +503,15 @@ export default function Sessions({ active, target, onMap }: { active: boolean; t
     if (current.has(id) === open) return current;
     const next = new Set(current); if (open) next.add(id); else next.delete(id); return next;
   });
-  const refresh = async () => {
+  const refresh = async (options: SessionRefreshOptions = { client: client === "all" ? undefined : client, mode: "quick" }) => {
     setRefreshing(true);
     setJobError(null);
     try {
-      const result = await request<{ job: SessionJob }>("/sessions/refresh", { method: "POST" });
+      const result = await request<{ job: SessionJob }>("/sessions/refresh", { method: "POST", body: { ...options } });
       setSessionJob(result.job);
     } catch (error) { setJobError(errorMessage(error)); }
     finally { setRefreshing(false); }
   };
-  const submitRefresh = (event: FormEvent) => { event.preventDefault(); void refresh(); };
 
   useEffect(() => {
     if (active && selectedSessionId && !new URLSearchParams(location.hash.split("?")[1]).get("id")) updateAddress(selectedSessionId, { mode }, true);
@@ -539,12 +539,13 @@ export default function Sessions({ active, target, onMap }: { active: boolean; t
           <div className="session-execution-filter"><FilterSelect label="筛选会话类型" value={executionMode} options={[{ value: "regular", label: "常规会话" }, { value: "quiet", label: "仅 Quiet 模式" }, { value: "all", label: "全部会话" }]} onChange={value => setExecutionMode(value as NonNullable<SessionQuery["executionMode"]>)} /><small>默认隐藏 Quiet 及仅 Hook 记录，选择全部会话可查看</small></div>
           {invalidDates && <p className="session-filter-error" role="alert">起始日期不能晚于截止日期。</p>}
           <div className="session-list-meta"><span>{debouncedGlobalQuery ? visibleGlobalSearch ? `${formatCount(visibleGlobalSearch.total)} 条命中` : "搜索历史" : sessionList ? `${formatCount(sessionList.total)} 个会话` : "会话列表"}</span>
-            <button className="icon-button" aria-label="刷新会话索引" title="刷新会话索引" disabled={refreshing || activeJob(sessionJob)} onClick={submitRefresh}><ArrowClockwise size={16} className={refreshing || activeJob(sessionJob) ? "is-spinning" : ""} /></button>
+            <SessionRefreshActions client={client === "all" ? undefined : client} disabled={refreshing || activeJob(sessionJob)} onRefresh={options => void refresh(options)} />
           </div>
+          <SessionClientChecks client={client === "all" ? undefined : client} checks={status?.clientChecks} />
           {status?.stale && <Notice>当前索引已过期，保留上一版可用结果；刷新完成后切换到新版本。</Notice>}
           {(statusError || jobError) && <Notice danger action={statusError ? <button className="text-button" onClick={() => setReload(value => value + 1)}>重试</button> : undefined}>{statusError ?? jobError}</Notice>}
           {statusLoading && !status && <p className="muted" role="status">正在读取索引状态…</p>}
-          {(sessionJob && activeJob(sessionJob)) && <div className="session-job" role="status"><span>{sessionJob.phase || "正在刷新会话"}</span><progress max="1" value={sessionJob.progress} /><small>{Math.round(sessionJob.progress * 100)}%</small></div>}
+          <SessionRefreshStatus job={sessionJob} />
           {sessionJob?.status === "failed" && <Notice danger>{sessionJob.error ?? "会话刷新失败；上次成功索引仍可查看。"}</Notice>}
           {listLoading && <p className="session-list-loading" role="status">正在读取会话…</p>}
           {listError && <Notice danger action={<button className="text-button" onClick={() => setReload(value => value + 1)}>重试</button>}>{listError}</Notice>}

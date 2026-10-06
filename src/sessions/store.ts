@@ -3,7 +3,10 @@ import { randomUUID } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import type { Gap } from "../contracts.js";
-import type { SessionIndexStatus, SessionJob, SessionListResult, SessionMessage, SessionMessageQuery, SessionMessageResult, SessionProfile, SessionQuery, SessionSearchResult, SessionSink, SessionSourceMeta, SessionSummary, SessionTimelineEvent, SessionTimelineResult, SessionUsage } from "../session-contracts.js";
+import { clientIds } from "../clients.js";
+import type { Client } from "../clients.js";
+import type { SourceLocation } from "../history/types.js";
+import type { SessionIndexStatus, SessionJob, SessionListResult, SessionMessage, SessionMessageQuery, SessionMessageResult, SessionProfile, SessionQuery, SessionRefreshOptions, SessionSearchResult, SessionSink, SessionSourceMeta, SessionSummary, SessionTimelineEvent, SessionTimelineResult, SessionUsage } from "../session-contracts.js";
 import { StoreError } from "../index/store.js";
 import { sessionTitle } from "./title.js";
 import { initializeSearchIndex, prepareSearchIndex, searchMatch } from "./search-index.js";
@@ -13,7 +16,15 @@ interface MessageRow extends JsonRow { text: string }
 interface RevisionRow extends JsonRow { id: string; path: string; fingerprint: string }
 type SqlValue = string | number;
 /** path 沿用 SQL 列名但表示来源缓存键；真实文件路径保存在 SessionSourceMeta.path。 */
-export interface SessionRevision { path: string; revision: string; fingerprint: string }
+export interface SessionRevision {
+  path: string;
+  revision: string;
+  fingerprint: string;
+  client?: Client;
+  location?: SourceLocation;
+  quickFingerprint?: string;
+  metadataFingerprint?: string;
+}
 const decode = <T>(row: JsonRow): T => JSON.parse(row.json) as T;
 const decodeMessage = (row: MessageRow): SessionMessage => ({ ...decode<SessionMessage>(row), text: row.text });
 const literal = (value: string) => `%${value.replace(/[\\%_]/g, "\\$&")}%`;
@@ -56,6 +67,11 @@ export class SessionStore {
         child TEXT NOT NULL, parent TEXT NOT NULL, PRIMARY KEY(version,child));
       CREATE INDEX IF NOT EXISTS session_relation_parent ON session_version_relations(version,parent);
     `);
+    // 旧修订没有快速检查记录；迁移后首次刷新仍校验正文。
+    const revisionColumns = new Set((this.database.prepare("PRAGMA table_info(session_revisions)").all() as { name: string }[]).map(column => column.name));
+    for (const column of ["source_location", "quick_fingerprint", "metadata_fingerprint"]) {
+      if (!revisionColumns.has(column)) this.database.exec(`ALTER TABLE session_revisions ADD COLUMN ${column} TEXT`);
+    }
     this.database.prepare("INSERT OR IGNORE INTO session_state(id,json) VALUES(1,?)").run(JSON.stringify({ stale: false }));
     initializeSearchIndex(this.database);
   }
@@ -86,8 +102,9 @@ export class SessionStore {
     return result;
   }
 
-  createJob(): SessionJob {
-    const job: SessionJob = { id: randomUUID(), status: "queued", phase: "queued", progress: 0, createdAt: new Date().toISOString() };
+  createJob(options: SessionRefreshOptions = {}): SessionJob {
+    const job: SessionJob = { id: randomUUID(), status: "queued", phase: "queued", progress: 0, createdAt: new Date().toISOString(),
+      client: options.client, mode: options.mode ?? "quick" };
     this.database.prepare("INSERT INTO session_jobs(id,created_at,json) VALUES(?,?,?)").run(job.id, job.createdAt, JSON.stringify(job));
     return job;
   }
@@ -123,8 +140,12 @@ export class SessionStore {
   cachedRevisions(): SessionRevision[] {
     const version = this.state().version;
     if (!version) return [];
-    return (this.database.prepare(`SELECT r.path,r.id AS revision,r.fingerprint FROM session_version_sources v JOIN session_revisions r ON r.id=v.revision
-      WHERE v.version=?`).all(version) as SessionRevision[]);
+    const rows = this.database.prepare(`SELECT r.path,r.id AS revision,r.fingerprint,r.client,r.source_location,r.quick_fingerprint,r.metadata_fingerprint
+      FROM session_version_sources v JOIN session_revisions r ON r.id=v.revision WHERE v.version=?`).all(version) as
+      (SessionRevision & { source_location: string | null; quick_fingerprint: string | null; metadata_fingerprint: string | null })[];
+    return rows.map(({ source_location, quick_fingerprint, metadata_fingerprint, ...revision }) => ({ ...revision,
+      location: source_location ? JSON.parse(source_location) as SourceLocation : undefined,
+      quickFingerprint: quick_fingerprint ?? undefined, metadataFingerprint: metadata_fingerprint ?? undefined }));
   }
 
   createRevision(path: string, fingerprint: string): { revision: string; sink: SessionSink; flush: () => void } {
@@ -178,7 +199,15 @@ export class SessionStore {
     this.database.transaction(() => {
       this.database.prepare("INSERT INTO session_versions(id,created_at,gaps) VALUES(?,?,?)").run(version, createdAt, "[]");
       const addSource = this.database.prepare("INSERT INTO session_version_sources(version,path,revision) VALUES(?,?,?)");
-      for (const item of revisions) addSource.run(version, item.path, item.revision);
+      const saveCheck = this.database.prepare(`UPDATE session_revisions SET source_location=?,quick_fingerprint=?,metadata_fingerprint=?
+        WHERE id=? AND (source_location IS NOT ? OR quick_fingerprint IS NOT ? OR metadata_fingerprint IS NOT ?)`);
+      for (const item of revisions) {
+        addSource.run(version, item.path, item.revision);
+        const location = item.location ? JSON.stringify(item.location) : null;
+        const quick = item.quickFingerprint ?? null;
+        const metadata = item.metadataFingerprint ?? null;
+        saveCheck.run(location, quick, metadata, item.revision, location, quick, metadata);
+      }
       // 同一会话存在活动／归档副本时择完整且较新的副本，不重复统计。
       this.database.prepare(`INSERT INTO session_version_sessions(version,session_id,revision)
         SELECT ?,session_id,id FROM (SELECT r.*,ROW_NUMBER() OVER (PARTITION BY session_id ORDER BY CAST(json_extract(r.json,'$.messageCount') AS INTEGER) DESC,
@@ -244,8 +273,13 @@ export class SessionStore {
         WHERE v.version=?`).iterate(version) as Iterable<JsonRow>) for (const gap of decode<SessionSourceMeta>(row).gaps) addGap(gap);
       const publishedGaps = [...aggregated.values()];
       this.database.prepare("UPDATE session_versions SET gaps=? WHERE id=?").run(JSON.stringify(publishedGaps), version);
-      const previousVersion = this.state().version;
-      this.saveState({ version, previousVersion, createdAt, stale: false, gaps: publishedGaps });
+      const state = this.state();
+      const previousVersion = state.version;
+      const job = this.getJob(jobId);
+      const checkedClients = job.client ? [job.client] : clientIds;
+      const clientChecks = new Map((state.clientChecks ?? []).map(check => [check.client, check]));
+      for (const client of checkedClients) clientChecks.set(client, { client, checkedAt: createdAt, mode: job.mode ?? "quick" });
+      this.saveState({ version, previousVersion, createdAt, stale: false, gaps: publishedGaps, clientChecks: [...clientChecks.values()] });
       this.updateJob(jobId, { status: "complete", phase: "complete", progress: 1, version, finishedAt: createdAt });
       this.database.prepare("DELETE FROM session_versions WHERE id<>? AND id<>?").run(version, previousVersion ?? version);
       this.removeUnpublishedRevisions();

@@ -74,6 +74,7 @@ export function desktopResult(record: Record<string, unknown>): { result: unknow
 
 export const codeflickerDesktopAdapter: HistoryAdapter = {
   id: DESKTOP_FORMAT,
+  quickCheck: { version: "1", dependencies: location => [join(desktopSessionDirectory(location.path), "checkpoints", "registry.json")] },
   discover(_record, location) {
     const sessionId = basename(desktopSessionDirectory(location.path));
     return { source: { ...location, sessionId, sourceId: `${location.client}:${hash(sessionId)}` }, complete: true };

@@ -90,6 +90,7 @@ function successfulTemplate(tool: string, input: unknown, result: unknown): bool
 
 export const codeflickerAdapter: HistoryAdapter = {
   id: "codeflicker-jsonl",
+  quickCheck: { version: "1", dependencies: () => [] },
   discover(record, location) {
     if (!["config", "message"].includes(string(record.type) ?? "") || !record.sessionId) return undefined;
     const candidate = sourceMetadata(record, location.client, location.path);

@@ -51,6 +51,8 @@ agent-manor evidence <repositoryId> <eventId> --version <analysisVersion> --clie
 
 ```sh
 agent-manor sessions refresh --wait --json
+agent-manor sessions refresh --client codeflicker --wait --json
+agent-manor sessions refresh --client codex --mode full --wait --json
 agent-manor sessions status --json
 agent-manor sessions list --client codeflicker --page 1 --page-size 50 --json
 agent-manor sessions list --include-subagents --json
@@ -64,7 +66,11 @@ agent-manor sessions cacheclear --wait --json
 
 会话刷新任务完成状态为 `complete`，与仓库任务的 `completed` 区分。首次启动会自动检查全部历史，无须先登记仓库；首次索引未完成可通过 `sessions status` 查看进度，或 `sessions refresh --wait` 等待。列表／搜索／消息和画像支持 `--version`，同一浏览流程沿用返回的完整版本。`--project none` 筛选无项目会话。
 
-API 为 `GET /api/v1/sessions`、`/sessions/search`、`/sessions/:id/messages`、`/sessions/:id/profile`、`/sessions/status`，刷新用 `POST /sessions/refresh`，清除并重建用 `DELETE /sessions/cache`；会话任务沿用 `/jobs/:id` 查询。默认消息每页 50 条，最多 200。查询参数为 `client/project/from/to/q/kinds/page/pageSize/version`；`kinds` 只限定列表匹配与搜索范围，不删减消息上下文；消息另有 `mode/messageId`，画像另有 `includeChildren=true`。
+刷新默认采用快速检查。Web 主按钮跟随客户端筛选：选中一个客户端时只刷新它，选中“全部客户端”时刷新全部；旁边菜单始终可刷新全部，并提供当前范围或全部的完整校验。项目、日期和搜索不限制刷新范围。CLI 用 `sessions refresh --client <client>` 指定范围，`--mode full` 完整校验；不指定参数时检查全部客户端。完整校验读取来源内容核对，未变索引仍可复用，与 `sessions cacheclear` 的全局重建不同。
+
+局部刷新保留其他客户端索引及检查时间，成功后仍发布完整全局结果。进度与完成提示说明实际范围、方式、快速复用／内容复用／重新解析／缺失数及回退情况；各客户端最近成功检查独立显示，旧索引没有记录时显示未记录。只有完整依赖已核验的格式才快速跳过，其他格式和缺少检查记录的来源退回内容检查；SQLite/WAL 与相关元信息不能只看主文件。快速检查不能严格排除保留相同变化指示的内容改写，需要核对正文时使用完整校验。
+
+API 为 `GET /api/v1/sessions`、`/sessions/search`、`/sessions/:id/messages`、`/sessions/:id/profile`、`/sessions/status`，刷新用 `POST /sessions/refresh`（可选 JSON `{ "client": "codex", "mode": "full" }`；省略为全部快速检查），清除并重建用 `DELETE /sessions/cache`；会话任务沿用 `/jobs/:id` 查询。默认消息每页 50 条，最多 200。查询参数为 `client/project/from/to/q/kinds/page/pageSize/version`；`kinds` 只限定列表匹配与搜索范围，不删减消息上下文；消息另有 `mode/messageId`，画像另有 `includeChildren=true`。
 
 消息 API 可选择 `pageUnit=turn`，此时默认每页 10 轮，返回 `totalTurns`、当前页的 `turns` 元信息和完整消息；`total` 仍为当前视图消息数。`turnPosition` 为当前视图的一基轮次位置，`messageId` 定位优先于轮次位置。初始上下文 `position=0`，随第一页返回且不计入 `totalTurns`。`toolName` 或 `resourceKind/resourceName/resourceServer` 可以定位首条调用／资源证据，返回 `focusMessageId`；过程记录不属于简易模式，需要完整或轨迹模式。未指定 `pageUnit` 时沿用按消息分页，现有 CLI 查询保持原有行为。
 

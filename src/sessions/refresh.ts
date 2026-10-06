@@ -8,6 +8,7 @@ import { IDE_FORMAT, readIdeSnapshot } from "../history/adapters/codeflicker-ide
 import type { IdeSnapshot } from "../history/adapters/codeflicker-ide.js";
 import type { DiscoverRoots } from "../history/types.js";
 import type { Gap } from "../contracts.js";
+import type { SessionRefreshCounts } from "../session-contracts.js";
 import { parseSessionSource } from "./parser.js";
 import { SessionStore } from "./store.js";
 import type { SessionRevision } from "./store.js";
@@ -16,6 +17,7 @@ import { loadCodeFlickerProjects } from "./codeflicker-projects.js";
 import { desktopModels, loadDesktopTitles } from "./codeflicker-desktop.js";
 import { historyAdapter, historyClient } from "../history/adapters/index.js";
 import type { NormalizedSnapshot } from "../history/adapters/normalized.js";
+import { sourceQuickStamp } from "./quick-check.js";
 
 // 会话规范化规则升级时使来源缓存失效，独立于地图索引迁移。
 const SESSION_INDEX_RULE_VERSION = "5";
@@ -32,24 +34,76 @@ async function fingerprint(path: string, byteLimit?: number): Promise<{ hash: st
   return { hash: `${SESSION_INDEX_RULE_VERSION}:${digest.digest("hex")}`, bytes };
 }
 
+/** 旁路读取失败不能当成正文来源被删除。 */
+async function confirmedMissing(path: string, error?: unknown): Promise<boolean> {
+  if (error && (error as NodeJS.ErrnoException).code !== "ENOENT") return false;
+  try { await lstat(path); return false; }
+  catch (failure) { if ((failure as NodeJS.ErrnoException).code === "ENOENT") return true; throw failure; }
+}
+
 /** 来源解析逐记录落库；完整发布前不改变任何正在查询的版本。 */
 export async function refreshSessions(store: SessionStore, jobId: string, roots?: DiscoverRoots, clearCache = false): Promise<void> {
-  store.updateJob(jobId, { status: "running", phase: "discover", progress: 0 });
+  const job = store.getJob(jobId);
+  const client = clearCache ? undefined : job.client;
+  const mode = clearCache ? "full" : job.mode ?? "quick";
+  const counts: SessionRefreshCounts = { discovered: 0, quickReused: 0, verifiedReused: 0, parsed: 0, missing: 0, fallbacks: [] };
+  const missing = new Set<string>();
+  const fallback = (reason: string) => {
+    const item = counts.fallbacks.find(item => item.reason === reason);
+    if (item) item.count += 1;
+    else counts.fallbacks.push({ reason, count: 1 });
+  };
+  store.updateJob(jobId, { status: "running", phase: "discover", progress: 0, client, mode, counts });
   try {
     await store.prepareSearchIndex(progress => store.updateJob(jobId, { phase: "建立搜索索引", progress }));
     store.updateJob(jobId, { phase: "discover", progress: 0 });
-    const sources = await discoverSources(roots);
+    // 基础版本在执行时读取，连续范围任务保留前一任务刚发布的结果。
+    const cached = new Map(store.cachedRevisions().map(item => [item.path, item]));
+    const selected = [...cached.values()].filter(item => !client || item.client === client);
+    const cachedSources = selected.flatMap(item => item.location && item.quickFingerprint ? [{ location: item.location, stamp: item.quickFingerprint }] : []);
+    const sources = await discoverSources(roots, { clients: client ? [client] : undefined, cachedSources: mode === "quick" ? cachedSources : undefined });
+    counts.discovered = sources.length;
     const codexTitles = sources.some(source => source.client === "codex") ? await loadCodexTitles(roots) : new Map<string, string>();
     const codeflickerProjects = await loadCodeFlickerProjects(sources);
     const desktopTitles = await loadDesktopTitles(sources);
-    const cached = new Map(store.cachedRevisions().map(item => [item.path, item]));
-    const current: SessionRevision[] = [];
+    const current: SessionRevision[] = [...cached.values()].filter(item => client && item.client !== client);
     const gaps: Gap[] = [];
     const discovered = new Set(sources.map(sourceLocationKey));
-    let missing = [...cached.keys()].filter(path => !discovered.has(path)).length;
+    for (const previous of selected) {
+      if (discovered.has(previous.path)) continue;
+      // 发现阶段已经确认容器内的选择器集合；仍检查物理路径，读取错误不发布删除。
+      const path = previous.location?.path ?? (previous.path.startsWith("[") ? (JSON.parse(previous.path) as string[])[0]! : previous.path);
+      await confirmedMissing(path);
+      missing.add(previous.path);
+    }
     for (const [index, source] of sources.entries()) {
-      store.updateJob(jobId, { phase: "index", progress: sources.length ? index / sources.length : 0 });
+      store.updateJob(jobId, { phase: "index", progress: sources.length ? index / sources.length : 0, counts });
+      const { discoveryQuickStamp, ...location } = source;
       const sourceKey = sourceLocationKey(source);
+      const previous = cached.get(sourceKey);
+      const title = source.sessionId ? (source.client === "codex" ? codexTitles : source.client === "codeflicker-desktop" ? desktopTitles : new Map<string, string>()).get(source.sessionId) : undefined;
+      // 标题、归属和模型仍分别检查，正文快检命中不能遮蔽旁路变化。
+      const titleFingerprint = ["codex", "codeflicker-desktop"].includes(source.client) ? `:title-v1:${createHash("sha256").update(JSON.stringify(title ?? null)).digest("hex")}` : "";
+      const childTitleFingerprint = source.client === "codex" && source.parentSessionId ? ":child-title-v2" : "";
+      const projectMetadata = codeflickerProjects.get(source.path);
+      const projectFingerprint = source.client === "codeflicker" ? `:project-v1:${createHash("sha256").update(JSON.stringify(projectMetadata ?? null)).digest("hex")}:execution-v2:attachments-v1` : "";
+      const nativeModels = source.format === DESKTOP_FORMAT ? await desktopModels(source.path) : undefined;
+      const desktopFingerprint = nativeModels ? `:desktop-v3:${source.cwd ?? ""}:${nativeModels.fingerprint}:${nativeModels.limited}` : "";
+      const metadataSuffix = `${titleFingerprint}${childTitleFingerprint}${projectFingerprint}${desktopFingerprint}`;
+      const metadataFingerprint = createHash("sha256").update(JSON.stringify({ rule: SESSION_INDEX_RULE_VERSION, source: location, metadataSuffix })).digest("hex");
+      let stamp: string | undefined;
+      try { stamp = await sourceQuickStamp(source); }
+      catch (error) { if (await confirmedMissing(source.path, error)) { missing.add(sourceKey); continue; } throw error; }
+      if (!clearCache && mode === "quick") {
+        if (stamp && stamp === discoveryQuickStamp && previous?.quickFingerprint === stamp && previous.metadataFingerprint === metadataFingerprint
+          && previous.fingerprint.startsWith(`${source.client}:${source.format ?? "default"}:`) && previous.fingerprint.endsWith(metadataSuffix)) {
+          current.push({ ...previous, location });
+          counts.quickReused += 1;
+          continue;
+        }
+        fallback(!stamp ? "unsupported_source" : !previous ? "cache_missing" : !previous.quickFingerprint || !previous.metadataFingerprint ? "check_record_missing"
+          : previous.metadataFingerprint !== metadataFingerprint ? "metadata_changed" : "source_changed");
+      }
       let nativeSnapshot: IdeSnapshot | undefined;
       let normalizedSnapshot: NormalizedSnapshot | undefined;
       const adapter = historyAdapter(source.format ?? historyClient(source.client).format);
@@ -61,21 +115,20 @@ export async function refreshSessions(store: SessionStore, jobId: string, roots?
           : nativeSnapshot ? { hash: `${SESSION_INDEX_RULE_VERSION}:${nativeSnapshot.hash}`, bytes: 0 } : await fingerprint(source.path);
       }
       catch (error) {
-        if ((error as NodeJS.ErrnoException).code === "ENOENT") { missing += 1; continue; }
+        if (await confirmedMissing(source.path, error)) { missing.add(sourceKey); continue; }
         throw error;
       }
-      const title = source.sessionId ? (source.client === "codex" ? codexTitles : source.client === "codeflicker-desktop" ? desktopTitles : new Map<string, string>()).get(source.sessionId) : undefined;
-      // Codex 标题与正文分别更新；只失效对应来源，其他客户端沿用现有缓存。
-      const titleFingerprint = ["codex", "codeflicker-desktop"].includes(source.client) ? `:title-v1:${createHash("sha256").update(JSON.stringify(title ?? null)).digest("hex")}` : "";
-      // 新增子任务标题只失效 Codex 子来源，保留未改变的长主会话及其他客户端缓存。
-      const childTitleFingerprint = source.client === "codex" && source.parentSessionId ? ":child-title-v2" : "";
-      const projectMetadata = codeflickerProjects.get(source.path);
-      const projectFingerprint = source.client === "codeflicker" ? `:project-v1:${createHash("sha256").update(JSON.stringify(projectMetadata ?? null)).digest("hex")}:execution-v2:attachments-v1` : "";
-      const nativeModels = source.format === DESKTOP_FORMAT ? await desktopModels(source.path) : undefined;
-      const desktopFingerprint = nativeModels ? `:desktop-v3:${source.cwd ?? ""}:${nativeModels.fingerprint}:${nativeModels.limited}` : "";
-      const sourceFingerprint = `${source.client}:${source.format ?? "default"}:${digest.hash}${titleFingerprint}${childTitleFingerprint}${projectFingerprint}${desktopFingerprint}`;
-      const previous = cached.get(sourceKey);
-      if (!clearCache && previous?.fingerprint === sourceFingerprint) { current.push(previous); continue; }
+      const sourceFingerprint = `${source.client}:${source.format ?? "default"}:${digest.hash}${metadataSuffix}`;
+      const cacheRecord = async (revision: string): Promise<SessionRevision> => {
+        const stable = stamp && stamp === discoveryQuickStamp && await sourceQuickStamp(source) === stamp;
+        return { path: sourceKey, revision, fingerprint: sourceFingerprint, client: source.client, location,
+          quickFingerprint: stable ? stamp : undefined, metadataFingerprint };
+      };
+      if (!clearCache && previous?.fingerprint === sourceFingerprint && (!previous.metadataFingerprint || previous.metadataFingerprint === metadataFingerprint)) {
+        current.push(await cacheRecord(previous.revision));
+        counts.verifiedReused += 1;
+        continue;
+      }
       const pending = store.createRevision(sourceKey, sourceFingerprint);
       try {
         const meta = await parseSessionSource(source, pending.sink, { byteLimit: digest.bytes, title, projectMetadata, desktopModels: nativeModels?.entries, nativeSnapshot, normalizedSnapshot });
@@ -86,17 +139,21 @@ export async function refreshSessions(store: SessionStore, jobId: string, roots?
           : nativeSnapshot ? { hash: `${SESSION_INDEX_RULE_VERSION}:${(await readIdeSnapshot(source)).hash}` } : await fingerprint(source.path, digest.bytes);
         if (after.hash !== digest.hash) throw new Error("会话来源已有内容在解析期间被改写，请重新刷新");
         store.finishRevision(pending.revision, meta);
-        current.push({ path: sourceKey, revision: pending.revision, fingerprint: sourceFingerprint });
+        current.push(await cacheRecord(pending.revision));
+        counts.parsed += 1;
       } catch (error) {
         store.removeRevision(pending.revision);
-        if ((error as NodeJS.ErrnoException).code === "ENOENT") { missing += 1; continue; }
+        if (await confirmedMissing(source.path, error)) { missing.add(sourceKey); continue; }
         throw error;
       }
     }
-    if (missing) gaps.push({ kind: "source_missing", message: "已有来源已删除或移走，新版统计已排除；上一版保留供对照", count: missing });
-    store.updateJob(jobId, { phase: "publish", progress: 0.99 });
+    counts.missing = missing.size;
+    if (counts.missing) gaps.push({ kind: "source_missing", message: "已有来源已删除或移走，新版统计已排除；上一版保留供对照", count: counts.missing });
+    store.updateJob(jobId, { phase: "publish", progress: 0.99, counts });
     store.publish(jobId, current, gaps);
   } catch (error) {
+    counts.missing = missing.size;
+    store.updateJob(jobId, { counts });
     store.failJob(jobId, error instanceof Error ? error.message : String(error));
     throw error;
   }

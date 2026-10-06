@@ -24,6 +24,7 @@ function sourceMetadata(raw: unknown, client: Client, path: string): SourceLocat
 
 export const codexAdapter: HistoryAdapter = {
   id: "codex-jsonl",
+  quickCheck: { version: "1", dependencies: () => [] },
   discover(record, location) {
     return record.type === "session_meta" ? { source: sourceMetadata(record, location.client, location.path), complete: true } : undefined;
   },

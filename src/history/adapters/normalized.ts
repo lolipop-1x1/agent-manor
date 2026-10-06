@@ -96,6 +96,7 @@ export function normalizedSnapshot(source: SourceLocation, records: RawHistoryRe
 
 export function createNormalizedAdapter(config: {
   id: string;
+  quickCheck?: HistoryAdapter["quickCheck"];
   readSnapshot(location: SourceLocation): Promise<NormalizedSnapshot>;
   discoverFile?(location: SourceLocation): Promise<SourceLocation[]>;
   selectSources?(locations: SourceLocation[]): SourceLocation[];
@@ -103,6 +104,7 @@ export function createNormalizedAdapter(config: {
 }): HistoryAdapter {
   return {
     id: config.id, normalized: true,
+    quickCheck: config.quickCheck,
     discover: () => undefined,
     discoverFile: config.discoverFile ?? (async location => [(await config.readSnapshot(location)).source]),
     selectSources: config.selectSources,

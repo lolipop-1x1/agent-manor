@@ -16,6 +16,8 @@ export interface SourceLocation {
   sessionId?: string;
   cwd?: string;
   parentSessionId?: string;
+  /** 仅在本次发现中绑定已读取的元信息；不参与持久元信息指纹。 */
+  discoveryQuickStamp?: string;
   /** 仅供来源选择器比较副本完整度；解析完成后不写入历史元数据。 */
   sourceCompleteness?: { version?: number; supported: boolean; complete: boolean; fingerprint: string };
   adapterGap?: Gap;
@@ -26,6 +28,12 @@ export const sourceLocationKey = (source: { path: string; selector?: string }): 
   source.selector ? JSON.stringify([source.path, source.selector]) : source.path;
 
 export type DiscoverRoots = Partial<Record<Client, string | string[]>>;
+
+export interface DiscoverOptions {
+  clients?: readonly Client[];
+  /** 同一来源文件的完整发现结果；只在适配器依赖标记未变化时复用。 */
+  cachedSources?: readonly { location: SourceLocation; stamp: string }[];
+}
 
 export interface HistoryRelationship {
   kind: "fork" | "subagent";

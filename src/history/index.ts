@@ -10,20 +10,48 @@ import { json, object, returnedText, string, words } from "./extraction.js";
 import { normalizeHistoryPath } from "./adapters/common.js";
 import { HISTORY_ADAPTERS, HISTORY_CLIENTS, historyAdapter, historyClient } from "./adapters/index.js";
 import type { HistoryAdapterContext, HistoryClient } from "./adapters/types.js";
+import { sourceQuickCheck, sourceQuickStamp } from "./quick-check.js";
 
-import type { DiscoverRoots, HistoricalWorktree, HistoryCursor, HistoryRelationship, ParsedHistorySource, PendingCall, SharedHistoryResult, SourceAssociation, SourceLocation } from "./types.js";
+import type { DiscoverOptions, DiscoverRoots, HistoricalWorktree, HistoryCursor, HistoryRelationship, ParsedHistorySource, PendingCall, SharedHistoryResult, SourceAssociation, SourceLocation } from "./types.js";
 
 export { normalizeHistoryPath } from "./adapters/common.js";
 
-export type { DiscoverRoots, HistoryRelationship, ParsedHistorySource, SharedHistoryResult, SourceAssociation, SourceLocation } from "./types.js";
+export type { DiscoverOptions, DiscoverRoots, HistoryRelationship, ParsedHistorySource, SharedHistoryResult, SourceAssociation, SourceLocation } from "./types.js";
 
 const hash = (value: string | Uint8Array) => createHash("sha256").update(value).digest("hex");
 const git = promisify(execFile);
 
 /** 发现只读至多 64 KiB 的头部；正文留给已选来源的 parseSource。 */
-export async function discoverSources(roots: DiscoverRoots = {}): Promise<SourceLocation[]> {
+export async function discoverSources(roots: DiscoverRoots = {}, options: DiscoverOptions = {}): Promise<SourceLocation[]> {
   const found: SourceLocation[] = [];
   const paths = new Set<string>();
+  const selected = options.clients ? new Set(options.clients) : undefined;
+  const cachedByFile = new Map<string, NonNullable<DiscoverOptions["cachedSources"]>[number][]>();
+  const cacheKey = (client: Client, format: string, path: string) => JSON.stringify([client, format, resolve(path)]);
+  for (const cached of options.cachedSources ?? []) {
+    const format = cached.location.format ?? historyClient(cached.location.client).format;
+    const key = cacheKey(cached.location.client, format, cached.location.path);
+    cachedByFile.set(key, [...(cachedByFile.get(key) ?? []), cached]);
+  }
+  async function reuseDiscovery(path: string, client: Client, format: string): Promise<boolean> {
+    const cached = cachedByFile.get(cacheKey(client, format, path));
+    if (!cached?.length) return false;
+    for (const value of cached) {
+      const stamp = await sourceQuickStamp(value.location);
+      if (!stamp || stamp !== value.stamp) return false;
+    }
+    found.push(...cached.map(value => ({ ...structuredClone(value.location), discoveryQuickStamp: value.stamp })));
+    return true;
+  }
+  async function discoverFile(location: SourceLocation, read: () => Promise<SourceLocation[]>): Promise<void> {
+    const before = await sourceQuickCheck(location);
+    const sources = await read();
+    for (const source of sources) {
+      const after = before && await sourceQuickCheck(source);
+      // 标记覆盖头部和旁路读取；其间变化不能把旧元信息绑定到新依赖标记。
+      found.push({ ...source, discoveryQuickStamp: before && after?.dependencies === before.dependencies ? after.stamp : undefined });
+    }
+  }
   async function walk(path: string, declaration: HistoryClient): Promise<void> {
     let entries;
     try { entries = await readdir(path, { withFileTypes: true }); }
@@ -34,34 +62,41 @@ export async function discoverSources(roots: DiscoverRoots = {}): Promise<Source
       if (entry.isDirectory()) await walk(child, declaration);
       else if (entry.isFile() && declaration.acceptsContainer?.(child) && !paths.has(child)) {
         paths.add(child);
+        if (await reuseDiscovery(child, declaration.client, declaration.containerFormat!)) continue;
         const container = historyAdapter(declaration.containerFormat!);
-        found.push(...await container!.discoverFile!({ path: child, client: declaration.client, format: declaration.containerFormat }));
+        const location = { path: child, client: declaration.client, format: declaration.containerFormat };
+        await discoverFile(location, () => container!.discoverFile!(location));
       }
       else if (entry.isFile() && (declaration.acceptsFile?.(child) ?? entry.name.endsWith(".jsonl")) && !paths.has(child)) {
         paths.add(child);
+        if (await reuseDiscovery(child, declaration.client, declaration.format)) continue;
+        const location = { path: child, client: declaration.client, format: declaration.format };
         if (adapter?.discoverFile) {
-          found.push(...await adapter.discoverFile({ path: child, client: declaration.client, format: declaration.format }));
+          await discoverFile(location, () => adapter.discoverFile!(location));
           continue;
         }
-        let metadata: SourceLocation = { path: child, client: declaration.client, format: declaration.format };
-        if (adapter) {
-          const handle = await open(child, "r");
-          try {
-            const buffer = Buffer.alloc(65_536);
-            const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
-            for (const line of buffer.subarray(0, bytesRead).toString("utf8").split("\n").slice(0, 32)) {
-              try {
-                const candidate = adapter.discover(object(JSON.parse(line)), metadata);
-                if (candidate) { metadata = candidate.source; if (candidate.complete) break; }
-              } catch { /* 发现阶段不把坏行误认为有效元数据。 */ }
-            }
-          } finally { await handle.close(); }
-        }
-        found.push(await adapter?.readSourceMetadata?.(metadata) ?? metadata);
+        await discoverFile(location, async () => {
+          let metadata: SourceLocation = location;
+          if (adapter) {
+            const handle = await open(child, "r");
+            try {
+              const buffer = Buffer.alloc(65_536);
+              const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
+              for (const line of buffer.subarray(0, bytesRead).toString("utf8").split("\n").slice(0, 32)) {
+                try {
+                  const candidate = adapter.discover(object(JSON.parse(line)), metadata);
+                  if (candidate) { metadata = candidate.source; if (candidate.complete) break; }
+                } catch { /* 发现阶段不把坏行误认为有效元数据。 */ }
+              }
+            } finally { await handle.close(); }
+          }
+          return [await adapter?.readSourceMetadata?.(metadata) ?? metadata];
+        });
       }
     }
   }
   for (const declaration of HISTORY_CLIENTS) {
+    if (selected && !selected.has(declaration.client)) continue;
     const environment = process.env[declaration.environmentVariable];
     const clientHome = declaration.homeEnvironmentVariable ? process.env[declaration.homeEnvironmentVariable] : undefined;
     const configured = roots[declaration.client] ?? (environment ? [environment] : clientHome ? [join(clientHome, "sessions"), ...declaration.defaultRoots.slice(1).map(path => join(homedir(), path))] : declaration.defaultRoots.map(path => join(homedir(), path)));

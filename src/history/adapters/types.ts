@@ -36,6 +36,11 @@ export interface HistoryAdapterContext {
 /** 格式适配器接收实际客户端身份，不据格式推断客户端。 */
 export interface HistoryAdapter {
   id: string;
+  /** 已核验完整依赖才声明；返回 undefined 时继续内容检查，不复用发现元信息。 */
+  quickCheck?: {
+    version: string;
+    dependencies(location: SourceLocation): readonly string[] | undefined;
+  };
   /** 新来源使用共享规范化事件，同时供地图和会话库消费。 */
   normalized?: boolean;
   /** 多会话容器直接发现原生选择器，不按文本文件头猜测。 */
