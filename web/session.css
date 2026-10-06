@@ -296,5 +296,5 @@
 }
 
 .session-branch-navigation { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; padding-block: 10px; }
-.session-branch-navigation .filter-select-trigger { width: 180px; }
+.session-branch-navigation .filter-trigger { width: 180px; }
 .session-branch-navigation small { color: var(--muted); }

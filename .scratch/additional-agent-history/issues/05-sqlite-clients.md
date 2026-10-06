@@ -1,7 +1,7 @@
 # OpenCode 与 ZCode 适配
 
 Type: task
-Status: ready-for-agent
+Status: claimed
 Blocked by: 03
 
 ## Scope

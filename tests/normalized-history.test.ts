@@ -41,3 +41,18 @@ test("JSONL 流式读取保留坏行与未完成末行缺口", async () => {
   assert.equal(rows.length, 1); assert.equal(rows[0]?.line, 1);
   assert.deepEqual(gaps.map(gap => gap.kind), ["parse_error", "incomplete_record"]);
 });
+
+
+test("并发复用调用身份保留歧义，不把结果配给最后一个请求", () => {
+  const messages = new Map<string, SessionMessage>();
+  const meta = parseNormalizedSession(normalizedSnapshot({ client: "pi", path: "/workspace/demo.jsonl", sessionId: "demo" }, [
+    normalizedRecord({ key: "u", kind: "user", text: "检查" }, "{}", 1),
+    normalizedRecord({ key: "first", kind: "tool_call", callId: "same", tool: "read", input: { path: "a.ts" } }, "{}", 2),
+    normalizedRecord({ key: "second", kind: "tool_call", callId: "same", tool: "read", input: { path: "b.ts" } }, "{}", 3),
+    normalizedRecord({ key: "result", kind: "tool_result", callId: "same", status: "success", text: "返回" }, "{}", 4),
+    normalizedRecord({ key: "answer", kind: "assistant", text: "继续" }, "{}", 5),
+  ]), { message: value => messages.set(value.id, value), usage: () => {} });
+  assert.ok(meta.gaps.some(gap => gap.kind === "ambiguous"));
+  assert.ok([...messages.values()].filter(value => value.kind === "tool_call").every(value => !value.status));
+  assert.equal([...messages.values()].find(value => value.kind === "assistant")?.final, undefined);
+});

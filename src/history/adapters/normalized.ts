@@ -110,7 +110,7 @@ export function createNormalizedAdapter(config: {
     processRecord(record, context) {
       if (record.normalizedMeta) {
         const meta = record.normalizedMeta as NormalizedSessionMetadata;
-        context.cursor.relationships = meta.relationships ?? (meta.parentSessionId ? [{ kind: meta.relationship === "child" ? "subagent" : "fork", parentSessionId: meta.parentSessionId }] : []);
+        context.cursor.relationships = meta.relationships ?? (meta.parentSessionId && meta.relationship ? [{ kind: meta.relationship === "child" ? "subagent" : "fork", parentSessionId: meta.parentSessionId }] : []);
         context.source.relationships = context.cursor.relationships;
         context.source.gaps.push(...(meta.gaps ?? []).map(gap => ({ ...gap, sourceId: context.source.sourceId })));
         return;
@@ -151,8 +151,8 @@ export function parseNormalizedSession(snapshot: NormalizedSnapshot, sink: Sessi
     parentSessionId: native.parentSessionId ? normalizedSessionKey(source.client, native.parentSessionId) : undefined,
     relationship: native.relationship, branches: native.branches, childSessionIds: native.childSessionIds?.map(child => normalizedSessionKey(source.client, child)),
     messageCount: 0, turnCount: 0, models: [], gaps: [...(native.gaps ?? [])] };
-  const messages = new Map<string, number>(); const pending = new Map<string, SessionMessage>(); const inputs = new Map<string, unknown>();
-  const candidates = new Map<string, SessionMessage>(); const interrupted = new Set<string>(); const tools = new Map<string, string>();
+  const messages = new Map<string, number>(); const pending = new Map<string, SessionMessage[]>(); const inputs = new Map<string, unknown>();
+  const candidates = new Map<string, SessionMessage>(); const interrupted = new Set<string>();
   const turns = new Map<string, string>(); const models = new Set<string>(); let turn = `${id}:turn:0`;
   for (const row of snapshot.records) {
     const event = row.record.normalizedEvent as NormalizedEvent | undefined;
@@ -178,24 +178,31 @@ export function parseNormalizedSession(snapshot: NormalizedSnapshot, sink: Sessi
     if (event.interrupted) interrupted.add(turn);
     if (event.kind === "assistant") candidates.set(turn, value);
     if (event.kind === "tool_call") {
-      candidates.delete(turn); pending.set(event.callId ?? event.key, value); tools.set(event.callId ?? event.key, event.tool ?? "unknown"); inputs.set(event.callId ?? event.key, event.input);
+      candidates.delete(turn);
+      const key = event.callId ?? event.key;
+      const calls = pending.get(key) ?? [];
+      const existing = calls.findIndex(call => call.id === value.id);
+      if (existing < 0) calls.push(value); else calls[existing] = value;
+      pending.set(key, calls); inputs.set(value.id, event.input);
     }
     if (event.kind === "tool_result") {
-      const call = pending.get(event.callId ?? "");
-      value.tool ??= tools.get(event.callId ?? "");
+      const calls = pending.get(event.callId ?? "") ?? [];
+      const call = calls.length === 1 ? calls[0] : undefined;
+      value.tool ??= call?.tool;
       if (call) {
         call.status = event.status ?? "unknown"; call.durationMs = event.durationMs ?? call.durationMs;
-        if (call.status === "success") call.resource = event.resource ?? resourceOf(call.tool, inputs.get(event.callId ?? ""), call.filePaths);
-        sink.message(call); pending.delete(event.callId ?? ""); inputs.delete(event.callId ?? "");
-      } else meta.gaps.push({ kind: "unpaired_call", message: "原生工具结果缺少可配对请求", sourceId: meta.sourceId });
+        if (call.status === "success") call.resource = event.resource ?? resourceOf(call.tool, inputs.get(call.id), call.filePaths);
+        sink.message(call); pending.delete(event.callId ?? ""); inputs.delete(call.id);
+      } else meta.gaps.push({ kind: calls.length > 1 ? "ambiguous" : "unpaired_call", message: calls.length > 1 ? "原生调用身份同时对应多个请求，未猜测结果关联" : "原生工具结果缺少可配对请求", sourceId: meta.sourceId });
     }
     sink.message(value);
     if (event.usage) sink.usage({ ...event.usage, id: `${id}:usage:${normalizedHash(event.usageKey ?? event.key).slice(0, 24)}`,
       messageId: value.id, turnId: value.turnId, model: event.model, occurredAt: event.occurredAt });
   }
-  const pendingTurns = new Set([...pending.values()].map(value => value.turnId));
+  const pendingCalls = [...pending.values()].flat();
+  const pendingTurns = new Set(pendingCalls.map(value => value.turnId));
   for (const [key, candidate] of candidates) if (!candidate.final && !pendingTurns.has(key) && !interrupted.has(key)) sink.message({ ...candidate, final: "inferred" });
-  if (pending.size) meta.gaps.push({ kind: "unpaired_call", message: "部分原生工具请求尚未记录结果", count: pending.size, sourceId: meta.sourceId });
+  if (pendingCalls.length) meta.gaps.push({ kind: "unpaired_call", message: "部分原生工具请求尚未记录结果", count: pendingCalls.length, sourceId: meta.sourceId });
   meta.models = [...models];
   return meta;
 }

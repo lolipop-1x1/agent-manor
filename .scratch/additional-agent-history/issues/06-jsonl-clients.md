@@ -1,7 +1,7 @@
 # WorkBuddy、CodeBuddy 与 Qoder 适配
 
 Type: task
-Status: ready-for-agent
+Status: claimed
 Blocked by: 03
 
 ## Scope
