@@ -423,10 +423,21 @@ export class SessionStore {
     const candidates = match ? " AND m.rowid IN (SELECT rowid FROM session_message_search WHERE session_message_search MATCH ?)" : "";
     const title = `SELECT v.session_id,NULL AS message_id,NULL AS turn_id,'title' AS kind,r.id AS revision,
       r.json,COALESCE(r.updated_at,r.started_at,'') AS updated_at,0 AS ordinal ${common} AND r.title LIKE ? ESCAPE '\\'`;
-    // 全局搜索按 FTS rowid 读取命中消息；窄范围搜索先筛活动修订再检查正文。
-    const scoped = Boolean(query.client || query.project !== undefined || query.sessionId || query.from || query.to
-      || query.executionMode === "quiet" || query.executionMode === "regular");
-    const messageFrom = match && scoped ? `FROM session_version_sessions v
+    let scopedFts = false;
+    if (match && (query.client || query.project !== undefined || query.sessionId)) {
+      const counts = this.database.prepare(`WITH scoped AS (
+        SELECT json_extract(r.json,'$.messageCount') AS message_count
+        FROM session_version_sessions v JOIN session_revisions r ON r.id=v.revision
+        WHERE v.version=?${filter.sql} LIMIT 101
+      ) SELECT COUNT(*) AS sessions,COUNT(message_count) AS known_sessions,
+        COALESCE(SUM(message_count),0) AS messages FROM scoped`).get(version, ...filter.values) as {
+          sessions: number; known_sessions: number; messages: number;
+        };
+      // 探测最多 101 条来源元数据；只有不超过 100 个会话且已知消息量不超过 10000 才按修订读取。
+      scopedFts = counts.sessions <= 100 && counts.known_sessions === counts.sessions && counts.messages <= 10_000;
+    }
+    // 全局及宽范围搜索按 FTS rowid 读取命中消息；窄范围先筛活动修订再检查正文。
+    const messageFrom = match && scopedFts ? `FROM session_version_sessions v
       CROSS JOIN session_revisions r ON r.id=v.revision
       CROSS JOIN session_messages m INDEXED BY session_message_order ON m.revision=r.id`
       : match ? `FROM session_messages m CROSS JOIN session_version_sessions v ON v.revision=m.revision
