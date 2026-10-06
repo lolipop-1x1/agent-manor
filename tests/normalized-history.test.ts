@@ -1,10 +1,13 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { Readable } from "node:stream";
+import { mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { HISTORY_ADAPTERS } from "../src/history/adapters/index.js";
 import type { HistoryAdapter } from "../src/history/adapters/types.js";
 import { parseSource } from "../src/history/index.js";
-import { createNormalizedAdapter, normalizedRecord, normalizedSnapshot, parseNormalizedSession, readBoundedJsonl } from "../src/history/adapters/normalized.js";
+import { createNormalizedAdapter, normalizedHash, normalizedRecord, normalizedSnapshot, parseNormalizedSession, readBoundedJsonl } from "../src/history/adapters/normalized.js";
 import type { SessionMessage, SessionUsage } from "../src/session-contracts.js";
 
 test("规范化保留分支及实际用量，失败工具不会产生 Skill 读取证据", () => {
@@ -88,4 +91,20 @@ test("原生容器变更重建活动，未变快照复用且不保留已删除�
     assert.equal(changed.events.length, 0);
     assert.notEqual(changed.hash, first.hash);
   } finally { adapters.splice(adapters.indexOf(adapter), 1); }
+});
+
+test("原生证据缺失或改写时不可用，符号链接不能替代原来源", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "manor-native-evidence-"));
+  try {
+    const path = join(directory, "native.jsonl"); await writeFile(path, "{}\n");
+    const adapter = createNormalizedAdapter({ id: "synthetic", readSnapshot: async source => normalizedSnapshot(source,
+      [normalizedRecord({ key: "read", kind: "tool_call" }, "原始记录", 1)]) });
+    const reference = { sourceId: "pi:demo", path, recordLine: 1, hash: normalizedHash("原始记录") };
+    assert.equal((await adapter.readEvidence(reference))?.raw, "原始记录");
+    assert.equal(await adapter.readEvidence({ ...reference, hash: "changed" }), undefined);
+    const link = join(directory, "link.jsonl"); await symlink(path, link);
+    assert.equal(await adapter.readEvidence({ ...reference, path: link }), undefined);
+    await rm(path);
+    assert.equal(await adapter.readEvidence(reference), undefined);
+  } finally { await rm(directory, { recursive: true, force: true }); }
 });

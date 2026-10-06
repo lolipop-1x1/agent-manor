@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { createReadStream } from "node:fs";
+import { lstat, realpath } from "node:fs/promises";
 import { basename, isAbsolute } from "node:path";
 import type { Gap, HistoryEvent } from "../../contracts.js";
 import type { MessageKind, SessionMessage, SessionSink, SessionSourceMeta, SessionUsage } from "../../session-contracts.js";
@@ -103,9 +104,15 @@ export function createNormalizedAdapter(config: {
     readRecords: config.readSnapshot,
     extract: config.extract ?? defaultToolEvidence,
     async readEvidence(reference) {
-      const snapshot = await config.readSnapshot({ path: reference.path, client: reference.sourceId.split(":")[0] as SourceLocation["client"], format: config.id, selector: reference.selector });
-      const row = snapshot.records.find(row => row.line === reference.recordLine && normalizedHash(row.raw) === reference.hash);
-      return row ? { source: reference, raw: row.raw } : undefined;
+      if (!Number.isSafeInteger(reference.recordLine) || reference.recordLine < 1) return undefined;
+      try {
+        const canonical = await realpath(reference.path);
+        const stat = await lstat(reference.path);
+        if (!stat.isFile() || stat.isSymbolicLink()) return undefined;
+        const snapshot = await config.readSnapshot({ path: reference.path, client: reference.sourceId.split(":")[0] as SourceLocation["client"], format: config.id, selector: reference.selector });
+        const row = snapshot.records.find(row => row.line === reference.recordLine && normalizedHash(row.raw) === reference.hash);
+        return row && await realpath(reference.path) === canonical ? { source: reference, raw: row.raw } : undefined;
+      } catch { return undefined; }
     },
     processRecord(record, context) {
       if (record.normalizedMeta) {
