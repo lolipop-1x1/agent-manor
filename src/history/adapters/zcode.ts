@@ -49,7 +49,11 @@ function buildRecords(messages: Record<string, unknown>[], parts: Record<string,
     const turnKey = string(data.turnId) ?? id;
     turnByMessage.set(id, turnKey);
     const raw = JSON.stringify({ message: row, textParts: grouped.filter(part => part.data.type === "text").map(part => part.row) });
-    if (role === "user" || role === "assistant" || role === "system") {
+    const knownRole = role === "user" || role === "assistant" || role === "system";
+    if (!knownRole) {
+      gaps.push({ kind: "unsupported_format", message: `ZCode message role ${role ?? "<缺少角色>"} 尚未适配` });
+    }
+    if (knownRole) {
       const finishReason = (string(data.finish) ?? string(data.stopReason) ?? string(data.finishReason) ?? "")
         .toLowerCase().replaceAll("-", "_");
       const completedAt = timestamp(object(data.time).completed);
@@ -61,6 +65,9 @@ function buildRecords(messages: Record<string, unknown>[], parts: Record<string,
         && (normalFinish || Boolean(completedAt) && !finishReason);
       staged.push({ event: { key: `message:${id}`, kind: role, text, occurredAt: created, model, turnKey,
         ...(role === "assistant" ? { allowInferredFinal } : {}) }, raw, order: messageIndex * 1_000 });
+    } else {
+      staged.push({ event: { key: `message:${id}`, kind: "context", text, occurredAt: created, model, turnKey,
+        allowInferredFinal: false }, raw, order: messageIndex * 1_000 });
     }
 
     for (const [partIndex, part] of grouped.entries()) {
@@ -68,11 +75,20 @@ function buildRecords(messages: Record<string, unknown>[], parts: Record<string,
       const partId = string(part.data.id) ?? string(part.row.id) ?? `${id}:${partIndex}`;
       const partTime = timestamp(object(part.data.time).start ?? object(part.data.time).created ?? part.row.time_created) ?? created;
       const partOrder = messageIndex * 1_000 + partIndex + 1;
+      if (type === "text") continue;
       if (type === "reasoning") {
         const value = string(part.data.text);
         if (value) staged.push({ event: { key: `reasoning:${partId}`, kind: "thinking", text: value, occurredAt: partTime, model, turnKey }, raw: part.raw, order: partOrder });
       }
-      if (type !== "tool") continue;
+      if (type !== "tool") {
+        if (type !== "reasoning") {
+          gaps.push({ kind: "unsupported_format", message: `ZCode part 类型 ${type ?? "<缺少类型>"} 尚未适配` });
+          staged.push({ event: { key: `unknown-part:${partId}`, kind: "context",
+            text: `未适配 ZCode part 类型 ${type ?? "<缺少类型>"}`, occurredAt: partTime, model, turnKey, allowInferredFinal: false },
+            raw: part.raw, order: partOrder });
+        }
+        continue;
+      }
       const state = object(part.data.state);
       const callId = string(part.data.callID) ?? partId;
       const tool = string(part.data.tool) ?? "unknown";

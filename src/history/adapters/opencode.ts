@@ -88,17 +88,21 @@ function buildRecords(sessionId: string, messages: Record<string, unknown>[], pa
     const data = sqliteJson(row.data, gaps);
     const role = string(data.role);
     const grouped = byMessage.get(id) ?? [];
-    const text = textParts(grouped);
     const created = timestamp(object(data.time).created ?? row.time_created);
     const model = modelName(data);
     const parentMessage = string(data.parentID) ?? string(data.parent_id);
     const turnKey = parentMessage ?? id;
-    const messageRaw = JSON.stringify({ message: row, parts: grouped.filter(part => part.data.type === "text").map(part => part.row) });
     const messageMetadata = object(data.metadata);
     const compactionContinue = messageMetadata.compaction_continue === true
       || grouped.some(part => object(part.data.metadata).compaction_continue === true);
-    const synthetic = data.synthetic === true || messageMetadata.synthetic === true
-      || grouped.some(part => part.data.synthetic === true || object(part.data.metadata).synthetic === true);
+    const synthetic = data.synthetic === true || messageMetadata.synthetic === true;
+    const isSyntheticTextPart = (part: { data: Record<string, unknown> }) => part.data.type === "text"
+      && (part.data.synthetic === true || object(part.data.metadata).synthetic === true);
+    const syntheticTextParts = grouped.filter(isSyntheticTextPart);
+    const ordinaryTextParts = grouped.filter(part => part.data.type === "text" && !isSyntheticTextPart(part));
+    const text = textParts(synthetic ? grouped : ordinaryTextParts);
+    const messageRaw = JSON.stringify({ message: row,
+      parts: grouped.filter(part => part.data.type === "text" && (synthetic || !isSyntheticTextPart(part))).map(part => part.row) });
     const summarized = data.summary === true || messageMetadata.summary === true
       || grouped.some(part => part.data.summary === true || object(part.data.metadata).summary === true);
     const finishedAt = timestamp(object(data.time).completed ?? row.time_completed);
@@ -111,13 +115,17 @@ function buildRecords(sessionId: string, messages: Record<string, unknown>[], pa
     const allowInferredFinal = role === "assistant" && Boolean(finishedAt) && !terminalFailure
       && !hasToolPart && !hasCompressionPart && !synthetic && !compactionContinue && !summarized;
 
-    if (role === "user" || role === "assistant" || role === "system") {
-      const kind: NormalizedEvent["kind"] = hasCompressionPart ? "compression"
-        : synthetic ? "context" : role;
-      const event: NormalizedEvent = { key: `message:${id}`, kind, text, model, occurredAt: created, turnKey,
-        ...(role === "assistant" ? { allowInferredFinal } : {}) };
-      staged.push({ event, raw: messageRaw, order: messageIndex * 1_000 });
+    const knownRole = role === "user" || role === "assistant" || role === "system";
+    if (!knownRole) {
+      meta.gaps ??= [];
+      meta.gaps.push({ kind: "unsupported_format", message: `OpenCode message role ${role ?? "<缺少角色>"} 尚未适配` });
     }
+    const onlySyntheticUserText = role === "user" && !synthetic && syntheticTextParts.length > 0 && ordinaryTextParts.length === 0;
+    const kind: NormalizedEvent["kind"] = !knownRole || onlySyntheticUserText ? "context" : hasCompressionPart ? "compression"
+      : synthetic ? "context" : role as NormalizedEvent["kind"];
+    const event: NormalizedEvent = { key: `message:${id}`, kind, text, model, occurredAt: created, turnKey,
+      ...(role === "assistant" ? { allowInferredFinal } : {}) };
+    staged.push({ event, raw: messageRaw, order: messageIndex * 1_000 });
 
     for (const [partIndex, part] of grouped.entries()) {
       const type = string(part.data.type);
@@ -125,6 +133,10 @@ function buildRecords(sessionId: string, messages: Record<string, unknown>[], pa
       const partTime = timestamp(object(part.data.time).start ?? part.row.time_created) ?? created;
       const partRaw = part.raw;
       const partOrder = messageIndex * 1_000 + partIndex + 1;
+      if (type === "text" && isSyntheticTextPart(part) && !synthetic) {
+        staged.push({ event: { key: `synthetic-part:${partId}`, kind: "context", text: string(part.data.text) ?? "",
+          model, occurredAt: partTime, turnKey, allowInferredFinal: false }, raw: partRaw, order: partOrder });
+      }
       if (type === "reasoning") {
         const value = string(part.data.text);
         if (value) staged.push({ event: { key: `reasoning:${partId}`, kind: "thinking", text: value, model, occurredAt: partTime, turnKey }, raw: partRaw, order: partOrder });

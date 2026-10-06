@@ -141,7 +141,7 @@ test("DSH V3 工具结果包装保留调用配对，缺失缓存桶时不伪造�
   assert.equal(session.usage[0]?.outputTokens, 4);
 }));
 
-test("DSH 官方 turn/step 起止只保留过程 context，不令完整 V3 输给损坏 V4", async () => temporary(async directory => {
+test("DSH 官方过程事件与未知语义 gap 不令完整 V3 输给损坏 V4", async () => temporary(async directory => {
   register(dshAdapter);
   const id = "synthetic-dsh-boundaries";
   const v3 = join(directory, "session.v3.jsonl");
@@ -150,10 +150,13 @@ test("DSH 官方 turn/step 起止只保留过程 context，不令完整 V3 输�
     dshHeader(3, id),
     dshEvent("turn/start", 0, { turn: 1 }),
     dshEvent("step/start", 1, { turn: 1, step: 1 }),
-    dshEvent("user/message", 2, { turn: 1, message: { role: "user", source: { kind: "user" }, content: [{ type: "text", text: "synthetic prompt" }] } }),
-    dshEvent("assistant/message", 3, { turn: 1, step: 1, message: { role: "assistant", source: { kind: "model" }, content: [{ type: "text", text: "synthetic answer" }] } }),
-    dshEvent("step/end", 4, { turn: 1, step: 1 }),
-    dshEvent("turn/end", 5, { turn: 1, reason: { kind: "completed" } }),
+    dshEvent("request/header", 2, { turn: 1, reason: "synthetic" }),
+    dshEvent("request/context", 3, { turn: 1, route: "synthetic" }),
+    dshEvent("user/message", 4, { turn: 1, message: { role: "user", source: { kind: "user" }, content: [{ type: "text", text: "synthetic prompt" }] } }),
+    dshEvent("assistant/message", 5, { turn: 1, step: 1, message: { role: "assistant", source: { kind: "model" }, content: [{ type: "text", text: "synthetic answer" }] } }),
+    dshEvent("step/end", 6, { turn: 1, step: 1 }),
+    dshEvent("turn/end", 7, { turn: 1, reason: { kind: "completed" } }),
+    dshEvent("future/native-event", 8, { turn: 1, payload: "unknown semantic event" }),
   ]));
   await writeFile(v4, `${JSON.stringify(dshHeader(4, id))}\n{invalid}\n`);
   const [sourceV3] = await dshAdapter.discoverFile!({ client: "dsh", format: DSH_FORMAT, path: v3 });
@@ -167,9 +170,13 @@ test("DSH 官方 turn/step 起止只保留过程 context，不令完整 V3 输�
   assert.deepEqual(processEvents.map(event => event.text), [
     "DSH 过程事件 turn/start turn=1",
     "DSH 过程事件 step/start turn=1 step=1",
+    "DSH 过程事件 request/header",
+    "DSH 过程事件 request/context",
     "DSH 过程事件 step/end turn=1 step=1",
   ]);
-  assert.ok(!snapshot.meta.gaps?.some(gap => gap.kind === "unsupported_format"));
+  assert.ok(snapshot.meta.gaps?.some(gap => gap.kind === "unsupported_format" && gap.message.includes("future/native-event")));
+  assert.ok(snapshot.records.some(row => row.record.normalizedEvent?.text === "未适配事件 future/native-event"
+    && JSON.parse(row.raw).type === "future/native-event"));
   assert.equal(sink(snapshot as NormalizedSnapshot).metadata.turnCount, 1);
 }));
 
@@ -184,6 +191,8 @@ test("DSH 未知代际仍保留来源并显式标记 unsupported_format", async 
   const [source] = await dshAdapter.discoverFile!({ client: "dsh", format: DSH_FORMAT, path });
   assert.equal(source?.sessionId, "synthetic-v5");
   assert.equal(source?.selector, "v5");
+  assert.equal(source?.sourceCompleteness?.supported, false);
+  assert.equal(source?.sourceCompleteness?.complete, true);
   assert.equal(dshAdapter.selectSources!([source!]).length, 1);
   const supportedCopy = { ...source!, selector: "v4", path: join(directory, "session.v4.jsonl"),
     sourceCompleteness: { version: 4, supported: true, complete: true, fingerprint: "synthetic-complete" } };

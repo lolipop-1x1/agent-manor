@@ -319,6 +319,32 @@ test("OpenCode 顶层模型字段与合成压缩过程不会制造用户轮次�
   database.close();
 })));
 
+test("OpenCode 混合 user 正文与 synthetic text part 保留真实用户轮次", async () => temporary(directory => registerAdapters(async () => {
+  const path = join(directory, "opencode-mixed-synthetic.db");
+  const database = new Database(path);
+  createOpenCodeSchema(database);
+  insertOpenCodeSession(database, { id: "mixed-synthetic", directory: "/synthetic/repo" });
+  insertOpenCodeMessage(database, "mixed-synthetic", "mixed-user", "user", 1);
+  insertOpenCodePart(database, "mixed-synthetic", "mixed-user", "body-part", 1,
+    { type: "text", text: "explain attached file" });
+  insertOpenCodePart(database, "mixed-synthetic", "mixed-user", "attachment-part", 2,
+    { type: "text", text: "contents of attached file", synthetic: true });
+
+  const snapshot = await opencodeAdapter.readRecords!({ path, client: "opencode", format: OPENCODE_FORMAT,
+    selector: "mixed-synthetic", sessionId: "mixed-synthetic" });
+  const messages = new Map<string, SessionMessage>();
+  const summary = parseNormalizedSession(snapshot, { message: message => messages.set(message.id, message), usage: () => undefined });
+  assert.equal(summary.turnCount, 1);
+  assert.ok([...messages.values()].some(message => message.kind === "user" && message.text === "explain attached file"));
+  assert.ok([...messages.values()].some(message => message.kind === "context" && message.text === "contents of attached file"));
+  const userRow = snapshot.records.find(row => row.record.normalizedEvent?.key === "message:mixed-user")!;
+  const userRaw = JSON.parse(userRow.raw) as { parts: { id: string }[] };
+  assert.deepEqual(userRaw.parts.map(part => part.id), ["body-part"]);
+  const syntheticRow = snapshot.records.find(row => row.record.normalizedEvent?.key === "synthetic-part:attachment-part")!;
+  assert.equal(JSON.parse(syntheticRow.raw).id, "attachment-part");
+  database.close();
+})));
+
 test("SQLite JSON 损坏、未知 schema 与迭代预算均显式保留缺口", async () => temporary(directory => registerAdapters(async () => {
   const gaps: { kind: string; message: string }[] = [];
   assert.deepEqual(sqliteJson("{invalid", gaps), {});
@@ -408,6 +434,61 @@ test("ZCode 任务索引按 session.id 关联；model_usage 按尝试计数，�
   paths.index.prepare("UPDATE tasks SET title=? WHERE task_id=?").run("Changed title", "session-one");
   const changed = await zcodeAdapter.readRecords!({ ...found[0]! });
   assert.notEqual(changed.hash, snapshot.hash);
+  paths.db.close();
+  paths.index.close();
+})));
+
+test("OpenCode 与 ZCode 未知 message role 保留 context、缺口与原始行", async () => temporary(async directory => registerAdapters(async () => {
+  const openCodePath = join(directory, "opencode-unknown-role.db");
+  const openCode = new Database(openCodePath);
+  createOpenCodeSchema(openCode);
+  insertOpenCodeSession(openCode, { id: "unknown-role-opencode", directory: "/synthetic/repo" });
+  insertOpenCodeMessage(openCode, "unknown-role-opencode", "unknown-role-message", "future-role", 1,
+    { content: "synthetic unknown content" });
+  insertOpenCodePart(openCode, "unknown-role-opencode", "unknown-role-message", "unknown-role-text", 1,
+    { type: "text", text: "synthetic text part" });
+  const openCodeSnapshot = await opencodeAdapter.readRecords!({ path: openCodePath, client: "opencode", format: OPENCODE_FORMAT,
+    selector: "unknown-role-opencode", sessionId: "unknown-role-opencode" });
+  const openCodeMessages = new Map<string, SessionMessage>();
+  const openCodeMeta = parseNormalizedSession(openCodeSnapshot,
+    { message: message => openCodeMessages.set(message.id, message), usage: () => undefined });
+  assert.equal(openCodeMeta.turnCount, 0);
+  assert.ok([...openCodeMessages.values()].some(message => message.kind === "context" && message.text === "synthetic text part"));
+  assert.ok(openCodeMeta.gaps.some(gap => gap.kind === "unsupported_format" && gap.message.includes("future-role")));
+  const openCodeRow = openCodeSnapshot.records.find(row => row.record.normalizedEvent?.key === "message:unknown-role-message")!;
+  const openCodeRaw = JSON.parse(openCodeRow.raw) as { message: { id: string }; parts: { id: string }[] };
+  assert.equal(openCodeRow.line, 1);
+  assert.equal(openCodeRaw.message.id, "unknown-role-message");
+  assert.deepEqual(openCodeRaw.parts.map(part => part.id), ["unknown-role-text"]);
+  openCode.close();
+
+  const paths = await createZCodeSchema(directory);
+  paths.db.prepare("INSERT INTO session VALUES(?,?,?,?)").run("unknown-role-zcode", "/synthetic/session-dir", "Unknown role", null);
+  paths.db.prepare("INSERT INTO message VALUES(?,?,?,?,?)").run("unknown-role-message", "unknown-role-zcode", 1, 1,
+    JSON.stringify({ role: "future-role", content: "synthetic unknown content", time: { created: 1 } }));
+  paths.db.prepare("INSERT INTO part VALUES(?,?,?,?,?,?)").run("unknown-role-text", "unknown-role-message", "unknown-role-zcode", 1, 1,
+    JSON.stringify({ type: "text", id: "unknown-role-text", text: "synthetic text part" }));
+  paths.db.prepare("INSERT INTO part VALUES(?,?,?,?,?,?)").run("unknown-role-future-part", "unknown-role-message", "unknown-role-zcode", 2, 2,
+    JSON.stringify({ type: "future-part", id: "unknown-role-future-part", payload: "first" }));
+  const [zcodeSource] = await zcodeAdapter.discoverFile!({ path: paths.dbPath, client: "zcode", format: ZCODE_FORMAT });
+  const zcodeSnapshot = await zcodeAdapter.readRecords!({ ...zcodeSource! });
+  const zcodeMessages = new Map<string, SessionMessage>();
+  const zcodeMeta = parseNormalizedSession(zcodeSnapshot,
+    { message: message => zcodeMessages.set(message.id, message), usage: () => undefined });
+  assert.equal(zcodeMeta.turnCount, 0);
+  assert.ok([...zcodeMessages.values()].some(message => message.kind === "context" && message.text.includes("synthetic unknown content")));
+  assert.ok(zcodeMeta.gaps.some(gap => gap.kind === "unsupported_format" && gap.message.includes("future-role")));
+  assert.ok(zcodeMeta.gaps.some(gap => gap.kind === "unsupported_format" && gap.message.includes("future-part")));
+  const zcodeRow = zcodeSnapshot.records.find(row => row.record.normalizedEvent?.key === "message:unknown-role-message")!;
+  const zcodeRaw = JSON.parse(zcodeRow.raw) as { message: { id: string }; textParts: { id: string }[] };
+  assert.equal(zcodeRow.line, 1);
+  assert.equal(zcodeRaw.message.id, "unknown-role-message");
+  assert.deepEqual(zcodeRaw.textParts.map(part => part.id), ["unknown-role-text"]);
+  const unknownPart = zcodeSnapshot.records.find(row => row.record.normalizedEvent?.key === "unknown-part:unknown-role-future-part")!;
+  assert.equal(JSON.parse(JSON.parse(unknownPart.raw).data).payload, "first");
+  paths.db.prepare("UPDATE part SET data=? WHERE id=?").run(
+    JSON.stringify({ type: "future-part", id: "unknown-role-future-part", payload: "second" }), "unknown-role-future-part");
+  assert.notEqual((await zcodeAdapter.readRecords!({ ...zcodeSource! })).hash, zcodeSnapshot.hash);
   paths.db.close();
   paths.index.close();
 })));

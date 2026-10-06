@@ -374,6 +374,10 @@ async function snapshot(location: SourceLocation): Promise<NormalizedSnapshot> {
       records.push(normalizedRecord({ key, kind: "context", text: `DSH 过程事件 ${detail}`, occurredAt, turnKey, copied }, row.raw, row.line, seq));
       continue;
     }
+    if (type === "request/header" || type === "request/context") {
+      records.push(normalizedRecord({ key, kind: "context", text: `DSH 过程事件 ${type}`, occurredAt, turnKey, copied }, row.raw, row.line, seq));
+      continue;
+    }
     if (type === "turn/end" || type === "session/end-seed") {
       const reason = string(object(data.reason).kind);
       records.push(normalizedRecord({ key, kind: "context", ...(reason ? { text: reason } : { text: type }), occurredAt, turnKey, copied }, row.raw, row.line, seq));
@@ -393,7 +397,7 @@ const dshBaseAdapter = createNormalizedAdapter({
     const value = await snapshot(location);
     if (!value.source.sessionId) return [];
     const version = Number(/^v(\d+)$/.exec(value.source.selector ?? "")?.[1] ?? 0) || undefined;
-    const complete = !value.meta.gaps?.some(gap => ["parse_error", "incomplete_record", "budget_exceeded", "unsupported_format"].includes(gap.kind));
+    const complete = !value.meta.gaps?.some(gap => ["parse_error", "incomplete_record", "budget_exceeded"].includes(gap.kind));
     const fingerprint = normalizedHash(JSON.stringify(value.records.filter(row => row.record.normalizedEvent)
       .map(row => row.record.normalizedEvent)));
     return [{ ...value.source, sourceCompleteness: { version, supported: version === 3 || version === 4, complete, fingerprint } }];
