@@ -19,6 +19,9 @@ export interface SessionMessage {
   durationMs?: number;
   /** 仅存在明确原消息身份时标记复制内容。 */
   copied?: boolean;
+  /** 会话内树的叶分支成员；共同祖先可属于多个分支。 */
+  branchIds?: string[];
+  currentBranch?: boolean;
   resource?: { kind: "mcp" | "skill_call" | "skill_read"; name: string; server?: string };
   filePaths?: string[];
   /** Codex 注入上下文的来源；正文仍保留原记录。 */
@@ -57,6 +60,7 @@ export interface SessionSummary {
   parentSessionId?: string;
   parentTitle?: string;
   relationship?: "child" | "fork";
+  branches?: { id: string; label: string; current: boolean }[];
   /** 工具返回或元数据明确记录的子会话身份，不根据正文猜测。 */
   childSessionIds?: string[];
   startedAt?: string;
