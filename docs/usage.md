@@ -43,6 +43,8 @@ agent-manor evidence <repositoryId> <eventId> --version <analysisVersion> --clie
 
 对话每页显示 10 个完整轮次，使用首轮／末轮、上一轮／下一轮、轮次编号或页码导航。初始上下文随第一页返回，不计用户轮次；完整模式默认折叠过程，轨迹显示紧凑事件表。搜索或请求定位会自动展开。用户与 AI 正文支持 Markdown，长内容可展开；图片只显示替代文字。全局搜索默认覆盖标题及用户／AI 正文，过程内容可额外选入；会话内命中显示在浮层中，清除搜索恢复原阅读位置。点击用量图、请求编号、工具或资源名称可回到证据记录。
 
+有会话内分支时，“阅读分支”可选择当前分支、全部分支或保存的叶分支。简易默认当前分支，完整／轨迹默认全部；已保存真实对话不会因压缩摘要而消失。切换分支仅改变阅读视野，画像和代码活动仍统计全部实际活动；有原生复制依据的继承前缀排除重复统计。CLI 对应 `--branch current|all|<分支ID>`，消息 API 对应 `branch`。
+
 轨迹上方的三行时间线覆盖整段会话，可切换事件顺序、轮次和记录时间；悬停查看节点信息，点击节点或用左右方向键定位到对应页。下方详情可切换工具参数／返回结果、预览／原始正文。Codex 注入优先按客户端分类识别，旧日志再从完整包格式推断，并说明依据；上下文不进入简易版，也不计为用户提问，过程搜索仍可检索。总览 API 为 `GET /api/v1/sessions/:id/timeline`，只返回同版本定位元信息。
 
 请求用量趋势显示从零开始的 Token 纵轴。鼠标悬浮查看请求编号、模型、时间和输入／缓存读取／输出数值；未记录与零值分开。Tab 聚焦图表后，可用左右方向键切换请求、Home／End 到首末请求、Enter／空格定位消息。
@@ -92,9 +94,9 @@ API 为 `GET /api/v1/sessions`、`/sessions/search`、`/sessions/:id/messages`�
 
 全局 `--json` 输出一条 JSON，失败返回非零退出码；API 类错误通过 stderr 输出 `{error:{code,message}}`。刷新任务执行失败时 `--wait` 仍输出失败 job，并返回非零退出码。CLI 语法错误通过 Commander 显示；可先运行 `--help` 核对参数。等待默认 120 秒，可用 `--timeout <seconds>` 指定，最多 3600 秒。
 
-覆盖、热点、未观察读取、文件、活动、证据和来源查询支持 `--version`、`--client codex|claude|codeflicker|codeflicker-desktop`、`--from`、`--to`、`--categories`、`--directory`。省略客户端时查询全部客户端；CLI 帮助、API 校验与 Web 客户端选项共用客户端声明。时间须为 ISO 8601；起止边界均包含，默认全部可用历史。类别为逗号分隔的 `source,config,docs,unknown`，默认 `source`。来源清单描述该版本的采集来源，客户端筛选可缩小清单；时间／目录／类别筛选不改写来源级计数。热点和未观察读取响应的 `files` 已筛选，`summary` 保持所选范围的分母。
+覆盖、热点、未观察读取、文件、活动、证据和来源查询支持 `--version`、`--client <客户端ID>`、`--from`、`--to`、`--categories`、`--directory`。客户端 ID 包括 `codex`、`claude`、`codeflicker`、`codeflicker-desktop`、`dsh`、`pi`、`workbuddy`、`opencode`、`zcode`、`codebuddy`、`qoder`。省略客户端时查询全部客户端；CLI 帮助、API 校验与 Web 客户端选项共用客户端声明。时间须为 ISO 8601；起止边界均包含，默认全部可用历史。类别为逗号分隔的 `source,config,docs,unknown`，默认 `source`。来源清单描述该版本的采集来源，客户端筛选可缩小清单；时间／目录／类别筛选不改写来源级计数。热点和未观察读取响应的 `files` 已筛选，`summary` 保持所选范围的分母。
 
-CodeFlicker CLI 使用 `--client codeflicker`，Web 中选择 CodeFlicker CLI，API 使用 `client=codeflicker`。例如 `agent-manor coverage <repositoryId> --client codeflicker --json`；后续文件、活动、证据查询沿用返回的 `version` 和相同筛选。首版历史范围为 `~/.codeflicker/projects` 中的主会话及能够确认关系的子会话；`requests/` 中的请求重放不作为独立活动来源。旧 IDE 的 SQLite 历史尚未接入。
+CodeFlicker CLI 使用 `--client codeflicker`，Web 中选择 CodeFlicker CLI，API 使用 `client=codeflicker`。例如 `agent-manor coverage <repositoryId> --client codeflicker --json`；后续文件、活动、证据查询沿用返回的 `version` 和相同筛选。历史范围为 `~/.codeflicker/projects` 中的主会话及能够确认关系的子会话；`requests/` 中的请求重放不作为独立活动来源。旧 IDE 的 SQLite 历史使用独立的桌面版身份。
 
 CodeFlicker 桌面版接入新版 MyFlicker 桌面端，使用 `--client codeflicker-desktop` 或 API `client=codeflicker-desktop`。默认发现 `~/.myflicker/sessions/<会话ID>/message/cache.jsonl`；`MYFLICKER_HOME` 可替换客户端目录，AgentManor 的显式来源配置优先。代码地图与会话库共用这份主来源，不重复索引同会话的底层执行轨迹。`checkpoints/registry.json` 提供正式 cwd；本机 `MyFlicker/app.db` 的会话标题缓存只补充已发现会话的标题，不把未下载的服务端历史当成本机完整记录。模型只按明确消息 UUID 关联底层日志，未记录时保持缺失。刷新会检查标题、cwd 和模型旁路的变化，原始来源始终只读。
 
@@ -124,9 +126,16 @@ Claude 头部发现仍限于 64 KiB／前 32 条记录，会在同一会话中�
 | `AGENT_MANOR_CODEFLICKER_DIR` | CodeFlicker CLI 来源，覆盖默认 `~/.codeflicker/projects`；仍排除 `requests/` |
 | `AGENT_MANOR_CODEFLICKER_DESKTOP_DIR` | CodeFlicker 桌面版来源目录，覆盖默认新版 JSONL 与旧 IDE SQLite 两个目录 |
 | `AGENT_MANOR_CODEFLICKER_DESKTOP_DB` | 可选的桌面标题缓存 `app.db` 路径；自定义来源不会自动读取默认标题库 |
+| `AGENT_MANOR_DSH_DIR` | DeepSeek Harness，默认 `~/.dsh/sessions`，只读 V3／V4 压缩事件流 |
+| `AGENT_MANOR_PI_DIR` | Pi，默认 `~/.pi/agent/sessions`，保留事件树分支 |
+| `AGENT_MANOR_WORKBUDDY_DIR` | WorkBuddy，默认 `~/.workbuddy/projects`；按原生身份补充邻近 SQLite 元信息 |
+| `AGENT_MANOR_OPENCODE_DIR` | OpenCode，默认 `~/.local/share/opencode`，读取 `opencode.db` |
+| `AGENT_MANOR_ZCODE_DIR` | ZCode，默认 `~/.zcode/cli/db`，读取 `db.sqlite` 并关联桌面任务索引 |
+| `AGENT_MANOR_CODEBUDDY_DIR` | CodeBuddy，默认 `~/.codebuddy/projects` |
+| `AGENT_MANOR_QODER_DIR` | Qoder，默认 `~/.qoder/projects` |
 | `AGENT_MANOR_PORT` 或 `serve --port N` | 默认随机空闲端口；仅绑定 `127.0.0.1` |
 
-历史目录环境变量须在后台启动前设置；已有后台使用它启动时的环境。需要切换时先显式 `stop`，再以新环境启动。隔离测试应使用独立 `AGENT_MANOR_HOME`，并把四类历史目录环境变量全部指向测试目录或空目录，防止连接日常后台或读取本机历史。
+历史目录环境变量须在后台启动前设置；已有后台使用它启动时的环境。需要切换时先显式 `stop`，再以新环境启动。隔离测试应使用独立 `AGENT_MANOR_HOME`，并把所有客户端的历史目录环境变量指向测试目录或空目录，防止连接日常后台或读取本机历史。
 
 已有开发历史却全零时，先用 `sources <repositoryId> --json` 核对是否只接入了测试样本，再检查启动环境中的历史目录覆盖。使用默认目录后重启并刷新；仓库目录的文件清单正常不代表开发会话已经接入。已删除 worktree 的恢复需要会话中的成功创建与 Git 清单证据，支持边界见 [历史支持矩阵](design/history-support.md)。
 

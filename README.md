@@ -1,6 +1,8 @@
 # AgentManor
 
-在本机分析 Codex／Claude Code 历史，查看它们在当前 Git 仓库中的读取与修改活动。
+在本机浏览和搜索 Code Agent 历史，查看它们在当前 Git 仓库中的读取与修改活动。
+
+支持 Codex、Claude Code、CodeFlicker CLI／桌面版、DeepSeek Harness、Pi、WorkBuddy、OpenCode、ZCode、CodeBuddy、Qoder。各来源按实际留存记录展示消息、工具与用量；缺失数据明确标注，格式边界见 [历史支持矩阵](docs/design/history-support.md)。
 
 首版提供目录代码地图、文件与行覆盖率、活动和原始证据回查，以及共用一个本地后台的 Web、CLI 和 Agent Skill。精确对应与近似对应分别展示；不能确定的范围保留采集缺口。
 
@@ -42,7 +44,7 @@ agent-manor stop --json
 
 ## 数据与统计
 
-- 默认发现 `~/.codex/sessions`、`~/.codex/archived_sessions`、`~/.claude/projects`；无法可靠归属的来源单独列出，可手动关联。
+- 默认发现已注册客户端的本机历史目录，完整目录与覆盖配置见 [使用指南](docs/usage.md#数据目录后台与缓存)；无法可靠归属的来源单独列出，可手动关联。
 - 默认统计当前工作区源码，包含未提交修改；配置与文档可切换。行数包括注释和空白行，依赖、生成物、二进制及链接目标默认排除。
 - 成功读取且内容、范围可对应时进入覆盖；搜索、失败、缺失结果和未知范围单列。历史编辑次数不等于最终 Git diff。
 - 分析索引默认在 `~/.agent-manor`。原始历史只读，会话索引保存浏览及搜索所需正文，代码地图索引保存所需历史源码片段；分析在本机完成，无需调用模型或上传历史。
