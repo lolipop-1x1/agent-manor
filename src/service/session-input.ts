@@ -7,6 +7,10 @@ export function sessionQuery(raw: Record<string, unknown>): SessionQuery {
     pageSize: integer(raw.pageSize, "pageSize", 50, 200) };
   for (const key of ["project", "q"] as const) query[key] = textValue(raw[key], key);
   if (raw.includeSubagents !== undefined) query.includeSubagents = queryBoolean(raw.includeSubagents, "includeSubagents");
+  if (raw.executionMode !== undefined) {
+    if (!["regular", "quiet", "all"].includes(raw.executionMode as string)) throw new ServiceError("INVALID_INPUT", "未知会话执行类型");
+    query.executionMode = raw.executionMode as SessionQuery["executionMode"];
+  }
   const kinds = textValue(raw.kinds, "kinds");
   if (kinds) {
     const values = kinds.split(",");

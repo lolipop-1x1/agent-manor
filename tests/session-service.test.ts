@@ -18,6 +18,8 @@ test("全局 HTTP 和串行 Worker 完整发布三客户端、无项目会话及
     await writeFile(join(roots[client], "demo.jsonl"), encodeSession(fixture[client]));
   }
   await writeFile(join(roots.codex, "orphan.jsonl"), encodeSession(fixture.orphan));
+  await writeFile(join(roots.codeflicker, "quiet.jsonl"), encodeSession([{ type: "message", sessionId: "quiet-http-demo", uuid: "quiet-user",
+    role: "user", content: "Quiet HTTP 合成样例", entrypoint: "sdk-cli", version: "0.3.26" }]));
   const service = await startService({ home: join(directory, "data"), roots });
   try {
     let status: SessionIndexStatus | undefined;
@@ -34,6 +36,15 @@ test("全局 HTTP 和串行 Worker 完整发布三客户端、无项目会话及
     assert.ok(codex);
     assert.equal((await apiRequest<SessionListResult>(service.instance, "/sessions?project=none")).total, 1);
     assert.equal((await apiRequest<SessionListResult>(service.instance, "/sessions?client=codeflicker")).total, 1);
+    const quiet = await apiRequest<SessionListResult>(service.instance, "/sessions?executionMode=quiet");
+    assert.equal(quiet.total, 1);
+    assert.equal(quiet.sessions[0]?.executionMode, "quiet");
+    assert.equal((await apiRequest<SessionListResult>(service.instance, "/sessions?executionMode=all")).total, 5);
+    assert.equal((await apiRequest<SessionSearchResult>(service.instance, "/sessions/search?q=Quiet&executionMode=regular")).total, 0);
+    const quietSearch = await apiRequest<SessionSearchResult>(service.instance, "/sessions/search?q=Quiet&executionMode=quiet");
+    assert.equal(quietSearch.total, 2, "标题与正文分别计为命中");
+    assert.ok(quietSearch.hits.every(hit => hit.session.id === quiet.sessions[0]!.id));
+    assert.equal((await apiRequest<SessionMessageResult>(service.instance, `/sessions/${quiet.sessions[0]!.id}/messages`)).total, 1);
     const profile = await apiRequest<SessionProfile>(service.instance, `/sessions/${codex.id}/profile`);
     assert.equal(profile.usage.inputTokens, 100, "重复 token_count 不累计");
     assert.equal(profile.usage.cachedInputTokens, 60);
@@ -70,7 +81,7 @@ test("全局 HTTP 和串行 Worker 完整发布三客户端、无项目会话及
     const locate = await apiRequest<{ target: { sessionId: string; messageId?: string } }>(service.instance, "/sessions/locate?client=codex&clientSessionId=demo-codex&callId=read-entry");
     assert.equal(locate.target.sessionId, codex.id);
     assert.ok(locate.target.messageId);
-    for (const query of ["page=0", "kinds=unknown", "client=unknown", "from=invalid", "pageSize=999", "includeSubagents=wrong"]) {
+    for (const query of ["page=0", "kinds=unknown", "client=unknown", "from=invalid", "pageSize=999", "includeSubagents=wrong", "executionMode=unknown"]) {
       await assert.rejects(apiRequest(service.instance, `/sessions?${query}`), { code: "INVALID_INPUT" });
     }
     await assert.rejects(apiRequest(service.instance, "/sessions/search"), { code: "INVALID_INPUT" });

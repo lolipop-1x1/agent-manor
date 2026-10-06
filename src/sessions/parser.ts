@@ -15,6 +15,7 @@ import type { DesktopModelRecord } from "./codeflicker-desktop.js";
 import { IDE_FORMAT, readIdeSnapshot } from "../history/adapters/codeflicker-ide.js";
 import type { IdeSnapshot } from "../history/adapters/codeflicker-ide.js";
 import { ideSessionRecords } from "./codeflicker-ide.js";
+import { sessionExecutionMode } from "../session-execution.js";
 
 const digest = (value: string) => createHash("sha256").update(value).digest("hex").slice(0, 24);
 const MAX_RECORD_BYTES = 16 * 1024 * 1024;
@@ -236,6 +237,14 @@ export async function parseSessionSource(source: SourceLocation, sink: SessionSi
   for await (const { record, line } of inputRecords(gap)) {
     currentRecordLine = line;
     const payload = object(record.payload);
+    const entrypoint = source.client === "codeflicker" && record.type === "message" ? string(record.entrypoint) : undefined;
+    if (entrypoint) {
+      const version = string(record.version);
+      meta.executionEntries ??= [];
+      if (!meta.executionEntries.some(entry => entry.entrypoint === entrypoint && entry.version === version)) {
+        meta.executionEntries.push({ entrypoint, version, recordLine: line });
+      }
+    }
     const inheritedHeader = source.client === "codex" && record.type === "session_meta"
       && (string(payload.id) ?? string(payload.session_id)) !== rawId;
     const occurredAt = source.format === DESKTOP_FORMAT || ideSnapshot ? desktopTimestamp(record) : string(record.timestamp) ?? string(payload.timestamp);
@@ -481,6 +490,7 @@ export async function parseSessionSource(source: SourceLocation, sink: SessionSi
   }
   if (!meta.project && targetsLimited) gap("budget_exceeded", "工具目标目录超过项目关联检查上限，未推断项目归属");
   meta.models = [...models];
+  meta.executionMode = sessionExecutionMode(meta.client, meta.executionEntries);
   meta.gaps = [...gaps.values()].map(item => ({ ...item, sourceId: meta.sourceId }));
   if (options.title !== undefined) {
     meta.title = options.title || firstUserTitle || "未命名会话";

@@ -81,6 +81,10 @@ Codex 会把部分自动注入内容保存成 `role=user`。优先采用 `intern
 
 ## 桌面与 CLI 的身份边界
 
+CodeFlicker CLI 保存执行入口、客户端版本与记录位置。已核查的 0.3.26 版本将 quiet 入口记录为 sdk-cli，界面显示 Quiet 模式标签，版本与原始依据放在悬停说明中。未核查版本不套用映射；恢复会话的多个入口保留，混合或未知入口不认定为纯 Quiet 会话，入口不用于推断父子关系。
+
+会话列表默认排除已确认 Quiet 的会话，可切换常规会话、仅 Quiet 模式或全部会话。Web 类型筛选同时用于列表与全局搜索，计数与分页遵循筛选；直接链接与会话内搜索仍可访问 Quiet 历史。HTTP 与 CLI 支持 executionMode 为 regular、quiet、all；CLI 列表默认 regular，未指定类型的 API／CLI 搜索仍覆盖全部历史。筛选改变展示，不删除原始来源或索引记录。
+
 CodeFlicker CLI 继续使用 `codeflicker`，CodeFlicker 桌面版使用 `codeflicker-desktop`。同名模型、底层引擎或相同会话字符串不会合并两个客户端。新版桌面的消息缓存为主来源；SQLite 只读取会话标题命名空间，模型只按原生消息 UUID 关联。简易、完整、轨迹、搜索、画像和地图联动共用规范化会话与稳定客户端身份。
 
 桌面执行后端单独决定用量口径：`CLAUDE_CODE`、`DEEPSEEK_HARNESS` 的普通输入须加缓存读取和写入，`MY_FLICKER`、`CODEX` 采用已规范化输入；后端不明或分项缺失时不计算无法确认的总输入。输出和可确认的缓存分项仍保留，缓存比例只使用同口径完整分母。桌面的累计运行 duration 不当作单次工具耗时。

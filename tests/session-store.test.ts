@@ -82,6 +82,23 @@ function source(store: SessionStore, summary: SessionSourceMeta, messages: Sessi
   return { path: summary.path, revision: pending.revision, fingerprint: "synthetic-fingerprint" };
 }
 
+test("默认列表排除 Quiet，类型筛选、分页、搜索与直接访问保持一致", async () => fixture(store => {
+  const quiet = source(store, meta("quiet-demo", { client: "codeflicker", executionMode: "quiet", title: "入口合成样例" }), [message("quiet-demo", 1, { text: "Quiet 检索样例" })]);
+  const regular = source(store, meta("regular-demo"), [message("regular-demo", 2)]);
+  const unknown = source(store, meta("unknown-demo", { client: "codeflicker" }), [message("unknown-demo", 3)]);
+  store.publish(store.createJob().id, [quiet, regular, unknown], []);
+  assert.equal(store.list().total, 2);
+  assert.ok(!store.list().sessions.some(item => item.id === "quiet-demo"));
+  assert.equal(store.list({ executionMode: "all", pageSize: 1, page: 3 }).total, 3);
+  assert.equal(store.list({ executionMode: "all", pageSize: 1, page: 3 }).sessions.length, 1);
+  assert.deepEqual(store.list({ executionMode: "quiet" }).sessions.map(item => item.id), ["quiet-demo"]);
+  assert.equal(store.list({ executionMode: "regular", client: "codeflicker" }).total, 1);
+  assert.equal(store.search({ q: "Quiet", executionMode: "regular" }).total, 0);
+  assert.equal(store.search({ q: "Quiet", executionMode: "quiet" }).total, 1);
+  assert.equal(store.search({ q: "Quiet", sessionId: "quiet-demo" }).total, 1);
+  assert.equal(store.messages("quiet-demo").session.executionMode, "quiet");
+}));
+
 test("搜索索引保留字面匹配、筛选、分页和短词语义，不保存正文副本", async () => fixture((store, path) => {
   const texts = ["防小偷合成场景", "甲乙丙x乙丙丁", "甲乙丙丁", "50%_ literal \\path \"Quoted\"", "Alpha BETA 😄中文测试", "短词防小", "中文隐藏过程"];
   const first = source(store, meta("search-a", { title: "标题防小偷", project: "/workspace/demo" }), texts.map((text, index) =>

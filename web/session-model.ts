@@ -1,9 +1,15 @@
-import type { MessageKind, SessionMessage, SessionQuery, SessionSearchHit, SessionUsage } from "../src/session-contracts";
+import type { MessageKind, SessionMessage, SessionQuery, SessionSearchHit, SessionSummary, SessionUsage } from "../src/session-contracts";
 import type { PanelSemantics, PanelSide } from "./workspace-layout";
+import { isQuietEntry } from "../src/session-execution";
 
 export const PAGE_SIZE = 40;
 export const TURN_PAGE_SIZE = 10;
 export type EvidenceTarget = { toolName?: string; resourceKind?: "mcp" | "skill_call" | "skill_read"; resourceName?: string; resourceServer?: string };
+
+export function executionEntryLabel(client: SessionSummary["client"], entry: NonNullable<SessionSummary["executionEntries"]>[number]): string {
+  // 仅采用已核查的客户端版本映射；入口标记也可能被原生子会话继承。
+  return isQuietEntry(client, entry) ? "Quiet 模式" : `入口 ${entry.entrypoint}`;
+}
 
 export function usageAxis(value: number): { max: number; ticks: number[] } {
   const target = Math.max(1, value) / 4;
@@ -67,6 +73,7 @@ export function sessionParams(query: Partial<SessionQuery> & {
     sessionId: query.sessionId,
     includeChildren: query.includeChildren,
     includeSubagents: query.includeSubagents,
+    executionMode: query.executionMode,
     pageUnit: query.pageUnit,
     turnPosition: query.turnPosition,
     toolName: query.toolName,

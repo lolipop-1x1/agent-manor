@@ -64,7 +64,7 @@ export async function refreshSessions(store: SessionStore, jobId: string, roots?
       // 新增子任务标题只失效 Codex 子来源，保留未改变的长主会话及其他客户端缓存。
       const childTitleFingerprint = source.client === "codex" && source.parentSessionId ? ":child-title-v2" : "";
       const projectMetadata = codeflickerProjects.get(source.path);
-      const projectFingerprint = source.client === "codeflicker" ? `:project-v1:${createHash("sha256").update(JSON.stringify(projectMetadata ?? null)).digest("hex")}` : "";
+      const projectFingerprint = source.client === "codeflicker" ? `:project-v1:${createHash("sha256").update(JSON.stringify(projectMetadata ?? null)).digest("hex")}:execution-v2` : "";
       const nativeModels = source.format === DESKTOP_FORMAT ? await desktopModels(source.path) : undefined;
       const desktopFingerprint = nativeModels ? `:desktop-v3:${source.cwd ?? ""}:${nativeModels.fingerprint}:${nativeModels.limited}` : "";
       const sourceFingerprint = `${source.client}:${source.format ?? "default"}:${digest.hash}${titleFingerprint}${childTitleFingerprint}${projectFingerprint}${desktopFingerprint}`;

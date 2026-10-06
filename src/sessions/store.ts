@@ -292,13 +292,15 @@ export class SessionStore {
     }
     if (query.from) { parts.push("COALESCE(r.updated_at,r.started_at,'')>=?"); values.push(query.from); }
     if (query.to) { parts.push("COALESCE(r.started_at,r.updated_at,'')<=?"); values.push(query.to); }
+    if (query.executionMode === "quiet") parts.push("json_extract(r.json,'$.executionMode')='quiet'");
+    if (query.executionMode === "regular") parts.push("COALESCE(json_extract(r.json,'$.executionMode'),'')<>'quiet'");
     return { sql: parts.length ? " AND " + parts.join(" AND ") : "", values };
   }
 
   list(query: SessionQuery = {}): SessionListResult {
     const version = this.version(query.version);
     const { page, pageSize } = paging(query);
-    const filter = this.filters(query);
+    const filter = this.filters({ ...query, executionMode: query.executionMode ?? "regular" });
     if (!query.includeSubagents) filter.sql += ` AND NOT EXISTS (SELECT 1 FROM session_version_relations relation
       WHERE relation.version=v.version AND relation.child=v.session_id)`;
     if (query.q?.trim()) {

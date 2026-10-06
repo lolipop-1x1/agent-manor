@@ -2,10 +2,10 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState, type FormEvent }
 import { ArrowClockwise, CaretDown, CaretLeft, CaretRight, ChatCircle, MagnifyingGlass, MapTrifold } from "@phosphor-icons/react";
 import type { Client } from "../src/clients";
 import { CLIENTS, clientName } from "../src/clients";
-import type { MessageKind, SessionIndexStatus, SessionJob, SessionListResult, SessionMessage, SessionMessageResult, SessionProfile, SessionSearchHit, SessionSearchResult, SessionSummary, SessionTimelineResult } from "../src/session-contracts";
+import type { MessageKind, SessionIndexStatus, SessionJob, SessionListResult, SessionMessage, SessionMessageResult, SessionProfile, SessionQuery, SessionSearchHit, SessionSearchResult, SessionSummary, SessionTimelineResult } from "../src/session-contracts";
 import { ApiError, errorMessage, isAborted, request } from "./api";
 import { ResizableWorkspace } from "./ResizableWorkspace";
-import { groupedTurns, localDateBoundary, PAGE_SIZE, TURN_PAGE_SIZE, type EvidenceTarget, searchHitMode, searchKinds, sessionParams, turnTitle, workspaceSessionSemantics } from "./session-model";
+import { executionEntryLabel, groupedTurns, localDateBoundary, PAGE_SIZE, TURN_PAGE_SIZE, type EvidenceTarget, searchHitMode, searchKinds, sessionParams, turnTitle, workspaceSessionSemantics } from "./session-model";
 import { MessageCard, kindLabels } from "./SessionMessage";
 import { SessionTrace } from "./SessionTrace";
 import { Notice, Pager } from "./SessionControls";
@@ -34,6 +34,10 @@ function SessionRelationship({ session }: { session: SessionSummary }) {
   </small>;
 }
 
+function QuietTag({ session }: { session: SessionSummary }) {
+  return session.executionMode === "quiet" ? <span className="session-badge session-quiet-tag" title="由已核查的执行入口记录确认；不表示父子关系。">Quiet 模式</span> : null;
+}
+
 function SearchHitList({ hits, total, page, pageSize, onPage, onSelect, title }: {
   hits: SessionSearchHit[]; total: number; page: number; pageSize: number; onPage: (page: number) => void; onSelect: (hit: SessionSearchHit) => void; title: string;
 }) {
@@ -43,6 +47,7 @@ function SearchHitList({ hits, total, page, pageSize, onPage, onSelect, title }:
       <span className="session-hit-kind">{hit.kind === "title" ? "标题" : kindLabels[hit.kind]}</span>
       <strong>{hit.session.title}</strong>
       <SessionRelationship session={hit.session} />
+      <QuietTag session={hit.session} />
       <small>{clientName(hit.session.client)} · {shortProject(hit.session.project)} · {dateLabel(hit.session.updatedAt)}</small>
       <span className="session-hit-snippet">{hit.snippet}</span>
     </button>)}
@@ -119,6 +124,7 @@ export default function Sessions({ active, target, onMap }: { active: boolean; t
   const [profileError, setProfileError] = useState<string | null>(null);
   const [includeChildren, setIncludeChildren] = useState(false);
   const [includeSubagents, setIncludeSubagents] = useState(false);
+  const [executionMode, setExecutionMode] = useState<NonNullable<SessionQuery["executionMode"]>>("regular");
   const [profileRetry, setProfileRetry] = useState(0);
   const [leftCollapsed, setLeftCollapsed] = useState(false);
   const [rightCollapsed, setRightCollapsed] = useState(false);
@@ -150,7 +156,7 @@ export default function Sessions({ active, target, onMap }: { active: boolean; t
     const timer = setTimeout(() => setDebouncedLocalQuery(localQuery.trim()), 200);
     return () => clearTimeout(timer);
   }, [localQuery]);
-  useEffect(() => { setListPage(1); setGlobalSearchPage(1); }, [client, project, from, to, debouncedGlobalQuery, includeProcess, includeSubagents]);
+  useEffect(() => { setListPage(1); setGlobalSearchPage(1); }, [client, project, from, to, debouncedGlobalQuery, includeProcess, includeSubagents, executionMode]);
   useEffect(() => { setLocalSearchPage(1); }, [selectedSessionId, debouncedLocalQuery, includeProcess]);
 
   useEffect(() => {
@@ -184,7 +190,8 @@ export default function Sessions({ active, target, onMap }: { active: boolean; t
     pageSize: PAGE_SIZE,
     version: status?.version,
     includeSubagents,
-  }), [client, project, from, to, debouncedGlobalQuery, queryKinds, listPage, status?.version, includeSubagents]);
+    executionMode,
+  }), [client, project, from, to, debouncedGlobalQuery, queryKinds, listPage, status?.version, includeSubagents, executionMode]);
 
   const searchOnly = !!debouncedGlobalQuery && !!selectedSessionId;
   useEffect(() => {
@@ -210,7 +217,8 @@ export default function Sessions({ active, target, onMap }: { active: boolean; t
     page: globalSearchPage,
     pageSize: 12,
     version: status?.version,
-  }), [client, project, from, to, debouncedGlobalQuery, includeProcess, globalSearchPage, status?.version]);
+    executionMode,
+  }), [client, project, from, to, debouncedGlobalQuery, includeProcess, globalSearchPage, status?.version, executionMode]);
 
   useEffect(() => {
     if (!active || !indexReady || !debouncedGlobalQuery || invalidDates) { setGlobalSearch(null); setGlobalSearchError(null); return; }
@@ -522,6 +530,7 @@ export default function Sessions({ active, target, onMap }: { active: boolean; t
               ...(status?.projects.map(path => ({ value: path, label: shortProject(path), description: path })) ?? [])]} onChange={setProject} />
           </div>
           <div className="session-date-filters"><div><span>从</span><DatePicker label="起始日期" value={from} onChange={setFrom} /></div><div><span>到</span><DatePicker label="截止日期" value={to} onChange={setTo} /></div></div>
+          <div className="session-execution-filter"><FilterSelect label="筛选会话类型" value={executionMode} options={[{ value: "regular", label: "常规会话" }, { value: "quiet", label: "仅 Quiet 模式" }, { value: "all", label: "全部会话" }]} onChange={value => setExecutionMode(value as NonNullable<SessionQuery["executionMode"]>)} /><small>默认隐藏 Quiet 模式，可按类型查看</small></div>
           {invalidDates && <p className="session-filter-error" role="alert">起始日期不能晚于截止日期。</p>}
           <div className="session-list-meta"><span>{debouncedGlobalQuery ? visibleGlobalSearch ? `${formatCount(visibleGlobalSearch.total)} 条命中` : "搜索历史" : sessionList ? `${formatCount(sessionList.total)} 个会话` : "会话列表"}</span>
             <button className="icon-button" aria-label="刷新会话索引" title="刷新会话索引" disabled={refreshing || activeJob(sessionJob)} onClick={submitRefresh}><ArrowClockwise size={16} className={refreshing || activeJob(sessionJob) ? "is-spinning" : ""} /></button>
@@ -538,9 +547,9 @@ export default function Sessions({ active, target, onMap }: { active: boolean; t
             {globalSearchLoading && debouncedGlobalQuery && <p className="session-search-status" role="status">正在搜索历史…</p>}
             {visibleGlobalSearch && debouncedGlobalQuery && <SearchHitList title="全局搜索命中" hits={visibleGlobalSearch.hits} total={visibleGlobalSearch.total} page={visibleGlobalSearch.page} pageSize={visibleGlobalSearch.pageSize} onPage={setGlobalSearchPage} onSelect={selectHit} />}
             {!debouncedGlobalQuery && sessionList?.sessions.map(session => <button key={session.id} className={`session-list-item${session.id === selectedSessionId ? " is-selected" : ""}`} aria-current={session.id === selectedSessionId ? "true" : undefined} onClick={() => selectSession(session)}>
-              <ChatCircle size={17} aria-hidden="true" /><span className="session-list-copy"><strong title={session.title}>{session.title}</strong><SessionRelationship session={session} /><small>{clientName(session.client)} · {shortProject(session.project)} · {dateLabel(session.updatedAt)}</small><small>{formatCount(session.messageCount)} 条消息 · {formatCount(session.turnCount)} 轮{session.models.length ? ` · ${session.models.join("、")}` : ""}</small></span><CaretRight size={15} aria-hidden="true" />
+              <ChatCircle size={17} aria-hidden="true" /><span className="session-list-copy"><strong title={session.title}>{session.title}</strong><SessionRelationship session={session} /><QuietTag session={session} /><small>{clientName(session.client)} · {shortProject(session.project)} · {dateLabel(session.updatedAt)}</small><small>{formatCount(session.messageCount)} 条消息 · {formatCount(session.turnCount)} 轮{session.models.length ? ` · ${session.models.join("、")}` : ""}</small></span><CaretRight size={15} aria-hidden="true" />
             </button>)}
-            {!debouncedGlobalQuery && !listLoading && !listError && sessionList?.sessions.length === 0 && <div className="session-empty-list"><ChatCircle size={26} aria-hidden="true" /><strong>{debouncedGlobalQuery || client !== "all" || project !== "all" || from || to ? "没有匹配的会话" : "还没有会话记录"}</strong>
+            {!debouncedGlobalQuery && !listLoading && !listError && sessionList?.sessions.length === 0 && <div className="session-empty-list"><ChatCircle size={26} aria-hidden="true" /><strong>{status?.sessionCount || debouncedGlobalQuery || client !== "all" || project !== "all" || from || to ? "没有匹配的会话" : "还没有会话记录"}</strong>
               <p>{status?.sessionCount ? "调整筛选或搜索条件。" : "刷新本机可发现的会话来源以建立索引。"}</p>{!status?.sessionCount && <button className="button primary" disabled={refreshing || activeJob(sessionJob)} onClick={() => void refresh()}>刷新历史</button>}
             </div>}
           </div>
@@ -557,6 +566,7 @@ export default function Sessions({ active, target, onMap }: { active: boolean; t
             <div><p className="eyebrow" title={selectedSession?.project}>{selectedSession ? <>{clientName(selectedSession.client)} · {shortProject(selectedSession.project)}{selectedSession.projectOrigin === "tool_path" && <span className="session-project-evidence">文件活动关联</span>}{selectedSession.projectOrigin === "client_metadata" && <span className="session-project-evidence">客户端项目元数据</span>}</> : "全部本机历史"}</p>
               <h1 title={selectedSession?.title}>{selectedSession?.title ?? (selectedSessionId ? "正在加载会话…" : "选择会话查看历史")}</h1>
               {selectedSession && <p className="session-main-meta">{dateLabel(selectedSession.startedAt)} · {formatCount(selectedSession.messageCount)} 条消息 · {formatCount(selectedSession.turnCount)} 轮{selectedSession.relationship ? ` · ${selectedSession.relationship === "fork" ? "分叉会话" : "子会话"}` : ""}</p>}
+              {selectedSession?.executionEntries?.length ? <p className="session-execution-meta" aria-label="执行入口记录">执行入口{selectedSession.executionEntries.length > 1 ? "（多个记录）" : ""}：{selectedSession.executionEntries.map(entry => <span className="session-badge session-quiet-tag" key={`${entry.entrypoint}:${entry.version ?? ""}`} title={`原始入口 ${entry.entrypoint} · 客户端版本 ${entry.version ?? "未记录"} · 原始记录 ${entry.recordLine}。Quiet 标签仅按已核查的 0.3.26 版本映射，入口不能证明父子关系。`}>{executionEntryLabel(selectedSession.client, entry)}</span>)}</p> : null}
               {selectedSession?.relationship && <p className="session-main-meta">标题来源：{titleOrigins[selectedSession.titleOrigin]} · {selectedSession.parentTitle ? `父会话：${selectedSession.parentTitle}` : "父会话不可用或关系尚未确认"}</p>}
             </div><button className="button subtle session-map-button" onClick={() => onMap(undefined, selectedSession?.project)} disabled={!selectedSession?.project}><MapTrifold size={16} />查看代码地图</button>
           </div>

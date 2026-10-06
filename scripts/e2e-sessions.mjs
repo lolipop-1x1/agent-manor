@@ -33,7 +33,7 @@ try {
   await run("git", ["init", "-q", repository]);
   await run("git", ["-C", repository, "add", "src/entry.ts"]);
   const fixture = sessionFixture(repository);
-  fixture.codeflicker = fixture.codeflicker.map(({ cwd, ...record }) => record);
+  fixture.codeflicker = fixture.codeflicker.map(({ cwd, ...record }) => ({ ...record, entrypoint: "sdk-cli", version: "0.3.26" }));
   const reference = join(directory, "reference-workspace");
   await mkdir(reference);
   await run("git", ["init", "-q", reference]);
@@ -62,9 +62,11 @@ try {
     { type: "response_item", ordinal: 5, payload: { type: "message", role: "assistant", channel: "final", content: [{ type: "output_text", text: "子任务搜索标记：查询已核对" }] } },
   ]));
   assert.equal((await command(["sessions", "refresh", "--wait"])).job.status, "complete");
-  const list = await command(["sessions", "list"]);
+  assert.equal((await command(["sessions", "list"])).total, 4, "默认排除 Quiet 会话");
+  assert.equal((await command(["sessions", "list", "--execution-mode", "quiet"])).total, 1);
+  const list = await command(["sessions", "list", "--execution-mode", "all"]);
   assert.equal(list.total, 5);
-  const allSessions = await command(["sessions", "list", "--include-subagents"]);
+  const allSessions = await command(["sessions", "list", "--include-subagents", "--execution-mode", "all"]);
   assert.equal(allSessions.total, 6);
   const child = allSessions.sessions.find(item => item.clientSessionId === "demo-child");
   assert.equal(child.title, "check_queries");
@@ -75,6 +77,7 @@ try {
   const flicker = list.sessions.find(item => item.clientSessionId === "demo-flicker");
   assert.equal(flicker.project, repository, "跨仓库读取不改变正式项目归属");
   assert.equal(flicker.projectOrigin, "client_metadata");
+  assert.deepEqual(flicker.executionEntries, [{ entrypoint: "sdk-cli", version: "0.3.26", recordLine: 1 }]);
   for (const item of list.sessions.filter(item => ["demo-codex", "demo-claude", "demo-flicker"].includes(item.clientSessionId))) {
     const profile = await command(["sessions", "profile", item.id]);
     assert.equal(profile.usage.inputTokens, 100);
@@ -110,7 +113,17 @@ try {
       expect(initialRequests.filter(request => request.path.endsWith(suffix)).length === 1, `首次加载 ${suffix} 应只请求一次`);
     }
     expect(initialRequests.filter(request => !request.path.endsWith("/status")).every(request => request.versioned), "列表、消息与画像应使用同一确认版本");
-    expect(await page.locator(".session-list-item").count() === 5, "默认收起已确认子任务，保留无项目主会话");
+    expect(await page.locator(".session-list-item").count() === 4, "默认收起 Quiet 与已确认子任务");
+    await page.getByRole("combobox", { name: "筛选会话类型", exact: true }).click();
+    await page.getByRole("option", { name: "仅 Quiet 模式", exact: true }).click();
+    await page.waitForFunction(() => document.querySelectorAll(".session-list-item").length === 1);
+    expect((await page.locator(".session-list-item .session-quiet-tag").innerText()) === "Quiet 模式", "列表标签只显示模式");
+    await page.locator(".session-list-item").click();
+    await page.getByLabel("执行入口记录", { exact: true }).waitFor();
+    expect(!(await page.getByLabel("执行入口记录", { exact: true }).innerText()).includes("0.3.26"), "标签不展示客户端版本");
+    await page.getByRole("combobox", { name: "筛选会话类型", exact: true }).click();
+    await page.getByRole("option", { name: "全部会话", exact: true }).click();
+    await page.waitForFunction(() => document.querySelectorAll(".session-list-item").length === 5);
     await page.getByLabel("显示子 Agent 会话", { exact: true }).check();
     await page.waitForFunction(() => document.querySelectorAll(".session-list-item").length === 6);
     expect((await page.locator(".session-list-item").filter({ hasText: "check_queries" }).innerText()).includes("属于 长会话工作区验收"), "子列表应标识父会话");
@@ -149,6 +162,9 @@ try {
     await page.locator(".session-list-item").click();
     await page.locator(".session-project-evidence").filter({ hasText: "客户端项目元数据" }).waitFor();
     expect((await page.locator(".sessions-main-heading .eyebrow").innerText()).includes("sample-workspace"), "CodeFlicker 详情应显示正式项目");
+    const execution = page.getByLabel("执行入口记录", { exact: true });
+    expect((await execution.innerText()).includes("Quiet 模式"), "详情应显示已核查的 Quiet 入口");
+    expect((await execution.locator(".session-badge").getAttribute("title")).includes("原始入口 sdk-cli"), "入口标签应保留原始依据");
     await page.getByRole("button", { name: "筛选项目", exact: true }).click();
     await page.getByRole("combobox", { name: "搜索项目", exact: true }).fill("sample-workspace");
     const projectOption = page.getByRole("option").filter({ hasText: "sample-workspace" });

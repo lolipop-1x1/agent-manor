@@ -93,7 +93,7 @@ export function createProgram(): Command {
   const sessionQueryString = (command: Command, extra: Record<string, string | undefined> = {}) => {
     const opts = command.optsWithGlobals<Options>();
     const params = new URLSearchParams();
-    for (const key of ["client", "project", "from", "to", "version", "page", "kinds", "q", "mode", "messageId", "sessionId"]) {
+    for (const key of ["client", "project", "from", "to", "version", "page", "kinds", "q", "mode", "messageId", "sessionId", "executionMode"]) {
       if (typeof opts[key] === "string") params.set(key, opts[key] as string);
     }
     if (typeof opts.pageSize === "string") params.set("pageSize", opts.pageSize);
@@ -103,10 +103,12 @@ export function createProgram(): Command {
   sessions.command("status").description("会话索引状态与采集缺口")
     .action(async (_options: Options, command: Command) => { await request(command, "/sessions/status"); });
   sessionFilters(sessions.command("list").description("分页列出主会话及独立记录")).option("--q <text>", "标题及正文关键词")
+    .option("--execution-mode <mode>", "regular、quiet 或 all，默认 regular")
     .option("--include-subagents", "同时列出已确认父关系的子 Agent 会话")
     .action(async (_options: Options, command: Command) => { await request(command, `/sessions${sessionQueryString(command,
       { includeSubagents: command.optsWithGlobals<Options>().includeSubagents ? "true" : undefined })}`); });
   sessionFilters(sessions.command("search <text>").description("搜索全部有效索引，返回消息定位")).option("--session-id <id>", "仅搜索指定会话")
+    .option("--execution-mode <mode>", "regular、quiet 或 all，默认搜索全部模式")
     .action(async (q: string, _options: Options, command: Command) => { await request(command, `/sessions/search${sessionQueryString(command, { q })}`); });
   sessionFilters(sessions.command("messages <id>").description("分页浏览简易、完整或轨迹消息"))
     .option("--mode <mode>", "brief、full 或 trace，默认 full").option("--message-id <id>", "定位消息所在页")

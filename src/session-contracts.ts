@@ -51,6 +51,9 @@ export interface SessionSummary {
   agentName?: string;
   project?: string;
   projectOrigin?: "cwd" | "client_metadata" | "tool_path";
+  /** 去重保留实际入口记录；恢复会话可能包含多个入口，不能据此判断父子关系。 */
+  executionEntries?: { entrypoint: string; version?: string; recordLine: number }[];
+  executionMode?: "quiet";
   parentSessionId?: string;
   parentTitle?: string;
   relationship?: "child" | "fork";
@@ -72,6 +75,7 @@ export interface SessionSink {
   usage(usage: SessionUsage): void;
 }
 export interface SessionQuery {
+  executionMode?: "regular" | "quiet" | "all";
   /** 仅控制列表；搜索与直接访问始终保留子会话。 */
   includeSubagents?: boolean;
   client?: Client;

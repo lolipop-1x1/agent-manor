@@ -35,6 +35,25 @@ async function parsed(client: Client, records: unknown[], extra = "") {
   } finally { await rm(directory, { recursive: true, force: true }); }
 }
 
+test("CodeFlicker CLI 保留原始入口和版本，去重且不覆盖恢复后的混合入口", async () => {
+  const native = (uuid: string, entrypoint?: string, version?: string) => ({ type: "message", sessionId: "entry-demo", uuid,
+    role: "user", content: "合成请求", entrypoint, version });
+  const sample = await parsed("codeflicker", [native("one", "sdk-cli", "0.3.26"), native("two", "sdk-cli", "0.3.26"),
+    native("resumed", "cli", "0.3.26"), native("unknown-version", "sdk-cli"), native("missing")]);
+  assert.deepEqual(sample.summary.executionEntries, [
+    { entrypoint: "sdk-cli", version: "0.3.26", recordLine: 1 },
+    { entrypoint: "cli", version: "0.3.26", recordLine: 3 },
+    { entrypoint: "sdk-cli", version: undefined, recordLine: 4 },
+  ]);
+  assert.equal(sample.summary.parentSessionId, undefined, "执行入口不能推断父身份");
+  assert.equal(sample.summary.executionMode, undefined, "混合或未知入口不误归为 Quiet");
+  assert.equal((await parsed("codeflicker", [native("quiet", "sdk-cli", "0.3.26")])).summary.executionMode, "quiet");
+  assert.equal((await parsed("codeflicker", [native("future", "sdk-cli", "0.3.27")])).summary.executionMode, undefined);
+  assert.equal((await parsed("codeflicker", [native("missing")])).summary.executionEntries, undefined);
+  assert.equal((await parsed("claude", [native("other", "sdk-cli", "0.3.26")])).summary.executionEntries, undefined);
+  assert.equal((await parsed("codeflicker-desktop", [native("desktop", "sdk-cli", "0.3.26")])).summary.executionEntries, undefined);
+});
+
 test("Codex 响应正文优先于事件投影，保留明确终答、模型、中文与工具轨迹", async () => {
   const sample = await parsed("codex", [meta(), { type: "turn_context", payload: { model: "fixture-model" } },
     { type: "event_msg", payload: { type: "user_message", message: "检查会话检索" } }, user(),

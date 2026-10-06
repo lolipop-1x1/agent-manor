@@ -3,7 +3,7 @@ import { test } from "node:test";
 import type { Client } from "../src/clients.ts";
 import type { SessionMessage, SessionSearchHit } from "../src/session-contracts.ts";
 import { panelSemantics } from "../web/workspace-layout.ts";
-import { displayRecorded, groupedTurns, searchHitMode, searchKinds, sessionParams, turnTitle, usageAxis, usageSegments, workspaceSessionSemantics } from "../web/session-model.ts";
+import { displayRecorded, executionEntryLabel, groupedTurns, searchHitMode, searchKinds, sessionParams, turnTitle, usageAxis, usageSegments, workspaceSessionSemantics } from "../web/session-model.ts";
 
 const summary = {
   id: "session-a", client: "codex" as Client, clientSessionId: "external-a", title: "合成会话", titleOrigin: "recorded" as const,
@@ -14,9 +14,18 @@ const message = (id: string, ordinal: number, turnId: string, kind: SessionMessa
   id, sessionId: summary.id, ordinal, recordLine: ordinal, turnId, kind, text: id,
 });
 
+test("Quiet 标签只映射已核查的 CLI 版本与入口，其他记录保持原文", () => {
+  const entry = { entrypoint: "sdk-cli", version: "0.3.26", recordLine: 1 };
+  assert.equal(executionEntryLabel("codeflicker", entry), "Quiet 模式");
+  assert.equal(executionEntryLabel("codeflicker", { ...entry, version: undefined }), "入口 sdk-cli");
+  assert.equal(executionEntryLabel("codeflicker", { ...entry, version: "0.3.27" }), "入口 sdk-cli");
+  assert.equal(executionEntryLabel("codeflicker", { ...entry, entrypoint: "cli" }), "入口 cli");
+  assert.equal(executionEntryLabel("codeflicker-desktop", entry), "入口 sdk-cli");
+});
+
 test("会话查询编码保留筛选、类型列表和消息精确定位", () => {
   const params = new URLSearchParams(sessionParams({ client: "codex", project: "none", q: "缓存 命中&模型", kinds: ["user", "tool_call"],
-    page: 3, pageSize: 40, version: "version-7", mode: "trace", messageId: "message / 9", sessionId: summary.id, includeSubagents: true }));
+    page: 3, pageSize: 40, version: "version-7", mode: "trace", messageId: "message / 9", sessionId: summary.id, includeSubagents: true, executionMode: "quiet" }));
   assert.equal(params.get("client"), "codex");
   assert.equal(params.get("project"), "none");
   assert.equal(params.get("q"), "缓存 命中&模型");
@@ -28,6 +37,7 @@ test("会话查询编码保留筛选、类型列表和消息精确定位", () =>
   assert.equal(params.get("messageId"), "message / 9");
   assert.equal(params.get("sessionId"), summary.id);
   assert.equal(params.get("includeSubagents"), "true");
+  assert.equal(params.get("executionMode"), "quiet");
 });
 
 test("默认搜索只包含用户与 AI 正文，过程选项加入完整记录类型", () => {
