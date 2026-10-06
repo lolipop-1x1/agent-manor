@@ -1,7 +1,7 @@
 # WorkBuddy、CodeBuddy 与 Qoder 适配
 
 Type: task
-Status: claimed
+Status: resolved
 Blocked by: 03
 
 ## Scope
@@ -14,3 +14,7 @@ Blocked by: 03
 - CodeBuddy 本机仅用户记录的来源正常展示缺失，不补造助手／工具／用量。
 - Qoder workspace 元信息首行不阻止正文发现；工具和用量能解析；agentId 或 parentUuid 单独不足以确认委派。
 - 未核验用量分母不计算缓存比例；原始证据回查与目录归属保留依据。
+
+## Answer
+
+三类客户端保持独立身份并复用规范化、工具提取和元信息补充。原生验收核对 WorkBuddy 25、CodeBuddy 2、Qoder 4 个会话。缺少成功状态或行号不补造行覆盖；CodeBuddy 仅用户记录的样本保持模型与用量未记录。字符串参数、用量去重、注入及异常流回归通过，见 [验收记录](../../../docs/validation/additional-agent-history.md)。
