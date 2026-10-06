@@ -32,7 +32,7 @@ test("会话查询编码保留筛选、类型列表和消息精确定位", () =>
 
 test("默认搜索只包含用户与 AI 正文，过程选项加入完整记录类型", () => {
   assert.deepEqual(searchKinds(false), ["user", "assistant"]);
-  assert.deepEqual(searchKinds(true), ["user", "assistant", "thinking", "tool_call", "tool_result", "system", "compression"]);
+  assert.deepEqual(searchKinds(true), ["user", "assistant", "thinking", "tool_call", "tool_result", "system", "context", "compression"]);
 });
 
 test("消息命中强制打开轨迹视图，标题命中保留当前模式", () => {

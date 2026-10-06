@@ -250,24 +250,24 @@ test("完整轮次分页保留初始、未知及超大单轮，首末和消息�
   store.publish(store.createJob().id, [revision, empty], []);
   const first = store.messages(id, { pageUnit: "turn", pageSize: 1 });
   assert.equal(first.total, 74);
-  assert.equal(first.totalTurns, 6);
-  assert.deepEqual(first.turns, [{ id: `${id}:turn:0`, position: 1, messageCount: 2 }]);
-  assert.equal(first.messages.length, 2);
-  const unknown = store.messages(id, { pageUnit: "turn", pageSize: 1, turnPosition: 2 });
-  assert.deepEqual(unknown.turns, [{ id: "unknown", position: 2, messageCount: 1 }]);
-  assert.equal(unknown.messages[0]?.turnId, "", "原始轮次身份不伪造");
+  assert.equal(first.totalTurns, 5);
+  assert.deepEqual(first.turns, [{ id: `${id}:turn:0`, position: 0, messageCount: 2 }, { id: "unknown", position: 1, messageCount: 1 }]);
+  assert.equal(first.messages.length, 3);
+  const unknown = store.messages(id, { pageUnit: "turn", pageSize: 1, turnPosition: 1 });
+  assert.deepEqual(unknown.turns?.at(-1), { id: "unknown", position: 1, messageCount: 1 });
+  assert.equal(unknown.messages.at(-1)?.turnId, "", "原始轮次身份不伪造");
   const large = store.messages(id, { pageUnit: "turn", pageSize: 1, page: 1, messageId: "message-60" });
-  assert.equal(large.page, 3);
+  assert.equal(large.page, 2);
   assert.equal(large.focusMessageId, "message-60");
   assert.equal(large.messages.length, 67);
   assert.equal(large.messages[0]?.id, "message-3");
   assert.equal(large.messages.at(-1)?.id, "message-69");
   const last = store.messages(id, { pageUnit: "turn", pageSize: 2, turnPosition: first.totalTurns });
   assert.equal(last.page, 3);
-  assert.deepEqual(last.turns?.map(turn => turn.position), [5, 6]);
+  assert.deepEqual(last.turns?.map(turn => turn.position), [5]);
   assert.equal(last.messages.at(-1)?.id, "message-73");
-  assert.equal(store.messages(id, { pageUnit: "turn", pageSize: 1, page: 999 }).page, 6);
-  assert.equal(store.messages(id, { pageUnit: "turn", turnPosition: 1, messageId: "message-73", pageSize: 1 }).page, 6, "消息定位优先于轮次位置");
+  assert.equal(store.messages(id, { pageUnit: "turn", pageSize: 1, page: 999 }).page, 5);
+  assert.equal(store.messages(id, { pageUnit: "turn", turnPosition: 1, messageId: "message-73", pageSize: 1 }).page, 5, "消息定位优先于轮次位置");
   const brief = store.messages(id, { mode: "brief", pageUnit: "turn", pageSize: 2 });
   assert.equal(brief.total, 6);
   assert.equal(brief.totalTurns, 4);
@@ -288,7 +288,7 @@ test("完整轮次分页保留初始、未知及超大单轮，首末和消息�
   assert.throws(() => store.messages("missing-session", { pageUnit: "turn" }), { code: "SOURCE_NOT_FOUND" });
   const read = store.messages(id, { pageUnit: "turn", pageSize: 1, toolName: "read" });
   assert.equal(read.focusMessageId, "message-4");
-  assert.equal(read.page, 3);
+  assert.equal(read.page, 2);
   const skill = store.messages(id, { pageUnit: "turn", resourceKind: "skill_read", resourceName: "synthetic-skill" });
   assert.equal(skill.focusMessageId, "message-9");
   const mcp = store.messages(id, { pageUnit: "turn", resourceKind: "mcp", resourceName: "lookup", resourceServer: "synthetic-server" });
@@ -490,4 +490,36 @@ test("Codex 状态库的 name 优先于旧 title，改名刷新且不改写来�
     await refresh();
     assert.equal(store.list().sessions[0]?.title, "状态库改名结果");
   } finally { state.close(); }
+}));
+
+test("初始上下文与实际轮次分开计数和分页，总览不搬运正文且遵守版本", async () => fixture(store => {
+  const id = "timeline-demo";
+  const revision = source(store, meta(id), [
+    message(id, 1, { turnId: `${id}:turn:0`, kind: "context", contextSource: "agents_md", text: "私有合成正文" }),
+    message(id, 2, { turnId: `${id}:turn:1`, text: "第一轮" }),
+    message(id, 3, { turnId: `${id}:turn:1`, kind: "tool_call", callId: "call", tool: "read", occurredAt: "2026-01-01T00:00:00Z" }),
+    message(id, 4, { turnId: `${id}:turn:2`, text: "第二轮" }),
+  ]);
+  const version = store.publish(store.createJob().id, [revision], []);
+  const first = store.messages(id, { mode: "trace", pageUnit: "turn", pageSize: 1 });
+  assert.equal(first.totalTurns, 2);
+  assert.deepEqual(first.turns?.map(turn => turn.position), [0, 1]);
+  assert.equal(first.messages.length, 3);
+  const second = store.messages(id, { mode: "trace", pageUnit: "turn", pageSize: 1, turnPosition: 2 });
+  assert.equal(second.messages[0]?.text, "第二轮");
+  assert.equal(second.turns?.[0]?.position, 2);
+  const focused = store.messages(id, { pageUnit: "turn", pageSize: 1, messageId: "message-1" });
+  assert.equal(focused.page, 1);
+  const brief = store.messages(id, { mode: "brief", pageUnit: "turn", pageSize: 1 });
+  assert.equal(brief.totalTurns, 2);
+  assert.equal(brief.messages[0]?.text, "第一轮");
+  const timeline = store.timeline(id);
+  assert.equal(timeline.version, version);
+  assert.equal(timeline.events.length, 4);
+  assert.equal(timeline.events[0]?.contextSource, "agents_md");
+  assert.equal(timeline.events[2]?.tool, "read");
+  assert.ok(timeline.events.every(event => !("text" in event) && !("json" in event)));
+  store.publish(store.createJob().id, [], []);
+  assert.equal(store.timeline(id, version).events.length, 4);
+  assert.throws(() => store.timeline(id), { code: "SOURCE_NOT_FOUND" });
 }));

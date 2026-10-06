@@ -2,11 +2,12 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState, type FormEvent }
 import { ArrowClockwise, CaretDown, CaretLeft, CaretRight, ChatCircle, MagnifyingGlass, MapTrifold } from "@phosphor-icons/react";
 import type { Client } from "../src/clients";
 import { CLIENTS, clientName } from "../src/clients";
-import type { MessageKind, SessionIndexStatus, SessionJob, SessionListResult, SessionMessage, SessionMessageResult, SessionProfile, SessionSearchHit, SessionSearchResult, SessionSummary } from "../src/session-contracts";
+import type { MessageKind, SessionIndexStatus, SessionJob, SessionListResult, SessionMessage, SessionMessageResult, SessionProfile, SessionSearchHit, SessionSearchResult, SessionSummary, SessionTimelineResult } from "../src/session-contracts";
 import { ApiError, errorMessage, isAborted, request } from "./api";
 import { ResizableWorkspace } from "./ResizableWorkspace";
 import { groupedTurns, localDateBoundary, PAGE_SIZE, TURN_PAGE_SIZE, type EvidenceTarget, searchHitMode, searchKinds, sessionParams, turnTitle, workspaceSessionSemantics } from "./session-model";
 import { MessageCard, kindLabels } from "./SessionMessage";
+import { SessionTrace } from "./SessionTrace";
 import { Notice, Pager } from "./SessionControls";
 import { SessionProfilePane } from "./SessionProfile";
 import { FilterSelect } from "./FilterSelect";
@@ -50,9 +51,9 @@ function SearchHitList({ hits, total, page, pageSize, onPage, onSelect, title }:
   </section>;
 }
 
-function TurnTimeline({ turn, position, mode, focusMessageId, project, onMap, onFocus, expanded, onToggle }: {
+function TurnTimeline({ turn, position, mode, focusMessageId, project, onMap, expanded, onToggle }: {
   turn: { id: string; messages: SessionMessage[] }; position: number; mode: Mode; focusMessageId?: string; project?: string; onMap: (path?: string, project?: string) => void;
-  onFocus: (message: SessionMessage) => void; expanded: boolean; onToggle: (open: boolean) => void;
+  expanded: boolean; onToggle: (open: boolean) => void;
 }) {
   const title = turnTitle(turn.id, position);
   const userMessage = turn.messages.find(message => message.kind === "user");
@@ -61,11 +62,6 @@ function TurnTimeline({ turn, position, mode, focusMessageId, project, onMap, on
     <summary><CaretDown size={15} aria-hidden="true" /><span>{title}</span><small>{turn.messages.length} 条记录</small>
       <span className="session-turn-summary">{userMessage?.text ?? answer?.text ?? "展开查看本轮记录"}</span></summary>
     {expanded && <div className="session-turn-events">
-      {mode === "trace" && <nav className="session-mini-timeline" aria-label={`${title}时间线`}>
-        {turn.messages.map(message => <button key={message.id} className={`timeline-item kind-${message.kind}${focusMessageId === message.id ? " is-active" : ""}`}
-          aria-label={`${kindLabels[message.kind]}，${dateLabel(message.occurredAt)}，跳转到记录`} title={`${kindLabels[message.kind]} · ${dateLabel(message.occurredAt)}`}
-          onClick={() => onFocus(message)}><i aria-hidden="true" /><span>{kindLabels[message.kind]}</span></button>)}
-      </nav>}
       {turn.messages.map(message => <MessageCard key={message.id} message={message} mode={mode} focused={focusMessageId === message.id} project={project} onMap={onMap} />)}
     </div>}
   </details>;
@@ -96,6 +92,12 @@ export default function Sessions({ active, target, onMap }: { active: boolean; t
   const [mode, setMode] = useState<Mode>("brief");
   const [messagePage, setMessagePage] = useState(1);
   const [focusMessageId, setFocusMessageId] = useState<string>();
+  const [traceSelection, setTraceSelection] = useState<string>();
+  const [traceFocusRequest, setTraceFocusRequest] = useState(0);
+  const [timeline, setTimeline] = useState<{ sessionId: string; data: SessionTimelineResult }>();
+  const [timelineLoading, setTimelineLoading] = useState(false);
+  const [timelineError, setTimelineError] = useState<string>();
+  const [timelineRetry, setTimelineRetry] = useState(0);
   const [messageData, setMessageData] = useState<SessionMessageResult | null>(null);
   const [messageDataKey, setMessageDataKey] = useState("");
   const [messageLoading, setMessageLoading] = useState(false);
@@ -138,6 +140,7 @@ export default function Sessions({ active, target, onMap }: { active: boolean; t
   const evidenceRequest = useRef<AbortController | undefined>(undefined);
   const previousJob = useRef<SessionJob | undefined>(undefined);
   useEffect(() => () => evidenceRequest.current?.abort(), []);
+  useEffect(() => { setTraceSelection(focusMessageId); }, [focusMessageId, selectedSessionId, messagePage]);
 
   useEffect(() => {
     const timer = setTimeout(() => setDebouncedGlobalQuery(globalQuery.trim()), 240);
@@ -257,6 +260,17 @@ export default function Sessions({ active, target, onMap }: { active: boolean; t
     return () => controller.abort();
   }, [active, indexReady, selectedSessionId, messageQuery, focusMessageId, reload, messageRetry]);
 
+  useEffect(() => {
+    if (!active || !indexReady || !selectedSessionId || mode !== "trace") return;
+    const controller = new AbortController();
+    setTimelineLoading(true); setTimelineError(undefined);
+    void request<SessionTimelineResult>(`/sessions/${encodeURIComponent(selectedSessionId)}/timeline${sessionParams({ version: status?.version })}`, { signal: controller.signal })
+      .then(data => { if (!controller.signal.aborted) setTimeline({ sessionId: selectedSessionId, data }); })
+      .catch(error => { if (!isAborted(error)) setTimelineError(errorMessage(error)); })
+      .finally(() => { if (!controller.signal.aborted) setTimelineLoading(false); });
+    return () => controller.abort();
+  }, [active, indexReady, selectedSessionId, status?.version, mode, reload, timelineRetry]);
+
   useLayoutEffect(() => {
     if (!active || !messageData || messageData.session.id !== selectedSessionId || messageDataKey !== `${selectedSessionId}${messageQuery}` || !readingPane.current) return;
     if (restoreScroll.current !== undefined) {
@@ -264,6 +278,7 @@ export default function Sessions({ active, target, onMap }: { active: boolean; t
       return;
     }
     if (!pageScroll.current) return;
+    if (mode === "trace") { pageScroll.current = false; return; }
     const node = focusMessageId && document.getElementById(`session-message-${focusMessageId}`);
     if (node && expandedTurns.has(messageData.messages.find(message => message.id === focusMessageId)?.turnId || "unknown")) {
       const pane = readingPane.current;
@@ -275,7 +290,7 @@ export default function Sessions({ active, target, onMap }: { active: boolean; t
       if (target) readingPane.current.scrollTop += target.getBoundingClientRect().top - readingPane.current.getBoundingClientRect().top - 10;
       pageScroll.current = false;
     } else if (pageScroll.current) { readingPane.current.scrollTop = 0; pageScroll.current = false; }
-  }, [active, focusMessageId, messageData, messageDataKey, messageQuery, expandedTurns, selectedSessionId, turnPosition]);
+  }, [active, focusMessageId, messageData, messageDataKey, messageQuery, expandedTurns, selectedSessionId, turnPosition, mode, traceFocusRequest]);
 
   const localSearchQuery = useMemo(() => sessionParams({ q: debouncedLocalQuery || undefined, kinds: searchKinds(includeProcess),
     sessionId: selectedSessionId, page: localSearchPage, pageSize: 12, version: status?.version }), [debouncedLocalQuery, includeProcess, selectedSessionId, localSearchPage, status?.version]);
@@ -339,7 +354,7 @@ export default function Sessions({ active, target, onMap }: { active: boolean; t
     if (target.mode) setMode(target.mode); else if (target.messageId) setMode("trace");
     pageScroll.current = true;
     setLocalQuery(""); searchBookmark.current = undefined;
-  }, [target?.sessionId, target?.messageId, target?.mode, target?.page, target?.turnPosition]);
+  }, [target]);
 
   useEffect(() => {
     if (!target?.sessionId && !selectedSessionId && sessionList?.sessions[0]) {
@@ -351,11 +366,11 @@ export default function Sessions({ active, target, onMap }: { active: boolean; t
   const selectedMessageData = messageData?.session.id === selectedSessionId ? messageData : undefined;
   const selectedSession = selectedMessageData?.session ?? selectedSummary ?? sessionList?.sessions.find(session => session.id === selectedSessionId);
   const turns = useMemo(() => groupedTurns(selectedMessageData?.messages ?? []), [selectedMessageData]);
-  const currentMessage = selectedMessageData?.messages.find(message => message.id === focusMessageId);
+  const currentMessage = selectedMessageData?.messages.find(message => message.id === (mode === "trace" ? traceSelection ?? focusMessageId : focusMessageId));
   const visibleGlobalSearch = globalQuery.trim() === debouncedGlobalQuery && globalSearchKey === globalSearchQuery ? globalSearch : null;
   const visibleLocalSearch = localQuery.trim() === debouncedLocalQuery && localSearchKey === localSearchQuery ? localSearch : null;
 
-  const captureReading = (): ReadingPosition => ({ mode, page: selectedMessageData?.page ?? messagePage, focus: focusMessageId, position: turnPosition,
+  const captureReading = (): ReadingPosition => ({ mode, page: selectedMessageData?.page ?? messagePage, focus: mode === "trace" ? traceSelection ?? focusMessageId : focusMessageId, position: turnPosition,
     scroll: readingPane.current?.scrollTop ?? 0, expanded: [...expandedTurns] });
   const rememberReading = () => { if (selectedSessionId) readingPositions.current.set(selectedSessionId, captureReading()); };
   const updateAddress = (id: string, state: Partial<ReadingPosition> = {}, replace = false) => {
@@ -378,6 +393,7 @@ export default function Sessions({ active, target, onMap }: { active: boolean; t
     updateAddress(id, saved ?? { mode: "brief" });
   };
   const selectHit = (hit: SessionSearchHit) => {
+    setTraceFocusRequest(value => value + 1);
     evidenceRequest.current?.abort();
     if (hit.session.id !== selectedSessionId) { rememberReading(); searchBookmark.current = undefined; setLocalQuery(""); }
     setSelectedSessionId(hit.session.id); setSelectedSummary(hit.session); setFocusMessageId(hit.messageId);
@@ -388,6 +404,7 @@ export default function Sessions({ active, target, onMap }: { active: boolean; t
   };
   const focusStep = (step: SessionProfile["steps"][number]) => {
     if (!step.messageId) return;
+    setTraceFocusRequest(value => value + 1);
     if (step.sessionId !== selectedSessionId) { rememberReading(); setSelectedSessionId(step.sessionId); setSelectedSummary(undefined); setLocalQuery(""); }
     setFocusMessageId(step.messageId); setMessagePage(1); setTurnPosition(undefined); setMode("trace"); setCompactPanel(null);
     setExpandedTurns(new Set([selectedMessageData?.messages.find(message => message.id === step.messageId)?.turnId || "unknown"]));
@@ -409,16 +426,23 @@ export default function Sessions({ active, target, onMap }: { active: boolean; t
       setMessageError("当前索引范围中没有可定位的调用证据，请刷新后重试。");
     } catch (error) { if (!isAborted(error)) setMessageError(errorMessage(error)); }
   };
-  const navigateToMessage = (message: SessionMessage) => {
-    pageScroll.current = true;
-    setExpandedTurns(current => new Set(current).add(message.turnId || "unknown"));
-    setFocusMessageId(message.id); updateAddress(message.sessionId, { mode, focus: message.id });
+  const inspectTrace = (message: SessionMessage) => {
+    setTraceSelection(message.id);
+    trackTraceTurn(message.turnId || "unknown");
+    updateAddress(message.sessionId, { mode: "trace", focus: message.id });
+  };
+  const trackTraceTurn = (id: string) => {
+    const turn = selectedMessageData?.turns?.find(turn => turn.id === id);
+    if (turn) { setCurrentTurn(turn.position); if (document.activeElement?.getAttribute("aria-label") !== "跳转轮次") setTurnInput(String(turn.position)); }
   };
   const changeMessagePage = (page: number) => {
+    setTraceSelection(undefined);
     setFocusMessageId(undefined); setTurnPosition(undefined); setMessagePage(page); pageScroll.current = true;
     if (selectedSessionId) updateAddress(selectedSessionId, { mode, page });
   };
   const jumpTurn = (position: number) => {
+    setTraceFocusRequest(value => value + 1);
+    setTraceSelection(undefined);
     const bounded = Math.max(1, Math.min(selectedMessageData?.totalTurns ?? 1, position));
     setTurnInput(String(bounded)); setCurrentTurn(bounded); setTurnPosition(bounded); setFocusMessageId(undefined);
     const resident = selectedMessageData?.turns?.find(turn => turn.position === bounded);
@@ -427,9 +451,10 @@ export default function Sessions({ active, target, onMap }: { active: boolean; t
     if (selectedSessionId) updateAddress(selectedSessionId, { mode, position: bounded });
   };
   const changeMode = (next: Mode) => {
-    const current = selectedMessageData?.messages.find(message => message.id === focusMessageId);
+    const current = selectedMessageData?.messages.find(message => message.id === (mode === "trace" ? traceSelection ?? focusMessageId : focusMessageId));
     const activeTurn = current?.turnId ?? selectedMessageData?.turns?.find(turn => turn.position === currentTurn)?.id;
-    const candidate = selectedMessageData?.messages.find(message => (!activeTurn || (message.turnId || "unknown") === activeTurn) && (next !== "brief" || message.kind === "user" || message.final));
+    const candidate = current && (next !== "brief" || current.kind === "user" || current.final) ? current
+      : selectedMessageData?.messages.find(message => (!activeTurn || (message.turnId || "unknown") === activeTurn) && (next !== "brief" || message.kind === "user" || message.final));
     setMode(next); setFocusMessageId(candidate?.id); setTurnPosition(undefined); setExpandedTurns(new Set()); pageScroll.current = true;
     if (selectedSessionId) updateAddress(selectedSessionId, { mode: next, focus: candidate?.id, page: candidate ? undefined : messagePage });
   };
@@ -544,15 +569,16 @@ export default function Sessions({ active, target, onMap }: { active: boolean; t
           </div>}
           {showLocalHits && localQuery && <div className="session-local-results">{localSearchError && <Notice danger>{localSearchError}</Notice>}{visibleLocalSearch && debouncedLocalQuery && <SearchHitList title="当前会话命中" hits={visibleLocalSearch.hits} total={visibleLocalSearch.total} page={visibleLocalSearch.page} pageSize={visibleLocalSearch.pageSize} onPage={setLocalSearchPage} onSelect={hit => { setLocalHitIndex(visibleLocalSearch.hits.indexOf(hit)); selectHit(hit); }} />}</div>}
           {selectedMessageData && <nav className="session-turn-navigation" aria-label="轮次导航">
-            <button className="text-button" disabled={!selectedMessageData.totalTurns || currentTurn <= 1} onClick={() => jumpTurn(1)}>首组</button>
+            <button className="text-button" disabled={!selectedMessageData.totalTurns || currentTurn === 1} onClick={() => jumpTurn(1)}>首轮</button>
             <button className="icon-button" aria-label="上一轮" disabled={currentTurn <= 1} onClick={() => jumpTurn(currentTurn - 1)}><CaretLeft size={14} /></button>
-            <form onSubmit={event => { event.preventDefault(); if (turnInput) jumpTurn(Number(turnInput)); }}><label>组<input aria-label="跳转轮次" type="number" min="1" max={selectedMessageData.totalTurns || 1} value={turnInput} onChange={event => setTurnInput(event.target.value)} /> / {formatCount(selectedMessageData.totalTurns ?? 0)}</label><button className="text-button" type="submit">前往</button></form>
+            <form onSubmit={event => { event.preventDefault(); if (turnInput) jumpTurn(Number(turnInput)); }}><label>第<input aria-label="跳转轮次" type="number" min="1" max={selectedMessageData.totalTurns || 1} value={turnInput === "0" ? "" : turnInput} placeholder="上下文" onChange={event => setTurnInput(event.target.value)} /> 轮 / 共 {formatCount(selectedMessageData.totalTurns ?? 0)} 轮</label><button className="text-button" type="submit">跳转</button></form>
             <button className="icon-button" aria-label="下一轮" disabled={currentTurn >= (selectedMessageData.totalTurns ?? 0)} onClick={() => jumpTurn(currentTurn + 1)}><CaretRight size={14} /></button>
-            <button className="text-button" disabled={currentTurn >= (selectedMessageData.totalTurns ?? 0)} onClick={() => jumpTurn(selectedMessageData.totalTurns!)}>末组</button>
-            <span className="session-turn-range">每页 {TURN_PAGE_SIZE} 组 · 按完整轮次</span>
+            <button className="text-button" disabled={currentTurn >= (selectedMessageData.totalTurns ?? 0)} onClick={() => jumpTurn(selectedMessageData.totalTurns!)}>末轮</button>
+            <span className="session-turn-range">{currentTurn === 0 ? "正在查看初始上下文" : `每页 ${TURN_PAGE_SIZE} 轮 · 上下文不计入轮次`}</span>
           </nav>}
         </div>
-        <div ref={readingPane} className="session-message-scroll" aria-label="对话阅读区" onScroll={() => {
+        <div ref={readingPane} className={`session-message-scroll${mode === "trace" ? " is-trace" : ""}`} aria-label="对话阅读区" onScroll={() => {
+          if (mode === "trace") return;
           const pane = readingPane.current; if (!pane || !selectedMessageData?.turns) return;
           const top = pane.getBoundingClientRect().top;
           const visible = [...pane.querySelectorAll<HTMLElement>(".session-turn")].filter(node => node.getBoundingClientRect().top <= top + 30).at(-1);
@@ -573,15 +599,17 @@ export default function Sessions({ active, target, onMap }: { active: boolean; t
             </details>}
             {selectedMessageData && <>
               {!selectedMessageData.messages.length && !messageLoading ? <div className="session-message-empty"><h2>此会话没有可显示的记录</h2><p className="muted">来源可能只保留元数据，或当前模式下没有对应内容。</p></div> : <>
-                {mode === "trace" && <p className="session-trace-note">轨迹仅展示来源留存的事件。展开轮次及过程内容查看详情。</p>}
-                <div className="session-turns">{turns.map((turn, index) => <TurnTimeline key={turn.id} turn={turn} position={index + 1} mode={mode} focusMessageId={focusMessageId} project={selectedMessageData.session.project}
-                  onMap={onMap} onFocus={navigateToMessage} expanded={expandedTurns.has(turn.id)} onToggle={open => toggleTurn(turn.id, open)} />)}</div>
+                {mode === "trace" ? <SessionTrace key={selectedMessageData.session.id} messages={selectedMessageData.messages} steps={profile?.steps ?? []} focusMessageId={focusMessageId} focusRequest={traceFocusRequest} focusTurnId={selectedMessageData.turns?.find(turn => turn.position === turnPosition)?.id}
+                  timeline={timeline?.sessionId === selectedMessageData.session.id ? timeline.data.events : []} timelineLoading={timelineLoading} timelineError={timelineError} onRetryTimeline={() => setTimelineRetry(value => value + 1)} onTimelineSelect={event => focusStep({ id: event.id, sessionId: event.sessionId, messageId: event.id })}
+                  project={selectedMessageData.session.project} onMap={onMap} onInspect={inspectTrace} onViewTurn={trackTraceTurn} /> :
+                  <div className="session-turns">{turns.map((turn, index) => <TurnTimeline key={turn.id} turn={turn} position={index + 1} mode={mode} focusMessageId={focusMessageId} project={selectedMessageData.session.project}
+                    onMap={onMap} expanded={expandedTurns.has(turn.id)} onToggle={open => toggleTurn(turn.id, open)} />)}</div>}
               </>}
             </>}
             {currentMessage && <span className="sr-only" aria-live="polite">已定位到{kindLabels[currentMessage.kind]}记录。</span>}
           </> : <div className="session-message-empty"><ChatCircle size={30} aria-hidden="true" /><h2>选择一个会话</h2><p className="muted">按客户端、项目、时间或关键词筛选，搜索命中可直接定位记录。</p></div>}
         </div>
-        {selectedMessageData && <div className="session-reading-footer"><span>{formatCount(selectedMessageData.messages.length)} 条记录 · 当前页 {selectedMessageData.turns?.length ?? 0} 组</span><Pager page={selectedMessageData.page} pageSize={selectedMessageData.pageSize} total={selectedMessageData.totalTurns ?? 0} onChange={changeMessagePage} label="轮次分页" /></div>}
+        {selectedMessageData && <div className="session-reading-footer"><span>{formatCount(selectedMessageData.messages.length)} 条记录 · 当前页 {selectedMessageData.turns?.filter(turn => turn.position > 0).length ?? 0} 轮</span><Pager page={selectedMessageData.page} pageSize={selectedMessageData.pageSize} total={selectedMessageData.totalTurns ?? 0} onChange={changeMessagePage} label="轮次分页" /></div>}
       </main>
 
       <SessionProfilePane profile={profile} loading={profileLoading} error={profileError} includeChildren={includeChildren} setIncludeChildren={setIncludeChildren}

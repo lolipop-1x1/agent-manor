@@ -5,6 +5,9 @@ export function sessionFixture(project) {
   return {
     codex: [
       { type: "session_meta", timestamp: time, payload: { id: "demo-codex", cwd: project, title: "实现状态检查" } },
+      record({ type: "message", role: "user", content: [{ type: "input_text", text: "# AGENTS.md instructions for /workspace/example\n<INSTRUCTIONS>注入样本标记：遵循合成项目规则</INSTRUCTIONS>" }, { type: "input_text", text: "<environment_context>合成环境</environment_context>" }],
+        internal_chat_message_metadata_passthrough: { content_item_kinds: ["agents_md.instructions", "environments.environment_context"] } }, 0),
+      record({ type: "message", role: "user", content: [{ type: "input_text", text: '<external_codex_apps_open_page>{"page_id":null}</external_codex_apps_open_page>' }] }, 0),
       { type: "turn_context", payload: { turn_id: "turn-one", model: "fixture-codex" } },
       record({ type: "message", role: "user", content: [{ type: "input_text", text: "给示例服务增加状态检查" }] }, 1),
       record({ type: "message", role: "assistant", channel: "commentary", content: [{ type: "output_text", text: "先读取当前实现" }] }, 2),

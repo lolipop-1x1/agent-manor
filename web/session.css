@@ -66,7 +66,6 @@
 .session-hit strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 10px; }
 .session-hit small { overflow: hidden; color: var(--muted); text-overflow: ellipsis; white-space: nowrap; font-size: 9px; }
 .session-hit-snippet { overflow: hidden; color: var(--muted); font-size: 10px; line-height: 1.6; text-overflow: ellipsis; white-space: nowrap; }
-.session-trace-note { margin: 7px 0 11px; color: var(--muted); font-size: 10px; line-height: 1.6; }
 .session-turn { margin: 8px 0; border-radius: 6px; background: var(--surface); }
 .session-turn > summary { display: grid; grid-template-columns: 15px auto auto minmax(0, 1fr); align-items: center; gap: 8px; min-height: 34px; padding: 6px 9px; border-radius: 5px; color: var(--text); background: var(--surface-alt); cursor: pointer; list-style: none; }
 .session-turn > summary::-webkit-details-marker { display: none; }
@@ -77,12 +76,6 @@
 .session-turn > summary small { color: var(--muted); font-size: 9px; white-space: nowrap; }
 .session-turn-summary { overflow: hidden; color: var(--muted); font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
 .session-turn-events { position: relative; padding: 3px 8px 9px 20px; }
-.session-mini-timeline { display: flex; gap: 8px; overflow-x: auto; padding: 7px 3px 9px; border-bottom: 1px solid var(--border); scrollbar-width: thin; }
-.timeline-item { display: inline-flex; align-items: center; gap: 4px; flex-shrink: 0; border: 0; border-radius: 4px; padding: 3px 5px; color: var(--muted); background: transparent; font-size: 9px; }
-.timeline-item:hover, .timeline-item.is-active { color: var(--accent); background: var(--accent-soft); }
-.timeline-item i { width: 7px; height: 7px; border: 2px solid var(--accent); border-radius: 50%; background: var(--surface); }
-.timeline-item.kind-user i { border-color: #368ec3; }
-.timeline-item.kind-tool_call i, .timeline-item.kind-tool_result i { border-color: #4aa889; }
 .session-message { position: relative; margin: 8px 0; border: 1px solid var(--border); border-radius: 6px; padding: 10px 12px; background: var(--surface); scroll-margin: 90px; }
 .session-message.is-focused { border-color: var(--accent); box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 16%, transparent); }
 .session-message-head { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; min-width: 0; }

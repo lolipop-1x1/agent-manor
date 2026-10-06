@@ -138,6 +138,7 @@ export async function startService(options: ServiceOptions = {}) {
       return { target };
     });
     app.get<{ Params: { id: string }; Querystring: Query }>("/api/v1/sessions/:id/messages", async request => library.messages(request.params.id, sessionMessageQuery(request.query)));
+    app.get<{ Params: { id: string }; Querystring: Query }>("/api/v1/sessions/:id/timeline", async request => library.timeline(request.params.id, textValue(request.query.version, "version")));
     app.get<{ Params: { id: string }; Querystring: Query }>("/api/v1/sessions/:id/profile", async request => library.profile(request.params.id, {
       ...sessionQuery(request.query), includeChildren: queryBoolean(request.query.includeChildren, "includeChildren"),
     }));

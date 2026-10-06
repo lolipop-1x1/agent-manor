@@ -33,7 +33,7 @@ export function turnTitle(id: string, position: number): string {
   return id === "unknown" ? "轮次未记录" : `本页第 ${position} 组`;
 }
 
-const processKinds: MessageKind[] = ["thinking", "tool_call", "tool_result", "system", "compression"];
+const processKinds: MessageKind[] = ["thinking", "tool_call", "tool_result", "system", "context", "compression"];
 
 export function searchKinds(includeProcess: boolean): MessageKind[] {
   return includeProcess ? ["user", "assistant", ...processKinds] : ["user", "assistant"];

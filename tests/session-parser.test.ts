@@ -90,6 +90,52 @@ test("Codex 后备标题跳过自动注入的项目说明，保留原始消息",
   assert.equal(sample.summary.title, "检查标题显示");
   assert.equal(sample.summary.titleOrigin, "first_user");
   assert.equal(sample.messages[0]?.text, instructions);
+  assert.equal(sample.messages[0]?.kind, "context");
+  assert.equal(sample.messages[0]?.contextSource, "agents_md");
+  assert.equal(sample.messages[0]?.contextEvidence, "wrapper");
+  assert.equal(sample.summary.turnCount, 1);
+});
+
+test("Codex 内容分类元信息优先于正文格式，未知类型和真实文本不误判为注入", async () => {
+  const marked = (id: string, body: string, kinds: unknown) => response({ type: "message", id, role: "user",
+    content: [{ type: "input_text", text: body }], internal_chat_message_metadata_passthrough: { content_item_kinds: kinds } });
+  const instructions = "# AGENTS.md instructions\n<INSTRUCTIONS>合成规则</INSTRUCTIONS>";
+  const sample = await parsed("codex", [meta(), marked("agents", "客户端保存的指令正文", ["agents_md.instructions", "environments.environment_context"]),
+    marked("page", "客户端保存的页面上下文", ["additional_content.codex_apps_open_page"]), marked("human", "真实请求", ["user.text"])]);
+  assert.deepEqual(sample.messages.map(message => message.kind), ["context", "context", "user"]);
+  assert.deepEqual(sample.messages.slice(0, 2).map(message => message.contextEvidence), ["client_metadata", "client_metadata"]);
+  assert.equal(sample.messages[0]?.contextSource, "agents_md");
+  assert.equal(sample.messages[0]?.text, "客户端保存的指令正文");
+  assert.equal(sample.summary.turnCount, 1);
+  for (const kinds of [["user.text"], ["agents_md.instructions", "user.text"], ["unknown.kind"], ["constructor"], [], null, "agents_md.instructions"]) {
+    const human = await parsed("codex", [meta(), marked("human", instructions, kinds)]);
+    assert.equal(human.messages[0]?.kind, "user", JSON.stringify(kinds));
+    assert.equal(human.messages[0]?.text, instructions);
+    assert.equal(human.summary.turnCount, 1);
+  }
+});
+
+test("Codex 完整注入包不占用户轮次，混合请求、引用与未闭合内容仍为用户消息", async () => {
+  const agents = "# AGENTS.md instructions for /workspace/demo\n<INSTRUCTIONS>合成规则</INSTRUCTIONS>\n<environment_context>合成环境</environment_context>";
+  const page = '<external_codex_apps_open_page>{"page_id":null}</external_codex_apps_open_page>';
+  const sample = await parsed("codex", [meta(), user("agents", agents), user("page", page), user("human", "请检查示例服务"),
+    user("runtime", "<environment_context>新的环境</environment_context>"), assistant("answer", "完成", { channel: "final" })]);
+  assert.deepEqual(sample.messages.map(message => message.kind), ["context", "context", "user", "context", "assistant"]);
+  assert.equal(sample.summary.turnCount, 1);
+  assert.equal(sample.summary.title, "请检查示例服务");
+  assert.ok(sample.messages.slice(0, 2).every(message => message.turnId.endsWith(":turn:0")));
+  assert.ok(sample.messages.slice(2).every(message => message.turnId.endsWith(":turn:1")));
+  for (const body of ["请解释 AGENTS.md 的用途", `请解释以下规则：\n${agents}`, `\`\`\`text\n${agents}\n\`\`\``,
+    `${agents}\n真实提问`, "<INSTRUCTIONS>未闭合", `${page}\n这个是什么意思？`, '<send_user_message_question_reply>人工回答</send_user_message_question_reply>']) {
+    const human = await parsed("codex", [meta(), user("human", body)]);
+    assert.equal(human.messages[0]?.kind, "user", body);
+    assert.equal(human.summary.turnCount, 1);
+    assert.equal(human.messages[0]?.text, body);
+  }
+  const fallback = await parsed("codex", [meta(), { type: "event_msg", payload: { type: "user_message", message: agents } },
+    { type: "event_msg", payload: { type: "user_message", message: "真实请求" } }]);
+  assert.deepEqual(fallback.messages.map(message => message.kind), ["context", "user"]);
+  assert.equal(fallback.summary.turnCount, 1);
 });
 
 test("Codex 后备标题提取浏览器包装中的真实请求，跳过环境与 Skill 内容", async () => {

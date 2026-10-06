@@ -10,7 +10,7 @@ export function sessionQuery(raw: Record<string, unknown>): SessionQuery {
   const kinds = textValue(raw.kinds, "kinds");
   if (kinds) {
     const values = kinds.split(",");
-    if (values.some(value => !["user", "assistant", "thinking", "tool_call", "tool_result", "system", "compression"].includes(value))) {
+    if (values.some(value => !["user", "assistant", "thinking", "tool_call", "tool_result", "system", "context", "compression"].includes(value))) {
       throw new ServiceError("INVALID_INPUT", "未知会话内容类型");
     }
     query.kinds = [...new Set(values)] as MessageKind[];

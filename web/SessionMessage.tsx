@@ -6,14 +6,14 @@ import type { MessageKind, SessionMessage } from "../src/session-contracts";
 import { displayRecorded } from "./session-model";
 
 export const kindLabels: Record<MessageKind, string> = {
-  user: "用户", assistant: "AI", thinking: "思考", tool_call: "工具请求", tool_result: "工具响应", system: "系统", compression: "压缩",
+  user: "用户", assistant: "AI", thinking: "思考", tool_call: "工具请求", tool_result: "工具响应", system: "系统", context: "上下文", compression: "压缩",
 };
 export const resourceLabels = { mcp: "MCP 证据", skill_call: "Skill 调用", skill_read: "Skill 读取" } as const;
 const statusLabels = { success: "成功", failure: "失败", unknown: "未知" } as const;
 const PREVIEW_LENGTH = 6000;
 
-function MessageBody({ message, focused, project, onMap }: {
-  message: SessionMessage; focused: boolean; project?: string; onMap: (path?: string, project?: string) => void;
+export function MessageBody({ message, focused, project, onMap, flat = false }: {
+  message: SessionMessage; focused: boolean; project?: string; onMap: (path?: string, project?: string) => void; flat?: boolean;
 }) {
   const isProcess = !["user", "assistant"].includes(message.kind);
   const [open, setOpen] = useState(focused);
@@ -22,6 +22,7 @@ function MessageBody({ message, focused, project, onMap }: {
   const text = message.text || "（该记录没有可显示的正文）";
   const shown = full ? text : text.slice(0, PREVIEW_LENGTH);
   const more = text.length > PREVIEW_LENGTH && <button className="text-button session-text-expand" onClick={() => setFull(value => !value)}>{full ? "收起长内容" : `展开全部内容 · ${text.length.toLocaleString("zh-CN")} 字符`}</button>;
+  if (isProcess && flat) return <div className="trace-payload"><pre>{shown}</pre>{more}</div>;
   if (isProcess) return <details className="session-message-detail" open={open} onToggle={event => setOpen(event.currentTarget.open)}>
     <summary>{kindLabels[message.kind]}内容 · {text.length.toLocaleString("zh-CN")} 字符</summary>
     {open && <><pre>{shown}</pre>{more}</>}
@@ -51,6 +52,7 @@ export const MessageCard = memo(function MessageCard({ message, mode, focused, p
       <strong>{isTool ? message.tool ?? "工具" : message.kind === "assistant" ? message.model ?? "AI 回复" : kindLabels[message.kind]}</strong>
       {message.final && <span className={`session-final is-${message.final}`}>{message.final === "explicit" ? "明确最终回答" : "推断最终回答"}</span>}
       {message.copied && <span className="session-evidence-label">已识别复制记录</span>}
+      {message.contextSource && <span className="session-evidence-label">{message.contextSource === "agents_md" ? "AGENTS.md 注入" : "客户端注入包"}</span>}
       {message.status && <span className={`session-status is-${message.status}`}>{statusLabels[message.status]}</span>}
       {message.durationMs !== undefined && <span className="session-duration"><Clock size={12} />{displayRecorded(message.durationMs)} ms</span>}
       <time>{message.occurredAt ? new Date(message.occurredAt).toLocaleString("zh-CN", { hour12: false }) : "时间未记录"}</time>

@@ -9,6 +9,7 @@ import type { MessageKind, SessionMessage, SessionSink, SessionSourceMeta } from
 import { object, string, tokens, UsageParser } from "./parser-usage.js";
 import { projectFromToolPaths } from "./parser-project.js";
 import { sessionTitle } from "./title.js";
+import { codexContext } from "./codex-context.js";
 import { DESKTOP_FORMAT, desktopCalls, desktopIdentity, desktopResult, desktopTimestamp } from "../history/adapters/codeflicker-desktop.js";
 import type { DesktopModelRecord } from "./codeflicker-desktop.js";
 import { IDE_FORMAT, readIdeSnapshot } from "../history/adapters/codeflicker-ide.js";
@@ -345,8 +346,10 @@ export async function parseSessionSource(source: SourceLocation, sink: SessionSi
           message(key, "thinking", body, line, { ...extra, model: currentModel });
           projectedReasoning = { key, text: body, turnId };
         } else if (!hasResponseTranscript && ["user_message", "agent_message"].includes(string(payload.type) ?? "")) {
-          const kind = payload.type === "user_message" ? "user" : payload.type === "agent_reasoning" ? "thinking" : "assistant";
-          message(`event:${string(payload.id) ?? line}`, kind, text(payload.message ?? payload.text), line, { ...extra, model: kind === "user" ? undefined : currentModel }, kind === "user");
+          const body = text(payload.message ?? payload.text);
+          const context = payload.type === "user_message" ? codexContext(body, passthrough.content_item_kinds) : undefined;
+          const kind = payload.type === "user_message" ? context ? "context" : "user" : "assistant";
+          message(`event:${string(payload.id) ?? line}`, kind, body, line, { ...extra, ...context, model: kind === "user" ? undefined : currentModel }, kind === "user");
         } else if (["task_aborted", "turn_aborted", "error"].includes(string(payload.type) ?? "")) {
           interrupted = true; message(`event:${line}`, "system", display(payload), line, extra);
         } else if (payload.type === "item_completed") {
@@ -371,9 +374,11 @@ export async function parseSessionSource(source: SourceLocation, sink: SessionSi
       extra.model = string(payload.model) ?? currentModel;
       if (type === "message" || type === "agent_message") {
         const role = type === "agent_message" ? "assistant" : string(payload.role);
-        const kind: MessageKind = role === "user" ? "user" : role === "assistant" ? "assistant" : "system";
+        const body = text(payload.content);
+        const context = role === "user" ? codexContext(body, passthrough.content_item_kinds) : undefined;
+        const kind: MessageKind = role === "user" ? context ? "context" : "user" : role === "assistant" ? "assistant" : "system";
         const phase = string(payload.phase) ?? string(payload.channel) ?? string(passthrough.channel);
-        message(key, kind, text(payload.content), line, { ...extra, final: kind === "assistant" && ["final", "final_answer"].includes(phase ?? "") ? "explicit" : undefined }, kind === "user");
+        message(key, kind, body, line, { ...extra, ...context, final: kind === "assistant" && ["final", "final_answer"].includes(phase ?? "") ? "explicit" : undefined }, kind === "user");
       } else if (type === "reasoning") {
         const body = text(payload.summary) || text(payload.content);
         if (!body && payload.encrypted_content && projectedReasoning?.turnId !== turnId) gap("unsupported_format", "思考正文仅有加密内容，未解密或补造");

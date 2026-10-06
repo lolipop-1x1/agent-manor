@@ -89,7 +89,7 @@ export function createProgram(): Command {
     .option("--project <path>", "项目绝对路径；none 表示无项目").option("--from <time>", "ISO 8601 起始时间")
     .option("--to <time>", "ISO 8601 截止时间").option("--version <id>", "完整会话索引版本")
     .option("--page <number>", "页码").option("--page-size <number>", "每页条数，最多 200")
-    .option("--kinds <list>", "逗号分隔 user、assistant、thinking、tool_call、tool_result、system、compression");
+    .option("--kinds <list>", "逗号分隔 user、assistant、thinking、tool_call、tool_result、system、context、compression");
   const sessionQueryString = (command: Command, extra: Record<string, string | undefined> = {}) => {
     const opts = command.optsWithGlobals<Options>();
     const params = new URLSearchParams();

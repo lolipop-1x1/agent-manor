@@ -1,7 +1,7 @@
 import type { Client } from "./clients.js";
 import type { Gap } from "./contracts.js";
 
-export type MessageKind = "user" | "assistant" | "thinking" | "tool_call" | "tool_result" | "system" | "compression";
+export type MessageKind = "user" | "assistant" | "thinking" | "tool_call" | "tool_result" | "system" | "context" | "compression";
 export interface SessionMessage {
   id: string;
   sessionId: string;
@@ -21,7 +21,13 @@ export interface SessionMessage {
   copied?: boolean;
   resource?: { kind: "mcp" | "skill_call" | "skill_read"; name: string; server?: string };
   filePaths?: string[];
+  /** Codex 注入上下文的来源；正文仍保留原记录。 */
+  contextSource?: "agents_md" | "environment" | "client";
+  contextEvidence?: "client_metadata" | "wrapper";
 }
+/** 总览只返回定位和显示所需元信息，不加载正文。 */
+export type SessionTimelineEvent = Pick<SessionMessage, "id" | "sessionId" | "ordinal" | "turnId" | "kind" | "occurredAt" | "model" | "callId" | "tool" | "status" | "durationMs" | "contextSource"> & { usage?: boolean };
+export interface SessionTimelineResult { version: string; events: SessionTimelineEvent[] }
 export interface SessionUsage {
   id: string;
   messageId?: string;

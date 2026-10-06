@@ -41,7 +41,9 @@ agent-manor evidence <repositoryId> <eventId> --version <analysisVersion> --clie
 
 默认列表收起有已确认父关系的子 Agent 会话，勾选“显示子 Agent 会话”可查看全部。搜索始终包含子记录并标明所属父会话；父会话的画像或轨迹提供子任务入口，子详情可返回父会话。父记录缺失或关系不明确时保留独立入口。子任务缺少正式标题时使用任务路径名称、Agent 名称或编号，并标明来源。
 
-对话每页显示 10 个完整消息组，使用首末组、上一轮／下一轮、组编号或页码导航。初始上下文和未知轮次也可能单独成组，因此组位置与用户轮次编号可能不同。完整／轨迹默认折叠过程，搜索或请求定位会自动展开。用户与 AI 正文支持 Markdown，长内容可展开；图片只显示替代文字。全局搜索默认覆盖标题及用户／AI 正文，过程内容可额外选入；会话内命中显示在浮层中，清除搜索恢复原阅读位置。点击用量图、请求编号、工具或资源名称可回到证据记录。
+对话每页显示 10 个完整轮次，使用首轮／末轮、上一轮／下一轮、轮次编号或页码导航。初始上下文随第一页返回，不计用户轮次；完整模式默认折叠过程，轨迹显示紧凑事件表。搜索或请求定位会自动展开。用户与 AI 正文支持 Markdown，长内容可展开；图片只显示替代文字。全局搜索默认覆盖标题及用户／AI 正文，过程内容可额外选入；会话内命中显示在浮层中，清除搜索恢复原阅读位置。点击用量图、请求编号、工具或资源名称可回到证据记录。
+
+轨迹上方的三行时间线覆盖整段会话，可切换事件顺序、轮次和记录时间；悬停查看节点信息，点击节点或用左右方向键定位到对应页。下方详情可切换工具参数／返回结果、预览／原始正文。Codex 注入优先按客户端分类识别，旧日志再从完整包格式推断，并说明依据；上下文不进入简易版，也不计为用户提问，过程搜索仍可检索。总览 API 为 `GET /api/v1/sessions/:id/timeline`，只返回同版本定位元信息。
 
 请求用量趋势显示从零开始的 Token 纵轴。鼠标悬浮查看请求编号、模型、时间和输入／缓存读取／输出数值；未记录与零值分开。Tab 聚焦图表后，可用左右方向键切换请求、Home／End 到首末请求、Enter／空格定位消息。
 
@@ -62,7 +64,7 @@ agent-manor sessions cacheclear --wait --json
 
 API 为 `GET /api/v1/sessions`、`/sessions/search`、`/sessions/:id/messages`、`/sessions/:id/profile`、`/sessions/status`，刷新用 `POST /sessions/refresh`，清除并重建用 `DELETE /sessions/cache`；会话任务沿用 `/jobs/:id` 查询。默认消息每页 50 条，最多 200。查询参数为 `client/project/from/to/q/kinds/page/pageSize/version`；`kinds` 只限定列表匹配与搜索范围，不删减消息上下文；消息另有 `mode/messageId`，画像另有 `includeChildren=true`。
 
-消息 API 可选择 `pageUnit=turn`，此时默认每页 10 组，返回 `totalTurns`、当前页的 `turns` 元信息和完整消息；`total` 仍为当前视图消息数。`turnPosition` 为当前视图的一基组位置，`messageId` 定位优先于组位置。`toolName` 或 `resourceKind/resourceName/resourceServer` 可以定位首条调用／资源证据，返回 `focusMessageId`；过程记录不属于简易模式，需要完整或轨迹模式。未指定 `pageUnit` 时沿用按消息分页，现有 CLI 查询保持原有行为。
+消息 API 可选择 `pageUnit=turn`，此时默认每页 10 轮，返回 `totalTurns`、当前页的 `turns` 元信息和完整消息；`total` 仍为当前视图消息数。`turnPosition` 为当前视图的一基轮次位置，`messageId` 定位优先于轮次位置。初始上下文 `position=0`，随第一页返回且不计入 `totalTurns`。`toolName` 或 `resourceKind/resourceName/resourceServer` 可以定位首条调用／资源证据，返回 `focusMessageId`；过程记录不属于简易模式，需要完整或轨迹模式。未指定 `pageUnit` 时沿用按消息分页，现有 CLI 查询保持原有行为。
 
 浏览所需正文仅存本机索引，不上传、不调用模型；原始来源消失后新版排除，刷新失败继续显示上一完整版本。记录值、估算值与缺失的含义见 [会话统计口径](design/session-history.md)。
 

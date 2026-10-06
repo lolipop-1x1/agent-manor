@@ -5,7 +5,7 @@ import { join } from "node:path";
 import test from "node:test";
 import { startService } from "../src/server.js";
 import { apiRequest, delay } from "../src/service/runtime.js";
-import type { SessionIndexStatus, SessionJob, SessionListResult, SessionMessageResult, SessionProfile, SessionSearchResult } from "../src/session-contracts.js";
+import type { SessionIndexStatus, SessionJob, SessionListResult, SessionMessageResult, SessionProfile, SessionSearchResult, SessionTimelineResult } from "../src/session-contracts.js";
 import { sessionFixture, encodeSession } from "../scripts/session-fixture.mjs";
 import { SessionStore } from "../src/sessions/store.js";
 
@@ -49,6 +49,13 @@ test("全局 HTTP 和串行 Worker 完整发布三客户端、无项目会话及
     const messages = await apiRequest<SessionMessageResult>(service.instance, `/sessions/${codex.id}/messages?mode=trace&messageId=${hit.messageId}`);
     assert.ok(messages.messages.some(message => message.id === hit.messageId));
     const brief = await apiRequest<SessionMessageResult>(service.instance, `/sessions/${codex.id}/messages?mode=brief`);
+    assert.equal(brief.session.turnCount, 1, "注入包不能增加用户轮次");
+    assert.ok(brief.messages.every(message => message.kind !== "context"));
+    const overview = await apiRequest<SessionTimelineResult>(service.instance, `/sessions/${codex.id}/timeline`);
+    assert.equal(overview.version, list.version);
+    assert.equal(overview.events.filter(event => event.kind === "context").length, 2);
+    assert.ok(overview.events.every(event => !("text" in event)));
+    assert.equal(overview.events.filter(event => event.usage).length, 1);
     assert.equal(brief.messages.filter(message => message.kind === "assistant").length, 1);
     assert.ok(brief.messages.some(message => message.final === "explicit"));
     const turnPage = await apiRequest<SessionMessageResult>(service.instance, `/sessions/${codex.id}/messages?mode=brief&pageUnit=turn`);

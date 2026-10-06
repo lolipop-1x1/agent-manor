@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import type { Gap } from "../contracts.js";
-import type { SessionIndexStatus, SessionJob, SessionListResult, SessionMessage, SessionMessageQuery, SessionMessageResult, SessionProfile, SessionQuery, SessionSearchResult, SessionSink, SessionSourceMeta, SessionSummary, SessionUsage } from "../session-contracts.js";
+import type { SessionIndexStatus, SessionJob, SessionListResult, SessionMessage, SessionMessageQuery, SessionMessageResult, SessionProfile, SessionQuery, SessionSearchResult, SessionSink, SessionSourceMeta, SessionSummary, SessionTimelineEvent, SessionTimelineResult, SessionUsage } from "../session-contracts.js";
 import { StoreError } from "../index/store.js";
 import { sessionTitle } from "./title.js";
 
@@ -18,7 +18,7 @@ const decodeMessage = (row: MessageRow): SessionMessage => ({ ...decode<SessionM
 const literal = (value: string) => `%${value.replace(/[\\%_]/g, "\\$&")}%`;
 const paging = (query: SessionQuery) => ({ page: Math.max(1, Math.floor(query.page ?? 1)), pageSize: Math.min(200, Math.max(1, Math.floor(query.pageSize ?? 50))) });
 const kindsOf = (query: SessionQuery) => (query.kinds?.length ? query.kinds : ["user", "assistant"])
-  .filter(kind => ["user", "assistant", "tool_call", "tool_result", "thinking", "system", "compression"].includes(kind));
+  .filter(kind => ["user", "assistant", "tool_call", "tool_result", "thinking", "system", "context", "compression"].includes(kind));
 
 /** 全局正文按来源修订保存，读者只访问最后完整发布的版本。 */
 export class SessionStore {
@@ -340,16 +340,19 @@ export class SessionStore {
       ) SELECT normalized_turn AS id,SUM(CASE WHEN ${visible} THEN 1 ELSE 0 END) AS messageCount
         FROM ordered GROUP BY normalized_turn HAVING messageCount>0 ORDER BY MIN(sequence)`)
         .all(revision) as { id: string; messageCount: number }[];
-      const totalTurns = groups.length;
+      const initial = groups.filter(turn => turn.id.endsWith(":turn:0"));
+      const rounds = groups.filter(turn => !turn.id.endsWith(":turn:0"));
+      const totalTurns = rounds.length;
       const total = groups.reduce((sum, turn) => sum + turn.messageCount, 0);
-      const targetPosition = target ? groups.findIndex(turn => turn.id === (target.turn_id || "unknown")) + 1 : query.turnPosition;
+      const targetPosition = target ? target.turn_id.endsWith(":turn:0") ? 0 : rounds.findIndex(turn => turn.id === (target.turn_id || "unknown")) + 1 : query.turnPosition;
       if (targetPosition !== undefined) {
-        if (targetPosition < 1 || targetPosition > totalTurns) throw new StoreError("INVALID_INPUT", "轮次位置超出当前视图范围");
-        pagination.page = Math.floor((targetPosition - 1) / pagination.pageSize) + 1;
+        if (targetPosition < 0 || targetPosition > totalTurns) throw new StoreError("INVALID_INPUT", "轮次位置超出当前视图范围");
+        pagination.page = targetPosition === 0 ? 1 : Math.floor((targetPosition - 1) / pagination.pageSize) + 1;
       }
       pagination.page = Math.min(pagination.page, Math.max(1, Math.ceil(totalTurns / pagination.pageSize)));
-      const turns = groups.slice((pagination.page - 1) * pagination.pageSize, pagination.page * pagination.pageSize)
+      const turns = rounds.slice((pagination.page - 1) * pagination.pageSize, pagination.page * pagination.pageSize)
         .map((turn, index) => ({ ...turn, position: (pagination.page - 1) * pagination.pageSize + index + 1 }));
+      if (pagination.page === 1) turns.unshift(...initial.map(turn => ({ ...turn, position: 0 })));
       const turnIds = turns.flatMap(turn => turn.id === "unknown" ? ["", "unknown"] : [turn.id]);
       const messages = turns.length ? (this.database.prepare(`SELECT json,text FROM session_messages WHERE revision=?${condition}
         AND turn_id IN (${turnIds.map(() => "?").join(",")}) ORDER BY ordinal,id`)
@@ -366,6 +369,24 @@ export class SessionStore {
     const messages = (this.database.prepare(`SELECT json,text FROM session_messages WHERE revision=?${condition} ORDER BY ordinal,id LIMIT ? OFFSET ?`)
       .all(revision, pagination.pageSize, (pagination.page - 1) * pagination.pageSize) as MessageRow[]).map(decodeMessage);
     return { version, session, messages, total, ...pagination, focusMessageId: target?.id };
+  }
+
+  timeline(id: string, requestedVersion?: string): SessionTimelineResult {
+    const version = this.version(requestedVersion);
+    const { revision } = this.session(id, version);
+    // JSON 投影在 SQLite 内完成，避免把每条消息正文搬进服务或浏览器堆。
+    const events = this.database.prepare(`SELECT json_object('id',id,'sessionId',json_extract(json,'$.sessionId'),
+      'ordinal',ordinal,'turnId',turn_id,'kind',kind,'occurredAt',json_extract(json,'$.occurredAt'),
+      'model',json_extract(json,'$.model'),'callId',call_id,'tool',json_extract(json,'$.tool'),
+      'status',json_extract(json,'$.status'),'durationMs',json_extract(json,'$.durationMs'),
+      'contextSource',json_extract(json,'$.contextSource'),'usage',id IN
+        (SELECT message_id FROM session_usage WHERE revision=? AND message_id IS NOT NULL)) AS json
+      FROM session_messages WHERE revision=? ORDER BY ordinal,id`).all(revision, revision) as JsonRow[];
+    return { version, events: events.map(row => {
+      const event = Object.fromEntries(Object.entries(decode<SessionTimelineEvent>(row)).filter(([, value]) => value !== null)) as SessionTimelineEvent;
+      event.usage = Boolean(event.usage);
+      return event;
+    }) };
   }
 
   search(query: SessionQuery & { sessionId?: string } = {}): SessionSearchResult {
