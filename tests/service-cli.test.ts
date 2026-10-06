@@ -42,7 +42,7 @@ test("CodeFlicker 的 CLI 与 API 使用同一分析版本、覆盖、来源及�
   await run("git", ["init", "-q", repository]);
   await writeFile(join(repository, "src/a.ts"), "alpha\nbeta\n");
   await writeFile(join(repository, "src/b.ts"), "unread\n");
-  const service = await startService({ home, roots: { codex: [], claude: [], codeflicker: [], "codeflicker-desktop": [] }, startupRefresh: false });
+  const service = await startService({ home, roots: { codex: [], claude: [], codeflicker: [], "codeflicker-desktop": [], dsh: [], pi: [], workbuddy: [], opencode: [], zcode: [], codebuddy: [], qoder: [] }, startupRefresh: false });
   const cli = fileURLToPath(new URL("../src/cli.ts", import.meta.url));
   const hook = fileURLToPath(import.meta.resolve("tsx/esm"));
   const env = { ...process.env, AGENT_MANOR_HOME: home };

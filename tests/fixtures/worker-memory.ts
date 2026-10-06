@@ -5,7 +5,7 @@ import { AnalysisStore, WorkerManager } from "../../src/index/index.js";
 const [repositoryPath, history, directory] = process.argv.slice(2) as [string, string, string];
 const store = new AnalysisStore(join(directory, "index.sqlite"));
 const repository = await store.registerRepository(repositoryPath);
-const manager = new WorkerManager(store, { roots: { codex: [], claude: [], codeflicker: history, "codeflicker-desktop": [] } });
+const manager = new WorkerManager(store, { roots: { codex: [], claude: [], codeflicker: history, "codeflicker-desktop": [], dsh: [], pi: [], workbuddy: [], opencode: [], zcode: [], codebuddy: [], qoder: [] } });
 try {
   for (let attempt = 0; attempt < 2; attempt++) {
     const job = await manager.waitForJob(manager.refresh(repository.id).id);

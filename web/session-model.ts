@@ -52,6 +52,7 @@ export function sessionParams(query: Partial<SessionQuery> & {
   includeChildren?: boolean;
   pageUnit?: "turn";
   turnPosition?: number;
+  branch?: string;
   toolName?: string;
   resourceKind?: string;
   resourceName?: string;
@@ -76,6 +77,7 @@ export function sessionParams(query: Partial<SessionQuery> & {
     executionMode: query.executionMode,
     pageUnit: query.pageUnit,
     turnPosition: query.turnPosition,
+    branch: query.branch,
     toolName: query.toolName,
     resourceKind: query.resourceKind,
     resourceName: query.resourceName,

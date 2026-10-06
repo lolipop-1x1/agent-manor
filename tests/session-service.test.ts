@@ -11,7 +11,7 @@ import { SessionStore } from "../src/sessions/store.js";
 
 test("全局 HTTP 和串行 Worker 完整发布三客户端、无项目会话及可定位的过程搜索", async () => {
   const directory = await mkdtemp(join(tmpdir(), "manor-session-service-"));
-  const roots = { codex: join(directory, "codex"), claude: join(directory, "claude"), codeflicker: join(directory, "codeflicker"), "codeflicker-desktop": [] };
+  const roots = { codex: join(directory, "codex"), claude: join(directory, "claude"), codeflicker: join(directory, "codeflicker"), "codeflicker-desktop": [], dsh: [], pi: [], workbuddy: [], opencode: [], zcode: [], codebuddy: [], qoder: [] };
   const fixture = sessionFixture(join(directory, "unregistered-project"));
   for (const client of ["codex", "claude", "codeflicker"] as const) {
     await mkdir(roots[client]);
@@ -127,7 +127,7 @@ test("HTTP 完整轮次分页可定位跨旧消息分页阈值的工具，首末
     title: "合成轮次导航", titleOrigin: "recorded", messageCount: ordinal, turnCount: 3, models: [], gaps: [] });
   store.publish(store.createJob().id, [{ path, revision: pending.revision, fingerprint: "synthetic" }], []);
   store.close();
-  const service = await startService({ home, startupRefresh: false, roots: { codex: [], claude: [], codeflicker: [], "codeflicker-desktop": [] } });
+  const service = await startService({ home, startupRefresh: false, roots: { codex: [], claude: [], codeflicker: [], "codeflicker-desktop": [], dsh: [], pi: [], workbuddy: [], opencode: [], zcode: [], codebuddy: [], qoder: [] } });
   try {
     const first = await apiRequest<SessionMessageResult>(service.instance, `/sessions/${id}/messages?pageUnit=turn&pageSize=1&turnPosition=1`);
     assert.equal(first.messages.length, 55);

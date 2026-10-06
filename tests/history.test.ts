@@ -29,7 +29,7 @@ test("Claude 同会话后续 cwd 补齐发现和来源，metadata-only 会话自
     { type: "user", sessionId: "metadata-session", cwd: directory },
     { type: "user", sessionId: "metadata-session", cwd: "/synthetic/later" },
   ]));
-  const [discovered] = await discoverSources({ codex: [], claude: [directory], codeflicker: [], "codeflicker-desktop": [] });
+  const [discovered] = await discoverSources({ codex: [], claude: [directory], codeflicker: [], "codeflicker-desktop": [], dsh: [], pi: [], workbuddy: [], opencode: [], zcode: [], codebuddy: [], qoder: [] });
   assert.equal(discovered!.cwd, directory);
   const parsed = await parseSource(path, "claude");
   assert.equal(parsed.cwd, directory);
@@ -223,7 +223,7 @@ test("无 fork 来源证明的相同请求和结果不会跨来源合并", async
 test("读取源文件只读，发现嵌套与归档目录，头部候选含 cwd", async () => temporary(async (directory) => {
   await writeFile(join(directory, "source.jsonl"), encode([meta()]));
   await writeFile(join(directory, "ignore.txt"), "not a source");
-  const sources = await discoverSources({ codex: directory, claude: [], codeflicker: [], "codeflicker-desktop": [] });
+  const sources = await discoverSources({ codex: directory, claude: [], codeflicker: [], "codeflicker-desktop": [], dsh: [], pi: [], workbuddy: [], opencode: [], zcode: [], codebuddy: [], qoder: [] });
   assert.equal(sources.length, 1);
   assert.equal(sources[0]!.cwd, "/synthetic/repo");
   assert.equal(sources[0]!.sessionId, "synthetic-session");

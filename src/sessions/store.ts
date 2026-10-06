@@ -302,8 +302,8 @@ export class SessionStore {
     const version = this.version(query.version);
     const { page, pageSize } = paging(query);
     const filter = this.filters({ ...query, executionMode: query.executionMode ?? "regular" });
-    if (!query.includeSubagents) filter.sql += ` AND NOT EXISTS (SELECT 1 FROM session_version_relations relation
-      WHERE relation.version=v.version AND relation.child=v.session_id)`;
+    if (!query.includeSubagents) filter.sql += ` AND COALESCE(json_extract(r.json,'$.relationship'),'')<>'child'
+      AND NOT EXISTS (SELECT 1 FROM session_version_relations relation WHERE relation.version=v.version AND relation.child=v.session_id)`;
     if (query.q?.trim()) {
       const kinds = kindsOf(query);
       const match = searchMatch(this.database, query.q.trim());
@@ -326,7 +326,16 @@ export class SessionStore {
     const version = this.version(query.version);
     const { revision, summary: session } = this.session(id, version);
     const pagination = paging(query.pageUnit === "turn" ? { ...query, pageSize: query.pageSize ?? 10 } : query);
-    const condition = query.mode === "brief" ? " AND (kind='user' OR (kind='assistant' AND final IS NOT NULL))" : "";
+    let branchCondition = "";
+    const branchValues: SqlValue[] = [];
+    if (query.branch && query.branch !== "all" && query.branch !== "current") {
+      if (!session.branches?.some(branch => branch.id === query.branch)) throw new StoreError("INVALID_INPUT", "会话分支不存在");
+      branchCondition = " AND (json_extract(json,'$.branchIds') IS NULL OR EXISTS (SELECT 1 FROM json_each(session_messages.json,'$.branchIds') WHERE value=?))";
+      branchValues.push(query.branch);
+    } else if (query.branch === "current" || !query.branch && query.mode === "brief") {
+      branchCondition = " AND COALESCE(json_extract(json,'$.currentBranch'),1)=1";
+    }
+    const condition = branchCondition + (query.mode === "brief" ? " AND (kind='user' OR (kind='assistant' AND final IS NOT NULL))" : "");
     const targetParts: string[] = [];
     const targetValues: SqlValue[] = [];
     if (query.messageId) { targetParts.push("id=?"); targetValues.push(query.messageId); }
@@ -337,7 +346,7 @@ export class SessionStore {
       }
     }
     const target = targetParts.length ? this.database.prepare(`SELECT ordinal,id,turn_id,kind,final FROM session_messages
-      WHERE revision=? AND ${targetParts.join(" AND ")} ORDER BY ordinal,id LIMIT 1`).get(revision, ...targetValues) as
+      WHERE revision=?${branchCondition} AND ${targetParts.join(" AND ")} ORDER BY ordinal,id LIMIT 1`).get(revision, ...branchValues, ...targetValues) as
       { ordinal: number; id: string; turn_id: string; kind: string; final: string | null } | undefined : undefined;
     if (!target && targetParts.length && (!query.messageId || query.pageUnit === "turn")) throw new StoreError("SOURCE_NOT_FOUND", "定位消息不存在于当前会话");
     if (target && query.mode === "brief" && target.kind !== "user" && !(target.kind === "assistant" && target.final)) {
@@ -348,10 +357,10 @@ export class SessionStore {
       const visible = query.mode === "brief" ? "kind='user' OR (kind='assistant' AND final IS NOT NULL)" : "1";
       const groups = this.database.prepare(`WITH ordered AS (
         SELECT CASE WHEN turn_id='' THEN 'unknown' ELSE turn_id END AS normalized_turn,kind,final,
-          ROW_NUMBER() OVER (ORDER BY ordinal,id) AS sequence FROM session_messages WHERE revision=?
+          ROW_NUMBER() OVER (ORDER BY ordinal,id) AS sequence FROM session_messages WHERE revision=?${branchCondition}
       ) SELECT normalized_turn AS id,SUM(CASE WHEN ${visible} THEN 1 ELSE 0 END) AS messageCount
         FROM ordered GROUP BY normalized_turn HAVING messageCount>0 ORDER BY MIN(sequence)`)
-        .all(revision) as { id: string; messageCount: number }[];
+        .all(revision, ...branchValues) as { id: string; messageCount: number }[];
       const initial = groups.filter(turn => turn.id.endsWith(":turn:0"));
       const rounds = groups.filter(turn => !turn.id.endsWith(":turn:0"));
       const totalTurns = rounds.length;
@@ -368,18 +377,18 @@ export class SessionStore {
       const turnIds = turns.flatMap(turn => turn.id === "unknown" ? ["", "unknown"] : [turn.id]);
       const messages = turns.length ? (this.database.prepare(`SELECT json,text FROM session_messages WHERE revision=?${condition}
         AND turn_id IN (${turnIds.map(() => "?").join(",")}) ORDER BY ordinal,id`)
-        .all(revision, ...turnIds) as MessageRow[]).map(decodeMessage) : [];
+        .all(revision, ...branchValues, ...turnIds) as MessageRow[]).map(decodeMessage) : [];
       return { version, session, messages, total, ...pagination, pageUnit: "turn", totalTurns, turns, focusMessageId: target?.id };
     }
     if (query.turnPosition !== undefined) throw new StoreError("INVALID_INPUT", "turnPosition 仅支持完整轮次分页");
     if (target) {
       const preceding = (this.database.prepare(`SELECT COUNT(*) AS count FROM session_messages WHERE revision=?${condition} AND (ordinal<? OR (ordinal=? AND id<?))`)
-        .get(revision, target.ordinal, target.ordinal, target.id) as { count: number }).count;
+        .get(revision, ...branchValues, target.ordinal, target.ordinal, target.id) as { count: number }).count;
       pagination.page = Math.floor(preceding / pagination.pageSize) + 1;
     }
-    const total = (this.database.prepare(`SELECT COUNT(*) AS count FROM session_messages WHERE revision=?${condition}`).get(revision) as { count: number }).count;
+    const total = (this.database.prepare(`SELECT COUNT(*) AS count FROM session_messages WHERE revision=?${condition}`).get(revision, ...branchValues) as { count: number }).count;
     const messages = (this.database.prepare(`SELECT json,text FROM session_messages WHERE revision=?${condition} ORDER BY ordinal,id LIMIT ? OFFSET ?`)
-      .all(revision, pagination.pageSize, (pagination.page - 1) * pagination.pageSize) as MessageRow[]).map(decodeMessage);
+      .all(revision, ...branchValues, pagination.pageSize, (pagination.page - 1) * pagination.pageSize) as MessageRow[]).map(decodeMessage);
     return { version, session, messages, total, ...pagination, focusMessageId: target?.id };
   }
 

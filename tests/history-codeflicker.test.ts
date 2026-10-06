@@ -160,7 +160,7 @@ test("发现主会话与显式子来源，排除 requests；不反解项目 slug
   await writeFile(join(project, "agent-child.jsonl"), encode([call("child", "read", "read", {}, { sessionId: "child-session", parentSessionId: "synthetic-codeflicker" })]));
   await writeFile(join(project, "requests", "replay.jsonl"), encode([call("replay", "read")]));
   await writeFile(join(project, "file-history", "snapshot.jsonl"), encode([call("snapshot", "read")]));
-  const discovered = await discoverSources({ codex: [], claude: [], codeflicker: [directory], "codeflicker-desktop": [] });
+  const discovered = await discoverSources({ codex: [], claude: [], codeflicker: [directory], "codeflicker-desktop": [], dsh: [], pi: [], workbuddy: [], opencode: [], zcode: [], codebuddy: [], qoder: [] });
   assert.equal(discovered.length, 2);
   assert.ok(discovered.every(source => source.client === "codeflicker" && source.cwd === undefined));
   const child = await parseSource(join(project, "agent-child.jsonl"), "codeflicker");

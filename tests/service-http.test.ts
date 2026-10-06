@@ -39,7 +39,7 @@ async function fixture(runFixture: (context: { directory: string; repository: st
   const source = join(sources, "source.jsonl");
   await writeFile(source, history(repository));
   await writeFile(join(sources, "orphan.jsonl"), history(undefined, "orphan"));
-  const service = await startService({ home: join(directory, "data"), roots: { codex: sources, claude: [], codeflicker: [], "codeflicker-desktop": [] }, staticRoot });
+  const service = await startService({ home: join(directory, "data"), roots: { codex: sources, claude: [], codeflicker: [], "codeflicker-desktop": [], dsh: [], pi: [], workbuddy: [], opencode: [], zcode: [], codebuddy: [], qoder: [] }, staticRoot });
   try {
     const register = await apiRequest<RegisterRepositoryResponse>(service.instance, "/repositories", "POST", { path: repository });
     await wait(service, register.job.id);

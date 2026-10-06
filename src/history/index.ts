@@ -39,6 +39,10 @@ export async function discoverSources(roots: DiscoverRoots = {}): Promise<Source
       }
       else if (entry.isFile() && (declaration.acceptsFile?.(child) ?? entry.name.endsWith(".jsonl")) && !paths.has(child)) {
         paths.add(child);
+        if (adapter?.discoverFile) {
+          found.push(...await adapter.discoverFile({ path: child, client: declaration.client, format: declaration.format }));
+          continue;
+        }
         let metadata: SourceLocation = { path: child, client: declaration.client, format: declaration.format };
         if (adapter) {
           const handle = await open(child, "r");

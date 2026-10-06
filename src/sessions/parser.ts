@@ -16,6 +16,8 @@ import { IDE_FORMAT, readIdeSnapshot } from "../history/adapters/codeflicker-ide
 import type { IdeSnapshot } from "../history/adapters/codeflicker-ide.js";
 import { ideSessionRecords } from "./codeflicker-ide.js";
 import { sessionExecutionMode } from "../session-execution.js";
+import { historyAdapter, historyClient } from "../history/adapters/index.js";
+import { parseNormalizedSession, type NormalizedSnapshot } from "../history/adapters/normalized.js";
 
 const digest = (value: string) => createHash("sha256").update(value).digest("hex").slice(0, 24);
 const MAX_RECORD_BYTES = 16 * 1024 * 1024;
@@ -101,7 +103,12 @@ function userTitle(body: string): string {
   return value.replace(/\s+/g, " ").slice(0, 120);
 }
 
-export async function parseSessionSource(source: SourceLocation, sink: SessionSink, options: { byteLimit?: number; title?: string; projectMetadata?: { project?: string; ambiguous?: boolean }; desktopModels?: Map<string, DesktopModelRecord>; nativeSnapshot?: IdeSnapshot } = {}): Promise<SessionSourceMeta> {
+export async function parseSessionSource(source: SourceLocation, sink: SessionSink, options: { byteLimit?: number; title?: string; projectMetadata?: { project?: string; ambiguous?: boolean }; desktopModels?: Map<string, DesktopModelRecord>; nativeSnapshot?: IdeSnapshot; normalizedSnapshot?: NormalizedSnapshot } = {}): Promise<SessionSourceMeta> {
+  const adapter = historyAdapter(source.format ?? historyClient(source.client).format);
+  if (adapter?.normalized) {
+    const snapshot = options.normalizedSnapshot ?? await adapter.readRecords!(source) as NormalizedSnapshot;
+    return parseNormalizedSession(snapshot, sink);
+  }
   const ideSnapshot = options.nativeSnapshot ?? (source.format === IDE_FORMAT ? await readIdeSnapshot(source) : undefined);
   if (ideSnapshot) { source = ideSnapshot.source; options = { ...options, title: ideSnapshot.title }; }
   const inputRecords = (onGap: (kind: GapKind, message: string) => void) => ideSnapshot ? ideSessionRecords(ideSnapshot) : records(source.path, onGap, options.byteLimit);

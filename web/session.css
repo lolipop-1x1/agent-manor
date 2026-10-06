@@ -294,3 +294,7 @@
   .is-spinning { animation: none; }
   .session-turn > summary > svg { transition: none; }
 }
+
+.session-branch-navigation { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; padding-block: 10px; }
+.session-branch-navigation .filter-select-trigger { width: 180px; }
+.session-branch-navigation small { color: var(--muted); }

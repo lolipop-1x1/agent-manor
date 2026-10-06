@@ -31,7 +31,7 @@ test("CodeFlicker 正式项目映射优先于跨仓库工具目标，并独立�
     const native = (uuid: string, path: string) => ({ type: "message", sessionId: "project-demo", uuid, role: "assistant",
       content: [{ type: "tool_use", id: uuid, name: "read", input: { file_path: path } }] });
     await writeFile(sourcePath, encode(repositories.map((repository, index) => native(`read-${index}`, join(repository, "entry.ts")))));
-    const roots = { codex: [], claude: [], codeflicker: dirname(sourcePath), "codeflicker-desktop": [] };
+    const roots = { codex: [], claude: [], codeflicker: dirname(sourcePath), "codeflicker-desktop": [], dsh: [], pi: [], workbuddy: [], opencode: [], zcode: [], codebuddy: [], qoder: [] };
     const refresh = () => refreshSessions(store, store.createJob().id, roots);
     const summary = () => store.list().sessions[0]!;
     await refresh();

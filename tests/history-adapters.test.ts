@@ -54,12 +54,12 @@ test("显式停用 roots 与缺省客户端环境变量同时生效，来源 for
   const previous = process.env.AGENT_MANOR_CODEFLICKER_DIR;
   process.env.AGENT_MANOR_CODEFLICKER_DIR = directory;
   try {
-    const sources = await discoverSources({ codex: [], claude: [], "codeflicker-desktop": [] });
+    const sources = await discoverSources({ codex: [], claude: [], "codeflicker-desktop": [], dsh: [], pi: [], workbuddy: [], opencode: [], zcode: [], codebuddy: [], qoder: [] });
     assert.equal(sources.length, 1);
     assert.equal(sources[0]!.client, "codeflicker");
     assert.equal(sources[0]!.format, "codeflicker-jsonl");
     assert.deepEqual(JSON.parse(JSON.stringify(sources)), sources);
-    assert.deepEqual(await discoverSources({ codex: [], claude: [], codeflicker: [], "codeflicker-desktop": [] }), []);
+    assert.deepEqual(await discoverSources({ codex: [], claude: [], codeflicker: [], "codeflicker-desktop": [], dsh: [], pi: [], workbuddy: [], opencode: [], zcode: [], codebuddy: [], qoder: [] }), []);
   } finally {
     if (previous === undefined) delete process.env.AGENT_MANOR_CODEFLICKER_DIR;
     else process.env.AGENT_MANOR_CODEFLICKER_DIR = previous;

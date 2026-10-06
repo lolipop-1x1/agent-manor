@@ -93,6 +93,8 @@ export interface SessionQuery {
   version?: string;
 }
 export interface SessionMessageQuery extends SessionQuery {
+  /** 省略时简易读当前分支、过程读全部；all 显式读取全部分支。 */
+  branch?: string;
   mode?: "brief" | "full" | "trace";
   pageUnit?: "message" | "turn";
   turnPosition?: number;

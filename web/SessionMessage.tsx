@@ -51,6 +51,7 @@ export const MessageCard = memo(function MessageCard({ message, mode, focused, p
       <span className={`session-kind kind-${message.kind}`}>{kindLabels[message.kind]}</span>
       <strong>{isTool ? message.tool ?? "工具" : message.kind === "assistant" ? message.model ?? "AI 回复" : kindLabels[message.kind]}</strong>
       {message.final && <span className={`session-final is-${message.final}`}>{message.final === "explicit" ? "明确最终回答" : "推断最终回答"}</span>}
+      {message.currentBranch === false && <span className="session-evidence-label">其他分支</span>}
       {message.copied && <span className="session-evidence-label">已识别复制记录</span>}
       {message.contextSource && <span className="session-evidence-label">{message.contextSource === "agents_md" ? "AGENTS.md 注入" : "客户端注入包"}</span>}
       {message.status && <span className={`session-status is-${message.status}`}>{statusLabels[message.status]}</span>}
