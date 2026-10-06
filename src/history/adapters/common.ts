@@ -18,9 +18,17 @@ export function historyRelationships(record: Record<string, unknown>): HistoryRe
   const payload = object(record.payload);
   const history = object(payload.history_base ?? record.history_base);
   const forkParent = string(history.thread_id) ?? string(payload.forked_from_id) ?? string(record.forked_from_id);
-  if (forkParent) return [{ kind: "fork", parentSessionId: forkParent, endByteOffset: number(history.end_byte_offset), endOrdinalExclusive: number(history.end_ordinal_exclusive) ?? number(payload.forked_from_ordinal_exclusive) ?? number(record.forked_from_ordinal_exclusive) }];
   const source = object(payload.source ?? record.source);
   const spawn = object(object(source.subagent).thread_spawn);
+  const fork: HistoryRelationship | undefined = forkParent ? { kind: "fork", parentSessionId: forkParent,
+    endByteOffset: number(history.end_byte_offset), endOrdinalExclusive: number(history.end_ordinal_exclusive)
+      ?? number(payload.forked_from_ordinal_exclusive) ?? number(record.forked_from_ordinal_exclusive) } : undefined;
+  const spawnParent = string(spawn.parent_thread_id);
+  // 子 Agent 也会继承父历史；创建身份优先，完整字节边界仍用于共享历史去重。
+  if (spawnParent) return [{ kind: "subagent", parentSessionId: spawnParent,
+    endOrdinalExclusive: number(payload.subagent_history_start_ordinal) ?? (forkParent === spawnParent ? fork?.endOrdinalExclusive : undefined) },
+  ...(fork?.endByteOffset !== undefined ? [fork] : [])];
+  if (fork) return [fork];
   const parent = string(payload.parent_thread_id) ?? string(spawn.parent_thread_id) ?? string(record.parent_thread_id) ?? string(record.parentSessionId);
   return parent ? [{ kind: "subagent", parentSessionId: parent, agentId: string(record.agentId) }] : [];
 }

@@ -65,6 +65,8 @@ export const codexAdapter: HistoryAdapter = {
     const payload = object(record.payload);
     if (record.type === "session_meta") {
       const metadata = sourceMetadata(record, client, absolutePath);
+      // 复制的父头部属于继承上下文，不能将当前子来源改成父来源。
+      if (!source.sessionId.startsWith("unknown:") && metadata.sessionId !== source.sessionId) return;
       source.sourceId = metadata.sourceId ?? source.sourceId;
       source.sessionId = metadata.sessionId ?? source.sessionId;
       source.cwd = metadata.cwd;

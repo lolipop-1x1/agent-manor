@@ -203,20 +203,26 @@ test("子标题规则升级刷新旧子修订，未变化的主会话继续复�
   const childPath = join(directory, "child.jsonl");
   const encode = (records: unknown[]) => records.map(value => JSON.stringify(value) + "\n").join("");
   await writeFile(parentPath, encode([{ type: "session_meta", payload: { id: "parent-demo", title: "合成主会话" } }]));
-  await writeFile(childPath, encode([{ type: "session_meta", payload: { id: "child-demo", parent_thread_id: "parent-demo", agent_path: "/root/check_queries" } }]));
+  await writeFile(childPath, encode([{ type: "session_meta", ordinal: 0, payload: { id: "child-demo", forked_from_id: "parent-demo",
+    parent_thread_id: "parent-demo", subagent_history_start_ordinal: 2,
+    source: { subagent: { thread_spawn: { parent_thread_id: "parent-demo", agent_path: "/root/check_queries" } } } } },
+  { type: "session_meta", ordinal: 1, payload: { id: "parent-demo", title: "复制的父标题" } }]));
   const roots = { codex: directory, claude: [], codeflicker: [], "codeflicker-desktop": [] };
   await refreshSessions(store, store.createJob().id, roots);
   const revisions = store.cachedRevisions();
   const cachedChild = revisions.find(item => item.path === childPath)!;
   const cachedParent = revisions.find(item => item.path === parentPath)!;
   const child = store.list({ includeSubagents: true }).sessions.find(item => item.clientSessionId === "child-demo")!;
-  const old = store.createRevision(childPath, cachedChild.fingerprint.replace(":child-title-v1", ""));
+  const old = store.createRevision(childPath, cachedChild.fingerprint.replace(":child-title-v2", ":child-title-v1"));
   old.flush();
-  store.finishRevision(old.revision, { ...child, title: "未命名会话", titleOrigin: "fallback", taskName: undefined, agentName: undefined,
+  store.finishRevision(old.revision, { ...child, title: "未命名会话", titleOrigin: "fallback", relationship: "fork", taskName: undefined, agentName: undefined,
     path: childPath, sourceId: "synthetic-child" });
-  store.publish(store.createJob().id, [cachedParent, { ...cachedChild, revision: old.revision, fingerprint: cachedChild.fingerprint.replace(":child-title-v1", "") }], []);
+  store.publish(store.createJob().id, [cachedParent, { ...cachedChild, revision: old.revision, fingerprint: cachedChild.fingerprint.replace(":child-title-v2", ":child-title-v1") }], []);
   await refreshSessions(store, store.createJob().id, roots);
   assert.equal(store.messages(child.id).session.title, "check_queries");
+  assert.equal(store.messages(child.id).session.relationship, "child");
+  assert.equal(store.list().total, 1, "已确认子来源恢复默认隐藏");
+  assert.equal(store.profile(store.list().sessions[0]!.id).children[0]?.id, child.id);
   assert.equal(store.cachedRevisions().find(item => item.path === parentPath)?.revision, cachedParent.revision);
   assert.notEqual(store.cachedRevisions().find(item => item.path === childPath)?.revision, old.revision);
 }));

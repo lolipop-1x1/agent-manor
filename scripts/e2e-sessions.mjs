@@ -53,10 +53,13 @@ try {
   await writeFile(join(env.AGENT_MANOR_CODEX_DIR, "orphan.jsonl"), encodeSession(fixture.orphan));
   await writeFile(join(env.AGENT_MANOR_CODEX_DIR, "long.jsonl"), encodeSession(longSessionFixture(repository)));
   await writeFile(join(env.AGENT_MANOR_CODEX_DIR, "child.jsonl"), encodeSession([
-    { type: "session_meta", payload: { id: "demo-child", cwd: repository, source: { subagent: { thread_spawn: {
+    { type: "session_meta", ordinal: 0, payload: { id: "demo-child", session_id: "demo-long", cwd: repository,
+      forked_from_id: "demo-long", subagent_history_start_ordinal: 5, source: { subagent: { thread_spawn: {
       parent_thread_id: "demo-long", agent_path: "/root/check_queries", agent_nickname: "Fixture Agent" } } } } },
-    { type: "response_item", payload: { type: "message", role: "user", content: [{ type: "input_text", text: "# AGENTS.md instructions\n<INSTRUCTIONS>合成项目规则</INSTRUCTIONS>" }] } },
-    { type: "response_item", payload: { type: "message", role: "assistant", channel: "final", content: [{ type: "output_text", text: "子任务搜索标记：查询已核对" }] } },
+    { type: "session_meta", ordinal: 1, payload: { id: "demo-long", cwd: repository, title: "复制的父标题" } },
+    { type: "response_item", ordinal: 2, payload: { type: "message", role: "user", content: [{ type: "input_text", text: "复制的父请求" }] } },
+    { type: "response_item", ordinal: 3, payload: { type: "message", role: "user", content: [{ type: "input_text", text: "# AGENTS.md instructions\n<INSTRUCTIONS>合成项目规则</INSTRUCTIONS>" }] } },
+    { type: "response_item", ordinal: 5, payload: { type: "message", role: "assistant", channel: "final", content: [{ type: "output_text", text: "子任务搜索标记：查询已核对" }] } },
   ]));
   assert.equal((await command(["sessions", "refresh", "--wait"])).job.status, "complete");
   const list = await command(["sessions", "list"]);

@@ -84,6 +84,30 @@ test("子任务标题沿用正式名称或请求，缺失时采用原生任务�
   assert.equal(main.summary.title, "未命名会话", "没有子关系时不把 Agent 身份当作会话标题");
 });
 
+test("Codex 子 Agent 继承父历史仍是子会话，复制头部和用户消息不覆盖任务身份", async () => {
+  const header = meta({ id: "child-demo", session_id: "parent-demo", forked_from_id: "parent-demo",
+    parent_thread_id: "parent-demo", subagent_history_start_ordinal: 5,
+    source: { subagent: { thread_spawn: { parent_thread_id: "parent-demo", agent_path: "/root/check_queries", agent_nickname: "Fixture Agent" } } } });
+  const records = [{ ...header, ordinal: 0 }, { ...meta({ id: "parent-demo", title: "父会话标题" }), ordinal: 1 },
+    { ...user("copied-request", "父会话请求"), ordinal: 2 }, { ...assistant("copied-answer", "父会话回答"), ordinal: 3 },
+    { ...assistant("task", "Message Type: NEW_TASK\nTask name: /root/check_queries\nPayload:\n核对查询"), ordinal: 5 }];
+  const sample = await parsed("codex", records);
+  assert.equal(sample.summary.clientSessionId, "child-demo");
+  assert.equal(sample.summary.parentSessionId, sessionKey("codex", "parent-demo"));
+  assert.equal(sample.summary.relationship, "child");
+  assert.equal(sample.summary.taskName, "check_queries");
+  assert.equal(sample.summary.agentName, "Fixture Agent");
+  assert.equal(sample.summary.title, "check_queries");
+  assert.equal(sample.summary.titleOrigin, "task");
+  assert.equal(sample.messages.find(message => message.kind === "user")?.copied, true);
+  const ownRequest = await parsed("codex", [...records, { ...user("own", "子任务补充请求"), ordinal: 6 }]);
+  assert.equal(ownRequest.summary.title, "子任务补充请求");
+  const fork = await parsed("codex", [{ ...meta({ id: "branch-demo", forked_from_id: "parent-demo", forked_from_ordinal_exclusive: 5 }), ordinal: 0 },
+    ...records.slice(1, 4), { ...user("branch-request", "独立分叉请求"), ordinal: 5 }]);
+  assert.equal(fork.summary.relationship, "fork", "没有明确子创建来源时保留真正分叉");
+  assert.equal(fork.summary.title, "独立分叉请求");
+});
+
 test("Codex 后备标题跳过自动注入的项目说明，保留原始消息", async () => {
   const instructions = "# AGENTS.md instructions for /workspace/demo\n\n<INSTRUCTIONS>\n使用中文回答\n</INSTRUCTIONS>";
   const sample = await parsed("codex", [meta(), user("instructions", instructions), user("request", "检查标题显示")]);

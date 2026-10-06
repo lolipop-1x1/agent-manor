@@ -115,7 +115,7 @@ export async function parseSessionSource(source: SourceLocation, sink: SessionSi
   if (!rawId) {
     for await (const { record } of inputRecords(() => {})) {
       const payload = object(record.payload);
-      rawId = string(record.sessionId) ?? string(payload.session_id) ?? (record.type === "session_meta" ? string(payload.id) : undefined);
+      rawId = (record.type === "session_meta" ? string(payload.id) : undefined) ?? string(record.sessionId) ?? string(payload.session_id);
       if (rawId) { if (string(record.agentId)) rawId += `/agent/${record.agentId}`; break; }
     }
   }
@@ -181,7 +181,7 @@ export async function parseSessionSource(source: SourceLocation, sink: SessionSi
     const value: SessionMessage = { id: `${id}:message:${digest(key)}`, sessionId: id, ordinal: identity.ordinal,
       recordLine: row, turnId: identity.turnId, kind, text: body, ...extra };
     if (value.model) models.add(value.model);
-    if (kind === "user" && !firstUserTitle) {
+    if (kind === "user" && !value.copied && !firstUserTitle) {
       firstUserTitle = (source.client === "codex" ? userTitle(body) : body.replace(/\s+/g, " ").trim().slice(0, 120)) || undefined;
       if (firstUserTitle && meta.titleOrigin === "fallback") { meta.title = firstUserTitle; meta.titleOrigin = "first_user"; }
     }
@@ -236,14 +236,16 @@ export async function parseSessionSource(source: SourceLocation, sink: SessionSi
   for await (const { record, line } of inputRecords(gap)) {
     currentRecordLine = line;
     const payload = object(record.payload);
+    const inheritedHeader = source.client === "codex" && record.type === "session_meta"
+      && (string(payload.id) ?? string(payload.session_id)) !== rawId;
     const occurredAt = source.format === DESKTOP_FORMAT || ideSnapshot ? desktopTimestamp(record) : string(record.timestamp) ?? string(payload.timestamp);
     if (occurredAt) {
       if (!meta.startedAt || occurredAt < meta.startedAt) meta.startedAt = occurredAt;
       if (!meta.updatedAt || occurredAt > meta.updatedAt) meta.updatedAt = occurredAt;
     }
     const project = normalizeHistoryPath(string(record.cwd) ?? string(payload.cwd));
-    if (!meta.project && project && isAbsolute(project)) { meta.project = project; meta.projectOrigin = "cwd"; }
-    const relations = historyRelationships(record);
+    if (!inheritedHeader && !meta.project && project && isAbsolute(project)) { meta.project = project; meta.projectOrigin = "cwd"; }
+    const relations = inheritedHeader ? [] : historyRelationships(record);
     if (relations[0]) {
       const relationship = relations[0];
       meta.parentSessionId = sessionKey(source.client, relationship.parentSessionId);
@@ -257,7 +259,7 @@ export async function parseSessionSource(source: SourceLocation, sink: SessionSi
     const copied = copyBeforeOrdinal !== undefined && ordinal !== undefined && ordinal < copyBeforeOrdinal ? true : undefined;
     const extra: Partial<SessionMessage> = { occurredAt, copied };
     const title = string(record.aiTitle) ?? string(record.title) ?? (record.type === "session_meta" ? string(payload.title) : undefined);
-    if (title) { meta.title = title; meta.titleOrigin = "recorded"; }
+    if (title && !inheritedHeader) { meta.title = title; meta.titleOrigin = "recorded"; }
     if (source.format === DESKTOP_FORMAT || ideSnapshot) {
       const key = `desktop:${desktopIdentity(record.id) ?? line}`;
       const native = options.desktopModels?.get(string(object(object(record.extra)["claude-code"]).lastEntryUuid) ?? "");
@@ -323,8 +325,10 @@ export async function parseSessionSource(source: SourceLocation, sink: SessionSi
       if (record.type === "session_meta") {
         const spawn = object(object(object(payload.source).subagent).thread_spawn);
         const agentPath = string(payload.agent_path) ?? string(spawn.agent_path);
-        meta.taskName = agentPath?.split("/").filter(Boolean).at(-1);
-        meta.agentName = string(payload.agent_nickname) ?? string(spawn.agent_nickname);
+        if (!inheritedHeader) {
+          meta.taskName = agentPath?.split("/").filter(Boolean).at(-1);
+          meta.agentName = string(payload.agent_nickname) ?? string(spawn.agent_nickname);
+        }
         const instructions = text(object(payload.base_instructions).text ?? payload.base_instructions);
         if (instructions) message("base-instructions", "system", instructions, line, extra);
         continue;

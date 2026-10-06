@@ -51,7 +51,7 @@ test("Claude 规则升级重建旧空 cwd 游标，来源首个 cwd 不覆盖逐
   previous.cwd = undefined;
   (previous.cursor as { ruleVersion: string }).ruleVersion = "2";
   const parsed = await parseSource(path, "claude", previous);
-  assert.equal(PARSER_RULE_VERSION, "8");
+  assert.equal(PARSER_RULE_VERSION, "9");
   assert.equal((parsed.cursor as { parsedRecords: number }).parsedRecords, 3);
   assert.equal(parsed.cwd, directory);
   assert.equal(parsed.events[0]!.cwd, "/synthetic/later");
@@ -188,6 +188,28 @@ test("fork 引用只使用完整父字节边界，复制有证明才去重，缺
   assert.equal(merged.relationships[0]!.resolved, true);
   copied.relationships[0]!.endByteOffset! -= 1;
   assert.ok(resolveSharedHistory([parent, copied]).gaps.some((gap) => gap.kind === "ambiguous"));
+}));
+
+test("Codex 子来源的继承字段和复制父头部不改变身份，明确共享边界仍可去重", async () => temporary(async (directory) => {
+  const parentPath = join(directory, "parent.jsonl");
+  const childPath = join(directory, "child.jsonl");
+  const parentRaw = encode([meta("parent"), call("shared", "cat src/a.ts", { id: "shared-request" }), output("shared")]);
+  await writeFile(parentPath, parentRaw);
+  const childHeader = meta("child", { forked_from_id: "parent", subagent_history_start_ordinal: 5,
+    source: { subagent: { thread_spawn: { parent_thread_id: "parent" } } } });
+  await writeFile(childPath, encode([childHeader, meta("parent"), call("own"), output("own")]));
+  const child = await parseSource(childPath, "codex");
+  assert.equal(child.sessionId, "child");
+  assert.equal(child.parentSessionId, "parent");
+  assert.equal(child.relationships[0]!.kind, "subagent");
+  const parent = await parseSource(parentPath, "codex");
+  assert.equal(resolveSharedHistory([parent, child]).gaps.length, 0);
+  const sharedHeader = meta("child", { ...childHeader.payload,
+    history_base: { thread_id: "parent", end_byte_offset: Buffer.byteLength(parentRaw), end_ordinal_exclusive: 5 } });
+  await writeFile(childPath, encode([sharedHeader, meta("parent"), call("shared", "cat src/a.ts", { id: "shared-request" }), output("shared"), call("own"), output("own")]));
+  const shared = await parseSource(childPath, "codex");
+  assert.equal(shared.relationships[0]!.kind, "subagent");
+  assert.equal(resolveSharedHistory([parent, shared]).events.length, 2);
 }));
 
 test("无 fork 来源证明的相同请求和结果不会跨来源合并", async () => temporary(async (directory) => {
