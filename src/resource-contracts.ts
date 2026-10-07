@@ -31,6 +31,12 @@ export interface ResourceHistoryIdentity {
   project?: string;
 }
 
+/** Skill 排行按完整名称汇总；实际历史来源仍单独保留用于关联管理入口。 */
+export interface ResourceUsageIdentity extends Omit<ResourceHistoryIdentity, "client"> {
+  client?: Client;
+  grouping: "skill" | "source";
+}
+
 /** 仅保留查询与定位所需元信息，不包含参数、结果正文或请求 Token。 */
 export interface ResourceUsageEvent {
   id: string;
@@ -77,9 +83,11 @@ export interface ResourceUsageCoverage {
 }
 
 export interface ResourceUsageRow {
-  identity: ResourceHistoryIdentity;
+  identity: ResourceUsageIdentity;
   stats: ResourceUsageStats;
   association: ResourceHistoryAssociation;
+  clients: Client[];
+  favorite: boolean;
 }
 
 export interface ResourceUsageResult {
@@ -111,6 +119,7 @@ export interface ResourceUsageDetail {
   projects: ResourceUsageDistribution[];
   tools: ResourceUsageTool[];
   coverage: ResourceUsageCoverage;
+  origins: ResourceHistoryIdentity[];
 }
 export interface ResourceUsageEvidenceQuery extends ResourceUsageQuery {
   evidenceKind?: ResourceEvidenceKind;
@@ -118,7 +127,7 @@ export interface ResourceUsageEvidenceQuery extends ResourceUsageQuery {
 }
 export interface ResourceUsageEvidenceResult {
   version: string;
-  identity: ResourceHistoryIdentity;
+  identity: ResourceUsageIdentity;
   events: ResourceUsageEvent[];
   total: number;
   page: number;
@@ -139,9 +148,9 @@ export interface ResourceAssociationEntry {
   server?: string;
 }
 export interface ResourceHistoryAssociation {
-  state: "linked" | "ambiguous" | "unassociated";
+  state: "linked" | "partial" | "ambiguous" | "unassociated";
   entryIds: string[];
-  reason: "recorded_path" | "multiple_entries" | "missing_path" | "not_discovered";
+  reason: "recorded_path" | "partial_link" | "multiple_entries" | "missing_path" | "not_discovered";
 }
 
 export interface ResourceEventStream {

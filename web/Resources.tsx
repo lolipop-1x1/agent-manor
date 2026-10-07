@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type
 import * as Dialog from "@radix-ui/react-dialog";
 import { ArrowClockwise, ArrowSquareOut, CaretLeft, CaretRight, Funnel, MagnifyingGlass, Plus, ShieldCheck, Star, X } from "@phosphor-icons/react";
 import { CLIENTS, clientName, type Client } from "../src/clients";
-import type { ResourceKind, ResourceUsageDetail, ResourceUsageDistribution, ResourceUsageEvidenceResult, ResourceUsageStats, ResourceUsageTrend } from "../src/resource-contracts";
+import type { ResourceKind, ResourceUsageDetail, ResourceUsageDistribution, ResourceUsageEvidenceResult, ResourceUsageRow, ResourceUsageStats, ResourceUsageTrend } from "../src/resource-contracts";
 import type { ResourceInventoryEntry, ResourceManualSource } from "../src/resource-inventory-contracts";
 import type { ResourceManagementAction, ResourceManagementInput, ResourceManagementOperation, ResourceManagementOperations, ResourceManagementPreview } from "../src/resource-management-contracts";
 import type { ResourceCandidate, ResourceLocalDetail, ResourceLocalQuery, ResourceLocalResult, ResourceLocalRow, ResourceStatus } from "../src/resource-service-contracts";
@@ -65,6 +65,8 @@ function address(route: ResourceRoute) {
     evidencePage: route.evidencePage === 1 ? undefined : route.evidencePage })}`;
 }
 const shortPath = (path: string) => path.split(/[\\/]/).filter(Boolean).at(-1) ?? path;
+const usageAgentLabel = (row: ResourceUsageRow) => row.clients.length === 1 ? clientName(row.clients[0]!) : row.clients.length ? `${fmt(row.clients.length)} 个 Agent` : "Agent 未记录";
+const associationNames = { linked: "已关联本地入口", partial: "部分未关联", ambiguous: "关联有歧义", unassociated: "未关联本地资源" };
 const observationNames = { recorded: "已关联使用", unknown: "使用未知", insufficient: "观测不足" };
 const observationLabel = (row: ResourceLocalRow) => row.observation === "recorded" && row.usage?.events === 0 ? "未发现使用" : observationNames[row.observation];
 const sourceStateNames = { ok: "可读取", missing: "来源缺失", unreadable: "不可读取", invalid: "格式异常", unsupported: "待适配" };
@@ -150,6 +152,7 @@ function Distribution({ rows, title, label }: { rows: ResourceUsageDistribution[
 }
 function UsageHelp() {
   return <HelpPopover label="使用统计口径"><dl>
+    <div><dt>Skill 排行</dt><dd>按记录的完整名称跨 Agent 汇总，会话数去重；路径用于具体来源回查，本地安装本体不按名称合并。</dd></div>
     <div><dt>使用会话</dt><dd>同一会话中的显式调用与成功读取合并计一次；文本提及、声明或未证实的脚本嵌套调用不计使用。全部实际分支活动均保留。</dd></div>
     <div><dt>已知结果</dt><dd>成功率以成功与失败之和为分母，未知结果单列。耗时仅使用日志实际记录值，并列出有效样本数。</dd></div>
     <div><dt>关联与观测</dt><dd>名称相同不能证明是当前安装实例。缺少路径、对应能力或充分观测时显示未关联或未知；未发现使用不等于从未使用。</dd></div>
@@ -236,11 +239,12 @@ export default function Resources({ active, onSession }: { active: boolean; onSe
     return () => controller.abort();
   }, [active, reload]);
   const invalidTime = (route.tab === "usage" || route.tab === "local") && route.window === "custom" && !!route.from && !!route.to && route.from > route.to;
+  const skillRanking = route.kind === "skill" && route.tab === "usage";
   const scopeQuery = useMemo<ResourceUsageFilters>(() => ({ kind: route.kind,
     client: route.client === "all" ? undefined : route.client as Client,
-    project: route.project === "all" ? undefined : route.project,
+    project: skillRanking || route.project === "all" ? undefined : route.project,
     ...timeFilters(route.window, route.from, route.to, timeAnchor),
-  }), [route.kind, route.client, route.project, route.window, route.from, route.to, timeAnchor]);
+  }), [route.kind, route.client, route.project, route.window, route.from, route.to, timeAnchor, skillRanking]);
   const query = useMemo<ResourceUsageFilters>(() => ({ ...scopeQuery, q: queryText, sort: route.sort as ResourceUsageFilters["sort"],
     page: route.page, pageSize: 20, favorite: route.favorite || undefined,
   }), [scopeQuery, queryText, route.sort, route.page, route.favorite]);
@@ -296,10 +300,10 @@ export default function Resources({ active, onSession }: { active: boolean; onSe
     return () => cancelAnimationFrame(frame);
   }, [active, detailLoading, evidenceLoading, usageDetail, compact]);
 
-  const favorite = async (id: string) => {
+  const favorite = async (id: string, current = !!status?.favoriteIds.includes(id)) => {
     setFavoritePending(id); setError(null);
     try {
-      const result = await resourceApi.favorite(id, !status?.favoriteIds.includes(id));
+      const result = await resourceApi.favorite(id, !current);
       setStatus(current => current ? { ...current, favoriteIds: result.favoriteIds } : current); setReload(value => value + 1);
     } catch (failure) { setError(errorMessage(failure)); }
     finally { setFavoritePending(null); }
@@ -355,8 +359,8 @@ export default function Resources({ active, onSession }: { active: boolean; onSe
   const projectOptions = [{ value: "all", label: "全部项目" }, { value: "none", label: "无项目" }, ...(status?.projects ?? []).map(path => ({ value: path, label: shortPath(path), description: path }))];
   const historyView = route.tab === "usage" || route.tab === "local";
   const filters = <div className="resource-filter-content" id={compact ? undefined : "resource-filter-content"}>
-    <div className="resource-field"><span>客户端</span><FilterSelect label="资源客户端" value={route.client} options={[{ value: "all", label: "全部客户端" }, ...CLIENTS.map(client => ({ value: client.id, label: client.name }))]} onChange={value => filter({ client: value })} /></div>
-    <div className="resource-field"><span>项目</span><ProjectPicker value={route.project} options={projectOptions} onChange={value => filter({ project: value })} /></div>
+    <div className="resource-field"><span>{skillRanking ? "Agent" : "客户端"}</span><FilterSelect label={skillRanking ? "资源Agent" : "资源客户端"} value={route.client} options={[{ value: "all", label: skillRanking ? "全部 Agent" : "全部客户端" }, ...CLIENTS.map(client => ({ value: client.id, label: client.name }))]} onChange={value => filter({ client: value })} /></div>
+    {!skillRanking && <div className="resource-field"><span>项目</span><ProjectPicker value={route.project} options={projectOptions} onChange={value => filter({ project: value })} /></div>}
     {historyView && <><div className="resource-field"><span>使用时间</span><FilterSelect label="资源使用时间" value={route.window} options={[{ value: "all", label: "全部历史" }, { value: "7", label: "近 7 天" }, { value: "30", label: "近 30 天" }, { value: "90", label: "近 90 天" }, { value: "custom", label: "自定义日期" }]} onChange={value => { setTimeAnchor(Date.now()); filter({ window: value }); }} /></div>
       {route.window === "custom" && <div className="resource-date-fields"><div className="resource-field"><span>从</span><DatePicker label="资源开始日期" value={route.from} onChange={value => filter({ from: value })} /></div><div className="resource-field"><span>到</span><DatePicker label="资源结束日期" value={route.to} onChange={value => filter({ to: value })} /></div></div>}
       <div className="resource-field"><span>排序</span><FilterSelect label="资源排序" value={route.sort} options={[{ value: "sessions", label: "使用会话数" }, { value: "calls", label: "调用次数" }, ...(route.kind === "skill" ? [{ value: "reads", label: "读取次数" }] : []), { value: "recent", label: "最近使用" }, { value: "name", label: "名称" }]} onChange={value => filter({ sort: value })} /></div>
@@ -374,13 +378,14 @@ export default function Resources({ active, onSession }: { active: boolean; onSe
   const selectedOperation = operations?.operations.find(item => item.id === route.id);
   const detail = <>
     {detailLoading ? <div role="status" className="resource-loading">正在读取资源详情…</div> : detailError ? <div className="resource-alert" role="alert">{detailError}<button className="text-button" onClick={() => setReload(value => value + 1)}>重试</button></div> : usageDetail ? <>
-      <div className="resource-detail-heading"><div><span>{clientName(usageDetail.resource.identity.client)}</span><h2>{usageDetail.resource.identity.name}</h2></div><FavoriteButton name={usageDetail.resource.identity.name} favorite={!!status?.favoriteIds.includes(route.id)} disabled={favoritePending === route.id} onClick={() => void favorite(route.id)} /></div>
-      <div className="resource-tags"><span>{usageDetail.resource.association.state === "linked" ? "已关联本地入口" : usageDetail.resource.association.state === "ambiguous" ? "关联有歧义" : "未关联本地资源"}</span>{usageDetail.coverage.partial && <span className="is-warning">部分记录</span>}{usageDetail.resource.stats.missingTimeEvents > 0 && <span className="is-warning">{fmt(usageDetail.resource.stats.missingTimeEvents)} 条时间缺失</span>}</div>
+      <div className="resource-detail-heading"><div><span>{usageAgentLabel(usageDetail.resource)}</span><h2>{usageDetail.resource.identity.name}</h2></div><FavoriteButton name={usageDetail.resource.identity.name} favorite={usageDetail.resource.favorite} disabled={favoritePending === route.id} onClick={() => void favorite(route.id, usageDetail.resource.favorite)} /></div>
+      <div className="resource-tags"><span className={usageDetail.resource.association.state !== "linked" ? "is-warning" : ""}>{associationNames[usageDetail.resource.association.state]}</span>{usageDetail.coverage.partial && <span className="is-warning">部分记录</span>}{usageDetail.resource.stats.missingTimeEvents > 0 && <span className="is-warning">{fmt(usageDetail.resource.stats.missingTimeEvents)} 条时间缺失</span>}</div>
       {usageDetail.resource.identity.path && <p className="resource-path">{usageDetail.resource.identity.path}</p>}
       <Stats stats={usageDetail.resource.stats} kind={route.kind} /><p className="resource-last-used">最近使用 · {dateLabel(usageDetail.resource.stats.lastUsedAt ?? undefined)}</p>
       <Trend rows={usageDetail.trend} timeZone={usageDetail.timeZone} />
-      <Distribution rows={usageDetail.clients} title="客户端分布" label={value => value ? clientName(value as Client) : "客户端未知"} />
+      <Distribution rows={usageDetail.clients} title={route.kind === "skill" ? "Agent 分布" : "客户端分布"} label={value => value ? clientName(value as Client) : "Agent 未记录"} />
       <Distribution rows={usageDetail.projects} title="项目分布" label={value => value ? shortPath(value) : "无项目"} />
+      {route.kind === "skill" && <details className="resource-data-details"><summary>历史来源 · {fmt(usageDetail.origins.length)} 个</summary><div className="resource-origin-list">{usageDetail.origins.map(origin => <div key={origin.id}><strong>{clientName(origin.client)}</strong><span title={origin.project}>{origin.project ? shortPath(origin.project) : "无项目"}</span><p className="resource-path">{origin.path ?? "路径未记录"}</p></div>)}</div></details>}
       {route.kind === "mcp" && <section className="resource-detail-section"><header><h3>工具调用</h3><span>{fmt(usageDetail.tools.length)} 个工具</span></header><div className="resource-tool-list">{usageDetail.tools.map(tool => <button key={tool.name} className={route.tool === tool.name ? "is-selected" : ""} aria-pressed={route.tool === tool.name} onClick={() => update({ tool: route.tool === tool.name ? "" : tool.name, evidencePage: 1 })}><strong>{tool.name}</strong><span>{fmt(tool.stats.mcpCalls)} 次</span><small>失败 {fmt(tool.stats.results.failure)} · 未知 {fmt(tool.stats.results.unknown)} · {tool.stats.duration.samples ? `${Math.round(tool.stats.duration.averageMs!)} ms / ${fmt(tool.stats.duration.samples)} 样本` : "耗时未记录"}</small></button>)}</div></section>}
       <section className="resource-detail-section"><header><h3>{route.tool ? `${route.tool} 的证据` : "使用证据"}</h3>{route.tool && <button className="text-button" onClick={() => update({ tool: "", evidencePage: 1 })}>全部工具</button>}</header>
         {evidenceLoading ? <div role="status" className="resource-loading">正在读取使用证据…</div> : evidenceError ? <div role="alert" className="resource-alert">{evidenceError}</div> : evidence?.events.length ? <>
@@ -433,8 +438,8 @@ export default function Resources({ active, onSession }: { active: boolean; onSe
         {route.tab === "local" && local?.partial && !listLoading && <div className="resource-range-summary"><span className="resource-state is-warning">部分来源未读取</span></div>}
         <div className="resource-list-scroll" ref={listScroll} aria-busy={listLoading}>
           {listLoading ? <div role="status" className="resource-loading">正在读取资源…</div> : invalidTime ? null : route.tab === "usage" ? usage?.resources.length ? <div className="resource-rows">{usage.resources.map(row => <div className={`resource-row${route.id === row.identity.id ? " is-selected" : ""}`} key={row.identity.id}>
-            <button className="resource-row-main" onClick={() => select(row.identity.id)} aria-label={`查看${row.identity.name}的使用详情`}><div className="resource-row-heading"><strong>{row.identity.name}</strong><span>{clientName(row.identity.client)}</span></div><div className="resource-row-subtitle" title={row.identity.path ?? row.identity.project}>{row.identity.path ?? (row.identity.project ? shortPath(row.identity.project) : "无项目")}</div><div className="resource-row-metrics"><span><b>{fmt(row.stats.sessions)}</b> 会话</span><span><b>{fmt(route.kind === "skill" ? row.stats.explicitCalls : row.stats.mcpCalls)}</b> 调用</span>{route.kind === "skill" && <span><b>{fmt(row.stats.successfulReads)}</b> 读取</span>}<span>{dateLabel(row.stats.lastUsedAt ?? undefined)}</span></div><div className="resource-tags">{row.association.state !== "linked" && <span className="is-warning">{row.association.state === "ambiguous" ? "关联有歧义" : "未关联本地资源"}</span>}{row.stats.results.unknown > 0 && <span>结果未知 {fmt(row.stats.results.unknown)}</span>}</div></button>
-            <FavoriteButton name={row.identity.name} favorite={!!status?.favoriteIds.includes(row.identity.id)} disabled={favoritePending === row.identity.id} onClick={() => void favorite(row.identity.id)} />
+            <button className="resource-row-main" onClick={() => select(row.identity.id)} aria-label={`查看${row.identity.name}的使用详情`}><div className="resource-row-heading"><strong>{row.identity.name}</strong><span>{usageAgentLabel(row)}</span></div>{route.kind !== "skill" && <div className="resource-row-subtitle" title={row.identity.path ?? row.identity.project}>{row.identity.path ?? (row.identity.project ? shortPath(row.identity.project) : "无项目")}</div>}<div className="resource-row-metrics"><span><b>{fmt(row.stats.sessions)}</b> 会话</span><span><b>{fmt(route.kind === "skill" ? row.stats.explicitCalls : row.stats.mcpCalls)}</b> 调用</span>{route.kind === "skill" && <span><b>{fmt(row.stats.successfulReads)}</b> 读取</span>}<span>{dateLabel(row.stats.lastUsedAt ?? undefined)}</span></div><div className="resource-tags">{row.association.state !== "linked" && <span className="is-warning">{associationNames[row.association.state]}</span>}{row.stats.results.unknown > 0 && <span>结果未知 {fmt(row.stats.results.unknown)}</span>}</div></button>
+            <FavoriteButton name={row.identity.name} favorite={row.favorite} disabled={favoritePending === row.identity.id} onClick={() => void favorite(row.identity.id, row.favorite)} />
           </div>)}</div> : <ResourceEmpty>没有匹配的使用记录</ResourceEmpty> : route.tab === "local" ? local?.rows.length ? <div className="resource-rows">{local.rows.map(row => <div className={`resource-row${route.id === row.body.id ? " is-selected" : ""}`} key={row.body.id}>
             <button className="resource-row-main" onClick={() => select(row.body.id)} aria-label={`查看${row.body.name}的本地详情`}><div className="resource-row-heading"><strong>{row.body.name}</strong><span>{fmt(row.entries.length)} 个入口</span></div><div className="resource-row-subtitle" title={row.body.targetPath}>{row.body.targetPath ?? row.entries[0]?.entryPath}</div><div className="resource-row-metrics"><span>{[...new Set(row.entries.map(entry => clientName(entry.client)))].join(" · ")}</span>{row.usage && <span><b>{fmt(row.usage.sessions)}</b> 使用会话</span>}</div><div className="resource-tags"><span className={row.observation === "recorded" ? "" : "is-warning"}>{observationLabel(row)}</span>{row.protected && <span><ShieldCheck size={12} />受保护</span>}{row.favorite && !status?.favoriteIds.includes(row.body.id) && <span>关联收藏保护</span>}{row.entries.some(entry => !entry.capabilities.standby && !entry.capabilities.disable && !entry.capabilities.trash) && <span>只读</span>}{row.candidates.includes("broken") && <span className="is-warning">断链／缺失</span>}{row.candidates.includes("duplicate") && <span>SKILL.md 相同</span>}</div></button><FavoriteButton name={row.body.name} favorite={!!status?.favoriteIds.includes(row.body.id)} disabled={favoritePending === row.body.id || !status} onClick={() => void favorite(row.body.id)} />
           </div>)}</div> : <ResourceEmpty>没有匹配的本地资源</ResourceEmpty> : route.tab === "operations" ? operations?.operations.length ? <div className="resource-rows">{operations.operations.map(operation => <div className={`resource-row${route.id === operation.id ? " is-selected" : ""}`} key={operation.id}><button className="resource-row-main" aria-label={`查看${operation.name}的${actionNames[operation.action]}记录`} onClick={() => select(operation.id)}><div className="resource-row-heading"><strong>{operation.name}</strong><span>{actionNames[operation.action]}</span></div><div className="resource-row-metrics"><span>{clientName(operation.resource.client)}</span><span>{dateLabel(operation.createdAt)}</span></div><div className="resource-tags"><span className={operation.status === "success" ? "" : "is-warning"}>{operationStatusNames[operation.status]}</span><span>{operation.clientEffect === "pending_reload" ? "待重新加载" : "客户端生效状态未知"}</span></div></button></div>)}</div> : <ResourceEmpty>没有匹配的操作记录</ResourceEmpty> : archives?.archives.length ? <div className="resource-rows">{archives.archives.map(archive => <div className={`resource-row${route.id === archive.id ? " is-selected" : ""}`} key={archive.id}><button className="resource-row-main" aria-label={`查看${archive.entry.name}的恢复记录`} onClick={() => select(archive.id)}><div className="resource-row-heading"><strong>{archive.entry.name}</strong><span>{clientName(archive.entry.client)}</span></div><div className="resource-row-subtitle" title={archive.originalPath}>{archive.originalPath}</div><div className="resource-row-metrics"><span>{dateLabel(archive.createdAt)}</span></div><div className="resource-tags"><span>{archiveNames[archive.state]}</span><span className={!archive.restorable ? "is-warning" : ""}>{archive.restorable ? "可恢复" : "恢复材料不可用"}</span>{archive.operationStatus === "partial" && <span className="is-warning">部分完成</span>}</div></button></div>)}</div> : <ResourceEmpty>当前范围没有{tabs.find(tab => tab.value === route.tab)?.label}资源</ResourceEmpty>}

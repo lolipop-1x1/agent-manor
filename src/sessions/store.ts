@@ -6,7 +6,7 @@ import type { Gap } from "../contracts.js";
 import { clientIds } from "../clients.js";
 import type { Client } from "../clients.js";
 import type { SourceLocation } from "../history/types.js";
-import type { ResourceEventStream, ResourceHistoryIdentity, ResourceUsageEvent, ResourceUsageQuery } from "../resource-contracts.js";
+import type { ResourceEventStream, ResourceHistoryIdentity, ResourceUsageIdentity, ResourceUsageEvent, ResourceUsageQuery } from "../resource-contracts.js";
 import type { SessionIndexStatus, SessionJob, SessionListResult, SessionMessage, SessionMessageQuery, SessionMessageResult, SessionProfile, SessionQuery, SessionRefreshOptions, SessionSearchResult, SessionSink, SessionSourceMeta, SessionSummary, SessionTimelineEvent, SessionTimelineResult, SessionUsage } from "../session-contracts.js";
 import { StoreError } from "../index/store.js";
 import { sessionTitle } from "./title.js";
@@ -339,7 +339,7 @@ export class SessionStore {
   }
 
   /** 资源查询只读取已发布调用的元信息；配对命中调用索引，不读取消息正文。 */
-  resourceEvents(query: ResourceUsageQuery = {}, identity?: ResourceHistoryIdentity): ResourceEventStream {
+  resourceEvents(query: ResourceUsageQuery = {}, identity?: ResourceHistoryIdentity | ResourceUsageIdentity): ResourceEventStream {
     const version = this.version(query.version);
     const parts = ["v.version=?"];
     const values: SqlValue[] = [version];
@@ -347,7 +347,7 @@ export class SessionStore {
       if (column === "r.project" && value === "none") parts.push("r.project IS NULL");
       else if (value !== undefined) { parts.push(`${column}=?`); values.push(value); }
     }
-    if (identity && identity.project === undefined) parts.push("r.project IS NULL");
+    if (identity?.client !== undefined && identity.project === undefined) parts.push("r.project IS NULL");
     const sessionFilter = parts.join(" AND ");
     const sessionCount = (this.database.prepare(`SELECT COUNT(*) AS count FROM session_version_sessions v
       JOIN session_revisions r ON r.id=v.revision WHERE ${sessionFilter}`).get(...values) as { count: number }).count;

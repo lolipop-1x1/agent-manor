@@ -10,7 +10,7 @@ import type { SessionMessage, SessionSourceMeta } from "../src/session-contracts
 import { StoreError } from "../src/index/store.js";
 import { parseSessionSource } from "../src/sessions/parser.js";
 import { SessionStore } from "../src/sessions/store.js";
-import { associateResourceHistory, emptyResourceUsageStats, listResourceUsage, localResourceUsage, resourceUsageDetail, resourceUsageEvidence } from "../src/resources/usage.js";
+import { associateResourceHistory, emptyResourceUsageStats, listResourceUsage, localResourceUsage, resourceHistoryIdentity, resourceUsageDetail, resourceUsageEvidence } from "../src/resources/usage.js";
 
 const occurredAt = "2026-01-02T12:00:00Z";
 async function fixture(run: (store: SessionStore, directory: string) => Promise<void> | void): Promise<void> {
@@ -127,7 +127,22 @@ test("日期按事件时间筛选，保留缺失与无效时间，不用会话�
   assert.throws(() => listResourceUsage(store, { from: "2026-02-01T00:00:00Z", to: "2026-01-01T00:00:00Z" }), StoreError);
 }));
 
-test("同名不同路径和范围保留分组；全部 Agent 与未知项目可查询", async () => fixture(store => {
+test("Skill 缺失名称保留来源，不用占位文案推断跨 Agent 的同一资源", async () => fixture(store => {
+  const first = source(store, meta("unknown-first"), [message("unknown-first", 0, { resource: { kind: "skill_call", name: "未记录名称" }, filePaths: ["/synthetic/skills/one/SKILL.md"] })]);
+  const second = source(store, meta("unknown-second", { client: "claude" }), [message("unknown-second", 0, { resource: { kind: "skill_call", name: "未记录名称" }, filePaths: ["/synthetic/skills/two/SKILL.md"] })]);
+  store.publish(store.createJob().id, [first, second], []);
+  const result = listResourceUsage(store, { kind: "skill" });
+  assert.equal(result.total, 2);
+  assert.equal(result.stats.events, 2);
+  for (const row of result.resources) {
+    assert.equal(row.identity.grouping, "source");
+    assert.equal(row.stats.sessions, 1);
+    assert.equal(resourceUsageDetail(store, row.identity.id).origins.length, 1);
+    assert.equal(resourceUsageEvidence(store, row.identity.id).total, 1);
+  }
+}));
+
+test("Skill 按名称跨路径、项目和 Agent 汇总；会话数取并集且筛选不改变分组标识", async () => fixture(store => {
   const revisions = clientIds.map((client, index) => source(store, meta(`agent-${index}`, { client, project: index === 0 ? undefined : "/synthetic/project" }), [
     message(`agent-${index}`, 0, { resource: { kind: "skill_call", name: "same-name" }, filePaths: ["/synthetic/skills/one/SKILL.md"] }),
     message(`agent-${index}`, 1, { resource: { kind: "skill_call", name: "same-name" }, filePaths: ["/synthetic/skills/two/SKILL.md"] }),
@@ -136,17 +151,74 @@ test("同名不同路径和范围保留分组；全部 Agent 与未知项目可�
   revisions.push(source(store, meta("other-project"), [message("other-project", 0, { resource: { kind: "skill_call", name: "same-name" }, filePaths: ["/synthetic/skills/one/SKILL.md"] })]));
   store.publish(store.createJob().id, revisions, []);
   const result = listResourceUsage(store);
-  assert.equal(result.total, clientIds.length * 3 + 1);
+  assert.equal(result.total, 1);
   assert.equal(result.stats.events, clientIds.length * 3 + 1);
   assert.equal(result.stats.sessions, clientIds.length + 1);
   assert.deepEqual([...result.coverage.clients].sort(), [...clientIds].sort());
   assert.ok(result.projects.some(project => project.value === null && project.stats.events === 3));
   assert.ok(result.resources.every(resource => resource.association.state === "unassociated"));
-  assert.equal(listResourceUsage(store, { client: "pi" }).total, 3);
+  const id = result.resources[0]!.identity.id;
+  assert.equal(result.resources[0]!.identity.grouping, "skill");
+  assert.equal(result.resources[0]!.identity.client, undefined);
+  assert.equal(result.resources[0]!.identity.path, undefined);
+  assert.equal(result.resources[0]!.stats.sessions, clientIds.length + 1);
+  assert.deepEqual(result.resources[0]!.clients.sort(), [...clientIds].sort());
+  const filtered = listResourceUsage(store, { client: "pi" });
+  assert.equal(filtered.total, 1);
+  assert.equal(filtered.resources[0]!.identity.id, id);
+  assert.equal(filtered.stats.events, 3);
+  assert.equal(filtered.stats.sessions, 1);
   assert.equal(listResourceUsage(store, { project: "/synthetic/project", client: "codex" }).total, 1);
   assert.equal(listResourceUsage(store, { project: "none" }).stats.events, 3);
   assert.equal(listResourceUsage(store, { project: "none" }).stats.sessions, 1);
   assert.equal(listResourceUsage(store, { q: "two" }).stats.events, clientIds.length);
+  const detail = resourceUsageDetail(store, id);
+  assert.deepEqual(detail.resource.stats, result.resources[0]!.stats);
+  assert.equal(detail.origins.length, clientIds.length * 3 + 1);
+  assert.equal(detail.clients.length, clientIds.length);
+  const evidence = resourceUsageEvidence(store, id, { pageSize: 200 });
+  assert.equal(evidence.total, result.stats.events);
+  assert.equal(resourceUsageEvidence(store, id, { client: "pi" }).total, 3);
+  const oldId = resourceHistoryIdentity({ ...evidence.events[0]! }).id;
+  const oldDetail = resourceUsageDetail(store, oldId);
+  assert.equal(oldDetail.resource.identity.grouping, "source");
+  assert.equal(oldDetail.origins.length, 1);
+  assert.equal(resourceUsageEvidence(store, oldId).total, oldDetail.resource.stats.events);
+}));
+
+test("合并排行保留逐来源关联，部分未关联不冒充同一个本地安装，收藏不裁掉同名使用", async () => fixture(store => {
+  const messages = [
+    message("mixed-origins", 0, { resource: { kind: "skill_call", name: "guide" }, filePaths: ["/synthetic/skills/guide/SKILL.md"] }),
+    message("mixed-origins", 1, { resource: { kind: "skill_call", name: "guide" }, filePaths: ["/synthetic/other/guide/SKILL.md"] }),
+    message("mixed-origins", 2, { resource: { kind: "skill_read", name: "guide" }, status: "success" }),
+  ];
+  store.publish(store.createJob().id, [source(store, meta("mixed-origins"), messages)], []);
+  const entries: ResourceAssociationEntry[] = [{ id: "synthetic-entry", kind: "skill", name: "guide", client: "codex",
+    scope: "user", entryPath: "/synthetic/skills/guide", targetPath: "/synthetic/skills/guide" }];
+  const result = listResourceUsage(store, {}, entries);
+  const row = result.resources[0]!;
+  assert.equal(row.stats.sessions, 1);
+  assert.equal(row.stats.events, 3);
+  assert.equal(row.association.state, "partial");
+  assert.deepEqual(row.association.entryIds, ["synthetic-entry"]);
+  assert.equal(result.coverage.unassociatedEvents, 2);
+  const detail = resourceUsageDetail(store, row.identity.id, {}, entries);
+  assert.equal(detail.origins.length, 3);
+  assert.equal(detail.coverage.unassociatedEvents, 2);
+  const oldFavorite = resourceHistoryIdentity(resourceUsageEvidence(store, row.identity.id).events[0]!).id;
+  const favorites = new Set([oldFavorite]);
+  const selected = listResourceUsage(store, { favorite: true }, entries, favorites);
+  assert.equal(selected.total, 1);
+  assert.equal(selected.resources[0]!.favorite, true);
+  assert.equal(selected.stats.events, 3);
+  assert.equal(selected.stats.sessions, 1);
+  assert.equal(resourceUsageDetail(store, row.identity.id, {}, entries, favorites).resource.favorite, true);
+  const local = localResourceUsage(store, {}, entries.map(entry => ({ ...entry, bodyId: "synthetic-body" } as ResourceInventoryEntry))).bodies.get("synthetic-body")!;
+  assert.equal(local.stats.events, 1);
+  assert.equal(local.historyIds.length, 1);
+  assert.notEqual(local.historyIds[0], row.identity.id);
+  assert.equal(resourceUsageDetail(store, local.historyIds[0]!).resource.identity.grouping, "source");
+  assert.equal(resourceUsageEvidence(store, local.historyIds[0]!).total, 1);
 }));
 
 test("重复调用标识或多份结果保持未知，copied 结果不能确认新的请求", async () => fixture(store => {
@@ -331,6 +403,7 @@ test("真实解析器到索引保留成功 Skill 正文读取，文本提及和�
   assert.equal(usage.stats.explicitCalls, 1);
   assert.equal(usage.stats.mcpCalls, 1);
   assert.equal(usage.stats.events, 4);
-  assert.ok(usage.resources.filter(resource => resource.stats.successfulReads).every(resource => resource.identity.path !== undefined));
+  assert.ok(usage.resources.filter(resource => resource.stats.successfulReads).every(resource =>
+    resourceUsageEvidence(store, resource.identity.id, { evidenceKind: "skill_read" }).events.every(event => event.path !== undefined)));
   assert.equal(usage.resources.find(resource => resource.stats.explicitCalls)?.association.reason, "missing_path");
 }));

@@ -41,3 +41,34 @@ export async function resourceFixture(directory, count = 45) {
   await writeFile(source, messages.map(record => `${JSON.stringify(record)}\n`).join(""));
   return { directory, userHome, project, home, history, source, guide, shared, link, configPath };
 }
+
+/** 同名 Skill 的多个真实来源，其中一份历史资源已不在本地。 */
+export async function skillRankingFixture(fixture, claudeHistory, secondProject) {
+  const codexGuide = join(fixture.project, ".agents", "skills", "guide");
+  const claudeGuide = join(secondProject, ".claude", "skills", "guide");
+  const retiredGuide = join(fixture.directory, "retired", "guide");
+  for (const path of [codexGuide, claudeGuide]) {
+    await mkdir(path, { recursive: true });
+    await writeFile(join(path, "SKILL.md"), "---\nname: guide\n---\n另一份人工指南。\n");
+  }
+  const records = [
+    { type: "session_meta", timestamp: "2026-01-05T12:00:00Z", payload: { id: "ranking-codex-example", cwd: fixture.project, title: "同名资源来源合并" } },
+    { type: "response_item", timestamp: "2026-01-05T12:00:01Z", payload: { type: "message", role: "user", content: [{ type: "input_text", text: "使用不同路径的同名人工指南" }] } },
+  ];
+  let sequence = 2;
+  for (const [index, path] of [fixture.guide, codexGuide, retiredGuide].entries()) {
+    const timestamp = () => new Date(Date.UTC(2026, 0, 5, 12, 0, sequence++)).toISOString();
+    records.push({ type: "response_item", timestamp: timestamp(), payload: { type: "function_call", name: "shell_command", call_id: `ranking-read-${index}`, arguments: JSON.stringify({ command: `cat '${join(path, "SKILL.md")}'`, workdir: fixture.project }) } });
+    records.push({ type: "response_item", timestamp: timestamp(), payload: { type: "function_call_output", call_id: `ranking-read-${index}`, output: "Exit code: 0\nOutput:\n人工指南内容。\n" } });
+  }
+  records.push({ type: "response_item", timestamp: "2026-01-05T12:00:10Z", payload: { type: "message", role: "assistant", channel: "final", content: [{ type: "output_text", text: "人工指南已使用" }] } });
+  const claudeRecords = [
+    { type: "user", uuid: "ranking-claude-user", timestamp: "2026-01-06T12:00:00Z", sessionId: "ranking-claude-example", cwd: secondProject, message: { content: [{ type: "text", text: "使用另一份人工指南" }] } },
+    { type: "assistant", uuid: "ranking-claude-request", timestamp: "2026-01-06T12:00:01Z", sessionId: "ranking-claude-example", cwd: secondProject, message: { content: [{ type: "tool_use", id: "ranking-claude-read", name: "Read", input: { file_path: join(claudeGuide, "SKILL.md") } }] } },
+    { type: "user", uuid: "ranking-claude-result", timestamp: "2026-01-06T12:00:02Z", sourceToolAssistantUUID: "ranking-claude-request", sessionId: "ranking-claude-example", cwd: secondProject, message: { content: [{ type: "tool_result", tool_use_id: "ranking-claude-read", content: "另一份人工指南。\n", is_error: false }] }, toolUseResult: { type: "text", file: { filePath: join(claudeGuide, "SKILL.md"), content: "另一份人工指南。\n", numLines: 1, startLine: 1, totalLines: 1 } } },
+    { type: "assistant", uuid: "ranking-claude-final", timestamp: "2026-01-06T12:00:03Z", sessionId: "ranking-claude-example", cwd: secondProject, message: { content: [{ type: "text", text: "人工指南已使用" }] } },
+  ];
+  await writeFile(join(fixture.history, "ranking-guide.jsonl"), records.map(record => JSON.stringify(record)).join("\n") + "\n");
+  await writeFile(join(claudeHistory, "ranking-guide.jsonl"), claudeRecords.map(record => JSON.stringify(record)).join("\n") + "\n");
+  return { codexGuide, claudeGuide, retiredGuide };
+}

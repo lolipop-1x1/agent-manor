@@ -19,6 +19,7 @@
 - 任务 03 已实现[独立管理状态与可恢复操作](../../src/resources/management.ts)，预览／确认、备份与依赖复核、局部配置编辑及恢复冲突通过隔离合成和 HTTP／CLI 验证；客户端加载仍待确认。[结果](issues/03-recoverable-management.md#answer)。
 - 任务 02 已完成[逐来源能力矩阵](../../docs/design/resource-support.md)，未知格式、系统与插件保持只读；手动来源保留独立登记身份。[结果](issues/02-local-inventory.md#answer)。
 - 任务 04 已完成资源顶层入口、共享本体分析及统一管理交互；任务 05 的 22 组真实 Chrome 验收通过。两路审查问题已修复；真实资源仅只读，写操作使用人工夹具。[验收记录](../../docs/validation/resource-management.md)。
+- 任务 06 将 Skill 使用排行调整为完整名称维度，跨 Agent／项目／路径汇总，会话取并集；实际来源与本地操作仍精确关联。325 项回归及 25 组真实 Chrome 通过，现有索引的排行由 1,147 行合并为 387 行，完整统计保持一致。[结果](issues/06-skill-name-ranking.md#answer)。
 
 ## 设计树状态
 
@@ -42,3 +43,4 @@
 3. [可恢复管理与独立生命周期](issues/03-recoverable-management.md)。
 4. [资源页面与会话证据联动](issues/04-resource-ui.md)。
 5. [端到端验收](issues/05-end-to-end-validation.md)。
+6. [Skill 排行按名称组织](issues/06-skill-name-ranking.md)。

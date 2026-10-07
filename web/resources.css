@@ -171,3 +171,5 @@
   .resource-list-toolbar { gap: 9px; }
   .resource-list-toolbar > span { font-size: 10px; }
 }
+.resource-origin-list > div { border-top: 1px solid var(--border); padding: 12px 0; }
+.resource-origin-list > div > span { margin-left: 12px; color: var(--muted); font-size: 12px; }

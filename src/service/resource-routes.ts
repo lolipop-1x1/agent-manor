@@ -37,8 +37,7 @@ export function registerResourceRoutes(app: FastifyInstance, resources: Resource
   app.post(`${base}/favorites`, request => {
     const body = resourceBody(request.body, ["id", "value"]);
     if (typeof body.value !== "boolean") throw new ServiceError("INVALID_INPUT", "value 必须是布尔值");
-    resources.manager.setFavorite(textValue(body.id, "id", true)!, body.value);
-    return { favoriteIds: resources.manager.favorites() };
+    return resources.setFavorite(textValue(body.id, "id", true)!, body.value);
   });
   app.post(`${base}/sources`, request => {
     const body = resourceBody(request.body, ["client", "kind", "path", "project", "format", "keyPath"]);

@@ -9,7 +9,7 @@ import { clientIds } from "../dist/clients.js";
 import { startService } from "../dist/server.js";
 import { parse as parseToml } from "smol-toml";
 import Database from "better-sqlite3";
-import { resourceFixture } from "./resource-fixture.mjs";
+import { resourceFixture, skillRankingFixture } from "./resource-fixture.mjs";
 
 // 全部历史 roots 和资源 home 均显式隔离；真实 Chrome 只操作人工资源。
 const run = promisify(execFile);
@@ -109,7 +109,7 @@ try {
     await row.getByRole("button",{name:"取消收藏guide",exact:true}).click();
     await page.getByText("没有匹配的使用记录",{exact:true}).waitFor();
     await page.getByRole("checkbox",{name:"仅收藏",exact:true}).uncheck();
-    const picker=page.getByRole("combobox",{name:"资源客户端",exact:true});
+    const picker=page.getByRole("combobox",{name:"资源Agent",exact:true});
     await picker.focus(); await page.keyboard.press("ArrowDown");
     await page.getByRole("option",{name:"Codex",exact:true}).focus(); await page.keyboard.press("Enter");
     expect((await picker.innerText()).includes("Codex"),"键盘选择未生效");
@@ -125,13 +125,16 @@ try {
     await page.getByRole("button",{name:"清空",exact:true}).click();
     expect((await page.getByRole("button",{name:"资源开始日期",exact:true}).innerText()).includes("选择日期"),"日期未清空");
     ${select("资源使用时间", "全部历史")}
+    expect(await page.locator(".resources-shell").getByRole("button",{name:"筛选项目",exact:true}).count()===0,"Skill排行仍展示项目筛选");
+    ${view("本地资源")}
     await page.locator(".resources-shell").getByRole("button",{name:"筛选项目",exact:true}).click();
     await page.getByRole("combobox",{name:"搜索项目",exact:true}).fill("sample-project");
     await page.getByRole("option").filter({hasText:"sample-project"}).click();
-    await page.getByRole("button",{name:"查看guide的使用详情",exact:true}).waitFor();
+    await page.getByText("没有匹配的本地资源",{exact:true}).waitFor();
   `);
   await step("MCP 工具下钻与证据跳转返回", `
     await page.getByRole("group",{name:"资源类型",exact:true}).getByRole("button",{name:"MCP",exact:true}).click();
+    ${view("使用排行")}
     await page.getByRole("button",{name:"查看sample的使用详情",exact:true}).click();
     const tool=page.locator(".resource-tool-list").getByRole("button").filter({hasText:"lookup"});
     await tool.click();
@@ -374,6 +377,88 @@ try {
     expect(page.resourceErrors.length===0,"浏览器异常："+page.resourceErrors.join(";"));
     ${screenshot("unused-zero-state.png")}
   `);
+
+  await skillRankingFixture(fixture, claudeHistory, secondProject);
+  const { job: rankingRefresh } = await api("/sessions/refresh", "POST");
+  let rankingJob = rankingRefresh;
+  for (let attempt = 0; attempt < 400 && ["queued", "running"].includes(rankingJob.status); attempt++) {
+    await new Promise(resolve => setTimeout(resolve, 25));
+    rankingJob = (await api(`/jobs/${rankingRefresh.id}`)).job;
+  }
+  assert.equal(rankingJob.status, "complete", rankingJob.error);
+  await api("/resources/refresh", "POST");
+  const ranked = (await api("/resources/usage?kind=skill&q=guide")).resources.filter(row => row.identity.name === "guide");
+  assert.equal(ranked.length, 1);
+  const guideRank = ranked[0];
+  assert.equal(guideRank.identity.grouping, "skill");
+  assert.equal(guideRank.identity.client, undefined); assert.equal(guideRank.identity.project, undefined); assert.equal(guideRank.identity.path, undefined);
+  assert.equal(guideRank.stats.sessions, 3); assert.equal(guideRank.stats.successfulReads, 5);
+  assert.deepEqual(new Set(guideRank.clients), new Set(["codex", "claude"]));
+  const rankedDetail = await api(`/resources/usage/${encodeURIComponent(guideRank.identity.id)}?kind=skill`);
+  assert.equal(rankedDetail.origins.length, 4); assert.equal(rankedDetail.projects.length, 2); assert.equal(rankedDetail.resource.association.state, "partial");
+  const oldOrigin = rankedDetail.origins.find(origin => origin.client === "codex" && origin.path === fixture.guide);
+  assert.ok(oldOrigin);
+  await api("/resources/favorites", "POST", { id: oldOrigin.id, value: true });
+  const oldProjectHash = `#resources?kind=skill&tab=usage&project=${encodeURIComponent(fixture.project)}&q=guide&id=${encodeURIComponent(guideRank.identity.id)}`;
+  await step("Skill 全名合并跨 Agent、项目与路径，会话数取并集", `
+    page.resourceRequests=[];
+    page.on("request",request=>{if(request.url().includes("/api/v1/resources/usage"))page.resourceRequests.push(request.url())});
+    await page.evaluate(hash=>location.hash=hash,${JSON.stringify(oldProjectHash)});
+    const row=page.locator(".resource-row").filter({has:page.getByRole("button",{name:"查看guide的使用详情",exact:true})});
+    await row.getByRole("button",{name:"查看guide的使用详情",exact:true}).waitFor();
+    expect(await row.count()===1,"同名Skill仍按来源拆成多行");
+    expect((await row.locator(".resource-row-heading").innerText()).includes("2 个 Agent"),"排行冒充单一Agent");
+    expect(await row.locator(".resource-row-subtitle").count()===0,"Skill排行仍展示单项目或路径");
+    expect(/3\\s*会话/.test(await row.innerText())&&/5\\s*读取/.test(await row.innerText()),"会话未取并集或读取次数丢失");
+    expect(await page.getByRole("combobox",{name:"资源Agent",exact:true}).count()===1,"Agent筛选没有复用统一组件");
+    expect(await page.locator(".resources-shell").getByRole("button",{name:"筛选项目",exact:true}).count()===0,"旧项目筛选仍可见");
+    const detail=page.getByRole("complementary",{name:"资源详情",exact:true});
+    await detail.getByRole("heading",{name:"guide",exact:true}).waitFor();
+    expect(/3\\s*使用会话/.test(await detail.locator(".resource-stats").innerText()),"详情会话并集错误");
+    expect((await detail.locator(".resource-tags").first().innerText()).includes("部分未关联"),"部分历史未关联状态被隐藏");
+    const agents=detail.locator(".resource-detail-section").filter({has:page.getByRole("heading",{name:"Agent 分布",exact:true})});
+    const projects=detail.locator(".resource-detail-section").filter({has:page.getByRole("heading",{name:"项目分布",exact:true})});
+    expect(await agents.locator(".resource-distribution>div").count()===2,"Agent分布未合并");
+    expect(await projects.locator(".resource-distribution>div").count()===2,"项目来源未保留");
+    await detail.getByText("历史来源 · 4 个",{exact:true}).click();
+    expect(await detail.locator(".resource-origin-list>div").count()===4,"实际历史来源被名称汇总吞掉");
+    expect(page.resourceRequests.length>=3&&page.resourceRequests.every(url=>!/[?&]project=/.test(url)),"Skill排行请求仍被旧项目限制");
+    await row.getByRole("button",{name:"取消收藏guide",exact:true}).waitFor();
+    ${screenshot("skill-name-ranking.png")}
+  `);
+  await step("旧来源收藏兼容名称汇总与管理保护", `
+    const row=page.locator(".resource-row").filter({has:page.getByRole("button",{name:"查看guide的使用详情",exact:true})});
+    await row.getByRole("button",{name:"取消收藏guide",exact:true}).click();
+    await row.getByRole("button",{name:"收藏guide",exact:true}).waitFor();
+    await row.getByRole("button",{name:"收藏guide",exact:true}).click();
+    await row.getByRole("button",{name:"取消收藏guide",exact:true}).waitFor();
+  `);
+  assert.ok((await api("/resources/status")).favoriteIds.includes(guideRank.identity.id));
+  assert.ok(!(await api("/resources/status")).favoriteIds.includes(oldOrigin.id));
+  const nativeGuide = (await api("/resources/local?kind=skill&q=guide")).rows.flatMap(row => row.entries).find(entry => entry.client === "codex" && entry.entryPath === fixture.guide);
+  assert.ok(nativeGuide);
+  assert.equal((await api("/resources/preview", "POST", { entryId: nativeGuide.id, action: "disable" })).protected, true);
+  await step("Agent筛选保持Skill身份与证据跳转返回", `
+    ${select("资源Agent", "Codex")}
+    await page.waitForFunction(()=>{const row=[...document.querySelectorAll(".resource-row")].find(element=>element.querySelector('[aria-label="查看guide的使用详情"]'));return row&&/2\\s*会话/.test(row.textContent)&&/4\\s*读取/.test(row.textContent)});
+    const codexRow=page.locator(".resource-row").filter({has:page.getByRole("button",{name:"查看guide的使用详情",exact:true})});
+    expect((await codexRow.locator(".resource-row-heading").innerText()).includes("Codex"),"单Agent筛选名称错误");
+    expect(await page.evaluate(()=>new URLSearchParams(location.hash.split("?")[1]).get("id"))===${JSON.stringify(guideRank.identity.id)},"筛选改变了Skill身份");
+    ${select("资源Agent", "Claude Code")}
+    await page.waitForFunction(()=>{const row=[...document.querySelectorAll(".resource-row")].find(element=>element.querySelector('[aria-label="查看guide的使用详情"]'));return row&&/1\\s*会话/.test(row.textContent)&&/1\\s*读取/.test(row.textContent)});
+    await page.waitForFunction(()=>document.querySelectorAll(".resource-evidence a").length===1);
+    const resourceHash=await page.evaluate(()=>location.hash);
+    await page.locator(".resource-evidence a").first().click(); await page.waitForURL(/#sessions/);
+    expect(page.url().includes("mode=trace")&&page.url().includes("message="),"Skill证据未定位轨迹");
+    await page.goBack(); await page.waitForURL(/#resources/);
+    expect((await page.evaluate(()=>location.hash))===resourceHash,"返回未保留Agent筛选与Skill");
+    await page.locator(".resource-evidence a").first().waitFor();
+    expect((await page.getByRole("combobox",{name:"资源Agent",exact:true}).innerText()).includes("Claude Code"),"返回丢失Agent筛选");
+    ${select("资源Agent", "全部 Agent")}
+    await page.waitForFunction(()=>{const row=[...document.querySelectorAll(".resource-row")].find(element=>element.querySelector('[aria-label="查看guide的使用详情"]'));return row&&/3\\s*会话/.test(row.textContent)});
+    expect(page.resourceErrors.length===0,"浏览器异常："+page.resourceErrors.join(";"));
+  `);
+  await api("/resources/favorites", "POST", { id: guideRank.identity.id, value: false });
 
   await writeFile(join(artifacts, "report.json"), JSON.stringify({ passed: true, checks, elapsedMs: Date.now() - started }, null, 2));
   console.log(`PASS 资源 Chrome 端到端 ${checks.length} 项`);
