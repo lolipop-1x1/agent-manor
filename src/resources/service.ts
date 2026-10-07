@@ -5,7 +5,7 @@ import type { ResourceUsageQuery, ResourceUsageResult } from "../resource-contra
 import { ServiceError } from "../service/input.js";
 import { StoreError } from "../index/store.js";
 import { scanResourceInventory } from "./inventory.js";
-import { aggregateResourceUsage, emptyResourceUsageStats, listResourceUsage, resourceOverviewIdentity, localResourceUsage, resourceUsageDetail, resourceUsageEvidence } from "./usage.js";
+import { overviewResourceUsage, emptyResourceUsageStats, listResourceUsage, resourceOverviewIdentity, localResourceUsage, resourceUsageDetail, resourceUsageEvidence } from "./usage.js";
 import { buildResourceOverview } from "./overview.js";
 import { buildResourceMap } from "./map.js";
 import { ResourceManager } from "./management.js";
@@ -14,7 +14,8 @@ import { ResourceManager } from "./management.js";
 export class ResourceService {
   private snapshot?: ResourceInventorySnapshot;
   private pending?: Promise<ResourceInventorySnapshot>;
-  private overviewCache?: { key: string; value: Promise<{ history: ResourceUsageResult | null; local: Awaited<ReturnType<ResourceService["localRows"]>> }> };
+  private readonly overviewCache = new Map<string, Promise<{ history: ResourceUsageResult | null; local: Awaited<ReturnType<ResourceService["localRows"]>> }>>();
+  private overviewGeneration?: string;
   constructor(readonly library: SessionStore, readonly manager: ResourceManager,
     private readonly inventoryOptions: ResourceInventoryOptions, private readonly projects: () => string[]) {}
 
@@ -26,6 +27,7 @@ export class ResourceService {
       const snapshot = await scanResourceInventory({ ...this.inventoryOptions, projects: this.projects(), manualSources: this.manager.manualSources() });
       this.manager.observeInventory(snapshot);
       this.snapshot = snapshot;
+      this.overviewCache.clear();
       return this.manager.decorateInventory(snapshot);
     })().finally(() => { this.pending = undefined; });
     return this.pending;
@@ -40,21 +42,34 @@ export class ResourceService {
     return { ...listResourceUsage(this.library, query, (await this.inventory()).entries, new Set(this.manager.favorites())), favoriteIds: this.manager.favorites() };
   }
   private async overviewData(query: ResourceOverviewQuery) {
-    const inventory = await this.inventory();
     const scope = { kind: query.kind ?? "skill", client: query.client, from: query.from, to: query.to,
       version: query.version ?? this.library.status().version };
+    const inventory = this.snapshot ? undefined : await this.inventory();
+    const favorites = this.manager.favorites();
+    const generation = JSON.stringify([scope.version, this.snapshot?.observedAt, favorites]);
+    if (this.overviewGeneration !== generation) { this.overviewCache.clear(); this.overviewGeneration = generation; }
     // 状态、排序和分页只改变视野；同一索引与盘点范围复用全量聚合。
-    const key = JSON.stringify([scope, inventory.observedAt, this.manager.favorites(), query.lowSessions, query.inactiveDays]);
-    if (this.overviewCache?.key === key) return this.overviewCache.value;
+    const key = JSON.stringify([scope, query.lowSessions, query.inactiveDays]);
+    const localQuery = { ...scope, lowSessions: query.lowSessions, inactiveDays: query.inactiveDays };
+    const cached = this.overviewCache.get(key);
+    if (cached) {
+      this.overviewCache.delete(key); this.overviewCache.set(key, cached);
+      const { history, local } = await cached;
+      // 观测期限与闲置状态随时间变化，复用历史但重新判断本地候选。
+      return { history, local: await this.localRows(localQuery, false, { inventory: local.inventory, history: local.history }) };
+    }
     const value = (async () => {
+      const snapshot = inventory ?? await this.inventory();
       let history: ResourceUsageResult | null = null;
-      try { history = aggregateResourceUsage(this.library, scope, inventory.entries, new Set(this.manager.favorites()), true); }
+      let localUsage: ReturnType<typeof localResourceUsage> | undefined;
+      try { const usage = overviewResourceUsage(this.library, scope, snapshot.entries, new Set(favorites)); history = usage.history; localUsage = usage.local; }
       catch (error) { if (!(error instanceof StoreError) || error.code !== "ANALYSIS_NOT_READY") throw error; }
-      const local = await this.localRows({ ...scope, lowSessions: query.lowSessions, inactiveDays: query.inactiveDays }, Boolean(scope.version));
+      const local = await this.localRows(localQuery, false, { inventory: snapshot, history: localUsage });
       return { history, local };
     })();
-    this.overviewCache = { key, value };
-    try { return await value; } catch (error) { if (this.overviewCache?.value === value) this.overviewCache = undefined; throw error; }
+    this.overviewCache.set(key, value);
+    if (this.overviewCache.size > 8) this.overviewCache.delete(this.overviewCache.keys().next().value!);
+    try { return await value; } catch (error) { if (this.overviewCache.get(key) === value) this.overviewCache.delete(key); throw error; }
   }
   async overview(query: ResourceOverviewQuery) {
     const { history, local } = await this.overviewData(query);
@@ -102,9 +117,10 @@ export class ResourceService {
     return { favoriteIds: this.manager.favorites() };
   }
 
-  private async localRows(query: ResourceLocalQuery, historyAvailable = true): Promise<{ rows: ResourceLocalRow[]; inventory: ResourceInventorySnapshot; partial: boolean; history?: ReturnType<typeof localResourceUsage> }> {
-    const inventory = await this.inventory();
-    let history: ReturnType<typeof localResourceUsage> | undefined;
+  private async localRows(query: ResourceLocalQuery, historyAvailable = true,
+    prepared?: { inventory: ResourceInventorySnapshot; history?: ReturnType<typeof localResourceUsage> }): Promise<{ rows: ResourceLocalRow[]; inventory: ResourceInventorySnapshot; partial: boolean; history?: ReturnType<typeof localResourceUsage> }> {
+    const inventory = prepared?.inventory ?? await this.inventory();
+    let history = prepared?.history;
     try { if (historyAvailable) history = localResourceUsage(this.library, query, inventory.entries); }
     catch (error) { if (!(error instanceof StoreError) || error.code !== "ANALYSIS_NOT_READY") throw error; }
     const favoriteIds = new Set(this.manager.favorites());

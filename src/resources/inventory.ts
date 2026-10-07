@@ -299,14 +299,22 @@ export async function scanResourceInventory(options: ResourceInventoryOptions = 
     }
   } catch (error) { fail(installedSource, error); }
 
-  for (const source of sources) {
-    if (source.format === "plugin") continue;
+  const scanSource = async (source: SourcePlan) => {
+    if (source.format === "plugin") return;
     if (source.format === "unsupported") {
-      source.readState = "unsupported"; gaps.push({ sourceId: source.id, client: source.client, reason: "unsupported" }); continue;
+      source.readState = "unsupported"; gaps.push({ sourceId: source.id, client: source.client, reason: "unsupported" }); return;
     }
     try { if (source.kind === "skill") await scanSkills(source); else await scanMcp(source); }
     catch (error) { fail(source, error); }
-  }
+  };
+  // 独立来源最多四路并行；合并时恢复来源顺序，共享本体的首选名称保持一致。
+  let nextSource = 0;
+  await Promise.all(Array.from({ length: 4 }, async () => {
+    while (nextSource < sources.length) await scanSource(sources[nextSource++]!);
+  }));
+  const sourceOrder = new Map(sources.map((source, index) => [source.id, index]));
+  entries.sort((left, right) => sourceOrder.get(left.sourceId)! - sourceOrder.get(right.sourceId)!);
+  gaps.sort((left, right) => sourceOrder.get(left.sourceId)! - sourceOrder.get(right.sourceId)!);
   // 普通入口指向已确认受管理本体时，保护不能被一个别名绕过。
   const managedBodies = new Map<string, ResourceInventoryEntry>();
   for (const entry of entries) if (entry.protected && (!managedBodies.has(entry.bodyId) || entry.protectionReason === "system")) managedBodies.set(entry.bodyId, entry);

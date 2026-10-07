@@ -137,13 +137,13 @@ test("地图复用范围缓存而不重读事件，发布版本变化后更新�
     versions.push(query.version); return original(query, identity);
   }) as SessionStore["resourceEvents"];
   const firstMap = await service.map({ q: "guide" });
-  assert.deepEqual(versions, [version, version]);
+  assert.deepEqual(versions, [version]);
   const guide = firstMap.positive[0]!;
   assert.ok(guide.localBodyIds.length > 0);
   assert.equal(guide.hasHistory, true);
   await service.map({ q: "guide", metric: "reads", maxValue: 0 });
   await service.overview({ q: "guide", pageSize: 1, order: "asc" });
-  assert.equal(versions.length, 2);
+  assert.equal(versions.length, 1);
   manager.setFavorite(guide.id, true);
   const favorite = await service.map({ q: "guide" });
   assert.equal(favorite.positive[0]!.favorite, true); assert.equal(favorite.positive[0]!.protected, true);
@@ -171,7 +171,7 @@ test("一次地图查询的历史和本地聚合固定版本，不混入查询�
   }) as SessionStore["resourceEvents"];
   const result = await service.map({ q: "guide" });
   assert.equal(result.version, version); assert.equal(result.positive[0]!.value, 1);
-  assert.deepEqual(versions, [version, version]); assert.notEqual(next, version);
+  assert.deepEqual(versions, [version]); assert.notEqual(next, version);
   const updated = await service.map({ q: "guide" });
   assert.equal(updated.version, next); assert.equal(updated.positive[0]!.value, 2);
 }));

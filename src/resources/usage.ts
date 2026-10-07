@@ -7,7 +7,7 @@ import type {
   ResourceAssociationEntry, ResourceHistoryAssociation, ResourceHistoryIdentity, ResourceUsageCoverage,
   ResourceUsageDetail, ResourceUsageDistribution, ResourceUsageEvent, ResourceUsageEvidenceQuery,
   ResourceUsageEvidenceResult, ResourceUsageQuery, ResourceUsageResult, ResourceUsageRow, ResourceUsageStats,
-  ResourceUsageIdentity,
+  ResourceUsageIdentity, ResourceEventStream,
 } from "../resource-contracts.js";
 
 interface Accumulator { stats: ResourceUsageStats; sessions: Set<string>; durationMs: number }
@@ -137,25 +137,32 @@ function observed(stats: ResourceUsageStats, range: ReturnType<typeof bounds>): 
 
 /** 本地本体按实际关联事件聚合，跨入口的会话数取并集，不能相加。 */
 export function localResourceUsage(store: SessionStore, query: ResourceUsageQuery, entries: readonly ResourceInventoryEntry[]) {
-  const range = bounds(query);
+  bounds(query);
   const stream = store.resourceEvents(query);
+  const collector = localUsageCollector(query, entries, stream);
+  for (const event of stream.events) collector.add(event);
+  return collector.result();
+}
+
+function localUsageCollector(query: ResourceUsageQuery, entries: readonly ResourceInventoryEntry[], stream: ResourceEventStream) {
+  const range = bounds(query);
   const byEntry = new Map(entries.map(entry => [entry.id, entry]));
   const associations = new Map<string, ResourceHistoryAssociation>();
   const bodies = new Map<string, { accumulator: Accumulator; historyIds: Set<string>; favoriteIds: Set<string>; trend: Map<string, Accumulator>;
     clients: Map<string, Accumulator>; projects: Map<string, Accumulator> }>();
   const uncertain = new Set<string>();
-  for (const event of stream.events) {
-    if (!selected(event, { ...query, q: undefined }, range)) continue;
+  return { add(event: ResourceUsageEvent) {
+    if (!selected(event, { ...query, q: undefined }, range)) return;
     const identity = resourceHistoryIdentity(event);
     let association = associations.get(identity.id);
     if (!association) { association = associateResourceHistory(identity, entries); associations.set(identity.id, association); }
     const bodyIds = new Set(association.entryIds.flatMap(id => byEntry.get(id)?.bodyId ?? []));
     if (bodyIds.size !== 1) {
       uncertain.add(JSON.stringify([identity.kind, identity.client, identity.name]));
-      continue;
+      return;
     }
     const entry = byEntry.get(association.entryIds[0]!);
-    if (!entry) continue;
+    if (!entry) return;
     let body = bodies.get(entry.bodyId);
     if (!body) {
       body = { accumulator: empty(), historyIds: new Set(), favoriteIds: new Set(), trend: new Map(), clients: new Map(), projects: new Map() };
@@ -170,12 +177,11 @@ export function localResourceUsage(store: SessionStore, query: ResourceUsageQuer
     add(group(body.projects, event.project ?? ""), event, range);
     const day = eventDay(event);
     if (day) add(group(body.trend, day), event, range);
-  }
-  return { version: stream.version, clients: stream.clients, partial: stream.gaps.length > 0, uncertain,
+  }, result() { return { version: stream.version, clients: stream.clients, partial: stream.gaps.length > 0, uncertain,
     uncertainClients: stream.uncertainClients ?? [], unscopedGaps: stream.unscopedGaps ?? stream.gaps.length > 0,
     timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
     bodies: new Map([...bodies].map(([id, body]) => [id, { stats: finish(body.accumulator), historyIds: [...body.historyIds], favoriteIds: [...body.favoriteIds],
-      trend: trends(body.trend), clients: distributions(body.clients), projects: distributions(body.projects) }])) };
+      trend: trends(body.trend), clients: distributions(body.clients), projects: distributions(body.projects) }])) }; } };
 }
 
 interface UsageBucket {
@@ -245,14 +251,29 @@ function unassociated(target: UsageBucket, entries: readonly ResourceAssociation
 /** Skill 保留名称排行；MCP 仅在总览按名称聚合，既有来源排行保持兼容。 */
 export function aggregateResourceUsage(store: SessionStore, query: ResourceUsageQuery = {}, entries: readonly ResourceAssociationEntry[] = [],
   favorites: ReadonlySet<string> = new Set(), overview = false): ResourceUsageResult {
-  const range = bounds(query);
+  bounds(query);
+  return aggregateUsage(store.resourceEvents(query), query, entries, favorites, overview);
+}
+
+/** 总览统计与本地关联共用一次事件流，不保存原始事件副本。 */
+export function overviewResourceUsage(store: SessionStore, query: ResourceUsageQuery, entries: readonly ResourceInventoryEntry[], favorites: ReadonlySet<string>) {
+  bounds(query);
   const stream = store.resourceEvents(query);
+  const local = localUsageCollector(query, entries, stream);
+  const history = aggregateUsage(stream, query, entries, favorites, true, event => local.add(event));
+  return { history, local: local.result() };
+}
+
+function aggregateUsage(stream: ResourceEventStream, query: ResourceUsageQuery, entries: readonly ResourceAssociationEntry[],
+  favorites: ReadonlySet<string>, overview: boolean, onEvent?: (event: ResourceUsageEvent) => void): ResourceUsageResult {
+  const range = bounds(query);
   const resources = new Map<string, UsageBucket>();
   const total = empty();
   const trend = new Map<string, Accumulator>();
   const clients = new Map<string, Accumulator>();
   const projects = new Map<string, Accumulator>();
   for (const event of stream.events) {
+    onEvent?.(event);
     if (!selected(event, query, range)) continue;
     const origin = resourceHistoryIdentity(event);
     const identity = overview ? resourceOverviewIdentity(origin, event.source.sourceId) : resourceUsageIdentity(origin);

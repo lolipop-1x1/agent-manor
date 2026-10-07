@@ -219,6 +219,7 @@ try {
     await page.getByRole('textbox',{name:'搜索资源名称或路径',exact:true}).fill('map-skill-001');
     ${select("地图面积指标", "使用会话数")}
     await page.waitForFunction(()=>new URLSearchParams(location.hash.split('?')[1]).get('q')==='map-skill-001'&&!document.querySelector('.resource-list-scroll[aria-busy="true"]'));
+    await page.locator('.resource-map-locator > span').filter({hasText:/^1 个色块/}).waitFor();
     const selectedDetail=page.getByRole('complementary',{name:'资源详情',exact:true});
     if(!await selectedDetail.getByRole('heading',{name:'map-skill-001',exact:true}).isVisible()) await page.getByRole('button',{name:'查看map-skill-001的使用详情',exact:true}).click();
     await selectedDetail.getByRole('heading',{name:'map-skill-001',exact:true}).waitFor();
@@ -236,6 +237,7 @@ try {
     await page.goBack(); await page.waitForURL(/#resources/);
     await page.getByRole('group',{name:'资源使用地图',exact:true}).waitFor();
     expect(await page.evaluate(()=>location.hash)===hash,'返回丢失地图路由状态');
+    await page.waitForFunction(scale=>document.querySelector('[data-scale]')?.getAttribute('data-scale')===scale,scale);
     expect(await stage.getAttribute('data-scale')===scale,'返回丢失地图倍率');
     expect(await stage.locator('svg').innerHTML()===position,'返回丢失地图平移位置');
     expect(page.mapRequests.length===requests,'返回重复请求相同地图');
@@ -426,7 +428,7 @@ try {
     const manage=detail.locator('details').filter({has:page.locator('summary').filter({hasText:/^管理具体入口$/})});
     if(await manage.getAttribute('open')===null) await manage.locator('summary').click();
     await detail.locator('.resource-tags').first().getByText('受保护',{exact:true}).waitFor();
-    await manage.getByRole('button',{name:'预览回收map-skill-002的Codex入口',exact:true}).click();
+    await manage.getByRole('button',{name:'预览移入回收区map-skill-002的Codex入口',exact:true}).click();
     const protectedPreview=page.getByRole('dialog',{name:'移入回收区预览',exact:true});
     await protectedPreview.getByRole('alert').filter({hasText:'此资源已收藏'}).waitFor();
     await protectedPreview.locator('.resource-preview-heading').getByText('受保护',{exact:true}).waitFor();
@@ -434,7 +436,7 @@ try {
     await detail.getByRole('button',{name:'取消收藏map-skill-002',exact:true}).click();
     await detail.getByRole('button',{name:'收藏map-skill-002',exact:true}).waitFor();
     if(await manage.getAttribute('open')===null) await manage.locator('summary').click();
-    await manage.getByRole('button',{name:'预览回收map-skill-002的Codex入口',exact:true}).click();
+    await manage.getByRole('button',{name:'预览移入回收区map-skill-002的Codex入口',exact:true}).click();
     const preview=page.getByRole('dialog',{name:'移入回收区预览',exact:true});
     await preview.getByRole('button',{name:'确认移入回收区',exact:true}).click();
     await preview.getByRole('button',{name:'完成',exact:true}).waitFor();

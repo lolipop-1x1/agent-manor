@@ -52,7 +52,7 @@ const search = name => `await page.getByRole("textbox",{name:"搜索资源名称
 const local = name => `${view("本地资源")} ${search(name)} await page.getByRole("button",{name:${JSON.stringify(`查看${name}的本地详情`)},exact:true}).click(); await page.locator(".resource-detail-heading h2").filter({hasText:${JSON.stringify(name)}}).waitFor();`;
 const screenshot = name => `await page.screenshot({path:${JSON.stringify(join(artifacts, name))}});`;
 const actionNames = { disable: "停用", standby: "移到备用", trash: "移入回收区", restore: "恢复", purge: "永久清除" };
-const previewEntry = (action, name, client = "Codex") => `await page.getByRole("button",{name:${JSON.stringify(`预览${action === "trash" ? "回收" : actionNames[action]}${name}的${client}入口`)},exact:true}).click(); await page.getByRole("dialog",{name:${JSON.stringify(`${actionNames[action]}预览`)},exact:true}).getByRole("button",{name:${JSON.stringify(`确认${actionNames[action]}`)},exact:true}).waitFor();`;
+const previewEntry = (action, name, client = "Codex") => `await page.getByRole("button",{name:${JSON.stringify(`预览${actionNames[action]}${name}的${client}入口`)},exact:true}).click(); await page.getByRole("dialog",{name:${JSON.stringify(`${actionNames[action]}预览`)},exact:true}).getByRole("button",{name:${JSON.stringify(`确认${actionNames[action]}`)},exact:true}).waitFor();`;
 const confirm = action => `{
   const dialog=page.getByRole("dialog",{name:${JSON.stringify(`${actionNames[action]}预览`)},exact:true});
   ${action === "purge" ? 'expect(await dialog.getByRole("button",{name:"确认永久清除",exact:true}).isDisabled(),"永久清除未要求二次确认"); await dialog.getByRole("checkbox",{name:"我确认永久清除所列恢复材料",exact:true}).check();' : ""}
@@ -86,8 +86,32 @@ try {
   const initialConfig = await readFile(fixture.configPath, "utf8");
   const usage = await api("/resources/usage?kind=skill");
   assert.equal(usage.resources.find(row => row.identity.name === "guide")?.stats.successfulReads, 1);
+  await writeFile(join(fixture.project, "sample.ts"), "export const sample = 1;\n");
+  const registered = await api("/repositories", "POST", { path: fixture.project });
+  for (let attempt = 0; attempt < 400; attempt++) {
+    const { job } = await api(`/jobs/${registered.job.id}`);
+    if (job.status === "completed") break;
+    assert.notEqual(job.status, "failed", job.error);
+    await new Promise(resolve => setTimeout(resolve, 25));
+  }
+  assert.equal((await api(`/jobs/${registered.job.id}`)).job.status, "completed");
   await api("/preferences", "PUT", { language: "zh-CN" });
-  await browser(["open", `${base}/`, "--headed", "--browser=chrome"]);
+  await browser(["open", `${base}/#resources`, "--headed", "--browser=chrome"]);
+
+  await step("资源首屏不加载隐藏代码地图，切回地图按需加载", `
+    await page.getByRole("table",{name:"Skill 总览",exact:true}).waitFor();
+    await page.waitForFunction(()=>performance.getEntriesByType("resource").some(entry=>new URL(entry.name).pathname==="/api/v1/status"));
+    const coverageCount=()=>page.evaluate(()=>performance.getEntriesByType("resource").filter(entry=>new URL(entry.name).pathname.endsWith("/coverage")).length);
+    expect(await coverageCount()===0,"资源首屏触发了隐藏地图查询");
+    const navigation=page.getByRole("navigation",{name:"功能导航"});
+    await navigation.getByRole("button",{name:"代码地图",exact:true}).click();
+    await page.locator(".map-file").first().waitFor();
+    const loaded=await coverageCount();
+    expect(loaded>0,"切回代码地图没有加载数据");
+    await navigation.getByRole("button",{name:"资源管理",exact:true}).click();
+    await page.getByRole("table",{name:"Skill 总览",exact:true}).waitFor();
+    expect(await coverageCount()===loaded,"返回资源页重新查询了隐藏地图");
+  `);
 
   await step("入口、Skill 读取与调用分列", `
     page.resourceErrors=[]; page.on("pageerror",error=>page.resourceErrors.push(error.message));

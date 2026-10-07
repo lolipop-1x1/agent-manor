@@ -307,7 +307,7 @@ export function App() {
     setJob(latest ?? null);
   }, [repoId, jobs]);
   useEffect(() => {
-    if (!repoId || invalidTime) return;
+    if (view !== "map" || !repoId || invalidTime) return;
     const controller = new AbortController();
     setCoverageLoading(true); setCoverageError(null);
     void (async () => {
@@ -322,8 +322,9 @@ export function App() {
     })().catch(failure => { if (!isAborted(failure)) { setCoverageError(failure); setCoverage(null); } })
       .finally(() => { if (!controller.signal.aborted) setCoverageLoading(false); });
     return () => controller.abort();
-  }, [repoId, filterKey, version, reload, invalidTime]);
+  }, [view, repoId, filterKey, version, reload, invalidTime]);
   useEffect(() => {
+    if (view !== "map") return;
     if (!repoId || !selected || !coverage || !query || coverageLoading || invalidTime) { setDetail(null); setDetailLoading(false); setDetailError(null); return; }
     const controller = new AbortController();
     setDetailLoading(true); setDetailError(null); setDetail(null);
@@ -332,7 +333,7 @@ export function App() {
       .catch(failure => { if (!isAborted(failure)) setDetailError(failure); })
       .finally(() => { if (!controller.signal.aborted) setDetailLoading(false); });
     return () => controller.abort();
-  }, [repoId, selected, coverage?.version, filterKey, detailRetry, coverageLoading, invalidTime]);
+  }, [view, repoId, selected, coverage?.version, filterKey, detailRetry, coverageLoading, invalidTime]);
   useEffect(() => {
     if (!job || !jobActive(job)) return;
     let cancelled = false;
