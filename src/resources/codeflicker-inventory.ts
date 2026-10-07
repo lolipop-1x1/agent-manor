@@ -27,6 +27,14 @@ const object = (value: unknown): ObjectValue | undefined => value !== null && ty
 const missing = (error: unknown): boolean => object(error)?.code === "ENOENT" || object(error)?.code === "ENOTDIR";
 const contained = (root: string, path: string): boolean => { const value = relative(root, path); return value === "" || value !== ".." && !value.startsWith(`..${sep}`) && !isAbsolute(value); };
 const strings = (value: unknown): string[] => Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
+const defaultUserOnlySkills = new Set(["docs-shuttle"]);
+
+/** 插件引用的真实目标须位于登记根内，返回核验后的读路径以避免再次跟随引用链接。 */
+export async function codeflickerReferencePath(source: InventorySourcePlan): Promise<string | undefined> {
+  if (!source.codeflicker?.containmentRoot) return source.path;
+  const [root, path] = await Promise.all([realpath(source.codeflicker.containmentRoot), realpath(source.path)]);
+  return contained(root, path) ? path : undefined;
+}
 /** 配置数组按原生优先级累计，MCP 注册的整体替换由来源投影处理。 */
 function merge(lower: ObjectValue, higher: ObjectValue): ObjectValue {
   const result = { ...lower };
@@ -57,9 +65,15 @@ export async function planCodeFlickerInventory(options: CodeFlickerPlannerOption
   };
   const readSettings = async (source: InventorySourcePlan): Promise<ObjectValue> => {
     try {
-      const value = await parseConfig(source.path, source.format);
+      const path = await codeflickerReferencePath(source);
+      if (!path) {
+        source.readState = "invalid"; diagnostic(source, "invalid_reference");
+        gaps.push({ sourceId: source.id, client: source.client, reason: "invalid" }); return {};
+      }
+      const value = await parseConfig(path, source.format);
       source.readState = "ok";
-      if (value && source.kind === "mcp" && !source.owner && Array.isArray(value.skills)) return { ...value, skillPaths: value.skills, skills: {} };
+      if (value && source.kind === "mcp" && !source.owner && Array.isArray(value.skills)) return { ...value,
+        skillPaths: Array.isArray(value.skillPaths) ? [...value.skillPaths, ...value.skills] : value.skills, skills: {} };
       return value ?? {};
     } catch (error) { fail(source, error); return {}; }
   };
@@ -130,7 +144,7 @@ export async function planCodeFlickerInventory(options: CodeFlickerPlannerOption
       }
       const manifestPath = join(root, ".claude-plugin", "plugin.json");
       const resourceProject = record.scope === "project" || record.scope === "local" ? project : undefined;
-      const manifestSource = add("codeflicker", "skill", manifestPath, "plugin", { project, origin: "plugin", owner, metadataOnly: true, codeflicker: { dependencyPaths: configPaths, resourceProject } });
+      const manifestSource = add("codeflicker", "skill", manifestPath, "plugin", { project, origin: "plugin", owner, metadataOnly: true, codeflicker: { dependencyPaths: configPaths, resourceProject, containmentRoot: root } });
       const manifest = await readSettings(manifestSource);
       if (manifestSource.readState !== "ok") { if (manifestSource.readState === "missing") gaps.push({ sourceId: manifestSource.id, client: manifestSource.client, reason: "missing" }); continue; }
       const enabled = object(settings.enabledPlugins)?.[owner];
@@ -209,6 +223,8 @@ export function codeflickerSkillState(source: InventorySourcePlan, name: string)
   const rules = object(metadata.settings?.skills);
   if (strings(rules?.disabled).includes(name)) return { nativeState: "disabled", invocationMode: "auto" };
   if (strings(rules?.userOnly).includes(name)) return { nativeState: "enabled", invocationMode: "user-only" };
+  if (strings(rules?.enabled).includes(name)) return { nativeState: "enabled", invocationMode: "auto" };
+  if (defaultUserOnlySkills.has(name)) return { nativeState: "enabled", invocationMode: "user-only" };
   return { nativeState: "enabled", invocationMode: "auto" };
 }
 

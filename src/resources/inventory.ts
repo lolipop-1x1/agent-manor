@@ -11,7 +11,7 @@ import type { Client } from "../clients.js";
 import type { ResourceKind } from "../resource-contracts.js";
 import type { ResourceInventoryBody, ResourceInventoryEntry, ResourceInventoryGap, ResourceInventoryOptions,
   ResourceInventorySnapshot, ResourceInventorySource, ResourceSourceFormat, ResourceInventoryDiagnostic } from "../resource-inventory-contracts.js";
-import { codeflickerSkillState, compactCodeFlickerInventory, planCodeFlickerInventory, projectCodeFlickerEntries } from "./codeflicker-inventory.js";
+import { codeflickerReferencePath, codeflickerSkillState, compactCodeFlickerInventory, planCodeFlickerInventory, projectCodeFlickerEntries } from "./codeflicker-inventory.js";
 import type { InventorySourcePlan } from "./codeflicker-inventory.js";
 
 type ObjectValue = Record<string, unknown>;
@@ -262,7 +262,13 @@ export async function scanResourceInventory(options: ResourceInventoryOptions = 
     await visit(root, 0, source.origin === "system"); source.readState = "ok";
   };
   const scanMcp = async (source: SourcePlan): Promise<void> => {
-    let config = await parseConfig(source.path, source.format);
+    const path = await codeflickerReferencePath(source);
+    if (!path) {
+      source.readState = "invalid"; gaps.push({ sourceId: source.id, client: source.client, reason: "invalid" });
+      diagnostics.push({ sourceId: source.id, client: source.client, kind: "mcp", scope: source.scope, project: source.project, reason: "invalid_reference", path: source.path });
+      return;
+    }
+    let config = await parseConfig(path, source.format);
     let keyPath = source.keyPath ?? [];
     if (source.origin === "plugin" && keyPath.length === 1 && keyPath[0] === "mcpServers" && !config?.mcpServers) keyPath = [];
     for (const key of keyPath) {
@@ -372,6 +378,9 @@ export async function scanResourceInventory(options: ResourceInventoryOptions = 
   const sourceOrder = new Map(sources.map((source, index) => [source.id, index]));
   entries.sort((left, right) => sourceOrder.get(left.sourceId)! - sourceOrder.get(right.sourceId)!);
   const originalEntries = [...entries];
+  // 被覆盖引用仍能证明真实本体受托管，先保留保护证据再投影有效入口。
+  const managedBodies = new Map<string, ResourceInventoryEntry>();
+  for (const entry of originalEntries) if (entry.protected && (!managedBodies.has(entry.bodyId) || entry.protectionReason === "system")) managedBodies.set(entry.bodyId, entry);
   const compact = compactCodeFlickerInventory(projectCodeFlickerEntries(entries, sources, diagnostics), originalEntries, sources, identity);
   entries.splice(0, entries.length, ...compact.entries); sources.splice(0, sources.length, ...compact.sources);
   for (const gap of gaps) gap.sourceId = compact.sourceIds.get(gap.sourceId) ?? gap.sourceId;
@@ -385,8 +394,6 @@ export async function scanResourceInventory(options: ResourceInventoryOptions = 
   const compactOrder = new Map(sources.map((source, index) => [source.id, index]));
   gaps.sort((left, right) => compactOrder.get(left.sourceId)! - compactOrder.get(right.sourceId)!);
   // 普通入口指向已确认受管理本体时，保护不能被一个别名绕过。
-  const managedBodies = new Map<string, ResourceInventoryEntry>();
-  for (const entry of entries) if (entry.protected && (!managedBodies.has(entry.bodyId) || entry.protectionReason === "system")) managedBodies.set(entry.bodyId, entry);
   for (const entry of entries) {
     const managed = managedBodies.get(entry.bodyId);
     if (managed) {

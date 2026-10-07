@@ -209,3 +209,63 @@ test("插件manifest可引用单Skill或立即子目录容器，容器本身不�
   assert.ok(plugin.every(entry => entry.readState === "present"));
   assert.ok(!snapshot.diagnostics?.some(row => row.reason === "shadowed" && row.name === "example:plugin-guide"));
 }));
+
+test("插件manifest和MCP链接先核验真实边界，根外JSON不产生资源，根内链接仍可读取", async () => fixture(async home => {
+  const escapedManifestRoot = join(home, "plugins", "escaped-manifest");
+  const pluginRoot = join(home, "plugins", "registered");
+  const outside = join(home, "outside");
+  await file(join(outside, "plugin.json"), JSON.stringify({ name: "outside-plugin", mcpServers: { forbiddenManifest: { command: "synthetic-secret" } } }));
+  await mkdir(join(escapedManifestRoot, ".claude-plugin"), { recursive: true });
+  await symlink(join(outside, "plugin.json"), join(escapedManifestRoot, ".claude-plugin", "plugin.json"));
+  await file(join(pluginRoot, ".claude-plugin", "plugin.json"), JSON.stringify({ name: "registered", mcpServers: "config/escaped.json" }));
+  await file(join(outside, "mcp.json"), JSON.stringify({ mcpServers: { forbiddenConfig: { command: "synthetic-secret" } } }));
+  await mkdir(join(pluginRoot, "config"), { recursive: true });
+  await symlink(join(outside, "mcp.json"), join(pluginRoot, "config", "escaped.json"));
+  await symlink(join(outside, "mcp.json"), join(pluginRoot, ".mcp.json"));
+  const insideRoot = join(home, "plugins", "inside");
+  await file(join(insideRoot, ".claude-plugin", "plugin.json"), JSON.stringify({ name: "inside", mcpServers: "config/linked.json" }));
+  await file(join(insideRoot, "config", "actual.json"), JSON.stringify({ mcpServers: { permitted: { command: "synthetic" } } }));
+  await symlink(join(insideRoot, "config", "actual.json"), join(insideRoot, "config", "linked.json"));
+  await file(join(home, ".codeflicker", "plugins", "installed_plugins.json"), JSON.stringify({ plugins: {
+    escaped: { name: "escaped", installPath: escapedManifestRoot, scope: "global" },
+    registered: { name: "registered", installPath: pluginRoot, scope: "global" }, inside: { name: "inside", installPath: insideRoot, scope: "global" },
+  } }));
+  await file(join(home, ".codeflicker", "config.json"), JSON.stringify({ enabledPlugins: { escaped: true, registered: true, inside: true } }));
+  const snapshot = await scanResourceInventory({ userHome: home });
+  assert.ok(!snapshot.entries.some(entry => ["forbiddenManifest", "forbiddenConfig"].includes(entry.name)));
+  assert.ok(snapshot.entries.some(entry => entry.client === "codeflicker" && entry.name === "permitted"));
+  for (const path of [join(escapedManifestRoot, ".claude-plugin", "plugin.json"), join(pluginRoot, "config", "escaped.json"), join(pluginRoot, ".mcp.json")]) {
+    assert.ok(snapshot.diagnostics?.some(row => row.reason === "invalid_reference" && row.path === path));
+    assert.ok(snapshot.sources.some(source => source.path === path && source.readState === "invalid"));
+  }
+  assert.ok(!JSON.stringify(snapshot).includes("synthetic-secret"));
+}));
+
+test("CLI内置默认名称在用户覆盖后仍仅用户触发，显式enabled及更高优先级规则正确", async () => fixture(async home => {
+  const user = join(home, ".codeflicker", "skills", "custom-shuttle");
+  await file(join(home, ".codeflicker", "remote-personal-skills", "builtin-shuttle", "SKILL.md"), skill("docs-shuttle"));
+  await file(join(user, "SKILL.md"), skill("docs-shuttle"));
+  const projects = ["enabled", "user-only", "disabled"].map(name => join(home, name));
+  await file(join(projects[0]!, ".codeflicker", "config.json"), JSON.stringify({ skills: { enabled: ["docs-shuttle"] } }));
+  await file(join(projects[1]!, ".codeflicker", "config.json"), JSON.stringify({ skills: { enabled: ["docs-shuttle"], userOnly: ["docs-shuttle"] } }));
+  await file(join(projects[2]!, ".codeflicker", "config.json"), JSON.stringify({ skills: { enabled: ["docs-shuttle"], userOnly: ["docs-shuttle"], disabled: ["docs-shuttle"] } }));
+  const snapshot = await scanResourceInventory({ userHome: home, projects });
+  const selected = snapshot.entries.find(entry => entry.client === "codeflicker" && entry.entryPath === user)!;
+  assert.equal(selected.nativeState, "enabled"); assert.equal(selected.invocationMode, "user-only");
+  assert.equal(selected.selectionScopes?.find(scope => scope.project === projects[0])?.invocationMode, "auto");
+  assert.equal(selected.selectionScopes?.find(scope => scope.project === projects[1])?.invocationMode, "user-only");
+  assert.equal(selected.selectionScopes?.find(scope => scope.project === projects[2])?.nativeState, "disabled");
+}));
+
+test("CLI同时保留新skillPaths和旧skills路径数组，旧数组后加载覆盖同名", async () => fixture(async home => {
+  const newer = join(home, "custom", "newer"), legacy = join(home, "custom", "legacy");
+  const distinctNew = join(home, "custom", "distinct-new"), distinctLegacy = join(home, "custom", "distinct-legacy");
+  await file(join(newer, "SKILL.md"), skill("collision")); await file(join(legacy, "SKILL.md"), skill("collision"));
+  await file(join(distinctNew, "SKILL.md"), skill("new-only")); await file(join(distinctLegacy, "SKILL.md"), skill("legacy-only"));
+  await file(join(home, ".codeflicker", "config.json"), JSON.stringify({ skillPaths: [newer, distinctNew], skills: [legacy, distinctLegacy], claudeImport: false, remoteSkills: false }));
+  const snapshot = await scanResourceInventory({ userHome: home });
+  const entries = snapshot.entries.filter(entry => entry.client === "codeflicker" && entry.kind === "skill");
+  assert.deepEqual(entries.map(entry => entry.name).sort(), ["collision", "legacy-only", "new-only"]);
+  assert.equal(entries.find(entry => entry.name === "collision")?.entryPath, legacy);
+  assert.ok(snapshot.diagnostics?.some(row => row.reason === "shadowed" && row.path === newer && row.selectedPath === legacy));
+}));

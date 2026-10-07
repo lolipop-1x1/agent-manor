@@ -17,7 +17,7 @@
 | --- | --- | --- | --- |
 | 用户资源 | `.codeflicker/skills` | `.myflicker/skills`、`.myflicker/user-skills`、`.agents/skills` | 普通独立目录可核验原生设置或隔离／恢复；共享本体不冒充单入口操作 |
 | 已知项目 | 项目 `.codeflicker/skills`；启用兼容导入时读取项目 `.claude/skills`、`.agents/skills` | 项目 `.myflicker/skills`、`.myflicker/user-skills`、`.agents/skills` | 按已知项目分别计算发现与覆盖关系，不全盘扫描 |
-| 自定义路径 | 顶层 `skillPaths` 字符串数组；旧式 `skills` 路径数组有兼容转换 | 全局 Agent 设置 `userCustomSkillDirs` 字符串数组 | 只读明确引用的本地路径；相对路径、无效值和不存在来源按原生规则核验，不使用服务 cwd 猜测 |
+| 自定义路径 | 顶层 `skillPaths` 字符串数组；旧式 `skills` 路径数组按新数组在前、旧数组在后拼接 | 全局 Agent 设置 `userCustomSkillDirs` 字符串数组 | 只读明确引用的本地路径；相对路径、无效值和不存在来源按原生规则核验，不使用服务 cwd 猜测 |
 | 兼容导入 | `claudeImport` 默认开启，包含用户 `.claude/skills` 与 `.agents/skills` | `.myflicker/user-skills` 是有效兼容扫描根 | “兼容”不表示当前客户端正在运行，也不证明目录独占 |
 | 远端安装材料 | `remoteSkills` 默认开启，读取 `.codeflicker/remote-personal-skills` 与 `remote-skills` | `.myflicker/remote-personal-skills` 是市场下载扫描根 | 盘点已有本地材料，保留托管来源保护；不下载或直接修改托管缓存 |
 | 内置与插件 | 内置元信息、插件登记及 manifest／静态路径；动态 hook 无法静态确认时记缺口 | `.myflicker/internal/skills` 为内置根 | 保护、只读，不通过执行插件来盘点 |
@@ -28,11 +28,13 @@ CLI 使用加载顺序覆盖同名 Map 项；插件原生名称带插件命名�
 
 CLI 的同名 Map 覆盖不套用于桌面的所有目录入口。桌面 `use_skill` 可按启用项的精确目录选择；只要原生路径仍能独立选择，同名资源就保留独立入口，不能仅因名称排序靠后而标为被覆盖。默认名称选择、目录选择及列表排序分别核验。
 
-CLI 的 `skills.disabled`、`skills.userOnly`、`skills.enabled` 按名称列表消费，状态判定先检查 disabled，再检查 userOnly，再检查 enabled 及内置默认设置。仅用户触发仍可由用户使用，不归类为停用。桌面 Skill 的 `.disable` 标记参与状态读取；实际写能力须核验独立入口及恢复冲突，不能覆盖共享目标后声称只影响一个入口。
+CLI 的 `skills.disabled`、`skills.userOnly`、`skills.enabled` 按名称列表消费，状态判定先检查 disabled，再检查 userOnly，再检查 enabled 及内置默认设置。已核验默认仅用户触发的原生名称为 `docs-shuttle`，同名用户目录覆盖后仍适用；显式 enabled 可以开启自动调用，带插件命名空间的名称另行判断。仅用户触发仍可由用户使用，不归类为停用。桌面 Skill 的 `.disable` 标记参与状态读取；实际写能力须核验独立入口及恢复冲突，不能覆盖共享目标后声称只影响一个入口。
 
 ## 插件与副本
 
 CLI 的 `installed_plugins.json` 保存安装登记，登记的 `installPath` 指向版本材料；`known_marketplaces.json` 描述市场检出位置，`plugins/cache` 保存版本缓存。三个概念不能混用，市场检出或缓存存在不证明某个插件已安装／启用。
+
+插件 manifest、Skill 与 MCP 文件引用在读取正文前核验真实目标位于登记根内；符号链接不能绕过边界，越界引用只保留无效状态与来源缺口。
 
 本地列表包含已核验入口及已停用项。未被发现规则或安装登记引用的旧副本进入来源诊断；被覆盖入口按用户默认和每个已知项目分别保留覆盖关系。名称、文档指纹或复制迁移不证明两个独立目录是同一本体。移除当前入口可能重新露出下层同名项，预览须说明该影响。
 

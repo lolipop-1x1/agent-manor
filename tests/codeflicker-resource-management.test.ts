@@ -169,3 +169,25 @@ test("CLI 项目 Skill 停用仅创建该项目本地名单并保留用户设置
   await restore(manager, await scan()); await assert.rejects(stat(localConfig));
   assert.equal(selected(await scan(), "codeflicker", "skill", "project-guide").invocationMode, "user-only");
 }));
+
+test("被同名覆盖的托管本体仍保护桌面共享入口，独立同名目录不受误保护", async () => fixture(async (manager, userHome, scan) => {
+  const managed = join(userHome, ".codeflicker", "remote-personal-skills", "guide");
+  const ordinary = join(userHome, ".codeflicker", "skills", "guide");
+  const linked = join(userHome, ".myflicker", "skills", "linked-guide");
+  await skill(managed); await skill(ordinary);
+  await mkdir(dirname(linked), { recursive: true }); await symlink(managed, linked);
+  const snapshot = await scan();
+  const activeCli = snapshot.entries.find(entry => entry.client === "codeflicker" && entry.entryPath === ordinary)!;
+  assert.equal(activeCli.protected, false);
+  assert.ok(snapshot.diagnostics?.some(row => row.reason === "shadowed" && row.path === managed && row.selectedPath === ordinary));
+  const desktop = snapshot.entries.find(entry => entry.client === "codeflicker-desktop" && entry.entryPath === linked)!;
+  assert.equal(desktop.protected, true); assert.equal(desktop.protectionReason, "managed");
+  assert.equal(desktop.locator.nativeControl, undefined);
+  const decorated = manager.decorateInventory(snapshot).entries.find(entry => entry.id === desktop.id)!;
+  for (const capability of ["disable", "standby", "trash", "restore", "purge"] as const) assert.equal(decorated.capabilities[capability], false);
+  for (const action of ["disable", "trash"] as const) await assert.rejects(manager.preview({ entryId: desktop.id, action }, snapshot),
+    (error: unknown) => error instanceof ServiceError && error.code === "FORBIDDEN");
+  await assert.rejects(stat(join(managed, ".disable")), { code: "ENOENT" });
+  assert.match(await readFile(join(managed, "SKILL.md"), "utf8"), /人工合成/);
+  assert.equal(manager.operations().total, 0);
+}));

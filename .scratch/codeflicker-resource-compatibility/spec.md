@@ -1,6 +1,6 @@
 # CodeFlicker CLI／桌面版本地资源兼容
 
-Status: claimed
+Status: resolved
 
 ## 目标
 
@@ -66,3 +66,7 @@ Status: claimed
 实施任务：[03 来源与盘点](issues/03-inventory-adapters.md)、[04 关联与管理](issues/04-association-management.md)、[05 展示与诊断](issues/05-interface-diagnostics.md)、[06 验收](issues/06-validation.md)。
 
 桌面 MCP 的 `disable`／`disabled` 消费差异必须逐来源核验；未确认时保持状态未知，不根据字段名字猜测，不影响服务器名称与注册定位的只读展示。Client Daemon 写适配、插件级管理及未持久化临时配置为后续范围。
+
+## Answer
+
+任务 01–06 已完成。两种客户端的本地盘点、历史关联、来源诊断及已核验管理能力通过回归与浏览器验收，桌面 MCP 保留只读边界。完整方法、测试结果及未验证范围见 [任务 06](issues/06-validation.md)。

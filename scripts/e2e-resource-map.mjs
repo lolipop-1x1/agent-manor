@@ -462,7 +462,9 @@ try {
     await detail.getByRole('button',{name:'管理map-system',exact:true}).click();
     const manage=page.getByRole('dialog',{name:'管理具体入口',exact:true}); await manage.waitFor();
     expect(await manage.getByRole('button',{name:/^预览/}).count()===0,'系统资源有写操作');
-    expect((await manage.innerText()).includes('系统资源受保护'),'系统只读原因不可见');
+    await manage.getByRole('button',{name:'只读原因',exact:true}).click();
+    await page.getByText('系统资源受保护，当前入口只读。',{exact:true}).waitFor();
+    await page.keyboard.press('Escape');
     await page.keyboard.press('Escape'); await manage.waitFor({state:'hidden'});
     expect(await detail.getByRole('button',{name:'管理map-system',exact:true}).evaluate(element=>element===document.activeElement),'Escape未恢复管理按钮焦点');
     await page.getByRole('textbox',{name:'搜索资源名称或路径',exact:true}).fill('no-such-map-resource');
