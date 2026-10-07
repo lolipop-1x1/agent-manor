@@ -1,17 +1,19 @@
 import type { SessionStore } from "../sessions/store.js";
 import type { ResourceInventoryOptions, ResourceInventorySnapshot, ResourceManualSource } from "../resource-inventory-contracts.js";
-import type { ResourceLocalDetail, ResourceLocalQuery, ResourceLocalResult, ResourceLocalRow, ResourceStatus } from "../resource-service-contracts.js";
-import type { ResourceUsageQuery } from "../resource-contracts.js";
+import type { ResourceLocalDetail, ResourceLocalQuery, ResourceLocalResult, ResourceLocalRow, ResourceStatus, ResourceOverviewQuery, ResourceOverviewDetail } from "../resource-service-contracts.js";
+import type { ResourceUsageQuery, ResourceUsageResult } from "../resource-contracts.js";
 import { ServiceError } from "../service/input.js";
 import { StoreError } from "../index/store.js";
 import { scanResourceInventory } from "./inventory.js";
-import { emptyResourceUsageStats, listResourceUsage, localResourceUsage, resourceUsageDetail, resourceUsageEvidence } from "./usage.js";
+import { aggregateResourceUsage, emptyResourceUsageStats, listResourceUsage, resourceUsageIdentity, localResourceUsage, resourceUsageDetail, resourceUsageEvidence } from "./usage.js";
+import { buildSkillOverview } from "./overview.js";
 import { ResourceManager } from "./management.js";
 
 /** 共用服务边界：派生盘点可刷新，收藏和恢复材料由独立管理库保留。 */
 export class ResourceService {
   private snapshot?: ResourceInventorySnapshot;
   private pending?: Promise<ResourceInventorySnapshot>;
+  private overviewCache?: { key: string; value: Promise<{ history: ResourceUsageResult | null; local: Awaited<ReturnType<ResourceService["localRows"]>> }> };
   constructor(readonly library: SessionStore, readonly manager: ResourceManager,
     private readonly inventoryOptions: ResourceInventoryOptions, private readonly projects: () => string[]) {}
 
@@ -35,6 +37,41 @@ export class ResourceService {
   async refresh(): Promise<ResourceStatus> { await this.scan(); return this.status(); }
   async usage(query: ResourceUsageQuery) {
     return { ...listResourceUsage(this.library, query, (await this.inventory()).entries, new Set(this.manager.favorites())), favoriteIds: this.manager.favorites() };
+  }
+  private async overviewData(query: ResourceOverviewQuery) {
+    const inventory = await this.inventory();
+    const scope = { kind: "skill" as const, client: query.client, from: query.from, to: query.to,
+      version: query.version ?? this.library.status().version };
+    // 状态、排序和分页只改变视野；同一索引与盘点范围复用全量聚合。
+    const key = JSON.stringify([scope, inventory.observedAt, this.manager.favorites(), query.lowSessions, query.inactiveDays]);
+    if (this.overviewCache?.key === key) return this.overviewCache.value;
+    const value = (async () => {
+      let history: ResourceUsageResult | null = null;
+      try { history = aggregateResourceUsage(this.library, scope, inventory.entries, new Set(this.manager.favorites())); }
+      catch (error) { if (!(error instanceof StoreError) || error.code !== "ANALYSIS_NOT_READY") throw error; }
+      const local = await this.localRows({ ...scope, lowSessions: query.lowSessions, inactiveDays: query.inactiveDays });
+      return { history, local };
+    })();
+    this.overviewCache = { key, value };
+    try { return await value; } catch (error) { if (this.overviewCache?.value === value) this.overviewCache = undefined; throw error; }
+  }
+  async overview(query: ResourceOverviewQuery) {
+    const { history, local } = await this.overviewData(query);
+    return { ...buildSkillOverview(history, local.rows, query, { observedAt: local.inventory.observedAt,
+      partial: local.partial, favorites: new Set(this.manager.favorites()) }), favoriteIds: this.manager.favorites() };
+  }
+  async overviewDetail(id: string, query: ResourceOverviewQuery): Promise<ResourceOverviewDetail> {
+    const { history, local } = await this.overviewData(query);
+    const all = buildSkillOverview(history, local.rows, { ...query, q: undefined, candidate: "all", favorite: false }, {
+      observedAt: local.inventory.observedAt, partial: local.partial, favorites: new Set(this.manager.favorites()), unpaginated: true });
+    const target = all.resources.find(row => row.identity.id === id);
+    if (target) return { resource: target, history: target.hasHistory ? resourceUsageDetail(this.library, id, { ...query, kind: "skill", project: undefined },
+      local.inventory.entries, new Set(this.manager.favorites())) : null, local: local.rows.filter(row => target.localBodyIds.includes(row.body.id)) };
+    const legacy = resourceUsageDetail(this.library, id, { ...query, kind: "skill", project: undefined }, local.inventory.entries, new Set(this.manager.favorites()));
+    const bodyIds = new Set(local.inventory.entries.filter(entry => legacy.resource.association.entryIds.includes(entry.id)).map(entry => entry.bodyId));
+    return { resource: { identity: legacy.resource.identity, stats: legacy.resource.stats.events ? legacy.resource.stats : null, clients: legacy.resource.clients,
+      favorite: legacy.resource.favorite, protected: legacy.resource.favorite, observation: legacy.resource.stats.events ? "used" : "unknown",
+      candidates: [], localBodyIds: [...bodyIds], hasHistory: true }, history: legacy, local: local.rows.filter(row => bodyIds.has(row.body.id)) };
   }
   async usageDetail(id: string, query: ResourceUsageQuery) {
     return { ...resourceUsageDetail(this.library, id, query, (await this.inventory()).entries, new Set(this.manager.favorites())), favoriteIds: this.manager.favorites() };
@@ -79,8 +116,11 @@ export class ResourceService {
       if (q && ![body.name, body.targetPath, ...entries.map(entry => entry.entryPath)].some(value => value?.toLocaleLowerCase().includes(q))) continue;
       const firstSeenAt = entries.map(entry => (entry as typeof entry & { firstSeenAt?: string }).firstSeenAt ?? entry.observedAt).sort()[0]!;
       const usage = history?.bodies.get(body.id);
-      const favorite = favoriteIds.has(body.id) || entries.some(entry => favoriteIds.has(entry.id)) || (usage?.favoriteIds.some(id => favoriteIds.has(id)) ?? false);
-      const uncertain = !history || history.partial || Boolean((query.from || query.to) && usage?.stats.missingTimeEvents) || entries.some(entry => !history.clients.includes(entry.client)
+      const favorite = favoriteIds.has(body.id) || entries.some(entry => favoriteIds.has(entry.id) || favoriteIds.has(resourceUsageIdentity({
+        id: entry.id, kind: entry.kind, name: entry.name, client: entry.client }).id)) || (usage?.favoriteIds.some(id => favoriteIds.has(id)) ?? false);
+      const uncertain = !history || history.unscopedGaps || Boolean((query.from || query.to) && usage?.stats.missingTimeEvents) || entries.some(entry => entry.readState !== "present"
+        || history.uncertainClients.includes(entry.client) || !history.clients.includes(entry.client)
+        || inventory.gaps.some(gap => gap.sourceId === entry.sourceId)
         || history.uncertain.has(JSON.stringify([entry.kind, entry.client, entry.name])));
       const observation = usage?.stats.events ? "recorded" : uncertain ? "unknown" : now - Date.parse(firstSeenAt) < 7 * 86400_000 ? "insufficient" : "recorded";
       const candidates: ResourceLocalRow["candidates"] = [];
@@ -97,11 +137,21 @@ export class ResourceService {
         || protectedEntry && ["unused", "low", "old"].includes(query.candidate))) continue;
       rows.push({ body, entries, favorite, firstSeenAt, usage: usage?.stats ?? (observation === "recorded" ? emptyResourceUsageStats() : null), historyIds: usage?.historyIds ?? [], observation, candidates, protected: protectedEntry });
     }
-    const metric = (row: ResourceLocalRow) => query.sort === "calls" ? (row.usage?.explicitCalls ?? 0) + (row.usage?.mcpCalls ?? 0)
-      : query.sort === "reads" ? row.usage?.successfulReads ?? 0 : row.usage?.sessions ?? 0;
-    rows.sort((a, b) => (query.sort === "recent" ? Date.parse(b.usage?.lastUsedAt ?? "") - Date.parse(a.usage?.lastUsedAt ?? "")
-      : query.sort === "name" ? 0 : metric(b) - metric(a)) || a.body.name.localeCompare(b.body.name) || a.body.id.localeCompare(b.body.id));
-    return { rows, inventory, history, partial: inventory.gaps.length > 0 || !history || history.partial };
+    const sort = query.sort ?? "sessions";
+    const direction = (query.order ?? (sort === "name" ? "asc" : "desc")) === "asc" ? 1 : -1;
+    const metric = (row: ResourceLocalRow): number | null => {
+      if (!row.usage) return null;
+      if (sort === "recent") return row.usage.lastUsedAt ? Date.parse(row.usage.lastUsedAt) : null;
+      return sort === "calls" ? row.usage.explicitCalls + row.usage.mcpCalls : sort === "reads" ? row.usage.successfulReads : row.usage.sessions;
+    };
+    rows.sort((a, b) => {
+      if (sort === "name") return direction * a.body.name.localeCompare(b.body.name) || a.body.id.localeCompare(b.body.id);
+      const left = metric(a), right = metric(b);
+      return (left === null ? right === null ? 0 : 1 : right === null ? -1 : direction * (left - right))
+        || a.body.name.localeCompare(b.body.name) || a.body.id.localeCompare(b.body.id);
+    });
+    return { rows, inventory, history, partial: inventory.gaps.some(gap => inventory.sources.some(source => source.id === gap.sourceId
+      && (!query.kind || source.kind === query.kind) && (!query.client || source.client === query.client))) || !history || history.partial };
   }
   async local(query: ResourceLocalQuery): Promise<ResourceLocalResult> {
     const { rows, inventory, partial } = await this.localRows(query);
@@ -120,13 +170,16 @@ export class ResourceService {
   async addSource(source: ResourceManualSource) { this.manager.addManualSource(source); return this.refresh(); }
   async removeSource(id: string) { this.manager.removeManualSource(id); return this.refresh(); }
   private async managementInventory() {
-    const snapshot = await this.scan();
+    const scanned = await this.scan();
     const favorites = new Set(this.manager.favorites());
+    const snapshot = { ...scanned, entries: scanned.entries.map(entry => ({ ...entry,
+      favorite: "favorite" in entry && entry.favorite === true || favorites.has(resourceUsageIdentity({ id: entry.id, kind: entry.kind, name: entry.name, client: entry.client }).id) })) };
     if (![...favorites].some(id => id.startsWith("resource:"))) return snapshot;
     try {
       const history = localResourceUsage(this.library, {}, snapshot.entries);
       return { ...snapshot, entries: snapshot.entries.map(entry => ({ ...entry,
-        favorite: "favorite" in entry && entry.favorite === true || (history.bodies.get(entry.bodyId)?.favoriteIds.some(id => favorites.has(id)) ?? false) })) };
+        favorite: "favorite" in entry && entry.favorite === true || favorites.has(resourceUsageIdentity({ id: entry.id, kind: entry.kind, name: entry.name, client: entry.client }).id)
+          || (history.bodies.get(entry.bodyId)?.favoriteIds.some(id => favorites.has(id)) ?? false) })) };
     } catch (error) {
       if (!(error instanceof StoreError) || error.code !== "ANALYSIS_NOT_READY") throw error;
       return snapshot;

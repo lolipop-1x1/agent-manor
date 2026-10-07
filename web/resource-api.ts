@@ -1,5 +1,5 @@
 import type { ResourceUsageDetail, ResourceUsageEvidenceQuery, ResourceUsageEvidenceResult, ResourceUsageQuery, ResourceUsageResult } from "../src/resource-contracts";
-import type { ResourceLocalDetail, ResourceLocalQuery, ResourceLocalResult, ResourceStatus } from "../src/resource-service-contracts";
+import type { ResourceLocalDetail, ResourceLocalQuery, ResourceLocalResult, ResourceOverviewDetail, ResourceOverviewQuery, ResourceOverviewResult, ResourceStatus } from "../src/resource-service-contracts";
 import type { ResourceManualSource } from "../src/resource-inventory-contracts";
 import type { ResourceArchiveState, ResourceManagementArchive, ResourceManagementInput, ResourceManagementOperation, ResourceManagementOperations, ResourceManagementPreview } from "../src/resource-management-contracts";
 import type { JsonValue } from "../src/contracts";
@@ -21,6 +21,8 @@ export function resourceQuery(query: object): string {
 export const resourceApi = {
   status: (signal?: AbortSignal) => request<ResourceStatus>("/resources/status", { signal }),
   refresh: () => request<ResourceStatus>("/resources/refresh", { method: "POST", body: {} }),
+  overview: (query: ResourceOverviewQuery, signal?: AbortSignal) => request<FavoriteResult<ResourceOverviewResult>>(`/resources/overview${resourceQuery(query)}`, { signal }),
+  overviewDetail: (id: string, query: ResourceOverviewQuery, signal?: AbortSignal) => request<FavoriteResult<ResourceOverviewDetail>>(`/resources/overview/${encodeURIComponent(id)}${resourceQuery(query)}`, { signal }),
   usage: (query: ResourceUsageFilters, signal?: AbortSignal) => request<FavoriteResult<ResourceUsageResult>>(`/resources/usage${resourceQuery(query)}`, { signal }),
   usageDetail: (id: string, query: ResourceUsageQuery, signal?: AbortSignal) => request<FavoriteResult<ResourceUsageDetail>>(`/resources/usage/${encodeURIComponent(id)}${resourceQuery(query)}`, { signal }),
   evidence: (id: string, query: ResourceUsageEvidenceQuery, signal?: AbortSignal) => request<ResourceUsageEvidenceResult>(`/resources/usage/${encodeURIComponent(id)}/evidence${resourceQuery(query)}`, { signal }),

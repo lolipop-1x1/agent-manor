@@ -133,11 +133,12 @@ export function createProgram(): Command {
     .option("--client <client>", clientIds.join(" 或 ")).option("--project <path>", "项目绝对路径；none 表示无项目")
     .option("--q <text>", "名称或路径关键词").option("--from <time>", "ISO 8601 起始时间")
     .option("--to <time>", "ISO 8601 截止时间").option("--sort <sort>", "sessions、calls、reads、recent 或 name")
+    .option("--order <order>", "asc 或 desc")
     .option("--page <number>", "页码").option("--page-size <number>", "每页条数，最多 200").option("--version <id>", "会话索引版本");
   const resourceQueryString = (command: Command) => {
     const opts = command.optsWithGlobals<Options>();
     const params = new URLSearchParams();
-    for (const key of ["kind", "client", "project", "q", "from", "to", "sort", "page", "version", "candidate", "tool", "state"]) {
+    for (const key of ["kind", "client", "project", "q", "from", "to", "sort", "order", "page", "version", "candidate", "tool", "state"]) {
       if (typeof opts[key] === "string") params.set(key, opts[key] as string);
     }
     for (const key of ["pageSize", "lowSessions", "inactiveDays", "evidenceKind"]) if (typeof opts[key] === "string") params.set(key, opts[key] as string);
@@ -148,16 +149,21 @@ export function createProgram(): Command {
     .action(async (_options: Options, command: Command) => { await request(command, "/resources/status"); });
   resources.command("refresh").description("重新盘点已声明来源，不修改资源")
     .action(async (_options: Options, command: Command) => { await request(command, "/resources/refresh", "POST", {}); });
+  resourceFilters(resources.command("overview").description("Skill 总览：本地清单与历史使用"))
+    .option("--candidate <filter>", "all、used、unused、low、old、review 或 favorite")
+    .option("--low-sessions <number>", "低频会话数阈值，默认 2").option("--inactive-days <number>", "长期未用天数阈值，默认 90")
+    .option("--favorite", "仅已收藏资源")
+    .action(async (_options: Options, command: Command) => { await request(command, `/resources/overview${resourceQueryString(command)}`); });
   resourceFilters(resources.command("usage").description("完整历史使用排行")).option("--favorite", "仅已收藏资源")
     .action(async (_options: Options, command: Command) => { await request(command, `/resources/usage${resourceQueryString(command)}`); });
   resourceFilters(resources.command("local").description("本地资源本体与客户端入口"))
     .option("--candidate <filter>", "all、unused、low、old、broken、duplicate、favorite 或 review")
     .option("--low-sessions <number>", "低频会话数阈值，默认 2").option("--inactive-days <number>", "长期未用天数阈值，默认 90")
     .action(async (_options: Options, command: Command) => { await request(command, `/resources/local${resourceQueryString(command)}`); });
-  resourceFilters(resources.command("detail <id>").description("资源统计或本地来源详情")).option("--view <view>", "usage 或 local，默认 usage")
+  resourceFilters(resources.command("detail <id>").description("资源统计或本地来源详情")).option("--view <view>", "overview、usage 或 local，默认 usage")
     .action(async (id: string, _options: Options, command: Command) => {
       const view = command.optsWithGlobals<Options>().view ?? "usage";
-      if (view !== "usage" && view !== "local") throw new RequestError("INVALID_INPUT", "view 必须是 usage 或 local");
+      if (!["overview", "usage", "local"].includes(String(view))) throw new RequestError("INVALID_INPUT", "view 必须是 overview、usage 或 local");
       await request(command, `/resources/${view}/${encodeURIComponent(id)}${resourceQueryString(command)}`);
     });
   resourceFilters(resources.command("evidence <id>").description("分页回查实际使用事件"))

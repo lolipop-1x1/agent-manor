@@ -38,6 +38,33 @@ function source(store: SessionStore, summary: SessionSourceMeta, messages: Sessi
   return { path: summary.path, revision: pending.revision, fingerprint: "synthetic-fingerprint" };
 }
 
+test("资源采集缺口按已确认来源客户端归属，未知来源保持全局保守", async () => fixture(store => {
+  const first = source(store, meta("covered"), [message("covered", 0, { resource: { kind: "skill_call", name: "guide" } })]);
+  const second = source(store, meta("partial", { client: "claude", sourceId: "synthetic:partial" }), []);
+  store.publish(store.createJob().id, [first, second], [{ kind: "parse_error", sourceId: "synthetic:partial", message: "合成采集缺口" }]);
+  const all = store.resourceEvents();
+  Array.from(all.events);
+  assert.deepEqual(all.uncertainClients, ["claude"]);
+  assert.equal(all.unscopedGaps, false);
+  const covered = store.resourceEvents({ client: "codex" });
+  Array.from(covered.events);
+  assert.equal(covered.gaps.length, 0);
+  assert.deepEqual(covered.uncertainClients, []);
+  assert.equal(covered.unscopedGaps, false);
+  const partial = store.resourceEvents({ client: "claude" });
+  Array.from(partial.events);
+  assert.equal(partial.gaps.length, 1);
+  // 来源消失后仍可依据保留的修订确认客户端，不把其他来源判为未知。
+  store.publish(store.createJob().id, [first], [{ kind: "source_missing", sourceId: "synthetic:partial", message: "合成来源缺失" }]);
+  const retained = store.resourceEvents({ client: "codex" });
+  Array.from(retained.events);
+  assert.equal(retained.gaps.length, 0);
+  store.publish(store.createJob().id, [first], [{ kind: "parse_error", sourceId: "synthetic:unmapped", message: "未知来源缺口" }]);
+  const unmapped = store.resourceEvents({ client: "codex" });
+  Array.from(unmapped.events);
+  assert.equal(unmapped.unscopedGaps, true);
+}));
+
 test("Skill 调用和成功读取分列，同会话合并，稳定消息及来源副本不重复计数", async () => fixture(store => {
   const skill = { kind: "skill_call", name: "guide" } as const;
   const path = "/synthetic/skills/guide/SKILL.md";

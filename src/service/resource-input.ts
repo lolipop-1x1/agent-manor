@@ -1,4 +1,4 @@
-import type { ResourceLocalQuery } from "../resource-service-contracts.js";
+import type { ResourceLocalQuery, ResourceOverviewQuery } from "../resource-service-contracts.js";
 import type { ResourceUsageEvidenceQuery } from "../resource-contracts.js";
 import { coverageQuery, integer, ServiceError, textValue } from "./input.js";
 import { queryBoolean } from "./session-input.js";
@@ -10,7 +10,7 @@ export function resourceQuery(raw: Record<string, unknown>): ResourceLocalQuery 
     lowSessions: integer(raw.lowSessions, "lowSessions", 2, 10_000), inactiveDays: integer(raw.inactiveDays, "inactiveDays", 90, 3650) };
   query.favorite = queryBoolean(raw.favorite, "favorite");
   for (const key of ["project", "q", "tool"] as const) query[key] = textValue(raw[key], key);
-  const enums = { kind: ["skill", "mcp"], sort: ["sessions", "calls", "reads", "recent", "name"],
+  const enums = { kind: ["skill", "mcp"], sort: ["sessions", "calls", "reads", "recent", "name"], order: ["asc", "desc"],
     candidate: ["all", "unused", "low", "old", "broken", "duplicate", "favorite", "review"],
     evidenceKind: ["skill_call", "skill_read", "mcp"] };
   for (const [key, values] of Object.entries(enums)) {
@@ -19,6 +19,14 @@ export function resourceQuery(raw: Record<string, unknown>): ResourceLocalQuery 
     if (value) Object.assign(query, { [key]: value });
   }
   return query;
+}
+
+export function resourceOverviewQuery(raw: Record<string, unknown>): ResourceOverviewQuery {
+  const candidate = textValue(raw.candidate, "candidate");
+  if (candidate && !["all", "used", "unused", "low", "old", "review", "favorite"].includes(candidate)) throw new ServiceError("INVALID_INPUT", "未知 candidate");
+  const query = resourceQuery({ ...raw, candidate: undefined, pageSize: raw.pageSize ?? "20" });
+  if (query.kind && query.kind !== "skill") throw new ServiceError("INVALID_INPUT", "总览只接受 Skill");
+  return { ...query, kind: "skill", project: undefined, candidate: candidate as ResourceOverviewQuery["candidate"] };
 }
 
 export function resourceBody(body: unknown, allowed: readonly string[]): Record<string, unknown> {

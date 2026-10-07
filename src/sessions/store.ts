@@ -219,13 +219,13 @@ export class SessionStore {
         SELECT ?,session_id,id FROM (SELECT r.*,ROW_NUMBER() OVER (PARTITION BY session_id ORDER BY CAST(json_extract(r.json,'$.messageCount') AS INTEGER) DESC,
           COALESCE(updated_at,started_at,'') DESC,r.path ASC) AS rank
           FROM session_revisions r JOIN session_version_sources s ON s.revision=r.id WHERE s.version=?) WHERE rank=1`).run(version, version);
-      // 全局状态按原因聚合，详细来源缺口保留在单会话画像中。
+      // 缺口按原因与来源聚合，保留按客户端判断观测完整性所需的归属。
       const aggregated = new Map<string, Gap>();
       const addGap = (gap: Gap) => {
-        const key = `${gap.kind}:${gap.message}`;
+        const key = JSON.stringify([gap.kind, gap.message, gap.sourceId ?? null]);
         const previous = aggregated.get(key);
         if (previous) previous.count = (previous.count ?? 1) + (gap.count ?? 1);
-        else aggregated.set(key, { kind: gap.kind, message: gap.message, count: gap.count ?? 1 });
+        else aggregated.set(key, { ...gap, count: gap.count ?? 1 });
       };
       for (const gap of gaps) addGap(gap);
       // 精确会话身份和原生声明建立关系，关系随版本发布，不回写可共享修订。
@@ -276,7 +276,10 @@ export class SessionStore {
         .get(version) as { count: number }).count;
       if (duplicate) addGap({ kind: "ambiguous", message: "同一会话存在多个来源副本，采用消息较完整、时间较新的副本；不重复累计", count: duplicate });
       for (const row of this.database.prepare(`SELECT r.json FROM session_version_sessions v JOIN session_revisions r ON r.id=v.revision
-        WHERE v.version=?`).iterate(version) as Iterable<JsonRow>) for (const gap of decode<SessionSourceMeta>(row).gaps) addGap(gap);
+        WHERE v.version=?`).iterate(version) as Iterable<JsonRow>) {
+        const summary = decode<SessionSourceMeta>(row);
+        for (const gap of summary.gaps) addGap({ ...gap, sourceId: gap.sourceId ?? summary.sourceId });
+      }
       const publishedGaps = [...aggregated.values()];
       this.database.prepare("UPDATE session_versions SET gaps=? WHERE id=?").run(JSON.stringify(publishedGaps), version);
       const state = this.state();
@@ -407,8 +410,23 @@ export class SessionStore {
           source: { path: row.source_path, sourceId: row.source_id, revision: row.revision, fingerprint: row.fingerprint, recordLine: row.record_line } };
       }
     })();
-    const gaps = JSON.parse((this.database.prepare("SELECT gaps FROM session_versions WHERE id=?").get(version) as { gaps: string }).gaps) as Gap[];
-    return { version, events, sessionCount, clients, gaps };
+    const allGaps = JSON.parse((this.database.prepare("SELECT gaps FROM session_versions WHERE id=?").get(version) as { gaps: string }).gaps) as Gap[];
+    const sourceIds = [...new Set(allGaps.flatMap(gap => gap.sourceId ?? []))];
+    const sourceClients = new Map<string, Set<Client>>();
+    if (sourceIds.length) {
+      const wanted = new Set(sourceIds);
+      const records = this.database.prepare("SELECT DISTINCT json_extract(json,'$.sourceId') AS source_id,client FROM session_revisions").all() as { source_id: string; client: Client }[];
+      for (const record of records) if (wanted.has(record.source_id)) {
+        let related = sourceClients.get(record.source_id);
+        if (!related) { related = new Set(); sourceClients.set(record.source_id, related); }
+        related.add(record.client);
+      }
+    }
+    const selectedClient = query.client ?? identity?.client;
+    const gaps = allGaps.filter(gap => !selectedClient || !gap.sourceId || !sourceClients.get(gap.sourceId)?.size || sourceClients.get(gap.sourceId)!.has(selectedClient));
+    const uncertainClients = [...new Set(gaps.flatMap(gap => gap.sourceId ? [...(sourceClients.get(gap.sourceId) ?? [])] : []))];
+    const unscopedGaps = gaps.some(gap => !gap.sourceId || !sourceClients.get(gap.sourceId)?.size);
+    return { version, events, sessionCount, clients, gaps, uncertainClients, unscopedGaps };
   }
 
   list(query: SessionQuery = {}): SessionListResult {

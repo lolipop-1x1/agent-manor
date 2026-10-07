@@ -116,7 +116,8 @@ function paging(query: ResourceUsageQuery): { page: number; pageSize: number } {
 
 function coverage(stream: ReturnType<SessionStore["resourceEvents"]>, stats: ResourceUsageStats, unassociatedEvents: number): ResourceUsageCoverage {
   return { sessionCount: stream.sessionCount, clients: stream.clients, missingTimeEvents: stats.missingTimeEvents,
-    unassociatedEvents, partial: stats.missingTimeEvents > 0 || stream.gaps.length > 0, gaps: stream.gaps };
+    unassociatedEvents, partial: stats.missingTimeEvents > 0 || stream.gaps.length > 0, gaps: stream.gaps,
+    uncertainClients: stream.uncertainClients, unscopedGaps: stream.unscopedGaps };
 }
 
 function observed(stats: ResourceUsageStats, range: ReturnType<typeof bounds>): number {
@@ -159,6 +160,7 @@ export function localResourceUsage(store: SessionStore, query: ResourceUsageQuer
     if (day) add(group(body.trend, day), event, range);
   }
   return { version: stream.version, clients: stream.clients, partial: stream.gaps.length > 0, uncertain,
+    uncertainClients: stream.uncertainClients ?? [], unscopedGaps: stream.unscopedGaps ?? stream.gaps.length > 0,
     timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
     bodies: new Map([...bodies].map(([id, body]) => [id, { stats: finish(body.accumulator), historyIds: [...body.historyIds], favoriteIds: [...body.favoriteIds],
       trend: trends(body.trend), clients: distributions(body.clients), projects: distributions(body.projects) }])) };
@@ -215,7 +217,8 @@ function usageRow(target: UsageBucket, entries: readonly ResourceAssociationEntr
   };
   const favorite = favorites.has(target.identity.id) || origins.some(origin => favorites.has(origin.identity.id));
   return { identity: target.identity, stats: finish(target.accumulator), association,
-    clients: [...target.clients.keys()].sort() as ResourceUsageRow["clients"], favorite };
+    clients: [...target.clients.keys()].sort() as ResourceUsageRow["clients"], favorite,
+    paths: [...new Set(origins.flatMap(origin => origin.identity.path ?? []))].sort() };
 }
 
 function unassociated(target: UsageBucket, entries: readonly ResourceAssociationEntry[], range: ReturnType<typeof bounds>): number {
@@ -225,7 +228,7 @@ function unassociated(target: UsageBucket, entries: readonly ResourceAssociation
 }
 
 /** Skill 排行以名称汇总；来源身份只用于证据关联，不再拆分排行。 */
-export function listResourceUsage(store: SessionStore, query: ResourceUsageQuery = {}, entries: readonly ResourceAssociationEntry[] = [], favorites: ReadonlySet<string> = new Set()): ResourceUsageResult {
+export function aggregateResourceUsage(store: SessionStore, query: ResourceUsageQuery = {}, entries: readonly ResourceAssociationEntry[] = [], favorites: ReadonlySet<string> = new Set()): ResourceUsageResult {
   const range = bounds(query);
   const stream = store.resourceEvents(query);
   const resources = new Map<string, UsageBucket>();
@@ -259,15 +262,26 @@ export function listResourceUsage(store: SessionStore, query: ResourceUsageQuery
     if (sort === "sessions") difference = right.stats.sessions - left.stats.sessions;
     if (sort === "calls") difference = right.stats.explicitCalls + right.stats.mcpCalls - left.stats.explicitCalls - left.stats.mcpCalls;
     if (sort === "reads") difference = right.stats.successfulReads - left.stats.successfulReads;
-    if (sort === "recent") difference = (right.stats.lastUsedAt ? Date.parse(right.stats.lastUsedAt) : -Infinity)
-      - (left.stats.lastUsedAt ? Date.parse(left.stats.lastUsedAt) : -Infinity);
-    return difference || left.identity.name.localeCompare(right.identity.name) || left.identity.id.localeCompare(right.identity.id);
+    if (sort === "recent") {
+      if (!left.stats.lastUsedAt || !right.stats.lastUsedAt) return (left.stats.lastUsedAt ? -1 : right.stats.lastUsedAt ? 1 : 0)
+        || left.identity.name.localeCompare(right.identity.name) || left.identity.id.localeCompare(right.identity.id);
+      difference = Date.parse(right.stats.lastUsedAt) - Date.parse(left.stats.lastUsedAt);
+    }
+    return (query.order === "asc" ? -difference : difference)
+      || (sort === "name" && query.order === "desc" ? -1 : 1) * left.identity.name.localeCompare(right.identity.name)
+      || left.identity.id.localeCompare(right.identity.id);
   });
-  const { page, pageSize } = paging(query);
   const stats = finish(total);
-  return { version: stream.version, resources: rows.slice((page - 1) * pageSize, page * pageSize), total: rows.length,
-    page, pageSize, stats, timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone, trend: trends(trend),
+  return { version: stream.version, resources: rows, total: rows.length,
+    page: 1, pageSize: Math.max(1, rows.length), stats, timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone, trend: trends(trend),
     clients: distributions(clients), projects: distributions(projects), coverage: coverage(stream, stats, unassociatedEvents) };
+}
+
+/** 聚合始终使用全部事件，分页只限制返回的列表行。 */
+export function listResourceUsage(store: SessionStore, query: ResourceUsageQuery = {}, entries: readonly ResourceAssociationEntry[] = [], favorites: ReadonlySet<string> = new Set()): ResourceUsageResult {
+  const result = aggregateResourceUsage(store, query, entries, favorites);
+  const { page, pageSize } = paging(query);
+  return { ...result, resources: result.resources.slice((page - 1) * pageSize, page * pageSize), page, pageSize };
 }
 
 function findIdentity(store: SessionStore, id: string, query: ResourceUsageQuery): ResourceUsageIdentity {

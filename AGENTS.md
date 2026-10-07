@@ -9,6 +9,7 @@
 - 后续前端开发先复用项目现有的统一组件；新增同类交互不要在页面中另写一套控件。通用交互优先基于现有 Radix 组件封装，复用主题、尺寸、焦点及弹层规范。
 - 普通枚举筛选统一复用 `web/FilterSelect.tsx`，底层采用 Radix Select；项目等选项较多的筛选复用 `web/ProjectPicker.tsx`，采用 Radix Popover 与 cmdk，支持名称及完整路径搜索。
 - 日期选择统一复用 `web/DatePicker.tsx`，采用 Radix Popover 与 React DayPicker；沿用本机时区和 `YYYY-MM-DD` 筛选值，提供选择及清空入口。
+- 资源列表分页统一复用 `web/ResourcePagination.tsx`，提供当前区间、首尾页、页码、直接跳转及每页条数；不要另写只有上一页／下一页的分页控件。
 - 新增同类筛选沿用这些组件，不再使用原生 `<select>`、`input[type="date"]` 或手写键盘、焦点管理。菜单高度受视口约束，内容独立滚动，通过 Portal 避免侧栏裁剪。
 - 样式复用现有主题变量及 `web/filter-controls.css`，保持代码地图与会话库、深浅主题一致。鼠标点击使用轻微边框反馈，键盘 `:focus-visible` 保留明确焦点标识，不全局删除焦点轮廓。
 - 保留明确的可访问名称、选中标记和 Escape 关闭后的焦点恢复；同名项目在选项中显示完整路径，不改变原筛选值或统计语义。

@@ -161,14 +161,17 @@ agent-manor stop --json
 
 ## 资源管理
 
-顶部「资源管理」切换 Skill／MCP，分别查看使用排行、本地资源、已停用、备用、回收和操作记录。排行依据已索引的实际事件；Skill 调用与成功读取分列，使用会话数取并集。MCP 可下钻工具，统计已记录结果和执行耗时，并从证据跳回会话轨迹。请求 Token 不归因到资源。
+顶部「资源管理」切换 Skill／MCP，Skill 首入口为总览，MCP 首入口为使用排行；另有本地资源、已停用、备用、回收和操作记录。总览按完整 Skill 名称合并本地清单及历史使用，Agent 作为筛选；具体路径、本体和管理入口保留在详情中。排行依据已索引的实际事件；Skill 调用与成功读取分列，使用会话数取并集。MCP 可下钻工具，统计已记录结果和执行耗时，并从证据跳回会话轨迹。请求 Token 不归因到资源。
 
-默认全部已索引历史，可按客户端、项目和事件时间筛选。来源、时间或安装归属缺失保持未知／部分记录；历史名称不能证明属于当前同名资源。整理候选提供使用会话数和未使用天数阈值，收藏与受管理资源受保护。首次发现不代表安装时间；新发现但观测不足的资源列为待检查。文档指纹只识别 `SKILL.md` 相同，不证明整个资源包相同。
+默认全部已索引历史，Skill 总览按 Agent 和事件时间筛选，其他视图也支持项目筛选。来源、时间或安装归属缺失保持未知／部分记录；历史名称不能证明属于当前同名资源。整理候选提供使用会话数和未使用天数阈值，收藏与受管理资源受保护。首次发现不代表安装时间；新发现但观测不足的资源列为待检查。文档指纹只识别 `SKILL.md` 相同，不证明整个资源包相同。
+
+总览提供全部、已使用、未发现使用、低频、长期未用、待检查与已收藏的计数快捷入口；计数对应当前 Agent、日期及搜索范围。未知或观测不足不补成零，保护资源不进入未使用、低频及长期未用整理候选。表格支持升降排序；分页支持首尾、页码、直接跳转及每页 20／50／100 条。名称收藏与独立本体收藏保留各自入口，取消名称收藏不移除本体收藏。
 
 本地盘点只读取已核验来源、已知项目和手动路径，不执行 Skill、启动 MCP 或全盘扫描。支持范围见 [资源来源矩阵](design/resource-support.md)。每个入口显示自身可用动作；未经核验的来源与插件缓存只读。停用使用已核验原生设置，备用／回收是入口隔离或所选注册移除，不卸载服务。符号链接操作保留其共享目标。
 
 ```sh
 agent-manor resources status --json
+agent-manor resources overview --candidate unused --page 1 --page-size 50
 agent-manor resources usage --kind skill --sort sessions --json
 agent-manor resources usage --kind mcp --client codex --json
 agent-manor resources local --candidate review --json
@@ -185,6 +188,6 @@ agent-manor resources operations --json
 
 写入必须先审阅该资源的具体预览，再确认对应 `previewId`；预览有效期为 15 分钟，执行前核验来源、共享入口和恢复材料。恢复不会覆盖原位置或目标注册中的新内容；冲突须重新检查。永久清除另行生成和确认 `purge` 预览，不自动清空回收区。成功仅表示本地修改完成，客户端显示待重新加载，不自动重启或探活。
 
-资源 API 位于 `/api/v1/resources`，与 Web／CLI 共用服务：`status`、`usage`、`usage/:id`、`usage/:id/evidence`、`local`、`local/:id`、`archives`、`operations`，以及 `refresh`、`favorites`、`sources`、`preview`、`apply`。分页只影响返回明细；所有历史事件参与相应范围统计。管理记录按资源范围筛选，不把历史使用日期当成操作日期。
+资源 API 位于 `/api/v1/resources`，与 Web／CLI 共用服务：`status`、`overview`、`overview/:id`、`usage`、`usage/:id`、`usage/:id/evidence`、`local`、`local/:id`、`archives`、`operations`，以及 `refresh`、`favorites`、`sources`、`preview`、`apply`。分页只影响返回明细；所有历史事件参与相应范围统计。管理记录按资源范围筛选，不把历史使用日期当成操作日期。
 
 管理状态保存于数据目录的 `resources.sqlite`，恢复材料位于 `resource-vault/`，独立于 `index.sqlite`；收藏、手动来源、记录与恢复材料不随历史清缓存删除。管理库及材料使用受限权限，可能包含恢复所需的私密配置；不要上传或加入发布包。清除回收材料不声称其他系统备份也已清除。

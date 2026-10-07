@@ -14,6 +14,7 @@ export interface ResourceUsageQuery {
   to?: string;
   q?: string;
   sort?: ResourceUsageSort;
+  order?: "asc" | "desc";
   page?: number;
   pageSize?: number;
   version?: string;
@@ -80,6 +81,8 @@ export interface ResourceUsageCoverage {
   unassociatedEvents: number;
   partial: boolean;
   gaps: Gap[];
+  uncertainClients?: Client[];
+  unscopedGaps?: boolean;
 }
 
 export interface ResourceUsageRow {
@@ -88,6 +91,7 @@ export interface ResourceUsageRow {
   association: ResourceHistoryAssociation;
   clients: Client[];
   favorite: boolean;
+  paths?: string[];
 }
 
 export interface ResourceUsageResult {
@@ -159,4 +163,7 @@ export interface ResourceEventStream {
   sessionCount: number;
   clients: Client[];
   gaps: Gap[];
+  /** 已按来源确认的采集缺口；无法确认归属的缺口继续影响所有客户端。 */
+  uncertainClients?: Client[];
+  unscopedGaps?: boolean;
 }

@@ -1,0 +1,127 @@
+import type { Client } from "../clients.js";
+import type { ResourceUsageIdentity, ResourceUsageResult, ResourceUsageRow, ResourceUsageStats } from "../resource-contracts.js";
+import type { ResourceLocalRow, ResourceOverviewCandidate, ResourceOverviewQuery, ResourceOverviewResult, ResourceOverviewRow } from "../resource-service-contracts.js";
+import { emptyResourceUsageStats, resourceUsageIdentity } from "./usage.js";
+
+interface OverviewBucket {
+  identity: ResourceUsageIdentity;
+  history?: ResourceUsageRow;
+  local: ResourceLocalRow[];
+}
+
+const candidates: ResourceOverviewCandidate[] = ["all", "used", "unused", "low", "old", "review", "favorite"];
+const dayMs = 86400_000;
+
+function localIdentity(row: ResourceLocalRow): ResourceUsageIdentity {
+  const entry = row.entries[0]!;
+  return resourceUsageIdentity({ id: row.body.id, kind: row.body.kind, name: row.body.name,
+    path: row.body.targetPath, client: entry.client, project: entry.project });
+}
+
+function uncertain(history: ResourceUsageResult | null, clients: readonly Client[], stats: ResourceUsageStats | null): boolean {
+  if (!history) return true;
+  const coverage = history.coverage;
+  if (stats?.missingTimeEvents || clients.some(client => !coverage.clients.includes(client))) return true;
+  if (coverage.unscopedGaps || coverage.uncertainClients?.some(client => clients.includes(client))) return true;
+  // 旧版本没有缺口归属字段时，不能把 partial 或缺口误当成完整观测。
+  return (coverage.uncertainClients === undefined || coverage.unscopedGaps === undefined)
+    && (coverage.partial || coverage.gaps.length > 0);
+}
+
+function rowOf(bucket: OverviewBucket, history: ResourceUsageResult | null, query: ResourceOverviewQuery,
+  favorites: ReadonlySet<string>, now: number): ResourceOverviewRow {
+  const { identity, local } = bucket;
+  const clients = [...new Set([...(bucket.history?.clients ?? []), ...local.flatMap(row => row.entries.map(entry => entry.client))])].sort();
+  const favorite = Boolean(bucket.history?.favorite) || favorites.has(identity.id)
+    || local.some(row => row.historyIds.some(id => favorites.has(id)));
+  const localFavorite = local.some(row => row.favorite || favorites.has(row.body.id)
+    || row.entries.some(entry => favorites.has(entry.id)));
+  const protectedResource = favorite || localFavorite || local.some(row => row.protected || row.entries.some(entry => entry.protected));
+  let stats = bucket.history?.stats ?? null;
+  const incomplete = uncertain(history, clients, stats);
+  let observation: ResourceOverviewRow["observation"];
+  if (stats && stats.events > 0) observation = "used";
+  else if (incomplete || !local.length || local.some(row => row.observation === "unknown"
+    || !Number.isFinite(Date.parse(row.firstSeenAt)))) observation = "unknown";
+  else if (local.some(row => row.observation === "insufficient" || now - Date.parse(row.firstSeenAt) < 7 * dayMs)) observation = "insufficient";
+  else observation = "unused";
+  if (observation === "unknown" || observation === "insufficient") stats = null;
+  else if (!bucket.history && observation === "unused") stats = emptyResourceUsageStats();
+  const rowCandidates: ResourceOverviewRow["candidates"] = [];
+  if (observation === "used") rowCandidates.push("used");
+  if (observation === "unknown" || observation === "insufficient") rowCandidates.push("review");
+  if (favorite || localFavorite) rowCandidates.push("favorite");
+  if (!protectedResource && !incomplete) {
+    if (observation === "unused") rowCandidates.push("unused");
+    if (observation === "used" && stats && stats.sessions <= (query.lowSessions ?? 2)) rowCandidates.push("low");
+    if (observation === "used" && stats?.lastUsedAt
+      && now - Date.parse(stats.lastUsedAt) >= (query.inactiveDays ?? 90) * dayMs) rowCandidates.push("old");
+  }
+  return { identity, stats, clients, favorite, protected: protectedResource, observation, candidates: rowCandidates,
+    localBodyIds: [...new Set(local.map(row => row.body.id))].sort(), hasHistory: Boolean(bucket.history) };
+}
+
+function matches(bucket: OverviewBucket, q: string): boolean {
+  return [bucket.identity.name, bucket.history?.identity.path, ...(bucket.history?.paths ?? []),
+    ...bucket.local.flatMap(row => [row.body.targetPath, ...row.entries.flatMap(entry => [entry.entryPath, entry.targetPath, entry.linkTarget])])]
+    .some(value => value?.toLocaleLowerCase().includes(q));
+}
+
+function compare(left: ResourceOverviewRow, right: ResourceOverviewRow, query: ResourceOverviewQuery): number {
+  const sort = query.sort ?? "sessions";
+  const direction = (query.order ?? (sort === "name" ? "asc" : "desc")) === "asc" ? 1 : -1;
+  if (sort === "name") return direction * left.identity.name.localeCompare(right.identity.name) || left.identity.id.localeCompare(right.identity.id);
+  const metric = (row: ResourceOverviewRow): number | null => {
+    if (!row.stats) return null;
+    if (sort === "recent") {
+      const time = row.stats.lastUsedAt ? Date.parse(row.stats.lastUsedAt) : NaN;
+      return Number.isFinite(time) ? time : null;
+    }
+    if (sort === "calls") return row.stats.explicitCalls + row.stats.mcpCalls;
+    if (sort === "reads") return row.stats.successfulReads;
+    return row.stats.sessions;
+  };
+  const a = metric(left), b = metric(right);
+  const difference = a === null ? b === null ? 0 : 1 : b === null ? -1 : direction * (a - b);
+  return difference || left.identity.name.localeCompare(right.identity.name) || left.identity.id.localeCompare(right.identity.id);
+}
+
+function positiveInteger(value: number | undefined, fallback: number): number {
+  return value !== undefined && Number.isFinite(value) ? Math.max(1, Math.floor(value)) : fallback;
+}
+
+/** 历史已按名称、Agent 和日期聚合；本地仅补充真实本体与观测状态，不累加使用统计。 */
+export function buildSkillOverview(history: ResourceUsageResult | null, localRows: readonly ResourceLocalRow[],
+  query: ResourceOverviewQuery, options: { observedAt: string; partial: boolean; favorites?: ReadonlySet<string>; now?: number; unpaginated?: boolean }): ResourceOverviewResult {
+  const buckets = new Map<string, OverviewBucket>();
+  for (const row of history?.resources ?? []) {
+    if (row.identity.kind !== "skill") continue;
+    buckets.set(row.identity.id, { identity: row.identity, history: row, local: [] });
+  }
+  for (const row of localRows) {
+    if (row.body.kind !== "skill") continue;
+    const identity = localIdentity(row);
+    let bucket = buckets.get(identity.id);
+    if (!bucket) { bucket = { identity, local: [] }; buckets.set(identity.id, bucket); }
+    bucket.local.push(row);
+  }
+  const q = query.q?.trim().toLocaleLowerCase();
+  const favorites = options.favorites ?? new Set<string>();
+  const now = options.now ?? Date.now();
+  const counts: ResourceOverviewResult["counts"] = { all: 0, used: 0, unused: 0, low: 0, old: 0, review: 0, favorite: 0 };
+  const rows: ResourceOverviewRow[] = [];
+  for (const bucket of buckets.values()) {
+    if (q && !matches(bucket, q)) continue;
+    const row = rowOf(bucket, history, query, favorites, now);
+    for (const candidate of candidates) if (candidate === "all" || row.candidates.includes(candidate)) counts[candidate] += 1;
+    if (query.candidate && query.candidate !== "all" && !row.candidates.includes(query.candidate)
+      || query.favorite && !row.candidates.includes("favorite")) continue;
+    rows.push(row);
+  }
+  rows.sort((left, right) => compare(left, right, query));
+  const pageSize = options.unpaginated ? Math.max(1, rows.length) : Math.min(200, positiveInteger(query.pageSize, 20));
+  const page = options.unpaginated ? 1 : Math.min(positiveInteger(query.page, 1), Math.max(1, Math.ceil(rows.length / pageSize)));
+  return { resources: rows.slice((page - 1) * pageSize, page * pageSize), total: rows.length, page, pageSize, counts,
+    stats: history?.stats ?? null, coverage: history?.coverage ?? null, observedAt: options.observedAt, partial: options.partial,
+    thresholds: { lowSessions: query.lowSessions ?? 2, inactiveDays: query.inactiveDays ?? 90 } };
+}

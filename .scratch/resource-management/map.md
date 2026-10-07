@@ -44,3 +44,9 @@
 4. [资源页面与会话证据联动](issues/04-resource-ui.md)。
 5. [端到端验收](issues/05-end-to-end-validation.md)。
 6. [Skill 排行按名称组织](issues/06-skill-name-ranking.md)。
+
+## 总览优化
+
+用户已批准 Skill 总览、带计数的整理筛选、可排序表格和直接跳转分页。任务 [07](issues/07-skill-overview.md) 与 [08](issues/08-overview-table-pagination.md) 并行实施，[09](issues/09-overview-validation.md) 验证两者整合。
+
+三项任务均已完成。341 项自动化回归及 36 组真实 Chrome 通过；本机总览包含 639 个名称，原有 387 个历史名称统计保持一致。未知与观测不足继续列为待检查。两路审查问题已修复，具体结果见 [验收记录](../../docs/validation/resource-management.md)。

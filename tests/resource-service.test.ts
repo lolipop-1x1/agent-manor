@@ -11,7 +11,7 @@ import { resourceFixture } from "../scripts/resource-fixture.mjs";
 import { startService } from "../src/server.js";
 import { apiRequest, delay } from "../src/service/runtime.js";
 import { createProgram } from "../src/cli.js";
-import type { ResourceLocalResult, ResourceStatus } from "../src/resource-service-contracts.js";
+import type { ResourceLocalResult, ResourceOverviewDetail, ResourceOverviewResult, ResourceStatus } from "../src/resource-service-contracts.js";
 import type { ResourceUsageEvidenceResult, ResourceUsageResult } from "../src/resource-contracts.js";
 import { resourceHistoryIdentity } from "../src/resources/usage.js";
 import type { ResourceManagementOperation, ResourceManagementPreview } from "../src/resource-management-contracts.js";
@@ -127,12 +127,59 @@ test("资源写入必须确认具体预览，管理状态不随历史缓存重�
 
 test("CLI 资源入口共用 API，执行操作保留显式确认参数", () => {
   const resources = createProgram().commands.find(command => command.name() === "resources")!;
-  for (const name of ["status", "refresh", "usage", "local", "detail", "evidence", "favorite", "archives", "operations", "source-add", "source-remove", "preview", "apply"]) {
+  for (const name of ["status", "refresh", "overview", "usage", "local", "detail", "evidence", "favorite", "archives", "operations", "source-add", "source-remove", "preview", "apply"]) {
     assert.ok(resources.commands.some(command => command.name() === name), name);
   }
   const apply = resources.commands.find(command => command.name() === "apply")!;
   assert.ok(apply.options.find(option => option.long === "--confirm")?.mandatory);
 });
+
+test("Skill 总览同时展示本地与历史，快筛计数先于分页，未关联观测不足不补零", async () => fixture(async (context, service) => {
+  const first = await apiRequest<ResourceOverviewResult>(service.instance, "/resources/overview?pageSize=100");
+  assert.ok(first.total > 40);
+  assert.equal(first.counts.used, 1);
+  assert.equal(first.counts.unused, 0);
+  const recent = first.resources.find(row => row.identity.name === "sample-00")!;
+  assert.equal(recent.stats, null);
+  assert.equal(recent.observation, "insufficient");
+  const unknown = first.resources.find(row => row.identity.name === "shared")!;
+  assert.equal(unknown.observation, "unknown");
+  const management = new Database(join(context.home, "resources.sqlite"));
+  management.prepare("UPDATE resource_seen SET first_seen=?").run("2025-01-01T00:00:00Z");
+  management.close();
+  await apiRequest(service.instance, "/resources/refresh", "POST", {});
+  const all = await apiRequest<ResourceOverviewResult>(service.instance, "/resources/overview?pageSize=100");
+  const zero = all.resources.find(row => row.identity.name === "sample-00")!;
+  assert.equal(zero.observation, "unused");
+  assert.equal(zero.stats?.sessions, 0);
+  const ascending = await apiRequest<ResourceLocalResult>(service.instance, "/resources/local?kind=skill&sort=sessions&order=asc&pageSize=200");
+  assert.equal(ascending.rows[0]!.usage?.sessions, 0);
+  const lastKnown = ascending.rows.filter(row => row.usage).at(-1)!;
+  assert.equal(lastKnown.body.name, "guide");
+  assert.equal(ascending.rows.at(-1)!.usage, null);
+  const namesDescending = await apiRequest<ResourceLocalResult>(service.instance, "/resources/local?kind=skill&sort=name&order=desc&pageSize=200");
+  assert.deepEqual(namesDescending.rows.map(row => row.body.name), namesDescending.rows.map(row => row.body.name).sort((a, b) => b.localeCompare(a)));
+  const used = await apiRequest<ResourceOverviewResult>(service.instance, "/resources/overview?candidate=used");
+  assert.equal(used.total, 1);
+  assert.deepEqual(used.counts, all.counts);
+  const last = await apiRequest<ResourceOverviewResult>(service.instance, "/resources/overview?page=999&pageSize=20");
+  assert.equal(last.page, Math.ceil(all.total / 20));
+  assert.ok(last.resources.length > 0);
+  const detail = await apiRequest<ResourceOverviewDetail>(service.instance, `/resources/overview/${zero.identity.id}`);
+  assert.equal(detail.history, null);
+  assert.equal(detail.local[0]!.body.id, zero.localBodyIds[0]);
+  await apiRequest(service.instance, "/resources/favorites", "POST", { id: zero.identity.id, value: true });
+  const favorite = await apiRequest<ResourceOverviewResult>(service.instance, "/resources/overview?candidate=favorite");
+  assert.equal(favorite.total, 1);
+  assert.equal(favorite.resources[0]!.identity.id, zero.identity.id);
+  assert.equal(favorite.resources[0]!.protected, true);
+  const unused = await apiRequest<ResourceOverviewResult>(service.instance, "/resources/overview?candidate=unused");
+  assert.ok(!unused.resources.some(row => row.identity.id === zero.identity.id));
+  assert.equal(unused.total, all.counts.unused - 1);
+  const preview = await apiRequest<ResourceManagementPreview>(service.instance, "/resources/preview", "POST", { action: "standby", entryId: detail.local[0]!.entries[0]!.id });
+  assert.equal(preview.protected, true);
+  for (const query of ["candidate=broken", "kind=mcp", "order=random", "pageSize=0"]) await assert.rejects(apiRequest(service.instance, `/resources/overview?${query}`), { code: "INVALID_INPUT" });
+}));
 
 test("同名历史归属不明时，不把较早的已关联使用当成确定长期未用", async () => fixture(async (context, service) => {
   await appendFile(context.source, JSON.stringify({ type: "response_item", timestamp: new Date().toISOString(),
@@ -151,12 +198,40 @@ test("同名历史归属不明时，不把较早的已关联使用当成确定�
   assert.equal(old.total, 0);
 }));
 
+test("日期筛选中的无时间 Skill 记录保持未知，名称及旧来源详情都不返回假零", async () => fixture(async (context, service) => {
+  await appendFile(context.source, JSON.stringify({ type: "response_item",
+    payload: { type: "function_call", name: "Skill", call_id: "undated", arguments: JSON.stringify({ skill: "undated-guide" }) } }) + "\n");
+  const { job } = await apiRequest<{ job: SessionJob }>(service.instance, "/sessions/refresh", "POST");
+  for (let attempt = 0; attempt < 400; attempt++) {
+    const result = await apiRequest<{ job: SessionJob }>(service.instance, `/jobs/${job.id}`);
+    if (result.job.status === "complete") break;
+    assert.notEqual(result.job.status, "failed", result.job.error);
+    await delay(25);
+  }
+  const all = await apiRequest<ResourceOverviewResult>(service.instance, "/resources/overview?q=undated-guide&from=2090-01-01T00:00:00Z");
+  const row = all.resources[0]!;
+  assert.equal(row.observation, "unknown");
+  assert.equal(row.stats, null);
+  const evidence = await apiRequest<ResourceUsageEvidenceResult>(service.instance, `/resources/usage/${row.identity.id}/evidence`);
+  const rawId = resourceHistoryIdentity(evidence.events[0]!).id;
+  for (const id of [row.identity.id, rawId]) {
+    const detail = await apiRequest<ResourceOverviewDetail>(service.instance, `/resources/overview/${id}?from=2090-01-01T00:00:00Z`);
+    assert.equal(detail.resource.observation, "unknown");
+    assert.equal(detail.resource.stats, null);
+    assert.equal(detail.history!.resource.stats.missingTimeEvents, 1);
+  }
+}));
+
 test("真实 CLI 通过同一服务查询、收藏、预览与确认，不另写本地业务逻辑", async () => fixture(async (context, service) => {
   const cli = fileURLToPath(new URL("../src/cli.ts", import.meta.url));
   const command = async (args: string[]) => JSON.parse((await run(process.execPath,
     ["--import", "tsx", cli, "--home", context.home, "--json", "resources", ...args], { timeout: 30_000, maxBuffer: 2 * 1024 * 1024 })).stdout);
   const usage = await command(["usage", "--kind", "skill"]);
   assert.equal(usage.stats.successfulReads, 1);
+  const overview = await command(["overview", "--q", "guide", "--order", "asc"]);
+  assert.equal(overview.total, 1);
+  assert.equal(overview.resources[0].stats.successfulReads, 1);
+  assert.equal((await command(["detail", overview.resources[0].identity.id, "--view", "overview"])).local.length, 1);
   const local = await command(["local", "--kind", "skill", "--q", "guide"]);
   assert.equal(local.total, 1);
   const entry = local.rows[0].entries[0];

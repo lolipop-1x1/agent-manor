@@ -6,7 +6,7 @@ import type { ResourceManualSource } from "../resource-inventory-contracts.js";
 import type { ResourceManagementInput } from "../resource-management-contracts.js";
 import type { ResourceService } from "../resources/service.js";
 import { emptyBody, ServiceError, textValue } from "./input.js";
-import { resourceBody, resourceQuery } from "./resource-input.js";
+import { resourceBody, resourceOverviewQuery, resourceQuery } from "./resource-input.js";
 
 type Query = Record<string, unknown>;
 type Id = { id: string };
@@ -14,6 +14,8 @@ export function registerResourceRoutes(app: FastifyInstance, resources: Resource
   const base = "/api/v1/resources";
   app.get(`${base}/status`, () => resources.status());
   app.post(`${base}/refresh`, request => { emptyBody(request.body); return resources.refresh(); });
+  app.get<{ Querystring: Query }>(`${base}/overview`, request => resources.overview(resourceOverviewQuery(request.query)));
+  app.get<{ Params: Id; Querystring: Query }>(`${base}/overview/:id`, request => resources.overviewDetail(request.params.id, resourceOverviewQuery(request.query)));
   app.get<{ Querystring: Query }>(`${base}/usage`, request => resources.usage(resourceQuery(request.query)));
   app.get<{ Params: Id; Querystring: Query }>(`${base}/usage/:id`, request => resources.usageDetail(request.params.id, resourceQuery(request.query)));
   app.get<{ Params: Id; Querystring: Query }>(`${base}/usage/:id/evidence`, request => resources.evidence(request.params.id, resourceQuery(request.query)));
