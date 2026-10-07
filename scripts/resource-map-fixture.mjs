@@ -40,6 +40,7 @@ export async function resourceMapFixture(directory, count = 215) {
     const suffix = String(index).padStart(3, "0");
     const path = await skill(`map-read-${suffix}`);
     call("shell_command", { command: `cat '${join(path, "SKILL.md")}'`, workdir: fixture.project });
+    await skill(`map-zero-${suffix}`);
     await skill(`map-review-${suffix}`);
     config += `\n[mcp_servers.map-zero-${suffix}]\ncommand = "example-zero-service"\n[mcp_servers.map-review-${suffix}]\ncommand = "example-review-service"\n`;
   }

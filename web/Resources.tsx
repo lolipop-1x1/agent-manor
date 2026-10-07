@@ -5,14 +5,14 @@ import { CLIENTS, type Client } from "../src/clients";
 import type { ResourceKind, ResourceUsageDetail, ResourceUsageDistribution, ResourceUsageEvidenceResult, ResourceUsageStats, ResourceUsageTrend } from "../src/resource-contracts";
 import type { ResourceInventoryEntry, ResourceManualSource } from "../src/resource-inventory-contracts";
 import type { ResourceManagementAction, ResourceManagementInput, ResourceManagementOperation, ResourceManagementOperations, ResourceManagementPreview } from "../src/resource-management-contracts";
-import type { ResourceCandidate, ResourceLocalDetail, ResourceLocalQuery, ResourceLocalResult, ResourceLocalRow, ResourceMapMetric, ResourceMapQuery, ResourceMapResult, ResourceOverviewCandidate, ResourceOverviewDetail, ResourceOverviewQuery, ResourceOverviewResult, ResourceOverviewRow, ResourceStatus } from "../src/resource-service-contracts";
+import type { ResourceCandidate, ResourceLocalDetail, ResourceLocalQuery, ResourceLocalResult, ResourceLocalRow, ResourceMapQuery, ResourceMapResult, ResourceOverviewCandidate, ResourceOverviewDetail, ResourceOverviewQuery, ResourceOverviewResult, ResourceOverviewRow, ResourceStatus } from "../src/resource-service-contracts";
 import { ApiError, errorMessage, isAborted } from "./api";
 import { DatePicker } from "./DatePicker";
 import { FilterSelect } from "./FilterSelect";
 import { HelpPopover } from "./HelpPopover";
 import { ProjectPicker } from "./ProjectPicker";
 import { ResourcePagination } from "./ResourcePagination";
-import { ResourceMap, resourceMapMetricKeys } from "./ResourceMap";
+import { ResourceMap } from "./ResourceMap";
 import { ResizableWorkspace } from "./ResizableWorkspace";
 import { dateLabel, fmt, timeFilters } from "./model";
 import { resourceApi, resourceQuery, type FavoriteResult, type ResourceArchiveResult, type ResourceUsageFilters } from "./resource-api";
@@ -25,7 +25,7 @@ interface ResourceRoute {
   kind: ResourceKind; tab: ResourceTab; client: string; project: string; window: string;
   from: string; to: string; q: string; sort: string; order: "asc" | "desc"; candidate: ResourceCandidate | ResourceOverviewCandidate;
   low: number; inactive: number; favorite: boolean; page: number; pageSize: number; id: string; evidencePage: number; tool: string;
-  view: "list" | "map"; metric: ResourceMapMetric; maxValue: string;
+  view: "list" | "map"; metric: "sessions"; maxValue: string;
   zeroPage: number; zeroSize: number; reviewPage: number; reviewSize: number;
 }
 const tabs: { value: ResourceTab; labelKey: string }[] = [
@@ -59,21 +59,22 @@ const readRoute = (): ResourceRoute => {
   const kind = params.get("kind") === "mcp" ? "mcp" : "skill";
   let preferredView = "list";
   try { preferredView = localStorage.getItem("agent-manor:resource-view") ?? "list"; } catch { /* 无法存储时仍保留当前路由。 */ }
-  const maximum = params.get("maxValue");
+  // 旧次数指标的上限不能直接解释为会话数。
+  const maximum = params.get("metric") === "sessions" ? params.get("maxValue") : null;
   return {
     kind,
     tab: tabs.some(tab => tab.value === params.get("tab")) ? params.get("tab") as ResourceTab : "usage",
     client: CLIENTS.some(client => client.id === params.get("client")) ? params.get("client")! : "all",
     project: params.get("project") ?? "all", window: ["7", "30", "90", "custom"].includes(params.get("window") ?? "") ? params.get("window")! : "all",
     from: validDate(params.get("from")), to: validDate(params.get("to")),
-    q: params.get("q") ?? "", sort: ["sessions", "calls", "recent", "name", ...(kind === "skill" ? ["reads"] : [])].includes(params.get("sort") ?? "") ? params.get("sort")! : kind === "mcp" ? "calls" : "sessions",
+    q: params.get("q") ?? "", sort: ["sessions", "recent", "name"].includes(params.get("sort") ?? "") ? params.get("sort")! : "sessions",
     order: params.get("order") === "asc" ? "asc" : params.get("order") === "desc" ? "desc" : params.get("sort") === "name" ? "asc" : "desc",
     candidate: [...candidates, ...overviewCandidates].some(item => item.value === params.get("candidate")) ? params.get("candidate") as ResourceRoute["candidate"] : "all",
     low: Math.min(10000, positive(params.get("low"), 2)), inactive: Math.min(3650, positive(params.get("inactive"), 90)),
     favorite: params.get("favorite") === "true", page: positive(params.get("page")), pageSize: [20, 50, 100].includes(Number(params.get("pageSize"))) ? Number(params.get("pageSize")) : 20, id: params.get("id") ?? "",
     evidencePage: positive(params.get("evidencePage")), tool: params.get("tool") ?? "",
     view: (params.get("view") ?? preferredView) === "map" ? "map" : "list",
-    metric: params.get("metric") === "sessions" ? "sessions" : kind === "skill" && params.get("metric") === "reads" ? "reads" : "calls",
+    metric: "sessions",
     maxValue: maximum !== null && /^\d+$/.test(maximum) && Number.isSafeInteger(Number(maximum)) ? String(Number(maximum)) : "",
     zeroPage: positive(params.get("zeroPage")), reviewPage: positive(params.get("reviewPage")),
     zeroSize: [20, 50, 100].includes(Number(params.get("zeroSize"))) ? Number(params.get("zeroSize")) : 20,
@@ -144,16 +145,16 @@ function OverviewTable({ rows, route, onSort, onSelect, onFavorite, favoritePend
   onFavorite: (id: string, favorite: boolean) => void; favoritePending: string | null;
 }) {
   useI18n();
-  const columns = [{ value: "name", label: route.kind === "skill" ? t("resources.kind.skill") : t("resources.column.server") }, { value: "sessions", label: t("resources.column.sessions") }, { value: "calls", label: t("resources.column.calls") }, ...(route.kind === "skill" ? [{ value: "reads", label: t("resources.column.reads") }] : []), { value: "recent", label: t("resources.column.recent") }];
+  const columns = [{ value: "name", label: route.kind === "skill" ? t("resources.kind.skill") : t("resources.column.server") }, { value: "sessions", label: t("resources.column.sessions") }, { value: "recent", label: t("resources.column.recent") }];
   const heading = (column: { value: string; label: string }) => <th key={column.value} scope="col" aria-sort={route.sort === column.value ? route.order === "asc" ? "ascending" : "descending" : "none"}>
     <button aria-label={t("resources.sortColumn", { column: column.label })} onClick={() => onSort(column.value)}>{column.label}<span aria-hidden="true">{route.sort === column.value ? route.order === "asc" ? "↑" : "↓" : "↕"}</span></button>
   </th>;
-  return <div className="resource-overview-scroll"><table className={`resource-overview-table${route.kind === "mcp" ? " resource-mcp-overview" : ""}`} aria-label={t("resources.overview", { kind: route.kind === "skill" ? t("resources.kind.skill") : t("resources.kind.mcp") })}>
+  return <div className="resource-overview-scroll"><table className="resource-overview-table" aria-label={t("resources.overview", { kind: route.kind === "skill" ? t("resources.kind.skill") : t("resources.kind.mcp") })}>
     <thead><tr>{heading(columns[0]!)}<th scope="col">{t("resources.agent.label")}</th>{columns.slice(1).map(heading)}<th scope="col">{t("resources.column.status")}</th></tr></thead>
     <tbody>{rows.map(row => <tr className={`resource-overview-row${route.id === row.identity.id ? " is-selected" : ""}`} key={row.identity.id}>
       <th scope="row"><div className="resource-overview-name"><button aria-label={t("resources.viewUsage", { name: messageText(row.identity.nameDescriptor, row.identity.name) })} onClick={() => onSelect(row.identity.id)}>{messageText(row.identity.nameDescriptor, row.identity.name)}</button><FavoriteButton name={messageText(row.identity.nameDescriptor, row.identity.name)} favorite={row.favorite} disabled={favoritePending === row.identity.id} onClick={() => onFavorite(row.identity.id, row.favorite)} /></div></th>
       <td className="resource-overview-agents" title={formatList(row.clients.map(clientLabel))}>{usageAgentLabel(row)}</td>
-      <td>{row.stats ? fmt(row.stats.sessions) : "—"}</td><td>{row.stats ? fmt(route.kind === "skill" ? row.stats.explicitCalls : row.stats.mcpCalls) : "—"}</td>{route.kind === "skill" && <td>{row.stats ? fmt(row.stats.successfulReads) : "—"}</td>}
+      <td>{row.stats ? fmt(row.stats.sessions) : "—"}</td>
       <td className="resource-overview-time">{row.stats?.lastUsedAt ? dateLabel(row.stats.lastUsedAt) : "—"}</td>
       <td><div className="resource-tags"><span className={row.observation === "unknown" || row.observation === "insufficient" ? "is-warning" : ""}>{t(overviewObservationNames[row.observation])}</span>{row.protected && <span><ShieldCheck size={12} />{t("resources.protected")}</span>}{!row.localBodyIds.length && row.hasHistory && <span>{t("resources.historyOnly")}</span>}</div></td>
     </tr>)}</tbody>
@@ -271,6 +272,11 @@ export default function Resources({ active, onSession }: { active: boolean; onSe
     const next = { ...routeRef.current, ...patch }; routeRef.current = next; setRoute(next);
     if (location.hash.startsWith("#resources")) history[push ? "pushState" : "replaceState"]({}, "", address(next));
   }, []);
+  useEffect(() => {
+    if (!active || !location.hash.startsWith("#resources")) return;
+    const params = new URLSearchParams(location.hash.split("?")[1]);
+    if (params.get("metric") !== "sessions" || ["calls", "reads"].includes(params.get("sort") ?? "")) history.replaceState({}, "", address(route));
+  }, [active, route]);
   const filter = (patch: Partial<ResourceRoute>) => { if (listScroll.current) listScroll.current.scrollTop = 0; update({ ...patch, page: 1, evidencePage: 1, zeroPage: 1, reviewPage: 1 }); };
   const sort = (value: string) => filter({ sort: value, order: route.sort === value ? route.order === "asc" ? "desc" : "asc" : value === "name" ? "asc" : "desc" });
   const pageChange = (page: number) => { if (listScroll.current) listScroll.current.scrollTop = 0; update({ page }); };
@@ -429,7 +435,7 @@ export default function Resources({ active, onSession }: { active: boolean; onSe
     finally { setApplying(false); }
   };
   const reset = () => {
-    const defaults = { ...readRoute(), client: "all", project: "all", window: "all", from: "", to: "", q: "", sort: route.kind === "mcp" ? "calls" : "sessions", order: "desc" as const, candidate: "all" as const, low: 2, inactive: 90, favorite: false, page: 1, pageSize: 20, maxValue: "", zeroPage: 1, reviewPage: 1 };
+    const defaults = { ...readRoute(), client: "all", project: "all", window: "all", from: "", to: "", q: "", sort: "sessions", order: "desc" as const, candidate: "all" as const, low: 2, inactive: 90, favorite: false, page: 1, pageSize: 20, maxValue: "", zeroPage: 1, reviewPage: 1 };
     setQueryText(""); update(defaults);
   };
   const projectOptions = [{ value: "all", label: t("resources.project.all") }, { value: "none", label: t("resources.project.none") }, ...(status?.projects ?? []).map(path => ({ value: path, label: shortPath(path), description: path }))];
@@ -439,7 +445,7 @@ export default function Resources({ active, onSession }: { active: boolean; onSe
     {!overviewRanking && <div className="resource-field"><span>{t("resources.project.label")}</span><ProjectPicker value={route.project} options={projectOptions} onChange={value => filter({ project: value })} /></div>}
     {historyView && <><div className="resource-field"><span>{t("resources.time.label")}</span><FilterSelect label={t("resources.time.filter")} value={route.window} options={[{ value: "all", label: t("resources.time.all") }, { value: "7", label: t("resources.time.seven") }, { value: "30", label: t("resources.time.thirty") }, { value: "90", label: t("resources.time.ninety") }, { value: "custom", label: t("resources.time.custom") }]} onChange={value => { setTimeAnchor(Date.now()); filter({ window: value }); }} /></div>
       {route.window === "custom" && <div className="resource-date-fields"><div className="resource-field"><span>{t("resources.time.from")}</span><DatePicker label={t("resources.time.startDate")} value={route.from} onChange={value => filter({ from: value })} /></div><div className="resource-field"><span>{t("resources.time.to")}</span><DatePicker label={t("resources.time.endDate")} value={route.to} onChange={value => filter({ to: value })} /></div></div>}
-      {!mapView && <><div className="resource-field"><span>{t("resources.sort.label")}</span><FilterSelect label={t("resources.sort.filter")} value={route.sort} options={[{ value: "sessions", label: t("resources.sort.sessions") }, { value: "calls", label: t("resources.sort.calls") }, ...(route.kind === "skill" ? [{ value: "reads", label: t("resources.sort.reads") }] : []), { value: "recent", label: t("resources.column.recent") }, { value: "name", label: t("resources.sort.name") }]} onChange={value => filter({ sort: value, order: value === "name" ? "asc" : "desc" })} /></div>
+      {!mapView && <><div className="resource-field"><span>{t("resources.sort.label")}</span><FilterSelect label={t("resources.sort.filter")} value={route.sort} options={[{ value: "sessions", label: t("resources.sort.sessions") }, { value: "recent", label: t("resources.column.recent") }, { value: "name", label: t("resources.sort.name") }]} onChange={value => filter({ sort: value, order: value === "name" ? "asc" : "desc" })} /></div>
       <div className="resource-field"><span>{t("resources.sort.direction")}</span><FilterSelect label={t("resources.sort.directionFilter")} value={route.order} options={[{ value: "desc", label: t("resources.sort.desc") }, { value: "asc", label: t("resources.sort.asc") }]} onChange={value => filter({ order: value as ResourceRoute["order"] })} /></div></>}
     </>}
     {route.tab === "local" && <><div className="resource-field"><span>{t("resources.candidate.label")}</span><FilterSelect label={t("resources.candidate.filter")} value={route.candidate === "used" ? "all" : route.candidate} options={(route.kind === "mcp" ? candidates.filter(candidate => candidate.value !== "duplicate") : candidates).map(item => ({ value: item.value, label: t(item.labelKey) }))} onChange={value => filter({ candidate: value as ResourceCandidate })} /></div>
@@ -518,15 +524,14 @@ export default function Resources({ active, onSession }: { active: boolean; onSe
       </aside>
       <main className="resources-main">
         <header className="resources-heading"><div><h1>{t("resources.title")}</h1></div><div className="resources-heading-actions"><button className="icon-button resource-mobile-filter" aria-label={t("resources.filters.open")} onClick={() => setFiltersOpen(true)}><Funnel size={18} /></button><button className="button" disabled={refreshing} onClick={() => void refresh()}><ArrowClockwise size={15} className={refreshing ? "spinning" : ""} />{refreshing ? t("resources.refresh.loading") : t("resources.refresh.label")}</button></div></header>
-        <div className="resource-kind-tabs" role="group" aria-label={t("resources.kind.label")}>{(["skill", "mcp"] as const).map(kind => <button key={kind} aria-pressed={route.kind === kind} className={route.kind === kind ? "is-selected" : ""} onClick={() => update({ kind, id: "", page: 1, tool: "", zeroPage: 1, reviewPage: 1, metric: kind === "mcp" && route.metric === "reads" ? "calls" : route.metric, maxValue: kind === route.kind ? route.maxValue : "", candidate: kind === "mcp" && route.candidate === "duplicate" ? "all" : route.candidate, sort: kind === route.kind ? route.sort : kind === "mcp" ? "calls" : "sessions", order: kind === route.kind ? route.order : "desc" })}>{kind === "skill" ? t("resources.kind.skill") : t("resources.kind.mcp")}</button>)}<UsageHelp kind={route.kind} /></div>
+        <div className="resource-kind-tabs" role="group" aria-label={t("resources.kind.label")}>{(["skill", "mcp"] as const).map(kind => <button key={kind} aria-pressed={route.kind === kind} className={route.kind === kind ? "is-selected" : ""} onClick={() => update({ kind, id: "", page: 1, tool: "", zeroPage: 1, reviewPage: 1, maxValue: kind === route.kind ? route.maxValue : "", candidate: kind === "mcp" && route.candidate === "duplicate" ? "all" : route.candidate, sort: kind === route.kind ? route.sort : "sessions", order: kind === route.kind ? route.order : "desc" })}>{kind === "skill" ? t("resources.kind.skill") : t("resources.kind.mcp")}</button>)}<UsageHelp kind={route.kind} /></div>
         <nav className="resource-view-tabs" aria-label={t("resources.view.label")}>{tabs.map(tab => <button key={tab.value} aria-current={route.tab === tab.value ? "page" : undefined} onClick={() => update({ tab: tab.value, id: "", page: 1, tool: "" }, true)}>{tab.value === "usage" ? overviewLabel : t(tab.labelKey)}</button>)}</nav>
         <div className="resource-list-toolbar"><label className="resource-search"><MagnifyingGlass size={16} /><input aria-label={t("resources.search.label")} value={route.q} placeholder={t("resources.search.label")} onChange={event => filter({ q: event.target.value })} />{route.q && <button className="icon-button" aria-label={t("resources.search.clear")} onClick={() => filter({ q: "" })}><X size={14} /></button>}</label>
           {overviewRanking && !listLoading && overviewData && <span>{t(route.kind === "skill" ? "resources.skillCount" : "resources.mcpCount", { count: overviewData.total })}</span>}{route.tab === "local" && !listLoading && local && <span>{t("resources.resourceCount", { count: local.total })}</span>}
           {route.tab === "operations" && !listLoading && operations && <span>{t("resources.operationCount", { count: operations.total })}</span>}{!historyView && route.tab !== "operations" && !listLoading && archives && <span>{t("resources.resourceCount", { count: archives.total })}</span>}
         </div>
         {overviewRanking && <div className="resource-map-settings"><div className="resource-display-switch" role="group" aria-label={t("resources.view.display")}>{(["list", "map"] as const).map(view => <button key={view} aria-pressed={route.view === view} onClick={() => update({ view })}>{view === "list" ? t("resources.view.list") : t("resources.view.map")}</button>)}</div>
-          {mapView && <><FilterSelect label={t("resources.map.metricFilter")} value={route.metric} options={[{ value: "calls", label: t("resources.sort.calls") }, { value: "sessions", label: t("resources.sort.sessions") }, ...(route.kind === "skill" ? [{ value: "reads", label: t("resources.map.reads") }] : [])]} onChange={value => filter({ metric: value as ResourceMapMetric, maxValue: "" })} />
-            <label className="resource-map-limit">{t(resourceMapMetricKeys[route.metric])} ≤<input type="number" min="0" step="1" aria-label={t("resources.map.limit")} value={route.maxValue} placeholder={t("resources.map.unlimited")} onChange={event => { const value = event.target.value; if (value === "" || /^\d+$/.test(value) && Number.isSafeInteger(Number(value))) filter({ maxValue: value }); }} /></label></>}
+          {mapView && <label className="resource-map-limit">{t("resources.sort.sessions")} ≤<input type="number" min="0" step="1" aria-label={t("resources.map.limit")} value={route.maxValue} placeholder={t("resources.map.unlimited")} onChange={event => { const value = event.target.value; if (value === "" || /^\d+$/.test(value) && Number.isSafeInteger(Number(value))) filter({ maxValue: value }); }} /></label>}
         </div>}
         {invalidTime && <div className="resource-alert" role="alert">{t("resources.time.invalidRange")}</div>}
         {error && <div className="resource-alert" role="alert"><ResourceErrorText error={error} /><button className="text-button" onClick={() => setReload(value => value + 1)}>{t("common.retry")}</button></div>}

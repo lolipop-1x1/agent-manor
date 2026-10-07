@@ -206,14 +206,14 @@ try {
   await button('放大资源地图').click();
   const zero=page.locator('.resource-map-compact').nth(0),review=page.locator('.resource-map-compact').nth(1);
   await zero.locator('summary').click();await review.locator('summary').click();
-  await button('查看map-skill-000的使用详情').click();await page.locator('.resource-detail-heading h2').filter({hasText:'map-skill-000'}).waitFor();
+  await button('定位资源').click();await page.getByRole('combobox',{name:'定位资源搜索',exact:true}).fill('map-skill-000');await page.getByRole('option',{name:'map-skill-000',exact:true}).click();await page.locator('.resource-detail-heading h2').filter({hasText:'map-skill-000'}).waitFor();
   await page.waitForLoadState('networkidle');
   const snapshot=async()=>({hash:await page.evaluate(()=>location.hash),scale:await page.getByRole('group',{name:await page.locator('html').getAttribute('lang')==='en'?'Resource usage map':'资源使用地图',exact:true}).getAttribute('data-scale'),selected:await page.locator('.resource-detail-heading h2').innerText(),queries:page.resourceQueries.length,writes:page.resourceWrites.length,open:await page.locator('.resource-map-compact').evaluateAll(items=>items.map(item=>item.open))});
   const before=await snapshot();await language('en');const after=await snapshot();
   ensure(before.hash===after.hash&&before.scale===after.scale&&before.selected===after.selected,'地图状态丢失');
   ensure(before.queries===after.queries&&before.writes===after.writes,'语言切换发起额外资源请求');
   ensure(JSON.stringify(before.open)===JSON.stringify(after.open),'零值或待查区域展开状态丢失');
-  ensure((await page.locator('.resource-map-secondary').innerText()).includes('successful read'),'零值区域未翻译');
+  ensure((await page.locator('.resource-map-secondary').innerText()).includes('No observed use'),'零值区域未翻译');
   ensure(!(await page.locator('.resources-shell').innerText()).includes('resources.'),'资源目录key泄漏');
   await button('Resource map help').click();ensure((await page.getByRole('dialog',{name:'Resource map help'}).innerText()).includes('Area and statistical scope'),'地图帮助未翻译');await button('Close Resource map help').click();
   await button('Usage definitions').click();ensure((await page.getByRole('dialog',{name:'Usage definitions'}).innerText()).includes('Known results'),'统计帮助未翻译');await button('Close Usage definitions').click();
