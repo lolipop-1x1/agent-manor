@@ -37,6 +37,16 @@ export function resourceUsageIdentity(identity: ResourceHistoryIdentity): Resour
     kind: "skill", name: identity.name, grouping: "skill" };
 }
 
+/** MCP 名称总览使用独立标识，既有历史来源标识与本地注册身份保持不变。 */
+export function resourceOverviewIdentity(identity: ResourceHistoryIdentity, sourceId?: string): ResourceUsageIdentity {
+  if (identity.kind !== "mcp") return resourceUsageIdentity(identity);
+  if (!identity.name.trim() || identity.name === "未记录服务器" || identity.name === "未记录名称") return { ...identity,
+    id: sourceId ? `resource:mcp-source:${createHash("sha256").update(JSON.stringify([identity.id, sourceId])).digest("hex").slice(0, 32)}` : identity.id,
+    grouping: "source" };
+  return { id: `resource:mcp:${createHash("sha256").update(JSON.stringify(["mcp", identity.name])).digest("hex").slice(0, 32)}`,
+    kind: "mcp", name: identity.name, server: identity.name, grouping: "mcp" };
+}
+
 /** 只依据已记录路径与客户端范围关联当前入口；不补造历史安装身份。 */
 export function associateResourceHistory(identity: ResourceHistoryIdentity, entries: readonly ResourceAssociationEntry[] = []): ResourceHistoryAssociation {
   if (!identity.path) return { state: "unassociated", entryIds: [], reason: "missing_path" };
@@ -153,6 +163,7 @@ export function localResourceUsage(store: SessionStore, query: ResourceUsageQuer
     body.historyIds.add(identity.id);
     body.favoriteIds.add(identity.id);
     body.favoriteIds.add(resourceUsageIdentity(identity).id);
+    body.favoriteIds.add(resourceOverviewIdentity(identity, event.source.sourceId).id);
     add(body.accumulator, event, range);
     add(group(body.clients, event.client), event, range);
     add(group(body.projects, event.project ?? ""), event, range);
@@ -227,8 +238,9 @@ function unassociated(target: UsageBucket, entries: readonly ResourceAssociation
   return count;
 }
 
-/** Skill 排行以名称汇总；来源身份只用于证据关联，不再拆分排行。 */
-export function aggregateResourceUsage(store: SessionStore, query: ResourceUsageQuery = {}, entries: readonly ResourceAssociationEntry[] = [], favorites: ReadonlySet<string> = new Set()): ResourceUsageResult {
+/** Skill 保留名称排行；MCP 仅在总览按名称聚合，既有来源排行保持兼容。 */
+export function aggregateResourceUsage(store: SessionStore, query: ResourceUsageQuery = {}, entries: readonly ResourceAssociationEntry[] = [],
+  favorites: ReadonlySet<string> = new Set(), overview = false): ResourceUsageResult {
   const range = bounds(query);
   const stream = store.resourceEvents(query);
   const resources = new Map<string, UsageBucket>();
@@ -239,7 +251,7 @@ export function aggregateResourceUsage(store: SessionStore, query: ResourceUsage
   for (const event of stream.events) {
     if (!selected(event, query, range)) continue;
     const origin = resourceHistoryIdentity(event);
-    const identity = resourceUsageIdentity(origin);
+    const identity = overview ? resourceOverviewIdentity(origin, event.source.sourceId) : resourceUsageIdentity(origin);
     let resource = resources.get(identity.id);
     if (!resource) { resource = bucket(identity); resources.set(identity.id, resource); }
     addUsage(resource, event, origin, range);
@@ -291,13 +303,17 @@ function findIdentity(store: SessionStore, id: string, query: ResourceUsageQuery
     const usage = resourceUsageIdentity(identity);
     if (usage.id === id) return usage;
     if (identity.id === id) return { ...identity, grouping: "source" };
+    const overview = resourceOverviewIdentity(identity, event.source.sourceId);
+    if (overview.id === id) return overview;
   }
   throw new StoreError("SOURCE_NOT_FOUND", "资源不存在于当前索引范围");
 }
 
 function matches(event: ResourceUsageEvent, identity: ResourceUsageIdentity): boolean {
   const origin = resourceHistoryIdentity(event);
-  return (identity.grouping === "skill" ? resourceUsageIdentity(origin).id : origin.id) === identity.id;
+  return (identity.id.startsWith("resource:mcp-source:") ? resourceOverviewIdentity(origin, event.source.sourceId).id
+    : identity.grouping === "skill" ? resourceUsageIdentity(origin).id
+    : identity.grouping === "mcp" ? resourceOverviewIdentity(origin).id : origin.id) === identity.id;
 }
 
 function group(map: Map<string, Accumulator>, key: string): Accumulator {

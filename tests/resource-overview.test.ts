@@ -4,8 +4,8 @@ import type { Client } from "../src/clients.js";
 import type { ResourceHistoryIdentity, ResourceUsageCoverage, ResourceUsageResult, ResourceUsageRow, ResourceUsageStats } from "../src/resource-contracts.js";
 import type { ResourceInventoryEntry } from "../src/resource-inventory-contracts.js";
 import type { ResourceLocalRow, ResourceOverviewQuery } from "../src/resource-service-contracts.js";
-import { buildSkillOverview } from "../src/resources/overview.js";
-import { emptyResourceUsageStats, resourceUsageIdentity } from "../src/resources/usage.js";
+import { buildResourceOverview, buildSkillOverview } from "../src/resources/overview.js";
+import { emptyResourceUsageStats, resourceOverviewIdentity, resourceUsageIdentity } from "../src/resources/usage.js";
 
 const now = Date.parse("2026-10-01T00:00:00Z");
 const options = { observedAt: "2026-10-01T00:00:00Z", partial: false, now };
@@ -243,4 +243,56 @@ test("低频和长期未用使用已使用事件与可调整阈值，历史独�
   assert.deepEqual(result.thresholds, { lowSessions: 5, inactiveDays: 10 });
   assert.deepEqual(result.resources.find(row => row.identity.name === "history-only")!.localBodyIds, []);
   assert.equal(result.resources.find(row => row.identity.name === "history-only")!.hasHistory, true);
+});
+
+function mcpHistory(name: string, extra: Partial<ResourceUsageRow> = {}): ResourceUsageRow {
+  return historyRow(name, { identity: resourceOverviewIdentity({ id: `mcp-origin:${name}`, kind: "mcp", name, server: name, client: "codex" }),
+    stats: stats({ events: 3, sessions: 2, mcpCalls: 3, lastUsedAt: "2026-01-01T00:00:00Z" }), ...extra });
+}
+
+function mcpLocal(name: string, id = name, extra: Partial<ResourceLocalRow> = {}): ResourceLocalRow {
+  const row = local(name, id);
+  return { ...row, body: { ...row.body, kind: "mcp" }, entries: row.entries.map(entry => ({ ...entry, kind: "mcp", server: name,
+    sourceFormat: "json", locator: { type: "mcp", configPath: entry.entryPath, format: "json", keyPath: ["mcpServers"] } })), ...extra };
+}
+
+test("MCP 总览复用完整名称汇总、计数与本地注册身份，默认调用排序且统计不相加", () => {
+  const recorded = mcpHistory("vendor/demo", { clients: ["codex", "claude"] });
+  const first = mcpLocal("vendor/demo", "mcp-a", { usage: stats({ events: 9, sessions: 9, mcpCalls: 9 }) });
+  const second = mcpLocal("vendor/demo", "mcp-b", { entries: mcpLocal("vendor/demo", "mcp-b").entries.map(entry => ({ ...entry, client: "claude" })) });
+  const input = history([recorded, mcpHistory("other/demo", { stats: stats({ events: 9, sessions: 1, mcpCalls: 9 }) })]);
+  const result = buildResourceOverview(input, [first, second, mcpLocal("zero"), mcpLocal("new", "new", { observation: "insufficient" }),
+    mcpLocal("unknown", "unknown", { observation: "unknown", usage: null }), mcpLocal("protected", "protected", { protected: true })], { kind: "mcp" }, options);
+  assert.equal(result.total, 6);
+  assert.equal(result.resources[0]!.identity.name, "other/demo");
+  const row = result.resources.find(row => row.identity.name === "vendor/demo")!;
+  assert.strictEqual(row.stats, recorded.stats);
+  assert.equal(row.stats!.sessions, 2);
+  assert.deepEqual(row.localBodyIds, ["mcp-a", "mcp-b"]);
+  assert.deepEqual(row.clients, ["claude", "codex"]);
+  assert.equal(result.counts.used, 2);
+  assert.equal(result.counts.unused, 1);
+  assert.equal(result.counts.review, 2);
+  assert.equal(result.resources.find(row => row.identity.name === "unknown")!.stats, null);
+  assert.equal(result.resources.find(row => row.identity.name === "new")!.stats, null);
+  const ascending = buildResourceOverview(input, [first, second, mcpLocal("zero"), mcpLocal("unknown", "unknown", { observation: "unknown" })],
+    { kind: "mcp", order: "asc" }, options);
+  assert.equal(ascending.resources[0]!.identity.name, "zero");
+  assert.equal(ascending.resources.at(-1)!.identity.name, "unknown");
+});
+
+test("MCP 缺失名称保持不同历史来源及本地注册，收藏与注册保护独立", () => {
+  const first = mcpHistory("未记录服务器", { identity: { id: "resource:mcp-source:a", kind: "mcp", name: "未记录服务器", grouping: "source" } });
+  const second = mcpHistory("未记录服务器", { identity: { id: "resource:mcp-source:b", kind: "mcp", name: "未记录服务器", grouping: "source" } });
+  const shared = mcpLocal("demo", "shared-mcp", { favorite: true });
+  const named = mcpLocal("named", "named-mcp");
+  const result = buildResourceOverview(history([first, second]), [mcpLocal("未记录服务器", "unknown-mcp-a"), mcpLocal("未记录服务器", "unknown-mcp-b"), shared, named],
+    { kind: "mcp" }, { ...options, favorites: new Set([resourceOverviewIdentity({ id: "unused", kind: "mcp", name: "named", client: "codex" }).id]) });
+  assert.equal(result.total, 6);
+  assert.equal(new Set(result.resources.filter(row => row.identity.name === "未记录服务器").map(row => row.identity.id)).size, 4);
+  assert.equal(result.resources.find(row => row.identity.name === "demo")!.favorite, false);
+  assert.equal(result.resources.find(row => row.identity.name === "demo")!.protected, true);
+  assert.equal(result.resources.find(row => row.identity.name === "named")!.favorite, true);
+  assert.equal(result.counts.favorite, 2);
+  assert.ok(!result.resources.find(row => row.identity.name === "named")!.candidates.includes("unused"));
 });

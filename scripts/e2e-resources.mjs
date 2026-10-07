@@ -9,7 +9,7 @@ import { clientIds } from "../dist/clients.js";
 import { startService } from "../dist/server.js";
 import { parse as parseToml } from "smol-toml";
 import Database from "better-sqlite3";
-import { resourceFixture, skillRankingFixture } from "./resource-fixture.mjs";
+import { resourceFixture, skillRankingFixture, mcpOverviewFixture } from "./resource-fixture.mjs";
 
 // 全部历史 roots 和资源 home 均显式隔离；真实 Chrome 只操作人工资源。
 const run = promisify(execFile);
@@ -134,7 +134,7 @@ try {
   `);
   await step("MCP 工具下钻与证据跳转返回", `
     await page.getByRole("group",{name:"资源类型",exact:true}).getByRole("button",{name:"MCP",exact:true}).click();
-    ${view("使用排行")}
+    ${view("MCP 总览")}
     await page.getByRole("button",{name:"查看sample的使用详情",exact:true}).click();
     const tool=page.locator(".resource-tool-list").getByRole("button").filter({hasText:"lookup"});
     await tool.click();
@@ -510,8 +510,8 @@ try {
     expect((await quick.getByRole("button",{name:/^全部/}).innerText()).includes(${JSON.stringify(String(overview.counts.all))}),"全部计数错误");
     ${screenshot("overview-synthetic-light.png")}
     await quick.getByRole("button",{name:/^已使用/}).click();
-    await page.getByRole("button",{name:"查看guide的使用详情",exact:true}).waitFor();
-    expect(await table.getByRole("row").count()===3,"已使用筛选混入本地未知资源");
+    await page.waitForFunction(expected=>document.querySelectorAll('table[aria-label="Skill 总览"] tbody tr').length===expected, ${overview.counts.used});
+    expect(await table.getByRole("row").count()===${overview.counts.used + 1},"已使用筛选混入本地未知资源");
     await quick.getByRole("button",{name:/^全部/}).click();
     ${search("sample-02")}
     const row=table.getByRole("row").filter({has:page.getByRole("button",{name:"查看sample-02的使用详情",exact:true})});
@@ -696,6 +696,185 @@ try {
     expect(page.resourceErrors.length===0,"浏览器异常："+page.resourceErrors.join(";"));
   `);
 
+  const mcpFixture = await mcpOverviewFixture(fixture, claudeHistory, secondProject);
+  const { job: mcpRefresh } = await api("/sessions/refresh", "POST");
+  let mcpJob = mcpRefresh;
+  for (let attempt = 0; attempt < 400 && ["queued", "running"].includes(mcpJob.status); attempt++) {
+    await new Promise(resolve => setTimeout(resolve, 25));
+    mcpJob = (await api(`/jobs/${mcpRefresh.id}`)).job;
+  }
+  assert.equal(mcpJob.status, "complete", mcpJob.error);
+  await api("/resources/refresh", "POST");
+  const mcpUnused = (await api("/resources/local?kind=mcp&q=mcp-unused")).rows.find(row => row.body.name === "mcp-unused");
+  assert.ok(mcpUnused);
+  const mcpManagement = new Database(join(fixture.home, "resources.sqlite"));
+  try {
+    for (const entry of mcpUnused.entries) assert.equal(mcpManagement.prepare("UPDATE resource_seen SET first_seen=? WHERE id=?").run("2025-01-01T00:00:00Z", entry.id).changes, 1);
+  } finally { mcpManagement.close(); }
+  await api("/resources/refresh", "POST");
+  const mcpOverview = await api("/resources/overview?kind=mcp&pageSize=200");
+  const mcpSample = mcpOverview.resources.find(row => row.identity.name === "sample");
+  assert.ok(mcpOverview.total > 100); assert.ok(mcpSample);
+  assert.equal(mcpSample.stats.sessions, 3); assert.equal(mcpSample.stats.mcpCalls, 29);
+  assert.equal(mcpSample.stats.results.failure, 3); assert.equal(mcpSample.stats.results.success, 26);
+  const mcpDetail = await api(`/resources/overview/${encodeURIComponent(mcpSample.identity.id)}?kind=mcp`);
+  assert.equal(mcpDetail.history.clients.length, 2); assert.equal(mcpDetail.history.projects.length, 2);
+  assert.equal(mcpDetail.history.tools.reduce((count, tool) => count + tool.stats.mcpCalls, 0), 29);
+  assert.ok(mcpDetail.local.length > 1);
+  const legacyMcp = (await api("/resources/usage?kind=mcp&q=sample&pageSize=200")).resources.find(row => row.identity.name === "sample" && row.identity.client === "codex");
+  assert.ok(legacyMcp); assert.equal(legacyMcp.stats.mcpCalls, 27);
+  const mcpConfigs = [fixture.configPath, mcpFixture.claudeConfig, join(fixture.project, ".mcp.json"), join(secondProject, ".mcp.json")];
+  const mcpConfigSnapshots = await Promise.all(mcpConfigs.map(path => readFile(path, "utf8")));
+  const mcpHash = `#resources?kind=mcp&tab=usage&project=${encodeURIComponent(fixture.project)}`;
+  await step("MCP 总览合并服务名称、注册和会话并集", `
+    await page.evaluate(hash=>location.hash=hash,${JSON.stringify(mcpHash)});
+    const table=page.getByRole("table",{name:"MCP 总览",exact:true}); await table.waitFor();
+    expect(await table.getByRole("columnheader").count()===6,"MCP总览列数错误");
+    expect(await table.getByRole("button",{name:"按读取排序",exact:true}).count()===0,"MCP错误展示Skill读取列");
+    expect(await table.getByRole("columnheader").filter({hasText:"调用"}).getAttribute("aria-sort")==="descending","MCP默认没有按调用降序");
+    const quick=page.getByRole("group",{name:"MCP 快速筛选",exact:true});
+    expect(await quick.getByRole("button").count()===7,"MCP快捷筛选缺失");
+    expect((await quick.getByRole("button",{name:/^全部/}).innerText()).includes(${JSON.stringify(String(mcpOverview.counts.all))}),"MCP快捷计数错误");
+    const row=table.getByRole("row").filter({has:page.getByRole("button",{name:"查看sample的使用详情",exact:true})});
+    expect(await row.count()===1,"同名服务仍按Agent或项目拆行");
+    expect((await row.getByRole("cell").nth(1).innerText())==="3"&&(await row.getByRole("cell").nth(2).innerText())==="29","服务会话或调用被重复累计");
+    expect((await row.locator('.resource-overview-agents').innerText())===${JSON.stringify(`${mcpSample.clients.length} 个 Agent`)},"服务遗漏本地或历史Agent");
+    expect(await page.locator('.resources-shell').getByRole("button",{name:"筛选项目",exact:true}).count()===0,"MCP总览仍受项目筛选");
+    ${screenshot("mcp-overview-light.png")}
+    await row.getByRole("button",{name:"查看sample的使用详情",exact:true}).click();
+    const detail=page.getByRole("complementary",{name:"资源详情",exact:true});
+    await detail.getByRole("heading",{name:"sample",exact:true}).waitFor();
+    expect(/29\\s*工具调用/.test(await detail.locator('.resource-stats').innerText()),"服务详情统计丢失");
+    expect(await detail.getByRole("button",{name:/^查看sample的本地本体 /}).count()===${mcpDetail.local.length},"同名注册被错误合并为管理对象");
+    expect(!(await detail.innerText()).includes('synthetic-mcp-secret'),"页面泄露注册配置值");
+  `);
+  await step("MCP Agent 筛选保持服务身份、调用与会话范围", `
+    ${select("资源Agent", "Codex")}
+    await page.waitForFunction(()=>{const row=document.querySelector('[aria-label="查看sample的使用详情"]')?.closest('tr');return row&&row.querySelectorAll('td')[2].textContent==='27'});
+    const table=page.getByRole("table",{name:"MCP 总览",exact:true});
+    let row=table.getByRole("row").filter({has:page.getByRole("button",{name:"查看sample的使用详情",exact:true})});
+    expect((await row.getByRole("cell").nth(1).innerText())==="2","Codex会话范围错误");
+    await row.getByRole("button",{name:"查看sample的使用详情",exact:true}).click();
+    expect(await page.evaluate(()=>new URLSearchParams(location.hash.split('?')[1]).get('id'))===${JSON.stringify(mcpSample.identity.id)},"Agent筛选改变服务名称身份");
+    ${select("资源Agent", "Claude Code")}
+    await page.waitForFunction(()=>{const row=document.querySelector('[aria-label="查看sample的使用详情"]')?.closest('tr');return row&&row.querySelectorAll('td')[2].textContent==='2'});
+    row=table.getByRole("row").filter({has:page.getByRole("button",{name:"查看sample的使用详情",exact:true})});
+    expect((await row.getByRole("cell").nth(1).innerText())==="1","Claude会话范围错误");
+    ${select("资源Agent", "全部 Agent")}
+    await page.waitForFunction(()=>{const row=document.querySelector('[aria-label="查看sample的使用详情"]')?.closest('tr');return row&&row.querySelectorAll('td')[2].textContent==='29'});
+  `);
+  await step("MCP 工具下钻覆盖全名历史及证据分页返回", `
+    const detail=page.getByRole("complementary",{name:"资源详情",exact:true});
+    await detail.getByRole("heading",{name:"工具调用",exact:true}).waitFor();
+    const tool=detail.locator('.resource-tool-list').getByRole('button').filter({hasText:'lookup'});
+    expect((await tool.innerText()).includes('22 次'),"工具没有汇总跨Agent调用");
+    await tool.click();
+    const pager=detail.getByRole("navigation",{name:"使用证据",exact:true});
+    await pager.getByRole("button",{name:"使用证据末页",exact:true}).click();
+    await page.waitForFunction(()=>document.querySelectorAll('.resource-evidence a').length===2);
+    expect((await pager.innerText()).includes('21–22 / 22 条'),"工具证据被截断或串服务");
+    const hash=await page.evaluate(()=>location.hash);
+    await detail.locator('.resource-evidence a').first().click(); await page.waitForURL(/#sessions/);
+    expect(page.url().includes('mode=trace')&&page.url().includes('message='),"MCP证据未定位轨迹");
+    await page.goBack(); await pager.waitFor();
+    expect(await page.evaluate(()=>location.hash)===hash,"返回丢失服务与工具分页");
+    await detail.getByRole("button",{name:"全部工具",exact:true}).click();
+    await page.waitForFunction(()=>document.querySelector('.resource-pagination')?.textContent.includes('29 条')||document.querySelector('[aria-label="使用证据"]')?.textContent.includes('29 条'));
+  `);
+  await step("MCP 零值与观测不足、本地注册精确跳转", `
+    ${search("mcp-new")}
+    await page.getByRole("button",{name:"查看mcp-new的使用详情",exact:true}).click();
+    const detail=page.getByRole("complementary",{name:"资源详情",exact:true});
+    await detail.getByRole("heading",{name:"mcp-new",exact:true}).waitFor();
+    expect((await detail.locator('.resource-stats').innerText()).includes('未知'),"未观测MCP冒充零值");
+    await detail.getByRole("button",{name:"查看mcp-new的本地本体 1",exact:true}).click();
+    await detail.getByRole("heading",{name:"客户端入口",exact:true}).waitFor();
+    expect(await page.evaluate(()=>new URLSearchParams(location.hash.split('?')[1]).get('project'))===null,"隐藏项目阻止用户级注册跳转");
+    expect(await detail.getByRole('alert').count()===0,"精确注册详情失败");
+    ${view("MCP 总览")} ${search("")}
+    await page.getByRole("group",{name:"MCP 快速筛选",exact:true}).getByRole('button',{name:/^未发现使用/}).click();
+    await page.getByRole("button",{name:"查看mcp-unused的使用详情",exact:true}).click();
+    await detail.getByRole("heading",{name:"mcp-unused",exact:true}).waitFor();
+    expect(/0\\s*工具调用/.test(await detail.locator('.resource-stats').innerText()),"确定零调用没有显示零");
+    expect(await page.evaluate(()=>new URLSearchParams(location.hash.split('?')[1]).get('page'))===null,"状态筛选没有重置页码");
+    await page.getByRole("group",{name:"MCP 快速筛选",exact:true}).getByRole('button',{name:/^全部/}).click();
+  `);
+  await step("MCP 排序、跳页、容量、刷新与空结果", `
+    const table=page.getByRole("table",{name:"MCP 总览",exact:true});
+    await table.getByRole('button',{name:'按服务器排序',exact:true}).click();
+    await page.waitForFunction(()=>document.querySelector('.resource-overview-table th[aria-sort="ascending"] button')?.textContent.includes('服务器'));
+    const firstAsc=await table.getByRole('row').nth(1).getByRole('rowheader').getByRole('button').first().innerText();
+    await table.getByRole('button',{name:'按服务器排序',exact:true}).focus(); await page.keyboard.press('Enter');
+    await page.waitForFunction(()=>document.querySelector('.resource-overview-table th[aria-sort="descending"] button')?.textContent.includes('服务器'));
+    expect((await table.getByRole('row').nth(1).getByRole('rowheader').getByRole('button').first().innerText())!==firstAsc,"MCP名称排序方向未改变");
+    const pager=page.getByRole('navigation',{name:'MCP 总览',exact:true});
+    await pager.getByRole('button',{name:'MCP 总览末页',exact:true}).click();
+    await page.waitForFunction(()=>document.querySelector('[aria-label="MCP 总览末页"]')?.disabled);
+    await pager.getByRole('spinbutton',{name:'MCP 总览跳转页码',exact:true}).fill('2');
+    await pager.getByRole('button',{name:'MCP 总览跳转',exact:true}).click();
+    await page.waitForFunction(()=>document.querySelector('nav[aria-label="MCP 总览"]')?.textContent.includes('21–40'));
+    ${select("MCP 总览每页条数", "50 条／页")}
+    await page.waitForFunction(()=>document.querySelectorAll('.resource-overview-table tbody tr').length===50);
+    ${select("MCP 总览每页条数", "100 条／页")}
+    await page.waitForFunction(()=>document.querySelectorAll('.resource-overview-table tbody tr').length===100);
+    await page.reload(); await table.waitFor();
+    expect((await pager.getByRole('combobox',{name:'MCP 总览每页条数',exact:true}).innerText()).includes('100'),"刷新丢失MCP容量");
+    expect(await table.getByRole('columnheader').first().getAttribute('aria-sort')==='descending',"刷新丢失MCP排序");
+    ${search("no-such-mcp")}
+    await page.getByText('没有匹配的 MCP',{exact:true}).waitFor();
+    expect((await pager.innerText()).includes('0–0 / 0 条'),"MCP空结果分页错误");
+    await page.getByRole('button',{name:'重置筛选',exact:true}).click();
+  `);
+  await step("MCP 名称收藏与独立注册收藏互不覆盖", `
+    ${search("sample")}
+    await page.getByRole('button',{name:'查看sample的使用详情',exact:true}).click();
+    const detail=page.getByRole('complementary',{name:'资源详情',exact:true});
+    await detail.getByRole('button',{name:'收藏sample本体 1',exact:true}).click();
+    await detail.getByRole('button',{name:'取消收藏sample本体 1',exact:true}).waitFor();
+    const row=page.getByRole('table',{name:'MCP 总览',exact:true}).getByRole('row').filter({has:page.getByRole('button',{name:'查看sample的使用详情',exact:true})});
+    await row.getByRole('button',{name:'收藏sample',exact:true}).click();
+    await row.getByRole('button',{name:'取消收藏sample',exact:true}).click();
+    await row.getByRole('button',{name:'收藏sample',exact:true}).waitFor();
+    await detail.getByRole('button',{name:'取消收藏sample本体 1',exact:true}).waitFor();
+    expect((await row.innerText()).includes('受保护'),"名称取消收藏清除了注册保护");
+    await page.getByRole('group',{name:'MCP 快速筛选',exact:true}).getByRole('button',{name:/^已收藏/}).click(); await row.waitFor();
+    await detail.getByRole('button',{name:'取消收藏sample本体 1',exact:true}).click();
+    await page.getByText('没有匹配的 MCP',{exact:true}).waitFor();
+    await page.getByRole('group',{name:'MCP 快速筛选',exact:true}).getByRole('button',{name:/^全部/}).click();
+  `);
+  await step("MCP 旧来源精确链接与仅历史服务", `
+    await page.evaluate(id=>location.hash='#resources?kind=mcp&tab=usage&id='+encodeURIComponent(id),${JSON.stringify(legacyMcp.identity.id)});
+    const detail=page.getByRole('complementary',{name:'资源详情',exact:true});
+    await detail.getByRole('heading',{name:'sample',exact:true}).waitFor();
+    expect(/27\\s*工具调用/.test(await detail.locator('.resource-stats').innerText()),"旧来源链接被扩大成全名汇总");
+    expect(/2\\s*使用会话/.test(await detail.locator('.resource-stats').innerText()),"旧来源会话范围错误");
+    ${search("retired-service")}
+    const row=page.getByRole('table',{name:'MCP 总览',exact:true}).getByRole('row').filter({has:page.getByRole('button',{name:'查看retired-service的使用详情',exact:true})});
+    await row.waitFor(); expect((await row.innerText()).includes('仅历史'),"仅历史MCP标签缺失");
+    await row.getByRole('button',{name:'查看retired-service的使用详情',exact:true}).click();
+    await detail.getByText('仅历史',{exact:true}).waitFor();
+    expect(await detail.getByRole('button',{name:/^查看retired-service的本地本体 /}).count()===0,"历史服务冒充注册对象");
+  `);
+  await step("MCP 深浅主题、375px独立滚动与键盘分页", `
+    await page.evaluate(()=>location.hash='#resources?kind=mcp&tab=usage');
+    await page.getByRole('table',{name:'MCP 总览',exact:true}).waitFor();
+    await page.getByRole('button',{name:'切换主题',exact:true}).click();
+    ${screenshot("mcp-overview-dark.png")}
+    await page.getByRole('button',{name:'切换主题',exact:true}).click();
+    await page.setViewportSize({width:375,height:812});
+    const scroll=page.locator('.resource-overview-scroll');
+    expect(await scroll.evaluate(element=>element.scrollWidth>element.clientWidth),"MCP窄屏表格没有独立滚动");
+    await scroll.evaluate(element=>element.scrollLeft=180);
+    expect(await scroll.evaluate(element=>element.scrollLeft)>0,"MCP表格不可横向滚动");
+    expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1&&document.documentElement.scrollHeight<=innerHeight+1),"MCP窄屏页面溢出");
+    const jump=page.getByRole('spinbutton',{name:'MCP 总览跳转页码',exact:true});
+    await jump.fill('2'); await jump.focus(); await page.keyboard.press('Enter');
+    await page.waitForFunction(()=>new URLSearchParams(location.hash.split('?')[1]).get('page')==='2'&&!document.querySelector('.resource-list-scroll[aria-busy="true"]'));
+    ${screenshot("mcp-overview-phone.png")}
+    await page.setViewportSize({width:1560,height:980});
+    expect(page.resourceErrors.length===0,"浏览器异常："+page.resourceErrors.join(';'));
+  `);
+  assert.deepEqual(await Promise.all(mcpConfigs.map(path => readFile(path, "utf8"))), mcpConfigSnapshots, "MCP总览浏览修改了注册配置");
   await writeFile(join(artifacts, "report.json"), JSON.stringify({ passed: true, checks, elapsedMs: Date.now() - started }, null, 2));
   console.log(`PASS 资源 Chrome 端到端 ${checks.length} 项`);
 } catch (error) {

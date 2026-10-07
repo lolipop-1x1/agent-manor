@@ -32,10 +32,10 @@ export interface ResourceHistoryIdentity {
   project?: string;
 }
 
-/** Skill 排行按完整名称汇总；实际历史来源仍单独保留用于关联管理入口。 */
+/** 名称总览与实际历史来源分开，来源身份保留用于精确证据和管理关联。 */
 export interface ResourceUsageIdentity extends Omit<ResourceHistoryIdentity, "client"> {
   client?: Client;
-  grouping: "skill" | "source";
+  grouping: "skill" | "mcp" | "source";
 }
 
 /** 仅保留查询与定位所需元信息，不包含参数、结果正文或请求 Token。 */

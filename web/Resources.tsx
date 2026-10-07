@@ -15,7 +15,6 @@ import { ResourcePagination } from "./ResourcePagination";
 import { ResizableWorkspace } from "./ResizableWorkspace";
 import { dateLabel, fmt, timeFilters } from "./model";
 import { resourceApi, resourceQuery, type FavoriteResult, type ResourceArchiveResult, type ResourceUsageFilters } from "./resource-api";
-import type { ResourceUsageResult } from "../src/resource-contracts";
 import "./resources.css";
 
 type ResourceTab = "usage" | "local" | "disabled" | "standby" | "trash" | "operations";
@@ -52,13 +51,14 @@ const validDate = (value: string | null): string => {
 };
 const readRoute = (): ResourceRoute => {
   const params = new URLSearchParams(location.hash.startsWith("#resources") ? location.hash.split("?")[1] : "");
+  const kind = params.get("kind") === "mcp" ? "mcp" : "skill";
   return {
-    kind: params.get("kind") === "mcp" ? "mcp" : "skill",
+    kind,
     tab: tabs.some(tab => tab.value === params.get("tab")) ? params.get("tab") as ResourceTab : "usage",
     client: CLIENTS.some(client => client.id === params.get("client")) ? params.get("client")! : "all",
     project: params.get("project") ?? "all", window: ["7", "30", "90", "custom"].includes(params.get("window") ?? "") ? params.get("window")! : "all",
     from: validDate(params.get("from")), to: validDate(params.get("to")),
-    q: params.get("q") ?? "", sort: ["calls", "reads", "recent", "name"].includes(params.get("sort") ?? "") ? params.get("sort")! : "sessions",
+    q: params.get("q") ?? "", sort: ["sessions", "calls", "recent", "name", ...(kind === "skill" ? ["reads"] : [])].includes(params.get("sort") ?? "") ? params.get("sort")! : kind === "mcp" ? "calls" : "sessions",
     order: params.get("order") === "asc" ? "asc" : params.get("order") === "desc" ? "desc" : params.get("sort") === "name" ? "asc" : "desc",
     candidate: [...candidates, ...overviewCandidates].some(item => item.value === params.get("candidate")) ? params.get("candidate") as ResourceRoute["candidate"] : "all",
     low: Math.min(10000, positive(params.get("low"), 2)), inactive: Math.min(3650, positive(params.get("inactive"), 90)),
@@ -115,16 +115,16 @@ function OverviewTable({ rows, route, onSort, onSelect, onFavorite, favoritePend
   rows: ResourceOverviewRow[]; route: ResourceRoute; onSort: (sort: string) => void; onSelect: (id: string) => void;
   onFavorite: (id: string, favorite: boolean) => void; favoritePending: string | null;
 }) {
-  const columns = [{ value: "name", label: "Skill" }, { value: "sessions", label: "会话" }, { value: "calls", label: "调用" }, { value: "reads", label: "读取" }, { value: "recent", label: "最近使用" }];
-  const heading = (index: number) => { const column = columns[index]!; return <th scope="col" aria-sort={route.sort === column.value ? route.order === "asc" ? "ascending" : "descending" : "none"}>
+  const columns = [{ value: "name", label: route.kind === "skill" ? "Skill" : "服务器" }, { value: "sessions", label: "会话" }, { value: "calls", label: "调用" }, ...(route.kind === "skill" ? [{ value: "reads", label: "读取" }] : []), { value: "recent", label: "最近使用" }];
+  const heading = (column: { value: string; label: string }) => <th key={column.value} scope="col" aria-sort={route.sort === column.value ? route.order === "asc" ? "ascending" : "descending" : "none"}>
     <button aria-label={`按${column.label}排序`} onClick={() => onSort(column.value)}>{column.label}<span aria-hidden="true">{route.sort === column.value ? route.order === "asc" ? "↑" : "↓" : "↕"}</span></button>
-  </th>; };
-  return <div className="resource-overview-scroll"><table className="resource-overview-table" aria-label="Skill 总览">
-    <thead><tr>{heading(0)}<th scope="col">Agent</th>{heading(1)}{heading(2)}{heading(3)}{heading(4)}<th scope="col">状态</th></tr></thead>
+  </th>;
+  return <div className="resource-overview-scroll"><table className={`resource-overview-table${route.kind === "mcp" ? " resource-mcp-overview" : ""}`} aria-label={`${route.kind === "skill" ? "Skill" : "MCP"} 总览`}>
+    <thead><tr>{heading(columns[0]!)}<th scope="col">Agent</th>{columns.slice(1).map(heading)}<th scope="col">状态</th></tr></thead>
     <tbody>{rows.map(row => <tr className={`resource-overview-row${route.id === row.identity.id ? " is-selected" : ""}`} key={row.identity.id}>
       <th scope="row"><div className="resource-overview-name"><button aria-label={`查看${row.identity.name}的使用详情`} onClick={() => onSelect(row.identity.id)}>{row.identity.name}</button><FavoriteButton name={row.identity.name} favorite={row.favorite} disabled={favoritePending === row.identity.id} onClick={() => onFavorite(row.identity.id, row.favorite)} /></div></th>
       <td className="resource-overview-agents" title={row.clients.map(clientName).join(" · ")}>{usageAgentLabel(row)}</td>
-      <td>{row.stats ? fmt(row.stats.sessions) : "—"}</td><td>{row.stats ? fmt(row.stats.explicitCalls) : "—"}</td><td>{row.stats ? fmt(row.stats.successfulReads) : "—"}</td>
+      <td>{row.stats ? fmt(row.stats.sessions) : "—"}</td><td>{row.stats ? fmt(route.kind === "skill" ? row.stats.explicitCalls : row.stats.mcpCalls) : "—"}</td>{route.kind === "skill" && <td>{row.stats ? fmt(row.stats.successfulReads) : "—"}</td>}
       <td className="resource-overview-time">{row.stats?.lastUsedAt ? dateLabel(row.stats.lastUsedAt) : "—"}</td>
       <td><div className="resource-tags"><span className={row.observation === "unknown" || row.observation === "insufficient" ? "is-warning" : ""}>{overviewObservationNames[row.observation]}</span>{row.protected && <span><ShieldCheck size={12} />受保护</span>}{!row.localBodyIds.length && row.hasHistory && <span>仅历史</span>}</div></td>
     </tr>)}</tbody>
@@ -166,10 +166,10 @@ function Distribution({ rows, title, label }: { rows: ResourceUsageDistribution[
     <div className="resource-distribution">{rows.map(row => <div key={row.value ?? "unknown"} title={row.value ?? "未记录"}><span>{label(row.value)}</span><i style={{ width: `${Math.max(2, row.stats.events / max * 100)}%` }} /><strong>{fmt(row.stats.events)}</strong></div>)}</div>
   </section>;
 }
-function UsageHelp() {
+function UsageHelp({ kind }: { kind: ResourceKind }) {
   return <HelpPopover label="使用统计口径"><dl>
-    <div><dt>Skill 总览</dt><dd>按完整名称汇总当前本地与历史 Skill，使用会话去重；名称汇总不合并本地管理对象，具体本体与入口在详情中回查。</dd></div>
-    <div><dt>使用会话</dt><dd>同一会话中的显式调用与成功读取合并计一次；文本提及、声明或未证实的脚本嵌套调用不计使用。全部实际分支活动均保留。</dd></div>
+    <div><dt>{kind === "skill" ? "Skill" : "MCP"} 总览</dt><dd>{kind === "skill" ? "按完整名称汇总当前本地与历史 Skill" : "按完整服务器名称汇总当前本地注册与历史 MCP"}，使用会话去重；同名不能证明实例相同，名称汇总不合并本地管理对象，具体本体与入口在详情中回查。</dd></div>
+    <div><dt>使用会话</dt><dd>{kind === "skill" ? "同一会话中的显式调用与成功读取合并计一次" : "同一会话中的 MCP 工具调用合并计一次"}；文本提及、声明或未证实的脚本嵌套调用不计使用。全部实际分支活动均保留。</dd></div>
     <div><dt>已知结果</dt><dd>成功率以成功与失败之和为分母，未知结果单列。耗时仅使用日志实际记录值，并列出有效样本数。</dd></div>
     <div><dt>关联与观测</dt><dd>名称相同不能证明是当前安装实例。缺少路径、对应能力或充分观测时显示未关联或未知；未发现使用不等于从未使用。</dd></div>
     <div><dt>整理与收藏</dt><dd>低频按所选范围的使用会话数判断；长期未用按最近使用和天数阈值判断。待检查包含未知、观测不足及来源异常。名称收藏与具体本体收藏独立，已收藏筛选也包含受独立收藏保护的本体。</dd></div>
@@ -181,7 +181,6 @@ export default function Resources({ active, onSession }: { active: boolean; onSe
   const [status, setStatus] = useState<ResourceStatus | null>(null);
   const [overview, setOverview] = useState<FavoriteResult<ResourceOverviewResult> | null>(null);
   const [overviewDetail, setOverviewDetail] = useState<FavoriteResult<ResourceOverviewDetail> | null>(null);
-  const [usage, setUsage] = useState<FavoriteResult<ResourceUsageResult> | null>(null);
   const [local, setLocal] = useState<ResourceLocalResult | null>(null);
   const [usageDetail, setUsageDetail] = useState<ResourceUsageDetail | null>(null);
   const [localDetail, setLocalDetail] = useState<ResourceLocalDetail | null>(null);
@@ -261,12 +260,13 @@ export default function Resources({ active, onSession }: { active: boolean; onSe
     return () => controller.abort();
   }, [active, reload]);
   const invalidTime = (route.tab === "usage" || route.tab === "local") && route.window === "custom" && !!route.from && !!route.to && route.from > route.to;
-  const skillRanking = route.kind === "skill" && route.tab === "usage";
+  const overviewRanking = route.tab === "usage";
+  const overviewLabel = `${route.kind === "skill" ? "Skill" : "MCP"} 总览`;
   const scopeQuery = useMemo<ResourceUsageFilters>(() => ({ kind: route.kind,
     client: route.client === "all" ? undefined : route.client as Client,
-    project: skillRanking || route.project === "all" ? undefined : route.project,
+    project: overviewRanking || route.project === "all" ? undefined : route.project,
     ...timeFilters(route.window, route.from, route.to, timeAnchor),
-  }), [route.kind, route.client, route.project, route.window, route.from, route.to, timeAnchor, skillRanking]);
+  }), [route.kind, route.client, route.project, route.window, route.from, route.to, timeAnchor, overviewRanking]);
   const query = useMemo<ResourceUsageFilters>(() => ({ ...scopeQuery, q: queryText, sort: route.sort as ResourceUsageFilters["sort"],
     order: route.order, page: route.page, pageSize: route.pageSize, favorite: route.favorite || undefined,
   }), [scopeQuery, queryText, route.sort, route.order, route.page, route.pageSize, route.favorite]);
@@ -277,15 +277,12 @@ export default function Resources({ active, onSession }: { active: boolean; onSe
     if (!active || invalidTime || route.tab !== "usage" && route.tab !== "local") return;
     const controller = new AbortController(); setListLoading(true); setError(null);
     const done = () => { if (!controller.signal.aborted) setListLoading(false); };
-    if (skillRanking) void resourceApi.overview(overviewQuery, controller.signal).then(result => {
+    if (overviewRanking) void resourceApi.overview(overviewQuery, controller.signal).then(result => {
       setOverview(result); if (result.favoriteIds) setStatus(current => current ? { ...current, favoriteIds: result.favoriteIds! } : current);
-    }).catch(failure => { if (!isAborted(failure)) setError(errorMessage(failure)); }).finally(done);
-    else if (route.tab === "usage") void resourceApi.usage(query, controller.signal).then(result => {
-      setUsage(result); if (result.favoriteIds) setStatus(current => current ? { ...current, favoriteIds: result.favoriteIds! } : current);
     }).catch(failure => { if (!isAborted(failure)) setError(errorMessage(failure)); }).finally(done);
     else void resourceApi.local(localQuery, controller.signal).then(setLocal).catch(failure => { if (!isAborted(failure)) setError(errorMessage(failure)); }).finally(done);
     return () => controller.abort();
-  }, [active, query, localQuery, overviewQuery, skillRanking, route.tab, reload, invalidTime]);
+  }, [active, query, localQuery, overviewQuery, overviewRanking, route.tab, reload, invalidTime]);
   useEffect(() => {
     if (!active || route.tab === "usage" || route.tab === "local") return;
     const controller = new AbortController(); setListLoading(true); setError(null);
@@ -298,13 +295,12 @@ export default function Resources({ active, onSession }: { active: boolean; onSe
     if (!active) return;
     if (!route.id || invalidTime || route.tab !== "usage" && route.tab !== "local") { setUsageDetail(null); setOverviewDetail(null); setLocalDetail(null); setDetailLoading(false); return; }
     const controller = new AbortController(); setDetailLoading(true); setDetailError(null); setUsageDetail(null); setOverviewDetail(null); setLocalDetail(null);
-    const task = skillRanking ? resourceApi.overviewDetail(route.id, { ...scopeQuery, lowSessions: route.low, inactiveDays: route.inactive }, controller.signal).then(result => { setOverviewDetail(result); setUsageDetail(result.history); if (result.favoriteIds) setStatus(current => current ? { ...current, favoriteIds: result.favoriteIds! } : current); })
-      : route.tab === "usage" ? resourceApi.usageDetail(route.id, scopeQuery, controller.signal).then(setUsageDetail)
+    const task = overviewRanking ? resourceApi.overviewDetail(route.id, { ...scopeQuery, lowSessions: route.low, inactiveDays: route.inactive }, controller.signal).then(result => { setOverviewDetail(result); setUsageDetail(result.history); if (result.favoriteIds) setStatus(current => current ? { ...current, favoriteIds: result.favoriteIds! } : current); })
       : resourceApi.localDetail(route.id, { ...scopeQuery, lowSessions: route.low, inactiveDays: route.inactive }, controller.signal).then(setLocalDetail);
     void task.catch(failure => { if (!isAborted(failure)) setDetailError(errorMessage(failure)); }).finally(() => { if (!controller.signal.aborted) setDetailLoading(false); });
     return () => controller.abort();
-  }, [active, route.id, route.tab, scopeQuery, skillRanking, route.low, route.inactive, reload, invalidTime]);
-  const evidenceId = skillRanking ? usageDetail?.resource.identity.id : route.id;
+  }, [active, route.id, route.tab, scopeQuery, overviewRanking, route.low, route.inactive, reload, invalidTime]);
+  const evidenceId = overviewRanking ? usageDetail?.resource.identity.id : route.id;
   useEffect(() => {
     if (!active || !evidenceId || route.tab !== "usage" || invalidTime) { setEvidence(null); setEvidenceLoading(false); return; }
     const controller = new AbortController(); setEvidenceLoading(true); setEvidenceError(null);
@@ -381,23 +377,22 @@ export default function Resources({ active, onSession }: { active: boolean; onSe
     finally { setApplying(false); }
   };
   const reset = () => {
-    const defaults = { ...readRoute(), client: "all", project: "all", window: "all", from: "", to: "", q: "", sort: "sessions", order: "desc" as const, candidate: "all" as const, low: 2, inactive: 90, favorite: false, page: 1, pageSize: 20 };
+    const defaults = { ...readRoute(), client: "all", project: "all", window: "all", from: "", to: "", q: "", sort: route.kind === "mcp" ? "calls" : "sessions", order: "desc" as const, candidate: "all" as const, low: 2, inactive: 90, favorite: false, page: 1, pageSize: 20 };
     setQueryText(""); update(defaults);
   };
   const projectOptions = [{ value: "all", label: "全部项目" }, { value: "none", label: "无项目" }, ...(status?.projects ?? []).map(path => ({ value: path, label: shortPath(path), description: path }))];
   const historyView = route.tab === "usage" || route.tab === "local";
   const filters = <div className="resource-filter-content" id={compact ? undefined : "resource-filter-content"}>
-    <div className="resource-field"><span>{skillRanking ? "Agent" : "客户端"}</span><FilterSelect label={skillRanking ? "资源Agent" : "资源客户端"} value={route.client} options={[{ value: "all", label: skillRanking ? "全部 Agent" : "全部客户端" }, ...CLIENTS.map(client => ({ value: client.id, label: client.name }))]} onChange={value => filter({ client: value })} /></div>
-    {!skillRanking && <div className="resource-field"><span>项目</span><ProjectPicker value={route.project} options={projectOptions} onChange={value => filter({ project: value })} /></div>}
+    <div className="resource-field"><span>{overviewRanking ? "Agent" : "客户端"}</span><FilterSelect label={overviewRanking ? "资源Agent" : "资源客户端"} value={route.client} options={[{ value: "all", label: overviewRanking ? "全部 Agent" : "全部客户端" }, ...CLIENTS.map(client => ({ value: client.id, label: client.name }))]} onChange={value => filter({ client: value })} /></div>
+    {!overviewRanking && <div className="resource-field"><span>项目</span><ProjectPicker value={route.project} options={projectOptions} onChange={value => filter({ project: value })} /></div>}
     {historyView && <><div className="resource-field"><span>使用时间</span><FilterSelect label="资源使用时间" value={route.window} options={[{ value: "all", label: "全部历史" }, { value: "7", label: "近 7 天" }, { value: "30", label: "近 30 天" }, { value: "90", label: "近 90 天" }, { value: "custom", label: "自定义日期" }]} onChange={value => { setTimeAnchor(Date.now()); filter({ window: value }); }} /></div>
       {route.window === "custom" && <div className="resource-date-fields"><div className="resource-field"><span>从</span><DatePicker label="资源开始日期" value={route.from} onChange={value => filter({ from: value })} /></div><div className="resource-field"><span>到</span><DatePicker label="资源结束日期" value={route.to} onChange={value => filter({ to: value })} /></div></div>}
       <div className="resource-field"><span>排序</span><FilterSelect label="资源排序" value={route.sort} options={[{ value: "sessions", label: "使用会话数" }, { value: "calls", label: "调用次数" }, ...(route.kind === "skill" ? [{ value: "reads", label: "读取次数" }] : []), { value: "recent", label: "最近使用" }, { value: "name", label: "名称" }]} onChange={value => filter({ sort: value, order: value === "name" ? "asc" : "desc" })} /></div>
       <div className="resource-field"><span>排序方向</span><FilterSelect label="资源排序方向" value={route.order} options={[{ value: "desc", label: "降序" }, { value: "asc", label: "升序" }]} onChange={value => filter({ order: value as ResourceRoute["order"] })} /></div>
     </>}
-    {route.tab === "usage" && !skillRanking && <label className="resource-checkbox"><input type="checkbox" checked={route.favorite} onChange={event => filter({ favorite: event.target.checked })} /><Star size={14} />仅收藏</label>}
     {route.tab === "local" && <><div className="resource-field"><span>整理候选</span><FilterSelect label="资源整理候选" value={route.candidate === "used" ? "all" : route.candidate} options={route.kind === "mcp" ? candidates.filter(candidate => candidate.value !== "duplicate") : candidates} onChange={value => filter({ candidate: value as ResourceCandidate })} /></div>
     </>}
-    {(route.tab === "local" || skillRanking) && <>
+    {(route.tab === "local" || overviewRanking) && <>
       {route.candidate === "low" && <label className="resource-field">使用会话数不超过<input type="number" min="1" max="10000" aria-label="低频使用会话阈值" value={route.low} onChange={event => { const value = Number(event.target.value); if (Number.isSafeInteger(value) && value > 0 && value <= 10000) filter({ low: value }); }} /></label>}
       {route.candidate === "old" && <label className="resource-field">未使用天数至少<input type="number" min="1" max="3650" aria-label="长期未用天数阈值" value={route.inactive} onChange={event => { const value = Number(event.target.value); if (Number.isSafeInteger(value) && value > 0 && value <= 3650) filter({ inactive: value }); }} /></label>}
     </>}
@@ -413,7 +408,7 @@ export default function Resources({ active, onSession }: { active: boolean; onSe
       <p className="resource-path">{row.body.targetPath ?? row.entries[0]?.entryPath ?? "本体路径未知"}</p>
       <div className="resource-tags"><span>{[...new Set(row.entries.map(entry => clientName(entry.client)))].join(" · ") || "Agent 未记录"}</span><span>{fmt(row.entries.length)} 个入口</span>{row.protected && <span>受保护</span>}</div>
       <div className="resource-entry-actions"><button className="button" aria-label={`查看${row.body.name}的本地本体 ${index + 1}`} onClick={() => showLocal(row.body.id)}>查看本地入口<CaretRight size={14} /></button></div>
-    </div>) : <ResourceEmpty>当前清单没有此 Skill 的本地本体</ResourceEmpty>}
+    </div>) : <ResourceEmpty>{route.kind === "skill" ? "当前清单没有此 Skill 的本地本体" : "当前清单没有此 MCP 的本地注册"}</ResourceEmpty>}
   </section>;
   const detail = <>
     {detailLoading ? <div role="status" className="resource-loading">正在读取资源详情…</div> : detailError ? <div className="resource-alert" role="alert">{detailError}<button className="text-button" onClick={() => setReload(value => value + 1)}>重试</button></div> : usageDetail ? <>
@@ -422,9 +417,9 @@ export default function Resources({ active, onSession }: { active: boolean; onSe
       {usageDetail.resource.identity.path && <p className="resource-path">{usageDetail.resource.identity.path}</p>}
       <Stats stats={overviewDetail ? overviewDetail.resource.stats : usageDetail.resource.stats} kind={route.kind} /><p className="resource-last-used">最近使用 · {dateLabel((overviewDetail ? overviewDetail.resource.stats : usageDetail.resource.stats)?.lastUsedAt ?? undefined)}</p>
       <Trend rows={usageDetail.trend} timeZone={usageDetail.timeZone} />
-      <Distribution rows={usageDetail.clients} title={route.kind === "skill" ? "Agent 分布" : "客户端分布"} label={value => value ? clientName(value as Client) : "Agent 未记录"} />
+      <Distribution rows={usageDetail.clients} title="Agent 分布" label={value => value ? clientName(value as Client) : "Agent 未记录"} />
       <Distribution rows={usageDetail.projects} title="项目分布" label={value => value ? shortPath(value) : "无项目"} />
-      {route.kind === "skill" && <details className="resource-data-details"><summary>历史来源 · {fmt(usageDetail.origins.length)} 个</summary><div className="resource-origin-list">{usageDetail.origins.map(origin => <div key={origin.id}><strong>{clientName(origin.client)}</strong><span title={origin.project}>{origin.project ? shortPath(origin.project) : "无项目"}</span><p className="resource-path">{origin.path ?? "路径未记录"}</p></div>)}</div></details>}
+      <details className="resource-data-details"><summary>历史来源 · {fmt(usageDetail.origins.length)} 个</summary><div className="resource-origin-list">{usageDetail.origins.map(origin => <div key={origin.id}><strong>{clientName(origin.client)}</strong><span title={origin.project}>{origin.project ? shortPath(origin.project) : "无项目"}</span><p className="resource-path">{origin.path ?? "路径未记录"}</p></div>)}</div></details>
       {route.kind === "mcp" && <section className="resource-detail-section"><header><h3>工具调用</h3><span>{fmt(usageDetail.tools.length)} 个工具</span></header><div className="resource-tool-list">{usageDetail.tools.map(tool => <button key={tool.name} className={route.tool === tool.name ? "is-selected" : ""} aria-pressed={route.tool === tool.name} onClick={() => update({ tool: route.tool === tool.name ? "" : tool.name, evidencePage: 1 })}><strong>{tool.name}</strong><span>{fmt(tool.stats.mcpCalls)} 次</span><small>失败 {fmt(tool.stats.results.failure)} · 未知 {fmt(tool.stats.results.unknown)} · {tool.stats.duration.samples ? `${Math.round(tool.stats.duration.averageMs!)} ms / ${fmt(tool.stats.duration.samples)} 样本` : "耗时未记录"}</small></button>)}</div></section>}
       <section className="resource-detail-section"><header><h3>{route.tool ? `${route.tool} 的证据` : "使用证据"}</h3>{route.tool && <button className="text-button" onClick={() => update({ tool: "", evidencePage: 1 })}>全部工具</button>}</header>
         {evidenceLoading ? <div role="status" className="resource-loading">正在读取使用证据…</div> : evidenceError ? <div role="alert" className="resource-alert">{evidenceError}</div> : evidence?.events.length ? <>
@@ -437,7 +432,7 @@ export default function Resources({ active, onSession }: { active: boolean; onSe
     </> : overviewDetail ? <>
       <div className="resource-detail-heading"><div><span>{usageAgentLabel(overviewDetail.resource)}</span><h2>{overviewDetail.resource.identity.name}</h2></div><FavoriteButton name={overviewDetail.resource.identity.name} favorite={overviewDetail.resource.favorite} disabled={favoritePending === route.id} onClick={() => void favorite(overviewDetail.resource.identity.id, overviewDetail.resource.favorite)} /></div>
       <div className="resource-tags"><span className={overviewDetail.resource.observation === "unknown" || overviewDetail.resource.observation === "insufficient" ? "is-warning" : ""}>{overviewObservationNames[overviewDetail.resource.observation]}</span>{overviewDetail.resource.protected && <span><ShieldCheck size={12} />受保护</span>}</div>
-      <Stats stats={overviewDetail.resource.stats} kind="skill" />
+      <Stats stats={overviewDetail.resource.stats} kind={route.kind} />
       {overviewLocal}
     </> : localDetail ? <>
       <div className="resource-detail-heading"><div><span>{route.kind === "skill" ? "本地 Skill" : "本地 MCP 注册"}</span><h2>{localDetail.row.body.name}</h2></div><FavoriteButton name={localDetail.row.body.name} favorite={!!status?.favoriteIds.includes(route.id)} disabled={favoritePending === route.id || !status} onClick={() => void favorite(route.id)} /></div>
@@ -470,31 +465,26 @@ export default function Resources({ active, onSession }: { active: boolean; onSe
       </aside>
       <main className="resources-main">
         <header className="resources-heading"><div><h1>资源管理</h1></div><div className="resources-heading-actions"><button className="icon-button resource-mobile-filter" aria-label="打开资源筛选" onClick={() => setFiltersOpen(true)}><Funnel size={18} /></button><button className="button" disabled={refreshing} onClick={() => void refresh()}><ArrowClockwise size={15} className={refreshing ? "spinning" : ""} />{refreshing ? "正在盘点" : "刷新清单"}</button></div></header>
-        <div className="resource-kind-tabs" role="group" aria-label="资源类型">{(["skill", "mcp"] as const).map(kind => <button key={kind} aria-pressed={route.kind === kind} className={route.kind === kind ? "is-selected" : ""} onClick={() => update({ kind, id: "", page: 1, tool: "", candidate: kind === "mcp" && route.candidate === "duplicate" ? "all" : route.candidate, sort: route.sort === "reads" && kind === "mcp" ? "sessions" : route.sort })}>{kind === "skill" ? "Skill" : "MCP"}</button>)}<UsageHelp /></div>
-        <nav className="resource-view-tabs" aria-label="资源视图">{tabs.map(tab => <button key={tab.value} aria-current={route.tab === tab.value ? "page" : undefined} onClick={() => update({ tab: tab.value, id: "", page: 1, tool: "" }, true)}>{tab.value === "usage" && route.kind === "skill" ? "Skill 总览" : tab.label}</button>)}</nav>
+        <div className="resource-kind-tabs" role="group" aria-label="资源类型">{(["skill", "mcp"] as const).map(kind => <button key={kind} aria-pressed={route.kind === kind} className={route.kind === kind ? "is-selected" : ""} onClick={() => update({ kind, id: "", page: 1, tool: "", candidate: kind === "mcp" && route.candidate === "duplicate" ? "all" : route.candidate, sort: kind === route.kind ? route.sort : kind === "mcp" ? "calls" : "sessions", order: kind === route.kind ? route.order : "desc" })}>{kind === "skill" ? "Skill" : "MCP"}</button>)}<UsageHelp kind={route.kind} /></div>
+        <nav className="resource-view-tabs" aria-label="资源视图">{tabs.map(tab => <button key={tab.value} aria-current={route.tab === tab.value ? "page" : undefined} onClick={() => update({ tab: tab.value, id: "", page: 1, tool: "" }, true)}>{tab.value === "usage" ? overviewLabel : tab.label}</button>)}</nav>
         <div className="resource-list-toolbar"><label className="resource-search"><MagnifyingGlass size={16} /><input aria-label="搜索资源名称或路径" value={route.q} placeholder="搜索资源名称或路径" onChange={event => filter({ q: event.target.value })} />{route.q && <button className="icon-button" aria-label="清空资源搜索" onClick={() => filter({ q: "" })}><X size={14} /></button>}</label>
-          {skillRanking && !listLoading && overview && <span>{fmt(overview.total)} 个 Skill</span>}{route.tab === "usage" && !skillRanking && !listLoading && usage && <span>{fmt(usage.total)} 个资源</span>}{route.tab === "local" && !listLoading && local && <span>{fmt(local.total)} 个资源</span>}
+          {overviewRanking && !listLoading && overview && <span>{fmt(overview.total)} {route.kind === "skill" ? "个 Skill" : "个 MCP"}</span>}{route.tab === "local" && !listLoading && local && <span>{fmt(local.total)} 个资源</span>}
           {route.tab === "operations" && !listLoading && operations && <span>{fmt(operations.total)} 条操作</span>}{!historyView && route.tab !== "operations" && !listLoading && archives && <span>{fmt(archives.total)} 个资源</span>}
         </div>
         {invalidTime && <div className="resource-alert" role="alert">开始日期不能晚于结束日期</div>}
         {error && <div className="resource-alert" role="alert">{error}<button className="text-button" onClick={() => setReload(value => value + 1)}>重试</button></div>}
         {feedback && <div className="resource-feedback" role="status">{feedback}<button className="icon-button" aria-label="关闭资源操作反馈" onClick={() => setFeedback(null)}><X size={14} /></button></div>}
-        {route.tab === "usage" && !skillRanking && usage && !listLoading && <div className="resource-range-summary"><span><strong>{fmt(usage.stats.sessions)}</strong> 个使用会话</span><span><strong>{fmt(usage.stats.events)}</strong> 次活动</span>{usage.coverage.partial && <span className="resource-state is-warning">部分记录</span>}{usage.coverage.missingTimeEvents > 0 && <span className="resource-state is-warning">{fmt(usage.coverage.missingTimeEvents)} 条时间缺失</span>}</div>}
-        {skillRanking && overview && !listLoading && <>
-          <div className="resource-quick-filters" role="group" aria-label="Skill 快速筛选">{overviewCandidates.map(candidate => <button key={candidate.value} aria-pressed={route.candidate === candidate.value || candidate.value === "all" && !overviewCandidates.some(item => item.value === route.candidate)} onClick={() => filter({ candidate: candidate.value, favorite: false })}>{candidate.label}<strong>{fmt(overview.counts[candidate.value])}</strong></button>)}</div>
+        {overviewRanking && overview && !listLoading && <>
+          <div className="resource-quick-filters" role="group" aria-label={`${route.kind === "skill" ? "Skill" : "MCP"} 快速筛选`}>{overviewCandidates.map(candidate => <button key={candidate.value} aria-pressed={route.candidate === candidate.value || candidate.value === "all" && !overviewCandidates.some(item => item.value === route.candidate)} onClick={() => filter({ candidate: candidate.value, favorite: false })}>{candidate.label}<strong>{fmt(overview.counts[candidate.value])}</strong></button>)}</div>
           {(overview.partial || !!overview.coverage?.missingTimeEvents) && <div className="resource-range-summary">{overview.partial && <span className="resource-state is-warning">部分来源或记录</span>}{!!overview.coverage?.missingTimeEvents && <span className="resource-state is-warning">{fmt(overview.coverage.missingTimeEvents)} 条时间缺失</span>}</div>}
         </>}
         {route.tab === "local" && local?.partial && !listLoading && <div className="resource-range-summary"><span className="resource-state is-warning">部分来源未读取</span></div>}
         <div className="resource-list-scroll" ref={listScroll} aria-busy={listLoading}>
-          {listLoading ? <div role="status" className="resource-loading">正在读取资源…</div> : invalidTime ? null : skillRanking ? overview?.resources.length ? <OverviewTable rows={overview.resources} route={route} onSort={sort} onSelect={select} onFavorite={(id, current) => void favorite(id, current)} favoritePending={favoritePending} /> : <ResourceEmpty>没有匹配的 Skill</ResourceEmpty> : route.tab === "usage" ? usage?.resources.length ? <div className="resource-rows">{usage.resources.map(row => <div className={`resource-row${route.id === row.identity.id ? " is-selected" : ""}`} key={row.identity.id}>
-            <button className="resource-row-main" onClick={() => select(row.identity.id)} aria-label={`查看${row.identity.name}的使用详情`}><div className="resource-row-heading"><strong>{row.identity.name}</strong><span>{usageAgentLabel(row)}</span></div>{route.kind !== "skill" && <div className="resource-row-subtitle" title={row.identity.path ?? row.identity.project}>{row.identity.path ?? (row.identity.project ? shortPath(row.identity.project) : "无项目")}</div>}<div className="resource-row-metrics"><span><b>{fmt(row.stats.sessions)}</b> 会话</span><span><b>{fmt(route.kind === "skill" ? row.stats.explicitCalls : row.stats.mcpCalls)}</b> 调用</span>{route.kind === "skill" && <span><b>{fmt(row.stats.successfulReads)}</b> 读取</span>}<span>{dateLabel(row.stats.lastUsedAt ?? undefined)}</span></div><div className="resource-tags">{row.association.state !== "linked" && <span className="is-warning">{associationNames[row.association.state]}</span>}{row.stats.results.unknown > 0 && <span>结果未知 {fmt(row.stats.results.unknown)}</span>}</div></button>
-            <FavoriteButton name={row.identity.name} favorite={row.favorite} disabled={favoritePending === row.identity.id} onClick={() => void favorite(row.identity.id, row.favorite)} />
-          </div>)}</div> : <ResourceEmpty>没有匹配的使用记录</ResourceEmpty> : route.tab === "local" ? local?.rows.length ? <div className="resource-rows">{local.rows.map(row => <div className={`resource-row${route.id === row.body.id ? " is-selected" : ""}`} key={row.body.id}>
+          {listLoading ? <div role="status" className="resource-loading">正在读取资源…</div> : invalidTime ? null : overviewRanking ? overview?.resources.length ? <OverviewTable rows={overview.resources} route={route} onSort={sort} onSelect={select} onFavorite={(id, current) => void favorite(id, current)} favoritePending={favoritePending} /> : <ResourceEmpty>没有匹配的{route.kind === "skill" ? " Skill" : " MCP"}</ResourceEmpty> : route.tab === "local" ? local?.rows.length ? <div className="resource-rows">{local.rows.map(row => <div className={`resource-row${route.id === row.body.id ? " is-selected" : ""}`} key={row.body.id}>
             <button className="resource-row-main" onClick={() => select(row.body.id)} aria-label={`查看${row.body.name}的本地详情`}><div className="resource-row-heading"><strong>{row.body.name}</strong><span>{fmt(row.entries.length)} 个入口</span></div><div className="resource-row-subtitle" title={row.body.targetPath}>{row.body.targetPath ?? row.entries[0]?.entryPath}</div><div className="resource-row-metrics"><span>{[...new Set(row.entries.map(entry => clientName(entry.client)))].join(" · ")}</span>{row.usage && <span><b>{fmt(row.usage.sessions)}</b> 使用会话</span>}</div><div className="resource-tags"><span className={row.observation === "recorded" ? "" : "is-warning"}>{observationLabel(row)}</span>{row.protected && <span><ShieldCheck size={12} />受保护</span>}{row.favorite && !status?.favoriteIds.includes(row.body.id) && <span>关联收藏保护</span>}{row.entries.some(entry => !entry.capabilities.standby && !entry.capabilities.disable && !entry.capabilities.trash) && <span>只读</span>}{row.candidates.includes("broken") && <span className="is-warning">断链／缺失</span>}{row.candidates.includes("duplicate") && <span>SKILL.md 相同</span>}</div></button><FavoriteButton name={row.body.name} favorite={!!status?.favoriteIds.includes(row.body.id)} disabled={favoritePending === row.body.id || !status} onClick={() => void favorite(row.body.id)} />
           </div>)}</div> : <ResourceEmpty>没有匹配的本地资源</ResourceEmpty> : route.tab === "operations" ? operations?.operations.length ? <div className="resource-rows">{operations.operations.map(operation => <div className={`resource-row${route.id === operation.id ? " is-selected" : ""}`} key={operation.id}><button className="resource-row-main" aria-label={`查看${operation.name}的${actionNames[operation.action]}记录`} onClick={() => select(operation.id)}><div className="resource-row-heading"><strong>{operation.name}</strong><span>{actionNames[operation.action]}</span></div><div className="resource-row-metrics"><span>{clientName(operation.resource.client)}</span><span>{dateLabel(operation.createdAt)}</span></div><div className="resource-tags"><span className={operation.status === "success" ? "" : "is-warning"}>{operationStatusNames[operation.status]}</span><span>{operation.clientEffect === "pending_reload" ? "待重新加载" : "客户端生效状态未知"}</span></div></button></div>)}</div> : <ResourceEmpty>没有匹配的操作记录</ResourceEmpty> : archives?.archives.length ? <div className="resource-rows">{archives.archives.map(archive => <div className={`resource-row${route.id === archive.id ? " is-selected" : ""}`} key={archive.id}><button className="resource-row-main" aria-label={`查看${archive.entry.name}的恢复记录`} onClick={() => select(archive.id)}><div className="resource-row-heading"><strong>{archive.entry.name}</strong><span>{clientName(archive.entry.client)}</span></div><div className="resource-row-subtitle" title={archive.originalPath}>{archive.originalPath}</div><div className="resource-row-metrics"><span>{dateLabel(archive.createdAt)}</span></div><div className="resource-tags"><span>{archiveNames[archive.state]}</span><span className={!archive.restorable ? "is-warning" : ""}>{archive.restorable ? "可恢复" : "恢复材料不可用"}</span>{archive.operationStatus === "partial" && <span className="is-warning">部分完成</span>}</div></button></div>)}</div> : <ResourceEmpty>当前范围没有{tabs.find(tab => tab.value === route.tab)?.label}资源</ResourceEmpty>}
         </div>
-        {skillRanking && overview && !listLoading && <ResourcePagination page={overview.page} total={overview.total} pageSize={overview.pageSize} label="Skill 总览" onPageSizeChange={pageSize => filter({ pageSize })} onChange={pageChange} />}
-        {route.tab === "usage" && !skillRanking && usage && !listLoading && <ResourcePagination page={usage.page} total={usage.total} pageSize={usage.pageSize} label="资源排行" onPageSizeChange={pageSize => filter({ pageSize })} onChange={pageChange} />}
+        {overviewRanking && overview && !listLoading && <ResourcePagination page={overview.page} total={overview.total} pageSize={overview.pageSize} label={overviewLabel} onPageSizeChange={pageSize => filter({ pageSize })} onChange={pageChange} />}
         {route.tab === "local" && local && !listLoading && <ResourcePagination page={local.page} total={local.total} pageSize={local.pageSize} label="本地资源" onPageSizeChange={pageSize => filter({ pageSize })} onChange={pageChange} />}
         {route.tab === "operations" && operations && !listLoading && <ResourcePagination page={operations.page} total={operations.total} pageSize={operations.pageSize} label="操作记录" onPageSizeChange={pageSize => filter({ pageSize })} onChange={pageChange} />}
         {!historyView && route.tab !== "operations" && archives && !listLoading && <ResourcePagination page={archives.page} total={archives.total} pageSize={archives.pageSize} label="恢复记录" onPageSizeChange={pageSize => filter({ pageSize })} onChange={pageChange} />}

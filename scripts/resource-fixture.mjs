@@ -1,4 +1,4 @@
-import { mkdir, symlink, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, readFile, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
 /** 人工资源与历史：仅在调用方创建的隔离目录内使用。 */
@@ -71,4 +71,46 @@ export async function skillRankingFixture(fixture, claudeHistory, secondProject)
   await writeFile(join(fixture.history, "ranking-guide.jsonl"), records.map(record => JSON.stringify(record)).join("\n") + "\n");
   await writeFile(join(claudeHistory, "ranking-guide.jsonl"), claudeRecords.map(record => JSON.stringify(record)).join("\n") + "\n");
   return { codexGuide, claudeGuide, retiredGuide };
+}
+
+/** 同名 MCP 的不同客户端注册与调用，不启动实际服务。 */
+export async function mcpOverviewFixture(fixture, claudeHistory, secondProject, count = 105) {
+  const claudeConfig = join(fixture.userHome, ".claude.json");
+  const config = JSON.parse(await readFile(claudeConfig, "utf8"));
+  config.mcpServers.sample = { command: "example-claude-service", env: { TOKEN: "synthetic-mcp-secret" } };
+  await writeFile(claudeConfig, JSON.stringify(config, null, 2));
+  for (const project of [fixture.project, secondProject]) {
+    await writeFile(join(project, ".mcp.json"), JSON.stringify({ mcpServers: { sample: { url: "https://example.invalid/project-mcp" } } }, null, 2));
+  }
+  let additions = '\n[mcp_servers.mcp-unused]\ncommand = "example-unused-service"\n[mcp_servers.mcp-new]\ncommand = "example-new-service"\n';
+  for (let index = 0; index < count; index++) additions += `\n[mcp_servers.mcp-sample-${String(index).padStart(3, "0")}]\ncommand = "example-service-${index}"\n`;
+  await appendFile(fixture.configPath, additions);
+  const records = [
+    { type: "session_meta", timestamp: "2026-01-08T12:00:00Z", payload: { id: "mcp-codex-example", cwd: fixture.project, title: "MCP 总览人工调用" } },
+    { type: "response_item", timestamp: "2026-01-08T12:00:01Z", payload: { type: "message", role: "user", content: [{ type: "input_text", text: "检查人工 MCP 使用" }] } },
+  ];
+  for (let index = 0; index < 26; index++) {
+    const server = index < 25 ? "sample" : "retired-service";
+    const tool = index < 20 ? "lookup" : "search";
+    const timestamp = second => new Date(Date.UTC(2026, 0, 8, 12, 0, second)).toISOString();
+    records.push({ type: "response_item", timestamp: timestamp(index * 2 + 2), payload: { type: "function_call", name: `mcp__${server}__${tool}`, call_id: `mcp-overview-${index}`, arguments: "{}" } });
+    records.push({ type: "response_item", timestamp: timestamp(index * 2 + 3), payload: { type: "function_call_output", call_id: `mcp-overview-${index}`, output: `Exit code: ${index === 4 ? 1 : 0}\nOutput:\n人工 MCP 结果。\n` } });
+  }
+  records.push({ type: "response_item", timestamp: "2026-01-08T12:01:00Z", payload: { type: "message", role: "assistant", channel: "final", content: [{ type: "output_text", text: "人工 MCP 调用完成" }] } });
+  const claudeRecords = [
+    { type: "user", uuid: "mcp-claude-user", timestamp: "2026-01-09T12:00:00Z", sessionId: "mcp-claude-example", cwd: secondProject, message: { content: [{ type: "text", text: "使用人工 MCP" }] } },
+  ];
+  for (const [index, tool] of ["lookup", "search"].entries()) {
+    const timestamp = second => new Date(Date.UTC(2026, 0, 9, 12, 0, second)).toISOString();
+    const requestId = `mcp-claude-request-${index}`;
+    claudeRecords.push({ type: "assistant", uuid: requestId, timestamp: timestamp(index * 2 + 1), sessionId: "mcp-claude-example", cwd: secondProject,
+      message: { content: [{ type: "tool_use", id: `mcp-claude-call-${index}`, name: `mcp__sample__${tool}`, input: {} }] } });
+    claudeRecords.push({ type: "user", uuid: `mcp-claude-result-${index}`, sourceToolAssistantUUID: requestId, timestamp: timestamp(index * 2 + 2), sessionId: "mcp-claude-example", cwd: secondProject,
+      message: { content: [{ type: "tool_result", tool_use_id: `mcp-claude-call-${index}`, content: "人工 MCP 返回。", is_error: index === 1 }] } });
+  }
+  claudeRecords.push({ type: "assistant", uuid: "mcp-claude-final", timestamp: "2026-01-09T12:00:06Z", sessionId: "mcp-claude-example", cwd: secondProject,
+    message: { content: [{ type: "text", text: "人工 MCP 已使用" }] } });
+  await writeFile(join(fixture.history, "mcp-overview.jsonl"), records.map(record => JSON.stringify(record)).join("\n") + "\n");
+  await writeFile(join(claudeHistory, "mcp-overview.jsonl"), claudeRecords.map(record => JSON.stringify(record)).join("\n") + "\n");
+  return { claudeConfig };
 }

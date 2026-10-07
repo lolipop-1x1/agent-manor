@@ -10,7 +10,7 @@ import type { SessionMessage, SessionSourceMeta } from "../src/session-contracts
 import { StoreError } from "../src/index/store.js";
 import { parseSessionSource } from "../src/sessions/parser.js";
 import { SessionStore } from "../src/sessions/store.js";
-import { associateResourceHistory, emptyResourceUsageStats, listResourceUsage, localResourceUsage, resourceHistoryIdentity, resourceUsageDetail, resourceUsageEvidence } from "../src/resources/usage.js";
+import { aggregateResourceUsage, associateResourceHistory, emptyResourceUsageStats, listResourceUsage, localResourceUsage, resourceHistoryIdentity, resourceOverviewIdentity, resourceUsageDetail, resourceUsageEvidence } from "../src/resources/usage.js";
 
 const occurredAt = "2026-01-02T12:00:00Z";
 async function fixture(run: (store: SessionStore, directory: string) => Promise<void> | void): Promise<void> {
@@ -124,6 +124,73 @@ test("MCP 按服务器聚合并下钻工具，失败计使用，成功率和耗�
   assert.equal(detail.projects[0]?.stats.events, 3);
   assert.equal(resourceUsageEvidence(store, id, { tool: "lookup" }).total, 2);
   assert.equal(resourceUsageEvidence(store, id, { tool: "mcp__demo__lookup" }).total, 2);
+}));
+
+test("MCP 总览跨 Agent、项目和注册路径按完整名称聚合，会话取并集且旧来源保持精确", async () => fixture(store => {
+  const revisions = [source(store, meta("mcp-first"), [
+    message("mcp-first", 0, { resource: { kind: "mcp", server: "vendor/demo", name: "lookup", path: "/synthetic/a.json" }, status: "success", durationMs: 20 }),
+    message("mcp-first", 1, { resource: { kind: "mcp", server: "vendor/demo", name: "search", path: "/synthetic/b.json" }, status: "failure", durationMs: 40 }),
+  ]), source(store, meta("mcp-second", { client: "claude", project: "/synthetic/another-project" }), [
+    message("mcp-second", 0, { resource: { kind: "mcp", server: "vendor/demo", name: "lookup", path: "/synthetic/c.json" }, status: "success", durationMs: 0 }),
+  ]), source(store, meta("mcp-third", { project: undefined }), [
+    message("mcp-third", 0, { resource: { kind: "mcp", server: "other/demo", name: "lookup" } }),
+  ])];
+  store.publish(store.createJob().id, revisions, []);
+  const old = listResourceUsage(store, { kind: "mcp", pageSize: 200 });
+  assert.equal(old.total, 4);
+  const result = aggregateResourceUsage(store, { kind: "mcp" }, [], new Set(), true);
+  assert.equal(result.total, 2);
+  const row = result.resources.find(row => row.identity.name === "vendor/demo")!;
+  assert.equal(row.identity.grouping, "mcp");
+  assert.ok(row.identity.id.startsWith("resource:mcp:"));
+  assert.equal(row.identity.client, undefined);
+  assert.equal(row.identity.path, undefined);
+  assert.equal(row.stats.sessions, 2);
+  assert.equal(row.stats.mcpCalls, 3);
+  assert.deepEqual(row.stats.results, { success: 2, failure: 1, unknown: 0, recorded: 3, successRate: 2 / 3 });
+  assert.deepEqual(row.stats.duration, { samples: 3, totalMs: 60, averageMs: 20 });
+  const detail = resourceUsageDetail(store, row.identity.id);
+  assert.equal(detail.origins.length, 3);
+  assert.deepEqual(detail.resource.stats, row.stats);
+  assert.deepEqual(detail.tools.map(tool => [tool.name, tool.stats.mcpCalls]), [["lookup", 2], ["search", 1]]);
+  assert.equal(detail.clients.length, 2);
+  assert.equal(detail.projects.length, 2);
+  assert.equal(resourceUsageEvidence(store, row.identity.id).total, 3);
+  assert.equal(resourceUsageEvidence(store, row.identity.id, { tool: "lookup" }).total, 2);
+  assert.equal(resourceUsageEvidence(store, row.identity.id, { client: "claude" }).total, 1);
+  assert.equal(aggregateResourceUsage(store, { kind: "mcp", client: "claude" }, [], new Set(), true).resources[0]!.identity.id, row.identity.id);
+  assert.equal(aggregateResourceUsage(store, { kind: "mcp", project: "/synthetic/project" }, [], new Set(), true).resources[0]!.stats.sessions, 1);
+  for (const oldRow of old.resources) {
+    assert.equal(oldRow.identity.grouping, "source");
+    assert.equal(resourceUsageDetail(store, oldRow.identity.id).origins.length, 1);
+    assert.equal(resourceUsageEvidence(store, oldRow.identity.id).total, oldRow.stats.events);
+  }
+  const inherited = aggregateResourceUsage(store, { kind: "mcp", favorite: true }, [], new Set([detail.origins[0]!.id]), true);
+  assert.equal(inherited.total, 1);
+  assert.equal(inherited.resources[0]!.stats.mcpCalls, 3);
+  assert.deepEqual(listResourceUsage(store, { kind: "mcp", pageSize: 200 }), old);
+}));
+
+test("缺名 MCP 总览在无路径、同 Agent 与项目时仍按来源分开，详情和证据不串源", async () => fixture(store => {
+  const first = source(store, meta("unknown-mcp-a"), [message("unknown-mcp-a", 0, { resource: { kind: "mcp", name: "lookup" } })]);
+  const second = source(store, meta("unknown-mcp-b"), [message("unknown-mcp-b", 0, { resource: { kind: "mcp", name: "search" } })]);
+  store.publish(store.createJob().id, [first, second], []);
+  const old = listResourceUsage(store, { kind: "mcp" });
+  assert.equal(old.total, 1);
+  assert.equal(old.stats.mcpCalls, 2);
+  const overview = aggregateResourceUsage(store, { kind: "mcp" }, [], new Set(), true);
+  assert.equal(overview.total, 2);
+  assert.equal(overview.stats.sessions, 2);
+  assert.equal(new Set(overview.resources.map(row => row.identity.id)).size, 2);
+  for (const row of overview.resources) {
+    assert.equal(row.identity.grouping, "source");
+    assert.ok(row.identity.id.startsWith("resource:mcp-source:"));
+    const evidence = resourceUsageEvidence(store, row.identity.id);
+    assert.equal(evidence.total, 1);
+    assert.equal(resourceUsageDetail(store, row.identity.id).resource.stats.mcpCalls, 1);
+    assert.equal(resourceOverviewIdentity(resourceHistoryIdentity(evidence.events[0]!), evidence.events[0]!.source.sourceId).id, row.identity.id);
+  }
+  assert.equal(resourceUsageEvidence(store, old.resources[0]!.identity.id).total, 2);
 }));
 
 test("日期按事件时间筛选，保留缺失与无效时间，不用会话时间或结果时间补造", async () => fixture(store => {

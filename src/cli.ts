@@ -149,7 +149,7 @@ export function createProgram(): Command {
     .action(async (_options: Options, command: Command) => { await request(command, "/resources/status"); });
   resources.command("refresh").description("重新盘点已声明来源，不修改资源")
     .action(async (_options: Options, command: Command) => { await request(command, "/resources/refresh", "POST", {}); });
-  resourceFilters(resources.command("overview").description("Skill 总览：本地清单与历史使用"))
+  resourceFilters(resources.command("overview").description("Skill / MCP 总览：本地清单与历史使用"))
     .option("--candidate <filter>", "all、used、unused、low、old、review 或 favorite")
     .option("--low-sessions <number>", "低频会话数阈值，默认 2").option("--inactive-days <number>", "长期未用天数阈值，默认 90")
     .option("--favorite", "仅已收藏资源")

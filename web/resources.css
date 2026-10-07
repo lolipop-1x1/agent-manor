@@ -67,6 +67,7 @@
 .resource-quick-filters strong { font-weight: 500; font-variant-numeric: tabular-nums; }
 .resource-overview-scroll { width: 100%; max-width: 100%; overflow-x: auto; overscroll-behavior-x: contain; scrollbar-width: thin; }
 .resource-overview-table { width: 100%; min-width: 750px; border-collapse: collapse; font-size: 11px; }
+.resource-mcp-overview { min-width: 650px; }
 .resource-overview-table th, .resource-overview-table td { padding: 9px 10px; border-bottom: 1px solid var(--border); text-align: right; vertical-align: middle; font-variant-numeric: tabular-nums; }
 .resource-overview-table thead th { white-space: nowrap; color: var(--muted); background: var(--surface); font-weight: 500; }
 .resource-overview-table th:first-child { width: 210px; text-align: left; }

@@ -5,8 +5,8 @@ import type { ResourceUsageQuery, ResourceUsageResult } from "../resource-contra
 import { ServiceError } from "../service/input.js";
 import { StoreError } from "../index/store.js";
 import { scanResourceInventory } from "./inventory.js";
-import { aggregateResourceUsage, emptyResourceUsageStats, listResourceUsage, resourceUsageIdentity, localResourceUsage, resourceUsageDetail, resourceUsageEvidence } from "./usage.js";
-import { buildSkillOverview } from "./overview.js";
+import { aggregateResourceUsage, emptyResourceUsageStats, listResourceUsage, resourceOverviewIdentity, localResourceUsage, resourceUsageDetail, resourceUsageEvidence } from "./usage.js";
+import { buildResourceOverview } from "./overview.js";
 import { ResourceManager } from "./management.js";
 
 /** 共用服务边界：派生盘点可刷新，收藏和恢复材料由独立管理库保留。 */
@@ -40,14 +40,14 @@ export class ResourceService {
   }
   private async overviewData(query: ResourceOverviewQuery) {
     const inventory = await this.inventory();
-    const scope = { kind: "skill" as const, client: query.client, from: query.from, to: query.to,
+    const scope = { kind: query.kind ?? "skill", client: query.client, from: query.from, to: query.to,
       version: query.version ?? this.library.status().version };
     // 状态、排序和分页只改变视野；同一索引与盘点范围复用全量聚合。
     const key = JSON.stringify([scope, inventory.observedAt, this.manager.favorites(), query.lowSessions, query.inactiveDays]);
     if (this.overviewCache?.key === key) return this.overviewCache.value;
     const value = (async () => {
       let history: ResourceUsageResult | null = null;
-      try { history = aggregateResourceUsage(this.library, scope, inventory.entries, new Set(this.manager.favorites())); }
+      try { history = aggregateResourceUsage(this.library, scope, inventory.entries, new Set(this.manager.favorites()), true); }
       catch (error) { if (!(error instanceof StoreError) || error.code !== "ANALYSIS_NOT_READY") throw error; }
       const local = await this.localRows({ ...scope, lowSessions: query.lowSessions, inactiveDays: query.inactiveDays });
       return { history, local };
@@ -57,17 +57,18 @@ export class ResourceService {
   }
   async overview(query: ResourceOverviewQuery) {
     const { history, local } = await this.overviewData(query);
-    return { ...buildSkillOverview(history, local.rows, query, { observedAt: local.inventory.observedAt,
+    return { ...buildResourceOverview(history, local.rows, query, { observedAt: local.inventory.observedAt,
       partial: local.partial, favorites: new Set(this.manager.favorites()) }), favoriteIds: this.manager.favorites() };
   }
   async overviewDetail(id: string, query: ResourceOverviewQuery): Promise<ResourceOverviewDetail> {
     const { history, local } = await this.overviewData(query);
-    const all = buildSkillOverview(history, local.rows, { ...query, q: undefined, candidate: "all", favorite: false }, {
+    const kind = query.kind ?? "skill";
+    const all = buildResourceOverview(history, local.rows, { ...query, q: undefined, candidate: "all", favorite: false }, {
       observedAt: local.inventory.observedAt, partial: local.partial, favorites: new Set(this.manager.favorites()), unpaginated: true });
     const target = all.resources.find(row => row.identity.id === id);
-    if (target) return { resource: target, history: target.hasHistory ? resourceUsageDetail(this.library, id, { ...query, kind: "skill", project: undefined },
+    if (target) return { resource: target, history: target.hasHistory ? resourceUsageDetail(this.library, id, { ...query, kind, project: undefined },
       local.inventory.entries, new Set(this.manager.favorites())) : null, local: local.rows.filter(row => target.localBodyIds.includes(row.body.id)) };
-    const legacy = resourceUsageDetail(this.library, id, { ...query, kind: "skill", project: undefined }, local.inventory.entries, new Set(this.manager.favorites()));
+    const legacy = resourceUsageDetail(this.library, id, { ...query, kind, project: undefined }, local.inventory.entries, new Set(this.manager.favorites()));
     const bodyIds = new Set(local.inventory.entries.filter(entry => legacy.resource.association.entryIds.includes(entry.id)).map(entry => entry.bodyId));
     return { resource: { identity: legacy.resource.identity, stats: legacy.resource.stats.events ? legacy.resource.stats : null, clients: legacy.resource.clients,
       favorite: legacy.resource.favorite, protected: legacy.resource.favorite, observation: legacy.resource.stats.events ? "used" : "unknown",
@@ -83,7 +84,9 @@ export class ResourceService {
     if (!value && id.startsWith("resource:")) {
       try {
         const detail = resourceUsageDetail(this.library, id);
-        if (detail.resource.identity.grouping === "skill") for (const origin of detail.origins) this.manager.setFavorite(origin.id, false);
+        if (detail.resource.identity.grouping !== "source" || id.startsWith("resource:mcp-source:")) {
+          for (const origin of detail.origins) this.manager.setFavorite(origin.id, false);
+        }
       } catch (error) {
         if (!(error instanceof StoreError) || !["ANALYSIS_NOT_READY", "SOURCE_NOT_FOUND"].includes(error.code)) throw error;
       }
@@ -116,7 +119,7 @@ export class ResourceService {
       if (q && ![body.name, body.targetPath, ...entries.map(entry => entry.entryPath)].some(value => value?.toLocaleLowerCase().includes(q))) continue;
       const firstSeenAt = entries.map(entry => (entry as typeof entry & { firstSeenAt?: string }).firstSeenAt ?? entry.observedAt).sort()[0]!;
       const usage = history?.bodies.get(body.id);
-      const favorite = favoriteIds.has(body.id) || entries.some(entry => favoriteIds.has(entry.id) || favoriteIds.has(resourceUsageIdentity({
+      const favorite = favoriteIds.has(body.id) || entries.some(entry => favoriteIds.has(entry.id) || favoriteIds.has(resourceOverviewIdentity({
         id: entry.id, kind: entry.kind, name: entry.name, client: entry.client }).id)) || (usage?.favoriteIds.some(id => favoriteIds.has(id)) ?? false);
       const uncertain = !history || history.unscopedGaps || Boolean((query.from || query.to) && usage?.stats.missingTimeEvents) || entries.some(entry => entry.readState !== "present"
         || history.uncertainClients.includes(entry.client) || !history.clients.includes(entry.client)
@@ -173,12 +176,12 @@ export class ResourceService {
     const scanned = await this.scan();
     const favorites = new Set(this.manager.favorites());
     const snapshot = { ...scanned, entries: scanned.entries.map(entry => ({ ...entry,
-      favorite: "favorite" in entry && entry.favorite === true || favorites.has(resourceUsageIdentity({ id: entry.id, kind: entry.kind, name: entry.name, client: entry.client }).id) })) };
+      favorite: "favorite" in entry && entry.favorite === true || favorites.has(resourceOverviewIdentity({ id: entry.id, kind: entry.kind, name: entry.name, client: entry.client }).id) })) };
     if (![...favorites].some(id => id.startsWith("resource:"))) return snapshot;
     try {
       const history = localResourceUsage(this.library, {}, snapshot.entries);
       return { ...snapshot, entries: snapshot.entries.map(entry => ({ ...entry,
-        favorite: "favorite" in entry && entry.favorite === true || favorites.has(resourceUsageIdentity({ id: entry.id, kind: entry.kind, name: entry.name, client: entry.client }).id)
+        favorite: "favorite" in entry && entry.favorite === true || favorites.has(resourceOverviewIdentity({ id: entry.id, kind: entry.kind, name: entry.name, client: entry.client }).id)
           || (history.bodies.get(entry.bodyId)?.favoriteIds.some(id => favorites.has(id)) ?? false) })) };
     } catch (error) {
       if (!(error instanceof StoreError) || error.code !== "ANALYSIS_NOT_READY") throw error;

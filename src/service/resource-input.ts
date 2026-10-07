@@ -25,8 +25,7 @@ export function resourceOverviewQuery(raw: Record<string, unknown>): ResourceOve
   const candidate = textValue(raw.candidate, "candidate");
   if (candidate && !["all", "used", "unused", "low", "old", "review", "favorite"].includes(candidate)) throw new ServiceError("INVALID_INPUT", "未知 candidate");
   const query = resourceQuery({ ...raw, candidate: undefined, pageSize: raw.pageSize ?? "20" });
-  if (query.kind && query.kind !== "skill") throw new ServiceError("INVALID_INPUT", "总览只接受 Skill");
-  return { ...query, kind: "skill", project: undefined, candidate: candidate as ResourceOverviewQuery["candidate"] };
+  return { ...query, kind: query.kind ?? "skill", project: undefined, candidate: candidate as ResourceOverviewQuery["candidate"] };
 }
 
 export function resourceBody(body: unknown, allowed: readonly string[]): Record<string, unknown> {

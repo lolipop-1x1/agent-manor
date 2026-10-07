@@ -178,7 +178,61 @@ test("Skill 总览同时展示本地与历史，快筛计数先于分页，未�
   assert.equal(unused.total, all.counts.unused - 1);
   const preview = await apiRequest<ResourceManagementPreview>(service.instance, "/resources/preview", "POST", { action: "standby", entryId: detail.local[0]!.entries[0]!.id });
   assert.equal(preview.protected, true);
-  for (const query of ["candidate=broken", "kind=mcp", "order=random", "pageSize=0"]) await assert.rejects(apiRequest(service.instance, `/resources/overview?${query}`), { code: "INVALID_INPUT" });
+  for (const query of ["candidate=broken", "kind=unknown", "order=random", "pageSize=0"]) await assert.rejects(apiRequest(service.instance, `/resources/overview?${query}`), { code: "INVALID_INPUT" });
+}));
+
+test("MCP HTTP 总览包含本地注册与完整历史，收藏不合并管理对象且旧来源可达", async () => fixture(async (context, service) => {
+  const before = await apiRequest<ResourceUsageResult>(service.instance, "/resources/usage?kind=mcp");
+  const all = await apiRequest<ResourceOverviewResult>(service.instance, "/resources/overview?kind=mcp&project=/ignored/scope");
+  assert.equal(all.total, 3);
+  assert.equal(all.counts.used, 1);
+  assert.equal(all.counts.review, 2);
+  const sample = all.resources[0]!;
+  assert.equal(sample.identity.name, "sample");
+  assert.equal(sample.identity.grouping, "mcp");
+  assert.equal(sample.stats!.mcpCalls, 2);
+  assert.equal(sample.stats!.sessions, 1);
+  assert.equal(sample.localBodyIds.length, 1);
+  const detail = await apiRequest<ResourceOverviewDetail>(service.instance, `/resources/overview/${sample.identity.id}?kind=mcp`);
+  assert.equal(detail.local.length, 1);
+  assert.equal(detail.history!.tools.length, 2);
+  assert.equal(detail.history!.resource.stats.mcpCalls, 2);
+  assert.equal(detail.history!.origins.length, 1);
+  const evidence = await apiRequest<ResourceUsageEvidenceResult>(service.instance, `/resources/usage/${sample.identity.id}/evidence?kind=mcp&tool=lookup`);
+  assert.equal(evidence.total, 1);
+  const oldId = before.resources[0]!.identity.id;
+  assert.notEqual(oldId, sample.identity.id);
+  const oldDetail = await apiRequest<ResourceOverviewDetail>(service.instance, `/resources/overview/${oldId}?kind=mcp`);
+  assert.equal(oldDetail.resource.identity.grouping, "source");
+  assert.equal(oldDetail.history!.resource.stats.mcpCalls, 2);
+  await apiRequest(service.instance, "/resources/favorites", "POST", { id: oldId, value: true });
+  const inherited = await apiRequest<ResourceOverviewResult>(service.instance, "/resources/overview?kind=mcp&candidate=favorite");
+  assert.equal(inherited.total, 1);
+  assert.equal(inherited.resources[0]!.identity.id, sample.identity.id);
+  assert.equal(inherited.resources[0]!.favorite, true);
+  await apiRequest(service.instance, "/resources/favorites", "POST", { id: detail.local[0]!.body.id, value: true });
+  await apiRequest(service.instance, "/resources/favorites", "POST", { id: sample.identity.id, value: false });
+  const favorites = await apiRequest<ResourceStatus>(service.instance, "/resources/status");
+  assert.ok(!favorites.favoriteIds.includes(oldId));
+  assert.ok(favorites.favoriteIds.includes(detail.local[0]!.body.id));
+  const independent = await apiRequest<ResourceOverviewDetail>(service.instance, `/resources/overview/${sample.identity.id}?kind=mcp`);
+  assert.equal(independent.resource.favorite, false);
+  assert.equal(independent.resource.protected, true);
+  await apiRequest(service.instance, "/resources/favorites", "POST", { id: detail.local[0]!.body.id, value: false });
+  await apiRequest(service.instance, "/resources/favorites", "POST", { id: sample.identity.id, value: true });
+  const preview = await apiRequest<ResourceManagementPreview>(service.instance, "/resources/preview", "POST", {
+    entryId: detail.local[0]!.entries[0]!.id, action: "standby" });
+  assert.equal(preview.protected, true);
+  await apiRequest(service.instance, "/resources/favorites", "POST", { id: sample.identity.id, value: false });
+  assert.deepEqual(await apiRequest<ResourceUsageResult>(service.instance, "/resources/usage?kind=mcp"), before);
+  const management = new Database(join(context.home, "resources.sqlite"));
+  management.prepare("UPDATE resource_seen SET first_seen=?").run("2025-01-01T00:00:00Z");
+  management.close();
+  await apiRequest(service.instance, "/resources/refresh", "POST", {});
+  const unused = await apiRequest<ResourceOverviewResult>(service.instance, "/resources/overview?kind=mcp&candidate=unused");
+  assert.equal(unused.total, 1);
+  assert.ok(unused.resources.every(row => row.stats?.mcpCalls === 0 && row.observation === "unused"));
+  assert.equal((await apiRequest<ResourceOverviewDetail>(service.instance, `/resources/overview/${unused.resources[0]!.identity.id}?kind=mcp`)).history, null);
 }));
 
 test("同名历史归属不明时，不把较早的已关联使用当成确定长期未用", async () => fixture(async (context, service) => {
@@ -232,6 +286,12 @@ test("真实 CLI 通过同一服务查询、收藏、预览与确认，不另写
   assert.equal(overview.total, 1);
   assert.equal(overview.resources[0].stats.successfulReads, 1);
   assert.equal((await command(["detail", overview.resources[0].identity.id, "--view", "overview"])).local.length, 1);
+  const mcpOverview = await command(["overview", "--kind", "mcp", "--candidate", "used"]);
+  assert.equal(mcpOverview.total, 1);
+  assert.equal(mcpOverview.resources[0].stats.mcpCalls, 2);
+  const mcpId = mcpOverview.resources[0].identity.id;
+  assert.equal((await command(["detail", mcpId, "--view", "overview", "--kind", "mcp"])).history.tools.length, 2);
+  assert.equal((await command(["evidence", mcpId, "--kind", "mcp", "--tool", "lookup"])).total, 1);
   const local = await command(["local", "--kind", "skill", "--q", "guide"]);
   assert.equal(local.total, 1);
   const entry = local.rows[0].entries[0];

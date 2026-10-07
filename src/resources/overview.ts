@@ -1,7 +1,7 @@
 import type { Client } from "../clients.js";
 import type { ResourceUsageIdentity, ResourceUsageResult, ResourceUsageRow, ResourceUsageStats } from "../resource-contracts.js";
 import type { ResourceLocalRow, ResourceOverviewCandidate, ResourceOverviewQuery, ResourceOverviewResult, ResourceOverviewRow } from "../resource-service-contracts.js";
-import { emptyResourceUsageStats, resourceUsageIdentity } from "./usage.js";
+import { emptyResourceUsageStats, resourceOverviewIdentity } from "./usage.js";
 
 interface OverviewBucket {
   identity: ResourceUsageIdentity;
@@ -14,7 +14,7 @@ const dayMs = 86400_000;
 
 function localIdentity(row: ResourceLocalRow): ResourceUsageIdentity {
   const entry = row.entries[0]!;
-  return resourceUsageIdentity({ id: row.body.id, kind: row.body.kind, name: row.body.name,
+  return resourceOverviewIdentity({ id: row.body.id, kind: row.body.kind, name: row.body.name,
     path: row.body.targetPath, client: entry.client, project: entry.project });
 }
 
@@ -68,7 +68,7 @@ function matches(bucket: OverviewBucket, q: string): boolean {
 }
 
 function compare(left: ResourceOverviewRow, right: ResourceOverviewRow, query: ResourceOverviewQuery): number {
-  const sort = query.sort ?? "sessions";
+  const sort = query.sort ?? (query.kind === "mcp" ? "calls" : "sessions");
   const direction = (query.order ?? (sort === "name" ? "asc" : "desc")) === "asc" ? 1 : -1;
   if (sort === "name") return direction * left.identity.name.localeCompare(right.identity.name) || left.identity.id.localeCompare(right.identity.id);
   const metric = (row: ResourceOverviewRow): number | null => {
@@ -91,15 +91,16 @@ function positiveInteger(value: number | undefined, fallback: number): number {
 }
 
 /** 历史已按名称、Agent 和日期聚合；本地仅补充真实本体与观测状态，不累加使用统计。 */
-export function buildSkillOverview(history: ResourceUsageResult | null, localRows: readonly ResourceLocalRow[],
+export function buildResourceOverview(history: ResourceUsageResult | null, localRows: readonly ResourceLocalRow[],
   query: ResourceOverviewQuery, options: { observedAt: string; partial: boolean; favorites?: ReadonlySet<string>; now?: number; unpaginated?: boolean }): ResourceOverviewResult {
+  const kind = query.kind ?? "skill";
   const buckets = new Map<string, OverviewBucket>();
   for (const row of history?.resources ?? []) {
-    if (row.identity.kind !== "skill") continue;
+    if (row.identity.kind !== kind) continue;
     buckets.set(row.identity.id, { identity: row.identity, history: row, local: [] });
   }
   for (const row of localRows) {
-    if (row.body.kind !== "skill") continue;
+    if (row.body.kind !== kind) continue;
     const identity = localIdentity(row);
     let bucket = buckets.get(identity.id);
     if (!bucket) { bucket = { identity, local: [] }; buckets.set(identity.id, bucket); }
@@ -125,3 +126,5 @@ export function buildSkillOverview(history: ResourceUsageResult | null, localRow
     stats: history?.stats ?? null, coverage: history?.coverage ?? null, observedAt: options.observedAt, partial: options.partial,
     thresholds: { lowSessions: query.lowSessions ?? 2, inactiveDays: query.inactiveDays ?? 90 } };
 }
+
+export const buildSkillOverview = buildResourceOverview;

@@ -50,3 +50,9 @@
 用户已批准 Skill 总览、带计数的整理筛选、可排序表格和直接跳转分页。任务 [07](issues/07-skill-overview.md) 与 [08](issues/08-overview-table-pagination.md) 并行实施，[09](issues/09-overview-validation.md) 验证两者整合。
 
 三项任务均已完成。341 项自动化回归及 36 组真实 Chrome 通过；本机总览包含 639 个名称，原有 387 个历史名称统计保持一致。未知与观测不足继续列为待检查。两路审查问题已修复，具体结果见 [验收记录](../../docs/validation/resource-management.md)。
+
+## MCP 总览
+
+用户要求 MCP 沿用 Skill 总览，完成验证后直接推送。任务 [10](issues/10-mcp-overview.md) 与 [11](issues/11-mcp-overview-ui.md) 实现聚合及页面，[12](issues/12-mcp-overview-validation.md) 验证整合与交付。名称汇总只改变统计阅读，不改变注册、服务实例或管理身份。
+
+三项任务均已完成。346 项自动化回归及 44 组真实 Chrome 通过；本机只读核验 25 项总览覆盖全部 17 个本地注册，原 60 个来源与 5,144 条调用统计保持一致。两路审查完成，发现的验收脚本问题已修正；具体方法与边界见 [验收记录](../../docs/validation/resource-management.md)。
