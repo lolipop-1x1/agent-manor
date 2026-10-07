@@ -91,7 +91,9 @@ export async function refreshSessions(store: SessionStore, jobId: string, roots?
       const projectFingerprint = source.client === "codeflicker" ? `:project-v1:${createHash("sha256").update(JSON.stringify(projectMetadata ?? null)).digest("hex")}:execution-v2:attachments-v1:compression-v1` : "";
       const nativeModels = source.format === DESKTOP_FORMAT ? await desktopModels(source.path) : undefined;
       const desktopFingerprint = nativeModels ? `:desktop-v3:${source.cwd ?? ""}:${nativeModels.fingerprint}:${nativeModels.limited}` : "";
-      const metadataSuffix = `${titleFingerprint}${childTitleFingerprint}${projectFingerprint}${desktopFingerprint}`;
+      // 保留原生 Skill 目录的资源规则只失效桌面会话缓存，避免触发其他客户端重建。
+      const desktopResourceFingerprint = source.client === "codeflicker-desktop" ? ":skill-directory-v1" : "";
+      const metadataSuffix = `${titleFingerprint}${childTitleFingerprint}${projectFingerprint}${desktopFingerprint}${desktopResourceFingerprint}`;
       const metadataFingerprint = createHash("sha256").update(JSON.stringify({ rule: SESSION_INDEX_RULE_VERSION, source: location, metadataSuffix })).digest("hex");
       let stamp: string | undefined;
       try { stamp = await sourceQuickStamp(source); }

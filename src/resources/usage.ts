@@ -53,7 +53,8 @@ export function associateResourceHistory(identity: ResourceHistoryIdentity, entr
   if (!identity.path) return { state: "unassociated", entryIds: [], reason: "missing_path" };
   const candidates = entries.filter(entry => entry.kind === identity.kind && entry.client === identity.client
     && (entry.scope !== "project" || entry.project !== undefined && entry.project === identity.project)
-    && (identity.kind === "mcp" ? (entry.server ?? entry.name) === identity.server : entry.name === identity.name));
+    && (identity.kind === "mcp" ? (entry.server ?? entry.name) === identity.server : entry.name === identity.name
+      || ["codeflicker", "codeflicker-desktop"].includes(entry.client) && entry.nativeNames?.includes(identity.name)));
   const exact = candidates.filter(entry => normalizedPath(entry.entryPath) === identity.path);
   const matches = exact.length ? exact : candidates.filter(entry => entry.targetPath && normalizedPath(entry.targetPath) === identity.path);
   const entryIds = [...new Set(matches.map(entry => entry.id))].sort();

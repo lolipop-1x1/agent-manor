@@ -14,6 +14,8 @@ export interface ResourceManagementPreview {
   sourcePath: string;
   destinationPath?: string;
   affectedEntries: Pick<ResourceInventoryEntry, "id" | "name" | "client" | "scope" | "project" | "entryPath">[];
+  /** 当前所选入口被隔离后，可能重新可见的持久来源。 */
+  revealedEntries?: Pick<ResourceInventoryEntry, "name" | "client" | "scope" | "project" | "entryPath">[];
   referencesComplete: false;
   protected: boolean;
   protectionReasons: string[];

@@ -10,10 +10,12 @@ import { clientIds } from "../clients.js";
 import type { Client } from "../clients.js";
 import type { ResourceKind } from "../resource-contracts.js";
 import type { ResourceInventoryBody, ResourceInventoryEntry, ResourceInventoryGap, ResourceInventoryOptions,
-  ResourceInventorySnapshot, ResourceInventorySource, ResourceSourceFormat } from "../resource-inventory-contracts.js";
+  ResourceInventorySnapshot, ResourceInventorySource, ResourceSourceFormat, ResourceInventoryDiagnostic } from "../resource-inventory-contracts.js";
+import { codeflickerSkillState, compactCodeFlickerInventory, planCodeFlickerInventory, projectCodeFlickerEntries } from "./codeflicker-inventory.js";
+import type { InventorySourcePlan } from "./codeflicker-inventory.js";
 
 type ObjectValue = Record<string, unknown>;
-type SourcePlan = ResourceInventorySource & { keyPath?: string[]; flat?: boolean; nativeControl?: ResourceInventoryEntry["locator"]["nativeControl"]; controlPath?: string };
+type SourcePlan = InventorySourcePlan;
 const object = (value: unknown): ObjectValue | undefined => value !== null && typeof value === "object" && !Array.isArray(value) ? value as ObjectValue : undefined;
 const identity = (prefix: string, values: unknown[]): string => `${prefix}:${createHash("sha256").update(JSON.stringify(values)).digest("hex").slice(0, 32)}`;
 const hash = (value: string): string => createHash("sha256").update(value).digest("hex");
@@ -28,10 +30,12 @@ export async function scanResourceInventory(options: ResourceInventoryOptions = 
   const environment = options.environment ?? {};
   const projects = [...new Set((options.projects ?? []).filter(isAbsolute).map(path => resolve(path)))];
   const sources: SourcePlan[] = [], entries: ResourceInventoryEntry[] = [], gaps: ResourceInventoryGap[] = [];
+  const diagnostics: ResourceInventoryDiagnostic[] = [];
   const sourceKeys = new Set<string>();
   const add = (client: Client, kind: ResourceKind, path: string, format: ResourceSourceFormat, extra: Partial<SourcePlan> = {}): SourcePlan => {
     const scope = extra.project ? "project" : "user";
-    const parts = [client, kind, resolve(path), scope, extra.project, extra.keyPath, extra.owner];
+    const parts: unknown[] = [client, kind, resolve(path), scope, extra.project, extra.keyPath, extra.owner];
+    if (extra.codeflicker) parts.push(extra.origin, extra.codeflicker.direct, extra.codeflicker.namespace, extra.codeflicker.depth);
     if (extra.origin === "manual") parts.push("manual", extra.manualSourceId);
     const id = identity("source", parts);
     const plan: SourcePlan = { id, client, kind, path: resolve(path), scope, format, origin: "standard", readState: "missing", observedAt, verified: true, ...extra };
@@ -40,6 +44,14 @@ export async function scanResourceInventory(options: ResourceInventoryOptions = 
   };
   const skills = (client: Client, path: string, extra: Partial<SourcePlan> = {}) => add(client, "skill", path, "skill-directory", extra);
   const config = (client: Client, path: string, format: "json" | "jsonc" | "toml", keyPath: string[], extra: Partial<SourcePlan> = {}) => add(client, "mcp", path, format, { keyPath, ...extra });
+  // 同一快照复用物理目录和定位读取，项目上下文只重新计算原生选择与状态。
+  const statsCache = new Map<string, ReturnType<typeof lstat>>();
+  const realpathCache = new Map<string, Promise<string>>();
+  const directoryCache = new Map<string, ReturnType<typeof readDirectory>>();
+  const cachedLstat = (path: string) => { let value = statsCache.get(path); if (!value) { value = lstat(path); statsCache.set(path, value); } return value; };
+  const cachedRealpath = (path: string) => { let value = realpathCache.get(path); if (!value) { value = realpath(path); realpathCache.set(path, value); } return value; };
+  const readDirectory = (path: string) => readdir(path, { withFileTypes: true });
+  const cachedDirectory = (path: string, _options: { withFileTypes: true }) => { let value = directoryCache.get(path); if (!value) { value = readDirectory(path); directoryCache.set(path, value); } return value; };
   const configCache = new Map<string, Promise<ObjectValue | undefined>>();
   const skillTextCache = new Map<string, Promise<string>>();
   const parseConfig = (path: string, format: ResourceSourceFormat): Promise<ObjectValue | undefined> => {
@@ -47,7 +59,7 @@ export async function scanResourceInventory(options: ResourceInventoryOptions = 
     let result = configCache.get(key);
     if (!result) {
       result = (async () => {
-        const stat = await lstat(path);
+        const stat = await cachedLstat(path);
         if (stat.size > 16 * 1024 * 1024) throw new Error("configuration_limit");
         const text = await readFile(path, "utf8");
         if (format === "toml") return object(parseToml(text));
@@ -86,18 +98,18 @@ export async function scanResourceInventory(options: ResourceInventoryOptions = 
   skills("qoder", join(userHome, ".qoder", "skills"));
   config("qoder", join(userHome, ".qoder", "settings.json"), "json", ["mcpServers"]);
   // 未核验的产品目录不自动猜测；用户可显式登记只读来源。
-  for (const client of ["codeflicker", "codeflicker-desktop", "workbuddy", "zcode"] as const) {
+  for (const client of ["workbuddy", "zcode"] as const) {
     add(client, "skill", userHome, "unsupported", { verified: false });
     add(client, "mcp", userHome, "unsupported", { verified: false });
   }
-  const exists = async (path: string): Promise<boolean> => { try { await lstat(path); return true; } catch (error) { return !missing(error); } };
+  const exists = async (path: string): Promise<boolean> => { try { await cachedLstat(path); return true; } catch (error) { return !missing(error); } };
   const firstConfig = async (client: Client, paths: string[], keyPath: string[], extra: Partial<SourcePlan> = {}) => {
     const path = await (async () => { for (const value of paths) if (await exists(value)) return value; return paths[0]!; })();
     config(client, path, "jsonc", keyPath, extra);
   };
   await firstConfig("codebuddy", [join(userHome, ".codebuddy", ".mcp.json"), join(userHome, ".codebuddy", "mcp.json"), join(userHome, ".codebuddy.json")], ["mcpServers"]);
   for (const project of projects) {
-    try { if (!(await lstat(project)).isDirectory()) throw new Error("project_not_directory"); }
+    try { if (!(await cachedLstat(project)).isDirectory()) throw new Error("project_not_directory"); }
     catch { for (const client of clientIds) { const source = add(client, "skill", project, "unsupported", { project, verified: false }); gaps.push({ sourceId: source.id, client, reason: "project_missing" }); } continue; }
     skills("codex", join(project, ".agents", "skills"), { project });
     config("codex", join(project, ".codex", "config.toml"), "toml", ["mcp_servers"], { project });
@@ -115,6 +127,9 @@ export async function scanResourceInventory(options: ResourceInventoryOptions = 
     skills("qoder", join(project, ".qoder", "skills"), { project });
     for (const path of [join(project, ".qoder", "settings.json"), join(project, ".mcp.json"), join(project, ".qoder", "settings.local.json")]) config("qoder", path, "json", ["mcpServers"], { project });
   }
+  const existingProjects = [];
+  for (const project of projects) { try { if ((await cachedLstat(project)).isDirectory()) existingProjects.push(project); } catch { /* 缺失项目已在通用来源层记录。 */ } }
+  await planCodeFlickerInventory({ userHome, projects: existingProjects, environment, add, parseConfig, gaps, diagnostics });
   for (const manual of options.manualSources ?? []) {
     const extra = { project: manual.project, origin: "manual" as const, verified: false, keyPath: manual.keyPath, manualSourceId: manual.id };
     const format = manual.format ?? (manual.kind === "skill" ? "skill-directory" : manual.path.endsWith(".toml") ? "toml" : manual.path.endsWith(".jsonc") ? "jsonc" : "json");
@@ -132,14 +147,14 @@ export async function scanResourceInventory(options: ResourceInventoryOptions = 
       if (source.client === "claude") return object(config?.skillOverrides)?.[name] === "off" ? "disabled" : "enabled";
       const rules = object(config?.skills)?.config;
       if (!Array.isArray(rules)) return "enabled";
-      const target = await realpath(skillFile);
+      const target = await cachedRealpath(skillFile);
       let state: ResourceInventoryEntry["nativeState"] = "enabled";
       for (const rule of rules) {
         const row = object(rule);
         if (!row || typeof row.enabled !== "boolean") continue;
         if (row.name === name && !row.path) state = row.enabled ? "enabled" : "disabled";
         if (typeof row.path === "string" && !row.name) {
-          try { if (await realpath(row.path) === target) state = row.enabled ? "enabled" : "disabled"; } catch { /* 已失效的 selector 不匹配当前资源。 */ }
+          try { if (await cachedRealpath(row.path) === target) state = row.enabled ? "enabled" : "disabled"; } catch { /* 已失效的 selector 不匹配当前资源。 */ }
         }
       }
       return state;
@@ -147,21 +162,26 @@ export async function scanResourceInventory(options: ResourceInventoryOptions = 
   };
   const appendSkill = async (source: SourcePlan, path: string, skillFile: string, protectedSystem: boolean): Promise<void> => {
     let linkTarget: string | undefined, targetPath: string | undefined;
-    const info = await lstat(path);
+    const info = await cachedLstat(path);
     const entryType: ResourceInventoryEntry["entryType"] = info.isSymbolicLink() ? "symlink" : info.isDirectory() ? "directory" : "file";
     if (info.isSymbolicLink()) linkTarget = await readlink(path);
-    try { targetPath = await realpath(path); } catch (error) { if (!missing(error) && object(error)?.code !== "ELOOP") throw error; }
+    try { targetPath = await cachedRealpath(path); } catch (error) { if (!missing(error) && object(error)?.code !== "ELOOP") throw error; }
+    if (targetPath && source.codeflicker?.containmentRoot && !contained(await cachedRealpath(source.codeflicker.containmentRoot), targetPath)) {
+      diagnostics.push({ sourceId: source.id, client: source.client, kind: "skill", scope: source.scope, project: source.project, reason: "invalid_reference", path });
+      gaps.push({ sourceId: source.id, client: source.client, reason: "invalid" }); return;
+    }
     const base = { id: identity("entry", [source.id, path]), kind: "skill" as const, client: source.client, project: source.project, scope: source.scope,
       sourceId: source.id, entryPath: path, targetPath, entryType, linkTarget, observedAt, sourceFormat: source.format,
-      owner: source.owner, protected: Boolean(source.owner) || protectedSystem, protectionReason: source.owner ? "plugin" as const : protectedSystem ? "system" as const : undefined,
-      locator: { type: "skill" as const, skillFile, nativeControl: source.owner || protectedSystem ? undefined : source.nativeControl, controlPath: source.controlPath }, capabilities: { ...writeDisabled } };
+      owner: source.owner, protected: Boolean(source.owner) || protectedSystem || source.origin === "managed", protectionReason: source.owner ? "plugin" as const : protectedSystem ? "system" as const : source.origin === "managed" ? "managed" as const : undefined,
+      locator: { type: "skill" as const, skillFile, nativeControl: source.owner || protectedSystem || source.origin === "managed" ? undefined : source.nativeControl, controlPath: source.controlPath,
+        dependencyPaths: source.codeflicker?.dependencyPaths }, capabilities: { ...writeDisabled } };
     if (!targetPath) {
       entries.push({ ...base, bodyId: identity("body", ["broken", source.id, path]), name: basename(path), readState: "broken", nativeState: "unknown" });
       return;
     }
     let text: string;
     try {
-      const canonicalFile = await realpath(skillFile);
+      const canonicalFile = await cachedRealpath(skillFile);
       let pending = skillTextCache.get(canonicalFile);
       if (!pending) {
         pending = (async () => { const file = await open(canonicalFile, "r"); try { const info = await file.stat(); if (info.size > 1024 * 1024) throw new Error("skill_limit"); return await file.readFile("utf8"); } finally { await file.close(); } })();
@@ -182,31 +202,59 @@ export async function scanResourceInventory(options: ResourceInventoryOptions = 
       if (!metadata) gaps.push({ sourceId: source.id, client: source.client, reason: "invalid" });
     }
     const field = (key: string): string | undefined => typeof metadata?.[key] === "string" ? metadata[key] as string : undefined;
-    const name = field("name") ?? basename(entryType === "file" ? path.replace(/\.md$/i, "") : path);
+    const documentName = field("name") ?? basename(entryType === "file" ? path.replace(/\.md$/i, "") : path);
+    const name = source.codeflicker?.namespace ? `${source.codeflicker.namespace}:${documentName}` : documentName;
+    if (source.client === "codeflicker" && (!field("name") || !field("description"))) {
+      gaps.push({ sourceId: source.id, client: source.client, reason: "invalid" });
+      diagnostics.push({ sourceId: source.id, client: source.client, kind: "skill", scope: source.scope, project: source.project, reason: "invalid_reference", path });
+      return;
+    }
     const fingerprint = hash(text);
+    let nativeState = await skillState(source, skillFile, name);
+    let invocationMode: ResourceInventoryEntry["invocationMode"];
+    if (source.client === "codeflicker" && source.codeflicker) ({ nativeState, invocationMode } = codeflickerSkillState(source, name));
+    if (source.client === "codeflicker-desktop" && source.codeflicker) {
+      try { await cachedLstat(join(path, ".disable")); nativeState = "disabled"; }
+      catch (error) { nativeState = missing(error) ? "enabled" : "unknown"; }
+      if (source.origin === "system" && contained(join(source.path, "agent-plugins"), path)) nativeState = "enabled";
+      base.locator.controlPath = join(targetPath, ".disable");
+      const manifestPath = join(path, "manifest.json");
+      if (await exists(manifestPath)) {
+        try {
+          const manifest = await parseConfig(manifestPath, "json");
+          if (typeof manifest?.name === "string" && manifest.name.trim() && typeof manifest.version === "string" && manifest.version.trim()) {
+            base.protected = true; base.protectionReason = "managed"; base.locator.nativeControl = undefined;
+          }
+        } catch { gaps.push({ sourceId: source.id, client: source.client, reason: "invalid" }); }
+      }
+    }
     entries.push({ ...base, bodyId: identity("body", ["skill", targetPath]), name, description: field("description"), readState: "present",
-      nativeState: await skillState(source, skillFile, name), modifiedAt: info.mtime.toISOString(), contentFingerprint: fingerprint, fingerprintScope: "skill-document" });
+      nativeState, invocationMode, nativeNames: source.codeflicker ? [...new Set([name, documentName, basename(entryType === "file" ? path.replace(/\.md$/i, "") : path), basename(targetPath)])] : undefined,
+      selectionScopes: source.codeflicker ? [{ scope: source.scope, project: source.project, nativeState, invocationMode, controlPath: base.locator.controlPath }] : undefined,
+      modifiedAt: info.mtime.toISOString(), contentFingerprint: fingerprint, fingerprintScope: "skill-document" });
   };
   const scanSkills = async (source: SourcePlan): Promise<void> => {
     const root = source.path;
-    const rootInfo = await lstat(root);
-    if (rootInfo.isFile() && source.origin === "manual") { await appendSkill(source, root, root, false); source.readState = "ok"; return; }
+    const rootInfo = await cachedLstat(root);
+    if (rootInfo.isFile() && (source.origin === "manual" || source.codeflicker?.direct)) { await appendSkill(source, root, root, false); source.readState = "ok"; return; }
+    if (source.codeflicker?.direct) { await appendSkill(source, root, join(root, "SKILL.md"), source.origin === "system"); source.readState = "ok"; return; }
     const seen = new Set<string>();
     let visited = 0;
     const visit = async (path: string, depth: number, system: boolean): Promise<void> => {
+      if (source.codeflicker?.depth !== undefined && depth > source.codeflicker.depth) return;
       if (++visited > 10000 || depth > 16) { if (!gaps.some(gap => gap.sourceId === source.id && gap.reason === "limit")) gaps.push({ sourceId: source.id, client: source.client, reason: "limit" }); return; }
       let info;
-      try { info = await lstat(path); } catch (error) { if (depth === 0) throw error; gaps.push({ sourceId: source.id, client: source.client, reason: "unreadable" }); return; }
+      try { info = await cachedLstat(path); } catch (error) { if (depth === 0) throw error; gaps.push({ sourceId: source.id, client: source.client, reason: "unreadable" }); return; }
       if (info.isSymbolicLink()) {
-        try { await realpath(path); } catch (error) { if (missing(error) || object(error)?.code === "ELOOP") { await appendSkill(source, path, join(path, "SKILL.md"), system); return; } throw error; }
+        try { await cachedRealpath(path); } catch (error) { if (missing(error) || object(error)?.code === "ELOOP") { await appendSkill(source, path, join(path, "SKILL.md"), system); return; } throw error; }
       }
       if (info.isFile()) { if (source.flat && depth === 1 && path.endsWith(".md")) await appendSkill(source, path, path, system); return; }
       const skillFile = join(path, "SKILL.md");
-      if (await exists(skillFile)) { await appendSkill(source, path, skillFile, system); return; }
-      const canonical = await realpath(path);
+      if (!(source.client === "codeflicker" && source.codeflicker && depth === 0) && await exists(skillFile)) { await appendSkill(source, path, skillFile, system); return; }
+      const canonical = await cachedRealpath(path);
       if (seen.has(canonical)) return;
       seen.add(canonical);
-      for (const child of await readdir(path, { withFileTypes: true })) {
+      for (const child of await cachedDirectory(path, { withFileTypes: true })) {
         if (child.name.startsWith(".") && child.name !== ".system") continue;
         if (child.isDirectory() || child.isSymbolicLink() || (source.flat && child.isFile() && child.name.endsWith(".md"))) await visit(join(path, child.name), depth + 1, system || child.name === ".system");
       }
@@ -222,7 +270,7 @@ export async function scanResourceInventory(options: ResourceInventoryOptions = 
       if (value !== undefined && !object(value)) throw new Error("configuration_invalid");
       config = object(value);
     }
-    source.readState = "ok";
+    if (source.readState !== "invalid" && source.readState !== "unreadable") source.readState = "ok";
     if (!config) return;
     for (const [server, raw] of Object.entries(config)) {
       const value = object(raw); if (!value) { gaps.push({ sourceId: source.id, client: source.client, reason: "invalid" }); continue; }
@@ -230,6 +278,12 @@ export async function scanResourceInventory(options: ResourceInventoryOptions = 
         : typeof value.command === "string" || Array.isArray(value.command) || value.type === "local" ? "stdio" : "unknown";
       const hasEnabledField = ["codex", "pi", "opencode"].includes(source.client);
       let nativeState: ResourceInventoryEntry["nativeState"] = hasEnabledField ? value.enabled === false ? "disabled" : "enabled" : "unknown";
+      if (source.client === "codeflicker" && source.codeflicker) {
+        nativeState = source.codeflicker.settingsUnknown || source.codeflicker.state === "unknown" ? "unknown" : source.codeflicker.state === "disabled" || value.disable === true ? "disabled" : "enabled";
+        if (source.owner && Array.isArray(source.codeflicker.settings?.disabledMcpServers) && source.codeflicker.settings.disabledMcpServers.includes(server)) nativeState = "disabled";
+      }
+      if (source.client === "codeflicker-desktop") nativeState = Object.hasOwn(value, "disabled") ? "unknown" : value.disable === true ? "disabled" : "enabled";
+      if (source.codeflicker && Object.hasOwn(value, "disable") && typeof value.disable !== "boolean") { nativeState = "unknown"; gaps.push({ sourceId: source.id, client: source.client, reason: "invalid" }); }
       if (source.client === "claude" && source.project) {
         try {
           const preferences = await parseConfig(join(userHome, ".claude.json"), "json");
@@ -243,14 +297,14 @@ export async function scanResourceInventory(options: ResourceInventoryOptions = 
         entryType: "registration", readState: "present", nativeState, sourceFormat: source.format, observedAt, owner: source.owner,
         protected: Boolean(source.owner) || source.origin === "system", protectionReason: source.owner ? "plugin" : source.origin === "system" ? "system" : undefined,
         transport, locator: { type: "mcp", configPath: source.path, format: source.format === "toml" ? "toml" : source.format === "jsonc" ? "jsonc" : "json",
-          keyPath: [...keyPath, server], nativeControl: source.nativeControl, controlPath: source.controlPath }, capabilities: { ...writeDisabled } });
+          keyPath: [...keyPath, server], nativeControl: source.nativeControl, controlPath: source.controlPath, dependencyPaths: source.codeflicker?.dependencyPaths }, capabilities: { ...writeDisabled } });
     }
   };
 
   // 插件只从已知 cache 根中的 manifest 或安装登记引用盘点，不修改缓存。
   const pluginRoots = new Set<string>();
   const plugin = async (client: "codex" | "claude", root: string, owner: string, project?: string): Promise<void> => {
-    let canonical: string; try { canonical = await realpath(root); } catch { return; }
+    let canonical: string; try { canonical = await cachedRealpath(root); } catch { return; }
     const pluginKey = `${client}:${canonical}:${project ?? ""}`;
     if (pluginRoots.has(pluginKey)) return; pluginRoots.add(pluginKey);
     const marker = [join(root, ".codex-plugin", "plugin.json"), join(root, ".claude-plugin", "plugin.json")];
@@ -275,14 +329,14 @@ export async function scanResourceInventory(options: ResourceInventoryOptions = 
     const cacheRoot = join(client === "codex" ? codexHome : join(userHome, ".claude"), "plugins", "cache");
     const cacheSource = add(client, "skill", cacheRoot, "plugin", { origin: "plugin" });
     let canonicalRoot = cacheRoot;
-    try { canonicalRoot = await realpath(cacheRoot); } catch { /* 缺失根由下方 readState 表达。 */ }
+    try { canonicalRoot = await cachedRealpath(cacheRoot); } catch { /* 缺失根由下方 readState 表达。 */ }
     const seen = new Set<string>(); let count = 0;
     const visit = async (path: string, depth: number): Promise<void> => {
       if (++count > 5000 || depth > 6) { if (!gaps.some(gap => gap.sourceId === cacheSource.id && gap.reason === "limit")) gaps.push({ sourceId: cacheSource.id, client, reason: "limit" }); return; }
-      let canonical: string; try { canonical = await realpath(path); } catch { return; }
+      let canonical: string; try { canonical = await cachedRealpath(path); } catch { return; }
       if (seen.has(canonical) || !contained(canonicalRoot, canonical)) return; seen.add(canonical);
       if (await exists(join(path, ".codex-plugin", "plugin.json")) || await exists(join(path, ".claude-plugin", "plugin.json"))) { await plugin(client, path, relative(cacheRoot, path)); return; }
-      try { for (const entry of await readdir(path, { withFileTypes: true })) if (entry.isDirectory()) await visit(join(path, entry.name), depth + 1); }
+      try { for (const entry of await cachedDirectory(path, { withFileTypes: true })) if (entry.isDirectory()) await visit(join(path, entry.name), depth + 1); }
       catch (error) { fail(cacheSource, error); }
     };
     if (await exists(cacheRoot)) { cacheSource.readState = "ok"; await visit(cacheRoot, 0); }
@@ -300,12 +354,15 @@ export async function scanResourceInventory(options: ResourceInventoryOptions = 
   } catch (error) { fail(installedSource, error); }
 
   const scanSource = async (source: SourcePlan) => {
-    if (source.format === "plugin") return;
+    if (source.format === "plugin" || source.metadataOnly) return;
     if (source.format === "unsupported") {
       source.readState = "unsupported"; gaps.push({ sourceId: source.id, client: source.client, reason: "unsupported" }); return;
     }
     try { if (source.kind === "skill") await scanSkills(source); else await scanMcp(source); }
-    catch (error) { fail(source, error); }
+    catch (error) {
+      fail(source, error);
+      if ((source.codeflicker?.direct || source.codeflicker?.required) && source.readState === "missing") gaps.push({ sourceId: source.id, client: source.client, reason: "missing" });
+    }
   };
   // 独立来源最多四路并行；合并时恢复来源顺序，共享本体的首选名称保持一致。
   let nextSource = 0;
@@ -314,7 +371,19 @@ export async function scanResourceInventory(options: ResourceInventoryOptions = 
   }));
   const sourceOrder = new Map(sources.map((source, index) => [source.id, index]));
   entries.sort((left, right) => sourceOrder.get(left.sourceId)! - sourceOrder.get(right.sourceId)!);
-  gaps.sort((left, right) => sourceOrder.get(left.sourceId)! - sourceOrder.get(right.sourceId)!);
+  const originalEntries = [...entries];
+  const compact = compactCodeFlickerInventory(projectCodeFlickerEntries(entries, sources, diagnostics), originalEntries, sources, identity);
+  entries.splice(0, entries.length, ...compact.entries); sources.splice(0, sources.length, ...compact.sources);
+  for (const gap of gaps) gap.sourceId = compact.sourceIds.get(gap.sourceId) ?? gap.sourceId;
+  const distinctGaps = new Map(gaps.map(gap => [JSON.stringify([gap.sourceId, gap.client, gap.reason]), gap]));
+  gaps.splice(0, gaps.length, ...distinctGaps.values());
+  for (const diagnostic of diagnostics) {
+    diagnostic.sourceId = compact.sourceIds.get(diagnostic.sourceId) ?? diagnostic.sourceId;
+    if (diagnostic.entryId) diagnostic.entryId = compact.entryIds.get(diagnostic.entryId) ?? diagnostic.entryId;
+    if (diagnostic.selectedEntryId) diagnostic.selectedEntryId = compact.entryIds.get(diagnostic.selectedEntryId) ?? diagnostic.selectedEntryId;
+  }
+  const compactOrder = new Map(sources.map((source, index) => [source.id, index]));
+  gaps.sort((left, right) => compactOrder.get(left.sourceId)! - compactOrder.get(right.sourceId)!);
   // 普通入口指向已确认受管理本体时，保护不能被一个别名绕过。
   const managedBodies = new Map<string, ResourceInventoryEntry>();
   for (const entry of entries) if (entry.protected && (!managedBodies.has(entry.bodyId) || entry.protectionReason === "system")) managedBodies.set(entry.bodyId, entry);
@@ -331,6 +400,6 @@ export async function scanResourceInventory(options: ResourceInventoryOptions = 
     if (!body) { body = { id: entry.bodyId, kind: entry.kind, name: entry.name, targetPath: entry.targetPath, entryIds: [], contentFingerprint: entry.contentFingerprint, fingerprintScope: entry.fingerprintScope }; bodies.set(body.id, body); }
     body.entryIds.push(entry.id);
   }
-  const publicSources = sources.map(({ keyPath: _keyPath, flat: _flat, nativeControl: _nativeControl, controlPath: _controlPath, ...source }) => source);
-  return { observedAt, sources: publicSources, entries, bodies: [...bodies.values()], gaps };
+  const publicSources = sources.map(({ keyPath: _keyPath, flat: _flat, nativeControl: _nativeControl, controlPath: _controlPath, codeflicker: _codeflicker, metadataOnly: _metadataOnly, ...source }) => source);
+  return { observedAt, sources: publicSources, entries, bodies: [...bodies.values()], gaps, diagnostics };
 }

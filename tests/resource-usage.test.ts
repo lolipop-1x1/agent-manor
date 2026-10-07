@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -10,6 +10,7 @@ import type { SessionMessage, SessionSourceMeta } from "../src/session-contracts
 import { StoreError } from "../src/index/store.js";
 import { parseSessionSource } from "../src/sessions/parser.js";
 import { SessionStore } from "../src/sessions/store.js";
+import { scanResourceInventory } from "../src/resources/inventory.js";
 import { aggregateResourceUsage, associateResourceHistory, emptyResourceUsageStats, listResourceUsage, localResourceUsage, resourceHistoryIdentity, resourceOverviewIdentity, resourceUsageDetail, resourceUsageEvidence } from "../src/resources/usage.js";
 
 const occurredAt = "2026-01-02T12:00:00Z";
@@ -429,6 +430,39 @@ test("关联当前入口需要路径与范围，名称相同及共享目标歧�
   const shared = { ...identity, path: "/synthetic/shared/guide" };
   assert.deepEqual(associateResourceHistory(shared, [entry, { ...entry, id: "entry-two", entryPath: "/synthetic/other/guide" }]),
     { state: "ambiguous", entryIds: ["entry-one", "entry-two"], reason: "multiple_entries" });
+});
+
+test("CodeFlicker 同目录读取名称与声明异名仍凭路径关联，历史名称身份和使用统计不被改写", async () => fixture(async (store, directory) => {
+  const userHome = join(directory, "user"); const path = join(userHome, ".codeflicker", "skills", "directory-guide");
+  await mkdir(path, { recursive: true }); await writeFile(join(path, "SKILL.md"), "---\nname: declared-guide\ndescription: 人工合成说明\n---\n人工合成正文\n");
+  const revision = source(store, meta("cli-reading", { client: "codeflicker" }), [
+    message("cli-reading", 0, { resource: { kind: "skill_read", name: "directory-guide", path: join(path, "SKILL.md") }, status: "success" }),
+  ]);
+  store.publish(store.createJob().id, [revision], []);
+  const before = listResourceUsage(store, { client: "codeflicker", kind: "skill" }).resources[0]!;
+  const inventory = await scanResourceInventory({ userHome, environment: {} });
+  const entry = inventory.entries.find(value => value.client === "codeflicker" && value.name === "declared-guide")!; assert.ok(entry);
+  const after = listResourceUsage(store, { client: "codeflicker", kind: "skill" }, inventory.entries).resources[0]!;
+  assert.equal(after.identity.name, "directory-guide"); assert.equal(after.identity.id, before.identity.id); assert.deepEqual(after.stats, before.stats);
+  assert.equal(after.stats.successfulReads, 1); assert.equal(after.stats.sessions, 1); assert.equal(after.association.state, "linked");
+  assert.deepEqual(after.association.entryIds, [entry.id]);
+  const original = [...store.resourceEvents({ client: "codeflicker" }).events][0]!;
+  assert.equal(original.name, "directory-guide"); assert.equal(original.path, join(path, "SKILL.md"));
+  const identity = resourceHistoryIdentity(original);
+  assert.equal(associateResourceHistory({ ...identity, path: undefined }, inventory.entries).reason, "missing_path");
+  assert.equal(associateResourceHistory({ ...identity, path: "/synthetic/other/directory-guide" }, inventory.entries).state, "unassociated");
+  assert.equal(associateResourceHistory({ ...identity, client: "codeflicker-desktop" }, inventory.entries).state, "unassociated");
+}));
+
+test("CodeFlicker 原生插件名称别名仍限定同路径及客户端，MCP 注册身份不使用 Skill 别名", () => {
+  const entry: ResourceAssociationEntry = { id: "plugin-entry", kind: "skill", name: "synthetic-plugin:declared-guide", client: "codeflicker", scope: "project",
+    project: "/synthetic/project", entryPath: "/synthetic/plugin/skills/directory-guide", nativeNames: ["synthetic-plugin:declared-guide", "declared-guide", "directory-guide"] };
+  const identity: ResourceHistoryIdentity = { id: "history-native", kind: "skill", name: "directory-guide", client: "codeflicker", project: entry.project, path: entry.entryPath };
+  assert.equal(associateResourceHistory(identity, [entry]).state, "linked");
+  assert.equal(associateResourceHistory({ ...identity, project: "/synthetic/other-project" }, [entry]).state, "unassociated");
+  assert.equal(associateResourceHistory({ ...identity, path: "/synthetic/other/directory-guide" }, [entry]).state, "unassociated");
+  const server = { ...entry, kind: "mcp" as const, name: "correct-server", server: "correct-server", nativeNames: ["wrong-server"] };
+  assert.equal(associateResourceHistory({ ...identity, kind: "mcp", name: "wrong-server", server: "wrong-server" }, [server]).state, "unassociated");
 });
 
 test("共享目标的多个入口可保持入口歧义，但已确认本体用量不丢失或重复", async () => fixture(store => {

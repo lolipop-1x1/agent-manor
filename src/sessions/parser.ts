@@ -199,7 +199,7 @@ export async function parseSessionSource(source: SourceLocation, sink: SessionSi
       if (samples.size < 4) samples.add(path);
       targets.set(directory, samples);
     }
-    const detectedResource = callResource(tool, input);
+    const detectedResource = callResource(tool, input, meta.project ?? source.cwd);
     const value = message(key, "tool_call", display(input), row, { ...extra, callId, tool, filePaths: paths,
       resource: detectedResource, status: "unknown" });
     const previousCompletion = completed.get(value.id);

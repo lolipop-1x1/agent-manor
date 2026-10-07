@@ -10,7 +10,7 @@ export interface ConfigChange {
   path: string;
   format: "json" | "jsonc" | "toml";
   keyPath: string[];
-  type: "json-key" | "toml-mcp" | "toml-skill";
+  type: "json-key" | "json-skill" | "skill-marker" | "toml-mcp" | "toml-skill";
   beforeText: string;
   afterText: string;
   before: string;
@@ -19,6 +19,10 @@ export interface ConfigChange {
   hadEnabled?: boolean;
   removedText?: string;
   skillPath?: string;
+  skillName?: string;
+  fileExistedBefore?: boolean;
+  hadDisabled?: boolean;
+  hadSkills?: boolean;
 }
 const readonly = (): never => { throw new ServiceError("FORBIDDEN", "当前配置写法未完成保留编辑适配，只读", { key: "diagnostics.resources.configEditor.m001" }); };
 const object = (value: unknown): Record<string, unknown> => value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
@@ -77,6 +81,11 @@ export function validateEditableToml(text: string): Block[] {
 export function editableConfig(text: string, entry: ResourceInventoryEntry): boolean {
   try {
     if (entry.kind === "skill") {
+      if (entry.locator.nativeControl === "codeflicker-desktop-skill") return text === "";
+      if (entry.locator.nativeControl === "codeflicker-skill") {
+        nameRules(json(text || "{}", "json"), entry.name);
+        return true;
+      }
       validateEditableToml(text);
       toml(`${text}${text.endsWith("\n") || !text ? "" : "\n"}\n[[skills.config]]\npath = "synthetic-format-check"\nenabled = false\n`);
       return true;
@@ -119,18 +128,44 @@ function skillRules(value: unknown, path: string): unknown[] {
   if (!Array.isArray(rules)) return readonly();
   return rules.filter(rule => object(rule).path === path);
 }
+/** 名称列表的原生优先级与其他名称保持独立，恢复只撤销本次成员。 */
+function nameRules(value: unknown, name: string): Record<string, number> {
+  const rules = get(value, ["skills"]);
+  if (rules !== undefined && (!rules || typeof rules !== "object" || Array.isArray(rules))) return readonly();
+  return Object.fromEntries(["disabled", "userOnly", "enabled"].map(key => {
+    const names = object(rules)[key];
+    if (names !== undefined && (!Array.isArray(names) || names.some(item => typeof item !== "string"))) return readonly();
+    return [key, (names as string[] | undefined)?.filter(item => item === name).length ?? 0];
+  }));
+}
 function selected(change: ConfigChange, text: string): string {
+  if (change.type === "skill-marker") return stable(text);
   const parsed = change.format === "toml" ? toml(text) : json(text, change.format);
-  return stable(change.type === "toml-skill" ? skillRules(parsed, change.skillPath!) : get(parsed, change.keyPath));
+  return stable(change.type === "toml-skill" ? skillRules(parsed, change.skillPath!)
+    : change.type === "json-skill" ? nameRules(parsed, change.skillName!) : get(parsed, change.keyPath));
 }
 
 export async function prepareConfig(entry: ResourceInventoryEntry, action: "disable" | "standby" | "trash", skillPath?: string): Promise<ConfigChange> {
   const path = entry.kind === "skill" ? entry.locator.controlPath : entry.locator.configPath;
   if (!path) return readonly();
-  let text: string;
+  let text: string; let fileExistedBefore = true;
   try { text = await readFile(path, "utf8"); }
-  catch (error) { if (entry.kind === "skill" && (error as NodeJS.ErrnoException).code === "ENOENT") text = ""; else throw error; }
+  catch (error) { if (entry.kind === "skill" && (error as NodeJS.ErrnoException).code === "ENOENT") { text = ""; fileExistedBefore = false; } else throw error; }
   if (entry.kind === "skill") {
+    if (action !== "disable") return readonly();
+    if (entry.locator.nativeControl === "codeflicker-desktop-skill") {
+      if (fileExistedBefore) throw new ServiceError("INVALID_INPUT", "资源已停用，没有新的本地修改", { key: "diagnostics.resources.configEditor.m002" });
+      return { path, format: "json", keyPath: [], type: "skill-marker", beforeText: "", afterText: "", before: "missing", after: stable(""), fileExistedBefore: false };
+    }
+    if (entry.locator.nativeControl === "codeflicker-skill") {
+      const value = json(text || "{}", "json"); const beforeRules = nameRules(value, entry.name);
+      if (beforeRules.disabled) throw new ServiceError("INVALID_INPUT", "资源已停用，没有新的本地修改", { key: "diagnostics.resources.configEditor.m002" });
+      const names = get(value, ["skills", "disabled"]) as string[] | undefined;
+      const afterText = editJson(text || "{}", ["skills", "disabled"], [...names ?? [], entry.name], "json");
+      return { path, format: "json", keyPath: ["skills", "disabled"], type: "json-skill", skillName: entry.name, fileExistedBefore,
+        hadSkills: Object.hasOwn(object(value), "skills"), hadDisabled: Object.hasOwn(object(get(value, ["skills"])), "disabled"),
+        beforeText: text, afterText, before: stable(beforeRules), after: stable(nameRules(json(afterText, "json"), entry.name)) };
+    }
     if (action !== "disable" || entry.locator.nativeControl !== "codex-skill" || !skillPath) return readonly();
     validateEditableToml(text);
     const beforeRules = skillRules(toml(text), skillPath);
@@ -148,7 +183,15 @@ export async function prepareConfig(entry: ResourceInventoryEntry, action: "disa
   const beforeValue = get(parsed, keyPath);
   if (!beforeValue || typeof beforeValue !== "object" || Array.isArray(beforeValue)) return readonly();
   if (format !== "toml") {
-    if (action === "disable") return readonly();
+    if (action === "disable") {
+      if (entry.locator.nativeControl !== "codeflicker-mcp") return readonly();
+      if (object(beforeValue).disable === true) throw new ServiceError("INVALID_INPUT", "资源已停用，没有新的本地修改", { key: "diagnostics.resources.configEditor.m002" });
+      if (object(beforeValue).disable !== undefined && typeof object(beforeValue).disable !== "boolean") return readonly();
+      const disablePath = [...keyPath, "disable"];
+      const afterText = editJson(text, disablePath, true, format);
+      return { path, format, keyPath: disablePath, type: "json-key", beforeText: text, afterText,
+        before: stable(get(parsed, disablePath)), after: stable(true) };
+    }
     const afterText = editJson(text, keyPath, undefined, format);
     return { path, format, keyPath, type: "json-key", beforeText: text, afterText, before: stable(beforeValue), after: "missing" };
   }
@@ -174,6 +217,14 @@ export function restoreConfig(change: ConfigChange, current: string): string {
   if (current === change.afterText) return change.beforeText;
   let result: string;
   if (change.type === "json-key") result = editJson(current, change.keyPath, change.before === "missing" ? undefined : JSON.parse(change.before), change.format as "json" | "jsonc");
+  else if (change.type === "json-skill") {
+    const names = get(json(current, "json"), change.keyPath) as string[];
+    const remaining = names.filter(name => name !== change.skillName);
+    result = editJson(current, change.keyPath, remaining.length || change.hadDisabled ? remaining : undefined, "json");
+    if (!change.hadSkills && Object.keys(object(get(json(result, "json"), ["skills"]))).length === 0) result = editJson(result, ["skills"], undefined, "json");
+    if (change.fileExistedBefore === false && Object.keys(object(json(result, "json"))).length === 0) return "";
+  }
+  else if (change.type === "skill-marker") return change.beforeText;
   else if (change.type === "toml-skill") {
     const matches = validateEditableToml(current).filter(block => block.array && sameKeys(block.keys, ["skills", "config"])
       && object(skillRules(toml(current.slice(block.start, block.end)), change.skillPath!).at(-1)).path === change.skillPath);

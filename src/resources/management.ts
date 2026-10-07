@@ -50,6 +50,9 @@ async function permissions(path: string, modes: Mode[], restricted: boolean): Pr
 }
 function references(snapshot: ResourceInventorySnapshot, entry: ResourceInventoryEntry): ResourceInventoryEntry[] {
   const paths = new Set([entry.entryPath, entry.targetPath].filter((value): value is string => value !== undefined));
+  if (entry.kind === "mcp") return snapshot.entries.filter(value => value.kind === "mcp" && (value.bodyId === entry.bodyId
+    || value.entryPath === entry.entryPath && (value.server ?? value.name) === (entry.server ?? entry.name)))
+    .sort((left, right) => left.id.localeCompare(right.id));
   return snapshot.entries.filter(value => value.bodyId === entry.bodyId || value.entryPath === entry.entryPath
     || value.targetPath !== undefined && paths.has(value.targetPath)
     || value.entryType === "symlink" && value.linkTarget !== undefined && paths.has(resolve(dirname(value.entryPath), value.linkTarget)))
@@ -59,9 +62,45 @@ function references(snapshot: ResourceInventorySnapshot, entry: ResourceInventor
 function sharedPhysical(entry: ResourceInventoryEntry, refs: readonly ResourceInventoryEntry[]): boolean {
   return entry.kind === "skill" && (entry.entryType === "directory" || entry.entryType === "file") && refs.some(value => value.id !== entry.id);
 }
-const signature = (snapshot: ResourceInventorySnapshot, entry: ResourceInventoryEntry): string => digest(JSON.stringify(references(snapshot, entry)
+function nameReferences(snapshot: ResourceInventorySnapshot, entry: ResourceInventoryEntry): ResourceInventoryEntry[] {
+  const path = entry.locator.controlPath;
+  return snapshot.entries.filter(value => value.client === "codeflicker" && value.kind === "skill" && value.name === entry.name
+    && (value.locator.controlPath === path || path !== undefined && value.locator.dependencyPaths?.includes(path)))
+    .sort((left, right) => left.id.localeCompare(right.id));
+}
+function revealed(snapshot: ResourceInventorySnapshot, entry: ResourceInventoryEntry): NonNullable<ResourceManagementPreview["revealedEntries"]> {
+  return (snapshot.diagnostics ?? []).filter(value => value.reason === "shadowed" && value.client === entry.client && value.kind === entry.kind
+    && (value.selectedEntryId === entry.id || value.selectedPath === entry.entryPath && (entry.scope === value.scope && entry.project === value.project
+      || entry.selectionScopes?.some(scope => scope.scope === value.scope && scope.project === value.project))))
+    .map(value => ({ name: value.name ?? entry.name, client: value.client, scope: value.scope, project: value.project, entryPath: value.path }));
+}
+function markerShared(entry: ResourceInventoryEntry, refs: readonly ResourceInventoryEntry[]): boolean {
+  return entry.locator.nativeControl === "codeflicker-desktop-skill" && refs.some(value => value.id !== entry.id);
+}
+function nameScopesKnown(entry: ResourceInventoryEntry, snapshot: ResourceInventorySnapshot): boolean {
+  const refs = nameReferences(snapshot, entry);
+  if (refs.some(value => value.selectionScopes?.some(scope => (entry.scope === "user" || scope.project === entry.project) && scope.nativeState === "unknown"))) return false;
+  const dependencies = new Set(entry.locator.dependencyPaths);
+  return !snapshot.sources.some(source => source.client === "codeflicker" && dependencies.has(source.path)
+    && !["ok", "missing"].includes(source.readState));
+}
+function nativeDisable(entry: ResourceInventoryEntry, snapshot: ResourceInventorySnapshot): boolean {
+  if (entry.nativeState === "disabled") return false;
+  const control = entry.locator.nativeControl;
+  if (entry.client === "codex") return entry.scope === "user" && (entry.kind === "skill" ? control === "codex-skill" && !!entry.locator.controlPath
+    : control === "codex-mcp" && entry.locator.format === "toml");
+  if (entry.client === "codeflicker") return entry.nativeState === "enabled" && (entry.kind === "skill" ? control === "codeflicker-skill" && !!entry.locator.controlPath
+    && (!entry.selectionScopes || entry.selectionScopes.some(scope => scope.scope === entry.scope && scope.project === entry.project))
+    && nameScopesKnown(entry, snapshot)
+    : control === "codeflicker-mcp" && entry.locator.format === "json");
+  return entry.client === "codeflicker-desktop" && entry.kind === "skill" && entry.nativeState === "enabled"
+    && control === "codeflicker-desktop-skill" && !!entry.locator.controlPath && !markerShared(entry, references(snapshot, entry));
+}
+const signature = (snapshot: ResourceInventorySnapshot, entry: ResourceInventoryEntry): string => digest(JSON.stringify({ references: references(snapshot, entry)
   .map(value => [value.id, value.entryPath, value.targetPath, value.client, value.project, value.sourceId, value.protected,
-    value.owner, value.contentFingerprint, value.locator, snapshot.sources.find(source => source.id === value.sourceId)?.verified])));
+    value.owner, value.contentFingerprint, value.locator, value.selectionScopes, snapshot.sources.find(source => source.id === value.sourceId)?.verified]),
+  diagnostics: entry.client === "codeflicker" ? snapshot.diagnostics?.filter(value => value.name === entry.name && value.client === entry.client && value.kind === entry.kind) : undefined,
+  nameReferences: entry.client === "codeflicker" ? nameReferences(snapshot, entry).map(value => [value.id, value.sourceId, value.locator, value.selectionScopes]) : undefined }));
 
 /** 管理状态与受限恢复材料独立保存，不因历史索引清理而丢失或重放操作。 */
 export class ResourceManager {
@@ -123,8 +162,10 @@ export class ResourceManager {
   private writable(entry: ResourceInventoryEntry, snapshot: ResourceInventorySnapshot): boolean {
     const source = snapshot.sources.find(value => value.id === entry.sourceId);
     return !entry.protected && !entry.owner && source?.verified === true && source.client === entry.client && source.kind === entry.kind
-      && !["plugin", "system"].includes(source.origin)
-      && ["codex", "claude"].includes(entry.client) && entry.readState !== "unreadable";
+      && !["plugin", "system", "managed"].includes(source.origin)
+      && (["codex", "claude"].includes(entry.client) || entry.client === "codeflicker" && ["codeflicker-skill", "codeflicker-mcp"].includes(entry.locator.nativeControl ?? "")
+        || entry.client === "codeflicker-desktop" && entry.kind === "skill" && entry.locator.nativeControl === "codeflicker-desktop-skill")
+      && entry.readState !== "unreadable";
   }
   private favorite(entry: ResourceInventoryEntry, snapshot: ResourceInventorySnapshot): boolean {
     const favorites = new Set(this.favorites());
@@ -138,15 +179,13 @@ export class ResourceManager {
     const archives = this.archives(); const texts = new Map<string, string | undefined>(); const editability = new Map<string, boolean>();
     return { ...snapshot, entries: snapshot.entries.map(entry => {
       const writable = this.writable(entry, snapshot);
-      let disable = writable && entry.scope === "user" && entry.client === "codex"
-        && (entry.kind === "skill" ? entry.locator.nativeControl === "codex-skill" && !!entry.locator.controlPath
-          : entry.locator.nativeControl === "codex-mcp" && entry.locator.format === "toml");
+      let disable = writable && nativeDisable(entry, snapshot);
       const path = entry.locator.controlPath ?? entry.locator.configPath;
       if (writable && path && !texts.has(path)) {
         try { texts.set(path, existsSync(path) ? readFileSync(path, "utf8") : entry.kind === "skill" ? "" : undefined); }
         catch { texts.set(path, undefined); }
       }
-      const editKey = JSON.stringify([writable, entry.kind, path, entry.locator.keyPath]);
+      const editKey = JSON.stringify([writable, entry.kind, entry.locator.nativeControl, path, entry.locator.keyPath]);
       if (!editability.has(editKey)) editability.set(editKey, writable && path !== undefined && texts.get(path) !== undefined && editableConfig(texts.get(path)!, entry));
       const configWritable = editability.get(editKey)!;
       disable = disable && configWritable;
@@ -198,6 +237,7 @@ export class ResourceManager {
       throw new ServiceError("FORBIDDEN", "该物理本体有其他已发现入口引用，隔离或恢复范围尚未核验，请选择符号链接入口或原生停用", { key: "diagnostics.resources.management.m010" });
     }
     const check = async (path: string) => { if (!dependencies.some(value => value.path === path)) dependencies.push({ path, hash: (await inspect(path)).hash }); };
+    for (const path of entry.locator.dependencyPaths ?? []) await check(path);
     let change: ConfigChange | undefined; let restoreText: string | undefined;
     let sourcePath = entry.entryPath; let destinationPath: string | undefined;
     let method: ResourceManagementPreview["method"] = input.action === "disable" ? "native_toggle" : entry.kind === "mcp" ? "registration_remove" : "entry_isolation";
@@ -217,12 +257,12 @@ export class ResourceManager {
       }
     } else {
       if (!this.writable(entry, snapshot)) throw new ServiceError("FORBIDDEN", "该来源没有已核验的写入能力，只读", { key: "diagnostics.resources.management.m015" });
-      if (input.action === "disable" && (entry.nativeState === "disabled" || entry.scope !== "user" || entry.client !== "codex"
-        || (entry.kind === "skill" ? entry.locator.nativeControl !== "codex-skill" : entry.locator.nativeControl !== "codex-mcp"))) {
+      if (input.action === "disable" && !nativeDisable(entry, snapshot)) {
         throw new ServiceError(entry.nativeState === "disabled" ? "INVALID_INPUT" : "FORBIDDEN", entry.nativeState === "disabled" ? "资源已停用，没有新的本地修改" : "该入口未适配原生停用，可检查明确的隔离操作", entry.nativeState === "disabled" ? { key: "diagnostics.resources.management.m016" } : { key: "diagnostics.resources.management.m017" });
       }
       await check(entry.entryPath);
       for (const reference of refs) await check(reference.entryPath);
+      if (input.action === "standby" || input.action === "trash") for (const value of revealed(snapshot, entry)) await check(value.entryPath);
       if (entry.kind === "mcp" || input.action === "disable") {
         const skillPath = entry.kind === "skill" ? await realpath(entry.locator.skillFile ?? join(entry.entryPath, "SKILL.md")) : undefined;
         try { change = await prepareConfig(entry, input.action as "disable" | "standby" | "trash", skillPath); }
@@ -235,10 +275,15 @@ export class ResourceManager {
       destinationPath = resourceMaterialPath(this.vaultPath, input.action, entry, id);
     }
     const favorite = this.favorite(entry, snapshot);
+    const affected = input.action === "disable" && entry.locator.nativeControl === "codeflicker-skill" ? nameReferences(snapshot, entry) : refs;
+    const revealedEntries = input.action === "standby" || input.action === "trash" ? revealed(snapshot, entry) : undefined;
     const preview: ResourceManagementPreview = { id, action: input.action, entryId: entry.id, operationId: input.operationId,
       resource: { name: entry.name, kind: entry.kind, client: entry.client, scope: entry.scope, project: entry.project }, method,
-      sourcePath, destinationPath, affectedEntries: refs.map(value => ({ id: value.id, name: value.name, client: value.client,
-        scope: value.scope, project: value.project, entryPath: value.entryPath })), referencesComplete: false,
+      sourcePath, destinationPath, affectedEntries: affected.flatMap(value => {
+        const scopes = value.selectionScopes?.filter(scope => !(input.action === "disable" && entry.locator.nativeControl === "codeflicker-skill" && entry.scope === "project")
+          || scope.project === entry.project) ?? [{ scope: value.scope, project: value.project }];
+        return scopes.map(scope => ({ id: value.id, name: value.name, client: value.client, scope: scope.scope, project: scope.project, entryPath: value.entryPath }));
+      }), revealedEntries, referencesComplete: false,
       protected: favorite, protectionReasons: favorite ? ["favorite"] : [],
       restoration: input.action === "purge" ? "永久清除本次恢复材料后将失去该恢复路径；其他副本可能仍存在" : "保存原位置及受限恢复材料；恢复冲突时不覆盖当前内容", restorationDescriptor: input.action === "purge" ? { key: "diagnostics.resources.management.m020" } : { key: "diagnostics.resources.management.m021" },
       createdAt, expiresAt, requiresConfirmation: true, clientEffect: input.action === "purge" ? "unknown" : "pending_reload" };
@@ -316,7 +361,10 @@ export class ResourceManager {
             saved = { public: { ...saved.public, state: "purged", restorable: false, storedPath: undefined, operationStatus: "success" }, modes: [], backupHash: "missing" };
           } else if (saved.change) {
             const dependency = plan.dependencies.find(value => value.path === saved!.public.originalPath)!;
-            await this.writeConfig(saved.public.originalPath, plan.restoreText!, dependency);
+            if (saved.change.fileExistedBefore === false && plan.restoreText === "") {
+              if ((await inspect(saved.public.originalPath)).hash !== dependency.hash) stale();
+              await rm(saved.public.originalPath, { force: false });
+            } else await this.writeConfig(saved.public.originalPath, plan.restoreText!, dependency);
             saved.public.state = "restored"; saved.public.restorable = false; saved.public.operationStatus = "success";
           } else {
             const material = saved.public.storedPath!; const destination = saved.public.originalPath;

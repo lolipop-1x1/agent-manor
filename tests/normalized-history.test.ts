@@ -56,7 +56,7 @@ test("共享资源管道确认 Shell 读取与目录调用，结果行不重复�
   const all = [...messages.values()];
   assert.deepEqual(all.filter(message => message.resource).map(message => message.resource), [
     { kind: "skill_read", name: "demo", path: "/workspace/app/skills/demo/SKILL.md" },
-    { kind: "skill_call", name: "invoked" }, { kind: "mcp", name: "lookup", server: "example" },
+    { kind: "skill_call", name: "invoked", path: "/workspace/skills/invoked" }, { kind: "mcp", name: "lookup", server: "example" },
   ]);
   assert.ok(all.filter(message => message.kind === "tool_result").every(message => !message.resource));
 });

@@ -179,7 +179,7 @@ export function parseNormalizedSession(snapshot: NormalizedSnapshot, sink: Sessi
       text: event.text ?? (event.input === undefined ? "" : JSON.stringify(event.input, null, 2)), textDescriptor: event.textDescriptor, occurredAt: event.occurredAt, model: event.model,
       callId: event.callId, tool: event.tool, status: event.status, final: event.final, durationMs: event.durationMs,
       copied: event.copied, branchIds: event.branchIds, currentBranch: event.currentBranch,
-      filePaths: paths.length ? paths : undefined, resource: event.kind === "tool_call" ? event.resource ?? callResource(event.tool ?? "", event.input)
+      filePaths: paths.length ? paths : undefined, resource: event.kind === "tool_call" ? event.resource ?? callResource(event.tool ?? "", event.input, meta.project ?? source.cwd)
         : event.kind === "user" ? event.resource : undefined };
     if (event.kind === "tool_call" && value.resource?.kind === "skill_read") value.resource = undefined;
     messages.set(event.key, value.ordinal);

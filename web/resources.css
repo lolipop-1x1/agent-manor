@@ -156,6 +156,11 @@
 .resource-source-list p { margin: 9px 0; color: var(--muted); font-size: 11px; line-height: 1.6; overflow-wrap: anywhere; }
 .resource-source-gaps { max-height: 180px; overflow: auto; padding-top: 8px; }
 .resource-source-gaps p { padding: 5px 0; }
+.resource-diagnostics { margin-top: 12px; }
+.resource-selection-scopes { display: grid; gap: 9px; max-height: 240px; overflow: auto; margin-top: 10px; overscroll-behavior: contain; }
+.resource-selection-scopes > div { padding: 9px; border: 1px solid var(--border); border-radius: 5px; }
+.resource-selection-scopes strong { font-size: 11px; overflow-wrap: anywhere; }
+.resource-selection-scopes .resource-path { margin-bottom: 0; }
 .resource-source-form { display: grid; gap: 15px; }
 .resource-source-form .dialog-end { margin-top: 4px; }
 .resource-dialog { scrollbar-width: thin; }

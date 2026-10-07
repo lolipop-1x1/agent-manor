@@ -6,14 +6,17 @@ import type { HistoryAdapter } from "../history/adapters/types.js";
 import { object, returnedText, string, textContent } from "../history/extraction.js";
 
 /** 原生调用身份与成功读取分开；普通参数和消息中提及资源名不算调用。 */
-export function callResource(tool: string, input: unknown): SessionMessage["resource"] {
+export function callResource(tool: string, input: unknown, cwd?: string): SessionMessage["resource"] {
   const name = tool.replace(/^functions\./, "");
   const mcp = /^mcp__(.+?)__(.+)$/.exec(name) ?? /^mcp__([^.]+)\.(.+)$/.exec(name);
   if (mcp) return { kind: "mcp", name: mcp[2]!, server: mcp[1] };
   if (/^(?:Skill|skill|use_skill)$/.test(name)) {
     const value = object(input);
-    const skill = string(value.skill) ?? string(value.name) ?? string(value.skill_directory)?.split(/[/\\]/).filter(Boolean).at(-1);
+    const directory = string(value.skill_directory);
+    const skill = string(value.skill) ?? string(value.name) ?? directory?.split(/[/\\]/).filter(Boolean).at(-1);
+    const path = directory?.trim() ? absolutePath(directory, string(value.workdir) ?? string(value.cwd) ?? cwd) : undefined;
     return { kind: "skill_call", name: skill?.trim() ? skill : "未记录名称",
+      ...(path ? { path } : {}),
       ...(!skill?.trim() ? { nameDescriptor: { key: "sessions.resource.nameUnrecorded" } as const } : {}) };
   }
   return undefined;

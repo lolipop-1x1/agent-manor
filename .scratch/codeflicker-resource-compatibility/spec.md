@@ -1,6 +1,6 @@
 # CodeFlicker CLI／桌面版本地资源兼容
 
-Status: ready-for-agent
+Status: claimed
 
 ## 目标
 

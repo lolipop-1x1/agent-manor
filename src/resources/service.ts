@@ -34,7 +34,7 @@ export class ResourceService {
   }
   async status(): Promise<ResourceStatus> {
     const inventory = await this.inventory();
-    return { observedAt: inventory.observedAt, sources: inventory.sources, gaps: inventory.gaps,
+    return { observedAt: inventory.observedAt, sources: inventory.sources, gaps: inventory.gaps, diagnostics: inventory.diagnostics,
       projects: this.projects(), favoriteIds: this.manager.favorites(), manualSources: this.manager.manualSources() };
   }
   async refresh(): Promise<ResourceStatus> { await this.scan(); return this.status(); }
@@ -136,7 +136,8 @@ export class ResourceService {
     for (const body of inventory.bodies) {
       if (query.kind && query.kind !== body.kind) continue;
       const entries = body.entryIds.flatMap(id => byId.get(id) ? [byId.get(id)!] : []).filter(entry =>
-        (!query.client || entry.client === query.client) && (!query.project || (query.project === "none" ? !entry.project : entry.project === query.project)));
+        (!query.client || entry.client === query.client) && (!query.project || (query.project === "none" ? entry.selectionScopes ? entry.selectionScopes.some(scope => scope.scope === "user") : !entry.project
+          : entry.project === query.project || entry.selectionScopes?.some(scope => scope.project === query.project))));
       if (!entries.length) continue;
       const q = query.q?.trim().toLocaleLowerCase();
       if (q && ![body.name, body.targetPath, ...entries.map(entry => entry.entryPath)].some(value => value?.toLocaleLowerCase().includes(q))) continue;
@@ -190,7 +191,7 @@ export class ResourceService {
     const row = rows.find(row => row.body.id === id);
     if (!row) throw new ServiceError("SOURCE_NOT_FOUND", "本地资源不在所选范围中", { key: "diagnostics.resources.service.m001" });
     const usage = history?.bodies.get(row.body.id);
-    return { row, inventory: { observedAt: inventory.observedAt, sources: inventory.sources.filter(source => row.entries.some(entry => entry.sourceId === source.id)), gaps: inventory.gaps },
+    return { row, inventory: { observedAt: inventory.observedAt, sources: inventory.sources.filter(source => row.entries.some(entry => entry.sourceId === source.id)), gaps: inventory.gaps, diagnostics: inventory.diagnostics?.filter(diagnostic => row.entries.some(entry => entry.id === diagnostic.selectedEntryId || entry.sourceId === diagnostic.sourceId)) },
       timeZone: history?.timeZone ?? Intl.DateTimeFormat().resolvedOptions().timeZone, trend: usage?.trend ?? [], clients: usage?.clients ?? [], projects: usage?.projects ?? [] };
   }
   async addSource(source: ResourceManualSource) { this.manager.addManualSource(source); return this.refresh(); }

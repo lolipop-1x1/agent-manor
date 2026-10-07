@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { appendFile, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -12,6 +13,8 @@ import { desktopModels } from "../src/sessions/codeflicker-desktop.js";
 import { AnalysisStore } from "../src/index/store.js";
 import { SessionStore } from "../src/sessions/store.js";
 import { refreshSessions } from "../src/sessions/refresh.js";
+import { scanResourceInventory } from "../src/resources/inventory.js";
+import { listResourceUsage } from "../src/resources/usage.js";
 import { isolatedHistoryRoots } from "./helpers/history-roots.js";
 // @ts-ignore 人工样例共用于真实 CLI／浏览器验收。
 import { desktopFixture, desktopNativeFixture, encodeDesktop } from "../scripts/desktop-fixture.mjs";
@@ -70,11 +73,44 @@ test("完整与简易消息、正式模型、总输入与缓存分项、Skill �
   assert.deepEqual(parsed.summary.models, ["fixture-desktop-model"]);
   assert.equal(parsed.messages.find(message => message.text === "桌面历史核对完成")?.final, "explicit");
   assert.equal(parsed.messages.filter(message => message.kind === "tool_call").length, 3);
-  assert.deepEqual(parsed.messages.find(message => message.tool === "use_skill" && message.kind === "tool_call")?.resource, { kind: "skill_call", name: "check-example" });
+  assert.deepEqual(parsed.messages.find(message => message.tool === "use_skill" && message.kind === "tool_call")?.resource,
+    { kind: "skill_call", name: "check-example", path: "/synthetic/skills/check-example" });
   assert.equal(parsed.usage.length, 2);
   assert.ok(parsed.usage.every(value => value.inputTokens === 100 && value.cachedInputTokens === 60 && value.outputTokens === 10));
   assert.ok(parsed.usage.every(value => parsed.messages.some(message => message.id === value.messageId)));
   assert.ok(parsed.messages.every(message => message.durationMs === undefined));
+}));
+
+test("桌面原生 Skill 目录贯通历史关联，旧解析缓存刷新后补齐路径且不改变调用名称和统计", async () => fixture(async (directory, path) => {
+  const project = join(directory, "synthetic-project"); const userHome = join(directory, "synthetic-user");
+  const skillPath = join(project, ".myflicker", "skills", "fixture-skill");
+  await mkdir(skillPath, { recursive: true }); await writeFile(join(skillPath, "SKILL.md"), "---\nname: declared-skill\ndescription: 人工合成说明\n---\n人工正文\n");
+  await writeFile(join(directory, "sessions/desktop-session/checkpoints/registry.json"), JSON.stringify({ sessionId: "desktop-session", cwd: project }));
+  const records = desktopFixture(project);
+  records[6].toolCalls[0].function.arguments = JSON.stringify({ skill_directory: ".myflicker/skills/fixture-skill" });
+  await writeFile(path, encodeDesktop(records));
+  const dbPath = join(directory, "index.sqlite"); new AnalysisStore(dbPath).close(); const store = new SessionStore(dbPath);
+  try {
+    const refresh = async () => { const job = store.createJob({ client: "codeflicker-desktop", mode: "quick" }); await refreshSessions(store, job.id, roots(directory)); return store.getJob(job.id); };
+    assert.equal((await refresh()).counts?.parsed, 1);
+    const inventory = await scanResourceInventory({ userHome, projects: [project], environment: {} });
+    const first = listResourceUsage(store, { kind: "skill", client: "codeflicker-desktop" }, inventory.entries).resources[0]!;
+    assert.equal(first.identity.name, "fixture-skill"); assert.equal(first.stats.explicitCalls, 1); assert.equal(first.stats.sessions, 1); assert.equal(first.association.state, "linked");
+    const cached = store.cachedRevisions()[0]!; assert.ok(cached.fingerprint.endsWith(":skill-directory-v1"));
+    const oldFingerprint = cached.fingerprint.replace(/:skill-directory-v1$/, "");
+    const oldSuffix = /^[^:]+:[^:]+:6:[a-f0-9]{64}(.*)$/.exec(oldFingerprint)?.[1]; assert.ok(oldSuffix);
+    const oldMetadata = createHash("sha256").update(JSON.stringify({ rule: "6", source: cached.location, metadataSuffix: oldSuffix })).digest("hex");
+    const database = new Database(dbPath);
+    database.prepare("UPDATE session_revisions SET fingerprint=?,metadata_fingerprint=? WHERE id=?").run(oldFingerprint, oldMetadata, cached.revision);
+    database.prepare("UPDATE session_messages SET json=json_remove(json,'$.resource.path') WHERE revision=?").run(cached.revision); database.close();
+    const old = listResourceUsage(store, { kind: "skill", client: "codeflicker-desktop" }, inventory.entries).resources[0]!;
+    assert.equal(old.association.reason, "missing_path");
+    const rebuilt = await refresh(); assert.equal(rebuilt.counts?.parsed, 1); assert.notEqual(store.cachedRevisions()[0]?.revision, cached.revision);
+    const current = listResourceUsage(store, { kind: "skill", client: "codeflicker-desktop" }, inventory.entries).resources[0]!;
+    assert.equal(current.identity.name, old.identity.name); assert.deepEqual(current.stats, old.stats); assert.equal(current.association.state, "linked");
+    assert.equal([...store.resourceEvents({ client: "codeflicker-desktop", kind: "skill" }).events][0]?.path, skillPath);
+    assert.equal((await refresh()).counts?.quickReused, 1);
+  } finally { store.close(); }
 }));
 
 test("工具失败、行计数或请求范围矛盾不抬高覆盖，终态中断不认定最终回答", async () => fixture(async (_directory, path) => {

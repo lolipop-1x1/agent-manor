@@ -1,7 +1,7 @@
 # 资源兼容回归与端到端验收
 
 Type: task
-Status: ready-for-agent
+Status: claimed
 Blocked by: 03, 04, 05
 
 ## 验收

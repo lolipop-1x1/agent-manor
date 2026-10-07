@@ -41,6 +41,14 @@ test("MCP 可见身份与显式 Skill 参数保留，普通名称和 sanitized �
   assert.equal(callResource("Bash", { command: "/skill:demo" }), undefined);
 });
 
+test("use_skill 保留明确目录路径，相对目录只由已记录 cwd 解析，名称参数不猜路径", () => {
+  assert.deepEqual(callResource("use_skill", { skill_directory: "/synthetic/skills/demo/../demo" }), { kind: "skill_call", name: "demo", path: "/synthetic/skills/demo" });
+  assert.deepEqual(callResource("use_skill", { skill_directory: "skills/demo" }, "/synthetic/project"), { kind: "skill_call", name: "demo", path: "/synthetic/project/skills/demo" });
+  assert.deepEqual(callResource("use_skill", { skill_directory: "skills/demo" }), { kind: "skill_call", name: "demo", path: "skills/demo" });
+  assert.deepEqual(callResource("use_skill", { name: "demo" }, "/synthetic/project"), { kind: "skill_call", name: "demo" });
+  assert.deepEqual(callResource("use_skill", { skill_directory: "file:///synthetic/skills/demo", skill: "vendor:demo" }), { kind: "skill_call", name: "vendor:demo", path: "/synthetic/skills/demo" });
+});
+
 test("原生 Read 返回路径矛盾时不退回普通正文归属", () => {
   const adapter = historyAdapter("codeflicker-jsonl")!;
   const result = { llmContent: JSON.stringify({ type: "text", filePath: "/synthetic/skills/other/SKILL.md",

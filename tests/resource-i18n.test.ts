@@ -55,3 +55,19 @@ test("资源趋势日期与占比格式改变显示但保留日期边界和面�
   }
   assert.equal(value, .00001);
 });
+
+test("来源诊断和作用范围使用独立中英文复数，原生边界明确区分", () => {
+  assert.equal(translate("en", "resources.diagnostic.count", { count: 1 }), "Source diagnostics · 1 item");
+  assert.equal(translate("en", "resources.diagnostic.count", { count: 1234 }), "Source diagnostics · 1,234 items");
+  assert.equal(translate("zh-CN", "resources.diagnostic.count", { count: 1234 }), "来源诊断 · 1,234 项");
+  assert.equal(translate("en", "resources.entry.selectionScopes", { count: 1 }), "Scope · 1 context");
+  assert.equal(translate("en", "resources.entry.selectionScopes", { count: 2 }), "Scope · 2 contexts");
+  assert.equal(translate("zh-CN", "resources.entry.selectionScopes", { count: 2 }), "作用范围 · 2 项");
+  for (const language of ["en", "zh-CN"] as const) {
+    assert.notEqual(translate(language, "resources.entry.userOnly"), translate(language, "resources.tab.disabled"));
+    assert.notEqual(translate(language, "resources.empty.local"), translate(language, "resources.empty.localUnreadable"));
+    assert.notEqual(translate(language, "resources.empty.localUnreadable"), translate(language, "resources.empty.localUnsupported"));
+    assert.notEqual(translate(language, "resources.diagnostic.shadowed"), translate(language, "resources.diagnostic.residual"));
+    assert.match(translate(language, "resources.management.desktopMcpReadOnly"), /CodeFlicker/);
+  }
+});

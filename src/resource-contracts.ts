@@ -153,6 +153,8 @@ export interface ResourceAssociationEntry {
   entryPath: string;
   targetPath?: string;
   server?: string;
+  /** 已核验的同一路径原生名称；不能用作缺失路径时的关联依据。 */
+  nativeNames?: string[];
 }
 export interface ResourceHistoryAssociation {
   state: "linked" | "partial" | "ambiguous" | "unassociated";

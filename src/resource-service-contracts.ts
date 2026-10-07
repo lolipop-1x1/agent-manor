@@ -31,7 +31,7 @@ export interface ResourceLocalResult {
 }
 export interface ResourceLocalDetail {
   row: ResourceLocalRow;
-  inventory: Pick<ResourceInventorySnapshot, "observedAt" | "sources" | "gaps">;
+  inventory: Pick<ResourceInventorySnapshot, "observedAt" | "sources" | "gaps" | "diagnostics">;
   timeZone: string;
   trend: ResourceUsageTrend[];
   clients: ResourceUsageDistribution[];
@@ -41,6 +41,7 @@ export interface ResourceStatus {
   observedAt: string | null;
   sources: ResourceInventorySnapshot["sources"];
   gaps: ResourceInventorySnapshot["gaps"];
+  diagnostics?: ResourceInventorySnapshot["diagnostics"];
   projects: string[];
   favoriteIds: string[];
   manualSources: ResourceManualSource[];
