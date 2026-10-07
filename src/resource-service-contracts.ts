@@ -1,5 +1,5 @@
 import type { ResourceInventoryBody, ResourceInventoryEntry, ResourceInventorySnapshot, ResourceManualSource } from "./resource-inventory-contracts.js";
-import type { ResourceUsageDetail, ResourceUsageDistribution, ResourceUsageIdentity, ResourceUsageQuery, ResourceUsageResult, ResourceUsageStats, ResourceUsageTrend } from "./resource-contracts.js";
+import type { ResourceKind, ResourceUsageDetail, ResourceUsageDistribution, ResourceUsageIdentity, ResourceUsageQuery, ResourceUsageResult, ResourceUsageStats, ResourceUsageTrend } from "./resource-contracts.js";
 import type { Client } from "./clients.js";
 
 export type ResourceCandidate = "all" | "unused" | "low" | "old" | "broken" | "duplicate" | "favorite" | "review";
@@ -76,4 +76,45 @@ export interface ResourceOverviewDetail {
   resource: ResourceOverviewRow;
   history: ResourceUsageDetail | null;
   local: ResourceLocalRow[];
+}
+
+export type ResourceMapMetric = "calls" | "sessions" | "reads";
+export interface ResourceMapQuery extends Omit<ResourceOverviewQuery, "page" | "pageSize" | "sort" | "order"> {
+  metric?: ResourceMapMetric;
+  maxValue?: number;
+}
+/** 地图只保存名称、统计和本体身份；不包含 MCP 注册值或历史正文。 */
+export interface ResourceMapNode {
+  id: string;
+  name: string;
+  value: number | null;
+  share: number | null;
+  metrics: { calls: number; reads: number; sessions: number } | null;
+  lastUsedAt: string | null;
+  missingTimeEvents: number;
+  clients: Client[];
+  favorite: boolean;
+  protected: boolean;
+  observation: ResourceOverviewRow["observation"];
+  localBodyIds: string[];
+  hasHistory: boolean;
+  partial: boolean;
+}
+export interface ResourceMapResult {
+  kind: ResourceKind;
+  metric: ResourceMapMetric;
+  maxValue?: number;
+  version: string | null;
+  observedAt: string;
+  /** 完整查询与采集覆盖是不同状态；partial 表示历史或盘点缺口。 */
+  complete: true;
+  partial: boolean;
+  positive: ResourceMapNode[];
+  zero: ResourceMapNode[];
+  review: ResourceMapNode[];
+  total: number;
+  totalValue: number;
+  counts: ResourceOverviewResult["counts"];
+  coverage: ResourceOverviewResult["coverage"];
+  thresholds: ResourceOverviewResult["thresholds"];
 }

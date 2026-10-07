@@ -18,7 +18,7 @@ function localIdentity(row: ResourceLocalRow): ResourceUsageIdentity {
     path: row.body.targetPath, client: entry.client, project: entry.project });
 }
 
-function uncertain(history: ResourceUsageResult | null, clients: readonly Client[], stats: ResourceUsageStats | null): boolean {
+export function resourceOverviewIncomplete(history: ResourceUsageResult | null, clients: readonly Client[], stats: ResourceUsageStats | null): boolean {
   if (!history) return true;
   const coverage = history.coverage;
   if (stats?.missingTimeEvents || clients.some(client => !coverage.clients.includes(client))) return true;
@@ -38,7 +38,7 @@ function rowOf(bucket: OverviewBucket, history: ResourceUsageResult | null, quer
     || row.entries.some(entry => favorites.has(entry.id)));
   const protectedResource = favorite || localFavorite || local.some(row => row.protected || row.entries.some(entry => entry.protected));
   let stats = bucket.history?.stats ?? null;
-  const incomplete = uncertain(history, clients, stats);
+  const incomplete = resourceOverviewIncomplete(history, clients, stats);
   let observation: ResourceOverviewRow["observation"];
   if (stats && stats.events > 0) observation = "used";
   else if (incomplete || !local.length || local.some(row => row.observation === "unknown"

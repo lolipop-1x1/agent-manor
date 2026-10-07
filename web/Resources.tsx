@@ -5,13 +5,14 @@ import { CLIENTS, clientName, type Client } from "../src/clients";
 import type { ResourceKind, ResourceUsageDetail, ResourceUsageDistribution, ResourceUsageEvidenceResult, ResourceUsageStats, ResourceUsageTrend } from "../src/resource-contracts";
 import type { ResourceInventoryEntry, ResourceManualSource } from "../src/resource-inventory-contracts";
 import type { ResourceManagementAction, ResourceManagementInput, ResourceManagementOperation, ResourceManagementOperations, ResourceManagementPreview } from "../src/resource-management-contracts";
-import type { ResourceCandidate, ResourceLocalDetail, ResourceLocalQuery, ResourceLocalResult, ResourceLocalRow, ResourceOverviewCandidate, ResourceOverviewDetail, ResourceOverviewQuery, ResourceOverviewResult, ResourceOverviewRow, ResourceStatus } from "../src/resource-service-contracts";
+import type { ResourceCandidate, ResourceLocalDetail, ResourceLocalQuery, ResourceLocalResult, ResourceLocalRow, ResourceMapMetric, ResourceMapQuery, ResourceMapResult, ResourceOverviewCandidate, ResourceOverviewDetail, ResourceOverviewQuery, ResourceOverviewResult, ResourceOverviewRow, ResourceStatus } from "../src/resource-service-contracts";
 import { errorMessage, isAborted } from "./api";
 import { DatePicker } from "./DatePicker";
 import { FilterSelect } from "./FilterSelect";
 import { HelpPopover } from "./HelpPopover";
 import { ProjectPicker } from "./ProjectPicker";
 import { ResourcePagination } from "./ResourcePagination";
+import { ResourceMap, resourceMapMetricNames } from "./ResourceMap";
 import { ResizableWorkspace } from "./ResizableWorkspace";
 import { dateLabel, fmt, timeFilters } from "./model";
 import { resourceApi, resourceQuery, type FavoriteResult, type ResourceArchiveResult, type ResourceUsageFilters } from "./resource-api";
@@ -22,6 +23,8 @@ interface ResourceRoute {
   kind: ResourceKind; tab: ResourceTab; client: string; project: string; window: string;
   from: string; to: string; q: string; sort: string; order: "asc" | "desc"; candidate: ResourceCandidate | ResourceOverviewCandidate;
   low: number; inactive: number; favorite: boolean; page: number; pageSize: number; id: string; evidencePage: number; tool: string;
+  view: "list" | "map"; metric: ResourceMapMetric; maxValue: string;
+  zeroPage: number; zeroSize: number; reviewPage: number; reviewSize: number;
 }
 const tabs: { value: ResourceTab; label: string }[] = [
   { value: "usage", label: "使用排行" }, { value: "local", label: "本地资源" },
@@ -52,6 +55,9 @@ const validDate = (value: string | null): string => {
 const readRoute = (): ResourceRoute => {
   const params = new URLSearchParams(location.hash.startsWith("#resources") ? location.hash.split("?")[1] : "");
   const kind = params.get("kind") === "mcp" ? "mcp" : "skill";
+  let preferredView = "list";
+  try { preferredView = localStorage.getItem("agent-manor:resource-view") ?? "list"; } catch { /* 无法存储时仍保留当前路由。 */ }
+  const maximum = params.get("maxValue");
   return {
     kind,
     tab: tabs.some(tab => tab.value === params.get("tab")) ? params.get("tab") as ResourceTab : "usage",
@@ -64,6 +70,12 @@ const readRoute = (): ResourceRoute => {
     low: Math.min(10000, positive(params.get("low"), 2)), inactive: Math.min(3650, positive(params.get("inactive"), 90)),
     favorite: params.get("favorite") === "true", page: positive(params.get("page")), pageSize: [20, 50, 100].includes(Number(params.get("pageSize"))) ? Number(params.get("pageSize")) : 20, id: params.get("id") ?? "",
     evidencePage: positive(params.get("evidencePage")), tool: params.get("tool") ?? "",
+    view: (params.get("view") ?? preferredView) === "map" ? "map" : "list",
+    metric: params.get("metric") === "sessions" ? "sessions" : kind === "skill" && params.get("metric") === "reads" ? "reads" : "calls",
+    maxValue: maximum !== null && /^\d+$/.test(maximum) && Number.isSafeInteger(Number(maximum)) ? String(Number(maximum)) : "",
+    zeroPage: positive(params.get("zeroPage")), reviewPage: positive(params.get("reviewPage")),
+    zeroSize: [20, 50, 100].includes(Number(params.get("zeroSize"))) ? Number(params.get("zeroSize")) : 20,
+    reviewSize: [20, 50, 100].includes(Number(params.get("reviewSize"))) ? Number(params.get("reviewSize")) : 20,
   };
 };
 function address(route: ResourceRoute) {
@@ -180,6 +192,8 @@ export default function Resources({ active, onSession }: { active: boolean; onSe
   const [route, setRoute] = useState<ResourceRoute>(readRoute);
   const [status, setStatus] = useState<ResourceStatus | null>(null);
   const [overview, setOverview] = useState<FavoriteResult<ResourceOverviewResult> | null>(null);
+  const [map, setMap] = useState<ResourceMapResult | null>(null);
+  const mapLoadedQuery = useRef("");
   const [overviewDetail, setOverviewDetail] = useState<FavoriteResult<ResourceOverviewDetail> | null>(null);
   const [local, setLocal] = useState<ResourceLocalResult | null>(null);
   const [usageDetail, setUsageDetail] = useState<ResourceUsageDetail | null>(null);
@@ -234,7 +248,7 @@ export default function Resources({ active, onSession }: { active: boolean; onSe
     const next = { ...routeRef.current, ...patch }; routeRef.current = next; setRoute(next);
     if (location.hash.startsWith("#resources")) history[push ? "pushState" : "replaceState"]({}, "", address(next));
   }, []);
-  const filter = (patch: Partial<ResourceRoute>) => { if (listScroll.current) listScroll.current.scrollTop = 0; update({ ...patch, page: 1, evidencePage: 1 }); };
+  const filter = (patch: Partial<ResourceRoute>) => { if (listScroll.current) listScroll.current.scrollTop = 0; update({ ...patch, page: 1, evidencePage: 1, zeroPage: 1, reviewPage: 1 }); };
   const sort = (value: string) => filter({ sort: value, order: route.sort === value ? route.order === "asc" ? "desc" : "asc" : value === "name" ? "asc" : "desc" });
   const pageChange = (page: number) => { if (listScroll.current) listScroll.current.scrollTop = 0; update({ page }); };
   const showLocal = (id: string) => { savedScroll.current = 0; update({ tab: "local", id, project: "all", page: 1, q: "", candidate: "all", favorite: false, evidencePage: 1, tool: "" }, true); };
@@ -261,6 +275,8 @@ export default function Resources({ active, onSession }: { active: boolean; onSe
   }, [active, reload]);
   const invalidTime = (route.tab === "usage" || route.tab === "local") && route.window === "custom" && !!route.from && !!route.to && route.from > route.to;
   const overviewRanking = route.tab === "usage";
+  const mapView = overviewRanking && route.view === "map";
+  const overviewData = mapView ? map : overview;
   const overviewLabel = `${route.kind === "skill" ? "Skill" : "MCP"} 总览`;
   const scopeQuery = useMemo<ResourceUsageFilters>(() => ({ kind: route.kind,
     client: route.client === "all" ? undefined : route.client as Client,
@@ -272,17 +288,30 @@ export default function Resources({ active, onSession }: { active: boolean; onSe
   }), [scopeQuery, queryText, route.sort, route.order, route.page, route.pageSize, route.favorite]);
   const localQuery = useMemo<ResourceLocalQuery>(() => ({ ...query, favorite: undefined, candidate: route.candidate === "used" ? "all" : route.candidate, lowSessions: route.low, inactiveDays: route.inactive }), [query, route.candidate, route.low, route.inactive]);
   const overviewQuery = useMemo<ResourceOverviewQuery>(() => ({ ...query, candidate: overviewCandidates.some(candidate => candidate.value === route.candidate) ? route.candidate as ResourceOverviewCandidate : "all", lowSessions: route.low, inactiveDays: route.inactive }), [query, route.candidate, route.low, route.inactive]);
+  const mapQuery = useMemo<ResourceMapQuery>(() => ({ ...scopeQuery, q: queryText,
+    candidate: overviewCandidates.some(candidate => candidate.value === route.candidate) ? route.candidate as ResourceOverviewCandidate : "all",
+    favorite: route.favorite || undefined, lowSessions: route.low, inactiveDays: route.inactive,
+    metric: route.metric, maxValue: route.maxValue === "" ? undefined : Number(route.maxValue),
+  }), [scopeQuery, queryText, route.candidate, route.favorite, route.low, route.inactive, route.metric, route.maxValue]);
+  const listRequestQuery = mapView ? mapQuery : overviewRanking ? overviewQuery : localQuery;
+  const mapRequestKey = JSON.stringify([mapQuery, reload]);
+  useEffect(() => { try { localStorage.setItem("agent-manor:resource-view", route.view); } catch { /* 存储不可用时视图仍可切换。 */ } }, [route.view]);
   const managementQuery = useMemo(() => ({ kind: route.kind, client: route.client === "all" ? undefined : route.client, project: route.project === "all" ? undefined : route.project, q: queryText, page: route.page, pageSize: route.pageSize }), [route.kind, route.client, route.project, queryText, route.page, route.pageSize]);
   useEffect(() => {
     if (!active || invalidTime || route.tab !== "usage" && route.tab !== "local") return;
+    // 证据页返回时复用同范围的完整地图，保持已挂载相机的缩放与位置。
+    if (mapView && map && mapLoadedQuery.current === mapRequestKey) { setListLoading(false); setError(null); return; }
     const controller = new AbortController(); setListLoading(true); setError(null);
     const done = () => { if (!controller.signal.aborted) setListLoading(false); };
-    if (overviewRanking) void resourceApi.overview(overviewQuery, controller.signal).then(result => {
+    if (mapView) { setMap(null); void resourceApi.map(mapQuery, controller.signal).then(result => {
+      mapLoadedQuery.current = mapRequestKey; setMap(result);
+    }).catch(failure => { if (!isAborted(failure)) setError(errorMessage(failure)); }).finally(done); }
+    else if (overviewRanking) void resourceApi.overview(overviewQuery, controller.signal).then(result => {
       setOverview(result); if (result.favoriteIds) setStatus(current => current ? { ...current, favoriteIds: result.favoriteIds! } : current);
     }).catch(failure => { if (!isAborted(failure)) setError(errorMessage(failure)); }).finally(done);
     else void resourceApi.local(localQuery, controller.signal).then(setLocal).catch(failure => { if (!isAborted(failure)) setError(errorMessage(failure)); }).finally(done);
     return () => controller.abort();
-  }, [active, query, localQuery, overviewQuery, overviewRanking, route.tab, reload, invalidTime]);
+  }, [active, mapView, listRequestQuery, mapRequestKey, overviewRanking, route.tab, reload, invalidTime]);
   useEffect(() => {
     if (!active || route.tab === "usage" || route.tab === "local") return;
     const controller = new AbortController(); setListLoading(true); setError(null);
@@ -372,12 +401,12 @@ export default function Resources({ active, onSession }: { active: boolean; onSe
     try {
       const result = await resourceApi.apply(preview.id);
       setManagementResult(result); setPreview(null); setReload(value => value + 1);
-      if (result.status === "success") { update({ id: "" }); setFeedback(`${operationStatusNames[result.status]} · ${result.clientEffect === "pending_reload" ? "待重新加载" : "客户端生效状态未知"}`); }
+      if (result.status === "success") { if (!mapView) update({ id: "" }); setFeedback(`${operationStatusNames[result.status]} · ${result.clientEffect === "pending_reload" ? "待重新加载" : "客户端生效状态未知"}`); }
     } catch (failure) { setManagementError(errorMessage(failure)); setPreview(null); }
     finally { setApplying(false); }
   };
   const reset = () => {
-    const defaults = { ...readRoute(), client: "all", project: "all", window: "all", from: "", to: "", q: "", sort: route.kind === "mcp" ? "calls" : "sessions", order: "desc" as const, candidate: "all" as const, low: 2, inactive: 90, favorite: false, page: 1, pageSize: 20 };
+    const defaults = { ...readRoute(), client: "all", project: "all", window: "all", from: "", to: "", q: "", sort: route.kind === "mcp" ? "calls" : "sessions", order: "desc" as const, candidate: "all" as const, low: 2, inactive: 90, favorite: false, page: 1, pageSize: 20, maxValue: "", zeroPage: 1, reviewPage: 1 };
     setQueryText(""); update(defaults);
   };
   const projectOptions = [{ value: "all", label: "全部项目" }, { value: "none", label: "无项目" }, ...(status?.projects ?? []).map(path => ({ value: path, label: shortPath(path), description: path }))];
@@ -387,8 +416,8 @@ export default function Resources({ active, onSession }: { active: boolean; onSe
     {!overviewRanking && <div className="resource-field"><span>项目</span><ProjectPicker value={route.project} options={projectOptions} onChange={value => filter({ project: value })} /></div>}
     {historyView && <><div className="resource-field"><span>使用时间</span><FilterSelect label="资源使用时间" value={route.window} options={[{ value: "all", label: "全部历史" }, { value: "7", label: "近 7 天" }, { value: "30", label: "近 30 天" }, { value: "90", label: "近 90 天" }, { value: "custom", label: "自定义日期" }]} onChange={value => { setTimeAnchor(Date.now()); filter({ window: value }); }} /></div>
       {route.window === "custom" && <div className="resource-date-fields"><div className="resource-field"><span>从</span><DatePicker label="资源开始日期" value={route.from} onChange={value => filter({ from: value })} /></div><div className="resource-field"><span>到</span><DatePicker label="资源结束日期" value={route.to} onChange={value => filter({ to: value })} /></div></div>}
-      <div className="resource-field"><span>排序</span><FilterSelect label="资源排序" value={route.sort} options={[{ value: "sessions", label: "使用会话数" }, { value: "calls", label: "调用次数" }, ...(route.kind === "skill" ? [{ value: "reads", label: "读取次数" }] : []), { value: "recent", label: "最近使用" }, { value: "name", label: "名称" }]} onChange={value => filter({ sort: value, order: value === "name" ? "asc" : "desc" })} /></div>
-      <div className="resource-field"><span>排序方向</span><FilterSelect label="资源排序方向" value={route.order} options={[{ value: "desc", label: "降序" }, { value: "asc", label: "升序" }]} onChange={value => filter({ order: value as ResourceRoute["order"] })} /></div>
+      {!mapView && <><div className="resource-field"><span>排序</span><FilterSelect label="资源排序" value={route.sort} options={[{ value: "sessions", label: "使用会话数" }, { value: "calls", label: "调用次数" }, ...(route.kind === "skill" ? [{ value: "reads", label: "读取次数" }] : []), { value: "recent", label: "最近使用" }, { value: "name", label: "名称" }]} onChange={value => filter({ sort: value, order: value === "name" ? "asc" : "desc" })} /></div>
+      <div className="resource-field"><span>排序方向</span><FilterSelect label="资源排序方向" value={route.order} options={[{ value: "desc", label: "降序" }, { value: "asc", label: "升序" }]} onChange={value => filter({ order: value as ResourceRoute["order"] })} /></div></>}
     </>}
     {route.tab === "local" && <><div className="resource-field"><span>整理候选</span><FilterSelect label="资源整理候选" value={route.candidate === "used" ? "all" : route.candidate} options={route.kind === "mcp" ? candidates.filter(candidate => candidate.value !== "duplicate") : candidates} onChange={value => filter({ candidate: value as ResourceCandidate })} /></div>
     </>}
@@ -408,6 +437,7 @@ export default function Resources({ active, onSession }: { active: boolean; onSe
       <p className="resource-path">{row.body.targetPath ?? row.entries[0]?.entryPath ?? "本体路径未知"}</p>
       <div className="resource-tags"><span>{[...new Set(row.entries.map(entry => clientName(entry.client)))].join(" · ") || "Agent 未记录"}</span><span>{fmt(row.entries.length)} 个入口</span>{row.protected && <span>受保护</span>}</div>
       <div className="resource-entry-actions"><button className="button" aria-label={`查看${row.body.name}的本地本体 ${index + 1}`} onClick={() => showLocal(row.body.id)}>查看本地入口<CaretRight size={14} /></button></div>
+      {mapView && <details className="resource-data-details"><summary>管理具体入口</summary>{row.entries.map(entry => <Entry key={entry.id} entry={entry} onManage={input => void showManagement(input)} />)}</details>}
     </div>) : <ResourceEmpty>{route.kind === "skill" ? "当前清单没有此 Skill 的本地本体" : "当前清单没有此 MCP 的本地注册"}</ResourceEmpty>}
   </section>;
   const detail = <>
@@ -465,26 +495,30 @@ export default function Resources({ active, onSession }: { active: boolean; onSe
       </aside>
       <main className="resources-main">
         <header className="resources-heading"><div><h1>资源管理</h1></div><div className="resources-heading-actions"><button className="icon-button resource-mobile-filter" aria-label="打开资源筛选" onClick={() => setFiltersOpen(true)}><Funnel size={18} /></button><button className="button" disabled={refreshing} onClick={() => void refresh()}><ArrowClockwise size={15} className={refreshing ? "spinning" : ""} />{refreshing ? "正在盘点" : "刷新清单"}</button></div></header>
-        <div className="resource-kind-tabs" role="group" aria-label="资源类型">{(["skill", "mcp"] as const).map(kind => <button key={kind} aria-pressed={route.kind === kind} className={route.kind === kind ? "is-selected" : ""} onClick={() => update({ kind, id: "", page: 1, tool: "", candidate: kind === "mcp" && route.candidate === "duplicate" ? "all" : route.candidate, sort: kind === route.kind ? route.sort : kind === "mcp" ? "calls" : "sessions", order: kind === route.kind ? route.order : "desc" })}>{kind === "skill" ? "Skill" : "MCP"}</button>)}<UsageHelp kind={route.kind} /></div>
+        <div className="resource-kind-tabs" role="group" aria-label="资源类型">{(["skill", "mcp"] as const).map(kind => <button key={kind} aria-pressed={route.kind === kind} className={route.kind === kind ? "is-selected" : ""} onClick={() => update({ kind, id: "", page: 1, tool: "", zeroPage: 1, reviewPage: 1, metric: kind === "mcp" && route.metric === "reads" ? "calls" : route.metric, maxValue: kind === route.kind ? route.maxValue : "", candidate: kind === "mcp" && route.candidate === "duplicate" ? "all" : route.candidate, sort: kind === route.kind ? route.sort : kind === "mcp" ? "calls" : "sessions", order: kind === route.kind ? route.order : "desc" })}>{kind === "skill" ? "Skill" : "MCP"}</button>)}<UsageHelp kind={route.kind} /></div>
         <nav className="resource-view-tabs" aria-label="资源视图">{tabs.map(tab => <button key={tab.value} aria-current={route.tab === tab.value ? "page" : undefined} onClick={() => update({ tab: tab.value, id: "", page: 1, tool: "" }, true)}>{tab.value === "usage" ? overviewLabel : tab.label}</button>)}</nav>
         <div className="resource-list-toolbar"><label className="resource-search"><MagnifyingGlass size={16} /><input aria-label="搜索资源名称或路径" value={route.q} placeholder="搜索资源名称或路径" onChange={event => filter({ q: event.target.value })} />{route.q && <button className="icon-button" aria-label="清空资源搜索" onClick={() => filter({ q: "" })}><X size={14} /></button>}</label>
-          {overviewRanking && !listLoading && overview && <span>{fmt(overview.total)} {route.kind === "skill" ? "个 Skill" : "个 MCP"}</span>}{route.tab === "local" && !listLoading && local && <span>{fmt(local.total)} 个资源</span>}
+          {overviewRanking && !listLoading && overviewData && <span>{fmt(overviewData.total)} {route.kind === "skill" ? "个 Skill" : "个 MCP"}</span>}{route.tab === "local" && !listLoading && local && <span>{fmt(local.total)} 个资源</span>}
           {route.tab === "operations" && !listLoading && operations && <span>{fmt(operations.total)} 条操作</span>}{!historyView && route.tab !== "operations" && !listLoading && archives && <span>{fmt(archives.total)} 个资源</span>}
         </div>
+        {overviewRanking && <div className="resource-map-settings"><div className="resource-display-switch" role="group" aria-label="资源展示方式">{(["list", "map"] as const).map(view => <button key={view} aria-pressed={route.view === view} onClick={() => update({ view })}>{view === "list" ? "列表" : "地图"}</button>)}</div>
+          {mapView && <><FilterSelect label="地图面积指标" value={route.metric} options={[{ value: "calls", label: "调用次数" }, { value: "sessions", label: "使用会话数" }, ...(route.kind === "skill" ? [{ value: "reads", label: "成功读取次数" }] : [])]} onChange={value => filter({ metric: value as ResourceMapMetric, maxValue: "" })} />
+            <label className="resource-map-limit">{resourceMapMetricNames[route.metric]} ≤<input type="number" min="0" step="1" aria-label="地图指标上限" value={route.maxValue} placeholder="不限" onChange={event => { const value = event.target.value; if (value === "" || /^\d+$/.test(value) && Number.isSafeInteger(Number(value))) filter({ maxValue: value }); }} /></label></>}
+        </div>}
         {invalidTime && <div className="resource-alert" role="alert">开始日期不能晚于结束日期</div>}
         {error && <div className="resource-alert" role="alert">{error}<button className="text-button" onClick={() => setReload(value => value + 1)}>重试</button></div>}
         {feedback && <div className="resource-feedback" role="status">{feedback}<button className="icon-button" aria-label="关闭资源操作反馈" onClick={() => setFeedback(null)}><X size={14} /></button></div>}
-        {overviewRanking && overview && !listLoading && <>
-          <div className="resource-quick-filters" role="group" aria-label={`${route.kind === "skill" ? "Skill" : "MCP"} 快速筛选`}>{overviewCandidates.map(candidate => <button key={candidate.value} aria-pressed={route.candidate === candidate.value || candidate.value === "all" && !overviewCandidates.some(item => item.value === route.candidate)} onClick={() => filter({ candidate: candidate.value, favorite: false })}>{candidate.label}<strong>{fmt(overview.counts[candidate.value])}</strong></button>)}</div>
-          {(overview.partial || !!overview.coverage?.missingTimeEvents) && <div className="resource-range-summary">{overview.partial && <span className="resource-state is-warning">部分来源或记录</span>}{!!overview.coverage?.missingTimeEvents && <span className="resource-state is-warning">{fmt(overview.coverage.missingTimeEvents)} 条时间缺失</span>}</div>}
+        {overviewRanking && overviewData && !listLoading && <>
+          <div className="resource-quick-filters" role="group" aria-label={`${route.kind === "skill" ? "Skill" : "MCP"} 快速筛选`}>{overviewCandidates.map(candidate => <button key={candidate.value} aria-pressed={route.candidate === candidate.value || candidate.value === "all" && !overviewCandidates.some(item => item.value === route.candidate)} onClick={() => filter({ candidate: candidate.value, favorite: false })}>{candidate.label}<strong>{fmt(overviewData.counts[candidate.value])}</strong></button>)}</div>
+          {(overviewData.partial || !!overviewData.coverage?.missingTimeEvents) && <div className="resource-range-summary">{overviewData.partial && <span className="resource-state is-warning">部分来源或记录</span>}{!!overviewData.coverage?.missingTimeEvents && <span className="resource-state is-warning">{fmt(overviewData.coverage.missingTimeEvents)} 条时间缺失</span>}</div>}
         </>}
         {route.tab === "local" && local?.partial && !listLoading && <div className="resource-range-summary"><span className="resource-state is-warning">部分来源未读取</span></div>}
-        <div className="resource-list-scroll" ref={listScroll} aria-busy={listLoading}>
-          {listLoading ? <div role="status" className="resource-loading">正在读取资源…</div> : invalidTime ? null : overviewRanking ? overview?.resources.length ? <OverviewTable rows={overview.resources} route={route} onSort={sort} onSelect={select} onFavorite={(id, current) => void favorite(id, current)} favoritePending={favoritePending} /> : <ResourceEmpty>没有匹配的{route.kind === "skill" ? " Skill" : " MCP"}</ResourceEmpty> : route.tab === "local" ? local?.rows.length ? <div className="resource-rows">{local.rows.map(row => <div className={`resource-row${route.id === row.body.id ? " is-selected" : ""}`} key={row.body.id}>
+        <div className={`resource-list-scroll${mapView ? " resource-map-scroll" : ""}`} ref={listScroll} aria-busy={listLoading}>
+          {listLoading ? <div role="status" className="resource-loading">正在读取资源…</div> : invalidTime ? null : mapView ? map && <ResourceMap data={map} selected={route.id} onSelect={select} zeroPage={route.zeroPage} zeroSize={route.zeroSize} reviewPage={route.reviewPage} reviewSize={route.reviewSize} onZeroPage={zeroPage => update({ zeroPage })} onZeroSize={zeroSize => update({ zeroSize, zeroPage: 1 })} onReviewPage={reviewPage => update({ reviewPage })} onReviewSize={reviewSize => update({ reviewSize, reviewPage: 1 })} /> : overviewRanking ? overview?.resources.length ? <OverviewTable rows={overview.resources} route={route} onSort={sort} onSelect={select} onFavorite={(id, current) => void favorite(id, current)} favoritePending={favoritePending} /> : <ResourceEmpty>没有匹配的{route.kind === "skill" ? " Skill" : " MCP"}</ResourceEmpty> : route.tab === "local" ? local?.rows.length ? <div className="resource-rows">{local.rows.map(row => <div className={`resource-row${route.id === row.body.id ? " is-selected" : ""}`} key={row.body.id}>
             <button className="resource-row-main" onClick={() => select(row.body.id)} aria-label={`查看${row.body.name}的本地详情`}><div className="resource-row-heading"><strong>{row.body.name}</strong><span>{fmt(row.entries.length)} 个入口</span></div><div className="resource-row-subtitle" title={row.body.targetPath}>{row.body.targetPath ?? row.entries[0]?.entryPath}</div><div className="resource-row-metrics"><span>{[...new Set(row.entries.map(entry => clientName(entry.client)))].join(" · ")}</span>{row.usage && <span><b>{fmt(row.usage.sessions)}</b> 使用会话</span>}</div><div className="resource-tags"><span className={row.observation === "recorded" ? "" : "is-warning"}>{observationLabel(row)}</span>{row.protected && <span><ShieldCheck size={12} />受保护</span>}{row.favorite && !status?.favoriteIds.includes(row.body.id) && <span>关联收藏保护</span>}{row.entries.some(entry => !entry.capabilities.standby && !entry.capabilities.disable && !entry.capabilities.trash) && <span>只读</span>}{row.candidates.includes("broken") && <span className="is-warning">断链／缺失</span>}{row.candidates.includes("duplicate") && <span>SKILL.md 相同</span>}</div></button><FavoriteButton name={row.body.name} favorite={!!status?.favoriteIds.includes(row.body.id)} disabled={favoritePending === row.body.id || !status} onClick={() => void favorite(row.body.id)} />
           </div>)}</div> : <ResourceEmpty>没有匹配的本地资源</ResourceEmpty> : route.tab === "operations" ? operations?.operations.length ? <div className="resource-rows">{operations.operations.map(operation => <div className={`resource-row${route.id === operation.id ? " is-selected" : ""}`} key={operation.id}><button className="resource-row-main" aria-label={`查看${operation.name}的${actionNames[operation.action]}记录`} onClick={() => select(operation.id)}><div className="resource-row-heading"><strong>{operation.name}</strong><span>{actionNames[operation.action]}</span></div><div className="resource-row-metrics"><span>{clientName(operation.resource.client)}</span><span>{dateLabel(operation.createdAt)}</span></div><div className="resource-tags"><span className={operation.status === "success" ? "" : "is-warning"}>{operationStatusNames[operation.status]}</span><span>{operation.clientEffect === "pending_reload" ? "待重新加载" : "客户端生效状态未知"}</span></div></button></div>)}</div> : <ResourceEmpty>没有匹配的操作记录</ResourceEmpty> : archives?.archives.length ? <div className="resource-rows">{archives.archives.map(archive => <div className={`resource-row${route.id === archive.id ? " is-selected" : ""}`} key={archive.id}><button className="resource-row-main" aria-label={`查看${archive.entry.name}的恢复记录`} onClick={() => select(archive.id)}><div className="resource-row-heading"><strong>{archive.entry.name}</strong><span>{clientName(archive.entry.client)}</span></div><div className="resource-row-subtitle" title={archive.originalPath}>{archive.originalPath}</div><div className="resource-row-metrics"><span>{dateLabel(archive.createdAt)}</span></div><div className="resource-tags"><span>{archiveNames[archive.state]}</span><span className={!archive.restorable ? "is-warning" : ""}>{archive.restorable ? "可恢复" : "恢复材料不可用"}</span>{archive.operationStatus === "partial" && <span className="is-warning">部分完成</span>}</div></button></div>)}</div> : <ResourceEmpty>当前范围没有{tabs.find(tab => tab.value === route.tab)?.label}资源</ResourceEmpty>}
         </div>
-        {overviewRanking && overview && !listLoading && <ResourcePagination page={overview.page} total={overview.total} pageSize={overview.pageSize} label={overviewLabel} onPageSizeChange={pageSize => filter({ pageSize })} onChange={pageChange} />}
+        {overviewRanking && !mapView && overview && !listLoading && <ResourcePagination page={overview.page} total={overview.total} pageSize={overview.pageSize} label={overviewLabel} onPageSizeChange={pageSize => filter({ pageSize })} onChange={pageChange} />}
         {route.tab === "local" && local && !listLoading && <ResourcePagination page={local.page} total={local.total} pageSize={local.pageSize} label="本地资源" onPageSizeChange={pageSize => filter({ pageSize })} onChange={pageChange} />}
         {route.tab === "operations" && operations && !listLoading && <ResourcePagination page={operations.page} total={operations.total} pageSize={operations.pageSize} label="操作记录" onPageSizeChange={pageSize => filter({ pageSize })} onChange={pageChange} />}
         {!historyView && route.tab !== "operations" && archives && !listLoading && <ResourcePagination page={archives.page} total={archives.total} pageSize={archives.pageSize} label="恢复记录" onPageSizeChange={pageSize => filter({ pageSize })} onChange={pageChange} />}

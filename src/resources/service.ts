@@ -1,12 +1,13 @@
 import type { SessionStore } from "../sessions/store.js";
 import type { ResourceInventoryOptions, ResourceInventorySnapshot, ResourceManualSource } from "../resource-inventory-contracts.js";
-import type { ResourceLocalDetail, ResourceLocalQuery, ResourceLocalResult, ResourceLocalRow, ResourceStatus, ResourceOverviewQuery, ResourceOverviewDetail } from "../resource-service-contracts.js";
+import type { ResourceLocalDetail, ResourceLocalQuery, ResourceLocalResult, ResourceLocalRow, ResourceStatus, ResourceOverviewQuery, ResourceOverviewDetail, ResourceMapQuery, ResourceMapResult } from "../resource-service-contracts.js";
 import type { ResourceUsageQuery, ResourceUsageResult } from "../resource-contracts.js";
 import { ServiceError } from "../service/input.js";
 import { StoreError } from "../index/store.js";
 import { scanResourceInventory } from "./inventory.js";
 import { aggregateResourceUsage, emptyResourceUsageStats, listResourceUsage, resourceOverviewIdentity, localResourceUsage, resourceUsageDetail, resourceUsageEvidence } from "./usage.js";
 import { buildResourceOverview } from "./overview.js";
+import { buildResourceMap } from "./map.js";
 import { ResourceManager } from "./management.js";
 
 /** 共用服务边界：派生盘点可刷新，收藏和恢复材料由独立管理库保留。 */
@@ -49,7 +50,7 @@ export class ResourceService {
       let history: ResourceUsageResult | null = null;
       try { history = aggregateResourceUsage(this.library, scope, inventory.entries, new Set(this.manager.favorites()), true); }
       catch (error) { if (!(error instanceof StoreError) || error.code !== "ANALYSIS_NOT_READY") throw error; }
-      const local = await this.localRows({ ...scope, lowSessions: query.lowSessions, inactiveDays: query.inactiveDays });
+      const local = await this.localRows({ ...scope, lowSessions: query.lowSessions, inactiveDays: query.inactiveDays }, Boolean(scope.version));
       return { history, local };
     })();
     this.overviewCache = { key, value };
@@ -59,6 +60,12 @@ export class ResourceService {
     const { history, local } = await this.overviewData(query);
     return { ...buildResourceOverview(history, local.rows, query, { observedAt: local.inventory.observedAt,
       partial: local.partial, favorites: new Set(this.manager.favorites()) }), favoriteIds: this.manager.favorites() };
+  }
+  async map(query: ResourceMapQuery): Promise<ResourceMapResult> {
+    const { history, local } = await this.overviewData(query);
+    const overview = buildResourceOverview(history, local.rows, query, { observedAt: local.inventory.observedAt,
+      partial: local.partial, favorites: new Set(this.manager.favorites()), unpaginated: true });
+    return buildResourceMap(overview, history, query);
   }
   async overviewDetail(id: string, query: ResourceOverviewQuery): Promise<ResourceOverviewDetail> {
     const { history, local } = await this.overviewData(query);
@@ -95,10 +102,10 @@ export class ResourceService {
     return { favoriteIds: this.manager.favorites() };
   }
 
-  private async localRows(query: ResourceLocalQuery): Promise<{ rows: ResourceLocalRow[]; inventory: ResourceInventorySnapshot; partial: boolean; history?: ReturnType<typeof localResourceUsage> }> {
+  private async localRows(query: ResourceLocalQuery, historyAvailable = true): Promise<{ rows: ResourceLocalRow[]; inventory: ResourceInventorySnapshot; partial: boolean; history?: ReturnType<typeof localResourceUsage> }> {
     const inventory = await this.inventory();
     let history: ReturnType<typeof localResourceUsage> | undefined;
-    try { history = localResourceUsage(this.library, query, inventory.entries); }
+    try { if (historyAvailable) history = localResourceUsage(this.library, query, inventory.entries); }
     catch (error) { if (!(error instanceof StoreError) || error.code !== "ANALYSIS_NOT_READY") throw error; }
     const favoriteIds = new Set(this.manager.favorites());
     const byId = new Map(inventory.entries.map(entry => [entry.id, entry]));

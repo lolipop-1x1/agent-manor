@@ -566,6 +566,7 @@ try {
     await pager.getByRole("spinbutton",{name:"Skill 总览跳转页码",exact:true}).fill("2");
     await pager.getByRole("button",{name:"Skill 总览跳转",exact:true}).click();
     await page.waitForFunction(()=>new URLSearchParams(location.hash.split("?")[1]).get("page")==="2"&&!document.querySelector('.resource-list-scroll[aria-busy="true"]'));
+    await page.waitForFunction(()=>document.querySelector('nav[aria-label="Skill 总览"]')?.textContent.includes("21–40"));
     expect((await pager.innerText()).includes("21–40"),"跳页区间错误");
     ${select("Skill 总览每页条数", "50 条／页")}
     await page.waitForFunction(()=>document.querySelectorAll('.resource-overview-table tbody tr').length===50);
@@ -591,6 +592,7 @@ try {
     await detail.getByRole("button",{name:"收藏guide本体 1",exact:true}).click();
     await detail.getByRole("button",{name:"取消收藏guide本体 1",exact:true}).waitFor();
     const row=page.getByRole("table",{name:"Skill 总览",exact:true}).getByRole("row").filter({has:page.getByRole("button",{name:"查看guide的使用详情",exact:true})});
+    await row.getByRole("button",{name:"收藏guide",exact:true}).waitFor();
     expect(await row.getByRole("button",{name:"收藏guide",exact:true}).count()===1,"本体收藏冒充名称收藏");
     await row.getByRole("button",{name:"收藏guide",exact:true}).click();
     await row.getByRole("button",{name:"取消收藏guide",exact:true}).waitFor();
