@@ -297,6 +297,7 @@ function aggregateUsage(stream: ResourceEventStream, query: ResourceUsageQuery, 
   rows.sort((left, right) => {
     let difference = 0;
     if (sort === "sessions") difference = right.stats.sessions - left.stats.sessions;
+    if (sort === "uses") difference = right.stats.events - left.stats.events;
     if (sort === "calls") difference = right.stats.explicitCalls + right.stats.mcpCalls - left.stats.explicitCalls - left.stats.mcpCalls;
     if (sort === "reads") difference = right.stats.successfulReads - left.stats.successfulReads;
     if (sort === "recent") {

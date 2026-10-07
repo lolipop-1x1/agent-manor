@@ -180,7 +180,9 @@ agent-manor stop --json
 
 ## 资源管理
 
-顶部「资源管理」切换 Skill／MCP，两类资源首入口均为总览；另有本地资源、已停用、备用、回收和操作记录。总览按完整 Skill 名称或 MCP 服务器名称合并本地清单及历史使用，Agent 作为筛选；具体路径、本体和注册入口保留在详情中。相同服务器名称不证明注册、地址或服务实例相同。排行依据已索引的实际事件，使用会话数取并集；Skill 调用与成功读取分列，MCP 默认按调用次数排序，可下钻工具，统计已记录结果和执行耗时，并从证据跳回会话轨迹。请求 Token 不归因到资源。
+顶部「资源管理」切换 Skill／MCP，两类资源首入口均为总览；另有本地资源、已停用、回收区和操作记录。总览按完整 Skill 名称或 MCP 服务器名称合并本地清单及历史使用，Agent 作为筛选；具体路径、本体和注册入口保留在详情中。相同服务器名称不证明注册、地址或服务实例相同。列表与地图保留调用次数和使用会话数，默认调用次数；Skill 次数包含显式调用与成功正文读取，使用会话数取并集，原始分类在详情回查。MCP 可下钻工具，统计已记录结果和执行耗时，并从证据跳回会话轨迹。请求 Token 不归因到资源。
+
+总览列表每行的「管理」按钮与地图选中后详情顶部的「管理」按钮打开同一组本地入口。选择具体路径与 Agent 入口，再预览停用或移入回收区，不必切换本地资源页；操作后保留统计筛选与地图视野。历史独有项、只读或受保护的入口显示实际限制，不按汇总名称批量修改。
 
 默认全部已索引历史，两类总览按 Agent 和事件时间筛选，其他视图也支持项目筛选。来源、时间或安装归属缺失保持未知／部分记录；历史名称不能证明属于当前同名资源，缺失名称保留来源身份。整理候选提供使用会话数和未使用天数阈值，收藏与受管理资源受保护。首次发现不代表安装时间；新发现但观测不足的资源列为待检查。文档指纹只识别 `SKILL.md` 相同，不证明整个资源包相同。
 
@@ -190,7 +192,7 @@ Skill／MCP 总览可切换列表或地图，首次使用列表，随后保留�
 
 地图支持滚轮缩放、拖动、全屏、适应窗口和定位所选；定位资源支持名称搜索，缩放只改变视野。悬停或键盘聚焦查看名称、数值、占比、最近使用和保护状态，点击打开详情及具体本地入口；全屏选择资源时退出全屏以展示详情。使用证据跳转返回同一范围时保留缩放与平移位置。地图的指标上限只筛选已知数值，切换指标清空上限，切回列表沿用列表范围；搜索与 Agent／时间／状态筛选同时作用于两种视图。数值口径和交互说明可通过地图帮助查看。
 
-本地盘点只读取已核验来源、已知项目和手动路径，不执行 Skill、启动 MCP 或全盘扫描。支持范围见 [资源来源矩阵](design/resource-support.md)。每个入口显示自身可用动作；未经核验的来源与插件缓存只读。停用使用已核验原生设置，备用／回收是入口隔离或所选注册移除，不卸载服务。符号链接操作保留其共享目标。
+本地盘点只读取已核验来源、已知项目和手动路径，不执行 Skill、启动 MCP 或全盘扫描。支持范围见 [资源来源矩阵](design/resource-support.md)。每个入口显示自身可用动作；未经核验的来源与插件缓存只读。停用使用已核验原生设置，保留资源本体并保存配置恢复备份；回收是入口隔离或所选注册移除，不卸载服务。符号链接操作保留其共享目标。旧备用档案归入回收区，继续可以恢复或另行确认永久清除，旧 API 与 CLI 调用保持兼容。
 
 ```sh
 agent-manor resources status --json
@@ -203,9 +205,9 @@ agent-manor resources detail <historyResourceId> --json
 agent-manor resources evidence <historyResourceId> --page 2 --json
 agent-manor resources favorite <resourceId> --json
 agent-manor resources source-add /workspace/skills --kind skill --client codex --json
-agent-manor resources preview standby --entry-id <entryId> --json
+agent-manor resources preview trash --entry-id <entryId> --json
 agent-manor resources apply <previewId> --confirm --json
-agent-manor resources archives --state standby --json
+agent-manor resources archives --state trash --json
 agent-manor resources preview restore --operation-id <operationId> --json
 agent-manor resources operations --json
 ```
@@ -214,6 +216,23 @@ agent-manor resources operations --json
 
 资源 API 位于 `/api/v1/resources`，与 Web／CLI 共用服务：`status`、`overview`、`overview/:id`、`map`、`usage`、`usage/:id`、`usage/:id/evidence`、`local`、`local/:id`、`archives`、`operations`，以及 `refresh`、`favorites`、`sources`、`preview`、`apply`。分页只影响返回明细；所有历史事件参与相应范围统计。管理记录按资源范围筛选，不把历史使用日期当成操作日期。
 
-`GET /api/v1/resources/map` 返回同一已发布版本下的完整轻量节点，包括正值、零值与待检查三个集合；复用总览缓存，仅在地图视图按需查询。支持 `kind`、`client`、`from`、`to`、`q`、`candidate`，以及地图专属的 `metric=calls|sessions|reads`、`maxValue` 非负整数；MCP 不支持读取指标。列表页码和排序不限制地图，不为绘图重新索引原始历史，也不返回 MCP 注册正文。
+`GET /api/v1/resources/map` 返回同一已发布版本下的完整轻量节点，包括正值、零值与待检查三个集合；复用总览缓存，仅在地图视图按需查询。支持 `kind`、`client`、`from`、`to`、`q`、`candidate`，以及地图专属的 `metric=calls|sessions|reads|uses`、`maxValue` 非负整数；MCP 不支持读取指标。`uses` 合计 Skill 显式调用与成功正文读取，MCP 则为工具请求次数；Web 默认采用此调用次数，可切换使用会话数。既有 `calls`、`reads` 口径保持不变，列表也支持 `sort=uses`。列表页码和排序不限制地图，不为绘图重新索引原始历史，也不返回 MCP 注册正文。
 
 管理状态保存于数据目录的 `resources.sqlite`，恢复材料位于 `resource-vault/`，独立于 `index.sqlite`；收藏、手动来源、记录与恢复材料不随历史清缓存删除。管理库及材料使用受限权限，可能包含恢复所需的私密配置；不要上传或加入发布包。清除回收材料不声称其他系统备份也已清除。
+
+正常运行使用持久数据目录，默认 `~/.agent-manor/`；临时目录仅用于隔离测试。新恢复材料按下面的结构存放，Agent 与完整原路径由恢复记录保存。来源标识区分不同入口或注册，同一资源每次操作也分别保存，不覆盖同名资源。
+
+```text
+resource-vault/
+├── backups/skill-or-mcp/name--source-id/operation-id/material
+└── trash/skill-or-mcp/name--source-id/operation-id/material
+```
+
+需要从旧数据目录迁移时，在源码工作区构建后运行以下工具。先停止服务，目标目录必须不存在；工具保留索引、偏好和管理记录，核对数据库与恢复材料，更新材料位置并使旧预览失效。原目录继续保留，不自动清理；随后使用新 `--home` 启动，或迁到默认目录后省略该参数。
+
+```sh
+npm run build
+node scripts/migrate-data-home.mjs /path/to/old-data /path/to/new-data
+```
+
+不要只复制管理数据库：恢复依赖对应材料及位置记录。回收区不是系统废纸篓，停用预览显示的是恢复备份位置，永久清除须单独确认。

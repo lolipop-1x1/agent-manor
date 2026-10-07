@@ -10,7 +10,7 @@ export function resourceQuery(raw: Record<string, unknown>): ResourceLocalQuery 
     lowSessions: integer(raw.lowSessions, "lowSessions", 2, 10_000), inactiveDays: integer(raw.inactiveDays, "inactiveDays", 90, 3650) };
   query.favorite = queryBoolean(raw.favorite, "favorite");
   for (const key of ["project", "q", "tool"] as const) query[key] = textValue(raw[key], key);
-  const enums = { kind: ["skill", "mcp"], sort: ["sessions", "calls", "reads", "recent", "name"], order: ["asc", "desc"],
+  const enums = { kind: ["skill", "mcp"], sort: ["sessions", "calls", "reads", "uses", "recent", "name"], order: ["asc", "desc"],
     candidate: ["all", "unused", "low", "old", "broken", "duplicate", "favorite", "review"],
     evidenceKind: ["skill_call", "skill_read", "mcp"] };
   for (const [key, values] of Object.entries(enums)) {
@@ -32,7 +32,7 @@ export function resourceMapQuery(raw: Record<string, unknown>): ResourceMapQuery
   const { page: _page, pageSize: _pageSize, sort: _sort, order: _order, ...query } = resourceOverviewQuery({
     ...raw, page: undefined, pageSize: undefined, sort: undefined, order: undefined });
   const metric = textValue(raw.metric, "metric") ?? "calls";
-  if (!["calls", "sessions", "reads"].includes(metric) || query.kind === "mcp" && metric === "reads") {
+  if (!["calls", "sessions", "reads", "uses"].includes(metric) || query.kind === "mcp" && metric === "reads") {
     throw new ServiceError("INVALID_INPUT", "所选资源不支持该面积指标", { key: "diagnostics.service.resourceInput.m003" });
   }
   const value = raw.maxValue;

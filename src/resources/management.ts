@@ -1,10 +1,10 @@
 import type { MessageDescriptor } from "../i18n/types.js";
 import Database from "better-sqlite3";
 import { createHash, randomUUID } from "node:crypto";
-import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { chmod, copyFile, cp, lstat, mkdir, readFile, readdir, readlink, realpath, rename, rm, symlink, writeFile } from "node:fs/promises";
 import { constants } from "node:fs";
-import { dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { clientIds } from "../clients.js";
 import type { ResourceInventoryEntry, ResourceInventorySnapshot, ResourceManualSource } from "../resource-inventory-contracts.js";
 import type {
@@ -15,6 +15,7 @@ import { ServiceError } from "../service/input.js";
 import { acquireLock } from "../service/runtime.js";
 import { editableConfig, prepareConfig, restoreConfig } from "./config-editor.js";
 import type { ConfigChange } from "./config-editor.js";
+import { resourceMaterialPath } from "./vault-path.js";
 
 interface Mode { path: string; mode: number; type: "file" | "directory" | "symlink" }
 interface Inspection { hash: string; modes: Mode[]; contentHash: string }
@@ -42,6 +43,8 @@ async function inspect(path: string): Promise<Inspection> {
   catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return { hash: "missing", contentHash: "missing", modes: [] }; throw error; }
   return { hash: digest(parts.join("\n")), contentHash: digest(contents.join("\n")), modes };
 }
+/** 迁移核对恢复材料时复用管理操作的内容校验口径。 */
+export async function resourceMaterialFingerprint(path: string): Promise<string> { return (await inspect(path)).contentHash; }
 async function permissions(path: string, modes: Mode[], restricted: boolean): Promise<void> {
   for (const item of [...modes].reverse()) if (item.type !== "symlink") await chmod(join(path, item.path), restricted ? item.type === "directory" ? 0o700 : 0o600 : item.mode);
 }
@@ -70,6 +73,7 @@ export class ResourceManager {
   constructor(home: string) {
     this.home = resolve(home); this.dbPath = join(this.home, "resources.sqlite"); this.vaultPath = join(this.home, "resource-vault");
     mkdirSync(this.home, { recursive: true, mode: 0o700 }); mkdirSync(this.vaultPath, { recursive: true, mode: 0o700 });
+    if (!lstatSync(this.vaultPath).isDirectory()) throw new TypeError("恢复目录根不能是符号链接");
     chmodSync(this.vaultPath, 0o700);
     if (!existsSync(this.dbPath)) writeFileSync(this.dbPath, "", { flag: "wx", mode: 0o600 });
     chmodSync(this.dbPath, 0o600); this.database = new Database(this.dbPath);
@@ -153,8 +157,9 @@ export class ResourceManager {
     }) };
   }
   archives(state?: ResourceManagementArchive["state"]): ResourceManagementArchive[] {
-    const rows = this.database.prepare(`SELECT json FROM resource_archives WHERE phase<>'prepared'${state ? " AND state=?" : ""} ORDER BY rowid DESC`)
-      .all(...(state ? [state] : [])) as JsonRow[];
+    const filter = state === "trash" ? " AND state IN ('trash','standby')" : state ? " AND state=?" : "";
+    const rows = this.database.prepare(`SELECT json FROM resource_archives WHERE phase<>'prepared'${filter} ORDER BY rowid DESC`)
+      .all(...(state && state !== "trash" ? [state] : [])) as JsonRow[];
     return rows.map(row => decode<PrivateArchive>(row).public);
   }
   operations(page = 1, pageSize = 50, query: ResourceManagementOperationQuery = {}): ResourceManagementOperations {
@@ -227,7 +232,7 @@ export class ResourceManager {
         if ((file.hash === "missing" ? "" : await readFile(change.path, "utf8")) !== change.beforeText) stale();
         await check(change.path); sourcePath = change.path;
       }
-      destinationPath = join(this.vaultPath, id, "material");
+      destinationPath = resourceMaterialPath(this.vaultPath, input.action, entry, id);
     }
     const favorite = this.favorite(entry, snapshot);
     const preview: ResourceManagementPreview = { id, action: input.action, entryId: entry.id, operationId: input.operationId,
@@ -249,6 +254,23 @@ export class ResourceManager {
     this.database.prepare(`INSERT INTO resource_archives(id,operation_id,state,phase,json) VALUES(?,?,?,?,?)
       ON CONFLICT(id) DO UPDATE SET state=excluded.state,phase=excluded.phase,json=excluded.json`)
       .run(value.public.id, value.public.operationId, value.public.state, phase, JSON.stringify(value));
+  }
+  private async createMaterialDirectory(directory: string): Promise<void> {
+    const subpath = relative(this.vaultPath, directory);
+    if (!subpath || isAbsolute(subpath) || subpath === ".." || subpath.startsWith(`..${sep}`)) {
+      throw new TypeError("恢复材料必须保存在本地回收目录内");
+    }
+    let current = this.vaultPath;
+    if (!(await lstat(current)).isDirectory()) throw new TypeError("恢复目录根不能是符号链接");
+    await chmod(current, 0o700);
+    const parts = subpath.split(sep);
+    for (const part of parts.slice(0, -1)) {
+      current = join(current, part);
+      await mkdir(current, { recursive: true, mode: 0o700 });
+      if (!(await lstat(current)).isDirectory()) throw new TypeError("恢复目录包含未经核验的链接");
+      await chmod(current, 0o700);
+    }
+    await mkdir(directory, { mode: 0o700 });
   }
   private async writeConfig(path: string, text: string, dependency: Dependency): Promise<void> {
     await mkdir(dirname(path), { recursive: true });
@@ -315,7 +337,7 @@ export class ResourceManager {
           this.saveArchive(saved, "complete"); operation.archiveId = saved.public.id;
         } else {
           const directory = dirname(preview.destinationPath!); const material = preview.destinationPath!;
-          await mkdir(directory, { mode: 0o700 });
+          await this.createMaterialDirectory(directory);
           createdBackupDirectory = directory;
           const original = await inspect(preview.sourcePath);
           if (plan.change) await writeFile(material, plan.change.beforeText, { flag: "wx", mode: 0o600 });

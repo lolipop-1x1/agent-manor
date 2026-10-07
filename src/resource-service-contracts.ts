@@ -79,7 +79,7 @@ export interface ResourceOverviewDetail {
   local: ResourceLocalRow[];
 }
 
-export type ResourceMapMetric = "calls" | "sessions" | "reads";
+export type ResourceMapMetric = "calls" | "sessions" | "reads" | "uses";
 export interface ResourceMapQuery extends Omit<ResourceOverviewQuery, "page" | "pageSize" | "sort" | "order"> {
   metric?: ResourceMapMetric;
   maxValue?: number;

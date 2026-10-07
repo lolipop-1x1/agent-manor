@@ -77,6 +77,7 @@ function compare(left: ResourceOverviewRow, right: ResourceOverviewRow, query: R
       const time = row.stats.lastUsedAt ? Date.parse(row.stats.lastUsedAt) : NaN;
       return Number.isFinite(time) ? time : null;
     }
+    if (sort === "uses") return row.stats.events;
     if (sort === "calls") return row.stats.explicitCalls + row.stats.mcpCalls;
     if (sort === "reads") return row.stats.successfulReads;
     return row.stats.sessions;

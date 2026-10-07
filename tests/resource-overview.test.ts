@@ -191,6 +191,8 @@ test("数字和最近使用升降序都把未知放最后，名称排序服从�
   assert.deepEqual(names({ sort: "sessions", order: "asc" }), ["zulu-zero", "alpha", "beta", "aardvark-unknown"]);
   assert.deepEqual(names({ sort: "sessions", order: "desc" }), ["beta", "alpha", "zulu-zero", "aardvark-unknown"]);
   assert.deepEqual(names({ sort: "calls", order: "desc" }), ["alpha", "beta", "zulu-zero", "aardvark-unknown"]);
+  assert.deepEqual(names({ sort: "uses", order: "desc" }), ["beta", "alpha", "zulu-zero", "aardvark-unknown"]);
+  assert.deepEqual(names({ sort: "uses", order: "asc" }), ["zulu-zero", "alpha", "beta", "aardvark-unknown"]);
   assert.deepEqual(names({ sort: "reads", order: "asc" }), ["alpha", "zulu-zero", "beta", "aardvark-unknown"]);
   assert.deepEqual(names({ sort: "recent", order: "asc" }), ["alpha", "beta", "aardvark-unknown", "zulu-zero"]);
   assert.deepEqual(names({ sort: "recent", order: "desc" }), ["beta", "alpha", "aardvark-unknown", "zulu-zero"]);

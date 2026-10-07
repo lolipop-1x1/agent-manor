@@ -122,7 +122,9 @@ try {
     page.on('pageerror',error=>page.mapErrors.push(error.message));
     page.on('request',request=>{if(request.url().includes('/api/v1/resources/map'))page.mapRequests.push(request.url())});
     await page.setViewportSize({width:1560,height:980});
-    await page.getByRole('table',{name:'Skill 总览',exact:true}).waitFor();
+    const table=page.getByRole('table',{name:'Skill 总览',exact:true}); await table.waitFor();
+    expect(await table.getByRole('columnheader').filter({hasText:'调用次数'}).getAttribute('aria-sort')==='descending','Skill 默认排序不是调用次数');
+    expect(await table.getByRole('columnheader').count()===7,'Skill 列表缺少次数或会话列');
     expect(page.mapRequests.length===0,'列表提前读取地图');
     await page.getByRole('textbox',{name:'搜索资源名称或路径',exact:true}).fill('map-');
     await page.getByRole('group',{name:'资源展示方式',exact:true}).getByRole('button',{name:'地图',exact:true}).click();
@@ -130,37 +132,63 @@ try {
     await page.getByRole('button',{name:'查看map-skill-000的使用详情',exact:true}).waitFor();
     expect(page.mapRequests.length>0,'地图没有完整查询');
     expect(page.mapRequests.every(url=>!url.includes('pageSize=')&&!url.includes('&page=')),'地图沿用列表分页');
-    expect(await page.getByRole('combobox',{name:'地图面积指标',exact:true}).count()===0,'主界面仍区分调用与读取指标');
-    expect(page.mapRequests.every(url=>/[?&]metric=sessions(?:&|$)/.test(url)),'地图未统一使用会话数');
+    expect(await page.getByRole('combobox',{name:'地图面积指标',exact:true}).count()===1,'地图缺少次数与会话指标切换');
+    expect(page.mapRequests.every(url=>/[?&]metric=uses(?:&|$)/.test(url)),'地图默认未使用合并调用次数');
     const area=await page.locator('rect[data-resource-id]').evaluateAll((rects,ids)=>ids.map(id=>{const rect=rects.find(node=>node.getAttribute('data-resource-id')===id);return (Number(rect.getAttribute('width'))+1)*(Number(rect.getAttribute('height'))+1)}),${JSON.stringify([maps.skill.positive.find(row=>row.name==='map-skill-000').id,maps.skill.positive.find(row=>row.name==='map-skill-001').id])});
-    expect(Math.abs(area[0]/area[1]-.5)<1e-7,'同会话重复调用未去重或跨会话读取未纳入面积');
+    expect(Math.abs(area[0]/area[1]-100/11)<1e-7,'面积未包含重复调用与成功读取');
     ${screenshot("skill-map-light.png")}
   `);
-  await step("悬停与键盘展示使用会话，读取型资源直接进入地图", `
+  await step("悬停与键盘展示调用次数，读取型资源直接进入地图", `
     const tile=page.getByRole('button',{name:'查看map-skill-001的使用详情',exact:true});
     await tile.hover();
     const tooltip=page.getByRole('tooltip'); await tooltip.waitFor();
-    expect((await tooltip.innerText()).includes('map-skill-001')&&(await tooltip.innerText()).includes('使用会话数 · 2 个会话'),'悬停未显示完整名称及去重会话数');
+    expect((await tooltip.innerText()).includes('map-skill-001')&&(await tooltip.innerText()).includes('调用次数 · 11 次调用'),'悬停未显示完整名称及合并调用次数');
     await tile.focus(); await tooltip.waitFor();
     expect((await tooltip.innerText()).includes('最近使用'),'键盘聚焦缺少最近使用');
+    ${locateResource("map-read-000")}
     await page.getByRole('button',{name:'查看map-read-000的使用详情',exact:true}).focus();
     await tooltip.waitFor();
-    expect((await tooltip.innerText()).includes('使用会话数 · 1 个会话'),'只读取的 Skill 没有使用会话');
+    expect((await tooltip.innerText()).includes('调用次数 · 1 次调用'),'只读取的 Skill 没有计入调用次数');
+    await page.getByRole('button',{name:'适应资源地图窗口',exact:true}).click();
   `);
-  await step("旧调用与读取链接统一会话指标，旧次数上限不沿用", `
+  await step("次数和会话切换、上限重置、键盘操作及刷新保留", `
+    await page.getByRole('spinbutton',{name:'地图调用次数上限',exact:true}).fill('10');
+    await page.waitForFunction(()=>new URLSearchParams(location.hash.split('?')[1]).get('maxValue')==='10');
+    const metric=page.getByRole('combobox',{name:'地图面积指标',exact:true});
+    await metric.click(); await page.getByRole('option',{name:'使用会话数',exact:true}).click();
+    await page.getByRole('spinbutton',{name:'地图使用会话数上限',exact:true}).waitFor();
+    expect(await page.getByRole('spinbutton',{name:'地图使用会话数上限',exact:true}).inputValue()==='','切换指标没有清空次数上限');
+    await page.getByRole('button',{name:'查看map-skill-001的使用详情',exact:true}).hover();
+    await page.getByRole('tooltip').filter({hasText:'使用会话数 · 2 个会话'}).waitFor();
+    await page.reload();
+    await page.getByRole('group',{name:'资源使用地图',exact:true}).waitFor();
+    expect(await page.getByRole('combobox',{name:'地图面积指标',exact:true}).innerText()==='使用会话数','刷新丢失所选指标');
+    await page.getByRole('combobox',{name:'地图面积指标',exact:true}).focus();
+    await page.keyboard.press('Enter');
+    await page.getByRole('option',{name:'使用会话数',exact:true}).waitFor();
+    await page.waitForFunction(()=>document.activeElement?.getAttribute('role')==='option'&&document.activeElement.textContent.includes('使用会话数'));
+    await page.keyboard.press('Home');
+    await page.waitForFunction(()=>document.activeElement?.getAttribute('role')==='option'&&document.activeElement.textContent.includes('调用次数'));
+    await page.keyboard.press('Enter');
+    await page.getByRole('spinbutton',{name:'地图调用次数上限',exact:true}).waitFor();
+    await page.getByRole('button',{name:'查看map-skill-001的使用详情',exact:true}).focus();
+    await page.getByRole('tooltip').filter({hasText:'调用次数 · 11 次调用'}).waitFor();
+    page.mapRequests=[]; page.mapErrors=[];
+  `);
+  await step("旧调用与读取链接统一合并调用指标，旧上限不沿用", `
     for(const metric of ['calls','reads']) {
       await page.evaluate(metric=>location.hash='#resources?kind=skill&client=codex&view=map&q=map-read-000&sort='+metric+'&metric='+metric+'&maxValue=0',metric);
       await page.locator('.resource-map-locator > span').filter({hasText:/^1 个色块/}).waitFor();
       const route=await page.evaluate(()=>Object.fromEntries(new URLSearchParams(location.hash.split('?')[1])));
-      expect(route.metric==='sessions'&&route.sort==='sessions'&&!('maxValue' in route),'旧链接未统一指标或误用次数上限');
+      expect(route.metric==='uses'&&route.sort==='uses'&&!('maxValue' in route),'旧链接未统一指标或误用次数上限');
       expect(route.client==='codex'&&route.q==='map-read-000','兼容旧链接丢失统计范围');
       expect(await page.locator('rect[data-resource-id]').count()===1,'读取型资源在统一地图为空');
       await page.getByRole('group',{name:'资源展示方式',exact:true}).getByRole('button',{name:'列表',exact:true}).click();
       const table=page.getByRole('table',{name:'Skill 总览',exact:true}); await table.waitFor();
-      expect(await table.getByRole('columnheader').count()===5,'主列表没有简化');
+      expect(await table.getByRole('columnheader').count()===7,'主列表没有同时保留次数和会话列');
       expect((await table.getByRole('row').nth(1).getByRole('cell').nth(1).innerText())==='1','读取型资源没有计入使用会话');
       const sorting=page.getByRole('combobox',{name:'资源排序',exact:true}); await sorting.click();
-      expect(await page.getByRole('option',{name:'调用次数',exact:true}).count()===0&&await page.getByRole('option',{name:'读取次数',exact:true}).count()===0,'排序仍区分调用与读取');
+      expect(await page.getByRole('option',{name:'调用次数',exact:true}).count()===1&&await page.getByRole('option',{name:'读取次数',exact:true}).count()===0,'排序缺少调用次数或仍单列读取次数');
       await page.keyboard.press('Escape');
     }
     await page.evaluate(()=>location.hash='#resources?kind=skill&view=map&q=map-&metric=sessions');
@@ -264,26 +292,35 @@ try {
   `);
   await step("地图共享 Skill 直接管理具体入口与确认预览", `
     const detail=page.getByRole('complementary',{name:'资源详情',exact:true});
-    const summary=detail.locator('summary').filter({hasText:/^管理具体入口$/});
-    await summary.click();
-    expect(await detail.getByRole('button',{name:'预览移到备用map-skill-001的Codex入口',exact:true}).count()===0,'共享物理本体仍可移走');
-    await detail.getByRole('button',{name:'预览移到备用map-skill-001的Claude Code入口',exact:true}).click();
-    const dialog=page.getByRole('dialog',{name:'移到备用预览',exact:true});
-    await dialog.getByRole('button',{name:'确认移到备用',exact:true}).waitFor();
+    const hash=await page.evaluate(()=>location.hash);
+    const stage=page.getByRole('group',{name:'资源使用地图',exact:true});
+    const scale=await stage.getAttribute('data-scale');
+    const position=await stage.locator('svg').innerHTML();
+    await detail.getByRole('button',{name:'管理map-skill-001',exact:true}).click();
+    const manage=page.getByRole('dialog',{name:'管理具体入口',exact:true}); await manage.waitFor();
+    expect(await manage.getByRole('button',{name:'预览移入回收区map-skill-001的Codex入口',exact:true}).count()===0,'共享物理本体仍可移走');
+    await manage.getByRole('button',{name:'预览移入回收区map-skill-001的Claude Code入口',exact:true}).click();
+    const dialog=page.getByRole('dialog',{name:'移入回收区预览',exact:true});
+    await dialog.getByRole('button',{name:'确认移入回收区',exact:true}).waitFor();
     expect((await dialog.innerText()).includes('Claude Code'),'预览没有明确所选入口');
-    await dialog.getByRole('button',{name:'确认移到备用',exact:true}).click();
+    expect(await manage.count()===0,'入口面板与预览弹层重叠');
+    expect((await dialog.innerText()).includes('回收位置'),'回收预览位置标签错误');
+    await dialog.getByRole('button',{name:'确认移入回收区',exact:true}).click();
     await dialog.getByRole('button',{name:'完成',exact:true}).waitFor();
-    expect((await dialog.getByRole('status').innerText()).includes('本地修改完成'),'备用未成功');
+    expect((await dialog.getByRole('status').innerText()).includes('本地修改完成'),'回收未成功');
     expect((await dialog.innerText()).includes('待重新加载'),'未保留客户端生效边界');
     await dialog.getByRole('button',{name:'完成',exact:true}).click();
     await page.getByRole('group',{name:'资源使用地图',exact:true}).waitFor();
     await detail.getByRole('heading',{name:'map-skill-001',exact:true}).waitFor();
     expect(/2\\s*使用会话/.test(await detail.locator('.resource-stats').innerText()),'管理抹掉历史使用');
+    await page.waitForFunction(()=>!document.querySelector('.resource-list-scroll[aria-busy="true"]'));
+    expect(await page.evaluate(()=>location.hash)===hash,'管理改变地图筛选或选中项');
+    expect(await stage.getAttribute('data-scale')===scale&&await stage.locator('svg').innerHTML()===position,'管理重置地图视野');
   `);
   await assert.rejects(readFile(fixture.sharedMapLink), { code: "ENOENT" });
   assert.ok((await readFile(join(fixture.userHome, ".codex", "skills", "map-skill-001", "SKILL.md"), "utf8")).includes("人工地图资源"));
   await step("共享入口恢复后返回地图保留历史", `
-    await page.getByRole('navigation',{name:'资源视图',exact:true}).getByRole('button',{name:'备用',exact:true}).click();
+    await page.getByRole('navigation',{name:'资源视图',exact:true}).getByRole('button',{name:'回收区',exact:true}).click();
     await page.getByRole('button',{name:'查看map-skill-001的恢复记录',exact:true}).click();
     await page.getByRole('button',{name:'预览恢复',exact:true}).click();
     const dialog=page.getByRole('dialog',{name:'恢复预览',exact:true});
@@ -295,20 +332,44 @@ try {
     await page.getByRole('group',{name:'资源使用地图',exact:true}).waitFor();
   `);
   assert.equal(await realpath(fixture.sharedMapLink), await realpath(join(fixture.userHome, ".codex", "skills", "map-skill-001")));
-  await step("MCP 同样使用会话地图及独立注册管理", `
+  await step("语言切换前选择会话指标", `
+    ${select("地图面积指标", "使用会话数")}
+    await page.getByRole('spinbutton',{name:'地图使用会话数上限',exact:true}).waitFor();
+  `);
+  await api("/preferences", "PUT", { language: "en" });
+  await step("英文指标、数量与界面状态", `
+    await page.reload();
+    const metric=page.getByRole('combobox',{name:'Map area metric',exact:true}); await metric.waitFor();
+    expect(await metric.innerText()==='Usage sessions','语言切换改变地图指标');
+    await metric.click(); await page.getByRole('option',{name:'Calls',exact:true}).click();
+    await page.getByRole('spinbutton',{name:'Map Calls maximum',exact:true}).waitFor();
+    await page.getByRole('button',{name:'View usage details for map-skill-001',exact:true}).focus();
+    await page.getByRole('tooltip').filter({hasText:'Calls · 11 calls'}).waitFor();
+  `);
+  await api("/preferences", "PUT", { language: "zh-CN" });
+  await step("切回中文保留次数指标", `
+    await page.reload(); await page.getByRole('combobox',{name:'地图面积指标',exact:true}).waitFor();
+    expect(await page.getByRole('combobox',{name:'地图面积指标',exact:true}).innerText()==='调用次数','切回中文丢失次数指标');
+  `);
+  await step("MCP 默认调用地图及独立注册管理", `
     await page.getByRole('group',{name:'资源类型',exact:true}).getByRole('button',{name:'MCP',exact:true}).click();
     await page.getByRole('textbox',{name:'搜索资源名称或路径',exact:true}).fill('map-');
     await page.getByRole('group',{name:'资源使用地图',exact:true}).waitFor();
-    expect(await page.getByRole('combobox',{name:'地图面积指标',exact:true}).count()===0,'MCP仍提供次数指标切换');
-    expect(await page.evaluate(()=>new URLSearchParams(location.hash.split('?')[1]).get('metric'))==='sessions','MCP未沿用使用会话数');
+    expect(await page.getByRole('combobox',{name:'地图面积指标',exact:true}).count()===1,'MCP缺少指标切换');
+    expect(await page.evaluate(()=>new URLSearchParams(location.hash.split('?')[1]).get('metric'))==='uses','MCP未默认使用调用次数');
+    const tile=page.getByRole('button',{name:'查看map-mcp-001的使用详情',exact:true}); await tile.hover();
+    await page.getByRole('tooltip').filter({hasText:'调用次数 · 10 次调用'}).waitFor();
+    ${select("地图面积指标", "使用会话数")}
+    await tile.focus(); await page.getByRole('tooltip').filter({hasText:'使用会话数 · 1 个会话'}).waitFor();
+    ${select("地图面积指标", "调用次数")}
     await page.getByRole('textbox',{name:'搜索资源名称或路径',exact:true}).fill('map-mcp-001');
     await page.getByRole('button',{name:'查看map-mcp-001的使用详情',exact:true}).click();
     const detail=page.getByRole('complementary',{name:'资源详情',exact:true});
     await detail.getByRole('heading',{name:'map-mcp-001',exact:true}).waitFor();
-    const summaries=detail.locator('summary').filter({hasText:/^管理具体入口$/});
-    expect(await summaries.count()===2,'不同MCP注册被当成同一对象');
-    for(const summary of await summaries.all()) await summary.click();
-    await detail.getByRole('button',{name:'预览停用map-mcp-001的Codex入口',exact:true}).click();
+    await detail.getByRole('button',{name:'管理map-mcp-001',exact:true}).click();
+    const manage=page.getByRole('dialog',{name:'管理具体入口',exact:true}); await manage.waitFor();
+    expect(await manage.locator('.resource-management-body').count()===2,'不同MCP注册被当成同一对象');
+    await manage.getByRole('button',{name:'预览停用map-mcp-001的Codex入口',exact:true}).click();
     const dialog=page.getByRole('dialog',{name:'停用预览',exact:true});
     await dialog.getByRole('button',{name:'确认停用',exact:true}).click();
     await dialog.getByRole('button',{name:'完成',exact:true}).waitFor();
@@ -316,7 +377,7 @@ try {
     await dialog.getByRole('button',{name:'完成',exact:true}).click();
     await page.getByRole('group',{name:'资源使用地图',exact:true}).waitFor();
     await detail.getByRole('heading',{name:'map-mcp-001',exact:true}).waitFor();
-    expect(/10\\s*工具调用/.test(await detail.locator('.resource-stats').innerText()),'停用改变历史调用');
+    expect(/10\\s*调用次数/.test(await detail.locator('.resource-stats').innerText()),'停用改变历史调用');
   `);
   assert.equal(parseToml(await readFile(fixture.configPath, "utf8")).mcp_servers["map-mcp-001"].enabled, false);
   assert.equal(await readFile(fixture.claudeConfigPath, "utf8"), claudeConfigBefore, "所选注册操作误改其他 Agent");
@@ -398,9 +459,12 @@ try {
     await page.getByRole('button',{name:'查看map-system的使用详情',exact:true}).click();
     const detail=page.getByRole('complementary',{name:'资源详情',exact:true});
     await detail.getByRole('heading',{name:'map-system',exact:true}).waitFor();
-    await detail.locator('summary').filter({hasText:/^管理具体入口$/}).click();
-    expect(await detail.getByRole('button',{name:/^预览/}).count()===0,'系统资源有写操作');
-    expect((await detail.innerText()).includes('受保护'),'系统保护不可见');
+    await detail.getByRole('button',{name:'管理map-system',exact:true}).click();
+    const manage=page.getByRole('dialog',{name:'管理具体入口',exact:true}); await manage.waitFor();
+    expect(await manage.getByRole('button',{name:/^预览/}).count()===0,'系统资源有写操作');
+    expect((await manage.innerText()).includes('系统资源受保护'),'系统只读原因不可见');
+    await page.keyboard.press('Escape'); await manage.waitFor({state:'hidden'});
+    expect(await detail.getByRole('button',{name:'管理map-system',exact:true}).evaluate(element=>element===document.activeElement),'Escape未恢复管理按钮焦点');
     await page.getByRole('textbox',{name:'搜索资源名称或路径',exact:true}).fill('no-such-map-resource');
     await page.getByText('0 个 Skill',{exact:true}).waitFor();
     await page.waitForFunction(()=>!document.querySelector('.resource-list-scroll[aria-busy="true"]'));
@@ -433,6 +497,12 @@ try {
     const dialog=page.getByRole('dialog',{name:'资源详情',exact:true});
     await dialog.getByRole('heading',{name:'map-skill-214',exact:true}).waitFor();
     const box=await dialog.boundingBox(); expect(box.x>=0&&box.x+box.width<=375,'窄屏详情溢出');
+    await dialog.getByRole('button',{name:'管理map-skill-214',exact:true}).click();
+    const manage=page.getByRole('dialog',{name:'管理具体入口',exact:true}); await manage.waitFor();
+    expect(await page.getByRole('dialog').count()===1,'窄屏管理与详情弹层重叠');
+    const manageBox=await manage.boundingBox(); expect(manageBox.x>=0&&manageBox.x+manageBox.width<=375,'窄屏管理面板溢出');
+    await page.keyboard.press('Escape'); await manage.waitFor({state:'hidden'}); await dialog.waitFor();
+    expect(await dialog.getByRole('button',{name:'管理map-skill-214',exact:true}).evaluate(element=>element===document.activeElement),'窄屏Esc未恢复管理焦点');
     await page.keyboard.press('Escape'); await dialog.waitFor({state:'hidden'});
     ${screenshot("skill-map-phone.png")}
     expect(page.mapErrors.length===0,'浏览器异常：'+page.mapErrors.join(';'));
@@ -445,9 +515,9 @@ try {
     await detail.getByRole('heading',{name:'map-skill-002',exact:true}).waitFor();
     await detail.getByRole('button',{name:'收藏map-skill-002',exact:true}).click();
     await detail.getByRole('button',{name:'取消收藏map-skill-002',exact:true}).waitFor();
-    const manage=detail.locator('details').filter({has:page.locator('summary').filter({hasText:/^管理具体入口$/})});
-    if(await manage.getAttribute('open')===null) await manage.locator('summary').click();
-    await detail.locator('.resource-tags').first().getByText('受保护',{exact:true}).waitFor();
+    await detail.getByRole('button',{name:'管理map-skill-002',exact:true}).click();
+    const manage=page.getByRole('dialog',{name:'管理具体入口',exact:true}); await manage.waitFor();
+    await manage.getByText(/^(受保护|此资源已收藏)$/).waitFor();
     await manage.getByRole('button',{name:'预览移入回收区map-skill-002的Codex入口',exact:true}).click();
     const protectedPreview=page.getByRole('dialog',{name:'移入回收区预览',exact:true});
     await protectedPreview.getByRole('alert').filter({hasText:'此资源已收藏'}).waitFor();
@@ -455,7 +525,7 @@ try {
     await protectedPreview.getByRole('button',{name:'关闭移入回收区预览',exact:true}).click();
     await detail.getByRole('button',{name:'取消收藏map-skill-002',exact:true}).click();
     await detail.getByRole('button',{name:'收藏map-skill-002',exact:true}).waitFor();
-    if(await manage.getAttribute('open')===null) await manage.locator('summary').click();
+    await detail.getByRole('button',{name:'管理map-skill-002',exact:true}).click(); await manage.waitFor();
     await manage.getByRole('button',{name:'预览移入回收区map-skill-002的Codex入口',exact:true}).click();
     const preview=page.getByRole('dialog',{name:'移入回收区预览',exact:true});
     await preview.getByRole('button',{name:'确认移入回收区',exact:true}).click();

@@ -20,17 +20,17 @@ import { clientLabel, formatList, isMessageDescriptorKnown, messageText, t, useI
 import { type MessageDescriptor } from "../src/i18n";
 import "./resources.css";
 
-type ResourceTab = "usage" | "local" | "disabled" | "standby" | "trash" | "operations";
+type ResourceTab = "usage" | "local" | "disabled" | "trash" | "operations";
 interface ResourceRoute {
   kind: ResourceKind; tab: ResourceTab; client: string; project: string; window: string;
   from: string; to: string; q: string; sort: string; order: "asc" | "desc"; candidate: ResourceCandidate | ResourceOverviewCandidate;
   low: number; inactive: number; favorite: boolean; page: number; pageSize: number; id: string; evidencePage: number; tool: string;
-  view: "list" | "map"; metric: "sessions"; maxValue: string;
+  view: "list" | "map"; metric: "uses" | "sessions"; maxValue: string;
   zeroPage: number; zeroSize: number; reviewPage: number; reviewSize: number;
 }
 const tabs: { value: ResourceTab; labelKey: string }[] = [
   { value: "usage", labelKey: "resources.tab.usage" }, { value: "local", labelKey: "resources.tab.local" },
-  { value: "disabled", labelKey: "resources.tab.disabled" }, { value: "standby", labelKey: "resources.tab.standby" },
+  { value: "disabled", labelKey: "resources.tab.disabled" },
   { value: "trash", labelKey: "resources.tab.trash" }, { value: "operations", labelKey: "resources.tab.operations" },
 ];
 const candidates = [
@@ -59,22 +59,22 @@ const readRoute = (): ResourceRoute => {
   const kind = params.get("kind") === "mcp" ? "mcp" : "skill";
   let preferredView = "list";
   try { preferredView = localStorage.getItem("agent-manor:resource-view") ?? "list"; } catch { /* 无法存储时仍保留当前路由。 */ }
-  // 旧次数指标的上限不能直接解释为会话数。
-  const maximum = params.get("metric") === "sessions" ? params.get("maxValue") : null;
+  // 旧调用／读取指标统一为调用次数，原上限的口径不兼容。
+  const maximum = ["uses", "sessions"].includes(params.get("metric") ?? "") ? params.get("maxValue") : null;
   return {
     kind,
-    tab: tabs.some(tab => tab.value === params.get("tab")) ? params.get("tab") as ResourceTab : "usage",
+    tab: params.get("tab") === "standby" ? "trash" : tabs.some(tab => tab.value === params.get("tab")) ? params.get("tab") as ResourceTab : "usage",
     client: CLIENTS.some(client => client.id === params.get("client")) ? params.get("client")! : "all",
     project: params.get("project") ?? "all", window: ["7", "30", "90", "custom"].includes(params.get("window") ?? "") ? params.get("window")! : "all",
     from: validDate(params.get("from")), to: validDate(params.get("to")),
-    q: params.get("q") ?? "", sort: ["sessions", "recent", "name"].includes(params.get("sort") ?? "") ? params.get("sort")! : "sessions",
+    q: params.get("q") ?? "", sort: ["uses", "sessions", "recent", "name"].includes(params.get("sort") ?? "") ? params.get("sort")! : "uses",
     order: params.get("order") === "asc" ? "asc" : params.get("order") === "desc" ? "desc" : params.get("sort") === "name" ? "asc" : "desc",
     candidate: [...candidates, ...overviewCandidates].some(item => item.value === params.get("candidate")) ? params.get("candidate") as ResourceRoute["candidate"] : "all",
     low: Math.min(10000, positive(params.get("low"), 2)), inactive: Math.min(3650, positive(params.get("inactive"), 90)),
     favorite: params.get("favorite") === "true", page: positive(params.get("page")), pageSize: [20, 50, 100].includes(Number(params.get("pageSize"))) ? Number(params.get("pageSize")) : 20, id: params.get("id") ?? "",
     evidencePage: positive(params.get("evidencePage")), tool: params.get("tool") ?? "",
     view: (params.get("view") ?? preferredView) === "map" ? "map" : "list",
-    metric: "sessions",
+    metric: params.get("metric") === "sessions" ? "sessions" : "uses",
     maxValue: maximum !== null && /^\d+$/.test(maximum) && Number.isSafeInteger(Number(maximum)) ? String(Number(maximum)) : "",
     zeroPage: positive(params.get("zeroPage")), reviewPage: positive(params.get("reviewPage")),
     zeroSize: [20, 50, 100].includes(Number(params.get("zeroSize"))) ? Number(params.get("zeroSize")) : 20,
@@ -96,14 +96,14 @@ const methodNames = { directory: "resources.entry.directory", symlink: "resource
 const resultNames = { success: "resources.result.success", failure: "resources.result.failure", unknown: "resources.result.unknown" };
 const evidenceNames = { skill_call: "resources.evidence.skillCall", skill_read: "resources.evidence.skillRead", mcp: "resources.evidence.mcp" };
 const actionNames: Record<ResourceManagementAction, string> = { disable: "resources.action.disable", standby: "resources.action.standby", trash: "resources.action.trash", restore: "resources.action.restore", purge: "resources.action.purge" };
-const archiveNames = { disabled: "resources.tab.disabled", standby: "resources.tab.standby", trash: "resources.tab.trash", restored: "resources.archive.restored", purged: "resources.archive.purged" };
+const archiveNames = { disabled: "resources.tab.disabled", standby: "resources.tab.trash", trash: "resources.tab.trash", restored: "resources.archive.restored", purged: "resources.archive.purged" };
 const operationStatusNames = { success: "resources.operation.success", failure: "resources.operation.failure", conflict: "resources.operation.conflict", partial: "resources.operation.partial" };
 const operationMethodNames = { native_toggle: "resources.operationMethod.nativeToggle", entry_isolation: "resources.operationMethod.entryIsolation", registration_remove: "resources.operationMethod.registrationRemove", restore: "resources.operationMethod.restore", permanent_purge: "resources.operationMethod.purge" };
 const protectionNames: Record<string, string> = { favorite: "resources.protection.favorite", system: "resources.protection.system", plugin: "resources.protection.plugin" };
 const registrationKeys = (client: Client) => client === "codex" ? "mcp_servers" : client === "opencode" ? "mcp" : "mcpServers";
 
-function ResourceDialog({ open, onOpenChange, title, description, children, className = "", contentRef }: {
-  open: boolean; onOpenChange: (open: boolean) => void; title: string; description: string; children: ReactNode; className?: string; contentRef?: RefObject<HTMLDivElement | null>;
+function ResourceDialog({ open, onOpenChange, title, description, children, className = "", contentRef, focusTarget, afterClose }: {
+  open: boolean; onOpenChange: (open: boolean) => void; title: string; description: string; children: ReactNode; className?: string; contentRef?: RefObject<HTMLDivElement | null>; focusTarget?: () => HTMLElement | null; afterClose?: () => void;
 }) {
   useI18n();
   const returnFocus = useRef<HTMLElement | null>(null);
@@ -111,8 +111,9 @@ function ResourceDialog({ open, onOpenChange, title, description, children, clas
     <Dialog.Overlay className="dialog-overlay" /><Dialog.Content ref={contentRef} className={`dialog-content resource-dialog ${className}`}
       onOpenAutoFocus={() => { returnFocus.current = document.activeElement instanceof HTMLElement ? document.activeElement : null; }}
       onCloseAutoFocus={event => {
-        const target = returnFocus.current;
+        const target = focusTarget?.() ?? returnFocus.current;
         if (target?.isConnected && target !== document.body && target.getClientRects().length) { event.preventDefault(); target.focus(); }
+        afterClose?.();
       }}>
       <Dialog.Title>{title}</Dialog.Title><Dialog.Description className="dialog-description">{description}</Dialog.Description>
       <Dialog.Close asChild><button className="icon-button dialog-close" aria-label={t("common.closeNamed", { label: title })}><X size={18} /></button></Dialog.Close>
@@ -140,31 +141,34 @@ function FavoriteButton({ name, favorite, disabled, onClick }: { name: string; f
   return <button className={`icon-button resource-favorite${favorite ? " is-favorite" : ""}`} aria-label={t(favorite ? "resources.unfavoriteLabel" : "resources.favoriteLabel", { name })}
     aria-pressed={favorite} disabled={disabled} onClick={onClick}><Star size={17} weight={favorite ? "fill" : "regular"} /></button>;
 }
-function OverviewTable({ rows, route, onSort, onSelect, onFavorite, favoritePending }: {
+function OverviewTable({ rows, route, onSort, onSelect, onFavorite, onManage, favoritePending }: {
   rows: ResourceOverviewRow[]; route: ResourceRoute; onSort: (sort: string) => void; onSelect: (id: string) => void;
-  onFavorite: (id: string, favorite: boolean) => void; favoritePending: string | null;
+  onFavorite: (id: string, favorite: boolean) => void; onManage: (row: ResourceOverviewRow) => void; favoritePending: string | null;
 }) {
   useI18n();
-  const columns = [{ value: "name", label: route.kind === "skill" ? t("resources.kind.skill") : t("resources.column.server") }, { value: "sessions", label: t("resources.column.sessions") }, { value: "recent", label: t("resources.column.recent") }];
+  const columns = [{ value: "name", label: route.kind === "skill" ? t("resources.kind.skill") : t("resources.column.server") }, { value: "uses", label: t("resources.column.calls") }, { value: "sessions", label: t("resources.column.sessions") }, { value: "recent", label: t("resources.column.recent") }];
   const heading = (column: { value: string; label: string }) => <th key={column.value} scope="col" aria-sort={route.sort === column.value ? route.order === "asc" ? "ascending" : "descending" : "none"}>
     <button aria-label={t("resources.sortColumn", { column: column.label })} onClick={() => onSort(column.value)}>{column.label}<span aria-hidden="true">{route.sort === column.value ? route.order === "asc" ? "↑" : "↓" : "↕"}</span></button>
   </th>;
   return <div className="resource-overview-scroll"><table className="resource-overview-table" aria-label={t("resources.overview", { kind: route.kind === "skill" ? t("resources.kind.skill") : t("resources.kind.mcp") })}>
-    <thead><tr>{heading(columns[0]!)}<th scope="col">{t("resources.agent.label")}</th>{columns.slice(1).map(heading)}<th scope="col">{t("resources.column.status")}</th></tr></thead>
+    <thead><tr>{heading(columns[0]!)}<th scope="col">{t("resources.agent.label")}</th>{columns.slice(1).map(heading)}<th scope="col">{t("resources.column.status")}</th><th scope="col">{t("resources.column.management")}</th></tr></thead>
     <tbody>{rows.map(row => <tr className={`resource-overview-row${route.id === row.identity.id ? " is-selected" : ""}`} key={row.identity.id}>
       <th scope="row"><div className="resource-overview-name"><button aria-label={t("resources.viewUsage", { name: messageText(row.identity.nameDescriptor, row.identity.name) })} onClick={() => onSelect(row.identity.id)}>{messageText(row.identity.nameDescriptor, row.identity.name)}</button><FavoriteButton name={messageText(row.identity.nameDescriptor, row.identity.name)} favorite={row.favorite} disabled={favoritePending === row.identity.id} onClick={() => onFavorite(row.identity.id, row.favorite)} /></div></th>
       <td className="resource-overview-agents" title={formatList(row.clients.map(clientLabel))}>{usageAgentLabel(row)}</td>
+      <td>{row.stats ? fmt(row.stats.events) : "—"}</td>
       <td>{row.stats ? fmt(row.stats.sessions) : "—"}</td>
       <td className="resource-overview-time">{row.stats?.lastUsedAt ? dateLabel(row.stats.lastUsedAt) : "—"}</td>
       <td><div className="resource-tags"><span className={row.observation === "unknown" || row.observation === "insufficient" ? "is-warning" : ""}>{t(overviewObservationNames[row.observation])}</span>{row.protected && <span><ShieldCheck size={12} />{t("resources.protected")}</span>}{!row.localBodyIds.length && row.hasHistory && <span>{t("resources.historyOnly")}</span>}</div></td>
+      <td><button className="button resource-manage" aria-label={t("resources.management.resource", { name: messageText(row.identity.nameDescriptor, row.identity.name) })} data-manage-resource={row.identity.id} onClick={() => onManage(row)}>{t("resources.management.manage")}</button></td>
     </tr>)}</tbody>
   </table></div>;
 }
 function Stats({ stats, kind }: { stats: ResourceUsageStats | null; kind: ResourceKind }) {
   const { percent } = useI18n();
   return <div className="resource-stats">
+    <div><strong>{stats ? fmt(stats.events) : t("common.unknown")}</strong><span>{t("resources.column.calls")}</span></div>
     <div><strong>{stats ? fmt(stats.sessions) : t("common.unknown")}</strong><span>{t("resources.stat.sessions")}</span></div>
-    <div><strong>{stats ? fmt(kind === "skill" ? stats.explicitCalls : stats.mcpCalls) : t("common.unknown")}</strong><span>{kind === "skill" ? t("resources.stat.explicitCalls") : t("resources.stat.toolCalls")}</span></div>
+    {kind === "skill" && <div><strong>{stats ? fmt(stats.explicitCalls) : t("common.unknown")}</strong><span>{t("resources.stat.explicitCalls")}</span></div>}
     {kind === "skill" && <div><strong>{stats ? fmt(stats.successfulReads) : t("common.unknown")}</strong><span>{t("resources.stat.successfulReads")}</span></div>}
     <div><strong>{stats?.results.successRate === null || !stats ? t("common.notRecorded") : percent(stats.results.successRate, { minimumFractionDigits: 1, maximumFractionDigits: 1 })}</strong><span>{t("resources.stat.successRate")}</span></div>
     <div><strong>{stats?.duration.averageMs === null || !stats ? t("common.notRecorded") : t("resources.stat.milliseconds", { value: Math.round(stats.duration.averageMs) })}</strong><span>{t("resources.stat.averageDuration", { count: stats?.duration.samples ?? 0 })}</span></div>
@@ -204,6 +208,7 @@ function UsageHelp({ kind }: { kind: ResourceKind }) {
   useI18n();
   return <HelpPopover label={t("resources.help.usage")}><dl>
     <div><dt>{t("resources.overview", { kind: kind === "skill" ? t("resources.kind.skill") : t("resources.kind.mcp") })}</dt><dd>{t(kind === "skill" ? "resources.help.skillOverview" : "resources.help.mcpOverview")}</dd></div>
+    <div><dt>{t("resources.column.calls")}</dt><dd>{t(kind === "skill" ? "resources.help.skillCalls" : "resources.help.mcpCalls")}</dd></div>
     <div><dt>{t("resources.stat.sessions")}</dt><dd>{t(kind === "skill" ? "resources.help.skillSessions" : "resources.help.mcpSessions")}</dd></div>
     <div><dt>{t("resources.help.knownResults")}</dt><dd>{t("resources.help.knownResultsText")}</dd></div>
     <div><dt>{t("resources.help.association")}</dt><dd>{t("resources.help.associationText")}</dd></div>
@@ -218,6 +223,7 @@ export default function Resources({ active, onSession }: { active: boolean; onSe
   const [overview, setOverview] = useState<FavoriteResult<ResourceOverviewResult> | null>(null);
   const [map, setMap] = useState<ResourceMapResult | null>(null);
   const mapLoadedQuery = useRef("");
+  const mapLoadedScope = useRef("");
   const [overviewDetail, setOverviewDetail] = useState<FavoriteResult<ResourceOverviewDetail> | null>(null);
   const [local, setLocal] = useState<ResourceLocalResult | null>(null);
   const [usageDetail, setUsageDetail] = useState<ResourceUsageDetail | null>(null);
@@ -245,6 +251,13 @@ export default function Resources({ active, onSession }: { active: boolean; onSe
   const [sourceError, setSourceError] = useState<Error | null>(null);
   const [source, setSource] = useState<ResourceManualSource>({ client: "codex", kind: "skill", path: "", format: "skill-directory" });
   const [sourceKeys, setSourceKeys] = useState("mcpServers");
+  const [entriesOpen, setEntriesOpen] = useState(false);
+  const [entriesTarget, setEntriesTarget] = useState<{ id: string; name: string; rows: ResourceLocalRow[] | null } | null>(null);
+  const [entriesError, setEntriesError] = useState<Error | null>(null);
+  const entriesRequest = useRef(0);
+  const managementFocus = useRef<HTMLElement | null>(null);
+  const managementFocusAction = useRef<string | null>(null);
+  const pendingManagement = useRef<ResourceManagementInput | null>(null);
   const [managementOpen, setManagementOpen] = useState(false);
   const [managementInput, setManagementInput] = useState<ResourceManagementInput | null>(null);
   const [preview, setPreview] = useState<ResourceManagementPreview | null>(null);
@@ -275,7 +288,7 @@ export default function Resources({ active, onSession }: { active: boolean; onSe
   useEffect(() => {
     if (!active || !location.hash.startsWith("#resources")) return;
     const params = new URLSearchParams(location.hash.split("?")[1]);
-    if (params.get("metric") !== "sessions" || ["calls", "reads"].includes(params.get("sort") ?? "")) history.replaceState({}, "", address(route));
+    if (!["uses", "sessions"].includes(params.get("metric") ?? "") || ["calls", "reads"].includes(params.get("sort") ?? "") || params.get("tab") === "standby") history.replaceState({}, "", address(route));
   }, [active, route]);
   const filter = (patch: Partial<ResourceRoute>) => { if (listScroll.current) listScroll.current.scrollTop = 0; update({ ...patch, page: 1, evidencePage: 1, zeroPage: 1, reviewPage: 1 }); };
   const sort = (value: string) => filter({ sort: value, order: route.sort === value ? route.order === "asc" ? "desc" : "asc" : value === "name" ? "asc" : "desc" });
@@ -332,8 +345,8 @@ export default function Resources({ active, onSession }: { active: boolean; onSe
     if (mapView && map && mapLoadedQuery.current === mapRequestKey) { setListLoading(false); setError(null); return; }
     const controller = new AbortController(); setListLoading(true); setError(null);
     const done = () => { if (!controller.signal.aborted) setListLoading(false); };
-    if (mapView) { setMap(null); void resourceApi.map(mapQuery, controller.signal).then(result => {
-      mapLoadedQuery.current = mapRequestKey; setMap(result);
+    if (mapView) { if (mapLoadedScope.current !== JSON.stringify(mapQuery)) setMap(null); void resourceApi.map(mapQuery, controller.signal).then(result => {
+      mapLoadedQuery.current = mapRequestKey; mapLoadedScope.current = JSON.stringify(mapQuery); setMap(result);
     }).catch(failure => { if (!isAborted(failure)) setError(failure instanceof Error ? failure : new Error(errorMessage(failure))); }).finally(done); }
     else if (overviewRanking) void resourceApi.overview(overviewQuery, controller.signal).then(result => {
       setOverview(result); if (result.favoriteIds) setStatus(current => current ? { ...current, favoriteIds: result.favoriteIds! } : current);
@@ -410,7 +423,34 @@ export default function Resources({ active, onSession }: { active: boolean; onSe
     catch (failure) { setSourceError(failure instanceof Error ? failure : new Error(errorMessage(failure))); }
     finally { setSourcePending(false); }
   };
-  const showManagement = async (input: ResourceManagementInput) => {
+  const openEntries = async (id: string, name: string, rows?: ResourceLocalRow[]) => {
+    managementFocus.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    managementFocusAction.current = null;
+    const sequence = ++entriesRequest.current;
+    setEntriesTarget({ id, name, rows: rows ?? null }); setEntriesError(null); setEntriesOpen(true);
+    if (rows) return;
+    try {
+      const result = await resourceApi.overviewDetail(id, { ...scopeQuery, lowSessions: route.low, inactiveDays: route.inactive });
+      if (sequence === entriesRequest.current) setEntriesTarget({ id, name, rows: result.local });
+    } catch (failure) { if (sequence === entriesRequest.current) setEntriesError(failure instanceof Error ? failure : new Error(errorMessage(failure))); }
+  };
+  const closeEntries = (open: boolean) => { if (!open) entriesRequest.current++; setEntriesOpen(open); };
+  const managementFocusTarget = () => {
+    if (managementFocus.current?.isConnected) return managementFocus.current;
+    const selector = managementFocusAction.current ? `[data-resource-action="${CSS.escape(managementFocusAction.current)}"]`
+      : entriesTarget ? `[data-manage-resource="${CSS.escape(entriesTarget.id)}"]` : null;
+    return selector ? document.querySelector<HTMLElement>(`.resource-detail-dialog ${selector}`) ?? document.querySelector<HTMLElement>(selector) : null;
+  };
+  const chooseEntryAction = (input: ResourceManagementInput) => { pendingManagement.current = input; closeEntries(false); };
+  const afterEntriesClose = () => {
+    const input = pendingManagement.current; pendingManagement.current = null;
+    if (input) requestAnimationFrame(() => void showManagement(input, true));
+  };
+  const showManagement = async (input: ResourceManagementInput, fromEntries = false) => {
+    if (!fromEntries) {
+      managementFocus.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+      managementFocusAction.current = managementFocus.current?.dataset.resourceAction ?? null;
+    }
     const sequence = ++managementRequest.current;
     setManagementInput(input); setManagementOpen(true); setPreview(null); setManagementError(null); setManagementResult(null); setPurgeConfirmed(false); setPreviewLoading(true);
     try {
@@ -430,12 +470,12 @@ export default function Resources({ active, onSession }: { active: boolean; onSe
     try {
       const result = await resourceApi.apply(preview.id);
       setManagementResult(result); setPreview(null); setReload(value => value + 1);
-      if (result.status === "success") { if (!mapView) update({ id: "" }); setFeedback({ key: result.clientEffect === "pending_reload" ? "resources.feedback.completePending" : "resources.feedback.completeUnknown" }); }
+      if (result.status === "success") { if (!overviewRanking) update({ id: "" }); setFeedback({ key: result.clientEffect === "pending_reload" ? "resources.feedback.completePending" : "resources.feedback.completeUnknown" }); }
     } catch (failure) { setManagementError(failure instanceof Error ? failure : new Error(errorMessage(failure))); setPreview(null); }
     finally { setApplying(false); }
   };
   const reset = () => {
-    const defaults = { ...readRoute(), client: "all", project: "all", window: "all", from: "", to: "", q: "", sort: "sessions", order: "desc" as const, candidate: "all" as const, low: 2, inactive: 90, favorite: false, page: 1, pageSize: 20, maxValue: "", zeroPage: 1, reviewPage: 1 };
+    const defaults = { ...readRoute(), client: "all", project: "all", window: "all", from: "", to: "", q: "", sort: "uses", metric: "uses" as const, order: "desc" as const, candidate: "all" as const, low: 2, inactive: 90, favorite: false, page: 1, pageSize: 20, maxValue: "", zeroPage: 1, reviewPage: 1 };
     setQueryText(""); update(defaults);
   };
   const projectOptions = [{ value: "all", label: t("resources.project.all") }, { value: "none", label: t("resources.project.none") }, ...(status?.projects ?? []).map(path => ({ value: path, label: shortPath(path), description: path }))];
@@ -445,7 +485,7 @@ export default function Resources({ active, onSession }: { active: boolean; onSe
     {!overviewRanking && <div className="resource-field"><span>{t("resources.project.label")}</span><ProjectPicker value={route.project} options={projectOptions} onChange={value => filter({ project: value })} /></div>}
     {historyView && <><div className="resource-field"><span>{t("resources.time.label")}</span><FilterSelect label={t("resources.time.filter")} value={route.window} options={[{ value: "all", label: t("resources.time.all") }, { value: "7", label: t("resources.time.seven") }, { value: "30", label: t("resources.time.thirty") }, { value: "90", label: t("resources.time.ninety") }, { value: "custom", label: t("resources.time.custom") }]} onChange={value => { setTimeAnchor(Date.now()); filter({ window: value }); }} /></div>
       {route.window === "custom" && <div className="resource-date-fields"><div className="resource-field"><span>{t("resources.time.from")}</span><DatePicker label={t("resources.time.startDate")} value={route.from} onChange={value => filter({ from: value })} /></div><div className="resource-field"><span>{t("resources.time.to")}</span><DatePicker label={t("resources.time.endDate")} value={route.to} onChange={value => filter({ to: value })} /></div></div>}
-      {!mapView && <><div className="resource-field"><span>{t("resources.sort.label")}</span><FilterSelect label={t("resources.sort.filter")} value={route.sort} options={[{ value: "sessions", label: t("resources.sort.sessions") }, { value: "recent", label: t("resources.column.recent") }, { value: "name", label: t("resources.sort.name") }]} onChange={value => filter({ sort: value, order: value === "name" ? "asc" : "desc" })} /></div>
+      {!mapView && <><div className="resource-field"><span>{t("resources.sort.label")}</span><FilterSelect label={t("resources.sort.filter")} value={route.sort} options={[{ value: "uses", label: t("resources.sort.calls") }, { value: "sessions", label: t("resources.sort.sessions") }, { value: "recent", label: t("resources.column.recent") }, { value: "name", label: t("resources.sort.name") }]} onChange={value => filter({ sort: value, order: value === "name" ? "asc" : "desc" })} /></div>
       <div className="resource-field"><span>{t("resources.sort.direction")}</span><FilterSelect label={t("resources.sort.directionFilter")} value={route.order} options={[{ value: "desc", label: t("resources.sort.desc") }, { value: "asc", label: t("resources.sort.asc") }]} onChange={value => filter({ order: value as ResourceRoute["order"] })} /></div></>}
     </>}
     {route.tab === "local" && <><div className="resource-field"><span>{t("resources.candidate.label")}</span><FilterSelect label={t("resources.candidate.filter")} value={route.candidate === "used" ? "all" : route.candidate} options={(route.kind === "mcp" ? candidates.filter(candidate => candidate.value !== "duplicate") : candidates).map(item => ({ value: item.value, label: t(item.labelKey) }))} onChange={value => filter({ candidate: value as ResourceCandidate })} /></div>
@@ -466,12 +506,16 @@ export default function Resources({ active, onSession }: { active: boolean; onSe
       <p className="resource-path">{row.body.targetPath ?? row.entries[0]?.entryPath ?? t("resources.detail.bodyUnknown")}</p>
       <div className="resource-tags"><span>{formatList([...new Set(row.entries.map(entry => clientLabel(entry.client)))]) || t("resources.client.notRecorded")}</span><span>{t("resources.entryCount", { count: row.entries.length })}</span>{row.protected && <span>{t("resources.protected")}</span>}</div>
       <div className="resource-entry-actions"><button className="button" aria-label={t("resources.viewBody", { name: row.body.name, index: index + 1 })} onClick={() => showLocal(row.body.id)}>{t("resources.detail.localEntries")}<CaretRight size={14} /></button></div>
-      {mapView && <details className="resource-data-details"><summary>{t("resources.detail.manageEntries")}</summary>{row.entries.map(entry => <Entry key={entry.id} entry={entry} onManage={input => void showManagement(input)} />)}</details>}
+
     </div>) : <ResourceEmpty>{route.kind === "skill" ? t("resources.detail.skillMissing") : t("resources.detail.mcpMissing")}</ResourceEmpty>}
   </section>;
+  const detailManagement = overviewDetail
+    ? <button className="button resource-manage" data-manage-resource={overviewDetail.resource.identity.id} aria-label={t("resources.management.resource", { name: messageText(overviewDetail.resource.identity.nameDescriptor, overviewDetail.resource.identity.name) })} onClick={() => void openEntries(overviewDetail.resource.identity.id, messageText(overviewDetail.resource.identity.nameDescriptor, overviewDetail.resource.identity.name), overviewDetail.local)}>{t("resources.management.manage")}</button>
+    : localDetail ? <button className="button resource-manage" data-manage-resource={localDetail.row.body.id} aria-label={t("resources.management.resource", { name: localDetail.row.body.name })} onClick={() => void openEntries(localDetail.row.body.id, localDetail.row.body.name, [localDetail.row])}>{t("resources.management.manage")}</button> : null;
   const detail = <>
     {detailLoading ? <div role="status" className="resource-loading">{t("resources.loading.detail")}</div> : detailError ? <div className="resource-alert" role="alert"><ResourceErrorText error={detailError} /><button className="text-button" onClick={() => setReload(value => value + 1)}>{t("common.retry")}</button></div> : usageDetail ? <>
       <div className="resource-detail-heading"><div><span>{usageAgentLabel(overviewDetail?.resource ?? usageDetail.resource)}</span><h2>{messageText(usageDetail.resource.identity.nameDescriptor, usageDetail.resource.identity.name)}</h2></div><FavoriteButton name={messageText(usageDetail.resource.identity.nameDescriptor, usageDetail.resource.identity.name)} favorite={overviewDetail?.resource.favorite ?? usageDetail.resource.favorite} disabled={favoritePending === route.id} onClick={() => void favorite(overviewDetail?.resource.identity.id ?? route.id, overviewDetail?.resource.favorite ?? usageDetail.resource.favorite)} /></div>
+      {detailManagement}
       <div className="resource-tags">{overviewDetail && <><span className={overviewDetail.resource.observation === "unknown" || overviewDetail.resource.observation === "insufficient" ? "is-warning" : ""}>{t(overviewObservationNames[overviewDetail.resource.observation])}</span>{overviewDetail.resource.protected && <span><ShieldCheck size={12} />{t("resources.protected")}</span>}{!overviewDetail.resource.localBodyIds.length && <span>{t("resources.historyOnly")}</span>}</>}<span className={usageDetail.resource.association.state !== "linked" ? "is-warning" : ""}>{t(associationNames[usageDetail.resource.association.state])}</span>{usageDetail.coverage.partial && <span className="is-warning">{t("resources.partial")}</span>}{usageDetail.resource.stats.missingTimeEvents > 0 && <span className="is-warning">{t("resources.missingTimeCount", { count: usageDetail.resource.stats.missingTimeEvents })}</span>}</div>
       {usageDetail.resource.identity.path && <p className="resource-path">{usageDetail.resource.identity.path}</p>}
       <Stats stats={overviewDetail ? overviewDetail.resource.stats : usageDetail.resource.stats} kind={route.kind} /><p className="resource-last-used">{t("resources.lastUsed", { date: dateLabel((overviewDetail ? overviewDetail.resource.stats : usageDetail.resource.stats)?.lastUsedAt ?? undefined) })}</p>
@@ -490,11 +534,13 @@ export default function Resources({ active, onSession }: { active: boolean; onSe
       {overviewLocal}
     </> : overviewDetail ? <>
       <div className="resource-detail-heading"><div><span>{usageAgentLabel(overviewDetail.resource)}</span><h2>{messageText(overviewDetail.resource.identity.nameDescriptor, overviewDetail.resource.identity.name)}</h2></div><FavoriteButton name={messageText(overviewDetail.resource.identity.nameDescriptor, overviewDetail.resource.identity.name)} favorite={overviewDetail.resource.favorite} disabled={favoritePending === route.id} onClick={() => void favorite(overviewDetail.resource.identity.id, overviewDetail.resource.favorite)} /></div>
+      {detailManagement}
       <div className="resource-tags"><span className={overviewDetail.resource.observation === "unknown" || overviewDetail.resource.observation === "insufficient" ? "is-warning" : ""}>{t(overviewObservationNames[overviewDetail.resource.observation])}</span>{overviewDetail.resource.protected && <span><ShieldCheck size={12} />{t("resources.protected")}</span>}</div>
       <Stats stats={overviewDetail.resource.stats} kind={route.kind} />
       {overviewLocal}
     </> : localDetail ? <>
       <div className="resource-detail-heading"><div><span>{route.kind === "skill" ? t("resources.detail.localSkill") : t("resources.detail.localMcp")}</span><h2>{localDetail.row.body.name}</h2></div><FavoriteButton name={localDetail.row.body.name} favorite={!!status?.favoriteIds.includes(route.id)} disabled={favoritePending === route.id || !status} onClick={() => void favorite(route.id)} /></div>
+      {detailManagement}
       <div className="resource-tags"><span className={localDetail.row.observation !== "recorded" ? "is-warning" : ""}>{observationLabel(localDetail.row)}</span>{localDetail.row.protected && <span><ShieldCheck size={12} />{t("resources.protected")}</span>}{localDetail.row.favorite && !status?.favoriteIds.includes(route.id) && <span>{t("resources.detail.favoriteProtection")}</span>}{localDetail.row.candidates.includes("duplicate") && <span>{t("resources.candidate.duplicate")}</span>}</div>
       <Stats stats={localDetail.row.usage} kind={route.kind} />
       <Trend rows={localDetail.trend} timeZone={localDetail.timeZone} />
@@ -507,13 +553,13 @@ export default function Resources({ active, onSession }: { active: boolean; onSe
       <div className="resource-detail-heading"><div><span>{clientLabel(selectedArchive.entry.client)}</span><h2>{selectedArchive.entry.name}</h2></div></div>
       <div className="resource-tags"><span>{t(archiveNames[selectedArchive.state])}</span><span>{selectedArchive.restorable ? t("resources.archive.restorable") : t("resources.archive.unavailable")}</span>{selectedArchive.operationStatus === "partial" && <span className="is-warning">{t("resources.operation.partial")}</span>}</div>
       <dl className="resource-facts"><dt>{t("resources.facts.original")}</dt><dd>{selectedArchive.originalPath}</dd><dt>{t("resources.facts.scope")}</dt><dd>{selectedArchive.entry.scope === "user" ? t("resources.scope.user") : selectedArchive.entry.project ?? t("resources.project.unknown")}</dd><dt>{t("resources.facts.managementTime")}</dt><dd>{dateLabel(selectedArchive.createdAt)}</dd>{selectedArchive.storedPath && <><dt>{t("resources.facts.recovery")}</dt><dd>{selectedArchive.storedPath}</dd></>}</dl>
-      <div className="resource-entry-actions"><button className="button primary" disabled={!selectedArchive.restorable} onClick={() => void showManagement({ action: "restore", operationId: selectedArchive.operationId })}>{t("resources.archive.previewRestore")}</button>{selectedArchive.state === "trash" && <button className="button resource-danger-button" onClick={() => void showManagement({ action: "purge", operationId: selectedArchive.operationId })}>{t("resources.archive.previewPurge")}</button>}</div>
+      <div className="resource-entry-actions"><button className="button primary" disabled={!selectedArchive.restorable} onClick={() => void showManagement({ action: "restore", operationId: selectedArchive.operationId })}>{t("resources.archive.previewRestore")}</button>{["trash", "standby"].includes(selectedArchive.state) && <button className="button resource-danger-button" onClick={() => void showManagement({ action: "purge", operationId: selectedArchive.operationId })}>{t("resources.archive.previewPurge")}</button>}</div>
     </> : selectedOperation && route.tab === "operations" ? <>
       <div className="resource-detail-heading"><div><span>{clientLabel(selectedOperation.resource.client)}</span><h2>{selectedOperation.name}</h2></div></div>
       <div className="resource-tags"><span>{t(actionNames[selectedOperation.action])}</span><span className={selectedOperation.status === "success" ? "" : "is-warning"}>{t(operationStatusNames[selectedOperation.status])}</span><span>{selectedOperation.clientEffect === "pending_reload" ? t("resources.clientEffect.pending") : t("resources.clientEffect.unknown")}</span></div>
       <ResourceMessage descriptor={selectedOperation.messageDescriptor} original={selectedOperation.message} details={selectedOperation.details} />
       <dl className="resource-facts"><dt>{t("resources.facts.executionTime")}</dt><dd>{dateLabel(selectedOperation.createdAt)}</dd><dt>{t("resources.facts.scope")}</dt><dd>{selectedOperation.resource.scope === "user" ? t("resources.scope.user") : selectedOperation.resource.project ?? t("resources.project.unknown")}</dd><dt>{t("resources.facts.localState")}</dt><dd>{selectedOperation.localState === "changed" ? t("resources.localState.changed") : selectedOperation.localState === "partial" ? t("resources.localState.partial") : t("resources.localState.unchanged")}</dd></dl>
-      {selectedOperation.archiveId && ["disable", "standby", "trash"].includes(selectedOperation.action) && <button className="button" onClick={() => update({ tab: selectedOperation.action === "disable" ? "disabled" : selectedOperation.action === "trash" ? "trash" : "standby", q: selectedOperation.name, id: "", page: 1 }, true)}>{t("resources.archive.viewRecovery")}</button>}
+      {selectedOperation.archiveId && ["disable", "standby", "trash"].includes(selectedOperation.action) && <button className="button" onClick={() => update({ tab: selectedOperation.action === "disable" ? "disabled" : "trash", q: selectedOperation.name, id: "", page: 1 }, true)}>{t("resources.archive.viewRecovery")}</button>}
     </> : <ResourceEmpty>{t("resources.detail.empty")}</ResourceEmpty>}
   </>;
 
@@ -524,26 +570,26 @@ export default function Resources({ active, onSession }: { active: boolean; onSe
       </aside>
       <main className="resources-main">
         <header className="resources-heading"><div><h1>{t("resources.title")}</h1></div><div className="resources-heading-actions"><button className="icon-button resource-mobile-filter" aria-label={t("resources.filters.open")} onClick={() => setFiltersOpen(true)}><Funnel size={18} /></button><button className="button" disabled={refreshing} onClick={() => void refresh()}><ArrowClockwise size={15} className={refreshing ? "spinning" : ""} />{refreshing ? t("resources.refresh.loading") : t("resources.refresh.label")}</button></div></header>
-        <div className="resource-kind-tabs" role="group" aria-label={t("resources.kind.label")}>{(["skill", "mcp"] as const).map(kind => <button key={kind} aria-pressed={route.kind === kind} className={route.kind === kind ? "is-selected" : ""} onClick={() => update({ kind, id: "", page: 1, tool: "", zeroPage: 1, reviewPage: 1, maxValue: kind === route.kind ? route.maxValue : "", candidate: kind === "mcp" && route.candidate === "duplicate" ? "all" : route.candidate, sort: kind === route.kind ? route.sort : "sessions", order: kind === route.kind ? route.order : "desc" })}>{kind === "skill" ? t("resources.kind.skill") : t("resources.kind.mcp")}</button>)}<UsageHelp kind={route.kind} /></div>
+        <div className="resource-kind-tabs" role="group" aria-label={t("resources.kind.label")}>{(["skill", "mcp"] as const).map(kind => <button key={kind} aria-pressed={route.kind === kind} className={route.kind === kind ? "is-selected" : ""} onClick={() => update({ kind, id: "", page: 1, tool: "", zeroPage: 1, reviewPage: 1, metric: kind === route.kind ? route.metric : "uses", maxValue: kind === route.kind ? route.maxValue : "", candidate: kind === "mcp" && route.candidate === "duplicate" ? "all" : route.candidate, sort: kind === route.kind ? route.sort : "uses", order: kind === route.kind ? route.order : "desc" })}>{kind === "skill" ? t("resources.kind.skill") : t("resources.kind.mcp")}</button>)}<UsageHelp kind={route.kind} /></div>
         <nav className="resource-view-tabs" aria-label={t("resources.view.label")}>{tabs.map(tab => <button key={tab.value} aria-current={route.tab === tab.value ? "page" : undefined} onClick={() => update({ tab: tab.value, id: "", page: 1, tool: "" }, true)}>{tab.value === "usage" ? overviewLabel : t(tab.labelKey)}</button>)}</nav>
         <div className="resource-list-toolbar"><label className="resource-search"><MagnifyingGlass size={16} /><input aria-label={t("resources.search.label")} value={route.q} placeholder={t("resources.search.label")} onChange={event => filter({ q: event.target.value })} />{route.q && <button className="icon-button" aria-label={t("resources.search.clear")} onClick={() => filter({ q: "" })}><X size={14} /></button>}</label>
-          {overviewRanking && !listLoading && overviewData && <span>{t(route.kind === "skill" ? "resources.skillCount" : "resources.mcpCount", { count: overviewData.total })}</span>}{route.tab === "local" && !listLoading && local && <span>{t("resources.resourceCount", { count: local.total })}</span>}
+          {overviewRanking && overviewData && (!listLoading || mapView && mapLoadedScope.current === JSON.stringify(mapQuery)) && <span>{t(route.kind === "skill" ? "resources.skillCount" : "resources.mcpCount", { count: overviewData.total })}</span>}{route.tab === "local" && !listLoading && local && <span>{t("resources.resourceCount", { count: local.total })}</span>}
           {route.tab === "operations" && !listLoading && operations && <span>{t("resources.operationCount", { count: operations.total })}</span>}{!historyView && route.tab !== "operations" && !listLoading && archives && <span>{t("resources.resourceCount", { count: archives.total })}</span>}
         </div>
         {overviewRanking && <div className="resource-map-settings"><div className="resource-display-switch" role="group" aria-label={t("resources.view.display")}>{(["list", "map"] as const).map(view => <button key={view} aria-pressed={route.view === view} onClick={() => update({ view })}>{view === "list" ? t("resources.view.list") : t("resources.view.map")}</button>)}</div>
-          {mapView && <label className="resource-map-limit">{t("resources.sort.sessions")} ≤<input type="number" min="0" step="1" aria-label={t("resources.map.limit")} value={route.maxValue} placeholder={t("resources.map.unlimited")} onChange={event => { const value = event.target.value; if (value === "" || /^\d+$/.test(value) && Number.isSafeInteger(Number(value))) filter({ maxValue: value }); }} /></label>}
+          {mapView && <><FilterSelect label={t("resources.map.metricFilter")} value={route.metric} options={[{ value: "uses", label: t("resources.sort.calls") }, { value: "sessions", label: t("resources.sort.sessions") }]} onChange={value => filter({ metric: value as ResourceRoute["metric"], maxValue: "" })} /><label className="resource-map-limit">{t(route.metric === "sessions" ? "resources.sort.sessions" : "resources.sort.calls")} ≤<input type="number" min="0" step="1" aria-label={t("resources.map.limit", { metric: t(route.metric === "sessions" ? "resources.sort.sessions" : "resources.sort.calls") })} value={route.maxValue} placeholder={t("resources.map.unlimited")} onChange={event => { const value = event.target.value; if (value === "" || /^\d+$/.test(value) && Number.isSafeInteger(Number(value))) filter({ maxValue: value }); }} /></label></>}
         </div>}
         {invalidTime && <div className="resource-alert" role="alert">{t("resources.time.invalidRange")}</div>}
         {error && <div className="resource-alert" role="alert"><ResourceErrorText error={error} /><button className="text-button" onClick={() => setReload(value => value + 1)}>{t("common.retry")}</button></div>}
-        {feedback && <div className="resource-feedback" role="status">{t(feedback.key, feedback.params)}<button className="icon-button" aria-label={t("resources.feedback.close")} onClick={() => setFeedback(null)}><X size={14} /></button></div>}
-        {overviewRanking && overviewData && !listLoading && <>
+        {feedback && <div className={`resource-feedback${mapView ? " resource-map-feedback" : ""}`} role="status">{t(feedback.key, feedback.params)}<button className="icon-button" aria-label={t("resources.feedback.close")} onClick={() => setFeedback(null)}><X size={14} /></button></div>}
+        {overviewRanking && overviewData && (!listLoading || mapView && mapLoadedScope.current === JSON.stringify(mapQuery)) && <>
           <div className="resource-quick-filters" role="group" aria-label={t("resources.quickFilters", { kind: route.kind === "skill" ? t("resources.kind.skill") : t("resources.kind.mcp") })}>{overviewCandidates.map(candidate => <button key={candidate.value} aria-pressed={route.candidate === candidate.value || candidate.value === "all" && !overviewCandidates.some(item => item.value === route.candidate)} onClick={() => filter({ candidate: candidate.value, favorite: false })}>{t(candidate.labelKey)}<strong>{fmt(overviewData.counts[candidate.value])}</strong></button>)}</div>
           {(overviewData.partial || !!overviewData.coverage?.missingTimeEvents) && <div className="resource-range-summary">{overviewData.partial && <span className="resource-state is-warning">{t("resources.partialSources")}</span>}{!!overviewData.coverage?.missingTimeEvents && <span className="resource-state is-warning">{t("resources.missingTimeCount", { count: overviewData.coverage.missingTimeEvents })}</span>}</div>}
         </>}
         {route.tab === "local" && local?.partial && !listLoading && <div className="resource-range-summary"><span className="resource-state is-warning">{t("resources.partialUnread")}</span></div>}
         <div className={`resource-list-scroll${mapView ? " resource-map-scroll" : ""}`} ref={listScroll} aria-busy={listLoading}>
-          {listLoading ? <div role="status" className="resource-loading">{t("resources.loading.resources")}</div> : invalidTime ? null : mapView ? map && <ResourceMap data={map} selected={route.id} onSelect={select} zeroPage={route.zeroPage} zeroSize={route.zeroSize} reviewPage={route.reviewPage} reviewSize={route.reviewSize} onZeroPage={zeroPage => update({ zeroPage })} onZeroSize={zeroSize => update({ zeroSize, zeroPage: 1 })} onReviewPage={reviewPage => update({ reviewPage })} onReviewSize={reviewSize => update({ reviewSize, reviewPage: 1 })} /> : overviewRanking ? overview?.resources.length ? <OverviewTable rows={overview.resources} route={route} onSort={sort} onSelect={select} onFavorite={(id, current) => void favorite(id, current)} favoritePending={favoritePending} /> : <ResourceEmpty>{t("resources.empty.kind", { kind: route.kind === "skill" ? t("resources.kind.skill") : t("resources.kind.mcp") })}</ResourceEmpty> : route.tab === "local" ? local?.rows.length ? <div className="resource-rows">{local.rows.map(row => <div className={`resource-row${route.id === row.body.id ? " is-selected" : ""}`} key={row.body.id}>
-            <button className="resource-row-main" onClick={() => select(row.body.id)} aria-label={t("resources.viewLocal", { name: row.body.name })}><div className="resource-row-heading"><strong>{row.body.name}</strong><span>{t("resources.entryCount", { count: row.entries.length })}</span></div><div className="resource-row-subtitle" title={row.body.targetPath}>{row.body.targetPath ?? row.entries[0]?.entryPath}</div><div className="resource-row-metrics"><span>{formatList([...new Set(row.entries.map(entry => clientLabel(entry.client)))])}</span>{row.usage && <span>{t("resources.sessionCount", { count: row.usage.sessions })}</span>}</div><div className="resource-tags"><span className={row.observation === "recorded" ? "" : "is-warning"}>{observationLabel(row)}</span>{row.protected && <span><ShieldCheck size={12} />{t("resources.protected")}</span>}{row.favorite && !status?.favoriteIds.includes(row.body.id) && <span>{t("resources.detail.favoriteProtection")}</span>}{row.entries.some(entry => !entry.capabilities.standby && !entry.capabilities.disable && !entry.capabilities.trash) && <span>{t("resources.readOnly")}</span>}{row.candidates.includes("broken") && <span className="is-warning">{t("resources.candidate.broken")}</span>}{row.candidates.includes("duplicate") && <span>{t("resources.candidate.duplicate")}</span>}</div></button><FavoriteButton name={row.body.name} favorite={!!status?.favoriteIds.includes(row.body.id)} disabled={favoritePending === row.body.id || !status} onClick={() => void favorite(row.body.id)} />
+          {listLoading && !(mapView && map && mapLoadedScope.current === JSON.stringify(mapQuery)) ? <div role="status" className="resource-loading">{t("resources.loading.resources")}</div> : invalidTime ? null : mapView ? map && <ResourceMap data={map} selected={route.id} onSelect={select} zeroPage={route.zeroPage} zeroSize={route.zeroSize} reviewPage={route.reviewPage} reviewSize={route.reviewSize} onZeroPage={zeroPage => update({ zeroPage })} onZeroSize={zeroSize => update({ zeroSize, zeroPage: 1 })} onReviewPage={reviewPage => update({ reviewPage })} onReviewSize={reviewSize => update({ reviewSize, reviewPage: 1 })} /> : overviewRanking ? overview?.resources.length ? <OverviewTable rows={overview.resources} route={route} onSort={sort} onSelect={select} onManage={row => void openEntries(row.identity.id, messageText(row.identity.nameDescriptor, row.identity.name))} onFavorite={(id, current) => void favorite(id, current)} favoritePending={favoritePending} /> : <ResourceEmpty>{t("resources.empty.kind", { kind: route.kind === "skill" ? t("resources.kind.skill") : t("resources.kind.mcp") })}</ResourceEmpty> : route.tab === "local" ? local?.rows.length ? <div className="resource-rows">{local.rows.map(row => <div className={`resource-row${route.id === row.body.id ? " is-selected" : ""}`} key={row.body.id}>
+            <button className="resource-row-main" onClick={() => select(row.body.id)} aria-label={t("resources.viewLocal", { name: row.body.name })}><div className="resource-row-heading"><strong>{row.body.name}</strong><span>{t("resources.entryCount", { count: row.entries.length })}</span></div><div className="resource-row-subtitle" title={row.body.targetPath}>{row.body.targetPath ?? row.entries[0]?.entryPath}</div><div className="resource-row-metrics"><span>{formatList([...new Set(row.entries.map(entry => clientLabel(entry.client)))])}</span>{row.usage && <><span>{t("resources.map.callValue", { count: row.usage.events })}</span><span>{t("resources.sessionCount", { count: row.usage.sessions })}</span></>}</div><div className="resource-tags"><span className={row.observation === "recorded" ? "" : "is-warning"}>{observationLabel(row)}</span>{row.protected && <span><ShieldCheck size={12} />{t("resources.protected")}</span>}{row.favorite && !status?.favoriteIds.includes(row.body.id) && <span>{t("resources.detail.favoriteProtection")}</span>}{row.entries.some(entry => !entry.capabilities.disable && !entry.capabilities.trash) && <span>{t("resources.readOnly")}</span>}{row.candidates.includes("broken") && <span className="is-warning">{t("resources.candidate.broken")}</span>}{row.candidates.includes("duplicate") && <span>{t("resources.candidate.duplicate")}</span>}</div></button><FavoriteButton name={row.body.name} favorite={!!status?.favoriteIds.includes(row.body.id)} disabled={favoritePending === row.body.id || !status} onClick={() => void favorite(row.body.id)} />
           </div>)}</div> : <ResourceEmpty>{t("resources.empty.local")}</ResourceEmpty> : route.tab === "operations" ? operations?.operations.length ? <div className="resource-rows">{operations.operations.map(operation => <div className={`resource-row${route.id === operation.id ? " is-selected" : ""}`} key={operation.id}><button className="resource-row-main" aria-label={t("resources.viewOperation", { name: operation.name, action: t(actionNames[operation.action]) })} onClick={() => select(operation.id)}><div className="resource-row-heading"><strong>{operation.name}</strong><span>{t(actionNames[operation.action])}</span></div><div className="resource-row-metrics"><span>{clientLabel(operation.resource.client)}</span><span>{dateLabel(operation.createdAt)}</span></div><div className="resource-tags"><span className={operation.status === "success" ? "" : "is-warning"}>{t(operationStatusNames[operation.status])}</span><span>{operation.clientEffect === "pending_reload" ? t("resources.clientEffect.pending") : t("resources.clientEffect.unknown")}</span></div></button></div>)}</div> : <ResourceEmpty>{t("resources.empty.operations")}</ResourceEmpty> : archives?.archives.length ? <div className="resource-rows">{archives.archives.map(archive => <div className={`resource-row${route.id === archive.id ? " is-selected" : ""}`} key={archive.id}><button className="resource-row-main" aria-label={t("resources.viewRecovery", { name: archive.entry.name })} onClick={() => select(archive.id)}><div className="resource-row-heading"><strong>{archive.entry.name}</strong><span>{clientLabel(archive.entry.client)}</span></div><div className="resource-row-subtitle" title={archive.originalPath}>{archive.originalPath}</div><div className="resource-row-metrics"><span>{dateLabel(archive.createdAt)}</span></div><div className="resource-tags"><span>{t(archiveNames[archive.state])}</span><span className={!archive.restorable ? "is-warning" : ""}>{archive.restorable ? t("resources.archive.restorable") : t("resources.archive.unavailable")}</span>{archive.operationStatus === "partial" && <span className="is-warning">{t("resources.operation.partial")}</span>}</div></button></div>)}</div> : <ResourceEmpty>{t("resources.empty.archive", { state: t(tabs.find(tab => tab.value === route.tab)!.labelKey) })}</ResourceEmpty>}
         </div>
         {overviewRanking && !mapView && overview && !listLoading && <ResourcePagination page={overview.page} total={overview.total} pageSize={overview.pageSize} label={overviewLabel} onPageSizeChange={pageSize => filter({ pageSize })} onChange={pageChange} />}
@@ -557,7 +603,7 @@ export default function Resources({ active, onSession }: { active: boolean; onSe
       </aside>
     </ResizableWorkspace>
     <ResourceDialog open={compact && filtersOpen && active} onOpenChange={setFiltersOpen} title={t("resources.filters.title")} description={t("resources.filters.description")} className="resource-filter-dialog">{filters}<div className="dialog-end"><button className="button primary" onClick={() => setFiltersOpen(false)}>{t("resources.done")}</button></div></ResourceDialog>
-    <ResourceDialog open={compact && !!route.id && active} onOpenChange={open => { if (!open) update({ id: "" }); }} title={t("resources.detail.title")} description={route.kind === "skill" ? t("resources.detail.skillDescription") : t("resources.detail.mcpDescription")} className="resource-detail-dialog" contentRef={detailDialogScroll}>{detail}</ResourceDialog>
+    <ResourceDialog open={compact && !!route.id && active && !entriesOpen && !managementOpen} onOpenChange={open => { if (!open) update({ id: "" }); }} title={t("resources.detail.title")} description={route.kind === "skill" ? t("resources.detail.skillDescription") : t("resources.detail.mcpDescription")} className="resource-detail-dialog" contentRef={detailDialogScroll}>{detail}</ResourceDialog>
     <ResourceDialog open={sourcesOpen && active} onOpenChange={setSourcesOpen} title={t("resources.source.title")} description={t("resources.source.lastScanned", { date: status?.observedAt ? dateLabel(status.observedAt) : t("resources.source.neverScanned") })}>
       {sourceError && <div className="resource-alert" role="alert"><ResourceErrorText error={sourceError} /></div>}
       <div className="resource-source-list">{status?.sources.map(item => { const manual = item.manualSourceId ? status.manualSources.find(source => source.id === item.manualSourceId) : undefined; return <div key={item.id}><header><strong>{clientLabel(item.client)} · {item.kind === "skill" ? t("resources.kind.skill") : t("resources.kind.mcp")}</strong><span className={`resource-state${item.readState !== "ok" ? " is-warning" : ""}`}>{t(sourceStateNames[item.readState])}</span></header><p>{item.path}</p><div className="resource-tags"><span>{item.scope === "user" ? t("resources.scope.user") : t("resources.scope.project")}</span><span>{item.format}</span><span>{item.verified ? t("resources.source.verified") : t("resources.source.readOnlyUnsupported")}</span>{item.origin === "plugin" && <span>{t("resources.source.pluginOwner", { owner: item.owner ?? t("common.unknown") })}</span>}</div>{manual?.id && <button className="text-button" disabled={sourcePending} onClick={() => void removeSource(manual.id!)}>{t("resources.source.remove")}</button>}</div>; })}</div>
@@ -575,10 +621,21 @@ export default function Resources({ active, onSession }: { active: boolean; onSe
         <div className="dialog-end"><button type="button" className="button subtle" disabled={sourcePending} onClick={() => setSourceAdding(false)}>{t("common.cancel")}</button><button className="button primary" disabled={sourcePending || !source.path.trim()}>{sourcePending ? t("resources.source.adding") : t("resources.source.addAndScan")}</button></div>
       </form>
     </ResourceDialog>
-    <ResourceDialog open={managementOpen && active} onOpenChange={closeManagement} title={managementInput ? t("resources.management.actionPreview", { action: t(actionNames[managementInput.action]) }) : t("resources.management.preview")} description={t("resources.management.description")}>
+    <ResourceDialog open={entriesOpen && active} onOpenChange={closeEntries} title={t("resources.detail.manageEntries")} description={t("resources.management.chooseEntry")} className="resource-entry-dialog" focusTarget={managementFocusTarget} afterClose={afterEntriesClose}>
+      {entriesTarget && <div className="resource-preview-heading"><strong>{entriesTarget.name}</strong></div>}
+      {entriesError ? <div className="resource-alert" role="alert"><ResourceErrorText error={entriesError} /><button className="text-button" onClick={() => entriesTarget && void openEntries(entriesTarget.id, entriesTarget.name)}>{t("common.retry")}</button></div>
+        : !entriesTarget?.rows ? <div className="resource-loading" role="status">{t("resources.loading.detail")}</div>
+        : entriesTarget.rows.length ? <div className="resource-management-bodies">{entriesTarget.rows.map((row, index) => <section className="resource-management-body" key={row.body.id} aria-label={t("resources.bodyName", { name: row.body.name, index: index + 1 })}>
+          <header><strong>{row.body.name}</strong><span>{t("resources.entryCount", { count: row.entries.length })}</span></header>
+          <p className="resource-path">{row.body.targetPath ?? row.entries[0]?.entryPath ?? t("resources.detail.bodyUnknown")}</p>
+          {row.protected && <div className="resource-tags"><span><ShieldCheck size={12} />{row.favorite ? t("resources.protection.favorite") : t("resources.protected")}</span></div>}
+          {row.entries.map(entry => <Entry key={entry.id} entry={entry} onManage={chooseEntryAction} />)}
+        </section>)}</div> : <div className="resource-management-unavailable" role="status"><span className="resource-state">{t("resources.historyOnly")}</span><p>{t("resources.management.historyOnly")}</p></div>}
+    </ResourceDialog>
+    <ResourceDialog open={managementOpen && active} onOpenChange={closeManagement} focusTarget={managementFocusTarget} title={managementInput ? t("resources.management.actionPreview", { action: t(actionNames[managementInput.action]) }) : t("resources.management.preview")} description={t("resources.management.description")}>
       {previewLoading ? <div className="resource-loading" role="status">{t("resources.management.loading")}</div> : preview ? <>
         <div className="resource-preview-heading"><strong>{preview.resource.name}</strong><div className="resource-tags"><span>{clientLabel(preview.resource.client)}</span><span>{preview.resource.scope === "user" ? t("resources.scope.user") : t("resources.scope.project")}</span>{preview.protected && <span className="is-warning"><ShieldCheck size={12} />{t("resources.protected")}</span>}<span className="is-warning">{t("resources.management.referencesUnknown")}</span></div></div>
-        <dl className="resource-facts"><dt>{t("resources.facts.method")}</dt><dd>{t(operationMethodNames[preview.method])}</dd><dt>{t("resources.facts.original")}</dt><dd>{preview.sourcePath}</dd>{preview.destinationPath && <><dt>{t("resources.facts.destination")}</dt><dd>{preview.destinationPath}</dd></>}{preview.resource.project && <><dt>{t("resources.project.label")}</dt><dd>{preview.resource.project}</dd></>}<dt>{t("resources.facts.restoration")}</dt><dd><ResourceMessage descriptor={preview.restorationDescriptor} original={preview.restoration} /></dd><dt>{t("resources.facts.expires")}</dt><dd>{dateLabel(preview.expiresAt)}</dd></dl>
+        <dl className="resource-facts"><dt>{t("resources.facts.method")}</dt><dd>{t(operationMethodNames[preview.method])}</dd><dt>{t("resources.facts.original")}</dt><dd>{preview.sourcePath}</dd>{preview.destinationPath && <><dt>{t(preview.action === "disable" ? "resources.facts.backupDestination" : preview.action === "restore" ? "resources.facts.restoreDestination" : "resources.facts.trashDestination")}</dt><dd>{preview.destinationPath}</dd></>}{preview.resource.project && <><dt>{t("resources.project.label")}</dt><dd>{preview.resource.project}</dd></>}<dt>{t("resources.facts.restoration")}</dt><dd><ResourceMessage descriptor={preview.restorationDescriptor} original={preview.restoration} /></dd><dt>{t("resources.facts.expires")}</dt><dd>{dateLabel(preview.expiresAt)}</dd></dl>
         {preview.protected && <div className="resource-alert" role="alert">{preview.protectionReasons.length ? formatList(preview.protectionReasons.map(reason => protectionNames[reason] ? t(protectionNames[reason]!) : t("common.originalDetail", { detail: reason }))) : t("resources.management.protected")}</div>}
         <section className="resource-detail-section"><header><h3>{t("resources.management.affectedEntries")}</h3><span>{t("resources.entryCount", { count: preview.affectedEntries.length })}</span></header><div className="resource-preview-entries">{preview.affectedEntries.map(entry => <div key={entry.id}><strong>{clientLabel(entry.client)} · {entry.name}</strong><span>{entry.scope === "user" ? t("resources.scope.user") : entry.project ?? t("resources.project.unknown")}</span><p>{entry.entryPath}</p></div>)}</div></section>
         {preview.action === "purge" && <label className="resource-checkbox resource-purge-confirm"><input type="checkbox" checked={purgeConfirmed} onChange={event => setPurgeConfirmed(event.target.checked)} />{t("resources.management.confirmPurge")}</label>}
@@ -596,9 +653,16 @@ export default function Resources({ active, onSession }: { active: boolean; onSe
 
 function Entry({ entry, onManage }: { entry: ResourceInventoryEntry; onManage: (input: ResourceManagementInput) => void }) {
   useI18n();
-  return <div className="resource-entry"><header><strong>{clientLabel(entry.client)}</strong><span>{entry.scope === "user" ? t("resources.scope.user") : shortPath(entry.project ?? t("resources.project.unknown"))}</span></header><p className="resource-path">{entry.entryPath}</p>
+  const unavailable = !entry.capabilities.disable && !entry.capabilities.trash;
+  const unavailableKey = entry.protectionReason === "system" ? "resources.management.systemReadOnly"
+    : entry.protectionReason === "plugin" ? "resources.management.pluginReadOnly"
+    : entry.readState !== "present" ? "resources.management.unreadable"
+    : "resources.management.readOnly";
+  return <div className="resource-entry"><header><strong>{clientLabel(entry.client)}</strong><span>{entry.scope === "user" ? t("resources.scope.user") : entry.project ?? t("resources.project.unknown")}</span></header><p className="resource-path">{entry.entryPath}</p>
+    {entry.entryType === "registration" && entry.locator.keyPath?.length && <p className="resource-path">{entry.locator.keyPath.join(".")}</p>}
     {entry.entryType === "symlink" && <p className="resource-path">→ {entry.targetPath ?? entry.linkTarget ?? t("resources.entry.targetUnknown")}</p>}
-    <div className="resource-tags"><span>{t(methodNames[entry.entryType])}</span><span>{entry.nativeState === "disabled" ? t("resources.tab.disabled") : entry.nativeState === "enabled" ? t("resources.entry.enabled") : t("resources.entry.stateUnknown")}</span>{entry.readState !== "present" && <span className="is-warning">{entry.readState === "broken" ? t("resources.entry.broken") : t("resources.source.unreadable")}</span>}{entry.protected && <span>{entry.owner ? t("resources.entry.protectedOwner", { owner: entry.owner }) : t("resources.protected")}</span>}{!entry.capabilities.disable && !entry.capabilities.standby && !entry.capabilities.trash && <span>{t("resources.readOnly")}</span>}</div>
-    <div className="resource-entry-actions">{entry.capabilities.disable && entry.nativeState !== "disabled" && <button className="button" aria-label={t("resources.management.previewEntry", { action: t(actionNames.disable), name: entry.name, client: clientLabel(entry.client) })} onClick={() => onManage({ entryId: entry.id, action: "disable" })}>{t("resources.entry.previewDisable")}</button>}{entry.capabilities.standby && <button className="button" aria-label={t("resources.management.previewEntry", { action: t(actionNames.standby), name: entry.name, client: clientLabel(entry.client) })} onClick={() => onManage({ entryId: entry.id, action: "standby" })}>{t("resources.action.standby")}</button>}{entry.capabilities.trash && <button className="button resource-danger-button" aria-label={t("resources.management.previewEntry", { action: t(actionNames.trash), name: entry.name, client: clientLabel(entry.client) })} onClick={() => onManage({ entryId: entry.id, action: "trash" })}>{t("resources.action.trash")}</button>}</div>
+    <div className="resource-tags"><span>{t(methodNames[entry.entryType])}</span><span>{entry.nativeState === "disabled" ? t("resources.tab.disabled") : entry.nativeState === "enabled" ? t("resources.entry.enabled") : t("resources.entry.stateUnknown")}</span>{entry.readState !== "present" && <span className="is-warning">{entry.readState === "broken" ? t("resources.entry.broken") : t("resources.source.unreadable")}</span>}{entry.protected && <span>{entry.owner ? t("resources.entry.protectedOwner", { owner: entry.owner }) : t("resources.protected")}</span>}{!entry.capabilities.disable && !entry.capabilities.trash && <span>{t("resources.readOnly")}</span>}</div>
+    {unavailable && <p className="resource-management-unavailable">{t(unavailableKey)}</p>}
+    <div className="resource-entry-actions">{entry.capabilities.disable && entry.nativeState !== "disabled" && <button className="button" data-resource-action={`${entry.id}:disable`} aria-label={t("resources.management.previewEntry", { action: t(actionNames.disable), name: entry.name, client: clientLabel(entry.client) })} onClick={() => onManage({ entryId: entry.id, action: "disable" })}>{t("resources.entry.previewDisable")}</button>}{entry.capabilities.trash && <button className="button resource-danger-button" data-resource-action={`${entry.id}:trash`} aria-label={t("resources.management.previewEntry", { action: t(actionNames.trash), name: entry.name, client: clientLabel(entry.client) })} onClick={() => onManage({ entryId: entry.id, action: "trash" })}>{t("resources.action.trash")}</button>}</div>
   </div>;
 }

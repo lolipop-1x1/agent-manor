@@ -30,14 +30,14 @@ async function fixture(run: (context: Awaited<ReturnType<typeof resourceFixture>
 }
 
 function source(store: SessionStore, id: string, resources: { kind: "skill_call" | "skill_read" | "mcp"; name: string;
-  server?: string; nameDescriptor?: SessionMessage["textDescriptor"]; occurredAt?: string | null }[], client: SessionSourceMeta["client"] = "codex") {
+  server?: string; status?: SessionMessage["status"]; nameDescriptor?: SessionMessage["textDescriptor"]; occurredAt?: string | null }[], client: SessionSourceMeta["client"] = "codex") {
   const path = `/synthetic/history/${id}.jsonl`;
   const pending = store.createRevision(path, `synthetic-${id}`);
   for (const [ordinal, resource] of resources.entries()) {
-    const { occurredAt, ...identity } = resource;
+    const { occurredAt, status, ...identity } = resource;
     const message: SessionMessage = { id: `${id}:message:${ordinal}`, sessionId: id, ordinal, recordLine: ordinal + 1,
       turnId: "turn-1", kind: "tool_call", callId: `${id}:call:${ordinal}`, text: "人工合成内容不进入地图",
-      status: "success", occurredAt: occurredAt === null ? undefined : occurredAt ?? recordedAt, resource: identity };
+      status: status ?? "success", occurredAt: occurredAt === null ? undefined : occurredAt ?? recordedAt, resource: identity };
     pending.sink.message(message);
   }
   pending.flush();
@@ -102,6 +102,44 @@ test("同名跨 Agent 合并会话并集，调用、成功读取分开，零调�
   const dated = await service.map({ q: "map", from: "2026-09-01T00:00:00Z" });
   assert.equal(dated.zero[0]!.name, "shared-map");
   assert.equal(dated.zero[0]!.metrics?.reads, 1);
+}));
+
+test("统一调用指标包含 Skill 调用与成功读取，MCP 重复请求与会话数分开，原始指标保持不变", async () => fixture(async (_context, store, _manager, service) => {
+  store.publish(store.createJob().id, [source(store, "combined-first", [
+    { kind: "skill_call", name: "combined-skill" },
+    { kind: "skill_read", name: "combined-skill" },
+    { kind: "skill_read", name: "combined-skill", status: "failure" },
+    { kind: "skill_read", name: "read-only-skill" },
+    { kind: "mcp", name: "lookup", server: "combined-server" },
+    { kind: "mcp", name: "lookup", server: "combined-server", status: "failure" },
+  ]), source(store, "combined-second", [{ kind: "skill_read", name: "combined-skill" }], "claude")], []);
+  const app = Fastify(); registerResourceRoutes(app, service);
+  try {
+    const response = await app.inject({ method: "GET", url: "/api/v1/resources/map?kind=skill&metric=uses&q=skill" });
+    assert.equal(response.statusCode, 200);
+    const map = response.json<ResourceMapResult>();
+    const combined = map.positive.find(node => node.name === "combined-skill")!;
+    assert.equal(map.metric, "uses"); assert.equal(combined.value, 3);
+    assert.equal(combined.share, 3 / 4); assert.equal(map.totalValue, 4);
+    assert.deepEqual(combined.metrics, { calls: 1, reads: 2, sessions: 2 });
+    assert.equal(map.positive.find(node => node.name === "read-only-skill")!.value, 1);
+    const limit = await service.map({ metric: "uses", q: "skill", maxValue: 1 });
+    assert.deepEqual(limit.positive.map(node => node.name), ["read-only-skill"]);
+    const codex = await service.map({ metric: "uses", client: "codex", q: "combined-skill" });
+    assert.equal(codex.positive[0]!.value, 2);
+    const sessions = await service.map({ metric: "sessions", q: "combined-skill" });
+    assert.equal(sessions.positive[0]!.value, 2);
+    const rawCalls = await service.map({ metric: "calls", q: "combined-skill" });
+    assert.equal(rawCalls.positive[0]!.value, 1);
+    const overview = await app.inject({ method: "GET", url: "/api/v1/resources/overview?kind=skill&sort=uses&q=skill" });
+    assert.equal(overview.statusCode, 200);
+    assert.equal(overview.json().resources[0].identity.name, "combined-skill");
+    const mcp = await service.map({ kind: "mcp", metric: "uses", q: "combined-server" });
+    assert.equal(mcp.positive[0]!.value, 2);
+    assert.deepEqual(mcp.positive[0]!.metrics, { calls: 2, reads: 0, sessions: 1 });
+    const mcpSessions = await service.map({ kind: "mcp", metric: "sessions", q: "combined-server" });
+    assert.equal(mcpSessions.positive[0]!.value, 1);
+  } finally { await app.close(); }
 }));
 
 test("数值上限只过滤已知值，未知、观测不足和缺失时间继续可见，低频阈值独立", async () => fixture(async (_context, store, manager, service) => {

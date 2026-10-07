@@ -168,7 +168,7 @@ export class ResourceService {
     const metric = (row: ResourceLocalRow): number | null => {
       if (!row.usage) return null;
       if (sort === "recent") return row.usage.lastUsedAt ? Date.parse(row.usage.lastUsedAt) : null;
-      return sort === "calls" ? row.usage.explicitCalls + row.usage.mcpCalls : sort === "reads" ? row.usage.successfulReads : row.usage.sessions;
+      return sort === "uses" ? row.usage.events : sort === "calls" ? row.usage.explicitCalls + row.usage.mcpCalls : sort === "reads" ? row.usage.successfulReads : row.usage.sessions;
     };
     rows.sort((a, b) => {
       if (sort === "name") return direction * a.body.name.localeCompare(b.body.name) || a.body.id.localeCompare(b.body.id);

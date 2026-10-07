@@ -8,7 +8,7 @@ export function buildResourceMap(overview: ResourceOverviewResult, history: Reso
   query: ResourceMapQuery): ResourceMapResult {
   const kind = query.kind ?? "skill", metric = query.metric ?? "calls";
   if (overview.resources.length !== overview.total) throw new ServiceError("INVALID_INPUT", "地图查询需要完整资源结果", { key: "diagnostics.resources.map.completeRequired" });
-  if (!["calls", "sessions", "reads"].includes(metric) || kind === "mcp" && metric === "reads") {
+  if (!["calls", "sessions", "reads", "uses"].includes(metric) || kind === "mcp" && metric === "reads") {
     throw new ServiceError("INVALID_INPUT", "所选资源不支持该面积指标", { key: "diagnostics.service.resourceInput.m003" });
   }
   if (query.maxValue !== undefined && (!Number.isSafeInteger(query.maxValue) || query.maxValue < 0)) {
@@ -20,7 +20,7 @@ export function buildResourceMap(overview: ResourceOverviewResult, history: Reso
   for (const row of overview.resources) {
     const metrics = row.stats ? { calls: kind === "mcp" ? row.stats.mcpCalls : row.stats.explicitCalls,
       reads: row.stats.successfulReads, sessions: row.stats.sessions } : null;
-    const value = metrics?.[metric] ?? null;
+    const value = metric === "uses" ? row.stats?.events ?? null : metrics?.[metric] ?? null;
     if (value !== null && query.maxValue !== undefined && value > query.maxValue) continue;
     const timestamp = row.stats?.lastUsedAt;
     const node: ResourceMapNode = { id: row.identity.id, name: row.identity.name, ...(row.identity.nameDescriptor ? { nameDescriptor: row.identity.nameDescriptor } : {}), value, share: null, metrics,

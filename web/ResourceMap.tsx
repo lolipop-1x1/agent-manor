@@ -1,6 +1,6 @@
 import { useEffect, useId, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent, type PointerEvent } from "react";
 import { ArrowsIn, ArrowsOut, Crosshair, Minus, Plus, Resize, ShieldCheck, Star } from "@phosphor-icons/react";
-import type { ResourceMapNode, ResourceMapResult } from "../src/resource-service-contracts";
+import type { ResourceMapMetric, ResourceMapNode, ResourceMapResult } from "../src/resource-service-contracts";
 import { ProjectPicker } from "./ProjectPicker";
 import { HelpPopover } from "./HelpPopover";
 import { ResourcePagination } from "./ResourcePagination";
@@ -11,7 +11,8 @@ import { formatList, getLanguage, messageText, t, useI18n } from "./i18n";
 import { formatPercent } from "../src/i18n";
 import "./resource-map.css";
 
-const metricValue = (count: number) => t("resources.map.sessionValue", { count });
+const metricLabel = (metric: ResourceMapMetric) => t(metric === "sessions" ? "resources.sort.sessions" : metric === "reads" ? "resources.map.reads" : "resources.sort.calls");
+const metricValue = (metric: ResourceMapMetric, count: number) => t(metric === "sessions" ? "resources.map.sessionValue" : metric === "reads" ? "resources.map.metricValue" : "resources.map.callValue", { count });
 const shareLabel = (value: number | null) => value === null ? t("common.unknown") : value > 0 && value < .00001 ? `<${formatPercent(getLanguage(), .00001, { maximumFractionDigits: 3 })}` : formatPercent(getLanguage(), value, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const position = (rect: MapRect): CSSProperties => ({ left: rect.x, top: rect.y, width: rect.width, height: rect.height });
 const dateDay = (date: Date) => Date.UTC(date.getFullYear(), date.getMonth(), date.getDate());
@@ -29,8 +30,8 @@ interface ResourceMapProps {
   onReviewPage: (page: number) => void; onReviewSize: (size: number) => void;
 }
 
-function CompactResources({ nodes, title, label, selected, page, pageSize, onSelect, onPage, onSize }: {
-  nodes: ResourceMapNode[]; title: string; label: string; selected: string;
+function CompactResources({ nodes, title, label, metric, selected, page, pageSize, onSelect, onPage, onSize }: {
+  nodes: ResourceMapNode[]; title: string; label: string; metric: ResourceMapMetric; selected: string;
   page: number; pageSize: number; onSelect: (id: string) => void; onPage: (page: number) => void; onSize: (size: number) => void;
 }) {
   useI18n();
@@ -39,7 +40,7 @@ function CompactResources({ nodes, title, label, selected, page, pageSize, onSel
   return <details className="resource-map-compact"><summary>{title}<span>{fmt(nodes.length)}</span></summary>
     <div className="resource-map-compact-content">
       {rows.length ? <div className="resource-map-compact-rows">{rows.map(node => <button key={node.id} aria-label={t("resources.viewUsage", { name: messageText(node.nameDescriptor, node.name) })} className={selected === node.id ? "is-selected" : ""} onClick={() => onSelect(node.id)}>
-        <strong>{messageText(node.nameDescriptor, node.name)}</strong><span>{node.value === null ? node.observation === "insufficient" ? t("resources.observation.insufficient") : t("resources.observation.unknown") : metricValue(node.value)}</span>
+        <strong>{messageText(node.nameDescriptor, node.name)}</strong><span>{node.value === null ? node.observation === "insufficient" ? t("resources.observation.insufficient") : t("resources.observation.unknown") : metricValue(metric, node.value)}</span>
         <div className="resource-tags">{node.favorite && <span><Star size={12} />{t("resources.candidate.favorite")}</span>}{node.protected && <span><ShieldCheck size={12} />{t("resources.protected")}</span>}{node.partial && <span className="is-warning">{t("resources.partial")}</span>}{!node.lastUsedAt && <span className="is-warning">{t("resources.map.timeMissing")}</span>}</div>
       </button>)}</div> : <div className="resource-empty">{t("resources.map.empty")}</div>}
       <ResourcePagination label={label} page={current} pageSize={pageSize} total={nodes.length} onChange={onPage} onPageSizeChange={onSize} />
@@ -52,6 +53,8 @@ export function ResourceMap({ data, selected, onSelect, zeroPage, zeroSize, revi
   const explorer = useRef<HTMLElement>(null), host = useRef<HTMLDivElement>(null);
   const tooltipId = useId();
   const layout = useMemo(() => layoutResourceMap(data.positive), [data.positive]);
+  const geometry = JSON.stringify(data.positive.map(node => [node.id, node.value]));
+  const previousGeometry = useRef<string | null>(null);
   const [size, setSize] = useState({ width: 700, height: 400 });
   const sizeRef = useRef(size);
   const [camera, setCamera] = useState<ResourceMapCamera>(() => fitCamera(layout.bounds, size));
@@ -70,8 +73,12 @@ export function ResourceMap({ data, selected, onSelect, zeroPage, zeroSize, revi
   };
   useEffect(() => {
     const element = host.current!;
-    const reset = fitCamera(layout.bounds, sizeRef.current);
-    cameraRef.current = reset; setCamera(reset); setHint(null);
+    // 管理及收藏刷新未改变面积布局时保留地图视野。
+    if (previousGeometry.current !== geometry) {
+      const reset = fitCamera(layout.bounds, sizeRef.current);
+      cameraRef.current = reset; setCamera(reset);
+    }
+    previousGeometry.current = geometry; setHint(null);
     const observer = new ResizeObserver(entries => {
       const entry = entries[0]; if (!entry || !entry.contentRect.width || !entry.contentRect.height) return;
       const next = { width: entry.contentRect.width, height: entry.contentRect.height }, previous = sizeRef.current;
@@ -185,7 +192,7 @@ export function ResourceMap({ data, selected, onSelect, zeroPage, zeroSize, revi
         <button className="map-tool-button" aria-label={t("resources.map.locateSelectedAria")} disabled={!selectedTile} onClick={() => locate(selected)}><Crosshair size={16} />{t("resources.map.locateSelected")}</button>
       </div><button className="map-tool-button" aria-label={fullscreen ? t("resources.map.fullscreenExitAria") : t("resources.map.fullscreenEnterAria")} onClick={() => void toggleFullscreen()}>{fullscreen ? <ArrowsIn size={16} /> : <ArrowsOut size={16} />}{fullscreen ? t("resources.map.fullscreenExit") : t("resources.map.fullscreenEnter")}</button>
         <HelpPopover label={t("resources.map.help")} container={fullscreen ? explorer.current : undefined}><dl>
-          <div><dt>{t("resources.map.helpArea")}</dt><dd>{t("resources.map.helpAreaText", { metric: t("resources.sort.sessions") })}</dd></div>
+          <div><dt>{t("resources.map.helpArea")}</dt><dd>{t("resources.map.helpAreaText", { metric: metricLabel(data.metric) })}</dd></div>
           <div><dt>{t("resources.map.helpColor")}</dt><dd>{t("resources.map.helpColorText")}</dd></div>
           <div><dt>{t("resources.map.helpBrowse")}</dt><dd>{t("resources.map.helpBrowseText")}</dd></div>
           <div><dt>{t("resources.map.helpManage")}</dt><dd>{t("resources.map.helpManageText")}</dd></div>
@@ -203,17 +210,17 @@ export function ResourceMap({ data, selected, onSelect, zeroPage, zeroSize, revi
           const node = tile.node;
           return <button key={tile.id} style={position(rect)} className={`resource-map-tile recency-${tone(node, today)}${selected === tile.id ? " is-selected" : ""}`} aria-label={t("resources.viewUsage", { name: messageText(node.nameDescriptor, node.name) })} aria-describedby={hint?.node.id === tile.id ? tooltipId : undefined}
             onClick={() => void chooseResource(tile.id)} onFocus={() => setHint({ node, point: { x: rect.x, y: rect.y } })} onBlur={() => setHint(null)}>
-            <span className="resource-map-tile-copy">{rect.width >= 48 && rect.height >= 28 && <strong>{messageText(node.nameDescriptor, node.name)}</strong>}{rect.width >= 80 && rect.height >= 55 && <span>{metricValue(node.value!)}</span>}{rect.width >= 130 && rect.height >= 88 && <small>{shareLabel(node.share)}{node.favorite && <Star size={12} weight="fill" />}{node.protected && <ShieldCheck size={12} />}</small>}{rect.width >= 135 && rect.height >= 110 && (node.partial || !node.lastUsedAt) && <small>{formatList([node.partial && t("resources.partial"), !node.lastUsedAt && t("resources.map.timeMissing")].filter(Boolean) as string[])}</small>}</span>
+            <span className="resource-map-tile-copy">{rect.width >= 48 && rect.height >= 28 && <strong>{messageText(node.nameDescriptor, node.name)}</strong>}{rect.width >= 80 && rect.height >= 55 && <span>{metricValue(data.metric, node.value!)}</span>}{rect.width >= 130 && rect.height >= 88 && <small>{shareLabel(node.share)}{node.favorite && <Star size={12} weight="fill" />}{node.protected && <ShieldCheck size={12} />}</small>}{rect.width >= 135 && rect.height >= 110 && (node.partial || !node.lastUsedAt) && <small>{formatList([node.partial && t("resources.partial"), !node.lastUsedAt && t("resources.map.timeMissing")].filter(Boolean) as string[])}</small>}</span>
           </button>;
         })}
         {!data.positive.length && <div className="resource-map-empty">{t("resources.map.noPositive")}</div>}
         {hint && !dragging && <div id={tooltipId} role="tooltip" className="resource-map-tooltip" style={{ left: Math.max(6, Math.min(hint.point.x + 12, size.width - Math.min(300, size.width - 12))), top: Math.max(6, Math.min(hint.point.y + 14, size.height - 160)), maxWidth: Math.min(300, size.width - 12) }}>
-          <strong>{messageText(hint.node.nameDescriptor, hint.node.name)}</strong><span>{t("resources.map.tooltipMetric", { metric: t("resources.sort.sessions"), value: metricValue(hint.node.value!) })}</span><span>{t("resources.map.tooltipShare", { share: shareLabel(hint.node.share) })}</span><span>{t("resources.lastUsed", { date: hint.node.lastUsedAt ? dateLabel(hint.node.lastUsedAt) : t("resources.map.timeMissing") })}</span>{statusLabel(hint.node) && <span>{statusLabel(hint.node)}</span>}
+          <strong>{messageText(hint.node.nameDescriptor, hint.node.name)}</strong><span>{t("resources.map.tooltipMetric", { metric: metricLabel(data.metric), value: metricValue(data.metric, hint.node.value!) })}</span><span>{t("resources.map.tooltipShare", { share: shareLabel(hint.node.share) })}</span><span>{t("resources.lastUsed", { date: hint.node.lastUsedAt ? dateLabel(hint.node.lastUsedAt) : t("resources.map.timeMissing") })}</span>{statusLabel(hint.node) && <span>{statusLabel(hint.node)}</span>}
         </div>}
       </div>
       <div className="resource-map-legend" aria-label={t("resources.map.legend")}><span><i className="recency-recent" />{t("resources.time.thirty")}</span><span><i className="recency-older" />{t("resources.map.older")}</span><span><i className="recency-old" />{t("resources.map.old")}</span><span><i className="recency-missing" />{t("resources.map.timeMissing")}</span></div>
     </section>
-    <div className="resource-map-secondary"><CompactResources nodes={data.zero} title={t("resources.map.zeroSessions")} label={t("resources.map.zeroResources")} selected={selected} page={zeroPage} pageSize={zeroSize} onSelect={onSelect} onPage={onZeroPage} onSize={onZeroSize} />
-      <CompactResources nodes={data.review} title={t("resources.candidate.review")} label={t("resources.map.reviewResources")} selected={selected} page={reviewPage} pageSize={reviewSize} onSelect={onSelect} onPage={onReviewPage} onSize={onReviewSize} /></div>
+    <div className="resource-map-secondary"><CompactResources nodes={data.zero} title={t(data.metric === "sessions" ? "resources.map.zeroSessions" : data.metric === "reads" ? "resources.map.zeroReads" : "resources.map.zeroCalls")} label={t("resources.map.zeroResources")} metric={data.metric} selected={selected} page={zeroPage} pageSize={zeroSize} onSelect={onSelect} onPage={onZeroPage} onSize={onZeroSize} />
+      <CompactResources nodes={data.review} title={t("resources.candidate.review")} label={t("resources.map.reviewResources")} metric={data.metric} selected={selected} page={reviewPage} pageSize={reviewSize} onSelect={onSelect} onPage={onReviewPage} onSize={onReviewSize} /></div>
   </div>;
 }

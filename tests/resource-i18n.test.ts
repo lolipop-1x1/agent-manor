@@ -18,6 +18,9 @@ test("资源数量采用中英文复数与数字规则，零和单个资源不�
   assert.equal(translate("en", "resources.resourceCount", { count: 1234 }), "1,234 resources");
   assert.equal(translate("en", "resources.entryCount", { count: 1 }), "1 entry");
   assert.equal(translate("en", "resources.entryCount", { count: 2 }), "2 entries");
+  assert.equal(translate("en", "resources.map.callValue", { count: 1 }), "1 call");
+  assert.equal(translate("en", "resources.map.callValue", { count: 2 }), "2 calls");
+  assert.equal(translate("zh-CN", "resources.map.callValue", { count: 1234 }), "1,234 次调用");
   assert.equal(translate("en", "resources.map.sessionValue", { count: 1 }), "1 session");
   assert.equal(translate("en", "resources.map.sessionValue", { count: 2 }), "2 sessions");
   assert.equal(translate("zh-CN", "resources.resourceCount", { count: 1234 }), "1,234 个资源");

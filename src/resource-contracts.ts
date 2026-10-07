@@ -4,7 +4,7 @@ import type { Gap } from "./contracts.js";
 
 export type ResourceKind = "skill" | "mcp";
 export type ResourceEvidenceKind = "skill_call" | "skill_read" | "mcp";
-export type ResourceUsageSort = "sessions" | "calls" | "reads" | "recent" | "name";
+export type ResourceUsageSort = "sessions" | "calls" | "reads" | "uses" | "recent" | "name";
 
 export interface ResourceUsageQuery {
   kind?: ResourceKind;

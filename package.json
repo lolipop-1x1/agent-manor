@@ -20,7 +20,8 @@
     "docs/design/baseline-rules.md",
     "docs/design/matching-rules.md",
     "docs/design/session-history.md",
-    "docs/design/resource-support.md"
+    "docs/design/resource-support.md",
+    "docs/design/resource-history-parsing.md"
   ],
   "scripts": {
     "check:public": "node scripts/check-public-content.mjs",

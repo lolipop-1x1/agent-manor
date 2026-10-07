@@ -1,12 +1,12 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readFile, readlink, realpath, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, readlink, realpath, rename, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, relative, sep } from "node:path";
 import test from "node:test";
 import Database from "better-sqlite3";
 import { parse as parseToml } from "smol-toml";
 import type { ResourceInventoryEntry, ResourceInventorySnapshot } from "../src/resource-inventory-contracts.js";
-import { ResourceManager } from "../src/resources/management.js";
+import { ResourceManager, resourceMaterialFingerprint } from "../src/resources/management.js";
 import { scanResourceInventory } from "../src/resources/inventory.js";
 import { ServiceError } from "../src/service/input.js";
 
@@ -34,6 +34,21 @@ function mcp(path: string, format: "json" | "jsonc" | "toml" = "json", extra: Pa
     locator: { type: "mcp", format, configPath: path, keyPath: [format === "toml" ? "mcp_servers" : "mcpServers", "selected"],
       nativeControl: format === "toml" ? "codex-mcp" : undefined }, ...extra });
 }
+
+test("恢复目录根被替换为链接时不写入外部目标或改变其权限", async () => fixture(async (manager, directory) => {
+  const path = join(directory, "skills", "guide"); await skill(path);
+  const outside = join(directory, "outside-vault"); await mkdir(outside, { mode: 0o755 });
+  const initial = snapshot([entry(path)]);
+  const plan = await manager.preview({ entryId: initial.entries[0]!.id, action: "trash" }, initial);
+  await rename(manager.vaultPath, `${manager.vaultPath}-retained`);
+  await symlink(outside, manager.vaultPath);
+  const mode = (await stat(outside)).mode & 0o777;
+  assert.equal((await manager.apply(plan.id, true, initial)).status, "failure");
+  assert.equal((await stat(outside)).mode & 0o777, mode);
+  assert.match(await readFile(join(path, "SKILL.md"), "utf8"), /人工合成/);
+  assert.throws(() => new ResourceManager(join(directory, "data")), /符号链接/);
+  assert.equal((await stat(outside)).mode & 0o777, mode);
+}));
 
 test("共享链接只隔离所选入口，具体确认后写入，备用恢复不改目标与其他入口", async () => fixture(async (manager, directory) => {
   const target = join(directory, "shared", "guide"); const first = join(directory, "codex", "guide"); const second = join(directory, "claude", "guide");
@@ -165,6 +180,7 @@ test("普通目录可靠备份后入回收，恢复原权限；原路径占用�
 test("备份失败不修改来源，受管理资源只读且不会执行原生脚本", async () => fixture(async (manager, directory) => {
   const path = join(directory, "guide"); await skill(path); const selected = entry(path); const initial = snapshot([selected]);
   const preview = await manager.preview({ entryId: selected.id, action: "trash" }, initial);
+  await mkdir(dirname(dirname(preview.destinationPath!)), { recursive: true });
   await writeFile(dirname(preview.destinationPath!), "人工阻塞备份位置");
   const result = await manager.apply(preview.id, true, initial);
   assert.equal(result.status, "failure"); assert.equal(result.localState, "unchanged"); assert.equal(manager.archives().length, 0);
@@ -206,6 +222,7 @@ test("Codex MCP 原生停用局部修改 TOML，保留注释整数和未知项�
   assert.equal(manager.decorateInventory(initial).entries[0]?.capabilities.disable, true);
   const preview = await manager.preview({ entryId: selected.id, action: "disable" }, initial);
   assert.equal(preview.method, "native_toggle");
+  assert.ok(preview.destinationPath!.startsWith(join(manager.vaultPath, "backups", "mcp") + sep));
   const applied = await manager.apply(preview.id, true, initial); assert.equal(applied.status, "success");
   const after = await readFile(path, "utf8"); assert.equal(after, text.replace("enabled = true", "enabled = false"));
   await assert.rejects(manager.preview({ entryId: selected.id, action: "disable" }, initial), ServiceError);
@@ -334,4 +351,107 @@ test("写入后反馈失败保留部分完成与可用恢复材料，不虚报�
   const purge = await manager.preview({ operationId: archive.operationId, action: "purge" }, initial);
   assert.equal(purge.clientEffect, "unknown"); assert.equal((await manager.apply(purge.id, true, initial)).status, "success");
   assert.equal(await readFile(path, "utf8"), original); assert.equal(manager.archives()[0]?.state, "purged");
+}));
+
+test("同名 Skill 的不同原入口和重复回收分别保留，目录受限且永久清除只移除该次材料", async () => fixture(async (manager, directory) => {
+  const first = entry(join(directory, "first", "guide"), { id: "first-entry", bodyId: "first-body" });
+  const second = entry(join(directory, "second", "guide"), { id: "second-entry", bodyId: "second-body" });
+  await skill(first.entryPath); await skill(second.entryPath);
+  const firstPreview = await manager.preview({ entryId: first.id, action: "trash" }, snapshot([first]));
+  assert.equal((await manager.apply(firstPreview.id, true, snapshot([first]))).status, "success");
+  const firstArchive = manager.archives("trash")[0]!;
+  const secondPreview = await manager.preview({ entryId: second.id, action: "trash" }, snapshot([second]));
+  assert.equal((await manager.apply(secondPreview.id, true, snapshot([second]))).status, "success");
+  const secondArchive = manager.archives("trash")[0]!;
+  assert.notEqual(dirname(dirname(firstArchive.storedPath!)), dirname(dirname(secondArchive.storedPath!)));
+  const restore = await manager.preview({ operationId: firstArchive.operationId, action: "restore" }, snapshot([]));
+  assert.equal((await manager.apply(restore.id, true, snapshot([]))).status, "success");
+  const sourceDirectory = dirname(dirname(firstArchive.storedPath!));
+  await chmod(sourceDirectory, 0o755);
+  const repeatedPreview = await manager.preview({ entryId: first.id, action: "trash" }, snapshot([first]));
+  assert.equal((await manager.apply(repeatedPreview.id, true, snapshot([first]))).status, "success");
+  const repeatedArchive = manager.archives("trash")[0]!;
+  assert.equal(dirname(dirname(repeatedArchive.storedPath!)), sourceDirectory);
+  assert.notEqual(repeatedArchive.storedPath, firstArchive.storedPath);
+  const parts = relative(manager.vaultPath, dirname(repeatedArchive.storedPath!)).split(sep);
+  for (let count = 0; count <= parts.length; count++) {
+    assert.equal((await stat(join(manager.vaultPath, ...parts.slice(0, count)))).mode & 0o777, 0o700);
+  }
+  assert.equal((await stat(join(repeatedArchive.storedPath!, "SKILL.md"))).mode & 0o777, 0o600);
+  const purge = await manager.preview({ operationId: firstArchive.operationId, action: "purge" }, snapshot([]));
+  assert.equal((await manager.apply(purge.id, true, snapshot([]))).status, "success");
+  await assert.rejects(stat(dirname(firstArchive.storedPath!)));
+  assert.match(await readFile(join(repeatedArchive.storedPath!, "SKILL.md"), "utf8"), /人工合成/);
+  assert.match(await readFile(join(secondArchive.storedPath!, "SKILL.md"), "utf8"), /人工合成/);
+}));
+
+test("同名 MCP 多注册回收各有恢复材料，删除所选注册不覆盖另一份备份", async () => fixture(async (manager, directory) => {
+  const path = join(directory, "mcp.json");
+  await writeFile(path, '{"mcpServers":{"first":{"command":"first-tool"},"second":{"command":"second-tool"}}}');
+  const registered = (server: string) => mcp(path, "json", { id: server, bodyId: server, name: "same-name", server,
+    locator: { type: "mcp", configPath: path, format: "json", keyPath: ["mcpServers", server] } });
+  const first = registered("first"); const second = registered("second");
+  const firstPreview = await manager.preview({ entryId: first.id, action: "trash" }, snapshot([first]));
+  assert.equal((await manager.apply(firstPreview.id, true, snapshot([first]))).status, "success");
+  const firstArchive = manager.archives("trash")[0]!;
+  const secondPreview = await manager.preview({ entryId: second.id, action: "trash" }, snapshot([second]));
+  assert.equal((await manager.apply(secondPreview.id, true, snapshot([second]))).status, "success");
+  const secondArchive = manager.archives("trash")[0]!;
+  assert.notEqual(dirname(dirname(firstArchive.storedPath!)), dirname(dirname(secondArchive.storedPath!)));
+  assert.ok(firstArchive.storedPath!.startsWith(join(manager.vaultPath, "trash", "mcp") + sep));
+  assert.ok((await readFile(firstArchive.storedPath!, "utf8")).includes("first-tool"));
+  assert.ok((await readFile(secondArchive.storedPath!, "utf8")).includes("second-tool"));
+  const restore = await manager.preview({ operationId: firstArchive.operationId, action: "restore" }, snapshot([]));
+  assert.equal((await manager.apply(restore.id, true, snapshot([]))).status, "success");
+  assert.equal(JSON.parse(await readFile(path, "utf8")).mcpServers.first.command, "first-tool");
+  assert.equal(JSON.parse(await readFile(path, "utf8")).mcpServers.second, undefined);
+}));
+
+test("旧备用档案纳入回收查询，启动保留旧目录并支持恢复及另次确认永久清除", async () => fixture(async (manager, directory, home) => {
+  const path = join(directory, "skills", "guide"); await skill(path); const selected = entry(path); const initial = snapshot([selected]);
+  const preview = await manager.preview({ entryId: selected.id, action: "standby" }, initial);
+  assert.ok(preview.destinationPath!.startsWith(join(manager.vaultPath, "trash", "skill") + sep));
+  assert.equal((await manager.apply(preview.id, true, initial)).status, "success");
+  const archive = manager.archives("standby")[0]!;
+  const legacyDirectory = join(manager.vaultPath, preview.id);
+  await rename(dirname(archive.storedPath!), legacyDirectory);
+  const legacyMaterial = join(legacyDirectory, "material");
+  const fingerprint = await resourceMaterialFingerprint(legacyMaterial);
+  const database = new Database(manager.dbPath);
+  database.prepare("UPDATE resource_archives SET json=json_set(json,'$.public.storedPath',?) WHERE id=?").run(legacyMaterial, archive.id);
+  database.close();
+  const reopened = new ResourceManager(home);
+  try {
+    assert.equal(reopened.archives("standby").length, 1);
+    assert.equal(reopened.archives("trash")[0]?.state, "standby");
+    assert.equal(reopened.archives("trash")[0]?.storedPath, legacyMaterial);
+    assert.equal(await resourceMaterialFingerprint(legacyMaterial), fingerprint);
+    const restore = await reopened.preview({ operationId: archive.operationId, action: "restore" }, snapshot([]));
+    assert.equal((await reopened.apply(restore.id, true, snapshot([]))).status, "success");
+    assert.match(await readFile(join(path, "SKILL.md"), "utf8"), /人工合成/);
+    const purge = await reopened.preview({ operationId: archive.operationId, action: "purge" }, snapshot([]));
+    await assert.rejects(reopened.apply(purge.id, false as true, snapshot([])), ServiceError);
+    assert.equal(await resourceMaterialFingerprint(legacyMaterial), fingerprint);
+    assert.equal((await reopened.apply(purge.id, true, snapshot([]))).status, "success");
+    assert.equal(await resourceMaterialFingerprint(legacyMaterial), "missing");
+    assert.match(await readFile(join(path, "SKILL.md"), "utf8"), /人工合成/);
+  } finally { reopened.close(); }
+}));
+
+test("尚未恢复的旧备用档案也可另行确认永久清除，不自动删除材料", async () => fixture(async (manager, directory) => {
+  const path = join(directory, "guide"); await skill(path); const selected = entry(path); const initial = snapshot([selected]);
+  const preview = await manager.preview({ entryId: selected.id, action: "standby" }, initial);
+  assert.equal((await manager.apply(preview.id, true, initial)).status, "success");
+  const archive = manager.archives("standby")[0]!;
+  const legacyDirectory = join(manager.vaultPath, preview.id); await rename(dirname(archive.storedPath!), legacyDirectory);
+  const legacyMaterial = join(legacyDirectory, "material");
+  const database = new Database(manager.dbPath);
+  database.prepare("UPDATE resource_archives SET json=json_set(json,'$.public.storedPath',?) WHERE id=?").run(legacyMaterial, archive.id);
+  database.close();
+  const purge = await manager.preview({ operationId: archive.operationId, action: "purge" }, snapshot([]));
+  await assert.rejects(manager.apply(purge.id, false as true, snapshot([])), ServiceError);
+  assert.equal(manager.archives("trash")[0]?.restorable, true); assert.ok(await stat(legacyMaterial));
+  assert.equal((await manager.apply(purge.id, true, snapshot([]))).status, "success");
+  await assert.rejects(stat(legacyDirectory)); assert.equal(manager.archives("trash").length, 0);
+  assert.equal(manager.archives()[0]?.state, "purged"); await assert.rejects(stat(path));
 }));
