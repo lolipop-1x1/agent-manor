@@ -9,6 +9,7 @@ import { overviewResourceUsage, emptyResourceUsageStats, listResourceUsage, reso
 import { buildResourceOverview } from "./overview.js";
 import { buildResourceMap } from "./map.js";
 import { ResourceManager } from "./management.js";
+import { resourceUsageThresholdMatches } from "./classification.js";
 
 /** 共用服务边界：派生盘点可刷新，收藏和恢复材料由独立管理库保留。 */
 export class ResourceService {
@@ -159,9 +160,9 @@ export class ResourceService {
       if (entries.some(entry => entry.readState === "broken")) candidates.push("broken");
       if (body.contentFingerprint && (fingerprints.get(body.contentFingerprint)?.size ?? 0) > 1) candidates.push("duplicate");
       if (observation === "recorded" && !usage?.stats.events) candidates.push("unused");
-      if (usage?.stats.sessions && usage.stats.sessions <= (query.lowSessions ?? 2)) candidates.push("low");
-      if (usage?.stats.events && usage.stats.lastUsedAt && Number.isFinite(Date.parse(usage.stats.lastUsedAt))
-        && now - Date.parse(usage.stats.lastUsedAt) >= (query.inactiveDays ?? 90) * 86400_000) candidates.push("old");
+      const thresholdMatches = resourceUsageThresholdMatches(usage?.stats, query, now);
+      if (thresholdMatches.low) candidates.push("low");
+      if (usage?.stats.events && thresholdMatches.old) candidates.push("old");
       const protectedEntry = favorite || entries.some(entry => entry.protected);
       if (query.candidate && query.candidate !== "all" && query.candidate !== "review" && !candidates.includes(query.candidate)) continue;
       rows.push({ body, entries, favorite, firstSeenAt, usage: observation === "recorded" ? usage?.stats ?? emptyResourceUsageStats() : null,

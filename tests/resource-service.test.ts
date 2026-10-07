@@ -92,6 +92,23 @@ test("资源 HTTP 使用全部历史、可回查事件，来源公开投影不�
   }
 }));
 
+test("本地与总览的低频及长期未用阈值一致，包含时间边界", async testContext => fixture(async (_context, service) => {
+  const initial = await apiRequest<ResourceLocalResult>(service.instance, "/resources/local?kind=skill&q=guide");
+  const guide = initial.rows[0]!;
+  testContext.mock.method(Date, "now", () => Date.parse(guide.usage!.lastUsedAt!) + 90 * 86400_000);
+  for (const [query, expected] of [["", ["low", "old"]], ["&lowSessions=1&inactiveDays=91", ["low"]]] as const) {
+    const local = await apiRequest<ResourceLocalResult>(service.instance, `/resources/local?kind=skill&q=guide${query}`);
+    const overview = await apiRequest<ResourceOverviewResult>(service.instance, `/resources/overview?kind=skill&q=guide${query}`);
+    assert.equal(local.total, 1);
+    assert.equal(overview.total, 1);
+    assert.deepEqual(local.rows[0]!.candidates, expected);
+    assert.deepEqual(overview.resources[0]!.candidates.filter(candidate => candidate === "low" || candidate === "old"), expected);
+    assert.deepEqual(local.thresholds, overview.thresholds);
+    assert.deepEqual(local.rows[0]!.usage, guide.usage);
+    assert.deepEqual(overview.resources[0]!.stats, guide.usage);
+  }
+}));
+
 test("资源写入必须确认具体预览，管理状态不随历史缓存重建清除", async () => fixture(async (context, service) => {
   const local = await apiRequest<ResourceLocalResult>(service.instance, "/resources/local?kind=skill&pageSize=200");
   const guide = local.rows.find(row => row.body.name === "guide")!;

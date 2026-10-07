@@ -143,6 +143,8 @@ try {
   const combined = await api("/resources/map?kind=skill&q=map-skill-001&metric=sessions");
   assert.equal(combined.positive[0].value, 2);
   const skillSessionMap = await api("/resources/map?kind=skill&q=map-&metric=sessions");
+  const compactTitle = skillSessionMap.zero.some(node => node.value === null) ? "其他资源" : "未发现使用";
+  assert.equal(skillSessionMap.zero.find(node => node.name === "broken")?.value, null, "断链来源被补成零值");
   assert.equal(skillSessionMap.positive.find(row => row.name === "map-skill-000")?.value, 1);
   assert.equal(skillSessionMap.positive.find(row => row.name === "map-read-000")?.value, 1);
   const configBefore = await readFile(fixture.configPath, "utf8");
@@ -275,7 +277,7 @@ try {
     await page.waitForFunction(()=>document.querySelectorAll('rect[data-resource-id]').length>200);
     expect(await page.getByRole('button',{name:'查看map-skill-001的使用详情',exact:true}).count()===0,'上限没有过滤多会话资源');
     expect(!(await page.locator('.resource-list-scroll').innerText()).includes('待检查'),'仍有待检查分类');
-    expect((await page.locator('.resource-list-scroll').innerText()).includes('未发现使用'),'上限删除零值入口');
+    expect(await page.locator('.resource-map-compact summary').count()===1,'上限删除无面积入口');
     await page.getByRole('group',{name:'资源展示方式',exact:true}).getByRole('button',{name:'列表',exact:true}).click();
     ${select("资源排序", "使用会话数")}
     await page.getByRole('table',{name:'Skill 总览',exact:true}).getByRole('button',{name:'查看map-skill-001的使用详情',exact:true}).waitFor();
@@ -286,19 +288,21 @@ try {
     await page.getByRole('button',{name:'查看map-skill-001的使用详情',exact:true}).waitFor();
   `);
   await step("零值独立分页，不重新查询地图", `
-    const zero=page.locator('details').filter({has:page.locator('summary').filter({hasText:'未发现使用'})});
+    const zero=page.locator('details').filter({has:page.locator('summary').filter({hasText:${JSON.stringify(compactTitle)}})});
     if(await zero.getAttribute('open')===null) await zero.locator('summary').click();
+    const broken=zero.getByRole('button',{name:'查看broken的使用详情',exact:true});
+    expect((await broken.innerText()).includes('使用未知')&&!(await broken.innerText()).includes('0 次调用'),'真正未知被补成0');
     const before=page.mapRequests.length;
-    const zeroPager=zero.getByRole('navigation',{name:'未发现使用',exact:true});
-    await zeroPager.getByRole('spinbutton',{name:'未发现使用跳转页码',exact:true}).fill('2');
-    await zeroPager.getByRole('button',{name:'未发现使用跳转',exact:true}).click();
-    await page.waitForFunction(()=>document.querySelector('nav[aria-label="未发现使用"]')?.textContent.includes('21–40'));
+    const zeroPager=zero.getByRole('navigation',{name:${JSON.stringify(compactTitle)},exact:true});
+    await zeroPager.getByRole('spinbutton',{name:${JSON.stringify(`${compactTitle}跳转页码`)},exact:true}).fill('2');
+    await zeroPager.getByRole('button',{name:${JSON.stringify(`${compactTitle}跳转`)},exact:true}).click();
+    await page.waitForFunction(label=>document.querySelector('nav[aria-label="'+label+'"]')?.textContent.includes('21–40'),${JSON.stringify(compactTitle)});
     expect(await page.getByRole('navigation',{name:'待检查资源',exact:true}).count()===0,'待检查分页仍可见');
     expect(page.mapRequests.length===before,'零值分页重新查询整图');
-    await zeroPager.getByRole('button',{name:'未发现使用首页',exact:true}).click();
+    await zeroPager.getByRole('button',{name:${JSON.stringify(`${compactTitle}首页`)},exact:true}).click();
     const detail=page.getByRole('complementary',{name:'资源详情',exact:true});
-    await zero.getByRole('button',{name:'查看map-zero-000的使用详情',exact:true}).click();
-    await detail.getByRole('heading',{name:'map-zero-000',exact:true}).waitFor();
+    await zero.getByRole('button',{name:'查看map-review-000的使用详情',exact:true}).click();
+    await detail.getByRole('heading',{name:'map-review-000',exact:true}).waitFor();
     expect(/0\\s*使用会话/.test(await detail.locator('.resource-stats').innerText()),'零使用详情错误');
     ${locateResource("map-read-000")}
     await detail.getByRole('heading',{name:'map-read-000',exact:true}).waitFor();
@@ -506,6 +510,8 @@ try {
     await page.getByRole('button',{name:'适应资源地图窗口',exact:true}).click();
   `);
   await step("缺失时间、系统保护、空结果与失败重试", `
+    const feedback=page.getByRole('button',{name:'关闭资源操作反馈',exact:true});
+    if(await feedback.count()) await feedback.click();
     await page.getByRole('group',{name:'资源类型',exact:true}).getByRole('button',{name:'Skill',exact:true}).click();
     await page.getByRole('textbox',{name:'搜索资源名称或路径',exact:true}).fill('map-undated');
     await page.getByRole('button',{name:'查看map-undated的使用详情',exact:true}).focus();

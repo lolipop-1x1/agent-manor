@@ -3,6 +3,7 @@ import type { ResourceUsageIdentity, ResourceUsageResult, ResourceUsageRow, Reso
 import type { ResourceLocalRow, ResourceOverviewCandidate, ResourceOverviewQuery, ResourceOverviewResult, ResourceOverviewRow } from "../resource-service-contracts.js";
 import { emptyResourceUsageStats, resourceOverviewIdentity } from "./usage.js";
 import { resourceGapRelevant } from "./coverage.js";
+import { resourceUsageThresholdMatches } from "./classification.js";
 
 interface OverviewBucket {
   identity: ResourceUsageIdentity;
@@ -11,7 +12,6 @@ interface OverviewBucket {
 }
 
 const candidates: ResourceOverviewCandidate[] = ["all", "used", "unused", "low", "old", "review", "favorite"];
-const dayMs = 86400_000;
 
 function localIdentity(row: ResourceLocalRow): ResourceUsageIdentity {
   const entry = row.entries[0]!;
@@ -55,9 +55,9 @@ function rowOf(bucket: OverviewBucket, history: ResourceUsageResult | null, quer
   if (observation === "used") rowCandidates.push("used");
   if (favorite || localFavorite) rowCandidates.push("favorite");
   if (observation === "unused") rowCandidates.push("unused");
-  if (observation === "used" && stats && stats.sessions > 0 && stats.sessions <= (query.lowSessions ?? 2)) rowCandidates.push("low");
-  if (observation === "used" && stats?.lastUsedAt && Number.isFinite(Date.parse(stats.lastUsedAt))
-    && now - Date.parse(stats.lastUsedAt) >= (query.inactiveDays ?? 90) * dayMs) rowCandidates.push("old");
+  const thresholdMatches = resourceUsageThresholdMatches(stats, query, now);
+  if (observation === "used" && thresholdMatches.low) rowCandidates.push("low");
+  if (observation === "used" && thresholdMatches.old) rowCandidates.push("old");
   return { identity, stats, clients, favorite, protected: protectedResource, observation, candidates: rowCandidates,
     partial: incomplete || local.some(row => row.partial), usageUnassociated, missingTimeEvents,
     localBodyIds: [...new Set(local.map(row => row.body.id))].sort(), hasHistory: Boolean(bucket.history) };

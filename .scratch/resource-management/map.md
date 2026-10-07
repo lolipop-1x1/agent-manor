@@ -127,8 +127,10 @@
 - T7 已确认：新发现立即分类，读取失败与零记录区分，旧参数与 API 结构兼容；真实本机只读，端到端验证中英文、列表／地图及关键边界。
 - 只读事实调查完成：名称级使用统计与具体路径关联分开；首次发现不是安装或使用时间，不能代替最后使用时间。
 - [任务 26](issues/26-usage-classification-design.md) 已完成：T1–T7 全部确认，领域词汇和指标设计已更新，规格最新分类章节替代旧待检查与统一阻断规则。设计前沿为空；实现进度见下方任务摘要。
-- [27 分类计算](issues/27-usage-classification-data.md) 和 [28 界面与兼容](issues/28-usage-classification-interface.md) 已完成；当前实施前沿为 [29 综合验收](issues/29-usage-classification-validation.md)。
+- [27 分类计算](issues/27-usage-classification-data.md)、[28 界面与兼容](issues/28-usage-classification-interface.md) 和 [29 综合验收](issues/29-usage-classification-validation.md) 已完成；当前实施前沿为空。
 
 - [任务 27](issues/27-usage-classification-data.md) 已完成：使用分类与管理保护分离，新发现零记录立即参与；相关缺口按客户端提示，旧 review 查询兼容全部。66 项后端／HTTP／CLI 回归及补充地图回归、服务端类型检查通过。任务 28 开始界面接入，综合验收随后执行。
 
 - [任务 28](issues/28-usage-classification-interface.md) 已完成：移除待检查筛选和地图分组，旧视图参数归一；行及详情保留部分记录、缺日期与未关联状态。界面、HTTP／CLI 相关七十二项通过，中英文、类型及公开检查通过。
+
+- [任务 29](issues/29-usage-classification-validation.md) 已完成：481 项自动化回归和 82 组真实 Chrome 验收通过，两路审查的阈值重复问题已修复；最终服务只读核对原始统计与索引版本不变。真实管理资源没有写入，隔离资源保护与恢复流程通过；详见[验收记录](../../docs/validation/resource-usage-classification.md)。

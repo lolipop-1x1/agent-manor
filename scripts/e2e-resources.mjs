@@ -419,17 +419,24 @@ try {
     ${screenshot("unused-zero-state.png")}
   `);
 
-  await step("本地会话排序支持升降且未知值位于末尾", `
+  const localAsc = await api("/resources/local?kind=skill&sort=uses&order=asc&pageSize=200");
+  const localDesc = await api("/resources/local?kind=skill&sort=uses&order=desc&pageSize=200");
+  for (const sorted of [localAsc, localDesc]) {
+    const firstUnknown = sorted.rows.findIndex(row => row.usage === null);
+    assert.ok(firstUnknown >= 0, "夹具缺少真正未知的断链来源");
+    assert.ok(sorted.rows.slice(firstUnknown).every(row => row.usage === null), "未知数值没有排在完整结果末尾");
+  }
+  await step("本地调用排序支持升降，完整结果中真正未知位于末尾", `
     await page.getByRole("button",{name:"重置筛选",exact:true}).click();
     ${select("资源排序方向", "降序")}
     await page.waitForFunction(()=>document.querySelector('.resource-row-heading>strong')?.textContent==='shared');
     const rows=page.locator('.resource-row');
     expect((await rows.first().locator('.resource-row-metrics').innerText()).includes("2"),"本地会话降序未优先已知最大值");
-    expect(!(await rows.last().locator('.resource-row-metrics').innerText()).includes("使用会话"),"降序未知值未放末尾");
+    expect((await rows.last().locator('.resource-row-metrics').innerText()).includes("0"),"新发现零记录仍被当成未知");
     ${select("资源排序方向", "升序")}
-    await page.waitForFunction(()=>document.querySelector('.resource-row-heading>strong')?.textContent==='sample-01');
+    await page.waitForFunction(name=>document.querySelector('.resource-row-heading>strong')?.textContent===name,${JSON.stringify(localAsc.rows[0].body.name)});
     expect((await rows.first().locator('.resource-row-metrics').innerText()).includes("0"),"本地会话升序未优先确定零值");
-    expect(!(await rows.last().locator('.resource-row-metrics').innerText()).includes("使用会话"),"升序未知值未放末尾");
+    expect((await rows.last().locator('.resource-row-metrics').innerText()).includes("0"),"新发现零记录未按已知零值排序");
     expect(await page.evaluate(()=>new URLSearchParams(location.hash.split('?')[1]).get('order'))==='asc',"本地排序方向未写入路由");
     await page.getByRole("button",{name:"重置筛选",exact:true}).click();
   `);
@@ -637,6 +644,7 @@ try {
     await page.getByRole("button",{name:"查看guide的使用详情",exact:true}).click();
     const detail=page.getByRole("complementary",{name:"资源详情",exact:true});
     await detail.getByRole("heading",{name:"本地本体与入口",exact:true}).waitFor();
+    await detail.getByRole("button",{name:/^查看guide的本地本体 /}).nth(2).waitFor();
     expect(await detail.getByRole("button",{name:/^查看guide的本地本体 /}).count()===3,"同名本体被名称汇总合并");
     await detail.getByRole("button",{name:"收藏guide本体 1",exact:true}).click();
     await detail.getByRole("button",{name:"取消收藏guide本体 1",exact:true}).waitFor();
@@ -660,6 +668,7 @@ try {
     await page.evaluate(hash=>location.hash=hash,legacyHash);
     const detail=page.getByRole("complementary",{name:"资源详情",exact:true});
     await detail.getByRole("heading",{name:"guide",exact:true}).waitFor();
+    await detail.locator(".resource-stats").filter({hasText:/2\\s*使用会话/}).waitFor();
     expect(/2\\s*使用会话/.test(await detail.locator(".resource-stats").innerText()),"旧来源链接错误扩大为名称汇总");
     await page.waitForFunction(()=>document.querySelectorAll('.resource-evidence a').length===2);
     expect(await detail.getByRole("button",{name:/^查看guide的本地本体 /}).count()===1,"旧来源链接没有定位精确本体");
@@ -874,11 +883,13 @@ try {
     expect(await detail.getByRole('alert').count()===0,"精确注册详情失败");
     ${view("MCP 总览")} ${search("")}
     await page.getByRole("group",{name:"MCP 快速筛选",exact:true}).getByRole('button',{name:/^未发现使用/}).click();
+    ${search("mcp-unused")}
     await page.getByRole("button",{name:"查看mcp-unused的使用详情",exact:true}).click();
     await detail.getByRole("heading",{name:"mcp-unused",exact:true}).waitFor();
     expect(/0\\s*调用次数/.test(await detail.locator('.resource-stats').innerText()),"确定零调用没有显示零");
     expect(await page.evaluate(()=>new URLSearchParams(location.hash.split('?')[1]).get('page'))===null,"状态筛选没有重置页码");
     await page.getByRole("group",{name:"MCP 快速筛选",exact:true}).getByRole('button',{name:/^全部/}).click();
+    ${search("")}
   `);
   const mcpNameAsc = (await api("/resources/overview?kind=mcp&sort=name&order=asc")).resources[0].identity.name;
   const mcpNameDesc = (await api("/resources/overview?kind=mcp&sort=name&order=desc")).resources[0].identity.name;
@@ -931,6 +942,7 @@ try {
     await page.evaluate(id=>location.hash='#resources?kind=mcp&tab=usage&id='+encodeURIComponent(id),${JSON.stringify(legacyMcp.identity.id)});
     const detail=page.getByRole('complementary',{name:'资源详情',exact:true});
     await detail.getByRole('heading',{name:'sample',exact:true}).waitFor();
+    await detail.locator('.resource-stats').filter({hasText:/27\\s*调用次数/}).waitFor();
     expect(/27\\s*调用次数/.test(await detail.locator('.resource-stats').innerText()),"旧来源链接被扩大成全名汇总");
     expect(/2\\s*使用会话/.test(await detail.locator('.resource-stats').innerText()),"旧来源会话范围错误");
     ${search("retired-service")}
