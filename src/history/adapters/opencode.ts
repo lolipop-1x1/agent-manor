@@ -12,6 +12,8 @@ export const OPENCODE_FORMAT = "opencode-sqlite";
 const missing = () => Object.assign(new DiagnosticError("OpenCode 会话来源已缺失", { key: "diagnostics.history.adapters.opencode.m001" }), { code: "ENOENT" });
 const UNSUPPORTED_SCHEMA = "__unsupported_schema__";
 const READ_BUDGET_EXCEEDED = "__read_budget_exceeded__";
+// 自定义／MCP 工具的 completed 可能丢失协议 isError，不能等同业务调用成功。
+const BUILTIN_TOOLS = new Set(["read", "edit", "write", "glob", "grep", "list", "task", "skill", "webfetch", "websearch", "codesearch", "todowrite", "todoread", "question", "apply_patch", "lsp", "batch", "plan_exit"]);
 const rowRaw = (row: Record<string, unknown>) => JSON.stringify(row);
 
 function diagnosticSnapshot(location: SourceLocation, kind: "unsupported_format" | "budget_exceeded", message: string, messageDescriptor?: MessageDescriptor): NormalizedSnapshot {
@@ -176,8 +178,8 @@ function buildRecords(sessionId: string, messages: Record<string, unknown>[], pa
       const errorValue = state.error;
       if (outputValue === undefined && errorValue === undefined) continue;
       const bashExit = number(stateMetadata.exit);
-      const resultStatus = errorValue !== undefined || status === "error" ? "failure"
-        : status === "completed" && tool !== "bash" ? "success"
+      const resultStatus = errorValue !== undefined || status === "error" || tool === "invalid" ? "failure"
+        : status === "completed" && BUILTIN_TOOLS.has(tool) ? "success"
           : status === "completed" && bashExit !== undefined ? bashExit === 0 ? "success" : "failure" : "unknown";
       if (resultStatus === "unknown") {
         meta.gaps ??= [];

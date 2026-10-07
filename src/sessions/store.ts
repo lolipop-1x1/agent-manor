@@ -58,9 +58,10 @@ export class SessionStore {
       CREATE INDEX IF NOT EXISTS session_message_order ON session_messages(revision,ordinal,id);
       CREATE INDEX IF NOT EXISTS session_message_call ON session_messages(revision,call_id);
       CREATE INDEX IF NOT EXISTS session_message_turn ON session_messages(revision,turn_id,ordinal,id);
-      CREATE INDEX IF NOT EXISTS session_message_resource_event
+      CREATE INDEX IF NOT EXISTS session_message_resource_event_v2
         ON session_messages(revision,json_extract(json,'$.resource.kind'),ordinal,id)
-        WHERE kind='tool_call' AND copied=0 AND json_extract(json,'$.resource.kind') IN ('mcp','skill_call','skill_read');
+        WHERE kind IN ('tool_call','user') AND copied=0 AND json_extract(json,'$.resource.kind') IN ('mcp','skill_call','skill_read');
+      DROP INDEX IF EXISTS session_message_resource_event;
       CREATE INDEX IF NOT EXISTS session_message_resource_call ON session_messages(revision,call_id,kind,copied)
         WHERE kind='tool_call' AND copied=0;
       CREATE TABLE IF NOT EXISTS session_usage (revision TEXT NOT NULL REFERENCES session_revisions(id) ON DELETE CASCADE,
@@ -391,7 +392,7 @@ export class SessionStore {
       (SELECT COUNT(*) FROM session_messages c WHERE c.revision=m.revision AND c.call_id=m.call_id
         AND c.kind='tool_call' AND c.copied=0) AS call_count
       FROM session_version_sessions v JOIN session_revisions r ON r.id=v.revision
-      JOIN session_messages m INDEXED BY session_message_resource_event ON m.revision=r.id AND m.kind='tool_call' AND m.copied=0
+      JOIN session_messages m INDEXED BY session_message_resource_event_v2 ON m.revision=r.id AND m.kind IN ('tool_call','user') AND m.copied=0
       LEFT JOIN session_messages result ON result.revision=m.revision AND result.id=(SELECT MIN(z.id) FROM session_messages z
         WHERE z.revision=m.revision AND z.call_id=m.call_id AND z.kind='tool_result' AND z.copied=0 HAVING COUNT(*)=1)
       AND (SELECT COUNT(*) FROM session_messages c WHERE c.revision=m.revision AND c.call_id=m.call_id
@@ -701,9 +702,10 @@ export class SessionStore {
           if (message.durationMs !== undefined) tool.durationMs = (tool.durationMs ?? 0) + message.durationMs;
           tools.set(name, tool);
         }
-        if (message.resource) {
-          const key = JSON.stringify(message.resource);
-          const resource = resources.get(key) ?? { ...message.resource, count: 0 };
+        if ((message.kind === "tool_call" || message.kind === "user" && message.resource?.kind === "skill_read") && message.resource) {
+          const { path: _resourcePath, ...identity } = message.resource;
+          const key = JSON.stringify(identity);
+          const resource = resources.get(key) ?? { ...identity, count: 0 };
           resource.count += 1;
           resources.set(key, resource);
         }

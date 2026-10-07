@@ -273,6 +273,7 @@ async function snapshot(location: SourceLocation): Promise<NormalizedSnapshot> {
   };
   const knownCallIds = new Set(eventRows.filter(row => row.record.type === "tool/call").map(row => string(object(row.record.data).callId)).filter((value): value is string => Boolean(value)));
   const records = [] as ReturnType<typeof normalizedRecord>[];
+  const toolNames = new Map<string, string | undefined>();
   const completedTurns = new Set(eventRows.filter(row => row.record.type === "turn/end" && object(object(row.record.data).reason).kind === "completed")
     .map(row => object(row.record.data).turn).filter(value => typeof value === "number").map(String));
   const lastAssistant = new Map<string, { seq: number; interrupted: boolean; hasToolCall: boolean }>();
@@ -344,6 +345,7 @@ async function snapshot(location: SourceLocation): Promise<NormalizedSnapshot> {
     if (type === "tool/call") {
       const callId = string(data.callId);
       if (!callId) { gaps.push({ kind: "unpaired_call", message: "DSH 工具请求缺少原生 callId", messageDescriptor: { key: "diagnostics.history.adapters.dsh.m014" } }); continue; }
+      toolNames.set(callId, toolNames.has(callId) ? undefined : string(data.name));
       records.push(normalizedRecord({ key, kind: "tool_call", callId, tool: string(data.name) ?? "unknown",
         input: callInput(data.arguments), occurredAt, turnKey, copied }, row.raw, row.line, seq));
       continue;
@@ -356,8 +358,18 @@ async function snapshot(location: SourceLocation): Promise<NormalizedSnapshot> {
       if (!callId) { gaps.push({ kind: "unpaired_call", message: "DSH 工具结果缺少原生 callId", messageDescriptor: { key: "diagnostics.history.adapters.dsh.m015" } }); continue; }
       const resultContent = legacy?.content ?? message.content;
       const error = message.isError === true || legacy?.isError === true;
-      records.push(normalizedRecord({ key, kind: "tool_result", callId, tool: string(message.toolName) ?? string(legacy?.toolName),
-        result: data, text: contentText(resultContent), occurredAt, turnKey, status: message.isError === undefined && legacy?.isError === undefined ? "unknown" : error ? "failure" : "success", copied }, row.raw, row.line, seq));
+      const tool = string(message.toolName) ?? string(legacy?.toolName) ?? toolNames.get(callId);
+      const text = contentText(resultContent);
+      let status: NormalizedEvent["status"] = message.isError === undefined && legacy?.isError === undefined ? "unknown" : error ? "failure" : "success";
+      // Harness Bash 的 isError 表示工具异常，非零命令退出另写在末尾标记中。
+      if (!error && /(?:^|\.)bash$/i.test(tool ?? "")) {
+        const exit = /(?:^|\n)\[exit code: (-?\d+)\]\s*$/.exec(text);
+        if (exit && Number(exit[1]) !== 0) status = "failure";
+        else if (/(?:^|\n)\[(?:timed out after |stopped: |killed by signal: |still running after |sandbox:)/.test(text)) status = "unknown";
+      }
+      toolNames.delete(callId);
+      records.push(normalizedRecord({ key, kind: "tool_result", callId, tool,
+        result: data, text, occurredAt, turnKey, status, copied }, row.raw, row.line, seq));
       continue;
     }
     if (type === "compaction/summary" || type === "branch_summary") {

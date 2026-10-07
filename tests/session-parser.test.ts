@@ -347,6 +347,36 @@ test("Skill 只有明确调用或成功返回的读取证据，失败、缺结�
   assert.ok(sample.summary.gaps.some(gap => gap.kind === "unpaired_call"));
 });
 
+test("写入、搜索、任意 command 参数及空 Shell 返回不能冒充 Skill 读取", async () => {
+  const path = "/synthetic/skills/demo/SKILL.md";
+  const sample = await parsed("codex", [meta(), user(),
+    call("write", "Write", { file_path: path, content: "instructions" }), result("write", { success: true, content: "written" }),
+    call("edit", "Edit", { path, old_string: "before", new_string: "after" }), result("edit", { success: true }),
+    call("search", "Grep", { path, pattern: "skill" }), result("search", { success: true, content: "match" }),
+    call("other", "custom_tool", { command: `cat ${path}` }), result("other", "Exit code: 0\nOutput:\ninstructions"),
+    call("empty-shell", "functions.exec_command", { cmd: `cat ${path}` }), result("empty-shell", "Exit code: 0\nOutput:\n"),
+    call("read-shell", "functions.exec_command", { cmd: "cat skills/actual/SKILL.md", workdir: "/synthetic/repo" }), result("read-shell", "Exit code: 0\nOutput:\ninstructions"),
+  ]);
+  assert.deepEqual(sample.messages.filter(message => message.resource).map(message => message.resource),
+    [{ kind: "skill_read", name: "actual", path: "/synthetic/repo/skills/actual/SKILL.md" }]);
+});
+
+test("Claude 结构化 Read 省略 is_error 仍确认读取，多结果不共享旁路元信息", async () => {
+  const path = "/synthetic/skills/demo/SKILL.md";
+  const read = (id: string) => ({ type: "assistant", uuid: `a-${id}`, sessionId: "claude-demo", cwd: "/synthetic/repo",
+    message: { role: "assistant", content: [{ type: "tool_use", id, name: "Read", input: { file_path: path } }] } });
+  const block = (id: string) => ({ type: "tool_result", tool_use_id: id, content: "1\tinstructions" });
+  const file = { content: "instructions", filePath: path, startLine: 1, numLines: 1, totalLines: 1 };
+  const sample = await parsed("claude", [read("single"), { type: "user", uuid: "r-single", sessionId: "claude-demo",
+    message: { role: "user", content: [block("single")] }, toolUseResult: { type: "text", file } },
+  read("one"), read("two"), { type: "user", uuid: "r-many", sessionId: "claude-demo",
+    message: { role: "user", content: [block("one"), block("two")] }, toolUseResult: { type: "text", file } }]);
+  const calls = sample.messages.filter(message => message.kind === "tool_call");
+  assert.equal(calls[0]?.status, "success");
+  assert.deepEqual(calls[0]?.resource, { kind: "skill_read", name: "demo", path });
+  assert.ok(calls.slice(1).every(message => message.status === "unknown" && !message.resource));
+});
+
 test("缺失 Skill 名标记生成来源，真实同名和目录名保留原文", async () => {
   const sample = await parsed("codex", [meta(), user(),
     call("missing-name", "Skill", {}), result("missing-name", { success: true }),

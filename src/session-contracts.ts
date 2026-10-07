@@ -25,7 +25,7 @@ export interface SessionMessage {
   /** 会话内树的叶分支成员；共同祖先可属于多个分支。 */
   branchIds?: string[];
   currentBranch?: boolean;
-  resource?: { kind: "mcp" | "skill_call" | "skill_read"; name: string; nameDescriptor?: MessageDescriptor; server?: string };
+  resource?: { kind: "mcp" | "skill_call" | "skill_read"; name: string; nameDescriptor?: MessageDescriptor; server?: string; path?: string };
   filePaths?: string[];
   /** 注入上下文或本地 Hook 的来源；正文仍保留原记录。 */
   contextSource?: "agents_md" | "environment" | "client" | "hook";

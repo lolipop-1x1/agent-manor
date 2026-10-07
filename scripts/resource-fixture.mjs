@@ -29,6 +29,8 @@ export async function resourceFixture(directory, count = 45) {
   const messages = [
     { type: "session_meta", timestamp: "2026-01-02T12:00:00Z", payload: { id: "resource-example", cwd: project, title: "资源管理合成会话" } },
     record({ type: "message", role: "user", content: [{ type: "input_text", text: "验证资源使用统计" }] }),
+    record({ type: "function_call", name: "Write", call_id: "write-guide", arguments: JSON.stringify({ file_path: join(guide, "SKILL.md"), content: "人工合成资源" }) }),
+    record({ type: "function_call_output", call_id: "write-guide", output: JSON.stringify({ success: true, content: "written" }) }),
     record({ type: "function_call", name: "shell_command", call_id: "read-guide", arguments: JSON.stringify({ command: `cat '${join(guide, "SKILL.md")}'`, workdir: project }) }),
     record({ type: "function_call_output", call_id: "read-guide", output: "Exit code: 0\nOutput:\n# 指南\n人工合成资源\n" }),
     record({ type: "function_call", name: "mcp__sample__lookup", call_id: "mcp-lookup", arguments: "{}" }),
@@ -65,7 +67,7 @@ export async function skillRankingFixture(fixture, claudeHistory, secondProject)
   const claudeRecords = [
     { type: "user", uuid: "ranking-claude-user", timestamp: "2026-01-06T12:00:00Z", sessionId: "ranking-claude-example", cwd: secondProject, message: { content: [{ type: "text", text: "使用另一份人工指南" }] } },
     { type: "assistant", uuid: "ranking-claude-request", timestamp: "2026-01-06T12:00:01Z", sessionId: "ranking-claude-example", cwd: secondProject, message: { content: [{ type: "tool_use", id: "ranking-claude-read", name: "Read", input: { file_path: join(claudeGuide, "SKILL.md") } }] } },
-    { type: "user", uuid: "ranking-claude-result", timestamp: "2026-01-06T12:00:02Z", sourceToolAssistantUUID: "ranking-claude-request", sessionId: "ranking-claude-example", cwd: secondProject, message: { content: [{ type: "tool_result", tool_use_id: "ranking-claude-read", content: "另一份人工指南。\n", is_error: false }] }, toolUseResult: { type: "text", file: { filePath: join(claudeGuide, "SKILL.md"), content: "另一份人工指南。\n", numLines: 1, startLine: 1, totalLines: 1 } } },
+    { type: "user", uuid: "ranking-claude-result", timestamp: "2026-01-06T12:00:02Z", sourceToolAssistantUUID: "ranking-claude-request", sessionId: "ranking-claude-example", cwd: secondProject, message: { content: [{ type: "tool_result", tool_use_id: "ranking-claude-read", content: "另一份人工指南。\n" }] }, toolUseResult: { type: "text", file: { filePath: join(claudeGuide, "SKILL.md"), content: "另一份人工指南。\n", numLines: 1, startLine: 1, totalLines: 1 } } },
     { type: "assistant", uuid: "ranking-claude-final", timestamp: "2026-01-06T12:00:03Z", sessionId: "ranking-claude-example", cwd: secondProject, message: { content: [{ type: "text", text: "人工指南已使用" }] } },
   ];
   await writeFile(join(fixture.history, "ranking-guide.jsonl"), records.map(record => JSON.stringify(record)).join("\n") + "\n");

@@ -261,6 +261,26 @@ test("OpenCode 缺失读取编号或 Bash exit 不补造范围和成功终态", 
   database.close();
 })));
 
+test("OpenCode invalid 是失败，自定义工具 completed 不补造 MCP 身份或协议成功", async () => temporary(async directory => {
+  const path = join(directory, "opencode.db");
+  const writer = new Database(path);
+  createOpenCodeSchema(writer);
+  insertOpenCodeSession(writer, { id: "resource-status", directory: "/synthetic/repo" });
+  insertOpenCodeMessage(writer, "resource-status", "assistant", "assistant", 1);
+  for (const [index, tool] of ["invalid", "example_lookup", "mcp__example__lookup", "skill"].entries()) {
+    insertOpenCodePart(writer, "resource-status", "assistant", `part-${index}`, index + 2, { type: "tool", callID: `call-${index}`, tool,
+      state: { status: "completed", input: { name: "demo" }, output: "returned", metadata: {} } });
+  }
+  writer.close();
+  const snapshot = await opencodeAdapter.readRecords!({ path, client: "opencode", format: OPENCODE_FORMAT, selector: "resource-status" });
+  const messages = new Map<string, SessionMessage>();
+  parseNormalizedSession(snapshot, { message: value => messages.set(value.id, value), usage: () => {} });
+  const calls = [...messages.values()].filter(message => message.kind === "tool_call");
+  assert.deepEqual(calls.map(message => [message.tool, message.status]), [["invalid", "failure"], ["example_lookup", "unknown"], ["mcp__example__lookup", "unknown"], ["skill", "success"]]);
+  assert.equal(calls[1]?.resource, undefined);
+  assert.deepEqual(calls[2]?.resource, { kind: "mcp", name: "lookup", server: "example" });
+}));
+
 test("OpenCode 顶层模型字段与合成压缩过程不会制造用户轮次或截断终答", async () => temporary(directory => registerAdapters(async () => {
   const path = join(directory, "opencode.db");
   const database = new Database(path);

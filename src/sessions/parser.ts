@@ -4,7 +4,7 @@ import { createReadStream } from "node:fs";
 import { basename, dirname, isAbsolute, resolve } from "node:path";
 import type { Client, Gap, GapKind } from "../contracts.js";
 import { historyRelationships, normalizeHistoryPath } from "../history/adapters/common.js";
-import { shellEvidence, shellResult } from "../history/extraction.js";
+import { shellResult } from "../history/extraction.js";
 import type { SourceLocation } from "../history/types.js";
 import type { MessageKind, SessionMessage, SessionSink, SessionSourceMeta } from "../session-contracts.js";
 import { object, string, tokens, UsageParser } from "./parser-usage.js";
@@ -19,6 +19,7 @@ import { ideSessionRecords } from "./codeflicker-ide.js";
 import { sessionExecutionMode } from "../session-execution.js";
 import { historyAdapter, historyClient } from "../history/adapters/index.js";
 import { parseNormalizedSession, type NormalizedSnapshot } from "../history/adapters/normalized.js";
+import { callResource, successfulSkillRead } from "./resources.js";
 
 const digest = (value: string) => createHash("sha256").update(value).digest("hex").slice(0, 24);
 const MAX_RECORD_BYTES = 16 * 1024 * 1024;
@@ -75,20 +76,6 @@ function filePaths(input: unknown): string[] | undefined {
   return paths.length ? [...new Set(paths)] : undefined;
 }
 
-function resource(tool: string, input: unknown, paths: string[] | undefined): SessionMessage["resource"] {
-  const mcp = /^mcp__(.+?)__(.+)$/.exec(tool) ?? /^mcp__([^.]+)\.(.+)$/.exec(tool);
-  if (mcp) return { kind: "mcp", name: mcp[2]!, server: mcp[1] };
-  if (/^(?:Skill|skill|use_skill)$/.test(tool)) {
-    const name = string(object(input).skill) ?? string(object(input).name) ?? string(object(input).skill_directory)?.split(/[/\\]/).filter(Boolean).at(-1);
-    return { kind: "skill_call", name: name ?? "未记录名称", ...(name === undefined ? { nameDescriptor: { key: "sessions.resource.nameUnrecorded" } } : {}) };
-  }
-  if (/^(?:Read|read|read_file)$/.test(tool) && paths?.some(path => basename(path) === "SKILL.md")) {
-    const path = paths.find(path => basename(path) === "SKILL.md")!;
-    return { kind: "skill_read", name: path.replace(/[/\\]SKILL\.md$/, "").split(/[/\\]/).at(-1) ?? "SKILL.md" };
-  }
-  return undefined;
-}
-
 interface Pending { message: SessionMessage; bytes: number; input: unknown }
 
 /** 只清理标题候选中的完整注入包，消息正文与轮次保持原样。 */
@@ -111,7 +98,7 @@ export async function parseSessionSource(source: SourceLocation, sink: SessionSi
   const adapter = historyAdapter(source.format ?? historyClient(source.client).format);
   if (adapter?.normalized) {
     const snapshot = options.normalizedSnapshot ?? await adapter.readRecords!(source) as NormalizedSnapshot;
-    return parseNormalizedSession(snapshot, sink);
+    return parseNormalizedSession(snapshot, sink, adapter.extract);
   }
   const ideSnapshot = options.nativeSnapshot ?? (source.format === IDE_FORMAT ? await readIdeSnapshot(source) : undefined);
   if (ideSnapshot) { source = ideSnapshot.source; options = { ...options, title: ideSnapshot.title }; }
@@ -212,9 +199,9 @@ export async function parseSessionSource(source: SourceLocation, sink: SessionSi
       if (samples.size < 4) samples.add(path);
       targets.set(directory, samples);
     }
-    const detectedResource = resource(tool, input, paths);
+    const detectedResource = callResource(tool, input);
     const value = message(key, "tool_call", display(input), row, { ...extra, callId, tool, filePaths: paths,
-      resource: detectedResource?.kind === "skill_read" ? undefined : detectedResource, status: "unknown" });
+      resource: detectedResource, status: "unknown" });
     const previousCompletion = completed.get(value.id);
     if (previousCompletion) { sink.message({ ...value, ...previousCompletion }); return; }
     const previous = pending.get(callId);
@@ -224,21 +211,17 @@ export async function parseSessionSource(source: SourceLocation, sink: SessionSi
     if (pendingBytes + bytes > MAX_PENDING_BYTES || pending.size >= 1024) { gap("budget_exceeded", "未完成工具请求超过有界配对缓存，调用保持未知状态", { key: "diagnostics.sessions.parser.m005" }); return; }
     pending.set(callId, { message: value, bytes, input }); pendingBytes += bytes;
   };
-  const toolResult = (key: string, callId: string, body: string, row: number, status: SessionMessage["status"], extra: Partial<SessionMessage>) => {
+  const toolResult = (key: string, callId: string, body: string, row: number, status: SessionMessage["status"], extra: Partial<SessionMessage>, nativeResult?: unknown) => {
     const repeated = seen.has(key);
     const call = pending.get(callId);
     const value = message(key, "tool_result", body, row, { ...extra, callId, status, tool: extra.tool ?? call?.message.tool,
       filePaths: extra.filePaths ?? call?.message.filePaths });
     if (call) {
-      const command = string(object(call.input).cmd) ?? string(object(call.input).command) ?? string(call.input)
-        ?? (Array.isArray(call.input) ? string(call.input.at(-1)) : undefined);
-      const readPaths = status === "success" && command ? shellEvidence(command, shellResult(body).output || body)
-        .filter(part => part.kind === "read" && part.path && part.fragments.length).map(part => part.path!) : undefined;
-      const paths = [...new Set([...(call.message.filePaths ?? []), ...(readPaths ?? [])])];
-      const skillPath = status === "success" && body.trim() ? paths.find(path => basename(path) === "SKILL.md") : undefined;
-      const readResource = skillPath ? resource("read", { file_path: skillPath }, [skillPath]) : undefined;
+      const read = status === "success" ? successfulSkillRead(call.message.tool ?? "", call.input, nativeResult,
+        shellResult(body).output, meta.project ?? source.cwd, adapter?.extract) : undefined;
+      const paths = [...new Set([...(call.message.filePaths ?? []), ...(read?.paths ?? [])])];
       const completion = { status, filePaths: paths.length ? paths : undefined,
-        resource: call.message.resource ?? readResource, durationMs: extra.durationMs ?? call.message.durationMs };
+        resource: call.message.resource ?? read?.resource, durationMs: extra.durationMs ?? call.message.durationMs };
       sink.message({ ...call.message, ...completion });
       completed.set(call.message.id, completion);
       pendingBytes -= call.bytes; pending.delete(callId);
@@ -329,7 +312,7 @@ export async function parseSessionSource(source: SourceLocation, sink: SessionSi
       } else if (role === "tool") {
         const result = desktopResult(record);
         const callId = string(record.toolCallId);
-        if (callId) toolResult(key, callId, text(record.content), line, result.status, { ...extra, tool: string(object(record.extra).toolName) });
+        if (callId) toolResult(key, callId, text(record.content), line, result.status, { ...extra, tool: string(object(record.extra).toolName) }, result.result);
         else { gap("unpaired_call", "桌面工具结果缺少调用身份", { key: "diagnostics.sessions.parser.m010" }); message(key, "tool_result", text(record.content), line, extra); }
       } else if (role === "reasoning") message(key, "thinking", text(record.content), line, extra);
       else if (role === "system") message(key, "system", text(record.content), line, extra);
@@ -424,7 +407,7 @@ export async function parseSessionSource(source: SourceLocation, sink: SessionSi
         const status = result.is_error === true || result.success === false ? "failure" : result.success === true ? "success" : state.status;
         if (!copied && status !== "failure") childReference(pending.get(string(payload.call_id) ?? key)?.message.tool, output);
         toolResult(key, string(payload.call_id) ?? key, display(payload.output), line, status, { ...extra,
-          durationMs: tokens(result.duration_ms) ?? tokens(result.durationMs) ?? (typeof result.wall_time_seconds === "number" ? result.wall_time_seconds * 1000 : undefined) });
+          durationMs: tokens(result.duration_ms) ?? tokens(result.durationMs) ?? (typeof result.wall_time_seconds === "number" ? result.wall_time_seconds * 1000 : undefined) }, output);
       } else if (type === "compaction") {
         message(key, "compression", text(payload.content ?? payload.summary), line, extra);
         if (payload.encrypted_content) gap("unsupported_format", "压缩记录未保存可读正文", { key: "diagnostics.sessions.parser.m013" });
@@ -478,16 +461,17 @@ export async function parseSessionSource(source: SourceLocation, sink: SessionSi
         const callId = string(block.id) ?? key;
         toolCall(key, string(block.name) ?? "unknown", block.input, callId, line, extra);
       } else if (type === "tool_result" || type === "tool-result") {
-        const result = object(type === "tool-result" ? block.result : record.toolUseResult);
+        const result = object(type === "tool-result" ? block.result : blocks.filter(value => object(value).type === "tool_result").length === 1 ? record.toolUseResult : undefined);
         const body = type === "tool-result" ? text(result.llmContent) : text(block.content);
         const error = type === "tool-result" ? result.isError : block.is_error;
         const status = error === true ? "failure" : error === false ? "success" : typeof result.exitCode === "number" ? result.exitCode === 0 ? "success" : "failure"
+          : result.file || Array.isArray(result.structuredPatch) || ["create", "update"].includes(string(result.type) ?? "") ? "success"
           : type === "tool-result" && /^(?:File successfully written to |File .+ successfully edited\.)/.test(body) ? "success"
           : type === "tool-result" && object((() => { try { return JSON.parse(body); } catch { return {}; } })()).type === "text" ? "success" : "unknown";
         if (!copied && status !== "failure") childReference(pending.get(string(block.tool_use_id) ?? string(block.toolCallId) ?? key)?.message.tool, result, string(block.agentId));
         emitted = toolResult(key, string(block.tool_use_id) ?? string(block.toolCallId) ?? key, body, line,
-          result.interrupted === true || result.backgroundTaskId ? "unknown" : status,
-          { ...extra, tool: string(block.toolName), durationMs: tokens(result.durationMs) ?? tokens(object(record.metadata).durationMs) });
+          result.interrupted === true || result.backgroundTaskId || result.timedOutAfterMs ? "unknown" : status,
+          { ...extra, tool: string(block.toolName), durationMs: tokens(result.durationMs) ?? tokens(object(record.metadata).durationMs) }, result);
       } else if (type === "image" || type === "input_image") emitted = message(key, human ? "user" : "system", "[图片]", line, { ...extra, textDescriptor: { key: "sessions.body.image" } }, human && !firstMessage);
       else if (type) gap("unsupported_format", "历史存在尚未适配的消息内容块，未补造正文", { key: "diagnostics.sessions.parser.m016" });
       firstMessage ??= emitted;

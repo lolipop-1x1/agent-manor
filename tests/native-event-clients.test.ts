@@ -123,11 +123,31 @@ test("DSH 解码压缩代际副本、继承边界、失败尝试、工具证据�
   const bash = parsed.events.find(event => event.tool === "bash");
   assert.equal(bash?.fragments[0]?.content, "alpha\nbeta");
   const failedBash = parsed.events.find(event => event.tool === "bash" && event.fragments.length === 0);
-  assert.ok(failedBash?.reason?.includes("状态标记"));
+  assert.equal(failedBash?.status, "failure");
   const readRequest = await readHistoryEvidence(reads[0]!.sources[0]!);
   const readResult = await readHistoryEvidence(reads[0]!.sources[1]!);
   assert.ok(readRequest?.raw.includes('"type":"tool/call"'));
   assert.ok(readResult?.raw.includes('"type":"tool/result"'));
+}));
+
+test("Pi 原生 Skill 展开进入读取统计，普通提及与不完整包装不计使用", async () => temporary(async directory => {
+  const path = join(directory, "pi-skill.jsonl");
+  const skill = "/synthetic/skills/demo/SKILL.md";
+  const expanded = `<skill name="demo" location="${skill}">\nReferences are relative to /synthetic/skills/demo.\n\ninstructions\n</skill>\n\ninspect the example`;
+  await writeFile(path, encode([
+    { type: "session", version: 3, id: "pi-skill", timestamp: "2026-01-01T00:00:00Z", cwd: "/synthetic/repo" },
+    { type: "message", id: "expanded", parentId: null, message: { role: "user", content: [{ type: "text", text: expanded }] } },
+    { type: "message", id: "mention", parentId: "expanded", message: { role: "user", content: "/skill:demo" } },
+    { type: "message", id: "malformed", parentId: "mention", message: { role: "user", content: expanded.replace("/synthetic/skills/demo.\n", "/synthetic/other.\n") } },
+  ]));
+  const snapshot = await piAdapter.readRecords!({ path, client: "pi", format: "pi-jsonl" }) as NormalizedSnapshot;
+  const parsed = sink(snapshot);
+  assert.equal(parsed.metadata.turnCount, 3);
+  const resources = parsed.messages.filter(message => message.resource);
+  assert.equal(resources.length, 1);
+  assert.equal(resources[0]?.kind, "user", "保留原生用户消息，不补造工具调用");
+  assert.deepEqual(resources[0]?.resource, { kind: "skill_read", name: "demo", path: skill });
+  assert.equal(resources[0]?.status, "success");
 }));
 
 test("DSH V3 工具结果包装保留调用配对，缺失缓存桶时不伪造总输入", async () => temporary(async directory => {

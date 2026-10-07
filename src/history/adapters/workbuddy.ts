@@ -152,7 +152,7 @@ function eventFor(record: Record<string, unknown>, row: RawHistoryRecord, metaGa
     const callId = string(record.callId);
     const providerResult = object(provider.workbuddyToolResult);
     const genericResult = object(provider.toolResult);
-    const visible = textOf(record.output) || textOf(providerResult.stdout) || textOf(providerResult.content) || textOf(providerResult.stderr);
+    const visible = textOf(record.output) || textOf(providerResult.stdout) || textOf(providerResult.content) || textOf(providerResult.stderr) || textOf(genericResult.content);
     const exitCode = typeof providerResult.exitCode === "number" ? providerResult.exitCode : undefined;
     const success = typeof providerResult.success === "boolean" ? providerResult.success : undefined;
     const readFileResult = object(providerResult.read_file_result);
@@ -171,6 +171,7 @@ function eventFor(record: Record<string, unknown>, row: RawHistoryRecord, metaGa
       originalFile: providerResult.oldContent === undefined ? undefined : providerResult.oldContent,
       type: providerResult.isNewFile === true ? "create" : string(providerResult.type),
       success,
+      nativeToolResult: genericResult,
     };
     events.push(make(`result:${callId ?? row.line}`, "tool_result", {
       callId,

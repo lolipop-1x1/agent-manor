@@ -277,6 +277,25 @@ test("CodeBuddy 只把已记录 user 作为用户消息，不补造 assistant �
   assert.equal(meta.project, "/workspace/codebuddy");
   assert.deepEqual(collected.messages.map(message => [message.kind, message.text]), [["user", "synthetic user prompt"]]);
   assert.equal(collected.usage.length, 0);
+  assert.ok(meta.gaps.some(gap => gap.messageDescriptor?.key === "diagnostics.history.adapters.codebuddy.resourceCoverage"));
+}));
+
+test("WorkBuddy 保留原生 toolResult，completed 不冒充成功，错误仍是失败", async () => temporary(async directory => {
+  const path = join(directory, "workbuddy-native-result.jsonl");
+  const nativeToolResult = { content: "recorded result", renderer: "text", rawResponse: { recorded: true }, title: "sample" };
+  await writeFile(path, serialized([
+    { type: "function_call", id: "call", sessionId: "wb-result", name: "Skill", callId: "skill", arguments: JSON.stringify({ skill: "demo" }) },
+    { type: "function_call_result", id: "result", sessionId: "wb-result", name: "Skill", callId: "skill", status: "completed", providerData: { toolResult: nativeToolResult } },
+    { type: "function_call", id: "failed-call", sessionId: "wb-result", name: "mcp__example__lookup", callId: "failed", arguments: "{}" },
+    { type: "function_call_result", id: "failed-result", sessionId: "wb-result", name: "mcp__example__lookup", callId: "failed", status: "completed", providerData: { toolResult: { content: "failure", error: "synthetic error" } } },
+  ]));
+  const snapshot = await workbuddyAdapter.readRecords!({ path, client: "workbuddy", format: "workbuddy-jsonl" });
+  const events = snapshot.records.flatMap(row => row.record.normalizedEvent ? [row.record.normalizedEvent] : []);
+  const results = events.filter(event => event.kind === "tool_result");
+  assert.deepEqual(results[0]?.result.nativeToolResult, nativeToolResult);
+  assert.equal(results[0]?.text, "recorded result");
+  assert.equal(results[0]?.status, "unknown");
+  assert.equal(results[1]?.status, "failure");
 }));
 
 test("Qoder 跳过工作区首记录而解析正文，按 tool_use id 配对并不猜 agent 父级", async () => temporary(async directory => {

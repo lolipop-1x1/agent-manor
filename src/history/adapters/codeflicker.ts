@@ -7,7 +7,7 @@ import type { ToolEvidence } from "../extraction.js";
 import type { ParsedHistorySource, SourceLocation } from "../types.js";
 import { historyRelationships, normalizeHistoryPath, registerRequest } from "./common.js";
 import { readJsonlEvidence } from "./jsonl.js";
-import type { HistoryAdapter, HistoryAdapterContext } from "./types.js";
+import type { HistoryAdapter, HistoryExtractionContext } from "./types.js";
 
 const hash = (value: string) => createHash("sha256").update(value).digest("hex");
 const integer = (value: unknown, minimum = 0) => Number.isSafeInteger(value) && Number(value) >= minimum;
@@ -38,7 +38,7 @@ function bashResult(input: unknown, result: unknown): { status: HistoryEvent["st
     truncated: /(?:\.\.\. \[\d+ lines truncated\] \.\.\.|\[Output too large|Full output saved to:)/.test(parts[2]!) };
 }
 
-function samePath(requested: string | undefined, returned: string | undefined, context: HistoryAdapterContext): boolean {
+function samePath(requested: string | undefined, returned: string | undefined, context: HistoryExtractionContext): boolean {
   if (!requested || !returned) return false;
   const cwd = context.cursor.cwd ?? context.source.cwd;
   if ((!cwd || !isAbsolute(cwd)) && !isAbsolute(requested) && isAbsolute(returned)) {

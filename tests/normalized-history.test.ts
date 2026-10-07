@@ -41,6 +41,26 @@ test("中断及未配对工具轮次不补造最终回答", () => {
   assert.ok(meta.gaps.some(gap => gap.kind === "unpaired_call"));
 });
 
+test("共享资源管道确认 Shell 读取与目录调用，结果行不重复附加资源", () => {
+  const messages = new Map<string, SessionMessage>();
+  parseNormalizedSession(normalizedSnapshot({ client: "pi", path: "/workspace/history.jsonl", sessionId: "resources", cwd: "/workspace/app" }, [
+    normalizedRecord({ key: "bash", kind: "tool_call", tool: "bash", callId: "bash", input: { command: "cat skills/demo/SKILL.md" } }, "{}", 1),
+    normalizedRecord({ key: "bash-result", kind: "tool_result", callId: "bash", tool: "bash", text: "instructions", status: "success" }, "{}", 2),
+    normalizedRecord({ key: "skill", kind: "tool_call", tool: "use_skill", callId: "skill", input: { skill_directory: "/workspace/skills/invoked" } }, "{}", 3),
+    normalizedRecord({ key: "skill-result", kind: "tool_result", callId: "skill", tool: "use_skill", status: "success" }, "{}", 4),
+    normalizedRecord({ key: "mcp", kind: "tool_call", tool: "mcp__example__lookup", callId: "mcp", input: {} }, "{}", 5),
+    normalizedRecord({ key: "mcp-result", kind: "tool_result", callId: "mcp", tool: "mcp__example__lookup", status: "success" }, "{}", 6),
+    normalizedRecord({ key: "write", kind: "tool_call", tool: "write", callId: "write", input: { path: "/workspace/skills/false/SKILL.md", content: "changed" } }, "{}", 7),
+    normalizedRecord({ key: "write-result", kind: "tool_result", callId: "write", tool: "write", text: "written", status: "success" }, "{}", 8),
+  ]), { message: value => messages.set(value.id, value), usage: () => {} });
+  const all = [...messages.values()];
+  assert.deepEqual(all.filter(message => message.resource).map(message => message.resource), [
+    { kind: "skill_read", name: "demo", path: "/workspace/app/skills/demo/SKILL.md" },
+    { kind: "skill_call", name: "invoked" }, { kind: "mcp", name: "lookup", server: "example" },
+  ]);
+  assert.ok(all.filter(message => message.kind === "tool_result").every(message => !message.resource));
+});
+
 test("JSONL 流式读取保留坏行与未完成末行缺口", async () => {
   const gaps: Parameters<typeof readBoundedJsonl>[1] = [];
   const rows = await readBoundedJsonl("memory", gaps, Readable.from(['{"type":"message"}\n{invalid}\n{"type":', '"message"}']));

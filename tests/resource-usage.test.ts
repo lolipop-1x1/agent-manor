@@ -38,6 +38,21 @@ function source(store: SessionStore, summary: SessionSourceMeta, messages: Sessi
   return { path: summary.path, revision: pending.revision, fingerprint: "synthetic-fingerprint" };
 }
 
+test("Skill 原生展开证据参与排行，工具结果不使画像和排行双计数", async () => fixture(store => {
+  const summary = meta("native-resource", { client: "pi", messageCount: 3, turnCount: 1 });
+  const expanded = message(summary.id, 1, { kind: "user", callId: undefined, status: "success", text: "synthetic expanded Skill",
+    resource: { kind: "skill_read", name: "demo", path: "/synthetic/skills/demo/SKILL.md" } });
+  const mcp = message(summary.id, 2, { tool: "mcp__example__lookup", status: "success", resource: { kind: "mcp", name: "lookup", server: "example" } });
+  const result = message(summary.id, 3, { kind: "tool_result", callId: mcp.callId, status: "success", resource: mcp.resource });
+  store.publish(store.createJob().id, [source(store, summary, [expanded, mcp, result])], []);
+  const events = [...store.resourceEvents().events];
+  assert.equal(events.length, 2);
+  assert.equal(events.find(event => event.kind === "skill_read")?.path, expanded.resource?.path);
+  const profile = store.profile(summary.id);
+  assert.equal(profile.resources.find(resource => resource.kind === "mcp")?.count, 1);
+  assert.equal(profile.resources.find(resource => resource.kind === "skill_read")?.count, 1);
+}));
+
 test("缺失 Skill 名描述贯通资源聚合但不改变稳定身份，混合旧或真实同名保留原名", async () => fixture(store => {
   const descriptor = { key: "sessions.resource.nameUnrecorded" };
   const generated = source(store, meta("generated"), [message("generated", 0, { resource: { kind: "skill_call", name: "未记录名称", nameDescriptor: descriptor } })]);

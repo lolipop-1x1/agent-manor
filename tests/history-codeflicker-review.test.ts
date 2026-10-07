@@ -7,6 +7,7 @@ import type { Baseline, HistoryEvent } from "../src/contracts.js";
 import { buildCoverage, matchEvent } from "../src/analysis/index.js";
 import { associateSource, parseSource, resolveSharedHistory } from "../src/history/index.js";
 import { readHistoryEvidence } from "../src/history/adapters/index.js";
+import { PARSER_RULE_VERSION } from "../src/version.js";
 
 const fixture = (name: string) => new URL(`./fixtures/history/${name}`, import.meta.url).pathname;
 const encode = (records: unknown[]) => records.map(record => `${JSON.stringify(record)}\n`).join("");
@@ -55,7 +56,7 @@ test("read 隐藏长行截断不形成近似覆盖，完整前后行保持真实
   (previous.cursor as { ruleVersion: string }).ruleVersion = "7";
   previous.events[0]!.fragments = [{ kind: "read", content: observed, historicalStart: 1, completeLines: true, path: file }];
   const rebuilt = await parseSource(path, "codeflicker", previous);
-  assert.equal((rebuilt.cursor as { ruleVersion: string }).ruleVersion, "9");
+  assert.equal((rebuilt.cursor as { ruleVersion: string }).ruleVersion, PARSER_RULE_VERSION);
   assert.equal((rebuilt.cursor as { parsedRecords: number }).parsedRecords, 2);
   assert.deepEqual(rebuilt.events[0]!.fragments, parsed.events[0]!.fragments);
 }));
@@ -153,7 +154,7 @@ test("bash 固定多文件 sed 派生活动继承本次绝对执行目录并分�
   (previous.cursor as { ruleVersion: string }).ruleVersion = "7";
   delete previous.events[1]!.cwd;
   const rebuilt = await parseSource(path, "codeflicker", previous);
-  assert.equal((rebuilt.cursor as { ruleVersion: string; parsedRecords: number }).ruleVersion, "9");
+  assert.equal((rebuilt.cursor as { ruleVersion: string; parsedRecords: number }).ruleVersion, PARSER_RULE_VERSION);
   assert.equal((rebuilt.cursor as { parsedRecords: number }).parsedRecords, 2);
   assert.deepEqual(rebuilt.events, parsed.events);
 }));

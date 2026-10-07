@@ -1,5 +1,6 @@
 import { createReadStream } from "node:fs";
-import { isAbsolute, basename } from "node:path";
+import { isAbsolute, basename, dirname } from "node:path";
+import type { SessionMessage } from "../../session-contracts.js";
 import { changedFragments, number, object, physicalLines, shellEvidence, string, textContent, toolEvidence, unifiedFragments } from "../extraction.js";
 import { normalizeHistoryPath } from "./common.js";
 import { createNormalizedAdapter, normalizedHash, normalizedRecord, normalizedSnapshot, readBoundedJsonl, type NormalizedEvent, type NormalizedSessionMetadata, type NormalizedSnapshot, type RawHistoryRecord } from "./normalized.js";
@@ -39,6 +40,14 @@ function piUsage(value: unknown): NormalizedEvent["usage"] {
 function contentText(value: unknown): string {
   if (typeof value === "string") return value;
   return Array.isArray(value) ? value.map(item => string(object(item).text) ?? "").filter(Boolean).join("\n") : "";
+}
+
+/** Pi 原生 /skill 展开包已经包含读取的正文；普通 /skill 字样不作为使用证据。 */
+function expandedSkill(text: string): SessionMessage["resource"] {
+  const match = /^<skill name="([^"\n]+)" location="([^"\n]+)">\nReferences are relative to ([^\n]+)\.\n\n([\s\S]+)\n<\/skill>(?:\n\n[\s\S]+)?$/.exec(text);
+  if (!match || !isAbsolute(match[2]!) || basename(match[2]!) !== "SKILL.md"
+    || dirname(match[2]!) !== match[3] || !match[4]!.trim() || /<\/?skill\b/.test(match[4]!)) return undefined;
+  return { kind: "skill_read", name: match[1]!, path: match[2] };
 }
 
 function parentSessionId(value: string | undefined): string | undefined {
@@ -263,7 +272,9 @@ async function snapshot(location: SourceLocation): Promise<NormalizedSnapshot> {
       const role = string(message.role);
       const time = messageTimestamp(message, entry);
       if (role === "user") {
-        add({ key: "", kind: "user", text: contentText(message.content), occurredAt: time, turnKey: id });
+        const text = contentText(message.content);
+        const resource = expandedSkill(text);
+        add({ key: "", kind: "user", text, resource, status: resource ? "success" : undefined, occurredAt: time, turnKey: id });
       } else if (role === "assistant") {
         const blocks = Array.isArray(message.content) ? message.content.map(object) : [];
         const visible = blocks.filter(block => block.type === "text").map(block => string(block.text) ?? "").filter(Boolean).join("\n");

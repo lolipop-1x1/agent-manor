@@ -1,11 +1,12 @@
 import { createHash } from "node:crypto";
 import { createReadStream } from "node:fs";
 import { lstat, realpath } from "node:fs/promises";
-import { basename, isAbsolute } from "node:path";
+import { isAbsolute } from "node:path";
 import type { Gap, HistoryEvent } from "../../contracts.js";
 import type { MessageKind, SessionMessage, SessionSink, SessionSourceMeta, SessionUsage } from "../../session-contracts.js";
 import type { HistoryRelationship, SourceLocation } from "../types.js";
-import { object, string } from "../extraction.js";
+import { object } from "../extraction.js";
+import { callResource, successfulSkillRead } from "../../sessions/resources.js";
 import { defaultToolEvidence, registerRequest } from "./common.js";
 import type { HistoryAdapter, HistoryRecordSnapshot } from "./types.js";
 
@@ -148,20 +149,8 @@ export function createNormalizedAdapter(config: {
   };
 }
 
-function resourceOf(tool: string | undefined, input: unknown, paths?: string[]): SessionMessage["resource"] {
-  if (!tool) return undefined;
-  const mcp = /^mcp__(.+?)__(.+)$/.exec(tool) ?? /^mcp__([^.]+)\.(.+)$/.exec(tool);
-  if (mcp) return { kind: "mcp", name: mcp[2]!, server: mcp[1] };
-  if (/^(?:Skill|skill|use_skill)$/.test(tool)) {
-    const name = string(object(input).skill) ?? string(object(input).name);
-    return { kind: "skill_call", name: name ?? "未记录名称", ...(name === undefined ? { nameDescriptor: { key: "sessions.resource.nameUnrecorded" } } : {}) };
-  }
-  const skill = paths?.find(path => basename(path) === "SKILL.md");
-  return /^(?:Read|read|read_file)$/.test(tool) && skill ? { kind: "skill_read", name: skill.split(/[/\\]/).at(-2) ?? "SKILL.md" } : undefined;
-}
-
 /** 规范化事件只在这里形成会话消息，所有新适配器共享轮次、工具状态和资源口径。 */
-export function parseNormalizedSession(snapshot: NormalizedSnapshot, sink: SessionSink): SessionSourceMeta {
+export function parseNormalizedSession(snapshot: NormalizedSnapshot, sink: SessionSink, extract: HistoryAdapter["extract"] = defaultToolEvidence): SessionSourceMeta {
   const source = snapshot.source; const rawId = source.sessionId ?? `unknown:${normalizedHash(source.path).slice(0, 24)}`;
   const id = normalizedSessionKey(source.client, rawId); const native = snapshot.meta;
   const meta: SessionSourceMeta = { id, client: source.client, clientSessionId: rawId, path: source.path,
@@ -190,8 +179,9 @@ export function parseNormalizedSession(snapshot: NormalizedSnapshot, sink: Sessi
       text: event.text ?? (event.input === undefined ? "" : JSON.stringify(event.input, null, 2)), textDescriptor: event.textDescriptor, occurredAt: event.occurredAt, model: event.model,
       callId: event.callId, tool: event.tool, status: event.status, final: event.final, durationMs: event.durationMs,
       copied: event.copied, branchIds: event.branchIds, currentBranch: event.currentBranch,
-      filePaths: paths.length ? paths : undefined, resource: event.resource ?? resourceOf(event.tool, event.input, paths) };
-    if (value.resource?.kind === "skill_read") value.resource = undefined;
+      filePaths: paths.length ? paths : undefined, resource: event.kind === "tool_call" ? event.resource ?? callResource(event.tool ?? "", event.input)
+        : event.kind === "user" ? event.resource : undefined };
+    if (event.kind === "tool_call" && value.resource?.kind === "skill_read") value.resource = undefined;
     messages.set(event.key, value.ordinal);
     messageIds.set(event.key, value.id);
     if (event.model) models.add(event.model);
@@ -217,7 +207,11 @@ export function parseNormalizedSession(snapshot: NormalizedSnapshot, sink: Sessi
       value.tool ??= call?.tool;
       if (call) {
         call.status = event.status ?? "unknown"; call.durationMs = event.durationMs ?? call.durationMs;
-        if (call.status === "success") call.resource = event.resource ?? resourceOf(call.tool, inputs.get(call.id), call.filePaths);
+        if (call.status === "success" && !call.resource) {
+          const read = successfulSkillRead(call.tool ?? "", inputs.get(call.id), event.result, event.text ?? "", source.cwd, extract);
+          call.resource = read.resource;
+          call.filePaths = [...new Set([...(call.filePaths ?? []), ...read.paths])];
+        }
         sink.message(call); pending.delete(event.callId ?? ""); inputs.delete(call.id);
       } else meta.gaps.push({ kind: calls.length > 1 ? "ambiguous" : "unpaired_call", message: calls.length > 1 ? "原生调用身份同时对应多个请求，未猜测结果关联" : "原生工具结果缺少可配对请求", messageDescriptor: calls.length > 1 ? { key: "diagnostics.history.adapters.normalized.m005" } : { key: "diagnostics.history.adapters.normalized.m006" }, sourceId: meta.sourceId });
     }

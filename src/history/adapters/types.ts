@@ -34,6 +34,12 @@ export interface HistoryAdapterContext {
   pair(callId: string, requestUuid?: string): PendingCall | undefined;
 }
 
+/** 内容提取只依赖工具与来源 cwd，会话库复用同一套原生证据规则。 */
+export interface HistoryExtractionContext {
+  source: Pick<ParsedHistorySource, "cwd">;
+  cursor: Pick<HistoryCursor, "cwd">;
+}
+
 /** 格式适配器接收实际客户端身份，不据格式推断客户端。 */
 export interface HistoryAdapter {
   id: string;
@@ -52,7 +58,7 @@ export interface HistoryAdapter {
   readSourceMetadata?(location: SourceLocation): Promise<SourceLocation>;
   discover(record: Record<string, unknown>, location: SourceLocation): { source: SourceLocation; complete?: boolean } | undefined;
   processRecord(record: Record<string, unknown>, context: HistoryAdapterContext): void;
-  extract(tool: string, input: unknown, result: unknown, visible: string, context: HistoryAdapterContext): ToolEvidence[];
+  extract(tool: string, input: unknown, result: unknown, visible: string, context: HistoryExtractionContext): ToolEvidence[];
   finalizeCall?(context: HistoryAdapterContext, call: PendingCall, event: HistoryEvent, result: unknown, visible: string, row: number, raw: string): boolean;
   /** 只关联已解析来源；矛盾证据可使原父声明失效，格式规则不散落到核心。 */
   resolveRelationships?(source: ParsedSource, sources: readonly ParsedSource[]): { relationships: HistoryRelationship[]; gaps?: Gap[]; invalidateParent?: boolean };

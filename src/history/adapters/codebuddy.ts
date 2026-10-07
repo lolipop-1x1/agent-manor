@@ -37,6 +37,7 @@ async function readCodebuddySnapshot(location: SourceLocation): Promise<Normaliz
   const source = sourceFor(location, "codebuddy", CODEBUDDY_FORMAT, sessionId, cwd);
   source.selector = sessionId;
   const records = [];
+  addGap(gaps, "unsupported_format", "CodeBuddy 当前 JSONL 来源仅核验用户消息，工具与资源采集能力未确认", { key: "diagnostics.history.adapters.codebuddy.resourceCoverage" });
   for (const row of selected) {
     const type = string(row.record.type);
     if (type !== "message") {
