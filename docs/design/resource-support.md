@@ -19,6 +19,8 @@
 
 用户目录由操作系统 home 决定。可明确传入 `CODEX_HOME`、`DSH_HOME`、`DSH_AGENTS_HOME`、`PI_CODING_AGENT_DIR`、`XDG_CONFIG_HOME` 的已核验覆盖值；测试传入人工 home，不修改进程 `HOME`。项目扫描只限已登记、历史中确认或手动声明的项目根，不遍历仓库寻找任意配置。当前盘点不额外推导 nested 项目或祖先加载层。
 
+CodeFlicker CLI／桌面版的新旧资源根、配置字段与迁移边界已进行发行来源核验，见 [来源矩阵](codeflicker-resource-sources.md)。自动盘点及管理适配仍待实现和验收；来源格式核验不代表运行客户端或写操作已验证。
+
 手动来源记录客户端、Skill／MCP、绝对路径、作用项目及格式；MCP 可声明注册 map 的 key path。它不接收命令、URL 或凭证值，也不会因为手动选择了客户端就宣称该客户端正在加载来源。
 
 ## 身份、状态与保护
