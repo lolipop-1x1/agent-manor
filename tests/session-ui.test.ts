@@ -2,8 +2,9 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { Client } from "../src/clients.ts";
 import type { SessionMessage, SessionSearchHit } from "../src/session-contracts.ts";
+import { translate } from "../src/i18n/index.ts";
 import { panelSemantics } from "../web/workspace-layout.ts";
-import { displayRecorded, executionEntryLabel, groupedTurns, searchHitMode, searchKinds, sessionParams, turnTitle, usageAxis, usageIndexAt, usageSegments, workspaceSessionSemantics } from "../web/session-model.ts";
+import { sessionDisplayTitle, sessionParentTitle, sessionResourceName, sessionMessageText, displayRecorded, executionEntryLabel, groupedTurns, searchHitMode, searchKinds, sessionParams, turnTitle, usageAxis, usageIndexAt, usageSegments, workspaceSessionSemantics } from "../web/session-model.ts";
 
 const summary = {
   id: "session-a", client: "codex" as Client, clientSessionId: "external-a", title: "合成会话", titleOrigin: "recorded" as const,
@@ -14,13 +15,28 @@ const message = (id: string, ordinal: number, turnId: string, kind: SessionMessa
   id, sessionId: summary.id, ordinal, recordLine: ordinal, turnId, kind, text: id,
 });
 
+test("父标题和资源名称仅按来源描述翻译，未知正文描述保留原文", () => {
+  const parent = { ...summary, parentTitle: "未命名会话" };
+  const resource = { kind: "skill_call" as const, name: "未记录名称" };
+  for (const language of ["en", "zh-CN"] as const) {
+    assert.equal(sessionParentTitle(parent, language), "未命名会话");
+    assert.equal(sessionResourceName(resource, language), "未记录名称");
+    assert.equal(sessionMessageText({ ...message("original", 1, "turn-a"), text: "原始正文", textDescriptor: { key: "sessions.synthetic.obsolete" } }, language), "原始正文");
+  }
+  assert.equal(sessionParentTitle({ ...parent, parentTitleDescriptor: { key: "sessions.title.unnamed" } }, "en"), "Unnamed session");
+  assert.equal(sessionParentTitle({ ...parent, parentTitleDescriptor: { key: "sessions.title.childFallback", params: { id: "child-01" } } }, "en"), "Child session child-01");
+  assert.equal(sessionResourceName({ ...resource, nameDescriptor: { key: "sessions.resource.nameUnrecorded" } }, "en"), "Name not recorded");
+  assert.equal(sessionResourceName({ ...resource, nameDescriptor: { key: "sessions.resource.nameUnrecorded" } }, "zh-CN"), "未记录名称");
+  assert.equal(sessionResourceName({ ...resource, nameDescriptor: { key: "sessions.synthetic.obsolete" } }, "en"), "未记录名称");
+});
+
 test("Quiet 标签只映射已核查的 CLI 版本与入口，其他记录保持原文", () => {
   const entry = { entrypoint: "sdk-cli", version: "0.3.26", recordLine: 1 };
-  assert.equal(executionEntryLabel("codeflicker", entry), "Quiet 模式");
-  assert.equal(executionEntryLabel("codeflicker", { ...entry, version: undefined }), "入口 sdk-cli");
-  assert.equal(executionEntryLabel("codeflicker", { ...entry, version: "0.3.27" }), "入口 sdk-cli");
-  assert.equal(executionEntryLabel("codeflicker", { ...entry, entrypoint: "cli" }), "入口 cli");
-  assert.equal(executionEntryLabel("codeflicker-desktop", entry), "入口 sdk-cli");
+  assert.equal(executionEntryLabel("codeflicker", entry, "zh-CN"), "Quiet 模式");
+  assert.equal(executionEntryLabel("codeflicker", { ...entry, version: undefined }, "zh-CN"), "入口 sdk-cli");
+  assert.equal(executionEntryLabel("codeflicker", { ...entry, version: "0.3.27" }, "zh-CN"), "入口 sdk-cli");
+  assert.equal(executionEntryLabel("codeflicker", { ...entry, entrypoint: "cli" }, "zh-CN"), "入口 cli");
+  assert.equal(executionEntryLabel("codeflicker-desktop", entry, "zh-CN"), "入口 sdk-cli");
 });
 
 test("会话查询编码保留筛选、类型列表和消息精确定位", () => {
@@ -65,9 +81,9 @@ test("轮次按消息序号排序并保留明确轮次，未知轮次不推断�
 });
 
 test("缺失用量显示未记录，已记录零值保持为零", () => {
-  assert.equal(displayRecorded(null), "未记录");
-  assert.equal(displayRecorded(undefined), "未记录");
-  assert.equal(displayRecorded(0), "0");
+  assert.equal(displayRecorded(null, "zh-CN"), "未记录");
+  assert.equal(displayRecorded(undefined, "zh-CN"), "未记录");
+  assert.equal(displayRecorded(0, "zh-CN"), "0");
 });
 
 test("用量趋势保留零值，并在缺失记录处断开曲线", () => {
@@ -116,16 +132,47 @@ test("轮次分页和画像定位参数保留精确查询", () => {
 });
 
 test("会话工作区语义覆盖列表与画像名称，地图默认语义保持兼容", () => {
-  const semantics = workspaceSessionSemantics();
+  const semantics = workspaceSessionSemantics("zh-CN");
   assert.deepEqual(panelSemantics("sidebar", semantics), { label: "调整会话列表宽度", controls: "session-list-content" });
   assert.deepEqual(panelSemantics("details", semantics), { label: "调整会话画像宽度", controls: "session-profile-content" });
-  assert.deepEqual(panelSemantics("sidebar"), { label: "调整仓库导航宽度", controls: "repository-navigation-content" });
-  assert.deepEqual(panelSemantics("details"), { label: "调整文件详情宽度", controls: "file-details-content" });
+  assert.deepEqual(panelSemantics("sidebar"), { label: translate("en", "common.workspace.sidebarWidth"), controls: "repository-navigation-content" });
+  assert.deepEqual(panelSemantics("details"), { label: translate("en", "common.workspace.detailsWidth"), controls: "file-details-content" });
 });
 
 
 test("分页消息仍显示来源的真实轮次编号，不按当前页从1重新编号", () => {
-  assert.equal(turnTitle("session:turn:19", 1), "第 19 轮");
-  assert.equal(turnTitle("session:turn:0", 1), "初始上下文");
-  assert.equal(turnTitle("unknown", 1), "轮次未记录");
+  assert.equal(turnTitle("session:turn:19", 1, "zh-CN"), "第 19 轮");
+  assert.equal(turnTitle("session:turn:0", 1, "zh-CN"), "初始上下文");
+  assert.equal(turnTitle("unknown", 1, "zh-CN"), "轮次未记录");
+});
+
+
+test("会话标签按指定语言呈现，真实同名标题、正文、入口与标识保持原文", () => {
+  assert.equal(sessionDisplayTitle({ ...summary, title: "未命名会话" }, "en"), "未命名会话");
+  assert.equal(sessionDisplayTitle({ ...summary, title: "未命名会话", titleOrigin: "first_user" }, "en"), "未命名会话");
+  assert.equal(sessionDisplayTitle({ ...summary, titleOrigin: "fallback" }, "en"), "Unnamed session");
+  assert.equal(sessionDisplayTitle({ ...summary, titleOrigin: "fallback", relationship: "child" }, "en"), "Child session ternal-a");
+  const original = message("未记录内容", 1, "turn-a");
+  assert.equal(sessionMessageText(original, "en"), "未记录内容");
+  const generated = { ...original, textDescriptor: { key: "sessions.body.unrecorded" } };
+  assert.equal(sessionMessageText(generated, "en"), "Content not recorded");
+  assert.equal(sessionMessageText(generated, "zh-CN"), "未记录内容");
+  assert.equal(original.text, "未记录内容");
+  assert.equal(executionEntryLabel("codeflicker", { entrypoint: "sdk-cli", version: "0.3.26", recordLine: 1 }, "en"), "Quiet mode");
+  assert.equal(executionEntryLabel("codeflicker", { entrypoint: "sdk-cli", version: "0.3.27", recordLine: 1 }, "en"), "Entry sdk-cli");
+  assert.equal(turnTitle("session:turn:19", 1, "en"), "Turn 19");
+  assert.equal(turnTitle("session:turn:0", 1, "en"), "Initial context");
+  assert.equal(displayRecorded(undefined, "en"), "Not recorded");
+  assert.equal(displayRecorded(0, "en"), "0");
+  assert.equal(workspaceSessionSemantics("en").sidebar.label, "Resize session list");
+});
+
+test("会话目录的数量复数与生成正文参数保留原始内容", () => {
+  assert.equal(translate("en", "sessions.recordCount", { count: 1 }), "1 record");
+  assert.equal(translate("en", "sessions.recordCount", { count: 2 }), "2 records");
+  assert.equal(translate("zh-CN", "sessions.recordCount", { count: 2 }), "2 条记录");
+  const detail = "request/header turn=1 model=合成模型";
+  assert.equal(translate("en", "sessions.body.dshEvent", { detail }), `DSH process event ${detail}`);
+  assert.equal(translate("zh-CN", "sessions.body.dshEvent", { detail }), `DSH 过程事件 ${detail}`);
+  assert.equal(translate("en", "sessions.profile.chartValueLinked", { number: "1", input: "0", output: "Not recorded", cache: "0" }), "Request 1, input 0, output Not recorded, cache read 0; press Enter to locate the record");
 });

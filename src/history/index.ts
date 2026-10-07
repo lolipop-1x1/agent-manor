@@ -1,3 +1,4 @@
+import type { MessageDescriptor } from "../i18n/types.js";
 import { createHash } from "node:crypto";
 import { lstat, open, readFile, readdir, realpath } from "node:fs/promises";
 import { homedir } from "node:os";
@@ -161,7 +162,7 @@ export async function parseSource(path: string, client: Client, previous?: Parse
   if (metadata) Object.assign(source, metadata);
   for (const event of source.events) for (const reference of event.sources) reference.path = absolutePath;
   const eventById = new Map(source.events.map((event) => [event.id, event]));
-  const gap = (kind: Gap["kind"], message: string) => source.gaps.push({ kind, message, sourceId: source.sourceId });
+  const gap = (kind: Gap["kind"], message: string, messageDescriptor?: MessageDescriptor, details?: MessageDescriptor[]) => source.gaps.push({ kind, message, messageDescriptor, details, sourceId: source.sourceId });
   let activeContext: HistoryAdapterContext;
   const reference = (recordLine: number, raw: string, callId?: string): SourceReference => ({ sourceId: source.sourceId, format, path: absolutePath,
     selector: metadata?.selector, recordLine, hash: hash(raw), callId,
@@ -178,13 +179,13 @@ export async function parseSource(path: string, client: Client, previous?: Parse
     const event: HistoryEvent = {
       id: identity(key ?? `${tool}:${row}:${hash(raw)}`), client, sessionId: source.sessionId, parentSessionId: source.parentSessionId,
       occurredAt, tool, kind: extracted.kind, status: "unknown", cwd: normalizeHistoryPath(cwd) ?? cursor.cwd ?? source.cwd,
-      path: extracted.path, fragments: [], sources: [reference(row, raw)], input: json(input), reason: "调用结果尚未配对",
+      path: extracted.path, fragments: [], sources: [reference(row, raw)], input: json(input), reason: "调用结果尚未配对", reasonDescriptor: { key: "diagnostics.history.index.m001" },
     };
     source.events.push(event);
     eventById.set(event.id, event);
     return event;
   }
-  function finish(call: PendingCall, result: unknown, visible: string, status: HistoryEvent["status"], row: number, raw: string, reason?: string) {
+  function finish(call: PendingCall, result: unknown, visible: string, status: HistoryEvent["status"], row: number, raw: string, reason?: string, reasonDescriptor?: MessageDescriptor) {
     const event = findEvent(call.eventId);
     if (!event) return;
     const resultRef = reference(row, raw, call.callId);
@@ -199,22 +200,23 @@ export async function parseSource(path: string, client: Client, previous?: Parse
       target.path = evidence.path;
       target.fragments = status === "success" ? evidence.fragments : [];
       target.reason = reason ?? (status === "success" ? evidence.reason : status === "failure" ? "工具执行失败" : "未确认工具成功终态");
+      target.reasonDescriptor = reason !== undefined ? reasonDescriptor : status === "success" ? evidence.reasonDescriptor : { key: status === "failure" ? "diagnostics.history.toolFailed" : "diagnostics.history.toolStatusUnknown" };
       if (index) source.events.push(target);
-      if (target.reason?.startsWith("range_unknown:")) gap("range_unknown", target.reason);
-      if (target.reason?.startsWith("unsupported_tool:")) gap("unsupported_tool", target.reason);
+      if (target.reason?.startsWith("range_unknown:")) gap("range_unknown", target.reason, target.reasonDescriptor);
+      if (target.reason?.startsWith("unsupported_tool:")) gap("unsupported_tool", target.reason, target.reasonDescriptor);
     });
   }
   function pair(callId: string, requestUuid?: string): PendingCall | undefined {
     const matching = cursor.pending.filter((call) => call.callId === callId && (!requestUuid || call.requestUuid === requestUuid));
     if (matching.length !== 1) {
-      gap(matching.length ? "ambiguous" : "unpaired_call", matching.length ? `调用 ${callId} 有多个待配对出现位置` : `结果 ${callId} 没有请求`);
+      gap(matching.length ? "ambiguous" : "unpaired_call", matching.length ? `调用 ${callId} 有多个待配对出现位置` : `结果 ${callId} 没有请求`, matching.length ? { key: "diagnostics.history.index.m002", params: { p0: String(callId) } } : { key: "diagnostics.history.index.m003", params: { p0: String(callId) } });
       return undefined;
     }
     const call = matching[0]!;
     cursor.pending = cursor.pending.filter((candidate) => candidate !== call);
     return call;
   }
-  if (!adapter && !source.gaps.some(item => item.kind === "unsupported_format")) gap("unsupported_format", `历史格式 ${format} 尚未注册适配器`);
+  if (!adapter && !source.gaps.some(item => item.kind === "unsupported_format")) gap("unsupported_format", `历史格式 ${format} 尚未注册适配器`, { key: "diagnostics.history.index.m004", params: { p0: String(format) } });
   let position = cursor.completeBytes;
   let nativePosition = 0;
   while (container ? nativePosition < container.records.length : position < bytes.length) {
@@ -229,7 +231,7 @@ export async function parseSource(path: string, client: Client, previous?: Parse
     const row = cursor.recordLine;
     let record: Record<string, unknown>;
     try { record = nativeRecord?.record ?? object(JSON.parse(raw)); }
-    catch { gap("parse_error", `物理记录 ${row} 不是有效 JSON`); continue; }
+    catch { gap("parse_error", `物理记录 ${row} 不是有效 JSON`, { key: "diagnostics.history.index.m005", params: { p0: row } }); continue; }
     if (adapter) {
       activeContext = { client, path: absolutePath, row, raw, occurredAt: string(record.timestamp), source, cursor,
         hash, gap, reference, findEvent, createEvent, finish, pair };
@@ -240,8 +242,8 @@ export async function parseSource(path: string, client: Client, previous?: Parse
   cursor.prefixHash = hash(bytes.subarray(0, position));
   source.completeBytes = position;
   source.cursor = json(cursor);
-  if (position < bytes.length) gap("incomplete_record", "末尾记录尚未以换行完成，等待下一轮补齐");
-  for (const call of cursor.pending) gap("unpaired_call", `调用 ${call.callId} 的出现位置 ${call.recordLine} 尚无可确认结果`);
+  if (position < bytes.length) gap("incomplete_record", "末尾记录尚未以换行完成，等待下一轮补齐", { key: "diagnostics.history.index.m006" });
+  for (const call of cursor.pending) gap("unpaired_call", `调用 ${call.callId} 的出现位置 ${call.recordLine} 尚无可确认结果`, { key: "diagnostics.history.index.m007", params: { p0: String(call.callId), p1: String(call.recordLine) } });
   return source;
 }
 
@@ -422,13 +424,13 @@ export async function associateSource(source: ParsedSource, baseline: Baseline, 
     }
     const sources = [...new Map([...event.sources, ...proof].map(reference => [JSON.stringify(reference), reference])).values()];
     events.push({ ...event, path, fragments, sources });
-    if (!available.has(path)) gaps.push({ kind: "range_unknown", message: `历史文件 ${path} 不在当前仓库基线中`, sourceId: source.sourceId });
+    if (!available.has(path)) gaps.push({ kind: "range_unknown", message: `历史文件 ${path} 不在当前仓库基线中`, messageDescriptor: { key: "diagnostics.history.index.m008", params: { p0: String(path) } }, sourceId: source.sourceId });
   }
   const cwd = normalizeHistoryPath(source.cwd);
   const belongsByCwd = Boolean(cwd && isAbsolute(cwd) && inside(root, await canonicalPath(cwd)));
   const associated = events.length > 0 || belongsByCwd;
-  if (!associated) gaps.push({ kind: "unassociated", message: "来源工作目录与逐事件路径无法可靠归属仓库", sourceId: source.sourceId });
-  return { associated, source: parsed, events, gaps, reason: events.length ? "逐事件路径或 Git commonDir 确认" : belongsByCwd ? "来源 cwd 属于仓库，外部路径活动已排除" : "归属未知" };
+  if (!associated) gaps.push({ kind: "unassociated", message: "来源工作目录与逐事件路径无法可靠归属仓库", messageDescriptor: { key: "diagnostics.history.index.m009" }, sourceId: source.sourceId });
+  return { associated, source: parsed, events, gaps, reason: events.length ? "逐事件路径或 Git commonDir 确认" : belongsByCwd ? "来源 cwd 属于仓库，外部路径活动已排除" : "归属未知", reasonDescriptor: events.length ? { key: "diagnostics.history.index.m010" } : belongsByCwd ? { key: "diagnostics.history.index.m011" } : { key: "diagnostics.history.index.m012" } };
 }
 
 /** 只有明确 fork 来源与完整父字节边界能证明共享历史；文本相同不去重。 */
@@ -472,7 +474,7 @@ export function resolveSharedHistory(sources: ParsedSource[]): SharedHistoryResu
         parentProofs.push(...(relationship.sources ?? []));
       }
       if (!resolved) gaps.push({ kind: parents.length ? "ambiguous" : "source_missing", sourceId: source.sourceId,
-        message: relationship.kind === "fork" ? "fork 缺少可核验的完整记录边界或原生复制身份；未按文本推断共享调用" : "子会话父来源缺失" });
+        message: relationship.kind === "fork" ? "fork 缺少可核验的完整记录边界或原生复制身份；未按文本推断共享调用" : "子会话父来源缺失", messageDescriptor: relationship.kind === "fork" ? { key: "diagnostics.history.index.m013" } : { key: "diagnostics.history.index.m014" } });
       if (parent && relationship.kind === "fork") {
         for (const event of parent.events) {
           const parentRefs = event.sources.filter((reference) => reference.sourceId === parent.sourceId);
@@ -490,13 +492,13 @@ export function resolveSharedHistory(sources: ParsedSource[]): SharedHistoryResu
         }
       }
     }
-    if (relatedParents.size > 1) gaps.push({ kind: "ambiguous", sourceId: source.sourceId, message: "子会话存在多个已解析父身份，未选择父关系" });
+    if (relatedParents.size > 1) gaps.push({ kind: "ambiguous", sourceId: source.sourceId, message: "子会话存在多个已解析父身份，未选择父关系", messageDescriptor: { key: "diagnostics.history.index.m015" } });
     for (const event of source.events) {
       const proof = [...new Set(event.sources.filter((reference) => reference.sourceId === source.sourceId).map((reference) => reference.hash))].sort().join(":");
       const candidate = copied.get(proof);
       const identity = candidate ? eventIdentity(source, event) : undefined;
       const original = candidate?.identity && identity === candidate.identity ? candidate.event : undefined;
-      if (candidate && !original) gaps.push({ kind: "ambiguous", sourceId: source.sourceId, message: "fork 记录内容相同但缺少可确认的原事件身份，未按文本去重" });
+      if (candidate && !original) gaps.push({ kind: "ambiguous", sourceId: source.sourceId, message: "fork 记录内容相同但缺少可确认的原事件身份，未按文本去重", messageDescriptor: { key: "diagnostics.history.index.m016" } });
       const related = invalidatedParent ? { ...event, parentSessionId: undefined } : relatedParents.size === 1 ? { ...event, parentSessionId: [...relatedParents][0],
         sources: [...new Map([...event.sources, ...parentProofs].map(reference => [JSON.stringify(reference), reference])).values()] } : event;
       mergeEvent(events, original ? { ...related, id: original.id, sessionId: original.sessionId } : related, gaps);
@@ -514,11 +516,12 @@ function mergeEvent(events: Map<string, HistoryEvent>, event: HistoryEvent, gaps
     existing.fragments = structuredClone(event.fragments);
     existing.output = event.output;
     existing.reason = event.reason;
+    existing.reasonDescriptor = event.reasonDescriptor;
   } else if (existing.status !== "unknown" && event.status !== "unknown" && existing.status !== event.status) {
     existing.status = "unknown";
     existing.fragments = [];
-    existing.reason = "ambiguous: 同一事件身份存在相互矛盾的成功与失败结果";
-    gaps.push({ kind: "ambiguous", message: existing.reason });
+    existing.reason = "ambiguous: 同一事件身份存在相互矛盾的成功与失败结果"; existing.reasonDescriptor = { key: "diagnostics.history.index.m017" };
+    gaps.push({ kind: "ambiguous", message: existing.reason, messageDescriptor: existing.reasonDescriptor });
   }
   for (const reference of event.sources) {
     const key = `${reference.path}:${reference.recordLine}:${reference.hash}`;

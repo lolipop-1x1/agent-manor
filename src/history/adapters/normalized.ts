@@ -16,6 +16,7 @@ export interface NormalizedEvent {
   key: string;
   kind: MessageKind;
   text?: string;
+  textDescriptor?: SessionMessage["textDescriptor"];
   occurredAt?: string;
   model?: string;
   callId?: string;
@@ -61,7 +62,7 @@ export async function readBoundedJsonl(path: string, gaps: Gap[], stream: AsyncI
   let parts: Buffer[] = []; let length = 0; let total = 0; let line = 0; let oversized = false;
   for await (const value of stream) {
     const bytes = Buffer.from(value); total += bytes.length;
-    if (total > limit) { gaps.push({ kind: "budget_exceeded", message: "原生来源超过 128 MiB 有界读取上限" }); break; }
+    if (total > limit) { gaps.push({ kind: "budget_exceeded", message: "原生来源超过 128 MiB 有界读取上限", messageDescriptor: { key: "diagnostics.history.adapters.normalized.m001" } }); break; }
     let start = 0;
     while (start < bytes.length) {
       const next = bytes.indexOf(10, start); const end = next < 0 ? bytes.length : next;
@@ -70,16 +71,16 @@ export async function readBoundedJsonl(path: string, gaps: Gap[], stream: AsyncI
       else { oversized = true; parts = []; }
       if (next < 0) break;
       line += 1;
-      if (oversized) gaps.push({ kind: "budget_exceeded", message: "原生单条记录超过 16 MiB，未解析正文" });
+      if (oversized) gaps.push({ kind: "budget_exceeded", message: "原生单条记录超过 16 MiB，未解析正文", messageDescriptor: { key: "diagnostics.history.adapters.normalized.m002" } });
       else if (length) {
         const raw = Buffer.concat(parts, length).toString("utf8");
         try { rows.push({ raw, line, record: object(JSON.parse(raw)) }); }
-        catch { gaps.push({ kind: "parse_error", message: "原生来源存在无效 JSON 记录" }); }
+        catch { gaps.push({ kind: "parse_error", message: "原生来源存在无效 JSON 记录", messageDescriptor: { key: "diagnostics.history.adapters.normalized.m003" } }); }
       }
       parts = []; length = 0; oversized = false; start = next + 1;
     }
   }
-  if (length || oversized) gaps.push({ kind: "incomplete_record", message: "原生来源末行尚未完整写入" });
+  if (length || oversized) gaps.push({ kind: "incomplete_record", message: "原生来源末行尚未完整写入", messageDescriptor: { key: "diagnostics.history.adapters.normalized.m004" } });
   return rows;
 }
 
@@ -151,7 +152,10 @@ function resourceOf(tool: string | undefined, input: unknown, paths?: string[]):
   if (!tool) return undefined;
   const mcp = /^mcp__(.+?)__(.+)$/.exec(tool) ?? /^mcp__([^.]+)\.(.+)$/.exec(tool);
   if (mcp) return { kind: "mcp", name: mcp[2]!, server: mcp[1] };
-  if (/^(?:Skill|skill|use_skill)$/.test(tool)) return { kind: "skill_call", name: string(object(input).skill) ?? string(object(input).name) ?? "未记录名称" };
+  if (/^(?:Skill|skill|use_skill)$/.test(tool)) {
+    const name = string(object(input).skill) ?? string(object(input).name);
+    return { kind: "skill_call", name: name ?? "未记录名称", ...(name === undefined ? { nameDescriptor: { key: "sessions.resource.nameUnrecorded" } } : {}) };
+  }
   const skill = paths?.find(path => basename(path) === "SKILL.md");
   return /^(?:Read|read|read_file)$/.test(tool) && skill ? { kind: "skill_read", name: skill.split(/[/\\]/).at(-2) ?? "SKILL.md" } : undefined;
 }
@@ -183,7 +187,7 @@ export function parseNormalizedSession(snapshot: NormalizedSnapshot, sink: Sessi
     const paths = event.filePaths ?? [object(event.input).file_path, object(event.input).filePath, object(event.input).path].filter((item): item is string => typeof item === "string");
     const value: SessionMessage = { id: `${id}:message:${normalizedHash(event.key).slice(0, 24)}`, sessionId: id,
       ordinal: previous ?? ++meta.messageCount, recordLine: row.line, turnId: turn, kind: event.kind,
-      text: event.text ?? (event.input === undefined ? "" : JSON.stringify(event.input, null, 2)), occurredAt: event.occurredAt, model: event.model,
+      text: event.text ?? (event.input === undefined ? "" : JSON.stringify(event.input, null, 2)), textDescriptor: event.textDescriptor, occurredAt: event.occurredAt, model: event.model,
       callId: event.callId, tool: event.tool, status: event.status, final: event.final, durationMs: event.durationMs,
       copied: event.copied, branchIds: event.branchIds, currentBranch: event.currentBranch,
       filePaths: paths.length ? paths : undefined, resource: event.resource ?? resourceOf(event.tool, event.input, paths) };
@@ -215,7 +219,7 @@ export function parseNormalizedSession(snapshot: NormalizedSnapshot, sink: Sessi
         call.status = event.status ?? "unknown"; call.durationMs = event.durationMs ?? call.durationMs;
         if (call.status === "success") call.resource = event.resource ?? resourceOf(call.tool, inputs.get(call.id), call.filePaths);
         sink.message(call); pending.delete(event.callId ?? ""); inputs.delete(call.id);
-      } else meta.gaps.push({ kind: calls.length > 1 ? "ambiguous" : "unpaired_call", message: calls.length > 1 ? "原生调用身份同时对应多个请求，未猜测结果关联" : "原生工具结果缺少可配对请求", sourceId: meta.sourceId });
+      } else meta.gaps.push({ kind: calls.length > 1 ? "ambiguous" : "unpaired_call", message: calls.length > 1 ? "原生调用身份同时对应多个请求，未猜测结果关联" : "原生工具结果缺少可配对请求", messageDescriptor: calls.length > 1 ? { key: "diagnostics.history.adapters.normalized.m005" } : { key: "diagnostics.history.adapters.normalized.m006" }, sourceId: meta.sourceId });
     }
     sink.message(value);
     if (event.usage) sink.usage({ ...event.usage, id: `${id}:usage:${normalizedHash(event.usageKey ?? event.key).slice(0, 24)}`,
@@ -227,7 +231,7 @@ export function parseNormalizedSession(snapshot: NormalizedSnapshot, sink: Sessi
   const pendingTurns = new Set(pendingCalls.map(value => value.turnId));
   for (const [key, candidate] of candidates) if (candidate.allowInferredFinal && !candidate.message.final
     && !pendingTurns.has(key) && !interrupted.has(key)) sink.message({ ...candidate.message, final: "inferred" });
-  if (pendingCalls.length) meta.gaps.push({ kind: "unpaired_call", message: "部分原生工具请求尚未记录结果", count: pendingCalls.length, sourceId: meta.sourceId });
+  if (pendingCalls.length) meta.gaps.push({ kind: "unpaired_call", message: "部分原生工具请求尚未记录结果", messageDescriptor: { key: "diagnostics.history.adapters.normalized.m007" }, count: pendingCalls.length, sourceId: meta.sourceId });
   meta.models = [...models];
   return meta;
 }

@@ -1,9 +1,11 @@
 import { useEffect, useRef, useState, type CSSProperties, type KeyboardEvent, type PointerEvent, type ReactNode } from "react";
+import { useI18n } from "./i18n";
 import { panelSemantics, panelWidthRange, workspaceWidths, type PanelSemantics, type PanelSide, type PanelWidths } from "./workspace-layout";
 
 export function ResizableWorkspace({ sidebarCollapsed, detailsCollapsed, children, semantics }: {
   sidebarCollapsed: boolean; detailsCollapsed: boolean; children: ReactNode; semantics?: PanelSemantics;
 }) {
+  const { t } = useI18n();
   const workspace = useRef<HTMLDivElement>(null);
   const drag = useRef<{ side: PanelSide; x: number; width: number; pointerId: number } | null>(null);
   const [viewport, setViewport] = useState(() => window.innerWidth);
@@ -75,7 +77,7 @@ export function ResizableWorkspace({ sidebarCollapsed, detailsCollapsed, childre
       return <div key={side} className={`panel-resizer ${side}-resizer`} role="separator" tabIndex={0} hidden={hidden}
         aria-label={accessible.label} aria-orientation="vertical" aria-controls={accessible.controls}
         aria-valuemin={range.min} aria-valuemax={Math.round(range.max)} aria-valuenow={Math.round(widths[side])}
-        aria-valuetext={`${Math.round(widths[side])} 像素`} title="拖动调整宽度；左右键微调，Shift 加速，Home / End 到边界"
+        aria-valuetext={t("common.workspace.pixels", { count: Math.round(widths[side]) })} title={t("common.workspace.resizeHelp")}
         onPointerDown={event => start(event, side)} onPointerMove={move} onPointerUp={finish} onPointerCancel={finish}
         onLostPointerCapture={finish} onKeyDown={event => key(event, side)} />;
     })}

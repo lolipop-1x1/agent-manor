@@ -8,6 +8,9 @@ import { promisify } from "node:util";
 import { desktopFixture, desktopNativeFixture, encodeDesktop } from "./desktop-fixture.mjs";
 import { ideFixture } from "./ide-fixture.mjs";
 
+import { writePreferences } from "../dist/service/preferences.js";
+import { clientIds } from "../dist/clients.js";
+
 // 真实 CLI、后台、Worker、HTTP 与 Chrome；全部输入为人工样本。
 const run = promisify(execFile);
 const directory = await realpath(await mkdtemp(join(tmpdir(), "manor-desktop-e2e-")));
@@ -15,7 +18,7 @@ const cli = fileURLToPath(new URL("../dist/cli.js", import.meta.url));
 const repository = join(directory, "sample-workspace");
 const desktopRoot = join(directory, "desktop/sessions");
 const source = join(desktopRoot, "desktop-session/message/cache.jsonl");
-const env = { ...process.env, AGENT_MANOR_HOME: join(directory, "data"), AGENT_MANOR_PORT: "0",
+const env = { ...process.env, ...Object.fromEntries(clientIds.map(client => [`AGENT_MANOR_${client.replaceAll("-", "_").toUpperCase()}_DIR`, join(directory, `missing-${client}`)])), AGENT_MANOR_HOME: join(directory, "data"), AGENT_MANOR_PORT: "0",
   AGENT_MANOR_CODEX_DIR: join(directory, "missing-codex"), AGENT_MANOR_CLAUDE_DIR: join(directory, "missing-claude"),
   AGENT_MANOR_CODEFLICKER_DIR: join(directory, "cli-history"), AGENT_MANOR_CODEFLICKER_DESKTOP_DIR: desktopRoot,
   AGENT_MANOR_CODEFLICKER_DESKTOP_DB: join(directory, "missing-app.db") };
@@ -78,6 +81,7 @@ try {
   const url = `http://127.0.0.1:${status.instance.port}`;
   const response = await fetch(`${url}/api/v1/repositories/${repositoryId}/coverage?client=codeflicker-desktop&version=${coverage.version}`);
   assert.deepEqual(await response.json(), coverage);
+  await writePreferences(env.AGENT_MANOR_HOME, "zh-CN");
   await browser(["open", url, "--headed", "--browser=chrome"]);
   const code = async page => {
     const errors = [];

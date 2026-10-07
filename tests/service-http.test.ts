@@ -9,7 +9,7 @@ import test from "node:test";
 import type { CoverageResult, EvidenceResponse, EventsResponse, FileDetail, JobResponse, RegisterRepositoryResponse, SourcesResponse } from "../src/contracts.js";
 import { clientIds } from "../src/clients.js";
 import { startService } from "../src/server.js";
-import { apiRequest, delay, serviceUrl } from "../src/service/runtime.js";
+import { apiRequest, delay, RequestError, serviceUrl } from "../src/service/runtime.js";
 import { publishClientQueryFixture } from "./client-query-fixture.js";
 import { isolatedHistoryRoots } from "./helpers/history-roots.js";
 
@@ -288,7 +288,18 @@ test("Host、Origin、JSON 与静态路径安全边界；错误契约稳定", as
   }
   assert.equal((await fetch(`${url}/api/v1/repositories`, { method: "POST", headers: { "content-type": "application/json", "sec-fetch-site": "cross-site" }, body: "{}" })).status, 403);
   const invalidBody = await fetch(`${url}/api/v1/repositories`, { method: "POST", headers: { "content-type": "application/json" }, body: '{"path":"/","extra":true}' });
-  assert.deepEqual(await invalidBody.json(), { error: { code: "INVALID_INPUT", message: "请求体只能包含 path" } });
+  assert.deepEqual(await invalidBody.json(), { error: { code: "INVALID_INPUT", message: "请求体只能包含 path", messageDescriptor: { key: "diagnostics.service.input.m009", params: { p0: "path" } } } });
+  const languageErrors = await Promise.all(["zh-CN", "en"].map(async language => {
+    const response = await fetch(`${url}/api/v1/repositories`, { method: "POST", headers: { "content-type": "application/json", "accept-language": language }, body: '{"path":"/","extra":true}' });
+    return response.json();
+  }));
+  assert.deepEqual(languageErrors[0], languageErrors[1]);
+  await assert.rejects(apiRequest(service.instance, "/repositories", "POST", { path: "/", extra: true }), error => {
+    assert.ok(error instanceof RequestError);
+    assert.equal(error.message, "请求体只能包含 path");
+    assert.equal(error.messageDescriptor?.key, "diagnostics.service.input.m009");
+    return true;
+  });
   assert.equal((await fetch(`${url}/api/v1/repositories/${register.repository.id}/refresh`, { method: "POST", headers: { "content-type": "application/json" }, body: '{"path":"/"}' })).status, 400);
   assert.equal((await fetch(`${url}/api/v1/repositories`, { method: "POST", headers: { "content-type": "application/json" }, body: '{"path":"/nonexistent"}' })).status, 400);
   for (const query of ["client=other", "categories=other", "from=yesterday", "page=0", "pageSize=201"]) {

@@ -6,13 +6,16 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
+import { writePreferences } from "../dist/service/preferences.js";
+import { clientIds } from "../dist/clients.js";
+
 // 使用真实后台和合成仓库验收交互；需要本机 playwright-cli 与 Chrome。
 const run = promisify(execFile);
 const cli = fileURLToPath(new URL("../dist/cli.js", import.meta.url));
 const directory = await realpath(await mkdtemp(join(tmpdir(), "manor-workspace-e2e-")));
 const session = `mw${process.pid}`;
 const artifacts = fileURLToPath(new URL("../.local/workspace-e2e/", import.meta.url));
-const env = { ...process.env, AGENT_MANOR_HOME: join(directory, "data"), AGENT_MANOR_PORT: "0",
+const env = { ...process.env, ...Object.fromEntries(clientIds.map(client => [`AGENT_MANOR_${client.replaceAll("-", "_").toUpperCase()}_DIR`, join(directory, `missing-${client}`)])), AGENT_MANOR_HOME: join(directory, "data"), AGENT_MANOR_PORT: "0",
   AGENT_MANOR_CODEX_DIR: join(directory, "codex"), AGENT_MANOR_CLAUDE_DIR: join(directory, "claude"), AGENT_MANOR_CODEFLICKER_DESKTOP_DIR: join(directory, "missing-desktop"), AGENT_MANOR_CODEFLICKER_DIR: join(directory, "codeflicker") };
 const command = async args => JSON.parse((await run(process.execPath, [cli, ...args, "--json"], { cwd: directory, env, timeout: 30_000 })).stdout);
 const browser = async args => {
@@ -35,6 +38,7 @@ try {
     assert.equal((await command(["register", repository, "--wait"])).job.status, "completed");
   }
   const status = await command(["status"]);
+  await writePreferences(env.AGENT_MANOR_HOME, "zh-CN");
   await browser(["open", `http://127.0.0.1:${status.instance.port}`, "--headed", "--browser=chrome"]);
   const code = async page => {
     const errors = [];
@@ -111,7 +115,7 @@ try {
     await page.keyboard.press("Enter");
     for (const viewport of [{ width: 1920, height: 1080 }, { width: 900, height: 900 }, { width: 390, height: 844 }]) {
       await page.setViewportSize(viewport);
-      if (viewport.width === 1920) ensure(await page.locator(".workspace").evaluate(element => element.getBoundingClientRect().width) === 1920, "大屏地图仍被最大宽度限制");
+      if (viewport.width === 1920) ensure(await page.getByRole("region", { name: "代码地图视图", exact: true }).locator(".workspace").evaluate(element => element.getBoundingClientRect().width) === 1920, "大屏地图仍被最大宽度限制");
       await button("切换主题").click();
       await button("收起仓库导航").click();
       await button("收起文件详情").click();

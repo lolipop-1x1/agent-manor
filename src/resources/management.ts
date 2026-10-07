@@ -1,3 +1,4 @@
+import type { MessageDescriptor } from "../i18n/types.js";
 import Database from "better-sqlite3";
 import { createHash, randomUUID } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -24,14 +25,14 @@ interface Plan { public: ResourceManagementPreview; entry: ResourceInventoryEntr
 interface JsonRow { json: string }
 const digest = (text: string | Buffer): string => createHash("sha256").update(text).digest("hex");
 const decode = <T>(row: JsonRow): T => JSON.parse(row.json) as T;
-const stale = (message = "来源或共享入口已变化，请重新生成预览"): never => { throw new ServiceError("CONTENT_STALE", message); };
+const stale = (message = "来源或共享入口已变化，请重新生成预览", messageDescriptor: MessageDescriptor = { key: "diagnostics.resources.management.sourceChanged" }): never => { throw new ServiceError("CONTENT_STALE", message, messageDescriptor); };
 
 async function inspect(path: string): Promise<Inspection> {
   const parts: string[] = []; const contents: string[] = []; const modes: Mode[] = [];
   async function walk(current: string): Promise<void> {
     const stat = await lstat(current); const name = relative(path, current);
     const type = stat.isSymbolicLink() ? "symlink" : stat.isDirectory() ? "directory" : stat.isFile() ? "file" : undefined;
-    if (!type) throw new ServiceError("FORBIDDEN", "资源包含尚未支持的文件类型，只读");
+    if (!type) throw new ServiceError("FORBIDDEN", "资源包含尚未支持的文件类型，只读", { key: "diagnostics.resources.management.m001" });
     const value = type === "symlink" ? await readlink(current) : type === "file" ? digest(await readFile(current)) : "";
     const mode = stat.mode & 0o777; modes.push({ path: name, mode, type });
     contents.push(JSON.stringify([name, type, value])); parts.push(JSON.stringify([name, type, value, mode]));
@@ -87,7 +88,7 @@ export class ResourceManager {
   close(): void { this.database.close(); }
   favorites(): string[] { return (this.database.prepare("SELECT id FROM resource_favorites ORDER BY id").all() as { id: string }[]).map(row => row.id); }
   setFavorite(id: string, value: boolean): void {
-    if (typeof id !== "string" || !id || id.length > 4096 || typeof value !== "boolean") throw new ServiceError("INVALID_INPUT", "收藏参数无效");
+    if (typeof id !== "string" || !id || id.length > 4096 || typeof value !== "boolean") throw new ServiceError("INVALID_INPUT", "收藏参数无效", { key: "diagnostics.resources.management.m002" });
     if (value) this.database.prepare("INSERT OR IGNORE INTO resource_favorites(id) VALUES(?)").run(id);
     else this.database.prepare("DELETE FROM resource_favorites WHERE id=?").run(id);
   }
@@ -99,7 +100,7 @@ export class ResourceManager {
       || input.path.includes("\0") || input.project !== undefined && (typeof input.project !== "string" || !isAbsolute(input.project))
       || input.keyPath !== undefined && (!Array.isArray(input.keyPath) || input.keyPath.some(key => typeof key !== "string" || !key))
       || input.format !== undefined && !["skill-directory", "skill-files", "json", "jsonc", "toml", "plugin", "unsupported"].includes(input.format)) {
-      throw new ServiceError("INVALID_INPUT", "手动来源必须指定已知客户端、类型及绝对路径");
+      throw new ServiceError("INVALID_INPUT", "手动来源必须指定已知客户端、类型及绝对路径", { key: "diagnostics.resources.management.m003" });
     }
     const value: StoredResourceManualSource = { id: randomUUID(), client: input.client, kind: input.kind, path: resolve(input.path),
       project: input.project, format: input.format, keyPath: input.keyPath };
@@ -109,7 +110,7 @@ export class ResourceManager {
     this.database.prepare("INSERT INTO resource_manual_sources(id,json) VALUES(?,?)").run(value.id, JSON.stringify(value)); return value;
   }
   removeManualSource(id: string): void {
-    if (!this.database.prepare("DELETE FROM resource_manual_sources WHERE id=?").run(id).changes) throw new ServiceError("SOURCE_NOT_FOUND", "手动来源不存在");
+    if (!this.database.prepare("DELETE FROM resource_manual_sources WHERE id=?").run(id).changes) throw new ServiceError("SOURCE_NOT_FOUND", "手动来源不存在", { key: "diagnostics.resources.management.m004" });
   }
   observeInventory(snapshot: ResourceInventorySnapshot): void {
     const insert = this.database.prepare("INSERT OR IGNORE INTO resource_seen(id,first_seen) VALUES(?,?)");
@@ -172,24 +173,24 @@ export class ResourceManager {
   }
   private archive(operationId: string): PrivateArchive {
     const row = this.database.prepare("SELECT json FROM resource_archives WHERE operation_id=? AND phase<>'prepared'").get(operationId) as JsonRow | undefined;
-    if (!row) throw new ServiceError("SOURCE_NOT_FOUND", "恢复材料不存在"); return decode(row);
+    if (!row) throw new ServiceError("SOURCE_NOT_FOUND", "恢复材料不存在", { key: "diagnostics.resources.management.m005" }); return decode(row);
   }
   async preview(input: ResourceManagementInput, snapshot: ResourceInventorySnapshot): Promise<ResourceManagementPreview> {
     if (!input || !["disable", "standby", "trash", "restore", "purge"].includes(input.action)
       || (input.action === "restore" || input.action === "purge" ? !input.operationId || !!input.entryId : !input.entryId || !!input.operationId)) {
-      throw new ServiceError("INVALID_INPUT", "操作必须指定所选入口或恢复记录");
+      throw new ServiceError("INVALID_INPUT", "操作必须指定所选入口或恢复记录", { key: "diagnostics.resources.management.m006" });
     }
     const archive = input.operationId ? this.archive(input.operationId) : undefined;
     const entry = archive?.public.entry ?? snapshot.entries.find(value => value.id === input.entryId);
-    if (!entry) throw new ServiceError("SOURCE_NOT_FOUND", "资源入口不存在");
-    if (entry.protected || entry.owner) throw new ServiceError("FORBIDDEN", "系统或插件受管理资源只读");
+    if (!entry) throw new ServiceError("SOURCE_NOT_FOUND", "资源入口不存在", { key: "diagnostics.resources.management.m007" });
+    if (entry.protected || entry.owner) throw new ServiceError("FORBIDDEN", "系统或插件受管理资源只读", { key: "diagnostics.resources.management.m008" });
     if (archive && (input.action === "restore" ? !archive.public.restorable : !archive.public.storedPath || archive.public.state === "purged")) {
-      throw new ServiceError("INVALID_INPUT", "该记录已恢复或永久清除，所选操作不可用");
+      throw new ServiceError("INVALID_INPUT", "该记录已恢复或永久清除，所选操作不可用", { key: "diagnostics.resources.management.m009" });
     }
     const id = randomUUID(); const createdAt = new Date().toISOString(); const expiresAt = new Date(Date.now() + 15 * 60_000).toISOString();
     const refs = references(snapshot, entry); const dependencies: Dependency[] = [];
     if (sharedPhysical(entry, refs) && (input.action === "standby" || input.action === "trash" || input.action === "restore" && !archive?.change)) {
-      throw new ServiceError("FORBIDDEN", "该物理本体有其他已发现入口引用，隔离或恢复范围尚未核验，请选择符号链接入口或原生停用");
+      throw new ServiceError("FORBIDDEN", "该物理本体有其他已发现入口引用，隔离或恢复范围尚未核验，请选择符号链接入口或原生停用", { key: "diagnostics.resources.management.m010" });
     }
     const check = async (path: string) => { if (!dependencies.some(value => value.path === path)) dependencies.push({ path, hash: (await inspect(path)).hash }); };
     let change: ConfigChange | undefined; let restoreText: string | undefined;
@@ -198,31 +199,31 @@ export class ResourceManager {
     if (archive) {
       sourcePath = archive.public.storedPath!; method = input.action === "restore" ? "restore" : "permanent_purge";
       await check(sourcePath);
-      if ((await inspect(sourcePath)).contentHash !== archive.backupHash) stale("恢复材料已变化，请检查操作记录");
+      if ((await inspect(sourcePath)).contentHash !== archive.backupHash) stale("恢复材料已变化，请检查操作记录", { key: "diagnostics.resources.management.m011" });
       if (input.action === "restore") {
         for (const reference of refs) await check(reference.entryPath);
         destinationPath = archive.public.originalPath;
         await check(destinationPath);
         if (archive.change) {
-          if ((await inspect(destinationPath)).modes[0]?.type === "symlink") throw new ServiceError("FORBIDDEN", "共享配置链接的恢复写入能力尚未核验，只读");
+          if ((await inspect(destinationPath)).modes[0]?.type === "symlink") throw new ServiceError("FORBIDDEN", "共享配置链接的恢复写入能力尚未核验，只读", { key: "diagnostics.resources.management.m012" });
           try { restoreText = restoreConfig(archive.change, await readFile(destinationPath, "utf8")); }
-          catch (error) { if (error instanceof ServiceError) throw error; stale("配置无法读取，恢复不会覆盖现有文件"); }
-        } else if ((await inspect(destinationPath)).hash !== "missing") stale("原位置已被占用，恢复不会覆盖现有资源");
+          catch (error) { if (error instanceof ServiceError) throw error; stale("配置无法读取，恢复不会覆盖现有文件", { key: "diagnostics.resources.management.m013" }); }
+        } else if ((await inspect(destinationPath)).hash !== "missing") stale("原位置已被占用，恢复不会覆盖现有资源", { key: "diagnostics.resources.management.m014" });
       }
     } else {
-      if (!this.writable(entry, snapshot)) throw new ServiceError("FORBIDDEN", "该来源没有已核验的写入能力，只读");
+      if (!this.writable(entry, snapshot)) throw new ServiceError("FORBIDDEN", "该来源没有已核验的写入能力，只读", { key: "diagnostics.resources.management.m015" });
       if (input.action === "disable" && (entry.nativeState === "disabled" || entry.scope !== "user" || entry.client !== "codex"
         || (entry.kind === "skill" ? entry.locator.nativeControl !== "codex-skill" : entry.locator.nativeControl !== "codex-mcp"))) {
-        throw new ServiceError(entry.nativeState === "disabled" ? "INVALID_INPUT" : "FORBIDDEN", entry.nativeState === "disabled" ? "资源已停用，没有新的本地修改" : "该入口未适配原生停用，可检查明确的隔离操作");
+        throw new ServiceError(entry.nativeState === "disabled" ? "INVALID_INPUT" : "FORBIDDEN", entry.nativeState === "disabled" ? "资源已停用，没有新的本地修改" : "该入口未适配原生停用，可检查明确的隔离操作", entry.nativeState === "disabled" ? { key: "diagnostics.resources.management.m016" } : { key: "diagnostics.resources.management.m017" });
       }
       await check(entry.entryPath);
       for (const reference of refs) await check(reference.entryPath);
       if (entry.kind === "mcp" || input.action === "disable") {
         const skillPath = entry.kind === "skill" ? await realpath(entry.locator.skillFile ?? join(entry.entryPath, "SKILL.md")) : undefined;
         try { change = await prepareConfig(entry, input.action as "disable" | "standby" | "trash", skillPath); }
-        catch (error) { if (error instanceof ServiceError) throw error; throw new ServiceError("FORBIDDEN", "配置无法可靠读取或编辑，当前保持只读"); }
+        catch (error) { if (error instanceof ServiceError) throw error; throw new ServiceError("FORBIDDEN", "配置无法可靠读取或编辑，当前保持只读", { key: "diagnostics.resources.management.m018" }); }
         const file = await inspect(change.path);
-        if (file.modes[0]?.type === "symlink") throw new ServiceError("FORBIDDEN", "共享配置链接的写入能力尚未核验，只读");
+        if (file.modes[0]?.type === "symlink") throw new ServiceError("FORBIDDEN", "共享配置链接的写入能力尚未核验，只读", { key: "diagnostics.resources.management.m019" });
         if ((file.hash === "missing" ? "" : await readFile(change.path, "utf8")) !== change.beforeText) stale();
         await check(change.path); sourcePath = change.path;
       }
@@ -234,7 +235,7 @@ export class ResourceManager {
       sourcePath, destinationPath, affectedEntries: refs.map(value => ({ id: value.id, name: value.name, client: value.client,
         scope: value.scope, project: value.project, entryPath: value.entryPath })), referencesComplete: false,
       protected: favorite, protectionReasons: favorite ? ["favorite"] : [],
-      restoration: input.action === "purge" ? "永久清除本次恢复材料后将失去该恢复路径；其他副本可能仍存在" : "保存原位置及受限恢复材料；恢复冲突时不覆盖当前内容",
+      restoration: input.action === "purge" ? "永久清除本次恢复材料后将失去该恢复路径；其他副本可能仍存在" : "保存原位置及受限恢复材料；恢复冲突时不覆盖当前内容", restorationDescriptor: input.action === "purge" ? { key: "diagnostics.resources.management.m020" } : { key: "diagnostics.resources.management.m021" },
       createdAt, expiresAt, requiresConfirmation: true, clientEffect: input.action === "purge" ? "unknown" : "pending_reload" };
     const plan: Plan = { public: preview, entry, dependencies, references: signature(snapshot, entry), archiveId: archive?.public.id, change, restoreText };
     this.database.prepare("INSERT INTO resource_plans(id,expires_at,json) VALUES(?,?,?)").run(id, expiresAt, JSON.stringify(plan)); return preview;
@@ -262,30 +263,30 @@ export class ResourceManager {
     } finally { await rm(temp, { force: true }); }
   }
   async apply(previewId: string, confirmed: true, snapshot: ResourceInventorySnapshot): Promise<ResourceManagementOperation> {
-    if (confirmed !== true) throw new ServiceError("INVALID_INPUT", "执行需要明确确认该次具体预览");
+    if (confirmed !== true) throw new ServiceError("INVALID_INPUT", "执行需要明确确认该次具体预览", { key: "diagnostics.resources.management.m022" });
     const release = await acquireLock(this.home, "resource-management.lock", 5000);
     try {
       const row = this.database.prepare("SELECT json,consumed FROM resource_plans WHERE id=?").get(previewId) as (JsonRow & { consumed: number }) | undefined;
-      if (!row) throw new ServiceError("SOURCE_NOT_FOUND", "预览不存在或已经过期");
-      if (row.consumed) throw new ServiceError("CONTENT_STALE", "该预览已执行，请重新生成预览");
+      if (!row) throw new ServiceError("SOURCE_NOT_FOUND", "预览不存在或已经过期", { key: "diagnostics.resources.management.m023" });
+      if (row.consumed) throw new ServiceError("CONTENT_STALE", "该预览已执行，请重新生成预览", { key: "diagnostics.resources.management.m024" });
       const plan = decode<Plan>(row); const preview = plan.public;
       const operation: ResourceManagementOperation = { id: randomUUID(), previewId, action: preview.action, entryId: preview.entryId,
         name: preview.resource.name, resource: { kind: plan.entry.kind, client: plan.entry.client, scope: plan.entry.scope, project: plan.entry.project },
-        status: "partial", message: "执行尚未确认完成，恢复材料保留", createdAt: new Date().toISOString(), localState: "partial", clientEffect: "unknown" };
+        status: "partial", message: "执行尚未确认完成，恢复材料保留", messageDescriptor: { key: "diagnostics.resources.management.m025" }, createdAt: new Date().toISOString(), localState: "partial", clientEffect: "unknown" };
       this.database.prepare("UPDATE resource_plans SET consumed=1 WHERE id=?").run(previewId);
       let saved: PrivateArchive | undefined; let mutationStarted = false; let createdBackupDirectory: string | undefined;
       try {
-        if (Date.parse(preview.expiresAt) < Date.now()) stale("预览已过期，请重新生成预览");
-        if (this.favorite(plan.entry, snapshot) !== preview.protected) stale("保护状态已变化，请重新生成预览");
+        if (Date.parse(preview.expiresAt) < Date.now()) stale("预览已过期，请重新生成预览", { key: "diagnostics.resources.management.m026" });
+        if (this.favorite(plan.entry, snapshot) !== preview.protected) stale("保护状态已变化，请重新生成预览", { key: "diagnostics.resources.management.m027" });
         if (signature(snapshot, plan.entry) !== plan.references) stale();
         if (sharedPhysical(plan.entry, references(snapshot, plan.entry))
           && (preview.method === "entry_isolation" || preview.action === "restore" && plan.restoreText === undefined)) {
-          stale("该物理本体有其他已发现入口引用，隔离或恢复范围尚未核验，请重新检查入口");
+          stale("该物理本体有其他已发现入口引用，隔离或恢复范围尚未核验，请重新检查入口", { key: "diagnostics.resources.management.m028" });
         }
         for (const dependency of plan.dependencies) if ((await inspect(dependency.path)).hash !== dependency.hash) stale();
         if (plan.archiveId) {
           saved = this.archive(preview.operationId!);
-          if (preview.action === "restore" ? !saved.public.restorable : !saved.public.storedPath || saved.public.state === "purged") stale("该恢复记录已变化，请重新生成预览");
+          if (preview.action === "restore" ? !saved.public.restorable : !saved.public.storedPath || saved.public.state === "purged") stale("该恢复记录已变化，请重新生成预览", { key: "diagnostics.resources.management.m029" });
           this.saveOperation(operation);
           mutationStarted = true;
           if (preview.action === "purge") {
@@ -297,7 +298,7 @@ export class ResourceManager {
             saved.public.state = "restored"; saved.public.restorable = false; saved.public.operationStatus = "success";
           } else {
             const material = saved.public.storedPath!; const destination = saved.public.originalPath;
-            if ((await inspect(destination)).hash !== "missing") stale("原位置已被占用，恢复不会覆盖现有资源");
+            if ((await inspect(destination)).hash !== "missing") stale("原位置已被占用，恢复不会覆盖现有资源", { key: "diagnostics.resources.management.m014" });
             await mkdir(dirname(destination), { recursive: true });
             const root = saved.modes.find(value => !value.path)!;
             if (root.type === "symlink") await symlink(await readlink(material), destination);
@@ -308,7 +309,7 @@ export class ResourceManager {
                 { recursive: true, force: false, errorOnExist: true, dereference: false, verbatimSymlinks: true });
             }
             await permissions(destination, saved.modes, false);
-            if ((await inspect(destination)).contentHash !== saved.backupHash) throw new ServiceError("INTERNAL_ERROR", "恢复内容未通过校验，恢复材料继续保留");
+            if ((await inspect(destination)).contentHash !== saved.backupHash) throw new ServiceError("INTERNAL_ERROR", "恢复内容未通过校验，恢复材料继续保留", { key: "diagnostics.resources.management.m030" });
             saved.public.state = "restored"; saved.public.restorable = false; saved.public.operationStatus = "success";
           }
           this.saveArchive(saved, "complete"); operation.archiveId = saved.public.id;
@@ -321,7 +322,7 @@ export class ResourceManager {
           else await cp(preview.sourcePath, material, { recursive: true, force: false, errorOnExist: true, dereference: false, verbatimSymlinks: true });
           const backup = await inspect(material);
           if (plan.change ? digest(await readFile(material)) !== digest(plan.change.beforeText) : backup.contentHash !== original.contentHash) {
-            throw new ServiceError("INTERNAL_ERROR", "恢复材料校验失败，未修改来源");
+            throw new ServiceError("INTERNAL_ERROR", "恢复材料校验失败，未修改来源", { key: "diagnostics.resources.management.m031" });
           }
           await permissions(material, backup.modes, true);
           for (const dependency of plan.dependencies) if ((await inspect(dependency.path)).hash !== dependency.hash) stale();
@@ -335,19 +336,19 @@ export class ResourceManager {
           else await rm(plan.entry.entryPath, { recursive: plan.entry.entryType === "directory", force: false });
           saved.public.operationStatus = "success"; this.saveArchive(saved, "complete");
         }
-        operation.status = "success"; operation.message = preview.action === "purge" ? "本次恢复材料已永久清除" : "本地修改完成，客户端待重新加载";
+        operation.status = "success"; operation.message = preview.action === "purge" ? "本次恢复材料已永久清除" : "本地修改完成，客户端待重新加载"; operation.messageDescriptor = preview.action === "purge" ? { key: "diagnostics.resources.management.m032" } : { key: "diagnostics.resources.management.m033" };
         operation.localState = "changed"; operation.clientEffect = preview.action === "purge" ? "unknown" : "pending_reload";
       } catch (error) {
         const unchanged = plan.archiveId ? !mutationStarted : (await inspect(preview.sourcePath).catch(() => undefined))?.hash === plan.dependencies.find(value => value.path === preview.sourcePath)?.hash;
         const conflict = error instanceof ServiceError && error.code === "CONTENT_STALE";
         operation.status = conflict ? "conflict" : mutationStarted && !unchanged ? "partial" : "failure";
-        operation.message = error instanceof ServiceError ? error.message : "本地操作未完成；未确认客户端生效，请检查来源及恢复材料";
+        operation.message = error instanceof ServiceError ? error.message : "本地操作未完成；未确认客户端生效，请检查来源及恢复材料"; operation.messageDescriptor = error instanceof ServiceError ? error.messageDescriptor : { key: "diagnostics.resources.management.m034" };
         operation.localState = !conflict && mutationStarted && !unchanged ? "partial" : "unchanged";
         if (saved && operation.localState === "partial") { saved.public.operationStatus = "partial"; this.saveArchive(saved, "partial"); }
         else if (saved && !plan.archiveId) { this.database.prepare("DELETE FROM resource_archives WHERE id=?").run(saved.public.id); operation.archiveId = undefined; }
         if (!plan.archiveId && operation.localState === "unchanged" && createdBackupDirectory) {
           try { await rm(createdBackupDirectory, { recursive: true, force: true }); }
-          catch { operation.message += "；未使用备份的清理未完成"; }
+          catch { operation.message += "；未使用备份的清理未完成"; operation.details = [{ key: "diagnostics.resources.management.backupCleanupIncomplete" }]; }
         }
       }
       this.saveOperation(operation);

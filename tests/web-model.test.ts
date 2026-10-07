@@ -3,9 +3,24 @@ import { test } from "node:test";
 import type { FileCoverage, FileDetail } from "../src/contracts.ts";
 import { clientIds } from "../src/clients.ts";
 import { queryString } from "../web/api.ts";
-import { boundQuery, directories, directoryTree, fileHighlights, metricValue, timeFilters } from "../web/model.ts";
+import { translate } from "../src/i18n/index.ts";
+import { boundQuery, directories, directoryTree, fileHighlights, metricValue, refreshFailureReason, timeFilters } from "../web/model.ts";
 
 const file = (path: string, lineCount: number): FileCoverage => ({ path, lineCount, category: "source", hash: "hash", readExactLines: 1, readNearLines: 1, editExactLines: 0, editNearLines: 0, readCount: 2, editCount: 0, searchCount: 0, failedCount: 0, unknownCount: 0, activityCount: 2, readExactRanges: [{ start: 1, end: 1 }], readNearRanges: [{ start: 2, end: 2 }], editExactRanges: [], editNearRanges: [] });
+
+test("刷新错误只匹配错误描述，已知失败阶段不能遮住外部或旧错误原文", () => {
+  const phase = { phase: "刷新失败", phaseDescriptor: { key: "diagnostics.index.store.m008" } };
+  for (const language of ["en", "zh-CN"] as const) {
+    for (const errorDescriptor of [undefined, { key: "diagnostics.synthetic.obsolete" }]) {
+      assert.equal(refreshFailureReason({ ...phase, error: "external synthetic failure", errorDescriptor }, language), translate(language, "common.originalDetail", { detail: "external synthetic failure" }));
+    }
+    assert.equal(refreshFailureReason({ ...phase, error: "原始产品错误", errorDescriptor: { key: "common.error.http", params: { status: 503 } } }, language), translate(language, "common.error.http", { status: 503 }));
+    assert.equal(refreshFailureReason(phase, language), translate(language, "diagnostics.index.store.m008"));
+    assert.equal(refreshFailureReason({ ...phase, errorDescriptor: { key: "common.error.http", params: { status: 503 } } }, language), translate(language, "diagnostics.index.store.m008"));
+    assert.equal(refreshFailureReason({ phase: "原始合成阶段", phaseDescriptor: { key: "diagnostics.synthetic.obsolete" } }, language), translate(language, "common.originalDetail", { detail: "原始合成阶段" }));
+    assert.equal(refreshFailureReason({ ...phase, error: "" }, language), translate(language, "common.originalDetail", { detail: "" }));
+  }
+});
 
 test("全部已声明客户端的文件与证据查询保留版本和原筛选，路径单独编码", () => {
   for (const client of clientIds) {

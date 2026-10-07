@@ -1,14 +1,33 @@
 import type { MessageKind, SessionMessage, SessionQuery, SessionSearchHit, SessionSummary, SessionUsage } from "../src/session-contracts";
 import type { PanelSemantics, PanelSide } from "./workspace-layout";
 import { isQuietEntry } from "../src/session-execution";
+import { formatNumber, translate, translateMessageOrOriginal, type Language } from "../src/i18n";
+import { getLanguage } from "./i18n";
 
 export const PAGE_SIZE = 40;
 export const TURN_PAGE_SIZE = 10;
 export type EvidenceTarget = { toolName?: string; resourceKind?: "mcp" | "skill_call" | "skill_read"; resourceName?: string; resourceServer?: string };
 
-export function executionEntryLabel(client: SessionSummary["client"], entry: NonNullable<SessionSummary["executionEntries"]>[number]): string {
+export function executionEntryLabel(client: SessionSummary["client"], entry: NonNullable<SessionSummary["executionEntries"]>[number], language = getLanguage()): string {
   // 仅采用已核查的客户端版本映射；入口标记也可能被原生子会话继承。
-  return isQuietEntry(client, entry) ? "Quiet 模式" : `入口 ${entry.entrypoint}`;
+  return translate(language, isQuietEntry(client, entry) ? "sessions.execution.quiet" : "sessions.execution.entry", { entrypoint: entry.entrypoint });
+}
+
+export function sessionDisplayTitle(session: SessionSummary, language = getLanguage()): string {
+  if (session.titleOrigin !== "fallback") return session.title;
+  return translate(language, session.relationship === "child" ? "sessions.title.childFallback" : "sessions.title.unnamed", { id: session.clientSessionId.slice(-8) });
+}
+
+export function sessionParentTitle(session: SessionSummary, language = getLanguage()): string {
+  return translateMessageOrOriginal(language, session.parentTitleDescriptor, session.parentTitle);
+}
+
+export function sessionResourceName(resource: NonNullable<SessionMessage["resource"]>, language = getLanguage()): string {
+  return translateMessageOrOriginal(language, resource.nameDescriptor, resource.name);
+}
+
+export function sessionMessageText(message: SessionMessage, language = getLanguage()): string {
+  return translateMessageOrOriginal(language, message.textDescriptor, message.text) || translate(language, "sessions.body.empty");
 }
 
 export function usageAxis(value: number): { max: number; ticks: number[] } {
@@ -37,10 +56,10 @@ export function usageIndexAt(position: number, count: number): number {
   return Math.round(Math.max(0, Math.min(1, position)) * Math.max(0, count - 1));
 }
 
-export function turnTitle(id: string, position: number): string {
+export function turnTitle(id: string, position: number, language = getLanguage()): string {
   const match = /:turn:(\d+)$/.exec(id);
-  if (match) return Number(match[1]) === 0 ? "初始上下文" : `第 ${Number(match[1])} 轮`;
-  return id === "unknown" ? "轮次未记录" : `本页第 ${position} 组`;
+  if (match) return translate(language, Number(match[1]) === 0 ? "sessions.turn.initial" : "sessions.turn.number", { number: formatNumber(language, Number(match[1])) });
+  return translate(language, id === "unknown" ? "sessions.turn.unrecorded" : "sessions.turn.pageGroup", { number: formatNumber(language, position) });
 }
 
 const processKinds: MessageKind[] = ["thinking", "tool_call", "tool_result", "system", "context", "compression"];
@@ -113,8 +132,8 @@ export function searchHitMode(hit: SessionSearchHit, current: "brief" | "full" |
   return hit.messageId ? "trace" : current;
 }
 
-export function displayRecorded(value: number | null | undefined, locale = "zh-CN"): string {
-  return value === null || value === undefined ? "未记录" : value.toLocaleString(locale);
+export function displayRecorded(value: number | null | undefined, language: Language = getLanguage()): string {
+  return value === null || value === undefined ? translate(language, "common.notRecorded") : formatNumber(language, value);
 }
 
 export function localDateBoundary(value: string, end = false): string | undefined {
@@ -122,9 +141,9 @@ export function localDateBoundary(value: string, end = false): string | undefine
   return new Date(`${value}T${end ? "23:59:59.999" : "00:00:00"}`).toISOString();
 }
 
-export function workspaceSessionSemantics(): PanelSemantics {
+export function workspaceSessionSemantics(language = getLanguage()): PanelSemantics {
   return {
-    sidebar: { label: "调整会话列表宽度", controls: "session-list-content" },
-    details: { label: "调整会话画像宽度", controls: "session-profile-content" },
+    sidebar: { label: translate(language, "sessions.layout.listWidth"), controls: "session-list-content" },
+    details: { label: translate(language, "sessions.layout.profileWidth"), controls: "session-profile-content" },
   } satisfies Record<PanelSide, { label: string; controls: string }>;
 }

@@ -35,6 +35,23 @@ agent-manor evidence <repositoryId> <eventId> --version <analysisVersion> --clie
 
 查询参数 `--version` 是分析结果版本；程序版本用 `--cli-version`／`-V`，单独执行 `agent-manor --version` 也支持。
 
+## 显示语言
+
+顶栏语言菜单提供“自动（跟随浏览器）”“简体中文”和“English”。首次使用自动模式，按浏览器语言列表中首个支持的中文或英文系列选择；其他语言回退英文。切换立即生效，保留当前页面、筛选、选中项、分页及地图视野。其他已打开页面在重新获得焦点时同步。
+
+Web 手动选择保存在当前数据目录的 `preferences.json`，CLI 每次启动也读取它；服务重启或清除历史索引不会删除偏好。选择自动会清除手动覆盖：Web 跟随浏览器，CLI 跟随系统。不同 `--home`／`AGENT_MANOR_HOME` 数据目录各自独立。
+
+CLI 优先级为 `--lang` → `AGENT_MANOR_LANG` → 共享手动偏好 → 系统语言 → 英文。参数和环境变量接受 `zh-CN`、`en`、`auto`，只覆盖本次执行，不保存偏好。显式 `auto` 忽略较低优先级的手动设置，按第一个非空的 `LC_ALL`、`LC_MESSAGES`、`LANG` 检测；未支持语言及 `C`／`POSIX` 回退英文。无效覆盖值和偏好保存失败会明确报错。
+
+```sh
+agent-manor --lang en --help
+agent-manor coverage <repositoryId> --lang zh-CN
+AGENT_MANOR_LANG=en agent-manor sessions --help
+agent-manor --home /absolute/path/to/data --lang auto --help
+```
+
+语言只影响产品界面、帮助、人类摘要和错误提示。会话标题与正文、资源描述、工具／模型名称、路径和配置值保持原文；数字、日期和日历使用当前显示语言，但查询边界与统计含义不变。默认 pretty JSON 和 `--json` 输出都保留稳定字段、枚举、数值及原始诊断。新产品提示可附带 `messageDescriptor` 或对应字段；旧记录和外部错误以“原始详情”展示，不因语言切换重建索引。
+
 ## 全局会话库
 
 网页顶部选择“会话库”。左侧筛选客户端、项目与时间，中间切换简易／完整／轨迹，右侧以“概览／调用／用量”查看统计。三栏各自滚动，操作区保持可见；侧栏可以折叠与拖动调宽，小窗口通过“会话列表／会话统计”打开抽屉。

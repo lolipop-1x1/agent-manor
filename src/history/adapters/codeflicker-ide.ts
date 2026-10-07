@@ -1,3 +1,4 @@
+import { DiagnosticError } from "../../i18n/diagnostics.js";
 import { createHash } from "node:crypto";
 import { lstat, readFile } from "node:fs/promises";
 import { dirname, isAbsolute, join, resolve } from "node:path";
@@ -10,12 +11,12 @@ import type { HistoryAdapter, HistoryRecordSnapshot } from "./types.js";
 
 export const IDE_FORMAT = "codeflicker-ide-sqlite";
 const hash = (value: string) => createHash("sha256").update(value).digest("hex");
-const missing = () => Object.assign(new Error("SQLite 会话来源已缺失"), { code: "ENOENT" });
+const missing = () => Object.assign(new DiagnosticError("SQLite 会话来源已缺失", { key: "diagnostics.history.adapters.codeflickerIde.m001" }), { code: "ENOENT" });
 const decode = (value: unknown): unknown => JSON.parse(Buffer.isBuffer(value) ? value.toString("utf8") : String(value));
 
 async function openDatabase(path: string): Promise<Database.Database> {
   const info = await lstat(path);
-  if (!info.isFile() || info.isSymbolicLink()) throw new Error("SQLite 历史来源必须为普通文件");
+  if (!info.isFile() || info.isSymbolicLink()) throw new DiagnosticError("SQLite 历史来源必须为普通文件", { key: "diagnostics.history.adapters.codeflickerIde.m002" });
   const db = new Database(path, { readonly: true, fileMustExist: true });
   db.pragma("query_only = ON");
   return db;
@@ -61,7 +62,7 @@ export interface IdeSnapshot extends HistoryRecordSnapshot { title?: string; leg
 
 /** 读事务包含 WAL 中已提交的内容；按会话正文和旁路元数据计算逻辑指纹。 */
 export async function readIdeSnapshot(location: SourceLocation): Promise<IdeSnapshot> {
-  if (!location.selector) throw new Error("SQLite 来源缺少会话选择器");
+  if (!location.selector) throw new DiagnosticError("SQLite 来源缺少会话选择器", { key: "diagnostics.history.adapters.codeflickerIde.m003" });
   const db = await openDatabase(location.path);
   let data: Record<string, unknown>;
   let records: IdeSnapshot["records"];
@@ -81,7 +82,7 @@ export async function readIdeSnapshot(location: SourceLocation): Promise<IdeSnap
       const row = db.prepare("SELECT value FROM KwaipilotKV WHERE key=?").get(location.selector) as { value: unknown } | undefined;
       if (!row) throw missing();
       data = object(decode(row.value));
-      if (!Array.isArray(data.localMessages)) throw new Error("SQLite 会话缺少 localMessages 数组");
+      if (!Array.isArray(data.localMessages)) throw new DiagnosticError("SQLite 会话缺少 localMessages 数组", { key: "diagnostics.history.adapters.codeflickerIde.m004" });
       records = data.localMessages.map((value, index) => ({ record: object(value), raw: JSON.stringify(value), line: index + 1 }));
       const history = db.prepare("SELECT value FROM KwaipilotKV WHERE key='composerHistory'").get() as { value: unknown } | undefined;
       const entries = history ? decode(history.value) : undefined;
@@ -89,9 +90,9 @@ export async function readIdeSnapshot(location: SourceLocation): Promise<IdeSnap
     }
   } finally { db.exec("ROLLBACK"); db.close(); }
   const id = string(data.sessionId) ?? string(data.session_id) ?? location.sessionId;
-  if (!id || !legacy && location.selector !== `composerData:${id}`) throw new Error("SQLite 会话键与原生身份不符");
+  if (!id || !legacy && location.selector !== `composerData:${id}`) throw new DiagnosticError("SQLite 会话键与原生身份不符", { key: "diagnostics.history.adapters.codeflickerIde.m005" });
   const meta = legacy ? data : { ...legacyMetadata, ...await indexMetadata(location.path, id) };
-  if (meta.sessionId && meta.sessionId !== id) throw new Error("SQLite 标题元数据与会话身份不符");
+  if (meta.sessionId && meta.sessionId !== id) throw new DiagnosticError("SQLite 标题元数据与会话身份不符", { key: "diagnostics.history.adapters.codeflickerIde.m006" });
   const cwd = await workspace(string(data.workspaceUri) || string(meta.workspaceUri));
   const title = string(meta.name) ?? string(data.session_name);
   const results = new Map<string, number>();
@@ -146,9 +147,9 @@ function readEvidence(input: Record<string, unknown>, visible: string) {
   const path = string(input.path);
   const lines = physicalLines(visible);
   const first = Number(/^\s*(\d+)[\t|]/.exec(lines[0] ?? "")?.[1]);
-  if (!Number.isInteger(first) || returnedText(visible).truncated) return [{ kind: "read" as const, path, fragments: [], reason: "range_unknown: IDE 读取缺少完整编号返回内容" }];
+  if (!Number.isInteger(first) || returnedText(visible).truncated) return [{ kind: "read" as const, path, fragments: [], reason: "range_unknown: IDE 读取缺少完整编号返回内容", reasonDescriptor: { key: "diagnostics.history.adapters.codeflickerIde.m007" } }];
   const shift = first === 0 || typeof input.startLine === "number" && first === input.startLine - 1 ? 1 : 0;
-  if (typeof input.startLine === "number" && first + shift !== input.startLine) return [{ kind: "read" as const, path, fragments: [], reason: "range_unknown: IDE 读取请求与返回起始行不符" }];
+  if (typeof input.startLine === "number" && first + shift !== input.startLine) return [{ kind: "read" as const, path, fragments: [], reason: "range_unknown: IDE 读取请求与返回起始行不符", reasonDescriptor: { key: "diagnostics.history.adapters.codeflickerIde.m008" } }];
   const prefix: string[] = [];
   for (const line of lines) {
     const numbered = /^\s*(\d+)[\t|](.*)$/.exec(line);
@@ -156,7 +157,7 @@ function readEvidence(input: Record<string, unknown>, visible: string) {
     prefix.push(`${Number(numbered[1]) + shift}\t${numbered[2]}`);
   }
   const normalized = prefix.join("\n");
-  if (typeof input.endLine === "number" && first + shift + prefix.length - 1 > input.endLine) return [{ kind: "read" as const, path, fragments: [], reason: "range_unknown: IDE 读取返回超出请求范围" }];
+  if (typeof input.endLine === "number" && first + shift + prefix.length - 1 > input.endLine) return [{ kind: "read" as const, path, fragments: [], reason: "range_unknown: IDE 读取返回超出请求范围", reasonDescriptor: { key: "diagnostics.history.adapters.codeflickerIde.m009" } }];
   return toolEvidence("Read", input, {}, normalized);
 }
 
@@ -193,7 +194,7 @@ export const codeflickerIdeAdapter: HistoryAdapter = {
       const path = string(input.path) ?? string(effect.path);
       if (effect.status === "accepted" && typeof diff.originalCode === "string" && typeof diff.modifiedCode === "string"
         && (!input.path || !effect.path || input.path === effect.path)) return [{ kind: "edit", path, fragments: changedFragments(diff.originalCode, diff.modifiedCode, path) }];
-      return [{ kind: "edit", path, fragments: [], reason: "range_unknown: IDE 编辑缺少已接受的前后快照" }];
+      return [{ kind: "edit", path, fragments: [], reason: "range_unknown: IDE 编辑缺少已接受的前后快照", reasonDescriptor: { key: "diagnostics.history.adapters.codeflickerIde.m010" } }];
     }
     const mapped = /^(?:grepSearch|codebaseSearch|searchFile|listFiles)/.test(tool) ? "Grep" : tool === "executeCommand" ? "Bash" : tool;
     return toolEvidence(mapped, input, resultValue, visible);
@@ -212,7 +213,7 @@ export const codeflickerIdeAdapter: HistoryAdapter = {
     }
     if (["command_output", "use_mcp_tool_result", "tool_error"].includes(string(record.say) ?? "")) {
       const callId = string(record.toolCallId);
-      if (!callId) { context.gap("unpaired_call", "IDE 工具返回缺少调用身份"); return; }
+      if (!callId) { context.gap("unpaired_call", "IDE 工具返回缺少调用身份", { key: "diagnostics.history.adapters.codeflickerIde.m011" }); return; }
       const call = context.pair(callId);
       if (call) context.finish(call, record, string(record.text) ?? "", record.say === "tool_error" ? "failure" : "unknown", context.row, context.raw);
     }

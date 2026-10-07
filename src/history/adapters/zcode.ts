@@ -1,3 +1,5 @@
+import type { MessageDescriptor } from "../../i18n/types.js";
+import { DiagnosticError } from "../../i18n/diagnostics.js";
 import { dirname, resolve } from "node:path";
 import type { NormalizedEvent, NormalizedSessionMetadata, NormalizedSnapshot, RawHistoryRecord } from "./normalized.js";
 import { createNormalizedAdapter, normalizedRecord, normalizedSessionKey, normalizedSnapshot } from "./normalized.js";
@@ -7,14 +9,14 @@ import { createSqliteReadBudget, readOnlySqlite, readSqliteRows, sqliteJson, sql
 import type { SourceLocation } from "../types.js";
 
 export const ZCODE_FORMAT = "zcode-sqlite";
-const missing = () => Object.assign(new Error("ZCode 会话来源已缺失"), { code: "ENOENT" });
+const missing = () => Object.assign(new DiagnosticError("ZCode 会话来源已缺失", { key: "diagnostics.history.adapters.zcode.m001" }), { code: "ENOENT" });
 const UNSUPPORTED_SCHEMA = "__unsupported_schema__";
 const READ_BUDGET_EXCEEDED = "__read_budget_exceeded__";
 const rowRaw = (row: Record<string, unknown>) => JSON.stringify(row);
 
-function diagnosticSnapshot(location: SourceLocation, kind: "unsupported_format" | "budget_exceeded", message: string): NormalizedSnapshot {
+function diagnosticSnapshot(location: SourceLocation, kind: "unsupported_format" | "budget_exceeded", message: string, messageDescriptor?: MessageDescriptor): NormalizedSnapshot {
   const { adapterGap: _adapterGap, ...source } = location;
-  return normalizedSnapshot(source, [], { gaps: [{ kind, message }] });
+  return normalizedSnapshot(source, [], { gaps: [{ kind, message, messageDescriptor }] });
 }
 
 function timestamp(value: unknown): string | undefined {
@@ -51,7 +53,7 @@ function buildRecords(messages: Record<string, unknown>[], parts: Record<string,
     const raw = JSON.stringify({ message: row, textParts: grouped.filter(part => part.data.type === "text").map(part => part.row) });
     const knownRole = role === "user" || role === "assistant" || role === "system";
     if (!knownRole) {
-      gaps.push({ kind: "unsupported_format", message: `ZCode message role ${role ?? "<缺少角色>"} 尚未适配` });
+      gaps.push({ kind: "unsupported_format", message: `ZCode message role ${role ?? "<缺少角色>"} 尚未适配`, messageDescriptor: (role) !== undefined ? { key: "diagnostics.history.adapters.zcode.m002", params: { p0: String(role) } } : { key: "diagnostics.history.adapters.zcode.m003" } });
     }
     if (knownRole) {
       const finishReason = (string(data.finish) ?? string(data.stopReason) ?? string(data.finishReason) ?? "")
@@ -82,7 +84,7 @@ function buildRecords(messages: Record<string, unknown>[], parts: Record<string,
       }
       if (type !== "tool") {
         if (type !== "reasoning") {
-          gaps.push({ kind: "unsupported_format", message: `ZCode part 类型 ${type ?? "<缺少类型>"} 尚未适配` });
+          gaps.push({ kind: "unsupported_format", message: `ZCode part 类型 ${type ?? "<缺少类型>"} 尚未适配`, messageDescriptor: (type) !== undefined ? { key: "diagnostics.history.adapters.zcode.m004", params: { p0: String(type) } } : { key: "diagnostics.history.adapters.zcode.m005" } });
           staged.push({ event: { key: `unknown-part:${partId}`, kind: "context",
             text: `未适配 ZCode part 类型 ${type ?? "<缺少类型>"}`, occurredAt: partTime, model, turnKey, allowInferredFinal: false },
             raw: part.raw, order: partOrder });
@@ -100,7 +102,7 @@ function buildRecords(messages: Record<string, unknown>[], parts: Record<string,
         : stateName === "completed" ? "success" : "unknown";
       if (status === "unknown") {
         meta.gaps ??= [];
-        meta.gaps.push({ kind: "ambiguous", message: `ZCode 工具 ${tool} 缺少可确认的终态` });
+        meta.gaps.push({ kind: "ambiguous", message: `ZCode 工具 ${tool} 缺少可确认的终态`, messageDescriptor: { key: "diagnostics.history.adapters.zcode.m006", params: { p0: String(tool) } } });
       }
       const result = { input: state.input, output: state.output, error: state.error, metadata: state.metadata, status: stateName };
       const visible = textContent(state.output);
@@ -132,11 +134,11 @@ function buildRecords(messages: Record<string, unknown>[], parts: Record<string,
       ? input + read + write : undefined;
     if (input !== undefined && knownTotalInput === undefined) {
       meta.gaps ??= [];
-      meta.gaps.push({ kind: "unsupported_format", message: "ZCode model_usage 输入与 provider 原始口径未充分对照，未将 input/cache 归一化为总输入" });
+      meta.gaps.push({ kind: "unsupported_format", message: "ZCode model_usage 输入与 provider 原始口径未充分对照，未将 input/cache 归一化为总输入", messageDescriptor: { key: "diagnostics.history.adapters.zcode.m007" } });
     }
     if (reasoning !== undefined && output !== undefined) {
       meta.gaps ??= [];
-      meta.gaps.push({ kind: "ambiguous", message: "ZCode reasoning_tokens 与 output_tokens 的包含关系未核验，保留原字段且不相加" });
+      meta.gaps.push({ kind: "ambiguous", message: "ZCode reasoning_tokens 与 output_tokens 的包含关系未核验，保留原字段且不相加", messageDescriptor: { key: "diagnostics.history.adapters.zcode.m008" } });
     }
     const usageEvent: NormalizedEvent = {
       key: `model-usage:${id ?? usageIndex}`,
@@ -196,7 +198,7 @@ async function taskFor(databasePath: string, id: string): Promise<Record<string,
 async function discoverFile(location: SourceLocation): Promise<SourceLocation[]> {
   const sessions = await readOnlySqlite(location.path, database => {
     if (!["session", "message", "part", "model_usage"].every(table => sqliteTableExists(database, table))) {
-      return { rows: [], gap: { kind: "unsupported_format" as const, message: "ZCode SQLite 表结构尚未适配，保留来源并标记缺口" } };
+      return { rows: [], gap: { kind: "unsupported_format" as const, message: "ZCode SQLite 表结构尚未适配，保留来源并标记缺口", messageDescriptor: { key: "diagnostics.history.adapters.zcode.m009" } } };
     }
     const gaps: NonNullable<NormalizedSessionMetadata["gaps"]> = [];
     const budget = createSqliteReadBudget();
@@ -218,10 +220,10 @@ async function discoverFile(location: SourceLocation): Promise<SourceLocation[]>
 }
 
 async function readSnapshot(location: SourceLocation): Promise<NormalizedSnapshot> {
-  if (location.adapterGap) return diagnosticSnapshot(location, location.adapterGap.kind === "budget_exceeded" ? "budget_exceeded" : "unsupported_format", location.adapterGap.message);
-  if (location.selector === UNSUPPORTED_SCHEMA) return diagnosticSnapshot(location, "unsupported_format", "ZCode SQLite 表结构尚未适配，保留来源并标记缺口");
-  if (location.selector === READ_BUDGET_EXCEEDED) return diagnosticSnapshot(location, "budget_exceeded", "ZCode 会话目录超过 SQLite 有界读取上限");
-  if (!location.selector) throw new Error("ZCode 来源缺少原生会话选择器");
+  if (location.adapterGap) return diagnosticSnapshot(location, location.adapterGap.kind === "budget_exceeded" ? "budget_exceeded" : "unsupported_format", location.adapterGap.message, location.adapterGap.messageDescriptor);
+  if (location.selector === UNSUPPORTED_SCHEMA) return diagnosticSnapshot(location, "unsupported_format", "ZCode SQLite 表结构尚未适配，保留来源并标记缺口", { key: "diagnostics.history.adapters.zcode.m009" });
+  if (location.selector === READ_BUDGET_EXCEEDED) return diagnosticSnapshot(location, "budget_exceeded", "ZCode 会话目录超过 SQLite 有界读取上限", { key: "diagnostics.history.adapters.zcode.catalogBudget" });
+  if (!location.selector) throw new DiagnosticError("ZCode 来源缺少原生会话选择器", { key: "diagnostics.history.adapters.zcode.m010" });
   const gaps: NonNullable<NormalizedSessionMetadata["gaps"]> = [];
   const budget = createSqliteReadBudget();
   const snapshot = await readOnlySqlite(location.path, database => {
@@ -238,7 +240,7 @@ async function readSnapshot(location: SourceLocation): Promise<NormalizedSnapsho
   const meta: NormalizedSessionMetadata = { title: string(task?.title) ?? string(snapshot.session.title), gaps,
     titleOrigin: task?.title ? "task" : snapshot.session.title ? "recorded" : undefined };
   if (string(snapshot.session.parent_id) || string(task?.forked_from_task_id)) {
-    gaps.push({ kind: "ambiguous", message: "ZCode parent_id/forked_from_task_id 语义未核验，未判断子 Agent 或分叉关系" });
+    gaps.push({ kind: "ambiguous", message: "ZCode parent_id/forked_from_task_id 语义未核验，未判断子 Agent 或分叉关系", messageDescriptor: { key: "diagnostics.history.adapters.zcode.m011" } });
   }
   const records = buildRecords(snapshot.messages, snapshot.parts, snapshot.modelUsage, meta);
   const fingerprint = JSON.stringify({ session: rowRaw(snapshot.session), task: task ? rowRaw(task) : null });

@@ -8,6 +8,9 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { encodeSession, sessionFixture, longSessionFixture } from "./session-fixture.mjs";
 
+import { writePreferences } from "../dist/service/preferences.js";
+import { clientIds } from "../dist/clients.js";
+
 // 独立后台、人工历史和真实 Chrome；不读取日常历史或连接日常后台。
 const run = promisify(execFile);
 const cli = fileURLToPath(new URL("../dist/cli.js", import.meta.url));
@@ -17,7 +20,7 @@ const repository = join(directory, "sample-workspace");
 const projectSlug = repository.replace(/^\/+|\/+$/g, "").replace(/[^a-zA-Z0-9]/g, "-").replace(/-+/g, "-").toLowerCase();
 const projectFolder = projectSlug.length <= 80 ? projectSlug : `${projectSlug.slice(0, 80)}-${createHash("sha1").update(repository).digest("hex").slice(0, 8)}`;
 const session = `ms${process.pid}`;
-const env = { ...process.env, AGENT_MANOR_HOME: join(directory, "data"), AGENT_MANOR_PORT: "0",
+const env = { ...process.env, ...Object.fromEntries(clientIds.map(client => [`AGENT_MANOR_${client.replaceAll("-", "_").toUpperCase()}_DIR`, join(directory, `missing-${client}`)])), AGENT_MANOR_HOME: join(directory, "data"), AGENT_MANOR_PORT: "0",
   AGENT_MANOR_CODEX_DIR: join(directory, "codex"), AGENT_MANOR_CLAUDE_DIR: join(directory, "claude"), AGENT_MANOR_CODEFLICKER_DESKTOP_DIR: join(directory, "missing-desktop"), AGENT_MANOR_CODEFLICKER_DIR: join(directory, "codeflicker", "projects", projectFolder) };
 const command = async args => JSON.parse((await run(process.execPath, [cli, ...args, "--json"], { cwd: directory, env, timeout: 60_000, maxBuffer: 4 * 1024 * 1024 })).stdout);
 const browser = async args => {
@@ -90,6 +93,7 @@ try {
   assert.ok(located.messages.some(item => item.id === search.hits[0].messageId));
   assert.equal((await command(["register", repository, "--wait"])).job.status, "completed");
   const status = await command(["status"]);
+  await writePreferences(env.AGENT_MANOR_HOME, "zh-CN");
   await browser(["open", `http://127.0.0.1:${status.instance.port}`, "--headed", "--browser=chrome"]);
   const code = async page => {
     let stage = "initial";
@@ -218,7 +222,7 @@ try {
     await timelineSvg.focus(); await page.keyboard.press("Home");
     await page.locator(".trace-detail-body.kind-context").waitFor();
     expect((await page.locator(".trace-inspector").innerText()).includes("AGENTS.md 指令注入"), "上下文详情应说明原角色与识别依据");
-    expect((await page.locator(".trace-context-note").innerText()).includes("客户端元信息明确标记"), "明确注入应优先使用客户端分类");
+    expect((await page.locator(".trace-context-note").innerText()).includes("明确标记"), "明确注入应优先使用客户端分类");
     expect(await page.locator(".trace-inspector .session-message").count() === 0, "详情不再嵌套聊天卡片");
     await page.getByRole("button", { name: "记录时间", exact: true }).click();
     expect(await page.getByRole("button", { name: "记录时间", exact: true }).getAttribute("aria-pressed") === "true", "时间线排列应明确反馈");
@@ -235,7 +239,7 @@ try {
     expect(await page.locator(".session-message.kind-context").count() === 0, "简易版不应显示注入上下文");
     await page.goto(traceLink);
     await page.locator(".trace-context-note").waitFor();
-    expect((await page.locator(".trace-context-note").innerText()).includes("客户端元信息明确标记"), "重新打开同一深链接应恢复模式与目标节点");
+    expect((await page.locator(".trace-context-note").innerText()).includes("明确标记"), "重新打开同一深链接应恢复模式与目标节点");
     stage = "ledger-inspector";
     let traceRequests = 0;
     const trackTraceRequest = req => { if (req.url().includes("/messages?")) traceRequests++; };
@@ -326,10 +330,12 @@ try {
     expect(await page.locator(".session-usage-chart svg").count() === 1, "用量趋势图缺失");
     expect(await page.locator(".session-steps").count() === 0, "仍在连续铺开全部请求卡片");
     const axis = await page.locator(".session-chart-y-axis > span").allTextContents();
-    expect(axis[0] === "0" && axis.at(-1) === "4K", "Token 纵轴没有使用从零开始的整齐刻度");
-    await page.locator(".session-chart-hit").first().hover();
+    expect(axis[0] === "0" && axis.at(-1) === new Intl.NumberFormat("zh-CN", { notation: "compact", maximumFractionDigits: 1 }).format(4000), "Token 纵轴没有使用从零开始的整齐刻度");
+    const chartHit = page.locator(".session-chart-hit").first();
+    const chartHitBounds = await chartHit.boundingBox();
+    await chartHit.hover({ position: { x: 1, y: chartHitBounds.height / 2 } });
     await page.getByRole("tooltip").waitFor();
-    expect((await page.getByRole("tooltip").innerText()).includes("请求 1"), "悬浮未显示请求编号");
+    expect(await page.locator(".session-chart-tooltip strong").innerText() === "请求 1", "悬浮未显示请求编号");
     expect((await page.getByRole("tooltip").innerText()).includes("fixture-model"), "悬浮未显示模型");
     expect((await page.locator(".session-chart-tooltip dd").allTextContents()).join("|") === "101 Token|60 Token|5 Token", "悬浮数值与请求记录不一致");
     expect(await page.locator(".session-chart-reference circle").count() === 3, "选中请求的数据点标记缺失");
@@ -337,22 +343,23 @@ try {
     await page.keyboard.press("ArrowRight");
     expect((await page.getByRole("tooltip").innerText()).includes("请求 2"), "键盘移动没有更新请求数值");
     await page.keyboard.press("End");
-    expect((await page.getByRole("tooltip").innerText()).includes("请求 200"), "末请求的键盘定位不正确");
+    expect((await page.getByRole("tooltip").innerText()).includes("请求 210"), "末请求的键盘定位不正确");
     await page.getByRole("tab", { name: "用量", exact: true }).focus();
-    await page.locator(".session-chart-hit").last().hover();
-    expect((await page.locator(".session-chart-tooltip dd").allTextContents()).join("|") === "3,402 Token|2,040 Token|10 Token", "末请求的悬浮数值错误");
+    await chartHit.hover({ position: { x: chartHitBounds.width - 1, y: chartHitBounds.height / 2 } });
+    expect((await page.locator(".session-chart-tooltip dd").allTextContents()).join("|") === "3,506 Token|2,100 Token|30 Token", "末请求的悬浮数值错误");
     const tooltipBounds = await page.locator(".session-chart-tooltip").boundingBox();
     const plotBounds = await page.locator(".session-chart-plot").boundingBox();
     expect(tooltipBounds.x >= plotBounds.x && tooltipBounds.x + tooltipBounds.width <= plotBounds.x + plotBounds.width + 1, "悬浮面板超出图表宽度");
     await page.mouse.move(0, 0);
     await page.getByRole("tooltip").waitFor({ state: "hidden" });
     await page.locator(".session-chart-hit").first().focus();
+    await page.keyboard.press("Home");
     await page.keyboard.press("Enter");
     await page.locator(".session-message.is-focused.kind-system, .trace-detail-body.kind-system").waitFor();
     stage = "long-ledger";
     const traceLayout = await page.evaluate(() => ({
       rows: document.querySelectorAll(".trace-row").length,
-      nodeTotal: Number(document.querySelector(".trace-toolbar strong").textContent),
+      nodeTotal: Number(document.querySelector(".trace-toolbar strong").textContent.match(/[\d,]+/)[0].replaceAll(",", "")),
       body: document.documentElement.scrollHeight, viewport: innerHeight,
       rowHeights: [...document.querySelectorAll(".trace-row, .trace-group")].map(node => node.getBoundingClientRect().height),
     }));
@@ -369,7 +376,7 @@ try {
     await page.getByRole("button", { name: "切换主题", exact: true }).click();
     await page.screenshot({ path: "trace-long-dark.png", fullPage: true });
     await page.getByRole("button", { name: "切换主题", exact: true }).click();
-    await page.getByRole("navigation", { name: "请求明细分页", exact: true }).getByRole("button", { name: "下一页", exact: true }).click();
+    await page.getByRole("navigation", { name: "请求明细分页", exact: true }).getByRole("button", { name: "请求明细分页下一页", exact: true }).click();
     expect((await page.locator(".session-step-table tbody tr").first().innerText()).includes("#13"), "明细分页编号错误");
     await page.locator(".session-step-table tbody button").first().click();
     await page.locator(".session-message.is-focused.kind-system, .trace-detail-body.kind-system").waitFor();
@@ -432,7 +439,7 @@ try {
     await page.getByRole("button", { name: "会话统计", exact: true }).click();
     await page.locator(".session-profile").waitFor({ state: "visible" });
     await page.getByRole("tab", { name: "用量", exact: true }).click();
-    await page.locator(".session-chart-hit").last().hover();
+    await chartHit.hover({ position: { x: chartHitBounds.width - 1, y: chartHitBounds.height / 2 } });
     const narrowTooltip = await page.locator(".session-chart-tooltip").boundingBox();
     expect(narrowTooltip.x >= 0 && narrowTooltip.x + narrowTooltip.width <= 760, "窄屏悬浮面板超出窗口");
     await page.keyboard.press("Escape");

@@ -1,3 +1,4 @@
+import { DiagnosticError } from "../../i18n/diagnostics.js";
 import { lstat } from "node:fs/promises";
 import Database from "better-sqlite3";
 import type { Gap } from "../../contracts.js";
@@ -5,7 +6,7 @@ import type { Gap } from "../../contracts.js";
 /** 在查询专用只读事务中读取 SQLite；SQLite 会将已提交 WAL 纳入快照。 */
 export async function readOnlySqlite<T>(path: string, read: (database: Database.Database) => T): Promise<T> {
   const info = await lstat(path);
-  if (!info.isFile() || info.isSymbolicLink()) throw new Error("SQLite 历史来源必须为普通文件");
+  if (!info.isFile() || info.isSymbolicLink()) throw new DiagnosticError("SQLite 历史来源必须为普通文件", { key: "diagnostics.history.adapters.sqliteReadonly.m001" });
   const database = new Database(path, { readonly: true, fileMustExist: true });
   database.pragma("query_only = ON");
   let transaction = false;
@@ -43,7 +44,7 @@ export function readSqliteRows(database: Database.Database, sql: string, gaps: G
   for (const row of database.prepare(sql).iterate(...params) as Iterable<Record<string, unknown>>) {
     const bytes = Buffer.byteLength(JSON.stringify(row));
     if (budget.records + 1 > budget.maxRecords || budget.bytes + bytes > budget.maxBytes) {
-      if (!budget.exceeded) gaps.push({ kind: "budget_exceeded", message: `SQLite 来源超过 ${budget.maxRecords} 条记录或 ${budget.maxBytes} 字节的有界读取上限` });
+      if (!budget.exceeded) gaps.push({ kind: "budget_exceeded", message: `SQLite 来源超过 ${budget.maxRecords} 条记录或 ${budget.maxBytes} 字节的有界读取上限`, messageDescriptor: { key: "diagnostics.history.adapters.sqliteReadonly.m002", params: { p0: String(budget.maxRecords), p1: String(budget.maxBytes) } } });
       budget.exceeded = true;
       break;
     }
@@ -56,16 +57,16 @@ export function readSqliteRows(database: Database.Database, sql: string, gaps: G
 
 export function sqliteJson(value: unknown, gaps: Gap[]): Record<string, unknown> {
   if (typeof value !== "string" && !Buffer.isBuffer(value)) {
-    if (value !== undefined && value !== null) gaps.push({ kind: "parse_error", message: "SQLite 原生 JSON 字段不是文本或字节串" });
+    if (value !== undefined && value !== null) gaps.push({ kind: "parse_error", message: "SQLite 原生 JSON 字段不是文本或字节串", messageDescriptor: { key: "diagnostics.history.adapters.sqliteReadonly.m003" } });
     return {};
   }
   try {
     const decoded = JSON.parse(Buffer.isBuffer(value) ? value.toString("utf8") : value);
     if (decoded !== null && typeof decoded === "object" && !Array.isArray(decoded)) return decoded as Record<string, unknown>;
-    gaps.push({ kind: "parse_error", message: "SQLite 原生 JSON 字段不是对象" });
+    gaps.push({ kind: "parse_error", message: "SQLite 原生 JSON 字段不是对象", messageDescriptor: { key: "diagnostics.history.adapters.sqliteReadonly.m004" } });
     return {};
   } catch {
-    gaps.push({ kind: "parse_error", message: "SQLite 原生 JSON 字段无法解析，原记录仍保留" });
+    gaps.push({ kind: "parse_error", message: "SQLite 原生 JSON 字段无法解析，原记录仍保留", messageDescriptor: { key: "diagnostics.history.adapters.sqliteReadonly.m005" } });
     return {};
   }
 }

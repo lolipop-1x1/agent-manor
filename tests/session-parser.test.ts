@@ -58,9 +58,30 @@ test("CodeFlicker 附件保留为过程记录，不新增对话、模型请求�
   assert.equal(hooks[0]?.recordLine, 2);
   assert.equal(hooks[1]?.status, "failure");
   assert.ok(hooks[0]?.text.includes("SessionStart"));
+  assert.equal(hooks[0]?.textDescriptor?.key, "sessions.body.hook");
+  assert.ok(String(hooks[0]?.textDescriptor?.params?.details).includes("SessionStart"));
   assert.ok(sample.messages.some(message => message.kind === "context" && message.text.includes("原始附件内容")));
   assert.ok(sample.summary.gaps.some(gap => gap.kind === "unsupported_format"));
   assert.equal(sample.messages.filter(message => message.kind === "assistant" && message.final).length, 1);
+});
+
+test("IDE 缺失正文按生成来源标记，同名真实正文不附加翻译描述", async () => {
+  const messages: SessionMessage[] = [];
+  await parseSessionSource({ client: "codeflicker-desktop", format: "codeflicker-ide-sqlite", path: "/synthetic/history.sqlite" }, {
+    message: value => messages.push(value), usage: () => {},
+  }, { nativeSnapshot: {
+    source: { client: "codeflicker-desktop", format: "codeflicker-ide-sqlite", path: "/synthetic/history.sqlite", sessionId: "generated-body" },
+    hash: "synthetic-hash", records: [
+      { line: 1, raw: "", record: {} },
+      { line: 2, raw: "", record: { say: "text", role: "user", text: "未记录内容" } },
+    ],
+  } });
+  const generated = messages.find(message => message.kind === "system");
+  const original = messages.find(message => message.kind === "user");
+  assert.equal(generated?.text, "未记录内容");
+  assert.deepEqual(generated?.textDescriptor, { key: "sessions.body.unrecorded" });
+  assert.equal(original?.text, "未记录内容");
+  assert.equal(original?.textDescriptor, undefined);
 });
 
 test("CodeFlicker CLI 显式压缩摘要是过程记录，不产生用户轮次或额外用量", async () => {
@@ -324,6 +345,20 @@ test("Skill 只有明确调用或成功返回的读取证据，失败、缺结�
   const resources = sample.messages.filter(message => message.resource).map(message => message.resource!);
   assert.deepEqual(resources.map(resource => [resource.kind, resource.name]).sort(), [["skill_call", "invoked-skill"], ["skill_read", "read-skill"], ["skill_read", "shell-skill"]]);
   assert.ok(sample.summary.gaps.some(gap => gap.kind === "unpaired_call"));
+});
+
+test("缺失 Skill 名标记生成来源，真实同名和目录名保留原文", async () => {
+  const sample = await parsed("codex", [meta(), user(),
+    call("missing-name", "Skill", {}), result("missing-name", { success: true }),
+    call("recorded-name", "Skill", { skill: "未记录名称" }), result("recorded-name", { success: true }),
+    call("directory-name", "Skill", { skill_directory: "/synthetic/skills/未记录名称" }), result("directory-name", { success: true }),
+  ]);
+  const resources = sample.messages.filter(message => message.resource).map(message => message.resource!);
+  assert.equal(resources.length, 3);
+  assert.ok(resources.every(resource => resource.name === "未记录名称"));
+  assert.deepEqual(resources[0]?.nameDescriptor, { key: "sessions.resource.nameUnrecorded" });
+  assert.equal(resources[1]?.nameDescriptor, undefined);
+  assert.equal(resources[2]?.nameDescriptor, undefined);
 });
 
 test("未完成工具与中断不推断终答，尾部半条记录保留缺口", async () => {

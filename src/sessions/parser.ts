@@ -1,3 +1,4 @@
+import type { MessageDescriptor } from "../i18n/types.js";
 import { createHash } from "node:crypto";
 import { createReadStream } from "node:fs";
 import { basename, dirname, isAbsolute, resolve } from "node:path";
@@ -25,7 +26,7 @@ const MAX_PENDING_BYTES = 32 * 1024 * 1024;
 export const sessionKey = (client: Client, rawId: string): string => `${client}:${digest(rawId)}`;
 
 /** 分段读取并限制单条记录大小；不完整末行留待下次刷新，不能当作完整消息。 */
-async function* records(path: string, gap: (kind: GapKind, message: string) => void, byteLimit?: number) {
+async function* records(path: string, gap: (kind: GapKind, message: string, messageDescriptor?: MessageDescriptor) => void, byteLimit?: number) {
   if (byteLimit === 0) return;
   let parts: Buffer[] = [];
   let length = 0;
@@ -43,16 +44,16 @@ async function* records(path: string, gap: (kind: GapKind, message: string) => v
       else { oversized = true; parts = []; }
       if (newline < 0) break;
       line += 1;
-      if (oversized) gap("budget_exceeded", "单条历史记录超过 16 MiB，正文未索引");
+      if (oversized) gap("budget_exceeded", "单条历史记录超过 16 MiB，正文未索引", { key: "diagnostics.sessions.parser.m001" });
       else if (length) {
         const raw = Buffer.concat(parts, length).toString("utf8");
         try { yield { record: object(JSON.parse(raw)), line }; }
-        catch { gap("parse_error", "历史存在无效 JSON 记录，已跳过并保留缺口"); }
+        catch { gap("parse_error", "历史存在无效 JSON 记录，已跳过并保留缺口", { key: "diagnostics.sessions.parser.m002" }); }
       }
       parts = []; length = 0; oversized = false; start = newline + 1;
     }
   }
-  if (length || oversized) gap("incomplete_record", "历史末尾尚无完整 JSONL 换行，等待来源追加");
+  if (length || oversized) gap("incomplete_record", "历史末尾尚无完整 JSONL 换行，等待来源追加", { key: "diagnostics.sessions.parser.m003" });
 }
 
 function text(value: unknown): string {
@@ -77,7 +78,10 @@ function filePaths(input: unknown): string[] | undefined {
 function resource(tool: string, input: unknown, paths: string[] | undefined): SessionMessage["resource"] {
   const mcp = /^mcp__(.+?)__(.+)$/.exec(tool) ?? /^mcp__([^.]+)\.(.+)$/.exec(tool);
   if (mcp) return { kind: "mcp", name: mcp[2]!, server: mcp[1] };
-  if (/^(?:Skill|skill|use_skill)$/.test(tool)) return { kind: "skill_call", name: string(object(input).skill) ?? string(object(input).name) ?? string(object(input).skill_directory)?.split(/[/\\]/).filter(Boolean).at(-1) ?? "未记录名称" };
+  if (/^(?:Skill|skill|use_skill)$/.test(tool)) {
+    const name = string(object(input).skill) ?? string(object(input).name) ?? string(object(input).skill_directory)?.split(/[/\\]/).filter(Boolean).at(-1);
+    return { kind: "skill_call", name: name ?? "未记录名称", ...(name === undefined ? { nameDescriptor: { key: "sessions.resource.nameUnrecorded" } } : {}) };
+  }
   if (/^(?:Read|read|read_file)$/.test(tool) && paths?.some(path => basename(path) === "SKILL.md")) {
     const path = paths.find(path => basename(path) === "SKILL.md")!;
     return { kind: "skill_read", name: path.replace(/[/\\]SKILL\.md$/, "").split(/[/\\]/).at(-1) ?? "SKILL.md" };
@@ -111,13 +115,13 @@ export async function parseSessionSource(source: SourceLocation, sink: SessionSi
   }
   const ideSnapshot = options.nativeSnapshot ?? (source.format === IDE_FORMAT ? await readIdeSnapshot(source) : undefined);
   if (ideSnapshot) { source = ideSnapshot.source; options = { ...options, title: ideSnapshot.title }; }
-  const inputRecords = (onGap: (kind: GapKind, message: string) => void) => ideSnapshot ? ideSessionRecords(ideSnapshot) : records(source.path, onGap, options.byteLimit);
+  const inputRecords = (onGap: (kind: GapKind, message: string, messageDescriptor?: MessageDescriptor) => void) => ideSnapshot ? ideSessionRecords(ideSnapshot) : records(source.path, onGap, options.byteLimit);
   const gaps = new Map<string, Gap>();
-  const gap = (kind: GapKind, message: string) => {
+  const gap = (kind: GapKind, message: string, messageDescriptor?: MessageDescriptor) => {
     const key = `${kind}:${message}`;
     const previous = gaps.get(key);
     if (previous) previous.count = (previous.count ?? 1) + 1;
-    else gaps.set(key, { kind, message, sourceId: source.sourceId, count: 1 });
+    else gaps.set(key, { kind, message, messageDescriptor, sourceId: source.sourceId, count: 1 });
   };
   let rawId = source.sessionId;
   if (!rawId) {
@@ -163,7 +167,7 @@ export async function parseSessionSource(source: SourceLocation, sink: SessionSi
     if (source.client !== "codex") { sink.usage(value); return; }
     // 用量定位到实际保存该用量的记录，不猜测它属于哪段助手正文。
     const event = message(`usage:${value.id}`, "system", `请求用量（记录值）\n${display(value)}`, currentRecordLine,
-      { occurredAt: value.occurredAt, model: value.model });
+      { occurredAt: value.occurredAt, model: value.model, textDescriptor: { key: "sessions.body.usage", params: { details: display(value) } } });
     sink.usage({ ...value, messageId: event.id });
   } }, gap);
   const childReference = (tool: string | undefined, result: unknown, nativeAgentId?: string) => {
@@ -215,9 +219,9 @@ export async function parseSessionSource(source: SourceLocation, sink: SessionSi
     if (previousCompletion) { sink.message({ ...value, ...previousCompletion }); return; }
     const previous = pending.get(callId);
     if (previous?.message.id === value.id) { pendingBytes -= previous.bytes; pending.delete(callId); }
-    else if (previous) { gap("ambiguous", "同一调用身份存在多个未完成请求，结果未强行配对"); pendingBytes -= previous.bytes; pending.delete(callId); return; }
+    else if (previous) { gap("ambiguous", "同一调用身份存在多个未完成请求，结果未强行配对", { key: "diagnostics.sessions.parser.m004" }); pendingBytes -= previous.bytes; pending.delete(callId); return; }
     const bytes = Buffer.byteLength(value.text);
-    if (pendingBytes + bytes > MAX_PENDING_BYTES || pending.size >= 1024) { gap("budget_exceeded", "未完成工具请求超过有界配对缓存，调用保持未知状态"); return; }
+    if (pendingBytes + bytes > MAX_PENDING_BYTES || pending.size >= 1024) { gap("budget_exceeded", "未完成工具请求超过有界配对缓存，调用保持未知状态", { key: "diagnostics.sessions.parser.m005" }); return; }
     pending.set(callId, { message: value, bytes, input }); pendingBytes += bytes;
   };
   const toolResult = (key: string, callId: string, body: string, row: number, status: SessionMessage["status"], extra: Partial<SessionMessage>) => {
@@ -238,7 +242,7 @@ export async function parseSessionSource(source: SourceLocation, sink: SessionSi
       sink.message({ ...call.message, ...completion });
       completed.set(call.message.id, completion);
       pendingBytes -= call.bytes; pending.delete(callId);
-    } else if (!repeated) gap("unpaired_call", "工具结果缺少可唯一配对的请求，已保留原结果");
+    } else if (!repeated) gap("unpaired_call", "工具结果缺少可唯一配对的请求，已保留原结果", { key: "diagnostics.sessions.parser.m006" });
     return value;
   };
   for await (const { record, line } of inputRecords(gap)) {
@@ -273,7 +277,8 @@ export async function parseSessionSource(source: SourceLocation, sink: SessionSi
     }
     const ordinal = tokens(record.ordinal);
     const copied = copyBeforeOrdinal !== undefined && ordinal !== undefined && ordinal < copyBeforeOrdinal ? true : undefined;
-    const extra: Partial<SessionMessage> = { occurredAt, copied };
+    const extra: Partial<SessionMessage> = { occurredAt, copied,
+      ...(ideSnapshot && record.textDescriptor ? { textDescriptor: record.textDescriptor as MessageDescriptor } : {}) };
     const title = string(record.aiTitle) ?? string(record.title) ?? (record.type === "session_meta" ? string(payload.title) : undefined);
     if (title && !inheritedHeader) { meta.title = title; meta.titleOrigin = "recorded"; }
     if (source.format === DESKTOP_FORMAT || ideSnapshot) {
@@ -291,11 +296,11 @@ export async function parseSessionSource(source: SourceLocation, sink: SessionSi
           sink.message(candidate);
         }
         else interrupted = true;
-        if (!matches) gap("ambiguous", "桌面终态引用与当前助手消息不符，未认定最终回答");
+        if (!matches) gap("ambiguous", "桌面终态引用与当前助手消息不符，未认定最终回答", { key: "diagnostics.sessions.parser.m007" });
         finishTurn();
         continue;
       }
-      if (record.kind !== "message" && !record.role) { gap("unsupported_format", "桌面历史存在尚未适配的记录类型"); continue; }
+      if (record.kind !== "message" && !record.role) { gap("unsupported_format", "桌面历史存在尚未适配的记录类型", { key: "diagnostics.sessions.parser.m008" }); continue; }
       const role = string(record.role);
       const nativeTurn = string(record.turnId) ?? string(object(record.extra).turnId);
       let emitted: SessionMessage | undefined;
@@ -316,7 +321,7 @@ export async function parseSessionSource(source: SourceLocation, sink: SessionSi
           const nonCached = ["CLAUDE_CODE", "DEEPSEEK_HARNESS"].includes(backend ?? "");
           if (!nonCached && !["MY_FLICKER", "CODEX"].includes(backend ?? "")) {
             normalized.input_tokens = undefined;
-            gap("unsupported_format", "桌面用量缺少已确认的执行后端，未计算总输入与缓存比例");
+            gap("unsupported_format", "桌面用量缺少已确认的执行后端，未计算总输入与缓存比例", { key: "diagnostics.sessions.parser.m009" });
           }
           usage.native(nonCached ? "claude" : "codeflicker", normalized, native?.requestId ?? string(record.messageId) ?? key,
             { messageId: emitted?.id ?? (calls[0] ? `${id}:message:${digest(`${key}:call:${calls[0].id}`)}` : undefined), turnId, model, occurredAt });
@@ -325,7 +330,7 @@ export async function parseSessionSource(source: SourceLocation, sink: SessionSi
         const result = desktopResult(record);
         const callId = string(record.toolCallId);
         if (callId) toolResult(key, callId, text(record.content), line, result.status, { ...extra, tool: string(object(record.extra).toolName) });
-        else { gap("unpaired_call", "桌面工具结果缺少调用身份"); message(key, "tool_result", text(record.content), line, extra); }
+        else { gap("unpaired_call", "桌面工具结果缺少调用身份", { key: "diagnostics.sessions.parser.m010" }); message(key, "tool_result", text(record.content), line, extra); }
       } else if (role === "reasoning") message(key, "thinking", text(record.content), line, extra);
       else if (role === "system") message(key, "system", text(record.content), line, extra);
       else if (role === "activity") {
@@ -333,7 +338,7 @@ export async function parseSessionSource(source: SourceLocation, sink: SessionSi
         const body = [text(record.content), text(compaction.summary)].filter(Boolean).join("\n\n");
         message(key, Object.keys(compaction).length ? "compression" : "system", body || display(record.extra), line, extra);
       }
-      else gap("unsupported_format", "桌面历史存在尚未适配的消息角色");
+      else gap("unsupported_format", "桌面历史存在尚未适配的消息角色", { key: "diagnostics.sessions.parser.m011" });
       continue;
     }
     if (source.client === "codex") {
@@ -401,7 +406,7 @@ export async function parseSessionSource(source: SourceLocation, sink: SessionSi
         message(key, kind, body, line, { ...extra, ...context, final: kind === "assistant" && ["final", "final_answer"].includes(phase ?? "") ? "explicit" : undefined }, kind === "user");
       } else if (type === "reasoning") {
         const body = text(payload.summary) || text(payload.content);
-        if (!body && payload.encrypted_content && projectedReasoning?.turnId !== turnId) gap("unsupported_format", "思考正文仅有加密内容，未解密或补造");
+        if (!body && payload.encrypted_content && projectedReasoning?.turnId !== turnId) gap("unsupported_format", "思考正文仅有加密内容，未解密或补造", { key: "diagnostics.sessions.parser.m012" });
         if (body) message(projectedReasoning?.turnId === turnId && projectedReasoning.text === body ? projectedReasoning.key : key, "thinking", body, line, extra);
         else if (projectedReasoning?.turnId !== turnId) message(key, "thinking", "", line, extra);
         projectedReasoning = undefined;
@@ -422,7 +427,7 @@ export async function parseSessionSource(source: SourceLocation, sink: SessionSi
           durationMs: tokens(result.duration_ms) ?? tokens(result.durationMs) ?? (typeof result.wall_time_seconds === "number" ? result.wall_time_seconds * 1000 : undefined) });
       } else if (type === "compaction") {
         message(key, "compression", text(payload.content ?? payload.summary), line, extra);
-        if (payload.encrypted_content) gap("unsupported_format", "压缩记录未保存可读正文");
+        if (payload.encrypted_content) gap("unsupported_format", "压缩记录未保存可读正文", { key: "diagnostics.sessions.parser.m013" });
       }
       continue;
     }
@@ -446,9 +451,10 @@ export async function parseSessionSource(source: SourceLocation, sink: SessionSi
       const attachment = object(content);
       const type = string(attachment.type) ?? "未记录类型";
       const hook = ["hook_success", "hook_blocking_error", "hook_error_during_execution", "hook_cancelled", "hook_non_blocking_error", "hook_stopped_continuation"].includes(type);
-      if (!hook) gap("unsupported_format", "CodeFlicker 附件类型尚未适配，已保留原始过程记录");
+      if (!hook) gap("unsupported_format", "CodeFlicker 附件类型尚未适配，已保留原始过程记录", { key: "diagnostics.sessions.parser.m014" });
       message(`native:${nativeId}:attachment`, "context", `${hook ? "本地 Hook" : "附件过程记录"}\n${display(content ?? record)}`, line,
         { ...extra, contextSource: hook ? "hook" : undefined,
+          textDescriptor: { key: hook ? "sessions.body.hook" : "sessions.body.attachment", params: { details: display(content ?? record) } },
           status: !hook ? undefined : type === "hook_success" ? "success" : ["hook_blocking_error", "hook_error_during_execution", "hook_non_blocking_error"].includes(type) ? "failure" : "unknown",
           durationMs: hook ? tokens(attachment.durationMs) : undefined });
       continue;
@@ -467,7 +473,7 @@ export async function parseSessionSource(source: SourceLocation, sink: SessionSi
         emitted = message(key, kind, text(block.text), line, { ...extra, final: kind === "assistant" && ["end_turn", "stop_sequence"].includes(string(native.stop_reason) ?? "") ? "explicit" : undefined }, human && !firstMessage);
       } else if (["thinking", "reasoning", "redacted_thinking"].includes(type ?? "")) {
         emitted = message(key, "thinking", text(block.text ?? block.thinking), line, extra);
-        if (type === "redacted_thinking") gap("unsupported_format", "思考正文已由客户端隐藏，未补造内容");
+        if (type === "redacted_thinking") gap("unsupported_format", "思考正文已由客户端隐藏，未补造内容", { key: "diagnostics.sessions.parser.m015" });
       } else if (type === "tool_use" && role === "assistant") {
         const callId = string(block.id) ?? key;
         toolCall(key, string(block.name) ?? "unknown", block.input, callId, line, extra);
@@ -482,8 +488,8 @@ export async function parseSessionSource(source: SourceLocation, sink: SessionSi
         emitted = toolResult(key, string(block.tool_use_id) ?? string(block.toolCallId) ?? key, body, line,
           result.interrupted === true || result.backgroundTaskId ? "unknown" : status,
           { ...extra, tool: string(block.toolName), durationMs: tokens(result.durationMs) ?? tokens(object(record.metadata).durationMs) });
-      } else if (type === "image" || type === "input_image") emitted = message(key, human ? "user" : "system", "[图片]", line, extra, human && !firstMessage);
-      else if (type) gap("unsupported_format", "历史存在尚未适配的消息内容块，未补造正文");
+      } else if (type === "image" || type === "input_image") emitted = message(key, human ? "user" : "system", "[图片]", line, { ...extra, textDescriptor: { key: "sessions.body.image" } }, human && !firstMessage);
+      else if (type) gap("unsupported_format", "历史存在尚未适配的消息内容块，未补造正文", { key: "diagnostics.sessions.parser.m016" });
       firstMessage ??= emitted;
     }
     if (!blocks.length && typeof record.text === "string") firstMessage = message(`native:${nativeId}:text`, role === "assistant" ? "assistant" : human ? "user" : "system", record.text, line, extra, human);
@@ -494,22 +500,22 @@ export async function parseSessionSource(source: SourceLocation, sink: SessionSi
     if (record.interruptedMessageId || record.isApiErrorMessage === true) interrupted = true;
   }
   finishTurn();
-  if (ideSnapshot) gap("unsupported_format", "IDE 主历史未保存逐请求 Token 用量，累计缓存不能重建请求趋势；未补造记录值");
-  if (pending.size) gap("unpaired_call", "历史结束时仍有工具调用未记录完成结果");
-  if (meta.relationship === "fork" && copyBeforeOrdinal === undefined) gap("ambiguous", "分叉来源缺少共享历史边界，未猜测或排除复制消息");
-  if (source.client === "codeflicker" && basename(source.path).startsWith("agent-") && !meta.parentSessionId) gap("ambiguous", "子会话来源缺少明确父关系，作为独立会话保留");
+  if (ideSnapshot) gap("unsupported_format", "IDE 主历史未保存逐请求 Token 用量，累计缓存不能重建请求趋势；未补造记录值", { key: "diagnostics.sessions.parser.m017" });
+  if (pending.size) gap("unpaired_call", "历史结束时仍有工具调用未记录完成结果", { key: "diagnostics.sessions.parser.m018" });
+  if (meta.relationship === "fork" && copyBeforeOrdinal === undefined) gap("ambiguous", "分叉来源缺少共享历史边界，未猜测或排除复制消息", { key: "diagnostics.sessions.parser.m019" });
+  if (source.client === "codeflicker" && basename(source.path).startsWith("agent-") && !meta.parentSessionId) gap("ambiguous", "子会话来源缺少明确父关系，作为独立会话保留", { key: "diagnostics.sessions.parser.m020" });
   if (!meta.project && options.projectMetadata?.project && isAbsolute(options.projectMetadata.project)) {
     meta.project = options.projectMetadata.project;
     meta.projectOrigin = "client_metadata";
   }
-  if (!meta.project && options.projectMetadata?.ambiguous) gap("ambiguous", "客户端项目元数据对应多个完整路径，未选择单一项目归属");
+  if (!meta.project && options.projectMetadata?.ambiguous) gap("ambiguous", "客户端项目元数据对应多个完整路径，未选择单一项目归属", { key: "diagnostics.sessions.parser.m021" });
   if (!meta.project && !options.projectMetadata?.ambiguous && targets.size && !targetsLimited) {
     const association = await projectFromToolPaths([...targets.values()].flatMap(paths => [...paths]));
     if (association.project) { meta.project = association.project; meta.projectOrigin = "tool_path"; }
-    if (association.ambiguous) gap("ambiguous", "工具目标对应多个 Git 项目，未选择单一项目归属");
-    if (association.limited) gap("budget_exceeded", "工具目标目录超过项目关联检查上限，未推断项目归属");
+    if (association.ambiguous) gap("ambiguous", "工具目标对应多个 Git 项目，未选择单一项目归属", { key: "diagnostics.sessions.parser.m022" });
+    if (association.limited) gap("budget_exceeded", "工具目标目录超过项目关联检查上限，未推断项目归属", { key: "diagnostics.sessions.parser.m023" });
   }
-  if (!meta.project && targetsLimited) gap("budget_exceeded", "工具目标目录超过项目关联检查上限，未推断项目归属");
+  if (!meta.project && targetsLimited) gap("budget_exceeded", "工具目标目录超过项目关联检查上限，未推断项目归属", { key: "diagnostics.sessions.parser.m023" });
   meta.models = [...models];
   meta.executionMode = sessionExecutionMode(meta.client, meta.executionEntries);
   meta.gaps = [...gaps.values()].map(item => ({ ...item, sourceId: meta.sourceId }));

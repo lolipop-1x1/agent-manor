@@ -43,9 +43,9 @@ function normalizeQoderRows(rows: readonly RawHistoryRecord[], gaps: Gap[]): { r
   const directories = directoriesOf(rows);
   const cwdValues = [...new Set(rows.map(row => string(row.record.cwd)).filter((value): value is string => typeof value === "string" && isAbsolute(value)))];
   const cwd = directories.length === 1 ? directories[0] : directories.length === 0 && cwdValues.length === 1 ? cwdValues[0] : undefined;
-  if (directories.length > 1) addGap(gaps, "ambiguous", "Qoder workspace-directories 存在多个目录，未选择单一项目");
-  if (directories.length === 1 && cwdValues.some(value => value !== directories[0])) addGap(gaps, "ambiguous", "Qoder 消息 cwd 与 workspace-directories 不一致，优先采用 workspace 元数据");
-  if (directories.length === 0 && cwdValues.length > 1) addGap(gaps, "ambiguous", "Qoder 消息记录了多个 cwd，无法确认单一项目目录");
+  if (directories.length > 1) addGap(gaps, "ambiguous", "Qoder workspace-directories 存在多个目录，未选择单一项目", { key: "diagnostics.history.adapters.qoder.m001" });
+  if (directories.length === 1 && cwdValues.some(value => value !== directories[0])) addGap(gaps, "ambiguous", "Qoder 消息 cwd 与 workspace-directories 不一致，优先采用 workspace 元数据", { key: "diagnostics.history.adapters.qoder.m002" });
+  if (directories.length === 0 && cwdValues.length > 1) addGap(gaps, "ambiguous", "Qoder 消息记录了多个 cwd，无法确认单一项目目录", { key: "diagnostics.history.adapters.qoder.m003" });
   const title = rows.find(row => row.record.type === "ai-title" && typeof row.record.aiTitle === "string")?.record.aiTitle as string | undefined;
   let activeModel: string | undefined;
   const normalized: ReturnType<typeof normalizedRecord>[] = [];
@@ -61,7 +61,7 @@ function normalizeQoderRows(rows: readonly RawHistoryRecord[], gaps: Gap[]): { r
     }
     if (["workspace-directories", "ai-title", "last-prompt", "file-history-snapshot"].includes(type)) continue;
     if (type === "attachment") {
-      addGap(gaps, "unsupported_format", "Qoder 附件元数据存在，但附件正文未适配");
+      addGap(gaps, "unsupported_format", "Qoder 附件元数据存在，但附件正文未适配", { key: "diagnostics.history.adapters.qoder.m004" });
       continue;
     }
     if (type === "system") {
@@ -70,7 +70,7 @@ function normalizeQoderRows(rows: readonly RawHistoryRecord[], gaps: Gap[]): { r
       continue;
     }
     if (type !== "user" && type !== "assistant") {
-      addGap(gaps, "unsupported_format", `Qoder 记录类型 ${type} 尚未适配`);
+      addGap(gaps, "unsupported_format", `Qoder 记录类型 ${type} 尚未适配`, { key: "diagnostics.history.adapters.qoder.m005", params: { p0: String(type) } });
       normalized.push(normalizedRecord({ key: `unknown:${row.line}`, kind: "context", text: `未适配记录类型 ${type}` }, row.raw, row.line));
       continue;
     }
@@ -85,7 +85,7 @@ function normalizeQoderRows(rows: readonly RawHistoryRecord[], gaps: Gap[]): { r
     const hasMetaUser = type === "user" && (record.isMeta === true || record.userType === "meta" || record.userType === "internal"
       || object(record.origin).kind === "task-notification");
     const hasUsage = type === "assistant" ? object(message.usage) : {};
-    const usage = normalizeUsage([hasUsage], gap => addGap(gaps, gap.kind, gap.message));
+    const usage = normalizeUsage([hasUsage], gap => addGap(gaps, gap.kind, gap.message, gap.messageDescriptor, gap.details));
     const usageKey = string(message.id) ?? recordId;
     let usageAttached = false;
     const attachUsage = (event: NormalizedEvent) => {
@@ -122,7 +122,7 @@ function normalizeQoderRows(rows: readonly RawHistoryRecord[], gaps: Gap[]): { r
           input: block.input, occurredAt, model };
         attachUsage(event);
         normalized.push(normalizedRecord(event, row.raw, row.line));
-        if (!callId) addGap(gaps, "unpaired_call", "Qoder tool_use 缺少原生调用 id，无法配对结果");
+        if (!callId) addGap(gaps, "unpaired_call", "Qoder tool_use 缺少原生调用 id，无法配对结果", { key: "diagnostics.history.adapters.qoder.m006" });
       } else if (type === "user" && block.type === "tool_result") {
         const callId = string(block.tool_use_id);
         const result = object(record.toolUseResult);
@@ -131,9 +131,9 @@ function normalizeQoderRows(rows: readonly RawHistoryRecord[], gaps: Gap[]): { r
           result: { ...result, output: string(result.stdout) ?? visible, exit_code: result.exitCode },
           text: visible, status: resultStatus(block, result), occurredAt, model };
         normalized.push(normalizedRecord(event, row.raw, row.line));
-        if (!callId) addGap(gaps, "unpaired_call", "Qoder tool_result 缺少 tool_use_id，无法配对请求");
+        if (!callId) addGap(gaps, "unpaired_call", "Qoder tool_result 缺少 tool_use_id，无法配对请求", { key: "diagnostics.history.adapters.qoder.m007" });
       } else if (block.type === "tool_result" && type === "assistant") {
-        addGap(gaps, "ambiguous", "Qoder assistant 记录包含 tool_result，未据角色将其当作用户消息");
+        addGap(gaps, "ambiguous", "Qoder assistant 记录包含 tool_result，未据角色将其当作用户消息", { key: "diagnostics.history.adapters.qoder.m008" });
       }
     });
     if (type === "user" && !textBlocks.length && !resultBlocks.length) {
@@ -142,7 +142,7 @@ function normalizeQoderRows(rows: readonly RawHistoryRecord[], gaps: Gap[]): { r
       normalized.push(normalizedRecord(event, row.raw, row.line));
     }
     if (record.agentId && !record.parentSessionId) {
-      addGap(gaps, "ambiguous", "Qoder agentId 或 parentUuid 未证明跨会话父关系，未标记为委派子会话");
+      addGap(gaps, "ambiguous", "Qoder agentId 或 parentUuid 未证明跨会话父关系，未标记为委派子会话", { key: "diagnostics.history.adapters.qoder.m009" });
     }
     if (type === "assistant" && usage && !usageAttached) {
       normalized.push(normalizedRecord({ key: `${recordId}:usage`, kind: "context", text: "原生助手记录包含用量字段",
@@ -157,9 +157,9 @@ async function readQoderSnapshot(location: SourceLocation): Promise<NormalizedSn
   const rawRows = await readJsonlRows(location.path, gaps);
   const ids = sessionIds(rawRows);
   const sessionId = ids.length > 1 ? undefined : location.sessionId ?? location.selector ?? (ids.length === 1 ? ids[0] : undefined);
-  if (ids.length > 1) addGap(gaps, "ambiguous", "单个 Qoder 文件包含多个 sessionId，未合并跨会话正文");
-  if (sessionId && ids.some(id => id !== sessionId)) addGap(gaps, "ambiguous", "Qoder 正文身份与发现身份不一致，仅保留匹配记录");
-  if (!sessionId) addGap(gaps, "unassociated", "Qoder 正文缺少可确认的原生 sessionId");
+  if (ids.length > 1) addGap(gaps, "ambiguous", "单个 Qoder 文件包含多个 sessionId，未合并跨会话正文", { key: "diagnostics.history.adapters.qoder.m010" });
+  if (sessionId && ids.some(id => id !== sessionId)) addGap(gaps, "ambiguous", "Qoder 正文身份与发现身份不一致，仅保留匹配记录", { key: "diagnostics.history.adapters.qoder.m011" });
+  if (!sessionId) addGap(gaps, "unassociated", "Qoder 正文缺少可确认的原生 sessionId", { key: "diagnostics.history.adapters.qoder.m012" });
   const selected = ids.length > 1 ? [] : sessionId
     ? rawRows.filter(row => !string(row.record.sessionId) || row.record.sessionId === sessionId) : rawRows;
   const normalized = normalizeQoderRows(selected, gaps);

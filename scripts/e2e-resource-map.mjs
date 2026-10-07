@@ -109,6 +109,7 @@ try {
   const claudeConfigBefore = await readFile(fixture.claudeConfigPath, "utf8");
   assert.ok(!JSON.stringify(maps).includes("synthetic-secret-keep-private"));
   assert.ok(!JSON.stringify(maps).includes("synthetic-map-secret"));
+  await api("/preferences", "PUT", { language: "zh-CN" });
   await browser(["open", `${base}/#resources`, "--headed", "--browser=chrome"]);
 
   await step("首次列表、地图按需查询与完整范围", `

@@ -96,7 +96,7 @@ export const codeflickerDesktopAdapter: HistoryAdapter = {
         || (start !== undefined && actualStart !== start) || (count !== undefined && lines.length > count)
         || (number(result.end_line) !== undefined && actualStart !== undefined && Number(result.end_line) !== actualStart + lines.length - 1)
         || (number(input.end_line) !== undefined && actualStart !== undefined && actualStart + lines.length - 1 > Number(input.end_line))) {
-        return [{ kind: "read", path: string(input.path), fragments: [], reason: "range_unknown: 桌面读取实际行范围与请求或计数不符" }];
+        return [{ kind: "read", path: string(input.path), fragments: [], reason: "range_unknown: 桌面读取实际行范围与请求或计数不符", reasonDescriptor: { key: "diagnostics.history.adapters.codeflickerDesktop.m001" } }];
       }
       return numbered ? toolEvidence(tool, input, result, visible) : toolEvidence("Read", { file_path: input.path, offset: input.start_line, limit: input.line_count },
         { file: { content: visible, startLine: result.start_line, numLines: result.line_count, totalLines: result.total_lines, filePath: input.path } }, visible);
@@ -106,7 +106,7 @@ export const codeflickerDesktopAdapter: HistoryAdapter = {
       return [{ kind: "edit", path: string(input.path), fragments: input.content ? [{ kind: "added", content: input.content, historicalStart: 1, completeLines: true }] : [] }];
     }
     if (tool === "replace_in_file" && result.file_path !== undefined && result.file_path !== input.path) {
-      return [{ kind: "edit", path: string(input.path), fragments: [], reason: "range_unknown: 桌面替换返回路径与请求不符" }];
+      return [{ kind: "edit", path: string(input.path), fragments: [], reason: "range_unknown: 桌面替换返回路径与请求不符", reasonDescriptor: { key: "diagnostics.history.adapters.codeflickerDesktop.m002" } }];
     }
     return toolEvidence(toolName, input, result, visible);
   },
@@ -114,12 +114,12 @@ export const codeflickerDesktopAdapter: HistoryAdapter = {
     const { cursor, row, raw, findEvent, reference, pair, finish, gap } = context;
     context.occurredAt = desktopTimestamp(record);
     if (record.op === "turn_terminal") return;
-    if (record.kind !== "message" && !record.role) { gap("unsupported_format", `物理记录 ${row} 的桌面记录类型尚未适配`); return; }
+    if (record.kind !== "message" && !record.role) { gap("unsupported_format", `物理记录 ${row} 的桌面记录类型尚未适配`, { key: "diagnostics.history.adapters.codeflickerDesktop.m003", params: { p0: row } }); return; }
     for (const call of desktopCalls(record)) registerRequest(context, { callId: call.id, tool: call.name, input: call.input,
       key: `request:${record.id ?? row}:${call.id}`, cwd: context.source.cwd });
     if (record.role !== "tool") return;
     const callId = string(record.toolCallId);
-    if (!callId) { gap("unpaired_call", "桌面工具结果没有调用身份"); return; }
+    if (!callId) { gap("unpaired_call", "桌面工具结果没有调用身份", { key: "diagnostics.history.adapters.codeflickerDesktop.m004" }); return; }
     const key = `result:${record.id ?? row}:${callId}`;
     if (cursor.seen[key]) { findEvent(cursor.seen[key])?.sources.push(reference(row, raw, callId)); return; }
     const call = pair(callId);

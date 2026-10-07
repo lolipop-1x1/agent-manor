@@ -1,8 +1,8 @@
 # CLI 语言优先级、帮助与 JSON 稳定性
 
 Type: task
-Status: ready-for-agent
-Blocked by: 02, 03
+Status: resolved
+Blocked by: 02
 
 ## 目标与范围
 
@@ -18,6 +18,14 @@ Blocked by: 02, 03
 
 ## Answer
 
-待实现。
+- [CLI](../../../src/cli.ts) 启动时按 `--lang` → `AGENT_MANOR_LANG` → 当前数据目录共享手动偏好 → 系统首个非空语言变量 → 英文确定产品显示语言。支持 `zh-CN`、`en`、`auto`、等号形式与重复参数最后一次覆盖；显式自动模式忽略较低优先级手动值，无效显式值明确失败。
+- 命令帮助、参数描述和已有覆盖摘要接入[英文目录](../../../src/i18n/locales/en/cli.ts)与[中文目录](../../../src/i18n/locales/zh-CN/cli.ts)。摘要数字和日期随语言格式化；仓库名称、路径、版本、筛选 JSON 与原始诊断保留原文。
+- 帮助按 `--home`／既有 `AGENT_MANOR_HOME` 读取同一份偏好。参数及环境变量覆盖不写回设置；命令执行途中语言固定，下一命令重新读取。
+- 产品错误及采集缺口按可选稳定消息描述翻译，缺口的附加描述一并显示；第三方和旧诊断保留原文并使用本地化的原始详情语境。Commander 的缺失参数、未知命令等错误通过其稳定 `code` 关联提示，不解析原始句子。
+- 默认 pretty JSON 及 `--json` 保持字段、原文、代码、枚举、数字与时间戳一致。错误 JSON 只附加与语言无关的描述标识；不混入帮助正文或本地化输出。后台自动启动明确使用 `--lang auto`，避免已被父命令覆盖的无效环境／损坏偏好再次阻塞子服务。
+- 验证：新增[CLI 语言合成测试](../../../tests/cli-language.test.ts) 6 项及[既有 CLI/API 回归](../../../tests/service-cli.test.ts) 5 项共 11 项通过；覆盖真实 CLI 子进程、隔离回环服务、偏好执行中更新、API 错误描述转发、编译产物及自动启动。`check:server`、`check:i18n`、`check:public` 和 `git diff --check` 通过。
 
 ## Comments
+
+- 帮助、摘要及语言解析可在 02 完成后独立实施，诊断描述按共享可选契约接入；最终集成等待 03。
+- 07 已与 03 的 `RequestError.messageDescriptor`、API 描述转发及缺口 `details` 集成。所有测试只使用人工数据、临时目录与隔离来源；未改真实客户端配置，未提交或推送。

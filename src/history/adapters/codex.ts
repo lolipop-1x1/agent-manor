@@ -39,8 +39,8 @@ export const codexAdapter: HistoryAdapter = {
         for (const candidate of concrete) candidate.sources.push(...event.sources);
         source.events = source.events.filter((candidate) => candidate.id !== event.id);
       } else {
-        event.reason = "unsupported_tool: exec 包装未发现具体事件，未执行或猜测 JavaScript";
-        gap("unsupported_tool", event.reason);
+        event.reason = "unsupported_tool: exec 包装未发现具体事件，未执行或猜测 JavaScript"; event.reasonDescriptor = { key: "diagnostics.history.adapters.codex.m001" };
+        gap("unsupported_tool", event.reason, event.reasonDescriptor);
       }
       return true;
     }
@@ -57,7 +57,7 @@ export const codexAdapter: HistoryAdapter = {
         source.events = source.events.filter((candidate) => candidate.id !== event.id);
         return true;
       }
-      if (identities.size > 1) gap("ambiguous", "直接调用与具体命令事件存在多个对应候选，未合并身份");
+      if (identities.size > 1) gap("ambiguous", "直接调用与具体命令事件存在多个对应候选，未合并身份", { key: "diagnostics.history.adapters.codex.m002" });
     }
     return false;
   },
@@ -99,10 +99,10 @@ export const codexAdapter: HistoryAdapter = {
           const target = index ? { ...event, id: `${event.id}:file:${index}`, sources: [...event.sources] } : event;
           target.kind = part.kind; target.path = part.path;
           target.fragments = event.status === "success" && output !== undefined ? part.fragments : [];
-          target.reason = output === undefined ? "range_unknown: 具体命令缺少 formatted_output；未采用 stdout 补足" : event.status !== "success" ? "命令未成功完成" : part.reason;
+          target.reason = output === undefined ? "range_unknown: 具体命令缺少 formatted_output；未采用 stdout 补足" : event.status !== "success" ? "命令未成功完成" : part.reason; target.reasonDescriptor = output === undefined ? { key: "diagnostics.history.adapters.codex.m003" } : event.status !== "success" ? { key: "diagnostics.history.adapters.codex.m004" } : part.reasonDescriptor;
           if (index) source.events.push(target);
-          if (target.reason?.startsWith("range_unknown:")) gap("range_unknown", target.reason);
-          if (target.reason?.startsWith("unsupported_tool:")) gap("unsupported_tool", target.reason);
+          if (target.reason?.startsWith("range_unknown:")) gap("range_unknown", target.reason, target.reasonDescriptor);
+          if (target.reason?.startsWith("unsupported_tool:")) gap("unsupported_tool", target.reason, target.reasonDescriptor);
         });
       } else {
         event.kind = "edit";
@@ -114,9 +114,9 @@ export const codexAdapter: HistoryAdapter = {
           target.kind = "edit"; target.path = normalizeHistoryPath(string(change.move_path)) ?? changedPath;
           target.fragments = event.status === "success" ? change.type === "add" && typeof change.content === "string" ? [{ kind: "added", content: change.content, historicalStart: 1, path: target.path, completeLines: true }]
             : change.type === "update" ? unifiedFragments(string(change.unified_diff) ?? "", target.path) : [] : [];
-          target.reason = event.status !== "success" ? "文件修改未成功" : change.type === "delete" ? "range_unknown: 文件删除保留编辑活动，无当前新增行" : change.move_path ? "range_unknown: move_path 关系保留在输入；路径移动不证明当前内容对应" : undefined;
+          target.reason = event.status !== "success" ? "文件修改未成功" : change.type === "delete" ? "range_unknown: 文件删除保留编辑活动，无当前新增行" : change.move_path ? "range_unknown: move_path 关系保留在输入；路径移动不证明当前内容对应" : undefined; target.reasonDescriptor = event.status !== "success" ? { key: "diagnostics.history.adapters.codex.m005" } : change.type === "delete" ? { key: "diagnostics.history.adapters.codex.m006" } : change.move_path ? { key: "diagnostics.history.adapters.codex.m007" } : undefined;
           if (index) source.events.push(target);
-          if (target.reason) gap("range_unknown", target.reason);
+          if (target.reason) gap("range_unknown", target.reason, target.reasonDescriptor);
         });
       }
       return;
@@ -128,7 +128,7 @@ export const codexAdapter: HistoryAdapter = {
         const callId = string(payload.call_id) ?? `record:${row}`;
         let input: unknown = payload.input ?? {};
         if (typeof payload.arguments === "string") {
-          try { input = JSON.parse(payload.arguments); } catch { gap("unsupported_format", `调用 ${row} arguments 不是有效 JSON`); }
+          try { input = JSON.parse(payload.arguments); } catch { gap("unsupported_format", `调用 ${row} arguments 不是有效 JSON`, { key: "diagnostics.history.adapters.codex.m008", params: { p0: row } }); }
         }
         const key = payload.id ? `request:${payload.id}:${callId}:${hash(JSON.stringify(input))}` : undefined;
         registerRequest(context, { callId, tool, input, cwd: string(object(input).workdir), key, wrapper: tool === "exec", turnId: string(payload.turn_id) });
@@ -148,7 +148,7 @@ export const codexAdapter: HistoryAdapter = {
           if (structured.is_error === true || structured.success === false) status = "failure";
           else if (structured.success === true || structured.file || Array.isArray(structured.structuredPatch) || structured.type === "create") status = "success";
           if (call.tool === "apply_patch" && /^(?:Success\.|Done!|\{\})/.test(textContent(payload.output))) status = "success";
-          finish(call, structuredOutput, result.output || textContent(payload.output), status, row, raw, status === "unknown" ? result.reason : undefined);
+          finish(call, structuredOutput, result.output || textContent(payload.output), status, row, raw, status === "unknown" ? result.reason : undefined, status === "unknown" ? result.reasonDescriptor : undefined);
           cursor.seen[outputKey] = call.eventId;
         }
       }
@@ -156,6 +156,6 @@ export const codexAdapter: HistoryAdapter = {
     }
     const supportedRecords = ["session_meta", "turn_context", "event_msg", "response_item", "compacted", "compaction", "token_usage_record", "world_state", "inter_agent_communication_metadata"];
     const recordType = string(record.type) ?? "<缺少类型>";
-    if (!supportedRecords.includes(recordType)) gap("unsupported_format", `物理记录 ${row} 的顶层类型 ${recordType} 尚未适配`);
+    if (!supportedRecords.includes(recordType)) gap("unsupported_format", `物理记录 ${row} 的顶层类型 ${recordType} 尚未适配`, { key: "diagnostics.history.adapters.codex.m009", params: { p0: row, p1: String(recordType) } });
   },
 };

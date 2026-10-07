@@ -1,3 +1,4 @@
+import type { MessageDescriptor } from "../../i18n/types.js";
 import type { Client, EvidenceRecord, Gap, HistoryEvent, ParsedSource, SourceReference } from "../../contracts.js";
 import type { ToolEvidence } from "../extraction.js";
 import type { HistoryCursor, HistoryRelationship, ParsedHistorySource, PendingCall, SourceLocation } from "../types.js";
@@ -25,11 +26,11 @@ export interface HistoryAdapterContext {
   source: ParsedHistorySource;
   cursor: HistoryCursor;
   hash(value: string | Uint8Array): string;
-  gap(kind: Gap["kind"], message: string): void;
+  gap(kind: Gap["kind"], message: string, messageDescriptor?: MessageDescriptor, details?: MessageDescriptor[]): void;
   reference(recordLine: number, raw: string, callId?: string): SourceReference;
   findEvent(id: string): HistoryEvent | undefined;
   createEvent(tool: string, input: unknown, row: number, raw: string, occurredAt?: string, cwd?: string, key?: string): HistoryEvent;
-  finish(call: PendingCall, result: unknown, visible: string, status: HistoryEvent["status"], row: number, raw: string, reason?: string): void;
+  finish(call: PendingCall, result: unknown, visible: string, status: HistoryEvent["status"], row: number, raw: string, reason?: string, reasonDescriptor?: MessageDescriptor): void;
   pair(callId: string, requestUuid?: string): PendingCall | undefined;
 }
 

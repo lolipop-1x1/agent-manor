@@ -1,3 +1,4 @@
+import { errorDescriptor } from "../i18n/diagnostics.js";
 import { randomUUID } from "node:crypto";
 import { realpath } from "node:fs/promises";
 import { isAbsolute, relative, resolve, sep } from "node:path";
@@ -41,7 +42,7 @@ function eventsBySource(events: HistoryEvent[]): Map<string, HistoryEvent[]> {
 export async function refreshRepository(store: AnalysisStore, jobId: string, roots?: DiscoverRoots, clearCache = false): Promise<void> {
   const job = store.getJob(jobId);
   const repository = store.getRepository(job.repositoryId);
-  store.updateJob(jobId, { status: "running", phase: "盘点当前仓库", progress: 0.05, startedAt: new Date().toISOString() });
+  store.updateJob(jobId, { status: "running", phase: "盘点当前仓库", phaseDescriptor: { key: "diagnostics.index.refresh.m001" }, progress: 0.05, startedAt: new Date().toISOString() });
   try {
     const baseline = await scanRepository(repository.path);
     let locations: SourceLocation[];
@@ -103,18 +104,18 @@ export async function refreshRepository(store: AnalysisStore, jobId: string, roo
       } catch (error) {
         if (!missing(error)) throw error;
         const known = byPath.get(sourceLocationKey(location)) ?? (location.sourceId ? byId.get(location.sourceId) : undefined);
-        if (known && monitored.has(known.sourceId)) gaps.push({ kind: "source_missing", sourceId: known.sourceId, message: "已关联来源在读取前缺失；新版已排除该来源" });
+        if (known && monitored.has(known.sourceId)) gaps.push({ kind: "source_missing", sourceId: known.sourceId, message: "已关联来源在读取前缺失；新版已排除该来源", messageDescriptor: { key: "diagnostics.index.refresh.m002" } });
       }
     }
 
-    store.updateJob(jobId, { phase: "解析关联历史", progress: 0.2 });
+    store.updateJob(jobId, { phase: "解析关联历史", phaseDescriptor: { key: "diagnostics.index.refresh.m003" }, progress: 0.2 });
     for (const location of locations) if (await possible(location)) await parse(location);
     const availableIds = new Set(parsed.map((source) => source.sourceId));
     for (const old of tracked) {
       if (availableIds.has(old.sourceId)) continue;
       const replacement = parsed.find((source) => sourceLocationKey(source) === sourceLocationKey(old));
       if (replacement) {
-        gaps.push({ kind: "source_missing", sourceId: old.sourceId, message: "原来源被不同会话替换；新版已排除原来源" });
+        gaps.push({ kind: "source_missing", sourceId: old.sourceId, message: "原来源被不同会话替换；新版已排除原来源", messageDescriptor: { key: "diagnostics.index.refresh.m004" } });
         continue;
       }
       if (gaps.some((gap) => gap.sourceId === old.sourceId && gap.kind === "source_missing")) continue;
@@ -128,7 +129,7 @@ export async function refreshRepository(store: AnalysisStore, jobId: string, roo
         stats.parsedRecords += (source.cursor as { parsedRecords?: number } | undefined)?.parsedRecords ?? 0;
       } catch (error) {
         if (!missing(error)) throw error;
-        gaps.push({ kind: "source_missing", sourceId: old.sourceId, message: "已关联来源缺失；新版已排除该来源，可对照上一版" });
+        gaps.push({ kind: "source_missing", sourceId: old.sourceId, message: "已关联来源缺失；新版已排除该来源，可对照上一版", messageDescriptor: { key: "diagnostics.index.refresh.m005" } });
       }
     }
 
@@ -215,7 +216,7 @@ export async function refreshRepository(store: AnalysisStore, jobId: string, roo
     const mappingEntries: { key: string; mapping: ReturnType<typeof matchEvent> }[] = [];
     const files = new Map(baseline.files.map((file) => [file.path, file]));
     const selectedEvents = [...events.values()];
-    store.updateJob(jobId, { phase: "对应当前源码", progress: 0.6 });
+    store.updateJob(jobId, { phase: "对应当前源码", phaseDescriptor: { key: "diagnostics.index.refresh.m006" }, progress: 0.6 });
     for (const event of selectedEvents) {
       if (event.kind !== "read" && event.kind !== "edit") continue;
       for (const path of eventFilePaths(event, baseline.repository)) {
@@ -235,10 +236,10 @@ export async function refreshRepository(store: AnalysisStore, jobId: string, roo
     const snapshot: AnalysisSnapshot = { repository: publishedRepository, version, baseline,
       sources: snapshotSources, events: selectedEvents, mappings: mappingEntries.map((entry) => entry.mapping),
       gaps: [...new Map(gaps.map((gap) => [JSON.stringify(gap), gap])).values()], createdAt: new Date().toISOString(), previousVersion: repository.version };
-    store.updateJob(jobId, { phase: "发布完整结果", progress: 0.95 });
+    store.updateJob(jobId, { phase: "发布完整结果", phaseDescriptor: { key: "diagnostics.index.refresh.m007" }, progress: 0.95 });
     store.publish({ snapshot, sources: { version, sources, unassociated, gaps: snapshot.gaps },
       parsed, mappings: mappingEntries, stats, clearCache, jobId });
   } catch (error) {
-    store.failJob(jobId, error instanceof Error ? error.message : String(error));
+    store.failJob(jobId, error instanceof Error ? error.message : String(error), errorDescriptor(error));
   }
 }

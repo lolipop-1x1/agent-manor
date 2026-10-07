@@ -1,3 +1,5 @@
+import type { MessageDescriptor } from "../../i18n/types.js";
+import { DiagnosticError } from "../../i18n/diagnostics.js";
 import { constants } from "node:fs";
 import { lstat, open } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join } from "node:path";
@@ -69,7 +71,7 @@ export function normalizeUsage(raws: readonly unknown[], gap: (gap: Gap) => void
   const cacheWrite = tokenField(inputs, writeAliases);
   const input = tokenField(direct, inputAliases);
   if (input !== undefined && (hasTokenField(inputs, readAliases) || hasTokenField(inputs, writeAliases))) {
-    gap({ kind: "ambiguous", message: "原生输入与缓存桶的分母口径未核验，未计算缓存比例" });
+    gap({ kind: "ambiguous", message: "原生输入与缓存桶的分母口径未核验，未计算缓存比例", messageDescriptor: { key: "diagnostics.history.adapters.nativeJsonl.m001" } });
   }
   const usage = {
     inputTokens: input !== undefined && cacheRead === undefined && cacheWrite === undefined ? input : undefined,
@@ -83,7 +85,7 @@ export function normalizeUsage(raws: readonly unknown[], gap: (gap: Gap) => void
 
 export async function readJsonlRows(path: string, gaps: Gap[]): Promise<RawHistoryRecord[]> {
   const info = await lstat(path);
-  if (!info.isFile() || info.isSymbolicLink()) throw new Error("原生历史必须为普通文件");
+  if (!info.isFile() || info.isSymbolicLink()) throw new DiagnosticError("原生历史必须为普通文件", { key: "diagnostics.history.adapters.nativeJsonl.m002" });
   const handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
   try {
     return await readBoundedJsonl(path, gaps, handle.createReadStream({ autoClose: false }));
@@ -137,8 +139,8 @@ export function fileSessionId(path: string): string | undefined {
   return name.endsWith(".jsonl") ? name.slice(0, -6) || undefined : undefined;
 }
 
-export function addGap(gaps: Gap[], kind: Gap["kind"], message: string): void {
-  if (!gaps.some(gap => gap.kind === kind && gap.message === message)) gaps.push({ kind, message });
+export function addGap(gaps: Gap[], kind: Gap["kind"], message: string, messageDescriptor?: MessageDescriptor, details?: MessageDescriptor[]): void {
+  if (!gaps.some(gap => gap.kind === kind && gap.message === message)) gaps.push({ kind, message, messageDescriptor, details });
 }
 
 export function absoluteDirectory(value: unknown): string | undefined {

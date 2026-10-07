@@ -7,12 +7,12 @@ import { resourceOverviewIncomplete } from "./overview.js";
 export function buildResourceMap(overview: ResourceOverviewResult, history: ResourceUsageResult | null,
   query: ResourceMapQuery): ResourceMapResult {
   const kind = query.kind ?? "skill", metric = query.metric ?? "calls";
-  if (overview.resources.length !== overview.total) throw new ServiceError("INVALID_INPUT", "地图查询需要完整资源结果");
+  if (overview.resources.length !== overview.total) throw new ServiceError("INVALID_INPUT", "地图查询需要完整资源结果", { key: "diagnostics.resources.map.completeRequired" });
   if (!["calls", "sessions", "reads"].includes(metric) || kind === "mcp" && metric === "reads") {
-    throw new ServiceError("INVALID_INPUT", "所选资源不支持该面积指标");
+    throw new ServiceError("INVALID_INPUT", "所选资源不支持该面积指标", { key: "diagnostics.service.resourceInput.m003" });
   }
   if (query.maxValue !== undefined && (!Number.isSafeInteger(query.maxValue) || query.maxValue < 0)) {
-    throw new ServiceError("INVALID_INPUT", "maxValue 必须是非负安全整数");
+    throw new ServiceError("INVALID_INPUT", "maxValue 必须是非负安全整数", { key: "diagnostics.service.resourceInput.m004" });
   }
   const positive: ResourceMapNode[] = [], zero: ResourceMapNode[] = [], review: ResourceMapNode[] = [];
   const recorded = new Map(history?.resources.map(row => [row.identity.id, row.stats]) ?? []);
@@ -23,7 +23,7 @@ export function buildResourceMap(overview: ResourceOverviewResult, history: Reso
     const value = metrics?.[metric] ?? null;
     if (value !== null && query.maxValue !== undefined && value > query.maxValue) continue;
     const timestamp = row.stats?.lastUsedAt;
-    const node: ResourceMapNode = { id: row.identity.id, name: row.identity.name, value, share: null, metrics,
+    const node: ResourceMapNode = { id: row.identity.id, name: row.identity.name, ...(row.identity.nameDescriptor ? { nameDescriptor: row.identity.nameDescriptor } : {}), value, share: null, metrics,
       lastUsedAt: timestamp && Number.isFinite(Date.parse(timestamp)) ? timestamp : null,
       missingTimeEvents: row.stats?.missingTimeEvents ?? recorded.get(row.identity.id)?.missingTimeEvents ?? 0,
       clients: row.clients, favorite: row.favorite,

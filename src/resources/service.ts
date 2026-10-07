@@ -172,7 +172,7 @@ export class ResourceService {
   async localDetail(id: string, query: ResourceLocalQuery): Promise<ResourceLocalDetail> {
     const { rows, inventory, history } = await this.localRows({ ...query, q: undefined, candidate: "all" });
     const row = rows.find(row => row.body.id === id);
-    if (!row) throw new ServiceError("SOURCE_NOT_FOUND", "本地资源不在所选范围中");
+    if (!row) throw new ServiceError("SOURCE_NOT_FOUND", "本地资源不在所选范围中", { key: "diagnostics.resources.service.m001" });
     const usage = history?.bodies.get(row.body.id);
     return { row, inventory: { observedAt: inventory.observedAt, sources: inventory.sources.filter(source => row.entries.some(entry => entry.sourceId === source.id)), gaps: inventory.gaps },
       timeZone: history?.timeZone ?? Intl.DateTimeFormat().resolvedOptions().timeZone, trend: usage?.trend ?? [], clients: usage?.clients ?? [], projects: usage?.projects ?? [] };

@@ -40,6 +40,8 @@ async function browser(args) {
 }
 
 async function verify(page, fixture) {
+  // 只覆盖本次浏览器的展示偏好响应，不改写已有服务的用户设置。
+  await page.route("**/api/v1/preferences", route => route.fulfill({ contentType: "application/json", body: JSON.stringify({ language: "zh-CN" }) }));
   const ensure = (condition, message) => { if (!condition) throw new Error(message); };
   const errors = { page: 0, console: 0, http: 0, request: 0, listener: 0 };
   const requests = [];
@@ -507,7 +509,7 @@ async function verify(page, fixture) {
     await dragResize(right, -(initialRight - await paneWidth(".evidence-pane")));
     ensure(await selected() === fixture.small.path, "调整宽度丢失文件选择。");
     preserved(before, await view(), "面板调整恢复");
-    await page.locator(".workspace").screenshot({ path: `${fixture.artifacts}/resized-panels.png` });
+    await page.getByRole("region", { name: "代码地图视图", exact: true }).locator(".workspace").screenshot({ path: `${fixture.artifacts}/resized-panels.png` });
   });
 
   await withoutQuery("着色指标保留视野", async () => {

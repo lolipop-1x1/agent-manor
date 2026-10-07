@@ -1,5 +1,6 @@
 import type { SessionMessage, SessionTimelineEvent, SessionUsage } from "../src/session-contracts";
 import { groupedTurns } from "./session-model";
+import { t } from "./i18n";
 
 export interface TraceRecord {
   message: SessionMessage;
@@ -77,7 +78,7 @@ export function timelineProjection(nodes: ReturnType<typeof timelineNodes>, mode
 }
 
 export function tracePreview(text: string): string {
-  return text.slice(0, 600).replace(/\s+/g, " ").trim() || "无正文";
+  return text.slice(0, 600).replace(/\s+/g, " ").trim() || t("sessions.body.emptyPreview");
 }
 
 export const TRACE_ROW_HEIGHT = 40;

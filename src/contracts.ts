@@ -1,3 +1,4 @@
+import type { MessageDescriptor } from "./i18n/types.js";
 import type { Client } from "./clients.js";
 export type { Client } from "./clients.js";
 export type FileCategory = "source" | "config" | "docs" | "unknown";
@@ -61,6 +62,7 @@ export interface HistoryEvent {
   input?: JsonValue;
   output?: JsonValue;
   reason?: string;
+  reasonDescriptor?: MessageDescriptor;
 }
 
 export type GapKind =
@@ -79,6 +81,8 @@ export type GapKind =
 export interface Gap {
   kind: GapKind;
   message: string;
+  messageDescriptor?: MessageDescriptor;
+  details?: MessageDescriptor[];
   sourceId?: string;
   count?: number;
 }
@@ -145,6 +149,7 @@ export interface Mapping {
   exactRanges: LineRange[];
   nearRanges: LineRange[];
   unknownReason?: string;
+  unknownReasonDescriptors?: MessageDescriptor[];
   ruleVersion: string;
 }
 
@@ -240,11 +245,13 @@ export interface Job {
   repositoryId: string;
   status: JobStatus;
   phase: string;
+  phaseDescriptor?: MessageDescriptor;
   /** 0 到 1；未知进度可保留 0 并通过 phase 说明。 */
   progress: number;
   startedAt?: string;
   finishedAt?: string;
   error?: string;
+  errorDescriptor?: MessageDescriptor;
   version?: string;
 }
 
@@ -344,5 +351,6 @@ export interface ApiErrorResponse {
   error: {
     code: ApiErrorCode;
     message: string;
+    messageDescriptor?: MessageDescriptor;
   };
 }

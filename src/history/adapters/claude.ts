@@ -81,13 +81,13 @@ export const claudeAdapter: HistoryAdapter = {
         if (block.is_error !== true && (structured.file || Array.isArray(structured.structuredPatch) || ["create", "update"].includes(string(structured.type) ?? ""))) status = "success";
         if (structured.backgroundTaskId || structured.timedOutAfterMs || structured.interrupted === true) status = "unknown";
         const reason = structured.backgroundTaskId ? "后台任务尚无完成结果" : returnedText(visible).truncated ? "range_unknown: 持久化或截断输出未补读旁路文件" : undefined;
-        finish(call, result, visible, status, row, raw, reason);
-        if (structured.backgroundTaskId) gap("unpaired_call", "后台任务返回仅确认已接收；后续通知形态未适配，当前活动保持 unknown");
+        finish(call, result, visible, status, row, raw, reason, structured.backgroundTaskId ? { key: "diagnostics.history.adapters.claude.backgroundPending" } : returnedText(visible).truncated ? { key: "diagnostics.history.adapters.claude.outputTruncated" } : undefined);
+        if (structured.backgroundTaskId) gap("unpaired_call", "后台任务返回仅确认已接收；后续通知形态未适配，当前活动保持 unknown", { key: "diagnostics.history.adapters.claude.m001" });
         cursor.seen[key] = call.eventId;
       }
     });
     const supportedRecords = ["assistant", "user", "system", "progress", "summary", "file-history-snapshot", "file-history-delta", "attachment", "mode", "permission-mode", "last-prompt", "queue-operation"];
     const recordType = string(record.type) ?? "<缺少类型>";
-    if (!supportedRecords.includes(recordType)) gap("unsupported_format", `物理记录 ${row} 的顶层类型 ${recordType} 尚未适配`);
+    if (!supportedRecords.includes(recordType)) gap("unsupported_format", `物理记录 ${row} 的顶层类型 ${recordType} 尚未适配`, { key: "diagnostics.history.adapters.claude.m002", params: { p0: row, p1: String(recordType) } });
   },
 };

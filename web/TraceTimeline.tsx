@@ -1,14 +1,18 @@
+import { getLanguage, t, useI18n } from "./i18n";
+import { formatDateTime, formatNumber, formatTime } from "../src/i18n";
 import { useMemo, useState } from "react";
 import type { SessionTimelineEvent } from "../src/session-contracts";
+import { SessionError } from "./SessionControls";
 import { kindLabels } from "./SessionMessage";
 import { turnTitle } from "./session-model";
 import { timelineNodes, timelineProjection, type TraceProjection } from "./session-trace-model";
 
-const projections = { sequence: "事件顺序", turn: "轮次", time: "记录时间" } as const;
+const projections = { sequence: "sessions.timeline.sequence", turn: "sessions.timeline.turn", time: "sessions.timeline.time" } as const;
 export function TraceTimeline({ events, selectedId, loading, error, onSelect, onRetry }: {
-  events: SessionTimelineEvent[]; selectedId?: string; loading: boolean; error?: string;
+  events: SessionTimelineEvent[]; selectedId?: string; loading: boolean; error?: Error;
   onSelect: (event: SessionTimelineEvent) => void; onRetry: () => void;
 }) {
+  useI18n();
   const [mode, setMode] = useState<TraceProjection>("sequence");
   const [hover, setHover] = useState<{ index: number; x: number; y: number }>();
   const nodes = useMemo(() => timelineNodes(events), [events]);
@@ -24,15 +28,15 @@ export function TraceTimeline({ events, selectedId, loading, error, onSelect, on
     return [...bins.values()];
   }, [spans, selected]);
   const hovered = hover ? nodes[hover.index] : undefined;
-  const label = (event: SessionTimelineEvent) => `#${event.ordinal} · ${event.usage ? "请求用量记录" : event.tool ?? kindLabels[event.kind]} · ${turnTitle(event.turnId, 1)}`;
+  const label = (event: SessionTimelineEvent) => `#${formatNumber(getLanguage(), event.ordinal)} · ${event.usage ? t("sessions.timeline.usage") : event.tool ?? t(kindLabels[event.kind])} · ${turnTitle(event.turnId, 1)}`;
   const nearest = (x: number, lane: number) => spans.filter(span => span.lane === lane).reduce<typeof spans[number] | undefined>((best, span) => !best || Math.abs(span.x - x) < Math.abs(best.x - x) ? span : best, undefined);
-  const time = (value: number) => new Date(value).toLocaleTimeString("zh-CN", { hour12: false });
-  return <section className="trace-timeline" aria-label="会话轨迹总览">
-    <div className="trace-timeline-head"><div role="group" aria-label="时间线排列方式">{Object.entries(projections).map(([key, name]) => <button key={key} className="text-button" aria-pressed={mode === key} onClick={() => { setMode(key as TraceProjection); setHover(undefined); }}>{name}</button>)}</div>
-      <span>{loading ? "正在读取总览…" : `全会话 · ${nodes.length.toLocaleString("zh-CN")} 个节点`}</span></div>
-    {error ? <p className="trace-timeline-error" role="alert">{error} <button className="text-button" onClick={onRetry}>重试总览</button></p> : <>
-      <div className="trace-timeline-plot"><div className="trace-lane-labels" aria-hidden="true"><span>输入</span><span>模型</span><span>工具</span></div>
-        <svg viewBox="0 0 1000 66" preserveAspectRatio="none" role="group" tabIndex={0} aria-label="轨迹时间线，左右方向键选择节点，回车查看详情" onKeyDown={event => {
+  const time = (value: number) => formatTime(getLanguage(), value);
+  return <section className="trace-timeline" aria-label={t("sessions.timeline.title")}>
+    <div className="trace-timeline-head"><div role="group" aria-label={t("sessions.timeline.arrangement")}>{Object.entries(projections).map(([key, name]) => <button key={key} className="text-button" aria-pressed={mode === key} onClick={() => { setMode(key as TraceProjection); setHover(undefined); }}>{t(name)}</button>)}</div>
+      <span>{loading ? t("sessions.timeline.loading") : t("sessions.timeline.nodeCount", { count: nodes.length })}</span></div>
+    {error ? <p className="trace-timeline-error" role="alert"><SessionError error={error} /> <button className="text-button" onClick={onRetry}>{t("sessions.timeline.retry")}</button></p> : <>
+      <div className="trace-timeline-plot"><div className="trace-lane-labels" aria-hidden="true"><span>{t("sessions.usage.input")}</span><span>{t("sessions.timeline.model")}</span><span>{t("sessions.message.tool")}</span></div>
+        <svg viewBox="0 0 1000 66" preserveAspectRatio="none" role="group" tabIndex={0} aria-label={t("sessions.timeline.keyboard")} onKeyDown={event => {
           if (!["ArrowLeft", "ArrowRight", "Home", "End", "Enter"].includes(event.key) || !spans.length) return;
           event.preventDefault();
           const current = selected ? spans.indexOf(selected) : -1;
@@ -54,12 +58,12 @@ export function TraceTimeline({ events, selectedId, loading, error, onSelect, on
           {selected && <rect x={5 + selected.x * 990 - 4} y={selected.lane * 22 + 5} width={9} height={13} rx={2} className="trace-mark-selection" />}
         </svg>
         {hovered && hover && <div className="trace-timeline-tooltip" role="tooltip" style={{ left: `calc(44px + (100% - 44px) * ${hover.x / 100})`, top: hover.y + 18 }}>
-          <strong>{label(hovered.event)}</strong><span>{hovered.event.occurredAt ? new Date(hovered.event.occurredAt).toLocaleString("zh-CN", { hour12: false }) : "时间未记录"}</span>
-          {hovered.event.model && <span>{hovered.event.model}</span>}{hovered.event.durationMs !== undefined && <span>记录耗时 {hovered.event.durationMs.toLocaleString("zh-CN")} ms</span>}
+          <strong>{label(hovered.event)}</strong><span>{hovered.event.occurredAt ? formatDateTime(getLanguage(), hovered.event.occurredAt) : t("sessions.message.timeMissing")}</span>
+          {hovered.event.model && <span>{hovered.event.model}</span>}{hovered.event.durationMs !== undefined && <span>{t("sessions.timeline.duration", { value: formatNumber(getLanguage(), hovered.event.durationMs) })}</span>}
         </div>}
       </div>
-      <div className="trace-timeline-foot"><div className="trace-timeline-legend"><span><i className="key-user" />用户</span><span><i className="key-context" />上下文</span><span><i className="key-model" />模型</span><span><i className="key-tool" />工具</span></div>
-        {mode === "time" && <span>{spans.length ? `${time(start)} → ${time(end)}` : "没有已记录时间"}</span>}{missing > 0 && <span>{missing} 个节点时间未记录</span>}</div>
+      <div className="trace-timeline-foot"><div className="trace-timeline-legend"><span><i className="key-user" />{t("sessions.kind.user")}</span><span><i className="key-context" />{t("sessions.kind.context")}</span><span><i className="key-model" />{t("sessions.timeline.model")}</span><span><i className="key-tool" />{t("sessions.message.tool")}</span></div>
+        {mode === "time" && <span>{spans.length ? `${time(start)} → ${time(end)}` : t("sessions.timeline.noTime")}</span>}{missing > 0 && <span>{t("sessions.timeline.missingTime", { count: missing })}</span>}</div>
     </>}
   </section>;
 }

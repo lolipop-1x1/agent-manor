@@ -46,3 +46,7 @@
 .help-popover-body dd { margin: 2px 0 0; color: var(--muted); }
 .section-actions { display: flex; align-items: center; justify-content: flex-end; gap: 10px; }
 .section-actions > span { color: var(--muted); font-size: 10px; }
+
+.language-menu { min-width: 210px; max-height: var(--radix-dropdown-menu-content-available-height); overflow-y: auto; }
+.language-menu .filter-option { padding-left: 29px; }
+.language-menu .filter-check { position: absolute; left: 9px; margin-left: 0; }

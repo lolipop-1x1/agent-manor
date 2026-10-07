@@ -82,6 +82,56 @@ function source(store: SessionStore, summary: SessionSourceMeta, messages: Sessi
   store.finishRevision(pending.revision, summary);
   return { path: summary.path, revision: pending.revision, fingerprint: "synthetic-fingerprint" };
 }
+
+test("缺失 Skill 来源持久化并贯通画像与资源事件，真实同名独立保留", async () => fixture(store => {
+  const id = "resource-provenance";
+  const descriptor = { key: "sessions.resource.nameUnrecorded" };
+  const records = [message(id, 1, { kind: "tool_call", tool: "Skill", resource: { kind: "skill_call", name: "未记录名称", nameDescriptor: descriptor } }),
+    message(id, 2, { kind: "tool_call", tool: "Skill", resource: { kind: "skill_call", name: "未记录名称" } })];
+  store.publish(store.createJob().id, [source(store, meta(id), records)], []);
+  const read = store.messages(id, { mode: "full" }).messages;
+  assert.deepEqual(read[0]?.resource?.nameDescriptor, descriptor);
+  assert.equal(read[1]?.resource?.nameDescriptor, undefined);
+  const profile = store.profile(id);
+  assert.equal(profile.resources.length, 2);
+  assert.ok(profile.resources.every(resource => resource.name === "未记录名称" && resource.count === 1));
+  assert.equal(profile.resources.filter(resource => resource.nameDescriptor).length, 1);
+  const events = [...store.resourceEvents().events];
+  assert.deepEqual(events[0]?.nameDescriptor, descriptor);
+  assert.equal(events[1]?.nameDescriptor, undefined);
+  assert.equal(store.messages(id, { mode: "full", resourceName: "未记录名称" }).total, 2);
+}));
+
+test("父标题携带生成描述，列表、消息、搜索和分叉保持真实同名", async () => fixture(store => {
+  const unnamed = source(store, meta("unnamed-parent", { title: "未命名会话", titleOrigin: "fallback" }), []);
+  const recorded = source(store, meta("recorded-parent", { title: "未命名会话" }), []);
+  const child = source(store, meta("generated-child", { parentSessionId: "unnamed-parent", relationship: "child" }), [message("generated-child", 1, { text: "父标题定位" })]);
+  const real = source(store, meta("recorded-child", { parentSessionId: "recorded-parent", relationship: "child" }), []);
+  const fork = source(store, meta("generated-fork", { parentSessionId: "unnamed-parent", relationship: "fork" }), []);
+  store.publish(store.createJob().id, [unnamed, recorded, child, real, fork], []);
+  for (const session of [store.messages("generated-child").session, store.messages("generated-fork").session,
+    store.list({ includeSubagents: true }).sessions.find(session => session.id === "generated-child")!, store.search({ q: "父标题定位" }).hits[0]!.session]) {
+    assert.equal(session.parentTitle, "未命名会话");
+    assert.deepEqual(session.parentTitleDescriptor, { key: "sessions.title.unnamed" });
+  }
+  assert.equal(store.messages("recorded-child").session.parentTitle, "未命名会话");
+  assert.equal(store.messages("recorded-child").session.parentTitleDescriptor, undefined);
+}));
+
+test("生成正文描述经过索引持久化后保留，搜索使用原文，估算公式附带稳定描述", async () => fixture(store => {
+  const summary = meta("generated-description", { messageCount: 2, turnCount: 1 });
+  const records = [message(summary.id, 1, { kind: "system", text: "未记录内容", textDescriptor: { key: "sessions.body.unrecorded" } }),
+    message(summary.id, 2, { text: "未记录内容" })];
+  store.publish(store.createJob().id, [source(store, summary, records)], []);
+  const read = store.messages(summary.id, { mode: "full" }).messages;
+  assert.equal(read[0]?.text, "未记录内容");
+  assert.deepEqual(read[0]?.textDescriptor, { key: "sessions.body.unrecorded" });
+  assert.equal(read[1]?.textDescriptor, undefined);
+  assert.equal(store.search({ q: "未记录内容", kinds: ["user", "system"] }).total, 2);
+  const estimate = store.profile(summary.id).estimate;
+  assert.equal(estimate.method, "留存文本字符数 ÷ 4 向上取整；仅为内容体量估算，非计费用量");
+  assert.deepEqual(estimate.methodDescriptor, { key: "sessions.estimate.method" });
+}));
 test("多会话增量发布按真实子目标关联，避免无关会话两两扫描", async () => fixture(store => {
   const revisions = Array.from({ length: 2000 }, (_, index) => {
     const id = `publish-scale-${index}`;

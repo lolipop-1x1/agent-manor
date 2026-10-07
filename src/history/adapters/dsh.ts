@@ -55,13 +55,13 @@ function zstdFrameRanges(bytes: Buffer, gaps: NonNullable<NormalizedSessionMetad
     try {
       const end = nextZstdFrameEnd(bytes, offset);
       if (end === undefined) {
-        gaps.push({ kind: "incomplete_record", message: "DSH Zstandard 末尾帧不完整" });
+        gaps.push({ kind: "incomplete_record", message: "DSH Zstandard 末尾帧不完整", messageDescriptor: { key: "diagnostics.history.adapters.dsh.m001" } });
         break;
       }
       frames.push({ start: offset, end });
       offset = end;
     } catch {
-      gaps.push({ kind: "parse_error", message: "DSH Zstandard 帧结构无效，后续字节无法安全定位" });
+      gaps.push({ kind: "parse_error", message: "DSH Zstandard 帧结构无效，后续字节无法安全定位", messageDescriptor: { key: "diagnostics.history.adapters.dsh.m002" } });
       break;
     }
   }
@@ -131,7 +131,7 @@ function readToolEvidence(inputValue: unknown, resultValue: unknown, visible: st
   const message = object(result.message);
   const meta = object(result.meta);
   const path = string(meta.path) ?? string(input.file_path) ?? string(input.path);
-  if (message.isError === true) return [{ kind: "read", path, fragments: [], reason: "range_unknown: DSH read 执行失败" }];
+  if (message.isError === true) return [{ kind: "read", path, fragments: [], reason: "range_unknown: DSH read 执行失败", reasonDescriptor: { key: "diagnostics.history.adapters.dsh.m003" } }];
   const lines = Array.isArray(meta.lines) ? meta.lines.map(object) : undefined;
   const offset = number(meta.offset);
   const totalLines = number(meta.totalLines);
@@ -149,7 +149,7 @@ function editToolEvidence(inputValue: unknown, resultValue: unknown): ReturnType
   const input = object(inputValue);
   const result = object(resultValue);
   const message = object(result.message);
-  if (message.isError === true) return [{ kind: "edit", path: string(input.file_path), fragments: [], reason: "range_unknown: DSH edit 执行失败" }];
+  if (message.isError === true) return [{ kind: "edit", path: string(input.file_path), fragments: [], reason: "range_unknown: DSH edit 执行失败", reasonDescriptor: { key: "diagnostics.history.adapters.dsh.m004" } }];
   const meta = object(result.meta);
   const diffs = Array.isArray(meta.diffs) ? meta.diffs.map(object) : [];
   const path = string(input.file_path) ?? string(input.path);
@@ -160,7 +160,7 @@ function editToolEvidence(inputValue: unknown, resultValue: unknown): ReturnType
     const before = typeof diff.oldText === "string" ? diff.oldText : "";
     return changedFragments(before, diff.newText, diffPath).map(fragment => ({ ...fragment, historicalStart: undefined }));
   });
-  return [{ kind: "edit", path, fragments, ...fragments.length ? {} : { reason: "range_unknown: DSH edit 元数据没有可核验差异" } }];
+  return [{ kind: "edit", path, fragments, ...fragments.length ? {} : { reason: "range_unknown: DSH edit 元数据没有可核验差异", reasonDescriptor: { key: "diagnostics.history.adapters.dsh.m005" } } }];
 }
 
 function writeToolEvidence(inputValue: unknown, resultValue: unknown): ReturnType<typeof toolEvidence> {
@@ -169,19 +169,19 @@ function writeToolEvidence(inputValue: unknown, resultValue: unknown): ReturnTyp
   const message = object(result.message);
   const meta = object(result.meta);
   const path = string(input.file_path) ?? string(input.path);
-  if (message.isError === true) return [{ kind: "edit", path, fragments: [], reason: "range_unknown: DSH write 执行失败" }];
+  if (message.isError === true) return [{ kind: "edit", path, fragments: [], reason: "range_unknown: DSH write 执行失败", reasonDescriptor: { key: "diagnostics.history.adapters.dsh.m006" } }];
   const diffs = Array.isArray(meta.diffs) ? meta.diffs.map(object) : [];
   if (string(meta.operation) === "create" && typeof input.content === "string") {
     return [{ kind: "edit", path, fragments: input.content ? [{ kind: "added", content: input.content, historicalStart: 1, completeLines: true, path }] : [] }];
   }
-  if (!diffs.length) return [{ kind: "edit", path, fragments: [], reason: "range_unknown: DSH write 元数据没有可核验差异" }];
+  if (!diffs.length) return [{ kind: "edit", path, fragments: [], reason: "range_unknown: DSH write 元数据没有可核验差异", reasonDescriptor: { key: "diagnostics.history.adapters.dsh.m007" } }];
   const fragments = diffs.flatMap(diff => {
     const diffPath = string(diff.path) ?? path;
     if ((path && diffPath && path !== diffPath) || typeof diff.newText !== "string") return [];
     const before = typeof diff.oldText === "string" ? diff.oldText : "";
     return changedFragments(before, diff.newText, diffPath).map(fragment => ({ ...fragment, historicalStart: undefined }));
   });
-  return [{ kind: "edit", path, fragments, ...fragments.length ? {} : { reason: "range_unknown: DSH write 元数据没有可核验差异" } }];
+  return [{ kind: "edit", path, fragments, ...fragments.length ? {} : { reason: "range_unknown: DSH write 元数据没有可核验差异", reasonDescriptor: { key: "diagnostics.history.adapters.dsh.m007" } } }];
 }
 
 function dshExtract(tool: string, input: unknown, result: unknown, visible: string): ReturnType<typeof toolEvidence> {
@@ -193,7 +193,7 @@ function dshExtract(tool: string, input: unknown, result: unknown, visible: stri
     const message = object(object(result).message);
     if (message.isError === true || visible === "(no output)" || visible.includes("\n[stderr]\n")
       || /(?:^|\n)\[(?:output truncated;|some output was dropped from memory;|exit code:|timed out after |stopped: |killed by signal: |still running after |sandbox:)/.test(visible)) {
-      return [{ kind: "other", fragments: [], reason: "range_unknown: DSH bash 返回包含错误、截断或状态标记，无法确认完整输出" }];
+      return [{ kind: "other", fragments: [], reason: "range_unknown: DSH bash 返回包含错误、截断或状态标记，无法确认完整输出", reasonDescriptor: { key: "diagnostics.history.adapters.dsh.m008" } }];
     }
     return shellEvidence(string(object(input).command) ?? string(object(input).cmd) ?? "", visible);
   }
@@ -213,7 +213,7 @@ async function readRows(path: string, gaps: NormalizedSessionMetadata["gaps"]): 
     if (value.length > remaining) {
       if (remaining > 0) compressed.push(value.subarray(0, remaining));
       compressedBytes += remaining;
-      issues.push({ kind: "budget_exceeded", message: "DSH 压缩来源超过 128 MiB 有界读取上限" });
+      issues.push({ kind: "budget_exceeded", message: "DSH 压缩来源超过 128 MiB 有界读取上限", messageDescriptor: { key: "diagnostics.history.adapters.dsh.m009" } });
       break;
     }
     compressed.push(value);
@@ -227,13 +227,13 @@ async function readRows(path: string, gaps: NormalizedSessionMetadata["gaps"]): 
     try {
       const value = zstdDecompressSync(bytes.subarray(frame.start, frame.end), { maxOutputLength: MAX_SOURCE_BYTES });
       if (decodedBytes + value.length > MAX_SOURCE_BYTES) {
-        issues.push({ kind: "budget_exceeded", message: "DSH 解压来源超过 128 MiB 有界读取上限" });
+        issues.push({ kind: "budget_exceeded", message: "DSH 解压来源超过 128 MiB 有界读取上限", messageDescriptor: { key: "diagnostics.history.adapters.dsh.m010" } });
         break;
       }
       decoded.push(value);
       decodedBytes += value.length;
     } catch {
-      issues.push({ kind: "parse_error", message: "DSH Zstandard 帧解压失败" });
+      issues.push({ kind: "parse_error", message: "DSH Zstandard 帧解压失败", messageDescriptor: { key: "diagnostics.history.adapters.dsh.m011" } });
     }
   }
   async function* chunks(): AsyncGenerator<Buffer> {
@@ -249,7 +249,7 @@ async function snapshot(location: SourceLocation): Promise<NormalizedSnapshot> {
   const headerRow = rows[0];
   const header = headerRow?.record.type === "session" ? headerRow.record : undefined;
   if (!header) {
-    gaps.push({ kind: "unsupported_format", message: "DSH 来源缺少可识别的会话头记录" });
+    gaps.push({ kind: "unsupported_format", message: "DSH 来源缺少可识别的会话头记录", messageDescriptor: { key: "diagnostics.history.adapters.dsh.m012" } });
     return normalizedSnapshot(location, [], { gaps });
   }
   const version = tokenCount(header.version);
@@ -258,7 +258,7 @@ async function snapshot(location: SourceLocation): Promise<NormalizedSnapshot> {
   const inheritedMarker = eventRows.filter(row => row.record.type === "session/end-seed" && object(row.record.data).inherited === true).at(-1);
   const inheritedCut = inheritedMarker ? tokenCount(inheritedMarker.record.seq) : undefined;
   if (header.isSeeded === true && inheritedCut === undefined) {
-    gaps.push({ kind: "incomplete_record", message: "DSH seeded 会话缺少可核验的继承边界标记" });
+    gaps.push({ kind: "incomplete_record", message: "DSH seeded 会话缺少可核验的继承边界标记", messageDescriptor: { key: "diagnostics.history.adapters.dsh.m013" } });
   }
   const parentSessionId = string(header.parentSession);
   const relationships = parentSessionId ? [
@@ -343,7 +343,7 @@ async function snapshot(location: SourceLocation): Promise<NormalizedSnapshot> {
     }
     if (type === "tool/call") {
       const callId = string(data.callId);
-      if (!callId) { gaps.push({ kind: "unpaired_call", message: "DSH 工具请求缺少原生 callId" }); continue; }
+      if (!callId) { gaps.push({ kind: "unpaired_call", message: "DSH 工具请求缺少原生 callId", messageDescriptor: { key: "diagnostics.history.adapters.dsh.m014" } }); continue; }
       records.push(normalizedRecord({ key, kind: "tool_call", callId, tool: string(data.name) ?? "unknown",
         input: callInput(data.arguments), occurredAt, turnKey, copied }, row.raw, row.line, seq));
       continue;
@@ -353,7 +353,7 @@ async function snapshot(location: SourceLocation): Promise<NormalizedSnapshot> {
       const content = contentBlocks(message.content);
       const legacy = content.find(block => block.type === "tool-result");
       const callId = string(message.toolCallId) ?? string(legacy?.toolCallId);
-      if (!callId) { gaps.push({ kind: "unpaired_call", message: "DSH 工具结果缺少原生 callId" }); continue; }
+      if (!callId) { gaps.push({ kind: "unpaired_call", message: "DSH 工具结果缺少原生 callId", messageDescriptor: { key: "diagnostics.history.adapters.dsh.m015" } }); continue; }
       const resultContent = legacy?.content ?? message.content;
       const error = message.isError === true || legacy?.isError === true;
       records.push(normalizedRecord({ key, kind: "tool_result", callId, tool: string(message.toolName) ?? string(legacy?.toolName),
@@ -371,11 +371,11 @@ async function snapshot(location: SourceLocation): Promise<NormalizedSnapshot> {
       const turn = tokenCount(data.turn);
       const step = tokenCount(data.step);
       const detail = [type, ...(turn === undefined ? [] : [`turn=${turn}`]), ...(step === undefined ? [] : [`step=${step}`])].join(" ");
-      records.push(normalizedRecord({ key, kind: "context", text: `DSH 过程事件 ${detail}`, occurredAt, turnKey, copied }, row.raw, row.line, seq));
+      records.push(normalizedRecord({ key, kind: "context", text: `DSH 过程事件 ${detail}`, textDescriptor: { key: "sessions.body.dshEvent", params: { detail } }, occurredAt, turnKey, copied }, row.raw, row.line, seq));
       continue;
     }
     if (type === "request/header" || type === "request/context") {
-      records.push(normalizedRecord({ key, kind: "context", text: `DSH 过程事件 ${type}`, occurredAt, turnKey, copied }, row.raw, row.line, seq));
+      records.push(normalizedRecord({ key, kind: "context", text: `DSH 过程事件 ${type}`, textDescriptor: { key: "sessions.body.dshEvent", params: { detail: type } }, occurredAt, turnKey, copied }, row.raw, row.line, seq));
       continue;
     }
     if (type === "turn/end" || type === "session/end-seed") {
@@ -383,10 +383,10 @@ async function snapshot(location: SourceLocation): Promise<NormalizedSnapshot> {
       records.push(normalizedRecord({ key, kind: "context", ...(reason ? { text: reason } : { text: type }), occurredAt, turnKey, copied }, row.raw, row.line, seq));
       continue;
     }
-    records.push(normalizedRecord({ key, kind: "context", text: `未适配事件 ${type}`, occurredAt, turnKey, copied }, row.raw, row.line, seq));
-    gaps.push({ kind: "unsupported_format", message: `DSH 事件类型 ${type} 尚未适配` });
+    records.push(normalizedRecord({ key, kind: "context", text: `未适配事件 ${type}`, textDescriptor: { key: "sessions.body.unsupportedEvent", params: { type } }, occurredAt, turnKey, copied }, row.raw, row.line, seq));
+    gaps.push({ kind: "unsupported_format", message: `DSH 事件类型 ${type} 尚未适配`, messageDescriptor: { key: "diagnostics.history.adapters.dsh.m016", params: { p0: String(type) } } });
   }
-  if (version !== 3 && version !== 4) gaps.push({ kind: "unsupported_format", message: "DSH 会话头声明了尚未适配的格式代际" });
+  if (version !== 3 && version !== 4) gaps.push({ kind: "unsupported_format", message: "DSH 会话头声明了尚未适配的格式代际", messageDescriptor: { key: "diagnostics.history.adapters.dsh.m017" } });
   return normalizedSnapshot(source, records, metadata, JSON.stringify({ version, inheritedCut, relationships }));
 }
 
@@ -436,7 +436,13 @@ const dshBaseAdapter = createNormalizedAdapter({
           : complete.length > 1 ? "完整副本的规范化事件一致" : "未能在多个完整副本之间核对内容";
         const rejectedIncomplete = ordered.some(source => !source.sourceCompleteness?.complete);
         winner.adapterGap = { kind: conflict ? "ambiguous" : rejectedIncomplete ? "incomplete_record" : "ambiguous",
-          message: `DSH 同身份副本 ${versions}；${reason} v${selectedVersion}；${comparison}${rejectedIncomplete ? "；不完整副本未用于覆盖完整来源" : ""}` };
+          message: `DSH 同身份副本 ${versions}；${reason} v${selectedVersion}；${comparison}${rejectedIncomplete ? "；不完整副本未用于覆盖完整来源" : ""}`,
+          messageDescriptor: typeof selectedVersion === "number" ? { key: "diagnostics.history.adapters.dsh.copies", params: { versions, selectedVersion } } : { key: "diagnostics.history.adapters.dsh.copiesUnknownVersion", params: { versions } },
+          details: [
+            { key: winner.sourceCompleteness?.supported && winner.sourceCompleteness.complete ? "diagnostics.history.adapters.dsh.selectedComplete" : winner.sourceCompleteness?.supported ? "diagnostics.history.adapters.dsh.selectedSupported" : "diagnostics.history.adapters.dsh.selectedRecognizable" },
+            { key: conflict ? "diagnostics.history.adapters.dsh.copiesConflict" : complete.length > 1 ? "diagnostics.history.adapters.dsh.copiesAgree" : "diagnostics.history.adapters.dsh.copiesUnverified" },
+            ...(rejectedIncomplete ? [{ key: "diagnostics.history.adapters.dsh.incompleteExcluded" }] : []),
+          ] };
       }
       selected.push(winner);
     }

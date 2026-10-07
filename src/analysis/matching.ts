@@ -1,3 +1,4 @@
+import type { MessageDescriptor } from "../i18n/types.js";
 import { diffArrays } from "diff";
 import { posix } from "node:path";
 import type { BaselineFile, EvidenceFragment, HistoryEvent, LineRange, Mapping } from "../contracts.js";
@@ -29,6 +30,7 @@ interface FragmentMatch {
   exact: LineRange[];
   near: LineRange[];
   reason?: string;
+  reasonDescriptor?: MessageDescriptor;
 }
 
 interface ContextAnchor extends Candidate {
@@ -231,7 +233,7 @@ function localCorrespondence(oldLines: string[], lines: string[], candidate: Can
   }
   return { exact: mergeRanges(exact), near: mergeRanges(near),
     reason: budget.exceeded ? "budget_exceeded: 局部字符差异计算超限"
-      : unresolved ? "range_unknown: 部分历史行无法唯一对应当前内容" : undefined };
+      : unresolved ? "range_unknown: 部分历史行无法唯一对应当前内容" : undefined, reasonDescriptor: budget.exceeded ? { key: "diagnostics.analysis.matching.m001" } : unresolved ? { key: "diagnostics.analysis.matching.m002" } : undefined };
 }
 
 function approximateCandidates(oldLines: string[], lines: string[], index: Map<string, number[]>, context: { before?: ContextAnchor; after?: ContextAnchor }): Candidate[] | undefined {
@@ -280,11 +282,11 @@ function unchangedBlocks(oldLines: string[], lines: string[], index: Map<string,
     let first = row;
     let last = row;
     while (first > 0 && currentRow - row + first > 0 && oldLines[first - 1] === lines[currentRow - row + first - 1]) {
-      if (++comparisons > MATCHING_LIMITS.maxExactComparisons) return { exact: mergeRanges(exact), near: [], reason: "budget_exceeded: 精确子块比较超限" };
+      if (++comparisons > MATCHING_LIMITS.maxExactComparisons) return { exact: mergeRanges(exact), near: [], reason: "budget_exceeded: 精确子块比较超限", reasonDescriptor: { key: "diagnostics.analysis.matching.m003" } };
       first--;
     }
     while (last + 1 < oldLines.length && currentRow - row + last + 1 < lines.length && oldLines[last + 1] === lines[currentRow - row + last + 1]) {
-      if (++comparisons > MATCHING_LIMITS.maxExactComparisons) return { exact: mergeRanges(exact), near: [], reason: "budget_exceeded: 精确子块比较超限" };
+      if (++comparisons > MATCHING_LIMITS.maxExactComparisons) return { exact: mergeRanges(exact), near: [], reason: "budget_exceeded: 精确子块比较超限", reasonDescriptor: { key: "diagnostics.analysis.matching.m003" } };
       last++;
     }
     // 重复短行不能靠某一次 diff 选位；只保留唯一锚点之间的完整相同内容。
@@ -295,16 +297,16 @@ function unchangedBlocks(oldLines: string[], lines: string[], index: Map<string,
     exact.push({ start: candidate.start + 1, end: candidate.end + 1 });
     for (let oldRow = first; oldRow <= last; oldRow++) seen.add(oldRow);
   }
-  return { exact: mergeRanges(exact), near: [], reason: seen.size < oldLines.length ? "range_unknown: 部分历史内容未能唯一精确对应当前子块" : undefined };
+  return { exact: mergeRanges(exact), near: [], reason: seen.size < oldLines.length ? "range_unknown: 部分历史内容未能唯一精确对应当前子块" : undefined, reasonDescriptor: seen.size < oldLines.length ? { key: "diagnostics.analysis.matching.m004" } : undefined };
 }
 
 function matchFragment(fragment: EvidenceFragment, fragmentIndex: number, lines: string[], index: Map<string, number[]>, anchors: ContextAnchor[]): FragmentMatch {
-  if (!fragment.completeLines) return { exact: [], near: [], reason: "range_unknown: 片段包含不完整行" };
+  if (!fragment.completeLines) return { exact: [], near: [], reason: "range_unknown: 片段包含不完整行", reasonDescriptor: { key: "diagnostics.analysis.matching.m005" } };
   const oldLines = textLines(fragment.content);
-  if (oldLines.length === 0) return { exact: [], near: [], reason: "range_unknown: 没有历史源码内容" };
+  if (oldLines.length === 0) return { exact: [], near: [], reason: "range_unknown: 没有历史源码内容", reasonDescriptor: { key: "diagnostics.analysis.matching.m006" } };
   const context = surroundingContexts(fragment, fragmentIndex, anchors);
   const occurrences = findOccurrences(lines, oldLines, index);
-  if (!occurrences) return { exact: [], near: [], reason: "budget_exceeded: 精确候选过多" };
+  if (!occurrences) return { exact: [], near: [], reason: "budget_exceeded: 精确候选过多", reasonDescriptor: { key: "diagnostics.analysis.matching.m007" } };
   const located = occurrences.filter((candidate) => respectsContext(candidate, context));
   const informative = Array.from(oldLines.join("\n").trim()).length >= MATCHING_LIMITS.uniqueRunCodePoints
     || Boolean(context.before || context.after) || oldLines.length === lines.length;
@@ -312,18 +314,18 @@ function matchFragment(fragment: EvidenceFragment, fragmentIndex: number, lines:
     const candidate = located[0]!;
     return { exact: [{ start: candidate.start + 1, end: candidate.end + 1 }], near: [] };
   }
-  if (located.length > 1) return { exact: [], near: [], reason: "ambiguous: 内容对应多个当前位置" };
-  if (located.length === 1) return { exact: [], near: [], reason: "range_unknown: 短片段缺少唯一上下文" };
+  if (located.length > 1) return { exact: [], near: [], reason: "ambiguous: 内容对应多个当前位置", reasonDescriptor: { key: "diagnostics.analysis.matching.m008" } };
+  if (located.length === 1) return { exact: [], near: [], reason: "range_unknown: 短片段缺少唯一上下文", reasonDescriptor: { key: "diagnostics.analysis.matching.m009" } };
   // 删除片段只可精确对应被撤销后恢复的原行，不借相似邻行制造当前编辑范围。
-  if (fragment.kind === "deleted") return { exact: [], near: [], reason: "range_unknown: 删除行在当前基线不存在" };
+  if (fragment.kind === "deleted") return { exact: [], near: [], reason: "range_unknown: 删除行在当前基线不存在", reasonDescriptor: { key: "diagnostics.analysis.matching.m010" } };
   if (oldLines.length > MATCHING_LIMITS.maxFragmentLines || Array.from(fragment.content).length > MATCHING_LIMITS.maxFragmentCodePoints) {
-    return { exact: [], near: [], reason: "budget_exceeded: 近似片段超过计算预算" };
+    return { exact: [], near: [], reason: "budget_exceeded: 近似片段超过计算预算", reasonDescriptor: { key: "diagnostics.analysis.matching.m011" } };
   }
   if (oldLines.length === 1 && Array.from(oldLines[0]!).length > MATCHING_LIMITS.maxLineCodePoints) {
-    return { exact: [], near: [], reason: "budget_exceeded: 局部字符差异计算超限" };
+    return { exact: [], near: [], reason: "budget_exceeded: 局部字符差异计算超限", reasonDescriptor: { key: "diagnostics.analysis.matching.m001" } };
   }
   const candidates = approximateCandidates(oldLines, lines, index, context);
-  if (!candidates) return { exact: [], near: [], reason: "budget_exceeded: 近似候选超过计算预算" };
+  if (!candidates) return { exact: [], near: [], reason: "budget_exceeded: 近似候选超过计算预算", reasonDescriptor: { key: "diagnostics.analysis.matching.m012" } };
   const accepted: FragmentMatch[] = [];
   let exceeded = false;
   for (const candidate of candidates) {
@@ -333,22 +335,23 @@ function matchFragment(fragment: EvidenceFragment, fragmentIndex: number, lines:
     if (!mapped) exceeded = true;
     else if (mapped.exact.length > 0 || mapped.near.length > 0) accepted.push(mapped);
   }
-  if (accepted.length > 1) return { exact: [], near: [], reason: "ambiguous: 多个局部候选满足对应门槛" };
+  if (accepted.length > 1) return { exact: [], near: [], reason: "ambiguous: 多个局部候选满足对应门槛", reasonDescriptor: { key: "diagnostics.analysis.matching.m013" } };
   if (accepted.length === 1) return accepted[0]!;
   const unchanged = unchangedBlocks(oldLines, lines, index, context);
   if (unchanged.exact.length) return unchanged;
-  return { exact: [], near: [], reason: exceeded ? "budget_exceeded: 局部差异超限" : "range_unknown: 缺少唯一上下文或局部差异超过近似门槛" };
+  return { exact: [], near: [], reason: exceeded ? "budget_exceeded: 局部差异超限" : "range_unknown: 缺少唯一上下文或局部差异超过近似门槛", reasonDescriptor: exceeded ? { key: "diagnostics.analysis.matching.m014" } : { key: "diagnostics.analysis.matching.m015" } };
 }
 
 export function matchEvent(event: HistoryEvent, file: BaselineFile): Mapping {
   const mapping: Mapping = { eventId: event.id, filePath: file.path, kind: event.kind === "edit" ? "edit" : "read",
     exactRanges: [], nearRanges: [], ruleVersion: MATCHING_RULE_VERSION };
   if ((event.kind !== "read" && event.kind !== "edit") || event.status !== "success") {
-    return { ...mapping, unknownReason: "range_unknown: 非成功读取或编辑事件不进入覆盖" };
+    return { ...mapping, unknownReason: "range_unknown: 非成功读取或编辑事件不进入覆盖", unknownReasonDescriptors: [{ key: "diagnostics.analysis.matching.m016" }] };
   }
   const { lines, index } = fileIndex(file);
   const anchors = contextAnchors(event, file, lines, index);
   const reasons = new Set<string>();
+  const reasonDescriptors = new Map<string, MessageDescriptor>();
   let targets = 0;
   event.fragments.forEach((fragment, fragmentIndex) => {
     if (!samePath(fragment, file) || (event.kind === "read" ? fragment.kind !== "read" : fragment.kind !== "added" && fragment.kind !== "deleted")) return;
@@ -356,14 +359,23 @@ export function matchEvent(event: HistoryEvent, file: BaselineFile): Mapping {
     const result = matchFragment(fragment, fragmentIndex, lines, index, anchors);
     mapping.exactRanges.push(...result.exact);
     mapping.nearRanges.push(...result.near);
-    if (result.reason) reasons.add(result.reason);
+    if (result.reason) {
+      reasons.add(result.reason);
+      if (result.reasonDescriptor) reasonDescriptors.set(result.reason, result.reasonDescriptor);
+    }
   });
-  if (targets === 0) reasons.add("range_unknown: 没有可覆盖的实际源码片段");
+  if (targets === 0) {
+    const reason = "range_unknown: 没有可覆盖的实际源码片段";
+    reasons.add(reason);
+    reasonDescriptors.set(reason, { key: "diagnostics.analysis.matching.noTargetFragments" });
+  }
   mapping.exactRanges = mergeRanges(mapping.exactRanges, file.lineCount);
   mapping.nearRanges = subtractRanges(mergeRanges(mapping.nearRanges, file.lineCount), mapping.exactRanges);
   if (reasons.size > 0) {
     const priority = (reason: string) => reason.startsWith("ambiguous:") ? 0 : reason.startsWith("budget_exceeded:") ? 1 : 2;
-    mapping.unknownReason = [...reasons].sort((a, b) => priority(a) - priority(b)).join("；");
+    const ordered = [...reasons].sort((a, b) => priority(a) - priority(b));
+    mapping.unknownReason = ordered.join("；");
+    mapping.unknownReasonDescriptors = ordered.flatMap(reason => reasonDescriptors.has(reason) ? [reasonDescriptors.get(reason)!] : []);
   }
   return mapping;
 }

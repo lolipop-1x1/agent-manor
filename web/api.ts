@@ -1,7 +1,9 @@
 import type { ApiErrorResponse, CoverageQuery, JsonValue } from "../src/contracts";
+import type { MessageDescriptor } from "../src/i18n";
+import { messageText, t } from "./i18n";
 
 export class ApiError extends Error {
-  constructor(readonly code: string, message: string) {
+  constructor(readonly code: string, message: string, readonly messageDescriptor?: MessageDescriptor) {
     super(message);
     this.name = "ApiError";
   }
@@ -28,7 +30,7 @@ export async function request<T>(path: string, options: { method?: string; body?
     });
   } catch (error) {
     if (error instanceof Error && error.name === "AbortError") throw error;
-    throw new ApiError("CONNECTION_FAILED", "无法连接本地分析服务，请确认服务正在运行后重试。");
+    throw new ApiError("CONNECTION_FAILED", "无法连接本地分析服务，请确认服务正在运行后重试。", { key: "common.error.connection" });
   }
   let body: T | ApiErrorResponse | null;
   try {
@@ -40,14 +42,14 @@ export async function request<T>(path: string, options: { method?: string; body?
   if (!response.ok) {
     if (body && typeof body === "object" && "error" in body) {
       const failure = body as ApiErrorResponse;
-      throw new ApiError(failure.error.code, failure.error.message);
+      throw new ApiError(failure.error.code, failure.error.message, failure.error.messageDescriptor);
     }
-    throw new ApiError("INVALID_RESPONSE", `服务返回异常（HTTP ${response.status}），请重试。`);
+    throw new ApiError("INVALID_RESPONSE", `服务返回异常（HTTP ${response.status}），请重试。`, { key: "common.error.http", params: { status: response.status } });
   }
-  if (body === null) throw new ApiError("INVALID_RESPONSE", "服务未返回有效结果，请重试。");
+  if (body === null) throw new ApiError("INVALID_RESPONSE", "服务未返回有效结果，请重试。", { key: "common.error.invalidResponse" });
   return body as T;
 }
 
 export const repositoryPath = (id: string) => `/repositories/${encodeURIComponent(id)}`;
-export const errorMessage = (error: unknown) => error instanceof Error ? error.message : "查询失败，请重试。";
+export const errorMessage = (error: unknown): string => error instanceof ApiError ? messageText(error.messageDescriptor, error.message) : error instanceof Error ? error.message : typeof error === "string" ? error : t("common.error.query");
 export const isAborted = (error: unknown) => error instanceof Error && error.name === "AbortError";

@@ -27,14 +27,15 @@ export function resourceHistoryIdentity(event: ResourceUsageEvent): ResourceHist
   const path = event.path ? normalizedPath(event.path) : undefined;
   const parts = [kind, name, event.server ?? null, path ?? null, event.client, event.project ?? null];
   return { id: `resource:${createHash("sha256").update(JSON.stringify(parts)).digest("hex").slice(0, 32)}`,
-    kind, name, server: event.server, path, client: event.client, project: event.project };
+    kind, name, ...(kind === "skill" && event.nameDescriptor ? { nameDescriptor: event.nameDescriptor } : {}),
+    server: event.server, path, client: event.client, project: event.project };
 }
 
 export function resourceUsageIdentity(identity: ResourceHistoryIdentity): ResourceUsageIdentity {
   // 缺失名称的占位文案不能证明是同一个 Skill，继续保留来源范围。
   if (identity.kind !== "skill" || identity.name === "未记录名称" || !identity.name.trim()) return { ...identity, grouping: "source" };
   return { id: `resource:${createHash("sha256").update(JSON.stringify(["skill", identity.name])).digest("hex").slice(0, 32)}`,
-    kind: "skill", name: identity.name, grouping: "skill" };
+    kind: "skill", name: identity.name, ...(identity.nameDescriptor ? { nameDescriptor: identity.nameDescriptor } : {}), grouping: "skill" };
 }
 
 /** MCP 名称总览使用独立标识，既有历史来源标识与本地注册身份保持不变。 */
@@ -64,7 +65,7 @@ function bounds(query: ResourceUsageQuery): { from?: number; to?: number; dated:
   const from = query.from === undefined ? undefined : Date.parse(query.from);
   const to = query.to === undefined ? undefined : Date.parse(query.to);
   if (from !== undefined && !Number.isFinite(from) || to !== undefined && !Number.isFinite(to)
-    || from !== undefined && to !== undefined && from > to) throw new StoreError("INVALID_INPUT", "资源日期范围无效");
+    || from !== undefined && to !== undefined && from > to) throw new StoreError("INVALID_INPUT", "资源日期范围无效", { key: "diagnostics.resources.usage.invalidDates" });
   return { from, to, dated: from !== undefined || to !== undefined };
 }
 
@@ -193,6 +194,9 @@ function bucket(identity: ResourceUsageIdentity): UsageBucket {
 function addUsage(target: UsageBucket, event: ResourceUsageEvent, identity: ResourceHistoryIdentity, range: ReturnType<typeof bounds>): void {
   let origin = target.origins.get(identity.id);
   if (!origin) { origin = { identity, accumulator: empty() }; target.origins.set(identity.id, origin); }
+  // 同一稳定身份混有原始名称或旧记录时保留原名，不能将真实同名误译。
+  if (JSON.stringify(target.identity.nameDescriptor) !== JSON.stringify(identity.nameDescriptor)) delete target.identity.nameDescriptor;
+  if (JSON.stringify(origin.identity.nameDescriptor) !== JSON.stringify(identity.nameDescriptor)) delete origin.identity.nameDescriptor;
   add(origin.accumulator, event, range);
   add(target.accumulator, event, range);
   add(group(target.clients, event.client), event, range);
@@ -306,7 +310,7 @@ function findIdentity(store: SessionStore, id: string, query: ResourceUsageQuery
     const overview = resourceOverviewIdentity(identity, event.source.sourceId);
     if (overview.id === id) return overview;
   }
-  throw new StoreError("SOURCE_NOT_FOUND", "资源不存在于当前索引范围");
+  throw new StoreError("SOURCE_NOT_FOUND", "资源不存在于当前索引范围", { key: "diagnostics.resources.usage.notFound" });
 }
 
 function matches(event: ResourceUsageEvent, identity: ResourceUsageIdentity): boolean {

@@ -1,3 +1,4 @@
+import type { MessageDescriptor } from "../i18n/types.js";
 import type { Client, Gap, HistoryEvent, JsonValue, ParsedSource, SourceReference } from "../contracts.js";
 
 export interface HistoricalWorktree {
@@ -56,6 +57,7 @@ export interface SourceAssociation {
   events: HistoryEvent[];
   gaps: Gap[];
   reason: string;
+  reasonDescriptor?: MessageDescriptor;
 }
 
 export interface SharedHistoryResult {

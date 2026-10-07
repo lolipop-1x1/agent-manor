@@ -1,3 +1,5 @@
+import { DiagnosticError } from "../i18n/diagnostics.js";
+import type { MessageDescriptor } from "../i18n/types.js";
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
@@ -79,7 +81,7 @@ export async function acquireLock(home: string, name: string, waitMilliseconds =
             const current = JSON.parse(await readFile(join(reaper, "owner.json"), "utf8")) as LockOwner;
             if (Number.isSafeInteger(current.pid) && !alive(current.pid)) await rm(reaper, { recursive: true });
           } catch { /* 回收目录仍在初始化时等待。 */ }
-          if (Date.now() >= deadline) throw new Error("另一个服务实例正在回收启动锁");
+          if (Date.now() >= deadline) throw new DiagnosticError("另一个服务实例正在回收启动锁", { key: "diagnostics.service.runtime.m001" });
           await delay(100);
           continue;
         }
@@ -100,7 +102,7 @@ export async function acquireLock(home: string, name: string, waitMilliseconds =
         finally { if (!moved) await rm(reaper, { recursive: true, force: true }); }
         continue;
       }
-      if (Date.now() >= deadline) throw new Error("另一个服务实例正在启动或运行");
+      if (Date.now() >= deadline) throw new DiagnosticError("另一个服务实例正在启动或运行", { key: "diagnostics.service.runtime.m002" });
       await delay(100);
     }
   }
@@ -125,7 +127,7 @@ export async function connectService(autoStart = true, home = dataHome()): Promi
     if (ready) return ready;
     const extension = import.meta.url.endsWith(".ts") ? "ts" : "js";
     const cliPath = fileURLToPath(new URL(`../cli.${extension}`, import.meta.url));
-    const args = extension === "ts" ? ["--import", fileURLToPath(import.meta.resolve("tsx/esm")), cliPath, "serve"] : [cliPath, "serve"];
+    const args = extension === "ts" ? ["--import", fileURLToPath(import.meta.resolve("tsx/esm")), cliPath, "--lang", "auto", "serve"] : [cliPath, "--lang", "auto", "serve"];
     const child = spawn(process.execPath, args, { detached: true, stdio: "ignore", cwd: dirname(cliPath), env: { ...process.env, AGENT_MANOR_HOME: home } });
     let failure: Error | undefined;
     child.once("error", (error) => { failure = error; });
@@ -135,15 +137,15 @@ export async function connectService(autoStart = true, home = dataHome()): Promi
       if (failure) throw failure;
       const instance = await verifiedInstance(home);
       if (instance) return instance;
-      if (child.exitCode !== null) throw new Error(`本地后台启动失败（${child.exitCode}）`);
+      if (child.exitCode !== null) throw new DiagnosticError(`本地后台启动失败（${child.exitCode}）`, { key: "diagnostics.service.runtime.m003", params: { p0: String(child.exitCode) } });
       await delay(100);
     }
-    throw new Error("本地后台启动超时，请运行 agent-manor serve 查看错误");
+    throw new DiagnosticError("本地后台启动超时，请运行 agent-manor serve 查看错误", { key: "diagnostics.service.runtime.m004" });
   } finally { await release(); }
 }
 
 export class RequestError extends Error {
-  constructor(readonly code: string, message: string) { super(message); }
+  constructor(readonly code: string, message: string, readonly messageDescriptor?: MessageDescriptor) { super(message); }
 }
 
 export async function apiRequest<T>(instance: ServiceInstance, path: string, method = "GET", body?: unknown): Promise<T> {
@@ -154,7 +156,7 @@ export async function apiRequest<T>(instance: ServiceInstance, path: string, met
   const data = await response.json() as T | ApiErrorResponse;
   if (!response.ok) {
     const error = data as ApiErrorResponse;
-    throw new RequestError(error.error.code, error.error.message);
+    throw new RequestError(error.error.code, error.error.message, error.error.messageDescriptor);
   }
   return data as T;
 }

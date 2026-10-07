@@ -1,26 +1,29 @@
+import { getLanguage, t, useI18n } from "./i18n";
+import { formatNumber, formatTime } from "../src/i18n";
 import { useLayoutEffect, useMemo, useRef, useState } from "react";
 import { CaretDown, X } from "@phosphor-icons/react";
 import type { SessionMessage, SessionProfile, SessionTimelineEvent } from "../src/session-contracts";
 import { MessageBody, kindLabels, resourceLabels } from "./SessionMessage";
 import { TraceTimeline } from "./TraceTimeline";
 import { HelpPopover } from "./HelpPopover";
-import { displayRecorded, turnTitle } from "./session-model";
+import { displayRecorded, sessionResourceName, sessionMessageText, turnTitle } from "./session-model";
 import { TRACE_ROW_HEIGHT, tracePreview, traceTurns, traceWindow, type TraceRecord } from "./session-trace-model";
 import "./session-trace.css";
 
-const statuses = { success: "成功", failure: "失败", unknown: "未知" };
+const statuses = { success: "sessions.status.success", failure: "sessions.status.failure", unknown: "sessions.status.unknown" };
 const tokenFields = [
-  ["inputTokens", "输入"], ["cachedInputTokens", "缓存读取"], ["cacheWriteTokens", "缓存写入"],
-  ["outputTokens", "输出"], ["reasoningOutputTokens", "推理输出"], ["contextTokens", "上下文"],
+  ["inputTokens", "sessions.usage.input"], ["cachedInputTokens", "sessions.usage.cachedInput"], ["cacheWriteTokens", "sessions.usage.cacheWrite"],
+  ["outputTokens", "sessions.usage.output"], ["reasoningOutputTokens", "sessions.usage.reasoning"], ["contextTokens", "sessions.kind.context"],
 ] as const;
-const timeLabel = (value?: string) => value ? new Date(value).toLocaleTimeString("zh-CN", { hour12: false }) : "时间未记录";
+const timeLabel = (value?: string) => value ? formatTime(getLanguage(), value) : t("sessions.message.timeMissing");
 type Entry = { turnId: string; title: string; record?: TraceRecord; count: number };
 
 export function SessionTrace({ messages, steps, focusMessageId, focusRequest, focusTurnId, project, timeline, timelineLoading, timelineError, onRetryTimeline, onTimelineSelect, onMap, onInspect, onViewTurn }: {
   messages: SessionMessage[]; steps: SessionProfile["steps"]; focusMessageId?: string; focusRequest: number; focusTurnId?: string; project?: string;
   onMap: (path?: string, project?: string) => void; onInspect: (message: SessionMessage) => void; onViewTurn: (id: string) => void;
-  timeline: SessionTimelineEvent[]; timelineLoading: boolean; timelineError?: string; onRetryTimeline: () => void; onTimelineSelect: (event: SessionTimelineEvent) => void;
+  timeline: SessionTimelineEvent[]; timelineLoading: boolean; timelineError?: Error; onRetryTimeline: () => void; onTimelineSelect: (event: SessionTimelineEvent) => void;
 }) {
+  const { language } = useI18n();
   const turns = useMemo(() => traceTurns(messages, steps.filter(step => step.sessionId === messages[0]?.sessionId)), [messages, steps]);
   const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set());
   const [selectedId, setSelectedId] = useState(focusMessageId);
@@ -37,7 +40,7 @@ export function SessionTrace({ messages, steps, focusMessageId, focusRequest, fo
   const entries = useMemo(() => turns.flatMap((turn, position): Entry[] => {
     const group = { turnId: turn.id, title: turnTitle(turn.id, position + 1), count: turn.messages.length };
     return [group, ...(collapsed.has(turn.id) ? [] : turn.records.map(record => ({ ...group, record })))];
-  }), [turns, collapsed]);
+  }), [turns, collapsed, language]);
   const window = traceWindow(entries.length, scroll, height);
 
   useLayoutEffect(() => {
@@ -80,14 +83,14 @@ export function SessionTrace({ messages, steps, focusMessageId, focusRequest, fo
   const detailTabs = selected ? [selected.message, ...(selected.result ? [selected.result] : [])] : [];
   const linkedFiles = [...new Set(detailTabs.flatMap(message => message.filePaths ?? []))];
 
-  return <section className="session-trace" aria-label="执行轨迹">
+  return <section className="session-trace" aria-label={t("sessions.trace.title")}>
     <TraceTimeline events={timeline} selectedId={selectedId} loading={timelineLoading} error={timelineError} onSelect={onTimelineSelect} onRetry={onRetryTimeline} />
-    <div className="trace-toolbar"><span><strong>{records.length.toLocaleString("zh-CN")}</strong> 个执行节点 <small>· 本页 {messages.length.toLocaleString("zh-CN")} 条原始记录</small></span>
-      <div><HelpPopover label="轨迹说明"><dl><div><dt>轨迹总览</dt><dd>按事件顺序、轮次或记录时间排列，点击轨道定位节点，← → 切换节点。上下文、模型和工具分别呈现在轨道中。</dd></div>
-        <div><dt>执行节点</dt><dd>选择节点查看正文与关联结果，↑ ↓ 切换节点。仅展示已保存的事件，用量仅关联已返回的明细。</dd></div>
-        <div><dt>上下文记录</dt><dd>AGENTS.md、环境与客户端上下文注入不计为用户提问；保留识别依据与原始角色供核对。本地 Hook 记录不计为模型工具调用。</dd></div></dl></HelpPopover><button className="text-button" onClick={() => setCollapsed(new Set())}>展开全部</button><button className="text-button" onClick={() => setCollapsed(new Set(turns.map(turn => turn.id)))}>折叠全部</button></div></div>
-    <div className="trace-ledger" role="table" aria-label="事件轨迹表" aria-rowcount={entries.length + 1} aria-colcount={6}>
-      <div className="trace-columns" role="row"><span role="columnheader">序号</span><span role="columnheader">事件 / 模型</span><span role="columnheader">输入 / 参数</span><span role="columnheader">输出 / 结果</span><span role="columnheader">时间 / 耗时</span><span role="columnheader">Token 输入 / 输出</span></div>
+    <div className="trace-toolbar"><span><strong>{t("sessions.trace.nodeCount", { count: records.length })}</strong> <small>· {t("sessions.trace.pageRecords", { count: messages.length })}</small></span>
+      <div><HelpPopover label={t("sessions.trace.help")}><dl><div><dt>{t("sessions.trace.overview")}</dt><dd>{t("sessions.trace.overviewHelp")}</dd></div>
+        <div><dt>{t("sessions.trace.nodes")}</dt><dd>{t("sessions.trace.nodesHelp")}</dd></div>
+        <div><dt>{t("sessions.trace.contextRecords")}</dt><dd>{t("sessions.trace.contextHelp")}</dd></div></dl></HelpPopover><button className="text-button" onClick={() => setCollapsed(new Set())}>{t("sessions.trace.expandAll")}</button><button className="text-button" onClick={() => setCollapsed(new Set(turns.map(turn => turn.id)))}>{t("sessions.trace.collapseAll")}</button></div></div>
+    <div className="trace-ledger" role="table" aria-label={t("sessions.trace.table")} aria-rowcount={entries.length + 1} aria-colcount={6}>
+      <div className="trace-columns" role="row"><span role="columnheader">{t("sessions.trace.ordinal")}</span><span role="columnheader">{t("sessions.trace.eventModel")}</span><span role="columnheader">{t("sessions.trace.inputParams")}</span><span role="columnheader">{t("sessions.trace.outputResult")}</span><span role="columnheader">{t("sessions.trace.timeDuration")}</span><span role="columnheader">{t("sessions.trace.tokenInOut")}</span></div>
       <div ref={viewport} className="trace-ledger-scroll" role="rowgroup" onScroll={event => {
         const top = event.currentTarget.scrollTop; setScroll(top);
         const entry = entries[Math.floor(top / TRACE_ROW_HEIGHT)]; if (entry) onViewTurn(entry.turnId);
@@ -95,49 +98,52 @@ export function SessionTrace({ messages, steps, focusMessageId, focusRequest, fo
         <div aria-hidden="true" style={{ height: window.start * TRACE_ROW_HEIGHT }} />
         {entries.slice(window.start, window.end).map((entry, offset) => {
           const index = window.start + offset, record = entry.record;
-          if (!record) return <div id={`session-turn-${entry.turnId}`} key={`turn-${entry.turnId}`} className={`trace-group${entry.turnId === activeTurn ? " is-active" : ""}`} role="row" aria-rowindex={index + 2}>
+          if (!record) {
+            const user = turns.find(turn => turn.id === entry.turnId)?.messages.find(message => message.kind === "user");
+            return <div id={`session-turn-${entry.turnId}`} key={`turn-${entry.turnId}`} className={`trace-group${entry.turnId === activeTurn ? " is-active" : ""}`} role="row" aria-rowindex={index + 2}>
             <div role="cell" aria-colspan={6}><button aria-expanded={!collapsed.has(entry.turnId)} onClick={() => setCollapsed(current => { const next = new Set(current); if (next.has(entry.turnId)) next.delete(entry.turnId); else next.add(entry.turnId); return next; })}>
-              <CaretDown size={13} aria-hidden="true" /><strong>{entry.title}</strong><small>{entry.count} 条记录</small><span>{tracePreview(turns.find(turn => turn.id === entry.turnId)?.messages.find(message => message.kind === "user")?.text ?? "上下文及过程记录")}</span>
+              <CaretDown size={13} aria-hidden="true" /><strong>{entry.title}</strong><small>{t("sessions.recordCount", { count: entry.count })}</small><span>{tracePreview(user ? sessionMessageText(user) : t("sessions.trace.contextProcess"))}</span>
             </button></div></div>;
+          }
           const { message, result, usage } = record;
           const value = usage.length === 1 ? usage[0] : undefined;
           const isTool = message.kind === "tool_call" || message.kind === "tool_result";
-          const input = message.kind === "assistant" || message.kind === "thinking" || message.kind === "tool_result" ? "—" : tracePreview(message.text);
-          const output = result ? tracePreview(result.text) : message.kind === "tool_call" ? "结果未记录" : input === "—" ? tracePreview(message.text) : "—";
+          const input = message.kind === "assistant" || message.kind === "thinking" || message.kind === "tool_result" ? "—" : tracePreview(sessionMessageText(message));
+          const output = result ? tracePreview(sessionMessageText(result)) : message.kind === "tool_call" ? t("sessions.trace.resultMissing") : input === "—" ? tracePreview(sessionMessageText(message)) : "—";
           const status = result?.status ?? message.status;
           const duration = result?.durationMs ?? message.durationMs;
           const active = record === selected;
           return <div key={message.id} role="row" aria-rowindex={index + 2} aria-selected={active} className={`trace-row kind-${message.kind}${active ? " is-selected" : ""}`} onClick={() => inspect(message)}>
-            <span role="cell" className="trace-ordinal">#{message.ordinal}</span>
-            <div role="cell" className="trace-event"><button id={`trace-select-${message.id}`} aria-label={`查看记录 ${message.ordinal}：${isTool ? message.tool ?? "工具" : kindLabels[message.kind]}`} onClick={event => { event.stopPropagation(); inspect(message); }} onKeyDown={event => {
+            <span role="cell" className="trace-ordinal">#{formatNumber(getLanguage(), message.ordinal)}</span>
+            <div role="cell" className="trace-event"><button id={`trace-select-${message.id}`} aria-label={t("sessions.trace.viewRecord", { number: formatNumber(getLanguage(), message.ordinal), name: isTool ? message.tool ?? t("sessions.message.tool") : t(kindLabels[message.kind]) })} onClick={event => { event.stopPropagation(); inspect(message); }} onKeyDown={event => {
               if (["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) { event.preventDefault(); moveSelection(index, event.key); }
-            }}><i aria-hidden="true" /><span><strong>{isTool ? message.tool ?? "工具" : usage.length ? "请求用量" : kindLabels[message.kind]}</strong><small>{status ? statuses[status] : message.final ? "最终回答" : message.model ?? ""}</small></span></button></div>
+            }}><i aria-hidden="true" /><span><strong>{isTool ? message.tool ?? t("sessions.message.tool") : usage.length ? t("sessions.trace.usageRequest") : t(kindLabels[message.kind])}</strong><small>{status ? t(statuses[status]) : message.final ? t("sessions.message.final") : message.model ?? ""}</small></span></button></div>
             <span role="cell" className="trace-preview" title={input}>{input}</span>
             <span role="cell" className={`trace-preview${status === "failure" ? " is-failure" : ""}`} title={output}>{output}</span>
-            <span role="cell" className="trace-facts" title={message.occurredAt}><span>{timeLabel(message.occurredAt)}</span><small>{duration === undefined ? "耗时未记录" : `${displayRecorded(duration)} ms`}</small></span>
-            <span role="cell" className="trace-facts"><span>{value ? `${displayRecorded(value.inputTokens)} / ${displayRecorded(value.outputTokens)}` : usage.length ? `${usage.length} 条用量` : "—"}</span><small>{value?.cachedInputTokens !== undefined ? `缓存 ${displayRecorded(value.cachedInputTokens)}` : ""}</small></span>
+            <span role="cell" className="trace-facts" title={message.occurredAt}><span>{timeLabel(message.occurredAt)}</span><small>{duration === undefined ? t("sessions.trace.durationMissing") : `${displayRecorded(duration)} ms`}</small></span>
+            <span role="cell" className="trace-facts"><span>{value ? `${displayRecorded(value.inputTokens)} / ${displayRecorded(value.outputTokens)}` : usage.length ? t("sessions.usage.recordCount", { count: usage.length }) : "—"}</span><small>{value?.cachedInputTokens !== undefined ? t("sessions.trace.cache", { value: displayRecorded(value.cachedInputTokens) }) : ""}</small></span>
           </div>;
         })}
         <div aria-hidden="true" style={{ height: (entries.length - window.end) * TRACE_ROW_HEIGHT }} />
       </div>
     </div>
-    {selected && selectedMessage ? <section className="trace-inspector" aria-label="轨迹记录详情">
-      <header><strong>#{selectedMessage.ordinal} · {selected.message.tool ?? kindLabels[selected.message.kind]}</strong><div role="tablist" aria-label="轨迹详情内容">
-        {detailTabs.map(message => <button key={message.id} role="tab" aria-selected={selectedId === message.id} onClick={() => inspect(message)}>{message.kind === "tool_call" ? "输入参数" : message.kind === "tool_result" ? "返回结果" : "记录正文"}</button>)}
-      </div><button className="icon-button" aria-label="收起轨迹详情" onClick={() => setSelectedId(undefined)}><X size={15} /></button></header>
+    {selected && selectedMessage ? <section className="trace-inspector" aria-label={t("sessions.trace.detail")}>
+      <header><strong>#{formatNumber(getLanguage(), selectedMessage.ordinal)} · {selected.message.tool ?? t(kindLabels[selected.message.kind])}</strong><div role="tablist" aria-label={t("sessions.trace.detailTabs")}>
+        {detailTabs.map(message => <button key={message.id} role="tab" aria-selected={selectedId === message.id} onClick={() => inspect(message)}>{message.kind === "tool_call" ? t("sessions.trace.input") : message.kind === "tool_result" ? t("sessions.trace.result") : t("sessions.trace.body")}</button>)}
+      </div><button className="icon-button" aria-label={t("sessions.trace.collapseDetails")} onClick={() => setSelectedId(undefined)}><X size={15} /></button></header>
       <div className="trace-inspector-scroll" key={selectedMessage.id}>
-        <div className="trace-detail-meta"><span className={`session-kind kind-${selectedMessage.kind}`}>{kindLabels[selectedMessage.kind]}</span>{selectedMessage.model && <span>{selectedMessage.model}</span>}{selectedMessage.final && <span>{selectedMessage.final === "explicit" ? "明确最终回答" : "推断最终回答"}</span>}{selectedMessage.status && <span>{statuses[selectedMessage.status]}</span>}<time>{timeLabel(selectedMessage.occurredAt)}</time>
-          <button className="text-button" aria-pressed={raw} onClick={() => setRaw(value => !value)}>{raw ? "查看预览" : "原始正文"}</button></div>
-        {selectedMessage.contextSource && <p className="trace-context-note">{selectedMessage.contextSource === "hook" ? "本地 Hook" : <>{selectedMessage.contextSource === "agents_md" ? "AGENTS.md 指令注入" : selectedMessage.contextSource === "environment" ? "环境上下文注入" : "客户端上下文注入"} · {selectedMessage.contextEvidence === "client_metadata" ? "明确标记" : "推断"}</>}</p>}
-        <details className="trace-source"><summary>记录来源 · 第 {selectedMessage.recordLine} 条</summary><div>消息序号 {selectedMessage.ordinal}{selectedMessage.callId && <> · 调用 {selectedMessage.callId}</>}</div>{selectedMessage.contextSource && <div>原始角色：{selectedMessage.contextSource === "hook" ? "attachment" : "user"}</div>}{selectedMessage.resource && <div>{resourceLabels[selectedMessage.resource.kind]} · {selectedMessage.resource.name}</div>}</details>
-        {!!selected.usage.length && <div className="trace-usage">{selected.usage.map(usage => <div key={usage.id}><strong>{usage.model ?? "模型未记录"} · 用量记录</strong>{tokenFields.map(([key, label]) => <span key={key}>{label} <b>{displayRecorded(usage[key])}</b></span>)}</div>)}</div>}
+        <div className="trace-detail-meta"><span className={`session-kind kind-${selectedMessage.kind}`}>{t(kindLabels[selectedMessage.kind])}</span>{selectedMessage.model && <span>{selectedMessage.model}</span>}{selectedMessage.final && <span>{selectedMessage.final === "explicit" ? t("sessions.message.finalExplicit") : t("sessions.message.finalInferred")}</span>}{selectedMessage.status && <span>{t(statuses[selectedMessage.status])}</span>}<time>{timeLabel(selectedMessage.occurredAt)}</time>
+          <button className="text-button" aria-pressed={raw} onClick={() => setRaw(value => !value)}>{raw ? t("sessions.trace.preview") : t("sessions.trace.raw")}</button></div>
+        {selectedMessage.contextSource && <p className="trace-context-note">{selectedMessage.contextSource === "hook" ? t("sessions.context.hook") : <>{selectedMessage.contextSource === "agents_md" ? t("sessions.context.agentsInstructions") : selectedMessage.contextSource === "environment" ? t("sessions.context.environment") : t("sessions.context.client")} · {selectedMessage.contextEvidence === "client_metadata" ? t("sessions.context.explicit") : t("sessions.context.inferred")}</>}</p>}
+        <details className="trace-source"><summary>{t("sessions.trace.sourceRecord", { number: formatNumber(getLanguage(), selectedMessage.recordLine) })}</summary><div>{t("sessions.trace.messageOrdinal", { number: formatNumber(getLanguage(), selectedMessage.ordinal) })}{selectedMessage.callId && <> · {t("sessions.message.callId", { id: selectedMessage.callId })}</>}</div>{selectedMessage.contextSource && <div>{t("sessions.trace.originalRole", { role: selectedMessage.contextSource === "hook" ? "attachment" : "user" })}</div>}{selectedMessage.resource && <div>{t(resourceLabels[selectedMessage.resource.kind])} · {sessionResourceName(selectedMessage.resource)}</div>}</details>
+        {!!selected.usage.length && <div className="trace-usage">{selected.usage.map(usage => <div key={usage.id}><strong>{t("sessions.trace.usageModel", { model: usage.model ?? t("sessions.trace.modelMissing") })}</strong>{tokenFields.map(([key, label]) => <span key={key}>{t(label)} <b>{displayRecorded(usage[key])}</b></span>)}</div>)}</div>}
         <article id={`session-message-${selectedMessage.id}`} className={`trace-detail-body kind-${selectedMessage.kind}`} data-message-id={selectedMessage.id}>
-          {raw ? <pre className="trace-raw-content">{selectedMessage.text || "（没有正文）"}</pre> : <MessageBody message={selectedMessage} focused flat project={project} onMap={onMap} />}
+          {raw ? <pre className="trace-raw-content">{selectedMessage.text || t("sessions.body.emptyRaw")}</pre> : <MessageBody message={selectedMessage} focused flat project={project} onMap={onMap} />}
         </article>
-        {!!linkedFiles.length && <details className="session-file-links"><summary>关联调用文件 · {linkedFiles.length}</summary><div>
+        {!!linkedFiles.length && <details className="session-file-links"><summary>{t("sessions.trace.linkedFiles", { count: linkedFiles.length })}</summary><div>
           {linkedFiles.map(path => <button className="session-file-link" key={path} onClick={() => onMap(path, project)}>{path}</button>)}
         </div></details>}
       </div>
-    </section> : <p className="trace-hint">选择一个执行节点</p>}
+    </section> : <p className="trace-hint">{t("sessions.trace.select")}</p>}
   </section>;
 }

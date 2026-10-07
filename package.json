@@ -27,13 +27,14 @@
     "build": "npm run build:server && npm run build:web",
     "build:server": "tsc -p tsconfig.server.json",
     "build:web": "vite build",
-    "check": "npm run check:server && npm run check:web",
+    "check": "npm run check:i18n && npm run check:server && npm run check:web",
     "check:server": "tsc -p tsconfig.server.json --noEmit",
     "check:web": "tsc -p tsconfig.web.json",
     "test": "node --import tsx --test tests/*.test.ts",
     "test:sqlite": "node scripts/check-sqlite.mjs",
     "dev:web": "vite",
-    "prepack": "npm run check:public && npm run build && node scripts/check-package.mjs"
+    "prepack": "npm run check:public && npm run build && node scripts/check-package.mjs",
+    "check:i18n": "node --import tsx scripts/check-i18n.mjs"
   },
   "dependencies": {
     "@fastify/static": "10.1.5",
@@ -41,6 +42,7 @@
     "commander": "15.0.0",
     "diff": "9.0.0",
     "fastify": "5.12.5",
+    "i18next": "26.4.2",
     "jsonc-parser": "3.3.1",
     "smol-toml": "1.9.0",
     "yaml": "2.9.1"

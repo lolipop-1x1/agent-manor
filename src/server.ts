@@ -1,3 +1,4 @@
+import { DiagnosticError } from "./i18n/diagnostics.js";
 import Fastify from "fastify";
 import fastifyStatic from "@fastify/static";
 import { randomUUID } from "node:crypto";
@@ -21,6 +22,7 @@ import type { ResourceInventoryOptions } from "./resource-inventory-contracts.js
 import { ResourceManager } from "./resources/management.js";
 import { ResourceService } from "./resources/service.js";
 import { registerResourceRoutes } from "./service/resource-routes.js";
+import { registerPreferenceRoutes } from "./service/preferences.js";
 
 export interface ServiceOptions {
   home?: string;
@@ -49,7 +51,7 @@ function hasEventPath(snapshot: AnalysisSnapshot, eventId: string, path: string)
 export async function startService(options: ServiceOptions = {}) {
   const home = dataHome(options.home);
   const requestedPort = options.port ?? (process.env.AGENT_MANOR_PORT ? Number(process.env.AGENT_MANOR_PORT) : 0);
-  if (!Number.isInteger(requestedPort) || requestedPort < 0 || requestedPort > 65535) throw new Error("端口必须是 0 到 65535 的整数");
+  if (!Number.isInteger(requestedPort) || requestedPort < 0 || requestedPort > 65535) throw new DiagnosticError("端口必须是 0 到 65535 的整数", { key: "diagnostics.server.m001" });
   const release = await acquireLock(home, "service.lock");
   let store: AnalysisStore | undefined;
   let manager: WorkerManager | undefined;
@@ -81,18 +83,18 @@ export async function startService(options: ServiceOptions = {}) {
       const malformed = !known && typeof error === "object" && error !== null && "statusCode" in error
         && Number(error.statusCode) >= 400 && Number(error.statusCode) < 500;
       const code: ApiErrorCode = known ? error.code : malformed ? "INVALID_INPUT" : "INTERNAL_ERROR";
-      reply.code(statusCode(code)).send({ error: { code, message: known ? error.message : malformed ? "无效 HTTP 请求" : "本地服务处理失败" } });
+      reply.code(statusCode(code)).send({ error: { code, message: known ? error.message : malformed ? "无效 HTTP 请求" : "本地服务处理失败", messageDescriptor: known ? error.messageDescriptor : malformed ? { key: "diagnostics.server.m002" } : { key: "diagnostics.server.m003" } } });
     });
-    app.setNotFoundHandler((_request, reply) => { reply.code(404).send({ error: { code: "FILE_NOT_FOUND", message: "资源不存在" } }); });
+    app.setNotFoundHandler((_request, reply) => { reply.code(404).send({ error: { code: "FILE_NOT_FOUND", message: "资源不存在", messageDescriptor: { key: "diagnostics.server.m004" } } }); });
     app.addHook("onRequest", async (request) => {
       let host: URL;
-      try { host = new URL(`http://${request.headers.host ?? ""}`); } catch { throw new ServiceError("FORBIDDEN", "无效 Host"); }
+      try { host = new URL(`http://${request.headers.host ?? ""}`); } catch { throw new ServiceError("FORBIDDEN", "无效 Host", { key: "diagnostics.server.m005" }); }
       if (!["127.0.0.1", "localhost"].includes(host.hostname) || (host.port || "80") !== String(instance.port)
-        || host.username || host.password || host.pathname !== "/" || host.search || host.hash) throw new ServiceError("FORBIDDEN", "仅允许本机服务 Host");
+        || host.username || host.password || host.pathname !== "/" || host.search || host.hash) throw new ServiceError("FORBIDDEN", "仅允许本机服务 Host", { key: "diagnostics.server.m006" });
       const origin = request.headers.origin;
       if (origin) {
         let source: URL;
-        try { source = new URL(origin); } catch { throw new ServiceError("FORBIDDEN", "无效 Origin"); }
+        try { source = new URL(origin); } catch { throw new ServiceError("FORBIDDEN", "无效 Origin", { key: "diagnostics.server.m007" }); }
         let sameOrigin = source.origin === host.origin;
         // 兼容 Origin 丢失端口；浏览器同源标记与完整 Referer 必须同时匹配。
         if (!sameOrigin && !source.port && source.protocol === host.protocol && source.hostname === host.hostname
@@ -103,18 +105,19 @@ export async function startService(options: ServiceOptions = {}) {
           } catch { /* 没有完整同源来源时继续拒绝。 */ }
         }
         if (!sameOrigin || source.pathname !== "/" || source.search || source.hash || source.username || source.password) {
-          throw new ServiceError("FORBIDDEN", "仅允许同服务页面请求");
+          throw new ServiceError("FORBIDDEN", "仅允许同服务页面请求", { key: "diagnostics.server.m008" });
         }
       }
       const token = request.headers["x-agent-manor-instance"];
-      if (token !== undefined && token !== instance.id) throw new ServiceError("FORBIDDEN", "服务实例已变化");
+      if (token !== undefined && token !== instance.id) throw new ServiceError("FORBIDDEN", "服务实例已变化", { key: "diagnostics.server.m009" });
       if (!["GET", "HEAD", "OPTIONS"].includes(request.method)) {
-        if (request.headers["sec-fetch-site"] === "cross-site") throw new ServiceError("FORBIDDEN", "拒绝跨站写入");
+        if (request.headers["sec-fetch-site"] === "cross-site") throw new ServiceError("FORBIDDEN", "拒绝跨站写入", { key: "diagnostics.server.m010" });
         const contentType = request.headers["content-type"];
-        if (contentType && !/^application\/json(?:\s*;|$)/i.test(contentType)) throw new ServiceError("INVALID_INPUT", "写入请求仅接受 application/json");
-        if (Number(request.headers["content-length"] ?? 0) > 0 && !contentType) throw new ServiceError("INVALID_INPUT", "请求体需要 application/json");
+        if (contentType && !/^application\/json(?:\s*;|$)/i.test(contentType)) throw new ServiceError("INVALID_INPUT", "写入请求仅接受 application/json", { key: "diagnostics.server.m011" });
+        if (Number(request.headers["content-length"] ?? 0) > 0 && !contentType) throw new ServiceError("INVALID_INPUT", "请求体需要 application/json", { key: "diagnostics.server.m012" });
       }
     });
+    registerPreferenceRoutes(app, home);
     app.get("/api/v1/status", async () => ({ instance, version: VERSION, repositories: index.listRepositories(), jobs: index.listJobs(), sessions: library.status() }));
     app.post("/api/v1/stop", async (request, reply) => {
       emptyBody(request.body);
@@ -126,7 +129,7 @@ export async function startService(options: ServiceOptions = {}) {
       const path = bodyText(request.body, "path");
       let repository;
       try { repository = await index.registerRepository(path); }
-      catch { throw new ServiceError("INVALID_INPUT", "path 必须是可读取的 Git 仓库"); }
+      catch { throw new ServiceError("INVALID_INPUT", "path 必须是可读取的 Git 仓库", { key: "diagnostics.server.m013" }); }
       return { repository, job: worker.refresh(repository.id) };
     });
     const base = "/api/v1/repositories/:id";
@@ -136,12 +139,12 @@ export async function startService(options: ServiceOptions = {}) {
     app.get<{ Querystring: Query }>("/api/v1/sessions", async request => library.list(sessionQuery(request.query)));
     app.get<{ Querystring: Query }>("/api/v1/sessions/search", async request => {
       const query = sessionQuery(request.query);
-      if (!query.q) throw new ServiceError("INVALID_INPUT", "搜索需要 q");
+      if (!query.q) throw new ServiceError("INVALID_INPUT", "搜索需要 q", { key: "diagnostics.server.m014" });
       return library.search({ ...query, sessionId: textValue(request.query.sessionId, "sessionId") });
     });
     app.get<{ Querystring: Query }>("/api/v1/sessions/locate", async request => {
       const client = textValue(request.query.client, "client", true)!;
-      if (!clientIds.includes(client as Client)) throw new ServiceError("INVALID_INPUT", "未知客户端");
+      if (!clientIds.includes(client as Client)) throw new ServiceError("INVALID_INPUT", "未知客户端", { key: "diagnostics.server.m015" });
       const target = library.locate({ client: client as Client, clientSessionId: textValue(request.query.clientSessionId, "clientSessionId", true)!,
         sourceId: textValue(request.query.sourceId, "sourceId"),
         recordLine: request.query.recordLine === undefined ? undefined : integer(request.query.recordLine, "recordLine", 1, 1_000_000_000),
@@ -164,7 +167,7 @@ export async function startService(options: ServiceOptions = {}) {
     app.get<{ Params: RepositoryParams; Querystring: Query }>(`${base}/hotspots`, async (request) => {
       const query = coverageQuery(request.query);
       const metric = request.query.metric ?? "activity";
-      if (metric !== "read" && metric !== "edit" && metric !== "activity") throw new ServiceError("INVALID_INPUT", "未知热点指标");
+      if (metric !== "read" && metric !== "edit" && metric !== "activity") throw new ServiceError("INVALID_INPUT", "未知热点指标", { key: "diagnostics.server.m016" });
       const coverage = buildCoverage(snapshotFor(request.params.id, query), filtersOf(query));
       return { ...coverage, files: getHotspots(coverage, metric, integer(request.query.limit, "limit", 20, 1000)) };
     });
@@ -179,7 +182,7 @@ export async function startService(options: ServiceOptions = {}) {
       const snapshot = snapshotFor(request.params.id, query);
       const coverage = buildCoverage(snapshot, filtersOf(query));
       const file = coverage.files.find((candidate) => candidate.path === path);
-      if (!file) throw new ServiceError("FILE_NOT_FOUND", "文件不在所选分析范围内");
+      if (!file) throw new ServiceError("FILE_NOT_FOUND", "文件不在所选分析范围内", { key: "diagnostics.server.m017" });
       let content: string | null = null;
       let hash: string | undefined;
       try {
@@ -209,7 +212,7 @@ export async function startService(options: ServiceOptions = {}) {
       const query = coverageQuery(request.query);
       const snapshot = snapshotFor(request.params.id, query);
       const event = filterHistoricalEvents(snapshot, filtersOf(query)).find((candidate) => candidate.id === request.params.eventId);
-      if (!event) throw new ServiceError("EVENT_NOT_FOUND", "活动不在所选分析范围内");
+      if (!event) throw new ServiceError("EVENT_NOT_FOUND", "活动不在所选分析范围内", { key: "diagnostics.server.m018" });
       const records = [];
       const unavailable = [];
       for (const source of event.sources) {
@@ -263,7 +266,7 @@ export async function startService(options: ServiceOptions = {}) {
     }
     await app.listen({ host: "127.0.0.1", port: requestedPort });
     const address = app.server.address();
-    if (!address || typeof address === "string") throw new Error("未取得本地监听端口");
+    if (!address || typeof address === "string") throw new DiagnosticError("未取得本地监听端口", { key: "diagnostics.server.m019" });
     instance.port = address.port;
     await writeInstance(home, instance);
     if (options.startupRefresh !== false) {

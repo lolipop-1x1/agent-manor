@@ -1,3 +1,4 @@
+import type { MessageDescriptor } from "./i18n/types.js";
 import type { ResourceInventoryEntry, ResourceInventorySnapshot, ResourceManualSource } from "./resource-inventory-contracts.js";
 
 export type ResourceManagementAction = "disable" | "standby" | "trash" | "restore" | "purge";
@@ -17,6 +18,7 @@ export interface ResourceManagementPreview {
   protected: boolean;
   protectionReasons: string[];
   restoration: string;
+  restorationDescriptor?: MessageDescriptor;
   createdAt: string;
   expiresAt: string;
   requiresConfirmation: true;
@@ -31,6 +33,8 @@ export interface ResourceManagementOperation {
   resource: Pick<ResourceInventoryEntry, "kind" | "client" | "scope" | "project">;
   status: "success" | "failure" | "conflict" | "partial";
   message: string;
+  messageDescriptor?: MessageDescriptor;
+  details?: MessageDescriptor[];
   createdAt: string;
   archiveId?: string;
   localState: "changed" | "unchanged" | "partial";

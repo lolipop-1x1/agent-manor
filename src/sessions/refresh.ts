@@ -1,3 +1,5 @@
+import { errorDescriptor } from "../i18n/diagnostics.js";
+import { DiagnosticError } from "../i18n/diagnostics.js";
 import { createHash } from "node:crypto";
 import { createReadStream } from "node:fs";
 import { lstat } from "node:fs/promises";
@@ -24,13 +26,13 @@ const SESSION_INDEX_RULE_VERSION = "5";
 
 async function fingerprint(path: string, byteLimit?: number): Promise<{ hash: string; bytes: number }> {
   const before = await lstat(path);
-  if (!before.isFile() || before.isSymbolicLink()) throw new Error("会话来源必须为普通文件");
+  if (!before.isFile() || before.isSymbolicLink()) throw new DiagnosticError("会话来源必须为普通文件", { key: "diagnostics.sessions.refresh.m001" });
   const bytes = byteLimit ?? before.size;
-  if (before.size < bytes) throw new Error("会话来源在解析期间被截短，请重新刷新");
+  if (before.size < bytes) throw new DiagnosticError("会话来源在解析期间被截短，请重新刷新", { key: "diagnostics.sessions.refresh.m002" });
   const digest = createHash("sha256");
   if (bytes) for await (const chunk of createReadStream(path, { start: 0, end: bytes - 1 })) digest.update(chunk);
   const after = await lstat(path);
-  if (after.size < bytes) throw new Error("会话来源在检查期间被截短，请重新刷新");
+  if (after.size < bytes) throw new DiagnosticError("会话来源在检查期间被截短，请重新刷新", { key: "diagnostics.sessions.refresh.m003" });
   return { hash: `${SESSION_INDEX_RULE_VERSION}:${digest.digest("hex")}`, bytes };
 }
 
@@ -53,10 +55,10 @@ export async function refreshSessions(store: SessionStore, jobId: string, roots?
     if (item) item.count += 1;
     else counts.fallbacks.push({ reason, count: 1 });
   };
-  store.updateJob(jobId, { status: "running", phase: "discover", progress: 0, client, mode, counts });
+  store.updateJob(jobId, { status: "running", phase: "discover", phaseDescriptor: { key: "diagnostics.sessions.refresh.m004" }, progress: 0, client, mode, counts });
   try {
-    await store.prepareSearchIndex(progress => store.updateJob(jobId, { phase: "建立搜索索引", progress }));
-    store.updateJob(jobId, { phase: "discover", progress: 0 });
+    await store.prepareSearchIndex(progress => store.updateJob(jobId, { phase: "建立搜索索引", phaseDescriptor: { key: "diagnostics.sessions.refresh.m005" }, progress }));
+    store.updateJob(jobId, { phase: "discover", phaseDescriptor: { key: "diagnostics.sessions.refresh.m004" }, progress: 0 });
     // 基础版本在执行时读取，连续范围任务保留前一任务刚发布的结果。
     const cached = new Map(store.cachedRevisions().map(item => [item.path, item]));
     const selected = [...cached.values()].filter(item => !client || item.client === client);
@@ -77,7 +79,7 @@ export async function refreshSessions(store: SessionStore, jobId: string, roots?
       missing.add(previous.path);
     }
     for (const [index, source] of sources.entries()) {
-      store.updateJob(jobId, { phase: "index", progress: sources.length ? index / sources.length : 0, counts });
+      store.updateJob(jobId, { phase: "index", phaseDescriptor: { key: "diagnostics.sessions.refresh.m006" }, progress: sources.length ? index / sources.length : 0, counts });
       const { discoveryQuickStamp, ...location } = source;
       const sourceKey = sourceLocationKey(source);
       const previous = cached.get(sourceKey);
@@ -132,12 +134,12 @@ export async function refreshSessions(store: SessionStore, jobId: string, roots?
       const pending = store.createRevision(sourceKey, sourceFingerprint);
       try {
         const meta = await parseSessionSource(source, pending.sink, { byteLimit: digest.bytes, title, projectMetadata, desktopModels: nativeModels?.entries, nativeSnapshot, normalizedSnapshot });
-        if (nativeModels?.limited) meta.gaps.push({ kind: "budget_exceeded", message: "原生模型旁路日志超过有界读取上限，部分模型信息未关联", sourceId: meta.sourceId });
+        if (nativeModels?.limited) meta.gaps.push({ kind: "budget_exceeded", message: "原生模型旁路日志超过有界读取上限，部分模型信息未关联", messageDescriptor: { key: "diagnostics.sessions.refresh.m007" }, sourceId: meta.sourceId });
         pending.flush();
         // 允许活动日志追加；发布的始终是开始检查时的同一字节前缀。
         const after = normalizedSnapshot ? { hash: `normalized-1:${(await adapter!.readRecords!(source)).hash}` }
           : nativeSnapshot ? { hash: `${SESSION_INDEX_RULE_VERSION}:${(await readIdeSnapshot(source)).hash}` } : await fingerprint(source.path, digest.bytes);
-        if (after.hash !== digest.hash) throw new Error("会话来源已有内容在解析期间被改写，请重新刷新");
+        if (after.hash !== digest.hash) throw new DiagnosticError("会话来源已有内容在解析期间被改写，请重新刷新", { key: "diagnostics.sessions.refresh.m008" });
         store.finishRevision(pending.revision, meta);
         current.push(await cacheRecord(pending.revision));
         counts.parsed += 1;
@@ -148,13 +150,13 @@ export async function refreshSessions(store: SessionStore, jobId: string, roots?
       }
     }
     counts.missing = missing.size;
-    if (counts.missing) gaps.push({ kind: "source_missing", message: "已有来源已删除或移走，新版统计已排除；上一版保留供对照", count: counts.missing });
-    store.updateJob(jobId, { phase: "publish", progress: 0.99, counts });
+    if (counts.missing) gaps.push({ kind: "source_missing", message: "已有来源已删除或移走，新版统计已排除；上一版保留供对照", messageDescriptor: { key: "diagnostics.sessions.refresh.m009" }, count: counts.missing });
+    store.updateJob(jobId, { phase: "publish", phaseDescriptor: { key: "diagnostics.sessions.refresh.m010" }, progress: 0.99, counts });
     store.publish(jobId, current, gaps);
   } catch (error) {
     counts.missing = missing.size;
     store.updateJob(jobId, { counts });
-    store.failJob(jobId, error instanceof Error ? error.message : String(error));
+    store.failJob(jobId, error instanceof Error ? error.message : String(error), errorDescriptor(error));
     throw error;
   }
 }

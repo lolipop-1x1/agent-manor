@@ -1,3 +1,4 @@
+import type { MessageDescriptor } from "../i18n/types.js";
 import Database from "better-sqlite3";
 import { randomUUID } from "node:crypto";
 import { mkdirSync } from "node:fs";
@@ -109,7 +110,7 @@ export class SessionStore {
   }
 
   createJob(options: SessionRefreshOptions = {}): SessionJob {
-    const job: SessionJob = { id: randomUUID(), status: "queued", phase: "queued", progress: 0, createdAt: new Date().toISOString(),
+    const job: SessionJob = { id: randomUUID(), status: "queued", phase: "queued", phaseDescriptor: { key: "diagnostics.sessions.store.m001" }, progress: 0, createdAt: new Date().toISOString(),
       client: options.client, mode: options.mode ?? "quick" };
     this.database.prepare("INSERT INTO session_jobs(id,created_at,json) VALUES(?,?,?)").run(job.id, job.createdAt, JSON.stringify(job));
     return job;
@@ -117,7 +118,7 @@ export class SessionStore {
 
   getJob(id: string): SessionJob {
     const row = this.database.prepare("SELECT json FROM session_jobs WHERE id=?").get(id) as JsonRow | undefined;
-    if (!row) throw new StoreError("JOB_NOT_FOUND", "会话索引任务不存在");
+    if (!row) throw new StoreError("JOB_NOT_FOUND", "会话索引任务不存在", { key: "diagnostics.sessions.store.m002" });
     return decode(row);
   }
 
@@ -127,9 +128,10 @@ export class SessionStore {
     return job;
   }
 
-  failJob(id: string, error: string): void {
+  failJob(id: string, error: string, errorDescriptor?: MessageDescriptor): void {
+    if (this.getJob(id).status === "failed") { this.removeUnpublishedRevisions(); return; }
     this.database.transaction(() => {
-      this.updateJob(id, { status: "failed", phase: "failed", error, finishedAt: new Date().toISOString() });
+      this.updateJob(id, { status: "failed", phase: "failed", phaseDescriptor: { key: "diagnostics.sessions.store.m003" }, error, errorDescriptor, finishedAt: new Date().toISOString() });
       this.saveState({ ...this.state(), stale: true });
     })();
     this.removeUnpublishedRevisions();
@@ -139,7 +141,7 @@ export class SessionStore {
     const jobs = this.database.prepare("SELECT json FROM session_jobs").iterate() as Iterable<JsonRow>;
     const unfinished: string[] = [];
     for (const row of jobs) { const job = decode<SessionJob>(row); if (["queued", "running"].includes(job.status)) unfinished.push(job.id); }
-    for (const id of unfinished) this.failJob(id, "服务中断，未完成的会话索引保留上一版");
+    for (const id of unfinished) this.failJob(id, "服务中断，未完成的会话索引保留上一版", { key: "diagnostics.sessions.store.interrupted" });
     this.removeUnpublishedRevisions();
   }
 
@@ -242,14 +244,14 @@ export class SessionStore {
       const addRelation = this.database.prepare("INSERT OR IGNORE INTO session_version_relations(version,child,parent) VALUES(?,?,?)");
       for (const target of targets) {
         if (target.parents === 1) addRelation.run(version, target.child, target.parent);
-        else addGap({ kind: "ambiguous", message: "多个父会话声明同一子目标，未任意建立父子关联", count: 1 });
+        else addGap({ kind: "ambiguous", message: "多个父会话声明同一子目标，未任意建立父子关联", messageDescriptor: { key: "diagnostics.sessions.store.m004" }, count: 1 });
       }
       const conflicts = (this.database.prepare(`SELECT COUNT(DISTINCT c.session_id) AS count FROM session_version_sessions p
         JOIN session_revisions pr ON pr.id=p.revision CROSS JOIN json_each(pr.json,'$.childSessionIds') target
         CROSS JOIN session_version_sessions c ON c.version=p.version AND c.session_id=target.value JOIN session_revisions cr ON cr.id=c.revision
         WHERE p.version=? AND json_extract(cr.json,'$.parentSessionId') IS NOT NULL
           AND json_extract(cr.json,'$.parentSessionId')<>p.session_id`).get(version) as { count: number }).count;
-      if (conflicts) addGap({ kind: "ambiguous", message: "父工具目标与子会话显式父声明冲突，保留显式声明，不扩大汇总", count: conflicts });
+      if (conflicts) addGap({ kind: "ambiguous", message: "父工具目标与子会话显式父声明冲突，保留显式声明，不扩大汇总", messageDescriptor: { key: "diagnostics.sessions.store.m005" }, count: conflicts });
       const relationRows = this.database.prepare("SELECT child,parent FROM session_version_relations WHERE version=?").all(version) as { child: string; parent: string }[];
       const relationships = new Map(relationRows.map(item => [item.child, item.parent]));
       const checked = new Set<string>();
@@ -269,12 +271,12 @@ export class SessionStore {
       if (cycles.size) {
         const remove = this.database.prepare("DELETE FROM session_version_relations WHERE version=? AND child=?");
         for (const node of cycles) remove.run(version, node);
-        addGap({ kind: "ambiguous", message: "父子声明形成循环，循环中的关系未纳入汇总", count: cycles.size });
+        addGap({ kind: "ambiguous", message: "父子声明形成循环，循环中的关系未纳入汇总", messageDescriptor: { key: "diagnostics.sessions.store.m006" }, count: cycles.size });
       }
       const duplicate = (this.database.prepare(`SELECT COALESCE(SUM(count-1),0) AS count FROM
         (SELECT COUNT(*) AS count FROM session_version_sources v JOIN session_revisions r ON r.id=v.revision WHERE v.version=? GROUP BY r.session_id HAVING COUNT(*)>1)`)
         .get(version) as { count: number }).count;
-      if (duplicate) addGap({ kind: "ambiguous", message: "同一会话存在多个来源副本，采用消息较完整、时间较新的副本；不重复累计", count: duplicate });
+      if (duplicate) addGap({ kind: "ambiguous", message: "同一会话存在多个来源副本，采用消息较完整、时间较新的副本；不重复累计", messageDescriptor: { key: "diagnostics.sessions.store.m007" }, count: duplicate });
       for (const row of this.database.prepare(`SELECT r.json FROM session_version_sessions v JOIN session_revisions r ON r.id=v.revision
         WHERE v.version=?`).iterate(version) as Iterable<JsonRow>) {
         const summary = decode<SessionSourceMeta>(row);
@@ -289,7 +291,7 @@ export class SessionStore {
       const clientChecks = new Map((state.clientChecks ?? []).map(check => [check.client, check]));
       for (const client of checkedClients) clientChecks.set(client, { client, checkedAt: createdAt, mode: job.mode ?? "quick" });
       this.saveState({ version, previousVersion, createdAt, stale: false, gaps: publishedGaps, clientChecks: [...clientChecks.values()] });
-      this.updateJob(jobId, { status: "complete", phase: "complete", progress: 1, version, finishedAt: createdAt });
+      this.updateJob(jobId, { status: "complete", phase: "complete", phaseDescriptor: { key: "diagnostics.sessions.store.m008" }, progress: 1, version, finishedAt: createdAt });
       this.database.prepare("DELETE FROM session_versions WHERE id<>? AND id<>?").run(version, previousVersion ?? version);
       this.removeUnpublishedRevisions();
     })();
@@ -298,15 +300,15 @@ export class SessionStore {
 
   private version(requested?: string): string {
     const version = requested ?? this.state().version;
-    if (!version) throw new StoreError("ANALYSIS_NOT_READY", "会话索引尚未完成");
-    if (!this.database.prepare("SELECT 1 FROM session_versions WHERE id=?").get(version)) throw new StoreError("VERSION_NOT_FOUND", "会话索引版本不存在");
+    if (!version) throw new StoreError("ANALYSIS_NOT_READY", "会话索引尚未完成", { key: "diagnostics.sessions.store.m009" });
+    if (!this.database.prepare("SELECT 1 FROM session_versions WHERE id=?").get(version)) throw new StoreError("VERSION_NOT_FOUND", "会话索引版本不存在", { key: "diagnostics.sessions.store.m010" });
     return version;
   }
 
   private session(id: string, version: string): { revision: string; summary: SessionSummary } {
     const row = this.database.prepare(`SELECT r.id,r.json FROM session_version_sessions v JOIN session_revisions r ON r.id=v.revision
       WHERE v.version=? AND v.session_id=?`).get(version, id) as RevisionRow | undefined;
-    if (!row) throw new StoreError("SOURCE_NOT_FOUND", "会话不存在于当前索引版本");
+    if (!row) throw new StoreError("SOURCE_NOT_FOUND", "会话不存在于当前索引版本", { key: "diagnostics.sessions.store.m011" });
     return { revision: row.id, summary: this.summary(row, version) };
   }
 
@@ -316,13 +318,21 @@ export class SessionStore {
       JOIN session_version_sessions v ON v.version=relation.version AND v.session_id=relation.parent
       JOIN session_revisions r ON r.id=v.revision WHERE relation.version=? AND relation.child=?`)
       .get(version, summary.id) as (JsonRow & { parent: string }) | undefined;
+    const setParentTitle = (parentRow: JsonRow) => {
+      const parent = sessionTitle(decode<SessionSummary>(parentRow));
+      summary.parentTitle = parent.title;
+      summary.parentTitleDescriptor = parent.titleOrigin === "fallback" ? {
+        key: parent.relationship === "child" ? "sessions.title.childFallback" : "sessions.title.unnamed",
+        ...(parent.relationship === "child" ? { params: { id: parent.clientSessionId.slice(-8) } } : {}),
+      } : undefined;
+    };
     if (relation) {
       summary.parentSessionId = relation.parent; summary.relationship = "child";
-      summary.parentTitle = sessionTitle(decode<SessionSummary>(relation)).title;
+      setParentTitle(relation);
     } else if (summary.relationship === "fork" && summary.parentSessionId) {
       const parent = this.database.prepare(`SELECT r.json FROM session_version_sessions v JOIN session_revisions r ON r.id=v.revision
         WHERE v.version=? AND v.session_id=?`).get(version, summary.parentSessionId) as JsonRow | undefined;
-      if (parent) summary.parentTitle = sessionTitle(decode<SessionSummary>(parent)).title;
+      if (parent) setParentTitle(parent);
     }
     return sessionTitle(summary);
   }
@@ -367,6 +377,7 @@ export class SessionStore {
     const rows = this.database.prepare(`SELECT m.id AS message_id,m.ordinal,m.turn_id,m.record_line,r.session_id,r.client,r.project,
       r.id AS revision,r.fingerprint,json_extract(r.json,'$.path') AS source_path,json_extract(r.json,'$.sourceId') AS source_id,
       json_extract(m.json,'$.resource.kind') AS resource_kind,json_extract(m.json,'$.resource.name') AS resource_name,
+      json_extract(m.json,'$.resource.nameDescriptor') AS resource_name_descriptor,
       json_extract(m.json,'$.resource.server') AS resource_server,json_extract(m.json,'$.resource.path') AS resource_path,
       json_extract(m.json,'$.filePaths') AS file_paths,json_extract(m.json,'$.tool') AS tool,
       json_extract(m.json,'$.occurredAt') AS occurred_at,
@@ -389,7 +400,7 @@ export class SessionStore {
       ORDER BY r.session_id,m.ordinal,m.id`).iterate(...values) as Iterable<{
         message_id: string; ordinal: number; turn_id: string; record_line: number; session_id: string; client: Client; project: string | null;
         revision: string; fingerprint: string; source_path: string; source_id: string; resource_kind: ResourceUsageEvent["kind"];
-        resource_name: string | null; resource_server: string | null; resource_path: string | null; file_paths: string | null;
+        resource_name: string | null; resource_name_descriptor: string | null; resource_server: string | null; resource_path: string | null; file_paths: string | null;
         tool: string | null; occurred_at: string | null; status: ResourceUsageEvent["status"]; duration_ms: number | null;
         result_id: string | null; result_count: number; call_count: number;
       }>;
@@ -401,7 +412,8 @@ export class SessionStore {
           ?? (row.resource_kind === "skill_call" ? paths[0] : undefined));
         yield { id: `${row.session_id}:${row.message_id}`, sessionId: row.session_id, messageId: row.message_id,
           turnId: row.turn_id, ordinal: row.ordinal, client: row.client, project: row.project ?? undefined,
-          kind: row.resource_kind, name: row.resource_name ?? "未记录名称", server: row.resource_server ?? undefined,
+          kind: row.resource_kind, name: row.resource_name ?? "未记录名称",
+          ...(row.resource_name_descriptor ? { nameDescriptor: JSON.parse(row.resource_name_descriptor) } : {}), server: row.resource_server ?? undefined,
           path, tool: row.tool ?? undefined, occurredAt: row.occurred_at ?? undefined,
           status: row.status === "success" || row.status === "failure" ? row.status : "unknown",
           durationMs: typeof row.duration_ms === "number" && Number.isFinite(row.duration_ms) && row.duration_ms >= 0 ? row.duration_ms : undefined,
@@ -465,7 +477,7 @@ export class SessionStore {
     let branchCondition = "";
     const branchValues: SqlValue[] = [];
     if (query.branch && query.branch !== "all" && query.branch !== "current") {
-      if (!session.branches?.some(branch => branch.id === query.branch)) throw new StoreError("INVALID_INPUT", "会话分支不存在");
+      if (!session.branches?.some(branch => branch.id === query.branch)) throw new StoreError("INVALID_INPUT", "会话分支不存在", { key: "diagnostics.sessions.store.m012" });
       branchCondition = " AND (json_extract(json,'$.branchIds') IS NULL OR EXISTS (SELECT 1 FROM json_each(session_messages.json,'$.branchIds') WHERE value=?))";
       branchValues.push(query.branch);
     } else if (query.branch === "current" || !query.branch && query.mode === "brief") {
@@ -484,9 +496,9 @@ export class SessionStore {
     const target = targetParts.length ? this.database.prepare(`SELECT ordinal,id,turn_id,kind,final FROM session_messages
       WHERE revision=?${branchCondition} AND ${targetParts.join(" AND ")} ORDER BY ordinal,id LIMIT 1`).get(revision, ...branchValues, ...targetValues) as
       { ordinal: number; id: string; turn_id: string; kind: string; final: string | null } | undefined : undefined;
-    if (!target && targetParts.length && (!query.messageId || query.pageUnit === "turn")) throw new StoreError("SOURCE_NOT_FOUND", "定位消息不存在于当前会话");
+    if (!target && targetParts.length && (!query.messageId || query.pageUnit === "turn")) throw new StoreError("SOURCE_NOT_FOUND", "定位消息不存在于当前会话", { key: "diagnostics.sessions.store.m013" });
     if (target && query.mode === "brief" && target.kind !== "user" && !(target.kind === "assistant" && target.final)) {
-      throw new StoreError("INVALID_INPUT", "定位消息不在简易视图中，请切换完整或轨迹视图");
+      throw new StoreError("INVALID_INPUT", "定位消息不在简易视图中，请切换完整或轨迹视图", { key: "diagnostics.sessions.store.m014" });
     }
     if (query.pageUnit === "turn") {
       // 只聚合消息元信息，轮次顺序来自完整历史，避免加载全部正文。
@@ -503,7 +515,7 @@ export class SessionStore {
       const total = groups.reduce((sum, turn) => sum + turn.messageCount, 0);
       const targetPosition = target ? target.turn_id.endsWith(":turn:0") ? 0 : rounds.findIndex(turn => turn.id === (target.turn_id || "unknown")) + 1 : query.turnPosition;
       if (targetPosition !== undefined) {
-        if (targetPosition < 0 || targetPosition > totalTurns) throw new StoreError("INVALID_INPUT", "轮次位置超出当前视图范围");
+        if (targetPosition < 0 || targetPosition > totalTurns) throw new StoreError("INVALID_INPUT", "轮次位置超出当前视图范围", { key: "diagnostics.sessions.store.m015" });
         pagination.page = targetPosition === 0 ? 1 : Math.floor((targetPosition - 1) / pagination.pageSize) + 1;
       }
       pagination.page = Math.min(pagination.page, Math.max(1, Math.ceil(totalTurns / pagination.pageSize)));
@@ -516,7 +528,7 @@ export class SessionStore {
         .all(revision, ...branchValues, ...turnIds) as MessageRow[]).map(decodeMessage) : [];
       return { version, session, messages, total, ...pagination, pageUnit: "turn", totalTurns, turns, focusMessageId: target?.id };
     }
-    if (query.turnPosition !== undefined) throw new StoreError("INVALID_INPUT", "turnPosition 仅支持完整轮次分页");
+    if (query.turnPosition !== undefined) throw new StoreError("INVALID_INPUT", "turnPosition 仅支持完整轮次分页", { key: "diagnostics.sessions.store.m016" });
     if (target) {
       const preceding = (this.database.prepare(`SELECT COUNT(*) AS count FROM session_messages WHERE revision=?${condition} AND (ordinal<? OR (ordinal=? AND id<?))`)
         .get(revision, ...branchValues, target.ordinal, target.ordinal, target.id) as { count: number }).count;
@@ -648,7 +660,7 @@ export class SessionStore {
     const profile: SessionProfile = { version, scope: query.includeChildren ? "tree" : "self", sessionIds: [...included], missingChildren: 0,
       messageCount: 0, turnCount: 0, models: [], usage: { requests: 0, inputTokens: null, outputTokens: null, cachedInputTokens: null,
         cacheWriteTokens: null, reasoningOutputTokens: null, cacheReadRatio: null, peakInputTokens: null, peakContextTokens: null, inputRecordedRequests: 0, cacheRecordedRequests: 0 },
-      estimate: { method: "留存文本字符数 ÷ 4 向上取整；仅为内容体量估算，非计费用量", total: 0, byKind: [] }, tools: [], resources: [], compressions: 0,
+      estimate: { method: "留存文本字符数 ÷ 4 向上取整；仅为内容体量估算，非计费用量", methodDescriptor: { key: "sessions.estimate.method" }, total: 0, byKind: [] }, tools: [], resources: [], compressions: 0,
       children: directChildren, steps: [], gaps: [...root.summary.gaps] };
     const models = new Map<string, number>();
     const estimates = new Map<SessionMessage["kind"], number>();
@@ -667,7 +679,7 @@ export class SessionStore {
       const missing = new Set(summary.childSessionIds?.filter(child => !confirmedChildren.has(child)) ?? []);
       if (missing.size) {
         profile.missingChildren += missing.size;
-        profile.gaps.push({ kind: "unassociated", message: "明确子会话目标缺少来源或父子关联尚未确认，未纳入汇总", count: missing.size });
+        profile.gaps.push({ kind: "unassociated", message: "明确子会话目标缺少来源或父子关联尚未确认，未纳入汇总", messageDescriptor: { key: "diagnostics.sessions.store.m017" }, count: missing.size });
       }
       const retained = this.database.prepare(`SELECT kind,SUM(CAST((length(text)+3)/4 AS INTEGER)) AS tokens
         FROM session_messages WHERE revision=? AND copied=0 GROUP BY kind`).all(revision) as { kind: SessionMessage["kind"]; tokens: number }[];

@@ -1,5 +1,6 @@
 import type { ResourceInventoryBody, ResourceInventoryEntry, ResourceInventorySnapshot, ResourceManualSource } from "./resource-inventory-contracts.js";
 import type { ResourceKind, ResourceUsageDetail, ResourceUsageDistribution, ResourceUsageIdentity, ResourceUsageQuery, ResourceUsageResult, ResourceUsageStats, ResourceUsageTrend } from "./resource-contracts.js";
+import type { MessageDescriptor } from "./i18n/types.js";
 import type { Client } from "./clients.js";
 
 export type ResourceCandidate = "all" | "unused" | "low" | "old" | "broken" | "duplicate" | "favorite" | "review";
@@ -87,6 +88,7 @@ export interface ResourceMapQuery extends Omit<ResourceOverviewQuery, "page" | "
 export interface ResourceMapNode {
   id: string;
   name: string;
+  nameDescriptor?: MessageDescriptor;
   value: number | null;
   share: number | null;
   metrics: { calls: number; reads: number; sessions: number } | null;

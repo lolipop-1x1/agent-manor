@@ -55,12 +55,12 @@ function usageFrom(record: Record<string, unknown>, gap: (gap: Gap) => void): { 
   const raws = [provider.usage, message.usage, provider.rawUsage, record.usage, record.rawUsage];
   const projections = raws.map(value => normalizeUsage([value], () => undefined)).filter(Boolean);
   if (new Set(projections.map(value => JSON.stringify(value))).size > 1) {
-    gap({ kind: "ambiguous", message: "WorkBuddy message/provider/raw 用量投影不同，按 providerData.usage 优先并保留原始行" });
+    gap({ kind: "ambiguous", message: "WorkBuddy message/provider/raw 用量投影不同，按 providerData.usage 优先并保留原始行", messageDescriptor: { key: "diagnostics.history.adapters.workbuddy.m001" } });
   }
   const usage = normalizeUsage(raws, gap);
   const key = string(provider.messageId) ?? string(record.id);
   if (!usage && raws.some(value => Object.keys(object(value)).length > 0)) {
-    gap({ kind: "unsupported_format", message: "WorkBuddy 原生用量记录只含未归一化字段，保留原行并标记采集缺口" });
+    gap({ kind: "unsupported_format", message: "WorkBuddy 原生用量记录只含未归一化字段，保留原行并标记采集缺口", messageDescriptor: { key: "diagnostics.history.adapters.workbuddy.m002" } });
   }
   return { usage, key };
 }
@@ -75,7 +75,7 @@ function parseArguments(value: unknown, gaps: Gap[]): unknown {
   if (typeof value !== "string") return value;
   try { return JSON.parse(value) as unknown; }
   catch {
-    addGap(gaps, "parse_error", "WorkBuddy 工具参数不是有效 JSON 字符串");
+    addGap(gaps, "parse_error", "WorkBuddy 工具参数不是有效 JSON 字符串", { key: "diagnostics.history.adapters.workbuddy.m003" });
     return value;
   }
 }
@@ -108,7 +108,7 @@ function eventFor(record: Record<string, unknown>, row: RawHistoryRecord, metaGa
     ...values,
   });
   const useUsage = (event: NormalizedEvent) => {
-    const normalized = usageFrom(record, gap => addGap(metaGaps, gap.kind, gap.message));
+    const normalized = usageFrom(record, gap => addGap(metaGaps, gap.kind, gap.message, gap.messageDescriptor, gap.details));
     if (!normalized.usage || !normalized.key) return;
     const fingerprint = JSON.stringify(normalized.usage);
     const previous = usageSeen.get(normalized.key);
@@ -116,7 +116,7 @@ function eventFor(record: Record<string, unknown>, row: RawHistoryRecord, metaGa
       if (previous.fingerprint !== fingerprint) {
         previous.event.usage = undefined;
         event.usage = undefined;
-        addGap(metaGaps, "ambiguous", "同一原生请求存在不同用量记录，未选取其中一条");
+        addGap(metaGaps, "ambiguous", "同一原生请求存在不同用量记录，未选取其中一条", { key: "diagnostics.history.adapters.workbuddy.m004" });
       }
       return;
     }
@@ -147,7 +147,7 @@ function eventFor(record: Record<string, unknown>, row: RawHistoryRecord, metaGa
     });
     useUsage(event);
     events.push(event);
-    if (!callId) addGap(metaGaps, "ambiguous", "WorkBuddy 工具请求缺少原生 callId，无法可靠配对");
+    if (!callId) addGap(metaGaps, "ambiguous", "WorkBuddy 工具请求缺少原生 callId，无法可靠配对", { key: "diagnostics.history.adapters.workbuddy.m005" });
   } else if (type === "function_call_result") {
     const callId = string(record.callId);
     const providerResult = object(provider.workbuddyToolResult);
@@ -179,9 +179,9 @@ function eventFor(record: Record<string, unknown>, row: RawHistoryRecord, metaGa
       text: visible,
       status,
     }));
-    if (!callId) addGap(metaGaps, "unpaired_call", "WorkBuddy 工具结果缺少原生 callId，无法可靠配对");
+    if (!callId) addGap(metaGaps, "unpaired_call", "WorkBuddy 工具结果缺少原生 callId，无法可靠配对", { key: "diagnostics.history.adapters.workbuddy.m006" });
   } else if (!["ai-title", "custom-title", "file-history-snapshot"].includes(type)) {
-    addGap(metaGaps, "unsupported_format", `WorkBuddy 记录类型 ${type} 尚未适配`);
+    addGap(metaGaps, "unsupported_format", `WorkBuddy 记录类型 ${type} 尚未适配`, { key: "diagnostics.history.adapters.workbuddy.m007", params: { p0: String(type) } });
     events.push(make("unknown", "context", { text: `未适配记录类型 ${type}`, allowInferredFinal: false }));
   }
   return events;
@@ -195,17 +195,17 @@ async function readWorkbuddySnapshot(location: SourceLocation): Promise<Normaliz
   const provisionalId = location.sessionId ?? location.selector ?? (bodyIds.length === 1 ? bodyIds[0] : undefined);
   const metadata = await readMetadata(location.path, bodyIds.length > 1 ? undefined : provisionalId ?? fileId);
   const sessionId = bodyIds.length > 1 ? undefined : provisionalId ?? (metadata.found ? fileId : undefined);
-  if (bodyIds.length > 1) addGap(gaps, "ambiguous", "单个 WorkBuddy 文件包含多个 sessionId，未合并跨会话正文");
-  if (sessionId && bodyIds.some(id => id !== sessionId)) addGap(gaps, "ambiguous", "WorkBuddy 正文身份与文件／元数据身份不一致，仅保留匹配记录");
-  if (!sessionId) addGap(gaps, "unassociated", "WorkBuddy 正文没有 sessionId，且文件名未能与 sessions 元数据精确关联");
-  if (fileId && sessionId && fileId !== sessionId) addGap(gaps, "ambiguous", "WorkBuddy 文件名与原生 sessionId 不一致");
+  if (bodyIds.length > 1) addGap(gaps, "ambiguous", "单个 WorkBuddy 文件包含多个 sessionId，未合并跨会话正文", { key: "diagnostics.history.adapters.workbuddy.m008" });
+  if (sessionId && bodyIds.some(id => id !== sessionId)) addGap(gaps, "ambiguous", "WorkBuddy 正文身份与文件／元数据身份不一致，仅保留匹配记录", { key: "diagnostics.history.adapters.workbuddy.m009" });
+  if (!sessionId) addGap(gaps, "unassociated", "WorkBuddy 正文没有 sessionId，且文件名未能与 sessions 元数据精确关联", { key: "diagnostics.history.adapters.workbuddy.m010" });
+  if (fileId && sessionId && fileId !== sessionId) addGap(gaps, "ambiguous", "WorkBuddy 文件名与原生 sessionId 不一致", { key: "diagnostics.history.adapters.workbuddy.m011" });
   const recordRows = bodyIds.length > 1 ? [] : sessionId
     ? rows.filter(row => !string(row.record.sessionId) || row.record.sessionId === sessionId) : rows;
   const cwdValues = [...new Set(recordRows.map(row => string(row.record.cwd)).filter((value): value is string => typeof value === "string" && isAbsolute(value)))];
   const dbCwd = metadata.cwd && isAbsolute(metadata.cwd) ? metadata.cwd : undefined;
   const cwd = dbCwd ?? (cwdValues.length === 1 ? cwdValues[0] : undefined);
-  if (dbCwd && cwdValues.some(value => value !== dbCwd)) addGap(gaps, "ambiguous", "WorkBuddy 正文 cwd 与 sessions 元数据不一致，优先采用会话表字段");
-  if (!dbCwd && cwdValues.length > 1) addGap(gaps, "ambiguous", "WorkBuddy 正文记录了多个 cwd，无法确认单一项目目录");
+  if (dbCwd && cwdValues.some(value => value !== dbCwd)) addGap(gaps, "ambiguous", "WorkBuddy 正文 cwd 与 sessions 元数据不一致，优先采用会话表字段", { key: "diagnostics.history.adapters.workbuddy.m012" });
+  if (!dbCwd && cwdValues.length > 1) addGap(gaps, "ambiguous", "WorkBuddy 正文记录了多个 cwd，无法确认单一项目目录", { key: "diagnostics.history.adapters.workbuddy.m013" });
   const transcriptCustomTitle = recordRows.find(row => row.record.type === "custom-title" && typeof row.record.customTitle === "string");
   const transcriptAiTitle = recordRows.find(row => row.record.type === "ai-title" && typeof row.record.aiTitle === "string");
   const title = [metadata.customTitle, string(transcriptCustomTitle?.record.customTitle), metadata.title,
@@ -268,7 +268,7 @@ export const workbuddyAdapter: HistoryAdapter = createNormalizedAdapter({
       const completeFile = readResult.hasMore === false && content !== undefined && totalLines !== undefined
         && returnedLines.length === totalLines && (offset === undefined || offset === 1);
       if (!completeFile) return [{ kind: "read", path: mappedInput.file_path as string | undefined,
-        fragments: [], reason: "range_unknown: WorkBuddy Read 缺少完整文件边界或可信起始行" }];
+        fragments: [], reason: "range_unknown: WorkBuddy Read 缺少完整文件边界或可信起始行", reasonDescriptor: { key: "diagnostics.history.adapters.workbuddy.m014" } }];
       return toolEvidence(name, mappedInput, { file: { filePath: mappedInput.file_path, startLine: 1,
         numLines: returnedLines.length, totalLines, content } }, output);
     }

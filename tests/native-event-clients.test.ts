@@ -34,6 +34,15 @@ function sink(snapshot: NormalizedSnapshot) {
   return { messages, usage, metadata };
 }
 
+test("归一化 Skill 缺失名与真实同名有独立来源描述", () => {
+  const source = { path: "/synthetic/skill-history.jsonl", client: "pi" as const, format: "fixture", sessionId: "skill-history" };
+  const events = [{ key: "missing", kind: "tool_call" as const, tool: "Skill", input: {} },
+    { key: "recorded", kind: "tool_call" as const, tool: "Skill", input: { skill: "未记录名称" } }];
+  const parsed = sink(normalizedSnapshot(source, events.map((event, index) => normalizedRecord(event, JSON.stringify(event), index + 1))));
+  assert.deepEqual(parsed.messages[0]?.resource, { kind: "skill_call", name: "未记录名称", nameDescriptor: { key: "sessions.resource.nameUnrecorded" } });
+  assert.deepEqual(parsed.messages[1]?.resource, { kind: "skill_call", name: "未记录名称" });
+});
+
 function dshEvent(type: string, seq: number, data: Record<string, unknown>, time = 1_800_000_000_000, extra = {}) {
   return { type, seq, time, data, ...extra };
 }
@@ -174,10 +183,16 @@ test("DSH 官方过程事件与未知语义 gap 不令完整 V3 输给损坏 V4"
     "DSH 过程事件 request/context",
     "DSH 过程事件 step/end turn=1 step=1",
   ]);
+  assert.ok(processEvents.every(event => event.textDescriptor?.key === "sessions.body.dshEvent"));
   assert.ok(snapshot.meta.gaps?.some(gap => gap.kind === "unsupported_format" && gap.message.includes("future/native-event")));
   assert.ok(snapshot.records.some(row => row.record.normalizedEvent?.text === "未适配事件 future/native-event"
     && JSON.parse(row.raw).type === "future/native-event"));
   assert.equal(sink(snapshot as NormalizedSnapshot).metadata.turnCount, 1);
+  const localized = sink(snapshot as NormalizedSnapshot).messages;
+  assert.equal(localized.find(message => message.text === "synthetic prompt")?.textDescriptor, undefined);
+  assert.equal(localized.find(message => message.text === "synthetic answer")?.textDescriptor, undefined);
+  assert.deepEqual(localized.find(message => message.text === "未适配事件 future/native-event")?.textDescriptor,
+    { key: "sessions.body.unsupportedEvent", params: { type: "future/native-event" } });
 }));
 
 test("DSH 未知代际仍保留来源并显式标记 unsupported_format", async () => temporary(async directory => {
@@ -218,6 +233,11 @@ test("DSH 同身份副本优先选择完整旧代际，记录不完整新副本�
   assert.equal(selected?.path, v3);
   assert.match(selected?.adapterGap?.message ?? "", /v4.*v3/);
   assert.match(selected?.adapterGap?.message ?? "", /不完整副本未用于覆盖完整来源/);
+  assert.equal(selected?.adapterGap?.messageDescriptor?.key, "diagnostics.history.adapters.dsh.copies");
+  assert.ok(selected?.adapterGap?.details?.some(detail => detail.key === "diagnostics.history.adapters.dsh.incompleteExcluded"));
+  const parsedCopy = await dshAdapter.readRecords!(selected!);
+  const copyGap = (parsedCopy as NormalizedSnapshot).records[0]?.record.normalizedMeta?.gaps?.find(gap => gap.messageDescriptor?.key === "diagnostics.history.adapters.dsh.copies");
+  assert.deepEqual(copyGap?.details, selected?.adapterGap?.details);
 
   const conflictV3 = join(directory, "conflict.v3.jsonl");
   const conflictV4 = join(directory, "conflict.v4.jsonl");
@@ -231,6 +251,7 @@ test("DSH 同身份副本优先选择完整旧代际，记录不完整新副本�
   assert.equal(conflictSelected?.path, conflictV4);
   assert.equal(conflictSelected?.adapterGap?.kind, "ambiguous");
   assert.match(conflictSelected?.adapterGap?.message ?? "", /完整副本的规范化事件存在冲突/);
+  assert.ok(conflictSelected?.adapterGap?.details?.some(detail => detail.key === "diagnostics.history.adapters.dsh.copiesConflict"));
   assert.match(conflictSelected?.adapterGap?.message ?? "", /选择完整且已适配的来源 v4/);
 }));
 
@@ -342,6 +363,8 @@ test("Pi 分支各自保留 final、当前叶定位、复制继承、注入与�
   assert.deepEqual(finals.find(message => message.text === "branch A final")?.branchIds, ["compaction"]);
   assert.deepEqual(finals.find(message => message.text === "branch B final")?.branchIds, ["extra-usage"]);
   assert.equal(session.metadata.branches?.find(branch => branch.current)?.id, "extra-usage");
+  assert.equal(session.metadata.branches?.find(branch => branch.current)?.labelDescriptor?.key, "sessions.branch.current");
+  assert.ok(session.metadata.branches?.filter(branch => !branch.current).every(branch => branch.labelDescriptor?.key === "sessions.branch.number"));
   assert.equal(session.usage.length, 8);
   assert.equal(session.usage.some(value => value.inputTokens === 1998), false);
   assert.deepEqual([session.usage.at(-1)?.inputTokens, session.usage.at(-1)?.cachedInputTokens, session.usage.at(-1)?.cacheWriteTokens], [7, 2, 1]);

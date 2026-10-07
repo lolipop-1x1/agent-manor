@@ -1,21 +1,23 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode, type RefObject } from "react";
 import * as Dialog from "@radix-ui/react-dialog";
 import { ArrowClockwise, ArrowSquareOut, CaretLeft, CaretRight, Funnel, MagnifyingGlass, Plus, ShieldCheck, Star, X } from "@phosphor-icons/react";
-import { CLIENTS, clientName, type Client } from "../src/clients";
+import { CLIENTS, type Client } from "../src/clients";
 import type { ResourceKind, ResourceUsageDetail, ResourceUsageDistribution, ResourceUsageEvidenceResult, ResourceUsageStats, ResourceUsageTrend } from "../src/resource-contracts";
 import type { ResourceInventoryEntry, ResourceManualSource } from "../src/resource-inventory-contracts";
 import type { ResourceManagementAction, ResourceManagementInput, ResourceManagementOperation, ResourceManagementOperations, ResourceManagementPreview } from "../src/resource-management-contracts";
 import type { ResourceCandidate, ResourceLocalDetail, ResourceLocalQuery, ResourceLocalResult, ResourceLocalRow, ResourceMapMetric, ResourceMapQuery, ResourceMapResult, ResourceOverviewCandidate, ResourceOverviewDetail, ResourceOverviewQuery, ResourceOverviewResult, ResourceOverviewRow, ResourceStatus } from "../src/resource-service-contracts";
-import { errorMessage, isAborted } from "./api";
+import { ApiError, errorMessage, isAborted } from "./api";
 import { DatePicker } from "./DatePicker";
 import { FilterSelect } from "./FilterSelect";
 import { HelpPopover } from "./HelpPopover";
 import { ProjectPicker } from "./ProjectPicker";
 import { ResourcePagination } from "./ResourcePagination";
-import { ResourceMap, resourceMapMetricNames } from "./ResourceMap";
+import { ResourceMap, resourceMapMetricKeys } from "./ResourceMap";
 import { ResizableWorkspace } from "./ResizableWorkspace";
 import { dateLabel, fmt, timeFilters } from "./model";
 import { resourceApi, resourceQuery, type FavoriteResult, type ResourceArchiveResult, type ResourceUsageFilters } from "./resource-api";
+import { clientLabel, formatList, isMessageDescriptorKnown, messageText, t, useI18n } from "./i18n";
+import { type MessageDescriptor } from "../src/i18n";
 import "./resources.css";
 
 type ResourceTab = "usage" | "local" | "disabled" | "standby" | "trash" | "operations";
@@ -26,22 +28,22 @@ interface ResourceRoute {
   view: "list" | "map"; metric: ResourceMapMetric; maxValue: string;
   zeroPage: number; zeroSize: number; reviewPage: number; reviewSize: number;
 }
-const tabs: { value: ResourceTab; label: string }[] = [
-  { value: "usage", label: "使用排行" }, { value: "local", label: "本地资源" },
-  { value: "disabled", label: "已停用" }, { value: "standby", label: "备用" },
-  { value: "trash", label: "回收区" }, { value: "operations", label: "操作记录" },
+const tabs: { value: ResourceTab; labelKey: string }[] = [
+  { value: "usage", labelKey: "resources.tab.usage" }, { value: "local", labelKey: "resources.tab.local" },
+  { value: "disabled", labelKey: "resources.tab.disabled" }, { value: "standby", labelKey: "resources.tab.standby" },
+  { value: "trash", labelKey: "resources.tab.trash" }, { value: "operations", labelKey: "resources.tab.operations" },
 ];
 const candidates = [
-  { value: "all", label: "全部资源" }, { value: "favorite", label: "已收藏" },
-  { value: "unused", label: "未发现使用" }, { value: "low", label: "低频使用" },
-  { value: "old", label: "长期未用" }, { value: "broken", label: "断链／缺失" },
-  { value: "duplicate", label: "SKILL.md 相同" }, { value: "review", label: "待检查" },
+  { value: "all", labelKey: "resources.candidate.allResources" }, { value: "favorite", labelKey: "resources.candidate.favorite" },
+  { value: "unused", labelKey: "resources.candidate.unused" }, { value: "low", labelKey: "resources.candidate.lowUsage" },
+  { value: "old", labelKey: "resources.candidate.old" }, { value: "broken", labelKey: "resources.candidate.broken" },
+  { value: "duplicate", labelKey: "resources.candidate.duplicate" }, { value: "review", labelKey: "resources.candidate.review" },
 ];
-const overviewCandidates: { value: ResourceOverviewCandidate; label: string }[] = [
-  { value: "all", label: "全部" }, { value: "used", label: "已使用" }, { value: "unused", label: "未发现使用" },
-  { value: "low", label: "低频" }, { value: "old", label: "长期未用" }, { value: "review", label: "待检查" }, { value: "favorite", label: "已收藏" },
+const overviewCandidates: { value: ResourceOverviewCandidate; labelKey: string }[] = [
+  { value: "all", labelKey: "resources.candidate.all" }, { value: "used", labelKey: "resources.candidate.used" }, { value: "unused", labelKey: "resources.candidate.unused" },
+  { value: "low", labelKey: "resources.candidate.low" }, { value: "old", labelKey: "resources.candidate.old" }, { value: "review", labelKey: "resources.candidate.review" }, { value: "favorite", labelKey: "resources.candidate.favorite" },
 ];
-const overviewObservationNames = { used: "已使用", unused: "未发现使用", unknown: "使用未知", insufficient: "观测不足" };
+const overviewObservationNames = { used: "resources.candidate.used", unused: "resources.candidate.unused", unknown: "resources.observation.unknown", insufficient: "resources.observation.insufficient" };
 const positive = (value: string | null, fallback = 1) => {
   const number = Number(value);
   return Number.isSafeInteger(number) && number > 0 ? number : fallback;
@@ -84,24 +86,25 @@ function address(route: ResourceRoute) {
     evidencePage: route.evidencePage === 1 ? undefined : route.evidencePage })}`;
 }
 const shortPath = (path: string) => path.split(/[\\/]/).filter(Boolean).at(-1) ?? path;
-const usageAgentLabel = (row: { clients: Client[] }) => row.clients.length === 1 ? clientName(row.clients[0]!) : row.clients.length ? `${fmt(row.clients.length)} 个 Agent` : "Agent 未记录";
-const associationNames = { linked: "已关联本地入口", partial: "部分未关联", ambiguous: "关联有歧义", unassociated: "未关联本地资源" };
-const observationNames = { recorded: "已关联使用", unknown: "使用未知", insufficient: "观测不足" };
-const observationLabel = (row: ResourceLocalRow) => row.observation === "recorded" && row.usage?.events === 0 ? "未发现使用" : observationNames[row.observation];
-const sourceStateNames = { ok: "可读取", missing: "来源缺失", unreadable: "不可读取", invalid: "格式异常", unsupported: "待适配" };
-const methodNames = { directory: "目录", symlink: "链接", file: "文件", registration: "注册配置" };
-const resultNames = { success: "成功", failure: "失败", unknown: "结果未知" };
-const evidenceNames = { skill_call: "Skill 调用", skill_read: "Skill 读取", mcp: "MCP 调用" };
-const actionNames: Record<ResourceManagementAction, string> = { disable: "停用", standby: "移到备用", trash: "移入回收区", restore: "恢复", purge: "永久清除" };
-const archiveNames = { disabled: "已停用", standby: "备用", trash: "回收区", restored: "已恢复", purged: "已永久清除" };
-const operationStatusNames = { success: "本地修改完成", failure: "执行失败", conflict: "来源冲突", partial: "部分完成" };
-const operationMethodNames = { native_toggle: "客户端原生开关", entry_isolation: "隔离所选入口", registration_remove: "移除所选注册", restore: "恢复原入口", permanent_purge: "清除恢复材料" };
-const protectionNames: Record<string, string> = { favorite: "此资源已收藏", system: "系统默认资源", plugin: "插件管理资源" };
+const usageAgentLabel = (row: { clients: Client[] }) => row.clients.length === 1 ? clientLabel(row.clients[0]!) : row.clients.length ? t("resources.agentCount", { count: row.clients.length }) : t("resources.client.notRecorded");
+const associationNames = { linked: "resources.association.linked", partial: "resources.association.partial", ambiguous: "resources.association.ambiguous", unassociated: "resources.association.unassociated" };
+const observationNames = { recorded: "resources.observation.recorded", unknown: "resources.observation.unknown", insufficient: "resources.observation.insufficient" };
+const observationLabel = (row: ResourceLocalRow) => row.observation === "recorded" && row.usage?.events === 0 ? t("resources.candidate.unused") : t(observationNames[row.observation]);
+const sourceStateNames = { ok: "resources.source.ok", missing: "resources.source.missing", unreadable: "resources.source.unreadable", invalid: "resources.source.invalid", unsupported: "resources.source.unsupported" };
+const methodNames = { directory: "resources.entry.directory", symlink: "resources.entry.symlink", file: "resources.entry.file", registration: "resources.entry.registration" };
+const resultNames = { success: "resources.result.success", failure: "resources.result.failure", unknown: "resources.result.unknown" };
+const evidenceNames = { skill_call: "resources.evidence.skillCall", skill_read: "resources.evidence.skillRead", mcp: "resources.evidence.mcp" };
+const actionNames: Record<ResourceManagementAction, string> = { disable: "resources.action.disable", standby: "resources.action.standby", trash: "resources.action.trash", restore: "resources.action.restore", purge: "resources.action.purge" };
+const archiveNames = { disabled: "resources.tab.disabled", standby: "resources.tab.standby", trash: "resources.tab.trash", restored: "resources.archive.restored", purged: "resources.archive.purged" };
+const operationStatusNames = { success: "resources.operation.success", failure: "resources.operation.failure", conflict: "resources.operation.conflict", partial: "resources.operation.partial" };
+const operationMethodNames = { native_toggle: "resources.operationMethod.nativeToggle", entry_isolation: "resources.operationMethod.entryIsolation", registration_remove: "resources.operationMethod.registrationRemove", restore: "resources.operationMethod.restore", permanent_purge: "resources.operationMethod.purge" };
+const protectionNames: Record<string, string> = { favorite: "resources.protection.favorite", system: "resources.protection.system", plugin: "resources.protection.plugin" };
 const registrationKeys = (client: Client) => client === "codex" ? "mcp_servers" : client === "opencode" ? "mcp" : "mcpServers";
 
 function ResourceDialog({ open, onOpenChange, title, description, children, className = "", contentRef }: {
   open: boolean; onOpenChange: (open: boolean) => void; title: string; description: string; children: ReactNode; className?: string; contentRef?: RefObject<HTMLDivElement | null>;
 }) {
+  useI18n();
   const returnFocus = useRef<HTMLElement | null>(null);
   return <Dialog.Root open={open} onOpenChange={onOpenChange}><Dialog.Portal>
     <Dialog.Overlay className="dialog-overlay" /><Dialog.Content ref={contentRef} className={`dialog-content resource-dialog ${className}`}
@@ -111,84 +114,104 @@ function ResourceDialog({ open, onOpenChange, title, description, children, clas
         if (target?.isConnected && target !== document.body && target.getClientRects().length) { event.preventDefault(); target.focus(); }
       }}>
       <Dialog.Title>{title}</Dialog.Title><Dialog.Description className="dialog-description">{description}</Dialog.Description>
-      <Dialog.Close asChild><button className="icon-button dialog-close" aria-label={`关闭${title}`}><X size={18} /></button></Dialog.Close>
+      <Dialog.Close asChild><button className="icon-button dialog-close" aria-label={t("common.closeNamed", { label: title })}><X size={18} /></button></Dialog.Close>
       {children}
     </Dialog.Content>
   </Dialog.Portal></Dialog.Root>;
+}
+function ResourceMessage({ descriptor, original, details }: { descriptor?: MessageDescriptor; original: string; details?: MessageDescriptor[] }) {
+  useI18n();
+  const recognized = isMessageDescriptorKnown(descriptor);
+  return <div className="resource-operation-message">
+    {recognized ? messageText(descriptor, original) : <><strong>{t("common.originalDetails")}</strong><p>{original}</p></>}
+    {details?.length ? <ul>{details.map((detail, index) => <li key={index}>{isMessageDescriptorKnown(detail) ? messageText(detail, original) : t("common.originalDetail", { detail: original })}</li>)}</ul> : null}
+    {recognized && <details className="resource-data-details"><summary>{t("common.originalDetails")}</summary><p>{original}</p></details>}
+  </div>;
+}
+function ResourceErrorText({ error }: { error: Error }) {
+  return <ResourceMessage descriptor={error instanceof ApiError ? error.messageDescriptor : undefined} original={error.message} />;
 }
 function ResourceEmpty({ children }: { children: ReactNode }) {
   return <div className="resource-empty"><MagnifyingGlass size={24} /><span>{children}</span></div>;
 }
 function FavoriteButton({ name, favorite, disabled, onClick }: { name: string; favorite: boolean; disabled?: boolean; onClick: () => void }) {
-  return <button className={`icon-button resource-favorite${favorite ? " is-favorite" : ""}`} aria-label={`${favorite ? "取消收藏" : "收藏"}${name}`}
+  useI18n();
+  return <button className={`icon-button resource-favorite${favorite ? " is-favorite" : ""}`} aria-label={t(favorite ? "resources.unfavoriteLabel" : "resources.favoriteLabel", { name })}
     aria-pressed={favorite} disabled={disabled} onClick={onClick}><Star size={17} weight={favorite ? "fill" : "regular"} /></button>;
 }
 function OverviewTable({ rows, route, onSort, onSelect, onFavorite, favoritePending }: {
   rows: ResourceOverviewRow[]; route: ResourceRoute; onSort: (sort: string) => void; onSelect: (id: string) => void;
   onFavorite: (id: string, favorite: boolean) => void; favoritePending: string | null;
 }) {
-  const columns = [{ value: "name", label: route.kind === "skill" ? "Skill" : "服务器" }, { value: "sessions", label: "会话" }, { value: "calls", label: "调用" }, ...(route.kind === "skill" ? [{ value: "reads", label: "读取" }] : []), { value: "recent", label: "最近使用" }];
+  useI18n();
+  const columns = [{ value: "name", label: route.kind === "skill" ? t("resources.kind.skill") : t("resources.column.server") }, { value: "sessions", label: t("resources.column.sessions") }, { value: "calls", label: t("resources.column.calls") }, ...(route.kind === "skill" ? [{ value: "reads", label: t("resources.column.reads") }] : []), { value: "recent", label: t("resources.column.recent") }];
   const heading = (column: { value: string; label: string }) => <th key={column.value} scope="col" aria-sort={route.sort === column.value ? route.order === "asc" ? "ascending" : "descending" : "none"}>
-    <button aria-label={`按${column.label}排序`} onClick={() => onSort(column.value)}>{column.label}<span aria-hidden="true">{route.sort === column.value ? route.order === "asc" ? "↑" : "↓" : "↕"}</span></button>
+    <button aria-label={t("resources.sortColumn", { column: column.label })} onClick={() => onSort(column.value)}>{column.label}<span aria-hidden="true">{route.sort === column.value ? route.order === "asc" ? "↑" : "↓" : "↕"}</span></button>
   </th>;
-  return <div className="resource-overview-scroll"><table className={`resource-overview-table${route.kind === "mcp" ? " resource-mcp-overview" : ""}`} aria-label={`${route.kind === "skill" ? "Skill" : "MCP"} 总览`}>
-    <thead><tr>{heading(columns[0]!)}<th scope="col">Agent</th>{columns.slice(1).map(heading)}<th scope="col">状态</th></tr></thead>
+  return <div className="resource-overview-scroll"><table className={`resource-overview-table${route.kind === "mcp" ? " resource-mcp-overview" : ""}`} aria-label={t("resources.overview", { kind: route.kind === "skill" ? t("resources.kind.skill") : t("resources.kind.mcp") })}>
+    <thead><tr>{heading(columns[0]!)}<th scope="col">{t("resources.agent.label")}</th>{columns.slice(1).map(heading)}<th scope="col">{t("resources.column.status")}</th></tr></thead>
     <tbody>{rows.map(row => <tr className={`resource-overview-row${route.id === row.identity.id ? " is-selected" : ""}`} key={row.identity.id}>
-      <th scope="row"><div className="resource-overview-name"><button aria-label={`查看${row.identity.name}的使用详情`} onClick={() => onSelect(row.identity.id)}>{row.identity.name}</button><FavoriteButton name={row.identity.name} favorite={row.favorite} disabled={favoritePending === row.identity.id} onClick={() => onFavorite(row.identity.id, row.favorite)} /></div></th>
-      <td className="resource-overview-agents" title={row.clients.map(clientName).join(" · ")}>{usageAgentLabel(row)}</td>
+      <th scope="row"><div className="resource-overview-name"><button aria-label={t("resources.viewUsage", { name: messageText(row.identity.nameDescriptor, row.identity.name) })} onClick={() => onSelect(row.identity.id)}>{messageText(row.identity.nameDescriptor, row.identity.name)}</button><FavoriteButton name={messageText(row.identity.nameDescriptor, row.identity.name)} favorite={row.favorite} disabled={favoritePending === row.identity.id} onClick={() => onFavorite(row.identity.id, row.favorite)} /></div></th>
+      <td className="resource-overview-agents" title={formatList(row.clients.map(clientLabel))}>{usageAgentLabel(row)}</td>
       <td>{row.stats ? fmt(row.stats.sessions) : "—"}</td><td>{row.stats ? fmt(route.kind === "skill" ? row.stats.explicitCalls : row.stats.mcpCalls) : "—"}</td>{route.kind === "skill" && <td>{row.stats ? fmt(row.stats.successfulReads) : "—"}</td>}
       <td className="resource-overview-time">{row.stats?.lastUsedAt ? dateLabel(row.stats.lastUsedAt) : "—"}</td>
-      <td><div className="resource-tags"><span className={row.observation === "unknown" || row.observation === "insufficient" ? "is-warning" : ""}>{overviewObservationNames[row.observation]}</span>{row.protected && <span><ShieldCheck size={12} />受保护</span>}{!row.localBodyIds.length && row.hasHistory && <span>仅历史</span>}</div></td>
+      <td><div className="resource-tags"><span className={row.observation === "unknown" || row.observation === "insufficient" ? "is-warning" : ""}>{t(overviewObservationNames[row.observation])}</span>{row.protected && <span><ShieldCheck size={12} />{t("resources.protected")}</span>}{!row.localBodyIds.length && row.hasHistory && <span>{t("resources.historyOnly")}</span>}</div></td>
     </tr>)}</tbody>
   </table></div>;
 }
 function Stats({ stats, kind }: { stats: ResourceUsageStats | null; kind: ResourceKind }) {
+  const { percent } = useI18n();
   return <div className="resource-stats">
-    <div><strong>{stats ? fmt(stats.sessions) : "未知"}</strong><span>使用会话</span></div>
-    <div><strong>{stats ? fmt(kind === "skill" ? stats.explicitCalls : stats.mcpCalls) : "未知"}</strong><span>{kind === "skill" ? "显式调用" : "工具调用"}</span></div>
-    {kind === "skill" && <div><strong>{stats ? fmt(stats.successfulReads) : "未知"}</strong><span>成功读取</span></div>}
-    <div><strong>{stats?.results.successRate === null || !stats ? "未记录" : `${(stats.results.successRate * 100).toFixed(1)}%`}</strong><span>已知结果成功率</span></div>
-    <div><strong>{stats?.duration.averageMs === null || !stats ? "未记录" : `${Math.round(stats.duration.averageMs)} ms`}</strong><span>平均耗时 · {fmt(stats?.duration.samples ?? 0)} 样本</span></div>
-    {stats && <div><strong>{fmt(stats.results.unknown)}</strong><span>结果未知</span></div>}
+    <div><strong>{stats ? fmt(stats.sessions) : t("common.unknown")}</strong><span>{t("resources.stat.sessions")}</span></div>
+    <div><strong>{stats ? fmt(kind === "skill" ? stats.explicitCalls : stats.mcpCalls) : t("common.unknown")}</strong><span>{kind === "skill" ? t("resources.stat.explicitCalls") : t("resources.stat.toolCalls")}</span></div>
+    {kind === "skill" && <div><strong>{stats ? fmt(stats.successfulReads) : t("common.unknown")}</strong><span>{t("resources.stat.successfulReads")}</span></div>}
+    <div><strong>{stats?.results.successRate === null || !stats ? t("common.notRecorded") : percent(stats.results.successRate, { minimumFractionDigits: 1, maximumFractionDigits: 1 })}</strong><span>{t("resources.stat.successRate")}</span></div>
+    <div><strong>{stats?.duration.averageMs === null || !stats ? t("common.notRecorded") : t("resources.stat.milliseconds", { value: Math.round(stats.duration.averageMs) })}</strong><span>{t("resources.stat.averageDuration", { count: stats?.duration.samples ?? 0 })}</span></div>
+    {stats && <div><strong>{fmt(stats.results.unknown)}</strong><span>{t("resources.result.unknown")}</span></div>}
   </div>;
 }
 function Trend({ rows, timeZone }: { rows: ResourceUsageTrend[]; timeZone: string }) {
+  const { date } = useI18n();
+  const trendDate = (value: string) => date(`${value}T00:00:00`);
   const max = rows.reduce((maximum, row) => Math.max(maximum, row.stats.events), 1);
   const start = rows.length ? Date.parse(rows[0]!.date) : 0;
   const end = rows.length ? Date.parse(rows.at(-1)!.date) : start;
   const x = (date: string) => 38 + (end === start ? .5 : (Date.parse(date) - start) / (end - start)) * 238;
   const y = (events: number) => 127 - events / max * 90;
   return <section className="resource-detail-section">
-    <header><h3>使用趋势</h3><HelpPopover label="趋势口径"><p>按 {timeZone} 的事件日期统计全部已记录调用与成功读取。时间缺失另列，不推入某一天；次数表示使用活动，不表示任务效果。</p></HelpPopover></header>
-    {!rows.length ? <ResourceEmpty>当前范围没有可归入日期的记录</ResourceEmpty> : <>
-      <svg className="resource-trend" viewBox="0 0 300 163" role="img" aria-label="每日资源使用次数">
+    <header><h3>{t("resources.trend.title")}</h3><HelpPopover label={t("resources.trend.help")}><p>{t("resources.trend.helpText", { timeZone })}</p></HelpPopover></header>
+    {!rows.length ? <ResourceEmpty>{t("resources.trend.empty")}</ResourceEmpty> : <>
+      <svg className="resource-trend" viewBox="0 0 300 163" role="img" aria-label={t("resources.trend.aria")}>
         {[0, max].map(value => <g key={value}><line x1="38" x2="279" y1={y(value)} y2={y(value)} /><text x="31" y={y(value) + 4} textAnchor="end">{fmt(value)}</text></g>)}
-        <text x="38" y="18">次数</text>
+        <text x="38" y="18">{t("resources.trend.count")}</text>
         <polyline points={rows.map(row => `${x(row.date)},${y(row.stats.events)}`).join(" ")} />
-        {rows.map(row => <circle key={row.date} cx={x(row.date)} cy={y(row.stats.events)} r="2.5"><title>{row.date} · {fmt(row.stats.events)} 次 · {fmt(row.stats.sessions)} 个会话</title></circle>)}
-        <text x="38" y="150">{rows[0]!.date}</text><text x="279" y="150" textAnchor="end">{rows.at(-1)!.date}</text>
+        {rows.map(row => <circle key={row.date} cx={x(row.date)} cy={y(row.stats.events)} r="2.5"><title>{t("resources.trend.point", { date: trendDate(row.date), events: t("resources.map.metricValue", { count: row.stats.events }), sessions: t("resources.map.sessionValue", { count: row.stats.sessions }) })}</title></circle>)}
+        <text x="38" y="150">{trendDate(rows[0]!.date)}</text><text x="279" y="150" textAnchor="end">{trendDate(rows.at(-1)!.date)}</text>
       </svg>
-      <details className="resource-data-details"><summary>查看趋势数据 · {fmt(rows.length)} 天</summary><div className="resource-table-scroll"><table><thead><tr><th>日期</th><th>活动次数</th><th>会话数</th></tr></thead><tbody>{rows.map(row => <tr key={row.date}><td>{row.date}</td><td>{fmt(row.stats.events)}</td><td>{fmt(row.stats.sessions)}</td></tr>)}</tbody></table></div></details>
+      <details className="resource-data-details"><summary>{t("resources.trend.data", { count: rows.length })}</summary><div className="resource-table-scroll"><table><thead><tr><th>{t("resources.trend.date")}</th><th>{t("resources.trend.events")}</th><th>{t("resources.trend.sessions")}</th></tr></thead><tbody>{rows.map(row => <tr key={row.date}><td>{trendDate(row.date)}</td><td>{fmt(row.stats.events)}</td><td>{fmt(row.stats.sessions)}</td></tr>)}</tbody></table></div></details>
     </>}
   </section>;
 }
 function Distribution({ rows, title, label }: { rows: ResourceUsageDistribution[]; title: string; label: (value: string | null) => string }) {
+  useI18n();
   const max = rows.reduce((maximum, row) => Math.max(maximum, row.stats.events), 1);
-  return <section className="resource-detail-section"><header><h3>{title}</h3><span>{fmt(rows.length)} 项</span></header>
-    <div className="resource-distribution">{rows.map(row => <div key={row.value ?? "unknown"} title={row.value ?? "未记录"}><span>{label(row.value)}</span><i style={{ width: `${Math.max(2, row.stats.events / max * 100)}%` }} /><strong>{fmt(row.stats.events)}</strong></div>)}</div>
+  return <section className="resource-detail-section"><header><h3>{title}</h3><span>{t("common.itemCount", { count: rows.length })}</span></header>
+    <div className="resource-distribution">{rows.map(row => <div key={row.value ?? "unknown"} title={row.value ?? t("common.notRecorded")}><span>{label(row.value)}</span><i style={{ width: `${Math.max(2, row.stats.events / max * 100)}%` }} /><strong>{fmt(row.stats.events)}</strong></div>)}</div>
   </section>;
 }
 function UsageHelp({ kind }: { kind: ResourceKind }) {
-  return <HelpPopover label="使用统计口径"><dl>
-    <div><dt>{kind === "skill" ? "Skill" : "MCP"} 总览</dt><dd>{kind === "skill" ? "按完整名称汇总当前本地与历史 Skill" : "按完整服务器名称汇总当前本地注册与历史 MCP"}，使用会话去重；同名不能证明实例相同，名称汇总不合并本地管理对象，具体本体与入口在详情中回查。</dd></div>
-    <div><dt>使用会话</dt><dd>{kind === "skill" ? "同一会话中的显式调用与成功读取合并计一次" : "同一会话中的 MCP 工具调用合并计一次"}；文本提及、声明或未证实的脚本嵌套调用不计使用。全部实际分支活动均保留。</dd></div>
-    <div><dt>已知结果</dt><dd>成功率以成功与失败之和为分母，未知结果单列。耗时仅使用日志实际记录值，并列出有效样本数。</dd></div>
-    <div><dt>关联与观测</dt><dd>名称相同不能证明是当前安装实例。缺少路径、对应能力或充分观测时显示未关联或未知；未发现使用不等于从未使用。</dd></div>
-    <div><dt>整理与收藏</dt><dd>低频按所选范围的使用会话数判断；长期未用按最近使用和天数阈值判断。待检查包含未知、观测不足及来源异常。名称收藏与具体本体收藏独立，已收藏筛选也包含受独立收藏保护的本体。</dd></div>
+  useI18n();
+  return <HelpPopover label={t("resources.help.usage")}><dl>
+    <div><dt>{t("resources.overview", { kind: kind === "skill" ? t("resources.kind.skill") : t("resources.kind.mcp") })}</dt><dd>{t(kind === "skill" ? "resources.help.skillOverview" : "resources.help.mcpOverview")}</dd></div>
+    <div><dt>{t("resources.stat.sessions")}</dt><dd>{t(kind === "skill" ? "resources.help.skillSessions" : "resources.help.mcpSessions")}</dd></div>
+    <div><dt>{t("resources.help.knownResults")}</dt><dd>{t("resources.help.knownResultsText")}</dd></div>
+    <div><dt>{t("resources.help.association")}</dt><dd>{t("resources.help.associationText")}</dd></div>
+    <div><dt>{t("resources.help.organization")}</dt><dd>{t("resources.help.organizationText")}</dd></div>
   </dl></HelpPopover>;
 }
 
 export default function Resources({ active, onSession }: { active: boolean; onSession: (target: { sessionId: string; messageId: string }) => void }) {
+  useI18n();
   const [route, setRoute] = useState<ResourceRoute>(readRoute);
   const [status, setStatus] = useState<ResourceStatus | null>(null);
   const [overview, setOverview] = useState<FavoriteResult<ResourceOverviewResult> | null>(null);
@@ -204,10 +227,10 @@ export default function Resources({ active, onSession }: { active: boolean; onSe
   const [listLoading, setListLoading] = useState(false);
   const [detailLoading, setDetailLoading] = useState(false);
   const [evidenceLoading, setEvidenceLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [detailError, setDetailError] = useState<string | null>(null);
-  const [evidenceError, setEvidenceError] = useState<string | null>(null);
-  const [feedback, setFeedback] = useState<string | null>(null);
+  const [error, setError] = useState<Error | null>(null);
+  const [detailError, setDetailError] = useState<Error | null>(null);
+  const [evidenceError, setEvidenceError] = useState<Error | null>(null);
+  const [feedback, setFeedback] = useState<MessageDescriptor | null>(null);
   const [reload, setReload] = useState(0);
   const [refreshing, setRefreshing] = useState(false);
   const [favoritePending, setFavoritePending] = useState<string | null>(null);
@@ -218,7 +241,7 @@ export default function Resources({ active, onSession }: { active: boolean; onSe
   const [sourcesOpen, setSourcesOpen] = useState(false);
   const [sourceAdding, setSourceAdding] = useState(false);
   const [sourcePending, setSourcePending] = useState(false);
-  const [sourceError, setSourceError] = useState<string | null>(null);
+  const [sourceError, setSourceError] = useState<Error | null>(null);
   const [source, setSource] = useState<ResourceManualSource>({ client: "codex", kind: "skill", path: "", format: "skill-directory" });
   const [sourceKeys, setSourceKeys] = useState("mcpServers");
   const [managementOpen, setManagementOpen] = useState(false);
@@ -226,7 +249,7 @@ export default function Resources({ active, onSession }: { active: boolean; onSe
   const [preview, setPreview] = useState<ResourceManagementPreview | null>(null);
   const [previewLoading, setPreviewLoading] = useState(false);
   const [applying, setApplying] = useState(false);
-  const [managementError, setManagementError] = useState<string | null>(null);
+  const [managementError, setManagementError] = useState<Error | null>(null);
   const [managementResult, setManagementResult] = useState<ResourceManagementOperation | null>(null);
   const [purgeConfirmed, setPurgeConfirmed] = useState(false);
   const [queryText, setQueryText] = useState(route.q);
@@ -270,14 +293,14 @@ export default function Resources({ active, onSession }: { active: boolean; onSe
   useEffect(() => {
     if (!active || status && !reload) return;
     const controller = new AbortController();
-    void resourceApi.status(controller.signal).then(setStatus).catch(failure => { if (!isAborted(failure)) setError(errorMessage(failure)); });
+    void resourceApi.status(controller.signal).then(setStatus).catch(failure => { if (!isAborted(failure)) setError(failure instanceof Error ? failure : new Error(errorMessage(failure))); });
     return () => controller.abort();
   }, [active, reload]);
   const invalidTime = (route.tab === "usage" || route.tab === "local") && route.window === "custom" && !!route.from && !!route.to && route.from > route.to;
   const overviewRanking = route.tab === "usage";
   const mapView = overviewRanking && route.view === "map";
   const overviewData = mapView ? map : overview;
-  const overviewLabel = `${route.kind === "skill" ? "Skill" : "MCP"} 总览`;
+  const overviewLabel = t("resources.overview", { kind: route.kind === "skill" ? t("resources.kind.skill") : t("resources.kind.mcp") });
   const scopeQuery = useMemo<ResourceUsageFilters>(() => ({ kind: route.kind,
     client: route.client === "all" ? undefined : route.client as Client,
     project: overviewRanking || route.project === "all" ? undefined : route.project,
@@ -305,11 +328,11 @@ export default function Resources({ active, onSession }: { active: boolean; onSe
     const done = () => { if (!controller.signal.aborted) setListLoading(false); };
     if (mapView) { setMap(null); void resourceApi.map(mapQuery, controller.signal).then(result => {
       mapLoadedQuery.current = mapRequestKey; setMap(result);
-    }).catch(failure => { if (!isAborted(failure)) setError(errorMessage(failure)); }).finally(done); }
+    }).catch(failure => { if (!isAborted(failure)) setError(failure instanceof Error ? failure : new Error(errorMessage(failure))); }).finally(done); }
     else if (overviewRanking) void resourceApi.overview(overviewQuery, controller.signal).then(result => {
       setOverview(result); if (result.favoriteIds) setStatus(current => current ? { ...current, favoriteIds: result.favoriteIds! } : current);
-    }).catch(failure => { if (!isAborted(failure)) setError(errorMessage(failure)); }).finally(done);
-    else void resourceApi.local(localQuery, controller.signal).then(setLocal).catch(failure => { if (!isAborted(failure)) setError(errorMessage(failure)); }).finally(done);
+    }).catch(failure => { if (!isAborted(failure)) setError(failure instanceof Error ? failure : new Error(errorMessage(failure))); }).finally(done);
+    else void resourceApi.local(localQuery, controller.signal).then(setLocal).catch(failure => { if (!isAborted(failure)) setError(failure instanceof Error ? failure : new Error(errorMessage(failure))); }).finally(done);
     return () => controller.abort();
   }, [active, mapView, listRequestQuery, mapRequestKey, overviewRanking, route.tab, reload, invalidTime]);
   useEffect(() => {
@@ -317,7 +340,7 @@ export default function Resources({ active, onSession }: { active: boolean; onSe
     const controller = new AbortController(); setListLoading(true); setError(null);
     const task = route.tab === "operations" ? resourceApi.operations(managementQuery, controller.signal).then(setOperations)
       : resourceApi.archives(route.tab, managementQuery, controller.signal).then(setArchives);
-    void task.catch(failure => { if (!isAborted(failure)) setError(errorMessage(failure)); }).finally(() => { if (!controller.signal.aborted) setListLoading(false); });
+    void task.catch(failure => { if (!isAborted(failure)) setError(failure instanceof Error ? failure : new Error(errorMessage(failure))); }).finally(() => { if (!controller.signal.aborted) setListLoading(false); });
     return () => controller.abort();
   }, [active, route.tab, managementQuery, reload]);
   useEffect(() => {
@@ -326,7 +349,7 @@ export default function Resources({ active, onSession }: { active: boolean; onSe
     const controller = new AbortController(); setDetailLoading(true); setDetailError(null); setUsageDetail(null); setOverviewDetail(null); setLocalDetail(null);
     const task = overviewRanking ? resourceApi.overviewDetail(route.id, { ...scopeQuery, lowSessions: route.low, inactiveDays: route.inactive }, controller.signal).then(result => { setOverviewDetail(result); setUsageDetail(result.history); if (result.favoriteIds) setStatus(current => current ? { ...current, favoriteIds: result.favoriteIds! } : current); })
       : resourceApi.localDetail(route.id, { ...scopeQuery, lowSessions: route.low, inactiveDays: route.inactive }, controller.signal).then(setLocalDetail);
-    void task.catch(failure => { if (!isAborted(failure)) setDetailError(errorMessage(failure)); }).finally(() => { if (!controller.signal.aborted) setDetailLoading(false); });
+    void task.catch(failure => { if (!isAborted(failure)) setDetailError(failure instanceof Error ? failure : new Error(errorMessage(failure))); }).finally(() => { if (!controller.signal.aborted) setDetailLoading(false); });
     return () => controller.abort();
   }, [active, route.id, route.tab, scopeQuery, overviewRanking, route.low, route.inactive, reload, invalidTime]);
   const evidenceId = overviewRanking ? usageDetail?.resource.identity.id : route.id;
@@ -334,7 +357,7 @@ export default function Resources({ active, onSession }: { active: boolean; onSe
     if (!active || !evidenceId || route.tab !== "usage" || invalidTime) { setEvidence(null); setEvidenceLoading(false); return; }
     const controller = new AbortController(); setEvidenceLoading(true); setEvidenceError(null);
     void resourceApi.evidence(evidenceId, { ...scopeQuery, page: route.evidencePage, pageSize: 10, tool: route.tool || undefined }, controller.signal)
-      .then(setEvidence).catch(failure => { if (!isAborted(failure)) setEvidenceError(errorMessage(failure)); }).finally(() => { if (!controller.signal.aborted) setEvidenceLoading(false); });
+      .then(setEvidence).catch(failure => { if (!isAborted(failure)) setEvidenceError(failure instanceof Error ? failure : new Error(errorMessage(failure))); }).finally(() => { if (!controller.signal.aborted) setEvidenceLoading(false); });
     return () => controller.abort();
   }, [active, evidenceId, route.tab, route.evidencePage, route.tool, scopeQuery, reload, invalidTime]);
   useEffect(() => {
@@ -358,27 +381,27 @@ export default function Resources({ active, onSession }: { active: boolean; onSe
     try {
       const result = await resourceApi.favorite(id, !current);
       setStatus(current => current ? { ...current, favoriteIds: result.favoriteIds } : current); setReload(value => value + 1);
-    } catch (failure) { setError(errorMessage(failure)); }
+    } catch (failure) { setError(failure instanceof Error ? failure : new Error(errorMessage(failure))); }
     finally { setFavoritePending(null); }
   };
   const refresh = async () => {
     setRefreshing(true); setError(null);
-    try { setStatus(await resourceApi.refresh()); setReload(value => value + 1); setFeedback("本地资源清单已更新"); }
-    catch (failure) { setError(errorMessage(failure)); }
+    try { setStatus(await resourceApi.refresh()); setReload(value => value + 1); setFeedback({ key: "resources.feedback.inventoryUpdated" }); }
+    catch (failure) { setError(failure instanceof Error ? failure : new Error(errorMessage(failure))); }
     finally { setRefreshing(false); }
   };
   const addSource = async (event: FormEvent) => {
     event.preventDefault(); setSourcePending(true); setSourceError(null);
     try {
       const result = await resourceApi.addSource({ ...source, path: source.path.trim(), keyPath: source.kind === "mcp" ? sourceKeys.split(".").map(key => key.trim()).filter(Boolean) : undefined });
-      setStatus(result); setSourceAdding(false); setReload(value => value + 1); setFeedback("手动来源已添加");
-    } catch (failure) { setSourceError(errorMessage(failure)); }
+      setStatus(result); setSourceAdding(false); setReload(value => value + 1); setFeedback({ key: "resources.feedback.sourceAdded" });
+    } catch (failure) { setSourceError(failure instanceof Error ? failure : new Error(errorMessage(failure))); }
     finally { setSourcePending(false); }
   };
   const removeSource = async (id: string) => {
     setSourcePending(true); setSourceError(null);
-    try { setStatus(await resourceApi.removeSource(id)); setReload(value => value + 1); setFeedback("手动来源已移出盘点范围"); }
-    catch (failure) { setSourceError(errorMessage(failure)); }
+    try { setStatus(await resourceApi.removeSource(id)); setReload(value => value + 1); setFeedback({ key: "resources.feedback.sourceRemoved" }); }
+    catch (failure) { setSourceError(failure instanceof Error ? failure : new Error(errorMessage(failure))); }
     finally { setSourcePending(false); }
   };
   const showManagement = async (input: ResourceManagementInput) => {
@@ -387,7 +410,7 @@ export default function Resources({ active, onSession }: { active: boolean; onSe
     try {
       const result = await resourceApi.preview(input);
       if (sequence === managementRequest.current) setPreview(result);
-    } catch (failure) { if (sequence === managementRequest.current) setManagementError(errorMessage(failure)); }
+    } catch (failure) { if (sequence === managementRequest.current) setManagementError(failure instanceof Error ? failure : new Error(errorMessage(failure))); }
     finally { if (sequence === managementRequest.current) setPreviewLoading(false); }
   };
   const closeManagement = (open: boolean) => {
@@ -401,175 +424,176 @@ export default function Resources({ active, onSession }: { active: boolean; onSe
     try {
       const result = await resourceApi.apply(preview.id);
       setManagementResult(result); setPreview(null); setReload(value => value + 1);
-      if (result.status === "success") { if (!mapView) update({ id: "" }); setFeedback(`${operationStatusNames[result.status]} · ${result.clientEffect === "pending_reload" ? "待重新加载" : "客户端生效状态未知"}`); }
-    } catch (failure) { setManagementError(errorMessage(failure)); setPreview(null); }
+      if (result.status === "success") { if (!mapView) update({ id: "" }); setFeedback({ key: result.clientEffect === "pending_reload" ? "resources.feedback.completePending" : "resources.feedback.completeUnknown" }); }
+    } catch (failure) { setManagementError(failure instanceof Error ? failure : new Error(errorMessage(failure))); setPreview(null); }
     finally { setApplying(false); }
   };
   const reset = () => {
     const defaults = { ...readRoute(), client: "all", project: "all", window: "all", from: "", to: "", q: "", sort: route.kind === "mcp" ? "calls" : "sessions", order: "desc" as const, candidate: "all" as const, low: 2, inactive: 90, favorite: false, page: 1, pageSize: 20, maxValue: "", zeroPage: 1, reviewPage: 1 };
     setQueryText(""); update(defaults);
   };
-  const projectOptions = [{ value: "all", label: "全部项目" }, { value: "none", label: "无项目" }, ...(status?.projects ?? []).map(path => ({ value: path, label: shortPath(path), description: path }))];
+  const projectOptions = [{ value: "all", label: t("resources.project.all") }, { value: "none", label: t("resources.project.none") }, ...(status?.projects ?? []).map(path => ({ value: path, label: shortPath(path), description: path }))];
   const historyView = route.tab === "usage" || route.tab === "local";
   const filters = <div className="resource-filter-content" id={compact ? undefined : "resource-filter-content"}>
-    <div className="resource-field"><span>{overviewRanking ? "Agent" : "客户端"}</span><FilterSelect label={overviewRanking ? "资源Agent" : "资源客户端"} value={route.client} options={[{ value: "all", label: overviewRanking ? "全部 Agent" : "全部客户端" }, ...CLIENTS.map(client => ({ value: client.id, label: client.name }))]} onChange={value => filter({ client: value })} /></div>
-    {!overviewRanking && <div className="resource-field"><span>项目</span><ProjectPicker value={route.project} options={projectOptions} onChange={value => filter({ project: value })} /></div>}
-    {historyView && <><div className="resource-field"><span>使用时间</span><FilterSelect label="资源使用时间" value={route.window} options={[{ value: "all", label: "全部历史" }, { value: "7", label: "近 7 天" }, { value: "30", label: "近 30 天" }, { value: "90", label: "近 90 天" }, { value: "custom", label: "自定义日期" }]} onChange={value => { setTimeAnchor(Date.now()); filter({ window: value }); }} /></div>
-      {route.window === "custom" && <div className="resource-date-fields"><div className="resource-field"><span>从</span><DatePicker label="资源开始日期" value={route.from} onChange={value => filter({ from: value })} /></div><div className="resource-field"><span>到</span><DatePicker label="资源结束日期" value={route.to} onChange={value => filter({ to: value })} /></div></div>}
-      {!mapView && <><div className="resource-field"><span>排序</span><FilterSelect label="资源排序" value={route.sort} options={[{ value: "sessions", label: "使用会话数" }, { value: "calls", label: "调用次数" }, ...(route.kind === "skill" ? [{ value: "reads", label: "读取次数" }] : []), { value: "recent", label: "最近使用" }, { value: "name", label: "名称" }]} onChange={value => filter({ sort: value, order: value === "name" ? "asc" : "desc" })} /></div>
-      <div className="resource-field"><span>排序方向</span><FilterSelect label="资源排序方向" value={route.order} options={[{ value: "desc", label: "降序" }, { value: "asc", label: "升序" }]} onChange={value => filter({ order: value as ResourceRoute["order"] })} /></div></>}
+    <div className="resource-field"><span>{overviewRanking ? t("resources.agent.label") : t("resources.client.label")}</span><FilterSelect label={overviewRanking ? t("resources.client.resourceAgent") : t("resources.client.resourceClient")} value={route.client} options={[{ value: "all", label: overviewRanking ? t("resources.client.allAgents") : t("resources.client.all") }, ...CLIENTS.map(client => ({ value: client.id, label: clientLabel(client.id) }))]} onChange={value => filter({ client: value })} /></div>
+    {!overviewRanking && <div className="resource-field"><span>{t("resources.project.label")}</span><ProjectPicker value={route.project} options={projectOptions} onChange={value => filter({ project: value })} /></div>}
+    {historyView && <><div className="resource-field"><span>{t("resources.time.label")}</span><FilterSelect label={t("resources.time.filter")} value={route.window} options={[{ value: "all", label: t("resources.time.all") }, { value: "7", label: t("resources.time.seven") }, { value: "30", label: t("resources.time.thirty") }, { value: "90", label: t("resources.time.ninety") }, { value: "custom", label: t("resources.time.custom") }]} onChange={value => { setTimeAnchor(Date.now()); filter({ window: value }); }} /></div>
+      {route.window === "custom" && <div className="resource-date-fields"><div className="resource-field"><span>{t("resources.time.from")}</span><DatePicker label={t("resources.time.startDate")} value={route.from} onChange={value => filter({ from: value })} /></div><div className="resource-field"><span>{t("resources.time.to")}</span><DatePicker label={t("resources.time.endDate")} value={route.to} onChange={value => filter({ to: value })} /></div></div>}
+      {!mapView && <><div className="resource-field"><span>{t("resources.sort.label")}</span><FilterSelect label={t("resources.sort.filter")} value={route.sort} options={[{ value: "sessions", label: t("resources.sort.sessions") }, { value: "calls", label: t("resources.sort.calls") }, ...(route.kind === "skill" ? [{ value: "reads", label: t("resources.sort.reads") }] : []), { value: "recent", label: t("resources.column.recent") }, { value: "name", label: t("resources.sort.name") }]} onChange={value => filter({ sort: value, order: value === "name" ? "asc" : "desc" })} /></div>
+      <div className="resource-field"><span>{t("resources.sort.direction")}</span><FilterSelect label={t("resources.sort.directionFilter")} value={route.order} options={[{ value: "desc", label: t("resources.sort.desc") }, { value: "asc", label: t("resources.sort.asc") }]} onChange={value => filter({ order: value as ResourceRoute["order"] })} /></div></>}
     </>}
-    {route.tab === "local" && <><div className="resource-field"><span>整理候选</span><FilterSelect label="资源整理候选" value={route.candidate === "used" ? "all" : route.candidate} options={route.kind === "mcp" ? candidates.filter(candidate => candidate.value !== "duplicate") : candidates} onChange={value => filter({ candidate: value as ResourceCandidate })} /></div>
+    {route.tab === "local" && <><div className="resource-field"><span>{t("resources.candidate.label")}</span><FilterSelect label={t("resources.candidate.filter")} value={route.candidate === "used" ? "all" : route.candidate} options={(route.kind === "mcp" ? candidates.filter(candidate => candidate.value !== "duplicate") : candidates).map(item => ({ value: item.value, label: t(item.labelKey) }))} onChange={value => filter({ candidate: value as ResourceCandidate })} /></div>
     </>}
     {(route.tab === "local" || overviewRanking) && <>
-      {route.candidate === "low" && <label className="resource-field">使用会话数不超过<input type="number" min="1" max="10000" aria-label="低频使用会话阈值" value={route.low} onChange={event => { const value = Number(event.target.value); if (Number.isSafeInteger(value) && value > 0 && value <= 10000) filter({ low: value }); }} /></label>}
-      {route.candidate === "old" && <label className="resource-field">未使用天数至少<input type="number" min="1" max="3650" aria-label="长期未用天数阈值" value={route.inactive} onChange={event => { const value = Number(event.target.value); if (Number.isSafeInteger(value) && value > 0 && value <= 3650) filter({ inactive: value }); }} /></label>}
+      {route.candidate === "low" && <label className="resource-field">{t("resources.candidate.lowThreshold")}<input type="number" min="1" max="10000" aria-label={t("resources.candidate.lowThresholdAria")} value={route.low} onChange={event => { const value = Number(event.target.value); if (Number.isSafeInteger(value) && value > 0 && value <= 10000) filter({ low: value }); }} /></label>}
+      {route.candidate === "old" && <label className="resource-field">{t("resources.candidate.oldThreshold")}<input type="number" min="1" max="3650" aria-label={t("resources.candidate.oldThresholdAria")} value={route.inactive} onChange={event => { const value = Number(event.target.value); if (Number.isSafeInteger(value) && value > 0 && value <= 3650) filter({ inactive: value }); }} /></label>}
     </>}
-    <button className="button subtle resource-reset" onClick={reset}>重置筛选</button>
-    <div className="resource-filter-footer"><button className="text-button" onClick={() => setSourcesOpen(true)}>来源与能力</button><button className="text-button" onClick={() => { const client = route.client === "all" ? "codex" : route.client as Client; setSource({ client, kind: route.kind, path: "", format: route.kind === "skill" ? "skill-directory" : client === "codex" ? "toml" : "json" }); setSourceKeys(registrationKeys(client)); setSourceError(null); setSourceAdding(true); }}><Plus size={14} />添加来源</button></div>
+    <button className="button subtle resource-reset" onClick={reset}>{t("resources.filters.reset")}</button>
+    <div className="resource-filter-footer"><button className="text-button" onClick={() => setSourcesOpen(true)}>{t("resources.source.title")}</button><button className="text-button" onClick={() => { const client = route.client === "all" ? "codex" : route.client as Client; setSource({ client, kind: route.kind, path: "", format: route.kind === "skill" ? "skill-directory" : client === "codex" ? "toml" : "json" }); setSourceKeys(registrationKeys(client)); setSourceError(null); setSourceAdding(true); }}><Plus size={14} />{t("resources.source.add")}</button></div>
   </div>;
 
   const selectedArchive = archives?.archives.find(item => item.id === route.id);
   const selectedOperation = operations?.operations.find(item => item.id === route.id);
-  const overviewLocal = overviewDetail && <section className="resource-detail-section"><header><h3>本地本体与入口</h3><span>{fmt(overviewDetail.local.length)} 个本体</span></header>
+  const overviewLocal = overviewDetail && <section className="resource-detail-section"><header><h3>{t("resources.detail.bodies")}</h3><span>{t("resources.bodyCount", { count: overviewDetail.local.length })}</span></header>
     {overviewDetail.local.length ? overviewDetail.local.map((row, index) => <div className="resource-entry" key={row.body.id}>
-      <header><strong>{row.body.name}</strong><FavoriteButton name={`${row.body.name}本体 ${index + 1}`} favorite={!!status?.favoriteIds.includes(row.body.id)} disabled={favoritePending === row.body.id || !status} onClick={() => void favorite(row.body.id)} /></header>
-      <p className="resource-path">{row.body.targetPath ?? row.entries[0]?.entryPath ?? "本体路径未知"}</p>
-      <div className="resource-tags"><span>{[...new Set(row.entries.map(entry => clientName(entry.client)))].join(" · ") || "Agent 未记录"}</span><span>{fmt(row.entries.length)} 个入口</span>{row.protected && <span>受保护</span>}</div>
-      <div className="resource-entry-actions"><button className="button" aria-label={`查看${row.body.name}的本地本体 ${index + 1}`} onClick={() => showLocal(row.body.id)}>查看本地入口<CaretRight size={14} /></button></div>
-      {mapView && <details className="resource-data-details"><summary>管理具体入口</summary>{row.entries.map(entry => <Entry key={entry.id} entry={entry} onManage={input => void showManagement(input)} />)}</details>}
-    </div>) : <ResourceEmpty>{route.kind === "skill" ? "当前清单没有此 Skill 的本地本体" : "当前清单没有此 MCP 的本地注册"}</ResourceEmpty>}
+      <header><strong>{row.body.name}</strong><FavoriteButton name={t("resources.bodyName", { name: row.body.name, index: index + 1 })} favorite={!!status?.favoriteIds.includes(row.body.id)} disabled={favoritePending === row.body.id || !status} onClick={() => void favorite(row.body.id)} /></header>
+      <p className="resource-path">{row.body.targetPath ?? row.entries[0]?.entryPath ?? t("resources.detail.bodyUnknown")}</p>
+      <div className="resource-tags"><span>{formatList([...new Set(row.entries.map(entry => clientLabel(entry.client)))]) || t("resources.client.notRecorded")}</span><span>{t("resources.entryCount", { count: row.entries.length })}</span>{row.protected && <span>{t("resources.protected")}</span>}</div>
+      <div className="resource-entry-actions"><button className="button" aria-label={t("resources.viewBody", { name: row.body.name, index: index + 1 })} onClick={() => showLocal(row.body.id)}>{t("resources.detail.localEntries")}<CaretRight size={14} /></button></div>
+      {mapView && <details className="resource-data-details"><summary>{t("resources.detail.manageEntries")}</summary>{row.entries.map(entry => <Entry key={entry.id} entry={entry} onManage={input => void showManagement(input)} />)}</details>}
+    </div>) : <ResourceEmpty>{route.kind === "skill" ? t("resources.detail.skillMissing") : t("resources.detail.mcpMissing")}</ResourceEmpty>}
   </section>;
   const detail = <>
-    {detailLoading ? <div role="status" className="resource-loading">正在读取资源详情…</div> : detailError ? <div className="resource-alert" role="alert">{detailError}<button className="text-button" onClick={() => setReload(value => value + 1)}>重试</button></div> : usageDetail ? <>
-      <div className="resource-detail-heading"><div><span>{usageAgentLabel(overviewDetail?.resource ?? usageDetail.resource)}</span><h2>{usageDetail.resource.identity.name}</h2></div><FavoriteButton name={usageDetail.resource.identity.name} favorite={overviewDetail?.resource.favorite ?? usageDetail.resource.favorite} disabled={favoritePending === route.id} onClick={() => void favorite(overviewDetail?.resource.identity.id ?? route.id, overviewDetail?.resource.favorite ?? usageDetail.resource.favorite)} /></div>
-      <div className="resource-tags">{overviewDetail && <><span className={overviewDetail.resource.observation === "unknown" || overviewDetail.resource.observation === "insufficient" ? "is-warning" : ""}>{overviewObservationNames[overviewDetail.resource.observation]}</span>{overviewDetail.resource.protected && <span><ShieldCheck size={12} />受保护</span>}{!overviewDetail.resource.localBodyIds.length && <span>仅历史</span>}</>}<span className={usageDetail.resource.association.state !== "linked" ? "is-warning" : ""}>{associationNames[usageDetail.resource.association.state]}</span>{usageDetail.coverage.partial && <span className="is-warning">部分记录</span>}{usageDetail.resource.stats.missingTimeEvents > 0 && <span className="is-warning">{fmt(usageDetail.resource.stats.missingTimeEvents)} 条时间缺失</span>}</div>
+    {detailLoading ? <div role="status" className="resource-loading">{t("resources.loading.detail")}</div> : detailError ? <div className="resource-alert" role="alert"><ResourceErrorText error={detailError} /><button className="text-button" onClick={() => setReload(value => value + 1)}>{t("common.retry")}</button></div> : usageDetail ? <>
+      <div className="resource-detail-heading"><div><span>{usageAgentLabel(overviewDetail?.resource ?? usageDetail.resource)}</span><h2>{messageText(usageDetail.resource.identity.nameDescriptor, usageDetail.resource.identity.name)}</h2></div><FavoriteButton name={messageText(usageDetail.resource.identity.nameDescriptor, usageDetail.resource.identity.name)} favorite={overviewDetail?.resource.favorite ?? usageDetail.resource.favorite} disabled={favoritePending === route.id} onClick={() => void favorite(overviewDetail?.resource.identity.id ?? route.id, overviewDetail?.resource.favorite ?? usageDetail.resource.favorite)} /></div>
+      <div className="resource-tags">{overviewDetail && <><span className={overviewDetail.resource.observation === "unknown" || overviewDetail.resource.observation === "insufficient" ? "is-warning" : ""}>{t(overviewObservationNames[overviewDetail.resource.observation])}</span>{overviewDetail.resource.protected && <span><ShieldCheck size={12} />{t("resources.protected")}</span>}{!overviewDetail.resource.localBodyIds.length && <span>{t("resources.historyOnly")}</span>}</>}<span className={usageDetail.resource.association.state !== "linked" ? "is-warning" : ""}>{t(associationNames[usageDetail.resource.association.state])}</span>{usageDetail.coverage.partial && <span className="is-warning">{t("resources.partial")}</span>}{usageDetail.resource.stats.missingTimeEvents > 0 && <span className="is-warning">{t("resources.missingTimeCount", { count: usageDetail.resource.stats.missingTimeEvents })}</span>}</div>
       {usageDetail.resource.identity.path && <p className="resource-path">{usageDetail.resource.identity.path}</p>}
-      <Stats stats={overviewDetail ? overviewDetail.resource.stats : usageDetail.resource.stats} kind={route.kind} /><p className="resource-last-used">最近使用 · {dateLabel((overviewDetail ? overviewDetail.resource.stats : usageDetail.resource.stats)?.lastUsedAt ?? undefined)}</p>
+      <Stats stats={overviewDetail ? overviewDetail.resource.stats : usageDetail.resource.stats} kind={route.kind} /><p className="resource-last-used">{t("resources.lastUsed", { date: dateLabel((overviewDetail ? overviewDetail.resource.stats : usageDetail.resource.stats)?.lastUsedAt ?? undefined) })}</p>
       <Trend rows={usageDetail.trend} timeZone={usageDetail.timeZone} />
-      <Distribution rows={usageDetail.clients} title="Agent 分布" label={value => value ? clientName(value as Client) : "Agent 未记录"} />
-      <Distribution rows={usageDetail.projects} title="项目分布" label={value => value ? shortPath(value) : "无项目"} />
-      <details className="resource-data-details"><summary>历史来源 · {fmt(usageDetail.origins.length)} 个</summary><div className="resource-origin-list">{usageDetail.origins.map(origin => <div key={origin.id}><strong>{clientName(origin.client)}</strong><span title={origin.project}>{origin.project ? shortPath(origin.project) : "无项目"}</span><p className="resource-path">{origin.path ?? "路径未记录"}</p></div>)}</div></details>
-      {route.kind === "mcp" && <section className="resource-detail-section"><header><h3>工具调用</h3><span>{fmt(usageDetail.tools.length)} 个工具</span></header><div className="resource-tool-list">{usageDetail.tools.map(tool => <button key={tool.name} className={route.tool === tool.name ? "is-selected" : ""} aria-pressed={route.tool === tool.name} onClick={() => update({ tool: route.tool === tool.name ? "" : tool.name, evidencePage: 1 })}><strong>{tool.name}</strong><span>{fmt(tool.stats.mcpCalls)} 次</span><small>失败 {fmt(tool.stats.results.failure)} · 未知 {fmt(tool.stats.results.unknown)} · {tool.stats.duration.samples ? `${Math.round(tool.stats.duration.averageMs!)} ms / ${fmt(tool.stats.duration.samples)} 样本` : "耗时未记录"}</small></button>)}</div></section>}
-      <section className="resource-detail-section"><header><h3>{route.tool ? `${route.tool} 的证据` : "使用证据"}</h3>{route.tool && <button className="text-button" onClick={() => update({ tool: "", evidencePage: 1 })}>全部工具</button>}</header>
-        {evidenceLoading ? <div role="status" className="resource-loading">正在读取使用证据…</div> : evidenceError ? <div role="alert" className="resource-alert">{evidenceError}</div> : evidence?.events.length ? <>
+      <Distribution rows={usageDetail.clients} title={t("resources.distribution.agents")} label={value => value ? clientLabel(value as Client) : t("resources.client.notRecorded")} />
+      <Distribution rows={usageDetail.projects} title={t("resources.distribution.projects")} label={value => value ? shortPath(value) : t("resources.project.none")} />
+      <details className="resource-data-details"><summary>{t("resources.originCount", { count: usageDetail.origins.length })}</summary><div className="resource-origin-list">{usageDetail.origins.map(origin => <div key={origin.id}><strong>{clientLabel(origin.client)}</strong><span title={origin.project}>{origin.project ? shortPath(origin.project) : t("resources.project.none")}</span><p className="resource-path">{origin.path ?? t("resources.path.notRecorded")}</p></div>)}</div></details>
+      {route.kind === "mcp" && <section className="resource-detail-section"><header><h3>{t("resources.stat.toolCalls")}</h3><span>{t("resources.toolCount", { count: usageDetail.tools.length })}</span></header><div className="resource-tool-list">{usageDetail.tools.map(tool => <button key={tool.name} className={route.tool === tool.name ? "is-selected" : ""} aria-pressed={route.tool === tool.name} onClick={() => update({ tool: route.tool === tool.name ? "" : tool.name, evidencePage: 1 })}><strong>{tool.name}</strong><span>{t("resources.callCount", { count: tool.stats.mcpCalls })}</span><small>{t("resources.toolResults", { failure: tool.stats.results.failure, unknown: tool.stats.results.unknown, duration: tool.stats.duration.samples ? t("resources.durationSamples", { duration: Math.round(tool.stats.duration.averageMs!), count: tool.stats.duration.samples }) : t("resources.evidence.durationMissing") })}</small></button>)}</div></section>}
+      <section className="resource-detail-section"><header><h3>{route.tool ? t("resources.toolEvidence", { name: route.tool }) : t("resources.evidence.title")}</h3>{route.tool && <button className="text-button" onClick={() => update({ tool: "", evidencePage: 1 })}>{t("resources.evidence.allTools")}</button>}</header>
+        {evidenceLoading ? <div role="status" className="resource-loading">{t("resources.loading.evidence")}</div> : evidenceError ? <div role="alert" className="resource-alert"><ResourceErrorText error={evidenceError} /></div> : evidence?.events.length ? <>
           <div className="resource-evidence">{evidence.events.map(event => <a key={event.id} href={`#sessions?${new URLSearchParams({ id: event.sessionId, mode: "trace", message: event.messageId, branch: "all" })}`} onClick={click => { if (!click.metaKey && !click.ctrlKey && !click.shiftKey && click.button === 0) { click.preventDefault(); savedScroll.current = listScroll.current?.scrollTop ?? 0; savedDetailScroll.current = (compact ? detailDialogScroll.current : detailScroll.current)?.scrollTop ?? 0; returnFromEvidence.current = true; onSession({ sessionId: event.sessionId, messageId: event.messageId }); } }}>
-            <div><strong>{event.tool ?? evidenceNames[event.kind]}</strong><span className={`resource-result is-${event.status}`}>{resultNames[event.status]}</span><ArrowSquareOut size={14} /></div><span>{evidenceNames[event.kind]} · {dateLabel(event.occurredAt)}</span>{event.pairing === "ambiguous" && <span className="resource-result is-unknown">结果配对有歧义</span>}
-          </a>)}</div><ResourcePagination page={evidence.page} total={evidence.total} pageSize={evidence.pageSize} label="使用证据" onChange={page => update({ evidencePage: page })} />
-        </> : <ResourceEmpty>当前范围没有使用证据</ResourceEmpty>}
+            <div><strong>{event.tool ?? t(evidenceNames[event.kind])}</strong><span className={`resource-result is-${event.status}`}>{t(resultNames[event.status])}</span><ArrowSquareOut size={14} /></div><span>{t(evidenceNames[event.kind])} · {dateLabel(event.occurredAt)}</span>{event.pairing === "ambiguous" && <span className="resource-result is-unknown">{t("resources.evidence.pairingAmbiguous")}</span>}
+          </a>)}</div><ResourcePagination page={evidence.page} total={evidence.total} pageSize={evidence.pageSize} label={t("resources.evidence.title")} onChange={page => update({ evidencePage: page })} />
+        </> : <ResourceEmpty>{t("resources.evidence.empty")}</ResourceEmpty>}
       </section>
       {overviewLocal}
     </> : overviewDetail ? <>
-      <div className="resource-detail-heading"><div><span>{usageAgentLabel(overviewDetail.resource)}</span><h2>{overviewDetail.resource.identity.name}</h2></div><FavoriteButton name={overviewDetail.resource.identity.name} favorite={overviewDetail.resource.favorite} disabled={favoritePending === route.id} onClick={() => void favorite(overviewDetail.resource.identity.id, overviewDetail.resource.favorite)} /></div>
-      <div className="resource-tags"><span className={overviewDetail.resource.observation === "unknown" || overviewDetail.resource.observation === "insufficient" ? "is-warning" : ""}>{overviewObservationNames[overviewDetail.resource.observation]}</span>{overviewDetail.resource.protected && <span><ShieldCheck size={12} />受保护</span>}</div>
+      <div className="resource-detail-heading"><div><span>{usageAgentLabel(overviewDetail.resource)}</span><h2>{messageText(overviewDetail.resource.identity.nameDescriptor, overviewDetail.resource.identity.name)}</h2></div><FavoriteButton name={messageText(overviewDetail.resource.identity.nameDescriptor, overviewDetail.resource.identity.name)} favorite={overviewDetail.resource.favorite} disabled={favoritePending === route.id} onClick={() => void favorite(overviewDetail.resource.identity.id, overviewDetail.resource.favorite)} /></div>
+      <div className="resource-tags"><span className={overviewDetail.resource.observation === "unknown" || overviewDetail.resource.observation === "insufficient" ? "is-warning" : ""}>{t(overviewObservationNames[overviewDetail.resource.observation])}</span>{overviewDetail.resource.protected && <span><ShieldCheck size={12} />{t("resources.protected")}</span>}</div>
       <Stats stats={overviewDetail.resource.stats} kind={route.kind} />
       {overviewLocal}
     </> : localDetail ? <>
-      <div className="resource-detail-heading"><div><span>{route.kind === "skill" ? "本地 Skill" : "本地 MCP 注册"}</span><h2>{localDetail.row.body.name}</h2></div><FavoriteButton name={localDetail.row.body.name} favorite={!!status?.favoriteIds.includes(route.id)} disabled={favoritePending === route.id || !status} onClick={() => void favorite(route.id)} /></div>
-      <div className="resource-tags"><span className={localDetail.row.observation !== "recorded" ? "is-warning" : ""}>{observationLabel(localDetail.row)}</span>{localDetail.row.protected && <span><ShieldCheck size={12} />受保护</span>}{localDetail.row.favorite && !status?.favoriteIds.includes(route.id) && <span>关联收藏保护</span>}{localDetail.row.candidates.includes("duplicate") && <span>SKILL.md 相同</span>}</div>
+      <div className="resource-detail-heading"><div><span>{route.kind === "skill" ? t("resources.detail.localSkill") : t("resources.detail.localMcp")}</span><h2>{localDetail.row.body.name}</h2></div><FavoriteButton name={localDetail.row.body.name} favorite={!!status?.favoriteIds.includes(route.id)} disabled={favoritePending === route.id || !status} onClick={() => void favorite(route.id)} /></div>
+      <div className="resource-tags"><span className={localDetail.row.observation !== "recorded" ? "is-warning" : ""}>{observationLabel(localDetail.row)}</span>{localDetail.row.protected && <span><ShieldCheck size={12} />{t("resources.protected")}</span>}{localDetail.row.favorite && !status?.favoriteIds.includes(route.id) && <span>{t("resources.detail.favoriteProtection")}</span>}{localDetail.row.candidates.includes("duplicate") && <span>{t("resources.candidate.duplicate")}</span>}</div>
       <Stats stats={localDetail.row.usage} kind={route.kind} />
       <Trend rows={localDetail.trend} timeZone={localDetail.timeZone} />
-      <Distribution rows={localDetail.clients} title="客户端分布" label={value => value ? clientName(value as Client) : "客户端未知"} />
-      <Distribution rows={localDetail.projects} title="项目分布" label={value => value ? shortPath(value) : "无项目"} />
-      <section className="resource-detail-section"><header><h3>客户端入口</h3><span>{fmt(localDetail.row.entries.length)} 个</span></header>{localDetail.row.entries.map(entry => <Entry key={entry.id} entry={entry} onManage={input => void showManagement(input)} />)}</section>
-      <section className="resource-detail-section"><header><h3>关联历史</h3></header>{localDetail.row.historyIds.length ? <div className="resource-history-links">{localDetail.row.historyIds.map((id, index) => <button key={id} className="button subtle" onClick={() => showHistory(id)}>查看使用分布与证据{localDetail.row.historyIds.length > 1 ? ` ${index + 1}` : ""}<CaretRight size={14} /></button>)}</div> : <ResourceEmpty>尚无可确认归属的历史入口</ResourceEmpty>}</section>
-      <details className="resource-data-details"><summary>发现信息</summary><dl className="resource-facts"><dt>首次发现</dt><dd>{dateLabel(localDetail.row.firstSeenAt)}</dd><dt>本次盘点</dt><dd>{dateLabel(localDetail.inventory.observedAt)}</dd>{localDetail.row.body.targetPath && <><dt>真实目标</dt><dd>{localDetail.row.body.targetPath}</dd></>}</dl></details>
+      <Distribution rows={localDetail.clients} title={t("resources.distribution.clients")} label={value => value ? clientLabel(value as Client) : t("resources.client.unknown")} />
+      <Distribution rows={localDetail.projects} title={t("resources.distribution.projects")} label={value => value ? shortPath(value) : t("resources.project.none")} />
+      <section className="resource-detail-section"><header><h3>{t("resources.detail.clientEntries")}</h3><span>{t("resources.entryCount", { count: localDetail.row.entries.length })}</span></header>{localDetail.row.entries.map(entry => <Entry key={entry.id} entry={entry} onManage={input => void showManagement(input)} />)}</section>
+      <section className="resource-detail-section"><header><h3>{t("resources.detail.history")}</h3></header>{localDetail.row.historyIds.length ? <div className="resource-history-links">{localDetail.row.historyIds.map((id, index) => <button key={id} className="button subtle" onClick={() => showHistory(id)}>{localDetail.row.historyIds.length > 1 ? t("resources.viewHistoryNumber", { index: index + 1 }) : t("resources.viewHistory")}<CaretRight size={14} /></button>)}</div> : <ResourceEmpty>{t("resources.detail.historyEmpty")}</ResourceEmpty>}</section>
+      <details className="resource-data-details"><summary>{t("resources.detail.discovery")}</summary><dl className="resource-facts"><dt>{t("resources.detail.firstSeen")}</dt><dd>{dateLabel(localDetail.row.firstSeenAt)}</dd><dt>{t("resources.detail.inventoryTime")}</dt><dd>{dateLabel(localDetail.inventory.observedAt)}</dd>{localDetail.row.body.targetPath && <><dt>{t("resources.detail.realTarget")}</dt><dd>{localDetail.row.body.targetPath}</dd></>}</dl></details>
     </> : selectedArchive && !historyView && route.tab !== "operations" ? <>
-      <div className="resource-detail-heading"><div><span>{clientName(selectedArchive.entry.client)}</span><h2>{selectedArchive.entry.name}</h2></div></div>
-      <div className="resource-tags"><span>{archiveNames[selectedArchive.state]}</span><span>{selectedArchive.restorable ? "可恢复" : "恢复材料不可用"}</span>{selectedArchive.operationStatus === "partial" && <span className="is-warning">部分完成</span>}</div>
-      <dl className="resource-facts"><dt>原位置</dt><dd>{selectedArchive.originalPath}</dd><dt>作用范围</dt><dd>{selectedArchive.entry.scope === "user" ? "用户范围" : selectedArchive.entry.project ?? "项目未知"}</dd><dt>管理时间</dt><dd>{dateLabel(selectedArchive.createdAt)}</dd>{selectedArchive.storedPath && <><dt>恢复材料</dt><dd>{selectedArchive.storedPath}</dd></>}</dl>
-      <div className="resource-entry-actions"><button className="button primary" disabled={!selectedArchive.restorable} onClick={() => void showManagement({ action: "restore", operationId: selectedArchive.operationId })}>预览恢复</button>{selectedArchive.state === "trash" && <button className="button resource-danger-button" onClick={() => void showManagement({ action: "purge", operationId: selectedArchive.operationId })}>预览永久清除</button>}</div>
+      <div className="resource-detail-heading"><div><span>{clientLabel(selectedArchive.entry.client)}</span><h2>{selectedArchive.entry.name}</h2></div></div>
+      <div className="resource-tags"><span>{t(archiveNames[selectedArchive.state])}</span><span>{selectedArchive.restorable ? t("resources.archive.restorable") : t("resources.archive.unavailable")}</span>{selectedArchive.operationStatus === "partial" && <span className="is-warning">{t("resources.operation.partial")}</span>}</div>
+      <dl className="resource-facts"><dt>{t("resources.facts.original")}</dt><dd>{selectedArchive.originalPath}</dd><dt>{t("resources.facts.scope")}</dt><dd>{selectedArchive.entry.scope === "user" ? t("resources.scope.user") : selectedArchive.entry.project ?? t("resources.project.unknown")}</dd><dt>{t("resources.facts.managementTime")}</dt><dd>{dateLabel(selectedArchive.createdAt)}</dd>{selectedArchive.storedPath && <><dt>{t("resources.facts.recovery")}</dt><dd>{selectedArchive.storedPath}</dd></>}</dl>
+      <div className="resource-entry-actions"><button className="button primary" disabled={!selectedArchive.restorable} onClick={() => void showManagement({ action: "restore", operationId: selectedArchive.operationId })}>{t("resources.archive.previewRestore")}</button>{selectedArchive.state === "trash" && <button className="button resource-danger-button" onClick={() => void showManagement({ action: "purge", operationId: selectedArchive.operationId })}>{t("resources.archive.previewPurge")}</button>}</div>
     </> : selectedOperation && route.tab === "operations" ? <>
-      <div className="resource-detail-heading"><div><span>{clientName(selectedOperation.resource.client)}</span><h2>{selectedOperation.name}</h2></div></div>
-      <div className="resource-tags"><span>{actionNames[selectedOperation.action]}</span><span className={selectedOperation.status === "success" ? "" : "is-warning"}>{operationStatusNames[selectedOperation.status]}</span><span>{selectedOperation.clientEffect === "pending_reload" ? "待重新加载" : "客户端生效状态未知"}</span></div>
-      <p className="resource-operation-message">{selectedOperation.message}</p>
-      <dl className="resource-facts"><dt>执行时间</dt><dd>{dateLabel(selectedOperation.createdAt)}</dd><dt>作用范围</dt><dd>{selectedOperation.resource.scope === "user" ? "用户范围" : selectedOperation.resource.project ?? "项目未知"}</dd><dt>本地状态</dt><dd>{selectedOperation.localState === "changed" ? "已修改" : selectedOperation.localState === "partial" ? "部分修改" : "未修改"}</dd></dl>
-      {selectedOperation.archiveId && ["disable", "standby", "trash"].includes(selectedOperation.action) && <button className="button" onClick={() => update({ tab: selectedOperation.action === "disable" ? "disabled" : selectedOperation.action === "trash" ? "trash" : "standby", q: selectedOperation.name, id: "", page: 1 }, true)}>查看恢复记录</button>}
-    </> : <ResourceEmpty>选择一个资源查看详情</ResourceEmpty>}
+      <div className="resource-detail-heading"><div><span>{clientLabel(selectedOperation.resource.client)}</span><h2>{selectedOperation.name}</h2></div></div>
+      <div className="resource-tags"><span>{t(actionNames[selectedOperation.action])}</span><span className={selectedOperation.status === "success" ? "" : "is-warning"}>{t(operationStatusNames[selectedOperation.status])}</span><span>{selectedOperation.clientEffect === "pending_reload" ? t("resources.clientEffect.pending") : t("resources.clientEffect.unknown")}</span></div>
+      <ResourceMessage descriptor={selectedOperation.messageDescriptor} original={selectedOperation.message} details={selectedOperation.details} />
+      <dl className="resource-facts"><dt>{t("resources.facts.executionTime")}</dt><dd>{dateLabel(selectedOperation.createdAt)}</dd><dt>{t("resources.facts.scope")}</dt><dd>{selectedOperation.resource.scope === "user" ? t("resources.scope.user") : selectedOperation.resource.project ?? t("resources.project.unknown")}</dd><dt>{t("resources.facts.localState")}</dt><dd>{selectedOperation.localState === "changed" ? t("resources.localState.changed") : selectedOperation.localState === "partial" ? t("resources.localState.partial") : t("resources.localState.unchanged")}</dd></dl>
+      {selectedOperation.archiveId && ["disable", "standby", "trash"].includes(selectedOperation.action) && <button className="button" onClick={() => update({ tab: selectedOperation.action === "disable" ? "disabled" : selectedOperation.action === "trash" ? "trash" : "standby", q: selectedOperation.name, id: "", page: 1 }, true)}>{t("resources.archive.viewRecovery")}</button>}
+    </> : <ResourceEmpty>{t("resources.detail.empty")}</ResourceEmpty>}
   </>;
 
-  return <div className="resources-shell" aria-label="资源管理" data-compact={compact}>
-    <ResizableWorkspace sidebarCollapsed={sidebarCollapsed} detailsCollapsed={detailsCollapsed} semantics={{ sidebar: { label: "调整资源筛选宽度", controls: "resource-filter-content" }, details: { label: "调整资源详情宽度", controls: "resource-detail-content" } }}>
-      <aside className={`sidebar resource-sidebar${sidebarCollapsed ? " panel-collapsed" : ""}`} aria-label="资源筛选">
-        <div className="pane-heading"><span>筛选</span><button className="icon-button panel-toggle" aria-label={sidebarCollapsed ? "展开资源筛选" : "收起资源筛选"} aria-expanded={!sidebarCollapsed} aria-controls="resource-filter-content" onClick={() => setSidebarCollapsed(value => !value)}>{sidebarCollapsed ? <CaretRight size={17} /> : <CaretLeft size={17} />}</button></div>{!sidebarCollapsed && !compact && filters}
+  return <div className="resources-shell" aria-label={t("resources.title")} data-compact={compact}>
+    <ResizableWorkspace sidebarCollapsed={sidebarCollapsed} detailsCollapsed={detailsCollapsed} semantics={{ sidebar: { label: t("resources.layout.sidebarWidth"), controls: "resource-filter-content" }, details: { label: t("resources.layout.detailsWidth"), controls: "resource-detail-content" } }}>
+      <aside className={`sidebar resource-sidebar${sidebarCollapsed ? " panel-collapsed" : ""}`} aria-label={t("resources.filters.title")}>
+        <div className="pane-heading"><span>{t("resources.filters.label")}</span><button className="icon-button panel-toggle" aria-label={sidebarCollapsed ? t("resources.filters.expand") : t("resources.filters.collapse")} aria-expanded={!sidebarCollapsed} aria-controls="resource-filter-content" onClick={() => setSidebarCollapsed(value => !value)}>{sidebarCollapsed ? <CaretRight size={17} /> : <CaretLeft size={17} />}</button></div>{!sidebarCollapsed && !compact && filters}
       </aside>
       <main className="resources-main">
-        <header className="resources-heading"><div><h1>资源管理</h1></div><div className="resources-heading-actions"><button className="icon-button resource-mobile-filter" aria-label="打开资源筛选" onClick={() => setFiltersOpen(true)}><Funnel size={18} /></button><button className="button" disabled={refreshing} onClick={() => void refresh()}><ArrowClockwise size={15} className={refreshing ? "spinning" : ""} />{refreshing ? "正在盘点" : "刷新清单"}</button></div></header>
-        <div className="resource-kind-tabs" role="group" aria-label="资源类型">{(["skill", "mcp"] as const).map(kind => <button key={kind} aria-pressed={route.kind === kind} className={route.kind === kind ? "is-selected" : ""} onClick={() => update({ kind, id: "", page: 1, tool: "", zeroPage: 1, reviewPage: 1, metric: kind === "mcp" && route.metric === "reads" ? "calls" : route.metric, maxValue: kind === route.kind ? route.maxValue : "", candidate: kind === "mcp" && route.candidate === "duplicate" ? "all" : route.candidate, sort: kind === route.kind ? route.sort : kind === "mcp" ? "calls" : "sessions", order: kind === route.kind ? route.order : "desc" })}>{kind === "skill" ? "Skill" : "MCP"}</button>)}<UsageHelp kind={route.kind} /></div>
-        <nav className="resource-view-tabs" aria-label="资源视图">{tabs.map(tab => <button key={tab.value} aria-current={route.tab === tab.value ? "page" : undefined} onClick={() => update({ tab: tab.value, id: "", page: 1, tool: "" }, true)}>{tab.value === "usage" ? overviewLabel : tab.label}</button>)}</nav>
-        <div className="resource-list-toolbar"><label className="resource-search"><MagnifyingGlass size={16} /><input aria-label="搜索资源名称或路径" value={route.q} placeholder="搜索资源名称或路径" onChange={event => filter({ q: event.target.value })} />{route.q && <button className="icon-button" aria-label="清空资源搜索" onClick={() => filter({ q: "" })}><X size={14} /></button>}</label>
-          {overviewRanking && !listLoading && overviewData && <span>{fmt(overviewData.total)} {route.kind === "skill" ? "个 Skill" : "个 MCP"}</span>}{route.tab === "local" && !listLoading && local && <span>{fmt(local.total)} 个资源</span>}
-          {route.tab === "operations" && !listLoading && operations && <span>{fmt(operations.total)} 条操作</span>}{!historyView && route.tab !== "operations" && !listLoading && archives && <span>{fmt(archives.total)} 个资源</span>}
+        <header className="resources-heading"><div><h1>{t("resources.title")}</h1></div><div className="resources-heading-actions"><button className="icon-button resource-mobile-filter" aria-label={t("resources.filters.open")} onClick={() => setFiltersOpen(true)}><Funnel size={18} /></button><button className="button" disabled={refreshing} onClick={() => void refresh()}><ArrowClockwise size={15} className={refreshing ? "spinning" : ""} />{refreshing ? t("resources.refresh.loading") : t("resources.refresh.label")}</button></div></header>
+        <div className="resource-kind-tabs" role="group" aria-label={t("resources.kind.label")}>{(["skill", "mcp"] as const).map(kind => <button key={kind} aria-pressed={route.kind === kind} className={route.kind === kind ? "is-selected" : ""} onClick={() => update({ kind, id: "", page: 1, tool: "", zeroPage: 1, reviewPage: 1, metric: kind === "mcp" && route.metric === "reads" ? "calls" : route.metric, maxValue: kind === route.kind ? route.maxValue : "", candidate: kind === "mcp" && route.candidate === "duplicate" ? "all" : route.candidate, sort: kind === route.kind ? route.sort : kind === "mcp" ? "calls" : "sessions", order: kind === route.kind ? route.order : "desc" })}>{kind === "skill" ? t("resources.kind.skill") : t("resources.kind.mcp")}</button>)}<UsageHelp kind={route.kind} /></div>
+        <nav className="resource-view-tabs" aria-label={t("resources.view.label")}>{tabs.map(tab => <button key={tab.value} aria-current={route.tab === tab.value ? "page" : undefined} onClick={() => update({ tab: tab.value, id: "", page: 1, tool: "" }, true)}>{tab.value === "usage" ? overviewLabel : t(tab.labelKey)}</button>)}</nav>
+        <div className="resource-list-toolbar"><label className="resource-search"><MagnifyingGlass size={16} /><input aria-label={t("resources.search.label")} value={route.q} placeholder={t("resources.search.label")} onChange={event => filter({ q: event.target.value })} />{route.q && <button className="icon-button" aria-label={t("resources.search.clear")} onClick={() => filter({ q: "" })}><X size={14} /></button>}</label>
+          {overviewRanking && !listLoading && overviewData && <span>{t(route.kind === "skill" ? "resources.skillCount" : "resources.mcpCount", { count: overviewData.total })}</span>}{route.tab === "local" && !listLoading && local && <span>{t("resources.resourceCount", { count: local.total })}</span>}
+          {route.tab === "operations" && !listLoading && operations && <span>{t("resources.operationCount", { count: operations.total })}</span>}{!historyView && route.tab !== "operations" && !listLoading && archives && <span>{t("resources.resourceCount", { count: archives.total })}</span>}
         </div>
-        {overviewRanking && <div className="resource-map-settings"><div className="resource-display-switch" role="group" aria-label="资源展示方式">{(["list", "map"] as const).map(view => <button key={view} aria-pressed={route.view === view} onClick={() => update({ view })}>{view === "list" ? "列表" : "地图"}</button>)}</div>
-          {mapView && <><FilterSelect label="地图面积指标" value={route.metric} options={[{ value: "calls", label: "调用次数" }, { value: "sessions", label: "使用会话数" }, ...(route.kind === "skill" ? [{ value: "reads", label: "成功读取次数" }] : [])]} onChange={value => filter({ metric: value as ResourceMapMetric, maxValue: "" })} />
-            <label className="resource-map-limit">{resourceMapMetricNames[route.metric]} ≤<input type="number" min="0" step="1" aria-label="地图指标上限" value={route.maxValue} placeholder="不限" onChange={event => { const value = event.target.value; if (value === "" || /^\d+$/.test(value) && Number.isSafeInteger(Number(value))) filter({ maxValue: value }); }} /></label></>}
+        {overviewRanking && <div className="resource-map-settings"><div className="resource-display-switch" role="group" aria-label={t("resources.view.display")}>{(["list", "map"] as const).map(view => <button key={view} aria-pressed={route.view === view} onClick={() => update({ view })}>{view === "list" ? t("resources.view.list") : t("resources.view.map")}</button>)}</div>
+          {mapView && <><FilterSelect label={t("resources.map.metricFilter")} value={route.metric} options={[{ value: "calls", label: t("resources.sort.calls") }, { value: "sessions", label: t("resources.sort.sessions") }, ...(route.kind === "skill" ? [{ value: "reads", label: t("resources.map.reads") }] : [])]} onChange={value => filter({ metric: value as ResourceMapMetric, maxValue: "" })} />
+            <label className="resource-map-limit">{t(resourceMapMetricKeys[route.metric])} ≤<input type="number" min="0" step="1" aria-label={t("resources.map.limit")} value={route.maxValue} placeholder={t("resources.map.unlimited")} onChange={event => { const value = event.target.value; if (value === "" || /^\d+$/.test(value) && Number.isSafeInteger(Number(value))) filter({ maxValue: value }); }} /></label></>}
         </div>}
-        {invalidTime && <div className="resource-alert" role="alert">开始日期不能晚于结束日期</div>}
-        {error && <div className="resource-alert" role="alert">{error}<button className="text-button" onClick={() => setReload(value => value + 1)}>重试</button></div>}
-        {feedback && <div className="resource-feedback" role="status">{feedback}<button className="icon-button" aria-label="关闭资源操作反馈" onClick={() => setFeedback(null)}><X size={14} /></button></div>}
+        {invalidTime && <div className="resource-alert" role="alert">{t("resources.time.invalidRange")}</div>}
+        {error && <div className="resource-alert" role="alert"><ResourceErrorText error={error} /><button className="text-button" onClick={() => setReload(value => value + 1)}>{t("common.retry")}</button></div>}
+        {feedback && <div className="resource-feedback" role="status">{t(feedback.key, feedback.params)}<button className="icon-button" aria-label={t("resources.feedback.close")} onClick={() => setFeedback(null)}><X size={14} /></button></div>}
         {overviewRanking && overviewData && !listLoading && <>
-          <div className="resource-quick-filters" role="group" aria-label={`${route.kind === "skill" ? "Skill" : "MCP"} 快速筛选`}>{overviewCandidates.map(candidate => <button key={candidate.value} aria-pressed={route.candidate === candidate.value || candidate.value === "all" && !overviewCandidates.some(item => item.value === route.candidate)} onClick={() => filter({ candidate: candidate.value, favorite: false })}>{candidate.label}<strong>{fmt(overviewData.counts[candidate.value])}</strong></button>)}</div>
-          {(overviewData.partial || !!overviewData.coverage?.missingTimeEvents) && <div className="resource-range-summary">{overviewData.partial && <span className="resource-state is-warning">部分来源或记录</span>}{!!overviewData.coverage?.missingTimeEvents && <span className="resource-state is-warning">{fmt(overviewData.coverage.missingTimeEvents)} 条时间缺失</span>}</div>}
+          <div className="resource-quick-filters" role="group" aria-label={t("resources.quickFilters", { kind: route.kind === "skill" ? t("resources.kind.skill") : t("resources.kind.mcp") })}>{overviewCandidates.map(candidate => <button key={candidate.value} aria-pressed={route.candidate === candidate.value || candidate.value === "all" && !overviewCandidates.some(item => item.value === route.candidate)} onClick={() => filter({ candidate: candidate.value, favorite: false })}>{t(candidate.labelKey)}<strong>{fmt(overviewData.counts[candidate.value])}</strong></button>)}</div>
+          {(overviewData.partial || !!overviewData.coverage?.missingTimeEvents) && <div className="resource-range-summary">{overviewData.partial && <span className="resource-state is-warning">{t("resources.partialSources")}</span>}{!!overviewData.coverage?.missingTimeEvents && <span className="resource-state is-warning">{t("resources.missingTimeCount", { count: overviewData.coverage.missingTimeEvents })}</span>}</div>}
         </>}
-        {route.tab === "local" && local?.partial && !listLoading && <div className="resource-range-summary"><span className="resource-state is-warning">部分来源未读取</span></div>}
+        {route.tab === "local" && local?.partial && !listLoading && <div className="resource-range-summary"><span className="resource-state is-warning">{t("resources.partialUnread")}</span></div>}
         <div className={`resource-list-scroll${mapView ? " resource-map-scroll" : ""}`} ref={listScroll} aria-busy={listLoading}>
-          {listLoading ? <div role="status" className="resource-loading">正在读取资源…</div> : invalidTime ? null : mapView ? map && <ResourceMap data={map} selected={route.id} onSelect={select} zeroPage={route.zeroPage} zeroSize={route.zeroSize} reviewPage={route.reviewPage} reviewSize={route.reviewSize} onZeroPage={zeroPage => update({ zeroPage })} onZeroSize={zeroSize => update({ zeroSize, zeroPage: 1 })} onReviewPage={reviewPage => update({ reviewPage })} onReviewSize={reviewSize => update({ reviewSize, reviewPage: 1 })} /> : overviewRanking ? overview?.resources.length ? <OverviewTable rows={overview.resources} route={route} onSort={sort} onSelect={select} onFavorite={(id, current) => void favorite(id, current)} favoritePending={favoritePending} /> : <ResourceEmpty>没有匹配的{route.kind === "skill" ? " Skill" : " MCP"}</ResourceEmpty> : route.tab === "local" ? local?.rows.length ? <div className="resource-rows">{local.rows.map(row => <div className={`resource-row${route.id === row.body.id ? " is-selected" : ""}`} key={row.body.id}>
-            <button className="resource-row-main" onClick={() => select(row.body.id)} aria-label={`查看${row.body.name}的本地详情`}><div className="resource-row-heading"><strong>{row.body.name}</strong><span>{fmt(row.entries.length)} 个入口</span></div><div className="resource-row-subtitle" title={row.body.targetPath}>{row.body.targetPath ?? row.entries[0]?.entryPath}</div><div className="resource-row-metrics"><span>{[...new Set(row.entries.map(entry => clientName(entry.client)))].join(" · ")}</span>{row.usage && <span><b>{fmt(row.usage.sessions)}</b> 使用会话</span>}</div><div className="resource-tags"><span className={row.observation === "recorded" ? "" : "is-warning"}>{observationLabel(row)}</span>{row.protected && <span><ShieldCheck size={12} />受保护</span>}{row.favorite && !status?.favoriteIds.includes(row.body.id) && <span>关联收藏保护</span>}{row.entries.some(entry => !entry.capabilities.standby && !entry.capabilities.disable && !entry.capabilities.trash) && <span>只读</span>}{row.candidates.includes("broken") && <span className="is-warning">断链／缺失</span>}{row.candidates.includes("duplicate") && <span>SKILL.md 相同</span>}</div></button><FavoriteButton name={row.body.name} favorite={!!status?.favoriteIds.includes(row.body.id)} disabled={favoritePending === row.body.id || !status} onClick={() => void favorite(row.body.id)} />
-          </div>)}</div> : <ResourceEmpty>没有匹配的本地资源</ResourceEmpty> : route.tab === "operations" ? operations?.operations.length ? <div className="resource-rows">{operations.operations.map(operation => <div className={`resource-row${route.id === operation.id ? " is-selected" : ""}`} key={operation.id}><button className="resource-row-main" aria-label={`查看${operation.name}的${actionNames[operation.action]}记录`} onClick={() => select(operation.id)}><div className="resource-row-heading"><strong>{operation.name}</strong><span>{actionNames[operation.action]}</span></div><div className="resource-row-metrics"><span>{clientName(operation.resource.client)}</span><span>{dateLabel(operation.createdAt)}</span></div><div className="resource-tags"><span className={operation.status === "success" ? "" : "is-warning"}>{operationStatusNames[operation.status]}</span><span>{operation.clientEffect === "pending_reload" ? "待重新加载" : "客户端生效状态未知"}</span></div></button></div>)}</div> : <ResourceEmpty>没有匹配的操作记录</ResourceEmpty> : archives?.archives.length ? <div className="resource-rows">{archives.archives.map(archive => <div className={`resource-row${route.id === archive.id ? " is-selected" : ""}`} key={archive.id}><button className="resource-row-main" aria-label={`查看${archive.entry.name}的恢复记录`} onClick={() => select(archive.id)}><div className="resource-row-heading"><strong>{archive.entry.name}</strong><span>{clientName(archive.entry.client)}</span></div><div className="resource-row-subtitle" title={archive.originalPath}>{archive.originalPath}</div><div className="resource-row-metrics"><span>{dateLabel(archive.createdAt)}</span></div><div className="resource-tags"><span>{archiveNames[archive.state]}</span><span className={!archive.restorable ? "is-warning" : ""}>{archive.restorable ? "可恢复" : "恢复材料不可用"}</span>{archive.operationStatus === "partial" && <span className="is-warning">部分完成</span>}</div></button></div>)}</div> : <ResourceEmpty>当前范围没有{tabs.find(tab => tab.value === route.tab)?.label}资源</ResourceEmpty>}
+          {listLoading ? <div role="status" className="resource-loading">{t("resources.loading.resources")}</div> : invalidTime ? null : mapView ? map && <ResourceMap data={map} selected={route.id} onSelect={select} zeroPage={route.zeroPage} zeroSize={route.zeroSize} reviewPage={route.reviewPage} reviewSize={route.reviewSize} onZeroPage={zeroPage => update({ zeroPage })} onZeroSize={zeroSize => update({ zeroSize, zeroPage: 1 })} onReviewPage={reviewPage => update({ reviewPage })} onReviewSize={reviewSize => update({ reviewSize, reviewPage: 1 })} /> : overviewRanking ? overview?.resources.length ? <OverviewTable rows={overview.resources} route={route} onSort={sort} onSelect={select} onFavorite={(id, current) => void favorite(id, current)} favoritePending={favoritePending} /> : <ResourceEmpty>{t("resources.empty.kind", { kind: route.kind === "skill" ? t("resources.kind.skill") : t("resources.kind.mcp") })}</ResourceEmpty> : route.tab === "local" ? local?.rows.length ? <div className="resource-rows">{local.rows.map(row => <div className={`resource-row${route.id === row.body.id ? " is-selected" : ""}`} key={row.body.id}>
+            <button className="resource-row-main" onClick={() => select(row.body.id)} aria-label={t("resources.viewLocal", { name: row.body.name })}><div className="resource-row-heading"><strong>{row.body.name}</strong><span>{t("resources.entryCount", { count: row.entries.length })}</span></div><div className="resource-row-subtitle" title={row.body.targetPath}>{row.body.targetPath ?? row.entries[0]?.entryPath}</div><div className="resource-row-metrics"><span>{formatList([...new Set(row.entries.map(entry => clientLabel(entry.client)))])}</span>{row.usage && <span>{t("resources.sessionCount", { count: row.usage.sessions })}</span>}</div><div className="resource-tags"><span className={row.observation === "recorded" ? "" : "is-warning"}>{observationLabel(row)}</span>{row.protected && <span><ShieldCheck size={12} />{t("resources.protected")}</span>}{row.favorite && !status?.favoriteIds.includes(row.body.id) && <span>{t("resources.detail.favoriteProtection")}</span>}{row.entries.some(entry => !entry.capabilities.standby && !entry.capabilities.disable && !entry.capabilities.trash) && <span>{t("resources.readOnly")}</span>}{row.candidates.includes("broken") && <span className="is-warning">{t("resources.candidate.broken")}</span>}{row.candidates.includes("duplicate") && <span>{t("resources.candidate.duplicate")}</span>}</div></button><FavoriteButton name={row.body.name} favorite={!!status?.favoriteIds.includes(row.body.id)} disabled={favoritePending === row.body.id || !status} onClick={() => void favorite(row.body.id)} />
+          </div>)}</div> : <ResourceEmpty>{t("resources.empty.local")}</ResourceEmpty> : route.tab === "operations" ? operations?.operations.length ? <div className="resource-rows">{operations.operations.map(operation => <div className={`resource-row${route.id === operation.id ? " is-selected" : ""}`} key={operation.id}><button className="resource-row-main" aria-label={t("resources.viewOperation", { name: operation.name, action: t(actionNames[operation.action]) })} onClick={() => select(operation.id)}><div className="resource-row-heading"><strong>{operation.name}</strong><span>{t(actionNames[operation.action])}</span></div><div className="resource-row-metrics"><span>{clientLabel(operation.resource.client)}</span><span>{dateLabel(operation.createdAt)}</span></div><div className="resource-tags"><span className={operation.status === "success" ? "" : "is-warning"}>{t(operationStatusNames[operation.status])}</span><span>{operation.clientEffect === "pending_reload" ? t("resources.clientEffect.pending") : t("resources.clientEffect.unknown")}</span></div></button></div>)}</div> : <ResourceEmpty>{t("resources.empty.operations")}</ResourceEmpty> : archives?.archives.length ? <div className="resource-rows">{archives.archives.map(archive => <div className={`resource-row${route.id === archive.id ? " is-selected" : ""}`} key={archive.id}><button className="resource-row-main" aria-label={t("resources.viewRecovery", { name: archive.entry.name })} onClick={() => select(archive.id)}><div className="resource-row-heading"><strong>{archive.entry.name}</strong><span>{clientLabel(archive.entry.client)}</span></div><div className="resource-row-subtitle" title={archive.originalPath}>{archive.originalPath}</div><div className="resource-row-metrics"><span>{dateLabel(archive.createdAt)}</span></div><div className="resource-tags"><span>{t(archiveNames[archive.state])}</span><span className={!archive.restorable ? "is-warning" : ""}>{archive.restorable ? t("resources.archive.restorable") : t("resources.archive.unavailable")}</span>{archive.operationStatus === "partial" && <span className="is-warning">{t("resources.operation.partial")}</span>}</div></button></div>)}</div> : <ResourceEmpty>{t("resources.empty.archive", { state: t(tabs.find(tab => tab.value === route.tab)!.labelKey) })}</ResourceEmpty>}
         </div>
         {overviewRanking && !mapView && overview && !listLoading && <ResourcePagination page={overview.page} total={overview.total} pageSize={overview.pageSize} label={overviewLabel} onPageSizeChange={pageSize => filter({ pageSize })} onChange={pageChange} />}
-        {route.tab === "local" && local && !listLoading && <ResourcePagination page={local.page} total={local.total} pageSize={local.pageSize} label="本地资源" onPageSizeChange={pageSize => filter({ pageSize })} onChange={pageChange} />}
-        {route.tab === "operations" && operations && !listLoading && <ResourcePagination page={operations.page} total={operations.total} pageSize={operations.pageSize} label="操作记录" onPageSizeChange={pageSize => filter({ pageSize })} onChange={pageChange} />}
-        {!historyView && route.tab !== "operations" && archives && !listLoading && <ResourcePagination page={archives.page} total={archives.total} pageSize={archives.pageSize} label="恢复记录" onPageSizeChange={pageSize => filter({ pageSize })} onChange={pageChange} />}
+        {route.tab === "local" && local && !listLoading && <ResourcePagination page={local.page} total={local.total} pageSize={local.pageSize} label={t("resources.tab.local")} onPageSizeChange={pageSize => filter({ pageSize })} onChange={pageChange} />}
+        {route.tab === "operations" && operations && !listLoading && <ResourcePagination page={operations.page} total={operations.total} pageSize={operations.pageSize} label={t("resources.tab.operations")} onPageSizeChange={pageSize => filter({ pageSize })} onChange={pageChange} />}
+        {!historyView && route.tab !== "operations" && archives && !listLoading && <ResourcePagination page={archives.page} total={archives.total} pageSize={archives.pageSize} label={t("resources.archive.records")} onPageSizeChange={pageSize => filter({ pageSize })} onChange={pageChange} />}
       </main>
-      <aside className={`resource-details${detailsCollapsed ? " panel-collapsed" : ""}`} aria-label="资源详情">
-        <div className="pane-heading"><span>资源详情</span><button className="icon-button panel-toggle" aria-label={detailsCollapsed ? "展开资源详情" : "收起资源详情"} aria-expanded={!detailsCollapsed} aria-controls="resource-detail-content" onClick={() => setDetailsCollapsed(value => !value)}>{detailsCollapsed ? <CaretLeft size={17} /> : <CaretRight size={17} />}</button></div>
+      <aside className={`resource-details${detailsCollapsed ? " panel-collapsed" : ""}`} aria-label={t("resources.detail.title")}>
+        <div className="pane-heading"><span>{t("resources.detail.title")}</span><button className="icon-button panel-toggle" aria-label={detailsCollapsed ? t("resources.detail.expand") : t("resources.detail.collapse")} aria-expanded={!detailsCollapsed} aria-controls="resource-detail-content" onClick={() => setDetailsCollapsed(value => !value)}>{detailsCollapsed ? <CaretLeft size={17} /> : <CaretRight size={17} />}</button></div>
         <div className="resource-detail-scroll" ref={detailScroll} id="resource-detail-content" hidden={detailsCollapsed}>{!compact && detail}</div>
       </aside>
     </ResizableWorkspace>
-    <ResourceDialog open={compact && filtersOpen && active} onOpenChange={setFiltersOpen} title="资源筛选" description="选择资源范围" className="resource-filter-dialog">{filters}<div className="dialog-end"><button className="button primary" onClick={() => setFiltersOpen(false)}>完成</button></div></ResourceDialog>
-    <ResourceDialog open={compact && !!route.id && active} onOpenChange={open => { if (!open) update({ id: "" }); }} title="资源详情" description={route.kind === "skill" ? "Skill 使用与本地入口" : "MCP 使用与本地入口"} className="resource-detail-dialog" contentRef={detailDialogScroll}>{detail}</ResourceDialog>
-    <ResourceDialog open={sourcesOpen && active} onOpenChange={setSourcesOpen} title="来源与能力" description={`最近盘点 · ${status?.observedAt ? dateLabel(status.observedAt) : "尚未盘点"}`}>
-      {sourceError && <div className="resource-alert" role="alert">{sourceError}</div>}
-      <div className="resource-source-list">{status?.sources.map(item => { const manual = item.manualSourceId ? status.manualSources.find(source => source.id === item.manualSourceId) : undefined; return <div key={item.id}><header><strong>{clientName(item.client)} · {item.kind === "skill" ? "Skill" : "MCP"}</strong><span className={`resource-state${item.readState !== "ok" ? " is-warning" : ""}`}>{sourceStateNames[item.readState]}</span></header><p>{item.path}</p><div className="resource-tags"><span>{item.scope === "user" ? "用户范围" : "项目范围"}</span><span>{item.format}</span><span>{item.verified ? "已核验格式" : "只读／待适配"}</span>{item.origin === "plugin" && <span>所属插件 {item.owner ?? "未知"}</span>}</div>{manual?.id && <button className="text-button" disabled={sourcePending} onClick={() => void removeSource(manual.id!)}>移出盘点范围</button>}</div>; })}</div>
-      {!!status?.gaps.length && <details className="resource-data-details"><summary>来源缺口 · {fmt(status.gaps.length)}</summary><div className="resource-source-gaps">{status.gaps.map((gap, index) => <p key={index}>{clientName(gap.client)} · {gap.reason === "project_missing" ? "项目已缺失" : gap.reason === "limit" ? "来源数量受限" : sourceStateNames[gap.reason]}</p>)}</div></details>}
+    <ResourceDialog open={compact && filtersOpen && active} onOpenChange={setFiltersOpen} title={t("resources.filters.title")} description={t("resources.filters.description")} className="resource-filter-dialog">{filters}<div className="dialog-end"><button className="button primary" onClick={() => setFiltersOpen(false)}>{t("resources.done")}</button></div></ResourceDialog>
+    <ResourceDialog open={compact && !!route.id && active} onOpenChange={open => { if (!open) update({ id: "" }); }} title={t("resources.detail.title")} description={route.kind === "skill" ? t("resources.detail.skillDescription") : t("resources.detail.mcpDescription")} className="resource-detail-dialog" contentRef={detailDialogScroll}>{detail}</ResourceDialog>
+    <ResourceDialog open={sourcesOpen && active} onOpenChange={setSourcesOpen} title={t("resources.source.title")} description={t("resources.source.lastScanned", { date: status?.observedAt ? dateLabel(status.observedAt) : t("resources.source.neverScanned") })}>
+      {sourceError && <div className="resource-alert" role="alert"><ResourceErrorText error={sourceError} /></div>}
+      <div className="resource-source-list">{status?.sources.map(item => { const manual = item.manualSourceId ? status.manualSources.find(source => source.id === item.manualSourceId) : undefined; return <div key={item.id}><header><strong>{clientLabel(item.client)} · {item.kind === "skill" ? t("resources.kind.skill") : t("resources.kind.mcp")}</strong><span className={`resource-state${item.readState !== "ok" ? " is-warning" : ""}`}>{t(sourceStateNames[item.readState])}</span></header><p>{item.path}</p><div className="resource-tags"><span>{item.scope === "user" ? t("resources.scope.user") : t("resources.scope.project")}</span><span>{item.format}</span><span>{item.verified ? t("resources.source.verified") : t("resources.source.readOnlyUnsupported")}</span>{item.origin === "plugin" && <span>{t("resources.source.pluginOwner", { owner: item.owner ?? t("common.unknown") })}</span>}</div>{manual?.id && <button className="text-button" disabled={sourcePending} onClick={() => void removeSource(manual.id!)}>{t("resources.source.remove")}</button>}</div>; })}</div>
+      {!!status?.gaps.length && <details className="resource-data-details"><summary>{t("resources.source.gapCount", { count: status.gaps.length })}</summary><div className="resource-source-gaps">{status.gaps.map((gap, index) => <p key={index}>{clientLabel(gap.client)} · {gap.reason === "project_missing" ? t("resources.source.projectMissing") : gap.reason === "limit" ? t("resources.source.limit") : t(sourceStateNames[gap.reason])}</p>)}</div></details>}
     </ResourceDialog>
-    <ResourceDialog open={sourceAdding && active} onOpenChange={open => { if (!sourcePending) setSourceAdding(open); }} title="添加资源来源" description="仅盘点指定路径；未经核验的格式保持只读。">
+    <ResourceDialog open={sourceAdding && active} onOpenChange={open => { if (!sourcePending) setSourceAdding(open); }} title={t("resources.source.addTitle")} description={t("resources.source.addDescription")}>
       <form className="resource-source-form" onSubmit={event => void addSource(event)}>
-        <div className="resource-field"><span>客户端</span><FilterSelect label="来源客户端" value={source.client} options={CLIENTS.map(client => ({ value: client.id, label: client.name }))} onChange={value => { setSource(current => ({ ...current, client: value as Client, format: current.kind === "skill" ? current.format : value === "codex" ? "toml" : "json" })); setSourceKeys(registrationKeys(value as Client)); }} /></div>
-        <div className="resource-field"><span>资源类型</span><FilterSelect label="来源资源类型" value={source.kind} options={[{ value: "skill", label: "Skill" }, { value: "mcp", label: "MCP" }]} onChange={value => setSource(current => ({ ...current, kind: value as ResourceKind, format: value === "skill" ? "skill-directory" : current.client === "codex" ? "toml" : "json" }))} /></div>
-        <label className="resource-field">绝对路径<input required value={source.path} onChange={event => setSource(current => ({ ...current, path: event.target.value }))} placeholder="/absolute/path/to/resources" aria-label="资源来源绝对路径" autoComplete="off" /></label>
-        <div className="resource-field"><span>配置格式</span><FilterSelect label="来源配置格式" value={source.format!} options={source.kind === "skill" ? [{ value: "skill-directory", label: "Skill 目录" }, { value: "skill-files", label: "独立 Skill 文件" }] : [{ value: "json", label: "JSON" }, { value: "jsonc", label: "JSONC" }, { value: "toml", label: "TOML" }]} onChange={value => setSource(current => ({ ...current, format: value as ResourceManualSource["format"] }))} /></div>
-        <label className="resource-field">项目路径（可选）<input value={source.project ?? ""} onChange={event => setSource(current => ({ ...current, project: event.target.value || undefined }))} placeholder="用户级来源留空" aria-label="资源来源项目路径" autoComplete="off" /></label>
-        {source.kind === "mcp" && <label className="resource-field">注册字段路径<input value={sourceKeys} onChange={event => setSourceKeys(event.target.value)} placeholder="mcpServers" aria-label="MCP 注册字段路径" /></label>}
-        {sourceError && <div className="resource-alert" role="alert">{sourceError}</div>}
-        <div className="dialog-end"><button type="button" className="button subtle" disabled={sourcePending} onClick={() => setSourceAdding(false)}>取消</button><button className="button primary" disabled={sourcePending || !source.path.trim()}>{sourcePending ? "正在添加…" : "添加并盘点"}</button></div>
+        <div className="resource-field"><span>{t("resources.client.label")}</span><FilterSelect label={t("resources.source.client")} value={source.client} options={CLIENTS.map(client => ({ value: client.id, label: clientLabel(client.id) }))} onChange={value => { setSource(current => ({ ...current, client: value as Client, format: current.kind === "skill" ? current.format : value === "codex" ? "toml" : "json" })); setSourceKeys(registrationKeys(value as Client)); }} /></div>
+        <div className="resource-field"><span>{t("resources.kind.label")}</span><FilterSelect label={t("resources.source.kind")} value={source.kind} options={[{ value: "skill", label: t("resources.kind.skill") }, { value: "mcp", label: t("resources.kind.mcp") }]} onChange={value => setSource(current => ({ ...current, kind: value as ResourceKind, format: value === "skill" ? "skill-directory" : current.client === "codex" ? "toml" : "json" }))} /></div>
+        <label className="resource-field">{t("resources.source.absolutePath")}<input required value={source.path} onChange={event => setSource(current => ({ ...current, path: event.target.value }))} placeholder="/absolute/path/to/resources" aria-label={t("resources.source.absolutePathAria")} autoComplete="off" /></label>
+        <div className="resource-field"><span>{t("resources.source.format")}</span><FilterSelect label={t("resources.source.formatAria")} value={source.format!} options={source.kind === "skill" ? [{ value: "skill-directory", label: t("resources.source.skillDirectory") }, { value: "skill-files", label: t("resources.source.skillFiles") }] : [{ value: "json", label: "JSON" }, { value: "jsonc", label: "JSONC" }, { value: "toml", label: "TOML" }]} onChange={value => setSource(current => ({ ...current, format: value as ResourceManualSource["format"] }))} /></div>
+        <label className="resource-field">{t("resources.source.projectPath")}<input value={source.project ?? ""} onChange={event => setSource(current => ({ ...current, project: event.target.value || undefined }))} placeholder={t("resources.source.projectPlaceholder")} aria-label={t("resources.source.projectPathAria")} autoComplete="off" /></label>
+        {source.kind === "mcp" && <label className="resource-field">{t("resources.source.keyPath")}<input value={sourceKeys} onChange={event => setSourceKeys(event.target.value)} placeholder="mcpServers" aria-label={t("resources.source.keyPathAria")} /></label>}
+        {sourceError && <div className="resource-alert" role="alert"><ResourceErrorText error={sourceError} /></div>}
+        <div className="dialog-end"><button type="button" className="button subtle" disabled={sourcePending} onClick={() => setSourceAdding(false)}>{t("common.cancel")}</button><button className="button primary" disabled={sourcePending || !source.path.trim()}>{sourcePending ? t("resources.source.adding") : t("resources.source.addAndScan")}</button></div>
       </form>
     </ResourceDialog>
-    <ResourceDialog open={managementOpen && active} onOpenChange={closeManagement} title={managementInput ? `${actionNames[managementInput.action]}预览` : "资源操作预览"} description="核对本次具体影响，再确认执行。">
-      {previewLoading ? <div className="resource-loading" role="status">正在核验资源与恢复材料…</div> : preview ? <>
-        <div className="resource-preview-heading"><strong>{preview.resource.name}</strong><div className="resource-tags"><span>{clientName(preview.resource.client)}</span><span>{preview.resource.scope === "user" ? "用户范围" : "项目范围"}</span>{preview.protected && <span className="is-warning"><ShieldCheck size={12} />受保护</span>}<span className="is-warning">引用范围待确认</span></div></div>
-        <dl className="resource-facts"><dt>操作方式</dt><dd>{operationMethodNames[preview.method]}</dd><dt>原位置</dt><dd>{preview.sourcePath}</dd>{preview.destinationPath && <><dt>目标位置</dt><dd>{preview.destinationPath}</dd></>}{preview.resource.project && <><dt>项目</dt><dd>{preview.resource.project}</dd></>}<dt>恢复方式</dt><dd>{preview.restoration}</dd><dt>有效期至</dt><dd>{dateLabel(preview.expiresAt)}</dd></dl>
-        {preview.protected && <div className="resource-alert" role="alert">{preview.protectionReasons.length ? preview.protectionReasons.map(reason => protectionNames[reason] ?? reason).join(" · ") : "此资源受到保护，请确认影响。"}</div>}
-        <section className="resource-detail-section"><header><h3>已发现受影响入口</h3><span>{fmt(preview.affectedEntries.length)} 个</span></header><div className="resource-preview-entries">{preview.affectedEntries.map(entry => <div key={entry.id}><strong>{clientName(entry.client)} · {entry.name}</strong><span>{entry.scope === "user" ? "用户范围" : entry.project ?? "项目未知"}</span><p>{entry.entryPath}</p></div>)}</div></section>
-        {preview.action === "purge" && <label className="resource-checkbox resource-purge-confirm"><input type="checkbox" checked={purgeConfirmed} onChange={event => setPurgeConfirmed(event.target.checked)} />我确认永久清除所列恢复材料</label>}
-        <div className="dialog-end"><button className="button subtle" disabled={applying} onClick={() => closeManagement(false)}>取消</button><button className={`button ${preview.action === "trash" || preview.action === "purge" ? "resource-danger-button" : "primary"}`} disabled={applying || preview.action === "purge" && !purgeConfirmed} onClick={() => void applyManagement()}>{applying ? "正在执行…" : `确认${actionNames[preview.action]}`}</button></div>
+    <ResourceDialog open={managementOpen && active} onOpenChange={closeManagement} title={managementInput ? t("resources.management.actionPreview", { action: t(actionNames[managementInput.action]) }) : t("resources.management.preview")} description={t("resources.management.description")}>
+      {previewLoading ? <div className="resource-loading" role="status">{t("resources.management.loading")}</div> : preview ? <>
+        <div className="resource-preview-heading"><strong>{preview.resource.name}</strong><div className="resource-tags"><span>{clientLabel(preview.resource.client)}</span><span>{preview.resource.scope === "user" ? t("resources.scope.user") : t("resources.scope.project")}</span>{preview.protected && <span className="is-warning"><ShieldCheck size={12} />{t("resources.protected")}</span>}<span className="is-warning">{t("resources.management.referencesUnknown")}</span></div></div>
+        <dl className="resource-facts"><dt>{t("resources.facts.method")}</dt><dd>{t(operationMethodNames[preview.method])}</dd><dt>{t("resources.facts.original")}</dt><dd>{preview.sourcePath}</dd>{preview.destinationPath && <><dt>{t("resources.facts.destination")}</dt><dd>{preview.destinationPath}</dd></>}{preview.resource.project && <><dt>{t("resources.project.label")}</dt><dd>{preview.resource.project}</dd></>}<dt>{t("resources.facts.restoration")}</dt><dd><ResourceMessage descriptor={preview.restorationDescriptor} original={preview.restoration} /></dd><dt>{t("resources.facts.expires")}</dt><dd>{dateLabel(preview.expiresAt)}</dd></dl>
+        {preview.protected && <div className="resource-alert" role="alert">{preview.protectionReasons.length ? formatList(preview.protectionReasons.map(reason => protectionNames[reason] ? t(protectionNames[reason]!) : t("common.originalDetail", { detail: reason }))) : t("resources.management.protected")}</div>}
+        <section className="resource-detail-section"><header><h3>{t("resources.management.affectedEntries")}</h3><span>{t("resources.entryCount", { count: preview.affectedEntries.length })}</span></header><div className="resource-preview-entries">{preview.affectedEntries.map(entry => <div key={entry.id}><strong>{clientLabel(entry.client)} · {entry.name}</strong><span>{entry.scope === "user" ? t("resources.scope.user") : entry.project ?? t("resources.project.unknown")}</span><p>{entry.entryPath}</p></div>)}</div></section>
+        {preview.action === "purge" && <label className="resource-checkbox resource-purge-confirm"><input type="checkbox" checked={purgeConfirmed} onChange={event => setPurgeConfirmed(event.target.checked)} />{t("resources.management.confirmPurge")}</label>}
+        <div className="dialog-end"><button className="button subtle" disabled={applying} onClick={() => closeManagement(false)}>{t("common.cancel")}</button><button className={`button ${preview.action === "trash" || preview.action === "purge" ? "resource-danger-button" : "primary"}`} disabled={applying || preview.action === "purge" && !purgeConfirmed} onClick={() => void applyManagement()}>{applying ? t("resources.management.applying") : t("resources.management.confirm", { action: t(actionNames[preview.action]) })}</button></div>
       </> : managementResult ? <>
-        <div className={`resource-${managementResult.status === "success" ? "feedback" : "alert"}`} role={managementResult.status === "success" ? "status" : "alert"}>{operationStatusNames[managementResult.status]}</div><p className="resource-operation-message">{managementResult.message}</p>
-        <div className="resource-tags"><span>{managementResult.localState === "changed" ? "本地已修改" : managementResult.localState === "partial" ? "本地部分修改" : "本地未修改"}</span><span>{managementResult.clientEffect === "pending_reload" ? "待重新加载" : "客户端生效状态未知"}</span></div>
-        <div className="dialog-end">{managementResult.status !== "success" && managementInput && <button className="button" onClick={() => void showManagement(managementInput)}>重新预览</button>}<button className="button primary" onClick={() => closeManagement(false)}>完成</button></div>
+        <div className={`resource-${managementResult.status === "success" ? "feedback" : "alert"}`} role={managementResult.status === "success" ? "status" : "alert"}>{t(operationStatusNames[managementResult.status])}</div><ResourceMessage descriptor={managementResult.messageDescriptor} original={managementResult.message} details={managementResult.details} />
+        <div className="resource-tags"><span>{managementResult.localState === "changed" ? t("resources.management.changed") : managementResult.localState === "partial" ? t("resources.management.partial") : t("resources.management.unchanged")}</span><span>{managementResult.clientEffect === "pending_reload" ? t("resources.clientEffect.pending") : t("resources.clientEffect.unknown")}</span></div>
+        <div className="dialog-end">{managementResult.status !== "success" && managementInput && <button className="button" onClick={() => void showManagement(managementInput)}>{t("resources.management.previewAgain")}</button>}<button className="button primary" onClick={() => closeManagement(false)}>{t("resources.done")}</button></div>
       </> : null}
-      {managementError && <div className="resource-alert" role="alert">{managementError}</div>}
-      {managementError && !preview && managementInput && <div className="dialog-end"><button className="button subtle" onClick={() => closeManagement(false)}>取消</button><button className="button" onClick={() => void showManagement(managementInput)}>重新预览</button></div>}
+      {managementError && <div className="resource-alert" role="alert"><ResourceErrorText error={managementError} /></div>}
+      {managementError && !preview && managementInput && <div className="dialog-end"><button className="button subtle" onClick={() => closeManagement(false)}>{t("common.cancel")}</button><button className="button" onClick={() => void showManagement(managementInput)}>{t("resources.management.previewAgain")}</button></div>}
     </ResourceDialog>
   </div>;
 }
 
 function Entry({ entry, onManage }: { entry: ResourceInventoryEntry; onManage: (input: ResourceManagementInput) => void }) {
-  return <div className="resource-entry"><header><strong>{clientName(entry.client)}</strong><span>{entry.scope === "user" ? "用户范围" : shortPath(entry.project ?? "项目未知")}</span></header><p className="resource-path">{entry.entryPath}</p>
-    {entry.entryType === "symlink" && <p className="resource-path">→ {entry.targetPath ?? entry.linkTarget ?? "目标未知"}</p>}
-    <div className="resource-tags"><span>{methodNames[entry.entryType]}</span><span>{entry.nativeState === "disabled" ? "已停用" : entry.nativeState === "enabled" ? "已启用" : "启用状态未知"}</span>{entry.readState !== "present" && <span className="is-warning">{entry.readState === "broken" ? "断链" : "不可读取"}</span>}{entry.protected && <span>受保护{entry.owner ? ` · ${entry.owner}` : ""}</span>}{!entry.capabilities.disable && !entry.capabilities.standby && !entry.capabilities.trash && <span>只读</span>}</div>
-    <div className="resource-entry-actions">{entry.capabilities.disable && entry.nativeState !== "disabled" && <button className="button" aria-label={`预览停用${entry.name}的${clientName(entry.client)}入口`} onClick={() => onManage({ entryId: entry.id, action: "disable" })}>预览停用</button>}{entry.capabilities.standby && <button className="button" aria-label={`预览移到备用${entry.name}的${clientName(entry.client)}入口`} onClick={() => onManage({ entryId: entry.id, action: "standby" })}>移到备用</button>}{entry.capabilities.trash && <button className="button resource-danger-button" aria-label={`预览回收${entry.name}的${clientName(entry.client)}入口`} onClick={() => onManage({ entryId: entry.id, action: "trash" })}>移入回收区</button>}</div>
+  useI18n();
+  return <div className="resource-entry"><header><strong>{clientLabel(entry.client)}</strong><span>{entry.scope === "user" ? t("resources.scope.user") : shortPath(entry.project ?? t("resources.project.unknown"))}</span></header><p className="resource-path">{entry.entryPath}</p>
+    {entry.entryType === "symlink" && <p className="resource-path">→ {entry.targetPath ?? entry.linkTarget ?? t("resources.entry.targetUnknown")}</p>}
+    <div className="resource-tags"><span>{t(methodNames[entry.entryType])}</span><span>{entry.nativeState === "disabled" ? t("resources.tab.disabled") : entry.nativeState === "enabled" ? t("resources.entry.enabled") : t("resources.entry.stateUnknown")}</span>{entry.readState !== "present" && <span className="is-warning">{entry.readState === "broken" ? t("resources.entry.broken") : t("resources.source.unreadable")}</span>}{entry.protected && <span>{entry.owner ? t("resources.entry.protectedOwner", { owner: entry.owner }) : t("resources.protected")}</span>}{!entry.capabilities.disable && !entry.capabilities.standby && !entry.capabilities.trash && <span>{t("resources.readOnly")}</span>}</div>
+    <div className="resource-entry-actions">{entry.capabilities.disable && entry.nativeState !== "disabled" && <button className="button" aria-label={t("resources.management.previewEntry", { action: t(actionNames.disable), name: entry.name, client: clientLabel(entry.client) })} onClick={() => onManage({ entryId: entry.id, action: "disable" })}>{t("resources.entry.previewDisable")}</button>}{entry.capabilities.standby && <button className="button" aria-label={t("resources.management.previewEntry", { action: t(actionNames.standby), name: entry.name, client: clientLabel(entry.client) })} onClick={() => onManage({ entryId: entry.id, action: "standby" })}>{t("resources.action.standby")}</button>}{entry.capabilities.trash && <button className="button resource-danger-button" aria-label={t("resources.management.previewEntry", { action: t(actionNames.trash), name: entry.name, client: clientLabel(entry.client) })} onClick={() => onManage({ entryId: entry.id, action: "trash" })}>{t("resources.action.trash")}</button>}</div>
   </div>;
 }

@@ -1,3 +1,5 @@
+import { errorDescriptor } from "./i18n/diagnostics.js";
+import { DiagnosticError } from "./i18n/diagnostics.js";
 import { parentPort, workerData } from "node:worker_threads";
 import type { DiscoverRoots } from "./history/index.js";
 import { refreshRepository } from "./index/refresh.js";
@@ -5,7 +7,7 @@ import { AnalysisStore } from "./index/store.js";
 import { SessionStore } from "./sessions/store.js";
 import { refreshSessions } from "./sessions/refresh.js";
 
-if (!parentPort) throw new Error("分析入口必须由 Worker 启动");
+if (!parentPort) throw new DiagnosticError("分析入口必须由 Worker 启动", { key: "diagnostics.worker.m001" });
 const port = parentPort;
 const options = workerData as { dbPath: string; roots?: DiscoverRoots };
 const store = new AnalysisStore(options.dbPath);
@@ -20,7 +22,7 @@ port.on("message", (message: { type: string; jobId: string; clearCache?: boolean
     port.postMessage({ jobId: message.jobId });
   }).catch((error: unknown) => {
     const owner = message.type === "sessions" ? sessions : store;
-    owner.failJob(message.jobId, error instanceof Error ? error.message : String(error));
+    owner.failJob(message.jobId, error instanceof Error ? error.message : String(error), errorDescriptor(error));
     port.postMessage({ jobId: message.jobId });
   });
 });

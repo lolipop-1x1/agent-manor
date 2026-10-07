@@ -2,7 +2,7 @@
 
 ## 状态
 
-I1–I12 已全部确认，规格已收口，可进入实现。当前只完成设计与开发约定，尚未开始代码实现。
+I1–I12 已全部确认，01–08 已完成实现、独立评审及验证。详细结果与支持边界见 [验收记录](validation.md)。
 
 ## 目标与范围
 
@@ -83,13 +83,13 @@ I1–I12 已全部确认，规格已收口，可进入实现。当前只完成�
 9. 真实浏览器覆盖三个模块、日历、搜索／空结果、分页、帮助、统计和资源管理预览／结果。所有管理写操作使用隔离合成资源，测试不改真实客户端配置。
 10. 类型检查、自动测试、构建、双语端到端与公开内容检查通过，新增文案和语言扩展规范有开发文档。
 
-## 已核验现状与依据
+## 实现前现状与依据
 
 前端没有现成国际化目录或专用依赖；HTML 固定简体中文，日历使用固定中文 locale，数字／日期格式分散在多个组件。已有主题入口可用于统一语言菜单样式，日期筛选采用本机时区与 `YYYY-MM-DD`。
 
-服务端错误、解析缺口、刷新阶段和管理反馈包含自由中文文案，部分直接进入 Web；仅替换前端字面量不足以完成覆盖。CLI 无语言参数或环境处理；已有覆盖摘要为人类中文，其余多数命令默认为 pretty JSON。这些结论来自静态源码核验，尚未运行语言切换。
+服务端错误、解析缺口、刷新阶段和管理反馈包含自由中文文案，部分直接进入 Web；仅替换前端字面量不足以完成覆盖。CLI 无语言参数或环境处理；已有覆盖摘要为人类中文，其余多数命令默认为 pretty JSON。这些是设计阶段的静态源码基线；实现与运行时验收结果记录在任务图及 08 中。
 
-候选依赖依据为 i18next 的[回退规则](https://www.i18next.com/principles/fallback)、[数量复数](https://www.i18next.com/translation-function/plurals)和 react-i18next 的[组件翻译接口](https://react.i18next.com/latest/usetranslation-hook)。当前未新增依赖。
+候选依赖依据为 i18next 的[回退规则](https://www.i18next.com/principles/fallback)、[数量复数](https://www.i18next.com/translation-function/plurals)和 react-i18next 的[组件翻译接口](https://react.i18next.com/latest/usetranslation-hook)。实现已锁定公开的 i18next 依赖，React 通过共享 Provider 订阅语言偏好与呈现更新。
 
 ## 确认记录与任务
 

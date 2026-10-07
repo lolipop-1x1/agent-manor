@@ -1,3 +1,4 @@
+import type { MessageDescriptor } from "./i18n/types.js";
 import type { Client } from "./clients.js";
 import type { Gap } from "./contracts.js";
 
@@ -26,6 +27,7 @@ export interface ResourceHistoryIdentity {
   id: string;
   kind: ResourceKind;
   name: string;
+  nameDescriptor?: MessageDescriptor;
   server?: string;
   path?: string;
   client: Client;
@@ -49,6 +51,7 @@ export interface ResourceUsageEvent {
   project?: string;
   kind: ResourceEvidenceKind;
   name: string;
+  nameDescriptor?: MessageDescriptor;
   server?: string;
   path?: string;
   tool?: string;

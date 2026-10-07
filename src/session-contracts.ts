@@ -1,3 +1,4 @@
+import type { MessageDescriptor } from "./i18n/types.js";
 import type { Client } from "./clients.js";
 import type { Gap } from "./contracts.js";
 
@@ -10,6 +11,8 @@ export interface SessionMessage {
   turnId: string;
   kind: MessageKind;
   text: string;
+  /** 仅产品生成的正文附带描述，原始会话正文保持原样。 */
+  textDescriptor?: MessageDescriptor;
   occurredAt?: string;
   model?: string;
   callId?: string;
@@ -22,7 +25,7 @@ export interface SessionMessage {
   /** 会话内树的叶分支成员；共同祖先可属于多个分支。 */
   branchIds?: string[];
   currentBranch?: boolean;
-  resource?: { kind: "mcp" | "skill_call" | "skill_read"; name: string; server?: string };
+  resource?: { kind: "mcp" | "skill_call" | "skill_read"; name: string; nameDescriptor?: MessageDescriptor; server?: string };
   filePaths?: string[];
   /** 注入上下文或本地 Hook 的来源；正文仍保留原记录。 */
   contextSource?: "agents_md" | "environment" | "client" | "hook";
@@ -59,8 +62,9 @@ export interface SessionSummary {
   executionMode?: "quiet";
   parentSessionId?: string;
   parentTitle?: string;
+  parentTitleDescriptor?: MessageDescriptor;
   relationship?: "child" | "fork";
-  branches?: { id: string; label: string; current: boolean }[];
+  branches?: { id: string; label: string; labelDescriptor?: MessageDescriptor; current: boolean }[];
   /** 工具返回或元数据明确记录的子会话身份，不根据正文猜测。 */
   childSessionIds?: string[];
   startedAt?: string;
@@ -131,10 +135,12 @@ export interface SessionJob {
   id: string;
   status: "queued" | "running" | "complete" | "failed";
   phase: string;
+  phaseDescriptor?: MessageDescriptor;
   progress: number;
   createdAt: string;
   finishedAt?: string;
   error?: string;
+  errorDescriptor?: MessageDescriptor;
   version?: string;
   client?: Client;
   mode?: SessionCheckMode;
@@ -184,9 +190,9 @@ export interface SessionProfile {
   usage: { requests: number; inputTokens: number | null; outputTokens: number | null; cachedInputTokens: number | null;
     cacheWriteTokens: number | null; reasoningOutputTokens: number | null; cacheReadRatio: number | null;
     peakInputTokens: number | null; peakContextTokens: number | null; inputRecordedRequests: number; cacheRecordedRequests: number };
-  estimate: { method: string; total: number; byKind: { kind: MessageKind; tokens: number }[] };
+  estimate: { method: string; methodDescriptor?: MessageDescriptor; total: number; byKind: { kind: MessageKind; tokens: number }[] };
   tools: { name: string; calls: number; success: number; failure: number; unknown: number; durationMs: number | null }[];
-  resources: { kind: "mcp" | "skill_call" | "skill_read"; name: string; server?: string; count: number }[];
+  resources: (NonNullable<SessionMessage["resource"]> & { count: number })[];
   compressions: number;
   children: SessionSummary[];
   steps: (SessionUsage & { sessionId: string })[];

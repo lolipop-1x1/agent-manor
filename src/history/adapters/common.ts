@@ -1,3 +1,4 @@
+import type { MessageDescriptor } from "../../i18n/types.js";
 import { isAbsolute, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { EvidenceFragment } from "../../contracts.js";
@@ -45,13 +46,14 @@ export function registerRequest(context: HistoryAdapterContext, request: Omit<Pe
 }
 
 export function patchEvidence(patch: string) {
-  const evidence: { kind: "edit"; path?: string; fragments: EvidenceFragment[]; reason?: string }[] = [];
+  const evidence: { kind: "edit"; path?: string; fragments: EvidenceFragment[]; reason?: string; reasonDescriptor?: MessageDescriptor }[] = [];
   let current: typeof evidence[number] | undefined;
   let diff: string[] = [];
   const flush = () => {
     if (!current) return;
     if (current.reason !== "add") current.fragments = unifiedFragments(diff.join("\n"), current.path).map((fragment) => ({ ...fragment, historicalStart: undefined }));
     else current.fragments = [{ kind: "added", content: diff.filter((line) => line.startsWith("+")).map((line) => `${line.slice(1)}\n`).join(""), historicalStart: 1, path: current.path, completeLines: true }];
+    current.reasonDescriptor = current.reason === "delete" ? { key: "diagnostics.history.adapters.common.m001" } : current.reason === "add" ? undefined : { key: "diagnostics.history.adapters.common.m002" };
     current.reason = current.reason === "delete" ? "range_unknown: 删除文件无当前新增行" : current.reason === "add" ? undefined : "range_unknown: apply_patch 无标准 hunk 行号，仅保留变化内容";
     evidence.push(current); diff = [];
   };
@@ -61,7 +63,7 @@ export function patchEvidence(patch: string) {
     else if (current && !line.startsWith("***")) diff.push(line);
   }
   flush();
-  return evidence.length ? evidence : [{ kind: "edit" as const, fragments: [], reason: "range_unknown: apply_patch 格式不支持" }];
+  return evidence.length ? evidence : [{ kind: "edit" as const, fragments: [], reason: "range_unknown: apply_patch 格式不支持", reasonDescriptor: { key: "diagnostics.history.adapters.common.m003" } }];
 }
 
 export function defaultToolEvidence(tool: string, input: unknown, result: unknown, visible: string): ToolEvidence[] {

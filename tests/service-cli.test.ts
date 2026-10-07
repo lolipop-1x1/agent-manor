@@ -10,6 +10,7 @@ import test from "node:test";
 import type { CoverageResult, EvidenceResponse, EventsResponse, FileDetail, JobResponse, RegisterRepositoryResponse, SourcesResponse, StatusResponse } from "../src/contracts.js";
 import { clientIds } from "../src/clients.js";
 import { createProgram } from "../src/cli.js";
+import { translate } from "../src/i18n/index.js";
 import { startService } from "../src/server.js";
 import { apiRequest, delay } from "../src/service/runtime.js";
 import { publishClientQueryFixture } from "./client-query-fixture.js";
@@ -28,11 +29,11 @@ async function stopped(home: string): Promise<void> {
 }
 
 test("全部查询命令的客户端帮助来自共享声明", () => {
-  const program = createProgram();
+  const program = createProgram("zh-CN");
   const commands = program.commands.filter(command => command.options.some(option => option.long === "--client"));
   assert.equal(commands.length, 7);
   for (const command of commands) {
-    assert.equal(command.options.find(option => option.long === "--client")!.description, clientIds.join(" 或 "));
+    assert.equal(command.options.find(option => option.long === "--client")!.description, translate("zh-CN", "cli.clientChoices", { clients: clientIds.join(", ") }));
   }
 });
 

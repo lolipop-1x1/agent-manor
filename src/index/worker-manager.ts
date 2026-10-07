@@ -1,3 +1,5 @@
+import type { MessageDescriptor } from "../i18n/types.js";
+import { DiagnosticError } from "../i18n/diagnostics.js";
 import { Worker } from "node:worker_threads";
 import type { Job } from "../contracts.js";
 import type { DiscoverRoots } from "../history/index.js";
@@ -39,13 +41,13 @@ export class WorkerManager {
     });
     worker.on("error", (error) => { if (this.worker === worker && !this.closed) this.failed(error.message); });
     worker.on("exit", (code) => {
-      if (this.worker === worker && !this.closed) this.failed(`分析 Worker 意外停止（${code}）`);
+      if (this.worker === worker && !this.closed) this.failed(`分析 Worker 意外停止（${code}）`, { key: "diagnostics.index.workerManager.unexpectedExit", params: { code } });
     });
     return worker;
   }
 
   private enqueue(repositoryId: string, clearCache: boolean): Job {
-    if (this.closed) throw new Error("分析 Worker 已关闭");
+    if (this.closed) throw new DiagnosticError("分析 Worker 已关闭", { key: "diagnostics.index.workerManager.m001" });
     if (this.failure) {
       // 失败任务保持失败；仅在下一次明确刷新时重建，避免自动重试同一溢出任务。
       this.worker = this.createWorker();
@@ -61,7 +63,7 @@ export class WorkerManager {
   clearCache(repositoryId: string): Job { return this.enqueue(repositoryId, true); }
 
   refreshSessions(clearCache = false, options: SessionRefreshOptions = {}): SessionJob {
-    if (this.closed || !this.sessions) throw new Error("会话索引 Worker 不可用");
+    if (this.closed || !this.sessions) throw new DiagnosticError("会话索引 Worker 不可用", { key: "diagnostics.index.workerManager.m002" });
     const request: SessionRefreshOptions = clearCache ? { mode: "full" } : { client: options.client, mode: options.mode ?? "quick" };
     const key = JSON.stringify([clearCache, request.client ?? null, request.mode]);
     if (!clearCache) {
@@ -91,17 +93,17 @@ export class WorkerManager {
     this.pending.delete(jobId);
   }
 
-  private failed(error: string): void {
+  private failed(error: string, errorDescriptor?: MessageDescriptor): void {
     this.failure = error;
     for (const id of [...this.sessionActive]) {
       const job = this.sessions!.getJob(id);
-      if (job.status !== "complete" && job.status !== "failed") this.sessions!.failJob(id, error);
+      if (job.status !== "complete" && job.status !== "failed") this.sessions!.failJob(id, error, errorDescriptor);
       this.sessionActive.delete(id);
       this.sessionRequests.delete(id);
     }
     for (const id of [...this.active]) {
       const job = this.store.getJob(id);
-      if (job.status !== "completed" && job.status !== "failed") this.store.failJob(id, error);
+      if (job.status !== "completed" && job.status !== "failed") this.store.failJob(id, error, errorDescriptor);
       this.finished(id);
     }
   }
@@ -110,6 +112,6 @@ export class WorkerManager {
     if (this.closed) return;
     this.closed = true;
     await this.worker.terminate();
-    this.failed("后台停止时刷新尚未完成");
+    this.failed("后台停止时刷新尚未完成", { key: "diagnostics.index.workerManager.interrupted" });
   }
 }

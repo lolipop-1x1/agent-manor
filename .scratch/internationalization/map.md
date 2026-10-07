@@ -2,6 +2,16 @@
 
 ## 已作决策
 
+- 08 已完成跨模块双语、共享偏好与原有功能回归；399 项自动测试及 88 项 Chrome 双语断言通过，独立评审问题全部闭环，详见 [验收记录](validation.md)。
+
+- 05 已完成会话库、消息／轨迹／时间线与画像／用量双语迁移，来源描述保留生成正文与原文边界；81 项定向测试与隔离 Chrome 27 项状态／原文／诊断／窄屏断言通过，详见 [05 结果](issues/05-session-interface.md)。
+
+- 04 已完成全局 Web 语言 Provider／菜单、公共控件、代码地图与代码查看器迁移；23 项针对性测试和隔离 Chrome 双语状态／焦点／错误／窄屏验收通过，详见 [04 结果](issues/04-web-common-and-map.md)。
+
+- 03 已完成服务端产品诊断的稳定描述、418 项双语目录和持久化／DTO 透传；保留原始诊断且不回填旧索引，组合原因使用可选完整详情列表，详见 [03 结果](issues/03-product-diagnostics.md)。
+
+- 02 已实现本地共享翻译基础、语言检测／格式工具与独立原子偏好文件；类型、构建、公开检查及 10 项合成测试通过，详见 [02 结果](issues/02-language-foundation.md)。
+
 - 用户要求支持中英文切换，后续可以扩展更多语言。
 - 沿用主干开发、统一组件、原始证据与公开内容边界。
 - I1：首版同时覆盖全部 Web 界面与 CLI 人类可读输出；稳定接口字段与标识保持一致。
@@ -19,7 +29,7 @@
 
 ## 当前前沿
 
-无。I1–I12 已全部确认，设计澄清已完成，代码实现尚未开始。CLI 独立偏好推荐被用户修改为共享手动偏好，相关依赖已经收口。
+I1–I12 已全部确认，01–08 均已完成；实现、独立评审修复、完整回归与双语端到端验收已收口。CLI 独立偏好推荐被用户修改为共享手动偏好。
 
 ## 设计树
 
@@ -42,12 +52,12 @@
 | 编号 | 任务 | 依赖 | 状态 |
 | --- | --- | --- | --- |
 | [01](issues/01-language-design.md) | 设计澄清 | 无 | resolved |
-| [02](issues/02-language-foundation.md) | 目录、格式与共享偏好基础 | 01 | ready-for-agent |
-| [03](issues/03-product-diagnostics.md) | 服务端产品诊断与原始详情 | 02 | ready-for-agent |
-| [04](issues/04-web-common-and-map.md) | 全局菜单、共用控件与代码地图 | 02、03 | ready-for-agent |
-| [05](issues/05-session-interface.md) | 会话库与轨迹／画像 | 04 | ready-for-agent |
-| [06](issues/06-resource-interface.md) | 资源列表／地图与管理 | 04 | ready-for-agent |
-| [07](issues/07-cli-language.md) | CLI 语言与 JSON 稳定性 | 02、03 | ready-for-agent |
-| [08](issues/08-bilingual-validation.md) | 双语端到端、回归与使用文档 | 05、06、07 | ready-for-agent |
+| [02](issues/02-language-foundation.md) | 目录、格式与共享偏好基础 | 01 | resolved |
+| [03](issues/03-product-diagnostics.md) | 服务端产品诊断与原始详情 | 02 | resolved |
+| [04](issues/04-web-common-and-map.md) | 全局菜单、共用控件与代码地图 | 02 | resolved |
+| [05](issues/05-session-interface.md) | 会话库与轨迹／画像 | 04 | resolved |
+| [06](issues/06-resource-interface.md) | 资源列表／地图与管理 | 04 | resolved |
+| [07](issues/07-cli-language.md) | CLI 语言与 JSON 稳定性 | 02 | resolved |
+| [08](issues/08-bilingual-validation.md) | 双语端到端、回归与使用文档 | 03、05、06、07 | resolved |
 
-依赖完成后才认领对应任务；当前下一任务为 02。所有实现、测试和提交均按项目约定直接在 main 上进行。
+任务图已全部完成。实现、测试、提交与推送均按项目约定直接在 main 上进行。

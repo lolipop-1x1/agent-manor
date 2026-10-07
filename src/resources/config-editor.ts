@@ -20,7 +20,7 @@ export interface ConfigChange {
   removedText?: string;
   skillPath?: string;
 }
-const readonly = (): never => { throw new ServiceError("FORBIDDEN", "当前配置写法未完成保留编辑适配，只读"); };
+const readonly = (): never => { throw new ServiceError("FORBIDDEN", "当前配置写法未完成保留编辑适配，只读", { key: "diagnostics.resources.configEditor.m001" }); };
 const object = (value: unknown): Record<string, unknown> => value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
 const get = (value: unknown, keys: readonly string[]): unknown => keys.reduce((current: unknown, key) => Object.hasOwn(object(current), key) ? object(current)[key] : undefined, value);
 const stable = (value: unknown): string => value === undefined ? "missing" : JSON.stringify(value, (_key, item: unknown) => {
@@ -134,7 +134,7 @@ export async function prepareConfig(entry: ResourceInventoryEntry, action: "disa
     if (action !== "disable" || entry.locator.nativeControl !== "codex-skill" || !skillPath) return readonly();
     validateEditableToml(text);
     const beforeRules = skillRules(toml(text), skillPath);
-    if (object(beforeRules.at(-1)).enabled === false) throw new ServiceError("INVALID_INPUT", "资源已停用，没有新的本地修改");
+    if (object(beforeRules.at(-1)).enabled === false) throw new ServiceError("INVALID_INPUT", "资源已停用，没有新的本地修改", { key: "diagnostics.resources.configEditor.m002" });
     const addition = `[[skills.config]]\npath = ${JSON.stringify(skillPath)}\nenabled = false\n`;
     const afterText = `${text}${text && !text.endsWith("\n") ? "\n" : ""}\n${addition}`;
     const change: ConfigChange = { path, format: "toml", keyPath: ["skills", "config"], type: "toml-skill", skillPath,
@@ -155,7 +155,7 @@ export async function prepareConfig(entry: ResourceInventoryEntry, action: "disa
   const blocks = validateEditableToml(text);
   if (!blocks.some(block => !block.array && sameKeys(block.keys, keyPath))) return readonly();
   if (action === "disable") {
-    if (object(beforeValue).enabled === false) throw new ServiceError("INVALID_INPUT", "资源已停用，没有新的本地修改");
+    if (object(beforeValue).enabled === false) throw new ServiceError("INVALID_INPUT", "资源已停用，没有新的本地修改", { key: "diagnostics.resources.configEditor.m002" });
     const afterText = enabledEdit(text, keyPath, false);
     return { path, format, keyPath, type: "toml-mcp", beforeText: text, afterText, before: stable(beforeValue),
       after: stable(get(toml(afterText), keyPath)), enabledBefore: object(beforeValue).enabled as boolean | undefined,
@@ -170,7 +170,7 @@ export async function prepareConfig(entry: ResourceInventoryEntry, action: "disa
 
 /** 只恢复选中的项；其他配置的后续编辑继续保留，目标项变化则冲突。 */
 export function restoreConfig(change: ConfigChange, current: string): string {
-  if (selected(change, current) !== change.after) throw new ServiceError("CONTENT_STALE", "所选配置项已变化，恢复不会覆盖当前值");
+  if (selected(change, current) !== change.after) throw new ServiceError("CONTENT_STALE", "所选配置项已变化，恢复不会覆盖当前值", { key: "diagnostics.resources.configEditor.m003" });
   if (current === change.afterText) return change.beforeText;
   let result: string;
   if (change.type === "json-key") result = editJson(current, change.keyPath, change.before === "missing" ? undefined : JSON.parse(change.before), change.format as "json" | "jsonc");

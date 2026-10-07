@@ -1,7 +1,7 @@
 # 服务端产品诊断与原始详情
 
 Type: task
-Status: ready-for-agent
+Status: resolved
 Blocked by: 02
 
 ## 目标与范围
@@ -18,6 +18,15 @@ Blocked by: 02
 
 ## Answer
 
-待实现。
+已实现。服务端自有提示在生成点附加稳定消息描述，完整中英文诊断目录共 418 项；所有既有 `message`、`reason`、`phase`、`error` 和稳定代码继续保留原值。已分配的消息 key 不随原始中文文案修改而改名。
+
+- 契约使用 `Gap.messageDescriptor/details`、`HistoryEvent.reasonDescriptor`、`Mapping.unknownReasonDescriptors`、`Job/SessionJob.phaseDescriptor/errorDescriptor`、`ApiErrorResponse.error.messageDescriptor`、管理预览的 `restorationDescriptor` 及操作结果的 `messageDescriptor/details`。
+- 历史核心、全部产生诊断的适配器、规范化会话、用量回调、匹配到覆盖、API 错误和请求错误透传均保留描述；成功或更换原因时同步清除／替换旧描述。DSH 副本选择、匹配组合原因及备份清理反馈保存完整子描述，避免把中文子句放入参数。
+- SQLite 保持现有 schema 和规则版本，通过完整 JSON 保存可选字段，不回填旧记录，不因显示语言重建索引。没有明确描述的旧数据或外部错误保留原文；安全概述仍按原有 API 边界返回。
+- 自动启动的后台 `serve` 明确使用 `--lang auto`，避免父 CLI 的显式语言覆盖被子进程继承的低优先级无效语言设置阻断。后台不将显示语言写入索引。
+
+验证：服务端类型检查、目录完整性／参数检查、公开内容检查与 diff 空白检查通过。原有定向套件 242 项中，首次 8 项因沙箱禁止监听而失败；允许本机临时端口后 HTTP 与会话刷新补验通过，旧的精确错误 JSON 断言已按新增可选字段更新。新增 7 项诊断测试通过；最终资源地图／使用、DSH 和诊断组合套件 44 项通过。HTTP 另验证中英文请求的完整错误 JSON 相同以及 RequestError 描述透传。
+
+关键验证文件：[诊断与旧数据测试](../../../tests/i18n-diagnostics.test.ts)、[DSH 副本测试](../../../tests/native-event-clients.test.ts)、[管理预览／结果测试](../../../tests/resource-management.test.ts)、[HTTP 契约测试](../../../tests/service-http.test.ts)。Web 与 CLI 呈现以及完整双语浏览器验收由后续任务整合。
 
 ## Comments

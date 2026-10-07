@@ -1,8 +1,8 @@
 # 双语端到端、回归与使用文档
 
 Type: task
-Status: ready-for-agent
-Blocked by: 05, 06, 07
+Status: resolved
+Blocked by: none
 
 ## 目标与范围
 
@@ -20,6 +20,10 @@ Blocked by: 05, 06, 07
 
 ## Answer
 
-待实现。
+已完成跨模块双语验收、独立评审修复和开发文档。399 项自动测试、88 项真实 Chrome 双语断言及原有代码地图／长会话 CLI、HTTP、Chrome 回归通过；类型、目录、构建、公开内容及 diff 检查通过。
+
+详见 [验收记录](../validation.md)、[使用说明](../../../docs/usage.md) 和 [国际化开发规范](../../../docs/agents/i18n.md)。写操作只使用隔离合成资源，未修改真实客户端配置或执行永久清除。
 
 ## Comments
+
+- 已收口 08。规格与仓库标准的独立评审均完成并复查修复；详细日志和截图留在本机忽略目录。

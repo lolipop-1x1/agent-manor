@@ -63,11 +63,11 @@ function readEvidence(inputValue: unknown, resultValue: unknown): ReturnType<typ
   const details = object(result.details);
   const truncation = object(details.truncation);
   const text = textContent(result.content);
-  if (result.isError === true) return [{ kind: "read", path, fragments: [], reason: "range_unknown: Pi read 执行失败" }];
+  if (result.isError === true) return [{ kind: "read", path, fragments: [], reason: "range_unknown: Pi read 执行失败", reasonDescriptor: { key: "diagnostics.history.adapters.pi.m001" } }];
   const offset = number(input.offset) ?? 1;
-  if (!path || !Number.isSafeInteger(offset) || offset < 1) return [{ kind: "read", path, fragments: [], reason: "range_unknown: Pi read 缺少可核验路径或起始行" }];
+  if (!path || !Number.isSafeInteger(offset) || offset < 1) return [{ kind: "read", path, fragments: [], reason: "range_unknown: Pi read 缺少可核验路径或起始行", reasonDescriptor: { key: "diagnostics.history.adapters.pi.m002" } }];
   if (truncation.firstLineExceedsLimit === true || /^\[Line \d+ is .+ exceeds .+ limit\./.test(text)) {
-    return [{ kind: "read", path, fragments: [], reason: "range_unknown: Pi read 首行超过返回上限" }];
+    return [{ kind: "read", path, fragments: [], reason: "range_unknown: Pi read 首行超过返回上限", reasonDescriptor: { key: "diagnostics.history.adapters.pi.m003" } }];
   }
   let body = text;
   const footer = /\n\n\[(?:\d+ more lines in file\. Use offset=\d+ to continue\.|Showing lines \d+-\d+ of \d+(?: \([^\]]+\))?\. Use offset=\d+ to continue\.)\]$/;
@@ -76,19 +76,19 @@ function readEvidence(inputValue: unknown, resultValue: unknown): ReturnType<typ
   const partial = truncation.lastLinePartial === true;
   const fragments = lines.length && !partial ? [{ kind: "read" as const, content: `${body}${body && !body.endsWith("\n") ? "\n" : ""}`, historicalStart: offset, completeLines: true }] : [];
   const truncated = truncation.truncated === true || footer.test(text) || partial;
-  return [{ kind: "read", path, fragments, ...(truncated ? { reason: "range_unknown: Pi read 只保留返回窗口，完整文件内容未记录" } : {}) }];
+  return [{ kind: "read", path, fragments, ...(truncated ? { reason: "range_unknown: Pi read 只保留返回窗口，完整文件内容未记录", reasonDescriptor: { key: "diagnostics.history.adapters.pi.m004" } } : {}) }];
 }
 
 function editEvidence(inputValue: unknown, resultValue: unknown): ReturnType<typeof toolEvidence> {
   const input = object(inputValue);
   const result = object(resultValue);
   const path = string(input.path);
-  if (result.isError === true) return [{ kind: "edit", path, fragments: [], reason: "range_unknown: Pi edit 执行失败" }];
+  if (result.isError === true) return [{ kind: "edit", path, fragments: [], reason: "range_unknown: Pi edit 执行失败", reasonDescriptor: { key: "diagnostics.history.adapters.pi.m005" } }];
   const details = object(result.details);
   const patch = string(details.patch) ?? string(details.diff);
-  if (!patch) return [{ kind: "edit", path, fragments: [], reason: "range_unknown: Pi edit 结果缺少实际 patch" }];
+  if (!patch) return [{ kind: "edit", path, fragments: [], reason: "range_unknown: Pi edit 结果缺少实际 patch", reasonDescriptor: { key: "diagnostics.history.adapters.pi.m006" } }];
   const fragments = unifiedFragments(patch, path);
-  return [{ kind: "edit", path, fragments, ...fragments.length ? {} : { reason: "range_unknown: Pi edit patch 没有可定位 hunk" } }];
+  return [{ kind: "edit", path, fragments, ...fragments.length ? {} : { reason: "range_unknown: Pi edit patch 没有可定位 hunk", reasonDescriptor: { key: "diagnostics.history.adapters.pi.m007" } } }];
 }
 
 function piExtract(tool: string, input: unknown, result: unknown, visible: string): ReturnType<typeof toolEvidence> {
@@ -98,7 +98,7 @@ function piExtract(tool: string, input: unknown, result: unknown, visible: strin
   if (lower === "bash") {
     const details = object(object(result).details);
     if (object(details.truncation).truncated === true) {
-      return [{ kind: "other", fragments: [], reason: "range_unknown: Pi bash 输出被截断，未推断读取范围" }];
+      return [{ kind: "other", fragments: [], reason: "range_unknown: Pi bash 输出被截断，未推断读取范围", reasonDescriptor: { key: "diagnostics.history.adapters.pi.m008" } }];
     }
     const output = visible.replace(/\n\nCommand (?:exited with code -?\d+|timed out after .+|aborted|terminated without an exit code)$/s, "");
     return shellEvidence(string(object(input).command) ?? "", output);
@@ -107,10 +107,10 @@ function piExtract(tool: string, input: unknown, result: unknown, visible: strin
     const call = object(input);
     const details = object(object(result).details);
     const patch = string(details.patch) ?? string(details.diff);
-    if (object(result).isError === true) return [{ kind: "edit", path: string(call.path), fragments: [], reason: "range_unknown: Pi write 执行失败" }];
+    if (object(result).isError === true) return [{ kind: "edit", path: string(call.path), fragments: [], reason: "range_unknown: Pi write 执行失败", reasonDescriptor: { key: "diagnostics.history.adapters.pi.m009" } }];
     if (patch) return [{ kind: "edit", path: string(call.path), fragments: unifiedFragments(patch, string(call.path)) }];
     const content = string(call.content);
-    return content === undefined ? [{ kind: "edit", path: string(call.path), fragments: [], reason: "range_unknown: Pi write 缺少实际写入内容" }]
+    return content === undefined ? [{ kind: "edit", path: string(call.path), fragments: [], reason: "range_unknown: Pi write 缺少实际写入内容", reasonDescriptor: { key: "diagnostics.history.adapters.pi.m010" } }]
       : [{ kind: "edit", path: string(call.path), fragments: content ? [{ kind: "added", content, historicalStart: 1, completeLines: true, path: string(call.path) }] : [] }];
   }
   return toolEvidence(tool, input, result, visible);
@@ -133,7 +133,7 @@ async function snapshot(location: SourceLocation): Promise<NormalizedSnapshot> {
   const rows = await readBoundedJsonl(location.path, gaps, createReadStream(location.path)) as NativeRow[];
   const header = rows[0]?.record.type === "session" ? rows[0]!.record : undefined;
   if (!header) {
-    gaps.push({ kind: "unsupported_format", message: "Pi 来源缺少会话头记录" });
+    gaps.push({ kind: "unsupported_format", message: "Pi 来源缺少会话头记录", messageDescriptor: { key: "diagnostics.history.adapters.pi.m011" } });
     return normalizedSnapshot(location, [], { gaps });
   }
   const id = string(header.id) ?? location.sessionId;
@@ -150,21 +150,21 @@ async function snapshot(location: SourceLocation): Promise<NormalizedSnapshot> {
       parentFingerprint = parent.fingerprint;
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-      gaps.push({ kind: "source_missing", message: "Pi 分叉父文件已缺失，无法核验复制记录" });
+      gaps.push({ kind: "source_missing", message: "Pi 分叉父文件已缺失，无法核验复制记录", messageDescriptor: { key: "diagnostics.history.adapters.pi.m012" } });
     }
-  } else if (parentPath) gaps.push({ kind: "source_missing", message: "Pi 分叉父文件路径缺少可核验的绝对来源" });
-  if (parentPath && !parentId) gaps.push({ kind: "ambiguous", message: "Pi 分叉父文件名不能解析成原生会话身份" });
+  } else if (parentPath) gaps.push({ kind: "source_missing", message: "Pi 分叉父文件路径缺少可核验的绝对来源", messageDescriptor: { key: "diagnostics.history.adapters.pi.m013" } });
+  if (parentPath && !parentId) gaps.push({ kind: "ambiguous", message: "Pi 分叉父文件名不能解析成原生会话身份", messageDescriptor: { key: "diagnostics.history.adapters.pi.m014" } });
   const entries = rows.slice(1).filter(row => string(row.record.id));
   const byId = new Map<string, NativeRow>();
   for (const row of entries) {
     const entryId = string(row.record.id)!;
-    if (byId.has(entryId)) gaps.push({ kind: "ambiguous", message: "Pi 会话包含重复事件身份，按首次记录建立分支" });
+    if (byId.has(entryId)) gaps.push({ kind: "ambiguous", message: "Pi 会话包含重复事件身份，按首次记录建立分支", messageDescriptor: { key: "diagnostics.history.adapters.pi.m015" } });
     else byId.set(entryId, row);
   }
   const children = new Set(entries.map(row => string(row.record.parentId)).filter((value): value is string => Boolean(value)));
   const leaves = entries.filter(row => !children.has(string(row.record.id)!));
   const lastId = string(entries.at(-1)?.record.id);
-  if (lastId && !leaves.some(row => row.record.id === lastId)) gaps.push({ kind: "ambiguous", message: "Pi 最后保存事件不是树叶，当前分支定位不完整" });
+  if (lastId && !leaves.some(row => row.record.id === lastId)) gaps.push({ kind: "ambiguous", message: "Pi 最后保存事件不是树叶，当前分支定位不完整", messageDescriptor: { key: "diagnostics.history.adapters.pi.m016" } });
   const branchPaths = new Map<string, NativeRow[]>();
   for (const leaf of leaves) {
     const path: NativeRow[] = [];
@@ -172,13 +172,13 @@ async function snapshot(location: SourceLocation): Promise<NormalizedSnapshot> {
     let current: NativeRow | undefined = leaf;
     while (current) {
       const currentId = string(current.record.id)!;
-      if (seen.has(currentId)) { gaps.push({ kind: "parse_error", message: "Pi 事件树含循环父链" }); break; }
+      if (seen.has(currentId)) { gaps.push({ kind: "parse_error", message: "Pi 事件树含循环父链", messageDescriptor: { key: "diagnostics.history.adapters.pi.m017" } }); break; }
       seen.add(currentId);
       path.push(current);
       const parent = string(current.record.parentId);
       if (!parent) break;
       const parentRow = byId.get(parent);
-      if (!parentRow) { gaps.push({ kind: "source_missing", message: "Pi 事件树父身份不在来源内" }); break; }
+      if (!parentRow) { gaps.push({ kind: "source_missing", message: "Pi 事件树父身份不在来源内", messageDescriptor: { key: "diagnostics.history.adapters.pi.m018" } }); break; }
       current = parentRow;
     }
     branchPaths.set(string(leaf.record.id)!, path.reverse());
@@ -236,7 +236,8 @@ async function snapshot(location: SourceLocation): Promise<NormalizedSnapshot> {
     }
   }
   const branches = [...branchPaths.keys()].map((branchId, index) => ({ id: branchId,
-    label: branchId === lastId ? "当前分支" : `分支 ${index + 1}`, current: branchId === lastId }));
+    label: branchId === lastId ? "当前分支" : `分支 ${index + 1}`,
+    labelDescriptor: { key: branchId === lastId ? "sessions.branch.current" : "sessions.branch.number", params: { number: index + 1 } }, current: branchId === lastId }));
   let title: string | undefined;
   for (const row of entries) if (row.record.type === "session_info") title = string(row.record.name)?.trim() || title;
   const metadata: NormalizedSessionMetadata = {
@@ -281,11 +282,11 @@ async function snapshot(location: SourceLocation): Promise<NormalizedSnapshot> {
         }
       } else if (role === "toolResult") {
         const callId = string(message.toolCallId);
-        if (!callId) { gaps.push({ kind: "unpaired_call", message: "Pi 工具结果缺少原生 toolCallId" }); continue; }
+        if (!callId) { gaps.push({ kind: "unpaired_call", message: "Pi 工具结果缺少原生 toolCallId", messageDescriptor: { key: "diagnostics.history.adapters.pi.m019" } }); continue; }
         const usage = piUsage(message.usage);
         add({ key: "", kind: "tool_result", callId, tool: string(message.toolName), text: contentText(message.content), result: message,
           status: message.isError === true ? "failure" : message.isError === false ? "success" : "unknown" }, ":tool-result");
-        if (usage) gaps.push({ kind: "unsupported_format", message: "Pi 工具结果包含工具专用 usage，未并入模型 Token 汇总" });
+        if (usage) gaps.push({ kind: "unsupported_format", message: "Pi 工具结果包含工具专用 usage，未并入模型 Token 汇总", messageDescriptor: { key: "diagnostics.history.adapters.pi.m020" } });
       } else if (role === "system") {
         add({ key: "", kind: "system", text: contentText(message.content), occurredAt: time });
       } else if (role === "custom") {
@@ -300,7 +301,7 @@ async function snapshot(location: SourceLocation): Promise<NormalizedSnapshot> {
         add({ key: "", kind: "compression", text: string(message.summary) ?? "", occurredAt: time });
       } else {
         add({ key: "", kind: "context", text: role ?? "unknown Pi message role", occurredAt: time });
-        gaps.push({ kind: "unsupported_format", message: "Pi 消息包含尚未适配的原生 role" });
+        gaps.push({ kind: "unsupported_format", message: "Pi 消息包含尚未适配的原生 role", messageDescriptor: { key: "diagnostics.history.adapters.pi.m021" } });
       }
       continue;
     }
@@ -344,7 +345,7 @@ async function snapshot(location: SourceLocation): Promise<NormalizedSnapshot> {
       continue;
     }
     add({ key: "", kind: "context", text: string(entry.type) ?? "unknown Pi entry" }, ":entry");
-    gaps.push({ kind: "unsupported_format", message: "Pi 来源包含尚未适配的原生事件类型" });
+    gaps.push({ kind: "unsupported_format", message: "Pi 来源包含尚未适配的原生事件类型", messageDescriptor: { key: "diagnostics.history.adapters.pi.m022" } });
   }
   return normalizedSnapshot(source, records, metadata, parentFingerprint);
 }

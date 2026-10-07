@@ -1,3 +1,4 @@
+import { DiagnosticError } from "../i18n/diagnostics.js";
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
@@ -37,10 +38,10 @@ export async function loadCodeFlickerProjects(sources: readonly SourceLocation[]
     catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") continue; throw error; }
     let metadata: { projects?: unknown };
     try { metadata = JSON.parse(text) as typeof metadata; }
-    catch { throw new Error("CodeFlicker 项目元数据不是有效 JSON"); }
+    catch { throw new DiagnosticError("CodeFlicker 项目元数据不是有效 JSON", { key: "diagnostics.sessions.codeflickerProjects.m001" }); }
     if (!metadata || typeof metadata !== "object" || Array.isArray(metadata)
       || (metadata.projects !== undefined && (!metadata.projects || typeof metadata.projects !== "object" || Array.isArray(metadata.projects)))) {
-      throw new Error("CodeFlicker 项目元数据格式不支持");
+      throw new DiagnosticError("CodeFlicker 项目元数据格式不支持", { key: "diagnostics.sessions.codeflickerProjects.m002" });
     }
     for (const path of Object.keys(metadata.projects ?? {})) {
       if (!isAbsolute(path)) continue;

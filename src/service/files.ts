@@ -11,15 +11,15 @@ export const contentHash = (bytes: string | Uint8Array): string => createHash("s
 export async function safeFile(root: string, path: string): Promise<string> {
   relativePath(path);
   const canonicalRoot = await realpath(root);
-  if (canonicalRoot !== root) throw new ServiceError("FORBIDDEN", "仓库根目录已变化");
+  if (canonicalRoot !== root) throw new ServiceError("FORBIDDEN", "仓库根目录已变化", { key: "diagnostics.service.files.m001" });
   let current = root;
   for (const part of path.split("/")) {
     current = join(current, part);
-    if ((await lstat(current)).isSymbolicLink()) throw new ServiceError("FORBIDDEN", "不读取符号链接内容");
+    if ((await lstat(current)).isSymbolicLink()) throw new ServiceError("FORBIDDEN", "不读取符号链接内容", { key: "diagnostics.service.files.m002" });
   }
   const canonical = await realpath(current);
   const local = relative(root, canonical);
-  if (local === ".." || local.startsWith(`..${sep}`) || isAbsolute(local)) throw new ServiceError("FORBIDDEN", "路径超出已登记仓库");
+  if (local === ".." || local.startsWith(`..${sep}`) || isAbsolute(local)) throw new ServiceError("FORBIDDEN", "路径超出已登记仓库", { key: "diagnostics.service.files.m003" });
   return current;
 }
 
@@ -27,7 +27,7 @@ export async function readCurrentFile(root: string, path: string): Promise<Buffe
   const filename = await safeFile(root, path);
   const handle = await open(filename, constants.O_RDONLY | constants.O_NOFOLLOW);
   try {
-    if (!(await handle.stat()).isFile()) throw new ServiceError("FORBIDDEN", "只能读取普通文件");
+    if (!(await handle.stat()).isFile()) throw new ServiceError("FORBIDDEN", "只能读取普通文件", { key: "diagnostics.service.files.m004" });
     const bytes = await handle.readFile();
     // 读取前后都核对父目录，避免变更后的链接获得旧版高亮。
     await safeFile(root, path);

@@ -1,3 +1,5 @@
+import type { MessageDescriptor } from "../../i18n/types.js";
+import { DiagnosticError } from "../../i18n/diagnostics.js";
 import type { SourceReference } from "../../contracts.js";
 import type { NormalizedEvent, NormalizedSessionMetadata, NormalizedSnapshot, RawHistoryRecord } from "./normalized.js";
 import { createNormalizedAdapter, normalizedHash, normalizedRecord, normalizedSessionKey, normalizedSnapshot } from "./normalized.js";
@@ -7,14 +9,14 @@ import { createSqliteReadBudget, readOnlySqlite, readSqliteRows, sqliteJson, sql
 import type { SourceLocation } from "../types.js";
 
 export const OPENCODE_FORMAT = "opencode-sqlite";
-const missing = () => Object.assign(new Error("OpenCode 会话来源已缺失"), { code: "ENOENT" });
+const missing = () => Object.assign(new DiagnosticError("OpenCode 会话来源已缺失", { key: "diagnostics.history.adapters.opencode.m001" }), { code: "ENOENT" });
 const UNSUPPORTED_SCHEMA = "__unsupported_schema__";
 const READ_BUDGET_EXCEEDED = "__read_budget_exceeded__";
 const rowRaw = (row: Record<string, unknown>) => JSON.stringify(row);
 
-function diagnosticSnapshot(location: SourceLocation, kind: "unsupported_format" | "budget_exceeded", message: string): NormalizedSnapshot {
+function diagnosticSnapshot(location: SourceLocation, kind: "unsupported_format" | "budget_exceeded", message: string, messageDescriptor?: MessageDescriptor): NormalizedSnapshot {
   const { adapterGap: _adapterGap, ...source } = location;
-  return normalizedSnapshot(source, [], { gaps: [{ kind, message }] });
+  return normalizedSnapshot(source, [], { gaps: [{ kind, message, messageDescriptor }] });
 }
 
 function timestamp(value: unknown): string | undefined {
@@ -46,11 +48,11 @@ function usageEvent(key: string, tokensValue: unknown, model: string | undefined
   const reasoning = number(tokens.reasoning);
   if (input !== undefined && (read === undefined || write === undefined)) {
     meta.gaps ??= [];
-    meta.gaps.push({ kind: "unsupported_format", message: "OpenCode 用量缺少缓存分项，未计算总输入" });
+    meta.gaps.push({ kind: "unsupported_format", message: "OpenCode 用量缺少缓存分项，未计算总输入", messageDescriptor: { key: "diagnostics.history.adapters.opencode.m002" } });
   }
   if (output !== undefined && reasoning === undefined) {
     meta.gaps ??= [];
-    meta.gaps.push({ kind: "unsupported_format", message: "OpenCode 用量缺少 reasoning 分项，未计算总输出" });
+    meta.gaps.push({ kind: "unsupported_format", message: "OpenCode 用量缺少 reasoning 分项，未计算总输出", messageDescriptor: { key: "diagnostics.history.adapters.opencode.m003" } });
   }
   const event: NormalizedEvent = {
     key, kind: "context", text, model, occurredAt,
@@ -118,7 +120,7 @@ function buildRecords(sessionId: string, messages: Record<string, unknown>[], pa
     const knownRole = role === "user" || role === "assistant" || role === "system";
     if (!knownRole) {
       meta.gaps ??= [];
-      meta.gaps.push({ kind: "unsupported_format", message: `OpenCode message role ${role ?? "<缺少角色>"} 尚未适配` });
+      meta.gaps.push({ kind: "unsupported_format", message: `OpenCode message role ${role ?? "<缺少角色>"} 尚未适配`, messageDescriptor: (role) !== undefined ? { key: "diagnostics.history.adapters.opencode.m004", params: { p0: String(role) } } : { key: "diagnostics.history.adapters.opencode.m005" } });
     }
     const allPartsSynthetic = syntheticTextParts.length > 0
       && grouped.every(part => part.data.synthetic === true || object(part.data.metadata).synthetic === true);
@@ -155,7 +157,7 @@ function buildRecords(sessionId: string, messages: Record<string, unknown>[], pa
       if (type !== "tool") {
         if (!["text", "reasoning", "step-finish", "compaction", "summary"].includes(type ?? "")) {
           meta.gaps ??= [];
-          meta.gaps.push({ kind: "unsupported_format", message: `OpenCode part 类型 ${type ?? "<缺少类型>"} 尚未适配` });
+          meta.gaps.push({ kind: "unsupported_format", message: `OpenCode part 类型 ${type ?? "<缺少类型>"} 尚未适配`, messageDescriptor: (type) !== undefined ? { key: "diagnostics.history.adapters.opencode.m006", params: { p0: String(type) } } : { key: "diagnostics.history.adapters.opencode.m007" } });
           staged.push({ event: { key: `unknown-part:${partId}`, kind: "context", text: `未适配 OpenCode part 类型 ${type ?? "<缺少类型>"}`,
             model, occurredAt: partTime, turnKey, allowInferredFinal: false }, raw: partRaw, order: partOrder });
         }
@@ -179,7 +181,7 @@ function buildRecords(sessionId: string, messages: Record<string, unknown>[], pa
           : status === "completed" && bashExit !== undefined ? bashExit === 0 ? "success" : "failure" : "unknown";
       if (resultStatus === "unknown") {
         meta.gaps ??= [];
-        meta.gaps.push({ kind: "ambiguous", message: `OpenCode 工具 ${tool} 缺少可确认的终态` });
+        meta.gaps.push({ kind: "ambiguous", message: `OpenCode 工具 ${tool} 缺少可确认的终态`, messageDescriptor: { key: "diagnostics.history.adapters.opencode.m008", params: { p0: String(tool) } } });
       }
       const result = { output: outputValue, error: errorValue, metadata: stateMetadata, status };
       const textOutput = typeof outputValue === "string" ? outputValue : Array.isArray(outputValue)
@@ -232,7 +234,7 @@ async function discoverFile(location: SourceLocation): Promise<SourceLocation[]>
   return readOnlySqlite(location.path, database => {
     if (!["session", "message", "part"].every(table => sqliteTableExists(database, table))) {
       return [{ ...location, format: OPENCODE_FORMAT, selector: UNSUPPORTED_SCHEMA,
-        adapterGap: { kind: "unsupported_format", message: "OpenCode SQLite 表结构尚未适配，保留来源并标记缺口" } }];
+        adapterGap: { kind: "unsupported_format", message: "OpenCode SQLite 表结构尚未适配，保留来源并标记缺口", messageDescriptor: { key: "diagnostics.history.adapters.opencode.m009" } } }];
     }
     const gaps: NonNullable<NormalizedSessionMetadata["gaps"]> = [];
     const budget = createSqliteReadBudget();
@@ -240,16 +242,16 @@ async function discoverFile(location: SourceLocation): Promise<SourceLocation[]>
     const sources: SourceLocation[] = rows.filter(row => typeof row.id === "string").map(row => ({ ...location, format: OPENCODE_FORMAT,
       selector: String(row.id), sessionId: String(row.id), sourceId: normalizedSessionKey(location.client, String(row.id)) }));
     if (budget.exceeded) sources.push({ ...location, format: OPENCODE_FORMAT, selector: READ_BUDGET_EXCEEDED,
-      adapterGap: gaps[0] ?? { kind: "budget_exceeded", message: "OpenCode 会话目录超过 SQLite 有界读取上限" } });
+      adapterGap: gaps[0] ?? { kind: "budget_exceeded", message: "OpenCode 会话目录超过 SQLite 有界读取上限", messageDescriptor: { key: "diagnostics.history.adapters.opencode.m010" } } });
     return sources;
   });
 }
 
 async function readSnapshot(location: SourceLocation): Promise<NormalizedSnapshot> {
-  if (location.adapterGap) return diagnosticSnapshot(location, location.adapterGap.kind === "budget_exceeded" ? "budget_exceeded" : "unsupported_format", location.adapterGap.message);
-  if (location.selector === UNSUPPORTED_SCHEMA) return diagnosticSnapshot(location, "unsupported_format", "OpenCode SQLite 表结构尚未适配，保留来源并标记缺口");
-  if (location.selector === READ_BUDGET_EXCEEDED) return diagnosticSnapshot(location, "budget_exceeded", "OpenCode 会话目录超过 SQLite 有界读取上限");
-  if (!location.selector) throw new Error("OpenCode 来源缺少原生会话选择器");
+  if (location.adapterGap) return diagnosticSnapshot(location, location.adapterGap.kind === "budget_exceeded" ? "budget_exceeded" : "unsupported_format", location.adapterGap.message, location.adapterGap.messageDescriptor);
+  if (location.selector === UNSUPPORTED_SCHEMA) return diagnosticSnapshot(location, "unsupported_format", "OpenCode SQLite 表结构尚未适配，保留来源并标记缺口", { key: "diagnostics.history.adapters.opencode.m009" });
+  if (location.selector === READ_BUDGET_EXCEEDED) return diagnosticSnapshot(location, "budget_exceeded", "OpenCode 会话目录超过 SQLite 有界读取上限", { key: "diagnostics.history.adapters.opencode.m010" });
+  if (!location.selector) throw new DiagnosticError("OpenCode 来源缺少原生会话选择器", { key: "diagnostics.history.adapters.opencode.m011" });
   const gaps: NonNullable<NormalizedSessionMetadata["gaps"]> = [];
   const budget = createSqliteReadBudget();
   const selected = await readOnlySqlite(location.path, database => {
@@ -295,7 +297,7 @@ async function readSnapshot(location: SourceLocation): Promise<NormalizedSnapsho
     metadata.parentSessionId = parentId;
     metadata.relationships = [{ kind: "subagent", parentSessionId: parentId, agentId: agent }];
   } else if (!metadata.relationship && parentId) {
-    gaps.push({ kind: "ambiguous", message: "OpenCode parent_id 可由通用 Session.create 输入设置，未找到 Task 子会话证据，父类型未确认" });
+    gaps.push({ kind: "ambiguous", message: "OpenCode parent_id 可由通用 Session.create 输入设置，未找到 Task 子会话证据，父类型未确认", messageDescriptor: { key: "diagnostics.history.adapters.opencode.m012" } });
   }
   const records = buildRecords(id, selected.current.messages, selected.current.parts, metadata).records;
   const sessionRaw = rowRaw(selected.current.session);
@@ -312,16 +314,16 @@ function readToolEvidence(inputValue: unknown, resultValue: unknown, visible: st
   const requestedPath = string(input.filePath) ?? string(input.path);
   if (display.type !== "file" || typeof display.text !== "string" || typeof display.lineStart !== "number"
     || typeof display.lineEnd !== "number" || typeof display.totalLines !== "number") {
-    return [{ kind: "read" as const, path: requestedPath, fragments: [], reason: "range_unknown: OpenCode Read 缺少可核验的文件展示元数据" }];
+    return [{ kind: "read" as const, path: requestedPath, fragments: [], reason: "range_unknown: OpenCode Read 缺少可核验的文件展示元数据", reasonDescriptor: { key: "diagnostics.history.adapters.opencode.m013" } }];
   }
   if (metadata.truncated === true || display.truncated === true) {
-    return [{ kind: "read" as const, path: requestedPath, fragments: [], reason: "range_unknown: OpenCode Read 返回已截断" }];
+    return [{ kind: "read" as const, path: requestedPath, fragments: [], reason: "range_unknown: OpenCode Read 返回已截断", reasonDescriptor: { key: "diagnostics.history.adapters.opencode.m014" } }];
   }
   const path = string(display.path);
   const count = physicalLines(display.text).length;
   if (!path || requestedPath !== path || display.lineEnd - display.lineStart + 1 !== count
     || display.lineStart < 1 || display.lineEnd < display.lineStart - 1) {
-    return [{ kind: "read" as const, path: requestedPath, fragments: [], reason: "range_unknown: OpenCode Read 元数据与请求路径或行数不一致" }];
+    return [{ kind: "read" as const, path: requestedPath, fragments: [], reason: "range_unknown: OpenCode Read 元数据与请求路径或行数不一致", reasonDescriptor: { key: "diagnostics.history.adapters.opencode.m015" } }];
   }
   return toolEvidence("Read", { path, offset: number(input.offset), limit: number(input.limit) },
     { file: { filePath: path, content: display.text, startLine: display.lineStart, numLines: count, totalLines: display.totalLines } }, visible);

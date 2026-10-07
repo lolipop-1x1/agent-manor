@@ -1,3 +1,4 @@
+import type { MessageDescriptor } from "../../i18n/types.js";
 import { createHash } from "node:crypto";
 import { basename, dirname, isAbsolute, normalize, resolve, sep } from "node:path";
 import type { Client, EvidenceFragment, HistoryEvent } from "../../contracts.js";
@@ -121,7 +122,7 @@ export const codeflickerAdapter: HistoryAdapter = {
     }
     if (source.parentSessionId && !proofs.length) return { relationships: [] };
     return { relationships: [], invalidateParent: conflictingParent, gaps: [{ kind: "ambiguous", sourceId: source.sourceId,
-      message: proofs.length ? "子会话原生身份或父结果存在多个／矛盾候选，未建立关系" : "子会话候选缺少可确认的父关系，独立保留调用而不合并父历史" }] };
+      message: proofs.length ? "子会话原生身份或父结果存在多个／矛盾候选，未建立关系" : "子会话候选缺少可确认的父关系，独立保留调用而不合并父历史", messageDescriptor: proofs.length ? { key: "diagnostics.history.adapters.codeflicker.m001" } : { key: "diagnostics.history.adapters.codeflicker.m002" } }] };
   },
   extract(tool, inputValue, resultValue, _visible, context) {
     const input = object(inputValue);
@@ -131,8 +132,8 @@ export const codeflickerAdapter: HistoryAdapter = {
     const returned = tool === "read" ? string(readPayload(resultValue).filePath) : string(display.absoluteFilePath);
     const path = samePath(requested, returned, context) ? returned : requested;
     const kind = tool === "read" ? "read" : ["edit", "write"].includes(tool) ? "edit" : ["grep", "glob"].includes(tool) ? "search" : "other";
-    const unknown = (message: string): ToolEvidence[] => [{ kind, path, fragments: [], reason: `range_unknown: ${message}` }];
-    if (result.truncated === true) return unknown("CodeFlicker 返回截断，未补读旁路内容");
+    const unknown = (message: string, reasonDescriptor: MessageDescriptor): ToolEvidence[] => [{ kind, path, fragments: [], reason: `range_unknown: ${message}`, reasonDescriptor }];
+    if (result.truncated === true) return unknown("CodeFlicker 返回截断，未补读旁路内容", { key: "diagnostics.history.adapters.codeflicker.m003" });
     if (tool === "read") {
       const read = readPayload(resultValue);
       const content = string(read.content);
@@ -143,11 +144,11 @@ export const codeflickerAdapter: HistoryAdapter = {
       if (!successfulTemplate(tool, inputValue, resultValue) || content === undefined || start === undefined || count === undefined || total === undefined || limit === undefined
         || !samePath(requested, string(read.filePath), context) || start !== Math.max(1, number(input.offset) ?? 1)
         || count > limit || (number(input.limit) !== undefined && count > Number(input.limit)) || start + count - 1 > total) {
-        return unknown("read 返回路径、范围或文本结构无法校验");
+        return unknown("read 返回路径、范围或文本结构无法校验", { key: "diagnostics.history.adapters.codeflicker.m004" });
       }
-      if (count === 0) return content === "" ? [{ kind: "read", path, fragments: [] }] : unknown("read 空范围包含文本");
+      if (count === 0) return content === "" ? [{ kind: "read", path, fragments: [] }] : unknown("read 空范围包含文本", { key: "diagnostics.history.adapters.codeflicker.m005" });
       const lines = content.replace(/\r\n/g, "\n").split("\n");
-      if (lines.length !== count) return unknown("read 实际内容行数与 actualLinesRead 不符");
+      if (lines.length !== count) return unknown("read 实际内容行数与 actualLinesRead 不符", { key: "diagnostics.history.adapters.codeflicker.m006" });
       // split 的 EOF 空项不是物理源码行；范围内真正的末尾空行仍保留。
       const virtualEof = content.endsWith("\n") && start + count - 1 === total;
       const sourceContent = content.endsWith("\n") && !virtualEof ? `${content}\n` : content;
@@ -161,12 +162,12 @@ export const codeflickerAdapter: HistoryAdapter = {
           if (current) current.content += complete;
           else { current = { kind: "read", content: complete, historicalStart: start + index, completeLines: true, path }; fragments.push(current); }
         });
-        return [{ kind: "read", path, fragments, reason: "range_unknown: read 存在 SDK 单行隐藏截断，仅保留完整前后行" }];
+        return [{ kind: "read", path, fragments, reason: "range_unknown: read 存在 SDK 单行隐藏截断，仅保留完整前后行", reasonDescriptor: { key: "diagnostics.history.adapters.codeflicker.m007" } }];
       }
       return [{ kind: "read", path, fragments: sourceContent ? [{ kind: "read", content: sourceContent, historicalStart: start, completeLines: true, path }] : [] }];
     }
     if (["edit", "write"].includes(tool)) {
-      if (display.absoluteFilePath && !samePath(requested, string(display.absoluteFilePath), context)) return unknown(`${tool} 返回路径与请求不符`);
+      if (display.absoluteFilePath && !samePath(requested, string(display.absoluteFilePath), context)) return unknown(`${tool} 返回路径与请求不符`, { key: "diagnostics.history.adapters.codeflicker.m008", params: { p0: String(tool) } });
       const patch = patchEvidence(display, path);
       if (patch) return [patch];
       if (tool === "edit") {
@@ -174,10 +175,10 @@ export const codeflickerAdapter: HistoryAdapter = {
         const after = string(input.new_string);
         return [{ kind: "edit", path, fragments: before !== undefined && after !== undefined
           ? changedFragments(before, after, path).map(fragment => ({ ...fragment, historicalStart: undefined })) : [],
-        reason: "range_unknown: edit 缺少有效 structuredPatch；仅保留请求中的变化片段" }];
+        reason: "range_unknown: edit 缺少有效 structuredPatch；仅保留请求中的变化片段", reasonDescriptor: { key: "diagnostics.history.adapters.codeflicker.m009" } }];
       }
       const content = string(input.content);
-      if (!successfulTemplate(tool, inputValue, resultValue) || content === undefined) return unknown("write 缺少成功写入内容");
+      if (!successfulTemplate(tool, inputValue, resultValue) || content === undefined) return unknown("write 缺少成功写入内容", { key: "diagnostics.history.adapters.codeflicker.m010" });
       // 原生执行器会补齐末尾 LF；写入证据不表示原文件一定为新建。
       const written = content.endsWith("\n") ? content : `${content}\n`;
       const before = string(display.originalContent);
@@ -187,10 +188,10 @@ export const codeflickerAdapter: HistoryAdapter = {
     if (tool === "bash") {
       const bash = bashResult(input, result);
       const evidence = shellEvidence(string(input.command) ?? "", bash?.output ?? "");
-      return bash?.truncated ? evidence.map(part => ({ ...part, fragments: [], reason: "range_unknown: bash 输出截断或存入旁路文件" })) : evidence;
+      return bash?.truncated ? evidence.map(part => ({ ...part, fragments: [], reason: "range_unknown: bash 输出截断或存入旁路文件", reasonDescriptor: { key: "diagnostics.history.adapters.codeflicker.m011" } })) : evidence;
     }
     if (["grep", "glob", "ls", "todoWrite", "Agent"].includes(tool)) return [{ kind, path, fragments: [] }];
-    return [{ kind: "other", path, fragments: [], reason: `unsupported_tool: ${tool} 未提取代码范围` }];
+    return [{ kind: "other", path, fragments: [], reason: `unsupported_tool: ${tool} 未提取代码范围`, reasonDescriptor: { key: "diagnostics.history.adapters.codeflicker.m012", params: { p0: String(tool) } } }];
   },
   processRecord(record, context) {
     const { client, path, source, cursor, row, raw, gap, reference, findEvent, finish, pair } = context;
@@ -209,7 +210,7 @@ export const codeflickerAdapter: HistoryAdapter = {
       }
     }
     if (record.type !== "message") {
-      if (!["config", "snapshot"].includes(string(record.type) ?? "")) gap("unsupported_format", `物理记录 ${row} 的顶层类型 ${string(record.type) ?? "<缺少类型>"} 尚未适配`);
+      if (!["config", "snapshot"].includes(string(record.type) ?? "")) gap("unsupported_format", `物理记录 ${row} 的顶层类型 ${string(record.type) ?? "<缺少类型>"} 尚未适配`, (string(record.type)) !== undefined ? { key: "diagnostics.history.adapters.codeflicker.m013", params: { p0: String(row), p1: String(string(record.type)) } } : { key: "diagnostics.history.adapters.codeflicker.m014", params: { p0: String(row) } });
       return;
     }
     const blocks = Array.isArray(record.content) ? record.content : [];
@@ -238,7 +239,7 @@ export const codeflickerAdapter: HistoryAdapter = {
           : status === "unknown" ? "range_unknown: CodeFlicker 结果未确认成功终态" : undefined;
         const event = findEvent(call.eventId);
         if (event && bash?.cwd) event.cwd = bash.cwd;
-        finish(call, result, visible, status, row, raw, reason);
+        finish(call, result, visible, status, row, raw, reason, mismatchedTool ? { key: "diagnostics.history.adapters.codeflicker.toolMismatch" } : result.truncated === true ? { key: "diagnostics.history.adapters.codeflicker.m003" } : status === "unknown" ? { key: "diagnostics.history.adapters.codeflicker.statusUnknown" } : undefined);
         if (event && call.tool === "Agent" && status === "success" && typeof block.agentId === "string") event.output = json({ ...object(event.output), agentId: block.agentId });
         cursor.seen[key] = call.eventId;
       }

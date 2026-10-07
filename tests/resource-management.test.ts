@@ -43,11 +43,13 @@ test("共享链接只隔离所选入口，具体确认后写入，备用恢复�
   const other = entry(second, { id: "other-entry", client: "claude", entryType: "symlink", targetPath: target, linkTarget: target });
   const initial = snapshot([selected, other]); manager.setFavorite(selected.id, true);
   const preview = await manager.preview({ entryId: selected.id, action: "standby" }, initial);
+  assert.equal(preview.restorationDescriptor?.key, "diagnostics.resources.management.m021");
   assert.equal(preview.protected, true); assert.equal(preview.affectedEntries.length, 2); assert.equal(preview.referencesComplete, false);
   assert.equal(await readlink(first), target);
   await assert.rejects(manager.apply(preview.id, false as true, initial), ServiceError);
   const applied = await manager.apply(preview.id, true, initial);
   assert.equal(applied.status, "success"); assert.equal(applied.clientEffect, "pending_reload");
+  assert.equal(applied.messageDescriptor?.key, "diagnostics.resources.management.m033");
   assert.equal(manager.operations(1, 50, { project: "none" }).total, 1);
   assert.equal(manager.operations(1, 50, { project: "/synthetic/project" }).total, 0);
   await assert.rejects(readlink(first)); assert.equal(await readlink(second), target); assert.match(await readFile(join(target, "SKILL.md"), "utf8"), /人工合成/);
@@ -115,7 +117,8 @@ test("物理本体隔离与恢复的旧预览遇到新增共享链接时冲突�
   await symlink(path, alias);
   const shared = await scanResourceInventory({ userHome, environment: {} });
   const conflict = await manager.apply(old.id, true, shared);
-  assert.equal(conflict.status, "conflict"); assert.equal(conflict.localState, "unchanged"); assert.equal(manager.archives().length, 0);
+  assert.equal(conflict.status, "conflict"); assert.equal(conflict.localState, "unchanged");
+  assert.ok(conflict.messageDescriptor); assert.equal(manager.archives().length, 0);
   assert.match(await readFile(join(path, "SKILL.md"), "utf8"), /人工合成/); assert.match(await readFile(join(alias, "SKILL.md"), "utf8"), /人工合成/);
   await rm(alias);
   const single = await scanResourceInventory({ userHome, environment: {} });
@@ -245,11 +248,12 @@ test("管理状态跨重启与历史索引清理保留，永久清除需另次�
   const reopened = new ResourceManager(home);
   try {
     assert.deepEqual(reopened.favorites(), [selected.id]); assert.equal(reopened.manualSources()[0]?.id, manual.id);
-    assert.equal(reopened.operations().total, 1); assert.equal(reopened.archives("trash").length, 1);
+    assert.equal(reopened.operations().total, 1); assert.ok(reopened.operations().operations[0]?.messageDescriptor); assert.equal(reopened.archives("trash").length, 1);
     assert.equal(reopened.decorateInventory(snapshot([selected], "2026-02-01T00:00:00Z")).entries[0]?.firstSeenAt, "2026-01-01T00:00:00Z");
     assert.equal((await stat(reopened.dbPath)).mode & 0o777, 0o600); assert.equal((await stat(reopened.vaultPath)).mode & 0o777, 0o700);
     const archive = reopened.archives("trash")[0]!;
     const purge = await reopened.preview({ operationId: archive.operationId, action: "purge" }, snapshot([]));
+    assert.equal(purge.restorationDescriptor?.key, "diagnostics.resources.management.m020");
     assert.equal(purge.method, "permanent_purge"); assert.match(purge.restoration, /失去/);
     await assert.rejects(reopened.apply(purge.id, false as true, snapshot([])), ServiceError);
     assert.ok(await stat(archive.storedPath!));
@@ -321,6 +325,8 @@ test("写入后反馈失败保留部分完成与可用恢复材料，不虚报�
   access.writeConfig = async (...args) => { await write(...args); throw new Error("人工写入后反馈失败"); };
   const applied = await manager.apply(preview.id, true, initial); access.writeConfig = write;
   assert.equal(applied.status, "partial"); assert.equal(applied.localState, "partial"); assert.equal(applied.clientEffect, "unknown");
+  assert.equal(applied.messageDescriptor?.key, "diagnostics.resources.management.m034");
+  assert.doesNotMatch(applied.message, /人工写入后反馈失败/);
   assert.ok((await readFile(path, "utf8")).includes("enabled = false"));
   const archive = manager.archives("disabled")[0]!; assert.equal(archive.operationStatus, "partial"); assert.equal(archive.restorable, true);
   const restore = await manager.preview({ operationId: archive.operationId, action: "restore" }, initial);

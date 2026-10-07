@@ -1,3 +1,4 @@
+import type { MessageDescriptor } from "../i18n/types.js";
 import { createHash } from "node:crypto";
 import type { SessionSink, SessionUsage } from "../session-contracts.js";
 
@@ -16,7 +17,7 @@ export class UsageParser {
   private cumulativeInput?: number;
 
   constructor(private readonly sessionId: string, private readonly sink: SessionSink,
-    private readonly gap: (kind: "ambiguous" | "unsupported_format", message: string) => void) {}
+    private readonly gap: (kind: "ambiguous" | "unsupported_format", message: string, messageDescriptor?: MessageDescriptor) => void) {}
 
   private publish(key: string, value: SessionUsage): void {
     const previous = this.requests.get(key);
@@ -33,13 +34,13 @@ export class UsageParser {
     const write = tokens(usage.cache_creation_input_tokens);
     // Claude 原生 input_tokens 是非缓存输入；CodeFlicker 已持久化规范化总输入。
     const total = client === "codeflicker" ? input : input !== undefined && read !== undefined && write !== undefined ? input + read + write : undefined;
-    if (client === "claude" && input !== undefined && total === undefined) this.gap("unsupported_format", "Claude 输入用量缺少缓存分项，无法确认总输入口径");
+    if (client === "claude" && input !== undefined && total === undefined) this.gap("unsupported_format", "Claude 输入用量缺少缓存分项，无法确认总输入口径", { key: "diagnostics.sessions.parserUsage.m001" });
     const value: SessionUsage = { id: `${this.sessionId}:usage:${digest(requestId)}`, ...context, inputTokens: total,
       outputTokens: tokens(usage.output_tokens), cachedInputTokens: read, cacheWriteTokens: write,
       reasoningOutputTokens: tokens(usage.reasoning_output_tokens), contextTokens: tokens(usage.context_tokens) };
     if (read !== undefined && total !== undefined && read > total) {
       value.cachedInputTokens = undefined;
-      this.gap("ambiguous", "缓存读取超过总输入，未计算该请求的缓存比例");
+      this.gap("ambiguous", "缓存读取超过总输入，未计算该请求的缓存比例", { key: "diagnostics.sessions.parserUsage.m002" });
     }
     this.publish(requestId, value);
   }
@@ -57,11 +58,11 @@ export class UsageParser {
     const sameCheckpoint = checkpoint !== undefined && checkpoint === this.checkpoint;
     if (!requestKey && sameCheckpoint) return;
     if (!requestKey && !checkpoint) {
-      this.gap("ambiguous", "Codex 单次用量缺少请求身份及累计进度，未纳入请求统计");
+      this.gap("ambiguous", "Codex 单次用量缺少请求身份及累计进度，未纳入请求统计", { key: "diagnostics.sessions.parserUsage.m003" });
       return;
     }
     if (sameCheckpoint && requestKey && this.checkpointRequest && this.checkpointRequest !== requestKey) {
-      this.gap("ambiguous", "不同 Codex 请求记录相同累计进度，按明确请求身份分别保留");
+      this.gap("ambiguous", "不同 Codex 请求记录相同累计进度，按明确请求身份分别保留", { key: "diagnostics.sessions.parserUsage.m004" });
     }
     const id = known?.id ?? (sameCheckpoint && !this.checkpointRequest ? this.checkpointId : undefined)
       ?? `${this.sessionId}:usage:${requestKey ? digest(requestKey) : `${this.generation}:${checkpoint}`}`;
@@ -71,7 +72,7 @@ export class UsageParser {
       reasoningOutputTokens: tokens(usage.reasoning_output_tokens), contextTokens: tokens(usage.context_tokens) };
     if (input !== undefined && value.cachedInputTokens !== undefined && value.cachedInputTokens > input) {
       value.cachedInputTokens = undefined;
-      this.gap("ambiguous", "缓存读取超过总输入，未计算该请求的缓存比例");
+      this.gap("ambiguous", "缓存读取超过总输入，未计算该请求的缓存比例", { key: "diagnostics.sessions.parserUsage.m002" });
     }
     this.publish(requestKey ?? `checkpoint:${this.generation}:${checkpoint}`, value);
     if (checkpoint) { this.checkpoint = checkpoint; this.checkpointId = id; this.checkpointRequest = requestKey; this.cumulativeInput = cumulativeInput; }

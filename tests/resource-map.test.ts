@@ -30,7 +30,7 @@ async function fixture(run: (context: Awaited<ReturnType<typeof resourceFixture>
 }
 
 function source(store: SessionStore, id: string, resources: { kind: "skill_call" | "skill_read" | "mcp"; name: string;
-  server?: string; occurredAt?: string | null }[], client: SessionSourceMeta["client"] = "codex") {
+  server?: string; nameDescriptor?: SessionMessage["textDescriptor"]; occurredAt?: string | null }[], client: SessionSourceMeta["client"] = "codex") {
   const path = `/synthetic/history/${id}.jsonl`;
   const pending = store.createRevision(path, `synthetic-${id}`);
   for (const [ordinal, resource] of resources.entries()) {
@@ -45,6 +45,19 @@ function source(store: SessionStore, id: string, resources: { kind: "skill_call"
     title: "人工合成地图会话", titleOrigin: "recorded", models: [], messageCount: resources.length, turnCount: 1, gaps: [] });
   return { path, revision: pending.revision, fingerprint: `synthetic-${id}` };
 }
+
+test("资源总览与地图透传生成名称描述，真实同名与旧记录继续保留原名", async () => fixture(async (_context, store, _manager, service) => {
+  const descriptor = { key: "sessions.resource.nameUnrecorded" };
+  store.publish(store.createJob().id, [source(store, "generated-map", [{ kind: "skill_call", name: "未记录名称", nameDescriptor: descriptor }])], []);
+  const overview = await service.overview({ kind: "skill", candidate: "used" });
+  const row = overview.resources.find(row => row.identity.name === "未记录名称")!;
+  assert.deepEqual(row.identity.nameDescriptor, descriptor);
+  const map = await service.map({ kind: "skill", candidate: "used" });
+  assert.deepEqual(map.positive.find(node => node.id === row.identity.id)?.nameDescriptor, descriptor);
+  store.publish(store.createJob().id, [source(store, "recorded-map", [{ kind: "skill_call", name: "未记录名称" }])], []);
+  const recorded = await service.map({ kind: "skill", candidate: "used" });
+  assert.equal(recorded.positive.find(node => node.name === "未记录名称")?.nameDescriptor, undefined);
+}));
 
 test("完整地图超出二百条，API 不受页码限制且所有节点来自同一发布版本", async () => fixture(async (_context, store, _manager, service) => {
   const resources = Array.from({ length: 205 }, (_, index) => ({ kind: "skill_call" as const, name: `map-skill-${index}` }));

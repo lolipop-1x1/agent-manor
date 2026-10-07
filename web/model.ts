@@ -1,21 +1,36 @@
-import type { CoverageQuery, FileCategory, FileCoverage, FileDetail, Filters, GapKind, LineRange } from "../src/contracts";
+import type { CoverageQuery, FileCategory, FileCoverage, FileDetail, Filters, GapKind, Job, LineRange } from "../src/contracts";
 import type { MapRect } from "./map-viewport";
+import { formatDateTime, formatNumber, formatPercent, isMessageDescriptorKnown, translate, translateMessage } from "../src/i18n";
+import { formatList, getLanguage, t } from "./i18n";
 
 export type Metric = "read" | "edit" | "activity";
 export type Theme = "light" | "dark";
-export const metricNames: Record<Metric, string> = { read: "精确读取", edit: "历史修改", activity: "活动次数" };
-export const categoryNames: Record<FileCategory, string> = { source: "源码", config: "配置", docs: "文档", unknown: "未知类别" };
-export const gapNames: Record<GapKind, string> = {
-  source_missing: "来源缺失", source_unavailable: "来源不可读", range_unknown: "范围未知",
-  unsupported_format: "格式不支持", unsupported_tool: "工具不支持", ambiguous: "对应歧义",
-  unassociated: "未关联会话", parse_error: "解析失败", incomplete_record: "记录未完整",
-  unpaired_call: "调用结果未配对", budget_exceeded: "匹配预算不足",
+export const metricNames: Record<Metric, string> = {
+  get read() { return t("codeMap.metric.read"); }, get edit() { return t("codeMap.metric.edit"); }, get activity() { return t("codeMap.metric.activity"); },
 };
-export const fmt = (value: number) => value.toLocaleString("zh-CN");
-export const percent = (numerator: number, denominator: number) => denominator ? `${(numerator / denominator * 100).toFixed(1)}%` : "—";
+export const categoryNames: Record<FileCategory, string> = {
+  get source() { return t("common.category.source"); }, get config() { return t("common.category.config"); },
+  get docs() { return t("common.category.docs"); }, get unknown() { return t("common.category.unknown"); },
+};
+const gapKeys: Record<GapKind, string> = {
+  source_missing: "sourceMissing", source_unavailable: "sourceUnavailable", range_unknown: "rangeUnknown",
+  unsupported_format: "unsupportedFormat", unsupported_tool: "unsupportedTool", ambiguous: "ambiguous",
+  unassociated: "unassociated", parse_error: "parseError", incomplete_record: "incompleteRecord",
+  unpaired_call: "unpairedCall", budget_exceeded: "budgetExceeded",
+};
+export const gapNames = Object.fromEntries(Object.entries(gapKeys).map(([kind, key]) => [kind, key])) as Record<GapKind, string>;
+for (const [kind, key] of Object.entries(gapKeys)) Object.defineProperty(gapNames, kind, { get: () => t(`codeMap.gap.${key}`) });
+export const fmt = (value: number) => formatNumber(getLanguage(), value);
+export const percent = (numerator: number, denominator: number) => denominator ? formatPercent(getLanguage(), numerator / denominator, { minimumFractionDigits: 1 }) : "—";
 export const filename = (path: string) => path.split("/").at(-1) ?? path;
-export const rangesLabel = (ranges: LineRange[]) => ranges.map(range => range.start === range.end ? `L${range.start}` : `L${range.start}–${range.end}`).join("、");
-export const dateLabel = (value?: string) => value ? new Date(value).toLocaleString("zh-CN", { hour12: false }) : "时间未知";
+export const rangesLabel = (ranges: LineRange[]) => formatList(ranges.map(range => range.start === range.end ? `L${fmt(range.start)}` : `L${fmt(range.start)}–${fmt(range.end)}`));
+export const dateLabel = (value?: string) => value ? formatDateTime(getLanguage(), value, { dateStyle: "medium", timeStyle: "medium", hour12: false }) : t("common.timeUnknown");
+
+export function refreshFailureReason(job: Pick<Job, "error" | "errorDescriptor" | "phase" | "phaseDescriptor">, language = getLanguage()): string {
+  const original = job.error !== undefined ? job.error : job.phase;
+  const descriptor = job.error !== undefined ? job.errorDescriptor : job.phaseDescriptor;
+  return isMessageDescriptorKnown(descriptor) ? translateMessage(language, descriptor) : translate(language, "common.originalDetail", { detail: original });
+}
 
 /** 每次下钻使用已发布的版本和原筛选，目录以显式参数覆盖。 */
 export function boundQuery(filters: Filters, version: string, directory?: string): CoverageQuery {

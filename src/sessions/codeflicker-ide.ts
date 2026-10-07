@@ -39,6 +39,7 @@ export function* ideSessionRecords(snapshot: IdeSnapshot): Generator<{ line: num
       record: { ...base, role: "tool", toolCallId: record.toolCallId, content: record.text, isError: type === "tool_error" ? true : undefined } };
     else if (type === "completion_result") yield { line, record: { ...base, op: "turn_terminal",
       outcome: record.partial === true || /error|abort|cancel/i.test(string(record.stopReason) ?? "") ? "interrupted" : "completed" } };
-    else yield { line, record: { ...base, role: "system", content: record.text || type || "未记录内容" } };
+    else yield { line, record: { ...base, role: "system", content: record.text || type || "未记录内容",
+      ...(!record.text && !type ? { textDescriptor: { key: "sessions.body.unrecorded" } } : {}) } };
   }
 }

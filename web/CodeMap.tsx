@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent, type PointerEvent, type ReactNode } from "react";
 import { ArrowsIn, ArrowsOut, CaretRight, Crosshair, Folder, Minus, Plus, Resize } from "@phosphor-icons/react";
 import * as Tooltip from "@radix-ui/react-tooltip";
+import { t, useI18n } from "./i18n";
 import { HelpPopover } from "./HelpPopover";
 import type { FileCoverage } from "../src/contracts";
 import { fileLabelRect, fmt, metricNames, metricValue, percent, type Metric } from "./model";
@@ -11,13 +12,14 @@ export function Hint({ label, children }: { label: string; children: ReactNode }
 }
 
 const position = (rect: MapRect): CSSProperties => ({ left: rect.x, top: rect.y, width: rect.width, height: rect.height });
-const valueLabel = (file: FileCoverage, metric: Metric) => metric === "activity" ? `${fmt(file.activityCount)} 次` : percent(metricValue(file, metric), file.lineCount);
-const fileLabel = (file: FileCoverage, metric: Metric) => `${file.path}，${metricNames[metric]} ${valueLabel(file, metric)}，${fmt(file.lineCount)} 行`;
+const valueLabel = (file: FileCoverage, metric: Metric) => metric === "activity" ? t("codeMap.activity.calls", { count: file.activityCount }) : percent(metricValue(file, metric), file.lineCount);
+const fileLabel = (file: FileCoverage, metric: Metric) => t("codeMap.map.fileLabel", { path: file.path, metric: metricNames[metric], value: valueLabel(file, metric), lines: fmt(file.lineCount) });
 
 export function CodeMap({ files, directory, metric, selected, browse, select, heading, legend }: {
   files: FileCoverage[]; directory: string; metric: Metric; selected: string | null;
   browse: (directory: string) => void; select: (path: string) => void; heading: ReactNode; legend: ReactNode;
 }) {
+  const { language } = useI18n();
   const explorer = useRef<HTMLElement>(null);
   const host = useRef<HTMLDivElement>(null);
   const layout = useMemo(() => layoutMap(files, directory), [files, directory]);
@@ -74,7 +76,7 @@ export function CodeMap({ files, directory, metric, selected, browse, select, he
     const escape = (event: globalThis.KeyboardEvent) => {
       if (event.key !== "Escape" || !document.fullscreenElement || document.fullscreenElement !== explorer.current) return;
       event.preventDefault();
-      void document.exitFullscreen().catch(() => setFullscreenError("无法退出全屏，请使用浏览器的退出全屏操作。"));
+      void document.exitFullscreen().catch(() => setFullscreenError("codeMap.map.fullscreenExitError"));
     };
     document.addEventListener("fullscreenchange", changed);
     document.addEventListener("keydown", escape);
@@ -85,7 +87,7 @@ export function CodeMap({ files, directory, metric, selected, browse, select, he
     try {
       if (document.fullscreenElement === explorer.current) await document.exitFullscreen();
       else await explorer.current!.requestFullscreen();
-    } catch { setFullscreenError("无法进入全屏，请检查浏览器权限；仍可使用缩放和拖动。"); }
+    } catch { setFullscreenError("codeMap.map.fullscreenEnterError"); }
   };
   const visible = useMemo(() => visibleTiles(layout.files, camera, size), [layout, camera, size]);
   const maxCount = useMemo(() => files.reduce((max, file) => Math.max(max, file.activityCount), 1), [files]);
@@ -184,19 +186,19 @@ export function CodeMap({ files, directory, metric, selected, browse, select, he
     }
   };
   const selectedTile = layout.files.some(tile => tile.path === selected);
-  return <section className="map-explorer" ref={explorer} data-fullscreen={fullscreen} aria-label="地图浏览区域">
+  return <section className="map-explorer" ref={explorer} data-fullscreen={fullscreen} aria-label={t("codeMap.map.region")}>
     {heading}
-    <div className="map-toolbar"><div className="map-zoom-controls" role="group" aria-label="地图缩放操作">
-      <button className="icon-button" aria-label="缩小地图" disabled={camera.scale <= fit.scale * 1.0001} onClick={() => zoom(1 / 1.4)}><Minus size={16} /></button>
-      <output aria-label="地图缩放倍率">{fmt(Math.round(camera.scale / fit.scale * 100))}%</output>
-      <button className="icon-button" aria-label="放大地图" disabled={camera.scale >= layout.maxScale} onClick={() => zoom(1.4)}><Plus size={16} /></button>
-      <button className="map-tool-button" aria-label="适应窗口" onClick={reset}><Resize size={16} /><span>适应窗口</span></button>
-      <button className="map-tool-button" aria-label="定位所选文件" disabled={!selectedTile} onClick={locate}><Crosshair size={16} /><span>定位所选文件</span></button>
-    </div><HelpPopover label="地图操作" container={fullscreen ? explorer.current : undefined}><dl>
-      <div><dt>缩放与平移</dt><dd>地图内滚轮缩放，拖动平移；触屏可双指缩放。放大后逐步显示文件名、百分比与行数，缩放只改变视野。</dd></div>
-      <div><dt>定位与键盘</dt><dd>选择文件后可定位到它，适应窗口恢复全图。聚焦地图后用加减键缩放、方向键平移、0 适应窗口。</dd></div></dl></HelpPopover><button className="map-tool-button" aria-label={fullscreen ? "退出地图全屏" : "全屏查看地图"} onClick={() => void toggleFullscreen()}>{fullscreen ? <ArrowsIn size={16} /> : <ArrowsOut size={16} />}<span>{fullscreen ? "退出全屏" : "全屏"}</span></button></div>
-    {fullscreenError && <p className="map-error" role="alert">{fullscreenError}</p>}
-    <div ref={host} className={`code-map${dragging ? " dragging" : ""}`} role="group" tabIndex={0} aria-label="文件行数决定面积的代码活动地图" aria-description="滚轮缩放，拖动平移；聚焦地图后可用加减键缩放、方向键平移、0 适应窗口。" data-scale={camera.scale} data-visible-count={visible.length} data-file-count={layout.files.length}
+    <div className="map-toolbar"><div className="map-zoom-controls" role="group" aria-label={t("codeMap.map.zoomControls")}>
+      <button className="icon-button" aria-label={t("codeMap.map.zoomOut")} disabled={camera.scale <= fit.scale * 1.0001} onClick={() => zoom(1 / 1.4)}><Minus size={16} /></button>
+      <output aria-label={t("codeMap.map.zoomLevel")}>{new Intl.NumberFormat(language, { style: "percent", maximumFractionDigits: 0 }).format(camera.scale / fit.scale)}</output>
+      <button className="icon-button" aria-label={t("codeMap.map.zoomIn")} disabled={camera.scale >= layout.maxScale} onClick={() => zoom(1.4)}><Plus size={16} /></button>
+      <button className="map-tool-button" aria-label={t("codeMap.map.fit")} onClick={reset}><Resize size={16} /><span>{t("codeMap.map.fit")}</span></button>
+      <button className="map-tool-button" aria-label={t("codeMap.map.locate")} disabled={!selectedTile} onClick={locate}><Crosshair size={16} /><span>{t("codeMap.map.locate")}</span></button>
+    </div><HelpPopover label={t("codeMap.map.help")} container={fullscreen ? explorer.current : undefined}><dl>
+      <div><dt>{t("codeMap.map.zoomPan")}</dt><dd>{t("codeMap.map.zoomPanDescription")}</dd></div>
+      <div><dt>{t("codeMap.map.keyboard")}</dt><dd>{t("codeMap.map.keyboardDescription")}</dd></div></dl></HelpPopover><button className="map-tool-button" aria-label={fullscreen ? t("codeMap.map.exitFullscreenLabel") : t("codeMap.map.enterFullscreenLabel")} onClick={() => void toggleFullscreen()}>{fullscreen ? <ArrowsIn size={16} /> : <ArrowsOut size={16} />}<span>{fullscreen ? t("codeMap.map.exitFullscreen") : t("codeMap.map.fullscreen")}</span></button></div>
+    {fullscreenError && <p className="map-error" role="alert">{t(fullscreenError)}</p>}
+    <div ref={host} className={`code-map${dragging ? " dragging" : ""}`} role="group" tabIndex={0} aria-label={t("codeMap.map.label")} aria-description={t("codeMap.map.keyboardLabel")} data-scale={camera.scale} data-visible-count={visible.length} data-file-count={layout.files.length}
       onPointerDown={startPointer} onPointerMove={movePointer} onPointerUp={endPointer} onPointerCancel={endPointer} onPointerLeave={event => {
         if (!host.current!.hasPointerCapture(event.pointerId)) { pointers.current.delete(event.pointerId); gesture.current = null; }
         if (!gesture.current) setHint(null);
@@ -214,12 +216,12 @@ export function CodeMap({ files, directory, metric, selected, browse, select, he
         return <button key={file.path} data-path={file.path} className={`map-file tone-${tone(file)}${selected === file.path ? " selected" : ""}${metric !== "activity" && near ? " has-near" : ""}`} style={position(rect)} aria-label={fileLabel(file, metric)}
           onClick={() => { select(file.path); setHint(null); }} onFocus={() => setHint({ tile, point: { x: labels.x, y: labels.y } })} onBlur={() => setHint(null)}>
           <span className="map-file-labels" style={{ top: labels.y - rect.y - 1 }}>
-            {nameVisible && <span className="tile-name">{tile.name}</span>}{metricVisible && <strong>{valueLabel(file, metric)}</strong>}{roomy && <span className="tile-meta">{fmt(file.lineCount)} 行{metric !== "activity" && near > 0 && <em>+{fmt(near)} 近似</em>}</span>}
+            {nameVisible && <span className="tile-name">{tile.name}</span>}{metricVisible && <strong>{valueLabel(file, metric)}</strong>}{roomy && <span className="tile-meta">{t("codeMap.line.count", { count: file.lineCount })}{metric !== "activity" && near > 0 && <em>{t("codeMap.map.nearCount", { count: near })}</em>}</span>}
           </span>
         </button>;
       })}
-      {headings.map(({ node, rect }) => <button key={node.path} className="map-directory" style={{ left: rect.x, top: rect.y, maxWidth: rect.width }} onClick={() => browse(node.path)} aria-label={`进入目录 ${node.path}`}><Folder size={13} /><span>{node.name}</span><CaretRight size={12} /></button>)}
-      {hint && !dragging && <div className="map-hover-hint" role="tooltip" style={{ left: Math.max(4, Math.min(hint.point.x + 12, size.width - Math.min(310, size.width - 8))), top: Math.max(4, Math.min(hint.point.y + 16, size.height - 78)), maxWidth: Math.min(310, size.width - 8) }}><span>{hint.tile.path}</span><strong>{metricNames[metric]} {valueLabel(hint.tile.file, metric)}</strong><small>{fmt(hint.tile.file.lineCount)} 行</small></div>}
+      {headings.map(({ node, rect }) => <button key={node.path} className="map-directory" style={{ left: rect.x, top: rect.y, maxWidth: rect.width }} onClick={() => browse(node.path)} aria-label={t("codeMap.map.enterDirectory", { path: node.path })}><Folder size={13} /><span>{node.name}</span><CaretRight size={12} /></button>)}
+      {hint && !dragging && <div className="map-hover-hint" role="tooltip" style={{ left: Math.max(4, Math.min(hint.point.x + 12, size.width - Math.min(310, size.width - 8))), top: Math.max(4, Math.min(hint.point.y + 16, size.height - 78)), maxWidth: Math.min(310, size.width - 8) }}><span>{hint.tile.path}</span><strong>{metricNames[metric]} {valueLabel(hint.tile.file, metric)}</strong><small>{t("codeMap.line.count", { count: hint.tile.file.lineCount })}</small></div>}
     </div>
     {legend}
   </section>;

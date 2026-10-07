@@ -7,12 +7,12 @@ export function sessionRefreshOptions(body: unknown): SessionRefreshOptions {
   if (body === undefined) return {};
   if (!body || typeof body !== "object" || Array.isArray(body)
     || Object.keys(body).some(key => key !== "client" && key !== "mode")) {
-    throw new ServiceError("INVALID_INPUT", "刷新请求体只能包含 client 和 mode");
+    throw new ServiceError("INVALID_INPUT", "刷新请求体只能包含 client 和 mode", { key: "diagnostics.service.sessionInput.m001" });
   }
   const raw = body as Record<string, unknown>;
   const client = textValue(raw.client, "client");
-  if (client && !clientIds.includes(client as Client)) throw new ServiceError("INVALID_INPUT", "未知客户端");
-  if (raw.mode !== undefined && raw.mode !== "quick" && raw.mode !== "full") throw new ServiceError("INVALID_INPUT", "检查方式必须是 quick 或 full");
+  if (client && !clientIds.includes(client as Client)) throw new ServiceError("INVALID_INPUT", "未知客户端", { key: "diagnostics.service.sessionInput.m002" });
+  if (raw.mode !== undefined && raw.mode !== "quick" && raw.mode !== "full") throw new ServiceError("INVALID_INPUT", "检查方式必须是 quick 或 full", { key: "diagnostics.service.sessionInput.m003" });
   return { client: client as Client | undefined, mode: raw.mode as SessionRefreshOptions["mode"] };
 }
 
@@ -23,14 +23,14 @@ export function sessionQuery(raw: Record<string, unknown>): SessionQuery {
   for (const key of ["project", "q"] as const) query[key] = textValue(raw[key], key);
   if (raw.includeSubagents !== undefined) query.includeSubagents = queryBoolean(raw.includeSubagents, "includeSubagents");
   if (raw.executionMode !== undefined) {
-    if (!["regular", "quiet", "all"].includes(raw.executionMode as string)) throw new ServiceError("INVALID_INPUT", "未知会话执行类型");
+    if (!["regular", "quiet", "all"].includes(raw.executionMode as string)) throw new ServiceError("INVALID_INPUT", "未知会话执行类型", { key: "diagnostics.service.sessionInput.m004" });
     query.executionMode = raw.executionMode as SessionQuery["executionMode"];
   }
   const kinds = textValue(raw.kinds, "kinds");
   if (kinds) {
     const values = kinds.split(",");
     if (values.some(value => !["user", "assistant", "thinking", "tool_call", "tool_result", "system", "context", "compression"].includes(value))) {
-      throw new ServiceError("INVALID_INPUT", "未知会话内容类型");
+      throw new ServiceError("INVALID_INPUT", "未知会话内容类型", { key: "diagnostics.service.sessionInput.m005" });
     }
     query.kinds = [...new Set(values)] as MessageKind[];
   }
@@ -39,23 +39,23 @@ export function sessionQuery(raw: Record<string, unknown>): SessionQuery {
 
 export function sessionMode(value: unknown): "brief" | "full" | "trace" | undefined {
   if (value === undefined) return undefined;
-  if (value !== "brief" && value !== "full" && value !== "trace") throw new ServiceError("INVALID_INPUT", "未知会话查看方式");
+  if (value !== "brief" && value !== "full" && value !== "trace") throw new ServiceError("INVALID_INPUT", "未知会话查看方式", { key: "diagnostics.service.sessionInput.m006" });
   return value;
 }
 
 export function sessionMessageQuery(raw: Record<string, unknown>): SessionMessageQuery {
   const query: SessionMessageQuery = { ...sessionQuery(raw), mode: sessionMode(raw.mode) };
   const pageUnit = textValue(raw.pageUnit, "pageUnit");
-  if (pageUnit !== undefined && pageUnit !== "message" && pageUnit !== "turn") throw new ServiceError("INVALID_INPUT", "未知消息分页单位");
+  if (pageUnit !== undefined && pageUnit !== "message" && pageUnit !== "turn") throw new ServiceError("INVALID_INPUT", "未知消息分页单位", { key: "diagnostics.service.sessionInput.m007" });
   if (pageUnit) query.pageUnit = pageUnit;
   if (pageUnit === "turn" && raw.pageSize === undefined) query.pageSize = 10;
   if (raw.turnPosition !== undefined) {
-    if (pageUnit !== "turn") throw new ServiceError("INVALID_INPUT", "turnPosition 仅支持完整轮次分页");
+    if (pageUnit !== "turn") throw new ServiceError("INVALID_INPUT", "turnPosition 仅支持完整轮次分页", { key: "diagnostics.service.sessionInput.m008" });
     query.turnPosition = integer(raw.turnPosition, "turnPosition", 1, 1_000_000_000);
   }
   for (const key of ["messageId", "toolName", "resourceName", "resourceServer", "branch"] as const) query[key] = textValue(raw[key], key);
   const resourceKind = textValue(raw.resourceKind, "resourceKind");
-  if (resourceKind !== undefined && !["mcp", "skill_call", "skill_read"].includes(resourceKind)) throw new ServiceError("INVALID_INPUT", "未知资源证据类型");
+  if (resourceKind !== undefined && !["mcp", "skill_call", "skill_read"].includes(resourceKind)) throw new ServiceError("INVALID_INPUT", "未知资源证据类型", { key: "diagnostics.service.sessionInput.m009" });
   if (resourceKind) query.resourceKind = resourceKind as SessionMessageQuery["resourceKind"];
   return query;
 }
@@ -63,5 +63,5 @@ export function sessionMessageQuery(raw: Record<string, unknown>): SessionMessag
 export function queryBoolean(value: unknown, name: string): boolean {
   if (value === undefined || value === "false") return false;
   if (value === "true") return true;
-  throw new ServiceError("INVALID_INPUT", `${name} 必须是 true 或 false`);
+  throw new ServiceError("INVALID_INPUT", `${name} 必须是 true 或 false`, { key: "diagnostics.service.sessionInput.m010", params: { p0: String(name) } });
 }

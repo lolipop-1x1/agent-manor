@@ -1,11 +1,13 @@
+import { t } from "./i18n";
+
 export type PanelSide = "sidebar" | "details";
 export type PanelWidths = Record<PanelSide, number>;
 export type CollapsedPanels = Record<PanelSide, boolean>;
 export type PanelSemantics = Partial<Record<PanelSide, { label: string; controls: string }>>;
 
 const defaultPanelSemantics: Record<PanelSide, { label: string; controls: string }> = {
-  sidebar: { label: "调整仓库导航宽度", controls: "repository-navigation-content" },
-  details: { label: "调整文件详情宽度", controls: "file-details-content" },
+  sidebar: { get label() { return t("common.workspace.sidebarWidth"); }, controls: "repository-navigation-content" },
+  details: { get label() { return t("common.workspace.detailsWidth"); }, controls: "file-details-content" },
 };
 
 export function panelSemantics(side: PanelSide, overrides: PanelSemantics = {}) {

@@ -1,3 +1,5 @@
+import { DiagnosticError } from "../i18n/diagnostics.js";
+import type { MessageDescriptor } from "../i18n/types.js";
 import Database from "better-sqlite3";
 import { randomUUID } from "node:crypto";
 import { mkdirSync } from "node:fs";
@@ -6,7 +8,7 @@ import type { AnalysisSnapshot, ApiErrorCode, HistorySource, Job, Mapping, Parse
 import { getRepository } from "../analysis/index.js";
 
 export class StoreError extends Error {
-  constructor(public readonly code: ApiErrorCode, message: string) {
+  constructor(public readonly code: ApiErrorCode, message: string, readonly messageDescriptor?: MessageDescriptor) {
     super(message);
     this.name = "StoreError";
   }
@@ -51,7 +53,7 @@ export class AnalysisStore {
 
   private migrate(): void {
     const version = this.database.pragma("user_version", { simple: true }) as number;
-    if (version > 3) throw new Error(`不支持的索引版本 ${version}`);
+    if (version > 3) throw new DiagnosticError(`不支持的索引版本 ${version}`, { key: "diagnostics.index.store.m001", params: { p0: version } });
     if (version === 3) return;
     this.database.transaction(() => {
       if (version === 0) this.database.exec(`
@@ -158,17 +160,17 @@ export class AnalysisStore {
 
   getRepository(id: string): Repository {
     const row = this.database.prepare("SELECT json,version,stale FROM repositories WHERE id=?").get(id) as RepositoryRow | undefined;
-    if (!row) throw new StoreError("REPOSITORY_NOT_FOUND", "仓库尚未登记");
+    if (!row) throw new StoreError("REPOSITORY_NOT_FOUND", "仓库尚未登记", { key: "diagnostics.index.store.m002" });
     return this.repository(row);
   }
 
   getSnapshot(repositoryId: string, version?: string): AnalysisSnapshot {
     const repository = this.getRepository(repositoryId);
     const selected = version ?? repository.version;
-    if (!selected) throw new StoreError("ANALYSIS_NOT_READY", "仓库尚无完整分析结果");
+    if (!selected) throw new StoreError("ANALYSIS_NOT_READY", "仓库尚无完整分析结果", { key: "diagnostics.index.store.m003" });
     const row = this.database.prepare("SELECT snapshot AS json FROM versions WHERE repository_id=? AND version=?")
       .get(repositoryId, selected) as JsonRow | undefined;
-    if (!row) throw new StoreError("VERSION_NOT_FOUND", "分析结果版本不存在");
+    if (!row) throw new StoreError("VERSION_NOT_FOUND", "分析结果版本不存在", { key: "diagnostics.index.store.m004" });
     const snapshot = this.readPayload<AnalysisSnapshot>(row.json, repositoryId, "snapshot", selected);
     snapshot.sources = snapshot.sources.map((source) => this.sourceMetadata(source));
     snapshot.repository.stale = repository.stale || selected !== repository.version;
@@ -180,7 +182,7 @@ export class AnalysisStore {
     const selected = this.selectVersion(repositoryId, version);
     const row = this.database.prepare("SELECT sources AS json FROM versions WHERE repository_id=? AND version=?")
       .get(repositoryId, selected) as JsonRow | undefined;
-    if (!row) throw new StoreError("VERSION_NOT_FOUND", "分析结果版本不存在");
+    if (!row) throw new StoreError("VERSION_NOT_FOUND", "分析结果版本不存在", { key: "diagnostics.index.store.m004" });
     return this.readPayload<SourcesResponse>(row.json, repositoryId, "sources", selected);
   }
 
@@ -188,7 +190,7 @@ export class AnalysisStore {
     this.getRepository(repositoryId);
     const sources = this.listSources(repositoryId);
     if (![...sources.sources, ...sources.unassociated].some((source) => source.sourceId === sourceId)) {
-      throw new StoreError("SOURCE_NOT_FOUND", "来源尚未发现");
+      throw new StoreError("SOURCE_NOT_FOUND", "来源尚未发现", { key: "diagnostics.index.store.m005" });
     }
     this.database.prepare("INSERT OR IGNORE INTO manual_associations(repository_id,source_id) VALUES(?,?)")
       .run(repositoryId, sourceId);
@@ -235,20 +237,20 @@ export class AnalysisStore {
     const selected = this.selectVersion(repositoryId, version);
     const row = this.database.prepare("SELECT stats AS json FROM versions WHERE repository_id=? AND version=?")
       .get(repositoryId, selected) as JsonRow | undefined;
-    if (!row) throw new StoreError("VERSION_NOT_FOUND", "分析结果版本不存在");
+    if (!row) throw new StoreError("VERSION_NOT_FOUND", "分析结果版本不存在", { key: "diagnostics.index.store.m004" });
     return JSON.parse(row.json) as RefreshStats;
   }
 
   private selectVersion(repositoryId: string, version?: string): string {
     const selected = version ?? this.getRepository(repositoryId).version;
-    if (!selected) throw new StoreError("ANALYSIS_NOT_READY", "仓库尚无完整分析结果");
+    if (!selected) throw new StoreError("ANALYSIS_NOT_READY", "仓库尚无完整分析结果", { key: "diagnostics.index.store.m003" });
     this.getRepository(repositoryId);
     return selected;
   }
 
   createJob(repositoryId: string): Job {
     this.getRepository(repositoryId);
-    const job: Job = { id: randomUUID(), repositoryId, status: "queued", phase: "等待分析", progress: 0 };
+    const job: Job = { id: randomUUID(), repositoryId, status: "queued", phase: "等待分析", phaseDescriptor: { key: "diagnostics.index.store.m006" }, progress: 0 };
     this.database.prepare("INSERT INTO jobs(id,repository_id,json) VALUES(?,?,?)")
       .run(job.id, repositoryId, JSON.stringify(job));
     return job;
@@ -256,7 +258,7 @@ export class AnalysisStore {
 
   getJob(id: string): Job {
     const row = this.database.prepare("SELECT json FROM jobs WHERE id=?").get(id) as JsonRow | undefined;
-    if (!row) throw new StoreError("JOB_NOT_FOUND", "刷新任务不存在");
+    if (!row) throw new StoreError("JOB_NOT_FOUND", "刷新任务不存在", { key: "diagnostics.index.store.m007" });
     return JSON.parse(row.json) as Job;
   }
 
@@ -271,9 +273,11 @@ export class AnalysisStore {
     return job;
   }
 
-  failJob(id: string, error: string): Job {
+  failJob(id: string, error: string, errorDescriptor?: MessageDescriptor): Job {
+    const existing = this.getJob(id);
+    if (existing.status === "failed") return existing;
     return this.database.transaction(() => {
-      const job = this.updateJob(id, { status: "failed", phase: "刷新失败", progress: 1, finishedAt: new Date().toISOString(), error });
+      const job = this.updateJob(id, { status: "failed", phase: "刷新失败", phaseDescriptor: { key: "diagnostics.index.store.m008" }, progress: 1, finishedAt: new Date().toISOString(), error, errorDescriptor });
       this.database.prepare("UPDATE repositories SET stale=1 WHERE id=?").run(job.repositoryId);
       return job;
     })();
@@ -281,7 +285,7 @@ export class AnalysisStore {
 
   recoverJobs(): void {
     for (const job of this.listJobs()) {
-      if (job.status === "queued" || job.status === "running") this.failJob(job.id, "后台上次停止时刷新尚未完成");
+      if (job.status === "queued" || job.status === "running") this.failJob(job.id, "后台上次停止时刷新尚未完成", { key: "diagnostics.index.store.interrupted" });
     }
   }
 
@@ -310,7 +314,7 @@ export class AnalysisStore {
       const saveMapping = this.database.prepare("INSERT OR REPLACE INTO mapping_cache(repository_id,key,json) VALUES(?,?,?)");
       for (const entry of input.mappings) saveMapping.run(snapshot.repository.id, entry.key, JSON.stringify(entry.mapping));
       this.database.prepare("UPDATE repositories SET version=?,stale=0 WHERE id=?").run(snapshot.version, snapshot.repository.id);
-      this.updateJob(input.jobId, { status: "completed", phase: "分析完成", progress: 1, finishedAt: new Date().toISOString(), version: snapshot.version });
+      this.updateJob(input.jobId, { status: "completed", phase: "分析完成", phaseDescriptor: { key: "diagnostics.index.store.m009" }, progress: 1, finishedAt: new Date().toISOString(), version: snapshot.version });
     })();
   }
 

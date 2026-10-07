@@ -164,6 +164,7 @@
 .resource-dialog .resource-detail-section h3 { margin: 0; }
 .resource-dialog .resource-alert { margin-top: 10px; }
 .resource-danger-button { color: var(--danger); }
+.resource-alert > .resource-operation-message, .resource-facts .resource-operation-message { min-width: 0; margin: 0; }
 .resource-operation-message { margin: 17px 0; color: var(--text); font-size: 12px; line-height: 1.8; overflow-wrap: anywhere; }
 .resource-preview-heading { display: grid; gap: 10px; }
 .resource-preview-heading > strong { font-size: 17px; overflow-wrap: anywhere; }

@@ -1,3 +1,4 @@
+import type { MessageDescriptor } from "../i18n/types.js";
 import { diffLines } from "diff";
 import type { EventKind, EventStatus, EvidenceFragment, JsonValue } from "../contracts.js";
 
@@ -12,6 +13,7 @@ export interface ToolEvidence {
   path?: string;
   fragments: EvidenceFragment[];
   reason?: string;
+  reasonDescriptor?: MessageDescriptor;
 }
 
 export function textContent(value: unknown): string {
@@ -41,13 +43,13 @@ export function returnedText(value: string): { content: string; truncated: boole
   return { content: before.slice(0, before.lastIndexOf("\n") + 1), truncated: true };
 }
 
-export function shellResult(value: unknown): { status: EventStatus; output: string; reason?: string } {
+export function shellResult(value: unknown): { status: EventStatus; output: string; reason?: string; reasonDescriptor?: MessageDescriptor } {
   const result = object(value);
   const exitCode = number(result.exit_code) ?? number(result.exitCode);
-  if (exitCode !== undefined) return { status: exitCode === 0 ? "success" : "failure", output: string(result.output) ?? "", reason: exitCode === 0 ? undefined : `退出码 ${exitCode}` };
+  if (exitCode !== undefined) return { status: exitCode === 0 ? "success" : "failure", output: string(result.output) ?? "", reason: exitCode === 0 ? undefined : `退出码 ${exitCode}`, reasonDescriptor: exitCode === 0 ? undefined : { key: "diagnostics.history.extraction.m001", params: { p0: exitCode } } };
   const text = textContent(value);
   const match = /(?:^|\n)(?:Exit code:|Process exited with code)\s*(-?\d+)/.exec(text);
-  return { status: match ? Number(match[1]) === 0 ? "success" : "failure" : "unknown", output: text, reason: match ? undefined : "未找到执行终态" };
+  return { status: match ? Number(match[1]) === 0 ? "success" : "failure" : "unknown", output: text, reason: match ? undefined : "未找到执行终态", reasonDescriptor: match ? undefined : { key: "diagnostics.history.extraction.m002" } };
 }
 
 export function words(command: string, allowAnd = false): string[] | undefined {
@@ -84,7 +86,7 @@ function read(content: string, path: string, start?: number): ToolEvidence {
   return {
     kind: "read", path,
     fragments: returned.content ? [{ content: returned.content, kind: "read", historicalStart: start, completeLines: true }] : [],
-    reason: returned.truncated ? "range_unknown: 工具返回截断，仅保留截断标记前完整返回行" : undefined,
+    reason: returned.truncated ? "range_unknown: 工具返回截断，仅保留截断标记前完整返回行" : undefined, reasonDescriptor: returned.truncated ? { key: "diagnostics.history.extraction.m003" } : undefined,
   };
 }
 
@@ -95,7 +97,7 @@ function numberedRead(content: string, path: string, expectedStart?: number): To
   let current: EvidenceFragment | undefined;
   for (const line of physicalLines(returned.content)) {
     const match = /^\s*(\d+)[\t ](.*)$/.exec(line);
-    if (!match) return { kind: "read", path, fragments: [], reason: "range_unknown: 行号输出含无法校验的行" };
+    if (!match) return { kind: "read", path, fragments: [], reason: "range_unknown: 行号输出含无法校验的行", reasonDescriptor: { key: "diagnostics.history.extraction.m004" } };
     const lineNumber = Number(match[1]);
     if (!current || last === undefined || lineNumber !== last + 1) {
       current = { kind: "read", content: `${match[2]}\n`, historicalStart: lineNumber, completeLines: true };
@@ -104,9 +106,9 @@ function numberedRead(content: string, path: string, expectedStart?: number): To
     last = lineNumber;
   }
   if (expectedStart !== undefined && fragments[0]?.historicalStart !== expectedStart && fragments.length) {
-    return { kind: "read", path, fragments: [], reason: "range_unknown: 返回行号与请求范围不符" };
+    return { kind: "read", path, fragments: [], reason: "range_unknown: 返回行号与请求范围不符", reasonDescriptor: { key: "diagnostics.history.extraction.m005" } };
   }
-  return { kind: "read", path, fragments, reason: returned.truncated ? "range_unknown: 返回截断，仅保留完整编号行" : undefined };
+  return { kind: "read", path, fragments, reason: returned.truncated ? "range_unknown: 返回截断，仅保留完整编号行" : undefined, reasonDescriptor: returned.truncated ? { key: "diagnostics.history.extraction.m006" } : undefined };
 }
 
 function visibleReadLines(content: string): { lineNumber: number; content: string }[] | undefined {
@@ -137,7 +139,7 @@ function fixedSedBundle(command: string, output: string): ToolEvidence[] | undef
   const returned = returnedText(output);
   const lines = physicalLines(returned.content);
   if (returned.truncated || lines.length !== ranges.reduce((sum, range) => sum + range.count, 0)) {
-    return ranges.map(range => ({ kind: "read", path: range.path, fragments: [], reason: "range_unknown: 多段 sed 返回截断或行数不符，无法确认分段边界" }));
+    return ranges.map(range => ({ kind: "read", path: range.path, fragments: [], reason: "range_unknown: 多段 sed 返回截断或行数不符，无法确认分段边界", reasonDescriptor: { key: "diagnostics.history.extraction.m007" } }));
   }
   let offset = 0;
   return ranges.map(range => {
@@ -155,20 +157,20 @@ export function shellEvidence(command: string, output: string): ToolEvidence[] {
   }
   const bundle = fixedSedBundle(command, output);
   if (bundle) return bundle;
-  if (!tokens?.length) return [{ kind: "other", fragments: [], reason: "unsupported_tool: 复杂 Shell 语法未解析" }];
+  if (!tokens?.length) return [{ kind: "other", fragments: [], reason: "unsupported_tool: 复杂 Shell 语法未解析", reasonDescriptor: { key: "diagnostics.history.extraction.m008" } }];
   const executable = tokens[0]!.split("/").at(-1)!;
   if (executable === "rg") {
-    return [{ kind: tokens.includes("--files") ? "other" : "search", path: tokens.length > 2 && !tokens.at(-1)!.startsWith("-") ? tokens.at(-1) : undefined, fragments: [], reason: tokens.includes("--files") ? "文件列举不属于内容读取" : undefined }];
+    return [{ kind: tokens.includes("--files") ? "other" : "search", path: tokens.length > 2 && !tokens.at(-1)!.startsWith("-") ? tokens.at(-1) : undefined, fragments: [], reason: tokens.includes("--files") ? "文件列举不属于内容读取" : undefined, reasonDescriptor: tokens.includes("--files") ? { key: "diagnostics.history.extraction.m009" } : undefined }];
   }
   if (executable === "cat" && tokens.length === 2 && !tokens[1]!.startsWith("-")) return [read(output, tokens[1]!, 1)];
   if (executable === "cat" && tokens.length > 2 && tokens.slice(1).every((token) => !token.startsWith("-") && token !== "|")) {
-    return tokens.slice(1).map((path) => ({ kind: "read", path, fragments: [], reason: "range_unknown: 多文件 cat 无可确认输出边界" }));
+    return tokens.slice(1).map((path) => ({ kind: "read", path, fragments: [], reason: "range_unknown: 多文件 cat 无可确认输出边界", reasonDescriptor: { key: "diagnostics.history.extraction.m010" } }));
   }
   if (executable === "sed" && tokens.length === 4 && tokens[1] === "-n") {
     const range = /^(\d+)(?:,(\d+))?p$/.exec(tokens[2]!);
     if (range && Number(range[1]) >= 1 && Number(range[2] ?? range[1]) >= Number(range[1])) {
       const evidence = read(output, tokens[3]!, Number(range[1]));
-      if (evidence.fragments.some((fragment) => physicalLines(fragment.content).length > Number(range[2] ?? range[1]) - Number(range[1]) + 1)) return [{ kind: "read", path: tokens[3], fragments: [], reason: "range_unknown: sed 返回行数超过选择范围" }];
+      if (evidence.fragments.some((fragment) => physicalLines(fragment.content).length > Number(range[2] ?? range[1]) - Number(range[1]) + 1)) return [{ kind: "read", path: tokens[3], fragments: [], reason: "range_unknown: sed 返回行数超过选择范围", reasonDescriptor: { key: "diagnostics.history.extraction.m011" } }];
       return [evidence];
     }
   }
@@ -176,7 +178,7 @@ export function shellEvidence(command: string, output: string): ToolEvidence[] {
     const operand = tokens.length === 4 && tokens[1] === "-n" ? tokens[2] : tokens.length === 3 && /^-\d+$/.test(tokens[1]!) ? tokens[1]!.slice(1) : undefined;
     if (operand && /^\+?\d+$/.test(operand) && Number(operand) > 0 && (executable === "tail" || !operand.startsWith("+"))) {
       const evidence = read(output, tokens.at(-1)!, executable === "head" ? 1 : operand.startsWith("+") ? Number(operand.slice(1)) : undefined);
-      if (!operand.startsWith("+") && evidence.fragments.some((fragment) => physicalLines(fragment.content).length > Number(operand))) return [{ kind: "read", path: tokens.at(-1), fragments: [], reason: "range_unknown: head/tail 返回行数超过请求" }];
+      if (!operand.startsWith("+") && evidence.fragments.some((fragment) => physicalLines(fragment.content).length > Number(operand))) return [{ kind: "read", path: tokens.at(-1), fragments: [], reason: "range_unknown: head/tail 返回行数超过请求", reasonDescriptor: { key: "diagnostics.history.extraction.m012" } }];
       return [evidence];
     }
   }
@@ -186,12 +188,12 @@ export function shellEvidence(command: string, output: string): ToolEvidence[] {
       const range = /^(\d+),(\d+)p$/.exec(tokens[6]!);
       if (range) {
         const evidence = numberedRead(output, tokens[2]!, Number(range[1]));
-        if (evidence.fragments.some((fragment) => fragment.historicalStart! + physicalLines(fragment.content).length - 1 > Number(range[2]))) return [{ kind: "read", path: tokens[2], fragments: [], reason: "range_unknown: nl 返回行号超过选择范围" }];
+        if (evidence.fragments.some((fragment) => fragment.historicalStart! + physicalLines(fragment.content).length - 1 > Number(range[2]))) return [{ kind: "read", path: tokens[2], fragments: [], reason: "range_unknown: nl 返回行号超过选择范围", reasonDescriptor: { key: "diagnostics.history.extraction.m013" } }];
         return [evidence];
       }
     }
   }
-  return [{ kind: "other", fragments: [], reason: "unsupported_tool: Shell 参数或组合不在支持矩阵中" }];
+  return [{ kind: "other", fragments: [], reason: "unsupported_tool: Shell 参数或组合不在支持矩阵中", reasonDescriptor: { key: "diagnostics.history.extraction.m014" } }];
 }
 
 export function patchFragments(lines: string[], oldStart: number, newStart: number, path?: string): EvidenceFragment[] {
@@ -259,10 +261,10 @@ export function toolEvidence(tool: string, inputValue: unknown, resultValue: unk
       const returnedPath = string(file.filePath);
       if (content === undefined || start === undefined || count === undefined || !Number.isInteger(start) || !Number.isInteger(count) || start < 1 || count < 0
         || (total !== undefined && start + count - 1 > total) || returned.truncated || returnedText(content).truncated) {
-        return [{ kind: "read", path, fragments: [], reason: "range_unknown: Read 结构化范围与实际返回内容无法校验" }];
+        return [{ kind: "read", path, fragments: [], reason: "range_unknown: Read 结构化范围与实际返回内容无法校验", reasonDescriptor: { key: "diagnostics.history.extraction.m015" } }];
       }
       if ((path && returnedPath && path !== returnedPath) || (requestedStart !== undefined && start !== Math.max(1, requestedStart)) || (requestedLimit !== undefined && count > requestedLimit)) {
-        return [{ kind: "read", path, fragments: [], reason: "range_unknown: Read 返回路径或范围与请求不一致" }];
+        return [{ kind: "read", path, fragments: [], reason: "range_unknown: Read 返回路径或范围与请求不一致", reasonDescriptor: { key: "diagnostics.history.extraction.m016" } }];
       }
       const sourceLines = physicalLines(content);
       const sdkLines = content.replace(/\r\n/g, "\n").split("\n");
@@ -271,17 +273,17 @@ export function toolEvidence(tool: string, inputValue: unknown, resultValue: unk
         && numbered?.length === count && numbered.at(-1)?.content === ""
         && numbered.every((line, index) => line.lineNumber === start + index && line.content === sdkLines[index]);
       if (count !== sourceLines.length && !virtualEof) {
-        return [{ kind: "read", path, fragments: [], reason: "range_unknown: Read 结构化行数不符，未确认 SDK 虚拟 EOF 空行" }];
+        return [{ kind: "read", path, fragments: [], reason: "range_unknown: Read 结构化行数不符，未确认 SDK 虚拟 EOF 空行", reasonDescriptor: { key: "diagnostics.history.extraction.m017" } }];
       }
       const visibleSourceLines = virtualEof ? numbered!.slice(0, -1) : numbered;
       if (/^\s*\d+\t/m.test(visibleOutput) && (!visibleSourceLines || visibleSourceLines.length !== sourceLines.length
         || visibleSourceLines.some((line, index) => line.lineNumber !== start + index || line.content !== sourceLines[index]))) {
-        return [{ kind: "read", path, fragments: [], reason: "range_unknown: Read 行号文本与结构化内容不一致" }];
+        return [{ kind: "read", path, fragments: [], reason: "range_unknown: Read 行号文本与结构化内容不一致", reasonDescriptor: { key: "diagnostics.history.extraction.m018" } }];
       }
       return [{ kind: "read", path: path ?? string(file.filePath), fragments: content ? [{ content, kind: "read", historicalStart: start, completeLines: true }] : [] }];
     }
     if (path && /^\s*\d+\t/m.test(visibleOutput)) return [numberedRead(visibleOutput, path)];
-    return [{ kind: "read", path, fragments: [], reason: "range_unknown: Read 缺少可校验的实际行范围" }];
+    return [{ kind: "read", path, fragments: [], reason: "range_unknown: Read 缺少可校验的实际行范围", reasonDescriptor: { key: "diagnostics.history.extraction.m019" } }];
   }
   if (["Edit", "edit_file"].includes(tool)) {
     if (Array.isArray(result.structuredPatch)) {
@@ -292,16 +294,16 @@ export function toolEvidence(tool: string, inputValue: unknown, resultValue: unk
     }
     const before = string(input.old_string);
     const after = string(input.new_string);
-    return [{ kind: "edit", path, fragments: before !== undefined && after !== undefined ? changedFragments(before, after, path).map((fragment) => ({ ...fragment, historicalStart: undefined })) : [], reason: "range_unknown: Edit 无结构化位置；仅保留变化片段" }];
+    return [{ kind: "edit", path, fragments: before !== undefined && after !== undefined ? changedFragments(before, after, path).map((fragment) => ({ ...fragment, historicalStart: undefined })) : [], reason: "range_unknown: Edit 无结构化位置；仅保留变化片段", reasonDescriptor: { key: "diagnostics.history.extraction.m020" } }];
   }
   if (["Write", "write_file"].includes(tool)) {
     const content = string(result.content) ?? string(input.content);
-    if (content === undefined) return [{ kind: "edit", path, fragments: [], reason: "range_unknown: Write 缺少成功写入内容" }];
+    if (content === undefined) return [{ kind: "edit", path, fragments: [], reason: "range_unknown: Write 缺少成功写入内容", reasonDescriptor: { key: "diagnostics.history.extraction.m021" } }];
     const before = string(result.originalFile);
     if (before !== undefined) return [{ kind: "edit", path, fragments: changedFragments(before, content, path) }];
     if (result.type === "create" || result.originalFile === null) return [{ kind: "edit", path, fragments: content ? [{ kind: "added", content, historicalStart: 1, completeLines: true, path }] : [] }];
-    return [{ kind: "edit", path, fragments: [], reason: "range_unknown: Write 未确认新建或覆盖前内容" }];
+    return [{ kind: "edit", path, fragments: [], reason: "range_unknown: Write 未确认新建或覆盖前内容", reasonDescriptor: { key: "diagnostics.history.extraction.m022" } }];
   }
   if (["Grep", "Glob", "search", "rg"].includes(tool)) return [{ kind: "search", path, fragments: [] }];
-  return [{ kind: "other", path, fragments: [], reason: `unsupported_tool: ${tool} 未提取代码范围` }];
+  return [{ kind: "other", path, fragments: [], reason: `unsupported_tool: ${tool} 未提取代码范围`, reasonDescriptor: { key: "diagnostics.history.extraction.m023", params: { p0: String(tool) } } }];
 }

@@ -86,6 +86,7 @@ try {
   const initialConfig = await readFile(fixture.configPath, "utf8");
   const usage = await api("/resources/usage?kind=skill");
   assert.equal(usage.resources.find(row => row.identity.name === "guide")?.stats.successfulReads, 1);
+  await api("/preferences", "PUT", { language: "zh-CN" });
   await browser(["open", `${base}/`, "--headed", "--browser=chrome"]);
 
   await step("入口、Skill 读取与调用分列", `

@@ -38,6 +38,28 @@ function source(store: SessionStore, summary: SessionSourceMeta, messages: Sessi
   return { path: summary.path, revision: pending.revision, fingerprint: "synthetic-fingerprint" };
 }
 
+test("缺失 Skill 名描述贯通资源聚合但不改变稳定身份，混合旧或真实同名保留原名", async () => fixture(store => {
+  const descriptor = { key: "sessions.resource.nameUnrecorded" };
+  const generated = source(store, meta("generated"), [message("generated", 0, { resource: { kind: "skill_call", name: "未记录名称", nameDescriptor: descriptor } })]);
+  store.publish(store.createJob().id, [generated], []);
+  const event = [...store.resourceEvents().events][0]!;
+  const originalId = resourceHistoryIdentity({ ...event, nameDescriptor: undefined }).id;
+  const identity = resourceHistoryIdentity(event);
+  assert.equal(identity.id, originalId);
+  assert.equal(resourceOverviewIdentity(identity, event.source.sourceId).id, resourceOverviewIdentity({ ...identity, nameDescriptor: undefined }, event.source.sourceId).id);
+  assert.deepEqual(listResourceUsage(store).resources[0]?.identity.nameDescriptor, descriptor);
+  assert.deepEqual(resourceUsageDetail(store, identity.id).origins[0]?.nameDescriptor, descriptor);
+  const mixed = source(store, meta("mixed"), [message("mixed", 0, { resource: { kind: "skill_call", name: "未记录名称", nameDescriptor: descriptor } }),
+    message("mixed", 1, { resource: { kind: "skill_call", name: "未记录名称" } })]);
+  store.publish(store.createJob().id, [mixed], []);
+  const row = listResourceUsage(store).resources[0]!;
+  assert.equal(row.identity.id, originalId);
+  assert.equal(row.identity.name, "未记录名称");
+  assert.equal(row.identity.nameDescriptor, undefined);
+  assert.equal(row.stats.events, 2);
+  assert.equal(resourceUsageDetail(store, row.identity.id).origins[0]?.nameDescriptor, undefined);
+}));
+
 test("资源采集缺口按已确认来源客户端归属，未知来源保持全局保守", async () => fixture(store => {
   const first = source(store, meta("covered"), [message("covered", 0, { resource: { kind: "skill_call", name: "guide" } })]);
   const second = source(store, meta("partial", { client: "claude", sourceId: "synthetic:partial" }), []);

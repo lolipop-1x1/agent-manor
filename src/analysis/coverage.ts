@@ -93,7 +93,8 @@ function mappingGap(mapping: Mapping, event: HistoryEvent): Gap | undefined {
   if (!mapping.unknownReason) return undefined;
   const kind = mapping.unknownReason.startsWith("ambiguous:") ? "ambiguous"
     : mapping.unknownReason.startsWith("budget_exceeded:") ? "budget_exceeded" : "range_unknown";
-  return { kind, message: `${mapping.filePath}: ${mapping.unknownReason}`, sourceId: event.sources[0]?.sourceId, count: 1 };
+  return { kind, message: `${mapping.filePath}: ${mapping.unknownReason}`, sourceId: event.sources[0]?.sourceId, count: 1,
+    ...(mapping.unknownReasonDescriptors?.length ? { messageDescriptor: { key: "diagnostics.analysis.coverage.mappingUnknown", params: { path: mapping.filePath } }, details: mapping.unknownReasonDescriptors } : {}) };
 }
 
 export function buildCoverage(snapshot: AnalysisSnapshot, filters: Filters = {}): CoverageResult {
