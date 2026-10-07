@@ -6,7 +6,7 @@
 
 首版提供目录代码地图、文件与行覆盖率、活动和原始证据回查，以及共用一个本地后台的 Web、CLI 和 Agent Skill。精确对应与近似对应分别展示；不能确定的范围保留采集缺口。
 
-当前是 `0.1.0` 本地交付版本，npm 包保持 `private`，尚未发布到 npm。运行目标为 Node.js 24 和 Git，先验证 macOS Apple Silicon；Windows／Linux 尚未完成安装验收。许可证尚未选定。
+当前是 `0.1.0` 本地交付版本，npm 包保持 `private`，尚未发布到 npm。运行目标为 Node.js 24 和 Git。**当前支持 macOS，已在 Apple Silicon 完成验收；暂未兼容 Windows。** Linux 尚未完成验收，不在当前支持范围内。许可证尚未选定。
 
 ## 安装与启动
 

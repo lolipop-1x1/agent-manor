@@ -1,5 +1,7 @@
 # 使用指南
 
+当前支持 macOS，已在 Apple Silicon 完成验收；暂未兼容 Windows。Linux 尚未完成验收，不在当前支持范围内。
+
 需要 Node.js 24、Git 和浏览器。下文使用 `agent-manor`；本地安装时可以换成安装目录中的 `node_modules/.bin/agent-manor`，也可直接 `node /absolute/install/node_modules/agent-manor/dist/cli.js`。所有命令都可以在仓库外的工作目录运行。
 
 ## 从交付包安装
