@@ -1,7 +1,7 @@
 # 使用分类回归与端到端验收
 
 Type: task
-Status: ready-for-agent
+Status: claimed
 Blocked by: 27, 28
 
 ## 验收

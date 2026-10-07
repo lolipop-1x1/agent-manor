@@ -572,3 +572,40 @@ test("真实解析器到索引保留成功 Skill 正文读取，文本提及和�
     resourceUsageEvidence(store, resource.identity.id, { evidenceKind: "skill_read" }).events.every(event => event.path !== undefined)));
   assert.equal(usage.resources.find(resource => resource.stats.explicitCalls)?.association.reason, "missing_path");
 }));
+
+test("资源相关性依稳定诊断标识，无关正文用量和关系缺口不使资源覆盖变成部分记录", async () => fixture(store => {
+  const unrelated = ["diagnostics.sessions.parser.m012", "diagnostics.sessions.parser.m014",
+    "diagnostics.sessions.parser.m017", "diagnostics.sessions.parser.m020", "diagnostics.sessions.parser.m021"];
+  const summary = meta("unrelated", { gaps: unrelated.map(key => ({ kind: "unsupported_format", message: `人工合成诊断 ${key}`,
+    messageDescriptor: { key } })) });
+  const revision = source(store, summary, [message(summary.id, 0, { resource: { kind: "skill_call", name: "guide" } }),
+    message(summary.id, 1, { resource: { kind: "mcp", name: "lookup", server: "sample" } })]);
+  store.publish(store.createJob().id, [revision], []);
+  const usage = aggregateResourceUsage(store);
+  assert.equal(usage.coverage.gaps.length, unrelated.length);
+  assert.equal(usage.coverage.partial, false);
+  assert.deepEqual(usage.coverage.uncertainClients, []);
+  assert.equal(usage.stats.events, 2);
+  assert.equal(usage.stats.results.unknown, 2);
+  for (const key of ["diagnostics.sessions.parser.m018", "diagnostics.sessions.parser.m019", "diagnostics.history.adapters.codebuddy.resourceCoverage"]) {
+    store.publish(store.createJob().id, [revision], [{ kind: "unsupported_format", sourceId: summary.sourceId,
+      message: "思考正文与附件（文案不决定相关性）", messageDescriptor: { key } }]);
+    const related = aggregateResourceUsage(store);
+    assert.equal(related.coverage.partial, true);
+    assert.deepEqual(related.coverage.uncertainClients, ["codex"]);
+    assert.equal(related.stats.events, 2);
+  }
+}));
+
+test("首次发现即读取失败的原生来源按客户端前缀归属，不扩大到可读客户端", async () => fixture(store => {
+  const normal = source(store, meta("readable", { client: "claude" }), [message("readable", 0, {
+    resource: { kind: "skill_call", name: "readable-guide" } })]);
+  store.publish(store.createJob().id, [normal], [{ kind: "source_unavailable", sourceId: "codex:synthetic-first-unreadable", message: "人工合成首次读取失败" }]);
+  const all = aggregateResourceUsage(store);
+  assert.deepEqual(all.coverage.unavailableClients, ["codex"]);
+  assert.equal(all.coverage.unscopedUnavailableGaps, false);
+  const readable = aggregateResourceUsage(store, { client: "claude" });
+  assert.equal(readable.stats.events, 1);
+  assert.equal(readable.coverage.partial, false);
+  assert.equal(readable.coverage.gaps.length, 0);
+}));

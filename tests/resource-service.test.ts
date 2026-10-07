@@ -134,16 +134,16 @@ test("CLI 资源入口共用 API，执行操作保留显式确认参数", () => 
   assert.ok(apply.options.find(option => option.long === "--confirm")?.mandatory);
 });
 
-test("Skill 总览同时展示本地与历史，快筛计数先于分页，未关联观测不足不补零", async () => fixture(async (context, service) => {
+test("Skill 总览新发现立即分类，快筛计数先于分页，读取未知不补零", async () => fixture(async (context, service) => {
   const first = await apiRequest<ResourceOverviewResult>(service.instance, "/resources/overview?pageSize=100");
   assert.ok(first.total > 40);
   assert.equal(first.counts.used, 1);
-  assert.equal(first.counts.unused, 0);
+  assert.ok(first.counts.unused > 40);
   const recent = first.resources.find(row => row.identity.name === "sample-00")!;
-  assert.equal(recent.stats, null);
-  assert.equal(recent.observation, "insufficient");
+  assert.equal(recent.stats?.events, 0);
+  assert.equal(recent.observation, "unused");
   const unknown = first.resources.find(row => row.identity.name === "shared")!;
-  assert.equal(unknown.observation, "unknown");
+  assert.equal(unknown.observation, "unused");
   const management = new Database(join(context.home, "resources.sqlite"));
   management.prepare("UPDATE resource_seen SET first_seen=?").run("2025-01-01T00:00:00Z");
   management.close();
@@ -174,8 +174,8 @@ test("Skill 总览同时展示本地与历史，快筛计数先于分页，未�
   assert.equal(favorite.resources[0]!.identity.id, zero.identity.id);
   assert.equal(favorite.resources[0]!.protected, true);
   const unused = await apiRequest<ResourceOverviewResult>(service.instance, "/resources/overview?candidate=unused");
-  assert.ok(!unused.resources.some(row => row.identity.id === zero.identity.id));
-  assert.equal(unused.total, all.counts.unused - 1);
+  assert.ok(unused.resources.some(row => row.identity.id === zero.identity.id));
+  assert.equal(unused.total, all.counts.unused);
   const preview = await apiRequest<ResourceManagementPreview>(service.instance, "/resources/preview", "POST", { action: "standby", entryId: detail.local[0]!.entries[0]!.id });
   assert.equal(preview.protected, true);
   for (const query of ["candidate=broken", "kind=unknown", "order=random", "pageSize=0"]) await assert.rejects(apiRequest(service.instance, `/resources/overview?${query}`), { code: "INVALID_INPUT" });
@@ -186,7 +186,7 @@ test("MCP HTTP 总览包含本地注册与完整历史，收藏不合并管理�
   const all = await apiRequest<ResourceOverviewResult>(service.instance, "/resources/overview?kind=mcp&project=/ignored/scope");
   assert.equal(all.total, 3);
   assert.equal(all.counts.used, 1);
-  assert.equal(all.counts.review, 2);
+  assert.equal(all.counts.review, 0);
   const sample = all.resources[0]!;
   assert.equal(sample.identity.name, "sample");
   assert.equal(sample.identity.grouping, "mcp");
@@ -230,12 +230,12 @@ test("MCP HTTP 总览包含本地注册与完整历史，收藏不合并管理�
   management.close();
   await apiRequest(service.instance, "/resources/refresh", "POST", {});
   const unused = await apiRequest<ResourceOverviewResult>(service.instance, "/resources/overview?kind=mcp&candidate=unused");
-  assert.equal(unused.total, 1);
+  assert.equal(unused.total, 2);
   assert.ok(unused.resources.every(row => row.stats?.mcpCalls === 0 && row.observation === "unused"));
   assert.equal((await apiRequest<ResourceOverviewDetail>(service.instance, `/resources/overview/${unused.resources[0]!.identity.id}?kind=mcp`)).history, null);
 }));
 
-test("同名历史归属不明时，不把较早的已关联使用当成确定长期未用", async () => fixture(async (context, service) => {
+test("同名历史未关联保留提示，已关联使用仍按最近记录分类", async () => fixture(async (context, service) => {
   await appendFile(context.source, JSON.stringify({ type: "response_item", timestamp: new Date().toISOString(),
     payload: { type: "function_call", name: "Skill", call_id: "unassociated-call", arguments: JSON.stringify({ skill: "guide" }) } }) + "\n");
   const { job } = await apiRequest<{ job: SessionJob }>(service.instance, "/sessions/refresh", "POST");
@@ -247,9 +247,10 @@ test("同名历史归属不明时，不把较早的已关联使用当成确定�
   }
   const all = await apiRequest<ResourceLocalResult>(service.instance, "/resources/local?kind=skill&q=guide");
   assert.equal(all.rows[0]!.usage?.successfulReads, 1);
-  assert.ok(!all.rows[0]!.candidates.includes("old"));
+  assert.equal(all.rows[0]!.usageUnassociated, true);
+  assert.equal(all.rows[0]!.partial, true);
   const old = await apiRequest<ResourceLocalResult>(service.instance, "/resources/local?kind=skill&q=guide&candidate=old&inactiveDays=1");
-  assert.equal(old.total, 0);
+  assert.equal(old.total, 1);
 }));
 
 test("日期筛选中的无时间 Skill 记录保持未知，名称及旧来源详情都不返回假零", async () => fixture(async (context, service) => {

@@ -91,7 +91,7 @@ test("相同范围并发共享聚合，失败后可重试且范围缓存数量�
   assert.equal(reads, before + 1, "被淘汰的范围重新查询，不无限保留历史范围");
 }));
 
-test("复用历史聚合时重新判断观测期限，不冻结整理候选", async context => {
+test("新发现资源分类不依赖观测期限，复用历史聚合", async context => {
   let now = Date.parse("2026-01-09T00:00:00Z");
   context.mock.method(Date, "now", () => now);
   await fixture(async (service, library, manager) => {
@@ -101,9 +101,9 @@ test("复用历史聚合时重新判断观测期限，不冻结整理候选", as
     const original = library.resourceEvents.bind(library);
     library.resourceEvents = (...args) => { reads++; return original(...args); };
     const row = async () => (await service.overview({ kind: "skill" })).resources.find(row => row.identity.name === "sample-00")!;
-    assert.equal((await row()).observation, "insufficient");
+    assert.equal((await row()).observation, "unused");
     now += 2 * 86400_000;
     assert.equal((await row()).observation, "unused");
-    assert.equal(reads, 1, "观测期限变化只重新判断本地状态，无需重读历史");
+    assert.equal(reads, 1, "经过时间不重读已有历史范围");
   });
 });

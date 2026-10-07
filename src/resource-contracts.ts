@@ -86,6 +86,8 @@ export interface ResourceUsageCoverage {
   gaps: Gap[];
   uncertainClients?: Client[];
   unscopedGaps?: boolean;
+  unavailableClients?: Client[];
+  unscopedUnavailableGaps?: boolean;
 }
 
 export interface ResourceUsageRow {
@@ -168,7 +170,9 @@ export interface ResourceEventStream {
   sessionCount: number;
   clients: Client[];
   gaps: Gap[];
-  /** 已按来源确认的采集缺口；无法确认归属的缺口继续影响所有客户端。 */
+  /** 与资源采集相关的缺口范围；原始诊断始终完整保留在 gaps。 */
   uncertainClients?: Client[];
   unscopedGaps?: boolean;
+  unavailableClients?: Client[];
+  unscopedUnavailableGaps?: boolean;
 }

@@ -43,7 +43,7 @@
 .resource-map-legend .recency-old { background: #c5cfcb; }
 :root[data-theme="dark"] .resource-map-legend .recency-old { background: #43544e; }
 .resource-map-legend .recency-missing { border: 1px dashed var(--near); background: var(--surface-alt); }
-.resource-map-secondary { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; flex-shrink: 0; }
+.resource-map-secondary { display: grid; grid-template-columns: minmax(0, 1fr); gap: 10px; flex-shrink: 0; }
 .resource-map-compact { min-width: 0; border: 1px solid var(--border); border-radius: 5px; background: var(--surface); }
 .resource-map-compact > summary { padding: 10px; color: var(--text); cursor: pointer; font-size: 12px; }
 .resource-map-compact > summary > span { padding-left: 8px; color: var(--muted); font-variant-numeric: tabular-nums; }

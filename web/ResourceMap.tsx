@@ -9,10 +9,14 @@ import { clipRect, fitCamera, type MapPoint, type MapRect } from "./map-viewport
 import { layoutResourceMap, locateResourceMapCamera, panResourceMapCamera, resizeResourceMapCamera, resourceMapScreenRect, resourceMapTileAt, zoomResourceMapCamera, type ResourceMapCamera } from "./resource-map-layout";
 import { formatList, getLanguage, messageText, t, useI18n } from "./i18n";
 import { formatPercent } from "../src/i18n";
+import { resourceMapCompactTitleKey, resourceMapValueMessage, resourceUsageStates } from "./resource-usage-state";
 import "./resource-map.css";
 
 const metricLabel = (metric: ResourceMapMetric) => t(metric === "sessions" ? "resources.sort.sessions" : metric === "reads" ? "resources.map.reads" : "resources.sort.calls");
-const metricValue = (metric: ResourceMapMetric, count: number) => t(metric === "sessions" ? "resources.map.sessionValue" : metric === "reads" ? "resources.map.metricValue" : "resources.map.callValue", { count });
+const metricValue = (metric: ResourceMapMetric, count: number) => {
+  const message = resourceMapValueMessage({ value: count, observation: "used" }, metric);
+  return t(message.key, message.params);
+};
 const shareLabel = (value: number | null) => value === null ? t("common.unknown") : value > 0 && value < .00001 ? `<${formatPercent(getLanguage(), .00001, { maximumFractionDigits: 3 })}` : formatPercent(getLanguage(), value, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const position = (rect: MapRect): CSSProperties => ({ left: rect.x, top: rect.y, width: rect.width, height: rect.height });
 const dateDay = (date: Date) => Date.UTC(date.getFullYear(), date.getMonth(), date.getDate());
@@ -21,13 +25,13 @@ const tone = (node: ResourceMapNode, today: number) => {
   const days = (today - dateDay(new Date(node.lastUsedAt))) / 86400000;
   return days <= 30 ? "recent" : days <= 90 ? "older" : "old";
 };
-const statusLabel = (node: ResourceMapNode) => formatList([node.favorite && t("resources.candidate.favorite"), node.protected && t("resources.protected"), node.partial && t("resources.partial"), !node.lastUsedAt && t("resources.map.timeMissing"), node.missingTimeEvents > 0 && t("resources.missingTimeCount", { count: node.missingTimeEvents })].filter(Boolean) as string[]);
+const usageStateLabel = (node: ResourceMapNode) => formatList(resourceUsageStates(node).map(state => t(state.key, state.params)));
+const statusLabel = (node: ResourceMapNode) => formatList([node.favorite && t("resources.candidate.favorite"), node.protected && t("resources.protected"), usageStateLabel(node)].filter(Boolean) as string[]);
 
 interface ResourceMapProps {
   data: ResourceMapResult; selected: string; onSelect: (id: string) => void;
-  zeroPage: number; zeroSize: number; reviewPage: number; reviewSize: number;
+  zeroPage: number; zeroSize: number;
   onZeroPage: (page: number) => void; onZeroSize: (size: number) => void;
-  onReviewPage: (page: number) => void; onReviewSize: (size: number) => void;
 }
 
 function CompactResources({ nodes, title, label, metric, selected, page, pageSize, onSelect, onPage, onSize }: {
@@ -39,16 +43,16 @@ function CompactResources({ nodes, title, label, metric, selected, page, pageSiz
   const rows = nodes.slice((current - 1) * pageSize, current * pageSize);
   return <details className="resource-map-compact"><summary>{title}<span>{fmt(nodes.length)}</span></summary>
     <div className="resource-map-compact-content">
-      {rows.length ? <div className="resource-map-compact-rows">{rows.map(node => <button key={node.id} aria-label={t("resources.viewUsage", { name: messageText(node.nameDescriptor, node.name) })} className={selected === node.id ? "is-selected" : ""} onClick={() => onSelect(node.id)}>
-        <strong>{messageText(node.nameDescriptor, node.name)}</strong><span>{node.value === null ? node.observation === "insufficient" ? t("resources.observation.insufficient") : t("resources.observation.unknown") : metricValue(metric, node.value)}</span>
-        <div className="resource-tags">{node.favorite && <span><Star size={12} />{t("resources.candidate.favorite")}</span>}{node.protected && <span><ShieldCheck size={12} />{t("resources.protected")}</span>}{node.partial && <span className="is-warning">{t("resources.partial")}</span>}{!node.lastUsedAt && <span className="is-warning">{t("resources.map.timeMissing")}</span>}</div>
-      </button>)}</div> : <div className="resource-empty">{t("resources.map.empty")}</div>}
+      {rows.length ? <div className="resource-map-compact-rows">{rows.map(node => { const value = resourceMapValueMessage(node, metric); return <button key={node.id} aria-label={t("resources.viewUsage", { name: messageText(node.nameDescriptor, node.name) })} className={selected === node.id ? "is-selected" : ""} onClick={() => onSelect(node.id)}>
+        <strong>{messageText(node.nameDescriptor, node.name)}</strong><span>{t(value.key, value.params)}</span>
+        <div className="resource-tags">{node.favorite && <span><Star size={12} />{t("resources.candidate.favorite")}</span>}{node.protected && <span><ShieldCheck size={12} />{t("resources.protected")}</span>}{resourceUsageStates(node).map(state => <span className="is-warning" key={state.key}>{t(state.key, state.params)}</span>)}</div>
+      </button>; })}</div> : <div className="resource-empty">{t("resources.map.empty")}</div>}
       <ResourcePagination label={label} page={current} pageSize={pageSize} total={nodes.length} onChange={onPage} onPageSizeChange={onSize} />
     </div>
   </details>;
 }
 
-export function ResourceMap({ data, selected, onSelect, zeroPage, zeroSize, reviewPage, reviewSize, onZeroPage, onZeroSize, onReviewPage, onReviewSize }: ResourceMapProps) {
+export function ResourceMap({ data, selected, onSelect, zeroPage, zeroSize, onZeroPage, onZeroSize }: ResourceMapProps) {
   const { percent } = useI18n();
   const explorer = useRef<HTMLElement>(null), host = useRef<HTMLDivElement>(null);
   const tooltipId = useId();
@@ -181,6 +185,7 @@ export function ResourceMap({ data, selected, onSelect, zeroPage, zeroSize, revi
     }
   };
   const selectedTile = layout.tiles.some(tile => tile.id === selected);
+  const compactTitle = t(resourceMapCompactTitleKey(data.zero, data.metric));
   const zoomPercent = camera.scale / fit.scale * 100;
   return <div className="resource-map-view">
     <section className="resource-map-explorer" ref={explorer} aria-label={t("resources.map.explorer")}>
@@ -210,7 +215,7 @@ export function ResourceMap({ data, selected, onSelect, zeroPage, zeroSize, revi
           const node = tile.node;
           return <button key={tile.id} style={position(rect)} className={`resource-map-tile recency-${tone(node, today)}${selected === tile.id ? " is-selected" : ""}`} aria-label={t("resources.viewUsage", { name: messageText(node.nameDescriptor, node.name) })} aria-describedby={hint?.node.id === tile.id ? tooltipId : undefined}
             onClick={() => void chooseResource(tile.id)} onFocus={() => setHint({ node, point: { x: rect.x, y: rect.y } })} onBlur={() => setHint(null)}>
-            <span className="resource-map-tile-copy">{rect.width >= 48 && rect.height >= 28 && <strong>{messageText(node.nameDescriptor, node.name)}</strong>}{rect.width >= 80 && rect.height >= 55 && <span>{metricValue(data.metric, node.value!)}</span>}{rect.width >= 130 && rect.height >= 88 && <small>{shareLabel(node.share)}{node.favorite && <Star size={12} weight="fill" />}{node.protected && <ShieldCheck size={12} />}</small>}{rect.width >= 135 && rect.height >= 110 && (node.partial || !node.lastUsedAt) && <small>{formatList([node.partial && t("resources.partial"), !node.lastUsedAt && t("resources.map.timeMissing")].filter(Boolean) as string[])}</small>}</span>
+            <span className="resource-map-tile-copy">{rect.width >= 48 && rect.height >= 28 && <strong>{messageText(node.nameDescriptor, node.name)}</strong>}{rect.width >= 80 && rect.height >= 55 && <span>{metricValue(data.metric, node.value!)}</span>}{rect.width >= 130 && rect.height >= 88 && <small>{shareLabel(node.share)}{node.favorite && <Star size={12} weight="fill" />}{node.protected && <ShieldCheck size={12} />}</small>}{rect.width >= 135 && rect.height >= 110 && usageStateLabel(node) && <small>{usageStateLabel(node)}</small>}</span>
           </button>;
         })}
         {!data.positive.length && <div className="resource-map-empty">{t("resources.map.noPositive")}</div>}
@@ -220,7 +225,6 @@ export function ResourceMap({ data, selected, onSelect, zeroPage, zeroSize, revi
       </div>
       <div className="resource-map-legend" aria-label={t("resources.map.legend")}><span><i className="recency-recent" />{t("resources.time.thirty")}</span><span><i className="recency-older" />{t("resources.map.older")}</span><span><i className="recency-old" />{t("resources.map.old")}</span><span><i className="recency-missing" />{t("resources.map.timeMissing")}</span></div>
     </section>
-    <div className="resource-map-secondary"><CompactResources nodes={data.zero} title={t(data.metric === "sessions" ? "resources.map.zeroSessions" : data.metric === "reads" ? "resources.map.zeroReads" : "resources.map.zeroCalls")} label={t("resources.map.zeroResources")} metric={data.metric} selected={selected} page={zeroPage} pageSize={zeroSize} onSelect={onSelect} onPage={onZeroPage} onSize={onZeroSize} />
-      <CompactResources nodes={data.review} title={t("resources.candidate.review")} label={t("resources.map.reviewResources")} metric={data.metric} selected={selected} page={reviewPage} pageSize={reviewSize} onSelect={onSelect} onPage={onReviewPage} onSize={onReviewSize} /></div>
+    <div className="resource-map-secondary"><CompactResources nodes={data.zero} title={compactTitle} label={compactTitle} metric={data.metric} selected={selected} page={zeroPage} pageSize={zeroSize} onSelect={onSelect} onPage={onZeroPage} onSize={onZeroSize} /></div>
   </div>;
 }

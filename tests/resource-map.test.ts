@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -90,7 +90,7 @@ test("同名跨 Agent 合并会话并集，调用、成功读取分开，零调�
   assert.deepEqual(shared.metrics, { calls: 2, reads: 1, sessions: 2 });
   assert.deepEqual(shared.clients, ["claude", "codex"]);
   assert.equal(calls.zero.find(node => node.name === "read-only-map")!.observation, "used");
-  assert.equal(calls.zero[0]!.metrics?.reads, 1);
+  assert.equal(calls.zero.find(node => node.name === "read-only-map")!.metrics?.reads, 1);
   assert.equal(shared.lastUsedAt, "2026-09-30T00:00:00.000Z");
   const reads = await service.map({ q: "map", metric: "reads" });
   assert.equal(reads.positive.find(node => node.id === shared.id)!.lastUsedAt, shared.lastUsedAt);
@@ -100,8 +100,7 @@ test("同名跨 Agent 合并会话并集，调用、成功读取分开，零调�
   const claude = await service.map({ q: "map", client: "claude", candidate: "used" });
   assert.equal(claude.total, 1); assert.equal(claude.positive[0]!.value, 1);
   const dated = await service.map({ q: "map", from: "2026-09-01T00:00:00Z" });
-  assert.equal(dated.zero[0]!.name, "shared-map");
-  assert.equal(dated.zero[0]!.metrics?.reads, 1);
+  assert.equal(dated.zero.find(node => node.name === "shared-map")!.metrics?.reads, 1);
 }));
 
 test("统一调用指标包含 Skill 调用与成功读取，MCP 重复请求与会话数分开，原始指标保持不变", async () => fixture(async (_context, store, _manager, service) => {
@@ -142,16 +141,16 @@ test("统一调用指标包含 Skill 调用与成功读取，MCP 重复请求与
   } finally { await app.close(); }
 }));
 
-test("数值上限只过滤已知值，未知、观测不足和缺失时间继续可见，低频阈值独立", async () => fixture(async (_context, store, manager, service) => {
+test("数值上限只过滤已知值，零记录和缺失时间继续可见，低频阈值独立", async () => fixture(async (_context, store, manager, service) => {
   store.publish(store.createJob().id, [source(store, "map-threshold", [
     { kind: "skill_call", name: "one-map" }, { kind: "skill_call", name: "many-map" },
     { kind: "skill_call", name: "many-map" }, { kind: "skill_call", name: "undated-map", occurredAt: null }])], []);
   await service.status();
   const old = manager.favorites(); assert.deepEqual(old, []);
   const all = await service.map({});
-  assert.ok(all.review.length > 200);
-  assert.ok(all.review.some(node => node.observation === "insufficient"));
-  assert.ok(all.review.every(node => node.value === null && node.share === null && node.partial));
+  assert.ok(all.zero.length > 200);
+  assert.ok(all.zero.some(node => node.observation === "unused" && node.value === 0));
+  assert.deepEqual(all.review, []);
   const undated = all.positive.find(node => node.name === "undated-map")!;
   assert.equal(undated.lastUsedAt, null); assert.equal(undated.missingTimeEvents, 1); assert.equal(undated.partial, true);
   assert.equal(all.partial, true);
@@ -162,8 +161,8 @@ test("数值上限只过滤已知值，未知、观测不足和缺失时间继�
   const zero = await service.map({ maxValue: 0 });
   assert.equal(zero.positive.length, 0); assert.equal(zero.totalValue, 0); assert.equal(zero.review.length, all.review.length);
   const low = await service.map({ q: "map", candidate: "low", maxValue: 1 });
-  assert.deepEqual(low.positive.map(node => node.name), ["one-map"]);
-  assert.equal((await service.map({ q: "map", candidate: "low" })).positive.length, 2);
+  assert.deepEqual(low.positive.map(node => node.name), ["one-map", "undated-map"]);
+  assert.equal((await service.map({ q: "map", candidate: "low" })).positive.length, 3);
 }));
 
 test("地图复用范围缓存而不重读事件，发布版本变化后更新，管理保护与本体身份保留", async () => fixture(async (_context, store, manager, service) => {
@@ -234,7 +233,7 @@ test("MCP 仅提供调用和会话面积，注册数不累加历史，上限严�
 function node(id: string, value: number | null): ResourceMapNode {
   return { id, name: id, value, share: null, metrics: null, lastUsedAt: null, missingTimeEvents: 0,
     clients: [], favorite: false, protected: false, observation: value === null ? "unknown" : "used",
-    localBodyIds: [], hasHistory: true, partial: false };
+    localBodyIds: [], hasHistory: true, partial: false, usageUnassociated: false };
 }
 
 test("原值线性布局严格一比十，零值和未知无伪造面积，顺序和屏幕间隔不改变逻辑面积", () => {
@@ -301,3 +300,61 @@ test("较大世界坐标处的小宽度使用独立中心偏移，定位不会�
   assert.ok(Math.abs(screen.x + screen.width / 2 - 400) < 1e-8);
   assert.equal(resourceMapTileAt([tile], camera, { x: 400, y: 250 })?.id, "edge");
 });
+
+test("索引未就绪如实报错，相关缺口保留正记录和零记录且 review 查询回全部", async () => fixture(async (_context, store, _manager, service) => {
+  for (const query of [() => service.overview({}), () => service.local({}), () => service.map({})]) {
+    await assert.rejects(query(), { code: "ANALYSIS_NOT_READY" });
+  }
+  const revision = source(store, "partial-classification", [{ kind: "skill_call", name: "partial-guide", status: "unknown" }]);
+  store.publish(store.createJob().id, [revision], [{ kind: "parse_error", sourceId: "synthetic:partial-classification", message: "人工合成解析缺口" }]);
+  const map = await service.map({ candidate: "review", metric: "uses", maxValue: 1 });
+  assert.deepEqual(map.review, []);
+  assert.equal(map.counts.review, 0);
+  assert.equal(map.positive.find(node => node.name === "partial-guide")!.value, 1);
+  assert.equal(map.positive.find(node => node.name === "partial-guide")!.partial, true);
+  assert.ok(map.zero.some(node => node.name === "sample-00" && node.value === 0 && node.partial));
+  assert.equal((await service.overview({ candidate: "low", q: "partial-guide" })).total, 1);
+  const app = Fastify(); registerResourceRoutes(app, service);
+  try {
+    const all = await app.inject({ url: "/api/v1/resources/overview?q=sample-00" });
+    const old = await app.inject({ url: "/api/v1/resources/overview?q=sample-00&candidate=review&reviewPage=9&reviewSize=1" });
+    assert.deepEqual(old.json(), all.json());
+    const local = await service.local({ candidate: "review", q: "sample-00" });
+    assert.equal(local.rows[0]!.usage?.events, 0);
+  } finally { await app.close(); }
+}));
+
+test("历史来源读取失败不补零，可读客户端继续展示且 null 节点没有面积", async () => fixture(async (_context, store, _manager, service) => {
+  const revision = source(store, "failed-source", [{ kind: "skill_call", name: "positive-guide" }]);
+  store.publish(store.createJob().id, [revision], [{ kind: "source_unavailable", sourceId: "synthetic:failed-source", message: "人工合成读取失败" }]);
+  const local = await service.local({ q: "sample-00", client: "codex" });
+  assert.equal(local.rows[0]!.usage, null);
+  assert.equal(local.rows[0]!.observation, "unknown");
+  const map = await service.map({ q: "sample-00", client: "codex" });
+  assert.equal(map.zero[0]!.value, null);
+  assert.equal(map.zero[0]!.share, null);
+  assert.deepEqual(map.review, []);
+  assert.equal(map.counts.unused, 0);
+  const positive = await service.overview({ q: "positive-guide" });
+  assert.equal(positive.resources[0]!.stats?.events, 1);
+  assert.equal(positive.resources[0]!.partial, true);
+  const readable = await service.local({ q: "sample-00", client: "claude" });
+  assert.ok(readable.rows.every(row => row.usage?.events === 0));
+}));
+
+test("同名多本体的无路径使用只保留名称统计，不给任一本体制造零使用", async () => fixture(async (context, store, _manager, service) => {
+  const other = join(context.project, ".agents", "skills", "guide");
+  await mkdir(other, { recursive: true });
+  await writeFile(join(other, "SKILL.md"), "---\nname: guide\n---\n人工合成同名本体。\n");
+  store.publish(store.createJob().id, [source(store, "unassociated-body", [{ kind: "skill_call", name: "guide", status: "unknown" }])], []);
+  const local = await service.local({ q: "guide", client: "codex" });
+  assert.equal(local.total, 2);
+  assert.ok(local.rows.every(row => row.usage === null && row.usageUnassociated && row.partial));
+  assert.equal((await service.local({ q: "guide", client: "codex", candidate: "unused" })).total, 0);
+  const overview = await service.overview({ q: "guide", client: "codex" });
+  assert.equal(overview.total, 1);
+  assert.equal(overview.resources[0]!.stats?.events, 1);
+  assert.equal(overview.resources[0]!.localBodyIds.length, 2);
+  assert.equal(overview.resources[0]!.usageUnassociated, true);
+  assert.ok(overview.resources[0]!.candidates.includes("low"));
+}));

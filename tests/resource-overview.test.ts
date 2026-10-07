@@ -40,7 +40,7 @@ function local(name: string, id = name, extra: Partial<ResourceLocalRow> = {}): 
   const resourceEntry = entry(id, "codex", { name });
   return { body: { id, kind: "skill", name, entryIds: [resourceEntry.id], targetPath: resourceEntry.targetPath },
     entries: [resourceEntry], firstSeenAt: "2025-01-01T00:00:00Z", favorite: false, protected: false,
-    usage: emptyResourceUsageStats(), historyIds: [], observation: "recorded", candidates: [], ...extra };
+    usage: emptyResourceUsageStats(), historyIds: [], observation: "recorded", partial: false, usageUnassociated: false, missingTimeEvents: 0, candidates: [], ...extra };
 }
 
 function overview(resources: ResourceUsageRow[], localRows: ResourceLocalRow[] = [], query: ResourceOverviewQuery = {}) {
@@ -76,7 +76,7 @@ test("完整名称区分不同 Skill，未知名称保留历史来源和本地�
     ["body-unknown-a", "body-unknown-b", "history:unknown-a", "history:unknown-b"]);
 });
 
-test("本地独有区分充分观测零、未知和新发现不足七天，不沿用本地事件统计", () => {
+test("本地新发现立即参与未发现使用，未知保留且不沿用本地事件统计", () => {
   const locals = [local("known-zero"), local("unknown", "unknown", { observation: "unknown", usage: null }),
     local("new", "new", { firstSeenAt: "2026-09-30T00:00:00Z", observation: "insufficient", usage: null }),
     local("uncovered", "uncovered", { entries: [entry("uncovered", "qoder")] }),
@@ -87,13 +87,13 @@ test("本地独有区分充分观测零、未知和新发现不足七天，不�
   assert.deepEqual(byName.get("known-zero")!.stats, emptyResourceUsageStats());
   assert.equal(byName.get("unknown")!.observation, "unknown");
   assert.equal(byName.get("unknown")!.stats, null);
-  assert.equal(byName.get("new")!.observation, "insufficient");
-  assert.equal(byName.get("new")!.stats, null);
-  assert.equal(byName.get("uncovered")!.observation, "unknown");
+  assert.equal(byName.get("new")!.observation, "unused");
+  assert.equal(byName.get("new")!.stats?.events, 0);
+  assert.equal(byName.get("uncovered")!.observation, "unused");
   assert.equal(byName.get("no-history-used")!.observation, "unused");
   assert.equal(result.counts.used, 0);
-  assert.equal(result.counts.unused, 2);
-  assert.equal(result.counts.review, 3);
+  assert.equal(result.counts.unused, 4);
+  assert.equal(result.counts.review, 0);
   const missingHistory = buildSkillOverview(null, [local("guide")], {}, { ...options, partial: true });
   assert.equal(missingHistory.resources[0]!.observation, "unknown");
   assert.equal(missingHistory.resources[0]!.stats, null);
@@ -102,45 +102,47 @@ test("本地独有区分充分观测零、未知和新发现不足七天，不�
   assert.equal(missingHistory.partial, true);
 });
 
-test("任一本地本体观测未知或不足时，同名零证据总览继续待检查", () => {
+test("同名本体读取未知保留状态，新发现时间不阻断分类", () => {
   const result = overview([], [local("guide", "old-body"), local("guide", "unknown-body", { observation: "unknown" }),
     local("recent", "old-recent-body"), local("recent", "new-recent-body", { firstSeenAt: "2026-09-29T00:00:00Z" })]);
   assert.equal(result.resources.find(row => row.identity.name === "guide")!.observation, "unknown");
-  assert.equal(result.resources.find(row => row.identity.name === "recent")!.observation, "insufficient");
-  assert.ok(result.resources.every(row => row.stats === null));
-  assert.equal(result.counts.review, 2);
+  assert.equal(result.resources.find(row => row.identity.name === "recent")!.observation, "unused");
+  assert.equal(result.resources.find(row => row.identity.name === "guide")!.stats, null);
+  assert.equal(result.counts.review, 0);
 });
 
-test("已确认来源缺口只阻断对应 Agent，未归属及旧版本缺口保守影响全部", () => {
+test("相关缺口只标记对应 Agent 部分记录，分类保留已找到的记录", () => {
   const recorded = [historyRow("codex-used"), historyRow("claude-used", { clients: ["claude"] })];
   const locals = [local("codex-zero"), local("claude-zero", "claude-zero", { entries: [entry("claude-zero", "claude")] })];
   const input = history(recorded, { partial: true, uncertainClients: ["codex"] });
   const scoped = buildSkillOverview(input, locals, {}, { ...options, partial: true });
-  assert.deepEqual(scoped.resources.find(row => row.identity.name === "codex-used")!.candidates, ["used"]);
+  assert.deepEqual(scoped.resources.find(row => row.identity.name === "codex-used")!.candidates, ["used", "low", "old"]);
+  assert.equal(scoped.resources.find(row => row.identity.name === "codex-used")!.partial, true);
+  assert.equal(scoped.resources.find(row => row.identity.name === "claude-used")!.partial, false);
   assert.ok(scoped.resources.find(row => row.identity.name === "claude-used")!.candidates.includes("low"));
   assert.ok(scoped.resources.find(row => row.identity.name === "claude-used")!.candidates.includes("old"));
-  assert.equal(scoped.resources.find(row => row.identity.name === "codex-zero")!.observation, "unknown");
+  assert.equal(scoped.resources.find(row => row.identity.name === "codex-zero")!.observation, "unused");
   assert.equal(scoped.resources.find(row => row.identity.name === "claude-zero")!.observation, "unused");
   for (const coverage of [{ partial: true, unscopedGaps: true },
     { partial: true, uncertainClients: undefined, unscopedGaps: undefined },
     { gaps: [{ kind: "source_unavailable", message: "人工合成缺口" }], uncertainClients: undefined, unscopedGaps: undefined }] as Partial<ResourceUsageCoverage>[]) {
     const result = buildSkillOverview(history(recorded, coverage), locals, {}, options);
-    assert.equal(result.counts.low, 0);
-    assert.equal(result.counts.old, 0);
-    assert.equal(result.counts.unused, 0);
+    assert.equal(result.counts.low, 2);
+    assert.equal(result.counts.old, 2);
+    assert.equal(result.counts.unused, 2);
   }
 });
 
-test("本行缺失日期阻断低频和长期未用，不影响其他已确认资源", () => {
+test("缺失日期只保留缺失状态，已知最近时间和正会话仍可分类", () => {
   const input = history([historyRow("missing-time", { stats: stats({ events: 1, sessions: 1, missingTimeEvents: 1,
     lastUsedAt: "2025-01-01T00:00:00Z" }) }), historyRow("complete"),
   historyRow("undated-only", { stats: stats({ missingTimeEvents: 2 }) })], { partial: true, missingTimeEvents: 3 });
   const result = buildSkillOverview(input, [local("undated-only")], {}, options);
-  assert.deepEqual(result.resources.find(row => row.identity.name === "missing-time")!.candidates, ["used"]);
+  assert.deepEqual(result.resources.find(row => row.identity.name === "missing-time")!.candidates, ["used", "low", "old"]);
   assert.equal(result.resources.find(row => row.identity.name === "undated-only")!.observation, "unknown");
   assert.equal(result.resources.find(row => row.identity.name === "undated-only")!.stats, null);
-  assert.equal(result.counts.low, 1);
-  assert.equal(result.counts.old, 1);
+  assert.equal(result.counts.low, 2);
+  assert.equal(result.counts.old, 2);
   assert.equal(result.counts.unused, 0);
 });
 
@@ -157,9 +159,9 @@ test("名称和历史别名收藏控制总览星标，本体和入口收藏独�
     [named, legacy, body, entryFavorite, flagged, protectedLocal], {}, { ...options, favorites });
   assert.deepEqual(result.resources.filter(row => row.favorite).map(row => row.identity.name).sort(), ["history-favorite", "legacy", "named"]);
   assert.equal(result.counts.favorite, 6);
-  assert.equal(result.counts.unused, 0);
-  assert.equal(result.counts.low, 0);
-  assert.equal(result.counts.old, 0);
+  assert.equal(result.counts.unused, 5);
+  assert.equal(result.counts.low, 2);
+  assert.equal(result.counts.old, 2);
   assert.ok(result.resources.every(row => row.protected));
   const collected = buildSkillOverview(history([historyRow("history-favorite", { favorite: true }), historyRow("plugin")]),
     [named, legacy, body, entryFavorite, flagged, protectedLocal], { candidate: "favorite" }, { ...options, favorites });
@@ -172,7 +174,7 @@ test("搜索匹配完整名称、本地路径及历史路径，计数先于状�
   const locals = [local("guide-zero"), local("local-path", "search-marker-local"),
     local("guide-review", "review-body", { observation: "unknown", usage: null }), local("guide-favorite", "favorite-body", { favorite: true })];
   const all = overview(recorded, locals, { q: "guide" });
-  assert.deepEqual(all.counts, { all: 4, used: 1, unused: 1, low: 1, old: 1, review: 1, favorite: 1 });
+  assert.deepEqual(all.counts, { all: 4, used: 1, unused: 2, low: 1, old: 1, review: 0, favorite: 1 });
   const filtered = overview(recorded, locals, { q: "guide", candidate: "used" });
   assert.equal(filtered.total, 1);
   assert.deepEqual(filtered.counts, all.counts);
@@ -273,10 +275,10 @@ test("MCP 总览复用完整名称汇总、计数与本地注册身份，默认�
   assert.deepEqual(row.localBodyIds, ["mcp-a", "mcp-b"]);
   assert.deepEqual(row.clients, ["claude", "codex"]);
   assert.equal(result.counts.used, 2);
-  assert.equal(result.counts.unused, 1);
-  assert.equal(result.counts.review, 2);
+  assert.equal(result.counts.unused, 3);
+  assert.equal(result.counts.review, 0);
   assert.equal(result.resources.find(row => row.identity.name === "unknown")!.stats, null);
-  assert.equal(result.resources.find(row => row.identity.name === "new")!.stats, null);
+  assert.equal(result.resources.find(row => row.identity.name === "new")!.stats?.events, 0);
   const ascending = buildResourceOverview(input, [first, second, mcpLocal("zero"), mcpLocal("unknown", "unknown", { observation: "unknown" })],
     { kind: "mcp", order: "asc" }, options);
   assert.equal(ascending.resources[0]!.identity.name, "zero");
@@ -296,5 +298,32 @@ test("MCP 缺失名称保持不同历史来源及本地注册，收藏与注册�
   assert.equal(result.resources.find(row => row.identity.name === "demo")!.protected, true);
   assert.equal(result.resources.find(row => row.identity.name === "named")!.favorite, true);
   assert.equal(result.counts.favorite, 2);
-  assert.ok(!result.resources.find(row => row.identity.name === "named")!.candidates.includes("unused"));
+  assert.ok(result.resources.find(row => row.identity.name === "named")!.candidates.includes("unused"));
+});
+
+test("默认低频和长期阈值包含边界，零和无可确认日期不推断闲置", () => {
+  const boundary = new Date(now - 90 * 86400_000).toISOString();
+  const input = [historyRow("boundary", { stats: stats({ events: 2, sessions: 2, lastUsedAt: boundary }) }),
+    historyRow("above-sessions", { stats: stats({ events: 3, sessions: 3, lastUsedAt: new Date(Date.parse(boundary) + 1).toISOString() }) }),
+    historyRow("undated", { stats: stats({ events: 1, sessions: 1, missingTimeEvents: 1 }) }),
+    historyRow("invalid-time", { stats: stats({ events: 1, sessions: 0, lastUsedAt: "invalid" }) })];
+  const result = overview(input, [local("zero")]);
+  assert.deepEqual(result.resources.find(row => row.identity.name === "boundary")!.candidates, ["used", "low", "old"]);
+  assert.deepEqual(result.resources.find(row => row.identity.name === "above-sessions")!.candidates, ["used"]);
+  assert.deepEqual(result.resources.find(row => row.identity.name === "undated")!.candidates, ["used", "low"]);
+  assert.deepEqual(result.resources.find(row => row.identity.name === "invalid-time")!.candidates, ["used"]);
+  assert.deepEqual(result.resources.find(row => row.identity.name === "zero")!.candidates, ["unused"]);
+});
+
+test("真正来源读取失败保留未知且只影响所属客户端，旧 review 查询兼容全部", () => {
+  const locals = [local("failed-zero"), local("readable-zero", "readable-zero", { entries: [entry("readable-zero", "claude")] })];
+  const input = history([historyRow("recorded")], { partial: true, unavailableClients: ["codex"], uncertainClients: ["codex"] });
+  const result = buildResourceOverview(input, locals, { candidate: "review" }, options);
+  assert.equal(result.total, 3);
+  assert.equal(result.counts.review, 0);
+  assert.equal(result.resources.find(row => row.identity.name === "failed-zero")!.stats, null);
+  assert.equal(result.resources.find(row => row.identity.name === "failed-zero")!.observation, "unknown");
+  assert.equal(result.resources.find(row => row.identity.name === "readable-zero")!.stats?.events, 0);
+  assert.ok(result.resources.find(row => row.identity.name === "recorded")!.candidates.includes("low"));
+  assert.equal(result.resources.find(row => row.identity.name === "recorded")!.partial, true);
 });

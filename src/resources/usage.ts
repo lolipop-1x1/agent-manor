@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { posix } from "node:path";
 import { StoreError } from "../index/store.js";
+import { resourceGapRelevant } from "./coverage.js";
 import type { SessionStore } from "../sessions/store.js";
 import type { ResourceInventoryEntry } from "../resource-inventory-contracts.js";
 import type {
@@ -128,8 +129,9 @@ function paging(query: ResourceUsageQuery): { page: number; pageSize: number } {
 
 function coverage(stream: ReturnType<SessionStore["resourceEvents"]>, stats: ResourceUsageStats, unassociatedEvents: number): ResourceUsageCoverage {
   return { sessionCount: stream.sessionCount, clients: stream.clients, missingTimeEvents: stats.missingTimeEvents,
-    unassociatedEvents, partial: stats.missingTimeEvents > 0 || stream.gaps.length > 0, gaps: stream.gaps,
-    uncertainClients: stream.uncertainClients, unscopedGaps: stream.unscopedGaps };
+    unassociatedEvents, partial: stats.missingTimeEvents > 0 || stream.gaps.some(resourceGapRelevant), gaps: stream.gaps,
+    uncertainClients: stream.uncertainClients, unscopedGaps: stream.unscopedGaps,
+    unavailableClients: stream.unavailableClients, unscopedUnavailableGaps: stream.unscopedUnavailableGaps };
 }
 
 function observed(stats: ResourceUsageStats, range: ReturnType<typeof bounds>): number {
@@ -178,8 +180,10 @@ function localUsageCollector(query: ResourceUsageQuery, entries: readonly Resour
     add(group(body.projects, event.project ?? ""), event, range);
     const day = eventDay(event);
     if (day) add(group(body.trend, day), event, range);
-  }, result() { return { version: stream.version, clients: stream.clients, partial: stream.gaps.length > 0, uncertain,
-    uncertainClients: stream.uncertainClients ?? [], unscopedGaps: stream.unscopedGaps ?? stream.gaps.length > 0,
+  }, result() { return { version: stream.version, clients: stream.clients, partial: stream.gaps.some(resourceGapRelevant), uncertain,
+    uncertainClients: stream.uncertainClients ?? [], unscopedGaps: stream.unscopedGaps ?? stream.gaps.some(resourceGapRelevant),
+    unavailableClients: stream.unavailableClients ?? [], unscopedUnavailableGaps: stream.unscopedUnavailableGaps
+      ?? stream.gaps.some(gap => gap.kind === "source_unavailable" && resourceGapRelevant(gap)),
     timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
     bodies: new Map([...bodies].map(([id, body]) => [id, { stats: finish(body.accumulator), historyIds: [...body.historyIds], favoriteIds: [...body.favoriteIds],
       trend: trends(body.trend), clients: distributions(body.clients), projects: distributions(body.projects) }])) }; } };

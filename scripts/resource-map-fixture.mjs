@@ -2,7 +2,7 @@ import { appendFile, mkdir, readFile, symlink, writeFile } from "node:fs/promise
 import { join } from "node:path";
 import { resourceFixture } from "./resource-fixture.mjs";
 
-/** 地图人工夹具：完整历史、零指标、观测不足及共享入口，不运行 MCP。 */
+/** 地图人工夹具：完整历史、零指标、新发现资源及共享入口，不运行 MCP。 */
 export async function resourceMapFixture(directory, count = 215) {
   const fixture = await resourceFixture(directory, 0);
   const claudeHistory = join(directory, "history-claude");
@@ -47,6 +47,7 @@ export async function resourceMapFixture(directory, count = 215) {
   call("mcp__map-history-only__lookup", {});
   records.push({ type: "response_item", payload: { type: "function_call", name: "Skill", call_id: "map-undated", arguments: JSON.stringify({ skill: "map-undated" }) } });
   records.push({ type: "response_item", payload: { type: "function_call_output", call_id: "map-undated", output: "Exit code: 0\nOutput:\n人工无时间记录。\n" } });
+  records.push(record({ type: "reasoning", encrypted_content: "synthetic-encrypted-thinking" }));
   records.push(record({ type: "message", role: "assistant", channel: "final", content: [{ type: "output_text", text: "人工资源调用完成" }] }));
   await appendFile(fixture.configPath, config);
   const claudeConfigPath = join(fixture.userHome, ".claude.json");

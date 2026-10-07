@@ -404,7 +404,7 @@ try {
   assert.equal(unused.observation, "recorded");
   assert.equal(unused.usage.sessions, 0);
   await step("未发现使用筛选区分确定零值与未知", `
-    ${select("资源整理候选", "未发现使用")}
+    ${select("资源状态筛选", "未发现使用")}
     ${search("sample-01")}
     await page.getByRole("button",{name:"查看sample-01的本地详情",exact:true}).click();
     const detail=page.getByRole("complementary",{name:"资源详情",exact:true});
@@ -541,16 +541,16 @@ try {
   assert.ok(overview.total > 100);
   assert.ok(overview.counts.used >= 2);
   const zeroOverview = (await api("/resources/overview?kind=skill&q=sample-01")).resources.find(row => row.identity.name === "sample-01");
-  const unknownOverview = (await api("/resources/overview?kind=skill&q=sample-02")).resources.find(row => row.identity.name === "sample-02");
+  const freshOverview = (await api("/resources/overview?kind=skill&q=sample-02")).resources.find(row => row.identity.name === "sample-02");
   assert.equal(zeroOverview.observation, "unused"); assert.equal(zeroOverview.stats.sessions, 0);
-  assert.equal(unknownOverview.stats, null);
-  await step("总览包含本地资源、快捷计数与未知值", `
+  assert.equal(freshOverview.observation, "unused"); assert.equal(freshOverview.stats.sessions, 0);
+  await step("总览包含新发现的零记录本地资源", `
     await page.getByRole("button",{name:"重置筛选",exact:true}).click();
     ${view("Skill 总览")}
     const table=page.getByRole("table",{name:"Skill 总览",exact:true}); await table.waitFor();
     expect(await table.getByRole("columnheader").count()===7,"总览列数错误");
     const quick=page.getByRole("group",{name:"Skill 快速筛选",exact:true});
-    expect(await quick.getByRole("button").count()===7,"快捷筛选缺失");
+    expect(await quick.getByRole("button").count()===6,"快捷筛选缺失");
     expect((await quick.getByRole("button",{name:/^全部/}).innerText()).includes(${JSON.stringify(String(overview.counts.all))}),"全部计数错误");
     ${screenshot("overview-synthetic-light.png")}
     await quick.getByRole("button",{name:/^已使用/}).click();
@@ -559,12 +559,12 @@ try {
     await quick.getByRole("button",{name:/^全部/}).click();
     ${search("sample-02")}
     const row=table.getByRole("row").filter({has:page.getByRole("button",{name:"查看sample-02的使用详情",exact:true})});
-    await row.waitFor(); expect((await row.getByRole("cell").allTextContents()).slice(1,2).every(value=>value==="—"),"未知被误写为0");
-    expect((await row.innerText()).includes(${JSON.stringify(unknownOverview.observation === "insufficient" ? "观测不足" : "使用未知")}),"未知状态不可见");
+    await row.waitFor(); expect((await row.getByRole("cell").allTextContents()).slice(1,2).every(value=>value==="0"),"新资源没有显示零记录");
+    expect((await row.innerText()).includes("未发现使用"),"新资源没有进入未发现使用");
     await row.getByRole("button",{name:"查看sample-02的使用详情",exact:true}).click();
     const detail=page.getByRole("complementary",{name:"资源详情",exact:true});
     await detail.getByRole("heading",{name:"sample-02",exact:true}).waitFor();
-    expect((await detail.locator(".resource-stats").innerText()).includes("未知"),"本地未观测详情冒充统计零值");
+    expect(/0\\s*使用会话/.test(await detail.locator(".resource-stats").innerText()),"新资源详情没有显示零记录");
     await detail.getByRole("button",{name:"查看sample-02的本地本体 1",exact:true}).click();
     await detail.getByRole("heading",{name:"sample-02",exact:true}).waitFor();
     await detail.getByRole("heading",{name:"客户端入口",exact:true}).waitFor();
@@ -814,7 +814,7 @@ try {
     expect(await table.getByRole("button",{name:"按调用次数排序",exact:true}).count()===1,"MCP缺少调用次数列");
     expect(await table.getByRole("columnheader").filter({hasText:"调用次数"}).getAttribute("aria-sort")==="descending","MCP默认没有按调用次数降序");
     const quick=page.getByRole("group",{name:"MCP 快速筛选",exact:true});
-    expect(await quick.getByRole("button").count()===7,"MCP快捷筛选缺失");
+    expect(await quick.getByRole("button").count()===6,"MCP快捷筛选缺失");
     expect((await quick.getByRole("button",{name:/^全部/}).innerText()).includes(${JSON.stringify(String(mcpOverview.counts.all))}),"MCP快捷计数错误");
     const row=table.getByRole("row").filter({has:page.getByRole("button",{name:"查看sample的使用详情",exact:true})});
     expect(await row.count()===1,"同名服务仍按Agent或项目拆行");
@@ -862,12 +862,12 @@ try {
     await detail.getByRole("button",{name:"全部工具",exact:true}).click();
     await page.waitForFunction(()=>document.querySelector('.resource-pagination')?.textContent.includes('29 条')||document.querySelector('[aria-label="使用证据"]')?.textContent.includes('29 条'));
   `);
-  await step("MCP 零值与观测不足、本地注册精确跳转", `
+  await step("MCP 新注册立即归未发现使用、本地注册精确跳转", `
     ${search("mcp-new")}
     await page.getByRole("button",{name:"查看mcp-new的使用详情",exact:true}).click();
     const detail=page.getByRole("complementary",{name:"资源详情",exact:true});
     await detail.getByRole("heading",{name:"mcp-new",exact:true}).waitFor();
-    expect((await detail.locator('.resource-stats').innerText()).includes('未知'),"未观测MCP冒充零值");
+    expect(/0\\s*调用次数/.test(await detail.locator('.resource-stats').innerText()),"新注册MCP没有显示真实零记录");
     await detail.getByRole("button",{name:"查看mcp-new的本地本体 1",exact:true}).click();
     await detail.getByRole("heading",{name:"客户端入口",exact:true}).waitFor();
     expect(await page.evaluate(()=>new URLSearchParams(location.hash.split('?')[1]).get('project'))===null,"隐藏项目阻止用户级注册跳转");

@@ -16,7 +16,7 @@ export function resourceQuery(raw: Record<string, unknown>): ResourceLocalQuery 
   for (const [key, values] of Object.entries(enums)) {
     const value = textValue(raw[key], key);
     if (value && !values.includes(value)) throw new ServiceError("INVALID_INPUT", `未知 ${key}`, { key: "diagnostics.service.resourceInput.m001", params: { p0: String(key) } });
-    if (value) Object.assign(query, { [key]: value });
+    if (value) Object.assign(query, { [key]: key === "candidate" && value === "review" ? "all" : value });
   }
   return query;
 }
@@ -25,7 +25,8 @@ export function resourceOverviewQuery(raw: Record<string, unknown>): ResourceOve
   const candidate = textValue(raw.candidate, "candidate");
   if (candidate && !["all", "used", "unused", "low", "old", "review", "favorite"].includes(candidate)) throw new ServiceError("INVALID_INPUT", "未知 candidate", { key: "diagnostics.service.resourceInput.m002" });
   const query = resourceQuery({ ...raw, candidate: undefined, pageSize: raw.pageSize ?? "20" });
-  return { ...query, kind: query.kind ?? "skill", project: undefined, candidate: candidate as ResourceOverviewQuery["candidate"] };
+  return { ...query, kind: query.kind ?? "skill", project: undefined,
+    candidate: (candidate === "review" ? "all" : candidate) as ResourceOverviewQuery["candidate"] };
 }
 
 export function resourceMapQuery(raw: Record<string, unknown>): ResourceMapQuery {

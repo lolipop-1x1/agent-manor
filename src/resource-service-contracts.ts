@@ -17,6 +17,9 @@ export interface ResourceLocalRow {
   usage: ResourceUsageStats | null;
   historyIds: string[];
   observation: "recorded" | "unknown" | "insufficient";
+  partial: boolean;
+  usageUnassociated: boolean;
+  missingTimeEvents: number;
   candidates: Exclude<ResourceCandidate, "all">[];
   protected: boolean;
 }
@@ -58,6 +61,9 @@ export interface ResourceOverviewRow {
   favorite: boolean;
   protected: boolean;
   observation: "used" | "unused" | "unknown" | "insufficient";
+  partial: boolean;
+  usageUnassociated: boolean;
+  missingTimeEvents: number;
   candidates: Exclude<ResourceOverviewCandidate, "all">[];
   localBodyIds: string[];
   hasHistory: boolean;
@@ -102,6 +108,7 @@ export interface ResourceMapNode {
   localBodyIds: string[];
   hasHistory: boolean;
   partial: boolean;
+  usageUnassociated: boolean;
 }
 export interface ResourceMapResult {
   kind: ResourceKind;
@@ -113,6 +120,7 @@ export interface ResourceMapResult {
   complete: true;
   partial: boolean;
   positive: ResourceMapNode[];
+  /** 无面积节点；value=null 保留读取、身份或时间未知，不能显示为零。 */
   zero: ResourceMapNode[];
   review: ResourceMapNode[];
   total: number;

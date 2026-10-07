@@ -2,6 +2,7 @@ import type { Client } from "../clients.js";
 import type { ResourceUsageIdentity, ResourceUsageResult, ResourceUsageRow, ResourceUsageStats } from "../resource-contracts.js";
 import type { ResourceLocalRow, ResourceOverviewCandidate, ResourceOverviewQuery, ResourceOverviewResult, ResourceOverviewRow } from "../resource-service-contracts.js";
 import { emptyResourceUsageStats, resourceOverviewIdentity } from "./usage.js";
+import { resourceGapRelevant } from "./coverage.js";
 
 interface OverviewBucket {
   identity: ResourceUsageIdentity;
@@ -21,11 +22,11 @@ function localIdentity(row: ResourceLocalRow): ResourceUsageIdentity {
 export function resourceOverviewIncomplete(history: ResourceUsageResult | null, clients: readonly Client[], stats: ResourceUsageStats | null): boolean {
   if (!history) return true;
   const coverage = history.coverage;
-  if (stats?.missingTimeEvents || clients.some(client => !coverage.clients.includes(client))) return true;
+  if (stats?.missingTimeEvents) return true;
   if (coverage.unscopedGaps || coverage.uncertainClients?.some(client => clients.includes(client))) return true;
-  // 旧版本没有缺口归属字段时，不能把 partial 或缺口误当成完整观测。
+  // 旧版本缺少归属字段时，仅对资源采集相关的原始诊断保守标记部分记录。
   return (coverage.uncertainClients === undefined || coverage.unscopedGaps === undefined)
-    && (coverage.partial || coverage.gaps.length > 0);
+    && coverage.gaps.some(resourceGapRelevant);
 }
 
 function rowOf(bucket: OverviewBucket, history: ResourceUsageResult | null, query: ResourceOverviewQuery,
@@ -39,25 +40,26 @@ function rowOf(bucket: OverviewBucket, history: ResourceUsageResult | null, quer
   const protectedResource = favorite || localFavorite || local.some(row => row.protected || row.entries.some(entry => entry.protected));
   let stats = bucket.history?.stats ?? null;
   const incomplete = resourceOverviewIncomplete(history, clients, stats);
+  const missingTimeEvents = stats?.missingTimeEvents ?? 0;
+  const usageUnassociated = local.some(row => row.usageUnassociated)
+    || Boolean(local.length && bucket.history && bucket.history.association.state !== "linked");
+  const unavailable = history?.coverage.unscopedUnavailableGaps
+    || history?.coverage.unavailableClients?.some(client => clients.includes(client));
   let observation: ResourceOverviewRow["observation"];
   if (stats && stats.events > 0) observation = "used";
-  else if (incomplete || !local.length || local.some(row => row.observation === "unknown"
-    || !Number.isFinite(Date.parse(row.firstSeenAt)))) observation = "unknown";
-  else if (local.some(row => row.observation === "insufficient" || now - Date.parse(row.firstSeenAt) < 7 * dayMs)) observation = "insufficient";
+  else if (!history || unavailable || !local.length || missingTimeEvents || local.some(row => row.observation === "unknown")) observation = "unknown";
   else observation = "unused";
-  if (observation === "unknown" || observation === "insufficient") stats = null;
+  if (observation === "unknown") stats = null;
   else if (!bucket.history && observation === "unused") stats = emptyResourceUsageStats();
   const rowCandidates: ResourceOverviewRow["candidates"] = [];
   if (observation === "used") rowCandidates.push("used");
-  if (observation === "unknown" || observation === "insufficient") rowCandidates.push("review");
   if (favorite || localFavorite) rowCandidates.push("favorite");
-  if (!protectedResource && !incomplete) {
-    if (observation === "unused") rowCandidates.push("unused");
-    if (observation === "used" && stats && stats.sessions <= (query.lowSessions ?? 2)) rowCandidates.push("low");
-    if (observation === "used" && stats?.lastUsedAt
-      && now - Date.parse(stats.lastUsedAt) >= (query.inactiveDays ?? 90) * dayMs) rowCandidates.push("old");
-  }
+  if (observation === "unused") rowCandidates.push("unused");
+  if (observation === "used" && stats && stats.sessions > 0 && stats.sessions <= (query.lowSessions ?? 2)) rowCandidates.push("low");
+  if (observation === "used" && stats?.lastUsedAt && Number.isFinite(Date.parse(stats.lastUsedAt))
+    && now - Date.parse(stats.lastUsedAt) >= (query.inactiveDays ?? 90) * dayMs) rowCandidates.push("old");
   return { identity, stats, clients, favorite, protected: protectedResource, observation, candidates: rowCandidates,
+    partial: incomplete || local.some(row => row.partial), usageUnassociated, missingTimeEvents,
     localBodyIds: [...new Set(local.map(row => row.body.id))].sort(), hasHistory: Boolean(bucket.history) };
 }
 
@@ -116,7 +118,7 @@ export function buildResourceOverview(history: ResourceUsageResult | null, local
     if (q && !matches(bucket, q)) continue;
     const row = rowOf(bucket, history, query, favorites, now);
     for (const candidate of candidates) if (candidate === "all" || row.candidates.includes(candidate)) counts[candidate] += 1;
-    if (query.candidate && query.candidate !== "all" && !row.candidates.includes(query.candidate)
+    if (query.candidate && query.candidate !== "all" && query.candidate !== "review" && !row.candidates.includes(query.candidate)
       || query.favorite && !row.candidates.includes("favorite")) continue;
     rows.push(row);
   }

@@ -10,6 +10,7 @@ import type { SourceLocation } from "../history/types.js";
 import type { ResourceEventStream, ResourceHistoryIdentity, ResourceUsageIdentity, ResourceUsageEvent, ResourceUsageQuery } from "../resource-contracts.js";
 import type { SessionIndexStatus, SessionJob, SessionListResult, SessionMessage, SessionMessageQuery, SessionMessageResult, SessionProfile, SessionQuery, SessionRefreshOptions, SessionSearchResult, SessionSink, SessionSourceMeta, SessionSummary, SessionTimelineEvent, SessionTimelineResult, SessionUsage } from "../session-contracts.js";
 import { StoreError } from "../index/store.js";
+import { resourceGapRelevant } from "../resources/coverage.js";
 import { sessionTitle } from "./title.js";
 import { initializeSearchIndex, prepareSearchIndex, searchMatch } from "./search-index.js";
 
@@ -434,12 +435,20 @@ export class SessionStore {
         if (!related) { related = new Set(); sourceClients.set(record.source_id, related); }
         related.add(record.client);
       }
+      // 首次发现即失败的来源没有修订；公开原生身份的客户端前缀仍可确认归属。
+      for (const sourceId of sourceIds) if (!sourceClients.has(sourceId)) {
+        const client = clientIds.find(client => sourceId.startsWith(`${client}:`));
+        if (client) sourceClients.set(sourceId, new Set([client]));
+      }
     }
     const selectedClient = query.client ?? identity?.client;
     const gaps = allGaps.filter(gap => !selectedClient || !gap.sourceId || !sourceClients.get(gap.sourceId)?.size || sourceClients.get(gap.sourceId)!.has(selectedClient));
-    const uncertainClients = [...new Set(gaps.flatMap(gap => gap.sourceId ? [...(sourceClients.get(gap.sourceId) ?? [])] : []))];
-    const unscopedGaps = gaps.some(gap => !gap.sourceId || !sourceClients.get(gap.sourceId)?.size);
-    return { version, events, sessionCount, clients, gaps, uncertainClients, unscopedGaps };
+    const related = gaps.filter(resourceGapRelevant);
+    const affectedClients = (values: Gap[]) => [...new Set(values.flatMap(gap => gap.sourceId ? [...(sourceClients.get(gap.sourceId) ?? [])] : []))];
+    const unscoped = (values: Gap[]) => values.some(gap => !gap.sourceId || !sourceClients.get(gap.sourceId)?.size);
+    const unavailable = related.filter(gap => gap.kind === "source_unavailable");
+    return { version, events, sessionCount, clients, gaps, uncertainClients: affectedClients(related), unscopedGaps: unscoped(related),
+      unavailableClients: affectedClients(unavailable), unscopedUnavailableGaps: unscoped(unavailable) };
   }
 
   list(query: SessionQuery = {}): SessionListResult {

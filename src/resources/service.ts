@@ -60,12 +60,9 @@ export class ResourceService {
     }
     const value = (async () => {
       const snapshot = inventory ?? await this.inventory();
-      let history: ResourceUsageResult | null = null;
-      let localUsage: ReturnType<typeof localResourceUsage> | undefined;
-      try { const usage = overviewResourceUsage(this.library, scope, snapshot.entries, new Set(favorites)); history = usage.history; localUsage = usage.local; }
-      catch (error) { if (!(error instanceof StoreError) || error.code !== "ANALYSIS_NOT_READY") throw error; }
-      const local = await this.localRows(localQuery, false, { inventory: snapshot, history: localUsage });
-      return { history, local };
+      const usage = overviewResourceUsage(this.library, scope, snapshot.entries, new Set(favorites));
+      const local = await this.localRows(localQuery, false, { inventory: snapshot, history: usage.local });
+      return { history: usage.history, local };
     })();
     this.overviewCache.set(key, value);
     if (this.overviewCache.size > 8) this.overviewCache.delete(this.overviewCache.keys().next().value!);
@@ -94,6 +91,8 @@ export class ResourceService {
     const bodyIds = new Set(local.inventory.entries.filter(entry => legacy.resource.association.entryIds.includes(entry.id)).map(entry => entry.bodyId));
     return { resource: { identity: legacy.resource.identity, stats: legacy.resource.stats.events ? legacy.resource.stats : null, clients: legacy.resource.clients,
       favorite: legacy.resource.favorite, protected: legacy.resource.favorite, observation: legacy.resource.stats.events ? "used" : "unknown",
+      partial: legacy.coverage.partial, usageUnassociated: legacy.resource.association.state !== "linked",
+      missingTimeEvents: legacy.resource.stats.missingTimeEvents,
       candidates: [], localBodyIds: [...bodyIds], hasHistory: true }, history: legacy, local: local.rows.filter(row => bodyIds.has(row.body.id)) };
   }
   async usageDetail(id: string, query: ResourceUsageQuery) {
@@ -121,8 +120,7 @@ export class ResourceService {
     prepared?: { inventory: ResourceInventorySnapshot; history?: ReturnType<typeof localResourceUsage> }): Promise<{ rows: ResourceLocalRow[]; inventory: ResourceInventorySnapshot; partial: boolean; history?: ReturnType<typeof localResourceUsage> }> {
     const inventory = prepared?.inventory ?? await this.inventory();
     let history = prepared?.history;
-    try { if (historyAvailable) history = localResourceUsage(this.library, query, inventory.entries); }
-    catch (error) { if (!(error instanceof StoreError) || error.code !== "ANALYSIS_NOT_READY") throw error; }
+    if (historyAvailable) history = localResourceUsage(this.library, query, inventory.entries);
     const favoriteIds = new Set(this.manager.favorites());
     const byId = new Map(inventory.entries.map(entry => [entry.id, entry]));
     const fingerprints = new Map<string, Set<string>>();
@@ -145,24 +143,29 @@ export class ResourceService {
       const usage = history?.bodies.get(body.id);
       const favorite = favoriteIds.has(body.id) || entries.some(entry => favoriteIds.has(entry.id) || favoriteIds.has(resourceOverviewIdentity({
         id: entry.id, kind: entry.kind, name: entry.name, client: entry.client }).id)) || (usage?.favoriteIds.some(id => favoriteIds.has(id)) ?? false);
-      const uncertain = !history || history.unscopedGaps || Boolean((query.from || query.to) && usage?.stats.missingTimeEvents) || entries.some(entry => entry.readState !== "present"
-        || history.uncertainClients.includes(entry.client) || !history.clients.includes(entry.client)
-        || inventory.gaps.some(gap => gap.sourceId === entry.sourceId)
-        || history.uncertain.has(JSON.stringify([entry.kind, entry.client, entry.name])));
-      const observation = usage?.stats.events ? "recorded" : uncertain ? "unknown" : now - Date.parse(firstSeenAt) < 7 * 86400_000 ? "insufficient" : "recorded";
+      const usageUnassociated = entries.some(entry => history?.uncertain.has(JSON.stringify([entry.kind, entry.client, entry.name])));
+      const missingTimeEvents = usage?.stats.missingTimeEvents ?? 0;
+      const sourceUnavailable = entries.some(entry => entry.readState !== "present" || !entry.capabilities.inventory
+        || inventory.sources.some(source => source.id === entry.sourceId && ["unreadable", "invalid", "unsupported"].includes(source.readState)));
+      const unavailable = !history || history.unscopedUnavailableGaps || sourceUnavailable
+        || entries.some(entry => history.unavailableClients.includes(entry.client));
+      const partial = unavailable || Boolean(missingTimeEvents) || usageUnassociated || Boolean(history?.unscopedGaps)
+        || entries.some(entry => history?.uncertainClients.includes(entry.client) || !entry.capabilities.associate
+          || inventory.gaps.some(gap => gap.sourceId === entry.sourceId));
+      const unknown = unavailable || usageUnassociated || Boolean((query.from || query.to) && missingTimeEvents);
+      const observation = usage?.stats.events || !unknown ? "recorded" : "unknown";
       const candidates: ResourceLocalRow["candidates"] = [];
       if (favorite) candidates.push("favorite");
       if (entries.some(entry => entry.readState === "broken")) candidates.push("broken");
       if (body.contentFingerprint && (fingerprints.get(body.contentFingerprint)?.size ?? 0) > 1) candidates.push("duplicate");
-      if (observation !== "recorded") candidates.push("review");
-      else if (!usage?.stats.events) candidates.push("unused");
-      if (!uncertain && usage?.stats.sessions && usage.stats.sessions <= (query.lowSessions ?? 2)) candidates.push("low");
-      if (!uncertain && usage?.stats.lastUsedAt && now - Date.parse(usage.stats.lastUsedAt) >= (query.inactiveDays ?? 90) * 86400_000) candidates.push("old");
+      if (observation === "recorded" && !usage?.stats.events) candidates.push("unused");
+      if (usage?.stats.sessions && usage.stats.sessions <= (query.lowSessions ?? 2)) candidates.push("low");
+      if (usage?.stats.events && usage.stats.lastUsedAt && Number.isFinite(Date.parse(usage.stats.lastUsedAt))
+        && now - Date.parse(usage.stats.lastUsedAt) >= (query.inactiveDays ?? 90) * 86400_000) candidates.push("old");
       const protectedEntry = favorite || entries.some(entry => entry.protected);
-      // 保护资源保留手动查看入口，不因低使用率成为自动整理候选。
-      if (query.candidate && query.candidate !== "all" && (!candidates.includes(query.candidate)
-        || protectedEntry && ["unused", "low", "old"].includes(query.candidate))) continue;
-      rows.push({ body, entries, favorite, firstSeenAt, usage: usage?.stats ?? (observation === "recorded" ? emptyResourceUsageStats() : null), historyIds: usage?.historyIds ?? [], observation, candidates, protected: protectedEntry });
+      if (query.candidate && query.candidate !== "all" && query.candidate !== "review" && !candidates.includes(query.candidate)) continue;
+      rows.push({ body, entries, favorite, firstSeenAt, usage: observation === "recorded" ? usage?.stats ?? emptyResourceUsageStats() : null,
+        historyIds: usage?.historyIds ?? [], observation, candidates, protected: protectedEntry, partial, usageUnassociated, missingTimeEvents });
     }
     const sort = query.sort ?? "sessions";
     const direction = (query.order ?? (sort === "name" ? "asc" : "desc")) === "asc" ? 1 : -1;
@@ -178,7 +181,8 @@ export class ResourceService {
         || a.body.name.localeCompare(b.body.name) || a.body.id.localeCompare(b.body.id);
     });
     return { rows, inventory, history, partial: inventory.gaps.some(gap => inventory.sources.some(source => source.id === gap.sourceId
-      && (!query.kind || source.kind === query.kind) && (!query.client || source.client === query.client))) || !history || history.partial };
+      && (!query.kind || source.kind === query.kind) && (!query.client || source.client === query.client))) || !history || history.partial
+      || rows.some(row => row.partial) };
   }
   async local(query: ResourceLocalQuery): Promise<ResourceLocalResult> {
     const { rows, inventory, partial } = await this.localRows(query);

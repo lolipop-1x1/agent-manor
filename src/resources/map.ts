@@ -1,7 +1,6 @@
 import type { ResourceUsageResult } from "../resource-contracts.js";
 import type { ResourceMapNode, ResourceMapQuery, ResourceMapResult, ResourceOverviewResult } from "../resource-service-contracts.js";
 import { ServiceError } from "../service/input.js";
-import { resourceOverviewIncomplete } from "./overview.js";
 
 /** 面积指标仅选择既有统计；未记录和观测不足不补成零。 */
 export function buildResourceMap(overview: ResourceOverviewResult, history: ResourceUsageResult | null,
@@ -25,12 +24,11 @@ export function buildResourceMap(overview: ResourceOverviewResult, history: Reso
     const timestamp = row.stats?.lastUsedAt;
     const node: ResourceMapNode = { id: row.identity.id, name: row.identity.name, ...(row.identity.nameDescriptor ? { nameDescriptor: row.identity.nameDescriptor } : {}), value, share: null, metrics,
       lastUsedAt: timestamp && Number.isFinite(Date.parse(timestamp)) ? timestamp : null,
-      missingTimeEvents: row.stats?.missingTimeEvents ?? recorded.get(row.identity.id)?.missingTimeEvents ?? 0,
+      missingTimeEvents: row.missingTimeEvents ?? recorded.get(row.identity.id)?.missingTimeEvents ?? 0,
       clients: row.clients, favorite: row.favorite,
       protected: row.protected, observation: row.observation, localBodyIds: row.localBodyIds, hasHistory: row.hasHistory,
-      partial: row.observation === "unknown" || row.observation === "insufficient"
-        || resourceOverviewIncomplete(history, row.clients, row.stats) };
-    if (value === null) review.push(node);
+      partial: row.partial, usageUnassociated: row.usageUnassociated };
+    if (value === null) zero.push(node);
     else if (value === 0) { node.share = 0; zero.push(node); }
     else { positive.push(node); totalValue += value; }
   }

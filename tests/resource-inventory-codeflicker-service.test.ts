@@ -21,6 +21,8 @@ test("本地项目查询读取压缩入口的有效上下文，不把被覆盖�
   const manager = new ResourceManager(data);
   const service = new ResourceService(store, manager, { userHome }, () => [first, second]);
   try {
+    await assert.rejects(service.local({ kind: "skill", client: "codeflicker" }), { code: "ANALYSIS_NOT_READY" });
+    store.publish(store.createJob().id, [], []);
     const all = await service.local({ kind: "skill", client: "codeflicker" }); assert.equal(all.total, 2);
     const inherited = await service.local({ kind: "skill", client: "codeflicker", project: second });
     assert.equal(inherited.total, 1); assert.equal(inherited.rows[0]!.entries[0]!.scope, "user");
