@@ -131,6 +131,7 @@ export interface SessionIndexStatus {
   clientChecks?: SessionClientCheck[];
   job?: SessionJob;
 }
+export interface SessionIndexSummary extends Omit<SessionIndexStatus, "gaps"> { gapCount: number }
 export interface SessionJob {
   id: string;
   status: "queued" | "running" | "complete" | "failed";

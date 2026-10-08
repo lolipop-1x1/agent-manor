@@ -50,6 +50,39 @@ test("总览只读取一次事件流，Skill／MCP 切换、分页和地图复�
   assert.equal(decorations, previousDecorations, "缓存命中无需重新计算管理能力");
 }));
 
+test("连续状态读取共享盘点，收藏和主动刷新仍更新管理状态", async () => fixture(async (service, _library, manager) => {
+  let decorations = 0;
+  const decorate = manager.decorateInventory.bind(manager);
+  manager.decorateInventory = (...args) => { decorations++; return decorate(...args); };
+  const statuses = await Promise.all([service.status(), service.status(), service.status()]);
+  assert.deepEqual(statuses[0], statuses[1]);
+  await service.status();
+  assert.equal(decorations, 1, "读取缓存状态不能重复计算管理能力");
+  const row = (await service.local({ kind: "skill" })).rows[0]!;
+  service.setFavorite(row.body.id, true);
+  assert.equal((await service.local({ kind: "skill" })).rows.find(value => value.body.id === row.body.id)?.entries[0]?.favorite, true);
+  assert.equal(decorations, 1, "收藏只更新标记，不重新计算管理能力");
+  const before = decorations;
+  await service.refresh();
+  await service.status();
+  assert.equal(decorations, before + 1, "刷新只装饰一次新快照");
+}));
+
+test("盘点计算失败后可重试，失败刷新不替换原快照", async () => fixture(async (service, _library, manager) => {
+  const decorate = manager.decorateInventory.bind(manager);
+  let fail = true;
+  manager.decorateInventory = (...args) => {
+    if (fail) { fail = false; throw new Error("synthetic-decoration-failure"); }
+    return decorate(...args);
+  };
+  await assert.rejects(service.status(), /synthetic-decoration-failure/);
+  const previous = await service.status();
+  fail = true;
+  await assert.rejects(service.refresh(), /synthetic-decoration-failure/);
+  assert.deepEqual(await service.status(), previous);
+  assert.ok((await service.refresh()).sources.length);
+}));
+
 test("收藏、索引发布、资源刷新和统计范围变化不会返回旧聚合", async () => fixture(async (service, library, _manager, context, publish) => {
   let reads = 0;
   const original = library.resourceEvents.bind(library);

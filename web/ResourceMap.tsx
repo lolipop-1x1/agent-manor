@@ -1,6 +1,6 @@
 import { useEffect, useId, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent, type PointerEvent } from "react";
 import { ArrowsIn, ArrowsOut, Crosshair, Minus, Plus, Resize, ShieldCheck, Star } from "@phosphor-icons/react";
-import type { ResourceMapMetric, ResourceMapNode, ResourceMapResult } from "../src/resource-service-contracts";
+import type { ResourceMapMetric, ResourceMapNode, ResourceMapSummary } from "../src/resource-service-contracts";
 import { ProjectPicker } from "./ProjectPicker";
 import { HelpPopover } from "./HelpPopover";
 import { ResourcePagination } from "./ResourcePagination";
@@ -28,7 +28,7 @@ const tone = (node: ResourceMapNode, today: number) => {
 const statusLabel = (node: ResourceMapNode) => formatList([node.favorite && t("resources.candidate.favorite"), node.protected && t("resources.protected")].filter(Boolean) as string[]);
 
 interface ResourceMapProps {
-  data: ResourceMapResult; selected: string; onSelect: (id: string) => void;
+  data: ResourceMapSummary; selected: string; onSelect: (id: string) => void;
   zeroPage: number; zeroSize: number;
   onZeroPage: (page: number) => void; onZeroSize: (size: number) => void;
 }

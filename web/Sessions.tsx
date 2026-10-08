@@ -4,7 +4,7 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { CaretDown, CaretLeft, CaretRight, ChatCircle, MagnifyingGlass, MapTrifold } from "@phosphor-icons/react";
 import type { Client } from "../src/clients";
 import { CLIENTS } from "../src/clients";
-import type { MessageKind, SessionIndexStatus, SessionJob, SessionListResult, SessionMessage, SessionMessageResult, SessionProfile, SessionQuery, SessionRefreshOptions, SessionSearchHit, SessionSearchResult, SessionSummary, SessionTimelineResult } from "../src/session-contracts";
+import type { MessageKind, SessionIndexStatus, SessionIndexSummary, SessionJob, SessionListResult, SessionMessage, SessionMessageResult, SessionProfile, SessionQuery, SessionRefreshOptions, SessionSearchHit, SessionSearchResult, SessionSummary, SessionTimelineResult } from "../src/session-contracts";
 import { ApiError, isAborted, request } from "./api";
 import { ResizableWorkspace } from "./ResizableWorkspace";
 import { sessionDisplayTitle, sessionParentTitle, sessionMessageText, executionEntryLabel, groupedTurns, localDateBoundary, PAGE_SIZE, TURN_PAGE_SIZE, type EvidenceTarget, searchHitMode, searchKinds, sessionParams, turnTitle, workspaceSessionSemantics } from "./session-model";
@@ -80,9 +80,34 @@ function TurnTimeline({ turn, position, mode, focusMessageId, project, onMap, ex
   </details>;
 }
 
+function SessionIndexGaps({ active, version, count }: { active: boolean; version?: string; count: number }) {
+  const [open, setOpen] = useState(false);
+  const [data, setData] = useState<{ version: string; gaps: SessionIndexStatus["gaps"] } | null>(null);
+  const [error, setError] = useState<Error | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [retry, setRetry] = useState(0);
+  useEffect(() => {
+    if (!active || !open || !version || data?.version === version) return;
+    const controller = new AbortController();
+    setLoading(true); setError(null);
+    void request<{ version: string; gaps: SessionIndexStatus["gaps"] }>(`/sessions/gaps${sessionParams({ version })}`, { signal: controller.signal })
+      .then(setData).catch(failure => { if (!isAborted(failure)) setError(failure instanceof Error ? failure : new Error(String(failure))); })
+      .finally(() => { if (!controller.signal.aborted) setLoading(false); });
+    return () => controller.abort();
+  }, [active, open, version, retry]);
+  return <details className="session-index-gaps" open={open} onToggle={event => setOpen(event.currentTarget.open)}>
+    <summary>{t("sessions.status.gapCount", { count })}</summary>
+    {open && <>
+      {loading && <p role="status">{t("sessions.status.loading")}</p>}
+      {error && <Notice danger action={<button className="text-button" onClick={() => setRetry(value => value + 1)}>{t("common.retry")}</button>}><SessionError error={error} /></Notice>}
+      {data && data.version === version && data.gaps.map((gap, index) => <SessionDiagnostic key={`${gap.kind}-${gap.sourceId ?? index}`} gap={gap} />)}
+    </>}
+  </details>;
+}
+
 export default function Sessions({ active, target, onMap }: { active: boolean; target?: Target; onMap: (path?: string, project?: string) => void }) {
   useI18n();
-  const [status, setStatus] = useState<SessionIndexStatus | null>(null);
+  const [status, setStatus] = useState<SessionIndexSummary | null>(null);
   const [statusReload, setStatusReload] = useState(-1);
   const [statusLoading, setStatusLoading] = useState(false);
   const [statusError, setStatusError] = useState<Error | null>(null);
@@ -174,7 +199,7 @@ export default function Sessions({ active, target, onMap }: { active: boolean; t
     const controller = new AbortController();
     setStatusLoading(true);
     setStatusError(null);
-    void request<SessionIndexStatus>("/sessions/status", { signal: controller.signal })
+    void request<SessionIndexSummary>("/sessions/status?summary=true", { signal: controller.signal })
       .then(result => {
         setStatus(result);
         setStatusReload(reload);
@@ -573,7 +598,7 @@ export default function Sessions({ active, target, onMap }: { active: boolean; t
             </div>}
           </div>
           {!debouncedGlobalQuery && sessionList && sessionList.total > PAGE_SIZE && <Pager page={sessionList.page} pageSize={sessionList.pageSize} total={sessionList.total} onChange={setListPage} label={t("sessions.list.pagination")} />}
-          {status?.gaps?.length ? <details className="session-index-gaps"><summary>{t("sessions.status.gapCount", { count: status.gaps.length })}</summary>{status.gaps.map((gap, index) => <SessionDiagnostic key={`${gap.kind}-${gap.sourceId ?? index}`} gap={gap} />)}</details> : null}
+          {!!status?.gapCount && <SessionIndexGaps active={active} version={status.version} count={status.gapCount} />}
         </div>
       </aside>
 

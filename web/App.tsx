@@ -294,7 +294,7 @@ export function App() {
   useEffect(() => {
     const controller = new AbortController();
     setInitialLoading(true); setInitialError(null);
-    void request<StatusResponse>("/status", { signal: controller.signal }).then(result => {
+    void request<StatusResponse>("/status?summary=true", { signal: controller.signal }).then(result => {
       setRepositories(result.repositories); setJobs(result.jobs);
       const maintenance = result.indexMaintenance;
       setIndexMaintenance(maintenance && (maintenance.status === "failed" || maintenance.reason === "insufficientSpace" || maintenance.reason === "busy") ? maintenance : null);

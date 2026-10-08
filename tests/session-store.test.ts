@@ -83,6 +83,23 @@ function source(store: SessionStore, summary: SessionSourceMeta, messages: Sessi
   return { path: summary.path, revision: pending.revision, fingerprint: "synthetic-fingerprint" };
 }
 
+test("轻量状态保留数量与任务，缺口按版本读取且发布后不返回旧状态", async () => fixture(store => {
+  assert.equal(store.statusSummary().gapCount, 0);
+  assert.equal(store.currentVersion(), undefined);
+  const revisions = [source(store, meta("summary-session"), [])];
+  const first = store.publish(store.createJob().id, revisions, [{ kind: "parse", message: "合成解析缺口", count: 2 }]);
+  const { gaps, ...fields } = store.status();
+  assert.deepEqual(store.statusSummary(), { ...fields, gapCount: gaps.length });
+  assert.deepEqual(store.indexGaps(first), { version: first, gaps });
+  const second = store.publish(store.createJob().id, revisions, []);
+  assert.equal(store.currentVersion(), second);
+  assert.equal(store.statusSummary().version, second);
+  assert.equal(store.statusSummary().gapCount, 0);
+  assert.deepEqual(store.indexGaps(first).gaps, gaps);
+  assert.deepEqual(store.indexGaps(second).gaps, []);
+  assert.throws(() => store.indexGaps("missing-version"), /不存在/);
+}));
+
 test("紧凑消息从 SQL 完整读回，复制缺省、false 与 true 保持各自含义", async () => fixture((store, path) => {
   const id = "compact-message";
   const records = [

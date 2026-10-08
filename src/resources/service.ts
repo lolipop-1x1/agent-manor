@@ -1,6 +1,6 @@
 import type { SessionStore } from "../sessions/store.js";
 import type { ResourceInventoryOptions, ResourceInventorySnapshot, ResourceManualSource } from "../resource-inventory-contracts.js";
-import type { ResourceLocalDetail, ResourceLocalQuery, ResourceLocalResult, ResourceLocalRow, ResourceStatus, ResourceOverviewQuery, ResourceOverviewDetail, ResourceMapQuery, ResourceMapResult } from "../resource-service-contracts.js";
+import type { ResourceLocalDetail, ResourceLocalQuery, ResourceLocalResult, ResourceLocalRow, ResourceStatus, ResourceStatusSummary, ResourceOverviewResult, ResourceOverviewQuery, ResourceOverviewDetail, ResourceMapQuery, ResourceMapResult } from "../resource-service-contracts.js";
 import type { ResourceUsageQuery, ResourceUsageResult } from "../resource-contracts.js";
 import { ServiceError } from "../service/input.js";
 import { StoreError } from "../index/store.js";
@@ -10,6 +10,20 @@ import { buildResourceOverview } from "./overview.js";
 import { buildResourceMap } from "./map.js";
 import { ResourceManager } from "./management.js";
 import { resourceUsageThresholdMatches } from "./classification.js";
+
+export function summarizeResourceStatus(status: ResourceStatus): ResourceStatusSummary {
+  const sources = new Map(status.sources.map(source => [source.id, source]));
+  return { observedAt: status.observedAt, projects: status.projects, favoriteIds: status.favoriteIds, manualSources: status.manualSources,
+    sourceIssues: status.gaps.flatMap(gap => {
+      const source = sources.get(gap.sourceId);
+      return source ? [{ client: source.client, kind: source.kind, scope: source.scope, project: source.project, reason: gap.reason }] : [];
+    }) };
+}
+
+export function summarizeResourceCoverage<T extends ResourceOverviewResult | ResourceMapResult>(result: T) {
+  const { gaps: _gaps, ...coverage } = result.coverage ?? {};
+  return { ...result, coverage: result.coverage ? coverage : null };
+}
 
 /** 共用服务边界：派生盘点可刷新，收藏和恢复材料由独立管理库保留。 */
 export class ResourceService {
@@ -21,15 +35,14 @@ export class ResourceService {
     private readonly inventoryOptions: ResourceInventoryOptions, private readonly projects: () => string[]) {}
 
   private inventory(): Promise<ResourceInventorySnapshot> {
-    return this.snapshot ? Promise.resolve(this.manager.decorateInventory(this.snapshot)) : this.scan();
+    return this.snapshot ? Promise.resolve(this.snapshot) : this.scan();
   }
   private scan(): Promise<ResourceInventorySnapshot> {
     if (!this.pending) this.pending = (async () => {
       const snapshot = await scanResourceInventory({ ...this.inventoryOptions, projects: this.projects(), manualSources: this.manager.manualSources() });
-      this.manager.observeInventory(snapshot);
-      this.snapshot = snapshot;
+      this.snapshot = this.manager.decorateInventory(snapshot);
       this.overviewCache.clear();
-      return this.manager.decorateInventory(snapshot);
+      return this.snapshot;
     })().finally(() => { this.pending = undefined; });
     return this.pending;
   }
@@ -44,7 +57,7 @@ export class ResourceService {
   }
   private async overviewData(query: ResourceOverviewQuery) {
     const scope = { kind: query.kind ?? "skill", client: query.client, from: query.from, to: query.to,
-      version: query.version ?? this.library.status().version };
+      version: query.version ?? this.library.currentVersion() };
     const inventory = this.snapshot ? undefined : await this.inventory();
     const favorites = this.manager.favorites();
     const generation = JSON.stringify([scope.version, this.snapshot?.observedAt, favorites]);
@@ -114,7 +127,12 @@ export class ResourceService {
       }
     }
     this.manager.setFavorite(id, value);
-    return { favoriteIds: this.manager.favorites() };
+    const favoriteIds = this.manager.favorites();
+    if (this.snapshot) {
+      const favorites = new Set(favoriteIds);
+      this.snapshot = { ...this.snapshot, entries: this.snapshot.entries.map(entry => ({ ...entry, favorite: favorites.has(entry.id) || favorites.has(entry.bodyId) })) };
+    }
+    return { favoriteIds };
   }
 
   private async localRows(query: ResourceLocalQuery, historyAvailable = true,

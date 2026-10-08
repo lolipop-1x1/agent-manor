@@ -49,6 +49,10 @@ export interface ResourceStatus {
   favoriteIds: string[];
   manualSources: ResourceManualSource[];
 }
+/** 首屏保留筛选和异常提示所需信息，来源与诊断正文按需读取。 */
+export interface ResourceStatusSummary extends Pick<ResourceStatus, "observedAt" | "projects" | "favoriteIds" | "manualSources"> {
+  sourceIssues: (Pick<ResourceInventorySnapshot["sources"][number], "client" | "kind" | "scope" | "project"> & { reason: ResourceInventorySnapshot["gaps"][number]["reason"] })[];
+}
 
 export type ResourceOverviewCandidate = "all" | "used" | "unused" | "low" | "old" | "review" | "favorite";
 export interface ResourceOverviewQuery extends Omit<ResourceLocalQuery, "candidate"> {
@@ -80,6 +84,9 @@ export interface ResourceOverviewResult {
   partial: boolean;
   thresholds: { lowSessions: number; inactiveDays: number };
 }
+export type ResourceOverviewSummary = Omit<ResourceOverviewResult, "coverage"> & {
+  coverage: Omit<NonNullable<ResourceOverviewResult["coverage"]>, "gaps"> | null;
+};
 export interface ResourceOverviewDetail {
   resource: ResourceOverviewRow;
   history: ResourceUsageDetail | null;
@@ -129,3 +136,4 @@ export interface ResourceMapResult {
   coverage: ResourceOverviewResult["coverage"];
   thresholds: ResourceOverviewResult["thresholds"];
 }
+export type ResourceMapSummary = Omit<ResourceMapResult, "coverage"> & Pick<ResourceOverviewSummary, "coverage">;

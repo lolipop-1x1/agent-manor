@@ -120,7 +120,8 @@ export async function startService(options: ServiceOptions = {}) {
       }
     });
     registerPreferenceRoutes(app, home);
-    app.get("/api/v1/status", async () => ({ instance, version: VERSION, repositories: index.listRepositories(), jobs: index.listJobs(), sessions: library.status(), indexMaintenance }));
+    app.get<{ Querystring: Record<string, unknown> }>("/api/v1/status", async request => ({ instance, version: VERSION, repositories: index.listRepositories(), jobs: index.listJobs(),
+      sessions: queryBoolean(request.query.summary, "summary") ? library.statusSummary() : library.status(), indexMaintenance }));
     app.post("/api/v1/stop", async (request, reply) => {
       emptyBody(request.body);
       reply.send({ stopping: true });
@@ -137,7 +138,8 @@ export async function startService(options: ServiceOptions = {}) {
     const base = "/api/v1/repositories/:id";
     type RepositoryParams = { id: string };
     type Query = Record<string, unknown>;
-    app.get("/api/v1/sessions/status", async () => library.status());
+    app.get<{ Querystring: Query }>("/api/v1/sessions/status", async request => queryBoolean(request.query.summary, "summary") ? library.statusSummary() : library.status());
+    app.get<{ Querystring: Query }>("/api/v1/sessions/gaps", async request => library.indexGaps(textValue(request.query.version, "version")));
     app.get<{ Querystring: Query }>("/api/v1/sessions", async request => library.list(sessionQuery(request.query)));
     app.get<{ Querystring: Query }>("/api/v1/sessions/search", async request => {
       const query = sessionQuery(request.query);

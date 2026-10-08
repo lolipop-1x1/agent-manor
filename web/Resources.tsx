@@ -5,7 +5,7 @@ import { CLIENTS, type Client } from "../src/clients";
 import type { ResourceKind, ResourceUsageDetail, ResourceUsageDistribution, ResourceUsageEvidenceResult, ResourceUsageStats, ResourceUsageTrend } from "../src/resource-contracts";
 import type { ResourceInventoryDiagnostic, ResourceInventoryEntry, ResourceManualSource } from "../src/resource-inventory-contracts";
 import type { ResourceManagementAction, ResourceManagementInput, ResourceManagementOperation, ResourceManagementOperations, ResourceManagementPreview } from "../src/resource-management-contracts";
-import type { ResourceCandidate, ResourceLocalDetail, ResourceLocalQuery, ResourceLocalResult, ResourceLocalRow, ResourceMapQuery, ResourceMapResult, ResourceOverviewCandidate, ResourceOverviewDetail, ResourceOverviewQuery, ResourceOverviewResult, ResourceOverviewRow, ResourceStatus } from "../src/resource-service-contracts";
+import type { ResourceCandidate, ResourceLocalDetail, ResourceLocalQuery, ResourceLocalResult, ResourceLocalRow, ResourceMapQuery, ResourceMapSummary, ResourceOverviewCandidate, ResourceOverviewDetail, ResourceOverviewQuery, ResourceOverviewSummary, ResourceOverviewRow, ResourceStatus, ResourceStatusSummary } from "../src/resource-service-contracts";
 import { ApiError, errorMessage, isAborted } from "./api";
 import { DatePicker } from "./DatePicker";
 import { FilterSelect } from "./FilterSelect";
@@ -105,13 +105,23 @@ const registrationKeys = (client: Client) => client === "codex" ? "mcp_servers" 
 
 function SourceDiagnostics({ diagnostics }: { diagnostics?: ResourceInventoryDiagnostic[] }) {
   useI18n();
+  const [open, setOpen] = useState(false);
   if (!diagnostics?.length) return null;
-  return <details className="resource-data-details"><summary>{t("resources.diagnostic.count", { count: diagnostics.length })}</summary><div className="resource-source-list resource-diagnostics">
-    {diagnostics.map((item, index) => <div key={`${item.sourceId}:${item.reason}:${item.path}:${item.project ?? ""}:${index}`}><header><strong>{item.name ?? clientLabel(item.client)}</strong><span className="resource-state is-warning">{t(diagnosticNames[item.reason])}</span></header>
+  return <details className="resource-data-details" open={open} onToggle={event => setOpen(event.currentTarget.open)}><summary>{t("resources.diagnostic.count", { count: diagnostics.length })}</summary><div className="resource-source-list resource-diagnostics">
+    {open && diagnostics.map((item, index) => <div key={`${item.sourceId}:${item.reason}:${item.path}:${item.project ?? ""}:${index}`}><header><strong>{item.name ?? clientLabel(item.client)}</strong><span className="resource-state is-warning">{t(diagnosticNames[item.reason])}</span></header>
       <div className="resource-tags"><span>{clientLabel(item.client)}</span><span>{item.scope === "user" ? t("resources.scope.userDefault") : item.project ?? t("resources.project.unknown")}</span></div>
       <p className="resource-path">{item.path}</p>{item.selectedPath && <dl className="resource-facts"><dt>{t("resources.diagnostic.selectedPath")}</dt><dd>{item.selectedPath}</dd></dl>}
     </div>)}
   </div></details>;
+}
+
+function HistoryGaps({ gaps }: { gaps: ResourceUsageDetail["coverage"]["gaps"] }) {
+  const [open, setOpen] = useState(false);
+  if (!gaps.length) return null;
+  return <details className="resource-data-details" open={open} onToggle={event => setOpen(event.currentTarget.open)}>
+    <summary>{t("resources.source.gapCount", { count: gaps.length })}</summary>
+    {open && <div className="resource-source-gaps">{gaps.map((gap, index) => <div key={index}><ResourceMessage descriptor={gap.messageDescriptor} original={gap.message} details={gap.details} />{gap.sourceId && <p className="resource-path">{gap.sourceId}</p>}</div>)}</div>}
+  </details>;
 }
 
 function ResourceDialog({ open, onOpenChange, title, description, children, className = "", contentRef, focusTarget, afterClose }: {
@@ -230,9 +240,12 @@ function UsageHelp({ kind }: { kind: ResourceKind }) {
 export default function Resources({ active, onSession }: { active: boolean; onSession: (target: { sessionId: string; messageId: string }) => void }) {
   useI18n();
   const [route, setRoute] = useState<ResourceRoute>(readRoute);
-  const [status, setStatus] = useState<ResourceStatus | null>(null);
-  const [overview, setOverview] = useState<FavoriteResult<ResourceOverviewResult> | null>(null);
-  const [map, setMap] = useState<ResourceMapResult | null>(null);
+  const [status, setStatus] = useState<ResourceStatusSummary | null>(null);
+  const [sourceStatus, setSourceStatus] = useState<ResourceStatus | null>(null);
+  const [sourcesLoading, setSourcesLoading] = useState(false);
+  const [sourcesRetry, setSourcesRetry] = useState(0);
+  const [overview, setOverview] = useState<FavoriteResult<ResourceOverviewSummary> | null>(null);
+  const [map, setMap] = useState<ResourceMapSummary | null>(null);
   const mapLoadedQuery = useRef("");
   const mapLoadedScope = useRef("");
   const [overviewDetail, setOverviewDetail] = useState<FavoriteResult<ResourceOverviewDetail> | null>(null);
@@ -326,6 +339,15 @@ export default function Resources({ active, onSession }: { active: boolean; onSe
     void resourceApi.status(controller.signal).then(setStatus).catch(failure => { if (!isAborted(failure)) setError(failure instanceof Error ? failure : new Error(errorMessage(failure))); });
     return () => controller.abort();
   }, [active, reload]);
+  useEffect(() => {
+    if (!active || !sourcesOpen) return;
+    const controller = new AbortController();
+    setSourcesLoading(true); setSourceError(null); setSourceStatus(null);
+    void resourceApi.sources(controller.signal).then(setSourceStatus)
+      .catch(failure => { if (!isAborted(failure)) setSourceError(failure instanceof Error ? failure : new Error(errorMessage(failure))); })
+      .finally(() => { if (!controller.signal.aborted) setSourcesLoading(false); });
+    return () => controller.abort();
+  }, [active, sourcesOpen, reload, sourcesRetry]);
   const invalidTime = (route.tab === "usage" || route.tab === "local") && route.window === "custom" && !!route.from && !!route.to && route.from > route.to;
   const overviewRanking = route.tab === "usage";
   const mapView = overviewRanking && route.view === "map";
@@ -492,11 +514,13 @@ export default function Resources({ active, onSession }: { active: boolean; onSe
   const projectOptions = [{ value: "all", label: t("resources.project.all") }, { value: "none", label: t("resources.project.none") }, ...(status?.projects ?? []).map(path => ({ value: path, label: shortPath(path), description: path }))];
   const sourceInScope = (item: { client: Client; kind: ResourceKind; scope: "user" | "project"; project?: string }) => item.kind === route.kind && (route.client === "all" || item.client === route.client)
     && (overviewRanking || route.project === "all" || item.scope === "user" || item.project === route.project);
-  const visibleSources = status?.sources.filter(sourceInScope) ?? [];
-  const visibleGaps = status?.gaps.filter(gap => visibleSources.some(item => item.id === gap.sourceId)) ?? [];
-  const visibleDiagnostics = status?.diagnostics?.filter(item => sourceInScope(item) && (overviewRanking || route.project === "all" || (route.project === "none" ? !item.project : item.project === route.project))) ?? [];
-  const emptyLocalKey = route.q.trim() ? "resources.empty.local" : visibleGaps.some(gap => gap.reason === "unreadable" || gap.reason === "invalid") ? "resources.empty.localUnreadable"
-    : visibleGaps.some(gap => gap.reason === "unsupported") ? "resources.empty.localUnsupported" : "resources.empty.local";
+  const visibleSources = sourcesOpen && active ? sourceStatus?.sources.filter(sourceInScope) ?? [] : [];
+  const visibleSourceIds = new Set(visibleSources.map(item => item.id));
+  const visibleGaps = sourcesOpen && active ? sourceStatus?.gaps.filter(gap => visibleSourceIds.has(gap.sourceId)) ?? [] : [];
+  const visibleDiagnostics = sourcesOpen && active ? sourceStatus?.diagnostics?.filter(item => sourceInScope(item) && (overviewRanking || route.project === "all" || (route.project === "none" ? !item.project : item.project === route.project))) ?? [] : [];
+  const localIssues = route.tab === "local" && !local?.rows.length && !route.q.trim() ? status?.sourceIssues.filter(sourceInScope) ?? [] : [];
+  const emptyLocalKey = localIssues.some(issue => issue.reason === "unreadable" || issue.reason === "invalid") ? "resources.empty.localUnreadable"
+    : localIssues.some(issue => issue.reason === "unsupported") ? "resources.empty.localUnsupported" : "resources.empty.local";
   const historyView = route.tab === "usage" || route.tab === "local";
   const filters = <div className="resource-filter-content" id={compact ? undefined : "resource-filter-content"}>
     <div className="resource-field"><span>{overviewRanking ? t("resources.agent.label") : t("resources.client.label")}</span><FilterSelect label={overviewRanking ? t("resources.client.resourceAgent") : t("resources.client.resourceClient")} value={route.client} options={[{ value: "all", label: overviewRanking ? t("resources.client.allAgents") : t("resources.client.all") }, ...CLIENTS.map(client => ({ value: client.id, label: clientLabel(client.id) }))]} onChange={value => filter({ client: value })} /></div>
@@ -541,7 +565,7 @@ export default function Resources({ active, onSession }: { active: boolean; onSe
       <Distribution rows={usageDetail.clients} title={t("resources.distribution.agents")} label={value => value ? clientLabel(value as Client) : t("resources.client.notRecorded")} />
       <Distribution rows={usageDetail.projects} title={t("resources.distribution.projects")} label={value => value ? shortPath(value) : t("resources.project.none")} />
       <details className="resource-data-details"><summary>{t("resources.originCount", { count: usageDetail.origins.length })}</summary><div className="resource-origin-list">{usageDetail.origins.map(origin => <div key={origin.id}><strong>{clientLabel(origin.client)}</strong><span title={origin.project}>{origin.project ? shortPath(origin.project) : t("resources.project.none")}</span><p className="resource-path">{origin.path ?? t("resources.path.notRecorded")}</p></div>)}</div></details>
-      {!!usageDetail.coverage.gaps.length && <details className="resource-data-details"><summary>{t("resources.source.gapCount", { count: usageDetail.coverage.gaps.length })}</summary><div className="resource-source-gaps">{usageDetail.coverage.gaps.map((gap, index) => <div key={index}><ResourceMessage descriptor={gap.messageDescriptor} original={gap.message} details={gap.details} />{gap.sourceId && <p className="resource-path">{gap.sourceId}</p>}</div>)}</div></details>}
+      <HistoryGaps gaps={usageDetail.coverage.gaps} />
       {route.kind === "mcp" && <section className="resource-detail-section"><header><h3>{t("resources.stat.toolCalls")}</h3><span>{t("resources.toolCount", { count: usageDetail.tools.length })}</span></header><div className="resource-tool-list">{usageDetail.tools.map(tool => <button key={tool.name} className={route.tool === tool.name ? "is-selected" : ""} aria-pressed={route.tool === tool.name} onClick={() => update({ tool: route.tool === tool.name ? "" : tool.name, evidencePage: 1 })}><strong>{tool.name}</strong><span>{t("resources.callCount", { count: tool.stats.mcpCalls })}</span><small>{t("resources.toolResults", { failure: tool.stats.results.failure, unknown: tool.stats.results.unknown, duration: tool.stats.duration.samples ? t("resources.durationSamples", { duration: Math.round(tool.stats.duration.averageMs!), count: tool.stats.duration.samples }) : t("resources.evidence.durationMissing") })}</small></button>)}</div></section>}
       <section className="resource-detail-section"><header><h3>{route.tool ? t("resources.toolEvidence", { name: route.tool }) : t("resources.evidence.title")}</h3>{route.tool && <button className="text-button" onClick={() => update({ tool: "", evidencePage: 1 })}>{t("resources.evidence.allTools")}</button>}</header>
         {evidenceLoading ? <div role="status" className="resource-loading">{t("resources.loading.evidence")}</div> : evidenceError ? <div role="alert" className="resource-alert"><ResourceErrorText error={evidenceError} /></div> : evidence?.events.length ? <>
@@ -624,8 +648,9 @@ export default function Resources({ active, onSession }: { active: boolean; onSe
     <ResourceDialog open={compact && filtersOpen && active} onOpenChange={setFiltersOpen} title={t("resources.filters.title")} description={t("resources.filters.description")} className="resource-filter-dialog">{filters}<div className="dialog-end"><button className="button primary" onClick={() => setFiltersOpen(false)}>{t("resources.done")}</button></div></ResourceDialog>
     <ResourceDialog open={compact && !!route.id && active && !entriesOpen && !managementOpen} onOpenChange={open => { if (!open) update({ id: "" }); }} title={t("resources.detail.title")} description={route.kind === "skill" ? t("resources.detail.skillDescription") : t("resources.detail.mcpDescription")} className="resource-detail-dialog" contentRef={detailDialogScroll}>{detail}</ResourceDialog>
     <ResourceDialog open={sourcesOpen && active} onOpenChange={setSourcesOpen} title={t("resources.source.title")} description={t("resources.source.lastScanned", { date: status?.observedAt ? dateLabel(status.observedAt) : t("resources.source.neverScanned") })}>
-      {sourceError && <div className="resource-alert" role="alert"><ResourceErrorText error={sourceError} /></div>}
-      <div className="resource-source-list">{visibleSources.map(item => { const manual = item.manualSourceId ? status?.manualSources.find(source => source.id === item.manualSourceId) : undefined; return <div key={item.id}><header><strong>{clientLabel(item.client)} · {item.kind === "skill" ? t("resources.kind.skill") : t("resources.kind.mcp")}</strong><span className={`resource-state${item.readState !== "ok" ? " is-warning" : ""}`}>{t(sourceStateNames[item.readState])}</span></header><p>{item.path}</p><div className="resource-tags"><span>{item.scope === "user" ? t("resources.scope.user") : t("resources.scope.project")}</span><span>{item.format}</span><span>{item.verified ? t("resources.source.verified") : t("resources.source.readOnlyUnsupported")}</span>{item.origin === "plugin" && <span>{t("resources.source.pluginOwner", { owner: item.owner ?? t("common.unknown") })}</span>}{(item.origin === "system" || item.origin === "managed") && <span>{t(protectionNames[item.origin]!)}</span>}{item.project && <span title={item.project}>{shortPath(item.project)}</span>}</div>{manual?.id && <button className="text-button" disabled={sourcePending} onClick={() => void removeSource(manual.id!)}>{t("resources.source.remove")}</button>}</div>; })}</div>
+      {sourceError && <div className="resource-alert" role="alert"><ResourceErrorText error={sourceError} /><button className="text-button" onClick={() => setSourcesRetry(value => value + 1)}>{t("common.retry")}</button></div>}
+      {sourcesLoading && <div className="resource-loading" role="status">{t("resources.loading.detail")}</div>}
+      <div className="resource-source-list">{visibleSources.map(item => { const manual = item.manualSourceId ? sourceStatus?.manualSources.find(source => source.id === item.manualSourceId) : undefined; return <div key={item.id}><header><strong>{clientLabel(item.client)} · {item.kind === "skill" ? t("resources.kind.skill") : t("resources.kind.mcp")}</strong><span className={`resource-state${item.readState !== "ok" ? " is-warning" : ""}`}>{t(sourceStateNames[item.readState])}</span></header><p>{item.path}</p><div className="resource-tags"><span>{item.scope === "user" ? t("resources.scope.user") : t("resources.scope.project")}</span><span>{item.format}</span><span>{item.verified ? t("resources.source.verified") : t("resources.source.readOnlyUnsupported")}</span>{item.origin === "plugin" && <span>{t("resources.source.pluginOwner", { owner: item.owner ?? t("common.unknown") })}</span>}{(item.origin === "system" || item.origin === "managed") && <span>{t(protectionNames[item.origin]!)}</span>}{item.project && <span title={item.project}>{shortPath(item.project)}</span>}</div>{manual?.id && <button className="text-button" disabled={sourcePending} onClick={() => void removeSource(manual.id!)}>{t("resources.source.remove")}</button>}</div>; })}</div>
       <SourceDiagnostics diagnostics={visibleDiagnostics} />
       {!!visibleGaps.length && <details className="resource-data-details"><summary>{t("resources.source.gapCount", { count: visibleGaps.length })}</summary><div className="resource-source-gaps">{visibleGaps.map((gap, index) => <p key={index}>{clientLabel(gap.client)} · {gap.reason === "project_missing" ? t("resources.source.projectMissing") : gap.reason === "limit" ? t("resources.source.limit") : t(sourceStateNames[gap.reason])}</p>)}</div></details>}
     </ResourceDialog>

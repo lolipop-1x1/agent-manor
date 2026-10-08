@@ -108,8 +108,25 @@ export class SessionStore {
     this.database.prepare("UPDATE session_state SET json=? WHERE id=1").run(JSON.stringify(state));
   }
 
-  status(): SessionIndexStatus {
-    const state = this.state();
+  currentVersion(): string | undefined {
+    return (this.database.prepare("SELECT json_extract(json,'$.version') AS version FROM session_state WHERE id=1").get() as { version: string | null }).version ?? undefined;
+  }
+
+  status(): SessionIndexStatus { return this.indexStatus(this.state()); }
+
+  statusSummary() {
+    const row = this.database.prepare("SELECT json_remove(json,'$.gaps') AS json, COALESCE(json_array_length(json,'$.gaps'),0) AS gapCount FROM session_state WHERE id=1").get() as JsonRow & { gapCount: number };
+    const { gaps: _gaps, ...status } = this.indexStatus(decode(row));
+    return { ...status, gapCount: row.gapCount };
+  }
+
+  indexGaps(requestedVersion?: string) {
+    const version = this.version(requestedVersion);
+    const row = this.database.prepare("SELECT gaps FROM session_versions WHERE id=?").get(version) as { gaps: string };
+    return { version, gaps: JSON.parse(row.gaps) as SessionIndexStatus["gaps"] };
+  }
+
+  private indexStatus(state: Partial<SessionIndexStatus>): SessionIndexStatus {
     const latestJob = this.database.prepare("SELECT json FROM session_jobs ORDER BY created_at DESC,rowid DESC LIMIT 1").get() as JsonRow | undefined;
     const result: SessionIndexStatus = { ...state, stale: state.stale ?? false, sessionCount: 0, sourceCount: 0, gaps: state.gaps ?? [], projects: [] };
     if (state.version) {
@@ -313,7 +330,7 @@ export class SessionStore {
   }
 
   private version(requested?: string): string {
-    const version = requested ?? this.state().version;
+    const version = requested ?? this.currentVersion();
     if (!version) throw new StoreError("ANALYSIS_NOT_READY", "会话索引尚未完成", { key: "diagnostics.sessions.store.m009" });
     if (!this.database.prepare("SELECT 1 FROM session_versions WHERE id=?").get(version)) throw new StoreError("VERSION_NOT_FOUND", "会话索引版本不存在", { key: "diagnostics.sessions.store.m010" });
     return version;

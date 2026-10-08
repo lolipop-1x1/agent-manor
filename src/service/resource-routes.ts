@@ -5,6 +5,8 @@ import type { Client } from "../clients.js";
 import type { ResourceManualSource } from "../resource-inventory-contracts.js";
 import type { ResourceManagementInput } from "../resource-management-contracts.js";
 import type { ResourceService } from "../resources/service.js";
+import { summarizeResourceCoverage, summarizeResourceStatus } from "../resources/service.js";
+import { queryBoolean } from "./session-input.js";
 import { emptyBody, ServiceError, textValue } from "./input.js";
 import { resourceBody, resourceMapQuery, resourceOverviewQuery, resourceQuery } from "./resource-input.js";
 
@@ -12,10 +14,23 @@ type Query = Record<string, unknown>;
 type Id = { id: string };
 export function registerResourceRoutes(app: FastifyInstance, resources: ResourceService): void {
   const base = "/api/v1/resources";
-  app.get(`${base}/status`, () => resources.status());
-  app.post(`${base}/refresh`, request => { emptyBody(request.body); return resources.refresh(); });
-  app.get<{ Querystring: Query }>(`${base}/overview`, request => resources.overview(resourceOverviewQuery(request.query)));
-  app.get<{ Querystring: Query }>(`${base}/map`, request => resources.map(resourceMapQuery(request.query)));
+  const statusResponse = async (load: () => ReturnType<ResourceService["status"]>, query: Query) => {
+    const summary = queryBoolean(query.summary, "summary");
+    const status = await load();
+    return summary ? summarizeResourceStatus(status) : status;
+  };
+  app.get<{ Querystring: Query }>(`${base}/status`, request => statusResponse(() => resources.status(), request.query));
+  app.post<{ Querystring: Query }>(`${base}/refresh`, request => { emptyBody(request.body); return statusResponse(() => resources.refresh(), request.query); });
+  app.get<{ Querystring: Query }>(`${base}/overview`, async request => {
+    const summary = queryBoolean(request.query.summary, "summary");
+    const result = await resources.overview(resourceOverviewQuery(request.query));
+    return summary ? summarizeResourceCoverage(result) : result;
+  });
+  app.get<{ Querystring: Query }>(`${base}/map`, async request => {
+    const summary = queryBoolean(request.query.summary, "summary");
+    const result = await resources.map(resourceMapQuery(request.query));
+    return summary ? summarizeResourceCoverage(result) : result;
+  });
   app.get<{ Params: Id; Querystring: Query }>(`${base}/overview/:id`, request => resources.overviewDetail(request.params.id, resourceOverviewQuery(request.query)));
   app.get<{ Querystring: Query }>(`${base}/usage`, request => resources.usage(resourceQuery(request.query)));
   app.get<{ Params: Id; Querystring: Query }>(`${base}/usage/:id`, request => resources.usageDetail(request.params.id, resourceQuery(request.query)));
@@ -44,7 +59,7 @@ export function registerResourceRoutes(app: FastifyInstance, resources: Resource
     if (typeof body.value !== "boolean") throw new ServiceError("INVALID_INPUT", "value 必须是布尔值", { key: "diagnostics.service.resourceRoutes.m002" });
     return resources.setFavorite(textValue(body.id, "id", true)!, body.value);
   });
-  app.post(`${base}/sources`, request => {
+  app.post<{ Querystring: Query }>(`${base}/sources`, request => {
     const body = resourceBody(request.body, ["client", "kind", "path", "project", "format", "keyPath"]);
     const client = textValue(body.client, "client", true)!;
     if (!clientIds.includes(client as Client) || !["skill", "mcp"].includes(String(body.kind))) throw new ServiceError("INVALID_INPUT", "未知客户端或资源类型", { key: "diagnostics.service.resourceRoutes.m003" });
@@ -53,10 +68,10 @@ export function registerResourceRoutes(app: FastifyInstance, resources: Resource
     if (body.format !== undefined && !["skill-directory", "skill-files", "json", "jsonc", "toml"].includes(String(body.format))) throw new ServiceError("INVALID_INPUT", "不支持的手动来源格式", { key: "diagnostics.service.resourceRoutes.m005" });
     if (body.keyPath !== undefined && (!Array.isArray(body.keyPath) || body.keyPath.length > 20 || body.keyPath.some(value => typeof value !== "string" || !value || value.length > 4096
       || ["__proto__", "constructor", "prototype"].includes(value)))) throw new ServiceError("INVALID_INPUT", "keyPath 必须是安全的注册定位数组", { key: "diagnostics.service.resourceRoutes.m006" });
-    return resources.addSource({ client: client as Client, kind: body.kind as ResourceManualSource["kind"], path, project,
-      format: body.format as ResourceManualSource["format"], keyPath: body.keyPath as string[] | undefined });
+    return statusResponse(() => resources.addSource({ client: client as Client, kind: body.kind as ResourceManualSource["kind"], path, project,
+      format: body.format as ResourceManualSource["format"], keyPath: body.keyPath as string[] | undefined }), request.query);
   });
-  app.delete<{ Params: Id }>(`${base}/sources/:id`, request => { emptyBody(request.body); return resources.removeSource(request.params.id); });
+  app.delete<{ Params: Id; Querystring: Query }>(`${base}/sources/:id`, request => { emptyBody(request.body); return statusResponse(() => resources.removeSource(request.params.id), request.query); });
   app.post(`${base}/preview`, request => {
     const body = resourceBody(request.body, ["entryId", "operationId", "action"]);
     if (!["disable", "standby", "trash", "restore", "purge"].includes(String(body.action))) throw new ServiceError("INVALID_INPUT", "未知管理动作", { key: "diagnostics.service.resourceRoutes.m007" });

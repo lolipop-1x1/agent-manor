@@ -11,11 +11,11 @@ import { resourceFixture } from "../scripts/resource-fixture.mjs";
 import { startService } from "../src/server.js";
 import { apiRequest, delay } from "../src/service/runtime.js";
 import { createProgram } from "../src/cli.js";
-import type { ResourceLocalResult, ResourceOverviewDetail, ResourceOverviewResult, ResourceStatus } from "../src/resource-service-contracts.js";
+import type { ResourceLocalResult, ResourceMapResult, ResourceMapSummary, ResourceOverviewDetail, ResourceOverviewResult, ResourceOverviewSummary, ResourceStatus, ResourceStatusSummary } from "../src/resource-service-contracts.js";
 import type { ResourceUsageEvidenceResult, ResourceUsageResult } from "../src/resource-contracts.js";
 import { resourceHistoryIdentity } from "../src/resources/usage.js";
 import type { ResourceManagementOperation, ResourceManagementPreview } from "../src/resource-management-contracts.js";
-import type { SessionIndexStatus, SessionJob } from "../src/session-contracts.js";
+import type { SessionIndexStatus, SessionIndexSummary, SessionJob } from "../src/session-contracts.js";
 import { isolatedHistoryRoots } from "./helpers/history-roots.js";
 
 const run = promisify(execFile);
@@ -90,6 +90,33 @@ test("资源 HTTP 使用全部历史、可回查事件，来源公开投影不�
   for (const query of ["kind=unknown", "client=unknown", "candidate=unknown", "page=0", "favorite=maybe", "from=no", "lowSessions=0"]) {
     await assert.rejects(apiRequest(service.instance, `/resources/local?${query}`), { code: "INVALID_INPUT" });
   }
+}));
+
+test("页面摘要省略诊断正文，完整接口和按版本缺口仍可读取", async () => fixture(async (_context, service) => {
+  const full = await apiRequest<ResourceStatus>(service.instance, "/resources/status");
+  const summary = await apiRequest<ResourceStatusSummary>(service.instance, "/resources/status?summary=true");
+  assert.deepEqual(summary.projects, full.projects);
+  assert.deepEqual(summary.favoriteIds, full.favoriteIds);
+  assert.equal(summary.observedAt, full.observedAt);
+  assert.equal("sources" in summary, false);
+  assert.equal("diagnostics" in summary, false);
+  assert.equal(summary.sourceIssues.length, full.gaps.filter(gap => full.sources.some(source => source.id === gap.sourceId)).length);
+  for (const kind of ["skill", "mcp"]) {
+    const overview = await apiRequest<ResourceOverviewResult>(service.instance, `/resources/overview?kind=${kind}`);
+    const compact = await apiRequest<ResourceOverviewSummary>(service.instance, `/resources/overview?kind=${kind}&summary=true`);
+    const { gaps: _gaps, ...coverage } = overview.coverage!;
+    assert.deepEqual(compact, { ...overview, coverage });
+    const map = await apiRequest<ResourceMapResult>(service.instance, `/resources/map?kind=${kind}`);
+    const compactMap = await apiRequest<ResourceMapSummary>(service.instance, `/resources/map?kind=${kind}&summary=true`);
+    const { gaps: _mapGaps, ...mapCoverage } = map.coverage!;
+    assert.deepEqual(compactMap, { ...map, coverage: mapCoverage });
+  }
+  const session = await apiRequest<SessionIndexStatus>(service.instance, "/sessions/status");
+  const compactSession = await apiRequest<SessionIndexSummary>(service.instance, "/sessions/status?summary=true");
+  const { gaps, ...sessionFields } = session;
+  assert.deepEqual(compactSession, { ...sessionFields, gapCount: gaps.length });
+  assert.deepEqual(await apiRequest(service.instance, `/sessions/gaps?version=${session.version}`), { version: session.version, gaps });
+  await assert.rejects(apiRequest(service.instance, "/resources/status?summary=invalid"), /summary/);
 }));
 
 test("本地与总览的低频及长期未用阈值一致，包含时间边界", async testContext => fixture(async (_context, service) => {
