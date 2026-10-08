@@ -1,7 +1,7 @@
 import type Database from "better-sqlite3";
 import { setImmediate } from "node:timers/promises";
 
-/** 索引只保存三字符词项和消息 rowid，正文仍由会话表唯一保存。 */
+/** 索引只保存三字符词项和显式消息键，正文仍由会话表唯一保存。 */
 export function initializeSearchIndex(database: Database.Database): void {
   database.exec(`
     CREATE VIRTUAL TABLE IF NOT EXISTS session_message_search USING fts5(
@@ -9,25 +9,25 @@ export function initializeSearchIndex(database: Database.Database): void {
     CREATE TABLE IF NOT EXISTS session_search_state (id INTEGER PRIMARY KEY CHECK(id=1), cursor INTEGER NOT NULL, complete INTEGER NOT NULL);
     INSERT OR IGNORE INTO session_search_state VALUES(1,0,NOT EXISTS(SELECT 1 FROM session_messages LIMIT 1));
     CREATE TRIGGER IF NOT EXISTS session_search_insert AFTER INSERT ON session_messages BEGIN
-      INSERT INTO session_message_search(rowid,text) VALUES(new.rowid,new.text);
+      INSERT INTO session_message_search(rowid,text) VALUES(new.message_key,new.text);
     END;
     CREATE TRIGGER IF NOT EXISTS session_search_update AFTER UPDATE OF text ON session_messages WHEN old.text<>new.text BEGIN
-      INSERT OR REPLACE INTO session_message_search(rowid,text) VALUES(new.rowid,new.text);
+      INSERT OR REPLACE INTO session_message_search(rowid,text) VALUES(new.message_key,new.text);
     END;
     CREATE TRIGGER IF NOT EXISTS session_search_delete AFTER DELETE ON session_messages BEGIN
-      DELETE FROM session_message_search WHERE rowid=old.rowid;
+      DELETE FROM session_message_search WHERE rowid=old.message_key;
     END;
     CREATE INDEX IF NOT EXISTS session_version_revision ON session_version_sessions(version,revision);
   `);
 }
 
-/** 在刷新 Worker 分批补齐旧消息；游标和词项在同一事务提交，可中断续建。 */
+/** 在刷新 Worker 分批补齐未完成词项；游标和词项在同一事务提交，可中断续建。 */
 export async function prepareSearchIndex(database: Database.Database, onProgress?: (progress: number) => void): Promise<void> {
   if ((database.prepare("SELECT complete FROM session_search_state WHERE id=1").get() as { complete: number }).complete) return;
-  const maximum = (database.prepare("SELECT COALESCE(MAX(rowid),0) AS maximum FROM session_messages").get() as { maximum: number }).maximum;
-  const next = database.prepare("SELECT rowid FROM session_messages WHERE rowid>? AND rowid<=? ORDER BY rowid LIMIT 200");
+  const maximum = (database.prepare("SELECT COALESCE(MAX(message_key),0) AS maximum FROM session_messages").get() as { maximum: number }).maximum;
+  const next = database.prepare("SELECT message_key AS rowid FROM session_messages WHERE message_key>? AND message_key<=? ORDER BY message_key LIMIT 200");
   const insert = database.prepare(`INSERT OR REPLACE INTO session_message_search(rowid,text)
-    SELECT rowid,text FROM session_messages WHERE rowid>? AND rowid<=?`);
+    SELECT message_key,text FROM session_messages WHERE message_key>? AND message_key<=?`);
   const update = database.prepare("UPDATE session_search_state SET cursor=?,complete=? WHERE id=1");
   const batch = database.transaction(() => {
     const { cursor, complete } = database.prepare("SELECT cursor,complete FROM session_search_state WHERE id=1").get() as { cursor: number; complete: number };

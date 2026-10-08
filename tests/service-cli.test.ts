@@ -152,9 +152,25 @@ test("编译产物在包外cwd并发按需启动单实例，CLI/API JSON一致�
     await command(["repositories"]);
     const refresh = await command<JobResponse>(["refresh", id]);
     assert.equal((await command<JobResponse>(["jobs", refresh.job.id, "--wait"])).job.status, "completed");
+    assert.deepEqual((await command<CoverageResult>(["coverage", id, "--version", version])).summary.readExact, coverage.summary.readExact);
     const clear = await command<JobResponse>(["cacheclear", id, "--wait"]);
     assert.equal(clear.job.status, "completed");
     assert.equal((await command<CoverageResult>(["coverage", id])).summary.readExact.lines, 2);
+    for (const language of ["zh-CN", "en"] as const) {
+      await assert.rejects(run(process.execPath, [cli, "coverage", id, "--version", version, "--lang", language, "--json"], { cwd: tmpdir(), env, timeout: 30_000 }), error => {
+        const failure = error as Error & { stderr: string; stdout: string; code: number };
+        assert.equal(failure.code, 1);
+        assert.equal(failure.stdout, "");
+        const result = JSON.parse(failure.stderr) as { error: { code: string; messageDescriptor: object } };
+        assert.equal(result.error.code, "VERSION_NOT_FOUND");
+        assert.deepEqual(result.error.messageDescriptor, { key: "diagnostics.index.store.m004" });
+        return true;
+      });
+      await assert.rejects(run(process.execPath, [cli, "coverage", id, "--version", version, "--lang", language], { cwd: tmpdir(), env, timeout: 30_000 }), error => {
+        assert.ok((error as Error & { stderr: string }).stderr.includes(translate(language, "diagnostics.index.store.m004")));
+        return true;
+      });
+    }
     const web = await command<{ url: string; instance: StatusResponse["instance"] }>(["web", "--no-open"]);
     assert.equal(web.instance.id, instances[0]!.instance.id);
     assert.match(await (await fetch(web.url)).text(), /包外静态资源/);

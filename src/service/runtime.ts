@@ -7,6 +7,7 @@ import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ApiErrorResponse, ServiceInstance, StatusResponse } from "../contracts.js";
+import { activeIndexMaintenance } from "../index/maintenance.js";
 
 export const delay = (milliseconds: number): Promise<void> => new Promise((done) => setTimeout(done, milliseconds));
 export const dataHome = (home?: string): string => resolve(home ?? process.env.AGENT_MANOR_HOME ?? join(homedir(), ".agent-manor"));
@@ -102,7 +103,7 @@ export async function acquireLock(home: string, name: string, waitMilliseconds =
         finally { if (!moved) await rm(reaper, { recursive: true, force: true }); }
         continue;
       }
-      if (Date.now() >= deadline) throw new DiagnosticError("另一个服务实例正在启动或运行", { key: "diagnostics.service.runtime.m002" });
+      if (Date.now() >= deadline && !(name === "startup.lock" && waitMilliseconds > 0 && await activeIndexMaintenance(home))) throw new DiagnosticError("另一个服务实例正在启动或运行", { key: "diagnostics.service.runtime.m002" });
       await delay(100);
     }
   }
@@ -133,7 +134,7 @@ export async function connectService(autoStart = true, home = dataHome()): Promi
     child.once("error", (error) => { failure = error; });
     child.unref();
     const deadline = Date.now() + 20_000;
-    while (Date.now() < deadline) {
+    while (Date.now() < deadline || await activeIndexMaintenance(home, child.pid)) {
       if (failure) throw failure;
       const instance = await verifiedInstance(home);
       if (instance) return instance;

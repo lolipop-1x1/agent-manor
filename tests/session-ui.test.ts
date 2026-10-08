@@ -15,6 +15,15 @@ const message = (id: string, ordinal: number, turnId: string, kind: SessionMessa
   id, sessionId: summary.id, ordinal, recordLine: ordinal, turnId, kind, text: id,
 });
 
+test("产品过程标题按描述切换语言，原始详情只引用完整正文", () => {
+  const details = '{"stdout":"原始输出\\n第二行","command":"printf fixture"}';
+  for (const key of ["sessions.body.hook", "sessions.body.attachment", "sessions.body.usage"]) {
+    const record = { ...message("process", 1, "turn-a", "context"), text: `产品标题\n${details}`, textDescriptor: { key } };
+    for (const language of ["zh-CN", "en"] as const) assert.equal(sessionMessageText(record, language), translate(language, key, { details }));
+    assert.ok(!JSON.stringify(record.textDescriptor).includes(details));
+  }
+});
+
 test("父标题和资源名称仅按来源描述翻译，未知正文描述保留原文", () => {
   const parent = { ...summary, parentTitle: "未命名会话" };
   const resource = { kind: "skill_call" as const, name: "未记录名称" };

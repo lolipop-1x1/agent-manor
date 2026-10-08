@@ -1,7 +1,7 @@
 # 新安装、端到端与空间验收
 
 Type: task
-Status: ready-for-agent
+Status: claimed
 Blocked by: 01, 02, 03
 
 ## 目标

@@ -59,7 +59,7 @@ test("CodeFlicker 附件保留为过程记录，不新增对话、模型请求�
   assert.equal(hooks[1]?.status, "failure");
   assert.ok(hooks[0]?.text.includes("SessionStart"));
   assert.equal(hooks[0]?.textDescriptor?.key, "sessions.body.hook");
-  assert.ok(String(hooks[0]?.textDescriptor?.params?.details).includes("SessionStart"));
+  assert.equal(hooks[0]?.textDescriptor?.params, undefined);
   assert.ok(sample.messages.some(message => message.kind === "context" && message.text.includes("原始附件内容")));
   assert.ok(sample.summary.gaps.some(gap => gap.kind === "unsupported_format"));
   assert.equal(sample.messages.filter(message => message.kind === "assistant" && message.final).length, 1);

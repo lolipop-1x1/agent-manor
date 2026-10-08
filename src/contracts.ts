@@ -280,6 +280,18 @@ export interface StatusResponse {
   version: string;
   repositories: Repository[];
   jobs: Job[];
+  indexMaintenance?: IndexMaintenanceResult;
+}
+
+export interface IndexMaintenanceResult {
+  status: "completed" | "skipped" | "failed";
+  reason: "noDatabase" | "threshold" | "cooldown" | "unsupportedSchema" | "insufficientSpace" | "busy" | "error" | "completed";
+  messageDescriptor: MessageDescriptor;
+  beforeBytes?: number;
+  afterBytes?: number;
+  freeBytes?: number;
+  lastSuccess?: string;
+  details?: string;
 }
 
 export interface StopResponse {

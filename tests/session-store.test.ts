@@ -83,6 +83,85 @@ function source(store: SessionStore, summary: SessionSourceMeta, messages: Sessi
   return { path: summary.path, revision: pending.revision, fingerprint: "synthetic-fingerprint" };
 }
 
+test("紧凑消息从 SQL 完整读回，复制缺省、false 与 true 保持各自含义", async () => fixture((store, path) => {
+  const id = "compact-message";
+  const records = [
+    message(id, 1, { text: "真实用户请求", branchIds: ["branch-a", "branch-b"], currentBranch: true }),
+    message(id, 2, { kind: "thinking", text: "思考正文", copied: false, model: "synthetic-model", currentBranch: false }),
+    message(id, 3, { kind: "context", text: "上下文正文", copied: true, contextSource: "agents_md", contextEvidence: "wrapper" }),
+    message(id, 4, { kind: "tool_call", text: '{"path":"/synthetic/SKILL.md"}', callId: "call-a", tool: "Read", status: "success", durationMs: 0,
+      filePaths: ["/synthetic/SKILL.md"], resource: { kind: "skill_read", name: "fixture-skill", path: "/synthetic/SKILL.md" } }),
+    message(id, 5, { kind: "tool_result", text: "工具结果正文", callId: "call-a", status: "success" }),
+    message(id, 6, { kind: "compression", text: "压缩摘要", turnId: "" }),
+    message(id, 7, { kind: "assistant", text: "最终回答", final: "explicit", occurredAt: "2026-01-01T00:00:01Z" }),
+  ];
+  store.publish(store.createJob().id, [source(store, meta(id), records)], []);
+  assert.deepEqual(store.messages(id, { mode: "full", branch: "all" }).messages, records);
+  const profile = store.profile(id);
+  assert.equal(profile.messageCount, 6);
+  assert.equal(profile.compressions, 1);
+  assert.equal(profile.resources[0]?.count, 1);
+  assert.equal([...store.resourceEvents().events][0]?.status, "success");
+  assert.equal(store.timeline(id).events[3]?.callId, "call-a");
+  assert.equal(store.search({ q: "工具结果正文", kinds: ["tool_result"] }).hits[0]?.messageId, records[4]?.id);
+  const database = new Database(path);
+  try {
+    const rows = database.prepare("SELECT json,copied FROM session_messages ORDER BY ordinal").all() as { json: string; copied: number | null }[];
+    for (const row of rows) {
+      const metadata = JSON.parse(row.json) as object;
+      for (const key of ["id", "ordinal", "recordLine", "turnId", "kind", "final", "callId", "copied", "text"]) assert.ok(!(key in metadata), key);
+    }
+    assert.deepEqual(rows.slice(0, 3).map(row => row.copied), [null, 0, 1]);
+  } finally { database.close(); }
+}));
+
+test("显式消息键在更新、删除空洞、重新插入和 VACUUM 后保持搜索关联", async () => fixture((store, path) => {
+  const id = "stable-search-key";
+  const pending = store.createRevision("/synthetic/stable.jsonl", "fixture");
+  pending.sink.message(message(id, 1, { text: "准备删除词" }));
+  pending.sink.message(message(id, 2, { text: "保留搜索词" }));
+  pending.flush();
+  const database = new Database(path);
+  try {
+    const key = () => (database.prepare("SELECT message_key AS key FROM session_messages WHERE id='message-2'").get() as { key: number }).key;
+    const original = key();
+    pending.sink.message(message(id, 2, { text: "更新搜索词" }));
+    pending.flush();
+    assert.equal(key(), original);
+    database.prepare("DELETE FROM session_messages WHERE id='message-1'").run();
+    pending.sink.message(message(id, 3, { text: "新增搜索词" }));
+    pending.flush();
+    store.finishRevision(pending.revision, meta(id));
+    store.publish(store.createJob().id, [{ path: "/synthetic/stable.jsonl", revision: pending.revision, fingerprint: "fixture" }], []);
+    const before = store.search({ q: "更新搜索词" });
+    database.exec("VACUUM");
+    assert.equal(key(), original);
+    assert.deepEqual(store.search({ q: "更新搜索词" }), before);
+    assert.equal(store.search({ q: "准备删除词" }).total, 0);
+    assert.equal(store.search({ q: "新增搜索词" }).total, 1);
+    assert.equal((database.prepare("SELECT COUNT(*) AS count FROM session_message_search s LEFT JOIN session_messages m ON m.message_key=s.rowid WHERE m.message_key IS NULL").get() as { count: number }).count, 0);
+  } finally { database.close(); }
+}));
+
+test("独立会话新库和地图共用新版本初始化，旧版本不修改", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "manor-new-schema-"));
+  try {
+    const path = join(directory, "index.sqlite");
+    const sessions = new SessionStore(path);
+    sessions.close();
+    const maps = new AnalysisStore(path);
+    assert.deepEqual(maps.listRepositories(), []);
+    maps.close();
+    const oldPath = join(directory, "old.sqlite");
+    const database = new Database(oldPath);
+    database.pragma("user_version = 3");
+    assert.throws(() => new SessionStore(oldPath), /不支持的索引版本/);
+    assert.equal(database.pragma("user_version", { simple: true }), 3);
+    assert.equal((database.prepare("SELECT COUNT(*) AS count FROM sqlite_master WHERE name='session_messages'").get() as { count: number }).count, 0);
+    database.close();
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});
+
 test("缺失 Skill 来源持久化并贯通画像与资源事件，真实同名独立保留", async () => fixture(store => {
   const id = "resource-provenance";
   const descriptor = { key: "sessions.resource.nameUnrecorded" };
@@ -268,7 +347,7 @@ test("范围搜索保留命中语义、字面字符、分页与旧版本", async
   assert.equal(store.search({ q: "legacyneedle", sessionId: "scope-a", version: previousVersion }).total, 1);
 }));
 
-test("旧数据库后台补索引可中断续建，修改删除及历史版本保持一致", async () => fixture(async (store, path) => {
+test("当前结构后台补索引可中断续建，修改删除及历史版本保持一致", async () => fixture(async (store, path) => {
   const first = source(store, meta("migration"), Array.from({ length: 450 }, (_, index) => message("migration", index, { text: `防小偷合成内容 ${index}` })));
   const version = store.publish(store.createJob().id, [first], []);
   const database = new Database(path);
@@ -411,9 +490,9 @@ test("长会话画像按消息身份排除复制用量，查询不随请求数�
   assert.ok(elapsed < 1_000, `长会话画像耗时 ${Math.round(elapsed)} 毫秒，超过 1 秒预算`);
 }));
 
-test("独立表保留地图迁移版本，首次未就绪、发布及失败只读上一完整版本", async () => fixture((store, path) => {
+test("独立表共用新索引版本，首次未就绪、发布及失败只读上一完整版本", async () => fixture((store, path) => {
   const database = new Database(path);
-  assert.equal(database.pragma("user_version", { simple: true }), 3);
+  assert.equal(database.pragma("user_version", { simple: true }), 4);
   assert.equal(database.pragma("journal_mode", { simple: true }), "wal");
   database.close();
   assert.throws(() => store.list(), (error: unknown) => error instanceof StoreError && error.code === "ANALYSIS_NOT_READY");

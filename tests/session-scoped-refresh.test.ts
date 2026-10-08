@@ -296,20 +296,44 @@ test("不支持快检的来源仍完整检查，清缓存强制全部客户端�
   assert.deepEqual(store.status().clientChecks, before.clientChecks);
 }));
 
-test("已存在的会话修订表迁移为可空检查字段，不假造来源检查记录", async () => {
-  const directory = await mkdtemp(join(tmpdir(), "manor-refresh-migration-"));
+test("无版本标记但已有旧表的索引明确拒绝，不迁移或假造来源检查记录", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "manor-refresh-unsupported-"));
   const path = join(directory, "index.sqlite");
   const db = new Database(path);
   db.exec(`CREATE TABLE session_revisions (id TEXT PRIMARY KEY,path TEXT NOT NULL,fingerprint TEXT NOT NULL,
     session_id TEXT,client TEXT,project TEXT,title TEXT,started_at TEXT,updated_at TEXT,json TEXT NOT NULL)`);
   db.close();
-  const store = new SessionStore(path);
   try {
-    const migrated = new Database(path);
+    assert.throws(() => new SessionStore(path), /不支持的索引版本/);
+    const original = new Database(path);
     try {
-      const columns = (migrated.prepare("PRAGMA table_info(session_revisions)").all() as { name: string }[]).map(column => column.name);
-      assert.ok(["source_location", "quick_fingerprint", "metadata_fingerprint"].every(column => columns.includes(column)));
-    } finally { migrated.close(); }
-    assert.equal(store.status().clientChecks, undefined);
-  } finally { store.close(); await rm(directory, { recursive: true, force: true }); }
+      const columns = (original.prepare("PRAGMA table_info(session_revisions)").all() as { name: string }[]).map(column => column.name);
+      assert.ok(["source_location", "quick_fingerprint", "metadata_fingerprint"].every(column => !columns.includes(column)));
+      assert.equal(original.pragma("user_version", { simple: true }), 0);
+      assert.equal((original.prepare("SELECT COUNT(*) AS count FROM sqlite_master WHERE type='table'").get() as { count: number }).count, 1);
+    } finally { original.close(); }
+  } finally { await rm(directory, { recursive: true, force: true }); }
 });
+
+test("新库重开保留来源快检记录，不重新解析未变化正文", async () => fixture(async (store, directory) => {
+  const root = join(directory, "sessions");
+  await mkdir(root);
+  await writeFile(join(root, "main.jsonl"), codexSource("reopen-demo", "重开来源检查"));
+  const roots = isolatedHistoryRoots({ codex: root });
+  await refresh(store, roots, { client: "codex" });
+  const before = store.cachedRevisions();
+  const checks = store.status().clientChecks;
+  const search = store.search({ q: "重开来源" });
+  const reopened = new SessionStore(store.dbPath);
+  try {
+    assert.deepEqual(reopened.cachedRevisions(), before);
+    assert.deepEqual(reopened.status().clientChecks, checks);
+    const result = await refresh(reopened, roots, { client: "codex" });
+    assert.equal(result.counts!.quickReused, 1);
+    assert.equal(result.counts!.parsed, 0);
+    assert.deepEqual(reopened.cachedRevisions(), before);
+    const after = reopened.search({ q: "重开来源" });
+    assert.deepEqual({ ...after, version: search.version }, search);
+    assert.equal(after.version, reopened.status().version);
+  } finally { reopened.close(); }
+}));

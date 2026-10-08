@@ -42,7 +42,7 @@ async function fixture(run: (context: { directory: string; repositoryPath: strin
   }
 }
 
-test("SQLite迁移与WAL；登记、完整版本和手动关联重开后保留", async () => fixture(async ({ directory, repositoryPath, history, sourcePath, store, repositoryId, refresh }) => {
+test("SQLite新结构与WAL；登记、完整版本和手动关联重开后保留", async () => fixture(async ({ directory, repositoryPath, history, sourcePath, store, repositoryId, refresh }) => {
   await writeFile(sourcePath, encode([meta(repositoryPath), call(repositoryPath, "first"), output("first")]));
   const orphan = join(history, "orphan.jsonl");
   await writeFile(orphan, encode([meta(undefined, "orphan"), call(undefined, "manual"), output("manual")]));
@@ -61,7 +61,7 @@ test("SQLite迁移与WAL；登记、完整版本和手动关联重开后保留",
     assert.ok(second.getTrackedSources(repositoryId).every(source => source.format === "codex-jsonl"));
     const database = new Database(second.dbPath);
     assert.equal(database.pragma("journal_mode", { simple: true }), "wal");
-    assert.equal(database.pragma("user_version", { simple: true }), 3);
+    assert.equal(database.pragma("user_version", { simple: true }), 4);
     database.close();
   } finally { second.close(); }
 }));
@@ -80,13 +80,14 @@ test("无变化只核对哈希，真实复用解析游标和对应缓存；当�
   assert.equal(store.getRefreshStats(repositoryId).mappingsComputed, 0);
   assert.equal(store.getRefreshStats(repositoryId).mappingsReused, 1);
   assert.equal(buildCoverage(store.getSnapshot(repositoryId)).files[0]!.readCount, 1);
-  const oldCreatedAt = store.getSnapshot(repositoryId, first).createdAt;
+  const oldCreatedAt = store.getSnapshot(repositoryId, next).createdAt;
   await writeFile(join(repositoryPath, "a.ts"), "inserted\n" + content);
   await refresh();
   assert.equal(store.getRefreshStats(repositoryId).mappingsComputed, 1);
   assert.equal(store.getRefreshStats(repositoryId).parsedRecords, 0);
   assert.deepEqual(store.getSnapshot(repositoryId).mappings[0]!.exactRanges, [{ start: 2, end: 3 }]);
-  assert.equal(store.getSnapshot(repositoryId, first).createdAt, oldCreatedAt);
+  assert.equal(store.getSnapshot(repositoryId, next).createdAt, oldCreatedAt);
+  assert.throws(() => store.getSnapshot(repositoryId, first), (error) => error instanceof StoreError && error.code === "VERSION_NOT_FOUND");
   assert.equal(await readFile(sourcePath, "utf8"), original);
 }));
 
@@ -162,7 +163,7 @@ test("跨刷新补结果与未完整Unicode尾部，只续读完整新增记录�
   const tail = Buffer.from(encode([output("pending", "你好\n")]));
   const split = tail.indexOf(Buffer.from("你好")) + 2;
   await appendFile(sourcePath, tail.subarray(0, split));
-  await refresh();
+  const partial = await refresh();
   assert.equal(store.getRefreshStats(repositoryId).parsedRecords, 0);
   assert.ok(store.getSnapshot(repositoryId).gaps.some((gap) => gap.kind === "incomplete_record"));
   await appendFile(sourcePath, tail.subarray(split));
@@ -173,7 +174,8 @@ test("跨刷新补结果与未完整Unicode尾部，只续读完整新增记录�
   assert.equal(store.getRefreshStats(repositoryId).parsedRecords, 1);
   assert.ok(!snapshot.gaps.some((gap) => gap.kind === "unpaired_call" || gap.kind === "incomplete_record"));
   assert.equal(buildCoverage(snapshot).summary.readExact.lines, 1);
-  assert.equal(store.getSnapshot(repositoryId, first).events[0]!.status, "unknown");
+  assert.equal(store.getSnapshot(repositoryId, partial).events[0]!.status, "unknown");
+  assert.throws(() => store.getSnapshot(repositoryId, first), (error) => error instanceof StoreError && error.code === "VERSION_NOT_FOUND");
 }));
 
 test("来源移动不新增活动；ENOENT从新版排除且上一版可查询；无关来源不形成missing gap", async () => fixture(async ({ repositoryPath, history, sourcePath, store, repositoryId, refresh }) => {
@@ -286,6 +288,7 @@ test("大结果分块发布，来源汇总与解析游标完整往返，重开�
   const sources = store.listSources(repositoryId);
   sources.version = snapshot.version;
   sources.gaps = Array.from({ length: 80 }, () => ({ kind: "range_unknown", message: "范围".repeat(4096) }));
+  snapshot.gaps = sources.gaps;
   const job = store.createJob(repositoryId);
   const stringify = JSON.stringify;
   // 缩小字符串上限复现聚合溢出，避免回归测试为此分配半 GB 以上内存。
@@ -302,6 +305,18 @@ test("大结果分块发布，来源汇总与解析游标完整往返，重开�
     assert.deepEqual(reopened.getSnapshot(repositoryId).events, snapshot.events);
     assert.ok(reopened.getSnapshot(repositoryId).sources.every((source) => !("events" in source) && !("cursor" in source)));
     assert.deepEqual(reopened.listSources(repositoryId), sources);
+    assert.deepEqual(reopened.getSnapshot(repositoryId).gaps, sources.gaps);
+    const database = new Database(store.dbPath);
+    try {
+      const row = database.prepare("SELECT sources FROM versions WHERE version=?").get(snapshot.version) as { sources: string };
+      assert.ok(!("gaps" in (JSON.parse(row.sources) as { value: object }).value));
+      assert.equal((database.prepare("SELECT COUNT(*) AS count FROM payload_parts WHERE kind='sources' AND field='gaps'").get() as { count: number }).count, 0);
+      assert.ok((database.prepare("SELECT COUNT(*) AS count FROM payload_parts WHERE kind='snapshot' AND field='gaps' AND owner=?").get(snapshot.version) as { count: number }).count > 0);
+      const event = database.prepare("SELECT part,json FROM payload_parts WHERE kind='snapshot' AND field='events' AND owner=? LIMIT 1").get(snapshot.version) as { part: number; json: string };
+      database.prepare("UPDATE payload_parts SET json='invalid-synthetic-json' WHERE kind='snapshot' AND field='events' AND owner=? AND part=?").run(snapshot.version, event.part);
+      assert.deepEqual(reopened.listSources(repositoryId), sources, "来源查询不能为了缺口读取事件正文");
+      database.prepare("UPDATE payload_parts SET json=? WHERE kind='snapshot' AND field='events' AND owner=? AND part=?").run(event.json, snapshot.version, event.part);
+    } finally { database.close(); }
     assert.deepEqual(reopened.getParsedSources(repositoryId), parsed);
     const version = snapshot.version;
     await refresh(true);
@@ -375,46 +390,101 @@ test("未关联元数据在追加相关读取或后补历史 worktree 证明后�
   assert.deepEqual(store.getSnapshot(repositoryId).events.map(event => event.id), eventIds);
 }));
 
-test("从SQLite v1迁移补来源登记，缺失状态不会因升级丢失", async () => fixture(async ({ directory, repositoryPath, sourcePath, store, repositoryId, refresh }) => {
-  await writeFile(sourcePath, encode([meta(repositoryPath), call(repositoryPath, "first"), output("first")]));
-  await refresh();
-  const database = new Database(store.dbPath);
-  // 还原旧版实际存储格式，避免把新版分块格式伪装成 v1。
-  database.prepare("UPDATE versions SET snapshot=?,sources=?").run(JSON.stringify(store.getSnapshot(repositoryId)), JSON.stringify(store.listSources(repositoryId)));
-  for (const source of store.getParsedSources(repositoryId)) database.prepare("UPDATE source_cache SET json=? WHERE source_id=?").run(JSON.stringify(source), source.sourceId);
-  database.exec("DROP TABLE payload_parts; DROP TABLE tracked_sources; PRAGMA user_version=1;");
-  database.close();
-  const upgraded = new AnalysisStore(join(directory, "index.sqlite"));
+test("旧索引结构明确拒绝，初始化不增加迁移或兼容读写", async () => fixture(async ({ directory }) => {
+  for (const version of [1, 2, 3, 5]) {
+    const path = join(directory, `unsupported-${version}.sqlite`);
+    const database = new Database(path);
+    database.pragma(`user_version = ${version}`);
+    database.close();
+    assert.throws(() => new AnalysisStore(path), /不支持的索引版本/);
+    const untouched = new Database(path);
+    assert.equal(untouched.pragma("user_version", { simple: true }), version);
+    assert.equal((untouched.prepare("SELECT COUNT(*) AS count FROM sqlite_master WHERE type='table'").get() as { count: number }).count, 0);
+    untouched.close();
+  }
+  const unversioned = join(directory, "unversioned.sqlite");
+  const database = new Database(unversioned);
+  database.exec("CREATE TABLE repositories (id TEXT PRIMARY KEY, json TEXT NOT NULL)");
   try {
-    assert.equal(upgraded.getTrackedSources(repositoryId).length, 1);
-    assert.ok(!("events" in upgraded.getTrackedSources(repositoryId)[0]!));
-    assert.equal(upgraded.getSnapshot(repositoryId).events.length, 1);
-  } finally { upgraded.close(); }
+    assert.throws(() => new AnalysisStore(unversioned), /不支持的索引版本/);
+    assert.equal(database.pragma("user_version", { simple: true }), 0);
+    assert.equal((database.prepare("SELECT COUNT(*) AS count FROM sqlite_master WHERE type='table'").get() as { count: number }).count, 1);
+  } finally { database.close(); }
 }));
 
-test("SQLite v2旧JSON版本与解析缓存升级后可查询并续读", async () => fixture(async ({ directory, repositoryPath, sourcePath, store, repositoryId, refresh }) => {
+test("按成功发布顺序保留每仓库最近两版，淘汰分块而保留配置与解析缓存", async () => fixture(async ({ directory, repositoryPath, sourcePath, store, repositoryId, refresh }) => {
   await writeFile(sourcePath, encode([meta(repositoryPath), call(repositoryPath, "first"), output("first")]));
-  const oldVersion = await refresh();
+  const original = await refresh();
   const snapshot = store.getSnapshot(repositoryId);
   const sources = store.listSources(repositoryId);
   const parsed = store.getParsedSources(repositoryId);
+  store.associateSource(repositoryId, sources.sources[0]!.sourceId);
+  const otherPath = join(directory, "other-repository");
+  await mkdir(otherPath);
+  await git("git", ["init", "-q", otherPath]);
+  await writeFile(join(otherPath, "other.ts"), "other\n");
+  const other = await store.registerRepository(otherPath);
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const job = store.createJob(other.id);
+    await refreshRepository(store, job.id, isolatedHistoryRoots());
+    assert.equal(store.getJob(job.id).status, "completed");
+  }
   const database = new Database(store.dbPath);
-  database.prepare("UPDATE versions SET snapshot=?,sources=?").run(JSON.stringify({ ...snapshot, sources: parsed }), JSON.stringify(sources));
-  for (const source of parsed) database.prepare("UPDATE source_cache SET json=? WHERE source_id=?").run(JSON.stringify(source), source.sourceId);
-  database.exec("DROP TABLE payload_parts; PRAGMA user_version=2;");
-  database.close();
-  const upgraded = new AnalysisStore(join(directory, "index.sqlite"));
+  const otherVersions = database.prepare("SELECT version FROM versions WHERE repository_id=? ORDER BY publication").all(other.id);
+  const firstCache = database.prepare("SELECT key,json FROM mapping_cache WHERE repository_id=? ORDER BY key").all(repositoryId);
+  const tracked = store.getTrackedSources(repositoryId);
   try {
-    assert.deepEqual(upgraded.getParsedSources(repositoryId), parsed);
-    assert.deepEqual(upgraded.listSources(repositoryId), sources);
-    assert.deepEqual(upgraded.getSnapshot(repositoryId).events, snapshot.events);
-    assert.ok(upgraded.getSnapshot(repositoryId).sources.every((source) => !("events" in source)));
-    await appendFile(sourcePath, encode([call(repositoryPath, "second"), output("second")]));
-    const job = upgraded.createJob(repositoryId);
-    await refreshRepository(upgraded, job.id, isolatedHistoryRoots({ codex: join(sourcePath, "..") }));
-    assert.equal(upgraded.getJob(job.id).status, "completed", upgraded.getJob(job.id).error);
-    assert.equal(upgraded.getRefreshStats(repositoryId).parsedRecords, 2);
-    assert.equal(upgraded.getSnapshot(repositoryId).events.length, 2);
-    assert.equal(upgraded.getSnapshot(repositoryId, oldVersion).events.length, 1);
-  } finally { upgraded.close(); }
+    for (const [index, version] of ["z-first", "a-second", "m-third"].entries()) {
+      const job = store.createJob(repositoryId);
+      store.publish({ snapshot: { ...snapshot, version, createdAt: `2026-01-0${3 - index}T00:00:00Z`,
+        events: snapshot.events.map(event => ({ ...event, output: "完整长结果".repeat(4096) })) },
+      sources: { ...sources, version }, parsed, mappings: [],
+      stats: { sourcesParsed: 0, parsedRecords: 0, mappingsComputed: 0, mappingsReused: 1 }, clearCache: false, jobId: job.id });
+      assert.equal((database.prepare("SELECT COUNT(*) AS count FROM versions WHERE repository_id=?").get(repositoryId) as { count: number }).count, 2);
+      assert.equal(store.getJob(job.id).status, "completed");
+      assert.equal(store.getSnapshot(repositoryId).version, version);
+    }
+    assert.deepEqual(database.prepare("SELECT version FROM versions WHERE repository_id=? ORDER BY publication").all(repositoryId), [{ version: "a-second" }, { version: "m-third" }]);
+    assert.deepEqual(database.prepare("SELECT version FROM versions WHERE repository_id=? ORDER BY publication").all(other.id), otherVersions);
+    for (const version of [original, "z-first"]) {
+      assert.throws(() => store.getSnapshot(repositoryId, version), error => error instanceof StoreError && error.code === "VERSION_NOT_FOUND");
+      assert.throws(() => store.listSources(repositoryId, version), error => error instanceof StoreError && error.code === "VERSION_NOT_FOUND");
+      assert.equal((database.prepare("SELECT COUNT(*) AS count FROM payload_parts WHERE repository_id=? AND kind IN ('snapshot','sources') AND owner=?").get(repositoryId, version) as { count: number }).count, 0);
+    }
+    for (const version of ["a-second", "m-third"]) assert.equal(store.getSnapshot(repositoryId, version).events[0]!.output, "完整长结果".repeat(4096));
+    assert.deepEqual(database.prepare("SELECT key,json FROM mapping_cache WHERE repository_id=? ORDER BY key").all(repositoryId), firstCache);
+    assert.deepEqual(store.getParsedSources(repositoryId), parsed);
+    assert.deepEqual(store.getTrackedSources(repositoryId), tracked);
+    assert.ok(store.getManualAssociations(repositoryId).has(sources.sources[0]!.sourceId));
+  } finally { database.close(); }
+}));
+
+test("淘汰阶段失败回滚新版、分块、仓库指针及任务完成状态", async () => fixture(async ({ repositoryPath, sourcePath, store, repositoryId, refresh }) => {
+  await writeFile(sourcePath, encode([meta(repositoryPath), call(repositoryPath, "first"), output("first")]));
+  const first = await refresh();
+  const second = await refresh();
+  const database = new Database(store.dbPath);
+  const beforeVersions = database.prepare("SELECT * FROM versions ORDER BY publication").all();
+  const beforeParts = database.prepare("SELECT * FROM payload_parts ORDER BY kind,owner,field,part").all();
+  const beforeCache = store.getParsedSources(repositoryId);
+  const snapshot = store.getSnapshot(repositoryId);
+  const job = store.createJob(repositoryId);
+  try {
+    database.exec("CREATE TRIGGER reject_prune BEFORE DELETE ON versions BEGIN SELECT RAISE(ABORT,'synthetic prune failure'); END");
+    assert.throws(() => store.publish({ snapshot: { ...snapshot, version: "failed-third" }, sources: { ...store.listSources(repositoryId), version: "failed-third" }, parsed: [], mappings: [],
+      stats: { sourcesParsed: 0, parsedRecords: 0, mappingsComputed: 0, mappingsReused: 0 }, clearCache: true, jobId: job.id }), /synthetic prune failure/);
+    assert.deepEqual(database.prepare("SELECT * FROM versions ORDER BY publication").all(), beforeVersions);
+    assert.deepEqual(database.prepare("SELECT * FROM payload_parts ORDER BY kind,owner,field,part").all(), beforeParts);
+    assert.deepEqual(store.getParsedSources(repositoryId), beforeCache);
+    assert.equal(store.getRepository(repositoryId).version, second);
+    assert.equal(store.getSnapshot(repositoryId, first).events.length, 1);
+    assert.equal(store.getSnapshot(repositoryId, second).events.length, 1);
+    assert.equal(store.getJob(job.id).status, "queued");
+    assert.throws(() => store.getSnapshot(repositoryId, "failed-third"), error => error instanceof StoreError && error.code === "VERSION_NOT_FOUND");
+    database.exec("DROP TRIGGER reject_prune");
+  } finally { database.close(); }
+  const third = await refresh();
+  assert.equal(store.getSnapshot(repositoryId).version, third);
+  assert.throws(() => store.getSnapshot(repositoryId, first), error => error instanceof StoreError && error.code === "VERSION_NOT_FOUND");
+  assert.equal(store.getSnapshot(repositoryId, second).events.length, 1);
 }));

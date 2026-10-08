@@ -154,7 +154,7 @@ export async function parseSessionSource(source: SourceLocation, sink: SessionSi
     if (source.client !== "codex") { sink.usage(value); return; }
     // 用量定位到实际保存该用量的记录，不猜测它属于哪段助手正文。
     const event = message(`usage:${value.id}`, "system", `请求用量（记录值）\n${display(value)}`, currentRecordLine,
-      { occurredAt: value.occurredAt, model: value.model, textDescriptor: { key: "sessions.body.usage", params: { details: display(value) } } });
+      { occurredAt: value.occurredAt, model: value.model, textDescriptor: { key: "sessions.body.usage" } });
     sink.usage({ ...value, messageId: event.id });
   } }, gap);
   const childReference = (tool: string | undefined, result: unknown, nativeAgentId?: string) => {
@@ -437,7 +437,7 @@ export async function parseSessionSource(source: SourceLocation, sink: SessionSi
       if (!hook) gap("unsupported_format", "CodeFlicker 附件类型尚未适配，已保留原始过程记录", { key: "diagnostics.sessions.parser.m014" });
       message(`native:${nativeId}:attachment`, "context", `${hook ? "本地 Hook" : "附件过程记录"}\n${display(content ?? record)}`, line,
         { ...extra, contextSource: hook ? "hook" : undefined,
-          textDescriptor: { key: hook ? "sessions.body.hook" : "sessions.body.attachment", params: { details: display(content ?? record) } },
+          textDescriptor: { key: hook ? "sessions.body.hook" : "sessions.body.attachment" },
           status: !hook ? undefined : type === "hook_success" ? "success" : ["hook_blocking_error", "hook_error_during_execution", "hook_non_blocking_error"].includes(type) ? "failure" : "unknown",
           durationMs: hook ? tokens(attachment.durationMs) : undefined });
       continue;

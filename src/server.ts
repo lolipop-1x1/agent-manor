@@ -23,6 +23,7 @@ import { ResourceManager } from "./resources/management.js";
 import { ResourceService } from "./resources/service.js";
 import { registerResourceRoutes } from "./service/resource-routes.js";
 import { registerPreferenceRoutes } from "./service/preferences.js";
+import { compactIndexAtStartup } from "./index/maintenance.js";
 
 export interface ServiceOptions {
   home?: string;
@@ -60,6 +61,7 @@ export async function startService(options: ServiceOptions = {}) {
   const app = Fastify({ logger: false, bodyLimit: 65_536, forceCloseConnections: true });
   const instance: ServiceInstance = { id: randomUUID(), pid: process.pid, host: "127.0.0.1", port: requestedPort, startedAt: new Date().toISOString() };
   try {
+    const indexMaintenance = await compactIndexAtStartup(home);
     store = new AnalysisStore(join(home, "index.sqlite"));
     sessions = new SessionStore(store.dbPath);
     manager = new WorkerManager(store, { roots: options.roots }, sessions);
@@ -118,7 +120,7 @@ export async function startService(options: ServiceOptions = {}) {
       }
     });
     registerPreferenceRoutes(app, home);
-    app.get("/api/v1/status", async () => ({ instance, version: VERSION, repositories: index.listRepositories(), jobs: index.listJobs(), sessions: library.status() }));
+    app.get("/api/v1/status", async () => ({ instance, version: VERSION, repositories: index.listRepositories(), jobs: index.listJobs(), sessions: library.status(), indexMaintenance }));
     app.post("/api/v1/stop", async (request, reply) => {
       emptyBody(request.body);
       reply.send({ stopping: true });

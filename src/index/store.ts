@@ -1,4 +1,3 @@
-import { DiagnosticError } from "../i18n/diagnostics.js";
 import type { MessageDescriptor } from "../i18n/types.js";
 import Database from "better-sqlite3";
 import { randomUUID } from "node:crypto";
@@ -6,6 +5,7 @@ import { mkdirSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import type { AnalysisSnapshot, ApiErrorCode, HistorySource, Job, Mapping, ParsedSource, Repository, SourcesResponse } from "../contracts.js";
 import { getRepository } from "../analysis/index.js";
+import { initializeIndexSchema } from "./schema.js";
 
 export class StoreError extends Error {
   constructor(public readonly code: ApiErrorCode, message: string, readonly messageDescriptor?: MessageDescriptor) {
@@ -48,36 +48,21 @@ export class AnalysisStore {
     this.database.pragma("journal_mode = WAL");
     this.database.pragma("foreign_keys = ON");
     this.database.pragma("busy_timeout = 5000");
-    this.migrate();
+    try { this.initialize(); } catch (error) { this.database.close(); throw error; }
   }
 
-  private migrate(): void {
-    const version = this.database.pragma("user_version", { simple: true }) as number;
-    if (version > 3) throw new DiagnosticError(`不支持的索引版本 ${version}`, { key: "diagnostics.index.store.m001", params: { p0: version } });
-    if (version === 3) return;
-    this.database.transaction(() => {
-      if (version === 0) this.database.exec(`
-        CREATE TABLE repositories (id TEXT PRIMARY KEY, json TEXT NOT NULL, version TEXT, stale INTEGER NOT NULL);
-        CREATE TABLE manual_associations (repository_id TEXT NOT NULL REFERENCES repositories(id), source_id TEXT NOT NULL, PRIMARY KEY(repository_id, source_id));
-        CREATE TABLE jobs (id TEXT PRIMARY KEY, repository_id TEXT NOT NULL REFERENCES repositories(id), json TEXT NOT NULL);
-        CREATE TABLE versions (repository_id TEXT NOT NULL REFERENCES repositories(id), version TEXT NOT NULL, snapshot TEXT NOT NULL, sources TEXT NOT NULL, stats TEXT NOT NULL, PRIMARY KEY(repository_id, version));
-        CREATE TABLE source_cache (repository_id TEXT NOT NULL REFERENCES repositories(id), source_id TEXT NOT NULL, path TEXT NOT NULL, json TEXT NOT NULL, PRIMARY KEY(repository_id, source_id, path));
-        CREATE INDEX source_cache_path ON source_cache(repository_id, path);
-        CREATE TABLE mapping_cache (repository_id TEXT NOT NULL REFERENCES repositories(id), key TEXT NOT NULL, json TEXT NOT NULL, PRIMARY KEY(repository_id, key));
-        PRAGMA user_version = 1;
-      `);
-      if (version < 2) {
-        this.database.exec("CREATE TABLE tracked_sources (repository_id TEXT NOT NULL REFERENCES repositories(id), source_id TEXT NOT NULL, json TEXT NOT NULL, PRIMARY KEY(repository_id, source_id));");
-        const save = this.database.prepare("INSERT OR REPLACE INTO tracked_sources(repository_id,source_id,json) VALUES(?,?,?)");
-        const rows = this.database.prepare("SELECT versions.snapshot AS json FROM versions JOIN repositories ON versions.repository_id=repositories.id AND versions.version=repositories.version").all() as JsonRow[];
-        for (const row of rows) {
-          const snapshot = JSON.parse(row.json) as AnalysisSnapshot;
-          for (const source of snapshot.sources) save.run(snapshot.repository.id, source.sourceId, JSON.stringify(this.sourceMetadata(source)));
-        }
-      }
-      this.database.exec("CREATE TABLE payload_parts (repository_id TEXT NOT NULL REFERENCES repositories(id), kind TEXT NOT NULL, owner TEXT NOT NULL, field TEXT NOT NULL, part INTEGER NOT NULL, json TEXT NOT NULL, PRIMARY KEY(repository_id,kind,owner,field,part));");
-      this.database.pragma("user_version = 3");
-    })();
+  private initialize(): void {
+    initializeIndexSchema(this.database, () => this.database.exec(`
+      CREATE TABLE IF NOT EXISTS repositories (id TEXT PRIMARY KEY, json TEXT NOT NULL, version TEXT, stale INTEGER NOT NULL);
+      CREATE TABLE IF NOT EXISTS manual_associations (repository_id TEXT NOT NULL REFERENCES repositories(id), source_id TEXT NOT NULL, PRIMARY KEY(repository_id, source_id));
+      CREATE TABLE IF NOT EXISTS jobs (id TEXT PRIMARY KEY, repository_id TEXT NOT NULL REFERENCES repositories(id), json TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS versions (publication INTEGER PRIMARY KEY AUTOINCREMENT, repository_id TEXT NOT NULL REFERENCES repositories(id), version TEXT NOT NULL, snapshot TEXT NOT NULL, sources TEXT NOT NULL, stats TEXT NOT NULL, UNIQUE(repository_id, version));
+      CREATE TABLE IF NOT EXISTS source_cache (repository_id TEXT NOT NULL REFERENCES repositories(id), source_id TEXT NOT NULL, path TEXT NOT NULL, json TEXT NOT NULL, PRIMARY KEY(repository_id, source_id, path));
+      CREATE INDEX IF NOT EXISTS source_cache_path ON source_cache(repository_id, path);
+      CREATE TABLE IF NOT EXISTS mapping_cache (repository_id TEXT NOT NULL REFERENCES repositories(id), key TEXT NOT NULL, json TEXT NOT NULL, PRIMARY KEY(repository_id, key));
+      CREATE TABLE IF NOT EXISTS tracked_sources (repository_id TEXT NOT NULL REFERENCES repositories(id), source_id TEXT NOT NULL, json TEXT NOT NULL, PRIMARY KEY(repository_id, source_id));
+      CREATE TABLE IF NOT EXISTS payload_parts (repository_id TEXT NOT NULL REFERENCES repositories(id), kind TEXT NOT NULL, owner TEXT NOT NULL, field TEXT NOT NULL, part INTEGER NOT NULL, json TEXT NOT NULL, PRIMARY KEY(repository_id,kind,owner,field,part));
+    `));
   }
 
   /** 大集合逐项编码，读回也逐块恢复，不拼接整版 JSON 字符串。 */
@@ -116,12 +101,11 @@ export class AnalysisStore {
       }
       flush();
     }
-    return JSON.stringify({ partsFormat: 3, value: header });
+    return JSON.stringify({ partsFormat: 4, value: header });
   }
 
   private readPayload<T>(json: string, repositoryId: string, kind: PayloadKind, owner: string): T {
-    const decoded = JSON.parse(json) as { partsFormat?: number; value: Record<string, unknown> };
-    if (decoded.partsFormat !== 3) return decoded as T;
+    const decoded = JSON.parse(json) as { value: Record<string, unknown> };
     const rows = this.database.prepare("SELECT field,json FROM payload_parts WHERE repository_id=? AND kind=? AND owner=? ORDER BY field,part")
       .iterate(repositoryId, kind, owner) as Iterable<{ field: string; json: string }>;
     for (const row of rows) {
@@ -170,7 +154,7 @@ export class AnalysisStore {
     if (!selected) throw new StoreError("ANALYSIS_NOT_READY", "仓库尚无完整分析结果", { key: "diagnostics.index.store.m003" });
     const row = this.database.prepare("SELECT snapshot AS json FROM versions WHERE repository_id=? AND version=?")
       .get(repositoryId, selected) as JsonRow | undefined;
-    if (!row) throw new StoreError("VERSION_NOT_FOUND", "分析结果版本不存在", { key: "diagnostics.index.store.m004" });
+    if (!row) throw new StoreError("VERSION_NOT_FOUND", "分析结果版本不可用：不存在或已被淘汰", { key: "diagnostics.index.store.m004" });
     const snapshot = this.readPayload<AnalysisSnapshot>(row.json, repositoryId, "snapshot", selected);
     snapshot.sources = snapshot.sources.map((source) => this.sourceMetadata(source));
     snapshot.repository.stale = repository.stale || selected !== repository.version;
@@ -182,8 +166,15 @@ export class AnalysisStore {
     const selected = this.selectVersion(repositoryId, version);
     const row = this.database.prepare("SELECT sources AS json FROM versions WHERE repository_id=? AND version=?")
       .get(repositoryId, selected) as JsonRow | undefined;
-    if (!row) throw new StoreError("VERSION_NOT_FOUND", "分析结果版本不存在", { key: "diagnostics.index.store.m004" });
-    return this.readPayload<SourcesResponse>(row.json, repositoryId, "sources", selected);
+    if (!row) throw new StoreError("VERSION_NOT_FOUND", "分析结果版本不可用：不存在或已被淘汰", { key: "diagnostics.index.store.m004" });
+    const sources = this.readPayload<Omit<SourcesResponse, "gaps">>(row.json, repositoryId, "sources", selected);
+    const gaps: SourcesResponse["gaps"] = [];
+    // 缺口只在快照保存；这里仅读取该字段分块，不加载事件和代码正文。
+    for (const part of this.database.prepare("SELECT json FROM payload_parts WHERE repository_id=? AND kind='snapshot' AND owner=? AND field='gaps' ORDER BY part")
+      .iterate(repositoryId, selected) as Iterable<JsonRow>) {
+      for (const gap of JSON.parse(part.json) as SourcesResponse["gaps"]) gaps.push(gap);
+    }
+    return { ...sources, gaps };
   }
 
   associateSource(repositoryId: string, sourceId: string): void {
@@ -211,8 +202,8 @@ export class AnalysisStore {
   getParsedSourceLocations(repositoryId: string): HistorySource[] {
     const rows = this.database.prepare("SELECT json FROM source_cache WHERE repository_id=? ORDER BY path").iterate(repositoryId) as Iterable<JsonRow>;
     return Array.from(rows, row => {
-      const decoded = JSON.parse(row.json) as ParsedSource & { partsFormat?: number; value: ParsedSource };
-      return this.sourceMetadata(decoded.partsFormat === 3 ? decoded.value : decoded);
+      const decoded = JSON.parse(row.json) as { value: ParsedSource };
+      return this.sourceMetadata(decoded.value);
     });
   }
 
@@ -237,7 +228,7 @@ export class AnalysisStore {
     const selected = this.selectVersion(repositoryId, version);
     const row = this.database.prepare("SELECT stats AS json FROM versions WHERE repository_id=? AND version=?")
       .get(repositoryId, selected) as JsonRow | undefined;
-    if (!row) throw new StoreError("VERSION_NOT_FOUND", "分析结果版本不存在", { key: "diagnostics.index.store.m004" });
+    if (!row) throw new StoreError("VERSION_NOT_FOUND", "分析结果版本不可用：不存在或已被淘汰", { key: "diagnostics.index.store.m004" });
     return JSON.parse(row.json) as RefreshStats;
   }
 
@@ -293,12 +284,13 @@ export class AnalysisStore {
     this.database.transaction(() => {
       const { snapshot } = input;
       const repositoryId = snapshot.repository.id;
+      const { gaps: _sourceGaps, ...savedSources } = input.sources;
       const savedSnapshot = { ...snapshot, sources: snapshot.sources.map((source) => this.sourceMetadata(source)) };
       // 相同 version 不允许覆盖，旧证据与创建时间保持不可变。
       this.database.prepare("INSERT INTO versions(repository_id,version,snapshot,sources,stats) VALUES(?,?,?,?,?)")
         .run(repositoryId, snapshot.version,
           this.writePayload(savedSnapshot, repositoryId, "snapshot", snapshot.version, ["baseline.files", "baseline.excluded", "sources", "events", "mappings", "gaps"]),
-          this.writePayload(input.sources, repositoryId, "sources", snapshot.version, ["sources", "unassociated", "gaps"]), JSON.stringify(input.stats));
+          this.writePayload(savedSources, repositoryId, "sources", snapshot.version, ["sources", "unassociated"]), JSON.stringify(input.stats));
       if (input.clearCache) {
         this.database.prepare("DELETE FROM mapping_cache WHERE repository_id=?").run(snapshot.repository.id);
       }
@@ -315,6 +307,12 @@ export class AnalysisStore {
       for (const entry of input.mappings) saveMapping.run(snapshot.repository.id, entry.key, JSON.stringify(entry.mapping));
       this.database.prepare("UPDATE repositories SET version=?,stale=0 WHERE id=?").run(snapshot.version, snapshot.repository.id);
       this.updateJob(input.jobId, { status: "completed", phase: "分析完成", phaseDescriptor: { key: "diagnostics.index.store.m009" }, progress: 1, finishedAt: new Date().toISOString(), version: snapshot.version });
+      // 发布序号独立于版本名称、创建时间及普通 rowid；淘汰与发布一同提交。
+      const expired = "SELECT version FROM versions WHERE repository_id=? ORDER BY publication DESC LIMIT -1 OFFSET 2";
+      this.database.prepare(`DELETE FROM payload_parts WHERE repository_id=? AND kind IN ('snapshot','sources') AND owner IN (${expired})`)
+        .run(repositoryId, repositoryId);
+      this.database.prepare(`DELETE FROM versions WHERE repository_id=? AND version IN (${expired})`)
+        .run(repositoryId, repositoryId);
     })();
   }
 

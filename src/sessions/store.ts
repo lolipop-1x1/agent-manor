@@ -10,12 +10,17 @@ import type { SourceLocation } from "../history/types.js";
 import type { ResourceEventStream, ResourceHistoryIdentity, ResourceUsageIdentity, ResourceUsageEvent, ResourceUsageQuery } from "../resource-contracts.js";
 import type { SessionIndexStatus, SessionJob, SessionListResult, SessionMessage, SessionMessageQuery, SessionMessageResult, SessionProfile, SessionQuery, SessionRefreshOptions, SessionSearchResult, SessionSink, SessionSourceMeta, SessionSummary, SessionTimelineEvent, SessionTimelineResult, SessionUsage } from "../session-contracts.js";
 import { StoreError } from "../index/store.js";
+import { initializeIndexSchema } from "../index/schema.js";
 import { resourceGapRelevant } from "../resources/coverage.js";
 import { sessionTitle } from "./title.js";
 import { initializeSearchIndex, prepareSearchIndex, searchMatch } from "./search-index.js";
 
 interface JsonRow { json: string }
-interface MessageRow extends JsonRow { text: string }
+interface MessageMetadataRow extends JsonRow {
+  id: string; ordinal: number; record_line: number; turn_id: string; kind: SessionMessage["kind"];
+  final: SessionMessage["final"] | null; call_id: string | null; copied: number | null;
+}
+interface MessageRow extends MessageMetadataRow { text: string }
 interface RevisionRow extends JsonRow { id: string; path: string; fingerprint: string }
 type SqlValue = string | number;
 /** path 沿用 SQL 列名但表示来源缓存键；真实文件路径保存在 SessionSourceMeta.path。 */
@@ -29,7 +34,15 @@ export interface SessionRevision {
   metadataFingerprint?: string;
 }
 const decode = <T>(row: JsonRow): T => JSON.parse(row.json) as T;
-const decodeMessage = (row: MessageRow): SessionMessage => ({ ...decode<SessionMessage>(row), text: row.text });
+const MESSAGE_COLUMNS = "id,ordinal,record_line,turn_id,kind,final,call_id,copied,json";
+const decodeMessageMetadata = (row: MessageMetadataRow): Omit<SessionMessage, "text"> => ({
+  ...decode<Omit<SessionMessage, "text">>(row), id: row.id, ordinal: row.ordinal, recordLine: row.record_line,
+  turnId: row.turn_id, kind: row.kind,
+  ...(row.final !== null ? { final: row.final } : {}),
+  ...(row.call_id !== null ? { callId: row.call_id } : {}),
+  ...(row.copied !== null ? { copied: Boolean(row.copied) } : {}),
+});
+const decodeMessage = (row: MessageRow): SessionMessage => ({ ...decodeMessageMetadata(row), text: row.text });
 const literal = (value: string) => `%${value.replace(/[\\%_]/g, "\\$&")}%`;
 const paging = (query: SessionQuery) => ({ page: Math.max(1, Math.floor(query.page ?? 1)), pageSize: Math.min(200, Math.max(1, Math.floor(query.pageSize ?? 50))) });
 const kindsOf = (query: SessionQuery) => (query.kinds?.length ? query.kinds : ["user", "assistant"])
@@ -47,24 +60,25 @@ export class SessionStore {
     this.database.pragma("journal_mode = WAL");
     this.database.pragma("foreign_keys = ON");
     this.database.pragma("busy_timeout = 5000");
-    // 独立表不修改既有代码地图迁移版本。
-    this.database.exec(`
+    try {
+      initializeIndexSchema(this.database, () => {
+        this.database.exec(`
       CREATE TABLE IF NOT EXISTS session_state (id INTEGER PRIMARY KEY CHECK(id=1), json TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS session_jobs (id TEXT PRIMARY KEY, created_at TEXT NOT NULL, json TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS session_revisions (id TEXT PRIMARY KEY, path TEXT NOT NULL, fingerprint TEXT NOT NULL,
-        session_id TEXT, client TEXT, project TEXT, title TEXT, started_at TEXT, updated_at TEXT, json TEXT NOT NULL);
-      CREATE TABLE IF NOT EXISTS session_messages (revision TEXT NOT NULL REFERENCES session_revisions(id) ON DELETE CASCADE,
+        session_id TEXT, client TEXT, project TEXT, title TEXT, started_at TEXT, updated_at TEXT,
+        source_location TEXT, quick_fingerprint TEXT, metadata_fingerprint TEXT, json TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS session_messages (message_key INTEGER PRIMARY KEY, revision TEXT NOT NULL REFERENCES session_revisions(id) ON DELETE CASCADE,
         id TEXT NOT NULL, ordinal INTEGER NOT NULL, record_line INTEGER NOT NULL, turn_id TEXT NOT NULL, kind TEXT NOT NULL,
-        final TEXT, call_id TEXT, copied INTEGER NOT NULL, text TEXT NOT NULL, json TEXT NOT NULL, PRIMARY KEY(revision,id));
+        final TEXT, call_id TEXT, copied INTEGER, text TEXT NOT NULL, json TEXT NOT NULL, UNIQUE(revision,id));
       CREATE INDEX IF NOT EXISTS session_message_order ON session_messages(revision,ordinal,id);
       CREATE INDEX IF NOT EXISTS session_message_call ON session_messages(revision,call_id);
       CREATE INDEX IF NOT EXISTS session_message_turn ON session_messages(revision,turn_id,ordinal,id);
       CREATE INDEX IF NOT EXISTS session_message_resource_event_v2
         ON session_messages(revision,json_extract(json,'$.resource.kind'),ordinal,id)
-        WHERE kind IN ('tool_call','user') AND copied=0 AND json_extract(json,'$.resource.kind') IN ('mcp','skill_call','skill_read');
-      DROP INDEX IF EXISTS session_message_resource_event;
+        WHERE kind IN ('tool_call','user') AND copied IS NOT 1 AND json_extract(json,'$.resource.kind') IN ('mcp','skill_call','skill_read');
       CREATE INDEX IF NOT EXISTS session_message_resource_call ON session_messages(revision,call_id,kind,copied)
-        WHERE kind='tool_call' AND copied=0;
+        WHERE kind='tool_call' AND copied IS NOT 1;
       CREATE TABLE IF NOT EXISTS session_usage (revision TEXT NOT NULL REFERENCES session_revisions(id) ON DELETE CASCADE,
         id TEXT NOT NULL, message_id TEXT, turn_id TEXT, json TEXT NOT NULL, PRIMARY KEY(revision,id));
       CREATE TABLE IF NOT EXISTS session_versions (id TEXT PRIMARY KEY, created_at TEXT NOT NULL, gaps TEXT NOT NULL);
@@ -76,13 +90,10 @@ export class SessionStore {
         child TEXT NOT NULL, parent TEXT NOT NULL, PRIMARY KEY(version,child));
       CREATE INDEX IF NOT EXISTS session_relation_parent ON session_version_relations(version,parent);
     `);
-    // 旧修订没有快速检查记录；迁移后首次刷新仍校验正文。
-    const revisionColumns = new Set((this.database.prepare("PRAGMA table_info(session_revisions)").all() as { name: string }[]).map(column => column.name));
-    for (const column of ["source_location", "quick_fingerprint", "metadata_fingerprint"]) {
-      if (!revisionColumns.has(column)) this.database.exec(`ALTER TABLE session_revisions ADD COLUMN ${column} TEXT`);
-    }
-    this.database.prepare("INSERT OR IGNORE INTO session_state(id,json) VALUES(1,?)").run(JSON.stringify({ stale: false }));
-    initializeSearchIndex(this.database);
+        this.database.prepare("INSERT OR IGNORE INTO session_state(id,json) VALUES(1,?)").run(JSON.stringify({ stale: false }));
+        initializeSearchIndex(this.database);
+      });
+    } catch (error) { this.database.close(); throw error; }
   }
 
   close(): void { this.database.close(); }
@@ -172,9 +183,10 @@ export class SessionStore {
       for (const item of pending) {
         if (item.type === "message") {
           const value = item.value;
-          const { text: _text, ...metadata } = value;
+          const { id: _id, ordinal: _ordinal, recordLine: _recordLine, turnId: _turnId, kind: _kind,
+            final: _final, callId: _callId, copied: _copied, text: _text, ...metadata } = value;
           message.run(revision, value.id, value.ordinal, value.recordLine, value.turnId, value.kind, value.final ?? null,
-            value.callId ?? null, value.copied ? 1 : 0, value.text, JSON.stringify(metadata));
+            value.callId ?? null, value.copied === undefined ? null : value.copied ? 1 : 0, value.text, JSON.stringify(metadata));
         } else {
           const value = item.value;
           usage.run(revision, value.id, value.messageId ?? null, value.turnId ?? null, JSON.stringify(value));
@@ -385,19 +397,19 @@ export class SessionStore {
       json_extract(m.json,'$.occurredAt') AS occurred_at,
       COALESCE(CASE WHEN json_extract(m.json,'$.status') IN ('success','failure') THEN json_extract(m.json,'$.status') END,
         CASE WHEN (SELECT COUNT(*) FROM session_messages c WHERE c.revision=m.revision AND c.call_id=m.call_id
-          AND c.kind='tool_call' AND c.copied=0)=1 THEN json_extract(result.json,'$.status') END,'unknown') AS status,
+          AND c.kind='tool_call' AND c.copied IS NOT 1)=1 THEN json_extract(result.json,'$.status') END,'unknown') AS status,
       COALESCE(json_extract(m.json,'$.durationMs'),json_extract(result.json,'$.durationMs')) AS duration_ms,
       result.id AS result_id,
       (SELECT COUNT(*) FROM session_messages z WHERE z.revision=m.revision AND z.call_id=m.call_id
-        AND z.kind='tool_result' AND z.copied=0) AS result_count,
+        AND z.kind='tool_result' AND z.copied IS NOT 1) AS result_count,
       (SELECT COUNT(*) FROM session_messages c WHERE c.revision=m.revision AND c.call_id=m.call_id
-        AND c.kind='tool_call' AND c.copied=0) AS call_count
+        AND c.kind='tool_call' AND c.copied IS NOT 1) AS call_count
       FROM session_version_sessions v JOIN session_revisions r ON r.id=v.revision
-      JOIN session_messages m INDEXED BY session_message_resource_event_v2 ON m.revision=r.id AND m.kind IN ('tool_call','user') AND m.copied=0
+      JOIN session_messages m INDEXED BY session_message_resource_event_v2 ON m.revision=r.id AND m.kind IN ('tool_call','user') AND m.copied IS NOT 1
       LEFT JOIN session_messages result ON result.revision=m.revision AND result.id=(SELECT MIN(z.id) FROM session_messages z
-        WHERE z.revision=m.revision AND z.call_id=m.call_id AND z.kind='tool_result' AND z.copied=0 HAVING COUNT(*)=1)
+        WHERE z.revision=m.revision AND z.call_id=m.call_id AND z.kind='tool_result' AND z.copied IS NOT 1 HAVING COUNT(*)=1)
       AND (SELECT COUNT(*) FROM session_messages c WHERE c.revision=m.revision AND c.call_id=m.call_id
-        AND c.kind='tool_call' AND c.copied=0)=1
+        AND c.kind='tool_call' AND c.copied IS NOT 1)=1
       WHERE ${parts.join(" AND ")} AND json_extract(m.json,'$.resource.kind') IN ('mcp','skill_call','skill_read')
       ORDER BY r.session_id,m.ordinal,m.id`).iterate(...values) as Iterable<{
         message_id: string; ordinal: number; turn_id: string; record_line: number; session_id: string; client: Client; project: string | null;
@@ -533,7 +545,7 @@ export class SessionStore {
         .map((turn, index) => ({ ...turn, position: (pagination.page - 1) * pagination.pageSize + index + 1 }));
       if (pagination.page === 1) turns.unshift(...initial.map(turn => ({ ...turn, position: 0 })));
       const turnIds = turns.flatMap(turn => turn.id === "unknown" ? ["", "unknown"] : [turn.id]);
-      const messages = turns.length ? (this.database.prepare(`SELECT json,text FROM session_messages WHERE revision=?${condition}
+      const messages = turns.length ? (this.database.prepare(`SELECT ${MESSAGE_COLUMNS},text FROM session_messages WHERE revision=?${condition}
         AND turn_id IN (${turnIds.map(() => "?").join(",")}) ORDER BY ordinal,id`)
         .all(revision, ...branchValues, ...turnIds) as MessageRow[]).map(decodeMessage) : [];
       return { version, session, messages, total, ...pagination, pageUnit: "turn", totalTurns, turns, focusMessageId: target?.id };
@@ -545,7 +557,7 @@ export class SessionStore {
       pagination.page = Math.floor(preceding / pagination.pageSize) + 1;
     }
     const total = (this.database.prepare(`SELECT COUNT(*) AS count FROM session_messages WHERE revision=?${condition}`).get(revision, ...branchValues) as { count: number }).count;
-    const messages = (this.database.prepare(`SELECT json,text FROM session_messages WHERE revision=?${condition} ORDER BY ordinal,id LIMIT ? OFFSET ?`)
+    const messages = (this.database.prepare(`SELECT ${MESSAGE_COLUMNS},text FROM session_messages WHERE revision=?${condition} ORDER BY ordinal,id LIMIT ? OFFSET ?`)
       .all(revision, ...branchValues, pagination.pageSize, (pagination.page - 1) * pagination.pageSize) as MessageRow[]).map(decodeMessage);
     return { version, session, messages, total, ...pagination, focusMessageId: target?.id };
   }
@@ -692,13 +704,13 @@ export class SessionStore {
         profile.gaps.push({ kind: "unassociated", message: "明确子会话目标缺少来源或父子关联尚未确认，未纳入汇总", messageDescriptor: { key: "diagnostics.sessions.store.m017" }, count: missing.size });
       }
       const retained = this.database.prepare(`SELECT kind,SUM(CAST((length(text)+3)/4 AS INTEGER)) AS tokens
-        FROM session_messages WHERE revision=? AND copied=0 GROUP BY kind`).all(revision) as { kind: SessionMessage["kind"]; tokens: number }[];
+        FROM session_messages WHERE revision=? AND copied IS NOT 1 GROUP BY kind`).all(revision) as { kind: SessionMessage["kind"]; tokens: number }[];
       for (const item of retained) {
         estimates.set(item.kind, (estimates.get(item.kind) ?? 0) + item.tokens);
         profile.estimate.total += item.tokens;
       }
-      for (const row of this.database.prepare("SELECT json FROM session_messages WHERE revision=? AND copied=0 ORDER BY ordinal,id").iterate(revision) as Iterable<JsonRow>) {
-        const message = decode<Omit<SessionMessage, "text">>(row);
+      for (const row of this.database.prepare(`SELECT ${MESSAGE_COLUMNS} FROM session_messages WHERE revision=? AND copied IS NOT 1 ORDER BY ordinal,id`).iterate(revision) as Iterable<MessageMetadataRow>) {
+        const message = decodeMessageMetadata(row);
         profile.messageCount += 1;
         if (message.kind === "user" && message.turnId) turns.add(`${sessionId}:${message.turnId}`);
         if (message.model) models.set(message.model, (models.get(message.model) ?? 0) + 1);

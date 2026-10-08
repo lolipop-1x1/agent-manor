@@ -27,7 +27,13 @@ export function sessionResourceName(resource: NonNullable<SessionMessage["resour
 }
 
 export function sessionMessageText(message: SessionMessage, language = getLanguage()): string {
-  return translateMessageOrOriginal(language, message.textDescriptor, message.text) || translate(language, "sessions.body.empty");
+  const descriptor = message.textDescriptor;
+  if (descriptor && ["sessions.body.usage", "sessions.body.hook", "sessions.body.attachment"].includes(descriptor.key)) {
+    // 稳定标识确定产品标题，原始详情只引用正文第一行之后的内容。
+    const separator = message.text.indexOf("\n");
+    return translate(language, descriptor.key, { details: separator < 0 ? "" : message.text.slice(separator + 1) });
+  }
+  return translateMessageOrOriginal(language, descriptor, message.text) || translate(language, "sessions.body.empty");
 }
 
 export function usageAxis(value: number): { max: number; ticks: number[] } {

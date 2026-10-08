@@ -8,7 +8,7 @@
 - 新安装直接初始化新结构，后续启动复用。开发阶段不实现旧索引结构迁移或兼容层。
 - `.bak` 仅用于本次开发环境封存、重建及验证，成功后删除；不进入正式启动流程。
 - 开发重建只带过仓库登记、手动关联和历史文件位置，不复制旧分析数据；资源管理、语言偏好和回收材料保持不变。
-- [实施规格](spec.md) 已收口，状态为 `ready-for-agent`；架构边界见 [ADR 0008](../../docs/adr/0008-bound-analysis-version-retention.md)。
+- [实施规格](spec.md) 已收口，状态为 `claimed`；架构边界见 [ADR 0008](../../docs/adr/0008-bound-analysis-version-retention.md)。
 
 ## 已核验事实
 
@@ -22,13 +22,13 @@
 
 | 编号 | 任务 | 依赖 | 状态 |
 | --- | --- | --- | --- |
-| 01 | [紧凑存储与完整读写](issues/01-compact-storage.md) | 无 | ready-for-agent |
-| 02 | [地图保留最近两版](issues/02-map-version-retention.md) | 01 | ready-for-agent |
-| 03 | [启动时自动空间整理](issues/03-startup-compaction.md) | 01、02 | ready-for-agent |
-| 04 | [新安装、端到端与空间验收](issues/04-functional-validation.md) | 01、02、03 | ready-for-agent |
+| 01 | [紧凑存储与完整读写](issues/01-compact-storage.md) | 无 | resolved |
+| 02 | [地图保留最近两版](issues/02-map-version-retention.md) | 01 | resolved |
+| 03 | [启动时自动空间整理](issues/03-startup-compaction.md) | 01 | resolved |
+| 04 | [新安装、端到端与空间验收](issues/04-functional-validation.md) | 01、02、03 | claimed |
 | 05 | [一次性开发索引重建验证](issues/05-development-rebuild.md) | 04 | ready-for-agent |
 
-任务已明确，但依赖任务完成前不开始下游执行。没有待用户补充的问题；本轮不提前执行真实数据库操作。
+任务 01–03 已完成，任务 04 正在整合验收和独立 review；真实索引操作仍等待隔离验收通过。
 
 ## 后续 TODO
 
@@ -38,3 +38,4 @@
 ## Comments
 
 - 2026-10-08：完成决策收口，按用户最新要求将开发 `.bak` 验证与正式产品逻辑分开，移除产品旧库兼容与迁移任务。
+- 2026-10-08：实施核验确认任务 02 和 03 可在新结构完成后独立推进，移除 03 对 02 的阻塞；最终验收等待三项全部完成。
