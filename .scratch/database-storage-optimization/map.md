@@ -8,14 +8,14 @@
 - 新安装直接初始化新结构，后续启动复用。开发阶段不实现旧索引结构迁移或兼容层。
 - `.bak` 仅用于本次开发环境封存、重建及验证，成功后删除；不进入正式启动流程。
 - 开发重建只带过仓库登记、手动关联和历史文件位置，不复制旧分析数据；资源管理、语言偏好和回收材料保持不变。
-- [实施规格](spec.md) 已收口，状态为 `claimed`；架构边界见 [ADR 0008](../../docs/adr/0008-bound-analysis-version-retention.md)。
+- [实施规格](spec.md) 已完成，状态为 `resolved`；架构边界见 [ADR 0008](../../docs/adr/0008-bound-analysis-version-retention.md)。
 
 ## 已核验事实
 
 - 地图、会话索引和 Worker 共用索引文件；安全维护必须排除自动启动和其他写入者。
 - 现有清缓存不回收物理空间，现有数据目录迁移也不等于本次索引重建功能。
 - 空库可发现会话来源，但没有仓库可供地图重建；开发重建要单独保留最小配置及历史定位。
-- 当前 FTS 用消息隐式 rowid 关联。[SQLite VACUUM 文档](https://www.sqlite.org/lang_vacuum.html)不保证未声明 `INTEGER PRIMARY KEY` 的 rowid 在整理后不变，新结构需要稳定键并验证搜索关联；隔离小样本未复现变化，不将样本结果视为稳定性保证。
+- 优化前 FTS 用消息隐式 rowid 关联。[SQLite VACUUM 文档](https://www.sqlite.org/lang_vacuum.html)不保证未声明 `INTEGER PRIMARY KEY` 的 rowid 在整理后不变；新结构已使用显式稳定键，并验证整理前后的正文和搜索关联。
 - 原始来源已经消失的历史无法从新库重建；读取失败不是正常零记录。
 
 ## 实施依赖
@@ -25,10 +25,10 @@
 | 01 | [紧凑存储与完整读写](issues/01-compact-storage.md) | 无 | resolved |
 | 02 | [地图保留最近两版](issues/02-map-version-retention.md) | 01 | resolved |
 | 03 | [启动时自动空间整理](issues/03-startup-compaction.md) | 01 | resolved |
-| 04 | [新安装、端到端与空间验收](issues/04-functional-validation.md) | 01、02、03 | claimed |
-| 05 | [一次性开发索引重建验证](issues/05-development-rebuild.md) | 04 | ready-for-agent |
+| 04 | [新安装、端到端与空间验收](issues/04-functional-validation.md) | 01、02、03 | resolved |
+| 05 | [一次性开发索引重建验证](issues/05-development-rebuild.md) | 04 | resolved |
 
-任务 01–03 已完成，任务 04 正在整合验收和独立 review；真实索引操作仍等待隔离验收通过。
+任务 01–05 已完成，独立 review 的两个问题已修复并复核关闭。真实索引完整性、来源与消息一致性、搜索、资源统计、地图保留及正常重启验证通过；本次旧库恢复材料已清理。
 
 ## 后续 TODO
 
