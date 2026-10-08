@@ -555,7 +555,7 @@ try {
     await page.getByRole("button",{name:"重置筛选",exact:true}).click();
     ${view("Skill 总览")}
     const table=page.getByRole("table",{name:"Skill 总览",exact:true}); await table.waitFor();
-    expect(await table.getByRole("columnheader").count()===7,"总览列数错误");
+    expect(await table.getByRole("columnheader").count()===6,"总览列数错误");
     const quick=page.getByRole("group",{name:"Skill 快速筛选",exact:true});
     expect(await quick.getByRole("button").count()===6,"快捷筛选缺失");
     expect((await quick.getByRole("button",{name:/^全部/}).innerText()).includes(${JSON.stringify(String(overview.counts.all))}),"全部计数错误");
@@ -818,7 +818,7 @@ try {
   await step("MCP 总览合并服务名称、注册和会话并集", `
     await page.evaluate(hash=>location.hash=hash,${JSON.stringify(mcpHash)});
     const table=page.getByRole("table",{name:"MCP 总览",exact:true}); await table.waitFor();
-    expect(await table.getByRole("columnheader").count()===7,"MCP总览列数错误");
+    expect(await table.getByRole("columnheader").count()===6,"MCP总览列数错误");
     expect(await table.getByRole("button",{name:"按读取排序",exact:true}).count()===0,"MCP错误展示Skill读取列");
     expect(await table.getByRole("button",{name:"按调用次数排序",exact:true}).count()===1,"MCP缺少调用次数列");
     expect(await table.getByRole("columnheader").filter({hasText:"调用次数"}).getAttribute("aria-sort")==="descending","MCP默认没有按调用次数降序");

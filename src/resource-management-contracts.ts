@@ -3,6 +3,7 @@ import type { ResourceInventoryEntry, ResourceInventorySnapshot, ResourceManualS
 
 export type ResourceManagementAction = "disable" | "standby" | "trash" | "restore" | "purge";
 export type ResourceArchiveState = "disabled" | "standby" | "trash" | "restored" | "purged";
+export type ResourceAffectedEntry = Pick<ResourceInventoryEntry, "id" | "name" | "client" | "scope" | "project" | "entryPath">;
 export interface ResourceManagementInput { entryId?: string; operationId?: string; action: ResourceManagementAction }
 export interface ResourceManagementPreview {
   id: string;
@@ -11,9 +12,10 @@ export interface ResourceManagementPreview {
   operationId?: string;
   resource: Pick<ResourceInventoryEntry, "name" | "kind" | "client" | "scope" | "project">;
   method: "native_toggle" | "entry_isolation" | "registration_remove" | "restore" | "permanent_purge";
+  target?: "entry" | "file";
   sourcePath: string;
   destinationPath?: string;
-  affectedEntries: Pick<ResourceInventoryEntry, "id" | "name" | "client" | "scope" | "project" | "entryPath">[];
+  affectedEntries: ResourceAffectedEntry[];
   /** 当前所选入口被隔离后，可能重新可见的持久来源。 */
   revealedEntries?: Pick<ResourceInventoryEntry, "name" | "client" | "scope" | "project" | "entryPath">[];
   referencesComplete: false;
@@ -41,6 +43,8 @@ export interface ResourceManagementOperation {
   archiveId?: string;
   localState: "changed" | "unchanged" | "partial";
   clientEffect: "pending_reload" | "unknown";
+  target?: "entry" | "file";
+  affectedEntries?: ResourceAffectedEntry[];
 }
 export interface ResourceManagementArchive {
   id: string;
@@ -52,6 +56,8 @@ export interface ResourceManagementArchive {
   createdAt: string;
   restorable: boolean;
   operationStatus: "success" | "partial";
+  target?: "entry" | "file";
+  affectedEntries?: ResourceAffectedEntry[];
 }
 export interface ResourceManagementOperations { operations: ResourceManagementOperation[]; total: number; page: number; pageSize: number }
 export interface ResourceManagementOperationQuery { kind?: "skill" | "mcp"; client?: string; project?: string; q?: string }

@@ -350,6 +350,7 @@ export default {
   "diagnostics.server.m019": "No local listening port was obtained",
   "diagnostics.worker.m001": "The analysis entry point must be started by a worker",
   "diagnostics.resources.management.m001": "The resource contains unsupported file types and is read-only",
+  "diagnostics.resources.management.linkTargetMissing": "The link target no longer exists. Restore the target files first.",
   "diagnostics.resources.management.m002": "Invalid favorite parameters",
   "diagnostics.resources.management.m003": "Manual sources must specify a known client, type, and absolute path",
   "diagnostics.resources.management.m004": "The manual source does not exist",

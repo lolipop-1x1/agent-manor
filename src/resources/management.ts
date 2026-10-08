@@ -22,7 +22,7 @@ interface Inspection { hash: string; modes: Mode[]; contentHash: string }
 interface Dependency { path: string; hash: string }
 interface PrivateArchive { public: ResourceManagementArchive; change?: ConfigChange; modes: Mode[]; backupHash: string }
 interface Plan { public: ResourceManagementPreview; entry: ResourceInventoryEntry; dependencies: Dependency[]; references: string;
-  archiveId?: string; change?: ConfigChange; restoreText?: string }
+  archiveId?: string; change?: ConfigChange; restoreText?: string; linkTarget?: { path: string; resolved: string } }
 interface JsonRow { json: string }
 const digest = (text: string | Buffer): string => createHash("sha256").update(text).digest("hex");
 const decode = <T>(row: JsonRow): T => JSON.parse(row.json) as T;
@@ -58,7 +58,7 @@ function references(snapshot: ResourceInventorySnapshot, entry: ResourceInventor
     || value.entryType === "symlink" && value.linkTarget !== undefined && paths.has(resolve(dirname(value.entryPath), value.linkTarget)))
     .sort((left, right) => left.id.localeCompare(right.id));
 }
-/** 已发现其他入口依赖物理本体时，只允许已核验的原生开关或隔离链接入口。 */
+/** 入口隔离保持原范围；共享文件回收另行核验完整的已知引用。 */
 function sharedPhysical(entry: ResourceInventoryEntry, refs: readonly ResourceInventoryEntry[]): boolean {
   return entry.kind === "skill" && (entry.entryType === "directory" || entry.entryType === "file") && refs.some(value => value.id !== entry.id);
 }
@@ -167,6 +167,13 @@ export class ResourceManager {
         || entry.client === "codeflicker-desktop" && entry.kind === "skill" && entry.locator.nativeControl === "codeflicker-desktop-skill")
       && entry.readState !== "unreadable";
   }
+  private fileWritable(entry: ResourceInventoryEntry, snapshot: ResourceInventorySnapshot): boolean {
+    const source = snapshot.sources.find(value => value.id === entry.sourceId);
+    return entry.kind === "skill" && !entry.protected && !entry.owner && source?.verified === true
+      && source.client === entry.client && source.kind === entry.kind && !["plugin", "system", "managed"].includes(source.origin)
+      && entry.readState !== "unreadable" && ["directory", "file", "symlink"].includes(entry.entryType)
+      && !references(snapshot, entry).some(value => value.protected || value.owner);
+  }
   private favorite(entry: ResourceInventoryEntry, snapshot: ResourceInventorySnapshot): boolean {
     const favorites = new Set(this.favorites());
     return favorites.has(entry.bodyId) || favorites.has(entry.id) || references(snapshot, entry).some(value => favorites.has(value.id)
@@ -189,10 +196,14 @@ export class ResourceManager {
       if (!editability.has(editKey)) editability.set(editKey, writable && path !== undefined && texts.get(path) !== undefined && editableConfig(texts.get(path)!, entry));
       const configWritable = editability.get(editKey)!;
       disable = disable && configWritable;
-      const isolation = writable && (entry.kind === "skill" || configWritable) && !sharedPhysical(entry, references(snapshot, entry));
-      const archive = archives.find(value => value.entry.id === entry.id && !["restored", "purged"].includes(value.state));
+      const refs = references(snapshot, entry);
+      const isolation = writable && (entry.kind === "skill" || configWritable) && !sharedPhysical(entry, refs);
+      const trash = entry.kind === "skill" ? this.fileWritable(entry, snapshot) : isolation;
+      const archive = archives.find(value => (value.entry.id === entry.id || value.target === "file"
+        && (value.entry.bodyId === entry.bodyId || value.affectedEntries?.some(affected => affected.id === entry.id)))
+        && !["restored", "purged"].includes(value.state));
       return { ...entry, favorite: favorites.has(entry.id) || favorites.has(entry.bodyId), firstSeenAt: seen.get(entry.id)!, managementState: archive?.state ?? "active",
-        capabilities: { ...entry.capabilities, disable, standby: isolation, trash: isolation, restore: !!archive?.restorable, purge: !!archive?.restorable } };
+        capabilities: { ...entry.capabilities, disable, standby: isolation, trash, restore: !!archive?.restorable, purge: !!archive?.restorable } };
     }) };
   }
   archives(state?: ResourceManagementArchive["state"]): ResourceManagementArchive[] {
@@ -205,10 +216,14 @@ export class ResourceManager {
     page = Math.max(1, Math.floor(page)); pageSize = Math.min(200, Math.max(1, Math.floor(pageSize)));
     const parts: string[] = []; const values: string[] = [];
     for (const [field, value] of [["kind", query.kind], ["client", query.client], ["project", query.project]] as const) if (value !== undefined) {
-      if (field === "project" && value === "none") parts.push("json_extract(json,'$.resource.project') IS NULL");
-      else { parts.push(`json_extract(json,'$.resource.${field}')=?`); values.push(value); }
+      const shared = field !== "kind" ? ` OR (json_extract(resource_operations.json,'$.target')='file' AND EXISTS (SELECT 1 FROM json_each(json_extract(resource_operations.json,'$.affectedEntries')) ref WHERE json_extract(ref.value,'$.${field}')${field === "project" && value === "none" ? " IS NULL" : "=?"}))` : "";
+      if (field === "project" && value === "none") parts.push(`(json_extract(resource_operations.json,'$.resource.project') IS NULL${shared})`);
+      else { parts.push(`(json_extract(resource_operations.json,'$.resource.${field}')=?${shared})`); values.push(value); if (shared) values.push(value); }
     }
-    if (query.q?.trim()) { parts.push("json_extract(json,'$.name') LIKE ? ESCAPE '\\'"); values.push(`%${query.q.trim().replace(/[\\%_]/g, "\\$&")}%`); }
+    if (query.q?.trim()) {
+      parts.push("(json_extract(resource_operations.json,'$.name') LIKE ? ESCAPE '\\' OR (json_extract(resource_operations.json,'$.target')='file' AND EXISTS (SELECT 1 FROM json_each(json_extract(resource_operations.json,'$.affectedEntries')) ref WHERE json_extract(ref.value,'$.name') LIKE ? ESCAPE '\\' OR json_extract(ref.value,'$.entryPath') LIKE ? ESCAPE '\\')))");
+      const pattern = `%${query.q.trim().replace(/[\\%_]/g, "\\$&")}%`; values.push(pattern, pattern, pattern);
+    }
     const filter = parts.length ? ` WHERE ${parts.join(" AND ")}` : "";
     const total = (this.database.prepare(`SELECT COUNT(*) AS total FROM resource_operations${filter}`).get(...values) as { total: number }).total;
     const operations = (this.database.prepare(`SELECT json FROM resource_operations${filter} ORDER BY created_at DESC,rowid DESC LIMIT ? OFFSET ?`)
@@ -233,12 +248,17 @@ export class ResourceManager {
     }
     const id = randomUUID(); const createdAt = new Date().toISOString(); const expiresAt = new Date(Date.now() + 15 * 60_000).toISOString();
     const refs = references(snapshot, entry); const dependencies: Dependency[] = [];
-    if (sharedPhysical(entry, refs) && (input.action === "standby" || input.action === "trash" || input.action === "restore" && !archive?.change)) {
+    const target = archive?.public.target ?? (entry.kind === "skill" && input.action === "trash"
+      && ["directory", "file"].includes(entry.entryType) ? "file" : "entry");
+    if (target === "file" && refs.some(value => value.protected || value.owner)) {
+      throw new ServiceError("FORBIDDEN", "系统或插件受管理资源只读", { key: "diagnostics.resources.management.m008" });
+    }
+    if (sharedPhysical(entry, refs) && (input.action === "standby" || input.action === "restore" && !archive?.change && target !== "file")) {
       throw new ServiceError("FORBIDDEN", "该物理本体有其他已发现入口引用，隔离或恢复范围尚未核验，请选择符号链接入口或原生停用", { key: "diagnostics.resources.management.m010" });
     }
     const check = async (path: string) => { if (!dependencies.some(value => value.path === path)) dependencies.push({ path, hash: (await inspect(path)).hash }); };
     for (const path of entry.locator.dependencyPaths ?? []) await check(path);
-    let change: ConfigChange | undefined; let restoreText: string | undefined;
+    let change: ConfigChange | undefined; let restoreText: string | undefined; let linkTarget: Plan["linkTarget"];
     let sourcePath = entry.entryPath; let destinationPath: string | undefined;
     let method: ResourceManagementPreview["method"] = input.action === "disable" ? "native_toggle" : entry.kind === "mcp" ? "registration_remove" : "entry_isolation";
     if (archive) {
@@ -253,10 +273,18 @@ export class ResourceManager {
           if ((await inspect(destinationPath)).modes[0]?.type === "symlink") throw new ServiceError("FORBIDDEN", "共享配置链接的恢复写入能力尚未核验，只读", { key: "diagnostics.resources.management.m012" });
           try { restoreText = restoreConfig(archive.change, await readFile(destinationPath, "utf8")); }
           catch (error) { if (error instanceof ServiceError) throw error; stale("配置无法读取，恢复不会覆盖现有文件", { key: "diagnostics.resources.management.m013" }); }
-        } else if ((await inspect(destinationPath)).hash !== "missing") stale("原位置已被占用，恢复不会覆盖现有资源", { key: "diagnostics.resources.management.m014" });
+        } else {
+          if ((await inspect(destinationPath)).hash !== "missing") stale("原位置已被占用，恢复不会覆盖现有资源", { key: "diagnostics.resources.management.m014" });
+          if (entry.entryType === "symlink") {
+            const path = resolve(dirname(destinationPath), await readlink(sourcePath));
+            try { linkTarget = { path, resolved: await realpath(path) }; }
+            catch { stale("链接目标已不存在，请先恢复目标文件", { key: "diagnostics.resources.management.linkTargetMissing" }); }
+          }
+        }
       }
     } else {
-      if (!this.writable(entry, snapshot)) throw new ServiceError("FORBIDDEN", "该来源没有已核验的写入能力，只读", { key: "diagnostics.resources.management.m015" });
+      const writable = input.action === "trash" && entry.kind === "skill" ? this.fileWritable(entry, snapshot) : this.writable(entry, snapshot);
+      if (!writable) throw new ServiceError("FORBIDDEN", "该来源没有已核验的写入能力，只读", { key: "diagnostics.resources.management.m015" });
       if (input.action === "disable" && !nativeDisable(entry, snapshot)) {
         throw new ServiceError(entry.nativeState === "disabled" ? "INVALID_INPUT" : "FORBIDDEN", entry.nativeState === "disabled" ? "资源已停用，没有新的本地修改" : "该入口未适配原生停用，可检查明确的隔离操作", entry.nativeState === "disabled" ? { key: "diagnostics.resources.management.m016" } : { key: "diagnostics.resources.management.m017" });
       }
@@ -275,10 +303,12 @@ export class ResourceManager {
       destinationPath = resourceMaterialPath(this.vaultPath, input.action, entry, id);
     }
     const favorite = this.favorite(entry, snapshot);
-    const affected = input.action === "disable" && entry.locator.nativeControl === "codeflicker-skill" ? nameReferences(snapshot, entry) : refs;
+    const affected = input.action === "disable" && entry.locator.nativeControl === "codeflicker-skill" ? nameReferences(snapshot, entry)
+      : entry.entryType === "symlink" && (input.action === "trash" || archive && !archive.change)
+        ? [entry, ...refs.filter(value => value.entryPath === entry.entryPath && value.id !== entry.id)] : refs;
     const revealedEntries = input.action === "standby" || input.action === "trash" ? revealed(snapshot, entry) : undefined;
     const preview: ResourceManagementPreview = { id, action: input.action, entryId: entry.id, operationId: input.operationId,
-      resource: { name: entry.name, kind: entry.kind, client: entry.client, scope: entry.scope, project: entry.project }, method,
+      resource: { name: entry.name, kind: entry.kind, client: entry.client, scope: entry.scope, project: entry.project }, method, target,
       sourcePath, destinationPath, affectedEntries: affected.flatMap(value => {
         const scopes = value.selectionScopes?.filter(scope => !(input.action === "disable" && entry.locator.nativeControl === "codeflicker-skill" && entry.scope === "project")
           || scope.project === entry.project) ?? [{ scope: value.scope, project: value.project }];
@@ -287,7 +317,9 @@ export class ResourceManager {
       protected: favorite, protectionReasons: favorite ? ["favorite"] : [],
       restoration: input.action === "purge" ? "永久清除本次恢复材料后将失去该恢复路径；其他副本可能仍存在" : "保存原位置及受限恢复材料；恢复冲突时不覆盖当前内容", restorationDescriptor: input.action === "purge" ? { key: "diagnostics.resources.management.m020" } : { key: "diagnostics.resources.management.m021" },
       createdAt, expiresAt, requiresConfirmation: true, clientEffect: input.action === "purge" ? "unknown" : "pending_reload" };
-    const plan: Plan = { public: preview, entry, dependencies, references: signature(snapshot, entry), archiveId: archive?.public.id, change, restoreText };
+    if ((target === "file" || entry.entryType === "symlink" && !archive?.change) && archive?.public.affectedEntries) preview.affectedEntries = [...new Map(
+      [...archive.public.affectedEntries, ...preview.affectedEntries].map(value => [JSON.stringify([value.id, value.scope, value.project, value.entryPath]), value])).values()];
+    const plan: Plan = { public: preview, entry, dependencies, references: signature(snapshot, entry), archiveId: archive?.public.id, change, restoreText, linkTarget };
     this.database.prepare("INSERT INTO resource_plans(id,expires_at,json) VALUES(?,?,?)").run(id, expiresAt, JSON.stringify(plan)); return preview;
   }
 
@@ -339,7 +371,8 @@ export class ResourceManager {
       const plan = decode<Plan>(row); const preview = plan.public;
       const operation: ResourceManagementOperation = { id: randomUUID(), previewId, action: preview.action, entryId: preview.entryId,
         name: preview.resource.name, resource: { kind: plan.entry.kind, client: plan.entry.client, scope: plan.entry.scope, project: plan.entry.project },
-        status: "partial", message: "执行尚未确认完成，恢复材料保留", messageDescriptor: { key: "diagnostics.resources.management.m025" }, createdAt: new Date().toISOString(), localState: "partial", clientEffect: "unknown" };
+        status: "partial", message: "执行尚未确认完成，恢复材料保留", messageDescriptor: { key: "diagnostics.resources.management.m025" }, createdAt: new Date().toISOString(), localState: "partial", clientEffect: "unknown",
+        target: preview.target, affectedEntries: preview.affectedEntries };
       this.database.prepare("UPDATE resource_plans SET consumed=1 WHERE id=?").run(previewId);
       let saved: PrivateArchive | undefined; let mutationStarted = false; let createdBackupDirectory: string | undefined;
       try {
@@ -347,10 +380,14 @@ export class ResourceManager {
         if (this.favorite(plan.entry, snapshot) !== preview.protected) stale("保护状态已变化，请重新生成预览", { key: "diagnostics.resources.management.m027" });
         if (signature(snapshot, plan.entry) !== plan.references) stale();
         if (sharedPhysical(plan.entry, references(snapshot, plan.entry))
-          && (preview.method === "entry_isolation" || preview.action === "restore" && plan.restoreText === undefined)) {
+          && preview.target !== "file" && (preview.method === "entry_isolation" || preview.action === "restore" && plan.restoreText === undefined)) {
           stale("该物理本体有其他已发现入口引用，隔离或恢复范围尚未核验，请重新检查入口", { key: "diagnostics.resources.management.m028" });
         }
         for (const dependency of plan.dependencies) if ((await inspect(dependency.path)).hash !== dependency.hash) stale();
+        if (plan.linkTarget) {
+          const current = await realpath(plan.linkTarget.path).catch(() => stale());
+          if (current !== plan.linkTarget.resolved) stale();
+        }
         if (plan.archiveId) {
           saved = this.archive(preview.operationId!);
           if (preview.action === "restore" ? !saved.public.restorable : !saved.public.storedPath || saved.public.state === "purged") stale("该恢复记录已变化，请重新生成预览", { key: "diagnostics.resources.management.m029" });
@@ -398,7 +435,8 @@ export class ResourceManager {
           for (const dependency of plan.dependencies) if ((await inspect(dependency.path)).hash !== dependency.hash) stale();
           saved = { public: { id: randomUUID(), operationId: operation.id, entry: plan.entry,
             state: preview.action === "disable" ? "disabled" : preview.action === "standby" ? "standby" : "trash",
-            originalPath: preview.sourcePath, storedPath: material, createdAt: operation.createdAt, restorable: true, operationStatus: "partial" },
+            originalPath: preview.sourcePath, storedPath: material, createdAt: operation.createdAt, restorable: true, operationStatus: "partial",
+            target: preview.target, affectedEntries: preview.affectedEntries },
             change: plan.change, modes: original.modes, backupHash: (await inspect(material)).contentHash };
           this.saveArchive(saved, "prepared"); operation.archiveId = saved.public.id; this.saveOperation(operation);
           mutationStarted = true;

@@ -78,7 +78,7 @@ test("共享链接只隔离所选入口，具体确认后写入，备用恢复�
   await assert.rejects(manager.apply(preview.id, true, initial), ServiceError);
 }));
 
-test("真实盘点发现共享物理目录时不开放本体隔离，原生禁用与符号链接入口隔离不删除本体", async () => fixture(async (manager, directory) => {
+test("共享目录支持文件回收，旧隔离仍关闭，原生禁用与链接隔离不删除本体", async () => fixture(async (manager, directory) => {
   const userHome = join(directory, "synthetic-user"); const path = join(userHome, ".agents", "skills", "guide"); await skill(path);
   const alias = join(userHome, ".claude", "skills", "guide"); const config = join(userHome, ".codex", "config.toml");
   await mkdir(dirname(config), { recursive: true }); await writeFile(config, "# 合成配置\n");
@@ -91,8 +91,8 @@ test("真实盘点发现共享物理目录时不开放本体隔离，原生禁�
   const initial = await scanResourceInventory({ userHome, environment: {} });
   const linked = initial.entries.find(value => value.client === "claude" && value.entryPath === alias)!;
   const decorated = manager.decorateInventory(initial).entries.find(value => value.id === selected.id)!;
-  assert.equal(decorated.capabilities.standby, false); assert.equal(decorated.capabilities.trash, false); assert.equal(decorated.capabilities.disable, true);
-  for (const action of ["standby", "trash"] as const) {
+  assert.equal(decorated.capabilities.standby, false); assert.equal(decorated.capabilities.trash, true); assert.equal(decorated.capabilities.disable, true);
+  for (const action of ["standby"] as const) {
     await assert.rejects(manager.preview({ entryId: selected.id, action }, initial), (error: unknown) => error instanceof ServiceError && error.code === "FORBIDDEN");
   }
   assert.equal(manager.archives().length, 0); assert.equal(manager.operations().total, 0);
@@ -113,13 +113,21 @@ test("真实盘点发现共享物理目录时不开放本体隔离，原生禁�
   for (const value of remaining.entries.filter(value => value.bodyId === selected.bodyId)) assert.match(await readFile(value.locator.skillFile!, "utf8"), /人工合成/);
 }));
 
-test("同一物理文件被不同客户端发现时不开放隔离，即使本体标识不同", async () => fixture(async (manager, directory) => {
+test("同一物理文件被不同客户端发现时支持文件回收，即使本体标识不同", async () => fixture(async (manager, directory) => {
   const path = join(directory, "skills", "guide.md"); await mkdir(dirname(path), { recursive: true }); await writeFile(path, "# 合成独立文件\n");
   const selected = entry(path, { entryType: "file", sourceFormat: "skill-files", locator: { type: "skill", skillFile: path } });
   const other = { ...selected, id: "other-client", client: "claude" as const, bodyId: "other-body" };
   const initial = snapshot([selected, other]); const decorated = manager.decorateInventory(initial).entries[0]!;
-  assert.equal(decorated.capabilities.standby, false); assert.equal(decorated.capabilities.trash, false);
-  await assert.rejects(manager.preview({ entryId: selected.id, action: "trash" }, initial), (error: unknown) => error instanceof ServiceError && error.code === "FORBIDDEN");
+  assert.equal(decorated.capabilities.standby, false); assert.equal(decorated.capabilities.trash, true);
+  const preview = await manager.preview({ entryId: selected.id, action: "trash" }, initial);
+  assert.equal(preview.target, "file"); assert.equal(preview.affectedEntries.length, 2);
+  assert.equal(await readFile(path, "utf8"), "# 合成独立文件\n");
+  assert.equal((await manager.apply(preview.id, true, initial)).status, "success");
+  await assert.rejects(readFile(path)); assert.equal(manager.archives("trash").length, 1);
+  const archive = manager.archives("trash")[0]!;
+  const restore = await manager.preview({ operationId: archive.operationId, action: "restore" }, snapshot([]));
+  assert.equal(restore.affectedEntries.length, 2);
+  assert.equal((await manager.apply(restore.id, true, snapshot([]))).status, "success");
   assert.equal(await readFile(path, "utf8"), "# 合成独立文件\n");
 }));
 
@@ -454,4 +462,78 @@ test("尚未恢复的旧备用档案也可另行确认永久清除，不自动�
   assert.equal((await manager.apply(purge.id, true, snapshot([]))).status, "success");
   await assert.rejects(stat(legacyDirectory)); assert.equal(manager.archives("trash").length, 0);
   assert.equal(manager.archives()[0]?.state, "purged"); await assert.rejects(stat(path));
+}));
+
+
+test("普通共享 Skill 只回收一次文件，保存全部已知范围，跨客户端可查并恢复", async () => fixture(async (manager, directory) => {
+  const userHome = join(directory, "synthetic-user"); const path = join(userHome, ".agents", "skills", "shared-guide");
+  await skill(path);
+  const alias = join(userHome, ".claude", "skills", "guide-link"); await mkdir(dirname(alias), { recursive: true }); await symlink(path, alias);
+  const initial = await scanResourceInventory({ userHome, projects: [userHome], environment: {} });
+  const selected = initial.entries.find(value => value.client === "pi" && value.entryPath === path)!;
+  assert.ok(selected); assert.equal(manager.decorateInventory(initial).entries.find(value => value.id === selected.id)?.capabilities.trash, true);
+  assert.equal(manager.decorateInventory(initial).entries.find(value => value.id === selected.id)?.capabilities.disable, false);
+  const preview = await manager.preview({ entryId: selected.id, action: "trash" }, initial);
+  assert.equal(preview.target, "file"); assert.ok(new Set(preview.affectedEntries.map(value => value.client)).size > 2);
+  const result = await manager.apply(preview.id, true, initial); assert.equal(result.status, "success");
+  await assert.rejects(readFile(join(path, "SKILL.md"))); assert.equal(await readlink(alias), path);
+  const archives = manager.archives("trash"); assert.equal(archives.length, 1);
+  const archive = archives[0]!; assert.equal(archive.target, "file"); assert.equal(JSON.stringify(archive.affectedEntries), JSON.stringify(preview.affectedEntries));
+  assert.equal(manager.operations(1, 50, { client: "codex" }).total, 1);
+  assert.equal(manager.operations(1, 50, { project: userHome }).total, 1);
+  assert.equal(manager.operations(1, 50, { q: "guide-link", client: "claude", project: "none" }).total, 1);
+  const current = await scanResourceInventory({ userHome, projects: [userHome], environment: {} });
+  const broken = manager.decorateInventory(current).entries.find(value => value.entryPath === alias)!;
+  assert.equal(broken.readState, "broken"); assert.equal(broken.managementState, "trash"); assert.equal(broken.capabilities.restore, true);
+  const restore = await manager.preview({ operationId: archive.operationId, action: "restore" }, current);
+  for (const affected of preview.affectedEntries) assert.ok(restore.affectedEntries.some(value => value.id === affected.id && value.project === affected.project));
+  assert.equal((await manager.apply(restore.id, true, current)).status, "success");
+  assert.match(await readFile(join(path, "SKILL.md"), "utf8"), /人工合成/);
+  assert.match(await readFile(join(alias, "SKILL.md"), "utf8"), /人工合成/);
+  assert.equal(manager.archives().length, 1); assert.equal(manager.archives()[0]?.state, "restored");
+  assert.equal(manager.operations(1, 50, { client: "codex" }).total, 2);
+}));
+
+test("共享文件中的保护引用阻止回收，新增保护引用使旧预览冲突", async () => fixture(async (manager, directory) => {
+  const path = join(directory, "skills", "guide"); await skill(path);
+  const selected = entry(path); const protectedAlias = entry(path, { id: "protected-alias", bodyId: "plugin-body", protected: true, protectionReason: "plugin", owner: "synthetic-plugin" });
+  const protectedSnapshot = snapshot([selected, protectedAlias]);
+  assert.equal(manager.decorateInventory(protectedSnapshot).entries[0]?.capabilities.trash, false);
+  await assert.rejects(manager.preview({ entryId: selected.id, action: "trash" }, protectedSnapshot), (error: unknown) => error instanceof ServiceError && error.code === "FORBIDDEN");
+  const preview = await manager.preview({ entryId: selected.id, action: "trash" }, snapshot([selected]));
+  assert.equal((await manager.apply(preview.id, true, protectedSnapshot)).status, "conflict");
+  assert.equal(manager.archives().length, 0); assert.match(await readFile(join(path, "SKILL.md"), "utf8"), /人工合成/);
+}));
+
+test("链接恢复核验最终目标，拒绝链式断链，目标内容变化不影响恢复", async () => fixture(async (manager, directory) => {
+  const target = join(directory, "target"); await skill(target);
+  const middle = join(directory, "middle"); const path = join(directory, "link"); await symlink(target, middle); await symlink(middle, path);
+  const selected = entry(path, { entryType: "symlink", linkTarget: middle, targetPath: target });
+  const initial = snapshot([selected]); const trash = await manager.preview({ entryId: selected.id, action: "trash" }, initial);
+  assert.equal(trash.target, "entry"); assert.equal((await manager.apply(trash.id, true, initial)).status, "success");
+  const archive = manager.archives("trash")[0]!; await rm(target, { recursive: true });
+  await assert.rejects(manager.preview({ operationId: archive.operationId, action: "restore" }, snapshot([])), (error: unknown) => error instanceof ServiceError && error.messageDescriptor?.key === "diagnostics.resources.management.linkTargetMissing");
+  assert.equal(manager.archives()[0]?.restorable, true);
+  await skill(target); const restore = await manager.preview({ operationId: archive.operationId, action: "restore" }, snapshot([]));
+  await writeFile(join(target, "extra.md"), "合成目标的内容变更\n");
+  assert.equal((await manager.apply(restore.id, true, snapshot([]))).status, "success"); assert.equal(await readlink(path), middle);
+}));
+
+test("共享链接回收只影响同一路径的发现入口，恢复保留这些客户端范围", async () => fixture(async (manager, directory) => {
+  const target = join(directory, "target"); const path = join(directory, "link"); const otherPath = join(directory, "other-link");
+  await skill(target); await symlink(target, path); await symlink(target, otherPath);
+  const selected = entry(path, { entryType: "symlink", linkTarget: target, targetPath: target });
+  const samePath = { ...selected, id: "same-path-client", client: "claude" as const };
+  const other = { ...selected, id: "other-link", entryPath: otherPath };
+  const initial = snapshot([selected, samePath, other]);
+  const trash = await manager.preview({ entryId: selected.id, action: "trash" }, initial);
+  assert.equal(trash.target, "entry"); assert.equal(trash.affectedEntries.length, 2);
+  assert.ok(trash.affectedEntries.every(value => value.entryPath === path));
+  assert.equal((await manager.apply(trash.id, true, initial)).status, "success");
+  assert.equal(await readlink(otherPath), target); assert.match(await readFile(join(target, "SKILL.md"), "utf8"), /人工合成/);
+  const archive = manager.archives("trash")[0]!;
+  const current = snapshot([other]); const restore = await manager.preview({ operationId: archive.operationId, action: "restore" }, current);
+  assert.equal(JSON.stringify(restore.affectedEntries), JSON.stringify(trash.affectedEntries));
+  assert.equal((await manager.apply(restore.id, true, current)).status, "success");
+  assert.equal(await readlink(path), target);
 }));

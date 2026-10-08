@@ -517,7 +517,7 @@ try {
     await page.getByRole('button',{name:'查看map-undated的使用详情',exact:true}).focus();
     await page.getByRole('tooltip').waitFor();
     const tooltip=await page.getByRole('tooltip').innerText();
-    expect(tooltip.includes('时间未记录')&&tooltip.includes('部分记录'),'缺失时间或部分记录不可见');
+    expect(tooltip.includes('时间未记录')&&!tooltip.includes('部分记录')&&!tooltip.includes('统计不完整'),'具体时间值或概括提示展示不符合要求');
     await page.getByRole('textbox',{name:'搜索资源名称或路径',exact:true}).fill('map-system');
     const zero=page.locator('details').filter({has:page.locator('summary').filter({hasText:'未发现使用'})});
     await zero.locator('summary').filter({hasText:/未发现使用\\s*1$/}).waitFor();

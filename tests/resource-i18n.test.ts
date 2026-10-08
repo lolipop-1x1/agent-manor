@@ -4,7 +4,7 @@ import { formatDate, formatPercent, translate } from "../src/i18n/index.js";
 import { resourceQuery } from "../web/resource-api.js";
 import { timeFilters } from "../web/model.js";
 import type { ResourceMapNode } from "../src/resource-service-contracts.js";
-import { normalizeResourceRouteParams, resourceMapCompactTitleKey, resourceMapValueMessage, resourceUsageStates } from "../web/resource-usage-state.js";
+import { normalizeResourceRouteParams, resourceMapCompactTitleKey, resourceMapValueMessage } from "../web/resource-usage-state.js";
 
 test("趋势活动与会话各自使用复数，独立数量不串用单数规则", () => {
   for (const [events, sessions, expected] of [[1, 1, "1 activity · 1 session"], [1, 2, "1 activity · 2 sessions"],
@@ -106,15 +106,6 @@ test("CLI 人类帮助与资源帮助均不再展示待检查分类", () => {
   }
 });
 
-test("资源缺口按契约显示，正常零事件不误标时间未记录", () => {
-  assert.deepEqual(resourceUsageStates({ partial: false, usageUnassociated: false, missingTimeEvents: 0 }), []);
-  const states = resourceUsageStates({ partial: true, usageUnassociated: true, missingTimeEvents: 2 });
-  assert.deepEqual(states.map(state => state.key), ["resources.partial", "resources.missingTimeCount", "resources.usageUnassociated"]);
-  assert.deepEqual(states[1]?.params, { count: 2 });
-  assert.deepEqual(states.map(state => translate("en", state.key, state.params)), ["Partial records", "2 records with unrecorded time", "Usage records not linked"]);
-  assert.deepEqual(states.map(state => translate("zh-CN", state.key, state.params)), ["部分记录", "2 条时间未记录", "使用记录未关联"]);
-});
-
 test("单一地图紧凑区区分正常零值与未知，不把未知指标显示为零或未发现使用", () => {
   const zero: ResourceMapNode = { id: "synthetic-zero", name: "synthetic-zero", value: 0, share: 0,
     metrics: { calls: 0, reads: 0, sessions: 0 }, lastUsedAt: null, missingTimeEvents: 0, clients: ["codex"],
@@ -137,5 +128,4 @@ test("单一地图紧凑区区分正常零值与未知，不把未知指标显�
     }
   }
   assert.equal(resourceMapCompactTitleKey([{ ...zero, observation: "used" }], "calls"), "resources.map.zeroCalls");
-  assert.deepEqual(resourceUsageStates(zero), []);
 });

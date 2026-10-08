@@ -1,14 +1,6 @@
 import type { MessageDescriptor } from "../src/i18n/types";
 import type { ResourceMapMetric, ResourceMapNode } from "../src/resource-service-contracts";
 
-export function resourceUsageStates(row: { partial: boolean; usageUnassociated: boolean; missingTimeEvents: number }): MessageDescriptor[] {
-  const states: MessageDescriptor[] = [];
-  if (row.partial) states.push({ key: "resources.partial" });
-  if (row.missingTimeEvents > 0) states.push({ key: "resources.missingTimeCount", params: { count: row.missingTimeEvents } });
-  if (row.usageUnassociated) states.push({ key: "resources.usageUnassociated" });
-  return states;
-}
-
 export function resourceMapCompactTitleKey(nodes: ResourceMapNode[], metric: ResourceMapMetric): string {
   if (nodes.some(node => node.value === null)) return "resources.map.otherResources";
   if (nodes.every(node => node.observation === "unused")) return "resources.candidate.unused";

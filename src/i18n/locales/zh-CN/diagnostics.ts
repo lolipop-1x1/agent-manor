@@ -349,6 +349,7 @@ export default {
   "diagnostics.server.m018": "活动不在所选分析范围内",
   "diagnostics.server.m019": "未取得本地监听端口",
   "diagnostics.worker.m001": "分析入口必须由 Worker 启动",
+  "diagnostics.resources.management.linkTargetMissing": "链接目标已不存在，请先恢复目标文件",
   "diagnostics.resources.management.m001": "资源包含尚未支持的文件类型，只读",
   "diagnostics.resources.management.m002": "收藏参数无效",
   "diagnostics.resources.management.m003": "手动来源必须指定已知客户端、类型及绝对路径",

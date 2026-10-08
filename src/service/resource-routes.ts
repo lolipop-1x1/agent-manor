@@ -27,9 +27,11 @@ export function registerResourceRoutes(app: FastifyInstance, resources: Resource
     const state = textValue(request.query.state, "state");
     if (state && !["disabled", "standby", "trash", "restored", "purged"].includes(state)) throw new ServiceError("INVALID_INPUT", "未知恢复记录状态", { key: "diagnostics.service.resourceRoutes.m001" });
     const archives = resources.manager.archives(state as Parameters<typeof resources.manager.archives>[0]).filter(archive =>
-      (!query.kind || archive.entry.kind === query.kind) && (!query.client || archive.entry.client === query.client)
-      && (!query.project || (query.project === "none" ? !archive.entry.project : archive.entry.project === query.project))
-      && (!query.q || [archive.entry.name, archive.originalPath].some(value => value.toLocaleLowerCase().includes(query.q!.toLocaleLowerCase()))));
+      (!query.kind || archive.entry.kind === query.kind) && (!query.client || archive.entry.client === query.client
+        || archive.target === "file" && archive.affectedEntries?.some(entry => entry.client === query.client))
+      && (!query.project || (query.project === "none" ? !archive.entry.project : archive.entry.project === query.project)
+        || archive.target === "file" && archive.affectedEntries?.some(entry => query.project === "none" ? !entry.project : entry.project === query.project))
+      && (!query.q || [archive.entry.name, archive.originalPath, ...(archive.target === "file" ? archive.affectedEntries?.flatMap(entry => [entry.name, entry.entryPath]) ?? [] : [])].some(value => value.toLocaleLowerCase().includes(query.q!.toLocaleLowerCase()))));
     const page = query.page!, pageSize = query.pageSize!;
     return { archives: archives.slice((page - 1) * pageSize, page * pageSize), total: archives.length, page, pageSize };
   });

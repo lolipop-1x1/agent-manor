@@ -79,7 +79,6 @@
 .resource-overview-name > button:first-child { min-width: 0; flex: 1; padding: 4px 0; border: 0; color: var(--text); background: transparent; font: inherit; font-weight: 600; overflow-wrap: anywhere; text-align: left; }
 .resource-overview-name .resource-favorite { margin: 0; }
 .resource-overview-agents, .resource-overview-time { white-space: nowrap; color: var(--muted); }
-.resource-overview-table .resource-tags { min-width: 100px; }
 .resource-empty { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; min-height: 130px; padding: 28px 14px; color: var(--muted); text-align: center; font-size: 12px; line-height: 1.7; }
 .resource-loading { padding: 18px 4px; color: var(--muted); font-size: 12px; }
 .resource-alert, .resource-feedback { display: flex; align-items: center; gap: 8px; flex-shrink: 0; margin: 0 0 10px; padding: 10px 12px; border: 1px solid var(--border); border-radius: 5px; color: var(--text); background: var(--surface-alt); font-size: 12px; line-height: 1.6; }
@@ -215,6 +214,7 @@
 .resource-management-body > header > strong { overflow-wrap: anywhere; }
 .resource-management-body > header > span { flex-shrink: 0; color: var(--muted); font-size: 11px; }
 .resource-management-body .resource-entry { background: var(--surface); }
+.resource-management-note { color: var(--muted); font-size: 12px; line-height: 1.6; overflow-wrap: anywhere; }
 .resource-management-unavailable { margin-top: 13px; color: var(--muted); font-size: 12px; line-height: 1.7; }
 .resource-management-unavailable > p { margin-top: 9px; }
 .resource-entry-dialog { max-width: 640px; }

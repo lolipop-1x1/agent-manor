@@ -9,7 +9,7 @@ import { clipRect, fitCamera, type MapPoint, type MapRect } from "./map-viewport
 import { layoutResourceMap, locateResourceMapCamera, panResourceMapCamera, resizeResourceMapCamera, resourceMapScreenRect, resourceMapTileAt, zoomResourceMapCamera, type ResourceMapCamera } from "./resource-map-layout";
 import { formatList, getLanguage, messageText, t, useI18n } from "./i18n";
 import { formatPercent } from "../src/i18n";
-import { resourceMapCompactTitleKey, resourceMapValueMessage, resourceUsageStates } from "./resource-usage-state";
+import { resourceMapCompactTitleKey, resourceMapValueMessage } from "./resource-usage-state";
 import "./resource-map.css";
 
 const metricLabel = (metric: ResourceMapMetric) => t(metric === "sessions" ? "resources.sort.sessions" : metric === "reads" ? "resources.map.reads" : "resources.sort.calls");
@@ -25,8 +25,7 @@ const tone = (node: ResourceMapNode, today: number) => {
   const days = (today - dateDay(new Date(node.lastUsedAt))) / 86400000;
   return days <= 30 ? "recent" : days <= 90 ? "older" : "old";
 };
-const usageStateLabel = (node: ResourceMapNode) => formatList(resourceUsageStates(node).map(state => t(state.key, state.params)));
-const statusLabel = (node: ResourceMapNode) => formatList([node.favorite && t("resources.candidate.favorite"), node.protected && t("resources.protected"), usageStateLabel(node)].filter(Boolean) as string[]);
+const statusLabel = (node: ResourceMapNode) => formatList([node.favorite && t("resources.candidate.favorite"), node.protected && t("resources.protected")].filter(Boolean) as string[]);
 
 interface ResourceMapProps {
   data: ResourceMapResult; selected: string; onSelect: (id: string) => void;
@@ -45,7 +44,7 @@ function CompactResources({ nodes, title, label, metric, selected, page, pageSiz
     <div className="resource-map-compact-content">
       {rows.length ? <div className="resource-map-compact-rows">{rows.map(node => { const value = resourceMapValueMessage(node, metric); return <button key={node.id} aria-label={t("resources.viewUsage", { name: messageText(node.nameDescriptor, node.name) })} className={selected === node.id ? "is-selected" : ""} onClick={() => onSelect(node.id)}>
         <strong>{messageText(node.nameDescriptor, node.name)}</strong><span>{t(value.key, value.params)}</span>
-        <div className="resource-tags">{node.favorite && <span><Star size={12} />{t("resources.candidate.favorite")}</span>}{node.protected && <span><ShieldCheck size={12} />{t("resources.protected")}</span>}{resourceUsageStates(node).map(state => <span className="is-warning" key={state.key}>{t(state.key, state.params)}</span>)}</div>
+        <div className="resource-tags">{node.favorite && <span><Star size={12} />{t("resources.candidate.favorite")}</span>}{node.protected && <span><ShieldCheck size={12} />{t("resources.protected")}</span>}</div>
       </button>; })}</div> : <div className="resource-empty">{t("resources.map.empty")}</div>}
       <ResourcePagination label={label} page={current} pageSize={pageSize} total={nodes.length} onChange={onPage} onPageSizeChange={onSize} />
     </div>
@@ -215,7 +214,7 @@ export function ResourceMap({ data, selected, onSelect, zeroPage, zeroSize, onZe
           const node = tile.node;
           return <button key={tile.id} style={position(rect)} className={`resource-map-tile recency-${tone(node, today)}${selected === tile.id ? " is-selected" : ""}`} aria-label={t("resources.viewUsage", { name: messageText(node.nameDescriptor, node.name) })} aria-describedby={hint?.node.id === tile.id ? tooltipId : undefined}
             onClick={() => void chooseResource(tile.id)} onFocus={() => setHint({ node, point: { x: rect.x, y: rect.y } })} onBlur={() => setHint(null)}>
-            <span className="resource-map-tile-copy">{rect.width >= 48 && rect.height >= 28 && <strong>{messageText(node.nameDescriptor, node.name)}</strong>}{rect.width >= 80 && rect.height >= 55 && <span>{metricValue(data.metric, node.value!)}</span>}{rect.width >= 130 && rect.height >= 88 && <small>{shareLabel(node.share)}{node.favorite && <Star size={12} weight="fill" />}{node.protected && <ShieldCheck size={12} />}</small>}{rect.width >= 135 && rect.height >= 110 && usageStateLabel(node) && <small>{usageStateLabel(node)}</small>}</span>
+            <span className="resource-map-tile-copy">{rect.width >= 48 && rect.height >= 28 && <strong>{messageText(node.nameDescriptor, node.name)}</strong>}{rect.width >= 80 && rect.height >= 55 && <span>{metricValue(data.metric, node.value!)}</span>}{rect.width >= 130 && rect.height >= 88 && <small>{shareLabel(node.share)}{node.favorite && <Star size={12} weight="fill" />}{node.protected && <ShieldCheck size={12} />}</small>}</span>
           </button>;
         })}
         {!data.positive.length && <div className="resource-map-empty">{t("resources.map.noPositive")}</div>}
