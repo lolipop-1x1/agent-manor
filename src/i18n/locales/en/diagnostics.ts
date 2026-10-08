@@ -318,6 +318,7 @@ export default {
   "diagnostics.index.maintenance.error": "Index compaction failed; no success timestamp was recorded",
   "diagnostics.index.maintenance.completed": "Index compaction completed and content verification passed",
   "diagnostics.index.maintenance.inconsistent": "Index content changed after compaction; service startup was stopped",
+  "diagnostics.index.maintenance.invalidIndex": "Index content verification failed; service startup was stopped",
   "diagnostics.index.store.m002": "The repository is not registered yet",
   "diagnostics.index.store.m003": "The repository has no complete analysis results yet",
   "diagnostics.index.store.m004": "The analysis result version is unavailable: it does not exist or has been removed",

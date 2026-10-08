@@ -47,6 +47,7 @@ code, pre { font-family: var(--mono); }
 .notice { display: flex; align-items: flex-start; gap: 9px; padding: 13px 18px; background: var(--accent-soft); color: var(--text); font-size: 12px; line-height: 1.7; border-bottom: 1px solid var(--border); }
 .notice svg { margin-top: 2px; color: var(--accent); }
 .notice > div { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.notice details pre { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 200px; overflow: auto; }
 .notice .button, .notice .text-button { flex-shrink: 0; }
 .notice.danger { background: var(--danger-bg); color: var(--danger); }
 .notice.danger svg { color: var(--danger); }

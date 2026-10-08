@@ -36,7 +36,7 @@ function result(reason: IndexMaintenanceResult["reason"], status: IndexMaintenan
 function quoted(value: string): string { return '"' + value.replaceAll('"', '""') + '"'; }
 
 /** 同时验证显式消息身份、FTS 文档键和全部逻辑行，避免只比较消息数量。 */
-function fingerprint(database: Database.Database): string {
+function logicalFingerprint(database: Database.Database): string {
   if (database.pragma("quick_check", { simple: true }) !== "ok" || (database.pragma("foreign_key_check") as unknown[]).length) {
     throw new Error("SQLite integrity check failed");
   }
@@ -63,6 +63,15 @@ function fingerprint(database: Database.Database): string {
     }
   }
   return hash.digest("hex");
+}
+
+function invalidIndex(error: unknown): DiagnosticError {
+  return new DiagnosticError(`索引内容校验失败，服务启动已停止：${String(error)}`, { key: "diagnostics.index.maintenance.invalidIndex" });
+}
+
+function fingerprint(database: Database.Database): string {
+  try { return logicalFingerprint(database); }
+  catch (error) { throw invalidIndex(error); }
 }
 
 async function atomicJson(path: string, value: unknown): Promise<void> {
@@ -115,7 +124,9 @@ export async function compactIndexAtStartup(home: string, options: MaintenanceOp
     const activity: Activity = { ...owner, startedAt: new Date(options.now ?? Date.now()).toISOString(), phase: "validating" };
     await atomicJson(activityPath(home), activity);
     active = true;
-    if (database.prepare("SELECT 1 FROM sqlite_master WHERE name='session_search_state'").get()) await prepareSearchIndex(database);
+    try {
+      if (database.prepare("SELECT 1 FROM sqlite_master WHERE name='session_search_state'").get()) await prepareSearchIndex(database);
+    } catch (error) { throw invalidIndex(error); }
     const previous = fingerprint(database);
     await atomicJson(activityPath(home), { ...activity, phase: "compacting" });
     database.exec("VACUUM");

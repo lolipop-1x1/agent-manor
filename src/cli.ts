@@ -4,7 +4,7 @@ import { spawn } from "node:child_process";
 import { realpathSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { resolve } from "node:path";
-import type { CoverageResult, JobResponse, ServiceInstance } from "./contracts.js";
+import type { CoverageResult, IndexMaintenanceResult, JobResponse, ServiceInstance } from "./contracts.js";
 import { clientIds } from "./clients.js";
 import { startService } from "./server.js";
 import { apiRequest, connectService, dataHome, delay, RequestError, serviceUrl } from "./service/runtime.js";
@@ -44,6 +44,12 @@ export async function resolveCliLanguage(options: Partial<Pick<Options, "lang" |
 export function humanOutput(value: unknown, language: Language): string {
   const t = (key: string, params?: MessageParams) => translate(language, key, params);
   const number = (value: number) => formatNumber(language, value);
+  if (value && typeof value === "object" && "indexMaintenance" in value && value.indexMaintenance) {
+    const { indexMaintenance, ...status } = value;
+    const maintenance = indexMaintenance as IndexMaintenanceResult;
+    return [translateMessage(language, maintenance.messageDescriptor),
+      ...(maintenance.details ? [`${t("common.originalDetails")}: ${maintenance.details}`] : []), JSON.stringify(status, null, 2)].join("\n");
+  }
   if (value && typeof value === "object" && "summary" in value && "files" in value) {
     const result = value as CoverageResult;
     const { summary } = result;

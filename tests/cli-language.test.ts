@@ -188,6 +188,42 @@ test("CLI 未知产品描述保留原始错误及缺口详情，JSON 不受语�
   assert.deepEqual(JSON.parse(cliErrorOutput(error, "en", true)).error.messageDescriptor, descriptor);
 });
 
+test("CLI status 维护提示求值中英文描述，原始错误和 JSON 契约保持一致", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "manor-cli-maintenance-language-"));
+  const home = join(directory, "data");
+  let instance: ServiceInstance;
+  const maintenance = { status: "failed", reason: "error", messageDescriptor: { key: "diagnostics.index.maintenance.error" }, details: "synthetic external disk failure" };
+  const payload = () => ({ instance, version: "fixture-version", repositories: [], jobs: [], indexMaintenance: maintenance });
+  const server = createServer((_request, response) => {
+    response.setHeader("Content-Type", "application/json");
+    response.end(JSON.stringify(payload()));
+  });
+  try {
+    await new Promise<void>(done => server.listen(0, "127.0.0.1", done));
+    const address = server.address();
+    assert.ok(address && typeof address !== "string");
+    instance = { id: "fixture-maintenance-service-identity", pid: process.pid, host: "127.0.0.1", port: address.port, startedAt: "2026-01-01T00:00:00Z" };
+    await mkdir(home);
+    await writeFile(join(home, "service.json"), JSON.stringify(instance));
+    const before = JSON.stringify(payload());
+    for (const language of ["en", "zh-CN"] as const) {
+      const human = await command(directory, ["--lang", language, "status"]);
+      assert.equal(human.code, 0, human.stderr);
+      assert.ok(human.stdout.includes(translate(language, maintenance.messageDescriptor.key)));
+      assert.ok(human.stdout.includes(translate(language, "common.originalDetails")));
+      assert.match(human.stdout, /synthetic external disk failure/);
+      assert.doesNotMatch(human.stdout, /diagnostics\.index\.maintenance\.error/);
+      const json = await command(directory, ["--lang", language, "--json", "status"]);
+      assert.equal(json.code, 0, json.stderr);
+      assert.equal(json.stdout.trim(), before);
+    }
+    assert.equal(JSON.stringify(payload()), before);
+  } finally {
+    await new Promise<void>(done => server.close(() => done()));
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("参数覆盖坏偏好和无效环境仍能自动启动，内部服务启动不受显示偏好阻塞", async () => {
   const directory = await mkdtemp(join(tmpdir(), "manor-cli-language-startup-"));
   const home = join(directory, "data");

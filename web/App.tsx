@@ -3,7 +3,7 @@ import * as Dialog from "@radix-ui/react-dialog";
 import * as Dropdown from "@radix-ui/react-dropdown-menu";
 import * as Tooltip from "@radix-ui/react-tooltip";
 import { ArrowClockwise, ArrowSquareOut, CaretDown, CaretLeft, CaretRight, Check, Code, FileCode, Folder, MagnifyingGlass, MapTrifold, Moon, Plus, Stack, Sun, WarningCircle, X } from "@phosphor-icons/react";
-import type { Client, CoverageQuery, CoverageResult, EvidenceResponse, FileCategory, FileDetail, FileEvent, Filters, Gap, HistoryEvent, Job, JobResponse, RegisterRepositoryResponse, Repository, SourcesResponse, StatusResponse } from "../src/contracts";
+import type { Client, CoverageQuery, CoverageResult, EvidenceResponse, FileCategory, FileDetail, FileEvent, Filters, Gap, HistoryEvent, IndexMaintenanceResult, Job, JobResponse, RegisterRepositoryResponse, Repository, SourcesResponse, StatusResponse } from "../src/contracts";
 import { CLIENTS } from "../src/clients";
 import { ApiError, errorMessage, isAborted, queryString, repositoryPath, request } from "./api";
 import { CodeMap, Hint } from "./CodeMap";
@@ -246,6 +246,7 @@ export function App() {
   const [repoId, setRepoId] = useState("");
   const [initialLoading, setInitialLoading] = useState(true);
   const [initialError, setInitialError] = useState<unknown>(null);
+  const [indexMaintenance, setIndexMaintenance] = useState<IndexMaintenanceResult | null>(null);
   const [statusRetry, setStatusRetry] = useState(0);
   const [registerOpen, setRegisterOpen] = useState(false);
   const [registerPath, setRegisterPath] = useState("");
@@ -295,6 +296,8 @@ export function App() {
     setInitialLoading(true); setInitialError(null);
     void request<StatusResponse>("/status", { signal: controller.signal }).then(result => {
       setRepositories(result.repositories); setJobs(result.jobs);
+      const maintenance = result.indexMaintenance;
+      setIndexMaintenance(maintenance && (maintenance.status === "failed" || maintenance.reason === "insufficientSpace" || maintenance.reason === "busy") ? maintenance : null);
       setRepoId(current => result.repositories.some(repo => repo.id === current) ? current
         : result.repositories.find(repo => repo.id === localStorage.getItem("agent-manor-repository"))?.id ?? result.repositories[0]?.id ?? "");
     }).catch(failure => { if (!isAborted(failure)) setInitialError(failure); })
@@ -411,6 +414,10 @@ export function App() {
       </div>
     </header>
     <LanguageNotice />
+    {indexMaintenance && <Notice danger={indexMaintenance.status === "failed"} action={<button className="button subtle" onClick={() => setIndexMaintenance(null)}>{t("common.close")}</button>}>
+      {messageText(indexMaintenance.messageDescriptor, t("diagnostics.index.maintenance.error"))}
+      {indexMaintenance.details && <details><summary>{t("common.originalDetails")}</summary><pre tabIndex={0}>{indexMaintenance.details}</pre></details>}
+    </Notice>}
     <section className="product-view" hidden={view !== "map"} aria-label={t("codeMap.view.map")}>
     {!!initialError && <Notice danger action={<button className="button subtle" onClick={() => setStatusRetry(value => value + 1)}>{t("codeMap.refresh.retryConnection")}</button>}><ErrorDetails error={initialError} /></Notice>}
     {!!actionError && <Notice danger action={<button className="button subtle" onClick={() => setActionError(null)}>{t("common.close")}</button>}><ErrorDetails error={actionError} /></Notice>}

@@ -12,6 +12,7 @@ import { acquireLock, apiRequest } from "../src/service/runtime.js";
 import { startService } from "../src/server.js";
 import type { StatusResponse } from "../src/contracts.js";
 import { isolatedHistoryRoots } from "./helpers/history-roots.js";
+import { DiagnosticError } from "../src/i18n/diagnostics.js";
 
 test("启动整理阈值包含相等边界，成功冷却和未来时间不会误触发", () => {
   const size = { pageSize: 4096, pageCount: 1_310_720, freePages: 262_144 };
@@ -161,6 +162,32 @@ test("整理前补齐已记录的未完成 FTS，避免把缺失搜索词项记�
   const response = await compactIndexAtStartup(home, { decision: () => "compact" });
   assert.equal(response.status, "completed", response.details);
   assert.deepEqual(rows(path).hits.map(value => (value as { message_key: number }).message_key), [1, 3, 4, 6, 7, 8]);
+}));
+
+test("声称完整但缺失 FTS 文档的索引阻止正常启动，不吞成环境跳过", async () => fixture(async (home, path) => {
+  const database = new Database(path);
+  database.exec("DELETE FROM session_message_search WHERE rowid=6");
+  database.close();
+  const before = rows(path);
+  await assert.rejects(compactIndexAtStartup(home, { decision: () => "compact" }), error =>
+    error instanceof DiagnosticError && error.messageDescriptor?.key === "diagnostics.index.maintenance.invalidIndex"
+      && error.message.includes("FTS document keys"));
+  assert.deepEqual(rows(path), before);
+  assert.equal(await activeIndexMaintenance(home), false);
+  await assert.rejects(readFile(join(home, "index-maintenance.json")), { code: "ENOENT" });
+}));
+
+test("外键关联校验失败阻止正常启动，失败不清空或整理数据", async () => fixture(async (home, path) => {
+  const database = new Database(path);
+  database.pragma("foreign_keys = OFF");
+  database.exec("UPDATE session_messages SET revision='missing-synthetic-revision' WHERE message_key=1");
+  database.close();
+  const before = rows(path);
+  await assert.rejects(compactIndexAtStartup(home, { decision: () => "compact" }), error =>
+    error instanceof DiagnosticError && error.messageDescriptor?.key === "diagnostics.index.maintenance.invalidIndex"
+      && error.message.includes("SQLite integrity check"));
+  assert.deepEqual(rows(path), before);
+  await assert.rejects(readFile(join(home, "index-maintenance.json")), { code: "ENOENT" });
 }));
 
 test("VACUUM 中断后 SQLite 保留有效正文和搜索，不记录成功", async () => fixture(async (home, path) => {

@@ -318,6 +318,7 @@ export default {
   "diagnostics.index.maintenance.error": "索引空间整理失败，未记录成功时间",
   "diagnostics.index.maintenance.completed": "索引空间整理完成并通过内容校验",
   "diagnostics.index.maintenance.inconsistent": "整理后的索引内容不一致，服务启动已停止",
+  "diagnostics.index.maintenance.invalidIndex": "索引内容校验失败，服务启动已停止",
   "diagnostics.index.store.m002": "仓库尚未登记",
   "diagnostics.index.store.m003": "仓库尚无完整分析结果",
   "diagnostics.index.store.m004": "分析结果版本不可用：不存在或已被淘汰",
