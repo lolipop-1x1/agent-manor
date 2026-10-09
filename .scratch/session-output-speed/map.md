@@ -38,6 +38,7 @@
 
 - [03 请求解析](issues/03-request-timing.md)实施中。[07 共享契约](issues/07-shared-contract.md)已完成；[04 汇总刷新](issues/04-profile-refresh.md)与[05 界面展示](issues/05-speed-views.md)可并行启动。
 - [06 集成验收](issues/06-validation.md)等待解析、汇总和界面全部完成。原始历史保持只读，公开测试使用合成输入。
+- [08 验收数据准备](issues/08-validation-fixtures.md)可先构造隔离的三来源原生历史与自动化入口，完整界面结果由 06 验收。
 
 ## 实施记录
 
