@@ -5,7 +5,7 @@ import { t, useI18n } from "./i18n";
 import { HelpPopover } from "./HelpPopover";
 import type { FileCoverage } from "../src/contracts";
 import { fileLabelRect, fmt, metricNames, metricValue, percent, type Metric } from "./model";
-import { clipRect, fitCamera, layoutMap, locateCamera, panCamera, projectRect, resizeCamera, visibleTiles, zoomCamera, type MapCamera, type MapPoint, type MapRect, type MapTile } from "./map-viewport";
+import { clipRect, fitCamera, layoutMap, locateCamera, panCamera, projectRect, refreshCamera, resizeCamera, visibleTiles, zoomCamera, type MapCamera, type MapPoint, type MapRect, type MapTile } from "./map-viewport";
 
 export function Hint({ label, children }: { label: string; children: ReactNode }) {
   return <Tooltip.Root><Tooltip.Trigger asChild>{children}</Tooltip.Trigger><Tooltip.Portal><Tooltip.Content className="tooltip" sideOffset={6}>{label}<Tooltip.Arrow /></Tooltip.Content></Tooltip.Portal></Tooltip.Root>;
@@ -15,9 +15,9 @@ const position = (rect: MapRect): CSSProperties => ({ left: rect.x, top: rect.y,
 const valueLabel = (file: FileCoverage, metric: Metric) => metric === "activity" ? t("codeMap.activity.calls", { count: file.activityCount }) : percent(metricValue(file, metric), file.lineCount);
 const fileLabel = (file: FileCoverage, metric: Metric) => t("codeMap.map.fileLabel", { path: file.path, metric: metricNames[metric], value: valueLabel(file, metric), lines: fmt(file.lineCount) });
 
-export function CodeMap({ files, directory, metric, selected, browse, select, heading, legend }: {
+export function CodeMap({ files, directory, metric, selected, browse, select, heading, legend, scopeKey = directory }: {
   files: FileCoverage[]; directory: string; metric: Metric; selected: string | null;
-  browse: (directory: string) => void; select: (path: string) => void; heading: ReactNode; legend: ReactNode;
+  browse: (directory: string) => void; select: (path: string) => void; heading: ReactNode; legend: ReactNode; scopeKey?: string;
 }) {
   const { language } = useI18n();
   const explorer = useRef<HTMLElement>(null);
@@ -27,6 +27,7 @@ export function CodeMap({ files, directory, metric, selected, browse, select, he
   const sizeRef = useRef(size);
   const [camera, setCamera] = useState<MapCamera>(() => fitCamera(layout.bounds, size));
   const cameraRef = useRef(camera);
+  const previousLayout = useRef({ layout, scopeKey });
   const frame = useRef<number | null>(null);
   const [fullscreen, setFullscreen] = useState(false);
   const [fullscreenError, setFullscreenError] = useState("");
@@ -45,7 +46,9 @@ export function CodeMap({ files, directory, metric, selected, browse, select, he
   };
   useEffect(() => {
     const element = host.current!;
-    const reset = fitCamera(layout.bounds, sizeRef.current);
+    const previous = previousLayout.current;
+    const reset = previous.scopeKey === scopeKey ? refreshCamera(cameraRef.current, previous.layout, layout, sizeRef.current) : fitCamera(layout.bounds, sizeRef.current);
+    previousLayout.current = { layout, scopeKey };
     cameraRef.current = reset; setCamera(reset); setHint(null);
     const observer = new ResizeObserver(entries => {
       const entry = entries[0];
@@ -70,7 +73,7 @@ export function CodeMap({ files, directory, metric, selected, browse, select, he
     };
     element.addEventListener("wheel", wheel, { passive: false });
     return () => { observer.disconnect(); element.removeEventListener("wheel", wheel); if (frame.current !== null) cancelAnimationFrame(frame.current); frame.current = null; };
-  }, [layout]);
+  }, [layout, scopeKey]);
   useEffect(() => {
     const changed = () => { setFullscreen(document.fullscreenElement === explorer.current); setHint(null); };
     const escape = (event: globalThis.KeyboardEvent) => {

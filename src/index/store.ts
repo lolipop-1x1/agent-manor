@@ -6,6 +6,8 @@ import { dirname, resolve } from "node:path";
 import type { AnalysisSnapshot, ApiErrorCode, HistorySource, Job, Mapping, ParsedSource, Repository, SourcesResponse } from "../contracts.js";
 import { getRepository } from "../analysis/index.js";
 import { initializeIndexSchema } from "./schema.js";
+import { PARSER_RULE_VERSION } from "../version.js";
+import type { DiscoverOptions } from "../history/types.js";
 
 export class StoreError extends Error {
   constructor(public readonly code: ApiErrorCode, message: string, readonly messageDescriptor?: MessageDescriptor) {
@@ -19,6 +21,9 @@ export interface RefreshStats {
   parsedRecords: number;
   mappingsComputed: number;
   mappingsReused: number;
+  sourcesReused?: number;
+  /** 与结果内容和解析、映射依赖绑定，不包含本轮检查时间。 */
+  resultFingerprint?: string;
 }
 
 export interface PublishInput {
@@ -29,10 +34,14 @@ export interface PublishInput {
   stats: RefreshStats;
   clearCache: boolean;
   jobId: string;
+  /** 完整依赖快检命中的来源保持解析分块不变。 */
+  reusedParsed?: ReadonlySet<string>;
+  reusedVersion?: string;
 }
 
 interface JsonRow { json: string }
 interface RepositoryRow { json: string; version: string | null; stale: number }
+interface RefreshJob extends Job { refreshStats?: RefreshStats }
 type PayloadKind = "snapshot" | "sources" | "parsed";
 const PART_SIZE = 1024 * 1024;
 
@@ -66,7 +75,7 @@ export class AnalysisStore {
   }
 
   /** 大集合逐项编码，读回也逐块恢复，不拼接整版 JSON 字符串。 */
-  private writePayload(value: object, repositoryId: string, kind: PayloadKind, owner: string, fields: string[]): string {
+  private writePayload(value: object, repositoryId: string, kind: PayloadKind, owner: string, fields: string[], writeParts = true): string {
     const header = { ...value } as Record<string, unknown>;
     const save = this.database.prepare("INSERT INTO payload_parts(repository_id,kind,owner,field,part,json) VALUES(?,?,?,?,?,?)");
     for (const field of fields) {
@@ -82,6 +91,7 @@ export class AnalysisStore {
       if (!collection || typeof collection !== "object") continue;
       const array = Array.isArray(collection);
       target[key] = array ? [] : {};
+      if (!writeParts) continue;
       let parts: string[] = [];
       let size = 0;
       let part = 0;
@@ -207,6 +217,17 @@ export class AnalysisStore {
     });
   }
 
+  getDiscoveryCache(repositoryId: string): NonNullable<DiscoverOptions["cachedSources"]> {
+    const rows = this.database.prepare("SELECT json FROM source_cache WHERE repository_id=? ORDER BY path").iterate(repositoryId) as Iterable<JsonRow>;
+    const cached: NonNullable<DiscoverOptions["cachedSources"]>[number][] = [];
+    for (const row of rows) {
+      const source = (JSON.parse(row.json) as { value: ParsedSource }).value;
+      const cursor = source.cursor as { ruleVersion?: string; quickStamp?: string } | undefined;
+      if (cursor?.ruleVersion === PARSER_RULE_VERSION && cursor.quickStamp) cached.push({ location: this.sourceMetadata(source), stamp: cursor.quickStamp });
+    }
+    return cached;
+  }
+
   getParsedSource(repositoryId: string, sourceId: string, path: string): ParsedSource | undefined {
     const row = this.database.prepare("SELECT json FROM source_cache WHERE repository_id=? AND source_id=? AND path=?")
       .get(repositoryId, sourceId, path) as JsonRow | undefined;
@@ -226,6 +247,11 @@ export class AnalysisStore {
 
   getRefreshStats(repositoryId: string, version?: string): RefreshStats {
     const selected = this.selectVersion(repositoryId, version);
+    if (!version) {
+      const latest = this.database.prepare("SELECT json FROM jobs WHERE repository_id=? AND json_extract(json,'$.status')='completed' AND json_extract(json,'$.version')=? AND json_type(json,'$.refreshStats')='object' ORDER BY rowid DESC LIMIT 1")
+        .get(repositoryId, selected) as JsonRow | undefined;
+      if (latest) return (JSON.parse(latest.json) as RefreshJob).refreshStats!;
+    }
     const row = this.database.prepare("SELECT stats AS json FROM versions WHERE repository_id=? AND version=?")
       .get(repositoryId, selected) as JsonRow | undefined;
     if (!row) throw new StoreError("VERSION_NOT_FOUND", "分析结果版本不可用：不存在或已被淘汰", { key: "diagnostics.index.store.m004" });
@@ -247,18 +273,18 @@ export class AnalysisStore {
     return job;
   }
 
-  getJob(id: string): Job {
+  getJob(id: string): RefreshJob {
     const row = this.database.prepare("SELECT json FROM jobs WHERE id=?").get(id) as JsonRow | undefined;
     if (!row) throw new StoreError("JOB_NOT_FOUND", "刷新任务不存在", { key: "diagnostics.index.store.m007" });
-    return JSON.parse(row.json) as Job;
+    return JSON.parse(row.json) as RefreshJob;
   }
 
-  listJobs(): Job[] {
+  listJobs(): RefreshJob[] {
     return (this.database.prepare("SELECT json FROM jobs ORDER BY rowid DESC").all() as JsonRow[])
-      .map((row) => JSON.parse(row.json) as Job);
+      .map((row) => JSON.parse(row.json) as RefreshJob);
   }
 
-  updateJob(id: string, changes: Partial<Job>): Job {
+  updateJob(id: string, changes: Partial<RefreshJob>): RefreshJob {
     const job = { ...this.getJob(id), ...changes };
     this.database.prepare("UPDATE jobs SET json=? WHERE id=?").run(JSON.stringify(job), id);
     return job;
@@ -286,27 +312,42 @@ export class AnalysisStore {
       const repositoryId = snapshot.repository.id;
       const { gaps: _sourceGaps, ...savedSources } = input.sources;
       const savedSnapshot = { ...snapshot, sources: snapshot.sources.map((source) => this.sourceMetadata(source)) };
-      // 相同 version 不允许覆盖，旧证据与创建时间保持不可变。
-      this.database.prepare("INSERT INTO versions(repository_id,version,snapshot,sources,stats) VALUES(?,?,?,?,?)")
+      // 无变化检查沿用完整旧版；发布时统计和创建时间保持不可变。
+      if (input.reusedVersion) {
+        if (this.getRepository(repositoryId).version !== input.reusedVersion) throw new StoreError("VERSION_NOT_FOUND", "分析结果版本不可用：不存在或已被淘汰", { key: "diagnostics.index.store.m004" });
+      } else this.database.prepare("INSERT INTO versions(repository_id,version,snapshot,sources,stats) VALUES(?,?,?,?,?)")
         .run(repositoryId, snapshot.version,
           this.writePayload(savedSnapshot, repositoryId, "snapshot", snapshot.version, ["baseline.files", "baseline.excluded", "sources", "events", "mappings", "gaps"]),
           this.writePayload(savedSources, repositoryId, "sources", snapshot.version, ["sources", "unassociated"]), JSON.stringify(input.stats));
       if (input.clearCache) {
         this.database.prepare("DELETE FROM mapping_cache WHERE repository_id=?").run(snapshot.repository.id);
       }
-      const saveSource = this.database.prepare("INSERT OR REPLACE INTO source_cache(repository_id,source_id,path,json) VALUES(?,?,?,?)");
-      // 清理移动、替换和缺失来源的旧游标；当前来源才参与下一轮续读。
-      this.database.prepare("DELETE FROM source_cache WHERE repository_id=?").run(snapshot.repository.id);
-      this.database.prepare("DELETE FROM payload_parts WHERE repository_id=? AND kind='parsed'").run(repositoryId);
-      for (const source of input.parsed) saveSource.run(repositoryId, source.sourceId, source.path,
-        this.writePayload(source, repositoryId, "parsed", JSON.stringify([source.sourceId, source.path]),
-          ["events", "gaps", "relationships", "cursor.pending", "cursor.recordEnds", "cursor.relationships", "cursor.seen", "cursor.occurrences"]));
-      const trackSource = this.database.prepare("INSERT OR REPLACE INTO tracked_sources(repository_id,source_id,json) VALUES(?,?,?)");
+      const saveSource = this.database.prepare("INSERT INTO source_cache(repository_id,source_id,path,json) VALUES(?,?,?,?) ON CONFLICT(repository_id,source_id,path) DO UPDATE SET json=excluded.json WHERE json<>excluded.json");
+      const removeSource = this.database.prepare("DELETE FROM source_cache WHERE repository_id=? AND source_id=? AND path=?");
+      const removeParts = this.database.prepare("DELETE FROM payload_parts WHERE repository_id=? AND kind='parsed' AND owner=?");
+      const currentSources = new Set(input.parsed.map(source => JSON.stringify([source.sourceId, source.path])));
+      // 只清理确认移走、替换或缺失的缓存；未变来源不重新编码、删除和写入正文。
+      for (const old of this.database.prepare("SELECT source_id,path FROM source_cache WHERE repository_id=?").all(repositoryId) as { source_id: string; path: string }[]) {
+        const owner = JSON.stringify([old.source_id, old.path]);
+        if (currentSources.has(owner)) continue;
+        removeParts.run(repositoryId, owner);
+        removeSource.run(repositoryId, old.source_id, old.path);
+      }
+      for (const source of input.parsed) {
+        const owner = JSON.stringify([source.sourceId, source.path]);
+        const reused = !input.clearCache && input.reusedParsed?.has(owner);
+        if (!reused) removeParts.run(repositoryId, owner);
+        saveSource.run(repositoryId, source.sourceId, source.path,
+          this.writePayload(source, repositoryId, "parsed", owner,
+            ["events", "gaps", "relationships", "cursor.pending", "cursor.recordEnds", "cursor.relationships", "cursor.seen", "cursor.occurrences"], !reused));
+      }
+      const trackSource = this.database.prepare("INSERT INTO tracked_sources(repository_id,source_id,json) VALUES(?,?,?) ON CONFLICT(repository_id,source_id) DO UPDATE SET json=excluded.json WHERE json<>excluded.json");
       for (const source of snapshot.sources) trackSource.run(snapshot.repository.id, source.sourceId, JSON.stringify(this.sourceMetadata(source)));
-      const saveMapping = this.database.prepare("INSERT OR REPLACE INTO mapping_cache(repository_id,key,json) VALUES(?,?,?)");
+      const saveMapping = this.database.prepare("INSERT INTO mapping_cache(repository_id,key,json) VALUES(?,?,?) ON CONFLICT(repository_id,key) DO UPDATE SET json=excluded.json WHERE json<>excluded.json");
       for (const entry of input.mappings) saveMapping.run(snapshot.repository.id, entry.key, JSON.stringify(entry.mapping));
       this.database.prepare("UPDATE repositories SET version=?,stale=0 WHERE id=?").run(snapshot.version, snapshot.repository.id);
-      this.updateJob(input.jobId, { status: "completed", phase: "分析完成", phaseDescriptor: { key: "diagnostics.index.store.m009" }, progress: 1, finishedAt: new Date().toISOString(), version: snapshot.version });
+      this.updateJob(input.jobId, { status: "completed", phase: "分析完成", phaseDescriptor: { key: "diagnostics.index.store.m009" }, progress: 1, finishedAt: new Date().toISOString(), version: snapshot.version,
+        refreshStats: input.stats });
       // 发布序号独立于版本名称、创建时间及普通 rowid；淘汰与发布一同提交。
       const expired = "SELECT version FROM versions WHERE repository_id=? ORDER BY publication DESC LIMIT -1 OFFSET 2";
       this.database.prepare(`DELETE FROM payload_parts WHERE repository_id=? AND kind IN ('snapshot','sources') AND owner IN (${expired})`)

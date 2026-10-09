@@ -16,7 +16,7 @@ import { SessionStore } from "./store.js";
 import type { SessionRevision } from "./store.js";
 import { loadCodexTitles } from "./codex-titles.js";
 import { loadCodeFlickerProjects } from "./codeflicker-projects.js";
-import { desktopModels, loadDesktopTitles } from "./codeflicker-desktop.js";
+import { desktopMirrorStamp, desktopModels, loadDesktopTitles } from "./codeflicker-desktop.js";
 import { historyAdapter, historyClient } from "../history/adapters/index.js";
 import type { NormalizedSnapshot } from "../history/adapters/normalized.js";
 import { sourceQuickStamp } from "./quick-check.js";
@@ -89,8 +89,22 @@ export async function refreshSessions(store: SessionStore, jobId: string, roots?
       const childTitleFingerprint = source.client === "codex" && source.parentSessionId ? ":child-title-v2" : "";
       const projectMetadata = codeflickerProjects.get(source.path);
       const projectFingerprint = source.client === "codeflicker" ? `:project-v1:${createHash("sha256").update(JSON.stringify(projectMetadata ?? null)).digest("hex")}:execution-v2:attachments-v1:compression-v1:hidden-context-v1` : "";
-      const nativeModels = source.format === DESKTOP_FORMAT ? await desktopModels(source.path) : undefined;
-      const desktopFingerprint = nativeModels ? `:desktop-v4:${source.cwd ?? ""}:${nativeModels.fingerprint}:${nativeModels.limited}` : "";
+      const mirrorStamp = source.format === DESKTOP_FORMAT ? await desktopMirrorStamp(source.path) : undefined;
+      let nativeModels: Awaited<ReturnType<typeof desktopModels>> | undefined;
+      const mirrorCheck = mirrorStamp && !clearCache && mode === "quick" ? store.auxiliaryCheck(sourceKey, mirrorStamp) : undefined;
+      if (source.format === DESKTOP_FORMAT && !mirrorCheck) nativeModels = await desktopModels(source.path);
+      const mirrorMetadata = nativeModels ?? mirrorCheck;
+      const validateMirror = async () => {
+        if (source.format !== DESKTOP_FORMAT) return;
+        const after = mirrorStamp === undefined ? await desktopModels(source.path) : undefined;
+        if (after ? after.fingerprint !== mirrorMetadata?.fingerprint || after.limited !== mirrorMetadata?.limited
+          : mirrorStamp !== await desktopMirrorStamp(source.path)) {
+          throw new DiagnosticError("会话来源已有内容在解析期间被改写，请重新刷新", { key: "diagnostics.sessions.refresh.m008" });
+        }
+      };
+      await validateMirror();
+      if (mirrorStamp && nativeModels) store.saveAuxiliaryCheck(sourceKey, mirrorStamp, { fingerprint: nativeModels.fingerprint, limited: nativeModels.limited });
+      const desktopFingerprint = mirrorMetadata ? `:desktop-v4:${source.cwd ?? ""}:${mirrorMetadata.fingerprint}:${mirrorMetadata.limited}` : "";
       // 保留原生 Skill 目录的资源规则只失效桌面会话缓存，避免触发其他客户端重建。
       const desktopResourceFingerprint = source.client === "codeflicker-desktop" ? ":skill-directory-v1" : "";
       const contextUsageFingerprint = source.client === "codex" ? ":active-context-v1" : "";
@@ -138,6 +152,12 @@ export async function refreshSessions(store: SessionStore, jobId: string, roots?
       }
       const pending = store.createRevision(sourceKey, sourceFingerprint);
       try {
+        if (source.format === DESKTOP_FORMAT && !nativeModels) {
+          nativeModels = await desktopModels(source.path);
+          if (nativeModels.fingerprint !== mirrorMetadata?.fingerprint || nativeModels.limited !== mirrorMetadata?.limited) {
+            throw new DiagnosticError("会话来源已有内容在解析期间被改写，请重新刷新", { key: "diagnostics.sessions.refresh.m008" });
+          }
+        }
         const meta = await parseSessionSource(source, pending.sink, { byteLimit: digest.bytes, title, projectMetadata, desktopModels: nativeModels?.entries, nativeSnapshot, normalizedSnapshot });
         if (nativeModels?.limited) meta.gaps.push({ kind: "budget_exceeded", message: "原生模型旁路日志超过有界读取上限，部分模型信息未关联", messageDescriptor: { key: "diagnostics.sessions.refresh.m007" }, sourceId: meta.sourceId });
         pending.flush();
@@ -145,6 +165,7 @@ export async function refreshSessions(store: SessionStore, jobId: string, roots?
         const after = normalizedSnapshot ? { hash: `normalized-1:${(await adapter!.readRecords!(source)).hash}` }
           : nativeSnapshot ? { hash: `${SESSION_INDEX_RULE_VERSION}:${(await readIdeSnapshot(source)).hash}` } : await fingerprint(source.path, digest.bytes);
         if (after.hash !== digest.hash) throw new DiagnosticError("会话来源已有内容在解析期间被改写，请重新刷新", { key: "diagnostics.sessions.refresh.m008" });
+        await validateMirror();
         store.finishRevision(pending.revision, meta);
         current.push(await cacheRecord(pending.revision));
         counts.parsed += 1;

@@ -1,4 +1,4 @@
-import type { MessageKind, SessionMessageQuery, SessionQuery, SessionRefreshOptions } from "../session-contracts.js";
+import type { MessageKind, SessionMessageQuery, SessionQuery, SessionRefreshOptions, SessionProfileQuery, SessionTimelineQuery } from "../session-contracts.js";
 import { clientIds } from "../clients.js";
 import type { Client } from "../clients.js";
 import { coverageQuery, integer, ServiceError, textValue } from "./input.js";
@@ -57,7 +57,30 @@ export function sessionMessageQuery(raw: Record<string, unknown>): SessionMessag
   const resourceKind = textValue(raw.resourceKind, "resourceKind");
   if (resourceKind !== undefined && !["mcp", "skill_call", "skill_read"].includes(resourceKind)) throw new ServiceError("INVALID_INPUT", "未知资源证据类型", { key: "diagnostics.service.sessionInput.m009" });
   if (resourceKind) query.resourceKind = resourceKind as SessionMessageQuery["resourceKind"];
+  for (const [key, maximum] of [["messageLimit", 2000], ["maxTextChars", 100_000]] as const) {
+    if (raw[key] !== undefined) query[key] = integer(raw[key], key, 1, maximum);
+  }
+  if (raw.messageOffset !== undefined) query.messageOffset = queryOffset(raw.messageOffset, "messageOffset");
   return query;
+}
+
+function queryOffset(value: unknown, name: string): number {
+  if (value === "0") return 0;
+  return integer(value, name, 0, 1_000_000_000);
+}
+
+export function sessionProfileQuery(raw: Record<string, unknown>): SessionProfileQuery {
+  const query: SessionProfileQuery = { ...sessionQuery(raw), includeChildren: queryBoolean(raw.includeChildren, "includeChildren") };
+  if (raw.summary !== undefined) query.summary = queryBoolean(raw.summary, "summary");
+  if (raw.stepLimit !== undefined) query.stepLimit = integer(raw.stepLimit, "stepLimit", 1, 2000);
+  if (raw.stepOffset !== undefined) query.stepOffset = queryOffset(raw.stepOffset, "stepOffset");
+  return query;
+}
+
+export function sessionTimelineQuery(raw: Record<string, unknown>): SessionTimelineQuery {
+  return { version: textValue(raw.version, "version"),
+    messageId: textValue(raw.messageId, "messageId"),
+    ...(raw.maxEvents !== undefined ? { maxEvents: integer(raw.maxEvents, "maxEvents", 1, 5000) } : {}) };
 }
 
 export function queryBoolean(value: unknown, name: string): boolean {

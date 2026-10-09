@@ -1,4 +1,4 @@
-import type { SessionMessage, SessionTimelineEvent, SessionUsage } from "../src/session-contracts";
+import type { SessionMessage, SessionMessageResult, SessionTimelineEvent, SessionTimelineProjection, SessionUsage } from "../src/session-contracts";
 import { groupedTurns } from "./session-model";
 import { t } from "./i18n";
 
@@ -29,7 +29,7 @@ function tracePairs<T extends SessionTimelineEvent>(messages: T[]) {
   return { paired, consumed };
 }
 
-export function traceTurns(messages: SessionMessage[], usages: SessionUsage[]) {
+export function traceTurns(messages: SessionMessage[], usages: SessionUsage[], toolPairs?: SessionMessageResult["toolPairs"], relatedMessages: SessionMessage[] = []) {
   const usageByMessage = new Map<string, SessionUsage[]>();
   for (const usage of usages) {
     if (!usage.messageId) continue;
@@ -37,8 +37,17 @@ export function traceTurns(messages: SessionMessage[], usages: SessionUsage[]) {
     values.push(usage); usageByMessage.set(usage.messageId, values);
   }
   return groupedTurns(messages).map(turn => {
-    const { paired, consumed } = tracePairs(turn.messages);
-    const records: TraceRecord[] = turn.messages.filter(message => !consumed.has(message.id)).map(message => {
+    const page = new Map(turn.messages.map(message => [message.id, message]));
+    const available = new Map([...turn.messages, ...relatedMessages.filter(message => (message.turnId || "unknown") === turn.id)].map(message => [message.id, message]));
+    const { paired, consumed } = toolPairs === undefined ? tracePairs(turn.messages) : { paired: new Map<string, SessionMessage>(), consumed: new Set<string>() };
+    if (toolPairs) for (const pair of toolPairs) {
+      const call = available.get(pair.callMessageId), result = available.get(pair.resultMessageId);
+      if (!call || !result) continue;
+      paired.set(call.id, result); consumed.add(result.id);
+      // 本页只有结果时仍提供输入和结果两页详情，补充伙伴不扩张正文分页。
+      if (page.has(result.id)) page.set(call.id, call);
+    }
+    const records: TraceRecord[] = [...page.values()].filter(message => !consumed.has(message.id)).sort((a, b) => a.ordinal - b.ordinal).map(message => {
       const result = paired.get(message.id);
       return { message, result, usage: [...(usageByMessage.get(message.id) ?? []), ...(result ? usageByMessage.get(result.id) ?? [] : [])] };
     });
@@ -47,13 +56,14 @@ export function traceTurns(messages: SessionMessage[], usages: SessionUsage[]) {
 }
 
 export type TraceProjection = "sequence" | "turn" | "time";
-export function timelineNodes(events: SessionTimelineEvent[]) {
+export function timelineNodes(events: SessionTimelineEvent[], pairTools = true) {
   const ordered = [...events].sort((a, b) => a.ordinal - b.ordinal);
+  if (!pairTools) return ordered.map(event => ({ event, result: undefined }));
   const { paired, consumed } = tracePairs(ordered);
   return ordered.filter(event => !consumed.has(event.id)).map(event => ({ event, result: paired.get(event.id) }));
 }
 
-export function timelineProjection(nodes: ReturnType<typeof timelineNodes>, mode: TraceProjection) {
+export function timelineProjection(nodes: ReturnType<typeof timelineNodes>, mode: TraceProjection, complete?: SessionTimelineProjection) {
   const turns = new Map<string, number>();
   const counts = new Map<string, number>(), offsets = new Map<string, number>();
   for (const { event } of nodes) {
@@ -62,19 +72,23 @@ export function timelineProjection(nodes: ReturnType<typeof timelineNodes>, mode
   }
   const timestamps = nodes.map(node => node.event.occurredAt ? Date.parse(node.event.occurredAt) : NaN);
   const valid = timestamps.filter(Number.isFinite);
-  const start = valid.reduce((minimum, value) => Math.min(minimum, value), valid[0] ?? 0);
-  const end = valid.reduce((maximum, value) => Math.max(maximum, value), valid[0] ?? 0);
+  const start = complete?.timeStart ?? valid.reduce((minimum, value) => Math.min(minimum, value), valid[0] ?? 0);
+  const end = complete?.timeEnd ?? valid.reduce((maximum, value) => Math.max(maximum, value), valid[0] ?? 0);
   const spans = nodes.flatMap((node, index) => {
     const offset = offsets.get(node.event.turnId) ?? 0;
     offsets.set(node.event.turnId, offset + 1);
     if (mode === "time" && !Number.isFinite(timestamps[index])) return [];
     const x = mode === "time" ? (timestamps[index]! - start) / Math.max(1, end - start)
-      : mode === "turn" ? (turns.get(node.event.turnId)! + offset / counts.get(node.event.turnId)!) / Math.max(1, turns.size)
-      : index / Math.max(1, nodes.length - 1);
+      : mode === "turn" ? complete && node.event.turnPosition !== undefined
+        ? (node.event.turnPosition + (node.event.turnOffset ?? 0) / Math.max(1, node.event.turnCount ?? 1)) / Math.max(1, complete.totalTurns)
+        : (turns.get(node.event.turnId)! + offset / counts.get(node.event.turnId)!) / Math.max(1, turns.size)
+      : complete?.firstOrdinal !== undefined && complete.lastOrdinal !== undefined
+        ? (node.event.ordinal - complete.firstOrdinal) / Math.max(1, complete.lastOrdinal - complete.firstOrdinal)
+        : index / Math.max(1, nodes.length - 1);
     const lane = node.event.kind.startsWith("tool_") ? 2 : node.event.usage || ["assistant", "thinking", "compression"].includes(node.event.kind) ? 1 : 0;
     return [{ ...node, x, lane, index }];
   });
-  return { spans, missing: nodes.length - spans.length, start, end };
+  return { spans, missing: mode === "time" && complete ? complete.missingTime : nodes.length - spans.length, start, end };
 }
 
 export const TRACE_MAX_ZOOM = 64;

@@ -3,7 +3,7 @@ import { formatDateTime, formatNumber, formatPercent } from "../src/i18n";
 import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { CaretLeft, CaretRight, Crosshair } from "@phosphor-icons/react";
 import type { SessionProfile, SessionSummary, SessionTimelineEvent } from "../src/session-contracts";
-import { sessionDisplayTitle, displayRecorded, sessionResourceName, usageAxis, usageIndexAt, usageSegments, type EvidenceTarget } from "./session-model";
+import { sessionDisplayTitle, displayRecorded, sessionResourceName, sessionParams, usageAxis, usageIndexAt, usageSegments, type EvidenceTarget } from "./session-model";
 import { kindLabels, resourceLabels } from "./SessionMessage";
 import { Notice, Pager, SessionDiagnostic, SessionError } from "./SessionControls";
 import { HelpPopover } from "./HelpPopover";
@@ -11,6 +11,7 @@ import { SessionEvidence } from "./SessionEvidence";
 import { summarizeRequestSpeed } from "../src/session-speed";
 import { AverageSpeedMetric, RequestSpeedBadge, SpeedAlgorithmHelp, SpeedColumnHeader } from "./SessionSpeed";
 import { requestLocation } from "./session-speed-model";
+import { isAborted, request } from "./api";
 
 const formatCount = (value: number) => formatNumber(getLanguage(), value);
 const dateLabel = (value?: string) => value ? formatDateTime(getLanguage(), value) : t("sessions.message.timeMissing");
@@ -41,6 +42,7 @@ function UsageChart({ profile, onFocusStep }: { profile: SessionProfile; onFocus
   const active = selected === undefined ? undefined : profile.steps[selected];
   const currentRequest = Math.min(profile.steps.length - 1, selected ?? lastFocused.current);
   const controlStep = profile.steps[currentRequest]!;
+  const offset = profile.stepsOffset ?? 0;
   const x = (index: number) => profile.steps.length <= 1 ? 50 : index / (profile.steps.length - 1) * 100;
   const requestAt = (clientX: number, target: SVGRectElement) => {
     const bounds = target.getBoundingClientRect();
@@ -66,8 +68,8 @@ function UsageChart({ profile, onFocusStep }: { profile: SessionProfile; onFocus
             {usageSeries.map(([key]) => active[key] === undefined ? null : <circle key={key} cx={x(selected)} cy={100 - active[key] / max * 100} r="1.2" className={`series-${key}`} />)}
           </g>}
           <rect x="-2" y="0" width="104" height="100" className="session-chart-hit" role="slider" tabIndex={0}
-            aria-label={t("sessions.profile.chartSelect")} aria-orientation="horizontal" aria-valuemin={1} aria-valuemax={profile.steps.length} aria-valuenow={currentRequest + 1}
-            aria-valuetext={t(requestLocation(controlStep) ? "sessions.profile.chartValueLinked" : "sessions.profile.chartValue", { number: formatCount(currentRequest + 1), input: displayRecorded(controlStep.inputTokens), output: displayRecorded(controlStep.outputTokens), cache: displayRecorded(controlStep.cachedInputTokens) })}
+            aria-label={t("sessions.profile.chartSelect")} aria-orientation="horizontal" aria-valuemin={offset + 1} aria-valuemax={offset + profile.steps.length} aria-valuenow={offset + currentRequest + 1}
+            aria-valuetext={t(requestLocation(controlStep) ? "sessions.profile.chartValueLinked" : "sessions.profile.chartValue", { number: formatCount(offset + currentRequest + 1), input: displayRecorded(controlStep.inputTokens), output: displayRecorded(controlStep.outputTokens), cache: displayRecorded(controlStep.cachedInputTokens) })}
             aria-describedby={active ? tooltipId : undefined}
             onPointerMove={event => setHovered(requestAt(event.clientX, event.currentTarget))}
             onPointerDown={event => setHovered(requestAt(event.clientX, event.currentTarget))}
@@ -90,14 +92,14 @@ function UsageChart({ profile, onFocusStep }: { profile: SessionProfile; onFocus
             }} />
         </svg>
         {active && selected !== undefined && <div id={tooltipId} role="tooltip" className="session-chart-tooltip" style={x(selected) < 50 ? { right: 8 } : { left: 8 }}>
-          <strong>{t(active.sessionId !== profile.sessionIds[0] ? "sessions.profile.childRequestNumber" : "sessions.profile.requestNumber", { number: formatCount(selected + 1) })}</strong>
+          <strong>{t(active.sessionId !== profile.sessionIds[0] ? "sessions.profile.childRequestNumber" : "sessions.profile.requestNumber", { number: formatCount(offset + selected + 1) })}</strong>
           {active.model && <span className="session-chart-tooltip-model">{active.model}</span>}
           <dl>{usageSeries.filter(([key]) => active[key] !== undefined).map(([key, label]) => <div key={key}><dt><i className={`series-${key}`} />{t(label)}</dt><dd>{displayRecorded(active[key])}{active[key] === undefined ? "" : " Token"}</dd></div>)}</dl>
           <RequestSpeedBadge usage={active} interactive={false} />
           {active.occurredAt && <small>{dateLabel(active.occurredAt)}</small>}
         </div>}
       </div>
-      <span /><div className="session-chart-axis"><span>1</span><span>{t("sessions.profile.chartRequestIndex")}</span><span>{profile.steps.length > 1 ? formatCount(profile.steps.length) : ""}</span></div>
+      <span /><div className="session-chart-axis"><span>{formatCount(offset + 1)}</span><span>{t("sessions.profile.chartRequestIndex")}</span><span>{profile.steps.length > 1 ? formatCount(offset + profile.steps.length) : ""}</span></div>
     </div>
   </div>;
 }
@@ -117,23 +119,39 @@ export function SessionProfilePane({ profile, loading, error, includeChildren, s
   useI18n();
   const [tab, setTab] = useState<"overview" | "calls" | "usage">("overview");
   const [stepPage, setStepPage] = useState(1);
+  const [usageDetails, setUsageDetails] = useState<SessionProfile>();
+  const [usageLoading, setUsageLoading] = useState(false);
+  const [usageError, setUsageError] = useState<Error>();
+  const [usageRetry, setUsageRetry] = useState(0);
   const hasCalls = !!profile && (profile.tools.length > 0 || profile.resources.length > 0);
   const visibleMetrics = profile ? metrics.filter(([key]) => profile.usage[key] !== null) : [];
-  const hasUsage = visibleMetrics.length > 0 || !!profile?.steps.length;
-  const speedSummary = useMemo(() => profile ? summarizeRequestSpeed(profile.steps) : undefined, [profile]);
+  const hasUsage = visibleMetrics.length > 0 || !!profile?.usage.requests;
+  const speedSummary = useMemo(() => profile?.outputSpeed ?? (profile ? summarizeRequestSpeed(profile.steps) : undefined), [profile]);
   const hasSpeed = !!speedSummary?.requests;
   const visibleTab = tab === "calls" && !hasCalls || tab === "usage" && !hasUsage ? "overview" : tab;
   const primaryMetrics = visibleMetrics.filter(([key]) => key === "inputTokens" || key === "outputTokens");
   const extraMetrics = visibleMetrics.filter(([key]) => visibleTab === "usage" && !["inputTokens", "outputTokens", "peakInputTokens"].includes(key));
-  useEffect(() => { setStepPage(1); }, [profile?.sessionIds[0], profile?.scope, profile?.version]);
+  useEffect(() => { setStepPage(1); }, [profile?.sessionIds[0], profile?.scope]);
+  useEffect(() => { setStepPage(page => Math.min(page, Math.max(1, Math.ceil((profile?.usage.requests ?? 0) / 12)))); }, [profile?.usage.requests]);
+  useEffect(() => {
+    if (!profile || visibleTab !== "usage" || collapsed) return;
+    const controller = new AbortController(); setUsageLoading(true); setUsageError(undefined);
+    void request<SessionProfile>(`/sessions/${encodeURIComponent(profile.sessionIds[0]!)}/profile${sessionParams({ version: profile.version, includeChildren: profile.scope === "tree", stepOffset: (stepPage - 1) * 12, stepLimit: 12 })}`, { signal: controller.signal })
+      .then(result => { if (!controller.signal.aborted) setUsageDetails(result); })
+      .catch(error => { if (!isAborted(error)) setUsageError(error instanceof Error ? error : new Error(String(error))); })
+      .finally(() => { if (!controller.signal.aborted) setUsageLoading(false); });
+    return () => controller.abort();
+  }, [profile?.version, profile?.sessionIds[0], profile?.scope, visibleTab, collapsed, stepPage, usageRetry]);
+  const visibleUsage = usageDetails?.version === profile?.version && usageDetails?.scope === profile?.scope && usageDetails?.sessionIds[0] === profile?.sessionIds[0] ? usageDetails : undefined;
   const failureCount = profile?.tools.reduce((total, item) => total + item.failure, 0) ?? 0;
-  const peak = profile?.steps.find(step => step.inputTokens === profile.usage.peakInputTokens && !!step.messageId);
+  const peak = profile?.peakInputRequest ?? profile?.steps.find(step => step.inputTokens === profile.usage.peakInputTokens && !!step.messageId);
   const metric = ([key, label]: typeof metrics[number]) => {
     if (!profile) return null;
     const field = key === "peakInputTokens" ? "inputTokens" : key === "peakContextTokens" ? "contextTokens" : key;
-    const recorded = profile.steps.filter(step => step[field] !== undefined).length;
-    return <div key={key}><strong>{key === "peakInputTokens" && peak ? <button className="session-stat-link session-peak-link" aria-label={t("sessions.evidence.peak", { value: formatCount(peak.inputTokens!) })} onClick={() => onFocusStep(peak)}>{displayRecorded(profile.usage[key])}<Crosshair size={13} aria-hidden="true" /></button> : displayRecorded(profile.usage[key])}</strong><span>{t(label)}</span>
-      {recorded < profile.usage.requests && <small className="session-partial-badge">{t("sessions.usage.recordedRange", { count: recorded, total: profile.usage.requests })}</small>}</div>;
+    const recorded = field === "inputTokens" ? profile.usage.inputRecordedRequests : field === "cachedInputTokens" ? profile.usage.cacheRecordedRequests
+      : field === "contextTokens" ? undefined : profile.usage.recordedRequests?.[field];
+    return <div key={key}><strong>{key === "peakInputTokens" && peak ? <button className="session-stat-link session-peak-link" aria-label={t("sessions.evidence.peak", { value: formatCount(profile.usage.peakInputTokens!) })} onClick={() => onFocusStep(peak)}>{displayRecorded(profile.usage[key])}<Crosshair size={13} aria-hidden="true" /></button> : displayRecorded(profile.usage[key])}</strong><span>{t(label)}</span>
+      {recorded !== undefined && recorded < profile.usage.requests && <small className="session-partial-badge">{t("sessions.usage.recordedRange", { count: recorded, total: profile.usage.requests })}</small>}</div>;
   };
   return <aside className={`evidence-pane session-profile${collapsed ? " panel-collapsed" : ""}`} aria-label={t("sessions.profile.title")}>
     <div className="pane-heading"><span>{t("sessions.profile.title")}</span><div className="session-profile-heading-actions">
@@ -146,7 +164,7 @@ export function SessionProfilePane({ profile, loading, error, includeChildren, s
     <div className="session-profile-tabs" role="tablist" aria-label={t("sessions.profile.categories")} hidden={collapsed}>
       {([["overview", "sessions.profile.overview"], ...(hasCalls ? [["calls", "sessions.profile.calls"]] : []), ...(hasUsage ? [["usage", "sessions.profile.usage"]] : [])] as ["overview" | "calls" | "usage", string][]).map(([value, label]) => <button key={value} role="tab" aria-selected={visibleTab === value} aria-controls="session-profile-content" onClick={() => setTab(value)}>{t(label)}</button>)}
     </div>
-    <div id="session-profile-content" className="session-profile-content" hidden={collapsed}>
+    <div id="session-profile-content" className="session-profile-content" data-version={profile?.version} hidden={collapsed}>
       {loading && <p className="muted" role="status">{t("sessions.profile.loading")}</p>}
       {error && <Notice danger action={<button className="text-button" onClick={onRetry}>{t("common.retry")}</button>}><SessionError error={error} /></Notice>}
       {!loading && !error && !profile && <div className="session-profile-empty"><h3>{t("sessions.profile.select")}</h3></div>}
@@ -175,15 +193,18 @@ export function SessionProfilePane({ profile, loading, error, includeChildren, s
             {profile.estimate.byKind.filter(item => item.tokens > 0).map(item => <ProfileBar key={item.kind} label={t(kindLabels[item.kind])} count={item.tokens} max={Math.max(1, ...profile.estimate.byKind.map(value => value.tokens))} unit="tokens" />)}
           </details>
         </section>}
-        {visibleTab === "usage" && profile.steps.length > 0 && <section className="session-profile-section"><div className="session-section-heading"><h3>{t("sessions.profile.trend")}</h3><HelpPopover label={t("sessions.profile.chartHelp")}>
+        {visibleTab === "usage" && profile.usage.requests > 0 && <section className="session-profile-section"><div className="session-section-heading"><h3>{t("sessions.profile.trend")}</h3><HelpPopover label={t("sessions.profile.chartHelp")}>
           <p>{t("sessions.profile.chartCoordinatesHelp")}</p><p>{t("sessions.profile.chartLocateHelp")}</p>
         </HelpPopover></div>
-          {profile.steps.filter(step => usageSeries.some(([key]) => step[key] !== undefined)).length > 1 && <UsageChart profile={profile} onFocusStep={onFocusStep} />}
-            <div className="session-step-table"><table><thead><tr><th>{t("sessions.profile.request")}</th>{usageSeries.filter(([key]) => profile.steps.some(step => step[key] !== undefined)).map(([key, label]) => <th key={key}>{t(label)}</th>)}{hasSpeed && <th aria-label={t("sessions.speed.label")}><SpeedColumnHeader /></th>}</tr></thead><tbody>
-              {profile.steps.slice((stepPage - 1) * 12, stepPage * 12).map((step, index) => <tr key={`${step.sessionId}:${step.id}`}><td>{requestLocation(step) ? <button aria-label={t("sessions.profile.requestNumber", { number: formatCount((stepPage - 1) * 12 + index + 1) })} onClick={() => onFocusStep(step)}>#{formatCount((stepPage - 1) * 12 + index + 1)}</button> : <span>#{formatCount((stepPage - 1) * 12 + index + 1)}</span>}</td>
-                {usageSeries.filter(([key]) => profile.steps.some(item => item[key] !== undefined)).map(([key]) => <td key={key}>{step[key] === undefined ? "—" : displayRecorded(step[key])}</td>)}{hasSpeed && <td><RequestSpeedBadge usage={step} compact onLocate={messageId => onFocusStep({ ...step, messageId })} /></td>}</tr>)}
+          {usageLoading && <p role="status">{t("sessions.profile.loading")}</p>}
+          {usageError && <Notice danger action={<button className="text-button" onClick={() => setUsageRetry(value => value + 1)}>{t("common.retry")}</button>}><SessionError error={usageError} /></Notice>}
+          {visibleUsage && <><p className="session-request-range">{t("sessions.profile.requestRange", { from: (visibleUsage.stepsOffset ?? 0) + 1, to: (visibleUsage.stepsOffset ?? 0) + visibleUsage.steps.length, total: visibleUsage.stepsTotal ?? profile.usage.requests })}</p>
+          {visibleUsage.steps.filter(step => usageSeries.some(([key]) => step[key] !== undefined)).length > 1 && <UsageChart profile={visibleUsage} onFocusStep={onFocusStep} />}
+            <div className="session-step-table"><table><thead><tr><th>{t("sessions.profile.request")}</th>{usageSeries.filter(([key]) => profile.usage.recordedRequests?.[key] || profile.steps.some(step => step[key] !== undefined)).map(([key, label]) => <th key={key}>{t(label)}</th>)}{hasSpeed && <th aria-label={t("sessions.speed.label")}><SpeedColumnHeader /></th>}</tr></thead><tbody>
+              {visibleUsage.steps.map((step, index) => <tr key={`${step.sessionId}:${step.id}`}><td>{requestLocation(step) ? <button aria-label={t("sessions.profile.requestNumber", { number: formatCount((visibleUsage.stepsOffset ?? 0) + index + 1) })} onClick={() => onFocusStep(step)}>#{formatCount((visibleUsage.stepsOffset ?? 0) + index + 1)}</button> : <span>#{formatCount((visibleUsage.stepsOffset ?? 0) + index + 1)}</span>}</td>
+                {usageSeries.filter(([key]) => profile.usage.recordedRequests?.[key] || profile.steps.some(item => item[key] !== undefined)).map(([key]) => <td key={key}>{step[key] === undefined ? "—" : displayRecorded(step[key])}</td>)}{hasSpeed && <td><RequestSpeedBadge usage={step} compact onLocate={messageId => onFocusStep({ ...step, messageId })} /></td>}</tr>)}
             </tbody></table></div>
-            {profile.steps.length > 12 && <Pager page={stepPage} pageSize={12} total={profile.steps.length} onChange={setStepPage} label={t("sessions.profile.requestPagination")} showEnds />}
+            {(visibleUsage.stepsTotal ?? profile.usage.requests) > 12 && <Pager page={stepPage} pageSize={12} total={visibleUsage.stepsTotal ?? profile.usage.requests} onChange={setStepPage} label={t("sessions.profile.requestPagination")} showEnds />}</>}
         </section>}
         {visibleTab === "calls" && <>
           {profile.tools.length > 0 && <section className="session-profile-section"><div className="session-section-heading"><h3>{t("sessions.profile.tools")}</h3><span>{t("sessions.profile.callCount", { count: profile.tools.reduce((total, item) => total + item.calls, 0) })}</span></div>

@@ -76,8 +76,10 @@ await import(${JSON.stringify(workerUrl)});
     assert.equal(store.getSnapshot(repository.id).repository.stale, true);
     const retry = await manager.waitForJob(manager.refresh(repository.id).id);
     assert.equal(retry.status, "completed", retry.error);
-    assert.notEqual(retry.version, version);
+    assert.equal(retry.version, version, "未变化的成功重试沿用旧完整版");
+    assert.equal(store.getSnapshot(repository.id).repository.stale, false);
     assert.equal(store.getJob(first.id).status, "failed");
+    assert.equal(store.getJob(queued.id).status, "failed");
   } finally {
     await manager.close();
     store.close();

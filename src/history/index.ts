@@ -368,23 +368,31 @@ export async function historicalWorktrees(events: HistoryEvent[], baseline: Base
   return result;
 }
 
+/** 只在一次刷新中共享，不能把路径或 Git 身份的验证结果带到下一次刷新。 */
+export function createSourceAssociationCache() {
+  return { canonicalPaths: new Map<string, Promise<string>>(), commonDirectories: new Map<string, Promise<string | undefined>>(),
+    worktreeRoots: new Map<string, Promise<string | undefined>>() };
+}
+
 /** 仅映射实际属于基线的路径；历史 worktree 必须有对应时间的 Git 证据。 */
-export async function associateSource(source: ParsedSource, baseline: Baseline, worktrees: HistoricalWorktree[] = []): Promise<SourceAssociation> {
+export async function associateSource(source: ParsedSource, baseline: Baseline, worktrees: HistoricalWorktree[] = [], cache = createSourceAssociationCache()): Promise<SourceAssociation> {
   const parsed: ParsedHistorySource = { ...source, relationships: (source as ParsedHistorySource).relationships ?? cursorOf(source)?.relationships ?? [] };
   const events: HistoryEvent[] = [];
   const gaps: Gap[] = [];
-  const root = await canonicalPath(resolve(baseline.repository.path));
-  const repositoryCommonDir = await canonicalPath(resolve(baseline.repository.commonDir));
+  function canonical(path: string): Promise<string> {
+    if (!cache.canonicalPaths.has(path)) cache.canonicalPaths.set(path, canonicalPath(path));
+    return cache.canonicalPaths.get(path)!;
+  }
+  const root = await canonical(resolve(baseline.repository.path));
+  const repositoryCommonDir = await canonical(resolve(baseline.repository.commonDir));
   const available = new Set(baseline.files.map((file) => file.path));
-  const commonCache = new Map<string, string | undefined>();
-  const worktreeRootCache = new Map<string, string>();
   async function relativePath(path: string | undefined, cwd: string | undefined, at: number, proof: SourceReference[]): Promise<string | undefined> {
     const normalized = normalizeHistoryPath(path);
     const working = normalizeHistoryPath(cwd);
     if (!normalized) return undefined;
     const rawAbsolute = isAbsolute(normalized) ? normalized : working && isAbsolute(working) ? resolve(working, normalized) : undefined;
     if (!rawAbsolute) return undefined;
-    const absolute = await canonicalPath(rawAbsolute);
+    const absolute = await canonical(rawAbsolute);
     if (inside(root, absolute)) return relative(root, absolute).split(sep).join("/");
     const historical = worktrees.find(tree => inside(tree.path, absolute) && at >= tree.from && at <= tree.until);
     if (historical) {
@@ -392,16 +400,24 @@ export async function associateSource(source: ParsedSource, baseline: Baseline, 
       return relative(historical.path, absolute).split(sep).join("/");
     }
     if (working && isAbsolute(working)) {
-      if (!commonCache.has(working)) commonCache.set(working, await commonDir(working));
-      if (commonCache.get(working) === repositoryCommonDir) {
-        let worktreeRoot = worktreeRootCache.get(working);
-        if (!worktreeRoot) {
-          try { worktreeRoot = (await git("git", ["-C", working, "rev-parse", "--show-toplevel"], { timeout: 5_000 })).stdout.trim(); } catch { return undefined; }
-          if (worktreeRoot) {
-            worktreeRoot = await canonicalPath(worktreeRoot);
-            worktreeRootCache.set(working, worktreeRoot);
-          }
+      if (!cache.commonDirectories.has(working)) {
+        const check = commonDir(working);
+        cache.commonDirectories.set(working, check);
+        // 校验失败只表示身份未知；后续来源仍可重试，不能把读取错误共享为缺失。
+        void check.then(result => { if (!result && cache.commonDirectories.get(working) === check) cache.commonDirectories.delete(working); });
+      }
+      if (await cache.commonDirectories.get(working) === repositoryCommonDir) {
+        if (!cache.worktreeRoots.has(working)) {
+          const check = (async () => {
+            try {
+              const path = (await git("git", ["-C", working, "rev-parse", "--show-toplevel"], { timeout: 5_000 })).stdout.trim();
+              return path ? canonical(path) : undefined;
+            } catch { return undefined; }
+          })();
+          cache.worktreeRoots.set(working, check);
+          void check.then(result => { if (!result && cache.worktreeRoots.get(working) === check) cache.worktreeRoots.delete(working); });
         }
+        const worktreeRoot = await cache.worktreeRoots.get(working);
         if (worktreeRoot && inside(worktreeRoot, absolute)) return relative(worktreeRoot, absolute).split(sep).join("/");
       }
     }
@@ -410,7 +426,7 @@ export async function associateSource(source: ParsedSource, baseline: Baseline, 
   for (const event of source.events) {
     if (!event.path) {
       const cwd = normalizeHistoryPath(event.cwd ?? source.cwd);
-      if (cwd && isAbsolute(cwd) && inside(root, await canonicalPath(cwd))) events.push({ ...event, fragments: [] });
+      if (cwd && isAbsolute(cwd) && inside(root, await canonical(cwd))) events.push({ ...event, fragments: [] });
       continue;
     }
     const proof: SourceReference[] = [];
@@ -427,7 +443,7 @@ export async function associateSource(source: ParsedSource, baseline: Baseline, 
     if (!available.has(path)) gaps.push({ kind: "range_unknown", message: `历史文件 ${path} 不在当前仓库基线中`, messageDescriptor: { key: "diagnostics.history.index.m008", params: { p0: String(path) } }, sourceId: source.sourceId });
   }
   const cwd = normalizeHistoryPath(source.cwd);
-  const belongsByCwd = Boolean(cwd && isAbsolute(cwd) && inside(root, await canonicalPath(cwd)));
+  const belongsByCwd = Boolean(cwd && isAbsolute(cwd) && inside(root, await canonical(cwd)));
   const associated = events.length > 0 || belongsByCwd;
   if (!associated) gaps.push({ kind: "unassociated", message: "来源工作目录与逐事件路径无法可靠归属仓库", messageDescriptor: { key: "diagnostics.history.index.m009" }, sourceId: source.sourceId });
   return { associated, source: parsed, events, gaps, reason: events.length ? "逐事件路径或 Git commonDir 确认" : belongsByCwd ? "来源 cwd 属于仓库，外部路径活动已排除" : "归属未知", reasonDescriptor: events.length ? { key: "diagnostics.history.index.m010" } : belongsByCwd ? { key: "diagnostics.history.index.m011" } : { key: "diagnostics.history.index.m012" } };

@@ -114,6 +114,20 @@ export function resizeCamera(camera: MapCamera, previous: MapSize, next: MapSize
   return panCamera(camera, { x: (dimension(next.width) - dimension(previous.width)) / 2, y: (dimension(next.height) - dimension(previous.height)) / 2 });
 }
 
+/** 自动换版保留视口中心的文件与文件内位置；原来适配全图时继续适配。 */
+export function refreshCamera(camera: MapCamera, previous: MapLayout, next: MapLayout, viewport: MapSize): MapCamera {
+  const beforeFit = fitCamera(previous.bounds, viewport), afterFit = fitCamera(next.bounds, viewport);
+  if (Math.abs(camera.scale - beforeFit.scale) < 1e-8 && Math.abs(camera.x - beforeFit.x) < 1 && Math.abs(camera.y - beforeFit.y) < 1) return afterFit;
+  const center = { x: (viewport.width / 2 - camera.x) / camera.scale, y: (viewport.height / 2 - camera.y) / camera.scale };
+  const anchor = previous.files.find(tile => center.x >= tile.x && center.x <= tile.x + tile.width && center.y >= tile.y && center.y <= tile.y + tile.height);
+  const replacement = anchor && next.files.find(tile => tile.path === anchor.path);
+  if (!anchor || !replacement) return zoomCamera(camera, 1, { x: viewport.width / 2, y: viewport.height / 2 }, afterFit.scale, next.maxScale);
+  const scale = Math.min(next.maxScale, Math.max(afterFit.scale, camera.scale * Math.sqrt(anchor.width * anchor.height / (replacement.width * replacement.height))));
+  const x = replacement.x + (center.x - anchor.x) / anchor.width * replacement.width;
+  const y = replacement.y + (center.y - anchor.y) / anchor.height * replacement.height;
+  return { scale, x: translation(viewport.width / 2 - x * scale), y: translation(viewport.height / 2 - y * scale) };
+}
+
 export function projectRect(bounds: MapRect, camera: MapCamera): MapRect {
   return { x: bounds.x * camera.scale + camera.x, y: bounds.y * camera.scale + camera.y, width: bounds.width * camera.scale, height: bounds.height * camera.scale };
 }

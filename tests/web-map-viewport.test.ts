@@ -3,7 +3,7 @@ import { test } from "node:test";
 import type { FileCoverage } from "../src/contracts.ts";
 import { fileLabelRect } from "../web/model.ts";
 import {
-  clipRect, fitCamera, layoutMap, locateCamera, panCamera, projectRect, resizeCamera, visibleTiles, zoomCamera,
+  clipRect, fitCamera, layoutMap, locateCamera, panCamera, projectRect, refreshCamera, resizeCamera, visibleTiles, zoomCamera,
   type MapCamera, type MapPoint, type MapRect, type MapSize,
 } from "../web/map-viewport.ts";
 
@@ -15,6 +15,21 @@ const valid = (bounds: MapRect) => {
   assert.ok(bounds.width > 0);
   assert.ok(bounds.height > 0);
 };
+
+test("自动换版保留中心文件与文件内位置，适配全图和文件移除均有效", () => {
+  const viewport = { width: 900, height: 600 };
+  const previous = layoutMap([file("src/a.ts", 100), file("src/b.ts", 50)], "");
+  const next = layoutMap([file("src/a.ts", 200), file("src/b.ts", 50), file("src/c.ts", 60)], "");
+  const anchor = previous.files.find(tile => tile.path === "src/b.ts")!;
+  const camera = { scale: 4, x: viewport.width / 2 - (anchor.x + anchor.width * .3) * 4, y: viewport.height / 2 - (anchor.y + anchor.height * .7) * 4 };
+  const refreshed = refreshCamera(camera, previous, next, viewport);
+  const replacement = next.files.find(tile => tile.path === anchor.path)!;
+  const center = worldAt(refreshed, { x: viewport.width / 2, y: viewport.height / 2 });
+  close((center.x - replacement.x) / replacement.width, .3); close((center.y - replacement.y) / replacement.height, .7);
+  assert.deepEqual(refreshCamera(fitCamera(previous.bounds, viewport), previous, next, viewport), fitCamera(next.bounds, viewport));
+  const missing = refreshCamera(camera, previous, layoutMap([file("src/a.ts", 100)], ""), viewport);
+  assert.ok(Number.isFinite(missing.scale) && missing.scale > 0);
+});
 
 test("文件标签避让屏幕目录标题，原始面积与无关标签位置不变", () => {
   const rect = { x: 20, y: 30, width: 160, height: 120 };

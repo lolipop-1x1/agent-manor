@@ -80,6 +80,8 @@ export interface PendingCall {
 }
 
 export interface HistoryCursor {
+  /** 完整依赖未变时可跳过正文读取；只用于快检，不替代 prefixHash。 */
+  quickStamp?: string;
   /** 只有归属元数据，不能作为完整证据续读；来源改变或确认相关时重新解析。 */
   associationOnly?: boolean;
   ruleVersion: string;

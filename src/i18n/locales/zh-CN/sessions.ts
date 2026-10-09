@@ -1,6 +1,12 @@
 import type { MessageCatalog } from "../../types.js";
 
 export default {
+  "sessions.body.loading": "正在读取完整内容…",
+  "sessions.reading.versionChanged": "结果版本发生变化，请重试。",
+  "sessions.reading.anchorMissing": "原阅读位置已不在新版记录中，已保留当前会话。",
+  "sessions.reading.recordPagination": "当前轮次记录分页",
+  "sessions.profile.requestRange": "请求 {{from, number}}–{{to, number}} / 共 {{total, number}} 次",
+  "sessions.timeline.aggregatedCount_other": "全会话 · {{count, number}} 条记录（聚合显示）",
   "sessions.reading.projectCwd": "工作目录",
   "sessions.message.unconfirmed": "未确认结束",
   "sessions.copy.reply": "复制回复",

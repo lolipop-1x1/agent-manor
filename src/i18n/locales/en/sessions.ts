@@ -1,6 +1,13 @@
 import type { MessageCatalog } from "../../types.js";
 
 export default {
+  "sessions.body.loading": "Loading complete content…",
+  "sessions.reading.versionChanged": "The result version changed. Please retry.",
+  "sessions.reading.anchorMissing": "The original reading position is absent from the new records. This session remains selected.",
+  "sessions.reading.recordPagination": "Records in current turns",
+  "sessions.profile.requestRange": "Requests {{from, number}}–{{to, number}} of {{total, number}}",
+  "sessions.timeline.aggregatedCount_one": "Entire session · {{count, number}} record (aggregated)",
+  "sessions.timeline.aggregatedCount_other": "Entire session · {{count, number}} records (aggregated)",
   "sessions.reading.projectCwd": "Working directory",
   "sessions.message.unconfirmed": "End not confirmed",
   "sessions.copy.reply": "Copy reply",

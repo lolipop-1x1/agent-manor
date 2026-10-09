@@ -92,7 +92,16 @@ test("收藏、索引发布、资源刷新和统计范围变化不会返回旧�
   const guide = first.resources.find(row => row.identity.name === "guide")!;
   service.setFavorite(guide.identity.id, true);
   assert.equal((await service.overview({ kind: "skill" })).resources.find(row => row.identity.id === guide.identity.id)?.favorite, true);
+  const beforeNoOp = reads;
   publish();
+  assert.equal(library.status().version, firstVersion, "无变化发布保留内容版本与缓存");
+  await service.overview({ kind: "skill" });
+  assert.equal(reads, beforeNoOp, "无变化检查不重新聚合历史");
+  // 标题元信息确实变化，发布新修订后必须使资源聚合失效。
+  const changed = library.createRevision(context.source, "synthetic-changed-fingerprint");
+  const meta = await parseSessionSource({ client: "codex", path: context.source }, changed.sink);
+  changed.flush(); library.finishRevision(changed.revision, { ...meta, title: "更新后的人工会话", titleOrigin: "recorded" });
+  library.publish(library.createJob().id, [{ path: context.source, revision: changed.revision, fingerprint: "synthetic-changed-fingerprint" }], []);
   const published = await service.overview({ kind: "skill" });
   assert.notEqual(library.status().version, firstVersion);
   assert.equal(published.stats?.successfulReads, 1);

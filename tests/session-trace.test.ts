@@ -115,3 +115,11 @@ test("长会话仅绘制可见像素，放大拉开标记并保留选中节点�
   assert.equal(timelineVisibleMarks(pair, 1000, 0, 1000, "message-2")[0]?.result?.id, "message-2");
   assert.deepEqual(timelineVisibleMarks([], 1000, 0, 1000), []);
 });
+
+test("聚合代表不从采样子集推断工具配对，完整总览仍按唯一身份关联", () => {
+  const sampled = [message(1, "tool_call", { callId: "sampled" }), message(3, "tool_result", { callId: "sampled" })];
+  assert.equal(timelineNodes(sampled, false).length, 2);
+  assert.ok(timelineNodes(sampled, false).every(node => !node.result));
+  assert.equal(timelineNodes(sampled).length, 1);
+  assert.equal(timelineNodes(sampled)[0]?.result?.id, "message-3");
+});

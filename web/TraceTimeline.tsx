@@ -2,16 +2,17 @@ import { getLanguage, t, useI18n } from "./i18n";
 import { formatDateTime, formatNumber, formatPercent, formatTime } from "../src/i18n";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { Crosshair, Minus, Plus, Resize } from "@phosphor-icons/react";
-import type { SessionTimelineEvent } from "../src/session-contracts";
+import type { SessionTimelineEvent, SessionTimelineResult } from "../src/session-contracts";
 import { SessionError } from "./SessionControls";
 import { kindLabels } from "./SessionMessage";
-import { turnTitle } from "./session-model";
+import { sessionParams, turnTitle } from "./session-model";
+import { isAborted, request } from "./api";
 import { Hint } from "./CodeMap";
 import { TRACE_MAX_ZOOM, timelineCenteredScroll, timelineFraction, timelineNodes, timelinePosition, timelineProjection, timelineVisibleMarks, timelineZoomScroll, type TraceProjection } from "./session-trace-model";
 
 const projections = { sequence: "sessions.timeline.sequence", turn: "sessions.timeline.turn", time: "sessions.timeline.time" } as const;
-export function TraceTimeline({ events, selectedId, loading, error, onSelect, onRetry }: {
-  events: SessionTimelineEvent[]; selectedId?: string; loading: boolean; error?: Error;
+export function TraceTimeline({ data, sessionId, selectedId, loading, error, onSelect, onRetry }: {
+  data?: SessionTimelineResult; sessionId?: string; selectedId?: string; loading: boolean; error?: Error;
   onSelect: (event: SessionTimelineEvent) => void; onRetry: () => void;
 }) {
   useI18n();
@@ -20,13 +21,29 @@ export function TraceTimeline({ events, selectedId, loading, error, onSelect, on
   const [zoom, setZoom] = useState(1);
   const [width, setWidth] = useState(1000);
   const [scroll, setScroll] = useState(0);
+  const [detail, setDetail] = useState<SessionTimelineResult>();
+  const [detailError, setDetailError] = useState<Error>();
+  const [detailLoading, setDetailLoading] = useState(false);
+  const [detailRetry, setDetailRetry] = useState(0);
+  const resolution = Math.min(5000, 1800 * zoom);
+  useEffect(() => {
+    if (!sessionId || !data?.version || resolution === 1800 && (!selectedId || data.events.some(event => event.id === selectedId))) { setDetailLoading(false); setDetailError(undefined); return; }
+    const controller = new AbortController(); setDetailLoading(true); setDetailError(undefined);
+    void request<SessionTimelineResult>(`/sessions/${encodeURIComponent(sessionId)}/timeline${sessionParams({ version: data.version, maxEvents: resolution, messageId: selectedId })}`, { signal: controller.signal })
+      .then(result => { if (!controller.signal.aborted && result.version === data.version) setDetail(result); })
+      .catch(error => { if (!isAborted(error)) setDetailError(error instanceof Error ? error : new Error(String(error))); })
+      .finally(() => { if (!controller.signal.aborted) setDetailLoading(false); });
+    return () => controller.abort();
+  }, [sessionId, data?.version, resolution, selectedId, detailRetry]);
+  const shownData = detail?.version === data?.version ? detail : data;
+  const events = shownData?.events ?? [];
   const viewport = useRef<HTMLDivElement>(null);
   const pendingScroll = useRef<number | undefined>(undefined);
   const geometry = useRef({ width, zoom });
   geometry.current = { width, zoom };
   const plotWidth = width * zoom;
-  const nodes = useMemo(() => timelineNodes(events), [events]);
-  const { spans, missing, start, end } = useMemo(() => timelineProjection(nodes, mode), [nodes, mode]);
+  const nodes = useMemo(() => timelineNodes(events, !shownData?.aggregated), [events, shownData?.aggregated]);
+  const { spans, missing, start, end } = useMemo(() => timelineProjection(nodes, mode, shownData?.projection), [nodes, mode, shownData?.projection]);
   const selected = spans.find(span => span.event.id === selectedId || span.result?.id === selectedId);
   const marks = useMemo(() => timelineVisibleMarks(spans, plotWidth, scroll, width, selectedId), [spans, plotWidth, scroll, width, selectedId]);
   const changeZoom = (value: number, anchor = width / 2) => {
@@ -79,9 +96,9 @@ export function TraceTimeline({ events, selectedId, loading, error, onSelect, on
   const label = (event: SessionTimelineEvent) => `#${formatNumber(getLanguage(), event.ordinal)} · ${event.usage ? t("sessions.timeline.usage") : event.tool ?? t(kindLabels[event.kind])} · ${turnTitle(event.turnId, 1)}`;
   const nearest = (x: number, lane: number) => spans.filter(span => span.lane === lane).reduce<typeof spans[number] | undefined>((best, span) => !best || Math.abs(span.x - x) < Math.abs(best.x - x) ? span : best, undefined);
   const time = (value: number) => formatTime(getLanguage(), value);
-  return <section className="trace-timeline" aria-label={t("sessions.timeline.title")}>
+  return <section className="trace-timeline" data-version={shownData?.version} aria-label={t("sessions.timeline.title")}>
     <div className="trace-timeline-head"><div role="group" aria-label={t("sessions.timeline.arrangement")}>{Object.entries(projections).map(([key, name]) => <button key={key} className="text-button" aria-pressed={mode === key} onClick={() => { setMode(key as TraceProjection); setHover(undefined); }}>{t(name)}</button>)}</div>
-      <div className="trace-timeline-actions"><span>{loading ? t("sessions.timeline.loading") : t("sessions.timeline.nodeCount", { count: nodes.length })}</span>
+      <div className="trace-timeline-actions"><span>{loading || detailLoading ? t("sessions.timeline.loading") : shownData?.aggregated ? t("sessions.timeline.aggregatedCount", { count: shownData.total ?? events.length }) : t("sessions.timeline.nodeCount", { count: nodes.length })}</span>
         <div className="map-zoom-controls trace-timeline-zoom" role="group" aria-label={t("sessions.timeline.zoomControls")}>
           <Hint label={t("sessions.timeline.zoomOut")}><button className="icon-button" aria-label={t("sessions.timeline.zoomOut")} disabled={zoom <= 1 || !spans.length} onClick={() => changeZoom(zoom / 2)}><Minus size={14} aria-hidden="true" /></button></Hint>
           <output aria-label={t("sessions.timeline.zoomLevel")}>{formatPercent(getLanguage(), zoom, { maximumFractionDigits: 0 })}</output>
@@ -89,7 +106,7 @@ export function TraceTimeline({ events, selectedId, loading, error, onSelect, on
           <Hint label={t("sessions.timeline.fit")}><button className="icon-button" aria-label={t("sessions.timeline.fit")} disabled={!spans.length} onClick={fit}><Resize size={14} aria-hidden="true" /></button></Hint>
           <Hint label={t("sessions.timeline.locate")}><button className="icon-button" aria-label={t("sessions.timeline.locate")} disabled={!selected} onClick={locate}><Crosshair size={14} aria-hidden="true" /></button></Hint>
         </div></div></div>
-    {error ? <p className="trace-timeline-error" role="alert"><SessionError error={error} /> <button className="text-button" onClick={onRetry}>{t("sessions.timeline.retry")}</button></p> : <>
+    {error || detailError ? <p className="trace-timeline-error" role="alert"><SessionError error={(error ?? detailError)!} /> <button className="text-button" onClick={() => { setDetailRetry(value => value + 1); onRetry(); }}>{t("sessions.timeline.retry")}</button></p> : <>
       <div className="trace-timeline-plot"><div className="trace-lane-labels" aria-hidden="true"><span>{t("sessions.usage.input")}</span><span>{t("sessions.timeline.model")}</span><span>{t("sessions.message.tool")}</span></div>
         <div ref={viewport} className="trace-timeline-viewport" onScroll={event => { setScroll(event.currentTarget.scrollLeft); setHover(undefined); }}>
         <svg viewBox={`0 0 ${plotWidth} 66`} style={{ width: plotWidth }} role="group" tabIndex={0} aria-label={t("sessions.timeline.keyboard")} onKeyDown={event => {

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { appendFile, mkdir, mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, mkdtemp, readFile, rename, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
@@ -66,7 +66,7 @@ test("SQLite新结构与WAL；登记、完整版本和手动关联重开后保�
   } finally { second.close(); }
 }));
 
-test("无变化只核对哈希，真实复用解析游标和对应缓存；当前单文件变化使对应失效", async () => fixture(async ({ repositoryPath, sourcePath, store, repositoryId, refresh }) => {
+test("无变化快检复用正文和旧版，当前单文件变化只使对应失效", async () => fixture(async ({ repositoryPath, sourcePath, store, repositoryId, refresh }) => {
   const content = "const alpha = 1;\nconst beta = 2;\n";
   await writeFile(join(repositoryPath, "a.ts"), content);
   const original = encode([meta(repositoryPath), call(repositoryPath, "first"), output("first", content)]);
@@ -75,7 +75,9 @@ test("无变化只核对哈希，真实复用解析游标和对应缓存；当�
   assert.equal(store.getRefreshStats(repositoryId).parsedRecords, 3);
   assert.equal(store.getRefreshStats(repositoryId).mappingsComputed, 1);
   const next = await refresh();
-  assert.notEqual(next, first);
+  assert.equal(next, first);
+  assert.equal(store.getRefreshStats(repositoryId).sourcesParsed, 0);
+  assert.equal(store.getRefreshStats(repositoryId).sourcesReused, 1);
   assert.equal(store.getRefreshStats(repositoryId).parsedRecords, 0);
   assert.equal(store.getRefreshStats(repositoryId).mappingsComputed, 0);
   assert.equal(store.getRefreshStats(repositoryId).mappingsReused, 1);
@@ -87,8 +89,121 @@ test("无变化只核对哈希，真实复用解析游标和对应缓存；当�
   assert.equal(store.getRefreshStats(repositoryId).parsedRecords, 0);
   assert.deepEqual(store.getSnapshot(repositoryId).mappings[0]!.exactRanges, [{ start: 2, end: 3 }]);
   assert.equal(store.getSnapshot(repositoryId, next).createdAt, oldCreatedAt);
-  assert.throws(() => store.getSnapshot(repositoryId, first), (error) => error instanceof StoreError && error.code === "VERSION_NOT_FOUND");
+  assert.equal(store.getSnapshot(repositoryId, first).createdAt, oldCreatedAt);
   assert.equal(await readFile(sourcePath, "utf8"), original);
+}));
+
+test("无变化检查不写正文分块，快检失效但内容相同也只更新缓存头部", async () => fixture(async ({ repositoryPath, sourcePath, store, repositoryId, refresh }) => {
+  const original = encode([meta(repositoryPath), call(repositoryPath, "stable"), output("stable")]);
+  await writeFile(sourcePath, original);
+  const version = await refresh();
+  const published = store.getSnapshot(repositoryId);
+  const database = new Database(store.dbPath);
+  try {
+    database.exec(`
+      CREATE TRIGGER reject_payload_insert BEFORE INSERT ON payload_parts BEGIN SELECT RAISE(ABORT,'unchanged payload insert'); END;
+      CREATE TRIGGER reject_payload_delete BEFORE DELETE ON payload_parts BEGIN SELECT RAISE(ABORT,'unchanged payload delete'); END;
+      CREATE TRIGGER reject_payload_update BEFORE UPDATE ON payload_parts BEGIN SELECT RAISE(ABORT,'unchanged payload update'); END;
+      CREATE TRIGGER reject_mapping_update BEFORE UPDATE ON mapping_cache BEGIN SELECT RAISE(ABORT,'unchanged mapping update'); END;
+    `);
+    assert.equal(await refresh(), version);
+    assert.equal(store.getRefreshStats(repositoryId).sourcesParsed, 0);
+    assert.equal(store.getRefreshStats(repositoryId, version).parsedRecords, 3, "发布时统计不能被后续检查覆盖");
+    assert.deepEqual(store.getSnapshot(repositoryId), published);
+    await writeFile(sourcePath, original);
+    assert.equal(await refresh(), version);
+    assert.equal(store.getRefreshStats(repositoryId).sourcesParsed, 1, "变化指示失效必须重新核对内容");
+    assert.equal(store.getRefreshStats(repositoryId).parsedRecords, 0);
+    assert.deepEqual(store.getSnapshot(repositoryId), published);
+    assert.equal((database.prepare("SELECT COUNT(*) AS count FROM versions").get() as { count: number }).count, 1);
+  } finally { database.close(); }
+}));
+
+test("单个来源追加只改该来源缓存，其他来源分块不写入且增量与完整结果一致", async () => fixture(async ({ repositoryPath, sourcePath, history, store, repositoryId, refresh }) => {
+  const stablePath = join(history, "stable.jsonl");
+  await writeFile(sourcePath, encode([meta(repositoryPath), call(repositoryPath, "changed"), output("changed")]));
+  await writeFile(stablePath, encode([meta(repositoryPath, "stable-source"), call(repositoryPath, "stable"), output("stable")]));
+  const first = await refresh();
+  const stable = store.getParsedSources(repositoryId).find(source => source.path === stablePath)!;
+  const database = new Database(store.dbPath);
+  const owner = JSON.stringify([stable.sourceId, stable.path]);
+  const oldParts = database.prepare("SELECT * FROM payload_parts WHERE kind='parsed' AND owner=? ORDER BY field,part").all(owner);
+  database.exec("CREATE TABLE protected_source (owner TEXT PRIMARY KEY)");
+  database.prepare("INSERT INTO protected_source(owner) VALUES(?)").run(owner);
+  try {
+    database.exec(`
+      CREATE TRIGGER reject_stable_insert BEFORE INSERT ON payload_parts WHEN NEW.kind='parsed' AND NEW.owner IN (SELECT owner FROM protected_source) BEGIN SELECT RAISE(ABORT,'stable payload insert'); END;
+      CREATE TRIGGER reject_stable_delete BEFORE DELETE ON payload_parts WHEN OLD.kind='parsed' AND OLD.owner IN (SELECT owner FROM protected_source) BEGIN SELECT RAISE(ABORT,'stable payload delete'); END;
+    `);
+    await appendFile(sourcePath, encode([call(repositoryPath, "appended"), output("appended")]));
+    const next = await refresh();
+    assert.notEqual(next, first);
+    assert.equal(store.getRefreshStats(repositoryId).sourcesParsed, 1);
+    assert.equal(store.getRefreshStats(repositoryId).sourcesReused, 1);
+    assert.equal(store.getRefreshStats(repositoryId).parsedRecords, 2);
+    assert.equal(store.getSnapshot(repositoryId).events.length, 3);
+    assert.deepEqual(database.prepare("SELECT * FROM payload_parts WHERE kind='parsed' AND owner=? ORDER BY field,part").all(owner), oldParts);
+    const incremental = store.getSnapshot(repositoryId);
+    database.exec("DROP TRIGGER reject_stable_insert; DROP TRIGGER reject_stable_delete;");
+    await refresh(true);
+    const complete = store.getSnapshot(repositoryId);
+    assert.deepEqual(complete.events, incremental.events);
+    assert.deepEqual(complete.mappings, incremental.mappings);
+    assert.deepEqual(complete.gaps, incremental.gaps);
+    assert.deepEqual(complete.sources, incremental.sources);
+    assert.deepEqual(buildCoverage(complete).summary, buildCoverage(incremental).summary);
+  } finally { database.close(); }
+}));
+
+test("桌面来源registry依赖改变后重建归属，不把同一正文快检复用到新cwd", async () => fixture(async ({ directory, repositoryPath, store, repositoryId }) => {
+  const sessionsPath = join(directory, "desktop");
+  const sessionPath = join(sessionsPath, "desktop-synthetic");
+  const sourcePath = join(sessionPath, "message", "cache.jsonl");
+  const registryPath = join(sessionPath, "checkpoints", "registry.json");
+  await mkdir(join(sessionPath, "message"), { recursive: true });
+  await mkdir(join(sessionPath, "checkpoints"));
+  await writeFile(sourcePath, encode([
+    { kind: "message", role: "assistant", id: "request", toolCalls: [{ id: "call", function: { name: "read_file", arguments: JSON.stringify({ path: "a.ts", start_line: 1, line_count: 2 }) } }] },
+    { kind: "message", role: "tool", id: "result", toolCallId: "call", extra: { toolName: "read_file", output: { content: "alpha\nbeta\n", start_line: 1, line_count: 2, success: true } } },
+  ]));
+  await writeFile(registryPath, JSON.stringify({ sessionId: "desktop-synthetic", cwd: repositoryPath }));
+  const refresh = async () => {
+    const job = store.createJob(repositoryId);
+    await refreshRepository(store, job.id, isolatedHistoryRoots({ "codeflicker-desktop": sessionsPath }));
+    assert.equal(store.getJob(job.id).status, "completed", store.getJob(job.id).error);
+    return store.getJob(job.id).version!;
+  };
+  const first = await refresh();
+  assert.equal(store.getSnapshot(repositoryId).sources.length, 1);
+  assert.equal(await refresh(), first);
+  assert.equal(store.getRefreshStats(repositoryId).sourcesParsed, 0);
+  await writeFile(registryPath, JSON.stringify({ sessionId: "desktop-synthetic", cwd: "/synthetic/outside" }));
+  assert.notEqual(await refresh(), first);
+  assert.equal(store.getRefreshStats(repositoryId).sourcesParsed, 1);
+  assert.equal(store.getSnapshot(repositoryId).sources.length, 0);
+  assert.equal(store.getSnapshot(repositoryId).events.length, 0);
+  assert.equal(store.getSnapshot(repositoryId, first).sources.length, 1);
+}));
+
+test("来源与仓库内容未变但路径归属变化时必须发布新版", async () => fixture(async ({ directory, repositoryPath, sourcePath, store, repositoryId, refresh }) => {
+  const alias = join(directory, "history-file-alias");
+  const outside = join(directory, "outside.ts");
+  await writeFile(outside, "alpha\nbeta\n");
+  await symlink(join(repositoryPath, "a.ts"), alias);
+  await writeFile(sourcePath, encode([meta(repositoryPath), call(repositoryPath, "alias", `cat '${alias}'`), output("alias")]));
+  const first = await refresh();
+  const before = store.getSnapshot(repositoryId);
+  assert.equal(before.events.length, 1);
+  assert.equal(before.events[0]!.path, "a.ts");
+  await rm(alias);
+  await symlink(outside, alias);
+  assert.notEqual(await refresh(), first);
+  const after = store.getSnapshot(repositoryId);
+  assert.equal(store.getRefreshStats(repositoryId).sourcesParsed, 0);
+  assert.equal(after.baseline.hash, before.baseline.hash);
+  assert.equal(after.sources.length, 1);
+  assert.equal(after.events.length, 0);
+  assert.equal(store.getSnapshot(repositoryId, first).events.length, 1);
 }));
 
 test("原生 Agent 跨来源关系贯通来源列表与快照，重复刷新不增加调用且缓存保持原始元数据", async () => fixture(async ({ repositoryPath, history, sourcePath, store, repositoryId }) => {
@@ -225,6 +340,12 @@ test("截断、同大小替换和解析规则变化重算受影响来源", async
   await refresh();
   assert.equal(store.getRefreshStats(repositoryId).parsedRecords, 3);
   assert.equal(store.getSnapshot(repositoryId).events.length, 1);
+  const incompatible = new Database(store.dbPath);
+  incompatible.exec("UPDATE source_cache SET json=json_set(json,'$.value.cursor.format','obsolete-format')");
+  incompatible.close();
+  await refresh();
+  assert.equal(store.getRefreshStats(repositoryId).sourcesParsed, 1);
+  assert.equal(store.getRefreshStats(repositoryId).parsedRecords, 3, "格式游标失效不能被未变依赖快检覆盖");
 }));
 
 test("临时I/O失败不当来源缺失；清缓存失败仍保留旧版和可复用缓存", async () => fixture(async ({ repositoryPath, history, sourcePath, store, repositoryId, refresh }) => {
@@ -462,7 +583,7 @@ test("按成功发布顺序保留每仓库最近两版，淘汰分块而保留�
 test("淘汰阶段失败回滚新版、分块、仓库指针及任务完成状态", async () => fixture(async ({ repositoryPath, sourcePath, store, repositoryId, refresh }) => {
   await writeFile(sourcePath, encode([meta(repositoryPath), call(repositoryPath, "first"), output("first")]));
   const first = await refresh();
-  const second = await refresh();
+  const second = await refresh(true);
   const database = new Database(store.dbPath);
   const beforeVersions = database.prepare("SELECT * FROM versions ORDER BY publication").all();
   const beforeParts = database.prepare("SELECT * FROM payload_parts ORDER BY kind,owner,field,part").all();
@@ -483,7 +604,7 @@ test("淘汰阶段失败回滚新版、分块、仓库指针及任务完成状�
     assert.throws(() => store.getSnapshot(repositoryId, "failed-third"), error => error instanceof StoreError && error.code === "VERSION_NOT_FOUND");
     database.exec("DROP TRIGGER reject_prune");
   } finally { database.close(); }
-  const third = await refresh();
+  const third = await refresh(true);
   assert.equal(store.getSnapshot(repositoryId).version, third);
   assert.throws(() => store.getSnapshot(repositoryId, first), error => error instanceof StoreError && error.code === "VERSION_NOT_FOUND");
   assert.equal(store.getSnapshot(repositoryId, second).events.length, 1);

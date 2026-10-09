@@ -15,7 +15,7 @@ import { bodyText, coverageQuery, emptyBody, eventsQuery, integer, relativePath,
 import { contentHash, readCurrentFile, readEvidence } from "./service/files.js";
 import { acquireLock, dataHome, removeInstance, writeInstance } from "./service/runtime.js";
 import { SessionStore } from "./sessions/store.js";
-import { queryBoolean, sessionMessageQuery, sessionQuery, sessionRefreshOptions } from "./service/session-input.js";
+import { queryBoolean, sessionMessageQuery, sessionProfileQuery, sessionQuery, sessionRefreshOptions, sessionTimelineQuery } from "./service/session-input.js";
 import { textValue } from "./service/input.js";
 import { clientIds } from "./clients.js";
 import type { Client } from "./contracts.js";
@@ -122,7 +122,7 @@ export async function startService(options: ServiceOptions = {}) {
     });
     registerPreferenceRoutes(app, home);
     app.get<{ Querystring: Record<string, unknown> }>("/api/v1/status", async request => ({ instance, version: VERSION, repositories: index.listRepositories(), jobs: index.listJobs(),
-      sessions: queryBoolean(request.query.summary, "summary") ? library.statusSummary() : library.status(), indexMaintenance }));
+      sessions: queryBoolean(request.query.summary, "summary") ? library.statusSummary() : library.status(), indexMaintenance, indexReclaim: worker.reclaimStatus }));
     app.post("/api/v1/stop", async (request, reply) => {
       emptyBody(request.body);
       reply.send({ stopping: true });
@@ -160,11 +160,10 @@ export async function startService(options: ServiceOptions = {}) {
       return { target };
     });
     app.get<{ Params: { id: string }; Querystring: Query }>("/api/v1/sessions/:id/messages", async request => library.messages(request.params.id, sessionMessageQuery(request.query)));
-    app.get<{ Params: { id: string }; Querystring: Query }>("/api/v1/sessions/:id/timeline", async request => library.timeline(request.params.id, textValue(request.query.version, "version")));
-    app.get<{ Params: { id: string }; Querystring: Query }>("/api/v1/sessions/:id/profile", async request => library.profile(request.params.id, {
-      ...sessionQuery(request.query), includeChildren: queryBoolean(request.query.includeChildren, "includeChildren"),
-    }));
+    app.get<{ Params: { id: string }; Querystring: Query }>("/api/v1/sessions/:id/timeline", async request => library.timeline(request.params.id, sessionTimelineQuery(request.query)));
+    app.get<{ Params: { id: string }; Querystring: Query }>("/api/v1/sessions/:id/profile", async request => library.profile(request.params.id, sessionProfileQuery(request.query)));
     app.post("/api/v1/sessions/refresh", async request => ({ job: worker.refreshSessions(false, sessionRefreshOptions(request.body)) }));
+    app.post("/api/v1/sessions/auto-refresh", async request => { emptyBody(request.body); return { job: worker.autoRefreshSessions() }; });
     registerResourceRoutes(app, resources);
     app.delete("/api/v1/sessions/cache", async request => { emptyBody(request.body); return { job: worker.refreshSessions(true) }; });
     const snapshotFor = (id: string, query: CoverageQuery) => index.getSnapshot(id, query.version);
@@ -174,7 +173,13 @@ export async function startService(options: ServiceOptions = {}) {
     });
     app.get<{ Params: RepositoryParams; Querystring: Query }>(`${base}/coverage`, async (request) => {
       const query = coverageQuery(request.query);
-      return buildCoverage(snapshotFor(request.params.id, query), filtersOf(query));
+      const result = buildCoverage(snapshotFor(request.params.id, query), filtersOf(query));
+      return queryBoolean(request.query.summary, "summary") ? { ...result, gaps: [], gapCount: result.gaps.length } : result;
+    });
+    app.get<{ Params: RepositoryParams; Querystring: Query }>(`${base}/coverage/gaps`, async request => {
+      const query = coverageQuery(request.query);
+      const result = buildCoverage(snapshotFor(request.params.id, query), filtersOf(query));
+      return { version: result.version, gaps: result.gaps };
     });
     app.get<{ Params: RepositoryParams; Querystring: Query }>(`${base}/hotspots`, async (request) => {
       const query = coverageQuery(request.query);
@@ -250,6 +255,10 @@ export async function startService(options: ServiceOptions = {}) {
       emptyBody(request.body);
       index.getRepository(request.params.id);
       return { job: worker.refresh(request.params.id) };
+    });
+    app.post<{ Params: RepositoryParams }>(`${base}/auto-refresh`, async request => {
+      emptyBody(request.body);
+      return { job: worker.autoRefreshRepository(request.params.id) };
     });
     app.delete<{ Params: RepositoryParams }>(`${base}/cache`, async (request) => {
       emptyBody(request.body);

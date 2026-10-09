@@ -9,19 +9,11 @@ import { DiagnosticError } from "../i18n/diagnostics.js";
 import { INDEX_SCHEMA_VERSION } from "./schema.js";
 import { prepareSearchIndex } from "../sessions/search-index.js";
 
-const GiB = 1024 ** 3;
-const day = 24 * 60 * 60 * 1000;
 const activityPath = (home: string) => join(home, "index-maintenance-active.json");
 const successPath = (home: string) => join(home, "index-maintenance.json");
 interface Activity { pid: number; nonce: string; startedAt: string; phase?: "validating" | "compacting" | "verifying" }
 export interface MaintenanceStatistics { pageSize: number; pageCount: number; freePages: number }
 
-/** 只有实际启动会调用；阈值相等时满足条件，未来时间也处于冷却期。 */
-export function maintenanceDecision(statistics: MaintenanceStatistics, now: number, lastSuccess?: string): "threshold" | "cooldown" | "compact" {
-  if (statistics.freePages * statistics.pageSize < GiB || !statistics.pageCount || statistics.freePages / statistics.pageCount < 0.2) return "threshold";
-  const previous = lastSuccess ? Date.parse(lastSuccess) : NaN;
-  return Number.isFinite(previous) && now - previous < day ? "cooldown" : "compact";
-}
 
 function statistics(database: Database.Database): MaintenanceStatistics {
   return { pageSize: database.pragma("page_size", { simple: true }) as number,
@@ -93,8 +85,8 @@ export async function activeIndexMaintenance(home: string, expectedPid?: number)
 interface MaintenanceOptions {
   now?: number;
   availableBytes?: (path: string) => Promise<number>;
-  /** 隔离测试可直接核验小库的整理步骤；产品启动仍只调用标准阈值。 */
-  decision?: typeof maintenanceDecision;
+  /** 隔离测试可直接核验小库整理；产品仅在旧库需要转换时执行全库整理。 */
+  decision?: (statistics: MaintenanceStatistics, now: number, lastSuccess?: string) => "threshold" | "cooldown" | "compact";
 }
 
 /** 生命周期锁已持有，且任何 store、查询和 Worker 连接尚未打开。 */
@@ -110,7 +102,10 @@ export async function compactIndexAtStartup(home: string, options: MaintenanceOp
     let lastSuccess: string | undefined;
     try { lastSuccess = (JSON.parse(await readFile(successPath(home), "utf8")) as { completedAt?: string }).completedAt; }
     catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") return result("error", "failed", { ...values, details: String(error) }); }
-    const decision = (options.decision ?? maintenanceDecision)(before, options.now ?? Date.now(), lastSuccess);
+    const mode = database.pragma("auto_vacuum", { simple: true }) as number;
+    // NONE 库只转换一次；已支持增量回收的库不再因重启执行整库整理。
+    const decision = options.decision ? options.decision(before, options.now ?? Date.now(), lastSuccess)
+      : mode === 0 ? "compact" : "threshold";
     if (decision !== "compact") return result(decision, "skipped", { ...values, lastSuccess });
     const available = options.availableBytes ?? (async (directory: string) => { const volume = await statfs(directory); return volume.bavail * volume.bsize; });
     // VACUUM 的工作数据库及回写日志至多需要约两倍主库空间；两处卷均保守预检。
@@ -129,6 +124,7 @@ export async function compactIndexAtStartup(home: string, options: MaintenanceOp
     } catch (error) { throw invalidIndex(error); }
     const previous = fingerprint(database);
     await atomicJson(activityPath(home), { ...activity, phase: "compacting" });
+    database.pragma("auto_vacuum = INCREMENTAL");
     database.exec("VACUUM");
     await atomicJson(activityPath(home), { ...activity, phase: "verifying" });
     if (fingerprint(database) !== previous) throw new DiagnosticError("整理后的索引内容不一致，服务启动已停止", { key: "diagnostics.index.maintenance.inconsistent" });
@@ -143,4 +139,29 @@ export async function compactIndexAtStartup(home: string, options: MaintenanceOp
     database.close();
     if (active) await rm(activityPath(home), { force: true });
   }
+}
+
+/** 仅分析 Worker 空闲时调用；有界写锁和非阻塞 checkpoint 不等待前台读者。 */
+export function reclaimIndexBatch(path: string, pageLimit = 256): IndexMaintenanceResult {
+  const database = new Database(path, { fileMustExist: true, timeout: 0 });
+  try {
+    if (database.pragma("user_version", { simple: true }) !== INDEX_SCHEMA_VERSION) return result("unsupportedSchema");
+    if (database.pragma("auto_vacuum", { simple: true }) !== 2) return { ...result("unsupportedSchema"), messageDescriptor: { key: "diagnostics.index.maintenance.reclaimUnavailable" } };
+    const before = statistics(database);
+    const values = { beforeBytes: before.pageCount * before.pageSize, freeBytes: before.freePages * before.pageSize };
+    if (before.freePages) {
+      const pages = Math.min(before.freePages, Math.max(1, Math.min(256, Math.floor(pageLimit))));
+      // exec 消耗 PRAGMA 的全部步进结果，不能只读取第一行而只回收一个页。
+      database.exec(`PRAGMA incremental_vacuum(${pages})`);
+    }
+    const after = statistics(database);
+    database.pragma("wal_checkpoint(PASSIVE)");
+    // timeout=0；尚有读事务时 TRUNCATE 安全返回 busy，下一批再尝试。
+    database.pragma("wal_checkpoint(TRUNCATE)");
+    return before.freePages ? { ...result("completed", "completed", { ...values, afterBytes: after.pageCount * after.pageSize }), messageDescriptor: { key: "diagnostics.index.maintenance.reclaimed" } }
+      : result("threshold", "skipped", values);
+  } catch (error) {
+    const busy = ["SQLITE_BUSY", "SQLITE_LOCKED"].includes((error as { code?: string }).code ?? "");
+    return result(busy ? "busy" : "error", busy ? "skipped" : "failed", { details: String(error) });
+  } finally { database.close(); }
 }

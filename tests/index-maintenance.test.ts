@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawn } from "node:child_process";
 import test from "node:test";
-import { compactIndexAtStartup, activeIndexMaintenance, maintenanceDecision } from "../src/index/maintenance.js";
+import { compactIndexAtStartup, activeIndexMaintenance, reclaimIndexBatch } from "../src/index/maintenance.js";
 import { AnalysisStore } from "../src/index/store.js";
 import { SessionStore } from "../src/sessions/store.js";
 import { acquireLock, apiRequest } from "../src/service/runtime.js";
@@ -13,17 +13,6 @@ import { startService } from "../src/server.js";
 import type { StatusResponse } from "../src/contracts.js";
 import { isolatedHistoryRoots } from "./helpers/history-roots.js";
 import { DiagnosticError } from "../src/i18n/diagnostics.js";
-
-test("启动整理阈值包含相等边界，成功冷却和未来时间不会误触发", () => {
-  const size = { pageSize: 4096, pageCount: 1_310_720, freePages: 262_144 };
-  const now = Date.parse("2026-01-03T00:00:00Z");
-  assert.equal(maintenanceDecision(size, now), "compact");
-  assert.equal(maintenanceDecision({ ...size, freePages: size.freePages - 1 }, now), "threshold");
-  assert.equal(maintenanceDecision({ ...size, pageCount: size.pageCount + 1 }, now), "threshold");
-  assert.equal(maintenanceDecision(size, now, "2026-01-02T00:00:00Z"), "compact");
-  assert.equal(maintenanceDecision(size, now, "2026-01-02T00:00:00.001Z"), "cooldown");
-  assert.equal(maintenanceDecision(size, now, "2026-01-04T00:00:00Z"), "cooldown");
-});
 
 async function fixture(run: (home: string, path: string) => Promise<void>): Promise<void> {
   const home = await mkdtemp(join(tmpdir(), "manor-maintenance-"));
@@ -74,6 +63,16 @@ test("真实 VACUUM 保留行号空洞、完整正文、FTS 中文结果和其�
   const second = await compactIndexAtStartup(home);
   assert.equal(second.reason, "threshold");
   assert.ok(!(await readdir(home)).some(name => name.includes(".bak") || name.endsWith(".tmp") || name.endsWith("-active.json")));
+}));
+
+test("分批回收保留非连续消息键、正文和中文 FTS 结果", async () => fixture(async (_home, path) => {
+  const before = rows(path);
+  for (let count = 0; count < 50; count++) {
+    const response = reclaimIndexBatch(path);
+    assert.notEqual(response.status, "failed", response.details);
+    if (response.reason === "threshold") break;
+  }
+  assert.deepEqual(rows(path), before);
 }));
 
 test("磁盘不足、探测错误和维护竞争不改变正文或成功时间", async () => fixture(async (home, path) => {

@@ -12,6 +12,9 @@ export interface SessionMessage {
   turnId: string;
   kind: MessageKind;
   text: string;
+  /** 有界查询的正文预览；完整正文仍按消息身份读取。 */
+  textLength?: number;
+  textTruncated?: boolean;
   /** 仅产品生成的正文附带描述，原始会话正文保持原样。 */
   textDescriptor?: MessageDescriptor;
   occurredAt?: string;
@@ -35,8 +38,16 @@ export interface SessionMessage {
   contextEvidence?: "client_metadata" | "wrapper";
 }
 /** 总览只返回定位和显示所需元信息，不加载正文。 */
-export type SessionTimelineEvent = Pick<SessionMessage, "id" | "sessionId" | "ordinal" | "turnId" | "kind" | "occurredAt" | "model" | "callId" | "tool" | "status" | "durationMs" | "contextSource" | "copied"> & { usage?: boolean };
-export interface SessionTimelineResult { version: string; events: SessionTimelineEvent[] }
+export type SessionTimelineEvent = Pick<SessionMessage, "id" | "sessionId" | "ordinal" | "turnId" | "kind" | "occurredAt" | "model" | "callId" | "tool" | "status" | "durationMs" | "contextSource" | "copied"> & { usage?: boolean; turnPosition?: number; turnOffset?: number; turnCount?: number };
+export interface SessionTimelineProjection { totalTurns: number; timeStart?: number; timeEnd?: number; missingTime: number; firstOrdinal?: number; lastOrdinal?: number }
+export interface SessionTimelineQuery { version?: string; maxEvents?: number; messageId?: string }
+export interface SessionTimelineResult {
+  version: string;
+  projection?: SessionTimelineProjection;
+  events: (SessionTimelineEvent & { count?: number; rangeStartOrdinal?: number; rangeEndOrdinal?: number })[];
+  total?: number;
+  aggregated?: boolean;
+}
 export interface SessionRequestBoundary {
   occurredAt?: string;
   recordLine: number;
@@ -77,6 +88,7 @@ export interface SessionUsage {
   requestMessageIds?: string[];
   timing?: SessionRequestTiming;
 }
+export type SessionProfileStep = SessionUsage & { sessionId: string; branchIds?: string[]; currentBranch?: boolean };
 export interface SessionSummary {
   id: string;
   client: Client;
@@ -137,6 +149,10 @@ export interface SessionMessageQuery extends SessionQuery {
   resourceKind?: "mcp" | "skill_call" | "skill_read";
   resourceName?: string;
   resourceServer?: string;
+  /** 仅限制所选轮次正文；轮次目录与计数保持完整。 */
+  messageLimit?: number;
+  messageOffset?: number;
+  maxTextChars?: number;
 }
 export type SessionCheckMode = "quick" | "full";
 export interface SessionRefreshOptions { client?: Client; mode?: SessionCheckMode }
@@ -195,6 +211,14 @@ export interface SessionMessageResult {
   totalTurns?: number;
   turns?: { id: string; position: number; messageCount: number }[];
   focusMessageId?: string;
+  messageOffset?: number;
+  messageLimit?: number;
+  hasMoreMessages?: boolean;
+  /** 有界正文的配对以完整阅读范围确认，伙伴预览只补齐本页相关节点。 */
+  toolPairs?: { callMessageId: string; resultMessageId: string }[];
+  relatedMessages?: SessionMessage[];
+  /** 当前轮次范围的完整请求集合，不因正文分页而截断。 */
+  usages?: SessionProfileStep[];
 }
 export interface SessionSearchHit {
   session: SessionSummary;
@@ -217,6 +241,12 @@ export interface SessionGroupedSearchResult {
 export interface SessionTurnDirectory {
   version: string; turns: { id: string; position: number; question: string }[]; total: number; page: number; pageSize: number;
 }
+export interface SessionProfileQuery extends SessionQuery {
+  includeChildren?: boolean;
+  summary?: boolean;
+  stepOffset?: number;
+  stepLimit?: number;
+}
 export interface SessionProfile {
   version: string;
   scope: "self" | "tree";
@@ -227,13 +257,17 @@ export interface SessionProfile {
   models: { model: string; count: number }[];
   usage: { requests: number; inputTokens: number | null; outputTokens: number | null; cachedInputTokens: number | null;
     cacheWriteTokens: number | null; reasoningOutputTokens: number | null; cacheReadRatio: number | null;
-    peakInputTokens: number | null; peakContextTokens: number | null; inputRecordedRequests: number; cacheRecordedRequests: number };
+    peakInputTokens: number | null; peakContextTokens: number | null; inputRecordedRequests: number; cacheRecordedRequests: number;
+    recordedRequests?: Partial<Record<"inputTokens" | "outputTokens" | "cachedInputTokens" | "cacheWriteTokens" | "reasoningOutputTokens", number>> };
+  peakInputRequest?: Pick<SessionUsage, "id" | "messageId" | "turnId"> & { sessionId: string };
   estimate: { method: string; methodDescriptor?: MessageDescriptor; total: number; byKind: { kind: MessageKind; tokens: number }[] };
   tools: { name: string; calls: number; success: number; failure: number; unknown: number; durationMs: number | null }[];
   resources: (NonNullable<SessionMessage["resource"]> & { count: number })[];
   compressions: number;
   children: SessionSummary[];
   outputSpeed?: RequestSpeedSummary;
-  steps: (SessionUsage & { sessionId: string; branchIds?: string[]; currentBranch?: boolean })[];
+  steps: SessionProfileStep[];
+  stepsTotal?: number;
+  stepsOffset?: number;
   gaps: Gap[];
 }

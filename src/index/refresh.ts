@@ -1,14 +1,16 @@
 import { errorDescriptor } from "../i18n/diagnostics.js";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { realpath } from "node:fs/promises";
 import { isAbsolute, relative, resolve, sep } from "node:path";
 import type { AnalysisSnapshot, Gap, HistoryEvent, ParsedSource, SourceSummary } from "../contracts.js";
-import { eventFilePaths, getRepository, hashContent, mappingCacheKey, matchEvent, scanRepository } from "../analysis/index.js";
-import { associateSource, associationMetadata, canonicalPath, discoverSources, historicalWorktrees, normalizeHistoryPath, parseSource, resolveSharedHistory } from "../history/index.js";
+import { eventFilePaths, getRepository, hashContent, mappingCacheKey, MATCHING_RULE_VERSION, matchEvent, scanRepository } from "../analysis/index.js";
+import { associateSource, associationMetadata, canonicalPath, createSourceAssociationCache, discoverSources, historicalWorktrees, normalizeHistoryPath, parseSource, resolveSharedHistory } from "../history/index.js";
 import type { DiscoverRoots, ParsedHistorySource, SourceLocation } from "../history/index.js";
 import { sourceLocationKey } from "../history/types.js";
 import { AnalysisStore } from "./store.js";
 import type { RefreshStats } from "./store.js";
+import { sourceQuickStamp } from "../history/quick-check.js";
+import { PARSER_RULE_VERSION } from "../version.js";
 
 const missing = (error: unknown) => (error as NodeJS.ErrnoException).code === "ENOENT";
 
@@ -45,12 +47,13 @@ export async function refreshRepository(store: AnalysisStore, jobId: string, roo
   store.updateJob(jobId, { status: "running", phase: "盘点当前仓库", phaseDescriptor: { key: "diagnostics.index.refresh.m001" }, progress: 0.05, startedAt: new Date().toISOString() });
   try {
     const baseline = await scanRepository(repository.path);
+    const discoveryCache = clearCache ? [] : store.getDiscoveryCache(repository.id);
     let locations: SourceLocation[];
-    try { locations = await discoverSources(roots); }
+    try { locations = await discoverSources(roots, { cachedSources: discoveryCache }); }
     catch (error) {
       // 发现与读取之间来源被移走时重新盘点一次；其他 I/O 错误不视为缺失。
       if (!missing(error)) throw error;
-      locations = await discoverSources(roots);
+      locations = await discoverSources(roots, { cachedSources: discoveryCache });
     }
     const tracked = store.getTrackedSources(repository.id);
     const cached = clearCache ? [] : store.getParsedSourceLocations(repository.id);
@@ -61,15 +64,54 @@ export async function refreshRepository(store: AnalysisStore, jobId: string, roo
     const parsedPaths = new Set<string>();
     const metadataPaths = new Set<string>();
     const gaps: Gap[] = [];
-    const stats: RefreshStats = { sourcesParsed: 0, parsedRecords: 0, mappingsComputed: 0, mappingsReused: 0 };
+    const stats: RefreshStats = { sourcesParsed: 0, parsedRecords: 0, mappingsComputed: 0, mappingsReused: 0, sourcesReused: 0 };
+    const reusedParsed = new Set<string>();
     const cwdAssociation = new Map<string, boolean>();
+    const associationCache = createSourceAssociationCache();
     const monitored = new Set(tracked.map((source) => source.sourceId));
 
-    async function retain(source: ParsedHistorySource): Promise<void> {
+    async function retain(source: ParsedHistorySource): Promise<ParsedHistorySource> {
       if ((source.cursor as { associationOnly?: boolean } | undefined)?.associationOnly) {
         parsed.push(source); metadataPaths.add(sourceLocationKey(source));
-      } else if (manual.has(source.sourceId) || monitored.has(source.sourceId) || (await associateSource(source, baseline)).associated) parsed.push(source);
-      else { parsed.push(associationMetadata(source)); metadataPaths.add(sourceLocationKey(source)); }
+      } else if (manual.has(source.sourceId) || monitored.has(source.sourceId) || (await associateSource(source, baseline, [], associationCache)).associated) parsed.push(source);
+      else { source = associationMetadata(source); parsed.push(source); metadataPaths.add(sourceLocationKey(source)); }
+      return source;
+    }
+
+    async function readSource(location: SourceLocation): Promise<ParsedHistorySource> {
+      const previous = byPath.get(sourceLocationKey(location)) ?? (location.sourceId ? byId.get(location.sourceId) : undefined);
+      const old = previous ? store.getParsedSource(repository.id, previous.sourceId, previous.path) as ParsedHistorySource | undefined : undefined;
+      const oldCursor = old?.cursor as { ruleVersion?: string; format?: string; quickStamp?: string; associationOnly?: boolean;
+        prefixHash?: string; pending?: unknown[]; recordEnds?: unknown[]; relationships?: unknown[] } | undefined;
+      const compatibleCursor = oldCursor?.ruleVersion === PARSER_RULE_VERSION && oldCursor.format === location.format
+        && typeof oldCursor.prefixHash === "string" && Array.isArray(oldCursor.pending) && Array.isArray(oldCursor.recordEnds) && Array.isArray(oldCursor.relationships);
+      const before = await sourceQuickStamp(location);
+      let source: ParsedHistorySource;
+      if (!clearCache && old && compatibleCursor && before && before === oldCursor?.quickStamp
+        && (!location.discoveryQuickStamp || location.discoveryQuickStamp === before)) {
+        source = old;
+        source.cursor = { ...oldCursor, parsedRecords: 0 } as ParsedHistorySource["cursor"];
+        stats.sourcesReused = (stats.sourcesReused ?? 0) + 1;
+      } else {
+        source = await parseSource(location.path, location.client, old, location.format,
+          { location, allowAssociationMetadata: !old || (!manual.has(old.sourceId) && !monitored.has(old.sourceId)) });
+        stats.sourcesParsed++;
+        stats.parsedRecords += (source.cursor as { parsedRecords?: number } | undefined)?.parsedRecords ?? 0;
+      }
+      const after = before && await sourceQuickStamp(location);
+      if (source.cursor && typeof source.cursor === "object" && !Array.isArray(source.cursor)) {
+        source.cursor = { ...source.cursor, quickStamp: after === before ? before : undefined } as ParsedHistorySource["cursor"];
+      }
+      const retained = await retain(source);
+      // 同一内容和同一解析依赖的游标分块保持不变；快检标记、计数只更新小头部。
+      if (!clearCache && old && compatibleCursor && source.hash === old.hash
+        && source.sourceId === old.sourceId && source.path === old.path && source.client === old.client && source.format === old.format
+        && source.selector === old.selector && source.sessionId === old.sessionId && source.cwd === old.cwd
+        && source.parentSessionId === old.parentSessionId
+        && Boolean((retained.cursor as { associationOnly?: boolean } | undefined)?.associationOnly) === Boolean(oldCursor?.associationOnly)) {
+        reusedParsed.add(JSON.stringify([source.sourceId, source.path]));
+      }
+      return retained;
     }
 
     async function possible(location: SourceLocation): Promise<boolean> {
@@ -93,14 +135,7 @@ export async function refreshRepository(store: AnalysisStore, jobId: string, roo
       if (parsedPaths.has(sourceLocationKey(location))) return;
       parsedPaths.add(sourceLocationKey(location));
       try {
-        const previous = byPath.get(sourceLocationKey(location)) ?? (location.sourceId ? byId.get(location.sourceId) : undefined);
-        const old = previous ? store.getParsedSource(repository.id, previous.sourceId, previous.path) : undefined;
-        const source = await parseSource(location.path, location.client, old, location.format,
-          { location, allowAssociationMetadata: !old || (!manual.has(old.sourceId) && !monitored.has(old.sourceId)) });
-        await retain(source);
-        stats.sourcesParsed++;
-        const cursor = source.cursor as { parsedRecords?: number } | undefined;
-        stats.parsedRecords += cursor?.parsedRecords ?? 0;
+        await readSource(location);
       } catch (error) {
         if (!missing(error)) throw error;
         const known = byPath.get(sourceLocationKey(location)) ?? (location.sourceId ? byId.get(location.sourceId) : undefined);
@@ -109,7 +144,10 @@ export async function refreshRepository(store: AnalysisStore, jobId: string, roo
     }
 
     store.updateJob(jobId, { phase: "解析关联历史", phaseDescriptor: { key: "diagnostics.index.refresh.m003" }, progress: 0.2 });
-    for (const location of locations) if (await possible(location)) await parse(location);
+    for (const [index, location] of locations.entries()) {
+      if (await possible(location)) await parse(location);
+      if ((index + 1) % 32 === 0 || index === locations.length - 1) store.updateJob(jobId, { progress: 0.2 + 0.35 * (index + 1) / locations.length });
+    }
     const availableIds = new Set(parsed.map((source) => source.sourceId));
     for (const old of tracked) {
       if (availableIds.has(old.sourceId)) continue;
@@ -121,12 +159,8 @@ export async function refreshRepository(store: AnalysisStore, jobId: string, roo
       if (gaps.some((gap) => gap.sourceId === old.sourceId && gap.kind === "source_missing")) continue;
       try {
         // 已移出发现目录但仍在原路径的来源可续读；真正 ENOENT 才从新版排除。
-        const previous = byPath.get(sourceLocationKey(old));
-        const source = await parseSource(old.path, old.client, previous ? store.getParsedSource(repository.id, previous.sourceId, previous.path) : undefined, old.format, { location: old });
-        await retain(source);
+        const source = await readSource(old);
         availableIds.add(source.sourceId);
-        stats.sourcesParsed++;
-        stats.parsedRecords += (source.cursor as { parsedRecords?: number } | undefined)?.parsedRecords ?? 0;
       } catch (error) {
         if (!missing(error)) throw error;
         gaps.push({ kind: "source_missing", sourceId: old.sourceId, message: "已关联来源缺失；新版已排除该来源，可对照上一版", messageDescriptor: { key: "diagnostics.index.refresh.m005" } });
@@ -154,7 +188,7 @@ export async function refreshRepository(store: AnalysisStore, jobId: string, roo
     const required = new Set<string>();
     for (const source of parsed) {
       const relevant = grouped.get(source.sourceId) ?? [];
-      if (manual.has(source.sourceId) || (await associateSource({ ...source, events: relevant }, baseline, worktrees)).associated) required.add(source.sourceId);
+      if (manual.has(source.sourceId) || (await associateSource({ ...source, events: relevant }, baseline, worktrees, associationCache)).associated) required.add(source.sourceId);
     }
     for (;;) {
       const size = required.size;
@@ -170,7 +204,14 @@ export async function refreshRepository(store: AnalysisStore, jobId: string, roo
     for (let index = 0; index < parsed.length; index++) {
       const source = parsed[index]!;
       if (metadataPaths.has(sourceLocationKey(source)) && required.has(source.sourceId)) {
+        const before = await sourceQuickStamp(source);
         parsed[index] = await parseSource(source.path, source.client, undefined, source.format, { location: source });
+        reusedParsed.delete(JSON.stringify([source.sourceId, source.path]));
+        const after = before && await sourceQuickStamp(source);
+        const cursor = parsed[index]!.cursor;
+        if (cursor && typeof cursor === "object" && !Array.isArray(cursor)) {
+          parsed[index]!.cursor = { ...cursor, quickStamp: after === before ? before : undefined } as ParsedHistorySource["cursor"];
+        }
         metadataPaths.delete(sourceLocationKey(source));
         hydrated = true;
         stats.parsedRecords += (parsed[index]!.cursor as { parsedRecords?: number } | undefined)?.parsedRecords ?? 0;
@@ -192,7 +233,7 @@ export async function refreshRepository(store: AnalysisStore, jobId: string, roo
       const relevant = grouped.get(source.sourceId) ?? [];
       // 手动关联只补无 cwd 的相对路径，不覆盖已有工作目录或外部绝对路径。
       const constrained = manual.has(source.sourceId) ? relevant.map((event) => ({ ...event, cwd: event.cwd ?? source.cwd ?? repository.path })) : relevant;
-      const association = await associateSource({ ...source, events: constrained }, baseline, worktrees);
+      const association = await associateSource({ ...source, events: constrained }, baseline, worktrees, associationCache);
       if (association.associated || manual.has(source.sourceId)) {
         associated.add(source.sourceId);
         sources.push(summary(source, manual.has(source.sourceId) ? "manual" : "automatic"));
@@ -216,12 +257,23 @@ export async function refreshRepository(store: AnalysisStore, jobId: string, roo
     const mappingEntries: { key: string; mapping: ReturnType<typeof matchEvent> }[] = [];
     const files = new Map(baseline.files.map((file) => [file.path, file]));
     const selectedEvents = [...events.values()];
+    // 归属还受当前路径、worktree 和关系证明影响；正文哈希相同也不能略过这些派生结果。
+    const resolvedEventsHash = createHash("sha256");
+    for (const event of selectedEvents) resolvedEventsHash.update(JSON.stringify([event.id, event.client, event.sessionId, event.parentSessionId,
+      event.cwd, event.path, event.kind, event.status, event.reason, event.reasonDescriptor,
+      event.fragments.map(fragment => [fragment.kind, fragment.path, fragment.historicalStart, fragment.completeLines]), event.sources]));
+    stats.resultFingerprint = hashContent(JSON.stringify([PARSER_RULE_VERSION, MATCHING_RULE_VERSION,
+      baseline.hash, baseline.git, baseline.excluded, describedSources.map(source => summary(source)), sources, unassociated,
+      resolvedEventsHash.digest("hex"), [...manual].sort(), [...new Map(gaps.map(gap => [JSON.stringify(gap), gap])).values()]]));
+    const reusedVersion = !clearCache && repository.version
+      && store.getRefreshStats(repository.id, repository.version).resultFingerprint === stats.resultFingerprint ? repository.version : undefined;
     store.updateJob(jobId, { phase: "对应当前源码", phaseDescriptor: { key: "diagnostics.index.refresh.m006" }, progress: 0.6 });
     for (const event of selectedEvents) {
       if (event.kind !== "read" && event.kind !== "edit") continue;
       for (const path of eventFilePaths(event, baseline.repository)) {
         const file = files.get(path);
         if (!file) continue;
+        if (reusedVersion) { stats.mappingsReused++; continue; }
         const key = mappingCacheKey(event, file);
         const reused = clearCache ? undefined : store.getMapping(repository.id, key);
         const mapping = reused ?? matchEvent(event, file);
@@ -230,7 +282,7 @@ export async function refreshRepository(store: AnalysisStore, jobId: string, roo
         mappingEntries.push({ key, mapping });
       }
     }
-    const version = randomUUID();
+    const version = reusedVersion ?? randomUUID();
     const publishedRepository = { ...repository, version, stale: false };
     baseline.repository = { ...publishedRepository };
     const snapshot: AnalysisSnapshot = { repository: publishedRepository, version, baseline,
@@ -238,7 +290,7 @@ export async function refreshRepository(store: AnalysisStore, jobId: string, roo
       gaps: [...new Map(gaps.map((gap) => [JSON.stringify(gap), gap])).values()], createdAt: new Date().toISOString(), previousVersion: repository.version };
     store.updateJob(jobId, { phase: "发布完整结果", phaseDescriptor: { key: "diagnostics.index.refresh.m007" }, progress: 0.95 });
     store.publish({ snapshot, sources: { version, sources, unassociated, gaps: snapshot.gaps },
-      parsed, mappings: mappingEntries, stats, clearCache, jobId });
+      parsed, mappings: mappingEntries, stats, clearCache, jobId, reusedParsed, reusedVersion });
   } catch (error) {
     store.failJob(jobId, error instanceof Error ? error.message : String(error), errorDescriptor(error));
   }

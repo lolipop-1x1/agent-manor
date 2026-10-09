@@ -8,7 +8,7 @@ import { clientIds } from "../clients.js";
 import type { Client } from "../clients.js";
 import type { SourceLocation } from "../history/types.js";
 import type { ResourceEventStream, ResourceHistoryIdentity, ResourceUsageIdentity, ResourceUsageEvent, ResourceUsageQuery } from "../resource-contracts.js";
-import type { SessionGroupedSearchResult, SessionTurnDirectory, SessionIndexStatus, SessionJob, SessionListResult, SessionMessage, SessionMessageQuery, SessionMessageResult, SessionProfile, SessionQuery, SessionRefreshOptions, SessionSearchResult, SessionSink, SessionSourceMeta, SessionSummary, SessionTimelineEvent, SessionTimelineResult, SessionUsage } from "../session-contracts.js";
+import type { SessionGroupedSearchResult, SessionTurnDirectory, SessionIndexStatus, SessionJob, SessionListResult, SessionMessage, SessionMessageQuery, SessionMessageResult, SessionProfile, SessionProfileQuery, SessionQuery, SessionRefreshOptions, SessionSearchResult, SessionSink, SessionSourceMeta, SessionSummary, SessionTimelineEvent, SessionTimelineQuery, SessionTimelineResult, SessionUsage } from "../session-contracts.js";
 import { StoreError } from "../index/store.js";
 import { summarizeRequestSpeed } from "../session-speed.js";
 import { initializeIndexSchema } from "../index/schema.js";
@@ -22,6 +22,7 @@ interface MessageMetadataRow extends JsonRow {
   final: SessionMessage["final"] | null; call_id: string | null; copied: number | null;
 }
 interface MessageRow extends MessageMetadataRow { text: string }
+interface PreviewMessageRow extends MessageRow { text_length?: number; text_bytes?: number }
 interface RevisionRow extends JsonRow { id: string; path: string; fingerprint: string }
 type SqlValue = string | number;
 /** path 沿用 SQL 列名但表示来源缓存键；真实文件路径保存在 SessionSourceMeta.path。 */
@@ -44,6 +45,8 @@ const decodeMessageMetadata = (row: MessageMetadataRow): Omit<SessionMessage, "t
   ...(row.copied !== null ? { copied: Boolean(row.copied) } : {}),
 });
 const decodeMessage = (row: MessageRow): SessionMessage => ({ ...decodeMessageMetadata(row), text: row.text });
+const decodePreview = (row: PreviewMessageRow): SessionMessage => ({ ...decodeMessage(row), ...(row.text_length !== undefined
+  ? { textLength: row.text_length, textTruncated: row.text_bytes! > Buffer.byteLength(row.text, "utf8") } : {}) });
 const literal = (value: string) => `%${value.replace(/[\\%_]/g, "\\$&")}%`;
 const paging = (query: SessionQuery) => ({ page: Math.max(1, Math.floor(query.page ?? 1)), pageSize: Math.min(200, Math.max(1, Math.floor(query.pageSize ?? 50))) });
 const kindsOf = (query: SessionQuery) => (query.kinds?.length ? query.kinds : ["user", "assistant"])
@@ -53,6 +56,9 @@ const kindsOf = (query: SessionQuery) => (query.kinds?.length ? query.kinds : ["
 export class SessionStore {
   readonly dbPath: string;
   private readonly database: Database.Database;
+  private readonly profileSummaries = new Map<string, SessionProfile>();
+  private readonly revisionUsageCounts = new Map<string, number>();
+  private statusMetadata?: Pick<SessionIndexStatus, "version" | "sessionCount" | "sourceCount" | "projects">;
 
   constructor(dbPath: string) {
     this.dbPath = resolve(dbPath);
@@ -61,6 +67,16 @@ export class SessionStore {
     this.database.pragma("journal_mode = WAL");
     this.database.pragma("foreign_keys = ON");
     this.database.pragma("busy_timeout = 5000");
+    // SQLite 的文本 length 遇到 NUL 会提前结束，预览仍须明确保留完整正文的长度和截断状态。
+    this.database.function("session_text_length", { deterministic: true }, value => {
+      let count = 0;
+      for (const _character of String(value)) count += 1;
+      return count;
+    });
+    this.database.function("session_time_ms", { deterministic: true }, value => {
+      const time = typeof value === "string" ? Date.parse(value) : NaN;
+      return Number.isFinite(time) ? time : null;
+    });
     try {
       initializeIndexSchema(this.database, () => {
         this.database.exec(`
@@ -82,6 +98,7 @@ export class SessionStore {
         WHERE kind='tool_call' AND copied IS NOT 1;
       CREATE TABLE IF NOT EXISTS session_usage (revision TEXT NOT NULL REFERENCES session_revisions(id) ON DELETE CASCADE,
         id TEXT NOT NULL, message_id TEXT, turn_id TEXT, json TEXT NOT NULL, PRIMARY KEY(revision,id));
+      CREATE INDEX IF NOT EXISTS session_usage_order ON session_usage(revision);
       CREATE TABLE IF NOT EXISTS session_versions (id TEXT PRIMARY KEY, created_at TEXT NOT NULL, gaps TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS session_version_sources (version TEXT NOT NULL REFERENCES session_versions(id) ON DELETE CASCADE,
         path TEXT NOT NULL, revision TEXT NOT NULL REFERENCES session_revisions(id), PRIMARY KEY(version,path));
@@ -90,6 +107,8 @@ export class SessionStore {
       CREATE TABLE IF NOT EXISTS session_version_relations (version TEXT NOT NULL REFERENCES session_versions(id) ON DELETE CASCADE,
         child TEXT NOT NULL, parent TEXT NOT NULL, PRIMARY KEY(version,child));
       CREATE INDEX IF NOT EXISTS session_relation_parent ON session_version_relations(version,parent);
+      CREATE TABLE IF NOT EXISTS session_source_auxiliary_checks (path TEXT PRIMARY KEY, stamp TEXT NOT NULL, json TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS session_version_publication_inputs (version TEXT PRIMARY KEY REFERENCES session_versions(id) ON DELETE CASCADE, gaps TEXT NOT NULL);
     `);
         this.database.prepare("INSERT OR IGNORE INTO session_state(id,json) VALUES(1,?)").run(JSON.stringify({ stale: false }));
         initializeSearchIndex(this.database);
@@ -130,11 +149,16 @@ export class SessionStore {
   private indexStatus(state: Partial<SessionIndexStatus>): SessionIndexStatus {
     const latestJob = this.database.prepare("SELECT json FROM session_jobs ORDER BY created_at DESC,rowid DESC LIMIT 1").get() as JsonRow | undefined;
     const result: SessionIndexStatus = { ...state, stale: state.stale ?? false, sessionCount: 0, sourceCount: 0, gaps: state.gaps ?? [], projects: [] };
-    if (state.version) {
+    if (state.version && this.statusMetadata?.version === state.version) {
+      result.sessionCount = this.statusMetadata.sessionCount;
+      result.sourceCount = this.statusMetadata.sourceCount;
+      result.projects = [...this.statusMetadata.projects];
+    } else if (state.version) {
       result.sessionCount = (this.database.prepare("SELECT COUNT(*) AS count FROM session_version_sessions WHERE version=?").get(state.version) as { count: number }).count;
       result.sourceCount = (this.database.prepare("SELECT COUNT(*) AS count FROM session_version_sources WHERE version=?").get(state.version) as { count: number }).count;
       result.projects = (this.database.prepare(`SELECT DISTINCT r.project FROM session_version_sessions v JOIN session_revisions r ON r.id=v.revision
         WHERE v.version=? AND r.project IS NOT NULL ORDER BY r.project`).all(state.version) as { project: string }[]).map(row => row.project);
+      this.statusMetadata = { version: state.version, sessionCount: result.sessionCount, sourceCount: result.sourceCount, projects: [...result.projects] };
     }
     if (latestJob) result.job = decode(latestJob);
     return result;
@@ -187,6 +211,17 @@ export class SessionStore {
       quickFingerprint: quick_fingerprint ?? undefined, metadataFingerprint: metadata_fingerprint ?? undefined }));
   }
 
+  auxiliaryCheck(path: string, stamp: string): { fingerprint: string; limited: boolean } | undefined {
+    const row = this.database.prepare("SELECT json FROM session_source_auxiliary_checks WHERE path=? AND stamp=?").get(path, stamp) as JsonRow | undefined;
+    return row ? decode(row) : undefined;
+  }
+
+  saveAuxiliaryCheck(path: string, stamp: string, value: { fingerprint: string; limited: boolean }): void {
+    this.database.prepare(`INSERT INTO session_source_auxiliary_checks(path,stamp,json) VALUES(?,?,?)
+      ON CONFLICT(path) DO UPDATE SET stamp=excluded.stamp,json=excluded.json WHERE stamp IS NOT excluded.stamp OR json IS NOT excluded.json`)
+      .run(path, stamp, JSON.stringify(value));
+  }
+
   createRevision(path: string, fingerprint: string): { revision: string; sink: SessionSink; flush: () => void } {
     const revision = randomUUID();
     this.database.prepare("INSERT INTO session_revisions(id,path,fingerprint,json) VALUES(?,?,?,?)").run(revision, path, fingerprint, "{}");
@@ -236,17 +271,36 @@ export class SessionStore {
   publish(jobId: string, revisions: SessionRevision[], gaps: Gap[]): string {
     const version = randomUUID();
     const createdAt = new Date().toISOString();
+    const saveCheck = this.database.prepare(`UPDATE session_revisions SET source_location=?,quick_fingerprint=?,metadata_fingerprint=?
+      WHERE id=? AND (source_location IS NOT ? OR quick_fingerprint IS NOT ? OR metadata_fingerprint IS NOT ?)`);
+    const writeCheck = (item: SessionRevision) => {
+      const location = item.location ? JSON.stringify(item.location) : null;
+      const quick = item.quickFingerprint ?? null;
+      const metadata = item.metadataFingerprint ?? null;
+      saveCheck.run(location, quick, metadata, item.revision, location, quick, metadata);
+    };
+    const stateBefore = this.state();
+    const previousSources = new Map(this.cachedRevisions().map(item => [item.path, item.revision]));
+    const sameSources = stateBefore.version && previousSources.size === revisions.length
+      && revisions.every(item => previousSources.get(item.path) === item.revision);
+    // 单独保留外部缺口输入，区别来源固有缺口和本轮缺失说明；旧版本缺少记录时保守发布一次。
+    const previousInputs = stateBefore.version ? this.database.prepare("SELECT gaps FROM session_version_publication_inputs WHERE version=?")
+      .get(stateBefore.version) as { gaps: string } | undefined : undefined;
+    const sameExternalGaps = previousInputs?.gaps === JSON.stringify(gaps);
+    if (sameSources && sameExternalGaps) {
+      this.database.transaction(() => {
+        for (const item of revisions) writeCheck(item);
+        this.completeCheck(jobId, stateBefore.version!, createdAt, { ...stateBefore, stale: false });
+      })();
+      return stateBefore.version!;
+    }
     this.database.transaction(() => {
       this.database.prepare("INSERT INTO session_versions(id,created_at,gaps) VALUES(?,?,?)").run(version, createdAt, "[]");
+      this.database.prepare("INSERT INTO session_version_publication_inputs(version,gaps) VALUES(?,?)").run(version, JSON.stringify(gaps));
       const addSource = this.database.prepare("INSERT INTO session_version_sources(version,path,revision) VALUES(?,?,?)");
-      const saveCheck = this.database.prepare(`UPDATE session_revisions SET source_location=?,quick_fingerprint=?,metadata_fingerprint=?
-        WHERE id=? AND (source_location IS NOT ? OR quick_fingerprint IS NOT ? OR metadata_fingerprint IS NOT ?)`);
       for (const item of revisions) {
         addSource.run(version, item.path, item.revision);
-        const location = item.location ? JSON.stringify(item.location) : null;
-        const quick = item.quickFingerprint ?? null;
-        const metadata = item.metadataFingerprint ?? null;
-        saveCheck.run(location, quick, metadata, item.revision, location, quick, metadata);
+        writeCheck(item);
       }
       // 同一会话存在活动／归档副本时择完整且较新的副本，不重复统计。
       this.database.prepare(`INSERT INTO session_version_sessions(version,session_id,revision)
@@ -318,16 +372,21 @@ export class SessionStore {
       this.database.prepare("UPDATE session_versions SET gaps=? WHERE id=?").run(JSON.stringify(publishedGaps), version);
       const state = this.state();
       const previousVersion = state.version;
-      const job = this.getJob(jobId);
-      const checkedClients = job.client ? [job.client] : clientIds;
-      const clientChecks = new Map((state.clientChecks ?? []).map(check => [check.client, check]));
-      for (const client of checkedClients) clientChecks.set(client, { client, checkedAt: createdAt, mode: job.mode ?? "quick" });
-      this.saveState({ version, previousVersion, createdAt, stale: false, gaps: publishedGaps, clientChecks: [...clientChecks.values()] });
-      this.updateJob(jobId, { status: "complete", phase: "complete", phaseDescriptor: { key: "diagnostics.sessions.store.m008" }, progress: 1, version, finishedAt: createdAt });
+      this.completeCheck(jobId, version, createdAt, { version, previousVersion, createdAt, stale: false, gaps: publishedGaps, clientChecks: state.clientChecks });
       this.database.prepare("DELETE FROM session_versions WHERE id<>? AND id<>?").run(version, previousVersion ?? version);
       this.removeUnpublishedRevisions();
+      this.database.prepare("DELETE FROM session_source_auxiliary_checks WHERE path NOT IN (SELECT path FROM session_version_sources)").run();
     })();
     return version;
+  }
+
+  private completeCheck(jobId: string, version: string, checkedAt: string, state: Partial<SessionIndexStatus>): void {
+    const job = this.getJob(jobId);
+    const checkedClients = job.client ? [job.client] : clientIds;
+    const clientChecks = new Map((state.clientChecks ?? []).map(check => [check.client, check]));
+    for (const client of checkedClients) clientChecks.set(client, { client, checkedAt, mode: job.mode ?? "quick" });
+    this.saveState({ ...state, clientChecks: [...clientChecks.values()] });
+    this.updateJob(jobId, { status: "complete", phase: "complete", phaseDescriptor: { key: "diagnostics.sessions.store.m008" }, progress: 1, version, finishedAt: checkedAt });
   }
 
   private version(requested?: string): string {
@@ -522,9 +581,9 @@ export class SessionStore {
     return rows.map(row => this.summary(row, version));
   }
 
-  private readingScope(revision: string, session: SessionSummary, query: SessionMessageQuery) {
+  private readingBranch(session: SessionSummary, query: SessionMessageQuery) {
     let branch = "";
-    const values: SqlValue[] = [revision];
+    const values: SqlValue[] = [];
     if (query.branch && query.branch !== "all" && query.branch !== "current") {
       if (!session.branches?.some(item => item.id === query.branch)) throw new StoreError("INVALID_INPUT", "会话分支不存在", { key: "diagnostics.sessions.store.m012" });
       branch = " AND (json_extract(json,'$.branchIds') IS NULL OR EXISTS (SELECT 1 FROM json_each(session_messages.json,'$.branchIds') WHERE value=?))";
@@ -532,6 +591,12 @@ export class SessionStore {
     } else if (query.branch === "current" || !query.branch && query.mode === "brief") {
       branch = " AND COALESCE(json_extract(json,'$.currentBranch'),1)=1";
     }
+    return { branch, values };
+  }
+
+  private readingScope(revision: string, session: SessionSummary, query: SessionMessageQuery) {
+    const scope = this.readingBranch(session, query);
+    const branch = scope.branch, values: SqlValue[] = [revision, ...scope.values];
     if (query.mode !== "brief") return { values, cte: `WITH scoped AS MATERIALIZED (
       SELECT id,ordinal,CASE WHEN turn_id='' THEN 'unknown' ELSE turn_id END AS turn_id,kind,final FROM session_messages WHERE revision=?${branch}
     ), visible AS (SELECT * FROM scoped)` };
@@ -590,8 +655,10 @@ export class SessionStore {
     if (target && !this.database.prepare(`${cte} SELECT 1 FROM visible WHERE id=?`).get(...values, target.id)) {
       throw new StoreError("INVALID_INPUT", "定位消息不在简易视图中，请切换完整或轨迹视图", { key: "diagnostics.sessions.store.m014" });
     }
-    const project = (rows: MessageRow[]) => rows.map(row => {
-      const message = decodeMessage(row);
+    const textColumns = query.maxTextChars ? `substr(text,1,${Math.min(100_000, Math.max(1, Math.floor(query.maxTextChars)))}) AS text,
+      CASE WHEN instr(text,char(0))>0 THEN session_text_length(text) ELSE length(text) END AS text_length,length(CAST(text AS BLOB)) AS text_bytes` : "text";
+    const project = (rows: PreviewMessageRow[]) => rows.map(row => {
+      const message = decodePreview(row);
       return query.mode === "brief" && message.kind === "assistant" && !message.final ? { ...message, unconfirmed: true } : message;
     });
     if (query.pageUnit === "turn") {
@@ -611,10 +678,23 @@ export class SessionStore {
         .map((turn, index) => ({ ...turn, position: (pagination.page - 1) * pagination.pageSize + index + 1 }));
       if (pagination.page === 1) turns.unshift(...initial.map(turn => ({ ...turn, position: 0 })));
       const turnIds = turns.map(turn => turn.id);
-      const messages = turns.length ? project(this.database.prepare(`${cte} SELECT ${MESSAGE_COLUMNS},text FROM session_messages
-        WHERE revision=? AND id IN (SELECT id FROM visible WHERE turn_id IN (${turnIds.map(() => "?").join(",")})) ORDER BY ordinal,id`)
-        .all(...values, revision, ...turnIds) as MessageRow[]) : [];
-      return { version, session, messages, total, ...pagination, pageUnit: "turn", totalTurns, turns, focusMessageId: target?.id };
+      const messageLimit = query.messageLimit === undefined ? undefined : Math.min(2000, Math.max(1, Math.floor(query.messageLimit)));
+      let messageOffset = Math.max(0, Math.floor(query.messageOffset ?? 0));
+      if (target && messageLimit && query.messageOffset === undefined) {
+        const before = (this.database.prepare(`${cte} SELECT COUNT(*) AS count FROM visible
+          WHERE turn_id IN (${turnIds.map(() => "?").join(",")}) AND (ordinal<? OR (ordinal=? AND id<?))`)
+          .get(...values, ...turnIds, target.ordinal, target.ordinal, target.id) as { count: number }).count;
+        messageOffset = Math.floor(before / messageLimit) * messageLimit;
+      }
+      const bounded = messageLimit !== undefined;
+      const messages = turns.length ? project(this.database.prepare(`${cte} SELECT ${MESSAGE_COLUMNS},${textColumns} FROM session_messages
+        WHERE revision=? AND id IN (SELECT id FROM visible WHERE turn_id IN (${turnIds.map(() => "?").join(",")})) ORDER BY ordinal,id${bounded ? " LIMIT ? OFFSET ?" : ""}`)
+        .all(...values, revision, ...turnIds, ...(bounded ? [messageLimit, messageOffset] : [])) as PreviewMessageRow[]) : [];
+      const pageMessagesTotal = turns.reduce((sum, turn) => sum + turn.messageCount, 0);
+      const usages = bounded ? this.usagesForTurns(revision, id, turnIds) : undefined;
+      return { version, session, messages, total, ...pagination, pageUnit: "turn", totalTurns, turns, focusMessageId: target?.id,
+        ...(bounded ? { messageOffset, messageLimit, hasMoreMessages: messageOffset + messages.length < pageMessagesTotal, usages,
+          ...this.messageToolPairs(revision, session, query, messages, textColumns) } : {}) };
     }
     if (query.turnPosition !== undefined) throw new StoreError("INVALID_INPUT", "turnPosition 仅支持完整轮次分页", { key: "diagnostics.sessions.store.m016" });
     if (target) {
@@ -623,24 +703,128 @@ export class SessionStore {
       pagination.page = Math.floor(preceding / pagination.pageSize) + 1;
     }
     const total = (this.database.prepare(`${cte} SELECT COUNT(*) AS count FROM visible`).get(...values) as { count: number }).count;
-    const messages = project(this.database.prepare(`${cte} SELECT ${MESSAGE_COLUMNS},text FROM session_messages
+    const messages = project(this.database.prepare(`${cte} SELECT ${MESSAGE_COLUMNS},${textColumns} FROM session_messages
       WHERE revision=? AND id IN (SELECT id FROM visible ORDER BY ordinal,id LIMIT ? OFFSET ?) ORDER BY ordinal,id`)
       .all(...values, revision, pagination.pageSize, (pagination.page - 1) * pagination.pageSize) as MessageRow[]);
     return { version, session, messages, total, ...pagination, focusMessageId: target?.id };
   }
 
-  timeline(id: string, requestedVersion?: string): SessionTimelineResult {
-    const version = this.version(requestedVersion);
+  private messageToolPairs(revision: string, session: SessionSummary, query: SessionMessageQuery, messages: SessionMessage[], textColumns: string):
+    Pick<SessionMessageResult, "toolPairs" | "relatedMessages"> {
+    const callIds = [...new Set(messages.filter(message => message.kind === "tool_call" || message.kind === "tool_result").flatMap(message => message.callId ? [message.callId] : []))];
+    if (!callIds.length) return { toolPairs: [], relatedMessages: [] };
+    const scope = this.readingBranch(session, query);
+    // 利用调用身份索引批量查元信息，歧义判断覆盖完整分支，而不搬整轮正文。
+    const candidates = (this.database.prepare(`SELECT ${MESSAGE_COLUMNS} FROM session_messages
+      WHERE revision=? AND call_id IN (SELECT value FROM json_each(?)) AND kind IN ('tool_call','tool_result')${scope.branch} ORDER BY ordinal,id`)
+      .all(revision, JSON.stringify(callIds), ...scope.values) as MessageMetadataRow[]).map(decodeMessageMetadata);
+    const groups = new Map<string, { calls: Omit<SessionMessage, "text">[]; results: Omit<SessionMessage, "text">[] }>();
+    for (const message of candidates) {
+      const key = `${message.sessionId}\0${message.turnId}\0${message.callId}`;
+      const group = groups.get(key) ?? { calls: [], results: [] };
+      (message.kind === "tool_call" ? group.calls : group.results).push(message); groups.set(key, group);
+    }
+    const pageIds = new Set(messages.map(message => message.id));
+    const toolPairs: NonNullable<SessionMessageResult["toolPairs"]> = [];
+    for (const { calls, results } of groups.values()) {
+      if (calls.length !== 1 || results.length !== 1) continue;
+      const call = calls[0]!, result = results[0]!;
+      if ((!pageIds.has(call.id) && !pageIds.has(result.id)) || result.ordinal <= call.ordinal
+        || call.tool && result.tool && call.tool !== result.tool) continue;
+      toolPairs.push({ callMessageId: call.id, resultMessageId: result.id });
+    }
+    const relatedIds = [...new Set(toolPairs.flatMap(pair => [pair.callMessageId, pair.resultMessageId]).filter(id => !pageIds.has(id)))];
+    const relatedMessages = relatedIds.length ? (this.database.prepare(`SELECT ${MESSAGE_COLUMNS},${textColumns} FROM session_messages
+      WHERE revision=? AND id IN (SELECT value FROM json_each(?)) ORDER BY ordinal,id`).all(revision, JSON.stringify(relatedIds)) as PreviewMessageRow[]).map(decodePreview) : [];
+    return { toolPairs, relatedMessages };
+  }
+
+  private eligibleUsageWhere(): string {
+    return `NOT EXISTS (SELECT 1 FROM session_messages m WHERE m.revision=u.revision AND m.copied=1 AND m.id=u.message_id)
+      AND (u.message_id IS NOT NULL OR
+        ((json_array_length(u.json,'$.requestMessageIds')>0 OR json_extract(u.json,'$.timing.end.messageId') IS NOT NULL) AND NOT EXISTS
+          (SELECT 1 FROM session_messages m WHERE m.revision=u.revision AND m.copied=1 AND m.id IN
+            (SELECT value FROM json_each(u.json,'$.requestMessageIds') UNION SELECT json_extract(u.json,'$.timing.end.messageId')))) OR
+        (COALESCE(json_array_length(u.json,'$.requestMessageIds'),0)=0 AND json_extract(u.json,'$.timing.end.messageId') IS NULL AND NOT EXISTS
+          (SELECT 1 FROM session_messages m WHERE m.revision=u.revision AND m.copied=1 AND m.turn_id=u.turn_id)))`;
+  }
+
+  private usagesForTurns(revision: string, sessionId: string, turnIds: string[]): SessionProfile["steps"] {
+    if (!turnIds.length) return [];
+    // 目标轮的消息身份只读取一次，避免每个请求重扫整轮；候选筛选不截断轮次统计。
+    const rows = this.database.prepare(`WITH selected_turns AS MATERIALIZED (SELECT value AS id FROM json_each(?)),
+      selected_messages AS MATERIALIZED (SELECT id FROM session_messages WHERE revision=? AND turn_id IN (SELECT id FROM selected_turns)),
+      candidates AS MATERIALIZED (SELECT u.rowid,u.revision,u.message_id,u.turn_id,u.json FROM session_usage u WHERE u.revision=?
+        AND (u.turn_id IN (SELECT id FROM selected_turns) OR u.message_id IN (SELECT id FROM selected_messages)
+          OR json_extract(u.json,'$.timing.end.messageId') IN (SELECT id FROM selected_messages)
+          OR EXISTS (SELECT 1 FROM json_each(u.json,'$.requestMessageIds') member WHERE member.value IN (SELECT id FROM selected_messages))))
+      SELECT u.json FROM candidates u WHERE ${this.eligibleUsageWhere()} ORDER BY u.rowid`)
+      .all(JSON.stringify(turnIds), revision, revision) as JsonRow[];
+    const usages = rows.map(row => decode<SessionUsage>(row));
+    const members = this.usageMemberships(revision, usages);
+    return usages.map(usage => ({ ...usage, sessionId, ...this.requestBranches(usage, members) }));
+  }
+
+  timeline(id: string, requested?: string | SessionTimelineQuery): SessionTimelineResult {
+    const query = typeof requested === "string" ? { version: requested } : requested ?? {};
+    const version = this.version(query.version);
     const { revision } = this.session(id, version);
+    const total = (this.database.prepare("SELECT COUNT(*) AS count FROM session_messages WHERE revision=?").get(revision) as { count: number }).count;
+    const maxEvents = query.maxEvents === undefined ? undefined : Math.min(5000, Math.max(1, Math.floor(query.maxEvents)));
+    let projection: SessionTimelineResult["projection"];
+    if (maxEvents) {
+      const projectionRow = this.database.prepare(`SELECT COUNT(DISTINCT CASE WHEN turn_id='' THEN 'unknown' ELSE turn_id END) AS total_turns, MIN(ordinal) AS first_ordinal, MAX(ordinal) AS last_ordinal,
+        MIN(session_time_ms(json_extract(json,'$.occurredAt'))) AS time_start, MAX(session_time_ms(json_extract(json,'$.occurredAt'))) AS time_end,
+        COALESCE(SUM(CASE WHEN session_time_ms(json_extract(json,'$.occurredAt')) IS NULL THEN 1 ELSE 0 END),0) AS missing_time
+        FROM session_messages WHERE revision=?`).get(revision) as { total_turns: number; first_ordinal: number | null; last_ordinal: number | null; time_start: number | null; time_end: number | null; missing_time: number };
+      projection = { totalTurns: projectionRow.total_turns, missingTime: projectionRow.missing_time,
+        ...(projectionRow.first_ordinal !== null ? { firstOrdinal: projectionRow.first_ordinal, lastOrdinal: projectionRow.last_ordinal! } : {}),
+        ...(projectionRow.time_start !== null ? { timeStart: projectionRow.time_start, timeEnd: projectionRow.time_end! } : {}) };
+    }
+    if (maxEvents && total > maxEvents) {
+      const kindCount = (this.database.prepare("SELECT COUNT(DISTINCT kind) AS count FROM session_messages WHERE revision=?").get(revision) as { count: number }).count;
+      // 固定桶和类型聚合保留密度；代表点仍使用真实消息身份供点击定位。
+      const byKind = maxEvents >= kindCount;
+      const buckets = Math.max(1, Math.floor(maxEvents / (byKind ? kindCount : 1)));
+      const rows = this.database.prepare(`WITH ranked AS (
+        SELECT ${MESSAGE_COLUMNS},ROW_NUMBER() OVER (ORDER BY ordinal,id)-1 AS position,
+          FIRST_VALUE(id) OVER (PARTITION BY CASE WHEN turn_id='' THEN 'unknown' ELSE turn_id END ORDER BY ordinal,id) AS turn_first_id,
+          MIN(ordinal) OVER (PARTITION BY CASE WHEN turn_id='' THEN 'unknown' ELSE turn_id END) AS turn_start,
+          ROW_NUMBER() OVER (PARTITION BY CASE WHEN turn_id='' THEN 'unknown' ELSE turn_id END ORDER BY ordinal,id)-1 AS turn_offset,
+          COUNT(*) OVER (PARTITION BY CASE WHEN turn_id='' THEN 'unknown' ELSE turn_id END) AS turn_count FROM session_messages WHERE revision=?
+      ), positioned AS (SELECT *,DENSE_RANK() OVER (ORDER BY turn_start,turn_first_id)-1 AS turn_position FROM ranked),
+      bucketed AS (SELECT *,MIN(?,CAST(position*?/CAST(? AS REAL) AS INTEGER)) AS bucket FROM positioned), grouped AS (
+        SELECT *,COUNT(*) OVER (PARTITION BY bucket${byKind ? ",kind" : ""}) AS count,
+          MIN(ordinal) OVER (PARTITION BY bucket${byKind ? ",kind" : ""}) AS range_start,
+          MAX(ordinal) OVER (PARTITION BY bucket${byKind ? ",kind" : ""}) AS range_end,
+          ROW_NUMBER() OVER (PARTITION BY bucket${byKind ? ",kind" : ""} ORDER BY CASE WHEN id=? THEN 0 ELSE 1 END,ordinal,id) AS rank FROM bucketed
+      ) SELECT ${MESSAGE_COLUMNS},count,range_start,range_end,turn_position,turn_offset,turn_count,id IN
+        (SELECT message_id FROM session_usage WHERE revision=? AND message_id IS NOT NULL) AS has_usage FROM grouped WHERE rank=1 ORDER BY ordinal,id`)
+        .all(revision, buckets - 1, buckets, total, query.messageId ?? "", revision) as (MessageMetadataRow & { count: number; range_start: number; range_end: number; has_usage: number; turn_position: number; turn_offset: number; turn_count: number })[];
+      const events = rows.map(row => {
+        const { branchIds: _branches, currentBranch: _current, filePaths: _paths, resource: _resource, textDescriptor: _descriptor,
+          ...message } = decodeMessageMetadata(row);
+        const usage = Boolean(row.has_usage);
+        return { ...message, usage, count: row.count, rangeStartOrdinal: row.range_start, rangeEndOrdinal: row.range_end,
+          turnPosition: row.turn_position, turnOffset: row.turn_offset, turnCount: row.turn_count };
+      });
+      return { version, events, total, aggregated: true, projection };
+    }
     // JSON 投影在 SQLite 内完成，避免把每条消息正文搬进服务或浏览器堆。
-    const events = this.database.prepare(`SELECT json_object('id',id,'sessionId',json_extract(json,'$.sessionId'),
+    const events = this.database.prepare(`${maxEvents ? `WITH ranked AS (
+        SELECT revision,${MESSAGE_COLUMNS},FIRST_VALUE(id) OVER (PARTITION BY CASE WHEN turn_id='' THEN 'unknown' ELSE turn_id END ORDER BY ordinal,id) AS turn_first_id,
+          MIN(ordinal) OVER (PARTITION BY CASE WHEN turn_id='' THEN 'unknown' ELSE turn_id END) AS turn_start,
+          ROW_NUMBER() OVER (PARTITION BY CASE WHEN turn_id='' THEN 'unknown' ELSE turn_id END ORDER BY ordinal,id)-1 AS turn_offset,
+          COUNT(*) OVER (PARTITION BY CASE WHEN turn_id='' THEN 'unknown' ELSE turn_id END) AS turn_count
+        FROM session_messages WHERE revision=?), positioned AS (SELECT *,DENSE_RANK() OVER (ORDER BY turn_start,turn_first_id)-1 AS turn_position FROM ranked)` : ""}
+      SELECT json_object('id',id,'sessionId',json_extract(json,'$.sessionId'),
       'ordinal',ordinal,'turnId',turn_id,'kind',kind,'occurredAt',json_extract(json,'$.occurredAt'),
       'model',json_extract(json,'$.model'),'callId',call_id,'tool',json_extract(json,'$.tool'),
       'status',json_extract(json,'$.status'),'durationMs',json_extract(json,'$.durationMs'),
       'contextSource',json_extract(json,'$.contextSource'),'copied',copied,'usage',id IN
-        (SELECT message_id FROM session_usage WHERE revision=? AND message_id IS NOT NULL)) AS json
-      FROM session_messages WHERE revision=? ORDER BY ordinal,id`).all(revision, revision) as JsonRow[];
-    return { version, events: events.map(row => {
+        (SELECT message_id FROM session_usage WHERE revision=? AND message_id IS NOT NULL)${maxEvents ? ",'turnPosition',turn_position,'turnOffset',turn_offset,'turnCount',turn_count" : ""}) AS json
+      FROM ${maxEvents ? "positioned" : "session_messages"} WHERE revision=? ORDER BY ordinal,id`).all(...(maxEvents ? [revision] : []), revision, revision) as JsonRow[];
+    return { version, ...(maxEvents ? { total, aggregated: false, projection } : {}), events: events.map(row => {
       const event = Object.fromEntries(Object.entries(decode<SessionTimelineEvent>(row)).filter(([, value]) => value !== null)) as SessionTimelineEvent;
       event.usage = Boolean(event.usage);
       if (event.copied !== undefined) event.copied = Boolean(event.copied);
@@ -763,8 +947,83 @@ export class SessionStore {
     return { sessionId: row.session_id, messageId: message?.id };
   }
 
-  profile(id: string, query: SessionQuery & { includeChildren?: boolean } = {}): SessionProfile {
-    return this.buildProfile(id, query);
+  profile(id: string, query: SessionProfileQuery = {}): SessionProfile {
+    const version = this.version(query.version);
+    if (!query.summary && (query.stepLimit !== undefined || query.stepOffset !== undefined)) {
+      const summary = this.profile(id, { ...query, version, summary: true });
+      const stepsOffset = Math.max(0, Math.floor(query.stepOffset ?? 0));
+      const limit = Math.min(2000, Math.max(1, Math.floor(query.stepLimit ?? 200)));
+      return { ...summary, steps: this.profileSteps(summary, stepsOffset, limit), stepsOffset };
+    }
+    const root = this.session(id, version);
+    const members = this.database.prepare(`WITH RECURSIVE included(session_id) AS (
+      SELECT ? UNION SELECT child FROM session_version_relations relation JOIN included ON relation.parent=included.session_id
+      WHERE relation.version=? AND (? OR relation.parent=?)
+    ) SELECT v.session_id,v.revision,(SELECT relation.parent FROM session_version_relations relation
+      WHERE relation.version=v.version AND relation.child=v.session_id) AS parent FROM included JOIN session_version_sessions v ON v.session_id=included.session_id
+      WHERE v.version=? ORDER BY v.session_id`).all(id, version, query.includeChildren ? 1 : 0, id, version);
+    // 摘要绑定不可变修订及关系成员；其他会话更新不让相同摘要失效。
+    const key = JSON.stringify([root.revision, Boolean(query.includeChildren), members]);
+    const cached = query.summary ? this.profileSummaries.get(key) : undefined;
+    if (cached) return { ...structuredClone(cached), version };
+    const profile = this.buildProfile(id, { ...query, version });
+    if (!query.summary) return profile;
+    const stepsTotal = profile.steps.length;
+    const result = { ...profile, steps: [], stepsTotal, stepsOffset: 0 };
+    if (JSON.stringify(result).length <= 256_000) {
+      if (this.profileSummaries.size >= 32) this.profileSummaries.delete(this.profileSummaries.keys().next().value!);
+      this.profileSummaries.set(key, structuredClone(result));
+    }
+    return result;
+  }
+
+  private profileSteps(profile: SessionProfile, requestedOffset: number, limit: number): SessionProfile["steps"] {
+    let offset = requestedOffset;
+    const steps: SessionProfile["steps"] = [];
+    for (const sessionId of profile.sessionIds) {
+      const { revision } = this.session(sessionId, profile.version);
+      let count = this.revisionUsageCounts.get(revision);
+      if (count === undefined) {
+        count = (this.database.prepare(`SELECT COUNT(*) AS count FROM session_usage u WHERE u.revision=? AND ${this.eligibleUsageWhere()}`)
+          .get(revision) as { count: number }).count;
+        this.cacheUsageCount(revision, count);
+      }
+      if (offset >= count) { offset -= count; continue; }
+      const rows = this.database.prepare(`SELECT u.json FROM session_usage u WHERE u.revision=? AND ${this.eligibleUsageWhere()}
+        ORDER BY u.rowid LIMIT ? OFFSET ?`).all(revision, limit - steps.length, offset) as JsonRow[];
+      const usages = rows.map(row => decode<SessionUsage>(row));
+      const branchMessages = this.usageMemberships(revision, usages);
+      for (const usage of usages) steps.push({ ...usage, sessionId, ...this.requestBranches(usage, branchMessages) });
+      offset = 0;
+      if (steps.length >= limit) break;
+    }
+    return steps;
+  }
+
+  private usageMemberships(revision: string, usages: SessionUsage[]): Map<string, Pick<SessionMessage, "branchIds" | "currentBranch">> {
+    const ids = [...new Set(usages.flatMap(usage => [...(usage.requestMessageIds ?? []), ...(usage.messageId ? [usage.messageId] : []),
+      ...(usage.timing?.end?.messageId ? [usage.timing.end.messageId] : [])]))];
+    const rows = ids.length ? this.database.prepare(`SELECT id,json_extract(json,'$.branchIds') AS branches,
+      json_extract(json,'$.currentBranch') AS current FROM session_messages WHERE revision=? AND copied IS NOT 1
+      AND id IN (SELECT value FROM json_each(?))`).all(revision, JSON.stringify(ids)) as { id: string; branches: string | null; current: number | null }[] : [];
+    return new Map(rows.filter(row => row.branches !== null || row.current !== null)
+      .map(row => [row.id, { branchIds: row.branches ? JSON.parse(row.branches) as string[] : undefined,
+        currentBranch: row.current === null ? undefined : Boolean(row.current) }]));
+  }
+
+  private cacheUsageCount(revision: string, count: number): void {
+    if (this.revisionUsageCounts.size >= 4096) this.revisionUsageCounts.delete(this.revisionUsageCounts.keys().next().value!);
+    this.revisionUsageCounts.set(revision, count);
+  }
+
+  private requestBranches(usage: SessionUsage, messages: Map<string, Pick<SessionMessage, "branchIds" | "currentBranch">>): Pick<SessionMessage, "branchIds" | "currentBranch"> {
+    const associations = [...new Set([...(usage.requestMessageIds ?? []), ...(usage.messageId ? [usage.messageId] : []),
+      ...(usage.timing?.end?.messageId ? [usage.timing.end.messageId] : [])])].flatMap(id => messages.has(id) ? [messages.get(id)!] : []);
+    const memberships = associations.flatMap(message => message.branchIds ? [message.branchIds] : []);
+    const branchIds = memberships.length ? memberships[0]!.filter(branch => memberships.every(values => values.includes(branch))) : undefined;
+    const currentBranch = associations.some(message => message.currentBranch !== undefined)
+      ? associations.every(message => message.currentBranch !== false) : undefined;
+    return { ...(branchIds ? { branchIds } : {}), ...(currentBranch !== undefined ? { currentBranch } : {}) };
   }
 
   private buildProfile(id: string, query: SessionQuery & { includeChildren?: boolean }): SessionProfile {
@@ -784,7 +1043,7 @@ export class SessionStore {
     }
     const profile: SessionProfile = { version, scope: query.includeChildren ? "tree" : "self", sessionIds: [...included], missingChildren: 0,
       messageCount: 0, turnCount: 0, models: [], usage: { requests: 0, inputTokens: null, outputTokens: null, cachedInputTokens: null,
-        cacheWriteTokens: null, reasoningOutputTokens: null, cacheReadRatio: null, peakInputTokens: null, peakContextTokens: null, inputRecordedRequests: 0, cacheRecordedRequests: 0 },
+        cacheWriteTokens: null, reasoningOutputTokens: null, cacheReadRatio: null, peakInputTokens: null, peakContextTokens: null, inputRecordedRequests: 0, cacheRecordedRequests: 0, recordedRequests: {} },
       estimate: { method: "留存文本字符数 ÷ 4 向上取整；仅为内容体量估算，非计费用量", methodDescriptor: { key: "sessions.estimate.method" }, total: 0, byKind: [] }, tools: [], resources: [], compressions: 0,
       children: directChildren, steps: [], gaps: [...root.summary.gaps] };
     const models = new Map<string, number>();
@@ -795,7 +1054,10 @@ export class SessionStore {
     let pairedInput = 0;
     let pairedCache = 0;
     const sum = (key: "inputTokens" | "outputTokens" | "cachedInputTokens" | "cacheWriteTokens" | "reasoningOutputTokens", value: number | undefined) => {
-      if (value !== undefined) profile.usage[key] = (profile.usage[key] ?? 0) + value;
+      if (value !== undefined) {
+        profile.usage[key] = (profile.usage[key] ?? 0) + value;
+        profile.usage.recordedRequests![key] = (profile.usage.recordedRequests![key] ?? 0) + 1;
+      }
     };
     for (const sessionId of included) {
       const { revision, summary } = this.session(sessionId, version);
@@ -837,21 +1099,19 @@ export class SessionStore {
         }
       }
       // 明确请求成员或结束项优先于轮次回退，工具参数请求也能排除复制且保留原创事件。
-      const usageRows = this.database.prepare(`SELECT u.json FROM session_usage u WHERE u.revision=? AND NOT EXISTS
-        (SELECT 1 FROM session_messages m WHERE m.revision=u.revision AND m.copied=1 AND m.id=u.message_id)
-        AND (u.message_id IS NOT NULL OR
-          ((json_array_length(u.json,'$.requestMessageIds')>0 OR json_extract(u.json,'$.timing.end.messageId') IS NOT NULL) AND NOT EXISTS
-            (SELECT 1 FROM session_messages m WHERE m.revision=u.revision AND m.copied=1 AND m.id IN
-              (SELECT value FROM json_each(u.json,'$.requestMessageIds') UNION SELECT json_extract(u.json,'$.timing.end.messageId')))) OR
-          (COALESCE(json_array_length(u.json,'$.requestMessageIds'),0)=0 AND json_extract(u.json,'$.timing.end.messageId') IS NULL AND NOT EXISTS
-            (SELECT 1 FROM session_messages m WHERE m.revision=u.revision AND m.copied=1 AND m.turn_id=u.turn_id))) ORDER BY u.rowid`).iterate(revision) as Iterable<JsonRow>;
+      const usageRows = this.database.prepare(`SELECT u.json FROM session_usage u WHERE u.revision=? AND ${this.eligibleUsageWhere()} ORDER BY u.rowid`).iterate(revision) as Iterable<JsonRow>;
+      let usageCount = 0;
       for (const row of usageRows) {
+        usageCount += 1;
         const usage = decode<SessionUsage>(row);
         profile.usage.requests += 1;
         sum("inputTokens", usage.inputTokens); sum("outputTokens", usage.outputTokens); sum("cachedInputTokens", usage.cachedInputTokens);
         sum("cacheWriteTokens", usage.cacheWriteTokens); sum("reasoningOutputTokens", usage.reasoningOutputTokens);
         if (usage.inputTokens !== undefined) {
           profile.usage.inputRecordedRequests += 1;
+          if (profile.usage.peakInputTokens === null || usage.inputTokens > profile.usage.peakInputTokens) {
+            profile.peakInputRequest = { id: usage.id, messageId: usage.messageId, turnId: usage.turnId, sessionId };
+          }
           profile.usage.peakInputTokens = Math.max(profile.usage.peakInputTokens ?? 0, usage.inputTokens);
         }
         if (usage.inputTokens !== undefined && usage.cachedInputTokens !== undefined) {
@@ -860,15 +1120,9 @@ export class SessionStore {
         }
         if (usage.contextTokens !== undefined) profile.usage.peakContextTokens = Math.max(profile.usage.peakContextTokens ?? 0, usage.contextTokens);
         if (usage.model && !models.has(usage.model)) models.set(usage.model, 0);
-        const associations = [...new Set([...(usage.requestMessageIds ?? []), ...(usage.messageId ? [usage.messageId] : []),
-          ...(usage.timing?.end?.messageId ? [usage.timing.end.messageId] : [])])]
-          .flatMap(messageId => requestBranches.has(messageId) ? [requestBranches.get(messageId)!] : []);
-        const memberships = associations.flatMap(message => message.branchIds ? [message.branchIds] : []);
-        const branchIds = memberships.length ? memberships[0]!.filter(branch => memberships.every(values => values.includes(branch))) : undefined;
-        const currentBranch = associations.some(message => message.currentBranch !== undefined)
-          ? associations.every(message => message.currentBranch !== false) : undefined;
-        profile.steps.push({ ...usage, sessionId, ...(branchIds ? { branchIds } : {}), ...(currentBranch !== undefined ? { currentBranch } : {}) });
+        profile.steps.push({ ...usage, sessionId, ...this.requestBranches(usage, requestBranches) });
       }
+      this.cacheUsageCount(revision, usageCount);
     }
     profile.outputSpeed = summarizeRequestSpeed(profile.steps);
     profile.turnCount = turns.size;

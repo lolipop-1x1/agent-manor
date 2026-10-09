@@ -14,6 +14,7 @@ import { FilterSelect } from "./FilterSelect";
 import { ProjectPicker } from "./ProjectPicker";
 import { DatePicker } from "./DatePicker";
 import { HelpPopover } from "./HelpPopover";
+import { useVisiblePolling } from "./useVisiblePolling";
 import Sessions from "./Sessions";
 import Resources from "./Resources";
 import "./session-navigation.css";
@@ -63,7 +64,7 @@ function Gaps({ gaps }: { gaps: Gap[] }) {
   return <div className="gap-list">{gaps.map((gap, i) => <div key={`${gap.kind}-${gap.sourceId ?? i}`}><strong>{gapNames[gap.kind]}{gap.count !== undefined ? ` · ${fmt(gap.count)}` : ""}</strong><p>{!isMessageDescriptorKnown(gap.messageDescriptor) && <strong>{t("common.originalDetails")}: </strong>}{messageText(gap.messageDescriptor, gap.message)}{gap.details?.map((item, index) => <span key={index}> · {!isMessageDescriptorKnown(item) && <strong>{t("common.originalDetails")}: </strong>}{messageText(item, gap.message)}</span>)}</p>{gap.sourceId && <small>{t("codeMap.sourceId", { id: gap.sourceId })}</small>}</div>)}</div>;
 }
 
-function SourcesDialog({ repo, query, gaps, onJob }: { repo: Repository; query?: CoverageQuery; gaps: Gap[]; onJob: (job: Job) => void }) {
+function SourcesDialog({ repo, query, gapCount, onJob }: { repo: Repository; query?: CoverageQuery; gapCount: number; onJob: (job: Job) => void }) {
   useI18n();
   const [open, setOpen] = useState(false);
   const [data, setData] = useState<SourcesResponse | null>(null);
@@ -91,7 +92,7 @@ function SourcesDialog({ repo, query, gaps, onJob }: { repo: Repository; query?:
     finally { setAssociating(null); }
   };
   return <>
-    <button className="button subtle" aria-label={t("codeMap.sources.trigger")} onClick={() => setOpen(true)}><Stack size={17} /><span className="desktop-text">{t("codeMap.sources.trigger")}</span>{gaps.length > 0 && <span className="count-badge">{fmt(gaps.length)}</span>}</button>
+    <button className="button subtle" aria-label={t("codeMap.sources.trigger")} onClick={() => setOpen(true)}><Stack size={17} /><span className="desktop-text">{t("codeMap.sources.trigger")}</span>{gapCount > 0 && <span className="count-badge">{fmt(gapCount)}</span>}</button>
     <Modal open={open} onOpenChange={setOpen} title={t("codeMap.sources.title")} description={t("codeMap.sources.description")}>
       {!query?.version && <p className="muted">{t("codeMap.sources.notReady")}</p>}
       {loading && <p className="muted" role="status">{t("codeMap.sources.loading")}</p>}
@@ -105,6 +106,26 @@ function SourcesDialog({ repo, query, gaps, onJob }: { repo: Repository; query?:
       </>}
     </Modal>
   </>;
+}
+
+function CoverageGaps({ repoId, query, count }: { repoId: string; query: CoverageQuery; count: number }) {
+  useI18n();
+  const [open, setOpen] = useState(false), [data, setData] = useState<{ version: string; gaps: Gap[] }>();
+  const [loading, setLoading] = useState(false), [error, setError] = useState<unknown>(), [retry, setRetry] = useState(0);
+  const key = queryString(query);
+  const [loadedKey, setLoadedKey] = useState("");
+  useEffect(() => {
+    if (!open || loadedKey === key) return;
+    const controller = new AbortController(); setLoading(true); setError(undefined);
+    void request<{ version: string; gaps: Gap[] }>(`${repositoryPath(repoId)}/coverage/gaps${key}`, { signal: controller.signal })
+      .then(result => { if (!controller.signal.aborted && result.version === query.version) { setData(result); setLoadedKey(key); } })
+      .catch(error => { if (!isAborted(error)) setError(error); })
+      .finally(() => { if (!controller.signal.aborted) setLoading(false); });
+    return () => controller.abort();
+  }, [open, repoId, key, retry]);
+  return <details className="coverage-gaps" open={open} onToggle={event => setOpen(event.currentTarget.open)}><summary><WarningCircle size={15} />{t("codeMap.gaps.count", { count })}</summary>
+    {open && <>{loading && <p role="status">{t("codeMap.sources.loading")}</p>}{!!error && <Notice danger action={<button className="text-button" onClick={() => setRetry(value => value + 1)}>{t("common.retry")}</button>}><ErrorDetails error={error} /></Notice>}{data && loadedKey === key && <Gaps gaps={data.gaps} />}</>}
+  </details>;
 }
 
 function EvidenceDialog({ repoId, event, query, open, onOpenChange }: { repoId: string; event: HistoryEvent | null; query: CoverageQuery; open: boolean; onOpenChange: (open: boolean) => void }) {
@@ -276,6 +297,8 @@ export function App() {
   const [metric, setMetric] = useState<Metric>("read");
   const [version, setVersion] = useState<string | undefined>();
   const [coverage, setCoverage] = useState<CoverageResult | null>(null);
+  const [coverageKey, setCoverageKey] = useState("");
+  const loadedCoverage = useRef("");
   const [rootCoverage, setRootCoverage] = useState<CoverageResult | null>(null);
   const [coverageLoading, setCoverageLoading] = useState(false);
   const [coverageError, setCoverageError] = useState<unknown>(null);
@@ -288,6 +311,7 @@ export function App() {
   const [job, setJob] = useState<Job | null>(null);
   const [actionError, setActionError] = useState<unknown>(null);
   const [actionPending, setActionPending] = useState(false);
+  const [autoRefreshError, setAutoRefreshError] = useState<Error | null>(null);
   const recordJob = useCallback((next: Job) => {
     setJobs(current => [...current.filter(item => item.id !== next.id), next]);
     setJob(next);
@@ -318,6 +342,21 @@ export function App() {
       .finally(() => { if (!controller.signal.aborted) setInitialLoading(false); });
     return () => controller.abort();
   }, [statusRetry]);
+  useVisiblePolling(true, 60_000, async signal => {
+    await request("/sessions/auto-refresh", { method: "POST", body: {}, signal });
+    if (!signal.aborted) setAutoRefreshError(null);
+  }, error => setAutoRefreshError(error instanceof Error ? error : new Error(String(error))));
+  useVisiblePolling(view === "map" && !!repoId, 60_000, async signal => {
+    const result = await request<{ job?: Job }>(`${repositoryPath(repoId)}/auto-refresh`, { method: "POST", body: {}, signal });
+    if (!signal.aborted && result.job) recordJob(result.job);
+  }, failure => setActionError(failure));
+  useVisiblePolling(view === "map" && !!repoId, 5000, async signal => {
+    const result = await request<StatusResponse>("/status?summary=true", { signal });
+    if (signal.aborted) return;
+    setRepositories(result.repositories); setJobs(result.jobs);
+    const published = result.repositories.find(repo => repo.id === repoId)?.version;
+    if (published && coverage?.repository.id === repoId && coverage.version !== published) setVersion(published);
+  });
   useEffect(() => {
     const latest = [...jobs].reverse().filter(item => item.repositoryId === repoId).sort((a, b) => Number(jobActive(b)) - Number(jobActive(a))
       || (b.finishedAt ?? b.startedAt ?? "").localeCompare(a.finishedAt ?? a.startedAt ?? ""))[0];
@@ -325,18 +364,21 @@ export function App() {
   }, [repoId, jobs]);
   useEffect(() => {
     if (view !== "map" || !repoId || invalidTime) return;
+    const requestKey = `${repoId}:${filterKey}:${reload}`;
+    if (coverage?.version === version && loadedCoverage.current === requestKey) return;
     const controller = new AbortController();
     setCoverageLoading(true); setCoverageError(null);
     void (async () => {
-      const rootQuery = { ...filters, directory: undefined, version };
+      const rootQuery = { ...filters, directory: undefined, version, summary: true };
       const root = await request<CoverageResult>(`${repositoryPath(repoId)}/coverage${queryString(rootQuery)}`, { signal: controller.signal });
       if (version && root.version !== version) throw new ApiError("VERSION_MISMATCH", "统计结果版本已变化，请刷新后重试。", { key: "codeMap.error.versionCoverage" });
-      const scoped = directory ? await request<CoverageResult>(`${repositoryPath(repoId)}/coverage${queryString(boundQuery(filters, root.version))}`, { signal: controller.signal }) : root;
+      const scoped = directory ? await request<CoverageResult>(`${repositoryPath(repoId)}/coverage${queryString(boundQuery(filters, root.version), { summary: "true" })}`, { signal: controller.signal }) : root;
       if (scoped.version !== root.version) throw new ApiError("VERSION_MISMATCH", "目录统计与仓库结果版本不一致，请刷新后重试。", { key: "codeMap.error.versionDirectory" });
-      setRootCoverage(root); setCoverage(scoped); setVersion(root.version);
+      loadedCoverage.current = requestKey;
+      setCoverageKey(filterKey); setRootCoverage(root); setCoverage(scoped); setVersion(root.version);
       setSelected(current => scoped.files.some(file => file.path === current) ? current : null);
       setRepositories(current => current.map(repo => repo.id === repoId ? scoped.repository : repo));
-    })().catch(failure => { if (!isAborted(failure)) { setCoverageError(failure); setCoverage(null); } })
+    })().catch(failure => { if (!isAborted(failure)) { setCoverageError(failure); setCoverage(current => current?.repository.id === repoId && coverageKey === filterKey ? current : null); } })
       .finally(() => { if (!controller.signal.aborted) setCoverageLoading(false); });
     return () => controller.abort();
   }, [view, repoId, filterKey, version, reload, invalidTime]);
@@ -379,7 +421,7 @@ export function App() {
     return () => { cancelled = true; controller.abort(); clearTimeout(timer); };
   }, [job?.id, job?.status]);
   useEffect(() => {
-    if (job?.status === "completed") { setVersion(job.version); setReload(value => value + 1); }
+    if (job?.status === "completed" && job.version && coverage?.repository.id === repoId && job.version !== coverage.version) { setVersion(job.version); setReload(value => value + 1); }
   }, [job?.id, job?.status, job?.version]);
   const openSession = async (event: HistoryEvent) => {
     try {
@@ -446,7 +488,7 @@ export function App() {
   const mapLegend = <div className="map-legend"><span>{metric === "activity" ? t("codeMap.metric.activity") : t("codeMap.exactCoverage")}</span><span className="legend-scale">{[0, 1, 2, 3, 4].map(tone => <i key={tone} className={`tone-${tone}`} />)}</span><span>{metric === "activity" ? t("codeMap.activity.range", { count: visible.reduce((max, file) => Math.max(max, metricValue(file, metric)), 0) }) : "0 → 100%"}</span><span className="near-key legend-near" /><span>{t("codeMap.near")}</span><small>{t("codeMap.area")}</small></div>;
   return <Tooltip.Provider delayDuration={350}>
     <header className="app-header"><a className="brand" href="/" aria-label={t("codeMap.navigation.home")}><svg width="30" height="20" viewBox="8 16 48 32" fill="currentColor" aria-hidden="true" focusable="false"><path d="M14 18a3 3 0 0 0-4 2.8v22.4a3 3 0 0 0 4 2.8l10-6a2 2 0 0 0 1-1.8V25.8a2 2 0 0 0-1-1.8z" /><rect x="28" y="27" width="8" height="10" rx="2" /><path d="M14 18a3 3 0 0 0-4 2.8v22.4a3 3 0 0 0 4 2.8l10-6a2 2 0 0 0 1-1.8V25.8a2 2 0 0 0-1-1.8z" transform="translate(64 0) scale(-1 1)" /></svg><span>Agent<strong>Manor</strong></span></a><span className="header-divider" /><nav className="product-nav" aria-label={t("codeMap.navigation.title")}><button aria-current={view === "map" ? "page" : undefined} onClick={() => switchView("map")}>{t("codeMap.navigation.map")}</button><button aria-current={view === "sessions" ? "page" : undefined} onClick={() => switchView("sessions")}>{t("codeMap.navigation.sessions")}</button><button aria-current={view === "resources" ? "page" : undefined} onClick={() => switchView("resources")}>{t("codeMap.navigation.resources")}</button></nav>
-      <div className="header-actions">{view === "map" && repository && <SourcesDialog repo={repository} query={query} gaps={coverage?.gaps ?? []} onJob={recordJob} />}
+      <div className="header-actions">{view === "map" && repository && <SourcesDialog repo={repository} query={query} gapCount={coverage?.gapCount ?? coverage?.gaps.length ?? 0} onJob={recordJob} />}
         <LanguageMenu />
         <Hint label={theme === "light" ? t("codeMap.theme.dark") : t("codeMap.theme.light")}><button className="icon-button" aria-label={t("codeMap.theme.toggle")} onClick={() => setTheme(current => current === "light" ? "dark" : "light")}>{theme === "light" ? <Moon size={19} /> : <Sun size={19} />}</button></Hint>
         <button hidden={view !== "map"} className="button primary refresh-button" onClick={() => void runRefresh()} disabled={!repository || actionPending || jobActive(job)} aria-label={jobActive(job) ? t("codeMap.refresh.running") : t("codeMap.refresh.action")}><ArrowClockwise size={16} className={jobActive(job) ? "spinning" : ""} /><span className="refresh-label">{jobActive(job) ? t("codeMap.refresh.running") : t("codeMap.refresh.action")}</span></button>
@@ -490,13 +532,15 @@ export function App() {
         {!!mapSessionsError && <Notice danger action={<button className="text-button" onClick={() => setMapSessionsRetry(value => value + 1)}>{t("common.retry")}</button>}><ErrorDetails error={mapSessionsError} /></Notice>}
         {window === "custom" && <div className="date-range"><span>{t("codeMap.filter.startDate")}</span><DatePicker label={t("codeMap.filter.startDateLabel")} value={from} onChange={setFrom} /><span>{t("codeMap.filter.to")}</span><DatePicker label={t("codeMap.filter.endDateLabel")} value={to} onChange={setTo} /></div>}
         {invalidTime && <Notice danger>{t("codeMap.filter.invalidTime")}</Notice>}
-        {coverageLoading ? <div className="query-loading" role="status">{t("codeMap.coverage.loading")}</div> : coverageError ? <Empty title={t("codeMap.coverage.unavailable")} action={<div className="empty-actions"><button className="button" onClick={() => { setVersion(undefined); setReload(value => value + 1); }}>{t("codeMap.coverage.latest")}</button><button className="button subtle" onClick={() => void runRefresh()} disabled={jobActive(job)}>{t("codeMap.refresh.action")}</button></div>}><ErrorDetails error={coverageError} /></Empty> : s && exact && near && !invalidTime && <>
+        {coverageLoading && coverage?.repository.id === repoId && coverageKey === filterKey && <p className="query-loading" role="status">{t("codeMap.coverage.loading")}</p>}
+        {!!coverageError && coverage?.repository.id === repoId && coverageKey === filterKey && <Notice danger action={<button className="text-button" onClick={() => setReload(value => value + 1)}>{t("common.retry")}</button>}><ErrorDetails error={coverageError} /></Notice>}
+        {coverageLoading && !(coverage?.repository.id === repoId && coverageKey === filterKey) ? <div className="query-loading" role="status">{t("codeMap.coverage.loading")}</div> : coverageError && !(coverage?.repository.id === repoId && coverageKey === filterKey) ? <Empty title={t("codeMap.coverage.unavailable")} action={<div className="empty-actions"><button className="button" onClick={() => { setVersion(undefined); setReload(value => value + 1); }}>{t("codeMap.coverage.latest")}</button><button className="button subtle" onClick={() => void runRefresh()} disabled={jobActive(job)}>{t("codeMap.refresh.action")}</button></div>}><ErrorDetails error={coverageError} /></Empty> : s && exact && near && !invalidTime && <>
           {mapSession && !coverage!.files.some(file => file.activityCount > 0) && <Notice>{t("codeMap.session.noActivity")}</Notice>}
           <div className="metrics"><div className="metric-primary"><span>{editing ? t("codeMap.coverage.editLines") : t("codeMap.coverage.readLines")}</span><strong>{percent(exact.lines, s.lineCount)}</strong><small>{t("codeMap.coverage.lineFraction", { covered: fmt(exact.lines), count: s.lineCount })}</small></div><div><span>{editing ? t("codeMap.coverage.editFiles") : t("codeMap.coverage.readFiles")}</span><strong>{percent(exact.files, s.fileCount)}</strong><small>{t("codeMap.coverage.fileFraction", { covered: fmt(exact.files), count: s.fileCount })}</small></div><div className="metric-context"><span>{t("codeMap.coverage.moreNear")}</span><strong>{t("codeMap.line.count", { count: near.lines })}</strong><small>{t("codeMap.coverage.nearFiles", { count: near.files })}</small></div></div>
-          {visible.some(file => file.lineCount > 0) ? <CodeMap files={visible} directory={directory} metric={metric} selected={selected} browse={browse} select={selectFile} heading={mapHeading} legend={mapLegend} /> : <>{mapHeading}<Empty title={visible.length ? t("codeMap.empty.emptyFiles") : t("codeMap.empty.noFiles")} action={<button className="button subtle" onClick={clearFilters}>{t("codeMap.filter.reset")}</button>}>{visible.length ? t("codeMap.empty.emptyFilesDescription") : t("codeMap.empty.noFilesDescription")}</Empty>{mapLegend}</>}
+          {visible.some(file => file.lineCount > 0) ? <CodeMap files={visible} directory={directory} metric={metric} selected={selected} browse={browse} select={selectFile} heading={mapHeading} legend={mapLegend} scopeKey={`${repoId}:${filterKey}:${search}`} /> : <>{mapHeading}<Empty title={visible.length ? t("codeMap.empty.emptyFiles") : t("codeMap.empty.noFiles")} action={<button className="button subtle" onClick={clearFilters}>{t("codeMap.filter.reset")}</button>}>{visible.length ? t("codeMap.empty.emptyFilesDescription") : t("codeMap.empty.noFilesDescription")}</Empty>{mapLegend}</>}
           {search && <p className="muted small">{t("codeMap.filter.searchScope")}</p>}
           <details className="file-table" open={!!search || visible.some(file => !file.lineCount)}><summary>{t("codeMap.table.title", { count: visible.length })}</summary><div className="file-table-scroll"><table><thead><tr><th>{t("codeMap.filter.file")}</th><th>{t("codeMap.table.lines")}</th><th>{t("codeMap.table.exact")}</th><th>{t("codeMap.table.nearLines")}</th><th>{t("codeMap.table.count")}</th></tr></thead><tbody>{visible.map(file => <tr key={file.path} className={selected === file.path ? "selected" : ""}><td><button onClick={() => selectFile(file.path)}>{file.path}</button></td><td>{fmt(file.lineCount)}</td><td>{percent(metric === "edit" ? file.editExactLines : file.readExactLines, file.lineCount)}</td><td>{fmt(metric === "edit" ? file.editNearLines : file.readNearLines)}</td><td>{fmt(metricValue(file, "activity"))}</td></tr>)}</tbody></table></div></details>
-          {coverage!.gaps.length > 0 && <details className="coverage-gaps"><summary><WarningCircle size={15} />{t("codeMap.gaps.count", { count: coverage!.gaps.length })}</summary><Gaps gaps={coverage!.gaps} /></details>}
+          {(coverage!.gapCount ?? coverage!.gaps.length) > 0 && query && <CoverageGaps repoId={repoId} query={query} count={coverage!.gapCount ?? coverage!.gaps.length} />}
           <details className="baseline-note"><summary>{t("codeMap.analysis.info", { date: dateLabel(coverage!.createdAt) })}</summary><p>{t("codeMap.analysis.version", { version: coverage!.version })}<br />{t("codeMap.analysis.baseline", { hash: coverage!.baselineHash })}{coverage!.previousVersion && <>{t("codeMap.analysis.previous", { version: coverage!.previousVersion })}</>}</p></details>
         </>}
       </main>
@@ -507,7 +551,7 @@ export function App() {
       <form className="register-form" onSubmit={event => void register(event)}><label>{t("codeMap.repository.path")}<input value={registerPath} onChange={event => setRegisterPath(event.target.value)} placeholder="/absolute/path/to/repository" autoComplete="off" required /></label>{!!registerError && <Notice danger><ErrorDetails error={registerError} /></Notice>}<div className="dialog-end"><button type="button" className="button subtle" onClick={() => setRegisterOpen(false)}>{t("common.cancel")}</button><button type="submit" className="button primary" disabled={registering || !registerPath.trim()}>{registering ? t("codeMap.repository.registering") : t("codeMap.repository.registerAnalyze")}</button></div></form>
     </Modal>
     </section>
-    <section className="product-view" hidden={view !== "sessions"} aria-label={t("codeMap.view.sessions")}><Sessions active={view === "sessions"} target={sessionTarget} onMap={openMap} /></section>
+    <section className="product-view" hidden={view !== "sessions"} aria-label={t("codeMap.view.sessions")}><Sessions active={view === "sessions"} target={sessionTarget} onMap={openMap} autoRefreshError={autoRefreshError} /></section>
     <section className="product-view" hidden={view !== "resources"} aria-label={t("codeMap.view.resources")}><Resources active={view === "resources"} onSession={openResourceSession} /></section>
   </Tooltip.Provider>;
 }

@@ -6,7 +6,7 @@ import { delimiter, join } from "node:path";
 import { promisify } from "node:util";
 import test from "node:test";
 import type { Baseline, EvidenceFragment, HistoryEvent, ParsedSource } from "../src/contracts.js";
-import { associateSource, parseSource } from "../src/history/index.js";
+import { associateSource, createSourceAssociationCache, parseSource } from "../src/history/index.js";
 
 const run = promisify(execFile);
 
@@ -136,6 +136,45 @@ test("相同 remote 的独立 clone 不作为 worktree 关联", () => temporary(
     assert.equal(result.associated, false);
     assert.equal(result.events.length, 0);
     assert.deepEqual(await readCounts(), { commonDir: 1, worktreeRoot: 0 });
+  });
+}));
+
+test("同一刷新跨来源复用Git归属验证，新刷新仍重新检查", () => temporary(async (directory) => {
+  const fixture = await repositoryFixture(directory);
+  const first = await sourceFixture(fixture.firstWorktree);
+  first.events = [eventAt(first.events[0]!, fixture.firstWorktree, join(fixture.firstWorktree, "a.ts"), [])];
+  const second = { ...first, sourceId: "synthetic-second-source", events: first.events.map(event => ({ ...event, id: `${event.id}:second` })) };
+  await withGitCounter(directory, async (readCounts) => {
+    const cache = createSourceAssociationCache();
+    assert.equal((await associateSource(first, fixture.baseline, [], cache)).events.length, 1);
+    assert.equal((await associateSource(second, fixture.baseline, [], cache)).events.length, 1);
+    assert.deepEqual(await readCounts(), { commonDir: 1, worktreeRoot: 1 });
+    await git(fixture.gitPath, ["-C", fixture.repository, "worktree", "remove", "--force", fixture.firstWorktree]);
+    await git(fixture.gitPath, ["clone", fixture.repository, fixture.firstWorktree]);
+    assert.equal((await associateSource(second, fixture.baseline, [], createSourceAssociationCache())).events.length, 0);
+    assert.deepEqual(await readCounts(), { commonDir: 2, worktreeRoot: 1 });
+  });
+}));
+
+test("共享缓存不把一次Git校验失败带到后续来源", () => temporary(async (directory) => {
+  const fixture = await repositoryFixture(directory);
+  const source = await sourceFixture(fixture.firstWorktree);
+  source.events = [eventAt(source.events[0]!, fixture.firstWorktree, join(fixture.firstWorktree, "a.ts"), [])];
+  await withGitCounter(directory, async (readCounts) => {
+    await writeFile(join(directory, "bin", "git"), [
+      "#!/bin/sh",
+      "if [ \"$3\" = \"rev-parse\" ] && [ \"$4\" = \"--show-toplevel\" ]; then printf 'root\\n' >> \"$MANOR_ASSOC_COUNTER\"; fi",
+      "if [ \"$3\" = \"rev-parse\" ] && [ \"$4\" = \"--path-format=absolute\" ]; then",
+      "  printf 'common\\n' >> \"$MANOR_ASSOC_COUNTER\"",
+      "  if [ ! -e \"$MANOR_ASSOC_COUNTER.failed\" ]; then : > \"$MANOR_ASSOC_COUNTER.failed\"; exit 1; fi",
+      "fi",
+      "exec \"$MANOR_ASSOC_REAL_GIT\" \"$@\"",
+      "",
+    ].join("\n"));
+    const cache = createSourceAssociationCache();
+    assert.equal((await associateSource(source, fixture.baseline, [], cache)).events.length, 0);
+    assert.equal((await associateSource(source, fixture.baseline, [], cache)).events.length, 1);
+    assert.deepEqual(await readCounts(), { commonDir: 2, worktreeRoot: 1 });
   });
 }));
 

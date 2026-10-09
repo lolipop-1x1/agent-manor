@@ -239,7 +239,8 @@ test("多会话增量发布按真实子目标关联，避免无关会话两两�
   const elapsed = performance.now() - start;
   assert.equal(store.status().sessionCount, 2000);
   assert.equal(store.status().sourceCount, 2000);
-  assert.equal(store.status().previousVersion, first);
+  assert.equal(store.status().version, first, "未变来源复用完整版本，不制造新版本");
+  assert.equal(store.status().previousVersion, undefined);
   assert.equal(store.list().total, 1980);
   assert.equal(store.list({ includeSubagents: true }).total, 2000);
   assert.equal(store.search({ q: "合成正文" }).total, 2000);
@@ -725,6 +726,10 @@ test("画像返回超过 200 条的全部请求，父子明细与汇总共同排
   assert.deepEqual(tree.steps.at(-1), { id: "child-request", messageId: "message-1", inputTokens: 42, sessionId: "usage-child" });
   assert.ok(!tree.steps.some(step => step.id === "copied-request"));
   assert.equal(tree.usage.inputTokens, own.usage.inputTokens! + 42);
+  const boundaryPage = store.profile("usage-parent", { includeChildren: true, stepOffset: 250, stepLimit: 20 });
+  assert.deepEqual(boundaryPage.steps, tree.steps.slice(250, 270), "父子范围分页保持原顺序且排除复制请求");
+  assert.deepEqual(boundaryPage.usage, tree.usage);
+  assert.equal(boundaryPage.stepsTotal, 258);
 }));
 
 test("画像采用同批缓存分母，未知保持null，reasoning不重复加输出，明确子关系与复制排除", async () => fixture(store => {
@@ -1045,6 +1050,9 @@ test("新请求关联优先于同轮复制回退，分支投影只采用明确�
   ])], []);
   const profile = store.profile(id);
   assert.equal(profile.steps.length, 5);
+  assert.deepEqual(store.profile(id, { stepOffset: 1, stepLimit: 3 }).steps, profile.steps.slice(1, 4), "有界分支投影与完整画像一致");
+  const rangeUsage = store.messages(id, { mode: "full", pageUnit: "turn", messageLimit: 2 }).usages!;
+  assert.deepEqual(rangeUsage.filter(usage => usage.id !== "unknown-link"), profile.steps.filter(usage => usage.id !== "unknown-link"), "轮次完整请求集合保留真实分支成员及复制过滤");
   assert.equal(profile.outputSpeed?.requests, 5);
   assert.equal(profile.outputSpeed?.outputTokens, 2000);
   assert.deepEqual(profile.steps[0]?.branchIds, ["branch-a"], "共同祖先不把后续请求扩到另一分支");
@@ -1056,4 +1064,107 @@ test("新请求关联优先于同轮复制回退，分支投影只采用明确�
   assert.equal(profile.steps[3]?.currentBranch, undefined);
   assert.deepEqual(profile.steps[4]?.branchIds, ["branch-a"], "工具参数请求的结束项提供明确分支依据");
   assert.equal(profile.steps[4]?.currentBranch, true);
+}));
+
+test("有界轨迹保留跨页可信配对，整范围重复身份不从单页猜测", async () => fixture(async store => {
+  const id = "bounded-tool-pairs";
+  const records = Array.from({ length: 650 }, (_, ordinal) => message(id, ordinal, { kind: "context" }));
+  records[299] = message(id, 299, { kind: "tool_call", callId: "boundary", tool: "fixture_tool" });
+  records[300] = message(id, 300, { kind: "tool_result", callId: "boundary", tool: "fixture_tool", text: "完整伙伴结果".repeat(100) });
+  records[10] = message(id, 10, { kind: "tool_call", callId: "duplicate" });
+  records[11] = message(id, 11, { kind: "tool_result", callId: "duplicate" });
+  records[550] = message(id, 550, { kind: "tool_call", callId: "duplicate" });
+  records[15] = message(id, 15, { kind: "tool_call", callId: "conflict", tool: "read" });
+  records[510] = message(id, 510, { kind: "tool_result", callId: "conflict", tool: "write" });
+  records[20] = message(id, 20, { kind: "tool_call", callId: "branch", branchIds: ["a"], currentBranch: true });
+  records[21] = message(id, 21, { kind: "tool_result", callId: "branch", branchIds: ["a"], currentBranch: true });
+  records[520] = message(id, 520, { kind: "tool_call", callId: "branch", branchIds: ["b"], currentBranch: false });
+  records[521] = message(id, 521, { kind: "tool_result", callId: "branch", branchIds: ["b"], currentBranch: false });
+  records[25] = message(id, 25, { kind: "tool_call", callId: "cross-turn" });
+  records[525] = message(id, 525, { kind: "tool_result", callId: "cross-turn", turnId: "turn-2" });
+  store.publish(store.createJob().id, [source(store, meta(id, { branches: [{ id: "a", label: "a", current: true }, { id: "b", label: "b", current: false }] }), records)], []);
+  const query = { mode: "trace", branch: "all", pageUnit: "turn", messageLimit: 300, maxTextChars: 10 } as const;
+  const first = store.messages(id, query), second = store.messages(id, { ...query, messageOffset: 300 });
+  assert.deepEqual(first.toolPairs, [{ callMessageId: "message-299", resultMessageId: "message-300" }]);
+  assert.deepEqual(second.toolPairs, first.toolPairs);
+  assert.equal(first.messages.length, 300); assert.equal(first.relatedMessages?.length, 1);
+  assert.equal(first.relatedMessages?.[0]?.textLength, 600); assert.equal(first.relatedMessages?.[0]?.textTruncated, true);
+  assert.equal([...first.relatedMessages![0]!.text].length, 10);
+  assert.equal(store.messages(id, { mode: "full", messageId: "message-300", pageSize: 1 }).messages[0]?.text, records[300]?.text);
+  const { traceTurns } = await import("../web/session-trace-model.js");
+  const full = traceTurns(store.messages(id, { mode: "trace", pageSize: 200, pageUnit: "turn" }).messages, []);
+  const page = traceTurns(first.messages, [], first.toolPairs, first.relatedMessages);
+  assert.deepEqual(page[0]?.records.find(record => record.message.id === "message-299")?.result?.id, "message-300");
+  assert.equal(page[0]?.records.find(record => record.message.id === "message-10")?.result, undefined);
+  assert.equal(full[0]?.records.find(record => record.message.id === "message-10")?.result, undefined);
+  assert.equal(traceTurns(second.messages, [], second.toolPairs, second.relatedMessages)[0]?.records.find(record => record.result?.id === "message-300")?.message.id, "message-299");
+  const branch = store.messages(id, { ...query, branch: "a" });
+  assert.ok(branch.toolPairs?.some(pair => pair.callMessageId === "message-20" && pair.resultMessageId === "message-21"));
+  assert.ok(!branch.relatedMessages?.some(value => value.branchIds?.includes("b")));
+}));
+
+test("聚合轨迹用完整轮次和时间坐标，替换选中代表不会移动其他节点", async () => fixture(async store => {
+  const id = "timeline-projection-bounds";
+  const records = Array.from({ length: 1004 }, (_, ordinal) => message(id, ordinal, { kind: "assistant", turnId: ordinal < 1000 ? "turn-first" : `turn-${ordinal}`,
+    occurredAt: ordinal === 1000 ? "invalid" : new Date(Date.UTC(2026, 0, 1) + ordinal * 1000).toISOString() }));
+  store.publish(store.createJob().id, [source(store, meta(id), records)], []);
+  const initial = store.timeline(id, { maxEvents: 4 }), focused = store.timeline(id, { maxEvents: 4, messageId: "message-1003" });
+  assert.equal(initial.events.length, 4); assert.ok(initial.events.every(event => event.turnId === "turn-first"));
+  assert.deepEqual(initial.projection, focused.projection); assert.equal(initial.projection?.totalTurns, 5); assert.equal(initial.projection?.missingTime, 1);
+  assert.equal(initial.projection?.timeEnd, Date.UTC(2026, 0, 1) + 1003_000);
+  const { timelineNodes, timelineProjection } = await import("../web/session-trace-model.js");
+  for (const mode of ["turn", "time"] as const) {
+    const before = timelineProjection(timelineNodes(initial.events), mode, initial.projection), after = timelineProjection(timelineNodes(focused.events), mode, focused.projection);
+    for (const span of before.spans) {
+      const same = after.spans.find(other => other.event.id === span.event.id);
+      if (same) assert.equal(same.x, span.x, "代表替换不移动其他节点");
+    }
+    assert.equal(before.missing, mode === "time" ? 1 : 0);
+    if (mode === "turn") assert.ok(before.spans.every(span => span.x < .2), "首轮代表仍位于全会话第一轮区间");
+    else assert.equal(before.end, initial.projection?.timeEnd);
+  }
+  assert.equal(timelineProjection(timelineNodes(focused.events), "turn", focused.projection).spans.at(-1)?.x, .8);
+}));
+
+test("空轮身份归一为未知轮，跨页工具输入结果保持同一详情节点", async () => fixture(async store => {
+  const id = "unknown-tool-turn";
+  const records = [message(id, 0, { turnId: "", kind: "tool_call", callId: "unknown-call" }), message(id, 1, { turnId: "", kind: "tool_result", callId: "unknown-call" })];
+  store.publish(store.createJob().id, [source(store, meta(id), records)], []);
+  const result = store.messages(id, { mode: "trace", pageUnit: "turn", messageLimit: 1, messageOffset: 1 });
+  const { traceTurns } = await import("../web/session-trace-model.js");
+  const turns = traceTurns(result.messages, [], result.toolPairs, result.relatedMessages);
+  assert.equal(turns[0]?.id, "unknown"); assert.equal(turns[0]?.records[0]?.message.id, "message-0"); assert.equal(turns[0]?.records[0]?.result?.id, "message-1");
+}));
+
+test("显式有界总览跨聚合阈值沿用同一原始记录坐标，工具结果时间不缩短", async () => fixture(async store => {
+  const id = "timeline-threshold";
+  const at = (seconds: number) => new Date(Date.UTC(2026, 0, 1) + seconds * 1000).toISOString();
+  const records = [message(id, 0, { occurredAt: at(0) }), message(id, 1, { occurredAt: at(.5) }),
+    message(id, 2, { kind: "tool_call", callId: "timed", occurredAt: at(1) }), message(id, 3, { kind: "tool_result", callId: "timed", occurredAt: at(100) })];
+  store.publish(store.createJob().id, [source(store, meta(id), records)], []);
+  const aggregate = store.timeline(id, { maxEvents: 3 }), complete = store.timeline(id, { maxEvents: 4 });
+  assert.equal(aggregate.aggregated, true); assert.equal(complete.aggregated, false);
+  assert.deepEqual(aggregate.projection, complete.projection);
+  const { timelineNodes, timelineProjection } = await import("../web/session-trace-model.js");
+  for (const mode of ["sequence", "turn", "time"] as const) {
+    const left = timelineProjection(timelineNodes(aggregate.events, false), mode, aggregate.projection);
+    const right = timelineProjection(timelineNodes(complete.events), mode, complete.projection);
+    assert.equal(left.start, right.start); assert.equal(left.end, right.end);
+    for (const span of left.spans) {
+      const same = right.spans.find(other => other.event.id === span.event.id);
+      if (same) assert.equal(same.x, span.x);
+    }
+    const call = right.spans.find(span => span.event.kind === "tool_call")!;
+    assert.equal(call.x, mode === "time" ? .01 : mode === "turn" ? .5 : 2 / 3);
+  }
+  assert.equal(complete.projection?.timeEnd, Date.UTC(2026, 0, 1) + 100_000);
+  assert.equal(store.timeline(id).projection, undefined, "旧未传粒度的接口保持原语义");
+}));
+
+test("空会话的有界轨迹投影返回零计数，不返回空值或虚构时间范围", async () => fixture(store => {
+  const id = "empty-timeline-projection";
+  store.publish(store.createJob().id, [source(store, meta(id), [])], []);
+  const result = store.timeline(id, { maxEvents: 1800 });
+  assert.deepEqual(result.events, []); assert.equal(result.total, 0); assert.equal(result.aggregated, false);
+  assert.deepEqual(result.projection, { totalTurns: 0, missingTime: 0 });
 }));

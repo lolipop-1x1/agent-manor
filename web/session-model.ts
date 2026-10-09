@@ -86,6 +86,13 @@ export function sessionParams(query: Partial<SessionQuery> & {
   resourceKind?: string;
   resourceName?: string;
   resourceServer?: string;
+  summary?: boolean;
+  stepOffset?: number;
+  stepLimit?: number;
+  maxEvents?: number;
+  messageLimit?: number;
+  messageOffset?: number;
+  maxTextChars?: number;
 }): string {
   const params = new URLSearchParams();
   const values: Record<string, string | number | boolean | readonly string[] | undefined> = {
@@ -111,6 +118,13 @@ export function sessionParams(query: Partial<SessionQuery> & {
     resourceKind: query.resourceKind,
     resourceName: query.resourceName,
     resourceServer: query.resourceServer,
+    summary: query.summary,
+    stepOffset: query.stepOffset,
+    stepLimit: query.stepLimit,
+    maxEvents: query.maxEvents,
+    messageLimit: query.messageLimit,
+    messageOffset: query.messageOffset,
+    maxTextChars: query.maxTextChars,
   };
   for (const [key, value] of Object.entries(values)) {
     if (value === undefined || value === "") continue;

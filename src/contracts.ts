@@ -241,6 +241,8 @@ export interface CoverageResult extends VersionedResult {
   files: FileCoverage[];
   summary: CoverageSummary;
   gaps: Gap[];
+  /** 摘要查询保留完整数量，具体诊断按同版范围另取。 */
+  gapCount?: number;
 }
 
 export interface FileEvent extends HistoryEvent {
@@ -299,6 +301,7 @@ export interface StatusResponse {
   repositories: Repository[];
   jobs: Job[];
   indexMaintenance?: IndexMaintenanceResult;
+  indexReclaim?: IndexMaintenanceResult;
 }
 
 export interface IndexMaintenanceResult {

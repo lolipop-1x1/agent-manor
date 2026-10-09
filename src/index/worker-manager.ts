@@ -1,7 +1,7 @@
 import type { MessageDescriptor } from "../i18n/types.js";
 import { DiagnosticError } from "../i18n/diagnostics.js";
 import { Worker } from "node:worker_threads";
-import type { Job } from "../contracts.js";
+import type { IndexMaintenanceResult, Job } from "../contracts.js";
 import type { DiscoverRoots } from "../history/index.js";
 import { AnalysisStore } from "./store.js";
 import { SessionStore } from "../sessions/store.js";
@@ -21,6 +21,9 @@ export class WorkerManager {
   private readonly sessionRequests = new Map<string, string>();
   private closed = false;
   private failure?: string;
+  private lastSessionCheck = -Infinity;
+  private readonly lastMapChecks = new Map<string, number>();
+  reclaimStatus?: IndexMaintenanceResult;
 
   constructor(private readonly store: AnalysisStore, private readonly options: WorkerManagerOptions = {}, private readonly sessions?: SessionStore) {
     store.recoverJobs();
@@ -36,8 +39,10 @@ export class WorkerManager {
     const worker = extension === "ts" && !options.workerUrl
       ? new Worker(`import('tsx/esm/api').then(({register}) => { register(); return import(${JSON.stringify(workerUrl.href)}); });`, { eval: true, workerData: { dbPath: store.dbPath, roots: options.roots } })
       : new Worker(workerUrl, { workerData: { dbPath: store.dbPath, roots: options.roots } });
-    worker.on("message", (message: { jobId?: string }) => {
-      if (this.worker === worker && message.jobId) this.finished(message.jobId);
+    worker.on("message", (message: { jobId?: string; reclaim?: IndexMaintenanceResult }) => {
+      if (this.worker !== worker) return;
+      if (message.reclaim) this.reclaimStatus = message.reclaim;
+      if (message.jobId) this.finished(message.jobId);
     });
     worker.on("error", (error) => { if (this.worker === worker && !this.closed) this.failed(error.message); });
     worker.on("exit", (code) => {
@@ -59,8 +64,35 @@ export class WorkerManager {
     return job;
   }
 
-  refresh(repositoryId: string): Job { return this.enqueue(repositoryId, false); }
+  refresh(repositoryId: string): Job {
+    this.lastMapChecks.set(repositoryId, Date.now());
+    return this.enqueue(repositoryId, false);
+  }
   clearCache(repositoryId: string): Job { return this.enqueue(repositoryId, true); }
+
+  /** 多个可见标签页共享检查间隔，手动刷新仍保持原有排队语义。 */
+  autoRefreshRepository(repositoryId: string, now = Date.now()): Job | undefined {
+    this.store.getRepository(repositoryId);
+    for (const id of this.active) {
+      const job = this.store.getJob(id);
+      if (job.repositoryId === repositoryId) return job;
+    }
+    if (now - (this.lastMapChecks.get(repositoryId) ?? -Infinity) < 60_000) return undefined;
+    const job = this.refresh(repositoryId);
+    this.lastMapChecks.set(repositoryId, now);
+    return job;
+  }
+
+  autoRefreshSessions(now = Date.now()): SessionJob | undefined {
+    if (this.closed || !this.sessions) throw new DiagnosticError("会话索引 Worker 不可用", { key: "diagnostics.index.workerManager.m002" });
+    // 不在已有局部或完整检查之后重复堆积自动任务。
+    const active = this.sessionActive.values().next().value as string | undefined;
+    if (active) return this.sessions.getJob(active);
+    if (now - this.lastSessionCheck < 60_000) return undefined;
+    const job = this.refreshSessions();
+    this.lastSessionCheck = now;
+    return job;
+  }
 
   refreshSessions(clearCache = false, options: SessionRefreshOptions = {}): SessionJob {
     if (this.closed || !this.sessions) throw new DiagnosticError("会话索引 Worker 不可用", { key: "diagnostics.index.workerManager.m002" });
@@ -71,6 +103,7 @@ export class WorkerManager {
     }
     if (this.failure) { this.worker = this.createWorker(); this.failure = undefined; }
     const job = this.sessions.createJob(request);
+    this.lastSessionCheck = Date.now();
     this.sessionActive.add(job.id);
     this.sessionRequests.set(job.id, key);
     this.worker.postMessage({ type: "sessions", jobId: job.id, clearCache });

@@ -48,6 +48,31 @@ export async function loadDesktopTitles(sources: readonly SourceLocation[]): Pro
 
 export interface DesktopModelRecord { model?: string; requestId?: string; timing?: SessionRequestTiming }
 
+/** 镜像列表和各文件身份均参与快检；只看目录时间会漏掉原文件追加。 */
+export async function desktopMirrorStamp(path: string): Promise<string | undefined> {
+  const directory = join(desktopSessionDirectory(path), "claude-session");
+  let files;
+  try { files = await readdir(directory, { withFileTypes: true }); }
+  catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return "desktop-mirror-v1:missing";
+    throw error;
+  }
+  const signatures: string[][] = [];
+  for (const file of files.sort((a, b) => a.name.localeCompare(b.name))) {
+    if (!file.name.endsWith(".jsonl")) continue;
+    if (!file.isFile()) return undefined;
+    try {
+      const info = await lstat(join(directory, file.name), { bigint: true });
+      if (!info.isFile() || info.isSymbolicLink()) return undefined;
+      signatures.push([file.name, String(info.dev), String(info.ino), String(info.size), String(info.mtimeNs), String(info.ctimeNs)]);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+      throw error;
+    }
+  }
+  return createHash("sha256").update(JSON.stringify(["desktop-mirror-v1", signatures])).digest("hex");
+}
+
 /** 按 UUID 与明确父关系关联原生请求；正文与工具仍只索引 cache.jsonl。 */
 export async function desktopModels(path: string): Promise<{ entries: Map<string, DesktopModelRecord>; fingerprint: string; limited: boolean }> {
   const directory = join(desktopSessionDirectory(path), "claude-session");

@@ -151,11 +151,19 @@ test("编译产物在包外cwd并发按需启动单实例，CLI/API JSON一致�
     await command(["unobserved", id, ...query]);
     await command(["repositories"]);
     const refresh = await command<JobResponse>(["refresh", id]);
-    assert.equal((await command<JobResponse>(["jobs", refresh.job.id, "--wait"])).job.status, "completed");
+    const checked = (await command<JobResponse>(["jobs", refresh.job.id, "--wait"])).job;
+    assert.equal(checked.status, "completed");
+    assert.equal(checked.version, version, "无变化检查保留完整已发布版本");
     assert.deepEqual((await command<CoverageResult>(["coverage", id, "--version", version])).summary.readExact, coverage.summary.readExact);
     const clear = await command<JobResponse>(["cacheclear", id, "--wait"]);
     assert.equal(clear.job.status, "completed");
+    assert.notEqual(clear.job.version, version);
     assert.equal((await command<CoverageResult>(["coverage", id])).summary.readExact.lines, 2);
+    assert.equal((await command<CoverageResult>(["coverage", id, "--version", version])).summary.readExact.lines, 2);
+    const clearAgain = await command<JobResponse>(["cacheclear", id, "--wait"]);
+    assert.equal(clearAgain.job.status, "completed");
+    assert.notEqual(clearAgain.job.version, clear.job.version);
+    assert.equal((await command<CoverageResult>(["coverage", id, "--version", clear.job.version!])).summary.readExact.lines, 2);
     for (const language of ["zh-CN", "en"] as const) {
       await assert.rejects(run(process.execPath, [cli, "coverage", id, "--version", version, "--lang", language, "--json"], { cwd: tmpdir(), env, timeout: 30_000 }), error => {
         const failure = error as Error & { stderr: string; stdout: string; code: number };
