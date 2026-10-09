@@ -106,6 +106,9 @@ progress::-moz-progress-bar { background: var(--accent); border-radius: 3px; }
 .filters { display: flex; align-items: center; flex-wrap: wrap; gap: 13px; margin-top: 28px; min-height: 36px; border-bottom: 1px solid var(--border); padding-bottom: 12px; }
 .select-field { display: inline-flex; align-items: center; gap: 7px; font-size: 11px; }
 .select-field > span { color: var(--muted); }
+.map-session-filter { min-width: 0; max-width: 100%; }
+.map-session-filter .filter-trigger { max-width: 220px; }
+.map-session-filter .icon-button { flex-shrink: 0; }
 .search-box { flex: 1; min-width: 150px; display: flex; gap: 7px; align-items: center; color: var(--muted); margin-left: auto; }
 .search-box input { width: 100%; min-width: 0; border: 0; background: transparent; color: var(--text); font-size: 11px; padding: 7px 0; }
 input::placeholder { color: var(--muted); }

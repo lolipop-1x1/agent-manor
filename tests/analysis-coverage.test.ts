@@ -6,6 +6,7 @@ import {
   MATCHING_RULE_VERSION, mergeRanges, subtractRanges,
 } from "../src/analysis/index.js";
 import { filterHistoricalEvents } from "../src/analysis/coverage.js";
+import { mapSessions } from "../src/analysis/sessions.js";
 
 function fixture(): AnalysisSnapshot {
   const files: BaselineFile[] = [
@@ -89,6 +90,30 @@ test("客户端和时间筛选在范围并集前，保留实际当前行号", ()
   const missingTime = { ...snapshot.events[0]!, id: "missing-time", occurredAt: undefined };
   snapshot.events.push(missingTime);
   assert.equal(filterEvents(snapshot, { from: "2026-10-01T00:00:00Z" }).some((event) => event.id === "missing-time"), false);
+});
+
+test("会话按客户端和原生身份隔离，分叉来源不带入父历史且分母不变", () => {
+  const snapshot = fixture();
+  snapshot.events[0]!.sources.push({ sourceId: "fork-source", path: "/tmp/fork.jsonl", recordLine: 3, hash: "copy" });
+  snapshot.events.push({ ...snapshot.events[0]!, id: "fork-new", sessionId: "fork", path: "src/unread.ts" });
+  snapshot.sources = [{ sourceId: "fork-source", client: "codex", path: "/tmp/fork.jsonl", hash: "fork", sessionId: "fork", eventCount: 2, association: "auto" }];
+  const filters = { sessionClient: "codex" as const, clientSessionId: "fork" };
+  const coverage = buildCoverage(snapshot, filters);
+  assert.equal(coverage.summary.fileCount, 2);
+  assert.equal(coverage.summary.lineCount, 7);
+  assert.equal(coverage.files.find(file => file.path === "src/main.ts")!.activityCount, 0);
+  assert.equal(coverage.files.find(file => file.path === "src/unread.ts")!.activityCount, 1);
+  assert.deepEqual(filterHistoricalEvents(snapshot, filters).map(event => event.id), ["fork-new"]);
+  const sameRawId = buildCoverage(snapshot, { sessionClient: "claude", clientSessionId: "session" });
+  assert.equal(sameRawId.files[0]!.activityCount, 2);
+  assert.equal(sameRawId.summary.readExact.lines, 0);
+  const missing = buildCoverage(snapshot, { sessionClient: "codex", clientSessionId: "missing" });
+  assert.equal(missing.summary.lineCount, 7);
+  assert.equal(missing.files.reduce((sum, file) => sum + file.activityCount, 0), 0);
+  assert.equal(filterEvents(snapshot, { ...filters, from: "2026-10-02T00:00:00Z" }).length, 0);
+  const sessions = mapSessions(snapshot, []);
+  assert.equal(sessions.find(session => session.clientSessionId === "fork")!.eventCount, 1);
+  assert.equal(sessions.find(session => session.client === "codex" && session.clientSessionId === "session")!.eventCount, 6);
 });
 
 test("目录和类别筛选改变分母，未知范围成功读取不称为未观察读取", () => {

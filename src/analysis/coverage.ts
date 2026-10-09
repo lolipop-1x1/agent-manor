@@ -1,6 +1,6 @@
 import { isAbsolute, relative, resolve, sep } from "node:path";
 import type {
-  AnalysisSnapshot, BaselineFile, CoverageResult, FileCoverage, Filters, Gap, HistoryEvent, Mapping, Repository,
+  AnalysisSnapshot, BaselineFile, CoverageResult, FileCoverage, Filters, Gap, HistoryEvent, HistorySource, Mapping, Repository,
 } from "../contracts.js";
 import { countRangeLines, mergeRanges, subtractRanges } from "./ranges.js";
 import { classifyFile } from "./baseline.js";
@@ -25,6 +25,7 @@ function selectedFile(file: BaselineFile, filters: Filters): boolean {
 
 function selectedEvent(event: HistoryEvent, filters: Filters): boolean {
   if (filters.client && event.client !== filters.client) return false;
+  if (filters.sessionClient && (event.client !== filters.sessionClient || event.sessionId !== filters.clientSessionId)) return false;
   if (filters.from || filters.to) {
     const time = event.occurredAt ? Date.parse(event.occurredAt) : NaN;
     if (!Number.isFinite(time)) return false;
@@ -32,6 +33,11 @@ function selectedEvent(event: HistoryEvent, filters: Filters): boolean {
     if (filters.to && time > Date.parse(filters.to)) return false;
   }
   return true;
+}
+
+export function selectedSource(source: HistorySource, filters: Filters): boolean {
+  return (!filters.client || source.client === filters.client)
+    && (!filters.sessionClient || source.client === filters.sessionClient && source.sessionId === filters.clientSessionId);
 }
 
 export function filterEvents(snapshot: AnalysisSnapshot, filters: Filters = {}): HistoryEvent[] {
@@ -113,9 +119,9 @@ export function buildCoverage(snapshot: AnalysisSnapshot, filters: Filters = {})
     mappedPaths.get(mapping.eventId)!.add(mapping.filePath);
   }
   const gaps = snapshot.gaps.filter((gap) => {
-    if (!filters.client || !gap.sourceId) return true;
+    if (!gap.sourceId) return true;
     const source = snapshot.sources.find((source) => source.sourceId === gap.sourceId);
-    return !source || source.client === filters.client;
+    return !source || selectedSource(source, filters);
   });
   const emittedGaps = new Set<string>();
   for (const event of events) {

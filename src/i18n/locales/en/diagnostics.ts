@@ -1,6 +1,7 @@
 import type { MessageCatalog } from "../../types.js";
 
 export default {
+  "diagnostics.service.input.sessionIdentity": "Session filtering requires both sessionClient and clientSessionId",
   "diagnostics.history.adapters.claude.m001": "The background task only acknowledged receipt; follow-up notifications are not supported, so the activity remains unknown",
   "diagnostics.history.adapters.claude.m002": "Record {{p0}} has an unsupported top-level type: {{p1}}",
   "diagnostics.history.adapters.codebuddy.m001": "One CodeBuddy file contains multiple sessionId values; content from different sessions was not merged",

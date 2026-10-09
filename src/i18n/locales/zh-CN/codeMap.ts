@@ -1,6 +1,18 @@
 import type { MessageCatalog } from "../../types.js";
 
 export default {
+  "codeMap.session.label": "会话",
+  "codeMap.session.filter": "筛选会话",
+  "codeMap.session.search": "搜索标题或会话 ID",
+  "codeMap.session.all": "全部会话",
+  "codeMap.session.clear": "清除会话筛选",
+  "codeMap.session.loading": "正在读取地图会话…",
+  "codeMap.session.option_other": "{{client}} · {{date}} · {{count, number}} 次活动 · {{id}}",
+  "codeMap.session.selectedOption": "{{client}} · {{id}}",
+  "codeMap.session.noActivity": "此会话在当前筛选范围内没有已记录的代码活动。",
+  "codeMap.session.helpTitle": "会话范围",
+  "codeMap.session.help": "会话筛选只统计所选会话自身的活动，子会话可单独选择。分叉复制的历史归原会话。地图、文件详情和证据使用同一范围，当前仓库的文件与代码行分母不变。会话列表来自当前地图分析版本；新历史需要刷新分析。",
+  "codeMap.error.versionSessions": "会话列表与地图结果版本不一致，请刷新后重试。",
   "codeMap.kind.read": "读取",
   "codeMap.kind.edit": "修改",
   "codeMap.kind.search": "搜索",

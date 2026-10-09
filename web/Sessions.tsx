@@ -109,7 +109,7 @@ function SessionIndexGaps({ active, version }: { active: boolean; version?: stri
   </details>;
 }
 
-export default function Sessions({ active, target, onMap }: { active: boolean; target?: Target; onMap: (path?: string, project?: string) => void }) {
+export default function Sessions({ active, target, onMap }: { active: boolean; target?: Target; onMap: (path?: string, project?: string, session?: SessionSummary) => void }) {
   useI18n();
   const initialFilters = useRef(readSessionFilters(location.hash)).current;
   const [status, setStatus] = useState<SessionIndexSummary | null>(null);
@@ -461,6 +461,7 @@ export default function Sessions({ active, target, onMap }: { active: boolean; t
 
   const selectedMessageData = messageData?.session.id === selectedSessionId ? messageData : undefined;
   const selectedSession = selectedMessageData?.session ?? selectedSummary ?? sessionList?.sessions.find(session => session.id === selectedSessionId);
+  const mapForSession = (path?: string, project?: string) => onMap(path, project, selectedSession);
   const turns = useMemo(() => groupedTurns(selectedMessageData?.messages ?? []), [selectedMessageData]);
   const readingSteps = profile?.version === selectedMessageData?.version && profile?.sessionIds.includes(selectedSessionId ?? "") ? profile.steps : [];
   const speed = useMemo(() => sessionSpeedMap(readingSteps, selectedSessionId ?? "", branch ?? (mode === "brief" ? "current" : "all"), !!selectedSession?.branches?.length), [readingSteps, selectedSessionId, branch, mode, selectedSession?.branches]);
@@ -677,7 +678,7 @@ export default function Sessions({ active, target, onMap }: { active: boolean; t
                 {selectedSession.projectOrigin && <p>{t(selectedSession.projectOrigin === "tool_path" ? "sessions.reading.projectActivity" : selectedSession.projectOrigin === "client_metadata" ? "sessions.reading.projectMetadata" : "sessions.reading.projectCwd")}</p>}
                 {selectedSession.executionEntries?.map(entry => <p key={`${entry.entrypoint}:${entry.recordLine}`}>{executionEntryLabel(selectedSession.client, entry)}</p>)}
               </details>}
-            </div><button className="button subtle session-map-button" onClick={() => onMap(undefined, selectedSession?.project)} disabled={!selectedSession?.project}><MapTrifold size={16} />{t("sessions.reading.map")}</button>
+            </div><button className="button subtle session-map-button" onClick={() => mapForSession(undefined, selectedSession?.project)} disabled={!selectedSession?.project}><MapTrifold size={16} />{t("sessions.reading.map")}</button>
           </div>
           <div className="session-view-toolbar">
             <div className="session-view-options">
@@ -745,9 +746,9 @@ export default function Sessions({ active, target, onMap }: { active: boolean; t
               </div> : <>
                 {mode === "trace" ? <SessionTrace key={selectedMessageData.session.id} messages={selectedMessageData.messages} steps={readingSteps} speed={speed} onFocusStep={focusStep} focusMessageId={focusMessageId} focusRequest={traceFocusRequest} focusTurnId={selectedMessageData.turns?.find(turn => turn.position === turnPosition)?.id}
                   timeline={timeline?.sessionId === selectedMessageData.session.id ? timeline.data.events : []} timelineLoading={timelineLoading} timelineError={timelineError} onRetryTimeline={() => setTimelineRetry(value => value + 1)} onTimelineSelect={event => focusStep({ id: event.id, sessionId: event.sessionId, messageId: event.id })}
-                  query={debouncedLocalQuery || debouncedGlobalQuery} project={selectedMessageData.session.project} onMap={onMap} onInspect={inspectTrace} onViewTurn={trackTraceTurn} /> :
+                  query={debouncedLocalQuery || debouncedGlobalQuery} project={selectedMessageData.session.project} onMap={mapForSession} onInspect={inspectTrace} onViewTurn={trackTraceTurn} /> :
                   <div className="session-turns">{turns.map((turn, index) => <TurnTimeline key={turn.id} turn={turn} position={index + 1} mode={mode} focusMessageId={focusMessageId} project={selectedMessageData.session.project}
-                    onMap={onMap} query={debouncedLocalQuery || debouncedGlobalQuery} speed={speed} expanded={expandedTurns.has(turn.id)} onToggle={open => toggleTurn(turn.id, open)} />)}</div>}
+                    onMap={mapForSession} query={debouncedLocalQuery || debouncedGlobalQuery} speed={speed} expanded={expandedTurns.has(turn.id)} onToggle={open => toggleTurn(turn.id, open)} />)}</div>}
               </>}
             </>}
             {currentMessage && <span className="sr-only" aria-live="polite">{t("sessions.reading.located", { kind: t(kindLabels[currentMessage.kind]) })}</span>}

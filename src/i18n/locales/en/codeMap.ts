@@ -1,6 +1,19 @@
 import type { MessageCatalog } from "../../types.js";
 
 export default {
+  "codeMap.session.label": "Session",
+  "codeMap.session.filter": "Filter sessions",
+  "codeMap.session.search": "Search titles or session IDs",
+  "codeMap.session.all": "All sessions",
+  "codeMap.session.clear": "Clear session filter",
+  "codeMap.session.loading": "Loading map sessions…",
+  "codeMap.session.option_one": "{{client}} · {{date}} · {{count, number}} activity · {{id}}",
+  "codeMap.session.option_other": "{{client}} · {{date}} · {{count, number}} activities · {{id}}",
+  "codeMap.session.selectedOption": "{{client}} · {{id}}",
+  "codeMap.session.noActivity": "This session has no recorded code activity within the current filters.",
+  "codeMap.session.helpTitle": "Session scope",
+  "codeMap.session.help": "A session filter counts only that session's own activity; child sessions can be selected separately. Copied fork history belongs to the original session. The map, file details and evidence share the same scope. The current repository's file and line denominators stay unchanged. Sessions come from the current map analysis version; refresh analysis to include new history.",
+  "codeMap.error.versionSessions": "The session list and map results use different versions. Refresh and try again.",
   "codeMap.kind.read": "Read",
   "codeMap.kind.edit": "Edit",
   "codeMap.kind.search": "Search",

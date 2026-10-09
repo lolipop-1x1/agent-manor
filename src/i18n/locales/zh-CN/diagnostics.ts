@@ -1,6 +1,7 @@
 import type { MessageCatalog } from "../../types.js";
 
 export default {
+  "diagnostics.service.input.sessionIdentity": "会话筛选必须同时提供 sessionClient 和 clientSessionId",
   "diagnostics.history.adapters.claude.m001": "后台任务返回仅确认已接收；后续通知形态未适配，当前活动保持 unknown",
   "diagnostics.history.adapters.claude.m002": "物理记录 {{p0}} 的顶层类型 {{p1}} 尚未适配",
   "diagnostics.history.adapters.codebuddy.m001": "单个 CodeBuddy 文件包含多个 sessionId，未合并跨会话正文",

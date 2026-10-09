@@ -39,6 +39,11 @@ export function coverageQuery(raw: Record<string, unknown>): CoverageQuery {
   const client = textValue(raw.client, "client");
   if (client && !clientIds.includes(client as Client)) throw new ServiceError("INVALID_INPUT", "未知客户端", { key: "diagnostics.service.input.m004" });
   if (client) query.client = client as Client;
+  const sessionClient = textValue(raw.sessionClient, "sessionClient");
+  const clientSessionId = textValue(raw.clientSessionId, "clientSessionId");
+  if (Boolean(sessionClient) !== Boolean(clientSessionId)) throw new ServiceError("INVALID_INPUT", "会话筛选必须同时提供 sessionClient 和 clientSessionId", { key: "diagnostics.service.input.sessionIdentity" });
+  if (sessionClient && !clientIds.includes(sessionClient as Client)) throw new ServiceError("INVALID_INPUT", "未知客户端", { key: "diagnostics.service.input.m004" });
+  if (sessionClient) { query.sessionClient = sessionClient as Client; query.clientSessionId = clientSessionId; }
   for (const key of ["from", "to"] as const) {
     const value = textValue(raw[key], key);
     if (value && (!/^\d{4}-\d{2}-\d{2}T/.test(value) || !Number.isFinite(Date.parse(value)))) {

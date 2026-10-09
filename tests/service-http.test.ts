@@ -6,7 +6,7 @@ import { request as httpRequest } from "node:http";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import test from "node:test";
-import type { CoverageResult, EvidenceResponse, EventsResponse, FileDetail, JobResponse, RegisterRepositoryResponse, SourcesResponse } from "../src/contracts.js";
+import type { CoverageResult, EvidenceResponse, EventsResponse, FileDetail, JobResponse, MapSessionsResponse, RegisterRepositoryResponse, SourcesResponse } from "../src/contracts.js";
 import { clientIds } from "../src/clients.js";
 import { startService } from "../src/server.js";
 import { apiRequest, delay, RequestError, serviceUrl } from "../src/service/runtime.js";
@@ -185,6 +185,48 @@ test("真实 HTTP 版本、筛选、文件与证据闭环；追加后原记录�
   const invalidated = await apiRequest<EvidenceResponse>(service.instance, `${base}/evidence/${encodeURIComponent(events.events[0]!.id)}?version=${associatedCoverage.version}&client=codex&directory=src`);
   assert.equal(invalidated.records.length, 1);
   assert.equal(invalidated.unavailable.length, 1);
+}));
+
+test("会话筛选贯通地图、文件、活动、证据、热点与来源，空会话不回退全量", async () => fixture(async ({ service, register, repository, source }) => {
+  const base = `/repositories/${register.repository.id}`;
+  await writeFile(join(source, "..", "second.jsonl"), history(repository, "second-session").replace("cat src/a.ts", "cat src/b.ts").replace("alpha\\nbeta\\n", "unread\\n"));
+  const refresh = await apiRequest<JobResponse>(service.instance, `${base}/refresh`, "POST");
+  await wait(service, refresh.job.id);
+  const all = await apiRequest<CoverageResult>(service.instance, `${base}/coverage`);
+  assert.equal(all.files.reduce((sum, file) => sum + file.readCount, 0), 2);
+  const key = `version=${all.version}&sessionClient=codex&clientSessionId=second-session`;
+  const scoped = await apiRequest<CoverageResult>(service.instance, `${base}/coverage?${key}`);
+  assert.equal(scoped.summary.fileCount, 2);
+  assert.equal(scoped.summary.lineCount, 3);
+  assert.deepEqual(scoped.summary.readExact, { files: 1, lines: 1 });
+  const events = await apiRequest<EventsResponse>(service.instance, `${base}/events?${key}`);
+  assert.equal(events.total, 1);
+  assert.equal(events.events[0]!.sessionId, "second-session");
+  const file = await apiRequest<FileDetail>(service.instance, `${base}/file?path=src/b.ts&${key}`);
+  assert.deepEqual(file.events.map(event => event.id), events.events.map(event => event.id));
+  assert.equal((await apiRequest<FileDetail>(service.instance, `${base}/file?path=src/a.ts&${key}`)).events.length, 0);
+  const evidence = await apiRequest<EvidenceResponse>(service.instance, `${base}/evidence/${encodeURIComponent(events.events[0]!.id)}?${key}`);
+  assert.equal(evidence.event.sessionId, "second-session");
+  assert.equal(evidence.records.length, 2);
+  const excluded = (await apiRequest<EventsResponse>(service.instance, `${base}/events?version=${all.version}`)).events.find(event => event.sessionId === "service-fixture")!;
+  await assert.rejects(apiRequest(service.instance, `${base}/evidence/${encodeURIComponent(excluded.id)}?${key}`), error => error instanceof RequestError && error.code === "EVENT_NOT_FOUND");
+  assert.deepEqual((await apiRequest<CoverageResult>(service.instance, `${base}/hotspots?${key}`)).files.map(file => file.path), ["src/b.ts"]);
+  assert.deepEqual((await apiRequest<CoverageResult>(service.instance, `${base}/unobserved?${key}`)).files.map(file => file.path), ["src/a.ts"]);
+  const sources = await apiRequest<SourcesResponse>(service.instance, `${base}/sources?${key}`);
+  assert.deepEqual(sources.sources.map(item => item.sessionId), ["second-session"]);
+  assert.equal(sources.unassociated.length, 0);
+  const list = await apiRequest<MapSessionsResponse>(service.instance, `${base}/sessions?version=${all.version}`);
+  assert.equal(list.version, all.version);
+  assert.deepEqual(list.sessions.map(session => session.clientSessionId).sort(), ["second-session", "service-fixture"]);
+  assert.ok(list.sessions.every(session => session.eventCount === 1));
+  const missing = await apiRequest<CoverageResult>(service.instance, `${base}/coverage?version=${all.version}&sessionClient=codex&clientSessionId=not-indexed`);
+  assert.equal(missing.summary.lineCount, 3);
+  assert.equal(missing.files.reduce((sum, file) => sum + file.activityCount, 0), 0);
+  for (const invalid of ["sessionClient=codex", "clientSessionId=second-session", "sessionClient=unknown&clientSessionId=second-session"]) {
+    await assert.rejects(apiRequest(service.instance, `${base}/coverage?${invalid}`), error => error instanceof RequestError && error.code === "INVALID_INPUT");
+  }
+  const crossClient = await apiRequest<CoverageResult>(service.instance, `${base}/coverage?${key}&client=claude`);
+  assert.equal(crossClient.files.reduce((sum, file) => sum + file.activityCount, 0), 0);
 }));
 
 test("当前内容变化不给旧高亮；路径穿越、文件及父目录符号链接被拒绝", async () => fixture(async ({ directory, repository, service, register }) => {

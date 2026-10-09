@@ -133,6 +133,10 @@ Claude 头部发现仍限于 64 KiB／前 32 条记录，会在同一会话中�
 
 ## 正确解释结果
 
+Web 代码地图提供可搜索的会话筛选，支持按标题或原生会话 ID 切换，并可清除恢复全部会话。从会话库的“查看代码地图”或消息文件链接进入时自动选中当前会话。会话列表基于该仓库当前地图分析版本，新历史需刷新分析；尚未索引标题的来源显示原生 ID。
+
+筛选只统计所选会话自身，子会话单独选择，已确认的分叉复制历史归原会话；没有匹配活动时显示零活动。当前文件与代码行分母不变，时间、类别和目录筛选继续有效。API 在已有地图查询中同时提供 `sessionClient` 与 `clientSessionId`；`GET /api/v1/repositories/:id/sessions?version=...` 返回该分析版本可选择的会话。文件、活动、证据与来源查询沿用同样的会话字段及 `version`。
+
 文件覆盖率用 `summary.readExact.files / summary.fileCount`，行覆盖率用 `summary.readExact.lines / summary.lineCount`；修改使用对应的 `editExact`。分母为零时显示无统计文件／行，不生成百分比。近似覆盖单列，不混入精确覆盖；行范围是一基闭区间 `{start,end}`。
 
 `readCount`／`editCount` 是成功活动次数，未知当前范围仍可能有活动；`activityCount` 按事件身份去重。搜索、失败与未知列可能重叠，不能相加当总活动。`unobserved` 只表示当前观测窗口与采集覆盖下没有观察到成功读取。

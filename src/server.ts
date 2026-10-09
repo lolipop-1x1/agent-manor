@@ -6,7 +6,8 @@ import { existsSync, lstatSync, realpathSync } from "node:fs";
 import { join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { AnalysisSnapshot, ApiErrorCode, CoverageQuery, FileDetail, Filters, ServiceInstance } from "./contracts.js";
-import { buildCoverage, eventFilePaths, filterEvents, filterHistoricalEvents, getHotspots, getUnreadFiles } from "./analysis/coverage.js";
+import { buildCoverage, eventFilePaths, filterEvents, filterHistoricalEvents, getHotspots, getUnreadFiles, selectedSource } from "./analysis/coverage.js";
+import { mapSessions } from "./analysis/sessions.js";
 import type { DiscoverRoots } from "./history/index.js";
 import { AnalysisStore, StoreError, WorkerManager } from "./index/index.js";
 import { VERSION } from "./version.js";
@@ -167,6 +168,10 @@ export async function startService(options: ServiceOptions = {}) {
     registerResourceRoutes(app, resources);
     app.delete("/api/v1/sessions/cache", async request => { emptyBody(request.body); return { job: worker.refreshSessions(true) }; });
     const snapshotFor = (id: string, query: CoverageQuery) => index.getSnapshot(id, query.version);
+    app.get<{ Params: RepositoryParams; Querystring: Query }>(`${base}/sessions`, async request => {
+      const snapshot = snapshotFor(request.params.id, coverageQuery(request.query));
+      return { version: snapshot.version, sessions: mapSessions(snapshot, library.summariesByIdentity([...snapshot.sources, ...snapshot.events])) };
+    });
     app.get<{ Params: RepositoryParams; Querystring: Query }>(`${base}/coverage`, async (request) => {
       const query = coverageQuery(request.query);
       return buildCoverage(snapshotFor(request.params.id, query), filtersOf(query));
@@ -231,10 +236,11 @@ export async function startService(options: ServiceOptions = {}) {
     app.get<{ Params: RepositoryParams; Querystring: Query }>(`${base}/sources`, async (request) => {
       const query = coverageQuery(request.query);
       const result = index.listSources(request.params.id, query.version);
-      if (!query.client) return result;
-      return { ...result, sources: result.sources.filter((source) => source.client === query.client),
-        unassociated: result.unassociated.filter((source) => source.client === query.client),
-        gaps: result.gaps.filter((gap) => !gap.sourceId || [...result.sources, ...result.unassociated].some((source) => source.sourceId === gap.sourceId && source.client === query.client)) };
+      if (!query.client && !query.sessionClient) return result;
+      const sources = result.sources.filter(source => selectedSource(source, query));
+      const unassociated = result.unassociated.filter(source => selectedSource(source, query));
+      return { ...result, sources, unassociated,
+        gaps: result.gaps.filter(gap => !gap.sourceId || [...sources, ...unassociated].some(source => source.sourceId === gap.sourceId)) };
     });
     app.post<{ Params: RepositoryParams }>(`${base}/associations`, async (request) => {
       index.associateSource(request.params.id, bodyText(request.body, "sourceId"));

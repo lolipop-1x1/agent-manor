@@ -690,6 +690,11 @@ test("来源identity优先定位子会话，找不到来源时回退原始会话
   store.publish(store.createJob().id, [parent, child, standalone], []);
   assert.deepEqual(store.locate({ client: "codex", clientSessionId: "standalone-raw", sourceId: "missing-source", recordLine: 3 }),
     { sessionId: "locate-standalone", messageId: "message-2" });
+  // 分叉事件合并后的来源可指向子副本，来源不能覆盖事件的原生会话身份。
+  assert.deepEqual(store.locate({ client: "codex", clientSessionId: "standalone-raw", sourceId: "codex:child-source", recordLine: 3 }),
+    { sessionId: "locate-standalone", messageId: "message-2" });
+  assert.deepEqual(store.summariesByIdentity([{ client: "codex", sessionId: "standalone-raw" }]).map(session => session.id), ["locate-standalone"]);
+  assert.deepEqual(store.summariesByIdentity([{ client: "claude", sessionId: "standalone-raw" }]), []);
 }));
 
 test("画像返回超过 200 条的全部请求，父子明细与汇总共同排除复制记录", async () => fixture(store => {

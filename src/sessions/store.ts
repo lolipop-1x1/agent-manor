@@ -3,7 +3,7 @@ import Database from "better-sqlite3";
 import { randomUUID } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import { dirname, resolve } from "node:path";
-import type { Gap } from "../contracts.js";
+import type { Gap, HistoryEvent } from "../contracts.js";
 import { clientIds } from "../clients.js";
 import type { Client } from "../clients.js";
 import type { SourceLocation } from "../history/types.js";
@@ -511,6 +511,17 @@ export class SessionStore {
     return { version, sessions, total, page, pageSize };
   }
 
+  /** 地图只取已发布会话的标题元信息，不读取正文，也不依赖项目路径推断身份。 */
+  summariesByIdentity(identities: Pick<HistoryEvent, "client" | "sessionId">[]): SessionSummary[] {
+    const version = this.currentVersion();
+    if (!version || !identities.length) return [];
+    const keys = [...new Set(identities.map(item => `${item.client}:${item.sessionId}`))];
+    const rows = this.database.prepare(`SELECT r.json FROM session_version_sessions v JOIN session_revisions r ON r.id=v.revision
+      WHERE v.version=? AND r.client||':'||json_extract(r.json,'$.clientSessionId') IN (SELECT value FROM json_each(?))`)
+      .all(version, JSON.stringify(keys)) as JsonRow[];
+    return rows.map(row => this.summary(row, version));
+  }
+
   private readingScope(revision: string, session: SessionSummary, query: SessionMessageQuery) {
     let branch = "";
     const values: SqlValue[] = [revision];
@@ -735,7 +746,7 @@ export class SessionStore {
     let row: { session_id: string; id: string } | undefined;
     if (input.sourceId) {
       const candidates = this.database.prepare(`SELECT v.session_id,r.id FROM session_version_sessions v JOIN session_revisions r ON r.id=v.revision
-        WHERE v.version=? AND r.client=? AND json_extract(r.json,'$.sourceId')=? LIMIT 2`).all(version, input.client, input.sourceId) as { session_id: string; id: string }[];
+        WHERE v.version=? AND r.client=? AND json_extract(r.json,'$.clientSessionId')=? AND json_extract(r.json,'$.sourceId')=? LIMIT 2`).all(version, input.client, input.clientSessionId, input.sourceId) as { session_id: string; id: string }[];
       if (candidates.length > 1) return null;
       row = candidates[0];
     }

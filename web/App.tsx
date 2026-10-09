@@ -3,13 +3,15 @@ import * as Dialog from "@radix-ui/react-dialog";
 import * as Dropdown from "@radix-ui/react-dropdown-menu";
 import * as Tooltip from "@radix-ui/react-tooltip";
 import { ArrowClockwise, ArrowSquareOut, CaretDown, CaretLeft, CaretRight, Check, Code, FileCode, Folder, MagnifyingGlass, MapTrifold, Moon, Plus, Stack, Sun, WarningCircle, X } from "@phosphor-icons/react";
-import type { Client, CoverageQuery, CoverageResult, EvidenceResponse, FileCategory, FileDetail, FileEvent, Filters, Gap, HistoryEvent, IndexMaintenanceResult, Job, JobResponse, RegisterRepositoryResponse, Repository, SourcesResponse, StatusResponse } from "../src/contracts";
+import type { Client, CoverageQuery, CoverageResult, EvidenceResponse, FileCategory, FileDetail, FileEvent, Filters, Gap, HistoryEvent, IndexMaintenanceResult, Job, JobResponse, MapSession, MapSessionsResponse, RegisterRepositoryResponse, Repository, SourcesResponse, StatusResponse } from "../src/contracts";
+import type { SessionSummary } from "../src/session-contracts";
 import { CLIENTS } from "../src/clients";
 import { ApiError, errorMessage, isAborted, queryString, repositoryPath, request } from "./api";
 import { CodeMap, Hint } from "./CodeMap";
 import { DirectoryTree } from "./DirectoryTree";
 import { ResizableWorkspace } from "./ResizableWorkspace";
 import { FilterSelect } from "./FilterSelect";
+import { ProjectPicker } from "./ProjectPicker";
 import { DatePicker } from "./DatePicker";
 import { HelpPopover } from "./HelpPopover";
 import Sessions from "./Sessions";
@@ -21,6 +23,8 @@ import { boundQuery, categoryNames, dateLabel, fileHighlights, filename, fmt, ga
 const kindKeys = { read: "codeMap.kind.read", edit: "codeMap.kind.edit", search: "codeMap.kind.search", other: "codeMap.kind.other" };
 const statusKeys = { success: "codeMap.status.success", failure: "codeMap.status.failure", unknown: "codeMap.status.unknown" };
 const jobActive = (job: Job | null) => job?.status === "queued" || job?.status === "running";
+const mapSessionKey = (session: Pick<MapSession, "client" | "clientSessionId">) => JSON.stringify([session.client, session.clientSessionId]);
+const mapSessionTitle = (session: MapSession) => messageText(session.titleDescriptor, session.title ?? session.clientSessionId);
 const CodeViewer = lazy(() => import("./CodeViewer").then(module => ({ default: module.CodeViewer })));
 
 function Notice({ children, action, danger = false }: { children: ReactNode; action?: ReactNode; danger?: boolean }) {
@@ -257,6 +261,11 @@ export function App() {
   const [registerError, setRegisterError] = useState<unknown>(null);
   const [registering, setRegistering] = useState(false);
   const [client, setClient] = useState<Client | "all">("all");
+  const [mapSession, setMapSession] = useState<MapSession>();
+  const [mapSessionList, setMapSessionList] = useState<MapSessionsResponse>();
+  const [mapSessionsLoading, setMapSessionsLoading] = useState(false);
+  const [mapSessionsError, setMapSessionsError] = useState<unknown>(null);
+  const [mapSessionsRetry, setMapSessionsRetry] = useState(0);
   const [window, setWindow] = useState("all");
   const [timeAnchor, setTimeAnchor] = useState(Date.now);
   const [from, setFrom] = useState("");
@@ -285,13 +294,14 @@ export function App() {
   }, []);
   const repository = repositories.find(repo => repo.id === repoId);
   const filters = useMemo<Filters>(() => ({ client: client === "all" ? undefined : client,
+    sessionClient: mapSession?.client, clientSessionId: mapSession?.clientSessionId,
     ...timeFilters(window, from, to, timeAnchor), categories: category === "all" ? ["source", "config", "docs", "unknown"] : [category], directory: directory || undefined,
-  }), [client, window, from, to, timeAnchor, category, directory]);
+  }), [client, mapSession?.client, mapSession?.clientSessionId, window, from, to, timeAnchor, category, directory]);
   const filterKey = queryString(filters);
   const invalidTime = window === "custom" && from && to && from > to;
   const query = coverage ? boundQuery(filters, coverage.version) : undefined;
   const chooseRepo = useCallback((id: string) => {
-    setRepoId(id); setVersion(undefined); setDirectory(""); setSelected(null); setDetail(null); setCoverage(null); setRootCoverage(null); setActionError(null);
+    setRepoId(id); setMapSession(undefined); setMapSessionList(undefined); setVersion(undefined); setDirectory(""); setSelected(null); setDetail(null); setCoverage(null); setRootCoverage(null); setActionError(null);
     localStorage.setItem("agent-manor-repository", id);
   }, []);
   useEffect(() => { document.documentElement.dataset.theme = theme; localStorage.setItem("agent-manor-theme", theme); }, [theme]);
@@ -330,6 +340,18 @@ export function App() {
       .finally(() => { if (!controller.signal.aborted) setCoverageLoading(false); });
     return () => controller.abort();
   }, [view, repoId, filterKey, version, reload, invalidTime]);
+  useEffect(() => {
+    if (view !== "map" || !coverage || coverage.repository.id !== repoId) return;
+    const controller = new AbortController();
+    setMapSessionsLoading(true); setMapSessionsError(null); setMapSessionList(undefined);
+    void request<MapSessionsResponse>(`${repositoryPath(repoId)}/sessions${queryString({ version: coverage.version })}`, { signal: controller.signal })
+      .then(result => {
+        if (result.version !== coverage.version) throw new ApiError("VERSION_MISMATCH", "会话列表与地图结果版本不一致，请刷新后重试。", { key: "codeMap.error.versionSessions" });
+        setMapSessionList(result);
+      }).catch(failure => { if (!isAborted(failure)) setMapSessionsError(failure); })
+      .finally(() => { if (!controller.signal.aborted) setMapSessionsLoading(false); });
+    return () => controller.abort();
+  }, [view, repoId, coverage?.version, mapSessionsRetry]);
   useEffect(() => {
     if (view !== "map") return;
     if (!repoId || !selected || !coverage || !query || coverageLoading || invalidTime) { setDetail(null); setDetailLoading(false); setDetailError(null); return; }
@@ -374,7 +396,7 @@ export function App() {
       location.hash = `sessions?${destination}`;
     } catch (failure) { setActionError(failure); }
   };
-  const openMap = (path?: string, project?: string) => {
+  const openMap = (path?: string, project?: string, session?: SessionSummary) => {
     if (location.hash.startsWith("#sessions")) sessionAddress.current = location.hash;
     const repo = [...repositories].sort((a, b) => b.path.length - a.path.length).find(candidate =>
       project === candidate.path || project?.startsWith(`${candidate.path}/`) || path?.startsWith(`${candidate.path}/`));
@@ -382,11 +404,23 @@ export function App() {
     if (repo.id !== repoId) chooseRepo(repo.id);
     const local = path?.startsWith(`${repo.path}/`) ? path.slice(repo.path.length + 1) : path?.startsWith("/") ? undefined : path;
     setDirectory(""); setCategory("all"); setClient("all"); setWindow("all"); setSearch("");
+    setMapSession(session ? { client: session.client, clientSessionId: session.clientSessionId, title: session.title, eventCount: 0,
+      ...(session.titleOrigin === "fallback" ? { titleDescriptor: { key: session.relationship === "child" ? "sessions.title.childFallback" : "sessions.title.unnamed", params: { id: session.clientSessionId.slice(-8) } } } : {}),
+    } : undefined);
     setSelected(local ?? null); setDetailsCollapsed(false); activateView("map"); location.hash = "map";
   };
   const browse = (path: string) => { setDirectory(path); setSelected(null); };
   const selectFile = (path: string) => { setSelected(path); setDetailsCollapsed(false); };
-  const clearFilters = () => { setClient("all"); setWindow("all"); setCategory("source"); setDirectory(""); setSearch(""); setSelected(null); };
+  const clearFilters = () => { setClient("all"); setMapSession(undefined); setWindow("all"); setCategory("source"); setDirectory(""); setSearch(""); setSelected(null); };
+  const availableMapSessions = mapSessionList?.version === coverage?.version ? mapSessionList?.sessions ?? [] : [];
+  const mapSessionOptions = availableMapSessions.filter(session => client === "all" || session.client === client).map(session => ({
+    value: mapSessionKey(session), label: mapSessionTitle(session),
+    description: t("codeMap.session.option", { client: clientLabel(session.client), date: dateLabel(session.updatedAt ?? session.startedAt), count: session.eventCount, id: session.clientSessionId }),
+  }));
+  if (mapSession && !mapSessionOptions.some(option => option.value === mapSessionKey(mapSession))) mapSessionOptions.unshift({
+    value: mapSessionKey(mapSession), label: mapSessionTitle(mapSession),
+    description: t("codeMap.session.selectedOption", { client: clientLabel(mapSession.client), id: mapSession.clientSessionId }),
+  });
   const runRefresh = async () => {
     if (!repoId) return;
     setActionPending(true); setActionError(null);
@@ -442,15 +476,22 @@ export function App() {
       <main className="map-main"><div className="page-heading"><h1>{t("codeMap.title")}</h1><HelpPopover label={t("codeMap.help.title")}><dl>
         <div><dt>{t("codeMap.help.coverageTitle")}</dt><dd>{t("codeMap.help.coverage")}</dd></div>
         <div><dt>{t("codeMap.help.filtersTitle")}</dt><dd>{t("codeMap.help.filters")}</dd></div>
+        <div><dt>{t("codeMap.session.helpTitle")}</dt><dd>{t("codeMap.session.help")}</dd></div>
         <div><dt>{t("codeMap.help.baselineTitle")}</dt><dd>{t("codeMap.help.baseline")}</dd></div></dl></HelpPopover></div>
-        <div className="filters"><div className="select-field"><span>{t("codeMap.filter.client")}</span><FilterSelect label={t("codeMap.filter.clientLabel")} value={client} options={[{ value: "all", label: t("codeMap.filter.allClients") }, ...CLIENTS.map(client => ({ value: client.id, label: clientLabel(client.id) }))]} onChange={value => setClient(value as Client | "all")} /></div>
+        <div className="filters"><div className="select-field"><span>{t("codeMap.filter.client")}</span><FilterSelect label={t("codeMap.filter.clientLabel")} value={client} options={[{ value: "all", label: t("codeMap.filter.allClients") }, ...CLIENTS.map(client => ({ value: client.id, label: clientLabel(client.id) }))]} onChange={value => { setClient(value as Client | "all"); if (value !== "all" && value !== mapSession?.client) setMapSession(undefined); }} /></div>
+          <div className="select-field map-session-filter"><span>{t("codeMap.session.label")}</span><ProjectPicker label={t("codeMap.session.filter")} placeholder={t("codeMap.session.search")} value={mapSession ? mapSessionKey(mapSession) : "all"} options={[{ value: "all", label: t("codeMap.session.all") }, ...mapSessionOptions]} onChange={value => setMapSession(value === "all" ? undefined : availableMapSessions.find(session => mapSessionKey(session) === value) ?? mapSession)} />
+            {mapSession && <Hint label={t("codeMap.session.clear")}><button className="icon-button" aria-label={t("codeMap.session.clear")} onClick={() => setMapSession(undefined)}><X size={14} /></button></Hint>}
+          </div>
           <div className="select-field"><span>{t("codeMap.filter.time")}</span><FilterSelect label={t("codeMap.filter.timeLabel")} value={window} options={[{ value: "all", label: t("codeMap.filter.allHistory") }, { value: "7", label: t("codeMap.filter.week") }, { value: "30", label: t("codeMap.filter.month") }, { value: "custom", label: t("codeMap.filter.custom") }]} onChange={value => { setWindow(value); setTimeAnchor(Date.now()); }} /></div>
           <div className="select-field"><span>{t("codeMap.filter.file")}</span><FilterSelect label={t("codeMap.filter.categoryLabel")} value={category} options={[{ value: "source", label: t("common.category.source") }, { value: "config", label: t("common.category.config") }, { value: "docs", label: t("common.category.docs") }, { value: "unknown", label: t("common.category.unknown") }, { value: "all", label: t("codeMap.filter.allText") }]} onChange={value => { setCategory(value as FileCategory | "all"); setSelected(null); }} /></div>
           <label className="search-box"><MagnifyingGlass size={17} /><input aria-label={t("codeMap.filter.search")} placeholder={t("codeMap.filter.search")} value={search} onChange={event => setSearch(event.target.value)} />{search && <button aria-label={t("codeMap.filter.clearSearch")} onClick={() => setSearch("")}><X size={14} /></button>}</label>
         </div>
+        {mapSessionsLoading && <p className="query-loading" role="status">{t("codeMap.session.loading")}</p>}
+        {!!mapSessionsError && <Notice danger action={<button className="text-button" onClick={() => setMapSessionsRetry(value => value + 1)}>{t("common.retry")}</button>}><ErrorDetails error={mapSessionsError} /></Notice>}
         {window === "custom" && <div className="date-range"><span>{t("codeMap.filter.startDate")}</span><DatePicker label={t("codeMap.filter.startDateLabel")} value={from} onChange={setFrom} /><span>{t("codeMap.filter.to")}</span><DatePicker label={t("codeMap.filter.endDateLabel")} value={to} onChange={setTo} /></div>}
         {invalidTime && <Notice danger>{t("codeMap.filter.invalidTime")}</Notice>}
         {coverageLoading ? <div className="query-loading" role="status">{t("codeMap.coverage.loading")}</div> : coverageError ? <Empty title={t("codeMap.coverage.unavailable")} action={<div className="empty-actions"><button className="button" onClick={() => { setVersion(undefined); setReload(value => value + 1); }}>{t("codeMap.coverage.latest")}</button><button className="button subtle" onClick={() => void runRefresh()} disabled={jobActive(job)}>{t("codeMap.refresh.action")}</button></div>}><ErrorDetails error={coverageError} /></Empty> : s && exact && near && !invalidTime && <>
+          {mapSession && !coverage!.files.some(file => file.activityCount > 0) && <Notice>{t("codeMap.session.noActivity")}</Notice>}
           <div className="metrics"><div className="metric-primary"><span>{editing ? t("codeMap.coverage.editLines") : t("codeMap.coverage.readLines")}</span><strong>{percent(exact.lines, s.lineCount)}</strong><small>{t("codeMap.coverage.lineFraction", { covered: fmt(exact.lines), count: s.lineCount })}</small></div><div><span>{editing ? t("codeMap.coverage.editFiles") : t("codeMap.coverage.readFiles")}</span><strong>{percent(exact.files, s.fileCount)}</strong><small>{t("codeMap.coverage.fileFraction", { covered: fmt(exact.files), count: s.fileCount })}</small></div><div className="metric-context"><span>{t("codeMap.coverage.moreNear")}</span><strong>{t("codeMap.line.count", { count: near.lines })}</strong><small>{t("codeMap.coverage.nearFiles", { count: near.files })}</small></div></div>
           {visible.some(file => file.lineCount > 0) ? <CodeMap files={visible} directory={directory} metric={metric} selected={selected} browse={browse} select={selectFile} heading={mapHeading} legend={mapLegend} /> : <>{mapHeading}<Empty title={visible.length ? t("codeMap.empty.emptyFiles") : t("codeMap.empty.noFiles")} action={<button className="button subtle" onClick={clearFilters}>{t("codeMap.filter.reset")}</button>}>{visible.length ? t("codeMap.empty.emptyFilesDescription") : t("codeMap.empty.noFilesDescription")}</Empty>{mapLegend}</>}
           {search && <p className="muted small">{t("codeMap.filter.searchScope")}</p>}

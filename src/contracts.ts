@@ -156,10 +156,28 @@ export interface Mapping {
 /** 未提供时使用全部客户端、全部历史和 source 类别。 */
 export interface Filters {
   client?: Client;
+  /** 两个字段同时提供，只收窄活动，不改变当前文件基线。 */
+  sessionClient?: Client;
+  clientSessionId?: string;
   from?: string;
   to?: string;
   categories?: FileCategory[];
   directory?: string;
+}
+
+export interface MapSession {
+  client: Client;
+  clientSessionId: string;
+  title?: string;
+  titleDescriptor?: MessageDescriptor;
+  startedAt?: string;
+  updatedAt?: string;
+  eventCount: number;
+}
+
+export interface MapSessionsResponse {
+  version: string;
+  sessions: MapSession[];
 }
 
 export interface CoverageQuery extends Filters {
