@@ -5,10 +5,10 @@
 .trace-toolbar small { color: var(--muted); font-size: 10px; }
 .trace-toolbar > div { display: flex; align-items: center; gap: 12px; }
 .trace-ledger { display: flex; flex-direction: column; min-height: 80px; flex: 1; overflow: auto; border: 1px solid var(--border); border-radius: 6px; background: var(--surface); }
-.trace-columns, .trace-row { display: grid; grid-template-columns: 48px 145px minmax(130px, 1fr) minmax(130px, 1fr) 100px 130px; min-width: 710px; }
+.trace-columns, .trace-row { display: grid; grid-template-columns: var(--trace-columns, 48px 145px minmax(130px, 1fr) minmax(130px, 1fr) 100px 130px); min-width: var(--trace-min-width, 710px); }
 .trace-columns { flex: 0 0 auto; height: 30px; background: var(--surface-alt); color: var(--muted); font-size: 9px; }
 .trace-columns > span { align-self: center; padding: 0 8px; }
-.trace-ledger-scroll { flex: 1; min-height: 0; min-width: 710px; overflow-y: auto; overflow-x: hidden; overscroll-behavior: contain; scrollbar-width: thin; }
+.trace-ledger-scroll { flex: 1; min-height: 0; min-width: var(--trace-min-width, 710px); overflow-y: auto; overflow-x: hidden; overscroll-behavior: contain; scrollbar-width: thin; }
 .trace-row, .trace-group { height: 40px; box-sizing: border-box; border-bottom: 1px solid var(--border); font-size: 10px; }
 .trace-row { align-items: center; cursor: pointer; }
 .trace-row:hover { background: var(--surface-alt); }
@@ -29,7 +29,7 @@
 .trace-preview.is-failure { color: var(--danger); }
 .trace-facts { display: grid; gap: 2px; overflow: hidden; font-variant-numeric: tabular-nums; }
 .trace-facts > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 9px; }
-.trace-group { min-width: 710px; background: var(--surface-alt); }
+.trace-group { min-width: var(--trace-min-width, 710px); background: var(--surface-alt); }
 .trace-group.is-active { background: var(--accent-soft); box-shadow: inset 3px 0 var(--accent); }
 .trace-group button { display: flex; align-items: center; gap: 8px; width: 100%; height: 39px; padding: 0 10px; border: 0; background: transparent; color: var(--text); text-align: left; }
 .trace-group button[aria-expanded="false"] > svg { transform: rotate(-90deg); }
@@ -94,3 +94,8 @@
   .trace-inspector > header { gap: 6px; padding: 3px 6px; }
   .trace-inspector-scroll { padding: 8px; }
 }
+
+.trace-group > [role="cell"] { display: flex; align-items: center; }
+.trace-group > [role="cell"] > button { min-width: 0; }
+.trace-group .session-copy-control { flex-shrink: 0; }
+.trace-group .session-copy-control button { width: 26px; height: 26px; padding: 4px; }

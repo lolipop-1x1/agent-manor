@@ -75,7 +75,7 @@
 .session-execution-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 6px; color: var(--muted); font-size: 11px; }
 .session-project-evidence { display: inline-block; margin-left: 7px; border-radius: 4px; padding: 2px 5px; color: var(--near); background: var(--surface-alt); font-size: 9px; }
 .session-map-button { flex-shrink: 0; }
-.session-view-toolbar { display: flex; align-items: center; gap: 12px; justify-content: space-between; min-height: 42px; margin: 14px 0 10px; border-bottom: 1px solid var(--border); }
+.session-view-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; justify-content: space-between; min-height: 42px; margin: 14px 0 10px; border-bottom: 1px solid var(--border); }
 .session-mode-tabs { display: flex; align-items: stretch; gap: 4px; height: 38px; }
 .session-mode-tabs button { min-width: 58px; border: 0; border-bottom: 2px solid transparent; border-radius: 0; padding: 0 11px; color: var(--muted); background: transparent; font-size: 11px; }
 .session-mode-tabs button:hover { color: var(--text); }
@@ -318,3 +318,45 @@
 .session-branch-navigation { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; padding-block: 10px; }
 .session-branch-navigation .filter-trigger { width: 180px; }
 .session-branch-navigation small { color: var(--muted); }
+
+/* 会话库按需控件沿用主题和统一弹层。 */
+.session-refresh-finished { color: var(--muted); font-size: 11px; margin-block: 5px; }
+.session-refresh-finished summary, .session-technical-details summary { cursor: pointer; }
+.session-refresh-finished p { margin-block: 6px; }
+.session-technical-details { color: var(--muted); font-size: 10px; margin-top: 4px; }
+.session-search-totals { color: var(--muted); font-size: 11px; margin: 8px 0; }
+.session-search-group { padding: 12px 0; border-bottom: 1px solid var(--border); }
+.session-group-title { display: block; text-align: left; border: 0; background: transparent; color: var(--text); width: 100%; padding: 0; }
+.session-group-title strong { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; font-size: 12px; }
+.session-search-group > small { display: block; color: var(--muted); font-size: 10px; margin: 5px 0; }
+.session-search-group .session-hit { padding: 6px; margin: 3px 0; font-size: 11px; }
+.sessions-shell mark { background: color-mix(in srgb, var(--accent) 18%, transparent); color: var(--text); border-radius: 2px; }
+.session-question-menu { width: min(540px, calc(100vw - 24px)); max-height: min(500px, var(--radix-popover-content-available-height)); overflow-y: auto; padding: 8px; }
+.session-question-menu .filter-option { display: flex; align-items: flex-start; flex-direction: column; gap: 4px; white-space: normal; width: 100%; text-align: left; border: 0; }
+.session-question-menu .filter-option span:first-child { color: var(--accent); font-size: 11px; }
+.session-question-menu .filter-option span:last-child { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; }
+.session-turn summary > .session-copy-control { margin-left: auto; }
+.session-copy-control { display: inline-flex; align-items: center; gap: 4px; }
+.session-copy-error { color: var(--danger); font-size: 10px; }
+.session-code-block { position: relative; }
+.session-code-block > .session-copy-control { float: right; margin: 5px; }
+.session-profile-shortcut { margin-top: 8px; text-align: left; }
+.session-usage-grid strong .session-stat-link { font: inherit; }
+.session-export-button { white-space: nowrap; }
+.filter-menu.session-evidence-popover { display: flex; flex-direction: column; width: min(300px, calc(100vw - 24px)); min-width: 0; max-height: min(360px, var(--radix-popover-content-available-height)); padding: 0; overflow: hidden; }
+.session-evidence-popover header { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 8px 10px; border-bottom: 1px solid var(--border); }
+.session-evidence-popover header strong { font-size: 12px; font-weight: 600; }
+.session-evidence-popover header .icon-button { width: 26px; height: 26px; min-height: 26px; }
+.session-evidence-list { min-height: 0; padding: 4px; overflow-y: auto; overscroll-behavior: contain; scrollbar-width: thin; scroll-padding: 4px; }
+.session-evidence-list > p { margin: 0; padding: 12px 10px; color: var(--muted); font-size: 12px; }
+.session-evidence-row { width: 100%; min-height: 44px; border: 0; padding: 8px 10px; background: transparent; color: var(--text); font-size: 12px; line-height: 1.5; text-align: left; }
+.session-evidence-row:hover, .session-evidence-row:focus-visible { background: var(--surface-alt); }
+.session-evidence-row:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.session-evidence-row > svg { flex-shrink: 0; color: var(--muted); }
+.session-evidence-copy { display: grid; min-width: 0; gap: 2px; }
+.session-evidence-copy > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; }
+.session-evidence-copy time { color: var(--muted); font-size: 10px; }
+.session-tool-outcomes { color: var(--muted); display: flex; gap: 8px; flex-wrap: wrap; margin-top: 5px; font-size: 10px; }
+.session-usage-grid .session-partial-badge { display: block; margin-top: 5px; width: fit-content; font-size: 10px; }
+.local-process { display: flex; justify-content: flex-end; margin-top: -5px; margin-bottom: 7px; }
+.session-mode-tabs button { display: inline-flex; align-items: center; gap: 4px; }

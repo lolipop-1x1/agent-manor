@@ -1,10 +1,13 @@
 import { getLanguage, t, useI18n } from "./i18n";
 import { formatNumber, formatTime } from "../src/i18n";
-import { useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { CaretDown, X } from "@phosphor-icons/react";
 import type { SessionMessage, SessionProfile, SessionTimelineEvent } from "../src/session-contracts";
 import { MessageBody, kindLabels, resourceLabels } from "./SessionMessage";
 import { TraceTimeline } from "./TraceTimeline";
+import { CopyButton } from "./SessionCopy";
+import { Highlight } from "./SessionSearchGroups";
+import { dialogueMarkdown } from "./session-export";
 import { HelpPopover } from "./HelpPopover";
 import { displayRecorded, sessionResourceName, sessionMessageText, turnTitle } from "./session-model";
 import { TRACE_ROW_HEIGHT, tracePreview, traceTurns, traceWindow, type TraceRecord } from "./session-trace-model";
@@ -15,11 +18,11 @@ const tokenFields = [
   ["inputTokens", "sessions.usage.input"], ["cachedInputTokens", "sessions.usage.cachedInput"], ["cacheWriteTokens", "sessions.usage.cacheWrite"],
   ["outputTokens", "sessions.usage.output"], ["reasoningOutputTokens", "sessions.usage.reasoning"], ["contextTokens", "sessions.kind.context"],
 ] as const;
-const timeLabel = (value?: string) => value ? formatTime(getLanguage(), value) : t("sessions.message.timeMissing");
+const timeLabel = (value?: string) => value ? formatTime(getLanguage(), value) : "";
 type Entry = { turnId: string; title: string; record?: TraceRecord; count: number };
 
-export function SessionTrace({ messages, steps, focusMessageId, focusRequest, focusTurnId, project, timeline, timelineLoading, timelineError, onRetryTimeline, onTimelineSelect, onMap, onInspect, onViewTurn }: {
-  messages: SessionMessage[]; steps: SessionProfile["steps"]; focusMessageId?: string; focusRequest: number; focusTurnId?: string; project?: string;
+export function SessionTrace({ messages, steps, focusMessageId, focusRequest, focusTurnId, project, query = "", timeline, timelineLoading, timelineError, onRetryTimeline, onTimelineSelect, onMap, onInspect, onViewTurn }: {
+  messages: SessionMessage[]; steps: SessionProfile["steps"]; focusMessageId?: string; focusRequest: number; focusTurnId?: string; project?: string; query?: string;
   onMap: (path?: string, project?: string) => void; onInspect: (message: SessionMessage) => void; onViewTurn: (id: string) => void;
   timeline: SessionTimelineEvent[]; timelineLoading: boolean; timelineError?: Error; onRetryTimeline: () => void; onTimelineSelect: (event: SessionTimelineEvent) => void;
 }) {
@@ -80,6 +83,11 @@ export function SessionTrace({ messages, steps, focusMessageId, focusRequest, fo
       requestAnimationFrame(() => document.getElementById(`trace-select-${target.entry.record!.message.id}`)?.focus());
     }
   };
+  const hasTiming = records.some(record => record.message.occurredAt || record.message.durationMs !== undefined || record.result?.durationMs !== undefined);
+  const hasUsage = records.some(record => record.usage.some(usage => tokenFields.some(([key]) => usage[key] !== undefined)));
+  const columnCount = 4 + Number(hasTiming) + Number(hasUsage);
+  const columns = `48px 145px minmax(130px, 1fr) minmax(130px, 1fr)${hasTiming ? " 100px" : ""}${hasUsage ? " 130px" : ""}`;
+  const ledgerStyle = { "--trace-columns": columns, "--trace-min-width": `${480 + (hasTiming ? 100 : 0) + (hasUsage ? 130 : 0)}px` } as CSSProperties;
   const detailTabs = selected ? [selected.message, ...(selected.result ? [selected.result] : [])] : [];
   const linkedFiles = [...new Set(detailTabs.flatMap(message => message.filePaths ?? []))];
 
@@ -89,8 +97,8 @@ export function SessionTrace({ messages, steps, focusMessageId, focusRequest, fo
       <div><HelpPopover label={t("sessions.trace.help")}><dl><div><dt>{t("sessions.trace.overview")}</dt><dd>{t("sessions.trace.overviewHelp")}</dd></div>
         <div><dt>{t("sessions.trace.nodes")}</dt><dd>{t("sessions.trace.nodesHelp")}</dd></div>
         <div><dt>{t("sessions.trace.contextRecords")}</dt><dd>{t("sessions.trace.contextHelp")}</dd></div></dl></HelpPopover><button className="text-button" onClick={() => setCollapsed(new Set())}>{t("sessions.trace.expandAll")}</button><button className="text-button" onClick={() => setCollapsed(new Set(turns.map(turn => turn.id)))}>{t("sessions.trace.collapseAll")}</button></div></div>
-    <div className="trace-ledger" role="table" aria-label={t("sessions.trace.table")} aria-rowcount={entries.length + 1} aria-colcount={6}>
-      <div className="trace-columns" role="row"><span role="columnheader">{t("sessions.trace.ordinal")}</span><span role="columnheader">{t("sessions.trace.eventModel")}</span><span role="columnheader">{t("sessions.trace.inputParams")}</span><span role="columnheader">{t("sessions.trace.outputResult")}</span><span role="columnheader">{t("sessions.trace.timeDuration")}</span><span role="columnheader">{t("sessions.trace.tokenInOut")}</span></div>
+    <div className="trace-ledger" role="table" aria-label={t("sessions.trace.table")} aria-rowcount={entries.length + 1} aria-colcount={columnCount} style={ledgerStyle}>
+      <div className="trace-columns" role="row"><span role="columnheader">{t("sessions.trace.ordinal")}</span><span role="columnheader">{t("sessions.trace.eventModel")}</span><span role="columnheader">{t("sessions.trace.inputParams")}</span><span role="columnheader">{t("sessions.trace.outputResult")}</span>{hasTiming && <span role="columnheader">{t("sessions.trace.timeDuration")}</span>}{hasUsage && <span role="columnheader">{t("sessions.trace.tokenInOut")}</span>}</div>
       <div ref={viewport} className="trace-ledger-scroll" role="rowgroup" onScroll={event => {
         const top = event.currentTarget.scrollTop; setScroll(top);
         const entry = entries[Math.floor(top / TRACE_ROW_HEIGHT)]; if (entry) onViewTurn(entry.turnId);
@@ -101,9 +109,9 @@ export function SessionTrace({ messages, steps, focusMessageId, focusRequest, fo
           if (!record) {
             const user = turns.find(turn => turn.id === entry.turnId)?.messages.find(message => message.kind === "user");
             return <div id={`session-turn-${entry.turnId}`} key={`turn-${entry.turnId}`} className={`trace-group${entry.turnId === activeTurn ? " is-active" : ""}`} role="row" aria-rowindex={index + 2}>
-            <div role="cell" aria-colspan={6}><button aria-expanded={!collapsed.has(entry.turnId)} onClick={() => setCollapsed(current => { const next = new Set(current); if (next.has(entry.turnId)) next.delete(entry.turnId); else next.add(entry.turnId); return next; })}>
+            <div role="cell" aria-colspan={columnCount}><button aria-expanded={!collapsed.has(entry.turnId)} onClick={() => setCollapsed(current => { const next = new Set(current); if (next.has(entry.turnId)) next.delete(entry.turnId); else next.add(entry.turnId); return next; })}>
               <CaretDown size={13} aria-hidden="true" /><strong>{entry.title}</strong><small>{t("sessions.recordCount", { count: entry.count })}</small><span>{tracePreview(user ? sessionMessageText(user) : t("sessions.trace.contextProcess"))}</span>
-            </button></div></div>;
+            </button><CopyButton text={dialogueMarkdown(turns.find(turn => turn.id === entry.turnId)?.messages ?? [], language)} label={t("sessions.copy.turn")} /></div></div>;
           }
           const { message, result, usage } = record;
           const value = usage.length === 1 ? usage[0] : undefined;
@@ -120,8 +128,8 @@ export function SessionTrace({ messages, steps, focusMessageId, focusRequest, fo
             }}><i aria-hidden="true" /><span><strong>{isTool ? message.tool ?? t("sessions.message.tool") : usage.length ? t("sessions.trace.usageRequest") : t(kindLabels[message.kind])}</strong><small>{status ? t(statuses[status]) : message.final ? t("sessions.message.final") : message.model ?? ""}</small></span></button></div>
             <span role="cell" className="trace-preview" title={input}>{input}</span>
             <span role="cell" className={`trace-preview${status === "failure" ? " is-failure" : ""}`} title={output}>{output}</span>
-            <span role="cell" className="trace-facts" title={message.occurredAt}><span>{timeLabel(message.occurredAt)}</span><small>{duration === undefined ? t("sessions.trace.durationMissing") : `${displayRecorded(duration)} ms`}</small></span>
-            <span role="cell" className="trace-facts"><span>{value ? `${displayRecorded(value.inputTokens)} / ${displayRecorded(value.outputTokens)}` : usage.length ? t("sessions.usage.recordCount", { count: usage.length }) : "—"}</span><small>{value?.cachedInputTokens !== undefined ? t("sessions.trace.cache", { value: displayRecorded(value.cachedInputTokens) }) : ""}</small></span>
+            {hasTiming && <span role="cell" className="trace-facts" title={message.occurredAt}><span>{timeLabel(message.occurredAt)}</span>{duration !== undefined && <small>{displayRecorded(duration)} ms</small>}</span>}
+            {hasUsage && <span role="cell" className="trace-facts"><span>{value ? `${value.inputTokens === undefined ? "—" : displayRecorded(value.inputTokens)} / ${value.outputTokens === undefined ? "—" : displayRecorded(value.outputTokens)}` : usage.length ? t("sessions.usage.recordCount", { count: usage.length }) : "—"}</span><small>{value?.cachedInputTokens !== undefined ? t("sessions.trace.cache", { value: displayRecorded(value.cachedInputTokens) }) : ""}</small></span>}
           </div>;
         })}
         <div aria-hidden="true" style={{ height: (entries.length - window.end) * TRACE_ROW_HEIGHT }} />
@@ -132,13 +140,14 @@ export function SessionTrace({ messages, steps, focusMessageId, focusRequest, fo
         {detailTabs.map(message => <button key={message.id} role="tab" aria-selected={selectedId === message.id} onClick={() => inspect(message)}>{message.kind === "tool_call" ? t("sessions.trace.input") : message.kind === "tool_result" ? t("sessions.trace.result") : t("sessions.trace.body")}</button>)}
       </div><button className="icon-button" aria-label={t("sessions.trace.collapseDetails")} onClick={() => setSelectedId(undefined)}><X size={15} /></button></header>
       <div className="trace-inspector-scroll" key={selectedMessage.id}>
-        <div className="trace-detail-meta"><span className={`session-kind kind-${selectedMessage.kind}`}>{t(kindLabels[selectedMessage.kind])}</span>{selectedMessage.model && <span>{selectedMessage.model}</span>}{selectedMessage.final && <span>{selectedMessage.final === "explicit" ? t("sessions.message.finalExplicit") : t("sessions.message.finalInferred")}</span>}{selectedMessage.status && <span>{t(statuses[selectedMessage.status])}</span>}<time>{timeLabel(selectedMessage.occurredAt)}</time>
+        <div className="trace-detail-meta"><span className={`session-kind kind-${selectedMessage.kind}`}>{t(kindLabels[selectedMessage.kind])}</span>{selectedMessage.model && <span>{selectedMessage.model}</span>}{selectedMessage.final && <span>{selectedMessage.final === "explicit" ? t("sessions.message.finalExplicit") : t("sessions.message.finalInferred")}</span>}{selectedMessage.status && <span>{t(statuses[selectedMessage.status])}</span>}{selectedMessage.occurredAt && <time>{timeLabel(selectedMessage.occurredAt)}</time>}
+          {selectedMessage.kind === "assistant" && <CopyButton text={selectedMessage.text} label={t("sessions.copy.reply")} />}
           <button className="text-button" aria-pressed={raw} onClick={() => setRaw(value => !value)}>{raw ? t("sessions.trace.preview") : t("sessions.trace.raw")}</button></div>
         {selectedMessage.contextSource && <p className="trace-context-note">{selectedMessage.contextSource === "hook" ? t("sessions.context.hook") : <>{selectedMessage.contextSource === "agents_md" ? t("sessions.context.agentsInstructions") : selectedMessage.contextSource === "environment" ? t("sessions.context.environment") : t("sessions.context.client")} · {selectedMessage.contextEvidence === "client_metadata" ? t("sessions.context.explicit") : t("sessions.context.inferred")}</>}</p>}
         <details className="trace-source"><summary>{t("sessions.trace.sourceRecord", { number: formatNumber(getLanguage(), selectedMessage.recordLine) })}</summary><div>{t("sessions.trace.messageOrdinal", { number: formatNumber(getLanguage(), selectedMessage.ordinal) })}{selectedMessage.callId && <> · {t("sessions.message.callId", { id: selectedMessage.callId })}</>}</div>{selectedMessage.contextSource && <div>{t("sessions.trace.originalRole", { role: selectedMessage.contextSource === "hook" ? "attachment" : "user" })}</div>}{selectedMessage.resource && <div>{t(resourceLabels[selectedMessage.resource.kind])} · {sessionResourceName(selectedMessage.resource)}</div>}</details>
-        {!!selected.usage.length && <div className="trace-usage">{selected.usage.map(usage => <div key={usage.id}><strong>{t("sessions.trace.usageModel", { model: usage.model ?? t("sessions.trace.modelMissing") })}</strong>{tokenFields.map(([key, label]) => <span key={key}>{t(label)} <b>{displayRecorded(usage[key])}</b></span>)}</div>)}</div>}
+        {!!selected.usage.length && <div className="trace-usage">{selected.usage.map(usage => <div key={usage.id}>{usage.model && <strong>{t("sessions.trace.usageModel", { model: usage.model })}</strong>}{tokenFields.filter(([key]) => usage[key] !== undefined).map(([key, label]) => <span key={key}>{t(label)} <b>{displayRecorded(usage[key])}</b></span>)}</div>)}</div>}
         <article id={`session-message-${selectedMessage.id}`} className={`trace-detail-body kind-${selectedMessage.kind}`} data-message-id={selectedMessage.id}>
-          {raw ? <pre className="trace-raw-content">{selectedMessage.text || t("sessions.body.emptyRaw")}</pre> : <MessageBody message={selectedMessage} focused flat project={project} onMap={onMap} />}
+          {raw ? <pre className="trace-raw-content"><Highlight text={selectedMessage.text || t("sessions.body.emptyRaw")} query={query} /></pre> : <MessageBody message={selectedMessage} focused flat query={query} project={project} onMap={onMap} />}
         </article>
         {!!linkedFiles.length && <details className="session-file-links"><summary>{t("sessions.trace.linkedFiles", { count: linkedFiles.length })}</summary><div>
           {linkedFiles.map(path => <button className="session-file-link" key={path} onClick={() => onMap(path, project)}>{path}</button>)}

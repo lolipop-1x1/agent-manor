@@ -44,11 +44,12 @@ export function SessionRefreshActions({ client, disabled, onRefresh }: {
 export function SessionRefreshStatus({ job }: { job?: SessionJob }) {
   useI18n();
   if (!job) return null;
+  if (job.status === "complete") return <details className="session-refresh-finished"><summary>{t("sessions.refresh.complete")}</summary><p>{scopeLabel(job.client)} · {modeLabel(job.mode)}</p>{job.finishedAt && <time>{checkedAtLabel(job.finishedAt)}</time>}{job.counts && <p>{t("sessions.refresh.counts", { discovered: countLabel(job.counts.discovered), quick: countLabel(job.counts.quickReused), verified: countLabel(job.counts.verifiedReused), parsed: countLabel(job.counts.parsed), missing: countLabel(job.counts.missing) })}</p>}</details>;
   const running = job.status === "running" || job.status === "queued";
   const counts = job.counts;
   const fallbackCount = counts?.fallbacks.reduce((sum, fallback) => sum + fallback.count, 0) ?? 0;
   return <section className="session-refresh-status" role="status" aria-label={t("sessions.refresh.status")}>
-    <div className="session-refresh-status-heading"><strong>{scopeLabel(job.client)}</strong><span>{modeLabel(job.mode)} · {running ? job.status === "queued" ? t("sessions.refresh.queued") : t("sessions.refresh.running") : job.status === "complete" ? t("sessions.refresh.complete") : t("sessions.status.failure")}</span></div>
+    <div className="session-refresh-status-heading"><strong>{scopeLabel(job.client)}</strong><span>{modeLabel(job.mode)} · {running ? job.status === "queued" ? t("sessions.refresh.queued") : t("sessions.refresh.running") : t("sessions.status.failure")}</span></div>
     {running && <div className="session-job"><span>{messageText(job.phaseDescriptor, phaseLabels[job.phase] ? t(phaseLabels[job.phase]!) : job.phase ? t("common.originalDetail", { detail: job.phase }) : t("sessions.refresh.active"))}</span><progress aria-label={t("sessions.refresh.progress")} max="1" value={job.progress} /><small>{formatPercent(getLanguage(), job.progress, { maximumFractionDigits: 0 })}</small></div>}
     {counts && <p className="session-refresh-counts">{t("sessions.refresh.counts", { discovered: countLabel(counts.discovered), quick: countLabel(counts.quickReused), verified: countLabel(counts.verifiedReused), parsed: countLabel(counts.parsed), missing: countLabel(counts.missing) })}</p>}
     {!!fallbackCount && <details className="session-refresh-fallbacks"><summary>{t("sessions.refresh.fallbackCount", { count: fallbackCount })}</summary>

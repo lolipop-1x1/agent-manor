@@ -141,6 +141,9 @@ export async function startService(options: ServiceOptions = {}) {
     app.get<{ Querystring: Query }>("/api/v1/sessions/status", async request => queryBoolean(request.query.summary, "summary") ? library.statusSummary() : library.status());
     app.get<{ Querystring: Query }>("/api/v1/sessions/gaps", async request => library.indexGaps(textValue(request.query.version, "version")));
     app.get<{ Querystring: Query }>("/api/v1/sessions", async request => library.list(sessionQuery(request.query)));
+    app.get<{ Querystring: Query }>("/api/v1/sessions/search/groups", async request => library.groupedSearch(sessionQuery(request.query)));
+    app.get<{ Params: { id: string }; Querystring: Query }>("/api/v1/sessions/:id/turns", async request => library.turnDirectory(request.params.id, sessionMessageQuery(request.query)));
+    app.get<{ Params: { id: string }; Querystring: Query }>("/api/v1/sessions/:id/matches", async request => library.matches(request.params.id, sessionQuery(request.query)));
     app.get<{ Querystring: Query }>("/api/v1/sessions/search", async request => {
       const query = sessionQuery(request.query);
       if (!query.q) throw new ServiceError("INVALID_INPUT", "搜索需要 q", { key: "diagnostics.server.m014" });

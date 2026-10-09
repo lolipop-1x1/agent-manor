@@ -20,6 +20,8 @@ export interface SessionMessage {
   status?: "success" | "failure" | "unknown";
   final?: "explicit" | "inferred";
   durationMs?: number;
+  /** 仅用于对话展示兜底，不代表来源确认了结束。 */
+  unconfirmed?: boolean;
   /** 仅存在明确原消息身份时标记复制内容。 */
   copied?: boolean;
   /** 会话内树的叶分支成员；共同祖先可属于多个分支。 */
@@ -32,7 +34,7 @@ export interface SessionMessage {
   contextEvidence?: "client_metadata" | "wrapper";
 }
 /** 总览只返回定位和显示所需元信息，不加载正文。 */
-export type SessionTimelineEvent = Pick<SessionMessage, "id" | "sessionId" | "ordinal" | "turnId" | "kind" | "occurredAt" | "model" | "callId" | "tool" | "status" | "durationMs" | "contextSource"> & { usage?: boolean };
+export type SessionTimelineEvent = Pick<SessionMessage, "id" | "sessionId" | "ordinal" | "turnId" | "kind" | "occurredAt" | "model" | "callId" | "tool" | "status" | "durationMs" | "contextSource" | "copied"> & { usage?: boolean };
 export interface SessionTimelineResult { version: string; events: SessionTimelineEvent[] }
 export interface SessionUsage {
   id: string;
@@ -179,6 +181,13 @@ export interface SessionSearchResult {
   total: number;
   page: number;
   pageSize: number;
+}
+export interface SessionSearchGroup { session: SessionSummary; matchCount: number; hits: SessionSearchHit[] }
+export interface SessionGroupedSearchResult {
+  version: string; groups: SessionSearchGroup[]; total: number; hitCount: number; page: number; pageSize: number;
+}
+export interface SessionTurnDirectory {
+  version: string; turns: { id: string; position: number; question: string }[]; total: number; page: number; pageSize: number;
 }
 export interface SessionProfile {
   version: string;

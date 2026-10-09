@@ -8,7 +8,7 @@ import { clientIds } from "../clients.js";
 import type { Client } from "../clients.js";
 import type { SourceLocation } from "../history/types.js";
 import type { ResourceEventStream, ResourceHistoryIdentity, ResourceUsageIdentity, ResourceUsageEvent, ResourceUsageQuery } from "../resource-contracts.js";
-import type { SessionIndexStatus, SessionJob, SessionListResult, SessionMessage, SessionMessageQuery, SessionMessageResult, SessionProfile, SessionQuery, SessionRefreshOptions, SessionSearchResult, SessionSink, SessionSourceMeta, SessionSummary, SessionTimelineEvent, SessionTimelineResult, SessionUsage } from "../session-contracts.js";
+import type { SessionGroupedSearchResult, SessionTurnDirectory, SessionIndexStatus, SessionJob, SessionListResult, SessionMessage, SessionMessageQuery, SessionMessageResult, SessionProfile, SessionQuery, SessionRefreshOptions, SessionSearchResult, SessionSink, SessionSourceMeta, SessionSummary, SessionTimelineEvent, SessionTimelineResult, SessionUsage } from "../session-contracts.js";
 import { StoreError } from "../index/store.js";
 import { initializeIndexSchema } from "../index/schema.js";
 import { resourceGapRelevant } from "../resources/coverage.js";
@@ -480,10 +480,11 @@ export class SessionStore {
       unavailableClients: affectedClients(unavailable), unscopedUnavailableGaps: unscoped(unavailable) };
   }
 
-  list(query: SessionQuery = {}): SessionListResult {
+  list(query: SessionQuery = {}, sessionId?: string): SessionListResult {
     const version = this.version(query.version);
     const { page, pageSize } = paging(query);
     const filter = this.filters({ ...query, executionMode: query.executionMode ?? "regular" });
+    if (sessionId) { filter.sql += " AND v.session_id=?"; filter.values.push(sessionId); }
     // 仅有本地 Hook 的来源保留回查，但默认列表不当作对话展示。
     if (query.executionMode !== "all") filter.sql += ` AND (r.client<>'codeflicker'
       OR COALESCE(json_extract(r.json,'$.messageCount'),0)=0 OR COALESCE(json_extract(r.json,'$.turnCount'),0)>0
@@ -493,13 +494,13 @@ export class SessionStore {
       AND NOT EXISTS (SELECT 1 FROM session_version_relations relation WHERE relation.version=v.version AND relation.child=v.session_id)`;
     if (query.q?.trim()) {
       const kinds = kindsOf(query);
-      const match = searchMatch(this.database, query.q.trim());
+      const match = searchMatch(this.database, (query.q ?? "").trim());
       const candidates = match ? "m.rowid IN (SELECT rowid FROM session_message_search WHERE session_message_search MATCH ?) AND " : "";
       const body = `m.kind IN (${kinds.map(() => "?").join(",") || "NULL"}) AND m.text LIKE ? ESCAPE '\\'`;
       const matched = match ? `r.id IN (SELECT m.revision FROM session_messages m WHERE ${candidates}${body})`
         : `EXISTS(SELECT 1 FROM session_messages m WHERE m.revision=r.id AND ${body})`;
       filter.sql += ` AND (r.title LIKE ? ESCAPE '\\' OR ${matched})`;
-      filter.values.push(literal(query.q.trim()), ...(match ? [match] : []), ...kinds, literal(query.q.trim()));
+      filter.values.push(literal((query.q ?? "").trim()), ...(match ? [match] : []), ...kinds, literal((query.q ?? "").trim()));
     }
     const from = `FROM session_version_sessions v JOIN session_revisions r ON r.id=v.revision WHERE v.version=?${filter.sql}`;
     const total = (this.database.prepare(`SELECT COUNT(*) AS count ${from}`).get(version, ...filter.values) as { count: number }).count;
@@ -509,20 +510,58 @@ export class SessionStore {
     return { version, sessions, total, page, pageSize };
   }
 
+  private readingScope(revision: string, session: SessionSummary, query: SessionMessageQuery) {
+    let branch = "";
+    const values: SqlValue[] = [revision];
+    if (query.branch && query.branch !== "all" && query.branch !== "current") {
+      if (!session.branches?.some(item => item.id === query.branch)) throw new StoreError("INVALID_INPUT", "会话分支不存在", { key: "diagnostics.sessions.store.m012" });
+      branch = " AND (json_extract(json,'$.branchIds') IS NULL OR EXISTS (SELECT 1 FROM json_each(session_messages.json,'$.branchIds') WHERE value=?))";
+      values.push(query.branch);
+    } else if (query.branch === "current" || !query.branch && query.mode === "brief") {
+      branch = " AND COALESCE(json_extract(json,'$.currentBranch'),1)=1";
+    }
+    if (query.mode !== "brief") return { values, cte: `WITH scoped AS MATERIALIZED (
+      SELECT id,ordinal,CASE WHEN turn_id='' THEN 'unknown' ELSE turn_id END AS turn_id,kind,final FROM session_messages WHERE revision=?${branch}
+    ), visible AS (SELECT * FROM scoped)` };
+    // 只计算元信息和正文是否为空；跨轮分页后才取正文。兜底不会写回 final。
+    const cte = `WITH scoped AS MATERIALIZED (
+      SELECT id,ordinal,CASE WHEN turn_id='' THEN 'unknown' ELSE turn_id END AS turn_id,kind,final,
+        CASE WHEN kind='assistant' AND length(trim(text,char(9)||char(10)||char(13)||' '))>0 THEN 1 ELSE 0 END AS has_body
+      FROM session_messages WHERE revision=?${branch}
+    ), ranked AS (
+      SELECT *,SUM(CASE WHEN kind='assistant' AND final IS NOT NULL THEN 1 ELSE 0 END) OVER (PARTITION BY turn_id) AS finals,
+        ROW_NUMBER() OVER (PARTITION BY turn_id,kind ORDER BY has_body DESC,ordinal DESC,id DESC) AS answer_rank FROM scoped
+    ), visible AS (
+      SELECT * FROM ranked ${query.mode === "brief" ? "WHERE kind='user' OR (kind='assistant' AND (final IS NOT NULL OR (finals=0 AND has_body=1 AND answer_rank=1)))" : ""}
+    )`;
+    return { cte, values };
+  }
+
+  matches(id: string, query: SessionQuery = {}): { version: string; matches: boolean } {
+    const result = query.q?.trim() ? this.search({ ...query, sessionId: id, pageSize: 1 }) : this.list({ ...query, pageSize: 1 }, id);
+    return { version: result.version, matches: result.total > 0 };
+  }
+
+  turnDirectory(id: string, query: SessionMessageQuery = {}): SessionTurnDirectory {
+    const version = this.version(query.version);
+    const { revision, summary } = this.session(id, version);
+    const { cte, values } = this.readingScope(revision, summary, { ...query, mode: query.mode ?? "brief" });
+    const { page, pageSize } = paging(query);
+    const groups = `${cte}, rounds AS (SELECT turn_id AS id,(SELECT MIN(s.ordinal) FROM scoped s WHERE s.turn_id=visible.turn_id) AS ordinal FROM visible
+      WHERE turn_id NOT LIKE '%:turn:0' GROUP BY turn_id), directory AS (
+      SELECT *,ROW_NUMBER() OVER (ORDER BY ordinal,id) AS position FROM rounds)`;
+    const total = (this.database.prepare(`${groups} SELECT COUNT(*) AS count FROM directory`).get(...values) as { count: number }).count;
+    const turns = this.database.prepare(`${groups} SELECT id,position,COALESCE((SELECT substr(text,1,160) FROM session_messages m
+      WHERE m.revision=? AND m.id IN (SELECT id FROM scoped WHERE turn_id=directory.id AND kind='user') ORDER BY ordinal,id LIMIT 1),'') AS question
+      FROM directory ORDER BY position LIMIT ? OFFSET ?`).all(...values, revision, pageSize, (page - 1) * pageSize) as SessionTurnDirectory["turns"];
+    return { version, turns, total, page, pageSize };
+  }
+
   messages(id: string, query: SessionMessageQuery = {}): SessionMessageResult {
     const version = this.version(query.version);
     const { revision, summary: session } = this.session(id, version);
     const pagination = paging(query.pageUnit === "turn" ? { ...query, pageSize: query.pageSize ?? 10 } : query);
-    let branchCondition = "";
-    const branchValues: SqlValue[] = [];
-    if (query.branch && query.branch !== "all" && query.branch !== "current") {
-      if (!session.branches?.some(branch => branch.id === query.branch)) throw new StoreError("INVALID_INPUT", "会话分支不存在", { key: "diagnostics.sessions.store.m012" });
-      branchCondition = " AND (json_extract(json,'$.branchIds') IS NULL OR EXISTS (SELECT 1 FROM json_each(session_messages.json,'$.branchIds') WHERE value=?))";
-      branchValues.push(query.branch);
-    } else if (query.branch === "current" || !query.branch && query.mode === "brief") {
-      branchCondition = " AND COALESCE(json_extract(json,'$.currentBranch'),1)=1";
-    }
-    const condition = branchCondition + (query.mode === "brief" ? " AND (kind='user' OR (kind='assistant' AND final IS NOT NULL))" : "");
+    const { cte, values } = this.readingScope(revision, session, query);
     const targetParts: string[] = [];
     const targetValues: SqlValue[] = [];
     if (query.messageId) { targetParts.push("id=?"); targetValues.push(query.messageId); }
@@ -532,22 +571,20 @@ export class SessionStore {
         if (value) { targetParts.push(`json_extract(json,'$.resource.${key}')=?`); targetValues.push(value); }
       }
     }
-    const target = targetParts.length ? this.database.prepare(`SELECT ordinal,id,turn_id,kind,final FROM session_messages
-      WHERE revision=?${branchCondition} AND ${targetParts.join(" AND ")} ORDER BY ordinal,id LIMIT 1`).get(revision, ...branchValues, ...targetValues) as
+    const target = targetParts.length ? this.database.prepare(`${cte} SELECT ordinal,id,turn_id,kind,final FROM session_messages
+      WHERE revision=? AND id IN (SELECT id FROM scoped) AND ${targetParts.join(" AND ")} ORDER BY ordinal,id LIMIT 1`).get(...values, revision, ...targetValues) as
       { ordinal: number; id: string; turn_id: string; kind: string; final: string | null } | undefined : undefined;
     if (!target && targetParts.length && (!query.messageId || query.pageUnit === "turn")) throw new StoreError("SOURCE_NOT_FOUND", "定位消息不存在于当前会话", { key: "diagnostics.sessions.store.m013" });
-    if (target && query.mode === "brief" && target.kind !== "user" && !(target.kind === "assistant" && target.final)) {
+    if (target && !this.database.prepare(`${cte} SELECT 1 FROM visible WHERE id=?`).get(...values, target.id)) {
       throw new StoreError("INVALID_INPUT", "定位消息不在简易视图中，请切换完整或轨迹视图", { key: "diagnostics.sessions.store.m014" });
     }
+    const project = (rows: MessageRow[]) => rows.map(row => {
+      const message = decodeMessage(row);
+      return query.mode === "brief" && message.kind === "assistant" && !message.final ? { ...message, unconfirmed: true } : message;
+    });
     if (query.pageUnit === "turn") {
-      // 只聚合消息元信息，轮次顺序来自完整历史，避免加载全部正文。
-      const visible = query.mode === "brief" ? "kind='user' OR (kind='assistant' AND final IS NOT NULL)" : "1";
-      const groups = this.database.prepare(`WITH ordered AS (
-        SELECT CASE WHEN turn_id='' THEN 'unknown' ELSE turn_id END AS normalized_turn,kind,final,
-          ROW_NUMBER() OVER (ORDER BY ordinal,id) AS sequence FROM session_messages WHERE revision=?${branchCondition}
-      ) SELECT normalized_turn AS id,SUM(CASE WHEN ${visible} THEN 1 ELSE 0 END) AS messageCount
-        FROM ordered GROUP BY normalized_turn HAVING messageCount>0 ORDER BY MIN(sequence)`)
-        .all(revision, ...branchValues) as { id: string; messageCount: number }[];
+      const groups = this.database.prepare(`${cte} SELECT turn_id AS id,COUNT(*) AS messageCount FROM visible
+        GROUP BY turn_id ORDER BY (SELECT MIN(s.ordinal) FROM scoped s WHERE s.turn_id=visible.turn_id),MIN(id)`).all(...values) as { id: string; messageCount: number }[];
       const initial = groups.filter(turn => turn.id.endsWith(":turn:0"));
       const rounds = groups.filter(turn => !turn.id.endsWith(":turn:0"));
       const totalTurns = rounds.length;
@@ -561,21 +598,22 @@ export class SessionStore {
       const turns = rounds.slice((pagination.page - 1) * pagination.pageSize, pagination.page * pagination.pageSize)
         .map((turn, index) => ({ ...turn, position: (pagination.page - 1) * pagination.pageSize + index + 1 }));
       if (pagination.page === 1) turns.unshift(...initial.map(turn => ({ ...turn, position: 0 })));
-      const turnIds = turns.flatMap(turn => turn.id === "unknown" ? ["", "unknown"] : [turn.id]);
-      const messages = turns.length ? (this.database.prepare(`SELECT ${MESSAGE_COLUMNS},text FROM session_messages WHERE revision=?${condition}
-        AND turn_id IN (${turnIds.map(() => "?").join(",")}) ORDER BY ordinal,id`)
-        .all(revision, ...branchValues, ...turnIds) as MessageRow[]).map(decodeMessage) : [];
+      const turnIds = turns.map(turn => turn.id);
+      const messages = turns.length ? project(this.database.prepare(`${cte} SELECT ${MESSAGE_COLUMNS},text FROM session_messages
+        WHERE revision=? AND id IN (SELECT id FROM visible WHERE turn_id IN (${turnIds.map(() => "?").join(",")})) ORDER BY ordinal,id`)
+        .all(...values, revision, ...turnIds) as MessageRow[]) : [];
       return { version, session, messages, total, ...pagination, pageUnit: "turn", totalTurns, turns, focusMessageId: target?.id };
     }
     if (query.turnPosition !== undefined) throw new StoreError("INVALID_INPUT", "turnPosition 仅支持完整轮次分页", { key: "diagnostics.sessions.store.m016" });
     if (target) {
-      const preceding = (this.database.prepare(`SELECT COUNT(*) AS count FROM session_messages WHERE revision=?${condition} AND (ordinal<? OR (ordinal=? AND id<?))`)
-        .get(revision, ...branchValues, target.ordinal, target.ordinal, target.id) as { count: number }).count;
+      const preceding = (this.database.prepare(`${cte} SELECT COUNT(*) AS count FROM visible WHERE ordinal<? OR (ordinal=? AND id<?)`)
+        .get(...values, target.ordinal, target.ordinal, target.id) as { count: number }).count;
       pagination.page = Math.floor(preceding / pagination.pageSize) + 1;
     }
-    const total = (this.database.prepare(`SELECT COUNT(*) AS count FROM session_messages WHERE revision=?${condition}`).get(revision, ...branchValues) as { count: number }).count;
-    const messages = (this.database.prepare(`SELECT ${MESSAGE_COLUMNS},text FROM session_messages WHERE revision=?${condition} ORDER BY ordinal,id LIMIT ? OFFSET ?`)
-      .all(revision, ...branchValues, pagination.pageSize, (pagination.page - 1) * pagination.pageSize) as MessageRow[]).map(decodeMessage);
+    const total = (this.database.prepare(`${cte} SELECT COUNT(*) AS count FROM visible`).get(...values) as { count: number }).count;
+    const messages = project(this.database.prepare(`${cte} SELECT ${MESSAGE_COLUMNS},text FROM session_messages
+      WHERE revision=? AND id IN (SELECT id FROM visible ORDER BY ordinal,id LIMIT ? OFFSET ?) ORDER BY ordinal,id`)
+      .all(...values, revision, pagination.pageSize, (pagination.page - 1) * pagination.pageSize) as MessageRow[]);
     return { version, session, messages, total, ...pagination, focusMessageId: target?.id };
   }
 
@@ -587,26 +625,24 @@ export class SessionStore {
       'ordinal',ordinal,'turnId',turn_id,'kind',kind,'occurredAt',json_extract(json,'$.occurredAt'),
       'model',json_extract(json,'$.model'),'callId',call_id,'tool',json_extract(json,'$.tool'),
       'status',json_extract(json,'$.status'),'durationMs',json_extract(json,'$.durationMs'),
-      'contextSource',json_extract(json,'$.contextSource'),'usage',id IN
+      'contextSource',json_extract(json,'$.contextSource'),'copied',copied,'usage',id IN
         (SELECT message_id FROM session_usage WHERE revision=? AND message_id IS NOT NULL)) AS json
       FROM session_messages WHERE revision=? ORDER BY ordinal,id`).all(revision, revision) as JsonRow[];
     return { version, events: events.map(row => {
       const event = Object.fromEntries(Object.entries(decode<SessionTimelineEvent>(row)).filter(([, value]) => value !== null)) as SessionTimelineEvent;
       event.usage = Boolean(event.usage);
+      if (event.copied !== undefined) event.copied = Boolean(event.copied);
       return event;
     }) };
   }
 
-  search(query: SessionQuery & { sessionId?: string } = {}): SessionSearchResult {
-    const version = this.version(query.version);
-    const { page, pageSize } = paging(query);
-    if (!query.q?.trim()) return { version, hits: [], total: 0, page, pageSize };
+  private searchCandidates(query: SessionQuery & { sessionId?: string }, version: string) {
     const filter = this.filters(query);
     if (query.sessionId) { filter.sql += " AND v.session_id=?"; filter.values.push(query.sessionId); }
     const selectedKinds = kindsOf(query);
     const common = `FROM session_version_sessions v JOIN session_revisions r ON r.id=v.revision WHERE v.version=?${filter.sql}`;
-    const pattern = literal(query.q.trim());
-    const match = searchMatch(this.database, query.q.trim());
+    const pattern = literal((query.q ?? "").trim());
+    const match = searchMatch(this.database, (query.q ?? "").trim());
     const candidates = match ? " AND m.rowid IN (SELECT rowid FROM session_message_search WHERE session_message_search MATCH ?)" : "";
     const title = `SELECT v.session_id,NULL AS message_id,NULL AS turn_id,'title' AS kind,r.id AS revision,
       r.json,COALESCE(r.updated_at,r.started_at,'') AS updated_at,0 AS ordinal ${common} AND r.title LIKE ? ESCAPE '\\'`;
@@ -634,8 +670,46 @@ export class SessionStore {
       r.json,COALESCE(r.updated_at,r.started_at,'') AS updated_at,m.ordinal ${messageFrom}
       WHERE v.version=?${filter.sql}${candidates} AND m.kind IN (${selectedKinds.map(() => "?").join(",") || "NULL"}) AND m.text LIKE ? ESCAPE '\\'`;
     const union = `${title} UNION ALL ${messages}`;
-    const needle = query.q.trim();
+    const needle = (query.q ?? "").trim();
     const values = [version, ...filter.values, pattern, version, ...filter.values, ...(match ? [match] : []), ...selectedKinds, pattern];
+    return { union, values, needle };
+  }
+
+  groupedSearch(query: SessionQuery = {}): SessionGroupedSearchResult {
+    const version = this.version(query.version);
+    const { page, pageSize } = paging(query);
+    if (!query.q?.trim()) return { version, groups: [], total: 0, hitCount: 0, page, pageSize };
+    const { union, values, needle } = this.searchCandidates(query, version);
+    const counts = this.database.prepare(`SELECT COUNT(DISTINCT session_id) AS total,COUNT(*) AS hitCount FROM (${union})`)
+      .get(...values) as { total: number; hitCount: number };
+    // 以会话分页，代表片段只取当前页的前三条，展开时复用记录级查询。
+    const rows = this.database.prepare(`WITH matches AS MATERIALIZED (${union}), selected AS (
+      SELECT session_id,COUNT(*) AS match_count FROM matches GROUP BY session_id ORDER BY MAX(updated_at) DESC,session_id LIMIT ? OFFSET ?
+    ), ranked AS (
+      SELECT matches.*,selected.match_count,ROW_NUMBER() OVER (PARTITION BY matches.session_id ORDER BY ordinal,message_id) AS rank
+      FROM matches JOIN selected ON selected.session_id=matches.session_id
+    ), bodies AS (
+      SELECT ranked.*,CASE WHEN message_id IS NULL THEN r.title ELSE m.text END AS body FROM ranked
+        JOIN session_revisions r ON r.id=ranked.revision LEFT JOIN session_messages m ON m.revision=ranked.revision AND m.id=ranked.message_id WHERE rank<=3
+    ) SELECT *,substr(body,MAX(1,instr(lower(body),lower(?))-70),240) AS text,
+      length(body) AS text_length,MAX(1,instr(lower(body),lower(?))-70) AS text_start FROM bodies ORDER BY updated_at DESC,session_id,rank`)
+      .all(...values, pageSize, (page - 1) * pageSize, needle, needle) as (JsonRow & { session_id: string; message_id?: string; turn_id?: string;
+        kind: SessionSearchResult["hits"][number]["kind"]; match_count: number; text: string; text_start: number; text_length: number })[];
+    const groups: SessionGroupedSearchResult["groups"] = [];
+    for (const row of rows) {
+      let group = groups.find(item => item.session.id === row.session_id);
+      if (!group) { group = { session: this.summary(row, version), matchCount: row.match_count, hits: [] }; groups.push(group); }
+      group.hits.push({ session: group.session, messageId: row.message_id ?? undefined, turnId: row.turn_id ?? undefined, kind: row.kind,
+        snippet: (row.text_start > 1 ? "…" : "") + row.text + (row.text_length > row.text_start - 1 + 240 ? "…" : "") });
+    }
+    return { version, groups, ...counts, page, pageSize };
+  }
+
+  search(query: SessionQuery & { sessionId?: string } = {}): SessionSearchResult {
+    const version = this.version(query.version);
+    const { page, pageSize } = paging(query);
+    if (!query.q?.trim()) return { version, hits: [], total: 0, page, pageSize };
+    const { union, values, needle } = this.searchCandidates(query, version);
     const total = (this.database.prepare(`SELECT COUNT(*) AS count FROM (${union})`).get(...values) as { count: number }).count;
     // 先选出当前页，避免为全部命中正文计算摘要和大小写转换。
     const rows = this.database.prepare(`WITH page AS MATERIALIZED (

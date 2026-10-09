@@ -945,3 +945,47 @@ test("初始上下文与实际轮次分开计数和分页，总览不搬运正�
   assert.equal(store.timeline(id, version).events.length, 4);
   assert.throws(() => store.timeline(id), { code: "SOURCE_NOT_FOUND" });
 }));
+
+test("对话兜底仅选本分支末条非空正文，不改写终态，分页和定位保留它", async () => fixture(store => {
+  const id = "unfinished-dialogue";
+  const records = [
+    message(id, 1, { turnId: "first", text: "问题一" }),
+    message(id, 2, { turnId: "first", kind: "assistant", text: "中间回复" }),
+    message(id, 3, { turnId: "first", kind: "assistant", text: "最后保存回复" }),
+    message(id, 4, { turnId: "first", kind: "assistant", text: "\n \t \r " }),
+    message(id, 5, { turnId: "first", kind: "tool_call", text: "尚有调用" }),
+    message(id, 6, { turnId: "second", text: "问题二" }),
+    message(id, 7, { turnId: "second", kind: "assistant", text: "终答", final: "explicit" }),
+    message(id, 8, { turnId: "second", kind: "assistant", text: "后续正文" }),
+    message(id, 9, { turnId: "first", kind: "assistant", text: "其他分支终答", final: "explicit", branchIds: ["other"], currentBranch: false }),
+  ];
+  store.publish(store.createJob().id, [source(store, meta(id, { branches: [{ id: "other", label: "other", current: false }] }), records)], []);
+  const result = store.messages(id, { mode: "brief", pageUnit: "turn", pageSize: 1 });
+  assert.deepEqual(result.messages.map(item => [item.ordinal, item.final, item.unconfirmed]), [[1, undefined, undefined], [3, undefined, true]]);
+  assert.equal(result.total, 4);
+  assert.equal(store.messages(id, { mode: "brief", pageUnit: "turn", messageId: "message-3" }).focusMessageId, "message-3");
+  assert.throws(() => store.messages(id, { mode: "brief", messageId: "message-2" }), { code: "INVALID_INPUT" });
+  assert.equal(store.messages(id, { mode: "full" }).messages[2]?.unconfirmed, undefined);
+  assert.equal(store.messages(id, { mode: "brief", pageUnit: "turn", page: 2, pageSize: 1 }).messages.at(-1)?.ordinal, 7);
+  const directory = store.turnDirectory(id, { pageSize: 1 });
+  assert.deepEqual(directory.turns, [{ id: "first", position: 1, question: "问题一" }]);
+  assert.equal(store.turnDirectory(id, { pageSize: 1, page: 2 }).turns[0]?.question, "问题二");
+}));
+
+test("会话级搜索按全量会话分页，保留记录级总数、展开及范围判断", async () => fixture(store => {
+  const revisions = [source(store, meta("many", { project: "/synthetic/a" }), Array.from({ length: 30 }, (_, index) => message("many", index, { text: `needle ${index}` }))),
+    source(store, meta("few", { project: "/synthetic/b" }), [message("few", 0, { text: "needle" })]),
+    source(store, meta("last", { project: "/synthetic/a" }), [message("last", 0, { text: "needle" })])];
+  const version = store.publish(store.createJob().id, revisions, []);
+  const groups = store.groupedSearch({ q: "needle", pageSize: 2 });
+  assert.equal(groups.total, 3); assert.equal(groups.hitCount, 32); assert.equal(groups.groups.length, 2);
+  assert.equal(new Set(groups.groups.map(group => group.session.id)).size, 2);
+  assert.ok(groups.groups.every(group => group.hits.length <= 3));
+  assert.equal(store.groupedSearch({ q: "needle", pageSize: 2, page: 2 }).groups.length, 1);
+  assert.equal(store.search({ q: "needle", sessionId: "many", page: 2, pageSize: 12 }).hits.length, 12);
+  assert.equal(store.search({ q: "needle" }).total, 32);
+  assert.equal(store.matches("many", { project: "/synthetic/b" }).matches, false);
+  assert.equal(store.matches("many", { q: "needle", page: 999 }).matches, true);
+  assert.equal(store.matches("many", { q: "missing" }).matches, false);
+  assert.equal(store.groupedSearch({ q: "needle", version }).version, version);
+}));

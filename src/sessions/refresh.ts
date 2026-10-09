@@ -88,12 +88,13 @@ export async function refreshSessions(store: SessionStore, jobId: string, roots?
       const titleFingerprint = ["codex", "codeflicker-desktop"].includes(source.client) ? `:title-v1:${createHash("sha256").update(JSON.stringify(title ?? null)).digest("hex")}` : "";
       const childTitleFingerprint = source.client === "codex" && source.parentSessionId ? ":child-title-v2" : "";
       const projectMetadata = codeflickerProjects.get(source.path);
-      const projectFingerprint = source.client === "codeflicker" ? `:project-v1:${createHash("sha256").update(JSON.stringify(projectMetadata ?? null)).digest("hex")}:execution-v2:attachments-v1:compression-v1` : "";
+      const projectFingerprint = source.client === "codeflicker" ? `:project-v1:${createHash("sha256").update(JSON.stringify(projectMetadata ?? null)).digest("hex")}:execution-v2:attachments-v1:compression-v1:hidden-context-v1` : "";
       const nativeModels = source.format === DESKTOP_FORMAT ? await desktopModels(source.path) : undefined;
       const desktopFingerprint = nativeModels ? `:desktop-v3:${source.cwd ?? ""}:${nativeModels.fingerprint}:${nativeModels.limited}` : "";
       // 保留原生 Skill 目录的资源规则只失效桌面会话缓存，避免触发其他客户端重建。
       const desktopResourceFingerprint = source.client === "codeflicker-desktop" ? ":skill-directory-v1" : "";
-      const metadataSuffix = `${titleFingerprint}${childTitleFingerprint}${projectFingerprint}${desktopFingerprint}${desktopResourceFingerprint}`;
+      const contextUsageFingerprint = source.client === "codex" ? ":active-context-v1" : "";
+      const metadataSuffix = `${contextUsageFingerprint}${titleFingerprint}${childTitleFingerprint}${projectFingerprint}${desktopFingerprint}${desktopResourceFingerprint}`;
       const metadataFingerprint = createHash("sha256").update(JSON.stringify({ rule: SESSION_INDEX_RULE_VERSION, source: location, metadataSuffix })).digest("hex");
       let stamp: string | undefined;
       try { stamp = await sourceQuickStamp(source); }

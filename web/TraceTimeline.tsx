@@ -58,7 +58,7 @@ export function TraceTimeline({ events, selectedId, loading, error, onSelect, on
           {selected && <rect x={5 + selected.x * 990 - 4} y={selected.lane * 22 + 5} width={9} height={13} rx={2} className="trace-mark-selection" />}
         </svg>
         {hovered && hover && <div className="trace-timeline-tooltip" role="tooltip" style={{ left: `calc(44px + (100% - 44px) * ${hover.x / 100})`, top: hover.y + 18 }}>
-          <strong>{label(hovered.event)}</strong><span>{hovered.event.occurredAt ? formatDateTime(getLanguage(), hovered.event.occurredAt) : t("sessions.message.timeMissing")}</span>
+          <strong>{label(hovered.event)}</strong>{hovered.event.occurredAt && <span>{formatDateTime(getLanguage(), hovered.event.occurredAt)}</span>}
           {hovered.event.model && <span>{hovered.event.model}</span>}{hovered.event.durationMs !== undefined && <span>{t("sessions.timeline.duration", { value: formatNumber(getLanguage(), hovered.event.durationMs) })}</span>}
         </div>}
       </div>

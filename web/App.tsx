@@ -200,6 +200,7 @@ export function App() {
   const hashView = (): ProductView => location.hash.startsWith("#sessions") ? "sessions" : location.hash.startsWith("#resources") ? "resources" : "map";
   const [view, setView] = useState<ProductView>(hashView);
   const viewScroll = useRef({ map: 0, sessions: 0, resources: 0 });
+  const sessionAddress = useRef(location.hash.startsWith("#sessions") ? location.hash : "#sessions");
   const resourceAddress = useRef(location.hash.startsWith("#resources") ? location.hash : "#resources");
   const activeView = useRef(view);
   const activateView = useCallback((next: ProductView) => {
@@ -218,8 +219,10 @@ export function App() {
       const sessionId = params.get("id");
       const mode = params.get("mode");
       const positive = (name: string) => { const value = Number(params.get(name)); return Number.isSafeInteger(value) && value > 0 ? value : undefined; };
-      if (sessionId) setSessionTarget({ sessionId, messageId: params.get("message") ?? undefined,
-        mode: mode === "brief" || mode === "full" || mode === "trace" ? mode : undefined, page: positive("page"), turnPosition: positive("turn"), branch: params.get("branch") ?? undefined });
+      if (sessionId) { const next = { sessionId, messageId: params.get("message") ?? undefined,
+        mode: mode === "brief" || mode === "full" || mode === "trace" ? mode as "brief" | "full" | "trace" : undefined, page: positive("page"), turnPosition: positive("turn"), branch: params.get("branch") ?? undefined };
+        setSessionTarget(current => JSON.stringify(current) === JSON.stringify(next) ? current : next);
+      }
     };
     navigate();
     globalThis.addEventListener("hashchange", navigate);
@@ -227,7 +230,8 @@ export function App() {
   }, [activateView]);
   const switchView = (next: ProductView) => {
     if (location.hash.startsWith("#resources")) resourceAddress.current = location.hash;
-    activateView(next); location.hash = next === "resources" ? resourceAddress.current : next;
+    if (location.hash.startsWith("#sessions")) sessionAddress.current = location.hash;
+    activateView(next); location.hash = next === "resources" ? resourceAddress.current : next === "sessions" ? sessionAddress.current : next;
   };
   const openResourceSession = (target: { sessionId: string; messageId: string }) => {
     resourceAddress.current = location.hash;
@@ -371,6 +375,7 @@ export function App() {
     } catch (failure) { setActionError(failure); }
   };
   const openMap = (path?: string, project?: string) => {
+    if (location.hash.startsWith("#sessions")) sessionAddress.current = location.hash;
     const repo = [...repositories].sort((a, b) => b.path.length - a.path.length).find(candidate =>
       project === candidate.path || project?.startsWith(`${candidate.path}/`) || path?.startsWith(`${candidate.path}/`));
     if (!repo) { setActionError(new ApiError("REPOSITORY_NOT_REGISTERED", "此会话项目尚未登记代码地图，请先登记本机仓库。", { key: "codeMap.error.repositoryMissing" })); activateView("map"); location.hash = "map"; return; }

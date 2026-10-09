@@ -447,3 +447,21 @@ test("没有 cwd 时仅现存工具目标可确认关联 Git 项目，多根冲�
     assert.equal(absent.summary.project, undefined);
   } finally { await rm(directory, { recursive: true, force: true }); }
 });
+
+test("CodeFlicker 原生隐藏注入保留为上下文，不产生用户轮次", async () => {
+  const records = [{ type: "message", sessionId: "hidden-context", uuid: "u", role: "user", content: "真实问题", timestamp },
+    { type: "message", sessionId: "hidden-context", uuid: "injection", role: "user", hidden: true, content: "Base directory for this skill: /synthetic/skill", timestamp },
+    { type: "message", sessionId: "hidden-context", uuid: "a", role: "assistant", content: "最终回答", stop_reason: "end_turn", timestamp }];
+  const result = await parsed("codeflicker", records);
+  assert.equal(result.summary.turnCount, 1);
+  const injected = result.messages.find(message => message.text.startsWith("Base directory"));
+  assert.equal(injected?.kind, "context"); assert.equal(injected?.contextEvidence, "client_metadata");
+});
+
+test("旧 Codex token_count 只用当次 total_tokens 补上下文，不读取累计总量", async () => {
+  const result = await parsed("codex", [meta(), user(), assistant("a", "已保存回复"),
+    counted({ ...usageValue(500), total_tokens: 9000 }, { ...usageValue(100), total_tokens: 123 }),
+    requestUsage("new-record", { ...usageValue(800), total_tokens: 15000 }, { ...usageValue(80), total_tokens: 999 })]);
+  assert.equal(result.usages[0]?.contextTokens, 123);
+  assert.equal(result.usages[1]?.contextTokens, undefined);
+});

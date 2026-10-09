@@ -2,12 +2,12 @@ import { clientLabel, getLanguage, isMessageDescriptorKnown, messageText, t, use
 import { formatDateTime, formatNumber, formatPercent } from "../src/i18n";
 import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { CaretLeft, CaretRight } from "@phosphor-icons/react";
-import type { SessionProfile, SessionSummary } from "../src/session-contracts";
+import type { SessionProfile, SessionSummary, SessionTimelineEvent } from "../src/session-contracts";
 import { sessionDisplayTitle, displayRecorded, sessionResourceName, usageAxis, usageIndexAt, usageSegments, type EvidenceTarget } from "./session-model";
 import { kindLabels, resourceLabels } from "./SessionMessage";
 import { Notice, Pager, SessionDiagnostic, SessionError } from "./SessionControls";
 import { HelpPopover } from "./HelpPopover";
-import { gapNames } from "./model";
+import { SessionEvidence } from "./SessionEvidence";
 
 const formatCount = (value: number) => formatNumber(getLanguage(), value);
 const dateLabel = (value?: string) => value ? formatDateTime(getLanguage(), value) : t("sessions.message.timeMissing");
@@ -26,7 +26,7 @@ function UsageChart({ profile, onFocusStep }: { profile: SessionProfile; onFocus
   const { max, ticks, curves } = useMemo(() => {
     const maximum = profile.steps.reduce((value, step) => Math.max(value, step.inputTokens ?? 0, step.cachedInputTokens ?? 0, step.outputTokens ?? 0), 0);
     const axis = usageAxis(maximum);
-    return { ...axis, curves: usageSeries.map(([key]) => ({ key, segments: usageSegments(profile.steps, key, axis.max) })) };
+    return { ...axis, curves: usageSeries.filter(([key]) => profile.steps.some(step => step[key] !== undefined)).map(([key]) => ({ key, segments: usageSegments(profile.steps, key, axis.max) })) };
   }, [profile.steps]);
   const [hovered, setHovered] = useState<number>();
   const [focused, setFocused] = useState<number>();
@@ -45,7 +45,7 @@ function UsageChart({ profile, onFocusStep }: { profile: SessionProfile; onFocus
     return usageIndexAt(((clientX - bounds.left) / bounds.width * 104 - 2) / 100, profile.steps.length);
   };
   return <div className="session-usage-chart">
-    <div className="session-chart-legend">{usageSeries.map(([key, label]) => <span key={key}><i className={`series-${key}`} />{t(label)}</span>)}</div>
+    <div className="session-chart-legend">{usageSeries.filter(([key]) => profile.steps.some(step => step[key] !== undefined)).map(([key, label]) => <span key={key}><i className={`series-${key}`} />{t(label)}</span>)}</div>
     <div className="session-chart-unit">Token</div>
     <div className="session-chart-body">
       <div className="session-chart-y-axis" aria-label={t("sessions.profile.chartYAxis")}>{ticks.map(value => <span key={value} style={{ top: `${100 - value / max * 100}%` }} title={`${formatCount(value)} Token`}>
@@ -88,9 +88,9 @@ function UsageChart({ profile, onFocusStep }: { profile: SessionProfile; onFocus
         </svg>
         {active && selected !== undefined && <div id={tooltipId} role="tooltip" className="session-chart-tooltip" style={x(selected) < 50 ? { right: 8 } : { left: 8 }}>
           <strong>{t(active.sessionId !== profile.sessionIds[0] ? "sessions.profile.childRequestNumber" : "sessions.profile.requestNumber", { number: formatCount(selected + 1) })}</strong>
-          <span className="session-chart-tooltip-model">{active.model ?? t("sessions.trace.modelMissing")}</span>
-          <dl>{usageSeries.map(([key, label]) => <div key={key}><dt><i className={`series-${key}`} />{t(label)}</dt><dd>{displayRecorded(active[key])}{active[key] === undefined ? "" : " Token"}</dd></div>)}</dl>
-          <small>{dateLabel(active.occurredAt)}</small>
+          {active.model && <span className="session-chart-tooltip-model">{active.model}</span>}
+          <dl>{usageSeries.filter(([key]) => active[key] !== undefined).map(([key, label]) => <div key={key}><dt><i className={`series-${key}`} />{t(label)}</dt><dd>{displayRecorded(active[key])}{active[key] === undefined ? "" : " Token"}</dd></div>)}</dl>
+          {active.occurredAt && <small>{dateLabel(active.occurredAt)}</small>}
         </div>}
       </div>
       <span /><div className="session-chart-axis"><span>1</span><span>{t("sessions.profile.chartRequestIndex")}</span><span>{profile.steps.length > 1 ? formatCount(profile.steps.length) : ""}</span></div>
@@ -98,22 +98,39 @@ function UsageChart({ profile, onFocusStep }: { profile: SessionProfile; onFocus
   </div>;
 }
 
-export function SessionProfilePane({ profile, loading, error, includeChildren, setIncludeChildren, collapsed, setCollapsed, onRetry, onSelectChild, onFocusStep, onFind }: {
+const metrics = [
+  ["inputTokens", "sessions.profile.totalInput"], ["outputTokens", "sessions.profile.outputTokens"],
+  ["cachedInputTokens", "sessions.profile.cachedTokens"], ["cacheWriteTokens", "sessions.profile.cacheWriteTokens"],
+  ["reasoningOutputTokens", "sessions.profile.reasoningTokens"], ["peakInputTokens", "sessions.profile.maxInput"], ["peakContextTokens", "sessions.profile.peakContext"],
+] as const;
+
+export function SessionProfilePane({ profile, loading, error, includeChildren, setIncludeChildren, collapsed, setCollapsed, onRetry, onSelectChild, onFocusStep, onFind, onFocusEvent }: {
   profile: SessionProfile | null; loading: boolean; error: Error | null; includeChildren: boolean; setIncludeChildren: (value: boolean) => void;
   collapsed: boolean; setCollapsed: (value: boolean) => void; onRetry: () => void;
   onSelectChild: (session: SessionSummary) => void; onFocusStep: (step: SessionProfile["steps"][number]) => void; onFind: (target: EvidenceTarget) => void;
+  onFocusEvent: (event: SessionTimelineEvent) => void;
 }) {
   useI18n();
   const [tab, setTab] = useState<"overview" | "calls" | "usage">("overview");
   const [stepPage, setStepPage] = useState(1);
+  const hasCalls = !!profile && (profile.tools.length > 0 || profile.resources.length > 0);
+  const visibleMetrics = profile ? metrics.filter(([key]) => profile.usage[key] !== null) : [];
+  const hasUsage = visibleMetrics.length > 0;
+  const visibleTab = tab === "calls" && !hasCalls || tab === "usage" && !hasUsage ? "overview" : tab;
+  const displayedMetrics = visibleMetrics.filter(([key]) => visibleTab === "usage" || key === "inputTokens" || key === "outputTokens");
   useEffect(() => { setStepPage(1); }, [profile?.sessionIds[0], profile?.scope, profile?.version]);
+  const failureCount = profile?.tools.reduce((total, item) => total + item.failure, 0) ?? 0;
+  const peak = profile?.steps.find(step => step.inputTokens === profile.usage.peakInputTokens && !!step.messageId);
   return <aside className={`evidence-pane session-profile${collapsed ? " panel-collapsed" : ""}`} aria-label={t("sessions.profile.title")}>
-    <div className="pane-heading"><span>{t("sessions.profile.title")}</span><div className="session-profile-heading-actions"><div className="session-profile-scope" role="group" aria-label={t("sessions.profile.scope")} hidden={collapsed}>
-      <button aria-pressed={!includeChildren} className={!includeChildren ? "is-selected" : ""} onClick={() => setIncludeChildren(false)}>{t("sessions.profile.self")}</button>
-      <button aria-pressed={includeChildren} className={includeChildren ? "is-selected" : ""} onClick={() => setIncludeChildren(true)}>{t("sessions.profile.withChildren")}</button>
-    </div><button className="icon-button panel-toggle" aria-label={collapsed ? t("sessions.profile.expand") : t("sessions.profile.collapse")} aria-expanded={!collapsed} aria-controls="session-profile-content" onClick={() => setCollapsed(!collapsed)}>{collapsed ? <CaretRight size={16} /> : <CaretLeft size={16} />}</button></div></div>
+    <div className="pane-heading"><span>{t("sessions.profile.title")}</span><div className="session-profile-heading-actions">
+      <div className="session-profile-scope" role="group" aria-label={t("sessions.profile.scope")} hidden={collapsed}>
+        <button aria-pressed={!includeChildren} className={!includeChildren ? "is-selected" : ""} onClick={() => setIncludeChildren(false)}>{t("sessions.profile.self")}</button>
+        <button aria-pressed={includeChildren} className={includeChildren ? "is-selected" : ""} onClick={() => setIncludeChildren(true)}>{t("sessions.profile.withChildren")}</button>
+      </div>
+      <button className="icon-button panel-toggle" aria-label={collapsed ? t("sessions.profile.expand") : t("sessions.profile.collapse")} aria-expanded={!collapsed} aria-controls="session-profile-content" onClick={() => setCollapsed(!collapsed)}>{collapsed ? <CaretLeft size={16} /> : <CaretRight size={16} />}</button>
+    </div></div>
     <div className="session-profile-tabs" role="tablist" aria-label={t("sessions.profile.categories")} hidden={collapsed}>
-      {([ ["overview", t("sessions.profile.overview")], ["calls", t("sessions.profile.calls")], ["usage", t("sessions.profile.usage")] ] as const).map(([value, label]) => <button key={value} role="tab" aria-selected={tab === value} aria-controls="session-profile-content" onClick={() => setTab(value)}>{label}</button>)}
+      {([["overview", "sessions.profile.overview"], ...(hasCalls ? [["calls", "sessions.profile.calls"]] : []), ...(hasUsage ? [["usage", "sessions.profile.usage"]] : [])] as ["overview" | "calls" | "usage", string][]).map(([value, label]) => <button key={value} role="tab" aria-selected={visibleTab === value} aria-controls="session-profile-content" onClick={() => setTab(value)}>{t(label)}</button>)}
     </div>
     <div id="session-profile-content" className="session-profile-content" hidden={collapsed}>
       {loading && <p className="muted" role="status">{t("sessions.profile.loading")}</p>}
@@ -121,64 +138,59 @@ export function SessionProfilePane({ profile, loading, error, includeChildren, s
       {!loading && !error && !profile && <div className="session-profile-empty"><h3>{t("sessions.profile.select")}</h3></div>}
       {profile && <>
         {profile.missingChildren > 0 && <Notice>{t("sessions.profile.missingChildren", { count: profile.missingChildren })}</Notice>}
-        <section className="session-profile-section" hidden={tab !== "overview"}><div className="session-section-heading"><h3>{t("sessions.profile.models")}</h3><span>{t("sessions.profile.modelCount", { count: profile.models.length })}</span></div>
-          {profile.models.length ? profile.models.map(item => <ProfileBar key={item.model} label={item.model} count={item.count} max={Math.max(...profile.models.map(model => model.count))} unit="records" />) : <p className="muted small">{t("sessions.trace.modelMissing")}</p>}
-        </section>
-        <section className="session-profile-section" hidden={tab === "calls"}><div className="session-section-heading"><h3>{t("sessions.trace.usageRequest")}</h3><div className="section-actions"><span>{t("sessions.profile.requestCount", { count: profile.usage.requests })}</span><HelpPopover label={t("sessions.profile.statsHelp")}>
-          <dl><div><dt>{t("sessions.profile.cacheRatio")}</dt><dd>{t("sessions.profile.cacheHelp")}</dd></div>
-            <div><dt>{t("sessions.profile.usageCoverage")}</dt><dd>{t("sessions.profile.coverageHelp", { input: formatCount(profile.usage.inputRecordedRequests), requests: formatCount(profile.usage.requests), cache: formatCount(profile.usage.cacheRecordedRequests) })}</dd></div>
-            <div><dt>{t("sessions.profile.estimate")}</dt><dd>{isMessageDescriptorKnown(profile.estimate.methodDescriptor) ? messageText(profile.estimate.methodDescriptor, profile.estimate.method) : t("common.originalDetail", { detail: profile.estimate.method })}</dd></div>
-            <div><dt>{t("sessions.profile.scopeHelpTitle")}</dt><dd>{t("sessions.profile.scopeHelp", { scope: profile.scope === "tree" ? t("sessions.profile.selfTree") : t("sessions.profile.currentSelf") })}</dd></div></dl>
-        </HelpPopover></div></div>
-          <div className="session-usage-grid">
-            <div><strong>{displayRecorded(profile.usage.inputTokens)}</strong><span>{t("sessions.profile.totalInput")}</span></div>
-            <div><strong>{displayRecorded(profile.usage.outputTokens)}</strong><span>{t("sessions.profile.outputTokens")}</span></div>
-            <div hidden={tab !== "usage"}><strong>{displayRecorded(profile.usage.cachedInputTokens)}</strong><span>{t("sessions.profile.cachedTokens")}</span></div>
-            <div hidden={tab !== "usage"}><strong>{displayRecorded(profile.usage.cacheWriteTokens)}</strong><span>{t("sessions.profile.cacheWriteTokens")}</span></div>
-            <div hidden={tab !== "usage"}><strong>{displayRecorded(profile.usage.reasoningOutputTokens)}</strong><span>{t("sessions.profile.reasoningTokens")}</span></div>
-            <div hidden={tab !== "usage"}><strong>{displayRecorded(profile.usage.peakInputTokens)}</strong><span>{t("sessions.profile.maxInput")}</span></div>
-            <div hidden={tab !== "usage"}><strong>{displayRecorded(profile.usage.peakContextTokens)}</strong><span>{t("sessions.profile.peakContext")}</span></div>
-          </div>
-          <div className="session-cache-ratio"><div><span>{t("sessions.profile.cacheRatio")}</span><strong>{normalizedRatio(profile.usage.cacheReadRatio)}</strong></div>
-            {profile.usage.cacheReadRatio !== null && (profile.usage.inputRecordedRequests < profile.usage.requests || profile.usage.cacheRecordedRequests < profile.usage.inputRecordedRequests) && <span className="session-partial-badge">{t("sessions.profile.partial")}</span>}
-          </div>
-        </section>
-        <section className="session-profile-section" hidden={tab !== "overview"}><div className="session-section-heading"><h3>{t("sessions.profile.content")}</h3><span>{profile.scope === "tree" ? t("sessions.profile.selfLinked") : t("sessions.profile.self")}</span></div>
+        {visibleTab === "overview" && profile.models.length > 0 && <section className="session-profile-section"><div className="session-section-heading"><h3>{t("sessions.profile.models")}</h3><span>{t("sessions.profile.modelCount", { count: profile.models.length })}</span></div>
+          {profile.models.map(item => <ProfileBar key={item.model} label={item.model} count={item.count} max={Math.max(...profile.models.map(model => model.count))} unit="records" />)}
+        </section>}
+        {visibleTab !== "calls" && displayedMetrics.length > 0 && <>
+          <section className="session-profile-section"><div className="session-section-heading"><h3>{t("sessions.trace.usageRequest")}</h3><div className="section-actions"><span>{t("sessions.profile.requestCount", { count: profile.usage.requests })}</span><HelpPopover label={t("sessions.profile.statsHelp")}>
+            <p>{t("sessions.profile.cacheHelp")}</p><p>{t("sessions.profile.scopeHelp", { scope: profile.scope === "tree" ? t("sessions.profile.selfTree") : t("sessions.profile.currentSelf") })}</p>
+            <p>{isMessageDescriptorKnown(profile.estimate.methodDescriptor) ? messageText(profile.estimate.methodDescriptor, profile.estimate.method) : profile.estimate.method}</p>
+          </HelpPopover></div></div>
+            <div className="session-usage-grid">{displayedMetrics.map(([key, label]) => {
+              const field = key === "peakInputTokens" ? "inputTokens" : key === "peakContextTokens" ? "contextTokens" : key;
+              const recorded = profile.steps.filter(step => step[field] !== undefined).length;
+              return <div key={key}><strong>{key === "peakInputTokens" && peak ? <button className="session-stat-link" aria-label={t("sessions.evidence.peak", { value: formatCount(peak.inputTokens!) })} onClick={() => onFocusStep(peak)}>{displayRecorded(profile.usage[key])}</button> : displayRecorded(profile.usage[key])}</strong><span>{t(label)}</span>
+                {recorded < profile.usage.requests && <small className="session-partial-badge">{t("sessions.usage.recordedRange", { count: recorded, total: profile.usage.requests })}</small>}</div>;
+            })}</div>
+            {profile.usage.cacheReadRatio !== null && profile.usage.inputRecordedRequests === profile.usage.requests && profile.usage.cacheRecordedRequests === profile.usage.requests && <div className="session-cache-ratio"><div><span>{t("sessions.profile.cacheRatio")}</span><strong>{normalizedRatio(profile.usage.cacheReadRatio)}</strong></div></div>}
+            {visibleTab === "overview" && peak && <button className="text-button session-profile-shortcut" onClick={() => onFocusStep(peak)}>{t("sessions.evidence.peak", { value: formatCount(peak.inputTokens!) })}</button>}
+          </section>
+        </>}
+        {visibleTab === "overview" && <section className="session-profile-section"><div className="session-section-heading"><h3>{t("sessions.profile.content")}</h3><div className="section-actions">
+          {failureCount > 0 ? <SessionEvidence kind="failure" profile={profile} onSelect={onFocusEvent}><button className="text-button">{t("sessions.evidence.failureCount", { count: failureCount })}</button></SessionEvidence> : <span>{profile.scope === "tree" ? t("sessions.profile.selfLinked") : t("sessions.profile.self")}</span>}
+        </div></div>
           <div className="session-usage-grid compact"><div><strong>{formatCount(profile.messageCount)}</strong><span>{t("sessions.profile.messages")}</span></div><div><strong>{formatCount(profile.turnCount)}</strong><span>{t("sessions.timeline.turn")}</span></div>
-            <div><strong>{formatCount(profile.estimate.total)}</strong><span>{t("sessions.profile.estimateTokens")}</span></div><div><strong>{formatCount(profile.compressions)}</strong><span>{t("sessions.profile.compressions")}</span></div></div>
-          <details className="session-stat-details"><summary>{t("sessions.profile.estimateKinds")}</summary>{profile.estimate.byKind.map(item => <ProfileBar key={item.kind} label={t(kindLabels[item.kind])} count={item.tokens} max={Math.max(1, ...profile.estimate.byKind.map(value => value.tokens))} unit="tokens" />)}</details>
-        </section>
-        <section className="session-profile-section" hidden={tab !== "calls"}><div className="session-section-heading"><h3>{t("sessions.profile.tools")}</h3><span>{t("sessions.profile.callCount", { count: profile.tools.reduce((total, item) => total + item.calls, 0) })}</span></div>
-          {profile.tools.length ? profile.tools.map(item => <div className="session-tool-stat" key={item.name}>
-            <div className="session-tool-title"><button className="session-stat-link" title={t("sessions.profile.locateCall")} onClick={() => onFind({ toolName: item.name })}>{item.name}</button><span>{t("sessions.profile.callStatuses", { success: formatCount(item.success), failure: formatCount(item.failure), unknown: formatCount(item.unknown) })}</span></div>
-            <ProfileBar label={t("sessions.profile.calls")} count={item.calls} max={Math.max(1, ...profile.tools.map(tool => tool.calls))} />
-            <small>{t("sessions.profile.duration", { duration: item.durationMs === null ? t("common.notRecorded") : `${displayRecorded(item.durationMs)} ms` })}</small>
-          </div>) : <p className="muted small">{t("sessions.profile.noTools")}</p>}
-        </section>
-        <section className="session-profile-section" hidden={tab !== "calls"}><div className="session-section-heading"><h3>{t("sessions.profile.resources")}</h3><span>{t("sessions.profile.resourceCount", { count: profile.resources.reduce((total, item) => total + item.count, 0) })}</span></div>
-          {profile.resources.length ? profile.resources.map(item => <div className="session-resource-stat" key={`${item.kind}-${item.server ?? ""}-${item.name}-${item.nameDescriptor?.key ?? ""}`}>
-            <span className={`session-resource-kind is-${item.kind}`}>{t(resourceLabels[item.kind])}</span><button className="session-stat-link" title={t("sessions.profile.locateResource")} onClick={() => onFind({ resourceKind: item.kind, resourceName: item.name, resourceServer: item.server })}>{item.server ? `${item.server} / ` : ""}{sessionResourceName(item)}</button><b>{formatCount(item.count)}</b>
-          </div>) : <p className="muted small">{t("sessions.profile.noResources")}</p>}
-        </section>
-        <section className="session-profile-section" hidden={tab !== "usage"}><div className="session-section-heading"><h3>{t("sessions.profile.trend")}</h3><div className="section-actions"><span>{t("sessions.profile.resourceCount", { count: profile.steps.length })}</span><HelpPopover label={t("sessions.profile.chartHelp")}>
-          <dl><div><dt>{t("sessions.profile.chartCoordinates")}</dt><dd>{t("sessions.profile.chartCoordinatesHelp")}</dd></div>
-            <div><dt>{t("sessions.profile.chartLocate")}</dt><dd>{t("sessions.profile.chartLocateHelp")}</dd></div></dl>
-        </HelpPopover></div></div>
-          {tab === "usage" && (profile.steps.length ? <>
-            <UsageChart profile={profile} onFocusStep={onFocusStep} />
-            <div className="session-step-table"><table><thead><tr><th>{t("sessions.profile.request")}</th><th>{t("sessions.usage.input")}</th><th>{t("sessions.usage.output")}</th><th>{t("sessions.usage.cachedInput")}</th></tr></thead><tbody>
-              {profile.steps.slice((stepPage - 1) * 12, stepPage * 12).map((step, index) => <tr key={step.id}>
-                <td>{step.messageId ? <button onClick={() => onFocusStep(step)} title={`${step.model ?? t("sessions.trace.modelMissing")} · ${dateLabel(step.occurredAt)}`}>{t(step.sessionId !== profile.sessionIds[0] ? "sessions.profile.childStep" : "sessions.profile.step", { number: formatCount((stepPage - 1) * 12 + index + 1) })}</button> : <span>#{formatCount((stepPage - 1) * 12 + index + 1)}</span>}</td>
-                <td>{displayRecorded(step.inputTokens)}</td><td>{displayRecorded(step.outputTokens)}</td><td>{displayRecorded(step.cachedInputTokens)}</td>
-              </tr>)}
+            <div><strong>{formatCount(profile.estimate.total)}</strong><span>{t("sessions.profile.estimateTokens")}</span></div><div><strong>{profile.compressions > 0 ? <SessionEvidence kind="compression" profile={profile} onSelect={onFocusEvent}><button className="session-stat-link" aria-label={t("sessions.evidence.compressionCount", { count: profile.compressions })}>{formatCount(profile.compressions)}</button></SessionEvidence> : formatCount(profile.compressions)}</strong><span>{t("sessions.profile.compressions")}</span></div></div>
+          <details className="session-stat-details"><summary>{t("sessions.profile.estimateKinds")}</summary>
+            <p>{isMessageDescriptorKnown(profile.estimate.methodDescriptor) ? messageText(profile.estimate.methodDescriptor, profile.estimate.method) : profile.estimate.method}</p>
+            {profile.estimate.byKind.filter(item => item.tokens > 0).map(item => <ProfileBar key={item.kind} label={t(kindLabels[item.kind])} count={item.tokens} max={Math.max(1, ...profile.estimate.byKind.map(value => value.tokens))} unit="tokens" />)}
+          </details>
+        </section>}
+        {visibleTab === "usage" && profile.steps.length > 0 && <section className="session-profile-section"><div className="session-section-heading"><h3>{t("sessions.profile.trend")}</h3><HelpPopover label={t("sessions.profile.chartHelp")}>
+          <p>{t("sessions.profile.chartCoordinatesHelp")}</p><p>{t("sessions.profile.chartLocateHelp")}</p>
+        </HelpPopover></div>
+          {profile.steps.filter(step => usageSeries.some(([key]) => step[key] !== undefined)).length > 1 && <UsageChart profile={profile} onFocusStep={onFocusStep} />}
+            <div className="session-step-table"><table><thead><tr><th>{t("sessions.profile.request")}</th>{usageSeries.filter(([key]) => profile.steps.some(step => step[key] !== undefined)).map(([key, label]) => <th key={key}>{t(label)}</th>)}</tr></thead><tbody>
+              {profile.steps.slice((stepPage - 1) * 12, stepPage * 12).map((step, index) => <tr key={step.id}><td>{step.messageId ? <button onClick={() => onFocusStep(step)}>#{formatCount((stepPage - 1) * 12 + index + 1)}</button> : <span>#{formatCount((stepPage - 1) * 12 + index + 1)}</span>}</td>
+                {usageSeries.filter(([key]) => profile.steps.some(item => item[key] !== undefined)).map(([key]) => <td key={key}>{step[key] === undefined ? "—" : displayRecorded(step[key])}</td>)}</tr>)}
             </tbody></table></div>
-            <Pager page={stepPage} pageSize={12} total={profile.steps.length} onChange={setStepPage} label={t("sessions.profile.requestPagination")} showEnds />
-          </> : <p className="muted small">{t("sessions.profile.noSteps")}</p>)}
-        </section>
-        {profile.children.length > 0 && <section className="session-profile-section" hidden={tab !== "overview"}><div className="session-section-heading"><h3>{t("sessions.profile.children")}</h3><span>{t("sessions.profile.childCount", { count: profile.children.length })}</span></div>
+            {profile.steps.length > 12 && <Pager page={stepPage} pageSize={12} total={profile.steps.length} onChange={setStepPage} label={t("sessions.profile.requestPagination")} showEnds />}
+        </section>}
+        {visibleTab === "calls" && <>
+          {profile.tools.length > 0 && <section className="session-profile-section"><div className="session-section-heading"><h3>{t("sessions.profile.tools")}</h3><span>{t("sessions.profile.callCount", { count: profile.tools.reduce((total, item) => total + item.calls, 0) })}</span></div>
+            {profile.tools.map(item => <div className="session-tool-stat" key={item.name}><div className="session-tool-title"><button className="session-stat-link" title={t("sessions.profile.locateCall")} onClick={() => onFind({ toolName: item.name })}>{item.name}</button><span>{t("sessions.profile.callCount", { count: item.calls })}</span></div>
+              <div className="session-tool-outcomes">{item.success > 0 && <span>{t("sessions.calls.successCount", { count: item.success })}</span>}{item.failure > 0 && <span>{t("sessions.calls.failureCount", { count: item.failure })}</span>}{item.unknown > 0 && <span>{t("sessions.calls.missingCount", { count: item.unknown })}</span>}{item.durationMs !== null && <span>{t("sessions.profile.duration", { duration: `${displayRecorded(item.durationMs)} ms` })}</span>}</div>
+              <ProfileBar label={t("sessions.profile.calls")} count={item.calls} max={Math.max(1, ...profile.tools.map(tool => tool.calls))} />
+            </div>)}
+          </section>}
+          {profile.resources.length > 0 && <section className="session-profile-section"><div className="session-section-heading"><h3>{t("sessions.profile.resources")}</h3><span>{t("sessions.profile.resourceCount", { count: profile.resources.reduce((total, item) => total + item.count, 0) })}</span></div>{profile.resources.map(item => <div className="session-resource-stat" key={`${item.kind}-${item.server ?? ""}-${item.name}`}>
+            <span className={`session-resource-kind is-${item.kind}`}>{t(resourceLabels[item.kind])}</span><button className="session-stat-link" title={t("sessions.profile.locateResource")} onClick={() => onFind({ resourceKind: item.kind, resourceName: item.name, resourceServer: item.server })}>{item.server ? `${item.server} / ` : ""}{sessionResourceName(item)}</button><b>{formatCount(item.count)}</b>
+          </div>)}</section>}
+        </>}
+        {visibleTab === "overview" && profile.children.length > 0 && <section className="session-profile-section"><div className="session-section-heading"><h3>{t("sessions.profile.children")}</h3><span>{t("sessions.profile.childCount", { count: profile.children.length })}</span></div>
           {profile.children.map(child => <button className="session-child" key={child.id} onClick={() => onSelectChild(child)}><strong>{sessionDisplayTitle(child)}</strong><small>{clientLabel(child.client)} · {shortProject(child.project)} · {child.relationship === "fork" ? t("sessions.relationship.forkShort") : t("sessions.relationship.child")}</small></button>)}
         </section>}
-        {profile.gaps.length > 0 && <details className="session-gaps"><summary>{t("sessions.profile.gapCount", { count: profile.gaps.length })}</summary>{profile.gaps.map((gap, index) => <div key={`${gap.kind}-${gap.sourceId ?? index}`}><strong>{gapNames[gap.kind]}{gap.count === undefined ? "" : ` · ${formatCount(gap.count)}`}</strong><SessionDiagnostic gap={gap} /></div>)}</details>}
+        {profile.gaps.length > 0 && <details className="session-gaps"><summary>{t("sessions.details.import")}</summary>{profile.gaps.filter((gap, index, all) => all.findIndex(item => item.kind === gap.kind && item.message === gap.message) === index).map((gap, index) => <SessionDiagnostic key={`${gap.kind}-${index}`} gap={gap} />)}</details>}
       </>}
     </div>
   </aside>;

@@ -347,7 +347,7 @@ export async function parseSessionSource(source: SourceLocation, sink: SessionSi
       if (record.type === "event_msg") {
         if (payload.type === "token_count") {
           const info = object(payload.info);
-          if (!copied) usage.codex(info.last_token_usage, info.total_token_usage, undefined, { turnId, model: currentModel, occurredAt });
+          if (!copied) usage.codex({ ...object(info.last_token_usage), context_tokens: object(info.last_token_usage).context_tokens ?? object(info.last_token_usage).total_tokens }, info.total_token_usage, undefined, { turnId, model: currentModel, occurredAt });
         } else if (payload.type === "agent_reasoning") {
           const key = `event:${string(payload.id) ?? line}`;
           const body = text(payload.message ?? payload.text);
@@ -445,15 +445,16 @@ export async function parseSessionSource(source: SourceLocation, sink: SessionSi
     const blocks = Array.isArray(content) ? content : typeof content === "string" ? [{ type: "text", text: content }] : [];
     let firstMessage: SessionMessage | undefined;
     const hasResult = blocks.some(value => ["tool_result", "tool-result"].includes(string(object(value).type) ?? ""));
-    const human = role === "user" && !hasResult && record.isMeta !== true;
+    const injected = source.client === "codeflicker" && role === "user" && (record.hidden === true || record.isMeta === true);
+    const human = role === "user" && !hasResult && record.isMeta !== true && !injected;
     for (const [index, value] of blocks.entries()) {
       const block = object(value);
       const key = `native:${nativeId}:${index}`;
       const type = string(block.type);
       let emitted: SessionMessage | undefined;
       if (type === "text") {
-        const kind: MessageKind = human ? "user" : role === "assistant" ? "assistant" : "system";
-        emitted = message(key, kind, text(block.text), line, { ...extra, final: kind === "assistant" && ["end_turn", "stop_sequence"].includes(string(native.stop_reason) ?? "") ? "explicit" : undefined }, human && !firstMessage);
+        const kind: MessageKind = human ? "user" : injected ? "context" : role === "assistant" ? "assistant" : "system";
+        emitted = message(key, kind, text(block.text), line, { ...extra, ...(injected ? { contextSource: "client" as const, contextEvidence: "client_metadata" as const } : {}), final: kind === "assistant" && ["end_turn", "stop_sequence"].includes(string(native.stop_reason) ?? "") ? "explicit" : undefined }, human && !firstMessage);
       } else if (["thinking", "reasoning", "redacted_thinking"].includes(type ?? "")) {
         emitted = message(key, "thinking", text(block.text ?? block.thinking), line, extra);
         if (type === "redacted_thinking") gap("unsupported_format", "思考正文已由客户端隐藏，未补造内容", { key: "diagnostics.sessions.parser.m015" });
