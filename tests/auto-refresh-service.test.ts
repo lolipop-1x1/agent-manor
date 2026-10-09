@@ -35,6 +35,8 @@ test("自动任务跨标签页合并，完成后间隔内不重复；手动范�
     // 完成消息可能尚在主线程事件队列中，等待被调度器消费。
     await delay(30);
     assert.equal(manager.autoRefreshSessions(now + 59_999), undefined);
+    assert.equal(manager.autoRefreshSessions(now + 600_000, 0), undefined);
+    assert.equal(manager.autoRefreshSessions(now + 599_999, 600_000), undefined);
     const second = manager.autoRefreshSessions(now + 60_000)!;
     assert.notEqual(second.id, first.id);
     const manual = manager.refreshSessions(false, { client: "claude", mode: "full" });
@@ -49,17 +51,52 @@ test("自动任务跨标签页合并，完成后间隔内不重复；手动范�
     await manager.waitForJob(map.id);
     assert.equal(index.getJob(map.id).status, "completed");
     assert.equal(manager.autoRefreshRepository(repository.id, now + 59_999), undefined);
+    assert.equal(manager.autoRefreshRepository(repository.id, now + 5_000, 0), undefined);
+    assert.equal(manager.autoRefreshRepository(repository.id, now + 4_999, 5_000), undefined);
+    const short = manager.autoRefreshRepository(repository.id, now + 5_000, 5_000)!;
+    assert.notEqual(short.id, map.id);
+    await manager.waitForJob(short.id);
   } finally { await manager.close(); library.close(); index.close(); await rm(directory, { recursive: true, force: true }); }
 });
 
-test("HTTP 自动刷新只接受空请求，既有未完成任务不会被多页重复入队", async () => {
+test("HTTP 自动刷新默认关闭，开启后合并任务，关闭不影响手动刷新", async () => {
   const directory = await mkdtemp(join(tmpdir(), "manor-auto-http-"));
   const service = await startService({ home: directory, roots: isolatedHistoryRoots(), startupRefresh: false });
   try {
     await assert.rejects(apiRequest(service.instance, "/sessions/auto-refresh", "POST", { client: "codex" }), { code: "INVALID_INPUT" });
+    assert.deepEqual(await apiRequest(service.instance, "/sessions/auto-refresh", "POST", {}), {});
+    await apiRequest(service.instance, "/preferences", "PUT", { sessionsAutoRefreshInterval: 5000 });
     const first = await apiRequest<{ job?: SessionJob }>(service.instance, "/sessions/auto-refresh", "POST");
     assert.ok(first.job);
     const second = await apiRequest<{ job?: SessionJob }>(service.instance, "/sessions/auto-refresh", "POST", {});
     assert.ok(!second.job || second.job.id === first.job.id);
+    await apiRequest(service.instance, "/preferences", "PUT", { sessionsAutoRefreshInterval: 0 });
+    assert.deepEqual(await apiRequest(service.instance, "/sessions/auto-refresh", "POST", {}), {});
+    const manual = await apiRequest<{ job: SessionJob }>(service.instance, "/sessions/refresh", "POST", { client: "pi" });
+    assert.equal(manual.job.client, "pi");
+  } finally { await service.close(); await rm(directory, { recursive: true, force: true }); }
+});
+
+
+test("会话库与代码地图的持久刷新开关互不影响，手动地图任务保持可用", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "manor-auto-independent-"));
+  const repo = join(directory, "repo"); await mkdir(repo);
+  await execute("git", ["init", "-q", repo]); await writeFile(join(repo, "a.ts"), "export const a = 1;\n");
+  const service = await startService({ home: join(directory, "data"), roots: isolatedHistoryRoots(), startupRefresh: false });
+  try {
+    const registration = await apiRequest<{ repository: { id: string }; job: { id: string } }>(service.instance, "/repositories", "POST", { path: repo });
+    const mapRoute = `/repositories/${registration.repository.id}`;
+    await apiRequest(service.instance, "/preferences", "PUT", { sessionsAutoRefreshInterval: 5_000 });
+    assert.deepEqual(await apiRequest(service.instance, `${mapRoute}/auto-refresh`, "POST", {}), {});
+    assert.ok((await apiRequest<{ job?: SessionJob }>(service.instance, "/sessions/auto-refresh", "POST", {})).job);
+    await apiRequest(service.instance, "/preferences", "PUT", { sessionsAutoRefreshInterval: 0, mapAutoRefreshInterval: 5_000 });
+    assert.deepEqual(await apiRequest(service.instance, "/sessions/auto-refresh", "POST", {}), {});
+    // 登记仓库也会记入检查时间；等待最短间隔后，地图独立创建新任务。
+    await delay(5_010);
+    const map = await apiRequest<{ job?: { id: string } }>(service.instance, `${mapRoute}/auto-refresh`, "POST", {});
+    assert.ok(map.job); assert.notEqual(map.job.id, registration.job.id);
+    await apiRequest(service.instance, "/preferences", "PUT", { mapAutoRefreshInterval: 0 });
+    assert.deepEqual(await apiRequest(service.instance, `${mapRoute}/auto-refresh`, "POST", {}), {});
+    assert.ok((await apiRequest<{ job: unknown }>(service.instance, `${mapRoute}/refresh`, "POST", {})).job);
   } finally { await service.close(); await rm(directory, { recursive: true, force: true }); }
 });

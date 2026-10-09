@@ -1,6 +1,8 @@
 import type { MessageCatalog } from "../../types.js";
 
 export default {
+  "diagnostics.service.preferences.fields": "请求体只能包含 language、sessionsAutoRefreshInterval 或 mapAutoRefreshInterval",
+  "diagnostics.service.preferences.interval": "刷新间隔必须是受支持的毫秒间隔",
   "diagnostics.service.input.sessionIdentity": "会话筛选必须同时提供 sessionClient 和 clientSessionId",
   "diagnostics.history.adapters.claude.m001": "后台任务返回仅确认已接收；后续通知形态未适配，当前活动保持 unknown",
   "diagnostics.history.adapters.claude.m002": "物理记录 {{p0}} 的顶层类型 {{p1}} 尚未适配",
@@ -271,10 +273,10 @@ export default {
   "diagnostics.service.input.m008": "未知活动类型",
   "diagnostics.service.input.m009": "请求体只能包含 {{p0}}",
   "diagnostics.service.input.m010": "此操作不接受请求体字段",
-  "diagnostics.service.preferences.m001": "无法读取语言偏好",
-  "diagnostics.service.preferences.m002": "语言偏好文件无效",
+  "diagnostics.service.preferences.m001": "无法读取偏好设置",
+  "diagnostics.service.preferences.m002": "偏好设置文件无效",
   "diagnostics.service.preferences.m003": "language 必须是 auto、zh-CN 或 en",
-  "diagnostics.service.preferences.m004": "语言偏好未保存",
+  "diagnostics.service.preferences.m004": "偏好设置未保存",
   "diagnostics.service.resourceInput.m001": "未知 {{p0}}",
   "diagnostics.service.resourceInput.m002": "未知 candidate",
   "diagnostics.service.resourceInput.m003": "所选资源不支持该面积指标",

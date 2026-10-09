@@ -44,6 +44,14 @@ code, pre { font-family: var(--mono); }
 .header-divider { height: 22px; width: 1px; background: var(--border); }
 .product-name { color: var(--muted); font-size: 12px; }
 .header-actions { display: flex; align-items: center; gap: 9px; margin-left: auto; }
+.auto-refresh-control { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--muted); white-space: nowrap; }
+.auto-refresh-control .filter-trigger { width: auto; min-width: 78px; }
+@media (max-width: 1050px) {
+  .app-header { flex-wrap: wrap; height: auto; min-height: 66px; padding-block: 8px; }
+}
+@media (max-width: 599px) {
+  .app-header .header-actions { width: 100%; justify-content: flex-end; flex-wrap: wrap; }
+}
 .count-badge { font-size: 10px; color: var(--muted); padding: 0 4px; }
 .notice { display: flex; align-items: flex-start; gap: 9px; padding: 13px 18px; background: var(--accent-soft); color: var(--text); font-size: 12px; line-height: 1.7; border-bottom: 1px solid var(--border); }
 .notice svg { margin-top: 2px; color: var(--accent); }

@@ -1,6 +1,11 @@
 import type { MessageCatalog } from "../../types.js";
 
 export default {
+  "common.autoRefresh.sessions": "会话库自动刷新",
+  "common.autoRefresh.map": "代码地图自动刷新",
+  "common.autoRefresh.off": "关闭",
+  "common.autoRefresh.seconds_other": "{{count, number}} 秒",
+  "common.autoRefresh.minutes_other": "{{count, number}} 分钟",
   "common.translationUnavailable": "翻译暂不可用",
   "common.language.chinese": "简体中文",
   "common.language.english": "English",
@@ -9,8 +14,8 @@ export default {
   "common.notRecorded": "未记录",
   "common.originalDetails": "原始详情",
   "common.operationFailed": "操作失败",
-  "common.preferences.readFailed": "无法读取语言偏好",
-  "common.preferences.saveFailed": "语言偏好未保存",
+  "common.preferences.readFailed": "无法读取偏好设置",
+  "common.preferences.saveFailed": "偏好设置未保存",
   "common.itemCount_other": "{{count, number}} 项",
   "common.language.menu": "显示语言",
   "common.client.codeflickerDesktop": "CodeFlicker 桌面版",

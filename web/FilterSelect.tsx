@@ -4,10 +4,10 @@ import "./filter-controls.css";
 
 export interface FilterOption { value: string; label: string; description?: string }
 
-export function FilterSelect({ label, value, options, onChange, container }: {
-  label: string; value: string; options: FilterOption[]; onChange: (value: string) => void; container?: HTMLElement | null;
+export function FilterSelect({ label, value, options, onChange, container, disabled }: {
+  label: string; value: string; options: FilterOption[]; onChange: (value: string) => void; container?: HTMLElement | null; disabled?: boolean;
 }) {
-  return <Select.Root value={value} onValueChange={onChange}>
+  return <Select.Root value={value} onValueChange={onChange} disabled={disabled}>
     <Select.Trigger className="filter-trigger" aria-label={label}>
       <Select.Value /><Select.Icon><CaretDown size={14} aria-hidden="true" /></Select.Icon>
     </Select.Trigger>

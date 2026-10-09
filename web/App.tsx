@@ -15,6 +15,7 @@ import { ProjectPicker } from "./ProjectPicker";
 import { DatePicker } from "./DatePicker";
 import { HelpPopover } from "./HelpPopover";
 import { useVisiblePolling } from "./useVisiblePolling";
+import { AutoRefreshControl } from "./AutoRefreshControl";
 import Sessions from "./Sessions";
 import Resources from "./Resources";
 import "./session-navigation.css";
@@ -220,7 +221,8 @@ function FilePane({ repoId, detail, loading, error, retry, collapsed, toggle, me
 }
 
 export function App() {
-  const { language } = useI18n();
+  const { language, refreshIntervals } = useI18n();
+  const { sessions: sessionsAutoRefreshInterval, map: mapAutoRefreshInterval } = refreshIntervals;
   type ProductView = "map" | "sessions" | "resources";
   const hashView = (): ProductView => location.hash.startsWith("#sessions") ? "sessions" : location.hash.startsWith("#resources") ? "resources" : "map";
   const [view, setView] = useState<ProductView>(hashView);
@@ -312,6 +314,7 @@ export function App() {
   const [actionError, setActionError] = useState<unknown>(null);
   const [actionPending, setActionPending] = useState(false);
   const [autoRefreshError, setAutoRefreshError] = useState<Error | null>(null);
+  useEffect(() => { if (!sessionsAutoRefreshInterval) setAutoRefreshError(null); }, [sessionsAutoRefreshInterval]);
   const recordJob = useCallback((next: Job) => {
     setJobs(current => [...current.filter(item => item.id !== next.id), next]);
     setJob(next);
@@ -342,15 +345,15 @@ export function App() {
       .finally(() => { if (!controller.signal.aborted) setInitialLoading(false); });
     return () => controller.abort();
   }, [statusRetry]);
-  useVisiblePolling(true, 60_000, async signal => {
+  useVisiblePolling(view === "sessions" && sessionsAutoRefreshInterval > 0, sessionsAutoRefreshInterval, async signal => {
     await request("/sessions/auto-refresh", { method: "POST", body: {}, signal });
     if (!signal.aborted) setAutoRefreshError(null);
   }, error => setAutoRefreshError(error instanceof Error ? error : new Error(String(error))));
-  useVisiblePolling(view === "map" && !!repoId, 60_000, async signal => {
+  useVisiblePolling(mapAutoRefreshInterval > 0 && view === "map" && !!repoId, mapAutoRefreshInterval, async signal => {
     const result = await request<{ job?: Job }>(`${repositoryPath(repoId)}/auto-refresh`, { method: "POST", body: {}, signal });
     if (!signal.aborted && result.job) recordJob(result.job);
   }, failure => setActionError(failure));
-  useVisiblePolling(view === "map" && !!repoId, 5000, async signal => {
+  useVisiblePolling(mapAutoRefreshInterval > 0 && view === "map" && !!repoId, 5000, async signal => {
     const result = await request<StatusResponse>("/status?summary=true", { signal });
     if (signal.aborted) return;
     setRepositories(result.repositories); setJobs(result.jobs);
@@ -489,6 +492,7 @@ export function App() {
   return <Tooltip.Provider delayDuration={350}>
     <header className="app-header"><a className="brand" href="/" aria-label={t("codeMap.navigation.home")}><svg width="30" height="20" viewBox="8 16 48 32" fill="currentColor" aria-hidden="true" focusable="false"><path d="M14 18a3 3 0 0 0-4 2.8v22.4a3 3 0 0 0 4 2.8l10-6a2 2 0 0 0 1-1.8V25.8a2 2 0 0 0-1-1.8z" /><rect x="28" y="27" width="8" height="10" rx="2" /><path d="M14 18a3 3 0 0 0-4 2.8v22.4a3 3 0 0 0 4 2.8l10-6a2 2 0 0 0 1-1.8V25.8a2 2 0 0 0-1-1.8z" transform="translate(64 0) scale(-1 1)" /></svg><span>Agent<strong>Manor</strong></span></a><span className="header-divider" /><nav className="product-nav" aria-label={t("codeMap.navigation.title")}><button aria-current={view === "map" ? "page" : undefined} onClick={() => switchView("map")}>{t("codeMap.navigation.map")}</button><button aria-current={view === "sessions" ? "page" : undefined} onClick={() => switchView("sessions")}>{t("codeMap.navigation.sessions")}</button><button aria-current={view === "resources" ? "page" : undefined} onClick={() => switchView("resources")}>{t("codeMap.navigation.resources")}</button></nav>
       <div className="header-actions">{view === "map" && repository && <SourcesDialog repo={repository} query={query} gapCount={coverage?.gapCount ?? coverage?.gaps.length ?? 0} onJob={recordJob} />}
+        {view !== "resources" && <AutoRefreshControl scope={view === "sessions" ? "sessions" : "map"} />}
         <LanguageMenu />
         <Hint label={theme === "light" ? t("codeMap.theme.dark") : t("codeMap.theme.light")}><button className="icon-button" aria-label={t("codeMap.theme.toggle")} onClick={() => setTheme(current => current === "light" ? "dark" : "light")}>{theme === "light" ? <Moon size={19} /> : <Sun size={19} />}</button></Hint>
         <button hidden={view !== "map"} className="button primary refresh-button" onClick={() => void runRefresh()} disabled={!repository || actionPending || jobActive(job)} aria-label={jobActive(job) ? t("codeMap.refresh.running") : t("codeMap.refresh.action")}><ArrowClockwise size={16} className={jobActive(job) ? "spinning" : ""} /><span className="refresh-label">{jobActive(job) ? t("codeMap.refresh.running") : t("codeMap.refresh.action")}</span></button>

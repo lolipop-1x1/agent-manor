@@ -23,7 +23,7 @@ import type { ResourceInventoryOptions } from "./resource-inventory-contracts.js
 import { ResourceManager } from "./resources/management.js";
 import { ResourceService } from "./resources/service.js";
 import { registerResourceRoutes } from "./service/resource-routes.js";
-import { registerPreferenceRoutes } from "./service/preferences.js";
+import { readPreferences, registerPreferenceRoutes } from "./service/preferences.js";
 import { compactIndexAtStartup } from "./index/maintenance.js";
 
 export interface ServiceOptions {
@@ -163,7 +163,11 @@ export async function startService(options: ServiceOptions = {}) {
     app.get<{ Params: { id: string }; Querystring: Query }>("/api/v1/sessions/:id/timeline", async request => library.timeline(request.params.id, sessionTimelineQuery(request.query)));
     app.get<{ Params: { id: string }; Querystring: Query }>("/api/v1/sessions/:id/profile", async request => library.profile(request.params.id, sessionProfileQuery(request.query)));
     app.post("/api/v1/sessions/refresh", async request => ({ job: worker.refreshSessions(false, sessionRefreshOptions(request.body)) }));
-    app.post("/api/v1/sessions/auto-refresh", async request => { emptyBody(request.body); return { job: worker.autoRefreshSessions() }; });
+    app.post("/api/v1/sessions/auto-refresh", async request => {
+      emptyBody(request.body);
+      const { sessionsAutoRefreshInterval } = await readPreferences(home);
+      return { job: worker.autoRefreshSessions(Date.now(), sessionsAutoRefreshInterval) };
+    });
     registerResourceRoutes(app, resources);
     app.delete("/api/v1/sessions/cache", async request => { emptyBody(request.body); return { job: worker.refreshSessions(true) }; });
     const snapshotFor = (id: string, query: CoverageQuery) => index.getSnapshot(id, query.version);
@@ -258,7 +262,8 @@ export async function startService(options: ServiceOptions = {}) {
     });
     app.post<{ Params: RepositoryParams }>(`${base}/auto-refresh`, async request => {
       emptyBody(request.body);
-      return { job: worker.autoRefreshRepository(request.params.id) };
+      const { mapAutoRefreshInterval } = await readPreferences(home);
+      return { job: worker.autoRefreshRepository(request.params.id, Date.now(), mapAutoRefreshInterval) };
     });
     app.delete<{ Params: RepositoryParams }>(`${base}/cache`, async (request) => {
       emptyBody(request.body);

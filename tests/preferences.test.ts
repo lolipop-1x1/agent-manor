@@ -8,7 +8,7 @@ import type { SessionJob } from "../src/session-contracts.js";
 import type { PreferencesResponse } from "../src/i18n/types.js";
 import { startService } from "../src/server.js";
 import { ServiceError } from "../src/service/input.js";
-import { preferencesPath, readPreferences, writePreferences } from "../src/service/preferences.js";
+import { preferencesPath, readPreferences, updatePreferences, writePreferences } from "../src/service/preferences.js";
 import { apiRequest, delay, RequestError } from "../src/service/runtime.js";
 import { isolatedHistoryRoots } from "./helpers/history-roots.js";
 
@@ -22,17 +22,17 @@ const options = (directory: string, home: string) => ({ home, startupRefresh: fa
 
 test("共享偏好按数据目录隔离，自动模式清除手动覆盖，设置文件限制访问", async () => fixture(async directory => {
   const first = join(directory, "first"), second = join(directory, "second");
-  assert.deepEqual(await readPreferences(first), { language: "auto" });
-  assert.deepEqual(await writePreferences(first, "zh-CN"), { language: "zh-CN" });
-  assert.deepEqual(await readPreferences(first), { language: "zh-CN" });
-  assert.deepEqual(await readPreferences(second), { language: "auto" });
+  assert.deepEqual(await readPreferences(first), { language: "auto", sessionsAutoRefreshInterval: 0, mapAutoRefreshInterval: 0 });
+  assert.deepEqual(await writePreferences(first, "zh-CN"), { language: "zh-CN", sessionsAutoRefreshInterval: 0, mapAutoRefreshInterval: 0 });
+  assert.deepEqual(await readPreferences(first), { language: "zh-CN", sessionsAutoRefreshInterval: 0, mapAutoRefreshInterval: 0 });
+  assert.deepEqual(await readPreferences(second), { language: "auto", sessionsAutoRefreshInterval: 0, mapAutoRefreshInterval: 0 });
   await writePreferences(second, "en");
-  assert.deepEqual(await readPreferences(first), { language: "zh-CN" });
-  assert.deepEqual(await readPreferences(second), { language: "en" });
+  assert.deepEqual(await readPreferences(first), { language: "zh-CN", sessionsAutoRefreshInterval: 0, mapAutoRefreshInterval: 0 });
+  assert.deepEqual(await readPreferences(second), { language: "en", sessionsAutoRefreshInterval: 0, mapAutoRefreshInterval: 0 });
   assert.equal((await stat(preferencesPath(first))).mode & 0o777, 0o600);
   await writePreferences(first, "auto");
   assert.deepEqual(JSON.parse(await readFile(preferencesPath(first), "utf8")), {});
-  assert.deepEqual(await readPreferences(first), { language: "auto" });
+  assert.deepEqual(await readPreferences(first), { language: "auto", sessionsAutoRefreshInterval: 0, mapAutoRefreshInterval: 0 });
   assert.deepEqual(await readdir(first), ["preferences.json"]);
 }));
 
@@ -46,7 +46,7 @@ test("读取损坏或不可读设置与原子保存失败如实报错，临时�
   await rm(preferencesPath(home));
   await mkdir(preferencesPath(home));
   await assert.rejects(readPreferences(home), error => error instanceof ServiceError && error.code === "INTERNAL_ERROR");
-  await assert.rejects(writePreferences(home, "en"), error => error instanceof ServiceError && error.message === "语言偏好未保存");
+  await assert.rejects(writePreferences(home, "en"), error => error instanceof ServiceError && error.message === "偏好设置未保存");
   assert.deepEqual(await readdir(home), ["preferences.json"]);
 }));
 
@@ -55,22 +55,22 @@ test("真实 HTTP 设置读写遵循既有输入及跨站错误契约，写偏�
   const service = await startService(options(directory, home));
   try {
     const before = await apiRequest<StatusResponse>(service.instance, "/status");
-    assert.deepEqual(await apiRequest<PreferencesResponse>(service.instance, "/preferences"), { language: "auto" });
-    assert.deepEqual(await apiRequest<PreferencesResponse>(service.instance, "/preferences", "PUT", { language: "en" }), { language: "en" });
-    assert.deepEqual(await apiRequest<PreferencesResponse>(service.instance, "/preferences"), { language: "en" });
+    assert.deepEqual(await apiRequest<PreferencesResponse>(service.instance, "/preferences"), { language: "auto", sessionsAutoRefreshInterval: 0, mapAutoRefreshInterval: 0 });
+    assert.deepEqual(await apiRequest<PreferencesResponse>(service.instance, "/preferences", "PUT", { language: "en", sessionsAutoRefreshInterval: 0, mapAutoRefreshInterval: 0 }), { language: "en", sessionsAutoRefreshInterval: 0, mapAutoRefreshInterval: 0 });
+    assert.deepEqual(await apiRequest<PreferencesResponse>(service.instance, "/preferences"), { language: "en", sessionsAutoRefreshInterval: 0, mapAutoRefreshInterval: 0 });
     for (const body of [{ language: "fr" }, { language: "en", extra: true }, {}, null]) {
       await assert.rejects(apiRequest(service.instance, "/preferences", "PUT", body), error => error instanceof RequestError && error.code === "INVALID_INPUT");
     }
-    assert.deepEqual(await readPreferences(home), { language: "en" });
+    assert.deepEqual(await readPreferences(home), { language: "en", sessionsAutoRefreshInterval: 0, mapAutoRefreshInterval: 0 });
     const url = `http://127.0.0.1:${service.instance.port}/api/v1/preferences`;
-    const forbidden = await fetch(url, { method: "PUT", headers: { "Content-Type": "application/json", Origin: "https://example.invalid" }, body: JSON.stringify({ language: "zh-CN" }) });
+    const forbidden = await fetch(url, { method: "PUT", headers: { "Content-Type": "application/json", Origin: "https://example.invalid" }, body: JSON.stringify({ language: "zh-CN", sessionsAutoRefreshInterval: 0, mapAutoRefreshInterval: 0 }) });
     assert.equal(forbidden.status, 403);
     assert.equal((await forbidden.json() as { error: { code: string } }).error.code, "FORBIDDEN");
     const after = await apiRequest<StatusResponse>(service.instance, "/status");
     assert.deepEqual(after.jobs, before.jobs);
     assert.deepEqual(after.sessions, before.sessions);
-    await apiRequest(service.instance, "/preferences", "PUT", { language: "auto" });
-    assert.deepEqual(await readPreferences(home), { language: "auto" });
+    await apiRequest(service.instance, "/preferences", "PUT", { language: "auto", sessionsAutoRefreshInterval: 0, mapAutoRefreshInterval: 0 });
+    assert.deepEqual(await readPreferences(home), { language: "auto", sessionsAutoRefreshInterval: 0, mapAutoRefreshInterval: 0 });
   } finally { await service.close(); }
 }));
 
@@ -78,10 +78,10 @@ test("共享偏好在服务重启、会话索引清除及派生数据库移除�
   const home = join(directory, "data");
   let service = await startService(options(directory, home));
   try {
-    await apiRequest(service.instance, "/preferences", "PUT", { language: "zh-CN" });
+    await apiRequest(service.instance, "/preferences", "PUT", { language: "zh-CN", sessionsAutoRefreshInterval: 300_000, mapAutoRefreshInterval: 600_000 });
     await service.close();
     service = await startService(options(directory, home));
-    assert.deepEqual(await apiRequest<PreferencesResponse>(service.instance, "/preferences"), { language: "zh-CN" });
+    assert.deepEqual(await apiRequest<PreferencesResponse>(service.instance, "/preferences"), { language: "zh-CN", sessionsAutoRefreshInterval: 300_000, mapAutoRefreshInterval: 600_000 });
     const result = await apiRequest<{ job: SessionJob }>(service.instance, "/sessions/cache", "DELETE");
     let complete = false;
     for (let attempt = 0; attempt < 300; attempt++) {
@@ -91,11 +91,11 @@ test("共享偏好在服务重启、会话索引清除及派生数据库移除�
       await delay(10);
     }
     assert.equal(complete, true, "隔离会话索引清除应完成");
-    assert.deepEqual(await readPreferences(home), { language: "zh-CN" });
+    assert.deepEqual(await readPreferences(home), { language: "zh-CN", sessionsAutoRefreshInterval: 300_000, mapAutoRefreshInterval: 600_000 });
     await service.close();
     await rm(join(home, "index.sqlite"));
     service = await startService(options(directory, home));
-    assert.deepEqual(await apiRequest<PreferencesResponse>(service.instance, "/preferences"), { language: "zh-CN" });
+    assert.deepEqual(await apiRequest<PreferencesResponse>(service.instance, "/preferences"), { language: "zh-CN", sessionsAutoRefreshInterval: 300_000, mapAutoRefreshInterval: 600_000 });
   } finally { await service.close(); }
 }));
 
@@ -104,8 +104,46 @@ test("HTTP 保存与读取失败返回 INTERNAL_ERROR，不返回成功偏好", 
   const service = await startService(options(directory, home));
   try {
     await mkdir(preferencesPath(home));
-    await assert.rejects(apiRequest(service.instance, "/preferences", "PUT", { language: "en" }), error => error instanceof RequestError && error.code === "INTERNAL_ERROR" && error.message === "语言偏好未保存");
+    await assert.rejects(apiRequest(service.instance, "/preferences", "PUT", { language: "en", sessionsAutoRefreshInterval: 0, mapAutoRefreshInterval: 0 }), error => error instanceof RequestError && error.code === "INTERNAL_ERROR" && error.message === "偏好设置未保存");
     await assert.rejects(apiRequest(service.instance, "/preferences"), error => error instanceof RequestError && error.code === "INTERNAL_ERROR");
     assert.equal((await readdir(home)).some(name => name.startsWith("preferences.json.") && name.endsWith(".tmp")), false);
+  } finally { await service.close(); }
+}));
+
+
+test("旧偏好默认关闭，独立与并发更新保留其他字段，失败后可以重试", async () => fixture(async directory => {
+  const home = join(directory, "data"); await mkdir(home);
+  await writeFile(preferencesPath(home), JSON.stringify({ language: "en" }));
+  assert.deepEqual(await readPreferences(home), { language: "en", sessionsAutoRefreshInterval: 0, mapAutoRefreshInterval: 0 });
+  await Promise.all([updatePreferences(home, { sessionsAutoRefreshInterval: 5_000 }), updatePreferences(home, { mapAutoRefreshInterval: 60_000 }), writePreferences(home, "zh-CN")]);
+  assert.deepEqual(await readPreferences(home), { language: "zh-CN", sessionsAutoRefreshInterval: 5_000, mapAutoRefreshInterval: 60_000 });
+  await writePreferences(home, "auto");
+  assert.deepEqual(await readPreferences(home), { language: "auto", sessionsAutoRefreshInterval: 5_000, mapAutoRefreshInterval: 60_000 });
+  await writeFile(preferencesPath(home), "invalid");
+  await assert.rejects(updatePreferences(home, { sessionsAutoRefreshInterval: 0, mapAutoRefreshInterval: 0 }));
+  assert.equal(await readFile(preferencesPath(home), "utf8"), "invalid");
+  await writeFile(preferencesPath(home), "{}");
+  assert.deepEqual(await updatePreferences(home, { sessionsAutoRefreshInterval: 0, mapAutoRefreshInterval: 0 }), { language: "auto", sessionsAutoRefreshInterval: 0, mapAutoRefreshInterval: 0 });
+}));
+
+test("刷新间隔通过 HTTP 严格校验并持久化，设置本身不创建索引任务", async () => fixture(async directory => {
+  const home = join(directory, "data");
+  const service = await startService(options(directory, home));
+  try {
+    await apiRequest(service.instance, "/preferences", "PUT", { language: "en" });
+    const expected = { language: "en", sessionsAutoRefreshInterval: 0, mapAutoRefreshInterval: 0 };
+    for (const field of ["sessionsAutoRefreshInterval", "mapAutoRefreshInterval"] as const) {
+      for (const interval of [0, 5_000, 10_000, 30_000, 60_000, 300_000, 600_000]) {
+        expected[field] = interval;
+        assert.deepEqual(await apiRequest(service.instance, "/preferences", "PUT", { [field]: interval }), expected);
+        assert.deepEqual(await readPreferences(home), expected);
+      }
+      for (const interval of [-1, 1, 4999, 5000.5, "5000", null, true]) {
+        await assert.rejects(apiRequest(service.instance, "/preferences", "PUT", { [field]: interval }), { code: "INVALID_INPUT" });
+      }
+    }
+    const status = await apiRequest<StatusResponse>(service.instance, "/status");
+    assert.equal(status.jobs.length, 0);
+    assert.equal(status.sessions?.job, undefined);
   } finally { await service.close(); }
 }));

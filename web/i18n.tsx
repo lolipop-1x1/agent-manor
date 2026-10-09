@@ -2,6 +2,7 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useRef, use
 import * as Dropdown from "@radix-ui/react-dropdown-menu";
 import { Check, Translate, WarningCircle } from "@phosphor-icons/react";
 import { CLIENTS, type Client } from "../src/clients";
+import { isAutoRefreshInterval, type AutoRefreshInterval, type RefreshScope } from "../src/refresh-preferences";
 import { detectLanguage, formatDate, formatDateTime, formatNumber, formatPercent, formatTime, isLanguagePreference, languageRegistry, supportedLanguages, translate, translateMessageOrOriginal, type Language, type LanguagePreference, type MessageDescriptor, type MessageParams, type PreferencesResponse } from "../src/i18n";
 
 export { isMessageDescriptorKnown } from "../src/i18n";
@@ -18,22 +19,29 @@ interface I18nContextValue {
   language: Language;
   preference: LanguagePreference;
   setPreference: (preference: LanguagePreference) => Promise<void>;
+  refreshIntervals: Record<RefreshScope, AutoRefreshInterval>;
+  setAutoRefreshInterval: (scope: RefreshScope, interval: AutoRefreshInterval) => Promise<void>;
   saving: boolean;
   error: "read" | "save" | null;
 }
 const I18nContext = createContext<I18nContextValue | null>(null);
 const browserLanguage = () => detectLanguage(navigator.languages.length ? navigator.languages : [navigator.language]);
 
-async function readPreference(signal?: AbortSignal): Promise<LanguagePreference> {
+function validatePreferences(body: PreferencesResponse): PreferencesResponse {
+  if (!isLanguagePreference(body.language) || !isAutoRefreshInterval(body.sessionsAutoRefreshInterval) || !isAutoRefreshInterval(body.mapAutoRefreshInterval)) throw new Error("INVALID_PREFERENCE");
+  return body;
+}
+
+async function readPreference(signal?: AbortSignal): Promise<PreferencesResponse> {
   const response = await fetch("/api/v1/preferences", { signal });
   if (!response.ok) throw new Error(String(response.status));
   const body = await response.json() as PreferencesResponse;
-  if (!isLanguagePreference(body.language)) throw new Error("INVALID_PREFERENCE");
-  return body.language;
+  return validatePreferences(body);
 }
 
 export function I18nProvider({ children }: { children: ReactNode }) {
   const [preference, updatePreference] = useState<LanguagePreference | null>(null);
+  const [refreshIntervals, updateRefreshIntervals] = useState<Record<RefreshScope, AutoRefreshInterval>>({ sessions: 0, map: 0 });
   const [error, setError] = useState<"read" | "save" | null>(null);
   const [saving, setSaving] = useState(false);
   const requestId = useRef(0);
@@ -48,7 +56,7 @@ export function I18nProvider({ children }: { children: ReactNode }) {
       const id = ++requestId.current;
       void readPreference(controller.signal).then(value => {
         if (id !== requestId.current) return;
-        updatePreference(value); setError(null);
+        updatePreference(value.language); updateRefreshIntervals({ sessions: value.sessionsAutoRefreshInterval, map: value.mapAutoRefreshInterval }); setError(null);
       }).catch(() => {
         if (controller.signal.aborted || id !== requestId.current) return;
         updatePreference(value => value ?? "auto"); setError("read");
@@ -58,23 +66,28 @@ export function I18nProvider({ children }: { children: ReactNode }) {
     window.addEventListener("focus", synchronize);
     return () => { controller.abort(); window.removeEventListener("focus", synchronize); };
   }, []);
-  const setPreference = useCallback(async (next: LanguagePreference) => {
+  const savePreference = useCallback(async (patch: Partial<PreferencesResponse>) => {
+    if (pendingWrite.current) return;
     pendingWrite.current = true;
     const id = ++requestId.current;
-    updatePreference(next); setSaving(true); setError(null);
+    if (patch.language !== undefined) updatePreference(patch.language);
+    setSaving(true); setError(null);
     try {
-      const response = await fetch("/api/v1/preferences", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ language: next }) });
+      const response = await fetch("/api/v1/preferences", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(patch) });
       if (!response.ok) throw new Error(String(response.status));
       const body = await response.json() as PreferencesResponse;
-      if (!isLanguagePreference(body.language)) throw new Error("INVALID_PREFERENCE");
-      if (id === requestId.current) updatePreference(body.language);
+      validatePreferences(body);
+      if (id === requestId.current) { updatePreference(body.language); updateRefreshIntervals({ sessions: body.sessionsAutoRefreshInterval, map: body.mapAutoRefreshInterval }); }
     } catch {
       if (id === requestId.current) setError("save");
     } finally {
       if (id === requestId.current) { pendingWrite.current = false; setSaving(false); }
     }
   }, []);
-  const value = useMemo(() => ({ language, preference: preference ?? "auto", setPreference, saving, error }), [language, preference, setPreference, saving, error]);
+  const setPreference = useCallback((language: LanguagePreference) => savePreference({ language }), [savePreference]);
+  const setAutoRefreshInterval = useCallback((scope: RefreshScope, interval: AutoRefreshInterval) => savePreference(scope === "sessions"
+    ? { sessionsAutoRefreshInterval: interval } : { mapAutoRefreshInterval: interval }), [savePreference]);
+  const value = useMemo(() => ({ language, preference: preference ?? "auto", setPreference, refreshIntervals, setAutoRefreshInterval, saving, error }), [language, preference, setPreference, refreshIntervals, setAutoRefreshInterval, saving, error]);
   if (preference === null) return <div className="query-loading" role="status">{t("common.loading")}</div>;
   return <I18nContext.Provider value={value}>{children}</I18nContext.Provider>;
 }

@@ -1,6 +1,13 @@
 import type { MessageCatalog } from "../../types.js";
 
 export default {
+  "common.autoRefresh.sessions": "Session auto refresh",
+  "common.autoRefresh.map": "Code map auto refresh",
+  "common.autoRefresh.off": "Off",
+  "common.autoRefresh.seconds_one": "{{count, number}} second",
+  "common.autoRefresh.seconds_other": "{{count, number}} seconds",
+  "common.autoRefresh.minutes_one": "{{count, number}} minute",
+  "common.autoRefresh.minutes_other": "{{count, number}} minutes",
   "common.translationUnavailable": "Translation unavailable",
   "common.language.chinese": "Simplified Chinese",
   "common.language.english": "English",
@@ -9,8 +16,8 @@ export default {
   "common.notRecorded": "Not recorded",
   "common.originalDetails": "Original details",
   "common.operationFailed": "Operation failed",
-  "common.preferences.readFailed": "Unable to read the language preference",
-  "common.preferences.saveFailed": "The language preference was not saved",
+  "common.preferences.readFailed": "Unable to read preferences",
+  "common.preferences.saveFailed": "Preferences were not saved",
   "common.itemCount_one": "{{count, number}} item",
   "common.itemCount_other": "{{count, number}} items",
   "common.language.menu": "Display language",

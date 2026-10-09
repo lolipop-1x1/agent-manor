@@ -1,6 +1,8 @@
 import type { MessageCatalog } from "../../types.js";
 
 export default {
+  "diagnostics.service.preferences.fields": "The request body can only contain language, sessionsAutoRefreshInterval, or mapAutoRefreshInterval",
+  "diagnostics.service.preferences.interval": "The refresh interval must be a supported interval in milliseconds",
   "diagnostics.service.input.sessionIdentity": "Session filtering requires both sessionClient and clientSessionId",
   "diagnostics.history.adapters.claude.m001": "The background task only acknowledged receipt; follow-up notifications are not supported, so the activity remains unknown",
   "diagnostics.history.adapters.claude.m002": "Record {{p0}} has an unsupported top-level type: {{p1}}",
@@ -271,10 +273,10 @@ export default {
   "diagnostics.service.input.m008": "Unknown activity type",
   "diagnostics.service.input.m009": "The request body may only contain {{p0}}",
   "diagnostics.service.input.m010": "This operation does not accept request body fields",
-  "diagnostics.service.preferences.m001": "Could not read the language preference",
-  "diagnostics.service.preferences.m002": "The language preference file is invalid",
+  "diagnostics.service.preferences.m001": "Could not read preferences",
+  "diagnostics.service.preferences.m002": "The preferences file is invalid",
   "diagnostics.service.preferences.m003": "language must be auto, zh-CN, or en",
-  "diagnostics.service.preferences.m004": "The language preference was not saved",
+  "diagnostics.service.preferences.m004": "Preferences were not saved",
   "diagnostics.service.resourceInput.m001": "Unknown {{p0}}",
   "diagnostics.service.resourceInput.m002": "Unknown candidate",
   "diagnostics.service.resourceInput.m003": "The selected resource does not support this area metric",

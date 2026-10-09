@@ -71,24 +71,26 @@ export class WorkerManager {
   clearCache(repositoryId: string): Job { return this.enqueue(repositoryId, true); }
 
   /** 多个可见标签页共享检查间隔，手动刷新仍保持原有排队语义。 */
-  autoRefreshRepository(repositoryId: string, now = Date.now()): Job | undefined {
+  autoRefreshRepository(repositoryId: string, now = Date.now(), interval = 60_000): Job | undefined {
     this.store.getRepository(repositoryId);
+    if (!interval) return undefined;
     for (const id of this.active) {
       const job = this.store.getJob(id);
       if (job.repositoryId === repositoryId) return job;
     }
-    if (now - (this.lastMapChecks.get(repositoryId) ?? -Infinity) < 60_000) return undefined;
+    if (now - (this.lastMapChecks.get(repositoryId) ?? -Infinity) < interval) return undefined;
     const job = this.refresh(repositoryId);
     this.lastMapChecks.set(repositoryId, now);
     return job;
   }
 
-  autoRefreshSessions(now = Date.now()): SessionJob | undefined {
+  autoRefreshSessions(now = Date.now(), interval = 60_000): SessionJob | undefined {
     if (this.closed || !this.sessions) throw new DiagnosticError("会话索引 Worker 不可用", { key: "diagnostics.index.workerManager.m002" });
+    if (!interval) return undefined;
     // 不在已有局部或完整检查之后重复堆积自动任务。
     const active = this.sessionActive.values().next().value as string | undefined;
     if (active) return this.sessions.getJob(active);
-    if (now - this.lastSessionCheck < 60_000) return undefined;
+    if (now - this.lastSessionCheck < interval) return undefined;
     const job = this.refreshSessions();
     this.lastSessionCheck = now;
     return job;

@@ -113,7 +113,7 @@ function SessionIndexGaps({ active, version }: { active: boolean; version?: stri
 }
 
 export default function Sessions({ active, target, onMap, autoRefreshError }: { active: boolean; target?: Target; onMap: (path?: string, project?: string, session?: SessionSummary) => void; autoRefreshError?: Error | null }) {
-  useI18n();
+  const { refreshIntervals } = useI18n();
   const initialFilters = useRef(readSessionFilters(location.hash)).current;
   const [status, setStatus] = useState<SessionIndexSummary | null>(null);
   const [statusReload, setStatusReload] = useState(-1);
@@ -253,7 +253,7 @@ export default function Sessions({ active, target, onMap, autoRefreshError }: { 
       .finally(() => { if (!controller.signal.aborted) setStatusLoading(false); });
     return () => controller.abort();
   }, [active, reload]);
-  useVisiblePolling(active, 5000, async signal => {
+  useVisiblePolling(active && refreshIntervals.sessions > 0, 5000, async signal => {
     const result = await request<SessionIndexSummary>("/sessions/status?summary=true", { signal });
     if (signal.aborted) return;
     setStatus(current => current && current.version === result.version && current.stale === result.stale && current.job?.id === result.job?.id && current.job?.status === result.job?.status ? current : result);
