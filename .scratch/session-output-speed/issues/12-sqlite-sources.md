@@ -1,7 +1,7 @@
 # SQLite 历史请求速度
 
 Type: task
-Status: claimed
+Status: resolved
 Blocked by: 10
 
 规格：[来源与区间](../spec.md)。用户已授权全部可计算来源接入。
@@ -13,3 +13,7 @@ Blocked by: 10
 ## Validation
 
 合成数据覆盖完整结束、取消、缺失、重复、门槛和消息关联；原始历史只读，公开内容不保留真实输入。
+
+## Answer
+
+ZCode 按逻辑请求和尝试序号保留原生单请求时长、完成状态与首字边界；OpenCode 按原生助手身份关联创建至完成区间，速度只用独立输出量。取消、未知状态、时间冲突和多尝试关联歧义均有验证。六项新增回归及九项既有 SQLite 测试通过。

@@ -73,3 +73,23 @@ npm run check:public
 原生 `summary` 在 Chrome 可访问树中使用 `DisclosureTriangle`，Playwright 的 ARIA 角色定位未暴露该原生角色。端到端脚本在容器内按共享中文“请求速度依据”或英文“Request speed details”定位，并通过所选 DOM 节点的 CDP 对象获取局部可访问树；每次点击或触摸前同时断言该节点的角色和可访问名称。轮次折叠沿用同一绑定检查，不能由其他同名节点替代。结束入口实际定位到保存用量的轨迹记录，API 消息 ID 与来源行号一致。
 
 最终 API、五段浏览器报告与截图仍保存在忽略的 `.local/session-output-speed-e2e/`。复核使用独立合成服务、独立 Chrome 与隔离偏好；没有重新运行已经通过且本次未引入新风险的原有会话可用性全套。
+
+## 全部可计算来源扩展
+
+任务 10–15 将来源扩展为 Codex、Claude Code、CodeFlicker CLI、CodeFlicker 桌面原生镜像、DeepSeek Harness、Pi、WorkBuddy、OpenCode、ZCode、CodeBuddy、Qoder。每类按原生请求身份、结束证据和对应时间区间计算，输出门槛 200 Token、耗时门槛 1 秒保持。来源接入不表示每条历史合格：缺用量、缺镜像、身份歧义、复杂回合及部分响应保留缺失原因。
+
+扩展增加流式、追加历史、JSON、SQLite 与桌面镜像合成回归，覆盖原生请求尝试、失败重试、独立推理分子、工具等待、复制／重复、缺失及门槛。Codex 工具完成事件的合成调用投影不再制造额外模型请求。桌面用量冲突按请求持续保留，冲突后追加思考或匹配快照仍不可计算；两轴独立审查分别关闭各自发现，没有新增问题。
+
+修复后完整测试 570／570 通过，类型、国际化与构建通过。原有五段实际 Chrome 验收 134 项检查通过；新增[计时区间验收脚本](../../scripts/e2e-session-speed-windows.mjs)的实际 headed Chrome 53 项检查通过，共 187 项，无运行时异常。
+
+新增脚本从原生 DeepSeek Harness 压缩历史导入 600 Token／10 秒的输出阶段请求，从原生 Pi 历史导入 400 Token／10 秒的响应请求。两者均贯通发现、Worker、索引、HTTP 与四个视图，分别呈现 `= 60 tok/s` 和 `≈ 40 tok/s`，说明客户端记录计时与历史估算的区别。同轮混合区间使用明确标注的直接索引 UI 夹具，API 与四视图分别显示响应平均 40、输出阶段平均 60，不提供混合平均；该夹具不替代原生来源校准。
+
+中文桌面、英文切换及 390px 实际触摸窄屏通过。请求依据操作核对同一节点的原生 `DisclosureTriangle` 角色及可访问名称；两类算式、统计区间、计时说明与缺失标记可读，页面无横向溢出。新增截图与 API／浏览器报告保存在忽略的 `.local/session-output-speed-windows-e2e/`，截图仅含合成输入。复现命令：
+
+```sh
+npm run build
+node scripts/e2e-session-output-speed.mjs
+node scripts/e2e-session-speed-windows.mjs
+```
+
+本机真实历史回填和服务验收完成后在本节追加结果。公开记录不包含真实会话正文、身份、本机用户目录或截图。

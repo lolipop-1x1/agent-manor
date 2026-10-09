@@ -165,7 +165,7 @@ export async function parseSessionSource(source: SourceLocation, sink: SessionSi
   } }, gap);
   const timing = source.format !== DESKTOP_FORMAT && !ideSnapshot && ["codex", "claude", "codeflicker"].includes(source.client)
     ? new RequestTimingParser(source.client as "codex" | "claude" | "codeflicker", usage) : undefined;
-  const desktopRequests = new Map<string, { timing?: SessionRequestTiming; usageId?: string; messages: Set<string> }>();
+  const desktopRequests = new Map<string, { timing?: SessionRequestTiming; usageId?: string; messages: Set<string>; usageConflict?: boolean }>();
   const childReference = (tool: string | undefined, result: unknown, nativeAgentId?: string) => {
     const output = object(result);
     const agent = source.client === "codex" && /(?:^|\.)spawn_agent$/.test(tool ?? "") ? string(output.agent_id)
@@ -286,7 +286,7 @@ export async function parseSessionSource(source: SourceLocation, sink: SessionSi
       let desktopRequest = native?.requestId ? desktopRequests.get(native.requestId) : undefined;
       if (!desktopRequest && native?.requestId) desktopRequest = { messages: new Set<string>() };
       if (desktopRequest && native?.requestId) {
-        desktopRequest.timing = native.timing;
+        if (!desktopRequest.usageConflict) desktopRequest.timing = native.timing;
         desktopRequests.set(native.requestId, desktopRequest);
       }
       extra.model = model;
@@ -333,7 +333,10 @@ export async function parseSessionSource(source: SourceLocation, sink: SessionSi
           if (desktopRequest) {
             desktopRequest.usageId = usageId;
             if (tokens(recorded.outputTokens) !== undefined && native?.timing?.outputTokens !== undefined
-              && recorded.outputTokens !== native.timing.outputTokens) desktopRequest.timing = { ...native.timing, completion: "unknown", durationMs: undefined };
+              && recorded.outputTokens !== native.timing.outputTokens) {
+              desktopRequest.usageConflict = true;
+              desktopRequest.timing = { ...native.timing, completion: "unknown", durationMs: undefined };
+            }
           }
         }
       } else if (role === "tool") {

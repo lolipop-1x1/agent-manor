@@ -72,3 +72,17 @@ test("没有镜像关联的桌面思考仍正常显示", async () => {
   assert.equal(sample.messages[0]?.kind, "thinking");
   assert.equal(sample.messages[0]?.text, "保留合成思考");
 });
+
+test("桌面请求的用量冲突不会被后续思考或匹配快照清除", async () => {
+  for (const later of [
+    { id: "thinking", kind: "message", role: "reasoning", timestamp: at(6), content: "合成思考", extra: { "claude-code": { lastEntryUuid: "a1" } } },
+    cacheAssistant("matching-snapshot", "a1", 6),
+  ]) {
+    const sample = await parsed([cacheAssistant("mismatch", "a1", 5, 900), later],
+      [nativeUser("u0", 0), nativeAssistant("a1", "u0", "one", 4)]);
+    assert.equal(sample.usages.length, 1);
+    assert.equal(requestSpeed(sample.usages[0]!).reason, "end_unconfirmed");
+    assert.equal(summarizeRequestSpeed(sample.usages).eligibleRequests, 0);
+    assert.equal(sample.usages[0]?.requestMessageIds?.length, 2);
+  }
+});
