@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { SessionMessage } from "../src/session-contracts.ts";
-import { tracePreview, traceTurns, traceWindow } from "../web/session-trace-model.ts";
+import { timelineCenteredScroll, timelineFraction, timelineNodes, timelinePosition, timelineProjection, timelineVisibleMarks, timelineZoomScroll, tracePreview, traceTurns, traceWindow } from "../web/session-trace-model.ts";
 
 const message = (ordinal: number, kind: SessionMessage["kind"], fields: Partial<SessionMessage> = {}): SessionMessage => ({
   id: `message-${ordinal}`, sessionId: "session-example", ordinal, recordLine: ordinal, turnId: "turn-one", kind, text: "合成记录", ...fields,
@@ -73,4 +73,45 @@ test("总览覆盖全部节点并按事件、轮次和记录时间投影，缺�
   assert.deepEqual(time.spans.map(span => span.x), [0, 0.5, 1]);
   assert.equal(time.spans[1]?.event.id, nodes[2]?.event.id);
   assert.equal(timelineProjection([], "time").spans.length, 0);
+});
+
+test("缩放绘制与命中使用相同坐标，中心及指针锚点保持，端点不越界", () => {
+  for (const width of [320, 1000, 64000]) {
+    for (const x of [0, 0.13, 0.5, 0.97, 1]) {
+      assert.ok(Math.abs(timelineFraction(timelinePosition(x, width), width) - x) < 1e-12);
+    }
+    assert.equal(timelineFraction(-10, width), 0);
+    assert.equal(timelineFraction(width + 10, width), 1);
+  }
+  for (const anchor of [100, 500, 900]) {
+    const before = timelineFraction(2000 + anchor, 8000);
+    const afterScroll = timelineZoomScroll(2000, 1000, 8000, 16000, anchor);
+    assert.ok(Math.abs(timelineFraction(afterScroll + anchor, 16000) - before) < 1e-12);
+  }
+  assert.equal(timelineCenteredScroll(0, 8000, 1000), 0);
+  assert.equal(timelineCenteredScroll(1, 8000, 1000), 7000);
+  assert.equal(timelineCenteredScroll(0.5, 8000, 1000), 3500);
+  assert.equal(timelineZoomScroll(3000, 1000, 8000, 1000), 0);
+  assert.equal(timelineZoomScroll(0, 1000, 1000, 2000, 0), 0);
+  assert.equal(timelineZoomScroll(0, 1000, 1000, 2000, 1000), 1000);
+});
+
+test("长会话仅绘制可见像素，放大拉开标记并保留选中节点及成对结果", () => {
+  const nodes = timelineNodes(Array.from({ length: 10000 }, (_, index) => message(index + 1, "assistant")));
+  const { spans } = timelineProjection(nodes, "sequence");
+  const fitted = timelineVisibleMarks(spans, 1000, 0, 1000);
+  const zoomed = timelineVisibleMarks(spans, 64000, 31000, 1000);
+  assert.ok(fitted.length <= 1000);
+  assert.ok(zoomed.length < 170);
+  assert.ok(timelinePosition(spans[1]!.x, 64000) - timelinePosition(spans[0]!.x, 64000) > 5);
+  assert.ok(zoomed.every(span => timelinePosition(span.x, 64000) >= 30995 && timelinePosition(span.x, 64000) <= 32005));
+  assert.equal(timelineVisibleMarks(spans, 64000, 0, 1000)[0]?.event.id, nodes[0]?.event.id);
+  assert.equal(timelineVisibleMarks(spans, 64000, 63000, 1000).at(-1)?.event.id, nodes.at(-1)?.event.id);
+  const selected = spans[5]!;
+  assert.ok(timelineVisibleMarks(spans, 1000, 0, 1000, selected.event.id).includes(selected));
+  const pair = timelineProjection(timelineNodes([
+    message(1, "tool_call", { callId: "paired" }), message(2, "tool_result", { callId: "paired" }),
+  ]), "sequence").spans;
+  assert.equal(timelineVisibleMarks(pair, 1000, 0, 1000, "message-2")[0]?.result?.id, "message-2");
+  assert.deepEqual(timelineVisibleMarks([], 1000, 0, 1000), []);
 });

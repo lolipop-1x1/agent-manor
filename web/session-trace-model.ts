@@ -77,6 +77,32 @@ export function timelineProjection(nodes: ReturnType<typeof timelineNodes>, mode
   return { spans, missing: nodes.length - spans.length, start, end };
 }
 
+export const TRACE_MAX_ZOOM = 64;
+export function timelinePosition(x: number, width: number) {
+  return 5 + x * Math.max(1, width - 10);
+}
+export function timelineFraction(position: number, width: number) {
+  return Math.min(1, Math.max(0, (position - 5) / Math.max(1, width - 10)));
+}
+export function timelineCenteredScroll(x: number, width: number, viewport: number) {
+  return Math.min(Math.max(0, width - viewport), Math.max(0, timelinePosition(x, width) - viewport / 2));
+}
+export function timelineZoomScroll(scroll: number, viewport: number, width: number, nextWidth: number, anchor = viewport / 2) {
+  const x = (scroll + anchor - 5) / Math.max(1, width - 10);
+  return Math.min(Math.max(0, nextWidth - viewport), Math.max(0, timelinePosition(x, nextWidth) - anchor));
+}
+export function timelineVisibleMarks(spans: ReturnType<typeof timelineProjection>["spans"], width: number, scroll: number, viewport: number, selectedId?: string) {
+  const bins = new Map<string, typeof spans[number]>();
+  for (const span of spans) {
+    const position = timelinePosition(span.x, width);
+    if (position < scroll - 5 || position > scroll + viewport + 5) continue;
+    const key = `${span.lane}:${Math.round(position)}`;
+    // 仅在同一像素合并标记，缩放后重新分桶，选中节点优先保留。
+    if (!bins.has(key) || span.event.id === selectedId || span.result?.id === selectedId) bins.set(key, span);
+  }
+  return [...bins.values()];
+}
+
 export function tracePreview(text: string): string {
   return text.slice(0, 600).replace(/\s+/g, " ").trim() || t("sessions.body.emptyPreview");
 }

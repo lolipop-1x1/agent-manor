@@ -59,13 +59,19 @@
 .trace-source > div { padding-top: 5px; }
 .kind-context .trace-event i { background: #63a58c; }
 .trace-timeline { flex: 0 0 auto; border: 1px solid var(--border); border-radius: 6px; background: var(--surface); margin: 3px 0 6px; }
-.trace-timeline-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 4px 10px; background: var(--surface-alt); border-bottom: 1px solid var(--border); font-size: 10px; color: var(--muted); }
+.trace-timeline-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 6px 12px; padding: 4px 10px; background: var(--surface-alt); border-bottom: 1px solid var(--border); font-size: 10px; color: var(--muted); }
 .trace-timeline-head > [role="group"] { display: flex; gap: 10px; }
 .trace-timeline-head button { font-size: 10px; color: var(--muted); padding: 4px 0; }
 .trace-timeline-head button[aria-pressed="true"] { color: var(--accent); box-shadow: inset 0 -2px var(--accent); }
-.trace-timeline-plot { display: flex; position: relative; padding: 0 10px; height: 66px; }
+.trace-timeline-actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; margin-left: auto; gap: 6px 12px; }
+.trace-timeline-actions > span { white-space: nowrap; }
+.trace-timeline-zoom { flex-wrap: nowrap; }
+.trace-timeline-zoom .icon-button { width: 26px; min-height: 26px; padding: 4px; color: var(--text); }
+.trace-timeline-zoom output { min-width: 48px; font-size: 10px; }
+.trace-timeline-plot { display: flex; position: relative; padding: 0 10px; height: 80px; }
 .trace-lane-labels { display: grid; grid-template-rows: repeat(3, 22px); width: 34px; flex: 0 0 auto; color: var(--muted); font-size: 10px; align-items: center; }
-.trace-timeline-plot svg { flex: 1; width: 0; height: 66px; cursor: crosshair; }
+.trace-timeline-viewport { flex: 1; min-width: 0; overflow-x: auto; overflow-y: hidden; overscroll-behavior-x: contain; scrollbar-width: thin; }
+.trace-timeline-plot svg { display: block; height: 66px; cursor: crosshair; }
 .trace-lane-divider { stroke: var(--border); stroke-width: 1; }
 .trace-mark { fill: #63a58c; }
 .trace-mark.kind-user { fill: #368ec3; }
