@@ -50,6 +50,32 @@ async function parsed(client: Client, records: unknown[]) {
 const sampleUsage = (id: string, outputTokens = 200, durationMs = 1000): SessionUsage => ({ id, outputTokens,
   timing: { basis: "estimated", method: "codex_event_boundary", completion: "inferred", durationMs } });
 
+test("不同计时区间分别汇总，原生输出分项不重复加入推理用量", () => {
+  const response = sampleUsage("response", 900, 10000);
+  response.timing = { ...response.timing!, outputTokens: 400, basis: "recorded" };
+  const generation = sampleUsage("generation", 600, 10000);
+  generation.timing = { ...generation.timing!, window: "generation", basis: "recorded" };
+  const summary = summarizeRequestSpeed([response, generation]);
+  assert.equal(requestSpeed(response).tokensPerSecond, 40);
+  assert.equal(summary.tokensPerSecond, null);
+  assert.equal(summary.byWindow?.response?.tokensPerSecond, 40);
+  assert.equal(summary.byWindow?.generation?.tokensPerSecond, 60);
+  assert.equal(summary.byWindow?.generation?.basis, "recorded");
+  assert.equal(summary.eligibleRequests, 2);
+  assert.equal(requestSpeed({ ...response, timing: { ...response.timing!, start: { recordLine: 1, occurredAt: at(0) }, end: { recordLine: 2, occurredAt: at(11) } } }).reason, "invalid_timing");
+});
+
+test("Codex 工具执行投影不创建模型请求或覆盖原请求区间", async () => {
+  const projection = timed({ type: "event_msg", payload: { type: "item_completed", item: { id: "local-shell",
+    type: "CommandExecution", command: ["fixture_command"], status: "completed", exit_code: 0, formatted_output: "合成工具结果" } } }, 20);
+  const sample = await parsed("codex", [cUser(), cModel("one", 3), cCall("exec", 4), cUsage("one", 4.1),
+    projection, cModel("two", 24, true), cUsage("two", 24.1, 600, 1000)]);
+  assert.equal(sample.usages.length, 2);
+  assert.deepEqual(sample.usages.map(value => value.timing?.durationMs), [4100, 4100]);
+  assert.ok(sample.messages.some(value => value.tool === "CommandExecution"));
+  assert.ok(sample.usages.every(value => value.timing?.end?.recordLine !== 5));
+});
+
 test("单请求门槛包含等号，并分别保留缺失、无效、短响应与终态原因", () => {
   assert.equal(requestSpeed(sampleUsage("equal")).tokensPerSecond, 200);
   assert.equal(requestSpeed(sampleUsage("output-low", 199)).reason, "output_below_threshold");

@@ -41,15 +41,25 @@ export interface SessionRequestBoundary {
   occurredAt?: string;
   recordLine: number;
   messageId?: string;
+  /** 镜像行号属于旁路原生日志，不能导航成主历史中的同号记录。 */
+  source?: "mirror";
 }
 export interface SessionRequestTiming {
-  basis: "estimated";
-  method: "codex_event_boundary" | "claude_message_boundary" | "codeflicker_message_boundary";
+  basis: "estimated" | "recorded";
+  /** 未声明的旧记录沿用含首字等待的响应区间。 */
+  window?: "response" | "generation";
+  method: "codex_event_boundary" | "claude_message_boundary" | "codeflicker_message_boundary"
+    | "codeflicker_desktop_mirror" | "dsh_stream_window" | "pi_message_boundary" | "zcode_request_span"
+    | "opencode_message_span" | "codebuddy_single_request_turn" | "workbuddy_message_boundary" | "qoder_message_boundary";
   completion: "explicit" | "inferred" | "partial" | "unknown";
-  completionEvidence?: "stop_reason" | "tool_result" | "tool_response_snapshot" | "final_response_snapshot" | "persisted_stream_result" | "request_interrupted";
+  completionEvidence?: "stop_reason" | "tool_result" | "tool_response_snapshot" | "final_response_snapshot" | "persisted_stream_result" | "request_interrupted"
+    | "request_completed" | "stream_finish" | "turn_metrics";
   start?: SessionRequestBoundary;
   end?: SessionRequestBoundary;
+  firstToken?: SessionRequestBoundary;
   durationMs?: number;
+  /** 来源单独保存输出分项时，不把独立推理用量重复加入速度分子。 */
+  outputTokens?: number;
 }
 export interface SessionUsage {
   id: string;

@@ -1,6 +1,7 @@
 import { createReadStream } from "node:fs";
 import { zstdDecompressSync } from "node:zlib";
 import type { HistoryEvent } from "../../contracts.js";
+import type { SessionRequestTiming } from "../../session-contracts.js";
 import { changedFragments, object, number, shellEvidence, string, textContent, toolEvidence } from "../extraction.js";
 import { normalizeHistoryPath } from "./common.js";
 import { createNormalizedAdapter, normalizedHash, normalizedRecord, normalizedSnapshot, readBoundedJsonl } from "./normalized.js";
@@ -94,6 +95,29 @@ function dshUsage(value: unknown): NormalizedEvent["usage"] {
     ...(reasoning !== undefined ? { reasoningOutputTokens: reasoning } : {}),
   };
   return Object.keys(normalized).length ? normalized : undefined;
+}
+
+function dshRequest(data: Record<string, unknown>, seq: number, line: number, attempt = false): { requestKey: string; requestTiming: SessionRequestTiming } {
+  const message = object(data.message);
+  const stream = Array.isArray(data.stream) ? data.stream.map(object) : [];
+  const terminal = stream.at(-1);
+  const finish = terminal?.type === "chunk" && object(terminal.chunk).type === "finish" ? terminal : undefined;
+  const replay = object(object(message.source).replayState);
+  const responseId = string(object(replay.response).responseId)
+    ?? string(object(object(object(finish?.chunk).replayState).response).responseId);
+  const requestKey = !attempt && responseId ? `dsh:response:${responseId}` : `dsh:request:${seq}`;
+  const starts = stream.filter(part => ["text-chunks", "reasoning-chunks", "tool-call-chunks"].includes(string(part.type) ?? ""))
+    .map(part => number(part.time0)).filter((time): time is number => time !== undefined && Boolean(nativeTime(time)));
+  const start = starts.length ? nativeTime(Math.min(...starts)) : undefined;
+  const end = nativeTime(finish?.time);
+  const partial = attempt || data.interrupted === true;
+  const ended = finish && ["stop", "tool-calls"].includes(string(object(object(finish.chunk).reason).kind) ?? "");
+  return { requestKey, requestTiming: { basis: "recorded", window: "generation", method: "dsh_stream_window",
+    completion: partial ? "partial" : ended ? "explicit" : "unknown",
+    ...(partial ? { completionEvidence: "request_interrupted" as const } : ended ? { completionEvidence: "stream_finish" as const } : {}),
+    ...(start ? { start: { occurredAt: start, recordLine: line } } : {}),
+    ...(end ? { end: { occurredAt: end, recordLine: line } } : {}),
+    ...(start && end ? { durationMs: Date.parse(end) - Date.parse(start) } : {}) } };
 }
 
 function contentBlocks(value: unknown): Record<string, unknown>[] {
@@ -277,6 +301,7 @@ async function snapshot(location: SourceLocation): Promise<NormalizedSnapshot> {
   const completedTurns = new Set(eventRows.filter(row => row.record.type === "turn/end" && object(object(row.record.data).reason).kind === "completed")
     .map(row => object(row.record.data).turn).filter(value => typeof value === "number").map(String));
   const lastAssistant = new Map<string, { seq: number; interrupted: boolean; hasToolCall: boolean }>();
+  const requestByCall = new Map<string, string | undefined>();
   for (const row of eventRows) {
     if (row.record.type !== "assistant/message") continue;
     const data = object(row.record.data);
@@ -285,6 +310,11 @@ async function snapshot(location: SourceLocation): Promise<NormalizedSnapshot> {
     if (turn === undefined) continue;
     const seq = tokenCount(row.record.seq) ?? row.line;
     const hasToolCall = contentBlocks(message.content).some(block => block.type === "tool-call");
+    const request = dshRequest(data, seq, row.line);
+    for (const block of contentBlocks(message.content).filter(block => block.type === "tool-call")) {
+      const callId = string(block.id);
+      if (callId) requestByCall.set(callId, requestByCall.has(callId) && requestByCall.get(callId) !== request.requestKey ? undefined : request.requestKey);
+    }
     const previous = lastAssistant.get(turn);
     if (!previous || seq >= previous.seq) lastAssistant.set(turn, { seq, interrupted: data.interrupted === true, hasToolCall });
   }
@@ -314,21 +344,23 @@ async function snapshot(location: SourceLocation): Promise<NormalizedSnapshot> {
       const text = content.filter(block => block.type === "text").map(block => string(block.text) ?? "").filter(Boolean).join("\n");
       const reasoning = content.filter(block => block.type === "reasoning").map(block => string(block.text) ?? "").filter(Boolean).join("\n");
       const usage = dshUsage(data.usage ?? message.usage);
+      const request = dshRequest(data, seq, row.line);
+      const requestTiming = header.isSeeded === true && inheritedCut === undefined ? undefined : request.requestTiming;
       const model = string(object(message.source).model) ?? string(object(data.usage).model);
       const turn = data.turn === undefined ? undefined : String(data.turn);
       const candidate = turn === undefined ? undefined : lastAssistant.get(turn);
       const final = turn && completedTurns.has(turn) && candidate?.seq === seq && !candidate.hasToolCall && !candidate.interrupted ? "inferred" : undefined;
       const interrupted = data.interrupted === true && candidate?.seq === seq;
       records.push(normalizedRecord({ key: `${key}:assistant`, kind: "assistant", ...(text ? { text } : {}), occurredAt, model, turnKey,
-        usageKey: usage ? `${key}:usage` : undefined, usage, final, allowInferredFinal: false,
+        ...request, requestTiming, usageKey: usage ? `${request.requestKey}:usage` : undefined, usage, final, allowInferredFinal: false,
         interrupted: interrupted || undefined, copied }, row.raw, row.line, seq));
-      if (reasoning) records.push(normalizedRecord({ key: `${key}:reasoning`, kind: "thinking", text: reasoning, occurredAt, model, turnKey, copied }, row.raw, row.line, seq));
+      if (reasoning) records.push(normalizedRecord({ key: `${key}:reasoning`, kind: "thinking", text: reasoning, occurredAt, model, turnKey, requestKey: request.requestKey, copied }, row.raw, row.line, seq));
       for (const block of content.filter(block => block.type === "tool-call")) {
         const callId = string(block.id);
         if (!callId || knownCallIds.has(callId)) continue;
         const tool = string(block.name) ?? "unknown";
         records.push(normalizedRecord({ key: `${key}:call:${callId}`, kind: "tool_call", callId, tool,
-          input: callInput(block.arguments), occurredAt, turnKey, copied }, row.raw, row.line, seq));
+          input: callInput(block.arguments), occurredAt, turnKey, requestKey: request.requestKey, copied }, row.raw, row.line, seq));
       }
       continue;
     }
@@ -338,7 +370,9 @@ async function snapshot(location: SourceLocation): Promise<NormalizedSnapshot> {
       const text = stream.filter(part => part.type === "text").map(part => string(part.text) ?? string(part.delta) ?? "").filter(Boolean).join("");
       const value = reasoning || text;
       const usage = dshUsage(data.usage);
+      const request = dshRequest(data, seq, row.line, true);
       records.push(normalizedRecord({ key, kind: "thinking", ...(value ? { text: value } : {}), occurredAt, turnKey, status: "unknown",
+        ...request, requestTiming: header.isSeeded === true && inheritedCut === undefined ? undefined : request.requestTiming,
         usageKey: usage ? `${key}:usage` : undefined, usage, copied }, row.raw, row.line, seq));
       continue;
     }
@@ -347,7 +381,7 @@ async function snapshot(location: SourceLocation): Promise<NormalizedSnapshot> {
       if (!callId) { gaps.push({ kind: "unpaired_call", message: "DSH 工具请求缺少原生 callId", messageDescriptor: { key: "diagnostics.history.adapters.dsh.m014" } }); continue; }
       toolNames.set(callId, toolNames.has(callId) ? undefined : string(data.name));
       records.push(normalizedRecord({ key, kind: "tool_call", callId, tool: string(data.name) ?? "unknown",
-        input: callInput(data.arguments), occurredAt, turnKey, copied }, row.raw, row.line, seq));
+        input: callInput(data.arguments), occurredAt, turnKey, requestKey: requestByCall.get(callId), copied }, row.raw, row.line, seq));
       continue;
     }
     if (type === "tool/result") {

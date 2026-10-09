@@ -92,13 +92,14 @@ function canInferAssistantFinal(record: Record<string, unknown>): boolean {
   return completed && !failed;
 }
 
-function eventFor(record: Record<string, unknown>, row: RawHistoryRecord, metaGaps: Gap[], usageSeen: Map<string, { event: NormalizedEvent; fingerprint: string }>): NormalizedEvent[] {
+function eventFor(record: Record<string, unknown>, row: RawHistoryRecord, metaGaps: Gap[], usageSeen: Map<string, { event: NormalizedEvent; fingerprint: string }>, reasoningRequests: Map<string, string>): NormalizedEvent[] {
   const type = string(record.type) ?? "<缺少类型>";
   const id = string(record.id) ?? `${type}:${row.line}:${normalizedHash(row.raw).slice(0, 16)}`;
   const provider = object(record.providerData);
   const message = object(record.message);
   const occurredAt = eventTime(record.timestamp);
   const model = modelOf(record);
+  const requestKey = reasoningRequests.get(string(record.id) ?? "") ?? string(provider.messageId);
   const events: NormalizedEvent[] = [];
   const make = (key: string, kind: NormalizedEvent["kind"], values: Partial<NormalizedEvent> = {}): NormalizedEvent => ({
     key: `${id}:${key}`,
@@ -133,14 +134,16 @@ function eventFor(record: Record<string, unknown>, row: RawHistoryRecord, metaGa
       : record.role === "user" ? "user" : record.role === "assistant" ? "assistant" : "system";
     const event = make("message", kind, { text: content,
       ...(record.role === "assistant" ? { allowInferredFinal: !compacted && canInferAssistantFinal(record) } : {}) });
+    if (kind === "assistant") event.requestKey = requestKey;
     useUsage(event);
     events.push(event);
   } else if (type === "reasoning") {
-    events.push(make("reasoning", "thinking", { text: textOf(record.content) || textOf(record.rawContent) }));
+    events.push(make("reasoning", "thinking", { text: textOf(record.content) || textOf(record.rawContent), requestKey }));
   } else if (type === "function_call") {
     const callId = string(record.callId);
     const event = make(`call:${callId ?? row.line}`, "tool_call", {
       callId,
+      requestKey,
       tool: string(record.name) ?? "unknown",
       input: parseArguments(record.arguments, metaGaps),
       turnKey: string(record.logicalParentId) ?? undefined,
@@ -188,6 +191,70 @@ function eventFor(record: Record<string, unknown>, row: RawHistoryRecord, metaGa
   return events;
 }
 
+function attachRequestTiming(events: { row: RawHistoryRecord; event: NormalizedEvent }[]): void {
+  type Timing = NonNullable<NormalizedEvent["requestTiming"]>;
+  type Group = { events: NormalizedEvent[]; timing: Timing; calls: Set<string>; end?: Timing["end"]; seen: Set<string>; identified: boolean; terminalCompleted?: boolean };
+  const groups = new Map<string, Group>();
+  const calls = new Map<string, Group | undefined>();
+  let boundary: Timing["start"];
+  for (const { row, event } of events) {
+    const point = { occurredAt: event.occurredAt, recordLine: row.line };
+    if (event.kind === "user") { boundary = point; continue; }
+    if (event.kind === "tool_result") {
+      const group = event.callId ? calls.get(event.callId) : undefined;
+      if (group && group.calls.delete(event.callId!)) {
+        if (!group.calls.size && group.timing.completion === "unknown" && group.identified) {
+          group.timing.completion = "inferred"; group.timing.completionEvidence = "tool_result";
+        }
+        boundary = point;
+      }
+      continue;
+    }
+    if (!event.requestKey) continue;
+    let group = groups.get(event.requestKey);
+    if (!group) {
+      group = { events: [], calls: new Set(), seen: new Set(), identified: Boolean(string(object(row.record.providerData).messageId)),
+        timing: { basis: "estimated", window: "response", method: "workbuddy_message_boundary", completion: "unknown", start: boundary } };
+      groups.set(event.requestKey, group); boundary = undefined;
+    }
+    group.events.push(event);
+    const record = row.record;
+    const provider = object(record.providerData);
+    const message = object(record.message);
+    const status = (string(record.status) ?? "").toLowerCase();
+    const finish = string(record.finishReason) ?? string(record.finish_reason) ?? string(record.stopReason) ?? string(message.stop_reason);
+    const partial = ["error", "failed", "failure", "incomplete", "interrupted", "cancelled", "canceled"].includes(status)
+      || record.interrupted === true || record.error !== undefined && record.error !== null || Boolean(provider.error);
+    const fingerprint = JSON.stringify([record.type, record.role, record.content, record.rawContent, record.callId,
+      record.arguments, record.status, record.finishReason, record.finish_reason, record.stopReason, message, provider.usage, partial]);
+    if (!group.seen.has(fingerprint)) {
+      group.seen.add(fingerprint); group.end = point;
+      group.terminalCompleted = event.kind === "assistant" && canInferAssistantFinal(record);
+    }
+    if (partial) {
+      group.timing.completion = "partial"; group.timing.completionEvidence = "request_interrupted";
+    } else if (group.identified && group.timing.completion !== "partial"
+      && ["stop", "end_turn", "stop_sequence", "tool_use", "tool_calls", "tool-calls", "max_tokens", "length"].includes(finish ?? "")) {
+      group.timing.completion = "explicit"; group.timing.completionEvidence = "stop_reason";
+    }
+    if (event.kind === "tool_call" && event.callId) {
+      group.calls.add(event.callId);
+      if (!calls.has(event.callId)) calls.set(event.callId, group);
+      else if (calls.get(event.callId) !== group) calls.set(event.callId, undefined);
+    }
+  }
+  for (const group of groups.values()) {
+    if (group.identified && group.timing.completion === "unknown" && group.terminalCompleted && !group.calls.size) {
+      group.timing.completion = "explicit"; group.timing.completionEvidence = "request_completed";
+    }
+    group.timing.end = group.end;
+    const start = group.timing.start?.occurredAt; const end = group.end?.occurredAt;
+    if (start && end) group.timing.durationMs = Date.parse(end) - Date.parse(start);
+    group.timing.outputTokens = group.events.find(event => event.usage)?.usage?.outputTokens;
+    for (const event of group.events) event.requestTiming = group.timing;
+  }
+}
+
 async function readWorkbuddySnapshot(location: SourceLocation): Promise<NormalizedSnapshot> {
   const gaps: Gap[] = [];
   const rows = await readJsonlRows(location.path, gaps);
@@ -216,9 +283,28 @@ async function readWorkbuddySnapshot(location: SourceLocation): Promise<Normaliz
   source.selector = sessionId;
   const events: { row: RawHistoryRecord; event: NormalizedEvent }[] = [];
   const usageSeen = new Map<string, { event: NormalizedEvent; fingerprint: string }>();
+  const reasoningRequests = new Map<string, string>();
+  const modelChildren = new Map<string, RawHistoryRecord[]>();
   for (const row of recordRows) {
-    for (const event of eventFor(row.record, row, gaps, usageSeen)) events.push({ row, event });
+    const parentId = string(row.record.parentId);
+    if (!parentId || !(row.record.type === "function_call" || row.record.type === "message" && row.record.role === "assistant")) continue;
+    const children = modelChildren.get(parentId) ?? [];
+    children.push(row); modelChildren.set(parentId, children);
   }
+  for (const row of recordRows) {
+    if (row.record.type !== "reasoning" || !string(row.record.id)) continue;
+    const provider = object(row.record.providerData);
+    const traceId = string(provider.traceId);
+    if (!traceId) continue;
+    const children = (modelChildren.get(string(row.record.id)!) ?? []).filter(child => object(child.record.providerData).traceId === traceId
+      && object(child.record.providerData).conversationRequestId === provider.conversationRequestId);
+    const keys = new Set(children.map(child => string(object(child.record.providerData).messageId)));
+    if (keys.size === 1 && !keys.has(undefined)) reasoningRequests.set(string(row.record.id)!, [...keys][0]!);
+  }
+  for (const row of recordRows) {
+    for (const event of eventFor(row.record, row, gaps, usageSeen, reasoningRequests)) events.push({ row, event });
+  }
+  attachRequestTiming(events);
   return normalizedSnapshot(source, events.map(item => normalizedRecord(item.event, item.row.raw, item.row.line)), { title, titleOrigin, gaps },
     JSON.stringify([metadata, cwd, fileId, sessionId]));
 }

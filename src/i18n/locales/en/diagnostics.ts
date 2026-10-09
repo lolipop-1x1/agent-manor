@@ -13,7 +13,7 @@ export default {
   "diagnostics.history.adapters.codebuddy.m008": "CodeBuddy message role {{p0}} has not been verified against samples or format source code",
   "diagnostics.history.adapters.codebuddy.m009": "CodeBuddy message role <missing role> has not been verified against samples or format source code",
   "diagnostics.history.adapters.codebuddy.m010": "The CodeBuddy sample does not establish model and usage field semantics; this record was not normalized",
-  "diagnostics.history.adapters.codebuddy.resourceCoverage": "Only user messages are verified in this CodeBuddy JSONL format; tool and resource coverage is unconfirmed",
+  "diagnostics.history.adapters.codebuddy.resourceCoverage": "CodeBuddy tool and resource coverage is not fully verified",
   "diagnostics.history.adapters.codeflickerDesktop.m001": "range_unknown: Desktop read line ranges do not match the request or count",
   "diagnostics.history.adapters.codeflickerDesktop.m002": "range_unknown: Desktop replacement returned a path that differs from the request",
   "diagnostics.history.adapters.codeflickerDesktop.m003": "Record {{p0}} has an unsupported desktop record type",

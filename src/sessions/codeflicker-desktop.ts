@@ -6,8 +6,9 @@ import { isAbsolute, join, relative } from "node:path";
 import { createInterface } from "node:readline";
 import Database from "better-sqlite3";
 import type { SourceLocation } from "../history/types.js";
+import type { SessionRequestTiming } from "../session-contracts.js";
 import { DESKTOP_FORMAT, desktopSessionDirectory } from "../history/adapters/codeflicker-desktop.js";
-import { object, string } from "./parser-usage.js";
+import { object, string, tokens } from "./parser-usage.js";
 
 /** 只查询桌面标题缓存；不读认证命名空间，不把服务端分页缓存当作完整历史。 */
 export async function loadDesktopTitles(sources: readonly SourceLocation[]): Promise<Map<string, string>> {
@@ -45,9 +46,9 @@ export async function loadDesktopTitles(sources: readonly SourceLocation[]): Pro
   return titles;
 }
 
-export interface DesktopModelRecord { model?: string; requestId?: string }
+export interface DesktopModelRecord { model?: string; requestId?: string; timing?: SessionRequestTiming }
 
-/** 仅按消息 UUID 关联原生模型元信息；正文与工具仍只索引 cache.jsonl。 */
+/** 按 UUID 与明确父关系关联原生请求；正文与工具仍只索引 cache.jsonl。 */
 export async function desktopModels(path: string): Promise<{ entries: Map<string, DesktopModelRecord>; fingerprint: string; limited: boolean }> {
   const directory = join(desktopSessionDirectory(path), "claude-session");
   const entries = new Map<string, DesktopModelRecord>();
@@ -62,15 +63,59 @@ export async function desktopModels(path: string): Promise<{ entries: Map<string
     const info = await lstat(location);
     if (info.size > 64 * 1024 * 1024) { limited = true; hash.update(`${file.name}:oversized:${info.size}`); continue; }
     const lines = createInterface({ input: createReadStream(location), crlfDelay: Infinity });
+    const nodes = new Map<string, { type: string; parent?: string; request?: string; at?: string; line: number }>();
+    const groups = new Map<string, { model?: string; first: string; last: string; output?: number; stop?: string; partial: boolean }>();
+    let row = 0;
     for await (const line of lines) {
+      row += 1;
       hash.update(line).update("\n");
       let record: Record<string, unknown>;
       try { record = object(JSON.parse(line)); } catch { continue; }
       const uuid = string(record.uuid);
       const message = object(record.message);
-      if (!uuid || record.type !== "assistant") continue;
-      if (entries.size >= 50_000) { limited = true; continue; }
-      entries.set(uuid, { model: string(message.model), requestId: string(message.id) });
+      if (!uuid) continue;
+      if (nodes.size >= 50_000 || entries.size >= 50_000) { limited = true; continue; }
+      const request = record.type === "assistant" ? string(message.id) : undefined;
+      nodes.set(uuid, { type: string(record.type) ?? "", parent: string(record.parentUuid), request,
+        at: string(record.timestamp), line: row });
+      if (record.type !== "assistant") continue;
+      if (!request) { entries.set(uuid, { model: string(message.model) }); continue; }
+      let group = groups.get(request);
+      if (!group) { group = { first: uuid, last: uuid, partial: false }; groups.set(request, group); }
+      group.last = uuid;
+      group.model = string(message.model) ?? group.model;
+      group.output = tokens(object(message.usage).output_tokens) ?? group.output;
+      group.stop = string(message.stop_reason) ?? group.stop;
+      group.partial ||= record.isApiErrorMessage === true || record.interrupted === true;
+      groups.set(request, group);
+    }
+    const children = new Map<string, Set<string>>();
+    const requests = new Map<string, DesktopModelRecord>();
+    for (const [request, group] of groups) {
+      const first = nodes.get(group.first)!; const last = nodes.get(group.last)!;
+      let parentId = first.parent;
+      let parent = parentId ? nodes.get(parentId) : undefined;
+      const visited = new Set<string>();
+      while (parent?.type === "assistant" && parent.request === request && parent.parent && !visited.has(parent.parent)) {
+        visited.add(parent.parent); parentId = parent.parent; parent = nodes.get(parentId);
+      }
+      const timing: SessionRequestTiming = { basis: "estimated", window: "response", method: "codeflicker_desktop_mirror",
+        completion: group.partial ? "partial" : ["end_turn", "tool_use", "stop_sequence", "max_tokens"].includes(group.stop ?? "") ? "explicit" : "unknown",
+        completionEvidence: group.partial ? "request_interrupted" : group.stop ? "stop_reason" : undefined,
+        outputTokens: group.output, end: { occurredAt: last.at, recordLine: last.line, source: "mirror" } };
+      if (parent?.type === "user") {
+        timing.start = { occurredAt: parent.at, recordLine: parent.line, source: "mirror" };
+        const elapsed = parent.at && last.at ? Date.parse(last.at) - Date.parse(parent.at) : NaN;
+        if (Number.isFinite(elapsed)) timing.durationMs = elapsed;
+        const aliases = children.get(parentId!) ?? new Set<string>();
+        aliases.add(request); children.set(parentId!, aliases);
+      }
+      requests.set(request, { model: group.model, requestId: request, timing });
+    }
+    for (const [uuid, node] of nodes) {
+      const key = node.request ?? (children.get(uuid)?.size === 1 ? [...children.get(uuid)!][0] : undefined);
+      const value = key ? requests.get(key) : undefined;
+      if (value) entries.set(uuid, value);
     }
   }
   return { entries, fingerprint: hash.digest("hex"), limited };

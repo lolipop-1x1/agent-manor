@@ -339,7 +339,7 @@ test("新库重开保留来源快检记录，不重新解析未变化正文", as
   } finally { reopened.close(); }
 }));
 
-test("计时规则升级只回填三来源，旧 JSON 可查，失败保持前版且未支持来源复用", async () => fixture(async (store, directory) => {
+test("计时规则升级回填旧缓存，旧 JSON 可查，失败保持前版且未变化来源复用", async () => fixture(async (store, directory) => {
   const at = (seconds: number) => new Date(Date.UTC(2026, 0, 1) + seconds * 1000).toISOString();
   const codex = join(directory, "codex"); const claude = join(directory, "claude"); const codeflicker = join(directory, "cli");
   const desktop = join(directory, "desktop");
@@ -365,11 +365,11 @@ test("计时规则升级只回填三来源，旧 JSON 可查，失败保持前�
   const db = new Database(store.dbPath);
   try {
     for (const revision of revisions.filter(item => item.client !== "codeflicker-desktop")) {
-      assert.ok(revision.fingerprint.includes(":request-timing-v1"));
-      const metadataSuffix = revision.fingerprint.split(":request-timing-v1")[1]!;
+      assert.ok(revision.fingerprint.includes(":request-timing-v2"));
+      const metadataSuffix = revision.fingerprint.split(":request-timing-v2")[1]!;
       const oldMetadata = createHash("sha256").update(JSON.stringify({ rule: "6", source: revision.location, metadataSuffix })).digest("hex");
       db.prepare("UPDATE session_revisions SET fingerprint=?,metadata_fingerprint=? WHERE id=?")
-        .run(revision.fingerprint.replace(":request-timing-v1", ""), oldMetadata, revision.revision);
+        .run(revision.fingerprint.replace(":request-timing-v2", ""), oldMetadata, revision.revision);
       db.prepare("UPDATE session_usage SET json=json_remove(json,'$.timing','$.requestMessageIds') WHERE revision=?").run(revision.revision);
     }
   } finally { db.close(); }

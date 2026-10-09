@@ -58,8 +58,8 @@ test("速度格式沿用显示语言，小于一时一位小数；动态原因�
     for (const [category, names] of [
       ["reason", ["output_missing", "output_below_threshold", "timing_missing", "invalid_timing", "duration_below_threshold", "partial_response", "end_unconfirmed"]],
       ["completion", ["explicit", "inferred", "partial", "unknown"]],
-      ["method", ["codex_event_boundary", "claude_message_boundary", "codeflicker_message_boundary"]],
-      ["evidence", ["stop_reason", "tool_result", "tool_response_snapshot", "final_response_snapshot", "persisted_stream_result", "request_interrupted"]],
+      ["method", ["codex_event_boundary", "claude_message_boundary", "codeflicker_message_boundary", "codeflicker_desktop_mirror", "dsh_stream_window", "pi_message_boundary", "zcode_request_span", "opencode_message_span", "codebuddy_single_request_turn", "workbuddy_message_boundary", "qoder_message_boundary"]],
+      ["evidence", ["stop_reason", "tool_result", "tool_response_snapshot", "final_response_snapshot", "persisted_stream_result", "request_interrupted", "request_completed", "stream_finish", "turn_metrics"]],
     ] as const) for (const name of names) {
       const key = `sessions.speed.${category}.${name}`;
       assert.ok(isMessageDescriptorKnown({ key }), key);

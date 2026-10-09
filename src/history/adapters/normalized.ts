@@ -34,6 +34,9 @@ export interface NormalizedEvent {
   usageKey?: string;
   usageMessageKey?: string;
   usage?: Omit<SessionUsage, "id" | "messageId" | "turnId" | "occurredAt" | "model">;
+  /** 模型请求身份独立于消息片段与工具调用身份。 */
+  requestKey?: string;
+  requestTiming?: SessionUsage["timing"];
   turnKey?: string;
   branchIds?: string[];
   currentBranch?: boolean;
@@ -164,6 +167,8 @@ export function parseNormalizedSession(snapshot: NormalizedSnapshot, sink: Sessi
   const candidates = new Map<string, { message: SessionMessage; allowInferredFinal: boolean }>(); const interrupted = new Set<string>();
   const turns = new Map<string, string>(); const models = new Set<string>(); let turn = `${id}:turn:0`;
   const messageIds = new Map<string, string>();
+  const boundaryMessages = new Map<string, string[]>();
+  const requestGroups = new Map<string, { first: SessionMessage; messages: Set<string>; timing?: SessionUsage["timing"]; usage?: SessionUsage }>();
   for (const row of snapshot.records) {
     const event = row.record.normalizedEvent as NormalizedEvent | undefined;
     if (!event) continue;
@@ -184,6 +189,10 @@ export function parseNormalizedSession(snapshot: NormalizedSnapshot, sink: Sessi
     if (event.kind === "tool_call" && value.resource?.kind === "skill_read") value.resource = undefined;
     messages.set(event.key, value.ordinal);
     messageIds.set(event.key, value.id);
+    const pointKey = JSON.stringify([row.line, event.occurredAt]);
+    const pointMessages = boundaryMessages.get(pointKey) ?? [];
+    if (!pointMessages.includes(value.id)) pointMessages.push(value.id);
+    boundaryMessages.set(pointKey, pointMessages);
     if (event.model) models.add(event.model);
     if (event.occurredAt) { meta.startedAt = !meta.startedAt || event.occurredAt < meta.startedAt ? event.occurredAt : meta.startedAt; meta.updatedAt = !meta.updatedAt || event.occurredAt > meta.updatedAt ? event.occurredAt : meta.updatedAt; }
     if (event.kind === "user" && !event.copied && meta.titleOrigin === "fallback" && event.text?.trim()) { meta.title = event.text.trim().replace(/\s+/g, " ").slice(0, 120); meta.titleOrigin = "first_user"; }
@@ -216,10 +225,32 @@ export function parseNormalizedSession(snapshot: NormalizedSnapshot, sink: Sessi
       } else meta.gaps.push({ kind: calls.length > 1 ? "ambiguous" : "unpaired_call", message: calls.length > 1 ? "原生调用身份同时对应多个请求，未猜测结果关联" : "原生工具结果缺少可配对请求", messageDescriptor: calls.length > 1 ? { key: "diagnostics.history.adapters.normalized.m005" } : { key: "diagnostics.history.adapters.normalized.m006" }, sourceId: meta.sourceId });
     }
     sink.message(value);
-    if (event.usage) sink.usage({ ...event.usage, id: `${id}:usage:${normalizedHash(event.usageKey ?? event.key).slice(0, 24)}`,
+    const usageValue = event.usage && !event.copied ? { ...event.usage, id: `${id}:usage:${normalizedHash(event.usageKey ?? event.key).slice(0, 24)}`,
       messageId: messageIds.get(event.usageMessageKey ?? event.key) ?? value.id,
       turnId: event.turnKey && turns.has(event.turnKey) ? turns.get(event.turnKey) : value.turnId,
-      model: event.model, occurredAt: event.occurredAt });
+      model: event.model, occurredAt: event.occurredAt } : undefined;
+    if (usageValue && !event.requestKey) sink.usage(usageValue);
+    if (event.requestKey && !event.copied) {
+      const group = requestGroups.get(event.requestKey) ?? { first: value, messages: new Set<string>() };
+      if (["assistant", "thinking"].includes(value.kind)) group.messages.add(value.id);
+      if (event.requestTiming) group.timing = event.requestTiming;
+      if (usageValue) group.usage = { ...group.usage, ...usageValue, turnId: group.usage?.turnId ?? usageValue.turnId };
+      requestGroups.set(event.requestKey, group);
+    }
+  }
+  for (const [key, group] of requestGroups) {
+    const usageValue = group.usage ?? { id: `${id}:usage:${normalizedHash(key).slice(0, 24)}`,
+      turnId: group.first.turnId, model: group.first.model, occurredAt: group.timing?.end?.occurredAt ?? group.first.occurredAt };
+    const timing = group.timing ? { ...group.timing, start: group.timing.start ? { ...group.timing.start } : undefined,
+      end: group.timing.end ? { ...group.timing.end } : undefined, firstToken: group.timing.firstToken ? { ...group.timing.firstToken } : undefined } : undefined;
+    if (timing) {
+      for (const point of [timing.start, timing.end, timing.firstToken]) {
+        if (!point || point.messageId) continue;
+        const matches = boundaryMessages.get(JSON.stringify([point.recordLine, point.occurredAt])) ?? [];
+        if (matches.length === 1) point.messageId = matches[0];
+      }
+    }
+    sink.usage({ ...usageValue, timing, requestMessageIds: [...group.messages] });
   }
   const pendingCalls = [...pending.values()].flat();
   const pendingTurns = new Set(pendingCalls.map(value => value.turnId));

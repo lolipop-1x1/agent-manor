@@ -7,6 +7,7 @@ import { number, object, string, textContent, toolEvidence } from "../extraction
 import { normalizeHistoryPath } from "./common.js";
 import { createSqliteReadBudget, readOnlySqlite, readSqliteRows, sqliteJson, sqliteTableExists } from "./sqlite-readonly.js";
 import type { SourceLocation } from "../types.js";
+import type { SessionRequestTiming } from "../../session-contracts.js";
 
 export const ZCODE_FORMAT = "zcode-sqlite";
 const missing = () => Object.assign(new DiagnosticError("ZCode 会话来源已缺失", { key: "diagnostics.history.adapters.zcode.m001" }), { code: "ENOENT" });
@@ -25,6 +26,41 @@ function timestamp(value: unknown): string | undefined {
   return undefined;
 }
 
+function requestKey(row: Record<string, unknown>, index: number): string {
+  const logical = string(row.logical_request_id);
+  const attempt = number(row.attempt_index);
+  return logical && Number.isSafeInteger(attempt) && attempt! >= 0
+    ? `request:${JSON.stringify([logical, attempt])}` : `attempt:${string(row.id) ?? index}`;
+}
+
+function requestTiming(row: Record<string, unknown>): SessionRequestTiming {
+  const started = timestamp(row.started_at);
+  const completed = timestamp(row.completed_at);
+  const start = started === undefined ? undefined : Date.parse(started);
+  const end = completed === undefined ? undefined : Date.parse(completed);
+  const duration = number(row.duration_ms);
+  const validSpan = start !== undefined && end !== undefined && Number.isFinite(start) && Number.isFinite(end);
+  const matchedDuration = validSpan && (duration === undefined
+    || Number.isFinite(duration) && Math.abs(end! - start! - duration) <= 1);
+  const status = string(row.status)?.toLowerCase();
+  const partial = row.cancelled_by_user === true || row.cancelled_by_user === 1
+    || ["error", "failed", "cancelled", "canceled", "aborted", "interrupted"].includes(status ?? "");
+  const first = timestamp(row.first_token_at);
+  const firstTime = first === undefined ? undefined : Date.parse(first);
+  const firstWait = number(row.time_to_first_token_ms);
+  const validFirst = validSpan && firstTime !== undefined && Number.isFinite(firstTime)
+    && firstTime >= start! && firstTime <= end!
+    && (firstWait === undefined || Number.isFinite(firstWait) && Math.abs(firstTime - start! - firstWait) <= 1);
+  return { basis: "recorded", window: "response", method: "zcode_request_span",
+    completion: partial ? "partial" : status === "completed" ? "explicit" : "unknown",
+    completionEvidence: partial ? "request_interrupted" : status === "completed" ? "request_completed" : undefined,
+    start: started === undefined ? undefined : { occurredAt: started, recordLine: 0 },
+    end: completed === undefined ? undefined : { occurredAt: completed, recordLine: 0 },
+    firstToken: validFirst ? { occurredAt: first, recordLine: 0 } : undefined,
+    durationMs: matchedDuration ? duration ?? end! - start! : undefined,
+    outputTokens: number(row.output_tokens) };
+}
+
 function buildRecords(messages: Record<string, unknown>[], parts: Record<string, unknown>[], modelUsage: Record<string, unknown>[], meta: NormalizedSessionMetadata) {
   const gaps = meta.gaps ?? (meta.gaps = []);
   const byMessage = new Map<string, { row: Record<string, unknown>; data: Record<string, unknown>; raw: string }[]>();
@@ -35,6 +71,14 @@ function buildRecords(messages: Record<string, unknown>[], parts: Record<string,
     byMessage.set(messageId, [...(byMessage.get(messageId) ?? []), value]);
   }
   const messagesById = new Map(messages.map(row => [String(row.id), row]));
+  const requestsByMessage = new Map<string, Set<string>>();
+  for (const [index, row] of modelUsage.entries()) {
+    const messageId = string(row.assistant_message_id);
+    if (!messageId || !messagesById.has(messageId)) continue;
+    const keys = requestsByMessage.get(messageId) ?? new Set<string>();
+    keys.add(requestKey(row, index));
+    requestsByMessage.set(messageId, keys);
+  }
   const staged: { event: NormalizedEvent; raw: string; order: number }[] = [];
   const turnByMessage = new Map<string, string>();
 
@@ -49,6 +93,8 @@ function buildRecords(messages: Record<string, unknown>[], parts: Record<string,
     const created = timestamp(object(data.time).created ?? row.time_created);
     const model = string(object(data.model).modelID) ?? string(object(data.model).model) ?? string(data.model);
     const turnKey = string(data.turnId) ?? id;
+    const requests = requestsByMessage.get(id);
+    const messageRequestKey = requests?.size === 1 ? [...requests][0] : undefined;
     turnByMessage.set(id, turnKey);
     const raw = JSON.stringify({ message: row, textParts: grouped.filter(part => part.data.type === "text").map(part => part.row) });
     const knownRole = role === "user" || role === "assistant" || role === "system";
@@ -66,6 +112,7 @@ function buildRecords(messages: Record<string, unknown>[], parts: Record<string,
       const allowInferredFinal = role === "assistant" && !failed && !hasToolPart
         && (normalFinish || Boolean(completedAt) && !finishReason);
       staged.push({ event: { key: `message:${id}`, kind: role, text, occurredAt: created, model, turnKey,
+        ...(role === "assistant" ? { requestKey: messageRequestKey } : {}),
         ...(role === "assistant" ? { allowInferredFinal } : {}) }, raw, order: messageIndex * 1_000 });
     } else {
       staged.push({ event: { key: `message:${id}`, kind: "context", text, occurredAt: created, model, turnKey,
@@ -80,7 +127,8 @@ function buildRecords(messages: Record<string, unknown>[], parts: Record<string,
       if (type === "text") continue;
       if (type === "reasoning") {
         const value = string(part.data.text);
-        if (value) staged.push({ event: { key: `reasoning:${partId}`, kind: "thinking", text: value, occurredAt: partTime, model, turnKey }, raw: part.raw, order: partOrder });
+        if (value) staged.push({ event: { key: `reasoning:${partId}`, kind: "thinking", text: value, occurredAt: partTime, model, turnKey,
+          requestKey: role === "assistant" ? messageRequestKey : undefined }, raw: part.raw, order: partOrder });
       }
       if (type !== "tool") {
         if (type !== "reasoning") {
@@ -95,7 +143,8 @@ function buildRecords(messages: Record<string, unknown>[], parts: Record<string,
       const callId = string(part.data.callID) ?? partId;
       const tool = string(part.data.tool) ?? "unknown";
       const input = object(state.input);
-      staged.push({ event: { key: `tool-call:${partId}`, kind: "tool_call", callId, tool, input, occurredAt: partTime, model, turnKey }, raw: part.raw, order: partOrder });
+      staged.push({ event: { key: `tool-call:${partId}`, kind: "tool_call", callId, tool, input, occurredAt: partTime, model, turnKey,
+        requestKey: role === "assistant" ? messageRequestKey : undefined }, raw: part.raw, order: partOrder });
       if (state.output === undefined && state.error === undefined) continue;
       const stateName = string(state.status);
       const status = state.error !== undefined || stateName === "error" ? "failure"
@@ -147,7 +196,9 @@ function buildRecords(messages: Record<string, unknown>[], parts: Record<string,
       occurredAt: timestamp(row.started_at),
       model: string(row.model_id) ?? string(messageData.model),
       usageMessageKey: messageKey,
-      usageKey: `attempt:${id ?? `${string(row.logical_request_id) ?? "request"}:${number(row.attempt_index) ?? usageIndex}`}`,
+      usageKey: requestKey(row, usageIndex),
+      requestKey: requestKey(row, usageIndex),
+      requestTiming: requestTiming(row),
       turnKey: parentUser ? turnByMessage.get(parentUser) ?? parentUser : string(row.turn_id),
       usage: {
         inputTokens: knownTotalInput,
@@ -165,6 +216,11 @@ function buildRecords(messages: Record<string, unknown>[], parts: Record<string,
   for (const item of staged.sort((left, right) => left.order - right.order || left.event.key.localeCompare(right.event.key))) {
     let line = lineByRaw.get(item.raw);
     if (line === undefined) { line = lineByRaw.size + 1; lineByRaw.set(item.raw, line); }
+    if (item.event.requestTiming) {
+      for (const point of [item.event.requestTiming.start, item.event.requestTiming.end, item.event.requestTiming.firstToken]) {
+        if (point) point.recordLine = line;
+      }
+    }
     records.push(normalizedRecord(item.event, item.raw, line));
   }
   return records;

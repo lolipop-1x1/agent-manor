@@ -6,7 +6,7 @@ import type { Client, Gap, GapKind } from "../contracts.js";
 import { historyRelationships, normalizeHistoryPath } from "../history/adapters/common.js";
 import { shellResult } from "../history/extraction.js";
 import type { SourceLocation } from "../history/types.js";
-import type { MessageKind, SessionMessage, SessionSink, SessionSourceMeta } from "../session-contracts.js";
+import type { MessageKind, SessionMessage, SessionSink, SessionSourceMeta, SessionRequestTiming } from "../session-contracts.js";
 import { object, string, tokens, UsageParser } from "./parser-usage.js";
 import { RequestTimingParser } from "./parser-timing.js";
 import { projectFromToolPaths } from "./parser-project.js";
@@ -165,6 +165,7 @@ export async function parseSessionSource(source: SourceLocation, sink: SessionSi
   } }, gap);
   const timing = source.format !== DESKTOP_FORMAT && !ideSnapshot && ["codex", "claude", "codeflicker"].includes(source.client)
     ? new RequestTimingParser(source.client as "codex" | "claude" | "codeflicker", usage) : undefined;
+  const desktopRequests = new Map<string, { timing?: SessionRequestTiming; usageId?: string; messages: Set<string> }>();
   const childReference = (tool: string | undefined, result: unknown, nativeAgentId?: string) => {
     const output = object(result);
     const agent = source.client === "codex" && /(?:^|\.)spawn_agent$/.test(tool ?? "") ? string(output.agent_id)
@@ -178,7 +179,7 @@ export async function parseSessionSource(source: SourceLocation, sink: SessionSi
     candidate = undefined;
     interrupted = false;
   };
-  const message = (key: string, kind: MessageKind, body: string, row: number, extra: Partial<SessionMessage> = {}, newTurn = false): SessionMessage => {
+  const message = (key: string, kind: MessageKind, body: string, row: number, extra: Partial<SessionMessage> = {}, newTurn = false, modelRequest = true): SessionMessage => {
     let identity = seen.get(key);
     if (!identity) {
       if (newTurn) { finishTurn(); meta.turnCount += 1; turnId = `${id}:turn:${meta.turnCount}`; }
@@ -193,13 +194,13 @@ export async function parseSessionSource(source: SourceLocation, sink: SessionSi
       if (firstUserTitle && meta.titleOrigin === "fallback") { meta.title = firstUserTitle; meta.titleOrigin = "first_user"; }
     }
     sink.message(value);
-    timing?.message(value);
+    if (modelRequest) timing?.message(value);
     if (kind === "compression" && !value.copied) usage.compression();
     if (kind === "assistant") candidate = value;
     if (kind === "tool_call") candidate = undefined;
     return value;
   };
-  const toolCall = (key: string, tool: string, input: unknown, callId: string, row: number, extra: Partial<SessionMessage>) => {
+  const toolCall = (key: string, tool: string, input: unknown, callId: string, row: number, extra: Partial<SessionMessage>, modelRequest = true) => {
     const paths = filePaths(input);
     if (!meta.project) for (const path of paths ?? []) {
       if (!isAbsolute(path)) continue;
@@ -211,7 +212,7 @@ export async function parseSessionSource(source: SourceLocation, sink: SessionSi
     }
     const detectedResource = callResource(tool, input, meta.project ?? source.cwd);
     const value = message(key, "tool_call", display(input), row, { ...extra, callId, tool, filePaths: paths,
-      resource: detectedResource, status: "unknown" });
+      resource: detectedResource, status: "unknown" }, false, modelRequest);
     const previousCompletion = completed.get(value.id);
     if (previousCompletion) { sink.message({ ...value, ...previousCompletion }); return value; }
     const previous = pending.get(callId);
@@ -282,6 +283,12 @@ export async function parseSessionSource(source: SourceLocation, sink: SessionSi
       const key = `desktop:${desktopIdentity(record.id) ?? line}`;
       const native = options.desktopModels?.get(string(object(object(record.extra)["claude-code"]).lastEntryUuid) ?? "");
       const model = string(record.model) ?? native?.model;
+      let desktopRequest = native?.requestId ? desktopRequests.get(native.requestId) : undefined;
+      if (!desktopRequest && native?.requestId) desktopRequest = { messages: new Set<string>() };
+      if (desktopRequest && native?.requestId) {
+        desktopRequest.timing = native.timing;
+        desktopRequests.set(native.requestId, desktopRequest);
+      }
       extra.model = model;
       // duration 是桌面累计运行时长，不能当作单次工具耗时。
       if (record.op === "turn_terminal") {
@@ -307,6 +314,7 @@ export async function parseSessionSource(source: SourceLocation, sink: SessionSi
         emitted = message(key, record.isSilence === true ? "system" : "user", text(record.content), line, extra, newTurn);
       } else if (role === "assistant") {
         if (text(record.content)) emitted = message(key, "assistant", text(record.content), line, extra);
+        if (emitted) desktopRequest?.messages.add(emitted.id);
         const calls = desktopCalls(record);
         for (const call of calls) toolCall(`${key}:call:${call.id}`, call.name, call.input, call.id, line, extra);
         const recorded = object(record.usage);
@@ -320,15 +328,23 @@ export async function parseSessionSource(source: SourceLocation, sink: SessionSi
             normalized.input_tokens = undefined;
             gap("unsupported_format", "桌面用量缺少已确认的执行后端，未计算总输入与缓存比例", { key: "diagnostics.sessions.parser.m009" });
           }
-          usage.native(nonCached ? "claude" : "codeflicker", normalized, native?.requestId ?? string(record.messageId) ?? key,
+          const usageId = usage.native(nonCached ? "claude" : "codeflicker", normalized, native?.requestId ?? string(record.messageId) ?? key,
             { messageId: emitted?.id ?? (calls[0] ? `${id}:message:${digest(`${key}:call:${calls[0].id}`)}` : undefined), turnId, model, occurredAt });
+          if (desktopRequest) {
+            desktopRequest.usageId = usageId;
+            if (tokens(recorded.outputTokens) !== undefined && native?.timing?.outputTokens !== undefined
+              && recorded.outputTokens !== native.timing.outputTokens) desktopRequest.timing = { ...native.timing, completion: "unknown", durationMs: undefined };
+          }
         }
       } else if (role === "tool") {
         const result = desktopResult(record);
         const callId = string(record.toolCallId);
         if (callId) toolResult(key, callId, text(record.content), line, result.status, { ...extra, tool: string(object(record.extra).toolName) }, result.result);
         else { gap("unpaired_call", "桌面工具结果缺少调用身份", { key: "diagnostics.sessions.parser.m010" }); message(key, "tool_result", text(record.content), line, extra); }
-      } else if (role === "reasoning") message(key, "thinking", text(record.content), line, extra);
+      } else if (role === "reasoning") {
+        const thinking = message(key, "thinking", text(record.content), line, extra);
+        desktopRequest?.messages.add(thinking.id);
+      }
       else if (role === "system") message(key, "system", text(record.content), line, extra);
       else if (role === "activity") {
         const compaction = object(object(record.extra).compaction);
@@ -396,7 +412,7 @@ export async function parseSessionSource(source: SourceLocation, sink: SessionSi
               && (object(call.input).cmd ?? object(call.input).command) === command);
             const status = item.status === "failed" || (typeof item.exit_code === "number" && item.exit_code !== 0) ? "failure"
               : item.status === "completed" && (item.type === "FileChange" || item.exit_code === 0) ? "success" : "unknown";
-            if (!matching) toolCall(`item:${callId}:call`, string(item.type)!, item.command ?? item.changes, callId, line, { ...extra, model: currentModel });
+            if (!matching) toolCall(`item:${callId}:call`, string(item.type)!, item.command ?? item.changes, callId, line, { ...extra, model: currentModel }, false);
             const duration = typeof payload.started_at_ms === "number" && typeof payload.completed_at_ms === "number" && payload.completed_at_ms >= payload.started_at_ms ? payload.completed_at_ms - payload.started_at_ms : undefined;
             toolResult(`item:${callId}:result`, matching?.[0] ?? callId, display(item.formatted_output ?? item.changes), line, status, { ...extra, durationMs: duration });
           }
@@ -523,6 +539,9 @@ export async function parseSessionSource(source: SourceLocation, sink: SessionSi
     if (record.interruptedMessageId || record.isApiErrorMessage === true) interrupted = true;
   }
   timing?.finish();
+  for (const request of desktopRequests.values()) {
+    if (request.usageId && request.timing) usage.timing(request.usageId, request.timing, [...request.messages]);
+  }
   finishTurn();
   if (ideSnapshot) gap("unsupported_format", "IDE 主历史未保存逐请求 Token 用量，累计缓存不能重建请求趋势；未补造记录值", { key: "diagnostics.sessions.parser.m017" });
   if (pending.size) gap("unpaired_call", "历史结束时仍有工具调用未记录完成结果", { key: "diagnostics.sessions.parser.m018" });

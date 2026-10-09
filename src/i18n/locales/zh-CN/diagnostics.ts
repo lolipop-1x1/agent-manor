@@ -13,7 +13,7 @@ export default {
   "diagnostics.history.adapters.codebuddy.m008": "CodeBuddy 消息角色 {{p0}} 尚未由样本或格式源码确认",
   "diagnostics.history.adapters.codebuddy.m009": "CodeBuddy 消息角色 <缺少角色> 尚未由样本或格式源码确认",
   "diagnostics.history.adapters.codebuddy.m010": "CodeBuddy 样本未确认模型与用量字段口径，未归一化该记录",
-  "diagnostics.history.adapters.codebuddy.resourceCoverage": "CodeBuddy 当前 JSONL 来源仅核验用户消息，工具与资源采集能力未确认",
+  "diagnostics.history.adapters.codebuddy.resourceCoverage": "CodeBuddy 工具与资源采集覆盖尚未完整核验",
   "diagnostics.history.adapters.codeflickerDesktop.m001": "range_unknown: 桌面读取实际行范围与请求或计数不符",
   "diagnostics.history.adapters.codeflickerDesktop.m002": "range_unknown: 桌面替换返回路径与请求不符",
   "diagnostics.history.adapters.codeflickerDesktop.m003": "物理记录 {{p0}} 的桌面记录类型尚未适配",

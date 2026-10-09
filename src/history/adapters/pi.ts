@@ -1,6 +1,6 @@
 import { createReadStream } from "node:fs";
 import { isAbsolute, basename, dirname } from "node:path";
-import type { SessionMessage } from "../../session-contracts.js";
+import type { SessionMessage, SessionRequestTiming } from "../../session-contracts.js";
 import { changedFragments, number, object, physicalLines, shellEvidence, string, textContent, toolEvidence, unifiedFragments } from "../extraction.js";
 import { normalizeHistoryPath } from "./common.js";
 import { createNormalizedAdapter, normalizedHash, normalizedRecord, normalizedSnapshot, readBoundedJsonl, type NormalizedEvent, type NormalizedSessionMetadata, type NormalizedSnapshot, type RawHistoryRecord } from "./normalized.js";
@@ -127,6 +127,23 @@ function piExtract(tool: string, input: unknown, result: unknown, visible: strin
 
 function messageTimestamp(message: Record<string, unknown>, row: Record<string, unknown>): string | undefined {
   return dateValue(message.timestamp) ?? dateValue(row.timestamp);
+}
+
+function piRequest(message: Record<string, unknown>, row: Record<string, unknown>, line: number, id: string): { requestKey: string; requestTiming: SessionRequestTiming } {
+  const responseId = string(message.responseId);
+  const requestKey = responseId ? `pi:response:${responseId}` : `pi:entry:${id}`;
+  const stopReason = string(message.stopReason);
+  const partial = ["error", "aborted", "length"].includes(stopReason ?? "");
+  const completed = ["stop", "toolUse"].includes(stopReason ?? "");
+  // 内层时间记录调用初始化，外层时间记录历史追加；不以同一个时间补造零耗时。
+  const start = dateValue(message.timestamp);
+  const end = dateValue(row.timestamp);
+  return { requestKey, requestTiming: { basis: "estimated", window: "response", method: "pi_message_boundary",
+    completion: partial ? "partial" : completed ? "explicit" : "unknown",
+    ...(partial ? { completionEvidence: "request_interrupted" as const } : completed ? { completionEvidence: "stop_reason" as const } : {}),
+    ...(start ? { start: { occurredAt: start, recordLine: line } } : {}),
+    ...(end ? { end: { occurredAt: end, recordLine: line } } : {}),
+    ...(start && end ? { durationMs: Date.parse(end) - Date.parse(start) } : {}) } };
 }
 
 function inheritedParentIds(parentPath: string, gaps: NonNullable<NormalizedSessionMetadata["gaps"]>): Promise<{ ids: Set<string>; fingerprint: string }> {
@@ -280,16 +297,17 @@ async function snapshot(location: SourceLocation): Promise<NormalizedSnapshot> {
         const visible = blocks.filter(block => block.type === "text").map(block => string(block.text) ?? "").filter(Boolean).join("\n");
         const thinking = blocks.filter(block => block.type === "thinking").map(block => string(block.thinking) ?? "").filter(Boolean).join("\n");
         const usage = assistantUsage(message);
+        const request = piRequest(message, entry, row.line, id);
         const model = string(message.model);
         const final = finalIds.has(id) ? "inferred" : undefined;
         add({ key: "", kind: "assistant", ...(visible ? { text: visible } : {}), model, final, allowInferredFinal: false,
           interrupted: interruptedIds.has(id) || undefined, status: ["error"].includes(string(message.stopReason) ?? "") ? "failure" : undefined,
-          usageKey: usage ? `${id}:usage` : undefined, usage }, ":assistant");
-        if (thinking) add({ key: "", kind: "thinking", text: thinking, model }, ":thinking");
+          ...request, usageKey: usage ? `${request.requestKey}:usage` : undefined, usage }, ":assistant");
+        if (thinking) add({ key: "", kind: "thinking", text: thinking, model, requestKey: request.requestKey }, ":thinking");
         for (const block of hasToolCalls(message)) {
           const callId = string(block.id);
           if (!callId) continue;
-          add({ key: "", kind: "tool_call", callId, tool: string(block.name) ?? "unknown", input: block.arguments }, `:call:${callId}`);
+          add({ key: "", kind: "tool_call", callId, tool: string(block.name) ?? "unknown", input: block.arguments, requestKey: request.requestKey }, `:call:${callId}`);
         }
       } else if (role === "toolResult") {
         const callId = string(message.toolCallId);

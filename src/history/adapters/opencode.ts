@@ -7,6 +7,7 @@ import { number, object, physicalLines, string, toolEvidence } from "../extracti
 import { normalizeHistoryPath } from "./common.js";
 import { createSqliteReadBudget, readOnlySqlite, readSqliteRows, sqliteJson, sqliteTableExists } from "./sqlite-readonly.js";
 import type { SourceLocation } from "../types.js";
+import type { SessionRequestTiming } from "../../session-contracts.js";
 
 export const OPENCODE_FORMAT = "opencode-sqlite";
 const missing = () => Object.assign(new DiagnosticError("OpenCode 会话来源已缺失", { key: "diagnostics.history.adapters.opencode.m001" }), { code: "ENOENT" });
@@ -112,6 +113,7 @@ function buildRecords(sessionId: string, messages: Record<string, unknown>[], pa
     const finishedAt = timestamp(object(data.time).completed ?? row.time_completed);
     const finishReason = (string(data.finish) ?? string(data.stopReason) ?? string(data.finishReason) ?? "").toLowerCase();
     const terminalFailure = (data.error !== undefined && data.error !== null)
+      || data.interrupted === true
       || ["error", "length", "max_tokens", "aborted", "cancelled", "canceled", "interrupted"].includes(finishReason);
     const hasToolPart = grouped.some(part => part.data.type === "tool");
     const hasCompressionPart = compactionContinue || summarized
@@ -129,7 +131,17 @@ function buildRecords(sessionId: string, messages: Record<string, unknown>[], pa
     const onlySyntheticUserText = role === "user" && !synthetic && allPartsSynthetic;
     const kind: NormalizedEvent["kind"] = !knownRole || onlySyntheticUserText ? "context" : hasCompressionPart ? "compression"
       : synthetic ? "context" : role as NormalizedEvent["kind"];
+    const requestKey = kind === "assistant" ? `request:message:${id}` : undefined;
+    const completed = ["stop", "tool-calls", "tool_calls"].includes(finishReason);
+    const elapsed = created && finishedAt ? Date.parse(finishedAt) - Date.parse(created) : undefined;
+    const timing: SessionRequestTiming = { basis: "estimated", window: "response", method: "opencode_message_span",
+      completion: terminalFailure ? "partial" : completed && finishedAt ? "explicit" : "unknown",
+      completionEvidence: terminalFailure ? "request_interrupted" : completed && finishedAt ? "stop_reason" : undefined,
+      start: created ? { occurredAt: created, recordLine: 0 } : undefined,
+      end: finishedAt ? { occurredAt: finishedAt, recordLine: 0 } : undefined,
+      durationMs: elapsed !== undefined && Number.isFinite(elapsed) ? elapsed : undefined };
     const event: NormalizedEvent = { key: `message:${id}`, kind, text, model, occurredAt: created, turnKey,
+      requestKey, ...(requestKey ? { requestTiming: timing } : {}),
       ...(role === "assistant" ? { allowInferredFinal } : {}) };
     staged.push({ event, raw: messageRaw, order: messageIndex * 1_000 });
 
@@ -145,11 +157,14 @@ function buildRecords(sessionId: string, messages: Record<string, unknown>[], pa
       }
       if (type === "reasoning") {
         const value = string(part.data.text);
-        if (value) staged.push({ event: { key: `reasoning:${partId}`, kind: "thinking", text: value, model, occurredAt: partTime, turnKey }, raw: partRaw, order: partOrder });
+        if (value) staged.push({ event: { key: `reasoning:${partId}`, kind: "thinking", text: value, model, occurredAt: partTime, turnKey,
+          requestKey }, raw: partRaw, order: partOrder });
       }
       if (type === "step-finish") {
         staged.push({ event: { ...usageEvent(`usage:step:${partId}`, part.data.tokens, model, partTime, "", partRaw, 0, meta).record.normalizedEvent as NormalizedEvent,
-          usageMessageKey: `message:${id}`, turnKey }, raw: partRaw, order: partOrder });
+          usageMessageKey: `message:${id}`, turnKey, requestKey,
+          ...(requestKey ? { usageKey: requestKey,
+            requestTiming: { ...timing, outputTokens: number(object(part.data.tokens).output) } } : {}) }, raw: partRaw, order: partOrder });
       }
       if (type === "compaction" || type === "summary") {
         const summary = string(part.data.summary) ?? string(part.data.text) ?? string(part.data.content);
@@ -172,7 +187,8 @@ function buildRecords(sessionId: string, messages: Record<string, unknown>[], pa
       const stateMetadata = object(state.metadata);
       const taskMeta = object(stateMetadata);
       if (tool === "task" && string(taskMeta.parentSessionId) === sessionId && string(taskMeta.sessionId)) childIds.add(String(taskMeta.sessionId));
-      staged.push({ event: { key: `tool-call:${partId}`, kind: "tool_call", callId, tool, input, model, occurredAt: partTime, turnKey }, raw: partRaw, order: partOrder });
+      staged.push({ event: { key: `tool-call:${partId}`, kind: "tool_call", callId, tool, input, model, occurredAt: partTime, turnKey,
+        requestKey }, raw: partRaw, order: partOrder });
       const status = string(state.status);
       const outputValue = state.output;
       const errorValue = state.error;
@@ -195,16 +211,25 @@ function buildRecords(sessionId: string, messages: Record<string, unknown>[], pa
     const hasStepUsage = grouped.some(part => part.data.type === "step-finish");
     if (role === "assistant" && !hasStepUsage && data.tokens !== undefined) {
       const usage = usageEvent(`usage:message:${id}`, data.tokens, model, created, "", rowRaw(row), 0, meta).record.normalizedEvent as NormalizedEvent;
-      staged.push({ event: { ...usage, usageMessageKey: `message:${id}`, turnKey }, raw: rowRaw(row), order: messageIndex * 1_000 + 999 });
+      staged.push({ event: { ...usage, usageMessageKey: `message:${id}`, turnKey, requestKey,
+        ...(requestKey ? { usageKey: requestKey,
+          requestTiming: { ...timing, outputTokens: number(object(data.tokens).output) } } : {}) }, raw: rowRaw(row), order: messageIndex * 1_000 + 999 });
     }
   }
 
   const records: RawHistoryRecord[] = [];
   const lineByRaw = new Map<string, number>();
   const partLines = new Map<string, number>();
+  const requestLines = new Map<string, number>();
   for (const item of staged.sort((left, right) => left.order - right.order || left.event.key.localeCompare(right.event.key))) {
     let line = lineByRaw.get(item.raw);
     if (line === undefined) { line = lineByRaw.size + 1; lineByRaw.set(item.raw, line); }
+    if (item.event.requestKey && item.event.key.startsWith("message:")) requestLines.set(item.event.requestKey, line);
+    if (item.event.requestTiming && item.event.requestKey) {
+      for (const point of [item.event.requestTiming.start, item.event.requestTiming.end]) {
+        if (point) point.recordLine = requestLines.get(item.event.requestKey) ?? line;
+      }
+    }
     if (item.event.key.startsWith("tool-call:")) partLines.set(item.event.key.slice("tool-call:".length), line);
     records.push(normalizedRecord(item.event, item.raw, line));
   }

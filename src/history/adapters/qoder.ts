@@ -49,6 +49,8 @@ function normalizeQoderRows(rows: readonly RawHistoryRecord[], gaps: Gap[]): { r
   const title = rows.find(row => row.record.type === "ai-title" && typeof row.record.aiTitle === "string")?.record.aiTitle as string | undefined;
   let activeModel: string | undefined;
   const normalized: ReturnType<typeof normalizedRecord>[] = [];
+  const snapshots = new Map<string, Set<string>>();
+  const requestUsages = new Map<string, { event: NormalizedEvent; fingerprint: string }>();
   for (const row of rows) {
     const record = row.record;
     const type = string(record.type) ?? "<缺少类型>";
@@ -76,7 +78,14 @@ function normalizeQoderRows(rows: readonly RawHistoryRecord[], gaps: Gap[]): { r
     }
     const message = object(record.message);
     const content = Array.isArray(message.content) ? message.content : [];
-    const recordId = string(record.uuid) ?? string(message.id) ?? `${type}:${row.line}`;
+    const nativeRequest = type === "assistant" ? string(message.id) : undefined;
+    if (nativeRequest) {
+      const fingerprint = JSON.stringify([message, record.status, record.interrupted, record.error]);
+      const seen = snapshots.get(nativeRequest) ?? new Set<string>();
+      if (seen.has(fingerprint)) continue;
+      seen.add(fingerprint); snapshots.set(nativeRequest, seen);
+    }
+    const recordId = nativeRequest ?? string(record.uuid) ?? `${type}:${row.line}`;
     const occurredAt = eventTime(record.timestamp);
     const model = messageModel(record, activeModel);
     const blocks = content.map(value => object(value));
@@ -87,20 +96,27 @@ function normalizeQoderRows(rows: readonly RawHistoryRecord[], gaps: Gap[]): { r
     const hasUsage = type === "assistant" ? object(message.usage) : {};
     const usage = normalizeUsage([hasUsage], gap => addGap(gaps, gap.kind, gap.message, gap.messageDescriptor, gap.details));
     const usageKey = string(message.id) ?? recordId;
+    const requestKey = type === "assistant" ? nativeRequest ?? `record:${recordId}` : undefined;
     let usageAttached = false;
     const attachUsage = (event: NormalizedEvent) => {
       if (!usage || usageAttached) return;
-      event.usage = usage;
+      const fingerprint = JSON.stringify(usage);
+      const previous = requestUsages.get(usageKey);
+      if (previous && previous.fingerprint !== fingerprint) {
+        previous.event.usage = { ...previous.event.usage, outputTokens: undefined };
+        event.usage = { ...usage, outputTokens: undefined };
+      } else if (!previous) event.usage = usage;
       event.usageKey = usageKey;
+      if (!previous) requestUsages.set(usageKey, { event, fingerprint });
       usageAttached = true;
     };
     if (type === "user" && textBlocks.length) {
       const event: NormalizedEvent = { key: `${recordId}:user`, kind: hasMetaUser ? "context" : "user",
-        text: textBlocks.join("\n"), occurredAt, model };
+        text: textBlocks.join("\n"), occurredAt, model, requestKey };
       normalized.push(normalizedRecord(event, row.raw, row.line));
     }
     if (type === "assistant" && !content.length) {
-      const event: NormalizedEvent = { key: `${recordId}:assistant`, kind: "assistant", text: "", occurredAt, model, allowInferredFinal: false };
+      const event: NormalizedEvent = { key: `${recordId}:assistant`, kind: "assistant", text: "", occurredAt, model, requestKey, allowInferredFinal: false };
       if (message.stop_reason === "end_turn") event.final = "explicit";
       attachUsage(event);
       normalized.push(normalizedRecord(event, row.raw, row.line));
@@ -108,18 +124,18 @@ function normalizeQoderRows(rows: readonly RawHistoryRecord[], gaps: Gap[]): { r
     blocks.forEach((block, index) => {
       const key = `${recordId}:${index}`;
       if (type === "assistant" && block.type === "text") {
-        const event: NormalizedEvent = { key, kind: "assistant", text: string(block.text) ?? "", occurredAt, model,
+        const event: NormalizedEvent = { key, kind: "assistant", text: string(block.text) ?? "", occurredAt, model, requestKey,
           final: message.stop_reason === "end_turn" ? "explicit" : undefined, allowInferredFinal: false };
         attachUsage(event);
         normalized.push(normalizedRecord(event, row.raw, row.line));
       } else if (type === "assistant" && block.type === "thinking") {
-        normalized.push(normalizedRecord({ key, kind: "thinking", text: string(block.thinking) ?? "", occurredAt, model }, row.raw, row.line));
+        normalized.push(normalizedRecord({ key, kind: "thinking", text: string(block.thinking) ?? "", occurredAt, model, requestKey }, row.raw, row.line));
       } else if (type === "assistant" && block.type === "redacted_thinking") {
-        normalized.push(normalizedRecord({ key, kind: "thinking", text: "[原生记录标记为 redacted thinking]", occurredAt, model }, row.raw, row.line));
+        normalized.push(normalizedRecord({ key, kind: "thinking", text: "[原生记录标记为 redacted thinking]", occurredAt, model, requestKey }, row.raw, row.line));
       } else if (type === "assistant" && block.type === "tool_use") {
         const callId = string(block.id);
         const event: NormalizedEvent = { key, kind: "tool_call", callId, tool: string(block.name) ?? "unknown",
-          input: block.input, occurredAt, model };
+          input: block.input, occurredAt, model, requestKey };
         attachUsage(event);
         normalized.push(normalizedRecord(event, row.raw, row.line));
         if (!callId) addGap(gaps, "unpaired_call", "Qoder tool_use 缺少原生调用 id，无法配对结果", { key: "diagnostics.history.adapters.qoder.m006" });
@@ -129,7 +145,7 @@ function normalizeQoderRows(rows: readonly RawHistoryRecord[], gaps: Gap[]): { r
         const visible = textOf(block.content);
         const event: NormalizedEvent = { key, kind: "tool_result", callId,
           result: { ...result, output: string(result.stdout) ?? visible, exit_code: result.exitCode },
-          text: visible, status: resultStatus(block, result), occurredAt, model };
+          text: visible, status: resultStatus(block, result), occurredAt, model, requestKey };
         normalized.push(normalizedRecord(event, row.raw, row.line));
         if (!callId) addGap(gaps, "unpaired_call", "Qoder tool_result 缺少 tool_use_id，无法配对请求", { key: "diagnostics.history.adapters.qoder.m007" });
       } else if (block.type === "tool_result" && type === "assistant") {
@@ -138,18 +154,76 @@ function normalizeQoderRows(rows: readonly RawHistoryRecord[], gaps: Gap[]): { r
     });
     if (type === "user" && !textBlocks.length && !resultBlocks.length) {
       const event: NormalizedEvent = { key: `${recordId}:user`, kind: hasMetaUser ? "context" : "user",
-        text: textOf(message.content), occurredAt, model };
+        text: textOf(message.content), occurredAt, model, requestKey };
       normalized.push(normalizedRecord(event, row.raw, row.line));
     }
     if (record.agentId && !record.parentSessionId) {
       addGap(gaps, "ambiguous", "Qoder agentId 或 parentUuid 未证明跨会话父关系，未标记为委派子会话", { key: "diagnostics.history.adapters.qoder.m009" });
     }
     if (type === "assistant" && usage && !usageAttached) {
-      normalized.push(normalizedRecord({ key: `${recordId}:usage`, kind: "context", text: "原生助手记录包含用量字段",
-        occurredAt, model, usage, usageKey }, row.raw, row.line));
+      const event: NormalizedEvent = { key: `${recordId}:usage`, kind: "context", text: "原生助手记录包含用量字段",
+        occurredAt, model, requestKey };
+      attachUsage(event);
+      normalized.push(normalizedRecord(event, row.raw, row.line));
     }
   }
+  attachRequestTiming(rows, normalized);
   return { rows: normalized, title, cwd, fingerprint: [ids, directories, cwdValues] };
+}
+
+function attachRequestTiming(rows: readonly RawHistoryRecord[], records: ReturnType<typeof normalizedRecord>[]): void {
+  type Timing = NonNullable<NormalizedEvent["requestTiming"]>;
+  type Group = { events: NormalizedEvent[]; timing: Timing; calls: Set<string>; identified: boolean };
+  const byLine = new Map(rows.map(row => [row.line, row.record]));
+  const groups = new Map<string, Group>();
+  const calls = new Map<string, Group | undefined>();
+  let boundary: Timing["start"];
+  for (const row of records) {
+    const event = row.record.normalizedEvent as NormalizedEvent;
+    const raw = byLine.get(row.line) ?? {};
+    const point = { recordLine: row.line, occurredAt: event.occurredAt };
+    if (event.kind === "user") { boundary = point; continue; }
+    if (event.kind === "tool_result") {
+      const group = event.callId ? calls.get(event.callId) : undefined;
+      if (group && group.calls.delete(event.callId!)) {
+        if (!group.calls.size && group.identified && group.timing.completion === "unknown") {
+          group.timing.completion = "inferred"; group.timing.completionEvidence = "tool_result";
+        }
+        boundary = point;
+      }
+      continue;
+    }
+    if (!event.requestKey) continue;
+    let group = groups.get(event.requestKey);
+    if (!group) {
+      group = { events: [], calls: new Set(), identified: Boolean(string(object(raw.message).id)),
+        timing: { basis: "estimated", window: "response", method: "qoder_message_boundary", completion: "unknown", start: boundary } };
+      groups.set(event.requestKey, group); boundary = undefined;
+    }
+    group.events.push(event);
+    group.timing.end = point;
+    const message = object(raw.message);
+    const status = string(raw.status) ?? string(message.status);
+    const partial = raw.interrupted === true || raw.error !== undefined && raw.error !== null
+      || ["incomplete", "cancelled", "canceled", "interrupted", "error", "failed"].includes(status ?? "");
+    if (partial) {
+      group.timing.completion = "partial"; group.timing.completionEvidence = "request_interrupted";
+    } else if (group.identified && group.timing.completion !== "partial"
+      && ["end_turn", "stop_sequence", "tool_use", "max_tokens", "pause_turn", "refusal"].includes(string(message.stop_reason) ?? "")) {
+      group.timing.completion = "explicit"; group.timing.completionEvidence = "stop_reason";
+    }
+    if (event.kind === "tool_call" && event.callId) {
+      group.calls.add(event.callId);
+      if (!calls.has(event.callId)) calls.set(event.callId, group);
+      else if (calls.get(event.callId) !== group) calls.set(event.callId, undefined);
+    }
+  }
+  for (const group of groups.values()) {
+    const start = group.timing.start?.occurredAt; const end = group.timing.end?.occurredAt;
+    if (start && end) group.timing.durationMs = Date.parse(end) - Date.parse(start);
+    group.timing.outputTokens = group.events.find(event => event.usage)?.usage?.outputTokens;
+    for (const event of group.events) event.requestTiming = group.timing;
+  }
 }
 
 async function readQoderSnapshot(location: SourceLocation): Promise<NormalizedSnapshot> {
@@ -171,7 +245,7 @@ async function readQoderSnapshot(location: SourceLocation): Promise<NormalizedSn
 
 export const qoderAdapter: HistoryAdapter = createNormalizedAdapter({
   id: QODER_FORMAT,
-  quickCheck: { version: "1", dependencies: () => [] },
+  quickCheck: { version: "2", dependencies: () => [] },
   discoverFile: discoverQoderFile,
   readSnapshot: readQoderSnapshot,
   extract(tool, inputValue, resultValue, visible) {

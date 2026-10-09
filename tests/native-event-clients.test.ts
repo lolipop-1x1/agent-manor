@@ -109,10 +109,25 @@ test("DSH 解码压缩代际副本、继承边界、失败尝试、工具证据�
   assert.ok(session.messages.some(message => message.kind === "thinking" && message.text === "considering"));
   assert.equal(session.messages.find(message => message.text === "finished")?.final, "inferred");
   assert.equal(session.messages.find(message => message.text === "retrying")?.final, undefined);
-  assert.deepEqual(session.usage.map(value => [value.inputTokens, value.cachedInputTokens, value.cacheWriteTokens, value.outputTokens, value.reasoningOutputTokens]), [
+  assert.equal(session.usage.length, 4, "两个原生用量加上两个已识别但缺失用量的请求");
+  assert.equal(new Set(session.usage.map(value => value.id)).size, 4, "每个请求只发布一次最终用量");
+  const response = session.messages.find(message => message.text === "finished")!;
+  const compression = session.messages.find(message => message.kind === "compression")!;
+  const recordedUsage = [response, compression].map(message => session.usage.find(value => value.messageId === message.id)!);
+  assert.deepEqual(recordedUsage.map(value => [value.inputTokens, value.cachedInputTokens, value.cacheWriteTokens, value.outputTokens, value.reasoningOutputTokens]), [
     [13, 2, 1, 5, 2], [2, 0, 0, 1, 1],
   ]);
-  assert.equal(session.messages.find(message => message.kind === "compression")?.text, "older context summarized");
+  assert.equal(recordedUsage[0]?.turnId, response.turnId, "用量仍定位到原生回复及其轮次");
+  const missingUsage = session.usage.filter(value => value.outputTokens === undefined);
+  assert.equal(missingUsage.length, 2);
+  assert.ok(missingUsage.every(value => value.messageId === undefined && value.inputTokens === undefined));
+  for (const text of ["considering", "retrying"]) {
+    const message = session.messages.find(value => value.text === text)!;
+    assert.ok(missingUsage.some(value => value.requestMessageIds?.includes(message.id)), "缺失用量保留对应模型消息组");
+  }
+  assert.equal(missingUsage.find(value => value.timing?.completion === "partial")?.requestMessageIds?.length, 1,
+    "失败尝试保留独立请求和部分响应状态");
+  assert.equal(compression.text, "older context summarized");
 
   const reads = parsed.events.filter(event => event.tool === "read");
   assert.equal(reads.length, 1);
@@ -387,7 +402,11 @@ test("Pi 分支各自保留 final、当前叶定位、复制继承、注入与�
   assert.ok(session.metadata.branches?.filter(branch => !branch.current).every(branch => branch.labelDescriptor?.key === "sessions.branch.number"));
   assert.equal(session.usage.length, 8);
   assert.equal(session.usage.some(value => value.inputTokens === 1998), false);
-  assert.deepEqual([session.usage.at(-1)?.inputTokens, session.usage.at(-1)?.cachedInputTokens, session.usage.at(-1)?.cacheWriteTokens], [7, 2, 1]);
+  const extraUsageMessage = session.messages.find(message => message.text === "cache_warm")!;
+  const extraUsage = session.usage.find(value => value.messageId === extraUsageMessage.id)!;
+  assert.deepEqual([extraUsage.inputTokens, extraUsage.cachedInputTokens, extraUsage.cacheWriteTokens], [7, 2, 1]);
+  assert.equal(extraUsageMessage.recordLine, entries.findIndex(entry => "id" in entry && entry.id === "extra-usage") + 1);
+  assert.equal(extraUsage.turnId, extraUsageMessage.turnId, "用量位置不依赖最终发布顺序");
   const read = parsed.events.find(event => event.tool === "read");
   assert.equal(read?.fragments[0]?.content, "alpha\nbeta\n");
   assert.equal(read?.fragments[0]?.historicalStart, 2);
