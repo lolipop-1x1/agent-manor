@@ -94,7 +94,9 @@ export async function refreshSessions(store: SessionStore, jobId: string, roots?
       // 保留原生 Skill 目录的资源规则只失效桌面会话缓存，避免触发其他客户端重建。
       const desktopResourceFingerprint = source.client === "codeflicker-desktop" ? ":skill-directory-v1" : "";
       const contextUsageFingerprint = source.client === "codex" ? ":active-context-v1" : "";
-      const metadataSuffix = `${contextUsageFingerprint}${titleFingerprint}${childTitleFingerprint}${projectFingerprint}${desktopFingerprint}${desktopResourceFingerprint}`;
+      // 请求计时升级仅重解析已支持来源，未核验客户端保持原缓存。
+      const requestTimingFingerprint = ["codex", "claude", "codeflicker"].includes(source.client) ? ":request-timing-v1" : "";
+      const metadataSuffix = `${requestTimingFingerprint}${contextUsageFingerprint}${titleFingerprint}${childTitleFingerprint}${projectFingerprint}${desktopFingerprint}${desktopResourceFingerprint}`;
       const metadataFingerprint = createHash("sha256").update(JSON.stringify({ rule: SESSION_INDEX_RULE_VERSION, source: location, metadataSuffix })).digest("hex");
       let stamp: string | undefined;
       try { stamp = await sourceQuickStamp(source); }

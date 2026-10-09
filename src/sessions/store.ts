@@ -10,6 +10,7 @@ import type { SourceLocation } from "../history/types.js";
 import type { ResourceEventStream, ResourceHistoryIdentity, ResourceUsageIdentity, ResourceUsageEvent, ResourceUsageQuery } from "../resource-contracts.js";
 import type { SessionGroupedSearchResult, SessionTurnDirectory, SessionIndexStatus, SessionJob, SessionListResult, SessionMessage, SessionMessageQuery, SessionMessageResult, SessionProfile, SessionQuery, SessionRefreshOptions, SessionSearchResult, SessionSink, SessionSourceMeta, SessionSummary, SessionTimelineEvent, SessionTimelineResult, SessionUsage } from "../session-contracts.js";
 import { StoreError } from "../index/store.js";
+import { summarizeRequestSpeed } from "../session-speed.js";
 import { initializeIndexSchema } from "../index/schema.js";
 import { resourceGapRelevant } from "../resources/coverage.js";
 import { sessionTitle } from "./title.js";
@@ -800,8 +801,10 @@ export class SessionStore {
         estimates.set(item.kind, (estimates.get(item.kind) ?? 0) + item.tokens);
         profile.estimate.total += item.tokens;
       }
+      const requestBranches = new Map<string, Pick<SessionMessage, "branchIds" | "currentBranch">>();
       for (const row of this.database.prepare(`SELECT ${MESSAGE_COLUMNS} FROM session_messages WHERE revision=? AND copied IS NOT 1 ORDER BY ordinal,id`).iterate(revision) as Iterable<MessageMetadataRow>) {
         const message = decodeMessageMetadata(row);
+        if (message.branchIds || message.currentBranch !== undefined) requestBranches.set(message.id, message);
         profile.messageCount += 1;
         if (message.kind === "user" && message.turnId) turns.add(`${sessionId}:${message.turnId}`);
         if (message.model) models.set(message.model, (models.get(message.model) ?? 0) + 1);
@@ -822,11 +825,15 @@ export class SessionStore {
           resources.set(key, resource);
         }
       }
-      // 分开按消息身份和轮次关联，让每次排除检查命中现有索引，避免反复扫描整个会话。
+      // 明确请求成员或结束项优先于轮次回退，工具参数请求也能排除复制且保留原创事件。
       const usageRows = this.database.prepare(`SELECT u.json FROM session_usage u WHERE u.revision=? AND NOT EXISTS
         (SELECT 1 FROM session_messages m WHERE m.revision=u.revision AND m.copied=1 AND m.id=u.message_id)
-        AND (u.message_id IS NOT NULL OR NOT EXISTS
-          (SELECT 1 FROM session_messages m WHERE m.revision=u.revision AND m.copied=1 AND m.turn_id=u.turn_id)) ORDER BY u.rowid`).iterate(revision) as Iterable<JsonRow>;
+        AND (u.message_id IS NOT NULL OR
+          ((json_array_length(u.json,'$.requestMessageIds')>0 OR json_extract(u.json,'$.timing.end.messageId') IS NOT NULL) AND NOT EXISTS
+            (SELECT 1 FROM session_messages m WHERE m.revision=u.revision AND m.copied=1 AND m.id IN
+              (SELECT value FROM json_each(u.json,'$.requestMessageIds') UNION SELECT json_extract(u.json,'$.timing.end.messageId')))) OR
+          (COALESCE(json_array_length(u.json,'$.requestMessageIds'),0)=0 AND json_extract(u.json,'$.timing.end.messageId') IS NULL AND NOT EXISTS
+            (SELECT 1 FROM session_messages m WHERE m.revision=u.revision AND m.copied=1 AND m.turn_id=u.turn_id))) ORDER BY u.rowid`).iterate(revision) as Iterable<JsonRow>;
       for (const row of usageRows) {
         const usage = decode<SessionUsage>(row);
         profile.usage.requests += 1;
@@ -842,9 +849,17 @@ export class SessionStore {
         }
         if (usage.contextTokens !== undefined) profile.usage.peakContextTokens = Math.max(profile.usage.peakContextTokens ?? 0, usage.contextTokens);
         if (usage.model && !models.has(usage.model)) models.set(usage.model, 0);
-        profile.steps.push({ ...usage, sessionId });
+        const associations = [...new Set([...(usage.requestMessageIds ?? []), ...(usage.messageId ? [usage.messageId] : []),
+          ...(usage.timing?.end?.messageId ? [usage.timing.end.messageId] : [])])]
+          .flatMap(messageId => requestBranches.has(messageId) ? [requestBranches.get(messageId)!] : []);
+        const memberships = associations.flatMap(message => message.branchIds ? [message.branchIds] : []);
+        const branchIds = memberships.length ? memberships[0]!.filter(branch => memberships.every(values => values.includes(branch))) : undefined;
+        const currentBranch = associations.some(message => message.currentBranch !== undefined)
+          ? associations.every(message => message.currentBranch !== false) : undefined;
+        profile.steps.push({ ...usage, sessionId, ...(branchIds ? { branchIds } : {}), ...(currentBranch !== undefined ? { currentBranch } : {}) });
       }
     }
+    profile.outputSpeed = summarizeRequestSpeed(profile.steps);
     profile.turnCount = turns.size;
     profile.usage.cacheReadRatio = pairedInput > 0 ? pairedCache / pairedInput : null;
     profile.models = [...models].map(([model, count]) => ({ model, count })).sort((left, right) => right.count - left.count || left.model.localeCompare(right.model));

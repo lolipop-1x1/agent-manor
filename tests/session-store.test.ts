@@ -989,3 +989,66 @@ test("会话级搜索按全量会话分页，保留记录级总数、展开及�
   assert.equal(store.matches("many", { q: "missing" }).matches, false);
   assert.equal(store.groupedSearch({ q: "needle", version }).version, version);
 }));
+
+test("速度画像以完整请求集合加权，缺失与部分响应保留分母，父子同名请求互不覆盖", async () => fixture(store => {
+  const timing = (durationMs: number): SessionUsage["timing"] => ({ basis: "estimated", method: "codex_event_boundary", completion: "inferred", durationMs });
+  const usages: SessionUsage[] = Array.from({ length: 301 }, (_, index) => ({ id: `request-${index}`, messageId: `message-${index}`,
+    outputTokens: 400, reasoningOutputTokens: 100, timing: timing(10_000) }));
+  usages[300] = { ...usages[300]!, outputTokens: 6000, timing: timing(100_000) };
+  usages.push({ id: "missing-output", requestMessageIds: ["message-301"], timing: timing(1000) },
+    { id: "old-usage", outputTokens: 800 },
+    { id: "partial", outputTokens: 900, timing: { ...timing(10_000)!, completion: "partial" } });
+  const parent = source(store, meta("speed-parent", { childSessionIds: ["speed-child"] }),
+    Array.from({ length: 302 }, (_, index) => message("speed-parent", index, { kind: "assistant" })), usages);
+  const child = source(store, meta("speed-child", { parentSessionId: "speed-parent", relationship: "child" }), [
+    message("speed-child", 0, { copied: true }), message("speed-child", 1, { kind: "assistant" }),
+  ], [{ id: "copied", messageId: "message-0", outputTokens: 9999, timing: timing(1000) },
+    { id: "request-0", messageId: "message-1", outputTokens: 1000, timing: timing(50_000) }]);
+  const version = store.publish(store.createJob().id, [parent, child], []);
+  const own = store.profile("speed-parent");
+  assert.equal(own.steps.length, 304);
+  assert.equal(own.usage.outputTokens, 127700, "原始输出包含不合格请求，推理 Token 不再加到输出");
+  assert.deepEqual(own.outputSpeed, { requests: 304, eligibleRequests: 301, outputTokens: 126000,
+    durationMs: 3_100_000, tokensPerSecond: 126000 / 3100 });
+  const tree = store.profile("speed-parent", { includeChildren: true });
+  assert.equal(tree.version, version);
+  assert.equal(tree.steps.length, 305);
+  assert.deepEqual(tree.outputSpeed, { requests: 305, eligibleRequests: 302, outputTokens: 127000,
+    durationMs: 3_150_000, tokensPerSecond: 127000 / 3150 });
+  assert.ok(!tree.steps.some(usage => usage.id === "copied"));
+}));
+
+test("新请求关联优先于同轮复制回退，分支投影只采用明确消息成员", async () => fixture(store => {
+  const id = "speed-branches";
+  const records = [
+    message(id, 0, { copied: true, branchIds: ["branch-a", "branch-b"], currentBranch: true }),
+    message(id, 1, { kind: "thinking", branchIds: ["branch-a", "branch-b"], currentBranch: true }),
+    message(id, 2, { kind: "assistant", branchIds: ["branch-a"], currentBranch: true }),
+    message(id, 3, { kind: "assistant", branchIds: ["branch-b"], currentBranch: false }),
+    message(id, 4, { kind: "system", branchIds: ["branch-a"], currentBranch: true }),
+    message(id, 5, { kind: "tool_call", tool: "fixture_tool", branchIds: ["branch-a"], currentBranch: true }),
+  ];
+  const timing: SessionUsage["timing"] = { basis: "estimated", method: "claude_message_boundary", completion: "explicit", durationMs: 10_000 };
+  store.publish(store.createJob().id, [source(store, meta(id), records, [
+    { id: "branch-a-request", requestMessageIds: ["message-1", "message-2"], turnId: "turn-1", outputTokens: 400, timing },
+    { id: "branch-b-request", requestMessageIds: ["message-3"], turnId: "turn-1", outputTokens: 600, timing },
+    { id: "raw-location", messageId: "message-4", outputTokens: 800, timing },
+    { id: "copied-group", requestMessageIds: ["message-0"], turnId: "turn-1", outputTokens: 9999, timing },
+    { id: "legacy-turn-only", turnId: "turn-1", outputTokens: 9999, timing },
+    { id: "unknown-link", requestMessageIds: ["not-saved"], outputTokens: 200, timing },
+    { id: "tool-only", requestMessageIds: [], turnId: "turn-1", timing: { ...timing, end: { messageId: "message-5", recordLine: 6 } } },
+  ])], []);
+  const profile = store.profile(id);
+  assert.equal(profile.steps.length, 5);
+  assert.equal(profile.outputSpeed?.requests, 5);
+  assert.equal(profile.outputSpeed?.outputTokens, 2000);
+  assert.deepEqual(profile.steps[0]?.branchIds, ["branch-a"], "共同祖先不把后续请求扩到另一分支");
+  assert.equal(profile.steps[0]?.currentBranch, true);
+  assert.deepEqual(profile.steps[1]?.branchIds, ["branch-b"]);
+  assert.equal(profile.steps[1]?.currentBranch, false);
+  assert.deepEqual(profile.steps[2]?.branchIds, ["branch-a"]);
+  assert.equal(profile.steps[3]?.branchIds, undefined, "未知身份不按同轮补配分支");
+  assert.equal(profile.steps[3]?.currentBranch, undefined);
+  assert.deepEqual(profile.steps[4]?.branchIds, ["branch-a"], "工具参数请求的结束项提供明确分支依据");
+  assert.equal(profile.steps[4]?.currentBranch, true);
+}));

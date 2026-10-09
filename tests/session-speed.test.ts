@@ -239,3 +239,10 @@ test("缺失、逆序和无效的原生时间不会产生速度，已结束请�
     assert.equal(sample.usages[0]?.requestMessageIds?.length, 1);
   }
 });
+
+test("跨会话请求身份复用时分别统计，同会话关联重复仍只计一次", () => {
+  const first = { ...sampleUsage("shared-id", 400, 10_000), sessionId: "parent" };
+  const second = { ...sampleUsage("shared-id", 600, 30_000), sessionId: "child" };
+  assert.deepEqual(summarizeRequestSpeed([first, first, second]), { requests: 2, eligibleRequests: 2,
+    outputTokens: 1000, durationMs: 40_000, tokensPerSecond: 25 });
+});

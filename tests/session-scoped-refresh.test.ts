@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import fs from "node:fs";
 import { appendFile, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { syncBuiltinESMExports } from "node:module";
@@ -336,4 +337,62 @@ test("新库重开保留来源快检记录，不重新解析未变化正文", as
     assert.deepEqual({ ...after, version: search.version }, search);
     assert.equal(after.version, reopened.status().version);
   } finally { reopened.close(); }
+}));
+
+test("计时规则升级只回填三来源，旧 JSON 可查，失败保持前版且未支持来源复用", async () => fixture(async (store, directory) => {
+  const at = (seconds: number) => new Date(Date.UTC(2026, 0, 1) + seconds * 1000).toISOString();
+  const codex = join(directory, "codex"); const claude = join(directory, "claude"); const codeflicker = join(directory, "cli");
+  const desktop = join(directory, "desktop");
+  for (const root of [codex, claude, codeflicker]) await mkdir(root);
+  await mkdir(join(desktop, "desktop-example", "message"), { recursive: true });
+  await writeFile(join(codex, "request.jsonl"), encode({ type: "session_meta", payload: { id: "speed-codex" } })
+    + encode({ ...codexMessage("user", "合成速度请求"), timestamp: at(0) })
+    + encode({ type: "response_item", timestamp: at(10), payload: { type: "message", id: "assistant", role: "assistant", phase: "final_answer",
+      content: [{ type: "output_text", text: "合成响应" }] } })
+    + encode({ type: "token_usage_record", timestamp: at(10), payload: { response_id: "model-request", usage: { output_tokens: 400, input_tokens: 100 } } }));
+  await writeFile(join(claude, "request.jsonl"), encode({ type: "user", uuid: "user", sessionId: "speed-claude", timestamp: at(0), message: { role: "user", content: "合成速度请求" } })
+    + encode({ type: "assistant", uuid: "assistant", sessionId: "speed-claude", timestamp: at(10), message: { role: "assistant", id: "model-request",
+      content: [{ type: "text", text: "合成响应" }], stop_reason: "end_turn", usage: { output_tokens: 400, input_tokens: 100 } } }));
+  await writeFile(join(codeflicker, "request.jsonl"), encode({ type: "message", uuid: "user", sessionId: "speed-cli", timestamp: at(0), role: "user", content: "合成速度请求" })
+    + encode({ type: "message", uuid: "assistant", sessionId: "speed-cli", timestamp: at(10), role: "assistant", model: "fixture-model", content: [{ type: "text", text: "合成响应" }],
+      metadata: { requestTokenBaseline: { requestId: "model-request" } }, usage: { output_tokens: 400, input_tokens: 100 } }));
+  await writeFile(join(desktop, "desktop-example", "message", "cache.jsonl"), encode({ kind: "message", id: "user", role: "user", content: "未核验来源保留" }));
+  const roots = isolatedHistoryRoots({ codex, claude, codeflicker, "codeflicker-desktop": desktop });
+  await refresh(store, roots);
+  const oldVersion = store.status().version!;
+  const revisions = store.cachedRevisions();
+  const desktopRevision = revisions.find(item => item.client === "codeflicker-desktop")!;
+  const db = new Database(store.dbPath);
+  try {
+    for (const revision of revisions.filter(item => item.client !== "codeflicker-desktop")) {
+      assert.ok(revision.fingerprint.includes(":request-timing-v1"));
+      const metadataSuffix = revision.fingerprint.split(":request-timing-v1")[1]!;
+      const oldMetadata = createHash("sha256").update(JSON.stringify({ rule: "6", source: revision.location, metadataSuffix })).digest("hex");
+      db.prepare("UPDATE session_revisions SET fingerprint=?,metadata_fingerprint=? WHERE id=?")
+        .run(revision.fingerprint.replace(":request-timing-v1", ""), oldMetadata, revision.revision);
+      db.prepare("UPDATE session_usage SET json=json_remove(json,'$.timing','$.requestMessageIds') WHERE revision=?").run(revision.revision);
+    }
+  } finally { db.close(); }
+  const sessions = store.list().sessions;
+  for (const session of sessions.filter(item => item.client !== "codeflicker-desktop")) {
+    assert.equal(store.profile(session.id).outputSpeed?.tokensPerSecond, null, "旧字段缺失不阻断查询");
+    assert.equal(store.profile(session.id).usage.outputTokens, 400);
+  }
+  const originalFinish = store.finishRevision.bind(store);
+  store.finishRevision = () => { throw new Error("合成回填发布失败"); };
+  try { await assert.rejects(refresh(store, roots, { client: "codex" }), /回填发布失败/); }
+  finally { store.finishRevision = originalFinish; }
+  assert.equal(store.status().version, oldVersion);
+  assert.deepEqual(store.cachedRevisions().map(item => item.revision), revisions.map(item => item.revision));
+  const checked = await refresh(store, roots);
+  assert.equal(checked.counts!.parsed, 3);
+  assert.equal(checked.counts!.quickReused, 1);
+  assert.equal(store.cachedRevisions().find(item => item.client === "codeflicker-desktop")!.revision, desktopRevision.revision);
+  for (const session of sessions.filter(item => item.client !== "codeflicker-desktop")) {
+    const profile = store.profile(session.id);
+    assert.equal(profile.outputSpeed?.tokensPerSecond, 40, JSON.stringify({ client: session.client, steps: profile.steps }));
+    assert.equal(profile.version, store.status().version);
+    assert.equal(store.profile(session.id, { version: oldVersion }).outputSpeed?.tokensPerSecond, null);
+  }
+  assert.equal((await refresh(store, roots)).counts!.quickReused, 4, "新规则回填后恢复日常复用");
 }));

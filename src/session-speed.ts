@@ -28,8 +28,8 @@ export function requestSpeed(usage: SessionUsage): RequestSpeed {
 }
 
 /** 汇总同一合格请求集合；请求可能关联多个消息，但只计算一次。 */
-export function summarizeRequestSpeed(usages: readonly SessionUsage[]): RequestSpeedSummary {
-  const requests = new Map(usages.map(usage => [usage.id, usage]));
+export function summarizeRequestSpeed(usages: readonly (SessionUsage & { sessionId?: string })[]): RequestSpeedSummary {
+  const requests = new Map(usages.map(usage => [JSON.stringify([usage.sessionId ?? null, usage.id]), usage]));
   let eligibleRequests = 0;
   let outputTokens = 0;
   let durationMs = 0;
