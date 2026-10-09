@@ -153,7 +153,7 @@ export class RequestTimingParser {
 
   interrupt(alias?: string): void {
     const key = alias ? this.nativeAliases.get(alias) : undefined;
-    const group = key ? this.groups.get(key) : this.active ?? this.latestGroup;
+    const group = alias ? key ? this.groups.get(key) : undefined : this.active ?? this.latestGroup;
     if (!group || (!alias && complete(group))) return;
     group.timing.completion = "partial"; group.timing.completionEvidence = "request_interrupted";
     this.close(group);

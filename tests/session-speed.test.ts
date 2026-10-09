@@ -95,6 +95,8 @@ test("Codex 旧用量延迟到工具返回后，模型结束点回到最后助�
   assert.equal(sample.usages[0]?.timing?.completionEvidence, "tool_result");
   assert.equal(sample.usages[0]?.timing?.durationMs, 3100);
   assert.equal(sample.usages[0]?.timing?.end?.recordLine, 3);
+  assert.equal(sample.messages.find(message => message.id === sample.usages[0]?.timing?.end?.messageId)?.kind, "tool_call",
+    "延迟用量不能覆盖排除工具等待时采用的模型结束记录");
   assert.equal(sample.usages[1]?.timing?.durationMs, 10100);
   assert.equal(sample.usages[1]?.timing?.start?.recordLine, 6);
 });
@@ -106,7 +108,25 @@ test("Codex 投影去重的两个顺序保留原用量定位，不延长后续�
     assert.equal(sample.usages.length, 2);
     assert.equal(sample.usages[0]?.timing?.durationMs, 10000);
     assert.equal(sample.messages.find(message => message.id === sample.usages[0]?.messageId)?.recordLine, 3);
+    assert.equal(sample.usages[0]?.timing?.end?.messageId, sample.usages[0]?.messageId, "结束边界可定位到原用量记录");
     assert.equal(sample.usages[1]?.timing?.durationMs, 10000);
+  }
+});
+
+test("Codex 现代与旧用量结束边界保留真实记录定位，未保存的上下文不补造消息身份", async () => {
+  for (const count of [cUsage("one", 10), cCount(10)]) {
+    const sample = await parsed("codex", [cUser(), timed({ type: "turn_context", payload: { model: "fixture-model" } }, 1),
+      cModel("answer", 9, true), count]);
+    const request = sample.usages[0]!;
+    assert.equal(request.timing?.durationMs, 9000);
+    assert.equal(request.timing?.start?.recordLine, 2);
+    assert.equal(request.timing?.start?.messageId, undefined, "没有消息的上下文边界只保留来源行号");
+    assert.ok(request.timing?.end?.messageId);
+    assert.equal(request.timing?.end?.messageId, request.messageId);
+    const end = sample.messages.find(message => message.id === request.timing?.end?.messageId);
+    assert.equal(end?.kind, "system");
+    assert.equal(end?.recordLine, 4);
+    assert.equal(end?.occurredAt, request.timing?.end?.occurredAt);
   }
 });
 
@@ -200,6 +220,26 @@ test("Claude 明确关联的取消记录剔除部分响应，不将工具超时�
       toolUseResult: { interrupted: true, timedOutAfterMs: 5000 } }]);
   assert.equal(finished.usages[0]?.timing?.completion, "explicit");
   assert.ok(requestSpeed(finished.usages[0]!).tokensPerSecond);
+});
+
+test("Claude 未知中断目标不影响已完成请求或当前其他请求，无目标中断保留已完成请求", async () => {
+  const user = native("claude", "user", "user", 0, "合成请求");
+  const finished = native("claude", "finished", "assistant", 10, [textBlock], 400, "one", { stop_reason: "end_turn" });
+  const unknownTarget = { type: "system", uuid: "interruption", sessionId: "synthetic-session",
+    interruptedMessageId: "unrecorded-target", timestamp: at(21) };
+  const completed = await parsed("claude", [user, finished, unknownTarget]);
+  assert.equal(completed.usages[0]?.timing?.completion, "explicit");
+  assert.equal(requestSpeed(completed.usages[0]!).tokensPerSecond, 40);
+  const active = await parsed("claude", [user, finished,
+    native("claude", "current", "assistant", 20, [textBlock], 400, "two"), unknownTarget]);
+  assert.equal(active.usages[0]?.timing?.completion, "explicit");
+  assert.equal(active.usages[1]?.timing?.completion, "unknown", "不将其他请求的未知结束伪装为中断");
+  assert.equal(active.usages[1]?.timing?.durationMs, 10000);
+  assert.equal(requestSpeed(active.usages[1]!).reason, "end_unconfirmed");
+  const untargeted = await parsed("claude", [user, finished,
+    { type: "system", uuid: "error", sessionId: "synthetic-session", isApiErrorMessage: true, timestamp: at(11) }]);
+  assert.equal(untargeted.usages[0]?.timing?.completion, "explicit");
+  assert.equal(requestSpeed(untargeted.usages[0]!).tokensPerSecond, 40);
 });
 
 test("CodeFlicker CLI 成功结果写入支持估算，重复记录不重计，下一次请求从工具结果开始", async () => {

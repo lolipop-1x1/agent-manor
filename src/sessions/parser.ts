@@ -359,7 +359,7 @@ export async function parseSessionSource(source: SourceLocation, sink: SessionSi
       if (record.type === "token_usage_record") {
         if (!copied) {
           const usageId = usage.codex(payload.usage, payload.thread_token_usage, string(payload.response_id), { turnId, model: currentModel, occurredAt });
-          timing?.codexUsage(usageId, { occurredAt, recordLine: line });
+          timing?.codexUsage(usageId, { occurredAt, recordLine: line, messageId: usageId ? usageMarkers.get(usageId)?.id : undefined });
         }
         continue;
       }
@@ -372,7 +372,7 @@ export async function parseSessionSource(source: SourceLocation, sink: SessionSi
           if (!copied) {
             const usageId = usage.codex({ ...object(info.last_token_usage), context_tokens: object(info.last_token_usage).context_tokens ?? object(info.last_token_usage).total_tokens },
               info.total_token_usage, undefined, { turnId, model: currentModel, occurredAt });
-            timing?.codexUsage(usageId, { occurredAt, recordLine: line });
+            timing?.codexUsage(usageId, { occurredAt, recordLine: line, messageId: usageId ? usageMarkers.get(usageId)?.id : undefined });
           }
         } else if (payload.type === "agent_reasoning") {
           const key = `event:${string(payload.id) ?? line}`;
@@ -475,9 +475,10 @@ export async function parseSessionSource(source: SourceLocation, sink: SessionSi
     const injected = source.client === "codeflicker" && role === "user" && (record.hidden === true || record.isMeta === true);
     const human = role === "user" && !hasResult && record.isMeta !== true && !injected;
     const requestId = source.client === "codeflicker" ? string(object(object(record.metadata).requestTokenBaseline).requestId) ?? nativeId : string(native.id) ?? nativeId;
+    const identified = Boolean(recordedModel) && (source.client === "claude" ? Boolean(string(native.id))
+      : Boolean(string(object(object(record.metadata).requestTokenBaseline).requestId)));
     if (role === "assistant" && native.model === "<synthetic>") timing?.ignoreNative();
-    if (role === "assistant" && !copied && native.model !== "<synthetic>") timing?.nativeRequest(requestId, nativeId, Boolean(recordedModel)
-      && (source.client === "claude" ? Boolean(string(native.id)) : Boolean(string(object(object(record.metadata).requestTokenBaseline).requestId))));
+    if (role === "assistant" && !copied && native.model !== "<synthetic>") timing?.nativeRequest(requestId, nativeId, identified);
     for (const [index, value] of blocks.entries()) {
       const block = object(value);
       const key = `native:${nativeId}:${index}`;
@@ -511,8 +512,6 @@ export async function parseSessionSource(source: SourceLocation, sink: SessionSi
     if (!blocks.length && typeof record.text === "string") firstMessage = message(`native:${nativeId}:text`, role === "assistant" ? "assistant" : human ? "user" : "system", record.text, line, extra, human);
     if (role === "assistant") {
       if (!copied) {
-        const identified = Boolean(recordedModel) && (source.client === "claude" ? Boolean(string(native.id))
-          : Boolean(string(object(object(record.metadata).requestTokenBaseline).requestId)));
         const partial = record.isApiErrorMessage === true || record.isInterrupted === true || Boolean(record.interruptedMessageId);
         const persisted = source.client === "codeflicker" && record.type === "message" && Boolean(string(record.uuid)) && identified
           && Object.keys(object(native.usage)).length > 0 && !partial;

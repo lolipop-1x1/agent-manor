@@ -53,6 +53,12 @@ test("合成原生历史经发现、Worker、索引与 HTTP 保留三来源请�
         for (const id of profile.steps[0]?.requestMessageIds ?? []) {
           assert.ok(records.messages.some(message => message.id === id && ["assistant", "thinking"].includes(message.kind)), "关联可定位到真实模型记录");
         }
+        if (source.client === "codex") for (const step of profile.steps.slice(0, 2)) {
+          assert.equal(step.timing?.end?.messageId, step.messageId, "HTTP 保留用量结束边界的消息身份");
+          const end = records.messages.find(message => message.id === step.timing?.end?.messageId);
+          assert.equal(end?.kind, "system");
+          assert.equal(end?.recordLine, step.timing?.end?.recordLine, "结束入口指向保存用量的来源记录");
+        }
       }
       if (source.id === "speed-thresholds") {
         assert.deepEqual(profile.steps.map(step => requestSpeed(step).tokensPerSecond ?? requestSpeed(step).reason).sort(),

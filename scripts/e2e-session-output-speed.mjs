@@ -18,7 +18,28 @@ const run = promisify(execFile);
 const directory = await realpath(await mkdtemp(join(tmpdir(), "manor-speed-e2e-")));
 const artifacts = fileURLToPath(new URL("../.local/session-output-speed-e2e/", import.meta.url));
 const browserName = `speed-${process.pid}`;
+async function activateDisclosure(page, locator, name, action = "click") {
+  // Chrome 原生折叠控件使用 DisclosureTriangle；绑定实际操作节点核对角色与名称。
+  const client = await page.context().newCDPSession(page);
+  let objectId;
+  try {
+    await locator.evaluate(element => { globalThis.__speedDisclosureTarget = element; });
+    const target = await client.send("Runtime.evaluate", { expression: "globalThis.__speedDisclosureTarget" });
+    objectId = target.result.objectId;
+    const tree = await client.send("Accessibility.getPartialAXTree", { objectId, fetchRelatives: false });
+    const node = tree.nodes[0];
+    if (node?.ignored || node?.role?.value !== "DisclosureTriangle" || node?.name?.value !== name) {
+      throw new Error(`原生折叠控件的角色或可访问名称不符：${node?.role?.value} / ${node?.name?.value}`);
+    }
+  } finally {
+    await client.send("Runtime.evaluate", { expression: "delete globalThis.__speedDisclosureTarget" });
+    if (objectId) await client.send("Runtime.releaseObject", { objectId });
+    await client.detach();
+  }
+  await locator[action]();
+}
 const browser = async args => {
+  if (args[0] === "run-code") args[1] = args[1].replaceAll("DISCLOSURE_CONTROL", activateDisclosure.toString());
   const { stdout } = await run("playwright-cli", [`-s=${browserName}`, ...args], {
     cwd: directory, env: { ...process.env, TMPDIR: "/tmp" }, timeout: 60_000, maxBuffer: 4 * 1024 * 1024,
   });
@@ -55,6 +76,7 @@ try {
   assert.ok(status.version, "合成历史未能发布索引");
   const list = await api("/sessions?includeSubagents=true");
   const profiles = [];
+  let codexEnd;
   for (const source of fixture.files) {
     const session = list.sessions.find(item => item.clientSessionId === source.id);
     assert.ok(session, `未发现 ${source.id}`);
@@ -62,6 +84,16 @@ try {
     const speed = summarizeRequestSpeed(profile.steps);
     assert.deepEqual(speed, source.expected, `${source.client} 请求速度与覆盖`);
     assert.deepEqual(profile.outputSpeed, source.expected, `${source.client} Profile 汇总与全部请求一致`);
+    if (source.client === "codex" && source.name === "speed.jsonl") {
+      const records = await api(`/sessions/${encodeURIComponent(session.id)}/messages?mode=trace&pageSize=200`);
+      for (const step of profile.steps.slice(0, 2)) {
+        assert.equal(step.timing.end.messageId, step.messageId, "用量结束边界保留真实用量记录身份");
+        const end = records.messages.find(message => message.id === step.timing.end.messageId);
+        assert.equal(end?.kind, "system");
+        assert.equal(end?.recordLine, step.timing.end.recordLine);
+      }
+      codexEnd = profile.steps[0].timing.end;
+    }
     profiles.push({ client: source.client, source: source.id, speed });
   }
   const parent = list.sessions.find(item => item.clientSessionId === "speed-codex");
@@ -77,7 +109,7 @@ try {
     const legacy = indexLegacySpeedFixture(store, join(directory, "synthetic-legacy-ui.jsonl"));
     store.publish(store.createJob().id, [...existing, branch, legacy], []);
   } finally { store.close(); }
-  await writeFile(join(artifacts, "api-report.json"), JSON.stringify({ profiles, tree: summarizeRequestSpeed(tree.steps),
+  await writeFile(join(artifacts, "api-report.json"), JSON.stringify({ profiles, tree: summarizeRequestSpeed(tree.steps), codexEndRecord: codexEnd,
     directIndexBranchFixture: { purpose: "只验证 UI 分支范围", session: branch.id } }, null, 2) + "\n");
   if (!process.argv.includes("--api-only")) {
     await browser(["open", `${base}/#sessions?id=${encodeURIComponent(parent.id)}&mode=brief`, "--headed", "--browser=chrome"]);
@@ -87,6 +119,7 @@ try {
       const button = name => page.getByRole("button", { name, exact: true });
       const checks = [];
       const ensure = (value, message) => { if (!value) throw new Error(message); checks.push(message); };
+      const disclosure = DISCLOSURE_CONTROL;
       page.speedErrors = [];
       page.on("pageerror", error => page.speedErrors.push(error.message));
       await page.setViewportSize({ width: 1440, height: 900 });
@@ -101,7 +134,8 @@ try {
         await page.getByRole("spinbutton", { name: "跳转轮次", exact: true }).fill("1"); await button("跳转").click();
         await page.waitForLoadState("networkidle");
         await turn.locator(".kind-assistant .session-speed-badge").filter({ hasText: "请求 ≈ 20 tok/s" }).waitFor();
-        await turn.locator("summary").first().click();
+        await disclosure(page, turn.getByText("第 1 轮", { exact: true }).locator(".."), "第 1 轮 平均 ≈ 26 tok/s 复制本轮问答");
+        checks.push(`${file} 轮次折叠具有原生角色与可访问名称`);
         await page.waitForFunction(() => document.querySelector(".session-turn")?.open === false);
         ensure(await turn.getAttribute("open") === null && await turn.locator("summary .session-speed-badge").innerText() === "平均 ≈ 26 tok/s", `${file} 折叠保留轮平均`);
         await button("吐字速度说明").click();
@@ -128,7 +162,8 @@ try {
         await page.getByRole("button", { name: /^查看记录 \d+：思考$/ }).first().click();
         const inspector = page.locator(".trace-inspector");
         ensure(await inspector.locator("header .session-speed-badge").innerText() === "请求 ≈ 40 tok/s", `${file} 轨迹详情显示所属请求速度`);
-        await inspector.locator(".session-speed-details > summary").click();
+        await disclosure(page, inspector.getByText("请求速度依据", { exact: true }), "请求速度依据");
+        checks.push(`${file} 请求依据具有原生角色与共享可访问名称`);
         ensure(await inspector.locator(".session-speed-formula").innerText() === "480 Token ÷ 12.0 秒 ≈ 40 tok/s", `${file} 详情代入原始输出与耗时`);
         ensure((await inspector.locator(".session-speed-details").innerText()).includes("估算") && (await inspector.locator(".session-speed-details").innerText()).includes("起始记录"), `${file} 计时依据可核对`);
         await button("执行轨迹与速度说明").focus(); await page.keyboard.press("Enter");
@@ -145,10 +180,10 @@ try {
         const rows = profile.locator(".session-step-table tbody tr");
         ensure(await rows.count() === 5, `${file} 请求表保留过滤与缺失记录`);
         for (const [index, reason] of [[2, "输出少于 200 Token，未计算速度"], [3, "响应结束未确认，未计算速度"], [4, "响应未完整结束，未计算速度"]]) {
-          await rows.nth(index).locator(".session-speed-details > summary").click();
+          await disclosure(page, rows.nth(index).getByText("请求速度依据", { exact: true }), "请求速度依据");
           ensure((await rows.nth(index).innerText()).includes(reason) && await rows.nth(index).locator(".session-speed-formula").count() === 0, `${file} 请求${index + 1}显示实际原因而不制造算式`);
         }
-        await rows.first().locator(".session-speed-details > summary").click();
+        await disclosure(page, rows.first().getByText("请求速度依据", { exact: true }), "请求速度依据");
         ensure(await rows.first().locator(".session-speed-formula").innerText() === "480 Token ÷ 12.0 秒 ≈ 40 tok/s", `${file} 右侧单请求公式一致`);
         const slider = page.getByRole("slider", { name: "选择用量请求", exact: true });
         await slider.focus(); await page.keyboard.press("Home");
@@ -163,16 +198,25 @@ try {
         await profile.getByRole("button", { name: "请求 1", exact: true }).click();
         await inspector.locator("header .session-speed-badge").filter({ hasText: "请求 ≈ 40 tok/s" }).waitFor();
         ensure(await button("执行轨迹").getAttribute("aria-pressed") === "true", `${file} 请求定位到正确轨迹记录`);
+        if (file === "codex") {
+          await rows.first().getByRole("button", { name: `第 ${CODEX_END_RECORD_LINE} 条记录`, exact: true }).click();
+          await page.waitForLoadState("networkidle");
+          await page.waitForFunction(id => document.querySelector(".trace-inspector article[data-message-id]")?.getAttribute("data-message-id") === id, CODEX_END_MESSAGE_ID);
+          ensure(await inspector.locator("article[data-message-id]").getAttribute("data-message-id") === CODEX_END_MESSAGE_ID
+            && (await inspector.innerText()).includes("请求用量（记录值）"), "Codex 请求结束入口定位到保存用量的真实轨迹记录");
+        }
       }
       ensure(page.speedErrors.length === 0, "原生三来源Chrome无运行时异常");
       return { nativeApiVerified: true, fourViews: ["codex", "claude", "cli"], checks, errors: page.speedErrors };
     };
-    const output = await browser(["run-code", verifyNative.toString().replaceAll("ARTIFACTS", JSON.stringify(artifacts))]);
+    const output = await browser(["run-code", verifyNative.toString().replaceAll("ARTIFACTS", JSON.stringify(artifacts))
+      .replaceAll("CODEX_END_RECORD_LINE", JSON.stringify(codexEnd.recordLine)).replaceAll("CODEX_END_MESSAGE_ID", JSON.stringify(codexEnd.messageId))]);
     await writeFile(join(artifacts, "native-browser-report.txt"), output);
     console.log(output.split("### Ran Playwright code")[0]);
     const verifyScopes = async page => {
       const checks = [];
       const ensure = (value, message) => { if (!value) throw new Error(message); checks.push(message); };
+      const disclosure = DISCLOSURE_CONTROL;
       const button = name => page.getByRole("button", { name, exact: true });
       const select = async (title, name) => {
         await page.getByRole("button", { name }).click(); await page.getByRole("heading", { name: title, exact: true }).waitFor();
@@ -192,7 +236,7 @@ try {
       await profile.getByText("1/4 次可计算", { exact: true }).waitFor();
       ensure(await profile.locator(".session-speed-summary .session-speed-badge").innerText() === "平均 ≈ 200 tok/s", "200Token和1秒的等号请求参与统计");
       const thresholdRows = profile.locator(".session-step-table tbody tr");
-      for (let index = 0; index < await thresholdRows.count(); index++) await thresholdRows.nth(index).locator(".session-speed-details > summary").click();
+      for (let index = 0; index < await thresholdRows.count(); index++) await disclosure(page, thresholdRows.nth(index).getByText("请求速度依据", { exact: true }), "请求速度依据");
       const thresholdText = await profile.locator(".session-step-table").innerText();
       ensure(thresholdText.includes("200 Token ÷ 1.0 秒 ≈ 200 tok/s") && thresholdText.includes("响应耗时少于 1 秒，未计算速度")
         && thresholdText.includes("缺少有效计时依据") && thresholdText.includes("未记录输出 Token"), "等号算式、999ms、缺时间及缺输出分别呈现");
@@ -204,7 +248,7 @@ try {
         await page.getByRole("tab", { name: "用量", exact: true }).click();
         await profile.getByText("0/1 次可计算", { exact: true }).waitFor();
         ensure(await profile.locator(".session-step-table").getByRole("columnheader", { name: "速度", exact: true }).count() === 0, `${title}右侧速度列隐藏`);
-        await profile.locator(".session-speed-details > summary").click();
+        await disclosure(page, profile.getByText("请求速度依据", { exact: true }), "请求速度依据");
         ensure((await profile.locator(".session-speed-details").innerText()).includes(reason) && await profile.locator(".session-speed-formula").count() === 0, `${title}无数值时保留具体原因`);
       }
       await select("原生分支速度缺失验收", /^原生分支速度缺失验收 Pi/);
@@ -224,6 +268,7 @@ try {
     const verifyBranchLanguage = async page => {
       const checks = [];
       const ensure = (value, message) => { if (!value) throw new Error(message); checks.push(message); };
+      const disclosure = DISCLOSURE_CONTROL;
       const button = name => page.getByRole("button", { name, exact: true });
       const profile = page.locator(".session-profile");
       const choose = async (label, name) => {
@@ -251,7 +296,7 @@ try {
       await button("请求明细分页下一页").click();
       const firstRequest = profile.locator(".session-step-table tbody tr").first();
       await firstRequest.getByRole("button", { name: "请求 13", exact: true }).waitFor();
-      await firstRequest.locator(".session-speed-details > summary").click();
+      await disclosure(page, firstRequest.getByText("请求速度依据", { exact: true }), "请求速度依据");
       const slider = page.getByRole("slider", { name: "选择用量请求", exact: true });
       await slider.focus(); await page.keyboard.press("End");
       await page.getByRole("tooltip").getByText("请求 ≈ 40 tok/s", { exact: true }).waitFor();
@@ -276,9 +321,9 @@ try {
       await page.screenshot({ path: ARTIFACTS + "/branch-english-preserved.png" });
       await button("Execution trace").click(); await page.waitForLoadState("networkidle");
       await choose("Reading branch", "合成旧分支");
-      await page.locator(".trace-row.kind-assistant").first().getByRole("button").click();
+      await page.locator(".trace-row.kind-assistant").first().getByRole("button", { name: /^View record \d+: AI$/ }).click();
       const inspector = page.locator(".trace-inspector");
-      await inspector.locator(".session-speed-details > summary").click();
+      await disclosure(page, inspector.getByText("Request speed details", { exact: true }), "Request speed details");
       const traceBefore = { hash: await page.evaluate(() => location.hash), rows: await page.locator(".trace-ledger").getAttribute("aria-rowcount"),
         selected: await inspector.locator("article[data-message-id]").getAttribute("data-message-id") };
       await language("Display language", "Simplified Chinese");
@@ -296,6 +341,7 @@ try {
     const verifyLongHistory = async page => {
       const checks = [];
       const ensure = (value, message) => { if (!value) throw new Error(message); checks.push(message); };
+      const disclosure = DISCLOSURE_CONTROL;
       const button = name => page.getByRole("button", { name, exact: true });
       await page.getByRole("button", { name: /^长列表速度验收 Codex/ }).click();
       await page.getByRole("heading", { name: "长列表速度验收", exact: true }).waitFor(); await page.waitForLoadState("networkidle");
@@ -333,7 +379,7 @@ try {
       ensure(await profile.locator(".session-step-table tbody tr").count() === 12, "右侧660请求可定位第55页且保留12条明细");
       const last = profile.locator(".session-step-table tbody tr").last();
       ensure(await last.locator(".session-speed-badge").innerText() === "≈ 200 tok/s", "第660次请求速度来自完整明细");
-      await last.locator(".session-speed-details > summary").click();
+      await disclosure(page, last.getByText("请求速度依据", { exact: true }), "请求速度依据");
       ensure(await last.locator(".session-speed-formula").innerText() === "200 Token ÷ 1.0 秒 ≈ 200 tok/s", "最后请求代入算式可核对");
       const slider = page.getByRole("slider", { name: "选择用量请求", exact: true });
       await slider.focus(); await page.keyboard.press("End");
@@ -355,6 +401,7 @@ try {
       const mobile = await context.newPage();
       const checks = [], errors = [], tableSizes = [];
       const ensure = (value, message) => { if (!value) throw new Error(message); checks.push(message); };
+      const disclosure = DISCLOSURE_CONTROL;
       const button = name => mobile.getByRole("button", { name, exact: true });
       const inViewport = async dialog => {
         const value = await dialog.boundingBox();
@@ -387,7 +434,7 @@ try {
         ensure(await mobile.locator(".sessions-shell").getAttribute("data-compact-panel") === "profile", "关闭帮助保留统计侧栏");
         const table = profile.locator(".session-step-table");
         const firstRow = table.locator("tbody tr").first();
-        await firstRow.locator(".session-speed-details > summary").tap();
+        await disclosure(mobile, firstRow.getByText("请求速度依据", { exact: true }), "请求速度依据", "tap");
         ensure(await firstRow.locator(".session-speed-formula").innerText() === "480 Token ÷ 12.0 秒 ≈ 40 tok/s", "触摸可展开窄屏请求代入算式");
         await table.evaluate(element => { element.scrollLeft = element.scrollWidth - element.clientWidth; });
         tableSizes.push(await table.evaluate(element => ({ language: "zh-CN", width: element.clientWidth, contentWidth: element.scrollWidth, scroll: element.scrollLeft })));
@@ -416,7 +463,7 @@ try {
         await mobile.getByRole("tab", { name: "Usage", exact: true }).tap();
         ensure(await profile.locator(".session-speed-summary .session-speed-badge").innerText() === "Average ≈ 26 tok/s"
           && await profile.locator(".session-speed-coverage").innerText() === "2/5 calculable requests", "深色英文窄屏保留平均与部分覆盖");
-        if (!(await firstRow.locator(".session-speed-details").evaluate(element => element.open))) await firstRow.locator(".session-speed-details > summary").tap();
+        if (!(await firstRow.locator(".session-speed-details").evaluate(element => element.open))) await disclosure(mobile, firstRow.getByText("Request speed details", { exact: true }), "Request speed details", "tap");
         await firstRow.locator(".session-speed-formula").filter({ hasText: "480 tokens ÷ 12.0 seconds ≈ 40 tok/s" }).waitFor();
         await table.evaluate(element => { element.scrollLeft = element.scrollWidth - element.clientWidth; });
         tableSizes.push(await table.evaluate(element => ({ language: "en", width: element.clientWidth, contentWidth: element.scrollWidth, scroll: element.scrollLeft })));
