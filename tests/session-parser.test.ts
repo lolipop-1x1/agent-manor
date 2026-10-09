@@ -141,7 +141,8 @@ test("Codex 响应正文优先于事件投影，保留明确终答、模型、�
   assert.equal(sample.messages.filter(message => message.kind === "system").length, 1, "重复用量投影只生成一个可定位记录");
   assert.deepEqual(sample.summary.models, ["fixture-model"]);
   assert.deepEqual(sample.messages.find(message => message.kind === "tool_call")?.resource, { kind: "mcp", name: "lookup", server: "example" });
-  assert.equal(sample.usages.length, 1);
+  assert.equal(sample.usages.length, 2, "工具响应与终答是两次已识别请求，未保存用量的请求仍保留缺失");
+  assert.equal(sample.usages.filter(usage => usage.outputTokens === undefined).length, 1);
   assert.equal(sample.usages[0]?.inputTokens, 100);
   assert.equal(sample.usages[0]?.cachedInputTokens, 60);
   assert.equal(sample.usages[0]?.outputTokens, 20);
@@ -409,7 +410,8 @@ test("明确父子与分叉边界保留身份，复制用量不再次计入，�
   assert.equal(sample.summary.relationship, "fork");
   assert.equal(sample.messages[0]?.copied, true);
   assert.equal(sample.messages[1]?.copied, undefined);
-  assert.equal(sample.usages.length, 1);
+  assert.equal(sample.usages.length, 2, "保留自己的用量与缺少用量的委派请求，复制前缀不新增请求");
+  assert.equal(sample.usages.filter(usage => usage.outputTokens !== undefined).length, 1);
   assert.deepEqual(sample.summary.childSessionIds, [sessionKey("codex", "grandchild")]);
   const unknown = await parsed("codex", [meta({ forked_from_id: "parent" }), user()]);
   assert.ok(unknown.summary.gaps.some(gap => gap.kind === "ambiguous"));
