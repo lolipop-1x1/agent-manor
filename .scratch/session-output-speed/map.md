@@ -36,9 +36,10 @@
 
 ## 待实现
 
-- 实施任务 [03](issues/03-request-timing.md)、[04](issues/04-profile-refresh.md)、[05](issues/05-speed-views.md)、[06](issues/06-validation.md)：`ready-for-agent`，按依赖顺序启动。
-- 原始历史、产品代码、翻译目录和测试未在本轮修改；术语与设计文档已经更新。
+- [03 请求解析](issues/03-request-timing.md)实施中。[07 共享契约](issues/07-shared-contract.md)已完成；[04 汇总刷新](issues/04-profile-refresh.md)与[05 界面展示](issues/05-speed-views.md)可并行启动。
+- [06 集成验收](issues/06-validation.md)等待解析、汇总和界面全部完成。原始历史保持只读，公开测试使用合成输入。
 
 ## 实施记录
 
 - 2026-10-09：已确认设计提交到主干，实施按独立功能分支推进。任务 03 已认领；其余任务等待依赖完成。原始历史保持只读，公开测试使用合成输入。
+- 2026-10-09：共享契约提交 `592afee` 已集成。拆出任务 07，细化 04／05 的依赖；功能范围与确认口径保持一致，来源校准由最终集成验收把关。
