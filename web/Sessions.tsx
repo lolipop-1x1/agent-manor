@@ -17,6 +17,9 @@ import { MessageCard, kindLabels } from "./SessionMessage";
 import { SessionTrace } from "./SessionTrace";
 import { Notice, Pager, SessionDiagnostic, SessionError } from "./SessionControls";
 import { SessionProfilePane } from "./SessionProfile";
+import { HelpPopover } from "./HelpPopover";
+import { AverageSpeedBadge, SpeedAlgorithmHelp } from "./SessionSpeed";
+import { messageSpeedRequest, requestLocation, sessionSpeedMap, type SessionSpeedMap } from "./session-speed-model";
 import { FilterSelect } from "./FilterSelect";
 import { ProjectPicker } from "./ProjectPicker";
 import { DatePicker } from "./DatePicker";
@@ -62,9 +65,9 @@ function SearchHitList({ hits, total, page, pageSize, onPage, onSelect, title, q
   </section>;
 }
 
-function TurnTimeline({ turn, position, mode, focusMessageId, project, onMap, expanded, onToggle, query }: {
+function TurnTimeline({ turn, position, mode, focusMessageId, project, onMap, expanded, onToggle, query, speed }: {
   turn: { id: string; messages: SessionMessage[] }; position: number; mode: Mode; focusMessageId?: string; project?: string; onMap: (path?: string, project?: string) => void;
-  expanded: boolean; onToggle: (open: boolean) => void; query: string;
+  expanded: boolean; onToggle: (open: boolean) => void; query: string; speed: SessionSpeedMap;
 }) {
   useI18n();
   const title = turnTitle(turn.id, position);
@@ -72,9 +75,10 @@ function TurnTimeline({ turn, position, mode, focusMessageId, project, onMap, ex
   const answer = [...turn.messages].reverse().find(message => message.kind === "assistant" && message.final);
   return <details id={`session-turn-${turn.id}`} className="session-turn" open={expanded} onToggle={event => onToggle(event.currentTarget.open)}>
     <summary><CaretDown size={15} aria-hidden="true" /><span>{title}</span>{mode !== "brief" && <small>{t("sessions.recordCount", { count: turn.messages.length })}</small>}
+      <AverageSpeedBadge summary={speed.byTurn.get(turn.id)} />
       <span className="session-turn-summary" hidden={expanded}>{userMessage ? sessionMessageText(userMessage) : answer ? sessionMessageText(answer) : t("sessions.turn.expand")}</span><CopyButton text={dialogueMarkdown(turn.messages, getLanguage())} label={t("sessions.copy.turn")} /></summary>
     {expanded && <div className="session-turn-events">
-      {turn.messages.map(message => <MessageCard key={message.id} message={message} mode={mode} focused={focusMessageId === message.id} query={query} project={project} onMap={onMap} />)}
+      {turn.messages.map(message => <MessageCard key={message.id} message={message} mode={mode} focused={focusMessageId === message.id} query={query} project={project} onMap={onMap} usage={messageSpeedRequest(message, speed)} />)}
     </div>}
   </details>;
 }
@@ -457,6 +461,8 @@ export default function Sessions({ active, target, onMap }: { active: boolean; t
   const selectedMessageData = messageData?.session.id === selectedSessionId ? messageData : undefined;
   const selectedSession = selectedMessageData?.session ?? selectedSummary ?? sessionList?.sessions.find(session => session.id === selectedSessionId);
   const turns = useMemo(() => groupedTurns(selectedMessageData?.messages ?? []), [selectedMessageData]);
+  const readingSteps = profile?.version === selectedMessageData?.version && profile?.sessionIds.includes(selectedSessionId ?? "") ? profile.steps : [];
+  const speed = useMemo(() => sessionSpeedMap(readingSteps, selectedSessionId ?? "", branch ?? (mode === "brief" ? "current" : "all"), !!selectedSession?.branches?.length), [readingSteps, selectedSessionId, branch, mode, selectedSession?.branches]);
   const currentMessage = selectedMessageData?.messages.find(message => message.id === (mode === "trace" ? traceSelection ?? focusMessageId : focusMessageId));
   const visibleGlobalSearch = globalQuery.trim() === debouncedGlobalQuery && globalSearchKey === globalSearchQuery ? globalSearch : null;
   const visibleLocalSearch = localQuery.trim() === debouncedLocalQuery && localSearchKey === localSearchQuery ? localSearch : null;
@@ -502,14 +508,15 @@ export default function Sessions({ active, target, onMap }: { active: boolean; t
     updateAddress(hit.session.id, { mode: next, focus: hit.messageId, branch: "all" });
   };
   const focusStep = (step: SessionProfile["steps"][number]) => {
-    if (!step.messageId) return;
+    const messageId = requestLocation(step);
+    if (!messageId) return;
     setTraceFocusRequest(value => value + 1);
     if (step.sessionId !== selectedSessionId) { rememberReading(); setSelectedSessionId(step.sessionId); setSelectedSummary(undefined); setLocalQuery(""); }
     setBranch("all");
-    setFocusMessageId(step.messageId); setMessagePage(1); setTurnPosition(undefined); setMode("trace"); setCompactPanel(null);
-    setExpandedTurns(new Set([selectedMessageData?.messages.find(message => message.id === step.messageId)?.turnId || "unknown"]));
+    setFocusMessageId(messageId); setMessagePage(1); setTurnPosition(undefined); setMode("trace"); setCompactPanel(null);
+    setExpandedTurns(new Set([selectedMessageData?.messages.find(message => message.id === messageId)?.turnId || "unknown"]));
     pageScroll.current = true; restoreScroll.current = undefined;
-    updateAddress(step.sessionId, { mode: "trace", focus: step.messageId, branch: "all" });
+    updateAddress(step.sessionId, { mode: "trace", focus: messageId, branch: "all" });
   };
   const findEvidence = async (evidence: EvidenceTarget) => {
     if (!selectedSessionId) return;
@@ -675,12 +682,14 @@ export default function Sessions({ active, target, onMap }: { active: boolean; t
             <div className="session-mode-tabs" role="group" aria-label={t("sessions.reading.mode")}>
               {(["brief", "full", "trace"] as Mode[]).map(value => <button key={value} aria-pressed={mode === value} className={mode === value ? "is-selected" : ""} onClick={() => changeMode(value)}>{t(modeLabels[value])}</button>)}
             </div>
+            {mode !== "trace" && <HelpPopover iconOnly label={t("sessions.speed.help")}><SpeedAlgorithmHelp /></HelpPopover>}
             <button className="text-button session-export-button" disabled={!selectedSession || exporting} onClick={() => void exportDialogue()}>{t(exporting ? "sessions.export.loading" : "sessions.export.branch")}</button>
             <label className="session-search-field local"><MagnifyingGlass size={15} aria-hidden="true" /><span className="sr-only">{t("sessions.search.localLabel")}</span><input aria-label={t("sessions.search.localLabel")} value={localQuery} onChange={event => changeLocalQuery(event.target.value)} onFocus={() => localQuery && setShowLocalHits(true)} placeholder={t("sessions.search.localPlaceholder")} disabled={!selectedSessionId} />{localQuery && <button aria-label={t("sessions.search.clearLocal")} onClick={() => changeLocalQuery("")}>×</button>}</label>
           </div>
           {localQuery && <label className="session-process-toggle local-process"><input type="checkbox" checked={includeProcess} onChange={event => setIncludeProcess(event.target.checked)} /><span>{t("sessions.search.process")}</span></label>}
           {!inScope && <Notice action={<button className="text-button" onClick={clearFilters}>{t("sessions.filter.clearAll")}</button>}>{t("sessions.filter.outside")}</Notice>}
           {exportError && <Notice danger>{t("sessions.export.failed")}</Notice>}
+          {speed.scopeUnknown && <span className="session-speed-badge is-missing">{t("sessions.speed.scopeUnknown")}</span>}
           {!!selectedSession?.branches?.length && <div className="session-branch-navigation"><FilterSelect label={t("sessions.branch.label")} value={branch ?? (mode === "brief" ? "current" : "all")} options={[{ value: "current", label: t("sessions.branch.current") }, { value: "all", label: t("sessions.branch.all") }, ...selectedSession.branches.map(item => ({ value: item.id, label: item.current ? t("sessions.branch.currentLabel", { label: messageText(item.labelDescriptor, item.label) }) : messageText(item.labelDescriptor, item.label) }))]} onChange={value => {
             setBranch(value); setFocusMessageId(undefined); setTraceSelection(undefined); setTurnPosition(undefined); setMessagePage(1); pageScroll.current = true;
             if (selectedSessionId) updateAddress(selectedSessionId, { mode, branch: value });
@@ -728,11 +737,11 @@ export default function Sessions({ active, target, onMap }: { active: boolean; t
                   : t("sessions.reading.emptyHelp")}</p>
                 {mode === "brief" && selectedMessageData.session.messageCount > 0 && <button className="text-button" onClick={() => changeMode("full")}>{t("sessions.reading.viewFull")}</button>}
               </div> : <>
-                {mode === "trace" ? <SessionTrace key={selectedMessageData.session.id} messages={selectedMessageData.messages} steps={profile?.steps ?? []} focusMessageId={focusMessageId} focusRequest={traceFocusRequest} focusTurnId={selectedMessageData.turns?.find(turn => turn.position === turnPosition)?.id}
+                {mode === "trace" ? <SessionTrace key={selectedMessageData.session.id} messages={selectedMessageData.messages} steps={readingSteps} speed={speed} onFocusStep={focusStep} focusMessageId={focusMessageId} focusRequest={traceFocusRequest} focusTurnId={selectedMessageData.turns?.find(turn => turn.position === turnPosition)?.id}
                   timeline={timeline?.sessionId === selectedMessageData.session.id ? timeline.data.events : []} timelineLoading={timelineLoading} timelineError={timelineError} onRetryTimeline={() => setTimelineRetry(value => value + 1)} onTimelineSelect={event => focusStep({ id: event.id, sessionId: event.sessionId, messageId: event.id })}
                   query={debouncedLocalQuery || debouncedGlobalQuery} project={selectedMessageData.session.project} onMap={onMap} onInspect={inspectTrace} onViewTurn={trackTraceTurn} /> :
                   <div className="session-turns">{turns.map((turn, index) => <TurnTimeline key={turn.id} turn={turn} position={index + 1} mode={mode} focusMessageId={focusMessageId} project={selectedMessageData.session.project}
-                    onMap={onMap} query={debouncedLocalQuery || debouncedGlobalQuery} expanded={expandedTurns.has(turn.id)} onToggle={open => toggleTurn(turn.id, open)} />)}</div>}
+                    onMap={onMap} query={debouncedLocalQuery || debouncedGlobalQuery} speed={speed} expanded={expandedTurns.has(turn.id)} onToggle={open => toggleTurn(turn.id, open)} />)}</div>}
               </>}
             </>}
             {currentMessage && <span className="sr-only" aria-live="polite">{t("sessions.reading.located", { kind: t(kindLabels[currentMessage.kind]) })}</span>}

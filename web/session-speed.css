@@ -1,0 +1,17 @@
+.session-speed-badge { display: inline-flex; flex-shrink: 0; color: var(--accent); background: var(--accent-soft); border-radius: 4px; padding: 3px 6px; font-size: 10px; line-height: 1.3; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.session-speed-badge.is-missing { color: var(--muted); background: var(--surface-alt); }
+.session-speed-summary { display: inline-flex; align-items: center; flex-wrap: wrap; gap: 5px; }
+.session-speed-coverage { color: var(--muted); font-size: 9px; white-space: nowrap; }
+.session-speed-details { margin-top: 8px; color: var(--muted); font-size: 10px; text-align: left; white-space: normal; }
+.session-speed-details > summary { cursor: pointer; }
+.session-speed-details p { margin: 7px 0; line-height: 1.6; }
+.session-speed-details dl { display: grid; gap: 5px; margin: 8px 0; }
+.session-speed-details dl > div { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 12px; }
+.session-speed-details dd { margin: 0; overflow-wrap: anywhere; }
+.session-speed-formula { color: var(--text); font-variant-numeric: tabular-nums; }
+.trace-group .session-speed-summary { overflow: visible; flex-shrink: 0; }
+.trace-group .session-speed-badge { color: var(--accent); font-size: 9px; }
+.trace-row .session-speed-badge { font-size: 9px; padding: 2px 4px; }
+.trace-inspector > header .session-speed-badge { font-size: 9px; }
+.session-profile .session-speed-summary { margin: 8px 0 0; }
+.session-step-table .session-speed-details { min-width: 160px; }
