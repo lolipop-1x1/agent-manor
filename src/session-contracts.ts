@@ -36,6 +36,20 @@ export interface SessionMessage {
 /** 总览只返回定位和显示所需元信息，不加载正文。 */
 export type SessionTimelineEvent = Pick<SessionMessage, "id" | "sessionId" | "ordinal" | "turnId" | "kind" | "occurredAt" | "model" | "callId" | "tool" | "status" | "durationMs" | "contextSource" | "copied"> & { usage?: boolean };
 export interface SessionTimelineResult { version: string; events: SessionTimelineEvent[] }
+export interface SessionRequestBoundary {
+  occurredAt?: string;
+  recordLine: number;
+  messageId?: string;
+}
+export interface SessionRequestTiming {
+  basis: "estimated";
+  method: "codex_event_boundary" | "claude_message_boundary" | "codeflicker_message_boundary";
+  completion: "explicit" | "inferred" | "partial" | "unknown";
+  completionEvidence?: "stop_reason" | "tool_result" | "final_response_snapshot" | "persisted_stream_result" | "request_interrupted";
+  start?: SessionRequestBoundary;
+  end?: SessionRequestBoundary;
+  durationMs?: number;
+}
 export interface SessionUsage {
   id: string;
   messageId?: string;
@@ -48,6 +62,9 @@ export interface SessionUsage {
   reasoningOutputTokens?: number;
   contextTokens?: number;
   occurredAt?: string;
+  /** 模型消息组关联与原始用量记录的 messageId 定位分别保留。 */
+  requestMessageIds?: string[];
+  timing?: SessionRequestTiming;
 }
 export interface SessionSummary {
   id: string;
