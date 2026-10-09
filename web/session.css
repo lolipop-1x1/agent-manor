@@ -92,14 +92,14 @@
 .session-hit small { overflow: hidden; color: var(--muted); text-overflow: ellipsis; white-space: nowrap; font-size: 9px; }
 .session-hit-snippet { overflow: hidden; color: var(--muted); font-size: 10px; line-height: 1.6; text-overflow: ellipsis; white-space: nowrap; }
 .session-turn { margin: 8px 0; border-radius: 6px; background: var(--surface); }
-.session-turn > summary { display: grid; grid-template-columns: 15px auto auto minmax(0, 1fr); align-items: center; gap: 8px; min-height: 34px; padding: 6px 9px; border-radius: 5px; color: var(--text); background: var(--surface-alt); cursor: pointer; list-style: none; }
+.session-turn > summary { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; min-height: 34px; padding: 6px 9px; border-radius: 5px; color: var(--text); background: var(--surface-alt); cursor: pointer; list-style: none; }
 .session-turn > summary::-webkit-details-marker { display: none; }
 .session-turn > summary > svg { transition: transform .15s ease; }
 .session-turn[open] > summary > svg { transform: rotate(0deg); }
 .session-turn:not([open]) > summary > svg { transform: rotate(-90deg); }
 .session-turn > summary span:nth-of-type(1) { font-size: 11px; font-weight: 600; }
 .session-turn > summary small { color: var(--muted); font-size: 9px; white-space: nowrap; }
-.session-turn-summary { overflow: hidden; color: var(--muted); font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+.session-turn-summary { flex: 1; min-width: 0; overflow: hidden; color: var(--muted); font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
 .session-turn-events { position: relative; padding: 3px 8px 9px 20px; }
 .session-message { position: relative; margin: 8px 0; border: 1px solid var(--border); border-radius: 6px; padding: 10px 12px; background: var(--surface); scroll-margin: 90px; }
 .session-message.is-focused { border-color: var(--accent); box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 16%, transparent); }

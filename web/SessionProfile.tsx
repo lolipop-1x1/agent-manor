@@ -8,6 +8,9 @@ import { kindLabels, resourceLabels } from "./SessionMessage";
 import { Notice, Pager, SessionDiagnostic, SessionError } from "./SessionControls";
 import { HelpPopover } from "./HelpPopover";
 import { SessionEvidence } from "./SessionEvidence";
+import { summarizeRequestSpeed } from "../src/session-speed";
+import { AverageSpeedBadge, RequestSpeedBadge, RequestSpeedDetails, SpeedAlgorithmHelp } from "./SessionSpeed";
+import { requestLocation } from "./session-speed-model";
 
 const formatCount = (value: number) => formatNumber(getLanguage(), value);
 const dateLabel = (value?: string) => value ? formatDateTime(getLanguage(), value) : t("sessions.message.timeMissing");
@@ -64,7 +67,7 @@ function UsageChart({ profile, onFocusStep }: { profile: SessionProfile; onFocus
           </g>}
           <rect x="-2" y="0" width="104" height="100" className="session-chart-hit" role="slider" tabIndex={0}
             aria-label={t("sessions.profile.chartSelect")} aria-orientation="horizontal" aria-valuemin={1} aria-valuemax={profile.steps.length} aria-valuenow={currentRequest + 1}
-            aria-valuetext={t(controlStep.messageId ? "sessions.profile.chartValueLinked" : "sessions.profile.chartValue", { number: formatCount(currentRequest + 1), input: displayRecorded(controlStep.inputTokens), output: displayRecorded(controlStep.outputTokens), cache: displayRecorded(controlStep.cachedInputTokens) })}
+            aria-valuetext={t(requestLocation(controlStep) ? "sessions.profile.chartValueLinked" : "sessions.profile.chartValue", { number: formatCount(currentRequest + 1), input: displayRecorded(controlStep.inputTokens), output: displayRecorded(controlStep.outputTokens), cache: displayRecorded(controlStep.cachedInputTokens) })}
             aria-describedby={active ? tooltipId : undefined}
             onPointerMove={event => setHovered(requestAt(event.clientX, event.currentTarget))}
             onPointerDown={event => setHovered(requestAt(event.clientX, event.currentTarget))}
@@ -73,7 +76,7 @@ function UsageChart({ profile, onFocusStep }: { profile: SessionProfile; onFocus
               const index = currentRequest;
               setFocused(index);
               const step = profile.steps[index]!;
-              if (step.messageId) onFocusStep(step);
+              if (requestLocation(step)) onFocusStep(step);
             }}
             onKeyDown={event => {
               if (["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Home", "End"].includes(event.key)) {
@@ -81,7 +84,7 @@ function UsageChart({ profile, onFocusStep }: { profile: SessionProfile; onFocus
                 setHovered(undefined);
                 const direction = event.key === "ArrowRight" || event.key === "ArrowUp" ? 1 : -1;
                 setFocused(event.key === "Home" ? 0 : event.key === "End" ? profile.steps.length - 1 : Math.max(0, Math.min(profile.steps.length - 1, currentRequest + direction)));
-              } else if (controlStep.messageId && ["Enter", " "].includes(event.key)) {
+              } else if (requestLocation(controlStep) && ["Enter", " "].includes(event.key)) {
                 event.preventDefault(); onFocusStep(controlStep);
               }
             }} />
@@ -90,6 +93,7 @@ function UsageChart({ profile, onFocusStep }: { profile: SessionProfile; onFocus
           <strong>{t(active.sessionId !== profile.sessionIds[0] ? "sessions.profile.childRequestNumber" : "sessions.profile.requestNumber", { number: formatCount(selected + 1) })}</strong>
           {active.model && <span className="session-chart-tooltip-model">{active.model}</span>}
           <dl>{usageSeries.filter(([key]) => active[key] !== undefined).map(([key, label]) => <div key={key}><dt><i className={`series-${key}`} />{t(label)}</dt><dd>{displayRecorded(active[key])}{active[key] === undefined ? "" : " Token"}</dd></div>)}</dl>
+          <RequestSpeedBadge usage={active} />
           {active.occurredAt && <small>{dateLabel(active.occurredAt)}</small>}
         </div>}
       </div>
@@ -115,7 +119,9 @@ export function SessionProfilePane({ profile, loading, error, includeChildren, s
   const [stepPage, setStepPage] = useState(1);
   const hasCalls = !!profile && (profile.tools.length > 0 || profile.resources.length > 0);
   const visibleMetrics = profile ? metrics.filter(([key]) => profile.usage[key] !== null) : [];
-  const hasUsage = visibleMetrics.length > 0;
+  const hasUsage = visibleMetrics.length > 0 || !!profile?.steps.length;
+  const speedSummary = useMemo(() => profile ? summarizeRequestSpeed(profile.steps) : undefined, [profile]);
+  const hasSpeed = !!speedSummary?.eligibleRequests;
   const visibleTab = tab === "calls" && !hasCalls || tab === "usage" && !hasUsage ? "overview" : tab;
   const displayedMetrics = visibleMetrics.filter(([key]) => visibleTab === "usage" || key === "inputTokens" || key === "outputTokens");
   useEffect(() => { setStepPage(1); }, [profile?.sessionIds[0], profile?.scope, profile?.version]);
@@ -141,10 +147,10 @@ export function SessionProfilePane({ profile, loading, error, includeChildren, s
         {visibleTab === "overview" && profile.models.length > 0 && <section className="session-profile-section"><div className="session-section-heading"><h3>{t("sessions.profile.models")}</h3><span>{t("sessions.profile.modelCount", { count: profile.models.length })}</span></div>
           {profile.models.map(item => <ProfileBar key={item.model} label={item.model} count={item.count} max={Math.max(...profile.models.map(model => model.count))} unit="records" />)}
         </section>}
-        {visibleTab !== "calls" && displayedMetrics.length > 0 && <>
-          <section className="session-profile-section"><div className="session-section-heading"><h3>{t("sessions.trace.usageRequest")}</h3><div className="section-actions"><span>{t("sessions.profile.requestCount", { count: profile.usage.requests })}</span><HelpPopover label={t("sessions.profile.statsHelp")}>
+        {visibleTab !== "calls" && hasUsage && <>
+          <section className="session-profile-section"><div className="session-section-heading"><h3>{t("sessions.trace.usageRequest")}</h3><div className="section-actions"><span>{t("sessions.profile.requestCount", { count: profile.usage.requests })}</span><HelpPopover iconOnly label={t("sessions.profile.statsHelp")}>
             <p>{t("sessions.profile.cacheHelp")}</p><p>{t("sessions.profile.scopeHelp", { scope: profile.scope === "tree" ? t("sessions.profile.selfTree") : t("sessions.profile.currentSelf") })}</p>
-            <p>{isMessageDescriptorKnown(profile.estimate.methodDescriptor) ? messageText(profile.estimate.methodDescriptor, profile.estimate.method) : profile.estimate.method}</p>
+            <p>{isMessageDescriptorKnown(profile.estimate.methodDescriptor) ? messageText(profile.estimate.methodDescriptor, profile.estimate.method) : profile.estimate.method}</p><SpeedAlgorithmHelp />
           </HelpPopover></div></div>
             <div className="session-usage-grid">{displayedMetrics.map(([key, label]) => {
               const field = key === "peakInputTokens" ? "inputTokens" : key === "peakContextTokens" ? "contextTokens" : key;
@@ -152,6 +158,7 @@ export function SessionProfilePane({ profile, loading, error, includeChildren, s
               return <div key={key}><strong>{key === "peakInputTokens" && peak ? <button className="session-stat-link" aria-label={t("sessions.evidence.peak", { value: formatCount(peak.inputTokens!) })} onClick={() => onFocusStep(peak)}>{displayRecorded(profile.usage[key])}</button> : displayRecorded(profile.usage[key])}</strong><span>{t(label)}</span>
                 {recorded < profile.usage.requests && <small className="session-partial-badge">{t("sessions.usage.recordedRange", { count: recorded, total: profile.usage.requests })}</small>}</div>;
             })}</div>
+            <AverageSpeedBadge summary={speedSummary} />
             {profile.usage.cacheReadRatio !== null && profile.usage.inputRecordedRequests === profile.usage.requests && profile.usage.cacheRecordedRequests === profile.usage.requests && <div className="session-cache-ratio"><div><span>{t("sessions.profile.cacheRatio")}</span><strong>{normalizedRatio(profile.usage.cacheReadRatio)}</strong></div></div>}
             {visibleTab === "overview" && peak && <button className="text-button session-profile-shortcut" onClick={() => onFocusStep(peak)}>{t("sessions.evidence.peak", { value: formatCount(peak.inputTokens!) })}</button>}
           </section>
@@ -170,9 +177,9 @@ export function SessionProfilePane({ profile, loading, error, includeChildren, s
           <p>{t("sessions.profile.chartCoordinatesHelp")}</p><p>{t("sessions.profile.chartLocateHelp")}</p>
         </HelpPopover></div>
           {profile.steps.filter(step => usageSeries.some(([key]) => step[key] !== undefined)).length > 1 && <UsageChart profile={profile} onFocusStep={onFocusStep} />}
-            <div className="session-step-table"><table><thead><tr><th>{t("sessions.profile.request")}</th>{usageSeries.filter(([key]) => profile.steps.some(step => step[key] !== undefined)).map(([key, label]) => <th key={key}>{t(label)}</th>)}</tr></thead><tbody>
-              {profile.steps.slice((stepPage - 1) * 12, stepPage * 12).map((step, index) => <tr key={step.id}><td>{step.messageId ? <button onClick={() => onFocusStep(step)}>#{formatCount((stepPage - 1) * 12 + index + 1)}</button> : <span>#{formatCount((stepPage - 1) * 12 + index + 1)}</span>}</td>
-                {usageSeries.filter(([key]) => profile.steps.some(item => item[key] !== undefined)).map(([key]) => <td key={key}>{step[key] === undefined ? "—" : displayRecorded(step[key])}</td>)}</tr>)}
+            <div className="session-step-table"><table><thead><tr><th>{t("sessions.profile.request")}</th>{usageSeries.filter(([key]) => profile.steps.some(step => step[key] !== undefined)).map(([key, label]) => <th key={key}>{t(label)}</th>)}{hasSpeed && <th>{t("sessions.speed.label")}</th>}</tr></thead><tbody>
+              {profile.steps.slice((stepPage - 1) * 12, stepPage * 12).map((step, index) => <tr key={`${step.sessionId}:${step.id}`}><td>{requestLocation(step) ? <button aria-label={t("sessions.profile.requestNumber", { number: formatCount((stepPage - 1) * 12 + index + 1) })} onClick={() => onFocusStep(step)}>#{formatCount((stepPage - 1) * 12 + index + 1)}</button> : <span>#{formatCount((stepPage - 1) * 12 + index + 1)}</span>}{!hasSpeed && <RequestSpeedDetails usage={step} onLocate={messageId => onFocusStep({ ...step, messageId })} />}</td>
+                {usageSeries.filter(([key]) => profile.steps.some(item => item[key] !== undefined)).map(([key]) => <td key={key}>{step[key] === undefined ? "—" : displayRecorded(step[key])}</td>)}{hasSpeed && <td><RequestSpeedBadge usage={step} compact /><RequestSpeedDetails usage={step} onLocate={messageId => onFocusStep({ ...step, messageId })} /></td>}</tr>)}
             </tbody></table></div>
             {profile.steps.length > 12 && <Pager page={stepPage} pageSize={12} total={profile.steps.length} onChange={setStepPage} label={t("sessions.profile.requestPagination")} showEnds />}
         </section>}

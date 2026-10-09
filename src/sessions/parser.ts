@@ -8,6 +8,7 @@ import { shellResult } from "../history/extraction.js";
 import type { SourceLocation } from "../history/types.js";
 import type { MessageKind, SessionMessage, SessionSink, SessionSourceMeta } from "../session-contracts.js";
 import { object, string, tokens, UsageParser } from "./parser-usage.js";
+import { RequestTimingParser } from "./parser-timing.js";
 import { projectFromToolPaths } from "./parser-project.js";
 import { sessionTitle } from "./title.js";
 import { codexContext } from "./codex-context.js";
@@ -150,13 +151,20 @@ export async function parseSessionSource(source: SourceLocation, sink: SessionSi
     }
   }
   let currentRecordLine = 0;
+  const usageMarkers = new Map<string, SessionMessage>();
   const usage = new UsageParser(id, { message: sink.message, usage: value => {
-    if (source.client !== "codex") { sink.usage(value); return; }
+    if (source.client !== "codex" || value.messageId || !usage.hasRecordedUsage(value.id)) { sink.usage(value); return; }
     // 用量定位到实际保存该用量的记录，不猜测它属于哪段助手正文。
-    const event = message(`usage:${value.id}`, "system", `请求用量（记录值）\n${display(value)}`, currentRecordLine,
+    const previous = usageMarkers.get(value.id);
+    const body = `请求用量（记录值）\n${display(value)}`;
+    const event = previous ? { ...previous, text: body } : message(`usage:${value.id}`, "system", body, currentRecordLine,
       { occurredAt: value.occurredAt, model: value.model, textDescriptor: { key: "sessions.body.usage" } });
+    if (previous) sink.message(event);
+    usageMarkers.set(value.id, event);
     sink.usage({ ...value, messageId: event.id });
   } }, gap);
+  const timing = source.format !== DESKTOP_FORMAT && !ideSnapshot && ["codex", "claude", "codeflicker"].includes(source.client)
+    ? new RequestTimingParser(source.client as "codex" | "claude" | "codeflicker", usage) : undefined;
   const childReference = (tool: string | undefined, result: unknown, nativeAgentId?: string) => {
     const output = object(result);
     const agent = source.client === "codex" && /(?:^|\.)spawn_agent$/.test(tool ?? "") ? string(output.agent_id)
@@ -185,6 +193,8 @@ export async function parseSessionSource(source: SourceLocation, sink: SessionSi
       if (firstUserTitle && meta.titleOrigin === "fallback") { meta.title = firstUserTitle; meta.titleOrigin = "first_user"; }
     }
     sink.message(value);
+    timing?.message(value);
+    if (kind === "compression" && !value.copied) usage.compression();
     if (kind === "assistant") candidate = value;
     if (kind === "tool_call") candidate = undefined;
     return value;
@@ -203,13 +213,14 @@ export async function parseSessionSource(source: SourceLocation, sink: SessionSi
     const value = message(key, "tool_call", display(input), row, { ...extra, callId, tool, filePaths: paths,
       resource: detectedResource, status: "unknown" });
     const previousCompletion = completed.get(value.id);
-    if (previousCompletion) { sink.message({ ...value, ...previousCompletion }); return; }
+    if (previousCompletion) { sink.message({ ...value, ...previousCompletion }); return value; }
     const previous = pending.get(callId);
     if (previous?.message.id === value.id) { pendingBytes -= previous.bytes; pending.delete(callId); }
-    else if (previous) { gap("ambiguous", "同一调用身份存在多个未完成请求，结果未强行配对", { key: "diagnostics.sessions.parser.m004" }); pendingBytes -= previous.bytes; pending.delete(callId); return; }
+    else if (previous) { gap("ambiguous", "同一调用身份存在多个未完成请求，结果未强行配对", { key: "diagnostics.sessions.parser.m004" }); pendingBytes -= previous.bytes; pending.delete(callId); return value; }
     const bytes = Buffer.byteLength(value.text);
-    if (pendingBytes + bytes > MAX_PENDING_BYTES || pending.size >= 1024) { gap("budget_exceeded", "未完成工具请求超过有界配对缓存，调用保持未知状态", { key: "diagnostics.sessions.parser.m005" }); return; }
+    if (pendingBytes + bytes > MAX_PENDING_BYTES || pending.size >= 1024) { gap("budget_exceeded", "未完成工具请求超过有界配对缓存，调用保持未知状态", { key: "diagnostics.sessions.parser.m005" }); return value; }
     pending.set(callId, { message: value, bytes, input }); pendingBytes += bytes;
+    return value;
   };
   const toolResult = (key: string, callId: string, body: string, row: number, status: SessionMessage["status"], extra: Partial<SessionMessage>, nativeResult?: unknown) => {
     const repeated = seen.has(key);
@@ -262,6 +273,9 @@ export async function parseSessionSource(source: SourceLocation, sink: SessionSi
     const copied = copyBeforeOrdinal !== undefined && ordinal !== undefined && ordinal < copyBeforeOrdinal ? true : undefined;
     const extra: Partial<SessionMessage> = { occurredAt, copied,
       ...(ideSnapshot && record.textDescriptor ? { textDescriptor: record.textDescriptor as MessageDescriptor } : {}) };
+    if (!copied && source.client !== "codex" && (record.interruptedMessageId || record.isApiErrorMessage === true)) {
+      timing?.interrupt(string(record.interruptedMessageId));
+    }
     const title = string(record.aiTitle) ?? string(record.title) ?? (record.type === "session_meta" ? string(payload.title) : undefined);
     if (title && !inheritedHeader) { meta.title = title; meta.titleOrigin = "recorded"; }
     if (source.format === DESKTOP_FORMAT || ideSnapshot) {
@@ -337,9 +351,17 @@ export async function parseSessionSource(source: SourceLocation, sink: SessionSi
         if (instructions) message("base-instructions", "system", instructions, line, extra);
         continue;
       }
-      if (record.type === "turn_context") { currentModel = string(payload.model) ?? currentModel; if (currentModel) models.add(currentModel); continue; }
+      if (record.type === "turn_context") {
+        currentModel = string(payload.model) ?? currentModel; if (currentModel) models.add(currentModel);
+        if (!copied) timing?.context({ occurredAt, recordLine: line });
+        continue;
+      }
       if (record.type === "token_usage_record") {
-        if (!copied) usage.codex(payload.usage, payload.thread_token_usage, string(payload.response_id), { turnId, model: currentModel, occurredAt }); continue;
+        if (!copied) {
+          const usageId = usage.codex(payload.usage, payload.thread_token_usage, string(payload.response_id), { turnId, model: currentModel, occurredAt });
+          timing?.codexUsage(usageId, { occurredAt, recordLine: line, messageId: usageId ? usageMarkers.get(usageId)?.id : undefined });
+        }
+        continue;
       }
       if (["compacted", "compaction"].includes(string(record.type) ?? "")) {
         message(`compression:${line}`, "compression", text(payload.message ?? payload.summary), line, extra); continue;
@@ -347,7 +369,11 @@ export async function parseSessionSource(source: SourceLocation, sink: SessionSi
       if (record.type === "event_msg") {
         if (payload.type === "token_count") {
           const info = object(payload.info);
-          if (!copied) usage.codex({ ...object(info.last_token_usage), context_tokens: object(info.last_token_usage).context_tokens ?? object(info.last_token_usage).total_tokens }, info.total_token_usage, undefined, { turnId, model: currentModel, occurredAt });
+          if (!copied) {
+            const usageId = usage.codex({ ...object(info.last_token_usage), context_tokens: object(info.last_token_usage).context_tokens ?? object(info.last_token_usage).total_tokens },
+              info.total_token_usage, undefined, { turnId, model: currentModel, occurredAt });
+            timing?.codexUsage(usageId, { occurredAt, recordLine: line, messageId: usageId ? usageMarkers.get(usageId)?.id : undefined });
+          }
         } else if (payload.type === "agent_reasoning") {
           const key = `event:${string(payload.id) ?? line}`;
           const body = text(payload.message ?? payload.text);
@@ -359,6 +385,7 @@ export async function parseSessionSource(source: SourceLocation, sink: SessionSi
           const kind = payload.type === "user_message" ? context ? "context" : "user" : "assistant";
           message(`event:${string(payload.id) ?? line}`, kind, body, line, { ...extra, ...context, model: kind === "user" ? undefined : currentModel }, kind === "user");
         } else if (["task_aborted", "turn_aborted", "error"].includes(string(payload.type) ?? "")) {
+          if (!copied) timing?.interrupt();
           interrupted = true; message(`event:${line}`, "system", display(payload), line, extra);
         } else if (payload.type === "item_completed") {
           const item = object(payload.item);
@@ -447,6 +474,11 @@ export async function parseSessionSource(source: SourceLocation, sink: SessionSi
     const hasResult = blocks.some(value => ["tool_result", "tool-result"].includes(string(object(value).type) ?? ""));
     const injected = source.client === "codeflicker" && role === "user" && (record.hidden === true || record.isMeta === true);
     const human = role === "user" && !hasResult && record.isMeta !== true && !injected;
+    const requestId = source.client === "codeflicker" ? string(object(object(record.metadata).requestTokenBaseline).requestId) ?? nativeId : string(native.id) ?? nativeId;
+    const identified = Boolean(recordedModel) && (source.client === "claude" ? Boolean(string(native.id))
+      : Boolean(string(object(object(record.metadata).requestTokenBaseline).requestId)));
+    if (role === "assistant" && native.model === "<synthetic>") timing?.ignoreNative();
+    if (role === "assistant" && !copied && native.model !== "<synthetic>") timing?.nativeRequest(requestId, nativeId, identified);
     for (const [index, value] of blocks.entries()) {
       const block = object(value);
       const key = `native:${nativeId}:${index}`;
@@ -460,7 +492,7 @@ export async function parseSessionSource(source: SourceLocation, sink: SessionSi
         if (type === "redacted_thinking") gap("unsupported_format", "思考正文已由客户端隐藏，未补造内容", { key: "diagnostics.sessions.parser.m015" });
       } else if (type === "tool_use" && role === "assistant") {
         const callId = string(block.id) ?? key;
-        toolCall(key, string(block.name) ?? "unknown", block.input, callId, line, extra);
+        emitted = toolCall(key, string(block.name) ?? "unknown", block.input, callId, line, extra);
       } else if (type === "tool_result" || type === "tool-result") {
         const result = object(type === "tool-result" ? block.result : blocks.filter(value => object(value).type === "tool_result").length === 1 ? record.toolUseResult : undefined);
         const body = type === "tool-result" ? text(result.llmContent) : text(block.content);
@@ -479,11 +511,18 @@ export async function parseSessionSource(source: SourceLocation, sink: SessionSi
     }
     if (!blocks.length && typeof record.text === "string") firstMessage = message(`native:${nativeId}:text`, role === "assistant" ? "assistant" : human ? "user" : "system", record.text, line, extra, human);
     if (role === "assistant") {
-      const requestId = source.client === "codeflicker" ? string(object(object(record.metadata).requestTokenBaseline).requestId) ?? nativeId : string(native.id) ?? nativeId;
-      if (!copied) usage.native(source.client === "claude" ? "claude" : "codeflicker", native.usage, requestId, { messageId: firstMessage?.id, turnId, model: recordedModel, occurredAt });
+      if (!copied) {
+        const partial = record.isApiErrorMessage === true || record.isInterrupted === true || Boolean(record.interruptedMessageId);
+        const persisted = source.client === "codeflicker" && record.type === "message" && Boolean(string(record.uuid)) && identified
+          && Object.keys(object(native.usage)).length > 0 && !partial;
+        const usageId = usage.native(source.client === "claude" ? "claude" : "codeflicker", native.usage, requestId,
+          { messageId: firstMessage?.id, turnId, model: recordedModel, occurredAt }, identified);
+        timing?.nativeUsage(usageId, string(native.stop_reason), persisted, partial, { occurredAt, recordLine: line, messageId: firstMessage?.id });
+      }
     }
     if (record.interruptedMessageId || record.isApiErrorMessage === true) interrupted = true;
   }
+  timing?.finish();
   finishTurn();
   if (ideSnapshot) gap("unsupported_format", "IDE 主历史未保存逐请求 Token 用量，累计缓存不能重建请求趋势；未补造记录值", { key: "diagnostics.sessions.parser.m017" });
   if (pending.size) gap("unpaired_call", "历史结束时仍有工具调用未记录完成结果", { key: "diagnostics.sessions.parser.m018" });

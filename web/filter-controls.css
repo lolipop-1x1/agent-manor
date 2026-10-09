@@ -37,6 +37,7 @@
 .help-trigger { display: inline-flex; flex-shrink: 0; align-items: center; gap: 4px; padding: 4px 0; border: 0; background: transparent; color: var(--muted); font-size: 10px; white-space: nowrap; }
 .help-trigger:hover, .help-trigger[data-state="open"] { color: var(--accent); }
 .help-trigger:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; border-radius: 3px; }
+.help-trigger.is-icon-only { justify-content: center; width: 28px; height: 28px; padding: 4px; border-radius: 4px; }
 .help-popover { width: min(320px, calc(100vw - 24px)); min-width: 0; max-height: min(420px, var(--radix-popover-content-available-height)); padding: 12px; overflow: auto; overscroll-behavior: contain; }
 .help-popover header { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 8px; }
 .help-popover header strong { font-size: 13px; }

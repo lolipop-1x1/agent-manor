@@ -66,7 +66,7 @@ try {
     await page.getByRole("button", { name: /^长会话验收 Codex/ }).click();
     await page.getByRole("heading", { name: "长会话验收", exact: true }).waitFor();
     ensure(await button("起始日期").isVisible() && await page.getByRole("checkbox", { name: "显示子 Agent 会话", exact: true }).isVisible(), "筛选仍被折叠");
-    ensure(await button("全部记录").isVisible() && await button("执行过程").isVisible() && await button("导出当前分支对话").isVisible(), "查看功能仍在更多菜单中");
+    ensure(await button("全部记录").isVisible() && await button("执行轨迹").isVisible() && await button("导出当前分支对话").isVisible(), "查看功能仍在更多菜单中");
     await page.locator(".session-profile .session-bar-row").filter({ hasText: "demo-model" }).waitFor();
     await page.locator(".session-profile .session-child").first().waitFor();
     ensure(await page.getByRole("heading", { name: "会话内容", exact: true }).isVisible(), "原有画像概览未恢复");
@@ -80,7 +80,7 @@ try {
     await page.screenshot({ path: ARTIFACTS + "/right-collapsed.png" });
     await button("展开会话画像").click(); await button("收起会话画像").waitFor();
     await button("全部记录").click(); await page.locator('.session-mode-tabs button[aria-pressed="true"]').filter({ hasText: "全部记录" }).waitFor();
-    await button("执行过程").click(); await page.locator(".trace-ledger").waitFor();
+    await button("执行轨迹").click(); await page.locator(".trace-ledger").waitFor();
     await button("对话").click(); await button("复制代码").waitFor();
     await button("复制代码").click();
     await page.locator(".session-code-block [role='status']").filter({ hasText: "已复制" }).waitFor();
@@ -129,6 +129,8 @@ try {
     await page.locator(".trace-inspector").getByText("合成压缩摘要", { exact: true }).waitFor();
     await button("最大单次输入 · 210 Token").click(); await page.locator(".trace-inspector .trace-usage").getByText("210", { exact: true }).waitFor();
     await page.getByRole("button", { name: /^失败调用定位样本 CodeFlicker CLI/ }).click();
+    await page.getByRole("heading", { name: "失败调用定位样本", exact: true }).waitFor();
+    await page.waitForLoadState("networkidle");
     const failureReadingBounds = await page.locator(".session-message-scroll").boundingBox();
     await button("12 次失败调用").click();
     const failureList = page.getByRole("dialog", { name: "失败调用", exact: true });

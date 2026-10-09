@@ -1,3 +1,4 @@
+import { RequestSpeedBadge } from "./SessionSpeed";
 import { getLanguage, t, useI18n } from "./i18n";
 import { formatDateTime, formatNumber } from "../src/i18n";
 import { Children, cloneElement, isValidElement, memo, useEffect, useMemo, useState, type ReactNode } from "react";
@@ -7,7 +8,7 @@ import { Highlight } from "./SessionSearchGroups";
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { Clock, MapTrifold } from "@phosphor-icons/react";
-import type { MessageKind, SessionMessage } from "../src/session-contracts";
+import type { MessageKind, SessionMessage, SessionUsage } from "../src/session-contracts";
 import { displayRecorded, sessionResourceName, sessionMessageText } from "./session-model";
 
 export const kindLabels: Record<MessageKind, string> = {
@@ -60,8 +61,8 @@ export function MessageBody({ message, focused, project, onMap, flat = false, qu
   </div>;
 }
 
-export const MessageCard = memo(function MessageCard({ message, mode, focused, project, onMap, query }: {
-  message: SessionMessage; mode: "brief" | "full" | "trace"; focused: boolean; query?: string; project?: string; onMap: (path?: string, project?: string) => void;
+export const MessageCard = memo(function MessageCard({ message, mode, focused, project, onMap, query, usage }: {
+  message: SessionMessage; mode: "brief" | "full" | "trace"; focused: boolean; query?: string; project?: string; onMap: (path?: string, project?: string) => void; usage?: SessionUsage;
 }) {
   useI18n();
   const isTool = message.kind === "tool_call" || message.kind === "tool_result";
@@ -70,6 +71,7 @@ export const MessageCard = memo(function MessageCard({ message, mode, focused, p
     <header className="session-message-head">
       {isTool && <span className={`session-kind kind-${message.kind}`}>{t(kindLabels[message.kind])}</span>}
       <strong>{isTool ? message.tool ?? t("sessions.message.tool") : message.kind === "assistant" ? message.model ?? t("sessions.message.aiReply") : t(kindLabels[message.kind])}</strong>
+      {usage && <RequestSpeedBadge usage={usage} />}
       {message.unconfirmed && <span className="session-evidence-label">{t("sessions.message.unconfirmed")}</span>}
       {message.final && mode !== "brief" && <span className={`session-final is-${message.final}`}>{message.final === "explicit" ? t("sessions.message.finalExplicit") : t("sessions.message.finalInferred")}</span>}
       {message.currentBranch === false && <span className="session-evidence-label">{t("sessions.message.otherBranch")}</span>}
