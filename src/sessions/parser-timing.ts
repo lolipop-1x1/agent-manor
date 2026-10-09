@@ -164,7 +164,7 @@ export class RequestTimingParser {
   finish(): void {
     for (const group of this.groups.values()) {
       let id = group.usageId;
-      if (!id && group.identified) id = this.usage.missing(group.key, { messageId: group.first.id, turnId: group.first.turnId,
+      if (!id && group.identified) id = this.usage.missing(group.key, { turnId: group.first.turnId,
         model: group.first.model, occurredAt: group.timing.end?.occurredAt });
       if (!id) continue;
       const start = group.timing.start?.occurredAt;

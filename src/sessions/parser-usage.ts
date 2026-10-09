@@ -11,6 +11,7 @@ const digest = (value: unknown) => createHash("sha256").update(JSON.stringify(va
 export class UsageParser {
   private readonly requests = new Map<string, SessionUsage>();
   private readonly requestKeys = new Map<string, string>();
+  private readonly recordedRequests = new Set<string>();
   private checkpoint?: string;
   private checkpointId?: string;
   private checkpointRequest?: string;
@@ -38,8 +39,11 @@ export class UsageParser {
     if (key && value) this.publish(key, { ...value, timing, requestMessageIds });
   }
 
+  hasRecordedUsage(id: string): boolean { return this.recordedRequests.has(id); }
+
   missing(requestId: string, context: { messageId?: string; turnId: string; model?: string; occurredAt?: string }): string {
-    return this.publish(requestId, { id: `${this.sessionId}:usage:${digest(requestId)}`, ...context });
+    // 请求存在不代表原始用量记录存在，模型关联由 requestMessageIds 独立承载。
+    return this.publish(requestId, { id: `${this.sessionId}:usage:${digest(requestId)}`, ...context, messageId: undefined });
   }
 
   compression(): void { this.afterCompression = true; }
@@ -56,6 +60,7 @@ export class UsageParser {
     const value: SessionUsage = { id: `${this.sessionId}:usage:${digest(requestId)}`, ...context, inputTokens: total,
       outputTokens: tokens(usage.output_tokens), cachedInputTokens: read, cacheWriteTokens: write,
       reasoningOutputTokens: tokens(usage.reasoning_output_tokens), contextTokens: tokens(usage.context_tokens) };
+    this.recordedRequests.add(value.id);
     if (read !== undefined && total !== undefined && read > total) {
       value.cachedInputTokens = undefined;
       this.gap("ambiguous", "缓存读取超过总输入，未计算该请求的缓存比例", { key: "diagnostics.sessions.parserUsage.m002" });
@@ -98,6 +103,7 @@ export class UsageParser {
     const value: SessionUsage = { id, ...context, inputTokens: input, outputTokens: tokens(usage.output_tokens),
       cachedInputTokens: tokens(usage.cached_input_tokens), cacheWriteTokens: tokens(usage.cache_write_input_tokens),
       reasoningOutputTokens: tokens(usage.reasoning_output_tokens), contextTokens: tokens(usage.context_tokens) };
+    this.recordedRequests.add(id);
     if (input !== undefined && value.cachedInputTokens !== undefined && value.cachedInputTokens > input) {
       value.cachedInputTokens = undefined;
       this.gap("ambiguous", "缓存读取超过总输入，未计算该请求的缓存比例", { key: "diagnostics.sessions.parserUsage.m002" });
