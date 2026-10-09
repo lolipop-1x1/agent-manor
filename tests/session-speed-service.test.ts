@@ -8,7 +8,7 @@ import { apiRequest, delay } from "../src/service/runtime.js";
 import type { SessionIndexStatus, SessionListResult, SessionMessageResult, SessionProfile } from "../src/session-contracts.js";
 import { requestSpeed, summarizeRequestSpeed } from "../src/session-speed.js";
 import { SessionStore } from "../src/sessions/store.js";
-import { sessionSpeedFixture, indexSpeedBranchFixture } from "../scripts/session-speed-fixture.mjs";
+import { sessionSpeedFixture, indexSpeedBranchFixture, indexLegacySpeedFixture } from "../scripts/session-speed-fixture.mjs";
 import { encodeSession } from "../scripts/session-fixture.mjs";
 import { isolatedHistoryRoots } from "./helpers/history-roots.js";
 
@@ -40,6 +40,7 @@ test("合成原生历史经发现、Worker、索引与 HTTP 保留三来源请�
       const profile = await apiRequest<SessionProfile>(service.instance, `/sessions/${session.id}/profile`);
       assert.equal(profile.version, list.version);
       assert.equal(profile.usage.requests, source.expected.requests, `${source.client} 原生请求数`);
+      assert.deepEqual(profile.outputSpeed, source.expected, `${source.client} Profile 公开汇总字段`);
       assert.deepEqual(summarizeRequestSpeed(profile.steps), source.expected, `${source.client} 合格子集、原始输出与耗时`);
       if (["claude", "codeflicker", "codex"].includes(source.client) && source.id.startsWith("speed-") && source.name === "speed.jsonl") {
         assert.deepEqual(profile.steps.map(step => requestSpeed(step).tokensPerSecond ?? requestSpeed(step).reason),
@@ -80,6 +81,7 @@ test("合成原生历史经发现、Worker、索引与 HTTP 保留三来源请�
     const tree = await apiRequest<SessionProfile>(service.instance, `/sessions/${parent.id}/profile?includeChildren=true`);
     assert.equal(tree.scope, "tree"); assert.equal(tree.sessionIds.length, 2);
     assert.deepEqual(summarizeRequestSpeed(tree.steps), fixture.treeExpected, "父子范围使用同一批可计算请求");
+    assert.deepEqual(tree.outputSpeed, fixture.treeExpected);
     assert.equal(tree.children[0]?.clientSessionId, "speed-child");
   } finally {
     await service.close();
@@ -92,7 +94,8 @@ test("明确标注的直接索引分支样例保留完整请求关联，阅读�
   const store = new SessionStore(join(directory, "index.sqlite"));
   try {
     const source = indexSpeedBranchFixture(store, join(directory, "branch-ui.jsonl"));
-    store.publish(store.createJob().id, [source], []);
+    const legacy = indexLegacySpeedFixture(store, join(directory, "legacy-ui.jsonl"));
+    store.publish(store.createJob().id, [source, legacy], []);
     const profile = store.profile(source.id);
     assert.equal(profile.steps.length, 30);
     assert.equal(summarizeRequestSpeed(profile.steps).tokensPerSecond, 12000 / 450);
@@ -102,9 +105,14 @@ test("明确标注的直接索引分支样例保留完整请求关联，阅读�
       const requests = profile.steps.filter(step => step.requestMessageIds?.some(id => ids.has(id)));
       assert.equal(requests.length, 10);
       assert.equal(summarizeRequestSpeed(requests).tokensPerSecond, expected, "显式消息身份决定分支覆盖范围");
+      assert.ok(requests.every(request => request.branchIds?.includes(branch) && request.currentBranch === (branch === "branch-b")), "Profile 从明确模型消息关联投影分支成员");
       assert.ok(page.messages.filter(message => message.kind === "assistant").every(message => message.branchIds?.includes(branch)));
     }
     assert.equal(store.profile(source.id).usage.requests, 30, "阅读选项不修改完整请求用量");
+    const old = store.profile(legacy.id);
+    assert.equal(old.usage.outputTokens, 400);
+    assert.equal(old.steps[0]?.timing, undefined, "旧 JSON 不因查询补造计时字段");
+    assert.deepEqual(old.outputSpeed, { requests: 1, eligibleRequests: 0, outputTokens: null, durationMs: null, tokensPerSecond: null });
   } finally {
     store.close();
     await rm(directory, { recursive: true, force: true });

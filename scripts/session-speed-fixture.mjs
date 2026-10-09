@@ -130,3 +130,18 @@ export function indexSpeedBranchFixture(store, path) {
       { id: "branch-a", label: "合成旧分支", current: false }, { id: "branch-b", label: "当前分支", labelDescriptor: { key: "sessions.branch.current" }, current: true } ] });
   return { id, path, revision: pending.revision, fingerprint: "synthetic-ui-branch" };
 }
+
+/** 模拟升级前只保存用量的旧索引；不为缺失的新字段补造数据。 */
+export function indexLegacySpeedFixture(store, path) {
+  const id = "codex:synthetic-speed-legacy";
+  const pending = store.createRevision(path, "synthetic-ui-legacy");
+  const turnId = `${id}:turn:1`;
+  const prompt = { id: `${id}:user`, sessionId: id, turnId, ordinal: 1, recordLine: 1, kind: "user", text: "旧索引合成问题", occurredAt: at(8000) };
+  const answer = { id: `${id}:answer`, sessionId: id, turnId, ordinal: 2, recordLine: 2, kind: "assistant", text: "旧索引合成回答", occurredAt: at(8010), final: "explicit", model: "fixture-model" };
+  pending.sink.message(prompt); pending.sink.message(answer);
+  pending.sink.usage({ id: `${id}:request`, messageId: answer.id, turnId, model: "fixture-model", inputTokens: 100, outputTokens: 400, occurredAt: answer.occurredAt });
+  pending.flush();
+  store.finishRevision(pending.revision, { id, client: "codex", clientSessionId: "synthetic-speed-legacy", title: "旧索引速度验收", titleOrigin: "recorded", path,
+    sourceId: "synthetic-ui-legacy", messageCount: 2, turnCount: 1, models: ["fixture-model"], gaps: [] });
+  return { id, path, revision: pending.revision, fingerprint: "synthetic-ui-legacy" };
+}

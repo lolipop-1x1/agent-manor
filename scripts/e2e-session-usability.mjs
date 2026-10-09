@@ -129,6 +129,8 @@ try {
     await page.locator(".trace-inspector").getByText("合成压缩摘要", { exact: true }).waitFor();
     await button("最大单次输入 · 210 Token").click(); await page.locator(".trace-inspector .trace-usage").getByText("210", { exact: true }).waitFor();
     await page.getByRole("button", { name: /^失败调用定位样本 CodeFlicker CLI/ }).click();
+    await page.getByRole("heading", { name: "失败调用定位样本", exact: true }).waitFor();
+    await page.waitForLoadState("networkidle");
     const failureReadingBounds = await page.locator(".session-message-scroll").boundingBox();
     await button("12 次失败调用").click();
     const failureList = page.getByRole("dialog", { name: "失败调用", exact: true });
