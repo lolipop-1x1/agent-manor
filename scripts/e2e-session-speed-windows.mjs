@@ -71,26 +71,7 @@ function indexMixedFixture(store, path) {
   return { id, path, revision: pending.revision, fingerprint: "synthetic-mixed-windows" };
 }
 
-async function activateDisclosure(page, locator, name) {
-  const client = await page.context().newCDPSession(page);
-  let objectId;
-  try {
-    await locator.evaluate(element => { globalThis.__speedWindowsDisclosure = element; });
-    const target = await client.send("Runtime.evaluate", { expression: "globalThis.__speedWindowsDisclosure" });
-    objectId = target.result.objectId;
-    const tree = await client.send("Accessibility.getPartialAXTree", { objectId, fetchRelatives: false });
-    const node = tree.nodes[0];
-    if (node?.ignored || node?.role?.value !== "DisclosureTriangle" || node?.name?.value !== name) throw new Error("折叠控件角色或可访问名称不符");
-  } finally {
-    await client.send("Runtime.evaluate", { expression: "delete globalThis.__speedWindowsDisclosure" });
-    if (objectId) await client.send("Runtime.releaseObject", { objectId });
-    await client.detach();
-  }
-  await locator.click();
-}
-
 const browser = async args => {
-  if (args[0] === "run-code") args[1] = args[1].replaceAll("DISCLOSURE_CONTROL", activateDisclosure.toString());
   const { stdout } = await run("playwright-cli", [`-s=${browserName}`, ...args], { cwd: directory, env: { ...process.env, TMPDIR: "/tmp" }, timeout: 60_000, maxBuffer: 4 * 1024 * 1024 });
   if (stdout.includes("### Error")) throw new Error(stdout);
   return stdout;
@@ -150,7 +131,8 @@ try {
       const checks = [], errors = [];
       const ensure = (value, message) => { if (!value) throw new Error(message); checks.push(message); };
       const button = name => page.getByRole("button", { name, exact: true });
-      const disclosure = DISCLOSURE_CONTROL;
+      const details = page.getByRole("dialog", { name: /^(请求速度详情|Request speed details)$/ });
+      const openDetails = async target => { await target.locator(".session-speed-badge").click(); await details.waitFor(); };
       page.on("pageerror", error => errors.push(error.message));
       await page.setViewportSize({ width: 1440, height: 900 });
       const profile = page.locator(".session-profile");
@@ -179,22 +161,23 @@ try {
         await button("展开全部").click(); await page.locator(".trace-row.kind-assistant").first().getByRole("button", { name: /^查看记录 \d+：AI$/ }).click();
         const inspector = page.locator(".trace-inspector");
         ensure(await inspector.locator("header .session-speed-badge").innerText() === request, `${fixture.client} 轨迹详情显示请求所属区间`);
-        await disclosure(page, inspector.getByText("请求速度依据", { exact: true }), "请求速度依据");
-        ensure(await inspector.locator(".session-speed-formula").innerText() === formula, `${fixture.client} 单请求算式使用正确等号或近似号`);
-        const details = await inspector.locator(".session-speed-details").innerText();
-        ensure(details.includes(recorded ? "首个流输出片段至结束，不包含首字等待" : "请求或历史起始边界至结束，包含首字等待"), `${fixture.client} 详情解释统计区间`);
-        if (recorded) ensure(details.includes("客户端记录计时，不代表服务端逐 Token 计时"), "DSH 说明客户端记录计时的边界");
+        await openDetails(inspector.locator("header"));
+        ensure(await details.locator(".session-speed-formula").innerText() === formula, `${fixture.client} 单请求算式使用正确等号或近似号`);
+        const detailsText = await details.locator(".session-speed-details").innerText();
+        ensure(detailsText.includes(recorded ? "首个流输出片段至结束，不包含首字等待" : "请求或历史起始边界至结束，包含首字等待"), `${fixture.client} 详情解释统计区间`);
+        if (recorded) ensure(detailsText.includes("客户端记录计时，不代表服务端逐 Token 计时"), "DSH 说明客户端记录计时的边界");
+        await details.press("Escape");
         await page.getByRole("tab", { name: "用量", exact: true }).click();
-        await profile.locator(".session-speed-summary .session-speed-badge").filter({ hasText: average }).waitFor();
-        ensure(await profile.locator(".session-speed-summary .session-speed-badge").count() === (mixed ? 2 : 1), `${fixture.client} 右侧用量平均不混合区间`);
+        await profile.locator(".session-speed-metric strong").filter({ hasText: recorded ? "60 tok/s" : "≈ 40 tok/s" }).waitFor();
+        ensure(await profile.locator(".session-speed-metric strong").count() === (mixed ? 2 : 1), `${fixture.client} 右侧用量平均不混合区间`);
         const rows = profile.locator(".session-step-table tbody tr");
         ensure(await rows.count() === (mixed ? 2 : 1), `${fixture.client} 请求明细保持原生请求数量`);
-        await disclosure(page, rows.first().getByText("请求速度依据", { exact: true }), "请求速度依据");
-        ensure(await rows.first().locator(".session-speed-formula").innerText() === formula, `${fixture.client} 右侧公式与轨迹详情一致`);
+        await openDetails(rows.first());
+        ensure(await details.locator(".session-speed-formula").innerText() === formula, `${fixture.client} 右侧公式与轨迹详情一致`); await details.press("Escape");
         if (mixed) {
-          await disclosure(page, rows.nth(1).getByText("请求速度依据", { exact: true }), "请求速度依据");
-          ensure(await rows.nth(1).locator(".session-speed-formula").innerText() === "600 Token ÷ 10.0 秒 = 60 tok/s", "混合用量独立保留记录计时算式");
-          ensure(!(await profile.locator(".session-speed-summary").first().innerText()).includes("50 tok/s"), "右侧没有混合单一平均");
+          await openDetails(rows.nth(1));
+          ensure(await details.locator(".session-speed-formula").innerText() === "600 Token ÷ 10.0 秒 = 60 tok/s", "混合用量独立保留记录计时算式"); await details.press("Escape");
+          ensure(!(await profile.locator(".session-speed-metric").first().innerText()).includes("50 tok/s"), "右侧没有混合单一平均");
         }
         await button("统计口径").click(); const help = page.getByRole("dialog", { name: "统计口径", exact: true }); await help.waitFor();
         const text = await help.innerText(); ensure(text.includes("响应区间和输出阶段分别汇总") && text.includes("客户端记录计时与历史估算分别标注"), `${fixture.client} 统一帮助解释区间和计时来源`);
@@ -205,8 +188,11 @@ try {
       const saved = page.waitForResponse(response => response.url().endsWith("/api/v1/preferences") && response.request().method() === "PUT");
       await button("显示语言").click(); await page.getByRole("menuitemradio", { name: "English", exact: true }).click(); await saved;
       await page.waitForLoadState("networkidle");
-      ensure((await profile.locator(".session-speed-summary").first().innerText()).includes("Average ≈ 40 tok/s") && (await profile.locator(".session-speed-summary").first().innerText()).includes("Output phase average 60 tok/s"), "英文保留两个分组平均");
-      ensure(await profile.locator(".session-speed-formula").first().innerText() === "400 tokens ÷ 10.0 seconds ≈ 40 tok/s" && await profile.locator(".session-speed-formula").nth(1).innerText() === "600 tokens ÷ 10.0 seconds = 60 tok/s", "英文展开算式分别使用近似号与等号");
+      ensure((await profile.locator(".session-speed-metric").allTextContents()).join(" ").includes("≈ 40 tok/sAverage response speed") && (await profile.locator(".session-speed-metric").allTextContents()).join(" ").includes("60 tok/sAverage generation speed"), "英文保留两个分组平均");
+      for (const [index, formula] of [[0, "400 tokens ÷ 10.0 seconds ≈ 40 tok/s"], [1, "600 tokens ÷ 10.0 seconds = 60 tok/s"]]) {
+        await openDetails(profile.locator(".session-step-table tbody tr").nth(index));
+        ensure(await details.locator(".session-speed-formula").innerText() === formula, "英文请求算式分别使用近似号与等号"); await details.press("Escape");
+      }
       await button("Statistics methodology").click(); const englishHelp = page.getByRole("dialog", { name: "Statistics methodology", exact: true }); await englishHelp.waitFor();
       ensure((await englishHelp.innerText()).includes("Response and output-phase intervals are averaged separately"), "英文算法帮助明确分组汇总"); await englishHelp.press("Escape");
       await page.screenshot({ path: ARTIFACTS + "/mixed-windows-english-desktop.png" });
@@ -221,11 +207,12 @@ try {
         ensure(await mobile.evaluate(() => document.documentElement.scrollWidth <= innerWidth), "英文390px执行轨迹页面没有横向溢出");
         await mobile.getByRole("button", { name: "Session statistics", exact: true }).tap(); await mobile.getByRole("tab", { name: "Usage", exact: true }).tap();
         const mobileProfile = mobile.locator(".session-profile");
-        ensure((await mobileProfile.locator(".session-speed-summary").first().innerText()).includes("Average ≈ 40 tok/s") && (await mobileProfile.locator(".session-speed-summary").first().innerText()).includes("Output phase average 60 tok/s"), "英文窄屏用量保持两个平均");
-        await disclosure(mobile, mobileProfile.locator("tbody tr").nth(1).getByText("Request speed details", { exact: true }), "Request speed details");
-        ensure((await mobileProfile.locator(".session-speed-details[open]").innerText()).includes("Measured by the client; does not represent server-side per-token timing"), "英文窄屏详情显示客户端计时说明");
+        ensure((await mobileProfile.locator(".session-speed-metric").allTextContents()).join(" ").includes("≈ 40 tok/sAverage response speed") && (await mobileProfile.locator(".session-speed-metric").allTextContents()).join(" ").includes("60 tok/sAverage generation speed"), "英文窄屏用量保持两个平均");
+        await mobileProfile.locator("tbody tr").nth(1).locator(".session-speed-badge").tap();
+        const mobileDetails = mobile.getByRole("dialog", { name: "Request speed details", exact: true }); await mobileDetails.waitFor();
+        ensure((await mobileDetails.locator(".session-speed-details").innerText()).includes("Measured by the client; does not represent server-side per-token timing"), "英文窄屏详情显示客户端计时说明");
         ensure(await mobile.evaluate(() => document.documentElement.scrollWidth <= innerWidth), "英文390px用量详情页面没有横向溢出");
-        await mobileProfile.locator(".session-speed-details[open]").scrollIntoViewIfNeeded();
+
         await mobile.screenshot({ path: ARTIFACTS + "/mixed-windows-english-mobile.png" });
       } finally { await context.close(); }
       ensure(errors.length === 0, "原生区间和混合区间 Chrome 无运行时异常");

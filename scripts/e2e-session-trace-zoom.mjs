@@ -145,10 +145,10 @@ try {
     ensure(Math.abs((resizeAfter.scroll + resizeAfter.width / 2 - 5) / (resizeAfter.total - 10) - center) < 0.003, "调整窗口改变了当前浏览中心");
     await button("轨迹图适应窗口").click();
     ensure((await measure()).total === (await measure()).width, "按钮适应窗口失效");
-    await button("执行轨迹与速度说明").click();
-    ensure((await page.getByRole("dialog", { name: "执行轨迹与速度说明", exact: true }).innerText()).includes("横向缩放"), "现有帮助没有缩放操作说明");
-    await page.getByRole("dialog", { name: "执行轨迹与速度说明", exact: true }).press("Escape");
-    await page.waitForFunction(() => document.activeElement?.getAttribute("aria-label") === "执行轨迹与速度说明");
+    await button("执行轨迹说明").click();
+    ensure((await page.getByRole("dialog", { name: "执行轨迹说明", exact: true }).innerText()).includes("横向缩放"), "现有帮助没有缩放操作说明");
+    await page.getByRole("dialog", { name: "执行轨迹说明", exact: true }).press("Escape");
+    await page.waitForFunction(() => document.activeElement?.getAttribute("aria-label") === "执行轨迹说明");
     for (let index = 0; index < 4; index++) await button("放大轨迹图").click();
     await button("定位所选轨迹节点").click();
     await page.screenshot({ path: ARTIFACTS + "/desktop-zoom.png" });

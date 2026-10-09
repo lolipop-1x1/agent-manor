@@ -101,7 +101,12 @@
   .trace-inspector-scroll { padding: 8px; }
 }
 
-.trace-group > [role="cell"] { display: flex; align-items: center; }
+.trace-group > [role="cell"] { display: flex; align-items: center; gap: 8px; }
 .trace-group > [role="cell"] > button { min-width: 0; }
+.trace-group > [role="cell"] > .trace-turn-toggle { width: auto; flex-shrink: 0; }
+.trace-group .trace-turn-preview { flex: 1; min-width: 0; }
+.trace-group button.session-speed-badge { width: auto; height: auto; padding: 3px 6px; color: var(--accent); background: var(--accent-soft); border: 1px solid transparent; }
+.trace-group button.session-speed-badge:hover { border-color: var(--accent); }
+.trace-group button.session-speed-badge.is-missing { color: var(--muted); background: var(--surface-alt); }
 .trace-group .session-copy-control { flex-shrink: 0; }
 .trace-group .session-copy-control button { width: 26px; height: 26px; padding: 4px; }

@@ -146,6 +146,10 @@
 .session-bar-track { height: 7px; overflow: hidden; border-radius: 5px; background: var(--accent-soft); }
 .session-bar-track i { display: block; height: 100%; border-radius: inherit; background: var(--accent); }
 .session-usage-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 7px; padding: 4px 0; }
+.session-profile { container: session-profile / inline-size; }
+@container session-profile (min-width: 560px) {
+  .session-usage-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+}
 .session-usage-grid > div { min-width: 0; border-right: 1px solid var(--border); padding: 2px 5px; }
 .session-usage-grid strong { display: block; overflow-wrap: anywhere; color: var(--text); font-size: 14px; font-weight: 600; letter-spacing: -.3px; }
 .session-usage-grid span { display: block; margin-top: 3px; color: var(--muted); font-size: 9px; line-height: 1.4; }
@@ -341,8 +345,9 @@
 .session-copy-error { color: var(--danger); font-size: 10px; }
 .session-code-block { position: relative; }
 .session-code-block > .session-copy-control { float: right; margin: 5px; }
-.session-profile-shortcut { margin-top: 8px; text-align: left; }
 .session-usage-grid strong .session-stat-link { font: inherit; }
+.session-peak-link { display: inline-flex; align-items: center; gap: 5px; }
+.session-peak-link svg { flex-shrink: 0; color: var(--muted); }
 .session-export-button { min-height: 32px; padding: 6px 9px; font-size: 11px; white-space: nowrap; }
 @container session-reading (max-width: 720px) {
   .session-view-actions { display: contents; }

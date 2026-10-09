@@ -19,7 +19,7 @@ import { SessionTrace } from "./SessionTrace";
 import { Notice, Pager, SessionDiagnostic, SessionError } from "./SessionControls";
 import { SessionProfilePane } from "./SessionProfile";
 import { HelpPopover } from "./HelpPopover";
-import { AverageSpeedBadge, SpeedAlgorithmHelp } from "./SessionSpeed";
+import { AverageSpeedBadge } from "./SessionSpeed";
 import { messageSpeedRequest, requestLocation, sessionSpeedMap, type SessionSpeedMap } from "./session-speed-model";
 import { FilterSelect } from "./FilterSelect";
 import { ProjectPicker } from "./ProjectPicker";
@@ -684,7 +684,6 @@ export default function Sessions({ active, target, onMap }: { active: boolean; t
               <div className="session-mode-tabs" role="group" aria-label={t("sessions.reading.mode")}>
                 {(["brief", "full", "trace"] as Mode[]).map(value => <button key={value} aria-pressed={mode === value} className={mode === value ? "is-selected" : ""} onClick={() => changeMode(value)}>{t(modeLabels[value])}</button>)}
               </div>
-              {mode !== "trace" && <HelpPopover label={t("sessions.speed.help")}><SpeedAlgorithmHelp /></HelpPopover>}
             </div>
             <div className="session-view-actions">
               <label className="session-search-field local"><MagnifyingGlass size={15} aria-hidden="true" /><span className="sr-only">{t("sessions.search.localLabel")}</span><input aria-label={t("sessions.search.localLabel")} value={localQuery} onChange={event => changeLocalQuery(event.target.value)} onFocus={() => localQuery && setShowLocalHits(true)} placeholder={t("sessions.search.localPlaceholder")} disabled={!selectedSessionId} />{localQuery && <button aria-label={t("sessions.search.clearLocal")} onClick={() => changeLocalQuery("")}>×</button>}</label>
