@@ -18,6 +18,9 @@ export function requestSpeed(usage: SessionUsage): RequestSpeed {
   if (!timing || timing.completion === "unknown") return { reason: timing ? "end_unconfirmed" : "timing_missing" };
   if (!Number.isSafeInteger(usage.outputTokens) || usage.outputTokens! < 0) return { reason: "output_missing" };
   if (usage.outputTokens! < 200) return { reason: "output_below_threshold" };
+  if ([timing.start?.occurredAt, timing.end?.occurredAt].some(value => value !== undefined && !Number.isFinite(Date.parse(value)))) {
+    return { reason: "invalid_timing" };
+  }
   if (timing.durationMs === undefined) return { reason: "timing_missing" };
   if (!Number.isFinite(timing.durationMs) || timing.durationMs <= 0) return { reason: "invalid_timing" };
   if (timing.durationMs < 1000) return { reason: "duration_below_threshold" };
