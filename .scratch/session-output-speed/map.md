@@ -36,11 +36,11 @@
 └─ 规格收敛与共同理解确认：已确认
 ```
 
-## 待实现
+## 实施状态
 
-- [03 请求解析](issues/03-request-timing.md)实施中。[07 共享契约](issues/07-shared-contract.md)已完成；[04 汇总刷新](issues/04-profile-refresh.md)与[05 界面展示](issues/05-speed-views.md)可并行启动。
-- [06 集成验收](issues/06-validation.md)等待解析、汇总和界面全部完成。原始历史保持只读，公开测试使用合成输入。
-- [08 验收数据准备](issues/08-validation-fixtures.md)可先构造隔离的三来源原生历史与自动化入口，完整界面结果由 06 验收。
+- [03 请求解析](issues/03-request-timing.md)、[04 汇总刷新](issues/04-profile-refresh.md)、[05 界面展示](issues/05-speed-views.md)已完成并集成；[07 共享契约](issues/07-shared-contract.md)已完成。
+- [08 验收数据准备](issues/08-validation-fixtures.md)已完成三来源原生导入、长历史、父子／分支样例及自动化入口。
+- [06 集成验收](issues/06-validation.md)进入真实浏览器与完整回归阶段。原始历史保持只读，公开测试使用合成输入。
 
 ## 实施记录
 
