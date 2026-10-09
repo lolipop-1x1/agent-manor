@@ -45,7 +45,7 @@ export interface SessionRequestTiming {
   basis: "estimated";
   method: "codex_event_boundary" | "claude_message_boundary" | "codeflicker_message_boundary";
   completion: "explicit" | "inferred" | "partial" | "unknown";
-  completionEvidence?: "stop_reason" | "tool_result" | "final_response_snapshot" | "persisted_stream_result" | "request_interrupted";
+  completionEvidence?: "stop_reason" | "tool_result" | "tool_response_snapshot" | "final_response_snapshot" | "persisted_stream_result" | "request_interrupted";
   start?: SessionRequestBoundary;
   end?: SessionRequestBoundary;
   durationMs?: number;
