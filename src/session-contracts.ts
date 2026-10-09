@@ -1,6 +1,7 @@
 import type { MessageDescriptor } from "./i18n/types.js";
 import type { Client } from "./clients.js";
 import type { Gap } from "./contracts.js";
+import type { RequestSpeedSummary } from "./session-speed.js";
 
 export type MessageKind = "user" | "assistant" | "thinking" | "tool_call" | "tool_result" | "system" | "context" | "compression";
 export interface SessionMessage {
@@ -222,6 +223,7 @@ export interface SessionProfile {
   resources: (NonNullable<SessionMessage["resource"]> & { count: number })[];
   compressions: number;
   children: SessionSummary[];
-  steps: (SessionUsage & { sessionId: string })[];
+  outputSpeed?: RequestSpeedSummary;
+  steps: (SessionUsage & { sessionId: string; branchIds?: string[]; currentBranch?: boolean })[];
   gaps: Gap[];
 }
