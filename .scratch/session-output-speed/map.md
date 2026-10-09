@@ -57,3 +57,4 @@
 - [10 统一区间](issues/10-timing-windows.md)、[11 JSON 来源](issues/11-json-sources.md)、[12 SQLite 来源](issues/12-sqlite-sources.md)、[13 流与追加历史](issues/13-stream-sources.md)、[14 桌面镜像](issues/14-desktop-mirror.md)、[15 综合验收](issues/15-expanded-validation.md)全部完成。当前支持全部 11 类来源；单条历史仍须满足已确认的用量、区间和结束条件。
 - 扩展实现 `5945d05` 与冲突修复／区间验收 `1fd5102` 已提交主干。完整测试 570 项、实际 Chrome 187 项通过；两轴复核关闭各自发现。详见[验收报告](validation.md)和[审查记录](review.md)。
 - 本机历史回填与最终规则检查完成，前后端已重启且实际页面验收通过。历史原始文件保持只读；缺数据的记录不制造速度或混合平均。
+- [16 阅读工具栏](issues/16-reading-toolbar-layout.md)已完成：视图与速度说明靠左，搜索与图标导出靠右；窄阅读区搜索独占下一行。中英文、主题、帮助焦点恢复与现有两组 Chrome 验收通过，实际页面已刷新。

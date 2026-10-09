@@ -6,7 +6,8 @@ import { SessionJump } from "./SessionJump";
 import { CopyButton } from "./SessionCopy";
 import { collectDialogue, dialogueMarkdown } from "./session-export";
 import { readSessionFilters, writeSessionFilters } from "./session-address";
-import { CaretDown, CaretLeft, CaretRight, ChatCircle, MagnifyingGlass, MapTrifold } from "@phosphor-icons/react";
+import { CaretDown, CaretLeft, CaretRight, ChatCircle, DownloadSimple, MagnifyingGlass, MapTrifold } from "@phosphor-icons/react";
+import * as Tooltip from "@radix-ui/react-tooltip";
 import type { Client } from "../src/clients";
 import { CLIENTS } from "../src/clients";
 import type { SessionGroupedSearchResult, SessionIndexStatus, SessionIndexSummary, SessionJob, SessionListResult, SessionMessage, SessionMessageResult, SessionProfile, SessionQuery, SessionRefreshOptions, SessionSearchHit, SessionSearchResult, SessionSummary, SessionTimelineResult } from "../src/session-contracts";
@@ -679,12 +680,18 @@ export default function Sessions({ active, target, onMap }: { active: boolean; t
             </div><button className="button subtle session-map-button" onClick={() => onMap(undefined, selectedSession?.project)} disabled={!selectedSession?.project}><MapTrifold size={16} />{t("sessions.reading.map")}</button>
           </div>
           <div className="session-view-toolbar">
-            <div className="session-mode-tabs" role="group" aria-label={t("sessions.reading.mode")}>
-              {(["brief", "full", "trace"] as Mode[]).map(value => <button key={value} aria-pressed={mode === value} className={mode === value ? "is-selected" : ""} onClick={() => changeMode(value)}>{t(modeLabels[value])}</button>)}
+            <div className="session-view-options">
+              <div className="session-mode-tabs" role="group" aria-label={t("sessions.reading.mode")}>
+                {(["brief", "full", "trace"] as Mode[]).map(value => <button key={value} aria-pressed={mode === value} className={mode === value ? "is-selected" : ""} onClick={() => changeMode(value)}>{t(modeLabels[value])}</button>)}
+              </div>
+              {mode !== "trace" && <HelpPopover label={t("sessions.speed.help")}><SpeedAlgorithmHelp /></HelpPopover>}
             </div>
-            {mode !== "trace" && <HelpPopover iconOnly label={t("sessions.speed.help")}><SpeedAlgorithmHelp /></HelpPopover>}
-            <button className="text-button session-export-button" disabled={!selectedSession || exporting} onClick={() => void exportDialogue()}>{t(exporting ? "sessions.export.loading" : "sessions.export.branch")}</button>
-            <label className="session-search-field local"><MagnifyingGlass size={15} aria-hidden="true" /><span className="sr-only">{t("sessions.search.localLabel")}</span><input aria-label={t("sessions.search.localLabel")} value={localQuery} onChange={event => changeLocalQuery(event.target.value)} onFocus={() => localQuery && setShowLocalHits(true)} placeholder={t("sessions.search.localPlaceholder")} disabled={!selectedSessionId} />{localQuery && <button aria-label={t("sessions.search.clearLocal")} onClick={() => changeLocalQuery("")}>×</button>}</label>
+            <div className="session-view-actions">
+              <label className="session-search-field local"><MagnifyingGlass size={15} aria-hidden="true" /><span className="sr-only">{t("sessions.search.localLabel")}</span><input aria-label={t("sessions.search.localLabel")} value={localQuery} onChange={event => changeLocalQuery(event.target.value)} onFocus={() => localQuery && setShowLocalHits(true)} placeholder={t("sessions.search.localPlaceholder")} disabled={!selectedSessionId} />{localQuery && <button aria-label={t("sessions.search.clearLocal")} onClick={() => changeLocalQuery("")}>×</button>}</label>
+              <Tooltip.Root><Tooltip.Trigger asChild>
+                <button className="button session-export-button" aria-label={t(exporting ? "sessions.export.loading" : "sessions.export.branch")} disabled={!selectedSession || exporting} onClick={() => void exportDialogue()}><DownloadSimple size={15} aria-hidden="true" /><span className="session-export-label">{t(exporting ? "sessions.export.loading" : "sessions.export.short")}</span></button>
+              </Tooltip.Trigger><Tooltip.Portal><Tooltip.Content className="tooltip" sideOffset={6}>{t("sessions.export.branch")}<Tooltip.Arrow /></Tooltip.Content></Tooltip.Portal></Tooltip.Root>
+            </div>
           </div>
           {localQuery && <label className="session-process-toggle local-process"><input type="checkbox" checked={includeProcess} onChange={event => setIncludeProcess(event.target.checked)} /><span>{t("sessions.search.process")}</span></label>}
           {!inScope && <Notice action={<button className="text-button" onClick={clearFilters}>{t("sessions.filter.clearAll")}</button>}>{t("sessions.filter.outside")}</Notice>}
