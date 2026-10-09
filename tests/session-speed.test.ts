@@ -141,9 +141,13 @@ test("Codex 无用量的已识别模型请求保留分母，复制与压缩零�
     { ...cUsage("copied", 3), ordinal: 3 }, { ...cUser(10, "own"), ordinal: 10 },
     { ...cModel("own-answer", 13, true), ordinal: 11 }, { ...cUsage("own", 13), ordinal: 12 }]);
   assert.equal(copied.usages.length, 1);
-  const missing = await parsed("codex", [cUser(), cCall("request", 3), cResult("request", 10)]);
+  const missing = await parsed("codex", [cUser(), cThinking("thinking", 1), cModel("comment", 2), cCall("request", 3), cResult("request", 10)]);
   assert.equal(missing.usages.length, 1);
   assert.equal(requestSpeed(missing.usages[0]!).reason, "output_missing");
+  assert.equal(missing.usages[0]?.messageId, undefined, "未保存用量的请求不能把模型片段当作原用量记录");
+  assert.equal(missing.usages[0]?.requestMessageIds?.length, 2, "缺失用量不丢弃已确认的模型消息组关联");
+  assert.equal(missing.messages.filter(message => message.kind === "system").length, 0, "不为缺失用量制造原用量事件");
+  assert.equal(summarizeRequestSpeed(missing.usages).requests, 1, "缺失请求仍保留在覆盖分母中");
   const reset = await parsed("codex", [cUser(), cModel("one", 3, true), cCount(3),
     timed({ type: "compacted", payload: { message: "合成压缩摘要" } }, 4), cCount(4.1, 0, 0),
     cUser(5, "next"), cModel("two", 8, true), cCount(8, 400, 400)]);
@@ -188,6 +192,8 @@ test("Claude 明确关联的取消记录剔除部分响应，不将工具超时�
     native("claude", "answer", "assistant", 10, [textBlock], undefined, "one", { stop_reason: "end_turn" })]);
   assert.equal(missing.usages.length, 1);
   assert.equal(requestSpeed(missing.usages[0]!).reason, "output_missing");
+  assert.equal(missing.usages[0]?.messageId, undefined);
+  assert.equal(missing.usages[0]?.requestMessageIds?.length, 1);
   const finished = await parsed("claude", [native("claude", "user", "user", 0, "合成请求"),
     native("claude", "call", "assistant", 3, [{ type: "tool_use", id: "tool", name: "fixture_tool", input: {} }], 400, "one", { stop_reason: "tool_use" }),
     { ...native("claude", "result", "user", 30, [{ type: "tool_result", tool_use_id: "tool", content: "工具超时" }]),
