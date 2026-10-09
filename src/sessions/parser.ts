@@ -153,7 +153,7 @@ export async function parseSessionSource(source: SourceLocation, sink: SessionSi
   let currentRecordLine = 0;
   const usageMarkers = new Map<string, SessionMessage>();
   const usage = new UsageParser(id, { message: sink.message, usage: value => {
-    if (source.client !== "codex" || value.messageId) { sink.usage(value); return; }
+    if (source.client !== "codex" || value.messageId || !usage.hasRecordedUsage(value.id)) { sink.usage(value); return; }
     // 用量定位到实际保存该用量的记录，不猜测它属于哪段助手正文。
     const previous = usageMarkers.get(value.id);
     const body = `请求用量（记录值）\n${display(value)}`;
