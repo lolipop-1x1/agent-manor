@@ -38,8 +38,9 @@ code, pre { font-family: var(--mono); }
 .muted { color: var(--muted); font-size: 12px; line-height: 1.8; }
 .small { font-size: 11px; }
 .app-header { height: 66px; padding: 0 28px; display: flex; align-items: center; gap: 18px; border-bottom: 1px solid var(--border); background: var(--surface); }
-.brand { display: inline-flex; align-items: center; gap: 10px; color: var(--text); font-size: 20px; font-weight: 600; text-decoration: none; letter-spacing: -.7px; }
+.brand { display: inline-flex; align-items: center; gap: 10px; color: var(--text); font-size: 20px; font-weight: 450; text-decoration: none; letter-spacing: -.45px; }
 .brand svg { color: var(--accent); }
+.brand strong { font-weight: 650; }
 .header-divider { height: 22px; width: 1px; background: var(--border); }
 .product-name { color: var(--muted); font-size: 12px; }
 .header-actions { display: flex; align-items: center; gap: 9px; margin-left: auto; }
