@@ -38,3 +38,7 @@
 
 - 实施任务 [03](issues/03-request-timing.md)、[04](issues/04-profile-refresh.md)、[05](issues/05-speed-views.md)、[06](issues/06-validation.md)：`ready-for-agent`，按依赖顺序启动。
 - 原始历史、产品代码、翻译目录和测试未在本轮修改；术语与设计文档已经更新。
+
+## 实施记录
+
+- 2026-10-09：已确认设计提交到主干，实施按独立功能分支推进。任务 03 已认领；其余任务等待依赖完成。原始历史保持只读，公开测试使用合成输入。

@@ -1,7 +1,7 @@
 # 请求计时、结束依据与模型消息关联
 
 Type: task
-Status: ready-for-agent
+Status: claimed
 Blocked by: 02
 
 ## 范围
