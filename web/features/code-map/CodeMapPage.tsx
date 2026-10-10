@@ -428,6 +428,7 @@ export function useCodeMapPage({ active, theme, onSession }: {
   };
   const visible = useMemo(() => coverage?.files.filter(file => file.path.toLocaleLowerCase().includes(search.toLocaleLowerCase())) ?? [], [coverage?.files, search]);
   const s = coverage?.summary;
+  const retainedCoverageLoading = coverageLoading && coverage?.repository.id === repoId && coverageKey === filterKey;
   const editing = metric === "edit";
   const exact = s ? editing ? s.editExact : s.readExact : null;
   const near = s ? editing ? s.editNear : s.readNear : null;
@@ -470,12 +471,11 @@ export function useCodeMapPage({ active, theme, onSession }: {
           <div className="select-field"><span>{t("codeMap.filter.time")}</span><FilterSelect label={t("codeMap.filter.timeLabel")} value={window} options={[{ value: "all", label: t("codeMap.filter.allHistory") }, { value: "7", label: t("codeMap.filter.week") }, { value: "30", label: t("codeMap.filter.month") }, { value: "custom", label: t("codeMap.filter.custom") }]} onChange={value => { setWindow(value); setTimeAnchor(Date.now()); }} /></div>
           <div className="select-field"><span>{t("codeMap.filter.file")}</span><FilterSelect label={t("codeMap.filter.categoryLabel")} value={category} options={[{ value: "source", label: t("common.category.source") }, { value: "config", label: t("common.category.config") }, { value: "docs", label: t("common.category.docs") }, { value: "unknown", label: t("common.category.unknown") }, { value: "all", label: t("codeMap.filter.allText") }]} onChange={value => { setCategory(value as FileCategory | "all"); setSelected(null); }} /></div>
           <label className="search-box"><MagnifyingGlass size={17} /><input aria-label={t("codeMap.filter.search")} placeholder={t("codeMap.filter.search")} value={search} onChange={event => setSearch(event.target.value)} />{search && <button aria-label={t("codeMap.filter.clearSearch")} onClick={() => setSearch("")}><X size={14} /></button>}</label>
+          {(mapSessionsLoading || retainedCoverageLoading) && <span className="map-query-loading" role="status">{t(retainedCoverageLoading ? "codeMap.coverage.loading" : "codeMap.session.loading")}</span>}
         </div>
-        {mapSessionsLoading && <p className="query-loading" role="status">{t("codeMap.session.loading")}</p>}
         {!!mapSessionsError && <Notice danger action={<button className="text-button" onClick={() => setMapSessionsRetry(value => value + 1)}>{t("common.retry")}</button>}><ErrorDetails error={mapSessionsError} /></Notice>}
         {window === "custom" && <div className="date-range"><span>{t("codeMap.filter.startDate")}</span><DatePicker label={t("codeMap.filter.startDateLabel")} value={from} onChange={setFrom} /><span>{t("codeMap.filter.to")}</span><DatePicker label={t("codeMap.filter.endDateLabel")} value={to} onChange={setTo} /></div>}
         {invalidTime && <Notice danger>{t("codeMap.filter.invalidTime")}</Notice>}
-        {coverageLoading && coverage?.repository.id === repoId && coverageKey === filterKey && <p className="query-loading" role="status">{t("codeMap.coverage.loading")}</p>}
         {!!coverageError && coverage?.repository.id === repoId && coverageKey === filterKey && <Notice danger action={<button className="text-button" onClick={() => setReload(value => value + 1)}>{t("common.retry")}</button>}><ErrorDetails error={coverageError} /></Notice>}
         {coverageLoading && !(coverage?.repository.id === repoId && coverageKey === filterKey) ? <div className="query-loading" role="status">{t("codeMap.coverage.loading")}</div> : coverageError && !(coverage?.repository.id === repoId && coverageKey === filterKey) ? <Empty title={t("codeMap.coverage.unavailable")} action={<div className="empty-actions"><button className="button" onClick={() => { setVersion(undefined); setReload(value => value + 1); }}>{t("codeMap.coverage.latest")}</button><button className="button subtle" onClick={() => void runRefresh()} disabled={jobActive(job)}>{t("codeMap.refresh.action")}</button></div>}><ErrorDetails error={coverageError} /></Empty> : s && exact && near && !invalidTime && <>
           {mapSession && !coverage!.files.some(file => file.activityCount > 0) && <Notice>{t("codeMap.session.noActivity")}</Notice>}

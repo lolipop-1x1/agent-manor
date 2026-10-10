@@ -123,6 +123,7 @@ try {
     const beforeScale = await page.locator(".code-map").getAttribute("data-scale");
     await button("放大地图").click();
     await page.waitForFunction(previous => Number(document.querySelector(".code-map").dataset.scale) > Number(previous), beforeScale);
+    await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
     const scale = await page.locator(".code-map").getAttribute("data-scale");
     const retained = await page.evaluateHandle(() => [".code-map", ".sessions-shell", ".resources-shell"].map(selector => document.querySelector(selector)));
     for (const [name, activeIndex] of [["资源管理", 2], ["会话库", 1], ["代码地图", 0]]) {

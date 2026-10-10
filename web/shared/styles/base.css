@@ -111,7 +111,8 @@ progress::-moz-progress-bar { background: var(--accent); border-radius: 3px; }
 .sidebar-bottom .text-button { font-size: 10px; }
 .map-main { min-width: 0; padding: 31px 28px 28px; }
 .page-heading { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px; }
-.filters { display: flex; align-items: center; flex-wrap: wrap; gap: 13px; margin-top: 28px; min-height: 36px; border-bottom: 1px solid var(--border); padding-bottom: 12px; }
+.filters { position: relative; display: flex; align-items: center; flex-wrap: wrap; gap: 13px; margin-top: 28px; min-height: 36px; border-bottom: 1px solid var(--border); padding-bottom: 12px; }
+.map-query-loading { position: absolute; bottom: 1px; left: 0; color: var(--muted); font-size: 10px; line-height: 12px; }
 .select-field { display: inline-flex; align-items: center; gap: 7px; font-size: 11px; }
 .select-field > span { color: var(--muted); }
 .map-session-filter { min-width: 0; max-width: 100%; }
