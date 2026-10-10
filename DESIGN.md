@@ -28,6 +28,11 @@ colors:
   map-2-text: "#000000"
   map-3-text: "#000000"
   map-4-text: "#ffffff"
+  map-0-border: "#a3b1c7"
+  map-1-border: "#95a3b9"
+  map-2-border: "#818fa5"
+  map-3-border: "#647287"
+  map-4-border: "#a6b4ca"
   page-dark: "#111722"
   surface-dark: "#171d28"
   surface-alt-dark: "#1d2635"
@@ -54,6 +59,11 @@ colors:
   map-2-text-dark: "#ffffff"
   map-3-text-dark: "#ffffff"
   map-4-text-dark: "#000000"
+  map-0-border-dark: "#5c6c82"
+  map-1-border-dark: "#5c6c82"
+  map-2-border-dark: "#5d6d83"
+  map-3-border-dark: "#79879b"
+  map-4-border-dark: "#425167"
 typography:
   title:
     fontFamily: '"Geist Variable", "PingFang SC", "Microsoft YaHei", sans-serif'
@@ -202,6 +212,8 @@ components:
 **The Semantic Color Rule.** 主题色用于主要操作与选中；赭金用于近似、未知及需关注的记录；砖红用于错误。统计颜色必须与文字、图例和范围说明共同出现，不能替换其含义。
 
 地图五阶随主题色变化，各阶文字使用对应的 map-N-text，保持低到高的明度顺序与可读性。按钮与地图文字目标对比度至少 4.5。侧车预览色带仅作展示，不替代生产派生逻辑。
+
+代码地图以独立的 map-N-border 中性色区分相邻文件，边界与对应填充色的亮度对比至少 2。边界沿共享边缘绘制，宽度固定 1 CSS px，不随地图缩放加粗；任一边不超过 8px 的小块继续不留间隔、不画边界。填充色阶、面积及选中／键盘焦点语义保持原有规则。
 
 ## Typography
 

@@ -164,6 +164,7 @@ input::placeholder { color: var(--muted); }
 .map-colors .tone-2 { fill: var(--map-2); }
 .map-colors .tone-3 { fill: var(--map-3); }
 .map-colors .tone-4 { fill: var(--map-4); }
+.map-boundary { fill: none; stroke-width: 1; }
 .map-hover-hint { position: absolute; z-index: 5; display: grid; gap: 4px; padding: 9px 11px; border: 1px solid var(--border); border-radius: 5px; background: var(--surface); color: var(--text); font-size: 11px; box-shadow: 0 3px 14px #00000020; pointer-events: none; overflow-wrap: anywhere; }
 .map-hover-hint strong { font-size: 12px; }
 .map-hover-hint small { color: var(--muted); }

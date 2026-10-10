@@ -20,3 +20,13 @@ test("所有预设与极端自定义色在明暗模式有可读按钮和地图�
     for (const semantic of ["--danger", "--near", "--code-near", "--unknown"]) assert.equal(variables[semantic], undefined);
   }
 });
+
+test("地图各阶边界在所有预设与极端自定义配色的深浅主题中均可区分", () => {
+  const colors = [...Object.values(themePresets), "#000000", "#ffffff", "#ff0000", "#00ff00", "#0000ff", "#ffff00", "#777777"];
+  for (const color of colors) for (const theme of ["light", "dark"] as const) {
+    const variables = appearanceVariables({ ...defaultAppearance, preset: "custom", customColor: color }, theme);
+    for (let index = 0; index <= 4; index++) {
+      assert.ok(contrastRatio(variables[`--map-${index}`]!, variables[`--map-${index}-border`]!) >= 2, `${theme} ${color} map-${index}`);
+    }
+  }
+});

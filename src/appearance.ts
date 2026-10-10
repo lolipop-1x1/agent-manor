@@ -45,6 +45,11 @@ export function appearanceVariables(appearance: Appearance, theme: "light" | "da
   for (let index = 0; index <= 4; index++) {
     const color = variables[`--map-${index}`]!;
     variables[`--map-${index}-text`] = contrastRatio(color, "#ffffff") >= contrastRatio(color, "#000000") ? "#ffffff" : "#000000";
+    const borderSeed = dark ? "#5c6c82" : "#a6b4ca";
+    const borderTarget = contrastRatio(color, "#19273c") >= contrastRatio(color, "#e7edf7") ? "#19273c" : "#e7edf7";
+    let border = borderSeed;
+    for (let step = 1; contrastRatio(color, border) < 2 && step <= 100; step++) border = mixColor(borderSeed, borderTarget, step / 100);
+    variables[`--map-${index}-border`] = border;
   }
   return variables;
 }
