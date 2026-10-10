@@ -4,15 +4,17 @@
 
 - `app/`：应用导航、主题、跨页面跳转与三个页面的组装。
 - `features/code-map/`：代码地图、仓库筛选、文件详情、覆盖与证据展示。`CodeMapPage.tsx` 的 `useCodeMapPage` 封装页面状态，向应用返回页面内容、页头操作、维护提示和地图定位入口，保持既有页面与页头布局。
-- `features/sessions/`：会话列表、消息、画像、执行轨迹、搜索、速度与导出。
+- `features/sessions/`：会话列表、消息、画像、执行轨迹、搜索、速度与导出。`useContinuousReading.ts` 管理对话／全部记录的有界连续阅读与消息锚点；`SessionTurnNavigation.tsx` 统一轮次导航；`SessionTrace.tsx` 组织全宽节点表格和下方可调、可放大的正文详情。
 - `features/resources/`：资源清单、使用统计、资源地图与管理操作。
-- `shared/ui/`、`shared/layout/`：统一控件、工作区布局及相关样式。
+- `shared/ui/`、`shared/layout/`：统一控件、工作区布局及相关样式。`AppearanceMenu.tsx` 提供明暗模式、预设配色和点选自定义色盘，沿用共享偏好与主题变量。
 - `shared/map/`、`shared/refresh/`：通用地图几何与相机计算、可见页面轮询。
-- `shared/`：请求与错误处理、Web 国际化接入、格式化、时间筛选和主题类型。`shared/styles/base.css` 保留原有全局样式及级联顺序。
+- `shared/`：请求与错误处理、Web 国际化接入、格式化、时间筛选和主题应用。`i18n.tsx` 读写本地服务的共享语言、外观与自动刷新偏好；`theme.ts` 应用 `src/appearance.ts` 派生的颜色并同步 favicon。`shared/styles/base.css` 保留原有全局样式及级联顺序。
 
 功能模块优先就近放置展示、模型与样式。`app` 组装功能，功能引用共享能力，`shared` 不反向引用功能；功能间的跳转通过应用层的目标参数与回调协调。共享契约、客户端定义和翻译目录继续复用仓库的 `src/`。
 
 三个页面始终挂载，通过 `hidden` 和 `active` 切换显示与请求；不要改成按当前页条件挂载，以免丢失筛选、阅读位置和地图视野。保留 `web/main.tsx`、Vite 根目录 `web` 及构建产物 `dist/web`。
+
+外观、会话阅读和资源导航的操作入口见 [使用指南](../docs/usage.md)，呈现规范见 [设计系统](../DESIGN.md)，连续阅读与执行轨迹的数据边界见 [会话设计](../docs/design/session-history.md)。近期浏览器验收范围与重放命令见 [工作台验收](../docs/validation/workbench-refinements.md)。
 
 ## 正式代码活动地图
 

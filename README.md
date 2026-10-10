@@ -40,7 +40,7 @@ agent-manor stop --json
 
 ## 会话库
 
-网页顶部“会话库”可浏览全部可发现历史，搜索标题与正文，切换简易对话、完整过程及消息轨迹，并查看模型、Token、缓存和 Tool／Skill／MCP 画像。无需先登记仓库。CLI 使用 `agent-manor sessions refresh --wait --json` 与 `agent-manor sessions list --json`；更多入口见 [使用指南](docs/usage.md#全局会话库)。
+网页顶部“会话库”可浏览全部可发现历史，搜索标题与正文，连续阅读对话与全部记录、按轮次定位，并查看执行轨迹及模型、Token、缓存和 Tool／Skill／MCP 画像。无需先登记仓库。CLI 使用 `agent-manor sessions refresh --wait --json` 与 `agent-manor sessions list --json`；更多入口见 [使用指南](docs/usage.md#全局会话库)。
 
 ## 数据与统计
 

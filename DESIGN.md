@@ -164,7 +164,7 @@ components:
 
 工作区以平面为主，依靠页面、面板和次级底色建立区域关系，细边界帮助扫描。按钮、筛选、列表和容器紧凑、克制、反馈明确；临时浮层使用阴影说明其与底层内容的关系。
 
-本文件记录用户确认的工作台改版。基础中性色来自 CSS，默认主题色由 src/appearance.ts 派生。验收使用隔离合成数据；覆盖范围见 .scratch/workbench-redesign，不将局部对比度测试等同于全面无障碍认证。
+本文件记录用户确认的工作台改版。基础中性色来自 CSS，默认主题色由 src/appearance.ts 派生。验收使用隔离合成数据；近期覆盖范围与重放入口见 [工作台验收](docs/validation/workbench-refinements.md)，不将局部对比度测试等同于全面无障碍认证。
 
 **Key Characteristics:**
 

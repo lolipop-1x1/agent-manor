@@ -6,6 +6,7 @@
 - [CodeFlicker 接入验收](codeflicker.md)：扩展适配架构、125 项测试、最终安装包的 26 组端到端、真实原生历史核对及两轴审查修复。
 - [CodeFlicker 数据复核](codeflicker-data-audit.md)：公开的验证方法、相对路径归属修复与支持边界，不包含业务输入或定位标识。
 - [全局会话库验收](session-history.md)：175 项回归、真实 Chrome 端到端、三客户端原始用量样本核验、父子步骤跳转及搜索性能。
+- [工作台外观与连续阅读验收](workbench-refinements.md)：主题与图标、资源导航、地图加载、会话工具栏、双向连续阅读及全宽轨迹详情；区分各脚本实测范围与未重跑部分。
 - [七类原生历史接入验收](additional-agent-history.md)：260 项回归、117 个原生会话交叉核对、七客户端真实浏览器验收、只读来源及统计缺口边界。
 - [资源使用分类验收](resource-usage-classification.md)：取消待检查，使用分类与管理保护分离，验证零记录、阈值、缺口、旧链接及原始统计不变。
 - [资源标签与 Skill 文件回收验收](resource-tags-and-removal.md)：移除状态列与概括统计提示，普通共享 Skill 按实际路径回收；502 项回归与 12 组 Chrome 合成资源端到端通过。
