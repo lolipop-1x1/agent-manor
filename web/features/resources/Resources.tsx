@@ -409,6 +409,7 @@ export default function Resources({ active, onSession }: { active: boolean; onSe
   const listRequestQuery = mapView ? mapQuery : overviewRanking ? overviewQuery : localQuery;
   const mapRequestKey = JSON.stringify([mapQuery, reload, favoriteReload]);
   const hasListData = mapView ? !!map : overviewRanking ? !!overview : route.tab === "local" ? !!local : route.tab === "operations" ? !!operations : !!archives;
+  const listProgress = <span className="resource-list-progress" role={listLoading && hasListData ? "status" : undefined} aria-label={listLoading && hasListData ? t("resources.loading.resources") : undefined}>{listLoading && hasListData && <ArrowClockwise size={14} className="spinning" aria-hidden="true" />}</span>;
   useEffect(() => { try { localStorage.setItem("agent-manor:resource-view", route.view); } catch { /* 存储不可用时视图仍可切换。 */ } }, [route.view]);
   const managementQuery = useMemo(() => ({ kind: route.kind, client: route.client === "all" ? undefined : route.client, project: route.project === "all" ? undefined : route.project, q: queryText, page: route.page, pageSize: route.pageSize }), [route.kind, route.client, route.project, queryText, route.page, route.pageSize]);
   useEffect(() => {
@@ -707,12 +708,12 @@ export default function Resources({ active, onSession }: { active: boolean; onSe
           <label className="resource-search"><MagnifyingGlass size={16} aria-hidden="true" /><input aria-label={t("resources.search.label")} value={route.q} placeholder={t("resources.search.label")} onChange={event => filter({ q: event.target.value })} />{route.q && <button className="icon-button" aria-label={t("resources.search.clear")} onClick={() => filter({ q: "" })}><X size={14} /></button>}</label>
           {overviewRanking && <div className="resource-display-switch" role="group" aria-label={t("resources.view.display")}>{(["list", "map"] as const).map(view => <button key={view} aria-pressed={route.view === view} onClick={() => update({ view })}>{view === "list" ? <List size={15} aria-hidden="true" /> : <MapTrifold size={15} aria-hidden="true" />}{view === "list" ? t("resources.view.list") : t("resources.view.map")}</button>)}</div>}
         </div>
-        <div className="resource-list-summary">
-          <span className="resource-list-progress" role={listLoading && hasListData ? "status" : undefined} aria-label={listLoading && hasListData ? t("resources.loading.resources") : undefined}>{listLoading && hasListData && <ArrowClockwise size={14} className="spinning" aria-hidden="true" />}</span>
+        {!overviewRanking && <div className="resource-list-summary">
+          {listProgress}
           {!historyView && <strong>{t(tabs.find(tab => tab.value === route.tab)!.labelKey)}</strong>}
-          {overviewRanking && overviewData && <span>{t(route.kind === "skill" ? "resources.skillCount" : "resources.mcpCount", { count: overviewData.total })}</span>}{route.tab === "local" && local && <span>{t("resources.localCount", { count: local.total })}</span>}
+          {route.tab === "local" && local && <span>{t("resources.localCount", { count: local.total })}</span>}
           {route.tab === "operations" && operations && <span>{t("resources.operationCount", { count: operations.total })}</span>}{!historyView && route.tab !== "operations" && archives && <span>{t("resources.resourceCount", { count: archives.total })}</span>}
-        </div>
+        </div>}
         {mapView && <div className="resource-map-settings">
           {mapView && <><FilterSelect label={t("resources.map.metricFilter")} value={route.metric} options={[{ value: "uses", label: t("resources.sort.calls") }, { value: "sessions", label: t("resources.sort.sessions") }]} onChange={value => filter({ metric: value as ResourceRoute["metric"], maxValue: "" })} /><label className="resource-map-limit">{t(route.metric === "sessions" ? "resources.sort.sessions" : "resources.sort.calls")} ≤<input type="number" min="0" step="1" aria-label={t("resources.map.limit", { metric: t(route.metric === "sessions" ? "resources.sort.sessions" : "resources.sort.calls") })} value={route.maxValue} placeholder={t("resources.map.unlimited")} onChange={event => { const value = event.target.value; if (value === "" || /^\d+$/.test(value) && Number.isSafeInteger(Number(value))) filter({ maxValue: value }); }} /></label></>}
         </div>}
@@ -723,6 +724,7 @@ export default function Resources({ active, onSession }: { active: boolean; onSe
           <div className="resource-quick-filters" role="group" aria-label={t("resources.quickFilters", { kind: route.kind === "skill" ? t("resources.kind.skill") : t("resources.kind.mcp") })}>
             <div className="resource-usage-filters" role="group" aria-label={t("resources.usageStates")}>{overviewCandidates.slice(0, 3).map(candidate => <button key={candidate.value} aria-pressed={route.candidate === candidate.value || candidate.value === "all" && !overviewCandidates.some(item => item.value === route.candidate)} onClick={() => filter({ candidate: candidate.value, favorite: false })}>{t(candidate.labelKey)}<strong>{fmt(overviewData.counts[candidate.value])}</strong></button>)}</div>
             <div className="resource-attention-filters" data-active={["low", "old"].includes(route.candidate)} role="group" aria-label={t("resources.attention.filter")}>
+              {listProgress}
               <FilterSelect label={t("resources.attention.filter")} value={["low", "old"].includes(route.candidate) ? route.candidate : "all"} options={[{ value: "all", label: t("resources.attention.any") }, ...overviewCandidates.filter(candidate => ["low", "old"].includes(candidate.value)).map(candidate => ({ value: candidate.value, label: t("resources.candidate.withCount", { label: t(candidate.labelKey), count: overviewData.counts[candidate.value] }) }))]} onChange={value => filter({ candidate: value as ResourceRoute["candidate"], favorite: false })} />
               <button aria-pressed={route.candidate === "favorite"} onClick={() => filter({ candidate: route.candidate === "favorite" ? "all" : "favorite", favorite: false })}><Star size={14} weight={route.candidate === "favorite" ? "fill" : "regular"} aria-hidden="true" />{t("resources.candidate.favorite")}<strong>{fmt(overviewData.counts.favorite)}</strong></button>
             </div>

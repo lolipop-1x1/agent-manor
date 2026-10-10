@@ -115,6 +115,7 @@ try {
 
   await step("资源首屏不加载隐藏代码地图，切回地图按需加载", `
     await page.getByRole("table",{name:"Skill 总览",exact:true}).waitFor();
+    expect(await page.locator('.resource-list-summary').count()===0,"Skill总览仍有重复总数行");
     await page.waitForFunction(()=>performance.getEntriesByType("resource").some(entry=>new URL(entry.name).pathname==="/api/v1/status"));
     const coverageCount=()=>page.evaluate(()=>performance.getEntriesByType("resource").filter(entry=>new URL(entry.name).pathname.endsWith("/coverage")).length);
     expect(await coverageCount()===0,"资源首屏触发了隐藏地图查询");
@@ -248,6 +249,7 @@ try {
   `);
   await step("后台更新保留列表与分页，失败保留内容", `
     const table=await page.getByRole("table",{name:"Skill 总览",exact:true}).elementHandle();
+    const tableTop=await table.evaluate(element=>element.getBoundingClientRect().top);
     const pager=await page.locator(".resources-main .resource-pager").elementHandle();
     let release; const gate=new Promise(resolve=>release=resolve);
     await page.route("**/api/v1/resources/overview?*",async route=>{await gate; await route.fulfill({status:503,contentType:"application/json",body:JSON.stringify({error:{code:"SYNTHETIC_FAILURE",message:"synthetic list failure"}})});});
@@ -255,6 +257,7 @@ try {
     await page.locator('.resource-list-scroll[aria-busy="true"]').waitFor();
     expect(await table.evaluate(element=>element.isConnected)&&await pager.evaluate(element=>element.isConnected),"后台刷新卸载了已有内容");
     expect(await page.getByRole("status",{name:"正在读取资源…",exact:true}).count()===1,"后台刷新缺少进度提示");
+    expect(Math.abs(await table.evaluate(element=>element.getBoundingClientRect().top)-tableTop)<1,"后台刷新提示导致表格跳动");
     release(); await page.getByRole("alert").filter({hasText:"synthetic list failure"}).waitFor();
     expect(await table.evaluate(element=>element.isConnected),"刷新失败清空了列表");
     await page.unroute("**/api/v1/resources/overview?*");
@@ -279,11 +282,13 @@ try {
   await step("英文整行点击与本地资源收藏保留焦点", `
     await page.goto(${JSON.stringify(base)}+'/#resources'); await page.reload();
     const table=page.getByRole("table",{name:"Skill overview",exact:true}); await table.waitFor();
+    expect(await page.locator('.resource-list-summary').count()===0,"英文总览仍有重复总数行");
     const row=table.getByRole("row").filter({has:page.getByRole("button",{name:"View usage details for guide",exact:true})});
     await row.locator("td").nth(1).click();
     await page.locator(".resource-detail-heading h2").filter({hasText:"guide"}).waitFor();
     await page.getByRole("navigation",{name:"Resource views",exact:true}).getByRole("button",{name:"Local resources",exact:true}).click();
     const local=page.getByRole("table",{name:"Local resources",exact:true}); await local.waitFor();
+    expect(await page.locator('.resource-list-summary').count()===1,"本地资源总数行丢失");
     const guide=local.getByRole("row").filter({has:page.getByRole("button",{name:"View local details for guide",exact:true})});
     await guide.locator("td").last().click();
     await page.locator(".resource-detail-heading h2").filter({hasText:"guide"}).waitFor();
@@ -1017,6 +1022,7 @@ try {
     expect(await table.getByRole("button",{name:"按调用次数排序",exact:true}).count()===1,"MCP缺少调用次数列");
     expect(await table.getByRole("columnheader").filter({hasText:"调用次数"}).getAttribute("aria-sort")==="descending","MCP默认没有按调用次数降序");
     const quick=page.getByRole("group",{name:"MCP 快速筛选",exact:true});
+    expect(await page.locator('.resource-list-summary').count()===0,"MCP总览仍有重复总数行");
     expect(await quick.getByRole("button").count()===4 && await quick.getByRole("combobox",{name:"关注条件",exact:true}).count()===1,"MCP快捷筛选缺失");
     expect((await quick.getByRole("button",{name:/^全部/}).innerText()).includes(${JSON.stringify(String(mcpOverview.counts.all))}),"MCP快捷计数错误");
     const row=table.getByRole("row").filter({has:page.getByRole("button",{name:"查看sample的使用详情",exact:true})});

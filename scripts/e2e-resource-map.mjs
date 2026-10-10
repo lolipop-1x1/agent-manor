@@ -169,6 +169,7 @@ try {
     await page.getByRole('group',{name:'资源展示方式',exact:true}).getByRole('button',{name:'地图',exact:true}).click();
     await page.getByRole('group',{name:'资源使用地图',exact:true}).waitFor();
     await page.getByRole('button',{name:'查看map-skill-000的使用详情',exact:true}).waitFor();
+    expect(await page.locator('.resource-list-summary').count()===0,'资源地图仍有重复总数行');
     expect(page.mapRequests.length>0,'地图没有完整查询');
     expect(page.mapRequests.every(url=>!url.includes('pageSize=')&&!url.includes('&page=')),'地图沿用列表分页');
     expect(await page.getByRole('combobox',{name:'地图面积指标',exact:true}).count()===1,'地图缺少次数与会话指标切换');
@@ -547,7 +548,7 @@ try {
     await page.waitForFunction(name=>document.activeElement?.getAttribute('aria-label')===name,'管理map-system');
     expect(await detail.getByRole('button',{name:'管理map-system',exact:true}).evaluate(element=>element===document.activeElement),'Escape未恢复管理按钮焦点');
     await page.getByRole('textbox',{name:'搜索资源名称或路径',exact:true}).fill('no-such-map-resource');
-    await page.getByText('0 个 Skill',{exact:true}).waitFor();
+    await page.getByRole('group',{name:'Skill 快速筛选',exact:true}).getByRole('button',{name:/^全部/}).locator('strong').filter({hasText:/^0$/}).waitFor();
     await page.waitForFunction(()=>!document.querySelector('.resource-list-scroll[aria-busy="true"]'));
     expect(await page.getByRole('button',{name:'查看map-system的使用详情',exact:true}).count()===0,'空结果保留旧节点');
     const retainedMap=await page.getByRole('group',{name:'资源使用地图',exact:true}).elementHandle();
