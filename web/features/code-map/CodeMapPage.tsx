@@ -306,23 +306,27 @@ export function useCodeMapPage({ active, theme, onSession }: {
   const filterKey = queryString(filters);
   const invalidTime = window === "custom" && from && to && from > to;
   const query = coverage ? boundQuery(filters, coverage.version) : undefined;
-  const chooseRepo = useCallback((id: string) => {
-    if (id === currentRepoId.current) return;
+  const chooseRepo = useCallback((id: string, reset = false) => {
+    if (id === currentRepoId.current && !reset) return;
     pageEpoch.current += 1; currentRepoId.current = id;
     setRepoId(id); setMapSession(undefined); setMapSessionList(undefined); setVersion(undefined); setDirectory(""); setSelected(null); setDetail(null); setCoverage(null); setRootCoverage(null); setActionError(null);
     setJob(null); setCoverageError(null); setDetailError(null); setMapSessionsError(null); setCoverageLoading(false); setDetailLoading(false); setMapSessionsLoading(false);
     loadedCoverage.current = "";
+    if (reset) setReload(value => value + 1);
     if (id) localStorage.setItem("agent-manor-repository", id); else localStorage.removeItem("agent-manor-repository");
   }, []);
   const applyStatus = useCallback((result: StatusResponse) => {
+    const current = currentRepoId.current;
+    const previous = currentRepositories.current.find(repo => repo.id === current);
+    const registered = result.repositories.find(repo => repo.id === current);
     currentRepositories.current = result.repositories;
     setRepositories(result.repositories); setJobs(result.jobs);
     const maintenance = result.indexMaintenance;
     setIndexMaintenance(maintenance && (maintenance.status === "failed" || maintenance.reason === "insufficientSpace" || maintenance.reason === "busy") ? maintenance : null);
-    const current = currentRepoId.current;
     const next = result.repositories.some(repo => repo.id === current) ? current
       : (!current ? result.repositories.find(repo => repo.id === localStorage.getItem("agent-manor-repository"))?.id : undefined) ?? result.repositories[0]?.id ?? "";
     if (next !== current) chooseRepo(next);
+    else if (previous?.version && registered && !registered.version) chooseRepo(current, true);
   }, [chooseRepo]);
   const recoverMissingRepository = useCallback((failure: unknown) => {
     if (!(failure instanceof ApiError) || !["REPOSITORY_NOT_FOUND", "JOB_NOT_FOUND"].includes(failure.code)) return false;
@@ -528,7 +532,7 @@ export function useCodeMapPage({ active, theme, onSession }: {
   const mapLegend = <div className="map-legend"><span>{metric === "activity" ? t("codeMap.metric.activity") : t("codeMap.exactCoverage")}</span><span className="legend-scale">{[0, 1, 2, 3, 4].map(tone => <i key={tone} className={`tone-${tone}`} />)}</span><span>{metric === "activity" ? t("codeMap.activity.range", { count: visible.reduce((max, file) => Math.max(max, metricValue(file, metric)), 0) }) : "0 → 100%"}</span><span className="near-key legend-near" /><span>{t("codeMap.near")}</span><small>{t("codeMap.area")}</small></div>;
   return {
     openMap,
-    sourceAction: active && repository && <SourcesDialog key={repoId} repo={repository} query={query} gapCount={coverage?.gapCount ?? coverage?.gaps.length ?? 0} onJob={next => { if (renderEpoch === pageEpoch.current) recordJob(next); }} />,
+    sourceAction: active && repository && <SourcesDialog key={`${repoId}:${renderEpoch}`} repo={repository} query={query} gapCount={coverage?.gapCount ?? coverage?.gaps.length ?? 0} onJob={next => { if (renderEpoch === pageEpoch.current) recordJob(next); }} />,
     refreshAction: <button hidden={!active} className="button primary refresh-button" onClick={() => void runRefresh()} disabled={!repository || actionPending || jobActive(job)} title={coverage ? t("codeMap.analysis.info", { date: dateLabel(coverage.createdAt) }) : undefined} aria-label={jobActive(job) ? t("codeMap.refresh.running") : t("codeMap.refresh.action")}><ArrowClockwise size={16} className={jobActive(job) ? "spinning" : ""} /><span className="refresh-label">{jobActive(job) ? t("codeMap.refresh.running") : t("codeMap.refresh.action")}</span></button>,
     maintenanceNotice: indexMaintenance && <Notice danger={indexMaintenance.status === "failed"} action={<button className="button subtle" onClick={() => setIndexMaintenance(null)}>{t("common.close")}</button>}>
       {messageText(indexMaintenance.messageDescriptor, t("diagnostics.index.maintenance.error"))}

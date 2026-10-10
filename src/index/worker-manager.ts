@@ -146,6 +146,7 @@ export class WorkerManager {
     if (this.sessionActive.delete(jobId)) { this.sessionRequests.delete(jobId); return; }
     this.active.delete(jobId);
     const job = this.cancelled.get(jobId) ?? this.store.findJob(jobId);
+    this.cancelled.delete(jobId);
     if (!job) return;
     for (const resolve of this.pending.get(jobId) ?? []) resolve(job);
     this.pending.delete(jobId);
@@ -164,6 +165,7 @@ export class WorkerManager {
       if (job && job.status !== "completed" && job.status !== "failed") this.store.failJob(id, error, errorDescriptor);
       this.finished(id);
     }
+    this.cancelled.clear();
   }
 
   async close(): Promise<void> {

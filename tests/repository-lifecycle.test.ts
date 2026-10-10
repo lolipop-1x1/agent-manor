@@ -204,6 +204,8 @@ for (const boundary of ["running", "publish", "published"] as const) {
       assert.equal((await waitingRunning).status, "cancelled");
       assert.equal((await waitingQueued).status, "cancelled");
       assert.equal((await manager.waitForJob(running.id)).status, "cancelled");
+      assert.equal((await manager.waitForJob(queued.id)).status, "cancelled");
+      assert.equal((manager as unknown as { cancelled: Map<string, unknown> }).cancelled.size, 2);
       assert.equal(store.findJob(running.id), undefined);
       assert.equal(store.findJob(queued.id), undefined);
       const registered = await store.registerRepositoryResult(first);
@@ -215,6 +217,9 @@ for (const boundary of ["running", "publish", "published"] as const) {
       control.release();
       assert.equal((await waitingRemaining).status, "completed");
       assert.equal((await waitingNew).status, "completed");
+      assert.equal((manager as unknown as { cancelled: Map<string, unknown> }).cancelled.size, 0);
+      assert.throws(() => manager.waitForJob(running.id), error => error instanceof StoreError && error.code === "JOB_NOT_FOUND");
+      assert.throws(() => manager.waitForJob(queued.id), error => error instanceof StoreError && error.code === "JOB_NOT_FOUND");
       assert.equal(sessions.getJob(sessionJob.id).status, "complete");
       assert.equal(sessions.list().total, 1);
       assert.equal(store.findJob(running.id), undefined);
@@ -223,6 +228,41 @@ for (const boundary of ["running", "publish", "published"] as const) {
       assert.equal(store.getSnapshot(target.id).baseline.files.length, 1);
       assert.equal(store.getSnapshot(other.id).baseline.files.length, 1);
       assert.equal(manager.autoRefreshRepository(target.id, Date.now(), 60_000), undefined);
+    } finally { control.release(); await manager.close(); }
+  }));
+}
+
+for (const ending of ["failure", "close"] as const) {
+  test(`Worker ${ending} 边界释放取消缓存，保留立即收束并结束其他等待者`, { timeout: 15_000 }, async () => fixture(async ({ directory, store, sessions, first, second, history }) => {
+    const target = await store.registerRepository(first);
+    const other = await store.registerRepository(second);
+    const control = await controlledManager(store, sessions, directory, history, "running");
+    const { manager } = control;
+    try {
+      const paused = once(control.worker, "message");
+      const running = manager.refresh(target.id);
+      const waitingRunning = manager.waitForJob(running.id);
+      const queued = manager.refresh(target.id);
+      const waitingQueued = manager.waitForJob(queued.id);
+      const remaining = manager.refresh(other.id);
+      const waitingRemaining = manager.waitForJob(remaining.id);
+      await paused;
+      manager.deleteRepository(target.id);
+      assert.equal((await waitingRunning).status, "cancelled");
+      assert.equal((await waitingQueued).status, "cancelled");
+      assert.equal((await manager.waitForJob(running.id)).status, "cancelled");
+      assert.equal((await manager.waitForJob(queued.id)).status, "cancelled");
+      const cancelled = (manager as unknown as { cancelled: Map<string, unknown> }).cancelled;
+      assert.equal(cancelled.size, 2);
+      if (ending === "failure") {
+        const stopped = once(control.worker, "exit");
+        await control.worker.terminate();
+        await stopped;
+      } else await manager.close();
+      assert.equal((await waitingRemaining).status, "failed");
+      assert.equal(cancelled.size, 0);
+      assert.throws(() => manager.waitForJob(running.id), error => error instanceof StoreError && error.code === "JOB_NOT_FOUND");
+      assert.throws(() => manager.waitForJob(queued.id), error => error instanceof StoreError && error.code === "JOB_NOT_FOUND");
     } finally { control.release(); await manager.close(); }
   }));
 }

@@ -23,4 +23,4 @@ date: 2026-10-11
 
 代码地图完整版本发布继续遵循 [ADR 0004](0004-publish-complete-analysis-versions.md)，物理空间回收继续遵循 [ADR 0010](0010-incremental-refresh-and-space-reclamation.md)，删除数据库记录不承诺即时缩小数据库文件。
 
-需求树和后续验收范围见[仓库生命周期规格](../../.scratch/repository-lifecycle/spec.md)。本 ADR 的提出不代表功能已实现，也不授权删除运行环境中的真实仓库数据。
+需求树见[仓库生命周期规格](../../.scratch/repository-lifecycle/spec.md)，实现与运行证据见[验收记录](../validation/repository-lifecycle.md)。管理验收使用隔离合成数据，本 ADR 不授权删除运行环境中的真实仓库数据。

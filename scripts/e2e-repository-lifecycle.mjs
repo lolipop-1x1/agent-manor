@@ -5,6 +5,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
+import { Worker } from "node:worker_threads";
+import Database from "better-sqlite3";
 import { startService } from "../dist/server.js";
 import { clientIds } from "../dist/clients.js";
 import { updatePreferences } from "../dist/service/preferences.js";
@@ -79,7 +81,14 @@ try {
     await writeFile(join(path, "src", path === alpha ? "alpha.ts" : "beta.ts"), "export const synthetic = 1;\n");
   }
   const projects = [alpha, beta, join(alpha, "src"), ...Array.from({ length: 45 }, (_, index) => join(directory, `synthetic-project-${String(index).padStart(2, "0")}`)), join(directory, "first/shared"), join(directory, "second/shared")];
-  for (const [index, path] of projects.entries()) await writeFile(join(roots.codex, `project-${index}.jsonl`), history(`project-${index}`, path).map(row => JSON.stringify(row)).join("\n") + "\n");
+  for (const [index, path] of projects.entries()) {
+    const records = history(`project-${index}`, path);
+    if (path === beta) records.push(
+      { type: "response_item", timestamp: "2026-10-10T00:00:03Z", payload: { type: "function_call", name: "shell_command", call_id: "read-beta", arguments: JSON.stringify({ command: "cat src/beta.ts", workdir: beta }) } },
+      { type: "response_item", timestamp: "2026-10-10T00:00:04Z", payload: { type: "function_call_output", call_id: "read-beta", output: "Exit code: 0\nOutput:\nexport const synthetic = 1;\n" } },
+    );
+    await writeFile(join(roots.codex, `project-${index}.jsonl`), records.map(row => JSON.stringify(row)).join("\n") + "\n");
+  }
   await writeFile(join(roots.codex, "no-project.jsonl"), history("no-project").map(row => JSON.stringify(row)).join("\n") + "\n");
   await writeFile(join(roots.claude, "global.jsonl"), [
     { type: "user", uuid: "global-user", timestamp: "2026-10-10T00:00:00Z", sessionId: "global-example", cwd: globalProject, message: { content: [{ type: "text", text: "合成全局客户端项目" }] } },
@@ -184,6 +193,93 @@ try {
     await page.unroute(pattern); await u.deletion().getByRole("button", { name: u.names.delete, exact: true }).click(); await u.map("alpha-repository");
     await u.register(); await u.dialog().getByRole("textbox", { name: u.names.path, exact: true }).fill(f.beta); await u.dialog().getByRole("button", { name: u.names.submit, exact: true }).click(); await u.map("beta-repository");
   });
+  // 暂存新刷新消息使任务真正保持排队，再用数据库触发器控制失败，最后放行正常分析。
+  const database = new Database(join(home, "index.sqlite"));
+  const postMessage = Worker.prototype.postMessage;
+  let heldRefresh;
+  Worker.prototype.postMessage = function(message, ...args) {
+    if (message.type === "refresh") {
+      assert.equal(heldRefresh, undefined, "组合回归只能暂存一个刷新任务");
+      heldRefresh = { worker: this, message, args };
+      return;
+    }
+    return postMessage.call(this, message, ...args);
+  };
+  try {
+    database.exec("CREATE TRIGGER synthetic_publish_failure BEFORE INSERT ON versions BEGIN SELECT RAISE(ABORT,'synthetic publish failure'); END");
+    await writeFile(join(beta, "src/recreated.ts"), "export const recreated = 2;\n");
+    await step("另一标签页删除并同路径重登，版本退回无结果时清空旧地图与选择", async (page, f, u) => {
+      await u.map("beta-repository");
+      const sessionFilter = u.button("筛选会话");
+      await sessionFilter.click(); await page.getByRole("option").filter({ hasText: "合成项目 project-1" }).click();
+      await page.getByRole("button", { name: /^src\/beta\.ts/ }).click();
+      await page.getByRole("heading", { name: "beta.ts", exact: true }).waitFor();
+      u.ensure(await page.locator(".map-file.selected").count() === 1, "前置文件选择未建立");
+      u.ensure((await sessionFilter.innerText()).includes("合成项目 project-1"), "前置会话筛选未建立");
+      const other = await page.context().newPage();
+      const api = async (path, method = "GET", body) => {
+        const response = await other.request.fetch(f.base + "/api/v1" + path, { method, ...(body === undefined ? {} : { data: body }) });
+        u.ensure(response.ok(), "外部页面 API 失败 " + path); return response.json();
+      };
+      const previous = (await api("/status?summary=true")).repositories.find(repo => repo.path === f.beta);
+      await page.evaluate(version => { globalThis.__previousBetaVersion = version; }, previous.version);
+      let releaseStatus;
+      const changed = new Promise(resolve => { releaseStatus = resolve; });
+      const pattern = "**/api/v1/status?summary=true";
+      await page.route(pattern, async route => { await changed; await route.continue(); });
+      try {
+        await api("/repositories/" + previous.id, "DELETE");
+        const registered = await api("/repositories", "POST", { path: f.beta });
+        u.ensure(registered.repository.id === previous.id && !registered.repository.version, "同路径没有复用 ID 或新登记残留版本");
+        await page.evaluate(value => { globalThis.__recreatedBetaJob = value.job.id; globalThis.__recreatedBetaId = value.repository.id; }, registered);
+        releaseStatus();
+        await page.locator(".code-map").waitFor({ state: "hidden" });
+        await page.getByText("仓库尚无完整分析结果", { exact: true }).waitFor();
+        u.ensure(await page.getByRole("heading", { name: "beta.ts", exact: true }).count() === 0, "旧文件详情仍可见");
+        u.ensure(await page.locator(".map-file.selected").count() === 0, "旧文件选择残留");
+        u.ensure(await sessionFilter.innerText() === "全部会话", "旧会话筛选残留");
+        await sessionFilter.click(); u.ensure(await page.getByRole("option").count() === 1, "旧地图会话列表残留");
+        await page.getByRole("combobox", { name: "筛选会话搜索", exact: true }).press("Escape");
+        const { job } = await api("/jobs/" + registered.job.id);
+        u.ensure(job.status === "queued", "未验证真实排队中的无版本登记");
+        await page.screenshot({ path: f.artifacts + "/recreated-queued-zh-light.png" });
+      } finally { releaseStatus(); await page.unroute(pattern); await other.close(); }
+    });
+    assert.ok(heldRefresh, "新登记没有创建刷新消息");
+    Worker.prototype.postMessage = postMessage;
+    postMessage.call(heldRefresh.worker, heldRefresh.message, ...heldRefresh.args); heldRefresh = undefined;
+    await step("同路径重登的真实分析失败仍无旧结果", async (page, f, u) => {
+      await page.getByText(/刷新失败：.*synthetic publish failure/).waitFor();
+      const saved = await page.evaluate(() => ({ id: globalThis.__recreatedBetaId, jobId: globalThis.__recreatedBetaJob, version: globalThis.__previousBetaVersion }));
+      const status = await (await page.request.get(f.base + "/api/v1/status?summary=true")).json();
+      const current = status.repositories.find(repo => repo.id === saved.id);
+      u.ensure(!current.version, "失败后发布了版本");
+      u.ensure(status.jobs.find(job => job.id === saved.jobId)?.status === "failed", "不是后台真实失败");
+      u.ensure(await page.locator(".code-map").count() === 0, "失败后恢复旧地图");
+      u.ensure(await page.getByRole("heading", { name: "beta.ts", exact: true }).count() === 0, "失败后恢复旧文件详情");
+      u.ensure(await u.button("筛选会话").innerText() === "全部会话", "失败后恢复旧会话筛选");
+      u.ensure(!(await page.locator("body").innerText()).includes(saved.version), "失败后显示旧结果版本");
+      await page.screenshot({ path: f.artifacts + "/recreated-failed-zh-light.png" });
+    });
+    database.exec("DROP TRIGGER synthetic_publish_failure");
+    await step("重新分析完成后自动加载新版本，保留清空后的选择状态", async (page, f, u) => {
+      await page.getByRole("banner").getByRole("button", { name: "刷新分析", exact: true }).click(); await u.map("beta-repository");
+      await page.getByRole("button", { name: /^src\/recreated\.ts/ }).waitFor();
+      const saved = await page.evaluate(() => ({ id: globalThis.__recreatedBetaId, version: globalThis.__previousBetaVersion }));
+      const status = await (await page.request.get(f.base + "/api/v1/status?summary=true")).json();
+      const current = status.repositories.find(repo => repo.id === saved.id);
+      u.ensure(current.version && current.version !== saved.version, "没有自动加载新的发布版本");
+      u.ensure(await page.locator(".map-file.selected").count() === 0, "新版本自动恢复旧文件选择");
+      u.ensure(await u.button("筛选会话").innerText() === "全部会话", "新版本自动恢复旧会话筛选");
+      await page.getByRole("button", { name: /^src\/recreated\.ts/ }).click();
+      await page.getByRole("heading", { name: "recreated.ts", exact: true }).waitFor();
+      await page.screenshot({ path: f.artifacts + "/recreated-complete-zh-light.png" });
+    });
+  } finally {
+    Worker.prototype.postMessage = postMessage;
+    if (heldRefresh) postMessage.call(heldRefresh.worker, heldRefresh.message, ...heldRefresh.args);
+    database.exec("DROP TRIGGER IF EXISTS synthetic_publish_failure"); database.close();
+  }
   await step("删除时旧统计请求被丢弃，另一标签页自动恢复到剩余仓库", async (page, f, u) => {
     await u.choose(f.alpha); await u.map("alpha-repository");
     const other = await page.context().newPage(); await other.goto(f.base); const second = ui(other); await second.map("alpha-repository");
