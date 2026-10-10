@@ -42,7 +42,7 @@ export async function usageFixture() {
     if (sessionIndex === 35) {
       pending.sink.usage({ id: `${id}:undated`, model: "fixture-unpriced", inputTokens: 500, outputTokens: 50 });
       pending.sink.usage({ id: `${id}:known-unknown`, model: "unknown", inputTokens: 100, outputTokens: 50, cachedInputTokens: 0, cacheWriteTokens: 0 });
-      pending.sink.usage({ id: `${id}:missing-model`, inputTokens: 100, outputTokens: 50, cachedInputTokens: 0, cacheWriteTokens: 0 });
+      pending.sink.usage({ id: `${id}:missing-model`, inputTokens: 100, cachedInputTokens: 0, cacheWriteTokens: 0 });
     }
     pending.flush(); store.finishRevision(pending.revision, summary);
     sources.push({ path: summary.path, revision: pending.revision, fingerprint: "synthetic" });

@@ -38,6 +38,9 @@ try {
     await page.setViewportSize({ width: 1440, height: 1080 }); await ready();
     ensure(await page.getByRole("heading", { name: "用量统计", exact: true }).count() === 1, "独立统计入口未显示");
     ensure((await metrics()).includes("1,008"), "默认范围请求数错误");
+    const undated = page.locator(".usage-notice").filter({ hasText: "日期无法判断" });
+    ensure((await undated.innerText()).includes("完整用量 2 · 部分 1 · 未记录 0"), "无时间的部分 Token 小计没有独立覆盖状态");
+    ensure((await undated.innerText()).includes("完整估价 0 · 部分 0 · 未定价 3"), "无时间费用小计没有独立定价覆盖状态");
     const fullMetrics = await metrics(), fullPlot = await plot();
     const pager = page.getByRole("navigation", { name: "会话明细", exact: true });
     await change(() => pager.getByRole("button", { name: "会话明细下一页", exact: true }).click());
@@ -120,6 +123,7 @@ try {
     await page.getByRole("option").filter({ hasText: "fixture / fixture-fast" }).first().click(); await save(() => button("保存配置").click());
     ensure((await api("/usage/pricing")).configuration.mappings[0].targetProvider === "fixture", "映射没有保留服务商");
     await button("关闭模型价格").click(); await ready();
+    ensure((await undated.innerText()).includes("完整估价 0 · 部分 1 · 未定价 2"), "无时间的费用小计没有区分部分估价与未定价");
     await page.setViewportSize({ width: 1440, height: 1360 }); await page.evaluate(() => scrollTo(0, 0));
     await page.screenshot({ path: `${options.artifacts}/zh-overview.png` });
     await page.screenshot({ path: `${options.artifacts}/zh-desktop.png`, fullPage: true });
@@ -191,8 +195,10 @@ try {
     };
     const named = await filterModel("literal:unknown"); ensure(named.totals.requests === 1, "真实unknown模型与缺模型合并");
     ensure((await page.locator(".usage-ranking").innerText()).includes("unknown"), "真实unknown模型被翻译");
+    ensure(await button("移除 unknown").count() === 1, "真实模型筛选标签的可访问名称没有恢复原文");
     const missing = await filterModel("unknown"); ensure(missing.totals.requests === 1, "缺模型筛选包含真实unknown模型");
     ensure((await page.locator(".usage-ranking").innerText()).includes("未知"), "缺模型来源标签没有翻译");
+    ensure(await button("移除 未知").count() === 1, "缺模型筛选标签的可访问名称没有翻译");
     await filterModel("fixture-large");
     await page.locator(".usage-session-section tbody tr").first().getByRole("button", { name: "查看请求明细", exact: true }).click();
     await page.locator(".usage-request-section tbody tr").first().waitFor();

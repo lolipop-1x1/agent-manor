@@ -8,7 +8,7 @@
 - [价格与用量分别版本化](../../docs/adr/0012-versioned-usage-price-catalog.md) 已接受，完整方案已确认，直接在 main 实施。
 - 领域术语区分模型用量、留存内容估算和估算费用；估算费用不表示实际账单或订阅支出。
 - 2026-10-11：[全局请求聚合](issues/03-analytics.md) 已实现统一筛选、时区时间桶、独立缺时间小计和有界证据分页；用量聚合不再依赖逐会话画像，合成回归已通过，界面与完整集成验收仍待完成。
-- 2026-10-11：[价格](issues/02-pricing.md)、[页面](issues/04-interface.md)、[审查修正](issues/06-review-fixes.md) 与 [集成验收](issues/05-integration-validation.md) 均已完成。681 项自动测试、类型、国际化、构建与公开内容检查通过；真实 Chrome 的 55 项隔离合成交互通过。结果与支持边界见 [验收记录](../../docs/validation/usage-statistics.md)。
+- 2026-10-11：[价格](issues/02-pricing.md)、[页面](issues/04-interface.md)、[审查修正](issues/06-review-fixes.md) 与 [集成验收](issues/05-integration-validation.md) 均已完成。681 项自动测试、类型、国际化、构建与公开内容检查通过；真实 Chrome 的 60 项隔离合成交互通过。结果与支持边界见 [验收记录](../../docs/validation/usage-statistics.md)。
 
 ## 讨论树
 
