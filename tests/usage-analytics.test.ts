@@ -6,6 +6,7 @@ import test from "node:test";
 import type { SessionMessage, SessionSourceMeta, SessionSummary, SessionUsage } from "../src/session-contracts.js";
 import type { PricingStatus, RequestCost, UsageQuery, UsageSource } from "../src/usage-contracts.js";
 import { SessionStore } from "../src/sessions/store.js";
+import { usageDimensionKey, usageDimensionValue } from "../src/usage/dimensions.js";
 import { buildUsageReport, buildUsageRequestPage } from "../src/usage/analytics.js";
 
 const pricing: PricingStatus = { version: "prices-1", source: "bundled", sourceUrl: "https://example.invalid/prices",
@@ -126,6 +127,26 @@ test("多模型按请求筛选，包含和排除组合涵盖全部维度与unkno
   assert.equal(report(input, { projects: ["/workspace/a"], excludeProjects: ["/workspace/a"] }).totalSessions, 0);
 });
 
+test("真实 unknown 与 literal 前缀不与缺失模型和项目合并，分别包含与排除", () => {
+  const input = source([session("missing"), session("literal", { project: "unknown" }), session("escaped", { project: "literal:unknown" })], [
+    ["missing", usage("missing", { model: undefined })], ["literal", usage("literal", { model: "unknown" })],
+    ["escaped", usage("escaped", { model: "literal:unknown" })],
+  ]);
+  const all = report(input, { groupBy: "model" });
+  assert.deepEqual(all.facets.models, ["literal:literal:unknown", "literal:unknown", "unknown"]);
+  assert.deepEqual(all.facets.projects, all.facets.models);
+  assert.equal(all.groups.length, 3);
+  for (const [raw, id] of [[undefined, "missing"], ["unknown", "literal"], ["literal:unknown", "escaped"]] as const) {
+    const key = usageDimensionKey(raw);
+    assert.equal(usageDimensionValue(key), raw);
+    assert.equal(report(input, { models: [key], projects: [key] }).sessions[0]?.session.id, id);
+    assert.equal(report(input, { excludeModels: [key] }).totals.requests, 2);
+    assert.equal(report(input, { excludeProjects: [key] }).totals.requests, 2);
+  }
+  assert.equal(all.groups.find(group => group.key === "literal:unknown")?.label, "unknown");
+  assert.equal(all.groups.find(group => group.key === "literal:literal:unknown")?.label, "literal:unknown");
+});
+
 test("主子会话各自新增量，项目不继承父会话，类型不靠标题猜测", () => {
   const input = source([session("parent", { project: "/workspace/parent" }),
     session("child", { relationship: "child", parentSessionId: "parent", project: "/workspace/child" }),
@@ -199,6 +220,9 @@ test("缓存比例的分子分母来自相同可计算请求集合，推理和�
   assert.equal(result.totals.freshInputTokens, 70);
   assert.equal(result.totals.reasoningTokens, 30);
   assert.equal(result.totals.cacheReadRatio, 0.2);
+  assert.equal(result.totals.cacheReadRatioRequests, 1);
+  assert.equal(result.days[0]?.totals.cacheReadRatioRequests, 1);
+  assert.equal(result.groups[0]?.totals.cacheReadRatioRequests, 1);
   assert.equal(result.totals.inputTokens, 1020);
 });
 

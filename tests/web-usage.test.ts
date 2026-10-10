@@ -4,7 +4,7 @@ import type { UsageTotals } from "../src/usage-contracts.ts";
 import { composition, compositionIsPartial, defaultRoute, metricValue, readUsageRoute, usageAddress, usageParameters, usageQuery } from "../web/features/usage/model.ts";
 import { translate } from "../src/i18n/index.ts";
 
-const totals = (): UsageTotals => ({ requests: 1, sessions: 1, tokens: 250, inputTokens: 200, outputTokens: 50, freshInputTokens: 100, cacheReadTokens: 80, cacheWriteTokens: 20, reasoningTokens: 30, estimatedCost: .0003, cacheReadRatio: .4, completeTokenRequests: 1, partialTokenRequests: 0, missingTokenRequests: 0, pricedRequests: 1, partiallyPricedRequests: 0, unpricedRequests: 0, missingTimeRequests: 0 });
+const totals = (): UsageTotals => ({ requests: 1, sessions: 1, tokens: 250, inputTokens: 200, outputTokens: 50, freshInputTokens: 100, cacheReadTokens: 80, cacheWriteTokens: 20, reasoningTokens: 30, estimatedCost: .0003, cacheReadRatio: .4, cacheReadRatioRequests: 1, completeTokenRequests: 1, partialTokenRequests: 0, missingTokenRequests: 0, pricedRequests: 1, partiallyPricedRequests: 0, unpricedRequests: 0, missingTimeRequests: 0 });
 
 test("用量默认范围按本机日历含今天连续30天，不修改传入时间", () => {
   const now = new Date(2026, 9, 11, 12, 30);
@@ -58,4 +58,16 @@ test("组成只绘制互斥桶，推理输出与缓存输入不重复堆叠", ()
 test("动态图表与筛选标识在中英文目录中完整，产品不展示稳定标识", () => {
   const keys = ["title", "group.model", "interval.hour", "metric.cost", "composition.cacheRead", "filter.relationship", "filter.minTokens", "reason.tier_unknown", "pricing.manual", "pricing.restore", "tokens.input"];
   for (const language of ["zh-CN", "en"] as const) for (const key of keys) assert.notEqual(translate(language, `usage.${key}`), translate(language, "common.translationUnavailable"));
+});
+
+test("用量会话、无时间请求和档位数量采用英语复数及中文格式", () => {
+  assert.equal(translate("en", "usage.coverage.noUsage", { count: 1 }), "1 session has no recorded usage");
+  assert.equal(translate("en", "usage.coverage.noUsage", { count: 2 }), "2 sessions have no recorded usage");
+  assert.equal(translate("en", "usage.coverage.undated", { count: 1, tokens: "120", cost: "0.1" }), "Date unknown: 1 request · 120 tokens · 0.1 USD");
+  assert.equal(translate("en", "usage.coverage.undated", { count: 2, tokens: "240", cost: "0.2" }), "Date unknown: 2 requests · 240 tokens · 0.2 USD");
+  assert.equal(translate("en", "usage.pricing.tiers", { count: 1 }), "1 context tier");
+  assert.equal(translate("en", "usage.pricing.tiers", { count: 2 }), "2 context tiers");
+  assert.equal(translate("zh-CN", "usage.coverage.noUsage", { count: 1 }), "1 个会话未记录用量");
+  assert.equal(translate("zh-CN", "usage.coverage.cache", { count: 1, requests: 3 }), "缓存比例覆盖：1 / 3 条请求");
+  assert.equal(translate("en", "usage.pricing.contextThreshold", { count: 20000 }), "Applies from 20,000 input tokens");
 });

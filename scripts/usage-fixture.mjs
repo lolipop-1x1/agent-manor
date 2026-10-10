@@ -17,6 +17,7 @@ export async function usageFixture() {
   const prices = Object.fromEntries(models.map((model, index) => [model, { id: model, name: model,
     cost: { input: 1 + index * 2, output: 5 + index * 5, cache_read: 0.1 + index * 0.2, cache_write: 1.25 + index * 2.5 },
     limit: { context: 100_000, output: 16_000 } }]));
+  prices["fixture-large"].cost.tiers = [{ tier: { type: "context", size: 20_000 }, input: 7.5, output: 22.5, cache_read: 0.75, cache_write: 9.375 }];
   for (let sessionIndex = 0; sessionIndex < 36; sessionIndex++) {
     const id = `fixture-session-${String(sessionIndex).padStart(2, "0")}`;
     const child = sessionIndex > 0 && sessionIndex % 6 === 0;
@@ -38,7 +39,11 @@ export async function usageFixture() {
         model: sessionIndex === 34 ? "fixture-unpriced" : models[(day + sessionIndex) % 3],
         inputTokens: input, outputTokens: 500 + day * 30 + sessionIndex * 20, cachedInputTokens: Math.round(input * 0.6), cacheWriteTokens: 0 });
     }
-    if (sessionIndex === 35) pending.sink.usage({ id: `${id}:undated`, model: "fixture-unpriced", inputTokens: 500, outputTokens: 50 });
+    if (sessionIndex === 35) {
+      pending.sink.usage({ id: `${id}:undated`, model: "fixture-unpriced", inputTokens: 500, outputTokens: 50 });
+      pending.sink.usage({ id: `${id}:known-unknown`, model: "unknown", inputTokens: 100, outputTokens: 50, cachedInputTokens: 0, cacheWriteTokens: 0 });
+      pending.sink.usage({ id: `${id}:missing-model`, inputTokens: 100, outputTokens: 50, cachedInputTokens: 0, cacheWriteTokens: 0 });
+    }
     pending.flush(); store.finishRevision(pending.revision, summary);
     sources.push({ path: summary.path, revision: pending.revision, fingerprint: "synthetic" });
   }

@@ -2,6 +2,7 @@ import type { SessionSummary, SessionUsage } from "../session-contracts.js";
 import type { PricingStatus, RequestCost, UsageGroup, UsageInterval, UsageQuery, UsageReport, UsageRequestPage, UsageSeries,
   UsageSessionRow, UsageSource, UsageTimeBucket, UsageTotals } from "../usage-contracts.js";
 import { StoreError } from "../index/store.js";
+import { usageDimensionKey, usageDimensionValue } from "./dimensions.js";
 
 const UNKNOWN = "unknown";
 type Estimate = (usage: SessionUsage, client?: string) => RequestCost;
@@ -20,15 +21,15 @@ interface Selection {
 const numeric = (value: number | undefined): value is number => value !== undefined && Number.isFinite(value) && value >= 0;
 const coverageOf = (usage: SessionUsage): Coverage => numeric(usage.inputTokens) && numeric(usage.outputTokens) ? "complete"
   : numeric(usage.inputTokens) || numeric(usage.outputTokens) ? "partial" : "missing";
-const dimension = (request: Request, group: UsageGroup): string => group === "project" ? request.session.project ?? UNKNOWN
-  : group === "model" ? request.usage.model ?? UNKNOWN : request.session.client;
+const dimension = (request: Request, group: UsageGroup): string => group === "project" ? usageDimensionKey(request.session.project)
+  : group === "model" ? usageDimensionKey(request.usage.model) : request.session.client;
 const includes = (value: string, included?: string[], excluded?: string[]) => (!included?.length || included.includes(value))
   && !excluded?.includes(value);
 
 function accumulator(): Accumulator {
   return { sessions: new Set(), pairedInput: 0, pairedCache: 0, totals: {
     requests: 0, sessions: 0, tokens: null, inputTokens: null, outputTokens: null, freshInputTokens: null,
-    cacheReadTokens: null, cacheWriteTokens: null, reasoningTokens: null, estimatedCost: null, cacheReadRatio: null,
+    cacheReadTokens: null, cacheWriteTokens: null, reasoningTokens: null, estimatedCost: null, cacheReadRatio: null, cacheReadRatioRequests: 0,
     completeTokenRequests: 0, partialTokenRequests: 0, missingTokenRequests: 0,
     pricedRequests: 0, partiallyPricedRequests: 0, unpricedRequests: 0, missingTimeRequests: 0,
   } };
@@ -55,6 +56,7 @@ function add(target: Accumulator, request: Request): void {
   if (request.time === undefined) totals.missingTimeRequests += 1;
   if (numeric(usage.inputTokens) && numeric(usage.cachedInputTokens) && usage.cachedInputTokens <= usage.inputTokens) {
     target.pairedInput += usage.inputTokens; target.pairedCache += usage.cachedInputTokens;
+    totals.cacheReadRatioRequests += 1;
     totals.cacheReadRatio = target.pairedInput > 0 ? target.pairedCache / target.pairedInput : null;
   }
 }
@@ -146,7 +148,7 @@ function matchesDate(request: Request, query: UsageQuery): boolean {
 }
 function matchesSession(session: SessionSummary, query: UsageQuery): boolean {
   const type = session.relationship === "fork" ? "fork" : session.executionMode === "quiet" ? "automation" : "interactive";
-  return includes(session.client, query.clients, query.excludeClients) && includes(session.project ?? UNKNOWN, query.projects, query.excludeProjects)
+  return includes(session.client, query.clients, query.excludeClients) && includes(usageDimensionKey(session.project), query.projects, query.excludeProjects)
     && (!query.relationship || query.relationship === "all" || (session.relationship === "child" ? "child" : "main") === query.relationship)
     && (!query.sessionType || query.sessionType === "all" || type === query.sessionType);
 }
@@ -181,16 +183,16 @@ function select(source: UsageSource, requested: UsageQuery, pricing: PricingStat
   const bySession = new Map<string, { dated: Request[]; undated: Request[] }>();
   const facets = { clients: new Set<string>(), projects: new Set<string>(), models: new Set<string>() };
   for (const session of sessions.values()) {
-    facets.clients.add(session.client); facets.projects.add(session.project ?? UNKNOWN);
+    facets.clients.add(session.client); facets.projects.add(usageDimensionKey(session.project));
     if (!hasUsage.has(session.id)) facets.models.add(UNKNOWN);
     if (matchesSession(session, query)) bySession.set(session.id, { dated: [], undated: [] });
   }
   for (const item of unique.values()) {
     const session = sessions.get(item.sessionId);
     if (!session) continue;
-    facets.models.add(item.usage.model ?? UNKNOWN);
+    facets.models.add(usageDimensionKey(item.usage.model));
     const target = bySession.get(session.id);
-    if (!target || !includes(item.usage.model ?? UNKNOWN, query.models, query.excludeModels)) continue;
+    if (!target || !includes(usageDimensionKey(item.usage.model), query.models, query.excludeModels)) continue;
     const coverage = coverageOf(item.usage), cost = estimate(item.usage, session.client);
     if (!matchesCoverage(coverage, cost.coverage, query)) continue;
     const time = instant(item.usage.occurredAt);
@@ -235,7 +237,7 @@ function grouped(requests: Request[], query: UsageQuery): UsageSeries[] {
     add(groups.get(key)!, request);
   }
   const value = (totals: UsageTotals) => query.metric === "cost" ? totals.estimatedCost : query.metric === "requests" ? totals.requests : totals.tokens;
-  return [...groups].map(([key, result]) => ({ key, label: key, totals: result.totals }))
+  return [...groups].map(([key, result]) => ({ key, label: usageDimensionValue(key) ?? UNKNOWN, totals: result.totals }))
     .sort((left, right) => compareValues(value(left.totals), value(right.totals), "desc") || left.key.localeCompare(right.key));
 }
 function bucketed(requests: Request[], query: UsageQuery, dayOnly = false): UsageTimeBucket[] {

@@ -3,12 +3,14 @@ import type { CSSProperties } from "react";
 import type { UsageGroup, UsageMetric, UsageReport, UsageSeries, UsageTimeBucket } from "../../../src/usage-contracts";
 import { clientLabel, useI18n } from "../../shared/i18n";
 import { CLIENTS } from "../../../src/clients";
+import { usageDimensionValue } from "../../../src/usage/dimensions";
 import { composition, compositionIsPartial, metricValue } from "./model";
 
 export function groupLabel(value: string, group: UsageGroup, unknown: string): string {
-  if (value === "unknown") return unknown;
+  const original = usageDimensionValue(value);
+  if (original === undefined) return unknown;
   if (group === "client") { const client = CLIENTS.find(client => client.id === value); if (client) return clientLabel(client.id); }
-  return value;
+  return original;
 }
 export function UsageCharts({ report, metric, group, chart, onBucket, onGroup }: {
   report: UsageReport; metric: UsageMetric; group: UsageGroup; chart: "bar" | "line";
@@ -17,11 +19,12 @@ export function UsageCharts({ report, metric, group, chart, onBucket, onGroup }:
   const { t, number, date, dateTime, percent } = useI18n();
   const plot = useRef<HTMLDivElement>(null);
   const [canvasWidth, setCanvasWidth] = useState(1000);
+  const hasBuckets = report.buckets.length > 0;
   useEffect(() => {
     if (!plot.current) return;
     const observer = new ResizeObserver(entries => { const width = entries[0]?.contentRect.width; if (width) setCanvasWidth(width); });
     observer.observe(plot.current); return () => observer.disconnect();
-  }, []);
+  }, [hasBuckets]);
   const formatValue = (value: number | null) => value === null ? "—" : number(value, metric === "cost" ? { maximumFractionDigits: 6 } : {});
   const compactValue = (value: number) => number(value, { notation: "compact", maximumFractionDigits: metric === "cost" ? 3 : 1 });
   const label = (key: string) => groupLabel(key, group, t("usage.unknown"));

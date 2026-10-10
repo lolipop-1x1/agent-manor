@@ -41,12 +41,12 @@ export interface PricingStatus {
 export interface RequestCost {
   amount: number | null; coverage: "complete" | "partial" | "missing";
   reason?: "model_missing" | "price_missing" | "tokens_missing" | "tier_unknown" | "semantics_unknown";
-  price?: ModelPrice; freshInputTokens?: number;
+  price?: ModelPrice; freshInputTokens?: number; appliedContextThreshold?: number;
 }
 export interface UsageTotals {
   requests: number; sessions: number; tokens: number | null; inputTokens: number | null; outputTokens: number | null;
   freshInputTokens: number | null; cacheReadTokens: number | null; cacheWriteTokens: number | null;
-  reasoningTokens: number | null; estimatedCost: number | null; cacheReadRatio: number | null;
+  reasoningTokens: number | null; estimatedCost: number | null; cacheReadRatio: number | null; cacheReadRatioRequests: number;
   completeTokenRequests: number; partialTokenRequests: number; missingTokenRequests: number;
   pricedRequests: number; partiallyPricedRequests: number; unpricedRequests: number; missingTimeRequests: number;
 }

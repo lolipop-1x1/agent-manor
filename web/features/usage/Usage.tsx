@@ -4,7 +4,8 @@ import { ArrowClockwise, ArrowSquareOut, CaretDown, Funnel, X } from "@phosphor-
 import type { SessionIndexSummary } from "../../../src/session-contracts";
 import type { PricingStatus, UsageGroup, UsageInterval, UsageMetric, UsageQuery, UsageReport, UsageRequestPage, UsageTimeBucket } from "../../../src/usage-contracts";
 import { CLIENTS } from "../../../src/clients";
-import { errorMessage, isAborted, request } from "../../shared/api";
+import { usageDimensionValue } from "../../../src/usage/dimensions";
+import { ApiError, errorMessage, isAborted, request } from "../../shared/api";
 import { clientLabel, useI18n } from "../../shared/i18n";
 import { DatePicker } from "../../shared/ui/DatePicker";
 import { FilterSelect } from "../../shared/ui/FilterSelect";
@@ -14,6 +15,7 @@ import { ResourcePagination } from "../../shared/ui/ResourcePagination";
 import { sessionDisplayTitle } from "../sessions/session-model";
 import { activeFilterCount, defaultRoute, localDay, readUsageRoute, usageAddress, usageParameters, usageQuery, type DateWindow, type UsageRoute } from "./model";
 import { PricingManager } from "./PricingManager";
+import { PriceDetails } from "./PriceDetails";
 import { groupLabel, UsageCharts } from "./UsageCharts";
 import "./usage.css";
 
@@ -26,8 +28,8 @@ export default function Usage({ active, onSession }: { active: boolean; onSessio
   const [report, setReport] = useState<UsageReport | null>(null);
   const loadedQuery = useRef("");
   const [facets, setFacets] = useState<UsageReport["facets"]>({ clients: [], projects: [], models: [] });
-  const [error, setError] = useState(""); const [loading, setLoading] = useState(false);
-  const [requests, setRequests] = useState<UsageRequestPage | null>(null); const [requestError, setRequestError] = useState(""); const [requestLoading, setRequestLoading] = useState(false);
+  const [error, setError] = useState<Error | null>(null); const [loading, setLoading] = useState(false);
+  const [requests, setRequests] = useState<UsageRequestPage | null>(null); const [requestError, setRequestError] = useState<Error | null>(null); const [requestLoading, setRequestLoading] = useState(false);
   const [pricesOpen, setPricesOpen] = useState(false);
   const patch = (value: Partial<UsageRoute>, reset = true) => setRoute(current => ({ ...current, ...(reset ? { page: 1, selectedSession: undefined, requestPage: 1 } : {}), ...value }));
   useEffect(() => {
@@ -37,14 +39,13 @@ export default function Usage({ active, onSession }: { active: boolean; onSessio
   useEffect(() => { if (active && location.hash.startsWith("#usage")) history.replaceState(null, "", usageAddress(route)); }, [active, route]);
   useEffect(() => {
     if (!active) return;
-    const controller = new AbortController(); setLoading(true); setError("");
+    const controller = new AbortController(); setLoading(true); setError(null);
     void Promise.all([request<SessionIndexSummary>("/sessions/status?summary=true", { signal: controller.signal }), request<PricingStatus>("/usage/pricing", { signal: controller.signal })]).then(([index, prices]) => {
       if (controller.signal.aborted) return;
       setPricing(prices);
-      if (!index.version) { setReport(null); setVersions(null); setError(t("usage.notReady")); setLoading(false); return; }
+      if (!index.version) { setReport(null); setVersions(null); setError(new ApiError("INDEX_NOT_READY", "", { key: "usage.notReady" })); setLoading(false); return; }
       setVersions({ index: index.version, price: prices.version });
-      if (loadedQuery.current === usageParameters(usageQuery(route, index.version, prices.version))) setLoading(false);
-    }).catch(failure => { if (!isAborted(failure)) { setError(errorMessage(failure)); setLoading(false); } });
+    }).catch(failure => { if (!isAborted(failure)) { setError(failure instanceof Error ? failure : new ApiError("QUERY_FAILED", "", { key: "common.error.query" })); setLoading(false); } });
     return () => controller.abort();
     // 语言切换只重绘文案，不重复统计查询。
   }, [active, revision]);
@@ -54,15 +55,16 @@ export default function Usage({ active, onSession }: { active: boolean; onSessio
     || route.minCost !== undefined && route.maxCost !== undefined && route.minCost > route.maxCost
     || route.window === "custom" && !!route.from && !!route.to && route.from > route.to;
   useEffect(() => {
-    if (!active || !queryKey || invalid) return;
-    const controller = new AbortController(); setLoading(true); setError("");
+    if (invalid) { setLoading(false); return; }
+    if (!active || !queryKey) return;
+    const controller = new AbortController(); setLoading(true); setError(null);
     if (loadedQuery.current !== queryKey) setReport(null);
     void request<UsageReport>(`/usage?${queryKey}`, { signal: controller.signal }).then(result => {
       if (controller.signal.aborted) return;
       loadedQuery.current = queryKey; setReport(result); setFacets(result.facets); setLoading(false);
-    }).catch(failure => { if (!isAborted(failure)) { setError(errorMessage(failure)); setLoading(false); } });
+    }).catch(failure => { if (!isAborted(failure)) { setError(failure instanceof Error ? failure : new ApiError("QUERY_FAILED", "", { key: "common.error.query" })); setLoading(false); } });
     return () => controller.abort();
-  }, [active, queryKey, invalid]);
+  }, [active, queryKey, invalid, revision]);
   useEffect(() => {
     if (!active || !pricing?.refreshing) return;
     const controller = new AbortController(); const timer = globalThis.setTimeout(() => {
@@ -72,16 +74,16 @@ export default function Usage({ active, onSession }: { active: boolean; onSessio
   }, [active, pricing]);
   const requestQueryKey = route.selectedSession && report ? usageParameters({ ...report.query, sessionId: route.selectedSession, requestPage: route.requestPage ?? 1, requestPageSize: 20 }) : "";
   useEffect(() => {
-    setRequests(null); setRequestError("");
+    setRequests(null); setRequestError(null);
     if (!active || !requestQueryKey) { setRequestLoading(false); return; }
     const controller = new AbortController(); setRequestLoading(true);
-    void request<UsageRequestPage>(`/usage/requests?${requestQueryKey}`, { signal: controller.signal }).then(result => { if (!controller.signal.aborted) { setRequests(result); setRequestLoading(false); } }).catch(failure => { if (!isAborted(failure)) { setRequestError(errorMessage(failure)); setRequestLoading(false); } });
+    void request<UsageRequestPage>(`/usage/requests?${requestQueryKey}`, { signal: controller.signal }).then(result => { if (!controller.signal.aborted) { setRequests(result); setRequestLoading(false); } }).catch(failure => { if (!isAborted(failure)) { setRequestError(failure instanceof Error ? failure : new ApiError("QUERY_FAILED", "", { key: "common.error.query" })); setRequestLoading(false); } });
     return () => controller.abort();
   }, [active, requestQueryKey]);
   const updatePrice = useCallback((value: PricingStatus) => { setPricing(value); setVersions(current => current ? { ...current, price: value.version } : current); }, []);
   const value = (amount: number | null | undefined, cost = false) => amount == null ? "—" : number(amount, cost ? { minimumFractionDigits: 2, maximumFractionDigits: 6 } : {});
   const metric = route.metric ?? "tokens"; const group = route.groupBy ?? "model";
-  const labels = (values: string[], kind: UsageGroup) => values.map(item => ({ value: item, label: kind === "project" && item !== "unknown" ? item.split(/[\\/]/).filter(Boolean).at(-1) ?? item : groupLabel(item, kind, t("usage.unknown")), ...(kind === "project" && item !== "unknown" ? { description: item } : {}) }));
+  const labels = (values: string[], kind: UsageGroup) => values.map(item => { const original = usageDimensionValue(item); return { value: item, label: kind === "project" && original !== undefined ? original.split(/[\\/]/).filter(Boolean).at(-1) ?? original : groupLabel(item, kind, t("usage.unknown")), ...(kind === "project" && original !== undefined ? { description: original } : {}) }; });
   const filterDefinitions = [
     { include: "clients", exclude: "excludeClients", kind: "client", label: "usage.filter.clients", options: labels([...new Set([...facets.clients, ...(route.clients ?? []), ...(route.excludeClients ?? [])])], "client") },
     { include: "projects", exclude: "excludeProjects", kind: "project", label: "usage.filter.projects", options: labels([...new Set([...facets.projects, ...(route.projects ?? []), ...(route.excludeProjects ?? [])])], "project") },
@@ -123,13 +125,13 @@ export default function Usage({ active, onSession }: { active: boolean; onSessio
     {(activeFilterCount(route) > 0 || route.window === "custom") && <div className="usage-filter-chips">{filterDefinitions.flatMap(filter => ([filter.include, filter.exclude] as const).flatMap(key => (route[key] ?? []).map(item => <button key={`${key}:${item}`} aria-label={t("usage.filter.remove", { label: item })} onClick={() => patch({ [key]: route[key]?.filter(value => value !== item) })}>{key === filter.exclude ? t("usage.filter.excluded", { label: groupLabel(item, filter.kind, t("usage.unknown")) }) : groupLabel(item, filter.kind, t("usage.unknown"))}<X size={12} /></button>)))}{moreFilters.filter(filter => route[filter.key] && route[filter.key] !== "all").map(filter => <button key={filter.key} onClick={() => patch({ [filter.key]: "all" })}>{t(`usage.filter.${filter.key}`)}: {t(`usage.${route[filter.key]}`)}<X size={12} /></button>)}{numberFilters.filter(key => route[key] !== undefined).map(key => <button key={key} onClick={() => patch({ [key]: undefined })}>{t(`usage.filter.${key}`)}: {value(route[key])}<X size={12} /></button>)}{route.timeFrom && route.timeTo && <button onClick={() => patch({ timeFrom: undefined, timeTo: undefined })}>{dateTime(route.timeFrom)} – {dateTime(route.timeTo)}<X size={12} /></button>}<button className="text-button" onClick={() => setRoute(defaultRoute())}>{t("usage.filter.clearAll")}</button></div>}
     {invalid && <div className="usage-notice danger" role="alert">{t("usage.filter.invalidRange")}</div>}
     {pricing && <div className="usage-pricing-state"><span>{t(`usage.pricing.${pricing.source}`)}</span>{pricing.fetchedAt && <span>{t("usage.pricing.updated", { time: dateTime(pricing.fetchedAt) })}</span>}{pricing.refreshing && <span role="status">{t("usage.pricing.refreshing")}</span>}{pricing.error && <span className="usage-warning">{t("usage.pricing.fallback")} {message(pricing.errorDescriptor, pricing.error)}</span>}</div>}
-    {error && <div className="usage-notice danger" role="alert">{error}<button onClick={() => setRevision(current => current + 1)}>{t("usage.retry")}</button></div>}
+    {error && <div className="usage-notice danger" role="alert">{errorMessage(error)}<button onClick={() => setRevision(current => current + 1)}>{t("usage.retry")}</button></div>}
     {loading && !invalid && <div className="usage-loading" role="status">{t("usage.loading")}</div>}
     {report && loadedQuery.current === queryKey && !invalid && <>
       <div className="usage-range">{t("usage.chart.range", { from: report.query.from ? date(report.query.from.includes("T") ? report.query.from : `${report.query.from}T00:00:00`) : t("usage.window.all"), to: report.query.to ? date(report.query.to.includes("T") ? report.query.to : `${report.query.to}T00:00:00`) : t("usage.window.all"), timezone: report.timezone })}</div>
       <div className="usage-metrics">{[{ key: "tokens", display: value(report.totals.tokens), unit: t("usage.unit.tokens") }, { key: "cost", display: value(report.totals.estimatedCost, true), unit: "USD" }, { key: "requests", display: value(report.totals.requests), unit: "" }, { key: "sessions", display: value(report.totals.sessions), unit: "" }, { key: "cacheRatio", display: report.totals.cacheReadRatio === null ? "—" : percent(report.totals.cacheReadRatio), unit: "" }].map(item => <div key={item.key}><span>{t(`usage.metric.${item.key}`)}</span><strong>{item.display}<small>{item.unit}</small></strong></div>)}</div>
-      <div className="usage-coverage"><span className={report.totals.partialTokenRequests + report.totals.missingTokenRequests > 0 ? "usage-warning" : ""}>{t("usage.coverage.tokens", { complete: report.totals.completeTokenRequests, partial: report.totals.partialTokenRequests, missing: report.totals.missingTokenRequests })}</span><button className={report.totals.partiallyPricedRequests + report.totals.unpricedRequests > 0 ? "usage-warning" : ""} onClick={() => patch({ pricing: "missing" })}>{t("usage.coverage.cost", { complete: report.totals.pricedRequests, partial: report.totals.partiallyPricedRequests, missing: report.totals.unpricedRequests })}</button>{report.missingUsageSessions > 0 && <button onClick={() => patch({ coverage: "missing" })}>{t("usage.coverage.noUsage", { count: report.missingUsageSessions })}</button>}</div>
-      {report.undated.requests > 0 && <div className="usage-notice"><span>{t("usage.coverage.undated", { requests: report.undated.requests, tokens: value(report.undated.tokens), cost: value(report.undated.estimatedCost, true) })}</span><span>{t(route.window === "all" ? "usage.coverage.undatedIncluded" : "usage.coverage.undatedExcluded")}</span></div>}
+      <div className="usage-coverage"><span className={report.totals.partialTokenRequests + report.totals.missingTokenRequests > 0 ? "usage-warning" : ""}>{t("usage.coverage.tokens", { complete: report.totals.completeTokenRequests, partial: report.totals.partialTokenRequests, missing: report.totals.missingTokenRequests })}</span><button className={report.totals.partiallyPricedRequests + report.totals.unpricedRequests > 0 ? "usage-warning" : ""} onClick={() => patch({ pricing: "missing" })}>{t("usage.coverage.cost", { complete: report.totals.pricedRequests, partial: report.totals.partiallyPricedRequests, missing: report.totals.unpricedRequests })}</button><span>{t("usage.coverage.cache", { count: report.totals.cacheReadRatioRequests, requests: report.totals.requests })}</span>{report.missingUsageSessions > 0 && <button onClick={() => patch({ coverage: "missing" })}>{t("usage.coverage.noUsage", { count: report.missingUsageSessions })}</button>}</div>
+      {report.undated.requests > 0 && <div className="usage-notice"><span>{t("usage.coverage.undated", { count: report.undated.requests, tokens: value(report.undated.tokens), cost: value(report.undated.estimatedCost, true) })}</span><span>{t(route.window === "all" ? "usage.coverage.undatedIncluded" : "usage.coverage.undatedExcluded")}</span></div>}
       <div className="usage-chart-controls"><div role="group" aria-label={t("usage.chart.metric")} className="usage-segmented">{(["tokens", "cost", "requests"] as const).map(item => <button key={item} aria-pressed={metric === item} onClick={() => patch({ metric: item }, false)}>{t(`usage.metric.${item}`)}</button>)}</div><div><FilterSelect label={t("usage.group.label")} value={group} options={["model", "project", "client"].map(item => ({ value: item, label: t(`usage.group.${item}`) }))} onChange={groupBy => patch({ groupBy: groupBy as UsageGroup }, false)} /><FilterSelect label={t("usage.interval.label")} value={route.interval ?? "day"} options={["hour", "day", "week", "month"].map(item => ({ value: item, label: t(`usage.interval.${item}`) }))} onChange={interval => patch({ interval: interval as UsageInterval }, false)} /><div className="usage-segmented" role="group" aria-label={t("usage.chart.type")}><button aria-pressed={route.chart === "bar"} onClick={() => patch({ chart: "bar" }, false)}>{t("usage.chart.bar")}</button><button aria-pressed={route.chart === "line"} onClick={() => patch({ chart: "line" }, false)}>{t("usage.chart.line")}</button></div></div></div>
       <UsageCharts report={report} metric={metric} group={group} chart={route.chart} onBucket={filterBucket} onGroup={filterGroup} />
       <section className="usage-session-section" aria-labelledby="usage-session-title"><div className="usage-section-title"><h2 id="usage-session-title">{t("usage.sessions.title")}</h2><div><FilterSelect label={t("usage.sessions.sort")} value={route.sort ?? "tokens"} options={["tokens", "cost", "requests", "recent"].map(item => ({ value: item, label: t(item === "recent" ? "usage.sessions.recent" : `usage.metric.${item}`) }))} onChange={sort => patch({ sort: sort as UsageQuery["sort"] })} /><FilterSelect label={t("usage.sessions.direction")} value={route.direction ?? "desc"} options={["desc", "asc"].map(item => ({ value: item, label: t(`usage.sessions.${item}`) }))} onChange={direction => patch({ direction: direction as "asc" | "desc" })} /></div></div>
@@ -137,8 +139,8 @@ export default function Usage({ active, onSession }: { active: boolean; onSessio
         {!report.sessions.length && <div className="usage-empty">{t("usage.empty")}</div>}
         <ResourcePagination label={t("usage.sessions.title")} page={report.page} total={report.totalSessions} pageSize={report.pageSize} onChange={page => patch({ page, selectedSession: undefined }, false)} onPageSizeChange={pageSize => patch({ pageSize })} />
       </section>
-      {selectedSession && <section className="usage-request-section"><div className="usage-section-title"><h2>{t("usage.sessions.requests")} · {sessionDisplayTitle(selectedSession.session, language)}</h2><button className="icon-button" aria-label={t("common.closeNamed", { label: t("usage.sessions.requests") })} onClick={() => patch({ selectedSession: undefined }, false)}><X size={17} /></button></div>{requestLoading && <div role="status" className="usage-loading">{t("usage.loading")}</div>}{requestError && <div role="alert" className="usage-notice danger">{requestError}</div>}{requests && <><div className="usage-table-scroll"><table className="usage-table"><thead><tr><th>{t("usage.sessions.time")}</th><th>{t("usage.sessions.model")}</th><th>{t("usage.tokens.input")}</th><th>{t("usage.tokens.output")}</th><th>{t("usage.composition.cacheRead")}</th><th>{t("usage.composition.cacheWrite")}</th><th>{t("usage.metric.cost")} · USD</th><th>{t("usage.pricing.effective")}</th><th /></tr></thead><tbody>{requests.requests.map(item => <tr key={item.usage.id}><td>{item.usage.occurredAt ? dateTime(item.usage.occurredAt) : t("common.timeUnknown")}</td><td>{item.usage.model ?? t("usage.unknown")}</td><td className="usage-number">{value(item.usage.inputTokens)}</td><td className="usage-number">{value(item.usage.outputTokens)}</td><td className="usage-number">{value(item.usage.cachedInputTokens)}</td><td className="usage-number">{value(item.usage.cacheWriteTokens)}</td><td className="usage-number">{value(item.cost.amount, true)}{item.cost.coverage !== "complete" && <small className="usage-warning">{item.cost.reason ? t(`usage.reason.${item.cost.reason}`) : t(`usage.${item.cost.coverage}`)}</small>}</td><td>{item.cost.price ? <><span>{item.cost.price.provider} / {item.cost.price.model}</span><small>{t(`usage.pricing.${item.cost.price.source}`)}</small></> : "—"}</td><td><button className="text-button" onClick={() => openSession(selectedSession.session.id, item.usage.messageId ?? item.usage.requestMessageIds?.[0])}>{t("usage.sessions.open")}</button>{!item.usage.messageId && !item.usage.requestMessageIds?.length && <small>{t("usage.sessions.noLocator")}</small>}</td></tr>)}</tbody></table></div><ResourcePagination label={t("usage.sessions.requests")} page={requests.page} total={requests.total} pageSize={requests.pageSize} onChange={requestPage => patch({ requestPage }, false)} /></>}</section>}
+      {selectedSession && <section className="usage-request-section"><div className="usage-section-title"><h2>{t("usage.sessions.requests")} · {sessionDisplayTitle(selectedSession.session, language)}</h2><button className="icon-button" aria-label={t("common.closeNamed", { label: t("usage.sessions.requests") })} onClick={() => patch({ selectedSession: undefined }, false)}><X size={17} /></button></div>{requestLoading && <div role="status" className="usage-loading">{t("usage.loading")}</div>}{requestError && <div role="alert" className="usage-notice danger">{errorMessage(requestError)}</div>}{requests && <><div className="usage-table-scroll"><table className="usage-table"><thead><tr><th>{t("usage.sessions.time")}</th><th>{t("usage.sessions.model")}</th><th>{t("usage.tokens.input")}</th><th>{t("usage.tokens.output")}</th><th>{t("usage.composition.cacheRead")}</th><th>{t("usage.composition.cacheWrite")}</th><th>{t("usage.metric.cost")} · USD</th><th>{t("usage.pricing.effective")}</th><th /></tr></thead><tbody>{requests.requests.map(item => <tr key={item.usage.id}><td>{item.usage.occurredAt ? dateTime(item.usage.occurredAt) : t("common.timeUnknown")}</td><td>{item.usage.model ?? t("usage.unknown")}</td><td className="usage-number">{value(item.usage.inputTokens)}</td><td className="usage-number">{value(item.usage.outputTokens)}</td><td className="usage-number">{value(item.usage.cachedInputTokens)}</td><td className="usage-number">{value(item.usage.cacheWriteTokens)}</td><td className="usage-number">{value(item.cost.amount, true)}{item.cost.coverage !== "complete" && <small className="usage-warning">{item.cost.reason ? t(`usage.reason.${item.cost.reason}`) : t(`usage.${item.cost.coverage}`)}</small>}</td><td>{item.cost.price ? <><span>{item.cost.price.provider} / {item.cost.price.model}</span><small>{t(`usage.pricing.${item.cost.price.source}`)}</small><PriceDetails price={item.cost.price} threshold={item.cost.appliedContextThreshold} /></> : "—"}</td><td><button className="text-button" onClick={() => openSession(selectedSession.session.id, item.usage.messageId ?? item.usage.requestMessageIds?.[0])}>{t("usage.sessions.open")}</button>{!item.usage.messageId && !item.usage.requestMessageIds?.length && <small>{t("usage.sessions.noLocator")}</small>}</td></tr>)}</tbody></table></div><ResourcePagination label={t("usage.sessions.requests")} page={requests.page} total={requests.total} pageSize={requests.pageSize} onChange={requestPage => patch({ requestPage }, false)} /></>}</section>}
     </>}
-    {pricing && <PricingManager status={pricing} models={facets.models.filter(model => model !== "unknown")} onChange={updatePrice} open={pricesOpen} onOpenChange={setPricesOpen} />}
+    {pricing && <PricingManager status={pricing} models={facets.models.flatMap(model => { const original = usageDimensionValue(model); return original === undefined ? [] : [original]; })} onChange={updatePrice} open={pricesOpen} onOpenChange={setPricesOpen} />}
   </main>;
 }

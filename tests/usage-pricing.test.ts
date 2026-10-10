@@ -8,6 +8,7 @@ import type { PricingConfiguration } from "../src/usage-contracts.js";
 import { bundledPriceSnapshot } from "../src/usage/bundled-prices.js";
 import { parsePriceCatalog } from "../src/usage/price-catalog.js";
 import { PricingService } from "../src/usage/pricing.js";
+import { createPriceResolver } from "../src/usage/price-resolution.js";
 
 const date = "2026-10-11T00:00:00.000Z";
 const fixture = (cost: Record<string, unknown> = { input: 2, output: 5, cache_read: 0.1, cache_write: 1 }) => ({
@@ -139,6 +140,8 @@ test("档位从指定输入阈值开始；缺输入不依赖输出或错误的co
   const pricing = new PricingService(workspace(t), { fetch: async () => response(fixture({ input: 2, output: 5, cache_read: 0.1,
     tiers: [{ tier: { type: "context", size: 100 }, input: 4, output: 10, cache_read: 0.2 }] })), now: () => new Date(date) });
   await pricing.refresh();
+  assert.equal(pricing.estimate(request({ inputTokens: 99, cachedInputTokens: 0, cacheWriteTokens: 0 })).appliedContextThreshold, 0);
+  assert.equal(pricing.estimate(request({ inputTokens: 100, cachedInputTokens: 0, cacheWriteTokens: 0 })).appliedContextThreshold, 100);
   assert.equal(pricing.estimate(request({ inputTokens: 99, cachedInputTokens: 0, cacheWriteTokens: 0, contextTokens: 999 })).price?.input, 2);
   assert.equal(pricing.estimate(request({ inputTokens: 100, cachedInputTokens: 0, cacheWriteTokens: 0, contextTokens: 1 })).amount, 500 / 1_000_000);
   const unknown = pricing.estimate(request({ inputTokens: undefined, contextTokens: 999 }));
@@ -162,8 +165,10 @@ test("确认零值不要求缓存单价，非零缺缓存价与缺用量均不�
   assert.equal(zero.amount, 0); assert.equal(zero.coverage, "complete");
   const partial = pricing.estimate(request()); assert.equal(partial.coverage, "partial");
   assert.equal(partial.amount, 200 / 1_000_000);
+  assert.equal(partial.reason, "price_missing");
   const missing = pricing.estimate(request({ inputTokens: undefined, outputTokens: undefined, cachedInputTokens: undefined, cacheWriteTokens: undefined }));
   assert.equal(missing.amount, null); assert.equal(missing.coverage, "missing");
+  assert.equal(missing.reason, "tokens_missing");
   const contradiction = pricing.estimate(request({ inputTokens: 10, cachedInputTokens: 20, cacheWriteTokens: 0 }));
   assert.equal(contradiction.reason, "semantics_unknown"); assert.equal(contradiction.amount, 50 / 1_000_000);
 });
@@ -209,4 +214,22 @@ test("目录保留多档上下文、音频和推理价格；重复档位拒绝",
   assert.throws(() => parsePriceCatalog(fixture({ input: 1, output: 2, tiers: [
     { tier: { type: "context", size: 10 }, input: 2 }, { tier: { type: "context", size: 10 }, input: 4 },
   ] }), date));
+});
+
+test("目录与请求共享有效模型解析，映射原模型显示目标价格且任意覆盖优先", async t => {
+  const pricing = new PricingService(workspace(t), { fetch: async () => response(fixture()), now: () => new Date(date) });
+  await pricing.refresh();
+  pricing.configure({ overrides: [], mappings: [{ model: "original-model", targetProvider: "example-provider", targetModel: "example-model" }] });
+  let status = pricing.status();
+  let resolve = createPriceResolver(status.prices, status.configuration);
+  assert.equal(resolve("original-model")?.model, "example-model");
+  assert.deepEqual(resolve("original-model"), pricing.estimate(request({ model: "original-model" })).price);
+  pricing.configure({ ...status.configuration, overrides: [{ model: "original-model", input: 17, output: 19 }] });
+  status = pricing.status(); resolve = createPriceResolver(status.prices, status.configuration);
+  assert.equal(resolve("original-model")?.source, "manual"); assert.equal(resolve("original-model")?.input, 17);
+  await pricing.refresh(true); status = pricing.status();
+  assert.equal(createPriceResolver(status.prices, status.configuration)("original-model")?.input, 17);
+  pricing.configure({ overrides: [], mappings: [{ model: "original-model", targetProvider: "missing-provider", targetModel: "example-model" }] });
+  status = pricing.status();
+  assert.equal(createPriceResolver(status.prices, status.configuration)("original-model"), undefined);
 });

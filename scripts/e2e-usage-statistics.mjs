@@ -27,7 +27,7 @@ try {
     page.setDefaultTimeout(15_000);
     const button = name => page.getByRole("button", { name, exact: true });
     const ready = async () => { await page.locator(".usage-metrics").waitFor(); await page.waitForLoadState("networkidle"); };
-    const change = async action => { const response = page.waitForResponse(res => /\/api\/v1\/usage\?/.test(res.url())); await action(); await response; await ready(); };
+    const change = async action => { const response = page.waitForResponse(res => /\/api\/v1\/usage\?/.test(res.url())); await action(); try { await response; await ready(); } catch (error) { throw new Error(`${action.toString()}: ${error.message}`); } };
     const choose = async (label, value) => { await page.getByRole("combobox", { name: label, exact: true }).click(); await change(() => page.getByRole("option", { name: value, exact: true }).click()); };
     const metrics = () => page.locator(".usage-metrics").innerText();
     const hashState = () => page.evaluate(() => { const params = new URLSearchParams(location.hash.split("?")[1]); params.sort(); return params.toString(); });
@@ -96,6 +96,7 @@ try {
     ensure((await page.evaluate(() => location.hash)).includes("timeFrom"), "小时区间没有准确时间筛选");
     await button("开始日期").click(); await change(() => button("清空").click());
     ensure(!(await page.evaluate(() => location.hash)).includes("timeFrom"), "清空日期遗留小时筛选");
+    await button("结束日期").click(); await change(() => button("清空").click());
     await button("结束日期").click(); await change(() => button("今天").click());
     await reset();
     await page.locator(".usage-heatmap button").last().click(); await ready();
@@ -119,6 +120,8 @@ try {
     await page.getByRole("option").filter({ hasText: "fixture / fixture-fast" }).first().click(); await save(() => button("保存配置").click());
     ensure((await api("/usage/pricing")).configuration.mappings[0].targetProvider === "fixture", "映射没有保留服务商");
     await button("关闭模型价格").click(); await ready();
+    await page.setViewportSize({ width: 1440, height: 1360 }); await page.evaluate(() => scrollTo(0, 0));
+    await page.screenshot({ path: `${options.artifacts}/zh-overview.png` });
     await page.screenshot({ path: `${options.artifacts}/zh-desktop.png`, fullPage: true });
     for (const theme of ["dark", "light"]) {
       if (await page.locator("html").getAttribute("data-theme") !== theme) {
@@ -133,7 +136,7 @@ try {
     }
     await page.setViewportSize({ width: 1440, height: 1080 }); const savedMetrics = await metrics(), savedHash = await page.evaluate(() => location.hash);
     await button("显示语言").click(); await page.getByRole("menuitemradio", { name: "English", exact: true }).click(); await page.waitForLoadState("networkidle");
-    ensure(await page.getByRole("heading", { name: "Usage statistics", exact: true }).count() === 1, "英文统计入口没有翻译");
+    ensure(await page.getByRole("heading", { name: "Usage", exact: true }).count() === 1, "英文统计入口没有翻译");
     ensure(await page.evaluate(() => location.hash) === savedHash, "语言切换改变筛选地址");
     ensure((await metrics()).includes("1,008") && savedMetrics.includes("1,008"), "语言切换丢失统计数值");
     ensure(await page.getByText("翻译不可用", { exact: false }).count() === 0, "缺少产品翻译");
@@ -142,7 +145,71 @@ try {
     return { passed: true, checks, errors, filters: true, chartAndTableScope: true, requestEvidence: true, customPrices: true, mapping: true, themesAndMobile: true, languageState: true };
   };
   const output = await browser(["run-code", `async page => (${verify.toString()})(page, ${JSON.stringify({ base: fixture.base, artifacts })})`]);
-  await writeFile(`${artifacts}/report.txt`, output); console.log(output.split("### Ran Playwright code")[0]);
+  console.log(output.split("### Ran Playwright code")[0]);
+  const verifyFailures = async (page, options) => {
+    let checks = 0; const errors = []; page.on("pageerror", error => errors.push(error.message));
+    const ensure = (condition, message) => { if (!condition) throw new Error(message); checks++; };
+    const button = name => page.getByRole("button", { name, exact: true });
+    const ready = async () => { await page.locator(".usage-metrics").waitFor(); await page.waitForLoadState("networkidle"); };
+    const language = async (trigger, option) => { await button(trigger).click(); await page.getByRole("menuitemradio", { name: option, exact: true }).click(); await page.waitForLoadState("networkidle"); };
+    const queries = []; const record = req => { if (/\/api\/v1\/usage\?/.test(req.url())) queries.push(req.url()); }; page.on("request", record);
+    let failed = false;
+    await page.route("**/api/v1/usage?**", route => {
+      if (!failed) { failed = true; return route.fulfill({ status: 503, contentType: "application/json", body: JSON.stringify({ error: { code: "INTERNAL_ERROR", message: "synthetic query failure", messageDescriptor: { key: "common.error.http", params: { status: 503 } } } }) }); }
+      return route.continue();
+    });
+    await button("Refresh usage").click(); await page.getByRole("alert").filter({ hasText: "HTTP 503" }).waitFor();
+    const before = queries.length; await language("Display language", "Simplified Chinese");
+    await page.getByRole("alert").filter({ hasText: "服务返回异常" }).waitFor();
+    ensure((await page.getByRole("alert").innerText()).includes("服务返回异常"), "错误状态切换语言没有重绘");
+    ensure(queries.length === before, "语言变化重新请求统计");
+    const retry = page.waitForResponse(res => /\/api\/v1\/usage\?/.test(res.url()) && res.ok());
+    await button("重试").click(); await retry; await ready(); await page.getByRole("alert").waitFor({ state: "hidden" });
+    ensure(await button("刷新统计").isEnabled(), "相同版本重试没有结束加载"); await page.unroute("**/api/v1/usage?**");
+    await button("管理模型价格").click(); let dialog = page.getByRole("dialog", { name: "模型价格", exact: true });
+    await button("设置任意模型价格").click(); await dialog.getByLabel("原始模型名", { exact: true }).fill(" ");
+    await dialog.getByLabel("普通输入单价", { exact: true }).fill("1"); await dialog.getByLabel("输出单价", { exact: true }).fill("1"); await button("保存配置").click();
+    await dialog.getByRole("alert").waitFor();
+    // 在隔离数据目录模拟另一页面更改共享语言，当前对话框保留校验状态。
+    await page.evaluate(async () => { await fetch("/api/v1/preferences", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ language: "en" }) }); dispatchEvent(new Event("focus")); });
+    await page.waitForFunction(() => document.documentElement.lang === "en");
+    await page.getByRole("alert").filter({ hasText: "nonnegative" }).waitFor();
+    ensure((await page.getByRole("alert").innerText()).includes("nonnegative"), "价格校验切换语言没有重绘");
+    await button("Cancel").click(); await button("Close Model prices").click();
+    await language("Display language", "Simplified Chinese");
+    const filterModel = async key => {
+      const params = await page.evaluate(key => new URLSearchParams({ window: "all", models: JSON.stringify([key]) }).toString(), key);
+      await page.goto(`${options.base}/#usage?${params}`); await ready();
+      const report = await page.evaluate(async () => {
+        const index = await (await fetch("/api/v1/sessions/status?summary=true")).json();
+        const price = await (await fetch("/api/v1/usage/pricing")).json();
+        const params = new URLSearchParams(location.hash.split("?")[1]);
+        const query = new URLSearchParams({ version: index.version, priceVersion: price.version, models: params.get("models"), timezone: Intl.DateTimeFormat().resolvedOptions().timeZone });
+        return (await fetch(`/api/v1/usage?${query}`)).json();
+      });
+      return report;
+    };
+    const named = await filterModel("literal:unknown"); ensure(named.totals.requests === 1, "真实unknown模型与缺模型合并");
+    ensure((await page.locator(".usage-ranking").innerText()).includes("unknown"), "真实unknown模型被翻译");
+    const missing = await filterModel("unknown"); ensure(missing.totals.requests === 1, "缺模型筛选包含真实unknown模型");
+    ensure((await page.locator(".usage-ranking").innerText()).includes("未知"), "缺模型来源标签没有翻译");
+    await filterModel("fixture-large");
+    await page.locator(".usage-session-section tbody tr").first().getByRole("button", { name: "查看请求明细", exact: true }).click();
+    await page.locator(".usage-request-section tbody tr").first().waitFor();
+    const rates = page.getByText("查看适用单价", { exact: true }).first(); await rates.waitFor(); await rates.click();
+    ensure((await page.locator(".usage-request-section").innerText()).includes("总输入达到 20,000 Token 时适用"), "请求没有展示实际计价档位");
+    await button("管理模型价格").click(); dialog = page.getByRole("dialog", { name: "模型价格", exact: true });
+    await dialog.getByRole("textbox", { name: "搜索原始模型、计价模型或服务商", exact: true }).fill("fixture-large");
+    await dialog.getByText("查看价格规则", { exact: true }).first().click();
+    ensure((await dialog.innerText()).includes("总输入达到 20,000 Token 时适用"), "目录没有展示价格档位规则");
+    await button("关闭模型价格").click();
+    await page.goto(`${options.base}/#usage`); await ready();
+    ensure((await page.locator(".usage-metrics").innerText()).includes("1,008"), "缺时间请求混入默认日期总量");
+    page.off("request", record); ensure(errors.length === 0, errors.join(";"));
+    return { passed: true, checks, errors, errorLanguage: true, retrySameVersion: true, priceValidationLanguage: true, literalUnknownIdentity: true, appliedRates: true };
+  };
+  const failures = await browser(["run-code", `async page => (${verifyFailures.toString()})(page, ${JSON.stringify({ base: fixture.base, artifacts })})`]);
+  await writeFile(`${artifacts}/report.txt`, `${output}\n${failures}`); console.log(failures.split("### Ran Playwright code")[0]);
 } catch (error) {
   if (opened) await browser(["screenshot", `--filename=${artifacts}/failure.png`]).catch(() => {});
   throw error;

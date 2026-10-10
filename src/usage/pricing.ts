@@ -5,6 +5,7 @@ import type { MessageDescriptor } from "../i18n/types.js";
 import type { SessionUsage } from "../session-contracts.js";
 import { ServiceError } from "../service/input.js";
 import type { ModelPrice, ModelPriceRates, PriceSnapshot, PricingConfiguration, PricingStatus, RequestCost } from "../usage-contracts.js";
+import { createPriceResolver } from "./price-resolution.js";
 import { bundledPriceSnapshot } from "./bundled-prices.js";
 import { parsePriceCatalog, parseStoredPriceSnapshot, priceContentVersion, priceKey, priceSourceUrl, validPriceIdentity, validPriceNumber } from "./price-catalog.js";
 
@@ -76,13 +77,14 @@ function requestCost(usage: SessionUsage, price: ModelPrice | undefined, client?
   if (!price) return { amount: null, coverage: "missing", reason: "price_missing", ...extra };
   if (price.tiers?.length && parts.input === undefined) return { amount: null, coverage: "missing", reason: "tier_unknown", price: structuredClone(price), ...extra };
   const tier = price.tiers?.filter(item => parts.input! >= item.context).at(-1);
-  const applicable = { ...price, ...tier };
+  const { context: _context, ...tierRates } = tier ?? {};
+  const applicable = { ...price, ...tierRates };
   const output = count(usage.outputTokens); const reasoning = count(usage.reasoningOutputTokens);
-  let amount = 0; let computed = 0; let missing = false; let ambiguous = parts.inconsistent;
+  let amount = 0; let computed = 0; let missingTokens = false; let missingPrice = false; let ambiguous = parts.inconsistent;
   const add = (tokens: number | undefined, rate: number | undefined) => {
-    if (tokens === undefined) { missing = true; return; }
+    if (tokens === undefined) { missingTokens = true; return; }
     if (tokens === 0) { computed += 1; return; }
-    if (rate === undefined) { missing = true; return; }
+    if (rate === undefined) { missingPrice = true; return; }
     amount += tokens * rate; computed += 1;
   };
   // 没有音频独立用量时，不能用文本单价替代目录中不同的音频单价。
@@ -95,11 +97,11 @@ function requestCost(usage: SessionUsage, price: ModelPrice | undefined, client?
     if (output !== undefined && reasoning !== undefined && reasoning <= output) {
       add(output - reasoning, applicable.output); add(reasoning, applicable.reasoning);
     } else if (output === 0) add(0, applicable.output);
-    else { missing = true; if (reasoning !== undefined && output !== undefined) ambiguous = true; }
+    else { missingTokens = true; if (reasoning !== undefined && output !== undefined) ambiguous = true; }
   } else add(output, applicable.output);
-  const coverage = !missing && !ambiguous ? "complete" : computed > 0 ? "partial" : "missing";
-  return { amount: computed > 0 ? amount / 1_000_000 : null, coverage, ...(coverage === "complete" ? {} : { reason: ambiguous ? "semantics_unknown" as const : "tokens_missing" as const }),
-    price: structuredClone(applicable), ...extra };
+  const coverage = !missingTokens && !missingPrice && !ambiguous ? "complete" : computed > 0 ? "partial" : "missing";
+  return { amount: computed > 0 ? amount / 1_000_000 : null, coverage, ...(coverage === "complete" ? {} : { reason: ambiguous ? "semantics_unknown" as const : missingTokens ? "tokens_missing" as const : "price_missing" as const }),
+    price: structuredClone(applicable), appliedContextThreshold: tier?.context ?? 0, ...extra };
 }
 
 /** 本地配置独立保存，后台刷新只更新自动目录；每次查询使用固定价格视图。 */
@@ -139,33 +141,10 @@ export class PricingService {
     const catalog = new Map(bundledPriceSnapshot.prices.map(price => [priceKey(price), price]));
     for (const price of this.snapshot?.prices ?? []) catalog.set(priceKey(price), price);
     const automatic = [...catalog.values()];
-    const overrides = new Map(this.configuration.overrides.map(price => [price.model, price]));
-    const mappings = new Map(this.configuration.mappings.map(mapping => [mapping.model, mapping]));
-    const exact = new Map<string, ModelPrice[]>();
-    for (const price of automatic) { const matches = exact.get(price.model) ?? []; matches.push(price); exact.set(price.model, matches); }
-    const manualPrice = (model: string, provider?: string): ModelPrice | undefined => {
-      const manual = overrides.get(model);
-      if (!manual || provider !== undefined && manual.provider !== undefined && manual.provider !== provider) return;
-      return { ...manual, provider: manual.provider ?? provider ?? "manual", source: "manual" };
-    };
-    const resolve = (model: string): ModelPrice | undefined => {
-      const own = manualPrice(model); if (own) return own;
-      const mapping = mappings.get(model);
-      if (mapping) return manualPrice(mapping.targetModel, mapping.targetProvider)
-        ?? catalog.get(priceKey({ model: mapping.targetModel, provider: mapping.targetProvider }));
-      // 明确的服务商前缀与完整模型标识可以唯一匹配；不使用模糊前缀或客户端默认模型。
-      const slash = model.indexOf("/");
-      if (slash > 0) {
-        const provider = model.slice(0, slash); const targetModel = model.slice(slash + 1);
-        const qualified = manualPrice(targetModel, provider) ?? catalog.get(priceKey({ provider, model: targetModel }));
-        if (qualified) return qualified;
-      }
-      const matches = exact.get(model);
-      return matches?.length === 1 ? matches[0] : undefined;
-    };
+    const resolve = createPriceResolver(automatic, this.configuration);
     const listed = new Map(catalog);
     for (const price of this.configuration.overrides) {
-      const manual = manualPrice(price.model)!; listed.set(priceKey(manual), manual);
+      const manual: ModelPrice = { ...price, provider: price.provider ?? "manual", source: "manual" }; listed.set(priceKey(manual), manual);
     }
     const prices = [...listed.values()].sort((left, right) => priceKey(left) < priceKey(right) ? -1 : priceKey(left) > priceKey(right) ? 1 : 0);
     const version = createHash("sha256").update(JSON.stringify({ prices: priceContentVersion(prices), mappings: this.configuration.mappings })).digest("hex").slice(0, 24);
