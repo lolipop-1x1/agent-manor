@@ -1,6 +1,21 @@
 import type { MessageCatalog } from "../../types.js";
 
 export default {
+  "common.appearance.menu": "Appearance",
+  "common.appearance.mode": "Display mode",
+  "common.appearance.auto": "Use system",
+  "common.appearance.light": "Light",
+  "common.appearance.dark": "Dark",
+  "common.appearance.color": "Theme color",
+  "common.appearance.blue": "Blue",
+  "common.appearance.terracotta": "Terracotta",
+  "common.appearance.celadon": "Celadon",
+  "common.appearance.amber": "Amber",
+  "common.appearance.berry": "Berry",
+  "common.appearance.graphite": "Graphite",
+  "common.appearance.custom": "Custom color",
+  "common.appearance.apply": "Apply",
+
   "common.autoRefresh.sessions": "Session auto refresh",
   "common.autoRefresh.map": "Code map auto refresh",
   "common.autoRefresh.off": "Off",

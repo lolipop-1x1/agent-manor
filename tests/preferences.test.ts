@@ -147,3 +147,32 @@ test("刷新间隔通过 HTTP 严格校验并持久化，设置本身不创建�
     assert.equal(status.sessions?.job, undefined);
   } finally { await service.close(); }
 }));
+
+test("外观局部与并发更新不覆盖语言和刷新设置，旧文件保留迁移信号", async () => fixture(async directory => {
+  const home = join(directory, "appearance");
+  assert.equal((await readPreferences(home)).appearance, undefined);
+  await Promise.all([
+    updatePreferences(home, { appearance: { mode: "dark" } }),
+    updatePreferences(home, { appearance: { preset: "custom", customColor: "#aabbcc" } }),
+    updatePreferences(home, { language: "en", sessionsAutoRefreshInterval: 5_000 }),
+  ]);
+  const expected = { appearance: { mode: "dark", preset: "custom", customColor: "#aabbcc" }, language: "en", sessionsAutoRefreshInterval: 5_000, mapAutoRefreshInterval: 0 };
+  assert.deepEqual(await readPreferences(home), expected);
+  for (const appearance of [{}, null, { mode: "system" }, { preset: "missing" }, { customColor: "#abc" }, { extra: true }]) assert.throws(() => updatePreferences(home, { appearance }), { code: "INVALID_INPUT" });
+  assert.deepEqual(await readPreferences(home), expected);
+  await writeFile(preferencesPath(home), JSON.stringify({ appearance: { mode: "dark" } }));
+  await assert.rejects(readPreferences(home), { code: "INTERNAL_ERROR" });
+}));
+
+test("HTTP 外观偏好校验与合并，保存不启动索引任务", async () => fixture(async directory => {
+  const home = join(directory, "data"), service = await startService(options(directory, home));
+  try {
+    const before = await apiRequest<StatusResponse>(service.instance, "/status");
+    await apiRequest(service.instance, "/preferences", "PUT", { appearance: { mode: "light", preset: "berry" } });
+    const value = await apiRequest<PreferencesResponse>(service.instance, "/preferences", "PUT", { appearance: { customColor: "#123456" }, language: "en" });
+    assert.deepEqual(value.appearance, { mode: "light", preset: "berry", customColor: "#123456" });
+    for (const appearance of [{ preset: "unknown" }, { preset: { toString: {} } }, { preset: [] }, { customColor: "red" }, { mode: "auto", extra: true }, null]) await assert.rejects(apiRequest(service.instance, "/preferences", "PUT", { appearance }), { code: "INVALID_INPUT" });
+    assert.deepEqual(await readPreferences(home), value);
+    assert.deepEqual((await apiRequest<StatusResponse>(service.instance, "/status")).jobs, before.jobs);
+  } finally { await service.close(); }
+}));

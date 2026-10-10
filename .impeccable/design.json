@@ -1,6 +1,6 @@
 {
   "schemaVersion": 2,
-  "generatedAt": "2026-10-10T05:01:55.591Z",
+  "generatedAt": "2026-10-10T16:28:28.764Z",
   "title": "Design System: AgentManor",
   "extensions": {
     "colorMeta": {
@@ -8,14 +8,14 @@
         "role": "neutral",
         "displayName": "页面底 · 浅色",
         "tonalRamp": [
-          "oklch(15% 0.00248 165.08)",
-          "oklch(25% 0.00248 165.08)",
-          "oklch(35% 0.00248 165.08)",
-          "oklch(45% 0.00248 165.08)",
-          "oklch(55% 0.00248 165.08)",
-          "oklch(65% 0.00248 165.08)",
-          "oklch(80% 0.00248 165.08)",
-          "oklch(95% 0.00248 165.08)"
+          "oklch(15% 0.00000 89.88)",
+          "oklch(25% 0.00000 89.88)",
+          "oklch(35% 0.00000 89.88)",
+          "oklch(45% 0.00000 89.88)",
+          "oklch(55% 0.00000 89.88)",
+          "oklch(65% 0.00000 89.88)",
+          "oklch(80% 0.00000 89.88)",
+          "oklch(95% 0.00000 89.88)"
         ]
       },
       "surface": {
@@ -36,182 +36,182 @@
         "role": "neutral",
         "displayName": "次级面板 · 浅色",
         "tonalRamp": [
-          "oklch(15% 0.00344 174.48)",
-          "oklch(25% 0.00344 174.48)",
-          "oklch(35% 0.00344 174.48)",
-          "oklch(45% 0.00344 174.48)",
-          "oklch(55% 0.00344 174.48)",
-          "oklch(65% 0.00344 174.48)",
-          "oklch(80% 0.00344 174.48)",
-          "oklch(95% 0.00344 174.48)"
+          "oklch(15% 0.00740 260.73)",
+          "oklch(25% 0.00740 260.73)",
+          "oklch(35% 0.00740 260.73)",
+          "oklch(45% 0.00740 260.73)",
+          "oklch(55% 0.00740 260.73)",
+          "oklch(65% 0.00740 260.73)",
+          "oklch(80% 0.00740 260.73)",
+          "oklch(95% 0.00740 260.73)"
         ]
       },
       "text": {
         "role": "neutral",
         "displayName": "主要文字 · 浅色",
         "tonalRamp": [
-          "oklch(15% 0.02650 184.03)",
-          "oklch(25% 0.02650 184.03)",
-          "oklch(35% 0.02650 184.03)",
-          "oklch(45% 0.02650 184.03)",
-          "oklch(55% 0.02650 184.03)",
-          "oklch(65% 0.02650 184.03)",
-          "oklch(80% 0.02650 184.03)",
-          "oklch(95% 0.02650 184.03)"
+          "oklch(15% 0.04384 258.28)",
+          "oklch(25% 0.04384 258.28)",
+          "oklch(35% 0.04384 258.28)",
+          "oklch(45% 0.04384 258.28)",
+          "oklch(55% 0.04384 258.28)",
+          "oklch(65% 0.04384 258.28)",
+          "oklch(80% 0.04384 258.28)",
+          "oklch(95% 0.04384 258.28)"
         ]
       },
       "muted": {
         "role": "neutral",
         "displayName": "辅助文字 · 浅色",
         "tonalRamp": [
-          "oklch(15% 0.02223 180.52)",
-          "oklch(25% 0.02223 180.52)",
-          "oklch(35% 0.02223 180.52)",
-          "oklch(45% 0.02223 180.52)",
-          "oklch(55% 0.02223 180.52)",
-          "oklch(65% 0.02223 180.52)",
-          "oklch(80% 0.02223 180.52)",
-          "oklch(95% 0.02223 180.52)"
+          "oklch(15% 0.03985 256.41)",
+          "oklch(25% 0.03985 256.41)",
+          "oklch(35% 0.03985 256.41)",
+          "oklch(45% 0.03985 256.41)",
+          "oklch(55% 0.03985 256.41)",
+          "oklch(65% 0.03985 256.41)",
+          "oklch(80% 0.03985 256.41)",
+          "oklch(95% 0.03985 256.41)"
         ]
       },
       "border": {
         "role": "neutral",
         "displayName": "细边界 · 浅色",
         "tonalRamp": [
-          "oklch(15% 0.01044 174.25)",
-          "oklch(25% 0.01044 174.25)",
-          "oklch(35% 0.01044 174.25)",
-          "oklch(45% 0.01044 174.25)",
-          "oklch(55% 0.01044 174.25)",
-          "oklch(65% 0.01044 174.25)",
-          "oklch(80% 0.01044 174.25)",
-          "oklch(95% 0.01044 174.25)"
+          "oklch(15% 0.01729 256.28)",
+          "oklch(25% 0.01729 256.28)",
+          "oklch(35% 0.01729 256.28)",
+          "oklch(45% 0.01729 256.28)",
+          "oklch(55% 0.01729 256.28)",
+          "oklch(65% 0.01729 256.28)",
+          "oklch(80% 0.01729 256.28)",
+          "oklch(95% 0.01729 256.28)"
         ]
       },
       "accent": {
         "role": "primary",
-        "displayName": "青绿 · 浅色",
+        "displayName": "蓝色 · 浅色",
         "tonalRamp": [
-          "oklch(15% 0.08113 180.00)",
-          "oklch(25% 0.08113 180.00)",
-          "oklch(35% 0.08113 180.00)",
-          "oklch(45% 0.08113 180.00)",
-          "oklch(55% 0.08113 180.00)",
-          "oklch(65% 0.08113 180.00)",
-          "oklch(80% 0.08113 180.00)",
-          "oklch(95% 0.08113 180.00)"
+          "oklch(15% 0.17497 262.36)",
+          "oklch(25% 0.17497 262.36)",
+          "oklch(35% 0.17497 262.36)",
+          "oklch(45% 0.17497 262.36)",
+          "oklch(55% 0.17497 262.36)",
+          "oklch(65% 0.17497 262.36)",
+          "oklch(80% 0.17497 262.36)",
+          "oklch(95% 0.17497 262.36)"
         ]
       },
       "accent-soft": {
         "role": "primary",
-        "displayName": "青绿选中底 · 浅色",
+        "displayName": "蓝色选中底 · 浅色",
         "tonalRamp": [
-          "oklch(15% 0.01280 172.36)",
-          "oklch(25% 0.01280 172.36)",
-          "oklch(35% 0.01280 172.36)",
-          "oklch(45% 0.01280 172.36)",
-          "oklch(55% 0.01280 172.36)",
-          "oklch(65% 0.01280 172.36)",
-          "oklch(80% 0.01280 172.36)",
-          "oklch(95% 0.01280 172.36)"
+          "oklch(15% 0.01740 264.48)",
+          "oklch(25% 0.01740 264.48)",
+          "oklch(35% 0.01740 264.48)",
+          "oklch(45% 0.01740 264.48)",
+          "oklch(55% 0.01740 264.48)",
+          "oklch(65% 0.01740 264.48)",
+          "oklch(80% 0.01740 264.48)",
+          "oklch(95% 0.01740 264.48)"
         ]
       },
       "near": {
         "role": "semantic",
         "displayName": "赭金 · 浅色",
         "tonalRamp": [
-          "oklch(15% 0.10220 86.64)",
-          "oklch(25% 0.10220 86.64)",
-          "oklch(35% 0.10220 86.64)",
-          "oklch(45% 0.10220 86.64)",
-          "oklch(55% 0.10220 86.64)",
-          "oklch(65% 0.10220 86.64)",
-          "oklch(80% 0.10220 86.64)",
-          "oklch(95% 0.10220 86.64)"
+          "oklch(15% 0.09724 83.07)",
+          "oklch(25% 0.09724 83.07)",
+          "oklch(35% 0.09724 83.07)",
+          "oklch(45% 0.09724 83.07)",
+          "oklch(55% 0.09724 83.07)",
+          "oklch(65% 0.09724 83.07)",
+          "oklch(80% 0.09724 83.07)",
+          "oklch(95% 0.09724 83.07)"
         ]
       },
       "map-0": {
         "role": "data",
         "displayName": "地图阶位 0 · 浅色",
         "tonalRamp": [
-          "oklch(15% 0.00593 170.45)",
-          "oklch(25% 0.00593 170.45)",
-          "oklch(35% 0.00593 170.45)",
-          "oklch(45% 0.00593 170.45)",
-          "oklch(55% 0.00593 170.45)",
-          "oklch(65% 0.00593 170.45)",
-          "oklch(80% 0.00593 170.45)",
-          "oklch(95% 0.00593 170.45)"
+          "oklch(15% 0.00862 264.52)",
+          "oklch(25% 0.00862 264.52)",
+          "oklch(35% 0.00862 264.52)",
+          "oklch(45% 0.00862 264.52)",
+          "oklch(55% 0.00862 264.52)",
+          "oklch(65% 0.00862 264.52)",
+          "oklch(80% 0.00862 264.52)",
+          "oklch(95% 0.00862 264.52)"
         ]
       },
       "map-1": {
         "role": "data",
         "displayName": "地图阶位 1 · 浅色",
         "tonalRamp": [
-          "oklch(15% 0.02312 172.83)",
-          "oklch(25% 0.02312 172.83)",
-          "oklch(35% 0.02312 172.83)",
-          "oklch(45% 0.02312 172.83)",
-          "oklch(55% 0.02312 172.83)",
-          "oklch(65% 0.02312 172.83)",
-          "oklch(80% 0.02312 172.83)",
-          "oklch(95% 0.02312 172.83)"
+          "oklch(15% 0.02762 265.45)",
+          "oklch(25% 0.02762 265.45)",
+          "oklch(35% 0.02762 265.45)",
+          "oklch(45% 0.02762 265.45)",
+          "oklch(55% 0.02762 265.45)",
+          "oklch(65% 0.02762 265.45)",
+          "oklch(80% 0.02762 265.45)",
+          "oklch(95% 0.02762 265.45)"
         ]
       },
       "map-2": {
         "role": "data",
         "displayName": "地图阶位 2 · 浅色",
         "tonalRamp": [
-          "oklch(15% 0.04982 171.77)",
-          "oklch(25% 0.04982 171.77)",
-          "oklch(35% 0.04982 171.77)",
-          "oklch(45% 0.04982 171.77)",
-          "oklch(55% 0.04982 171.77)",
-          "oklch(65% 0.04982 171.77)",
-          "oklch(80% 0.04982 171.77)",
-          "oklch(95% 0.04982 171.77)"
+          "oklch(15% 0.05459 263.20)",
+          "oklch(25% 0.05459 263.20)",
+          "oklch(35% 0.05459 263.20)",
+          "oklch(45% 0.05459 263.20)",
+          "oklch(55% 0.05459 263.20)",
+          "oklch(65% 0.05459 263.20)",
+          "oklch(80% 0.05459 263.20)",
+          "oklch(95% 0.05459 263.20)"
         ]
       },
       "map-3": {
         "role": "data",
         "displayName": "地图阶位 3 · 浅色",
         "tonalRamp": [
-          "oklch(15% 0.07870 171.71)",
-          "oklch(25% 0.07870 171.71)",
-          "oklch(35% 0.07870 171.71)",
-          "oklch(45% 0.07870 171.71)",
-          "oklch(55% 0.07870 171.71)",
-          "oklch(65% 0.07870 171.71)",
-          "oklch(80% 0.07870 171.71)",
-          "oklch(95% 0.07870 171.71)"
+          "oklch(15% 0.09838 263.95)",
+          "oklch(25% 0.09838 263.95)",
+          "oklch(35% 0.09838 263.95)",
+          "oklch(45% 0.09838 263.95)",
+          "oklch(55% 0.09838 263.95)",
+          "oklch(65% 0.09838 263.95)",
+          "oklch(80% 0.09838 263.95)",
+          "oklch(95% 0.09838 263.95)"
         ]
       },
       "map-4": {
         "role": "data",
         "displayName": "地图阶位 4 · 浅色",
         "tonalRamp": [
-          "oklch(15% 0.08513 172.69)",
-          "oklch(25% 0.08513 172.69)",
-          "oklch(35% 0.08513 172.69)",
-          "oklch(45% 0.08513 172.69)",
-          "oklch(55% 0.08513 172.69)",
-          "oklch(65% 0.08513 172.69)",
-          "oklch(80% 0.08513 172.69)",
-          "oklch(95% 0.08513 172.69)"
+          "oklch(15% 0.17643 262.25)",
+          "oklch(25% 0.17643 262.25)",
+          "oklch(35% 0.17643 262.25)",
+          "oklch(45% 0.17643 262.25)",
+          "oklch(55% 0.17643 262.25)",
+          "oklch(65% 0.17643 262.25)",
+          "oklch(80% 0.17643 262.25)",
+          "oklch(95% 0.17643 262.25)"
         ]
       },
       "code-exact": {
         "role": "semantic",
         "displayName": "精确范围底 · 浅色",
         "tonalRamp": [
-          "oklch(15% 0.02023 169.33)",
-          "oklch(25% 0.02023 169.33)",
-          "oklch(35% 0.02023 169.33)",
-          "oklch(45% 0.02023 169.33)",
-          "oklch(55% 0.02023 169.33)",
-          "oklch(65% 0.02023 169.33)",
-          "oklch(80% 0.02023 169.33)",
-          "oklch(95% 0.02023 169.33)"
+          "oklch(15% 0.02335 264.45)",
+          "oklch(25% 0.02335 264.45)",
+          "oklch(35% 0.02335 264.45)",
+          "oklch(45% 0.02335 264.45)",
+          "oklch(55% 0.02335 264.45)",
+          "oklch(65% 0.02335 264.45)",
+          "oklch(80% 0.02335 264.45)",
+          "oklch(95% 0.02335 264.45)"
         ]
       },
       "code-near": {
@@ -260,210 +260,210 @@
         "role": "neutral",
         "displayName": "页面底 · 深色",
         "tonalRamp": [
-          "oklch(15% 0.01631 182.16)",
-          "oklch(25% 0.01631 182.16)",
-          "oklch(35% 0.01631 182.16)",
-          "oklch(45% 0.01631 182.16)",
-          "oklch(55% 0.01631 182.16)",
-          "oklch(65% 0.01631 182.16)",
-          "oklch(80% 0.01631 182.16)",
-          "oklch(95% 0.01631 182.16)"
+          "oklch(15% 0.02395 262.26)",
+          "oklch(25% 0.02395 262.26)",
+          "oklch(35% 0.02395 262.26)",
+          "oklch(45% 0.02395 262.26)",
+          "oklch(55% 0.02395 262.26)",
+          "oklch(65% 0.02395 262.26)",
+          "oklch(80% 0.02395 262.26)",
+          "oklch(95% 0.02395 262.26)"
         ]
       },
       "surface-dark": {
         "role": "neutral",
         "displayName": "主要面板 · 深色",
         "tonalRamp": [
-          "oklch(15% 0.02016 179.65)",
-          "oklch(25% 0.02016 179.65)",
-          "oklch(35% 0.02016 179.65)",
-          "oklch(45% 0.02016 179.65)",
-          "oklch(55% 0.02016 179.65)",
-          "oklch(65% 0.02016 179.65)",
-          "oklch(80% 0.02016 179.65)",
-          "oklch(95% 0.02016 179.65)"
+          "oklch(15% 0.02324 262.36)",
+          "oklch(25% 0.02324 262.36)",
+          "oklch(35% 0.02324 262.36)",
+          "oklch(45% 0.02324 262.36)",
+          "oklch(55% 0.02324 262.36)",
+          "oklch(65% 0.02324 262.36)",
+          "oklch(80% 0.02324 262.36)",
+          "oklch(95% 0.02324 262.36)"
         ]
       },
       "surface-alt-dark": {
         "role": "neutral",
         "displayName": "次级面板 · 深色",
         "tonalRamp": [
-          "oklch(15% 0.02382 178.10)",
-          "oklch(25% 0.02382 178.10)",
-          "oklch(35% 0.02382 178.10)",
-          "oklch(45% 0.02382 178.10)",
-          "oklch(55% 0.02382 178.10)",
-          "oklch(65% 0.02382 178.10)",
-          "oklch(80% 0.02382 178.10)",
-          "oklch(95% 0.02382 178.10)"
+          "oklch(15% 0.03098 260.45)",
+          "oklch(25% 0.03098 260.45)",
+          "oklch(35% 0.03098 260.45)",
+          "oklch(45% 0.03098 260.45)",
+          "oklch(55% 0.03098 260.45)",
+          "oklch(65% 0.03098 260.45)",
+          "oklch(80% 0.03098 260.45)",
+          "oklch(95% 0.03098 260.45)"
         ]
       },
       "text-dark": {
         "role": "neutral",
         "displayName": "主要文字 · 深色",
         "tonalRamp": [
-          "oklch(15% 0.01577 177.07)",
-          "oklch(25% 0.01577 177.07)",
-          "oklch(35% 0.01577 177.07)",
-          "oklch(45% 0.01577 177.07)",
-          "oklch(55% 0.01577 177.07)",
-          "oklch(65% 0.01577 177.07)",
-          "oklch(80% 0.01577 177.07)",
-          "oklch(95% 0.01577 177.07)"
+          "oklch(15% 0.01494 260.73)",
+          "oklch(25% 0.01494 260.73)",
+          "oklch(35% 0.01494 260.73)",
+          "oklch(45% 0.01494 260.73)",
+          "oklch(55% 0.01494 260.73)",
+          "oklch(65% 0.01494 260.73)",
+          "oklch(80% 0.01494 260.73)",
+          "oklch(95% 0.01494 260.73)"
         ]
       },
       "muted-dark": {
         "role": "neutral",
         "displayName": "辅助文字 · 深色",
         "tonalRamp": [
-          "oklch(15% 0.02673 171.70)",
-          "oklch(25% 0.02673 171.70)",
-          "oklch(35% 0.02673 171.70)",
-          "oklch(45% 0.02673 171.70)",
-          "oklch(55% 0.02673 171.70)",
-          "oklch(65% 0.02673 171.70)",
-          "oklch(80% 0.02673 171.70)",
-          "oklch(95% 0.02673 171.70)"
+          "oklch(15% 0.03520 259.41)",
+          "oklch(25% 0.03520 259.41)",
+          "oklch(35% 0.03520 259.41)",
+          "oklch(45% 0.03520 259.41)",
+          "oklch(55% 0.03520 259.41)",
+          "oklch(65% 0.03520 259.41)",
+          "oklch(80% 0.03520 259.41)",
+          "oklch(95% 0.03520 259.41)"
         ]
       },
       "border-dark": {
         "role": "neutral",
         "displayName": "细边界 · 深色",
         "tonalRamp": [
-          "oklch(15% 0.02901 172.08)",
-          "oklch(25% 0.02901 172.08)",
-          "oklch(35% 0.02901 172.08)",
-          "oklch(45% 0.02901 172.08)",
-          "oklch(55% 0.02901 172.08)",
-          "oklch(65% 0.02901 172.08)",
-          "oklch(80% 0.02901 172.08)",
-          "oklch(95% 0.02901 172.08)"
+          "oklch(15% 0.04337 261.59)",
+          "oklch(25% 0.04337 261.59)",
+          "oklch(35% 0.04337 261.59)",
+          "oklch(45% 0.04337 261.59)",
+          "oklch(55% 0.04337 261.59)",
+          "oklch(65% 0.04337 261.59)",
+          "oklch(80% 0.04337 261.59)",
+          "oklch(95% 0.04337 261.59)"
         ]
       },
       "accent-dark": {
         "role": "primary",
-        "displayName": "青绿 · 深色",
+        "displayName": "蓝色 · 深色",
         "tonalRamp": [
-          "oklch(15% 0.08408 171.23)",
-          "oklch(25% 0.08408 171.23)",
-          "oklch(35% 0.08408 171.23)",
-          "oklch(45% 0.08408 171.23)",
-          "oklch(55% 0.08408 171.23)",
-          "oklch(65% 0.08408 171.23)",
-          "oklch(80% 0.08408 171.23)",
-          "oklch(95% 0.08408 171.23)"
+          "oklch(15% 0.12798 263.15)",
+          "oklch(25% 0.12798 263.15)",
+          "oklch(35% 0.12798 263.15)",
+          "oklch(45% 0.12798 263.15)",
+          "oklch(55% 0.12798 263.15)",
+          "oklch(65% 0.12798 263.15)",
+          "oklch(80% 0.12798 263.15)",
+          "oklch(95% 0.12798 263.15)"
         ]
       },
       "accent-soft-dark": {
         "role": "primary",
-        "displayName": "青绿选中底 · 深色",
+        "displayName": "蓝色选中底 · 深色",
         "tonalRamp": [
-          "oklch(15% 0.03706 170.62)",
-          "oklch(25% 0.03706 170.62)",
-          "oklch(35% 0.03706 170.62)",
-          "oklch(45% 0.03706 170.62)",
-          "oklch(55% 0.03706 170.62)",
-          "oklch(65% 0.03706 170.62)",
-          "oklch(80% 0.03706 170.62)",
-          "oklch(95% 0.03706 170.62)"
+          "oklch(15% 0.03616 261.86)",
+          "oklch(25% 0.03616 261.86)",
+          "oklch(35% 0.03616 261.86)",
+          "oklch(45% 0.03616 261.86)",
+          "oklch(55% 0.03616 261.86)",
+          "oklch(65% 0.03616 261.86)",
+          "oklch(80% 0.03616 261.86)",
+          "oklch(95% 0.03616 261.86)"
         ]
       },
       "near-dark": {
         "role": "semantic",
         "displayName": "赭金 · 深色",
         "tonalRamp": [
-          "oklch(15% 0.11152 89.94)",
-          "oklch(25% 0.11152 89.94)",
-          "oklch(35% 0.11152 89.94)",
-          "oklch(45% 0.11152 89.94)",
-          "oklch(55% 0.11152 89.94)",
-          "oklch(65% 0.11152 89.94)",
-          "oklch(80% 0.11152 89.94)",
-          "oklch(95% 0.11152 89.94)"
+          "oklch(15% 0.10550 85.30)",
+          "oklch(25% 0.10550 85.30)",
+          "oklch(35% 0.10550 85.30)",
+          "oklch(45% 0.10550 85.30)",
+          "oklch(55% 0.10550 85.30)",
+          "oklch(65% 0.10550 85.30)",
+          "oklch(80% 0.10550 85.30)",
+          "oklch(95% 0.10550 85.30)"
         ]
       },
       "map-0-dark": {
         "role": "data",
         "displayName": "地图阶位 0 · 深色",
         "tonalRamp": [
-          "oklch(15% 0.02425 174.36)",
-          "oklch(25% 0.02425 174.36)",
-          "oklch(35% 0.02425 174.36)",
-          "oklch(45% 0.02425 174.36)",
-          "oklch(55% 0.02425 174.36)",
-          "oklch(65% 0.02425 174.36)",
-          "oklch(80% 0.02425 174.36)",
-          "oklch(95% 0.02425 174.36)"
+          "oklch(15% 0.03265 263.72)",
+          "oklch(25% 0.03265 263.72)",
+          "oklch(35% 0.03265 263.72)",
+          "oklch(45% 0.03265 263.72)",
+          "oklch(55% 0.03265 263.72)",
+          "oklch(65% 0.03265 263.72)",
+          "oklch(80% 0.03265 263.72)",
+          "oklch(95% 0.03265 263.72)"
         ]
       },
       "map-1-dark": {
         "role": "data",
         "displayName": "地图阶位 1 · 深色",
         "tonalRamp": [
-          "oklch(15% 0.04183 169.40)",
-          "oklch(25% 0.04183 169.40)",
-          "oklch(35% 0.04183 169.40)",
-          "oklch(45% 0.04183 169.40)",
-          "oklch(55% 0.04183 169.40)",
-          "oklch(65% 0.04183 169.40)",
-          "oklch(80% 0.04183 169.40)",
-          "oklch(95% 0.04183 169.40)"
+          "oklch(15% 0.04860 264.10)",
+          "oklch(25% 0.04860 264.10)",
+          "oklch(35% 0.04860 264.10)",
+          "oklch(45% 0.04860 264.10)",
+          "oklch(55% 0.04860 264.10)",
+          "oklch(65% 0.04860 264.10)",
+          "oklch(80% 0.04860 264.10)",
+          "oklch(95% 0.04860 264.10)"
         ]
       },
       "map-2-dark": {
         "role": "data",
         "displayName": "地图阶位 2 · 深色",
         "tonalRamp": [
-          "oklch(15% 0.06268 161.92)",
-          "oklch(25% 0.06268 161.92)",
-          "oklch(35% 0.06268 161.92)",
-          "oklch(45% 0.06268 161.92)",
-          "oklch(55% 0.06268 161.92)",
-          "oklch(65% 0.06268 161.92)",
-          "oklch(80% 0.06268 161.92)",
-          "oklch(95% 0.06268 161.92)"
+          "oklch(15% 0.07234 262.74)",
+          "oklch(25% 0.07234 262.74)",
+          "oklch(35% 0.07234 262.74)",
+          "oklch(45% 0.07234 262.74)",
+          "oklch(55% 0.07234 262.74)",
+          "oklch(65% 0.07234 262.74)",
+          "oklch(80% 0.07234 262.74)",
+          "oklch(95% 0.07234 262.74)"
         ]
       },
       "map-3-dark": {
         "role": "data",
         "displayName": "地图阶位 3 · 深色",
         "tonalRamp": [
-          "oklch(15% 0.08701 160.00)",
-          "oklch(25% 0.08701 160.00)",
-          "oklch(35% 0.08701 160.00)",
-          "oklch(45% 0.08701 160.00)",
-          "oklch(55% 0.08701 160.00)",
-          "oklch(65% 0.08701 160.00)",
-          "oklch(80% 0.08701 160.00)",
-          "oklch(95% 0.08701 160.00)"
+          "oklch(15% 0.10165 262.41)",
+          "oklch(25% 0.10165 262.41)",
+          "oklch(35% 0.10165 262.41)",
+          "oklch(45% 0.10165 262.41)",
+          "oklch(55% 0.10165 262.41)",
+          "oklch(65% 0.10165 262.41)",
+          "oklch(80% 0.10165 262.41)",
+          "oklch(95% 0.10165 262.41)"
         ]
       },
       "map-4-dark": {
         "role": "data",
         "displayName": "地图阶位 4 · 深色",
         "tonalRamp": [
-          "oklch(15% 0.09468 161.04)",
-          "oklch(25% 0.09468 161.04)",
-          "oklch(35% 0.09468 161.04)",
-          "oklch(45% 0.09468 161.04)",
-          "oklch(55% 0.09468 161.04)",
-          "oklch(65% 0.09468 161.04)",
-          "oklch(80% 0.09468 161.04)",
-          "oklch(95% 0.09468 161.04)"
+          "oklch(15% 0.15053 262.86)",
+          "oklch(25% 0.15053 262.86)",
+          "oklch(35% 0.15053 262.86)",
+          "oklch(45% 0.15053 262.86)",
+          "oklch(55% 0.15053 262.86)",
+          "oklch(65% 0.15053 262.86)",
+          "oklch(80% 0.15053 262.86)",
+          "oklch(95% 0.15053 262.86)"
         ]
       },
       "code-exact-dark": {
         "role": "semantic",
         "displayName": "精确范围底 · 深色",
         "tonalRamp": [
-          "oklch(15% 0.05052 163.47)",
-          "oklch(25% 0.05052 163.47)",
-          "oklch(35% 0.05052 163.47)",
-          "oklch(45% 0.05052 163.47)",
-          "oklch(55% 0.05052 163.47)",
-          "oklch(65% 0.05052 163.47)",
-          "oklch(80% 0.05052 163.47)",
-          "oklch(95% 0.05052 163.47)"
+          "oklch(15% 0.04123 262.85)",
+          "oklch(25% 0.04123 262.85)",
+          "oklch(35% 0.04123 262.85)",
+          "oklch(45% 0.04123 262.85)",
+          "oklch(55% 0.04123 262.85)",
+          "oklch(65% 0.04123 262.85)",
+          "oklch(80% 0.04123 262.85)",
+          "oklch(95% 0.04123 262.85)"
         ]
       },
       "code-near-dark": {
@@ -625,9 +625,9 @@
       "name": "主要按钮",
       "kind": "button",
       "refersTo": "button-primary",
-      "description": "主要操作，青绿底、轻微亮度反馈。",
+      "description": "主要操作，主题色底、轻微亮度反馈。",
       "html": "<button class=\"ds-button ds-primary\">刷新分析</button>",
-      "css": ".ds-button{display:inline-flex;align-items:center;justify-content:center;gap:7px;min-height:34px;padding:8px 11px;border:1px solid var(--border);border-radius:5px;background:var(--surface);color:var(--text);font-family:\"Geist Variable\", \"PingFang SC\", \"Microsoft YaHei\", sans-serif;font-size:12px;font-weight:500;cursor:pointer}.ds-button:hover:not(:disabled){background:var(--surface-alt)}.ds-button:focus-visible{outline:2px solid var(--accent);outline-offset:3px;}.ds-button:disabled{opacity:.55;cursor:default}.ds-primary{background:var(--accent);color:var(--surface);border-color:var(--accent)}.ds-primary:hover:not(:disabled){background:var(--accent);filter:brightness(.94)}"
+      "css": ".ds-button{display:inline-flex;align-items:center;justify-content:center;gap:7px;min-height:34px;padding:8px 11px;border:1px solid var(--border);border-radius:5px;background:var(--surface);color:var(--text);font-family:\"Geist Variable\", \"PingFang SC\", \"Microsoft YaHei\", sans-serif;font-size:12px;font-weight:500;cursor:pointer}.ds-button:hover:not(:disabled){background:var(--surface-alt)}.ds-button:focus-visible{outline:2px solid var(--accent);outline-offset:3px;}.ds-button:disabled{opacity:.55;cursor:default}.ds-primary{background:var(--accent);color:var(--on-accent);border-color:var(--accent)}.ds-primary:hover:not(:disabled){background:var(--accent-hover)}"
     },
     {
       "name": "中性按钮",
@@ -667,7 +667,7 @@
       "refersTo": "product-navigation",
       "description": "页头三入口，选中底色与其他页面导航层级分开。",
       "html": "<nav class=\"ds-nav\" aria-label=\"功能导航\"><button aria-current=\"page\">代码地图</button><button>会话库</button><button>资源管理</button></nav>",
-      "css": ".ds-nav{display:flex;align-items:center;gap:6px}.ds-nav button{padding:9px 14px;border:0;border-radius:6px;background:transparent;color:var(--muted);font-family:\"Geist Variable\", \"PingFang SC\", \"Microsoft YaHei\", sans-serif;font-size:16px;cursor:pointer}.ds-nav button:hover{background:var(--surface-alt);color:var(--text)}.ds-nav button[aria-current=page]{background:var(--accent-soft);color:var(--accent);font-weight:600}.ds-nav button:focus-visible{outline:2px solid var(--accent);outline-offset:3px;}@media(max-width:767px){.ds-nav button{padding:8px 10px}}@media(max-width:599px){.ds-nav{gap:2px}.ds-nav button{padding:8px 7px;font-size:11px}}"
+      "css": ".ds-nav{display:flex;align-items:center;gap:6px}.ds-nav button{padding:8px 12px;border:0;border-radius:6px;background:transparent;color:var(--muted);font-family:\"Geist Variable\", \"PingFang SC\", \"Microsoft YaHei\", sans-serif;font-size:13px;cursor:pointer}.ds-nav button:hover{background:var(--surface-alt);color:var(--text)}.ds-nav button[aria-current=page]{background:var(--accent-soft);color:var(--accent);font-weight:600}.ds-nav button:focus-visible{outline:2px solid var(--accent);outline-offset:3px;}@media(max-width:767px){.ds-nav button{padding:8px 10px}}@media(max-width:599px){.ds-nav{gap:2px}.ds-nav button{padding:8px 7px;font-size:11px}}"
     },
     {
       "name": "资源状态标签",
@@ -678,12 +678,12 @@
       "css": ".ds-tags{display:flex;flex-wrap:wrap;gap:5px}.ds-tags span{display:inline-flex;align-items:center;gap:4px;padding:3px 6px;border:1px solid var(--border);border-radius:4px;background:var(--surface);color:var(--muted);font-family:\"Geist Variable\", \"PingFang SC\", \"Microsoft YaHei\", sans-serif;font-size:10px;line-height:1.35}.ds-tags .ds-warning{color:var(--near)}"
     },
     {
-      "name": "会话消息卡",
+      "name": "会话连续阅读",
       "kind": "card",
       "refersTo": "message-card",
-      "description": "有细边界的消息阅读容器，正文与元信息分开。",
+      "description": "连续消息阅读区域，定位状态保留清晰边界。",
       "html": "<article class=\"ds-message\"><header><strong>用户</strong><time>示例时间</time></header><p>给示例服务增加状态检查</p></article>",
-      "css": ".ds-message{padding:12px 14px;border:1px solid var(--border);border-radius:6px;background:var(--surface);color:var(--text);font-family:\"Geist Variable\", \"PingFang SC\", \"Microsoft YaHei\", sans-serif}.ds-message header{display:flex;align-items:center;gap:6px}.ds-message strong{font-size:10px;font-weight:600}.ds-message time{margin-left:auto;font-size:10px;color:var(--muted)}.ds-message p{margin:10px 0 0;font-size:14px;line-height:1.75;overflow-wrap:anywhere}.ds-message.ds-focused{border-color:var(--accent);box-shadow:0 0 0 2px color-mix(in srgb,var(--accent) 16%,transparent)}"
+      "css": ".ds-message{padding:12px 14px;border:1px solid transparent;border-bottom-color:var(--border);border-radius:0;background:var(--surface);color:var(--text);font-family:\"Geist Variable\", \"PingFang SC\", \"Microsoft YaHei\", sans-serif}.ds-message header{display:flex;align-items:center;gap:6px}.ds-message strong{font-size:10px;font-weight:600}.ds-message time{margin-left:auto;font-size:10px;color:var(--muted)}.ds-message p{margin:10px 0 0;font-size:14px;line-height:1.75;overflow-wrap:anywhere}.ds-message.ds-focused{border-color:var(--accent);box-shadow:0 0 0 2px color-mix(in srgb,var(--accent) 16%,transparent)}"
     },
     {
       "name": "地图指标分段",
@@ -696,9 +696,9 @@
   ],
   "narrative": {
     "northStar": "开发者工作台",
-    "overview": "把会话、代码和资源组织为同一张工作台上的不同工具。界面以克制、精确、层次清楚为气质，支持密集信息和连续操作。品牌出现在青绿语义色、页头标记、选中状态和细节反馈中。\n\n工作区以平面为主，依靠页面、面板和次级底色建立区域关系，细边界帮助扫描。按钮、筛选、列表和容器紧凑、克制、反馈明确；临时浮层使用阴影说明其与底层内容的关系。\n\n本文件记录已有实现，不授权更换视觉体系。基础值提取自当前 CSS，描述语言经用户确认；本次使用隔离合成数据查看了三个页面的桌面浅色和窄屏深色表现。没有完成所有状态的对比度、键盘或触屏审计。",
+    "overview": "面向 AI coding agent 工作流的管理与调查工作台。三模块与三栏空间语义保持，布局按搜索阅读、资源入口管理和代码证据调查分配空间。默认纸白、午夜墨色与蓝色；六个预设和自定义色盘共享布局。常驻界面呈现数据与动作，说明按需打开，关键异常直接可见。",
     "keyCharacteristics": [
-      "青绿主色与中性色工作区，赭金和砖红承担明确语义。",
+      "纸白与午夜墨色工作区，主题色可选，近似与错误保持独立语义。",
       "信息密集，字号与留白按任务分配，没有统一的等比字号阶梯。",
       "细边界、小圆角、平面内容区域和临时浮层阴影。",
       "筛选、选中、聚焦和异常状态有可辨认的反馈。",
@@ -708,7 +708,7 @@
       {
         "name": "The Semantic Color Rule",
         "section": "colors",
-        "body": "青绿用于主要操作与选中；赭金用于近似、未知及需关注的记录；砖红用于错误。统计颜色必须与文字、图例和范围说明共同出现，不能替换其含义。"
+        "body": "主题色用于主要操作与选中；赭金用于近似、未知及需关注的记录；砖红用于错误。统计颜色必须与文字、图例和范围说明共同出现，不能替换其含义。"
       },
       {
         "name": "The Temporary Layer Rule",

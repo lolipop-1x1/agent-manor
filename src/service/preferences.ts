@@ -1,3 +1,4 @@
+import { defaultAppearance, isAppearance, isAppearancePatch, type Appearance } from "../appearance.js";
 import { randomUUID } from "node:crypto";
 import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
@@ -19,11 +20,12 @@ export async function readPreferences(home: string): Promise<PreferencesResponse
   }
   try {
     const value = JSON.parse(text) as Record<string, unknown>;
-    if (!value || typeof value !== "object" || Array.isArray(value) || Object.keys(value).some(key => key !== "language" && key !== "sessionsAutoRefreshInterval" && key !== "mapAutoRefreshInterval")
+    if (!value || typeof value !== "object" || Array.isArray(value) || Object.keys(value).some(key => key !== "language" && key !== "sessionsAutoRefreshInterval" && key !== "mapAutoRefreshInterval" && key !== "appearance")
+      || value.appearance !== undefined && !isAppearance(value.appearance)
       || value.language !== undefined && !isLanguage(value.language)
       || value.sessionsAutoRefreshInterval !== undefined && !isAutoRefreshInterval(value.sessionsAutoRefreshInterval)
       || value.mapAutoRefreshInterval !== undefined && !isAutoRefreshInterval(value.mapAutoRefreshInterval)) throw new Error("invalid_preferences");
-    return { language: value.language === undefined ? "auto" : value.language as LanguagePreference,
+    return { ...(value.appearance === undefined ? {} : { appearance: value.appearance as Appearance }), language: value.language === undefined ? "auto" : value.language as LanguagePreference,
       sessionsAutoRefreshInterval: value.sessionsAutoRefreshInterval === undefined ? 0 : value.sessionsAutoRefreshInterval as PreferencesResponse["sessionsAutoRefreshInterval"],
       mapAutoRefreshInterval: value.mapAutoRefreshInterval === undefined ? 0 : value.mapAutoRefreshInterval as PreferencesResponse["mapAutoRefreshInterval"] };
   } catch { throw new ServiceError("INTERNAL_ERROR", "偏好设置文件无效", { key: "diagnostics.service.preferences.m002" }); }
@@ -34,10 +36,11 @@ const pendingWrites = new Map<string, Promise<PreferencesResponse>>();
 /** 合并更新串行保存，避免语言和刷新设置的并发写入互相覆盖。 */
 export function updatePreferences(home: string, body: unknown): Promise<PreferencesResponse> {
   if (!body || typeof body !== "object" || Array.isArray(body) || !Object.keys(body).length
-    || Object.keys(body).some(key => key !== "language" && key !== "sessionsAutoRefreshInterval" && key !== "mapAutoRefreshInterval")) {
-    throw new ServiceError("INVALID_INPUT", "请求体只能包含 language、sessionsAutoRefreshInterval 或 mapAutoRefreshInterval", { key: "diagnostics.service.preferences.fields" });
+    || Object.keys(body).some(key => key !== "language" && key !== "sessionsAutoRefreshInterval" && key !== "mapAutoRefreshInterval" && key !== "appearance")) {
+    throw new ServiceError("INVALID_INPUT", "请求体只能包含 language、sessionsAutoRefreshInterval、mapAutoRefreshInterval 或 appearance", { key: "diagnostics.service.preferences.fields" });
   }
-  const patch = body as Partial<PreferencesResponse>;
+  const patch = body as PreferencesPatch;
+  if ("appearance" in patch && !isAppearancePatch(patch.appearance)) throw new ServiceError("INVALID_INPUT", "外观设置无效", { key: "diagnostics.service.preferences.appearance" });
   if ("language" in patch && !isLanguagePreference(patch.language)) throw new ServiceError("INVALID_INPUT", "language 必须是 auto、zh-CN 或 en", { key: "diagnostics.service.preferences.m003" });
   if ("sessionsAutoRefreshInterval" in patch && !isAutoRefreshInterval(patch.sessionsAutoRefreshInterval)
     || "mapAutoRefreshInterval" in patch && !isAutoRefreshInterval(patch.mapAutoRefreshInterval)) throw new ServiceError("INVALID_INPUT", "刷新间隔必须是受支持的毫秒间隔", { key: "diagnostics.service.preferences.interval" });
@@ -53,11 +56,15 @@ export async function writePreferences(home: string, language: LanguagePreferenc
   return updatePreferences(home, { language });
 }
 
-async function savePreferences(home: string, patch: Partial<PreferencesResponse>): Promise<PreferencesResponse> {
+type PreferencesPatch = Omit<Partial<PreferencesResponse>, "appearance"> & { appearance?: Partial<Appearance> };
+
+async function savePreferences(home: string, patch: PreferencesPatch): Promise<PreferencesResponse> {
   const temporary = `${preferencesPath(home)}.${randomUUID()}.tmp`;
   try {
-    const preferences = { ...await readPreferences(home), ...patch };
-    const stored = { ...(preferences.language === "auto" ? {} : { language: preferences.language }),
+    const previous = await readPreferences(home);
+    const { appearance, ...fields } = patch;
+    const preferences: PreferencesResponse = { ...previous, ...fields, ...(appearance ? { appearance: { ...defaultAppearance, ...previous.appearance, ...appearance } } : {}) };
+    const stored = { ...(preferences.appearance ? { appearance: preferences.appearance } : {}), ...(preferences.language === "auto" ? {} : { language: preferences.language }),
       ...(preferences.sessionsAutoRefreshInterval ? { sessionsAutoRefreshInterval: preferences.sessionsAutoRefreshInterval } : {}),
       ...(preferences.mapAutoRefreshInterval ? { mapAutoRefreshInterval: preferences.mapAutoRefreshInterval } : {}) };
     await mkdir(home, { recursive: true, mode: 0o700 });

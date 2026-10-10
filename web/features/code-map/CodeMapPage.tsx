@@ -160,9 +160,9 @@ function EvidenceDialog({ repoId, event, query, open, onOpenChange }: { repoId: 
   </Modal>;
 }
 
-function EventDetails({ event, openEvidence, openCode, openSession, stale }: { event: FileEvent; openEvidence: () => void; openCode: (line?: number) => void; openSession: () => void; stale: boolean }) {
+function EventDetails({ event, openEvidence, openCode, openSession, stale, sessionTitle }: { event: FileEvent; sessionTitle?: string; openEvidence: () => void; openCode: (line?: number) => void; openSession: () => void; stale: boolean }) {
   useI18n();
-  return <div className="event-detail"><h3>{event.tool}</h3><dl><dt>{t("codeMap.event.result")}</dt><dd>{t(statusKeys[event.status])}</dd><dt>{t("codeMap.event.session")}</dt><dd>{event.sessionId}</dd><dt>{t("codeMap.event.time")}</dt><dd>{dateLabel(event.occurredAt)}</dd></dl>
+  return <div className="event-detail"><h3>{event.tool}</h3><dl><dt>{t("codeMap.event.result")}</dt><dd className={`event-status ${event.status}`}>{t(statusKeys[event.status])}</dd><dt>{t("codeMap.event.session")}</dt><dd title={event.sessionId}>{sessionTitle ?? event.sessionId}</dd><dt>{t("codeMap.event.time")}</dt><dd>{dateLabel(event.occurredAt)}</dd></dl>
     {event.mapping?.unknownReason && <p className="muted small">{t("codeMap.event.unknownReason", { reason: event.mapping.unknownReasonDescriptors?.map(item => isMessageDescriptorKnown(item) ? messageText(item, event.mapping!.unknownReason) : t("common.originalDetail", { detail: event.mapping!.unknownReason! })).join("; ") ?? t("common.originalDetail", { detail: event.mapping.unknownReason }) })}</p>}
     {event.reason && <p className="muted small">{!isMessageDescriptorKnown(event.reasonDescriptor) && <strong>{t("common.originalDetails")}: </strong>}{messageText(event.reasonDescriptor, event.reason)}</p>}
     {!!event.mapping?.exactRanges.length && <button className="range-link" disabled={stale} onClick={() => openCode(event.mapping!.exactRanges[0]!.start)}>{t("codeMap.event.exactRange", { ranges: rangesLabel(event.mapping.exactRanges) })}</button>}
@@ -173,9 +173,9 @@ function EventDetails({ event, openEvidence, openCode, openSession, stale }: { e
   </div>;
 }
 
-function FilePane({ repoId, detail, loading, error, retry, collapsed, toggle, metric, theme, query, openSession }: {
+function FilePane({ repoId, detail, loading, error, retry, collapsed, toggle, metric, theme, query, openSession, sessions }: {
   repoId: string; detail: FileDetail | null; loading: boolean; error: unknown; retry: () => void; collapsed: boolean; toggle: () => void;
-  metric: Metric; theme: Theme; query?: CoverageQuery; openSession: (event: HistoryEvent) => void;
+  metric: Metric; theme: Theme; query?: CoverageQuery; openSession: (event: HistoryEvent) => void; sessions: MapSession[];
 }) {
   useI18n();
   const [selectedEvent, setSelectedEvent] = useState<string | null>(null);
@@ -188,6 +188,7 @@ function FilePane({ repoId, detail, loading, error, retry, collapsed, toggle, me
   useEffect(() => { setSelectedEvent(null); setCodeOpen(false); setRawOpen(false); setEventLimit(30); setJumpLine(undefined); }, [detail?.file.path, detail?.version]);
   const highlights = useMemo(() => detail ? fileHighlights(detail, metric, showNear) : { exact: [], near: [] }, [detail, metric, showNear]);
   const active = detail?.events.find(event => event.id === selectedEvent) ?? detail?.events[0] ?? null;
+  const activeSession = active ? sessions.find(item => item.client === active.client && item.clientSessionId === active.sessionId) : undefined;
   const openCode = (line?: number) => { setJumpLine(line); if (line) setLineInput(String(line)); setCodeOpen(true); };
   return <aside className={`evidence-pane${collapsed ? " panel-collapsed" : ""}`} aria-label={t("codeMap.file.title")}>
     <div className="pane-heading"><span>{t("codeMap.file.title")}</span><Hint label={collapsed ? t("codeMap.file.expand") : t("codeMap.file.collapse")}><button className="icon-button panel-toggle" aria-label={collapsed ? t("codeMap.file.expand") : t("codeMap.file.collapse")} aria-expanded={!collapsed} aria-controls="file-details-content" onClick={toggle}>{collapsed ? <CaretLeft size={17} /> : <CaretRight size={17} />}</button></Hint></div>
@@ -201,12 +202,12 @@ function FilePane({ repoId, detail, loading, error, retry, collapsed, toggle, me
       {detail.content === null ? <p className="muted">{t("codeMap.file.unreadable")}</p> : <button className="button view-code-button" onClick={() => openCode()}><Code size={16} />{t("codeMap.file.openCode")}</button>}
       <div className="section-heading"><h3>{t("codeMap.file.history")}</h3><span>{t("codeMap.activity.count", { count: detail.events.length })}</span></div>
       {!detail.events.length && <p className="muted small">{t("codeMap.file.noActivity")}</p>}
-      <div className="event-list">{detail.events.slice(0, eventLimit).map(event => <button className={`event${active?.id === event.id ? " active" : ""}`} key={event.id} onClick={() => setSelectedEvent(event.id)}>
-        <div className="event-head"><span className="client-mark">{CLIENTS.find(client => client.id === event.client)!.abbreviation}</span><strong>{clientLabel(event.client)}</strong><span>{t(kindKeys[event.kind])}</span></div><span className="event-session">{event.tool} · {t(statusKeys[event.status])}</span>
-        <span className="event-range">{event.mapping?.exactRanges.length ? rangesLabel(event.mapping.exactRanges) : event.kind === "search" || event.kind === "other" ? t("codeMap.event.excluded") : event.mapping?.nearRanges.length ? t("codeMap.event.noExact") : t("codeMap.event.unknownRange")}{!!event.mapping?.nearRanges.length && <em>{t("codeMap.event.nearRange", { ranges: rangesLabel(event.mapping.nearRanges) })}</em>}</span><small>{dateLabel(event.occurredAt)}</small>
+      <div className="event-list">{detail.events.slice(0, eventLimit).map(event => <button className={`event${active?.id === event.id ? " active" : ""}`} aria-pressed={active?.id === event.id} key={event.id} onClick={() => setSelectedEvent(event.id)}>
+        <div className="event-head"><span className="client-mark">{CLIENTS.find(client => client.id === event.client)!.abbreviation}</span><strong>{clientLabel(event.client)}</strong><span>{t(kindKeys[event.kind])}</span></div><span className="event-session">{event.tool} · <span className={`event-status ${event.status}`}>{t(statusKeys[event.status])}</span></span>
+        <span className={`event-range${!event.mapping?.exactRanges.length ? " is-unknown" : ""}`}>{event.mapping?.exactRanges.length ? rangesLabel(event.mapping.exactRanges) : event.kind === "search" || event.kind === "other" ? t("codeMap.event.excluded") : event.mapping?.nearRanges.length ? t("codeMap.event.noExact") : t("codeMap.event.unknownRange")}{!!event.mapping?.nearRanges.length && <em>{t("codeMap.event.nearRange", { ranges: rangesLabel(event.mapping.nearRanges) })}</em>}</span><small>{dateLabel(event.occurredAt)}</small>
       </button>)}</div>
       {eventLimit < detail.events.length && <button className="button subtle" onClick={() => setEventLimit(value => value + 30)}>{t("codeMap.file.moreActivity")}</button>}
-      {active && <EventDetails event={active} stale={detail.contentStale || detail.content === null} openCode={openCode} openEvidence={() => setRawOpen(true)} openSession={() => openSession(active)} />}
+      {active && <EventDetails event={active} sessionTitle={activeSession ? mapSessionTitle(activeSession) : undefined} stale={detail.contentStale || detail.content === null} openCode={openCode} openEvidence={() => setRawOpen(true)} openSession={() => openSession(active)} />}
       {query && <EvidenceDialog repoId={repoId} event={active} query={query} open={rawOpen} onOpenChange={setRawOpen} />}
       <Modal open={codeOpen} onOpenChange={setCodeOpen} title={detail.file.path} description={t("codeMap.code.description", { count: detail.file.lineCount })} wide>
         {detail.contentStale && <Notice>{t("codeMap.code.stale")}</Notice>}
@@ -235,7 +236,7 @@ export function useCodeMapPage({ active, theme, onSession }: {
     media.addEventListener("change", change);
     return () => media.removeEventListener("change", change);
   }, []);
-  const [detailsCollapsed, setDetailsCollapsed] = useState(false);
+  const [detailsCollapsed, setDetailsCollapsed] = useState(true);
   const [repositories, setRepositories] = useState<Repository[]>([]);
   const [jobs, setJobs] = useState<Job[]>([]);
   const [repoId, setRepoId] = useState("");
@@ -446,7 +447,7 @@ export function useCodeMapPage({ active, theme, onSession }: {
   return {
     openMap,
     sourceAction: active && repository && <SourcesDialog repo={repository} query={query} gapCount={coverage?.gapCount ?? coverage?.gaps.length ?? 0} onJob={recordJob} />,
-    refreshAction: <button hidden={!active} className="button primary refresh-button" onClick={() => void runRefresh()} disabled={!repository || actionPending || jobActive(job)} aria-label={jobActive(job) ? t("codeMap.refresh.running") : t("codeMap.refresh.action")}><ArrowClockwise size={16} className={jobActive(job) ? "spinning" : ""} /><span className="refresh-label">{jobActive(job) ? t("codeMap.refresh.running") : t("codeMap.refresh.action")}</span></button>,
+    refreshAction: <button hidden={!active} className="button primary refresh-button" onClick={() => void runRefresh()} disabled={!repository || actionPending || jobActive(job)} title={coverage ? t("codeMap.analysis.info", { date: dateLabel(coverage.createdAt) }) : undefined} aria-label={jobActive(job) ? t("codeMap.refresh.running") : t("codeMap.refresh.action")}><ArrowClockwise size={16} className={jobActive(job) ? "spinning" : ""} /><span className="refresh-label">{jobActive(job) ? t("codeMap.refresh.running") : t("codeMap.refresh.action")}</span></button>,
     maintenanceNotice: indexMaintenance && <Notice danger={indexMaintenance.status === "failed"} action={<button className="button subtle" onClick={() => setIndexMaintenance(null)}>{t("common.close")}</button>}>
       {messageText(indexMaintenance.messageDescriptor, t("diagnostics.index.maintenance.error"))}
       {indexMaintenance.details && <details><summary>{t("common.originalDetails")}</summary><pre tabIndex={0}>{indexMaintenance.details}</pre></details>}
@@ -455,10 +456,9 @@ export function useCodeMapPage({ active, theme, onSession }: {
     <section className="product-view code-map-page" hidden={!active} aria-label={t("codeMap.view.map")}>
     {!!initialError && <Notice danger action={<button className="button subtle" onClick={() => setStatusRetry(value => value + 1)}>{t("codeMap.refresh.retryConnection")}</button>}><ErrorDetails error={initialError} /></Notice>}
     {!!actionError && <Notice danger action={<button className="button subtle" onClick={() => setActionError(null)}>{t("common.close")}</button>}><ErrorDetails error={actionError} /></Notice>}
-    {job && <div className={`result-status${job.status === "failed" ? " failed" : ""}`} role="status">
+    {job && job.status !== "completed" && <div className={`result-status${job.status === "failed" ? " failed" : ""}`} role="status">
       {job.status === "failed" ? <><WarningCircle size={16} /><span>{t("codeMap.refresh.failure", { reason: refreshFailureReason(job), context: t(coverage ? "codeMap.refresh.previous" : "codeMap.refresh.noResults") })}</span><button className="text-button" disabled={actionPending} onClick={() => void runRefresh()}>{t("codeMap.refresh.retry")}</button></>
-        : jobActive(job) ? <><ArrowClockwise size={15} className="spinning" /><span>{job.status === "queued" ? t("codeMap.refresh.queued") : isMessageDescriptorKnown(job.phaseDescriptor) ? messageText(job.phaseDescriptor, job.phase) : t("common.originalDetail", { detail: job.phase })}</span><progress max="1" value={Math.max(0, Math.min(1, job.progress))} aria-label={t("codeMap.refresh.progress")} /><small>{new Intl.NumberFormat(language, { style: "percent", maximumFractionDigits: 0 }).format(job.progress)}{coverage ? t("codeMap.refresh.retained") : ""}</small></>
-          : <><Check size={16} /><span>{t("codeMap.refresh.complete")}</span><small>{dateLabel(job.finishedAt)}</small></>}
+        : <><ArrowClockwise size={15} className="spinning" /><span>{job.status === "queued" ? t("codeMap.refresh.queued") : isMessageDescriptorKnown(job.phaseDescriptor) ? messageText(job.phaseDescriptor, job.phase) : t("common.originalDetail", { detail: job.phase })}</span><progress max="1" value={Math.max(0, Math.min(1, job.progress))} aria-label={t("codeMap.refresh.progress")} /><small>{new Intl.NumberFormat(language, { style: "percent", maximumFractionDigits: 0 }).format(job.progress)}{coverage ? t("codeMap.refresh.retained") : ""}</small></>}
     </div>}
     {coverage?.stale && !jobActive(job) && job?.status !== "failed" && <Notice action={<button className="text-button" onClick={() => void runRefresh()}>{t("codeMap.refresh.action")}</button>}>{t("codeMap.refresh.stale", { date: dateLabel(coverage.createdAt) })}</Notice>}
     {initialLoading && !repository ? <Empty title={t("codeMap.empty.connect")}>{t("codeMap.empty.loading")}</Empty> : !repository ? <Empty title={t("codeMap.empty.start")}>{t("codeMap.empty.register")}<br />{t("codeMap.empty.local")}</Empty> : <ResizableWorkspace sidebarCollapsed={navigationCollapsed} detailsCollapsed={detailsCollapsed}>
@@ -498,7 +498,7 @@ export function useCodeMapPage({ active, theme, onSession }: {
           <details className="baseline-note"><summary>{t("codeMap.analysis.info", { date: dateLabel(coverage!.createdAt) })}</summary><p>{t("codeMap.analysis.version", { version: coverage!.version })}<br />{t("codeMap.analysis.baseline", { hash: coverage!.baselineHash })}{coverage!.previousVersion && <>{t("codeMap.analysis.previous", { version: coverage!.previousVersion })}</>}</p></details>
         </>}
       </main>
-      <FilePane repoId={repoId} detail={detail} loading={detailLoading} error={detailError} retry={() => setDetailRetry(value => value + 1)} collapsed={detailsCollapsed} toggle={() => setDetailsCollapsed(value => !value)} metric={metric} theme={theme} query={query} openSession={event => void openSession(event)} />
+      <FilePane repoId={repoId} detail={detail} loading={detailLoading} error={detailError} retry={() => setDetailRetry(value => value + 1)} collapsed={detailsCollapsed} toggle={() => setDetailsCollapsed(value => !value)} metric={metric} theme={theme} query={query} sessions={availableMapSessions} openSession={event => void openSession(event)} />
     </ResizableWorkspace>}
     {!repository && !initialLoading && <div className="first-register"><button className="button primary" onClick={() => setRegisterOpen(true)}><Plus size={17} />{t("codeMap.repository.registerLocal")}</button></div>}
     <Modal open={registerOpen} onOpenChange={setRegisterOpen} fallbackFocus={repositoryTrigger} title={t("codeMap.repository.registerTitle")} description={t("codeMap.repository.registerDescription")}>

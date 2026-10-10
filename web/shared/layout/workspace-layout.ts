@@ -2,6 +2,7 @@ import { t } from "../i18n";
 
 export type PanelSide = "sidebar" | "details";
 export type PanelWidths = Record<PanelSide, number>;
+export type WorkspaceVariant = "map" | "sessions" | "resources";
 export type CollapsedPanels = Record<PanelSide, boolean>;
 export type PanelSemantics = Partial<Record<PanelSide, { label: string; controls: string }>>;
 
@@ -19,10 +20,13 @@ const mapMinimum = 360;
 const railWidth = 44;
 const clamp = (value: number, min: number, max: number) => Math.max(min, Math.min(max, value));
 
-export function workspaceWidths(viewport: number, preferred: Partial<PanelWidths>, collapsed: CollapsedPanels): PanelWidths {
+export function workspaceWidths(viewport: number, preferred: Partial<PanelWidths>, collapsed: CollapsedPanels, variant: WorkspaceVariant = "map"): PanelWidths {
+  const defaults = variant === "sessions" ? { sidebar: viewport > 1250 ? 300 : 280, details: 260 }
+    : variant === "resources" ? { sidebar: 180, details: 340 }
+    : { sidebar: viewport > 1250 ? 200 : viewport >= 1024 ? 175 : 170, details: viewport > 1250 ? 320 : 285 };
   const widths = {
-    sidebar: collapsed.sidebar ? railWidth : clamp(preferred.sidebar ?? (viewport > 1250 ? 200 : viewport >= 1024 ? 175 : 170), limits.sidebar.min, limits.sidebar.max),
-    details: collapsed.details ? railWidth : clamp(preferred.details ?? (viewport > 1250 ? 320 : 285), limits.details.min, limits.details.max),
+    sidebar: collapsed.sidebar ? railWidth : clamp(preferred.sidebar ?? defaults.sidebar, limits.sidebar.min, limits.sidebar.max),
+    details: collapsed.details ? railWidth : clamp(preferred.details ?? defaults.details, limits.details.min, limits.details.max),
   };
   if (viewport < 768) return widths;
   const budget = viewport - mapMinimum - (viewport < 1024 && collapsed.details ? railWidth : 0);

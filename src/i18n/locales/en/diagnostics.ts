@@ -1,7 +1,9 @@
 import type { MessageCatalog } from "../../types.js";
 
 export default {
-  "diagnostics.service.preferences.fields": "The request body can only contain language, sessionsAutoRefreshInterval, or mapAutoRefreshInterval",
+  "diagnostics.service.preferences.appearance": "Invalid appearance preferences.",
+
+  "diagnostics.service.preferences.fields": "The request body can only contain language, sessionsAutoRefreshInterval, mapAutoRefreshInterval, or appearance",
   "diagnostics.service.preferences.interval": "The refresh interval must be a supported interval in milliseconds",
   "diagnostics.service.input.sessionIdentity": "Session filtering requires both sessionClient and clientSessionId",
   "diagnostics.history.adapters.claude.m001": "The background task only acknowledged receipt; follow-up notifications are not supported, so the activity remains unknown",

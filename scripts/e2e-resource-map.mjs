@@ -269,6 +269,7 @@ try {
     await detail.getByRole('heading',{name:'map-skill-214',exact:true}).waitFor();
     await page.getByRole('button',{name:'查看map-skill-214的使用详情',exact:true}).waitFor();
     expect(page.mapRequests.length===requests,'定位改变地图查询范围');
+    if(await page.locator('.resource-usage-summary:not([open]) > summary').count()) await page.locator('.resource-usage-summary:not([open]) > summary').first().click();
     expect(/1\\s*显式调用/.test(await detail.locator('.resource-stats').innerText()),'微小资源数值错误');
     expect(await page.evaluate(()=>new URLSearchParams(location.hash.split('?')[1]).get('q'))==='map-','定位替代了关键词筛选');
     await page.getByRole('button',{name:'适应资源地图窗口',exact:true}).click();
@@ -305,10 +306,11 @@ try {
     const detail=page.getByRole('complementary',{name:'资源详情',exact:true});
     await zero.getByRole('button',{name:'查看map-review-000的使用详情',exact:true}).click();
     await detail.getByRole('heading',{name:'map-review-000',exact:true}).waitFor();
+    if(await page.locator('.resource-usage-summary:not([open]) > summary').count()) await page.locator('.resource-usage-summary:not([open]) > summary').first().click();
     expect(/0\\s*使用会话/.test(await detail.locator('.resource-stats').innerText()),'零使用详情错误');
     ${locateResource("map-read-000")}
     await detail.getByRole('heading',{name:'map-read-000',exact:true}).waitFor();
-    const stats=await detail.locator('.resource-stats').innerText();
+    if(await page.locator('.resource-usage-summary:not([open]) > summary').count()) await page.locator('.resource-usage-summary:not([open]) > summary').first().click(); const stats=await detail.locator('.resource-stats').innerText();
     expect(/0\\s*显式调用/.test(stats)&&/1\\s*成功读取/.test(stats),'零调用被认定未使用');
     expect((await detail.locator('.resource-tags').first().innerText()).includes('已使用'),'读取证据未保留已使用状态');
   `);
@@ -318,6 +320,7 @@ try {
     await page.getByRole('button',{name:'查看map-skill-001的使用详情',exact:true}).click();
     const detail=page.getByRole('complementary',{name:'资源详情',exact:true});
     await detail.getByRole('heading',{name:'map-skill-001',exact:true}).waitFor();
+    if(await page.locator('.resource-usage-summary:not([open]) > summary').count()) await page.locator('.resource-usage-summary:not([open]) > summary').first().click();
     expect(/1\\s*使用会话/.test(await detail.locator('.resource-stats').innerText()),'Agent筛选统计扩大');
     await page.reload(); await page.getByRole('group',{name:'资源使用地图',exact:true}).waitFor();
     expect(await page.evaluate(()=>new URLSearchParams(location.hash.split('?')[1]).get('metric'))==='sessions','刷新丢失统一指标');
@@ -378,6 +381,7 @@ try {
     await dialog.getByRole('button',{name:'完成',exact:true}).click();
     await page.getByRole('group',{name:'资源使用地图',exact:true}).waitFor();
     await detail.getByRole('heading',{name:'map-skill-001',exact:true}).waitFor();
+    if(await page.locator('.resource-usage-summary:not([open]) > summary').count()) await page.locator('.resource-usage-summary:not([open]) > summary').first().click();
     expect(/2\\s*使用会话/.test(await detail.locator('.resource-stats').innerText()),'管理抹掉历史使用');
     await page.waitForFunction(()=>!document.querySelector('.resource-list-scroll[aria-busy="true"]'));
     expect(await page.evaluate(()=>location.hash)===hash,'管理改变地图筛选或选中项');
@@ -443,6 +447,7 @@ try {
     await dialog.getByRole('button',{name:'完成',exact:true}).click();
     await page.getByRole('group',{name:'资源使用地图',exact:true}).waitFor();
     await detail.getByRole('heading',{name:'map-mcp-001',exact:true}).waitFor();
+    if(await page.locator('.resource-usage-summary:not([open]) > summary').count()) await page.locator('.resource-usage-summary:not([open]) > summary').first().click();
     expect(/10\\s*调用次数/.test(await detail.locator('.resource-stats').innerText()),'停用改变历史调用');
   `);
   assert.equal(parseToml(await readFile(fixture.configPath, "utf8")).mcp_servers["map-mcp-001"].enabled, false);
@@ -557,10 +562,10 @@ try {
     await page.unroute('**/api/v1/resources/map?**');
   `);
   await step("深浅主题、375px滚动与窄屏详情", `
-    await page.getByRole('button',{name:'切换主题',exact:true}).click();
+    await page.getByRole('button',{name:'外观',exact:true}).click(); await page.getByRole('combobox',{name:'显示模式',exact:true}).click(); await page.getByRole('option',{name:'深色',exact:true}).click(); await page.keyboard.press('Escape');
     expect(await page.evaluate(()=>document.documentElement.dataset.theme)==='dark','深色主题没有生效');
     ${screenshot("skill-map-dark.png")}
-    await page.getByRole('button',{name:'切换主题',exact:true}).click();
+    await page.getByRole('button',{name:'外观',exact:true}).click(); await page.getByRole('combobox',{name:'显示模式',exact:true}).click(); await page.getByRole('option',{name:'明亮',exact:true}).click(); await page.keyboard.press('Escape');
     await page.getByRole('textbox',{name:'搜索资源名称或路径',exact:true}).fill('map-');
     await page.setViewportSize({width:375,height:812});
     const previousDetail=page.getByRole('dialog',{name:'资源详情',exact:true});
@@ -608,6 +613,7 @@ try {
     await preview.getByRole('button',{name:'完成',exact:true}).click();
     await detail.getByRole('heading',{name:'map-skill-002',exact:true}).waitFor();
     await page.getByRole('group',{name:'资源使用地图',exact:true}).waitFor();
+    if(await page.locator('.resource-usage-summary:not([open]) > summary').count()) await page.locator('.resource-usage-summary:not([open]) > summary').first().click();
     expect(/1\\s*显式调用/.test(await detail.locator('.resource-stats').innerText()),'回收抹掉真实历史');
     await page.getByRole('button',{name:'管理记录',exact:true}).click(); await page.getByRole('menuitemradio',{name:'回收区',exact:true}).click();
     await page.getByRole('button',{name:'查看map-skill-002的恢复记录',exact:true}).click();
@@ -620,6 +626,7 @@ try {
     await page.getByRole('group',{name:'资源使用地图',exact:true}).waitFor();
     await page.getByRole('button',{name:'查看map-skill-002的使用详情',exact:true}).click();
     await detail.getByRole('heading',{name:'map-skill-002',exact:true}).waitFor();
+    if(await page.locator('.resource-usage-summary:not([open]) > summary').count()) await page.locator('.resource-usage-summary:not([open]) > summary').first().click();
     expect(/1\\s*显式调用/.test(await detail.locator('.resource-stats').innerText()),'恢复统计变化');
   `);
   assert.ok((await readFile(join(fixture.userHome,'.codex','skills','map-skill-002','SKILL.md'),'utf8')).includes('map-skill-002'));

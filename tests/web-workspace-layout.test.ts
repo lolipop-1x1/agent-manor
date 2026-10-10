@@ -10,6 +10,17 @@ test("面板默认宽度沿用桌面与窄屏布局", () => {
   assert.deepEqual(workspaceWidths(900, {}, expanded), { sidebar: 170, details: 285 });
 });
 
+test("工作区按阅读与资源任务分配宽度，用户调整仍优先", () => {
+  assert.deepEqual(workspaceWidths(1280, {}, expanded, "sessions"), { sidebar: 300, details: 260 });
+  assert.deepEqual(workspaceWidths(1280, {}, expanded, "resources"), { sidebar: 180, details: 340 });
+  for (const variant of ["sessions", "resources"] as const) {
+    assert.deepEqual(workspaceWidths(1440, { sidebar: 350, details: 380 }, expanded, variant), { sidebar: 350, details: 380 });
+    const compact = workspaceWidths(1024, { sidebar: 460, details: 620 }, expanded, variant);
+    assert.ok(1024 - compact.sidebar - compact.details >= 360 - 1e-7);
+    assert.deepEqual(workspaceWidths(1024, {}, { sidebar: true, details: true }, variant), { sidebar: 44, details: 44 });
+  }
+});
+
 test("拖动范围保护相邻面板与地图，右侧堆叠时不占横向空间", () => {
   const widths = { sidebar: 300, details: 400 };
   assert.deepEqual(panelWidthRange("sidebar", 1024, widths), { min: 160, max: 264 });

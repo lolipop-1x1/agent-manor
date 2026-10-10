@@ -1,6 +1,7 @@
 import type { MessageCatalog } from "../../types.js";
 
 export default {
+  "sessions.filter.more": "More filters",
   "sessions.body.loading": "Loading complete content…",
   "sessions.reading.versionChanged": "The result version changed. Please retry.",
   "sessions.reading.anchorMissing": "The original reading position is absent from the new records. This session remains selected.",

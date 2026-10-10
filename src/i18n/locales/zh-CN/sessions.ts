@@ -1,6 +1,7 @@
 import type { MessageCatalog } from "../../types.js";
 
 export default {
+  "sessions.filter.more": "更多筛选",
   "sessions.body.loading": "正在读取完整内容…",
   "sessions.reading.versionChanged": "结果版本发生变化，请重试。",
   "sessions.reading.anchorMissing": "原阅读位置已不在新版记录中，已保留当前会话。",

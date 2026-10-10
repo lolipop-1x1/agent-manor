@@ -46,6 +46,18 @@ try {
     page.on("pageerror", error => errors.push(error.message));
     const ensure = (condition, message) => { if (!condition) throw new Error(message); };
     const button = name => page.getByRole("button", { name, exact: true });
+
+    const toggleTheme = async () => {
+      const english = await page.locator("html").getAttribute("lang") === "en";
+      const dark = await page.locator("html").getAttribute("data-theme") !== "dark";
+      await button(english ? "Appearance" : "外观").click();
+      await page.getByRole("combobox", { name: english ? "Display mode" : "显示模式", exact: true }).click();
+      const saved = page.waitForResponse(response => response.url().endsWith("/api/v1/preferences") && response.request().method() === "PUT");
+      await page.getByRole("option", { name: english ? dark ? "Dark" : "Light" : dark ? "深色" : "明亮", exact: true }).click();
+      await saved;
+      await page.waitForFunction(dark => document.documentElement.dataset.theme === (dark ? "dark" : "light"), dark);
+      await page.keyboard.press("Escape");
+    };
     const map = page.getByRole("group", { name: "文件行数决定面积的代码活动地图" });
     const selectedDirectory = async () => page.locator(".directory-select[aria-current=location]").getAttribute("aria-label");
     const width = async () => (await map.boundingBox()).width;
@@ -130,10 +142,12 @@ try {
     for (const viewport of [{ width: 1920, height: 1080 }, { width: 900, height: 900 }, { width: 390, height: 844 }]) {
       await page.setViewportSize(viewport);
       if (viewport.width === 1920) ensure(await page.getByRole("region", { name: "代码地图视图", exact: true }).locator(".workspace").evaluate(element => element.getBoundingClientRect().width) === 1920, "大屏地图仍被最大宽度限制");
-      await button("切换主题").click();
-      await button("收起仓库导航").click();
+      await toggleTheme();
+      const collapseNavigation = page.getByRole("button", { name: /^收起仓库导航/ });
+      if (!await collapseNavigation.isVisible()) await page.getByRole("button", { name: /^展开仓库导航/ }).click();
+      await collapseNavigation.click();
       await button("收起文件详情").click();
-      await button("展开仓库导航").click();
+      await page.getByRole("button", { name: /^展开仓库导航/ }).click();
       await button("展开文件详情").click();
       await fits();
       ensure(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), "窄屏页面横向溢出");
@@ -143,7 +157,7 @@ try {
     await navigate(() => page.getByRole("menuitem", { name: /second-demo/ }).click(), "", 6, "切换第二个仓库");
     ensure(await button("选择目录 src/deep").count() === 0, "切换仓库未重置目录展开状态");
     ensure(errors.length === 0, `浏览器运行异常：${errors.join("; ")}`);
-    if (await page.locator("html").getAttribute("data-theme") === "dark") await button("切换主题").click();
+    if (await page.locator("html").getAttribute("data-theme") === "dark") await toggleTheme();
     await page.locator(".app-header").scrollIntoViewIfNeeded();
     return { status: "passed", originalWidth, leftWidth, bothWidth, errors };
   };

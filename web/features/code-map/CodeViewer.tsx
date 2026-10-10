@@ -58,11 +58,21 @@ function rangeDecorations(state: EditorState, exact: LineRange[], near: LineRang
   return Decoration.set([...lines].sort(([a], [b]) => a - b).map(([line, className]) => Decoration.line({ class: className }).range(state.doc.line(line).from)));
 }
 
+const editorTheme = (theme: Theme) => EditorView.theme({ "&": { backgroundColor: "var(--surface)", color: "var(--text)" },
+  ".cm-scroller": { fontFamily: "var(--mono)", fontSize: "12px", lineHeight: "1.8" },
+  ".cm-gutters": { backgroundColor: "var(--surface-alt)", color: "var(--muted)", borderRight: "1px solid var(--border)" },
+  ".cm-activeLine, .cm-activeLineGutter": { backgroundColor: "var(--surface-alt)" },
+  ".cm-coverage-exact": { backgroundColor: "var(--code-exact)", borderLeft: "2px solid var(--accent)" },
+  ".cm-coverage-near": { backgroundColor: "var(--code-near)", borderLeft: "2px dashed var(--near)" },
+  ".cm-cursor": { borderLeftColor: "var(--accent)" },
+}, { dark: theme === "dark" });
+
 export function CodeViewer({ content, path, exact, near, theme, jumpLine }: {
   content: string; path: string; exact: LineRange[]; near: LineRange[]; theme: Theme; jumpLine?: number;
 }) {
   const { language: displayLanguage } = useI18n();
   const labels = useRef(new Compartment());
+  const colors = useRef(new Compartment());
   const host = useRef<HTMLDivElement>(null);
   const view = useRef<EditorView | null>(null);
   useEffect(() => {
@@ -79,20 +89,14 @@ export function CodeViewer({ content, path, exact, near, theme, jumpLine }: {
         doc: content,
         extensions: [basicSetup, language, EditorState.readOnly.of(true), EditorView.editable.of(false), coverage,
           labels.current.of([EditorView.contentAttributes.of({ "aria-label": t("codeMap.code.current", { path }), tabindex: "0" }), EditorState.phrases.of(editorPhrases())]),
-          EditorView.theme({ "&": { backgroundColor: "var(--surface)", color: "var(--text)" },
-            ".cm-scroller": { fontFamily: "var(--mono)", fontSize: "12px", lineHeight: "1.8" },
-            ".cm-gutters": { backgroundColor: "var(--surface-alt)", color: "var(--muted)", borderRight: "1px solid var(--border)" },
-            ".cm-activeLine, .cm-activeLineGutter": { backgroundColor: "var(--surface-alt)" },
-            ".cm-coverage-exact": { backgroundColor: "var(--code-exact)", borderLeft: "2px solid var(--accent)" },
-            ".cm-coverage-near": { backgroundColor: "var(--code-near)", borderLeft: "2px dashed var(--near)" },
-            ".cm-cursor": { borderLeftColor: "var(--accent)" },
-          }, { dark: theme === "dark" }),
+          colors.current.of(editorTheme(theme)),
         ],
       }),
     });
     view.current = editor;
     return () => { editor.destroy(); view.current = null; };
-  }, [content, path, exact, near, theme]);
+  }, [content, path, exact, near]);
+  useEffect(() => { view.current?.dispatch({ effects: colors.current.reconfigure(editorTheme(theme)) }); }, [theme, content, path, exact, near]);
   useEffect(() => {
     view.current?.dispatch({ effects: labels.current.reconfigure([
       EditorView.contentAttributes.of({ "aria-label": t("codeMap.code.current", { path }), tabindex: "0" }), EditorState.phrases.of(editorPhrases()),

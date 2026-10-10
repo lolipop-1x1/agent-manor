@@ -1,6 +1,8 @@
 import type { MessageCatalog } from "../../types.js";
 
 export default {
+  "resources.detail.usageSummary": "Usage statistics and distribution",
+  "resources.detail.observation": "Usage observation",
   "resources.kind.skill": "Skill",
   "resources.kind.mcp": "MCP",
   "resources.agent.label": "Agent",

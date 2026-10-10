@@ -1,9 +1,9 @@
 import { useEffect, useRef, useState, type CSSProperties, type KeyboardEvent, type PointerEvent, type ReactNode } from "react";
 import { useI18n } from "../i18n";
-import { panelSemantics, panelWidthRange, workspaceWidths, type PanelSemantics, type PanelSide, type PanelWidths } from "./workspace-layout";
+import { panelSemantics, panelWidthRange, workspaceWidths, type PanelSemantics, type PanelSide, type PanelWidths, type WorkspaceVariant } from "./workspace-layout";
 
-export function ResizableWorkspace({ sidebarCollapsed, detailsCollapsed, children, semantics }: {
-  sidebarCollapsed: boolean; detailsCollapsed: boolean; children: ReactNode; semantics?: PanelSemantics;
+export function ResizableWorkspace({ sidebarCollapsed, detailsCollapsed, children, semantics, variant = "map" }: {
+  sidebarCollapsed: boolean; detailsCollapsed: boolean; children: ReactNode; semantics?: PanelSemantics; variant?: WorkspaceVariant;
 }) {
   const { t } = useI18n();
   const workspace = useRef<HTMLDivElement>(null);
@@ -14,7 +14,7 @@ export function ResizableWorkspace({ sidebarCollapsed, detailsCollapsed, childre
   const [resizing, setResizing] = useState<PanelSide | null>(null);
   // 在当前窗口内固定另一侧的显示宽度，避免拖动联动；窗口变化后恢复它原有的偏好。
   const display = pinned?.viewport === viewport ? { ...preferred, [pinned.side]: pinned.width } : preferred;
-  const widths = workspaceWidths(viewport, display, { sidebar: sidebarCollapsed, details: detailsCollapsed });
+  const widths = workspaceWidths(viewport, display, { sidebar: sidebarCollapsed, details: detailsCollapsed }, variant);
 
   useEffect(() => {
     const observer = new ResizeObserver(entries => {
@@ -67,7 +67,7 @@ export function ResizableWorkspace({ sidebarCollapsed, detailsCollapsed, childre
     adjust(side, event.key === "Home" ? range.min : event.key === "End" ? range.max : widths[side] + (event.key === "ArrowRight" ? step : -step));
   };
 
-  return <div ref={workspace} className="workspace" data-sidebar-collapsed={sidebarCollapsed} data-details-collapsed={detailsCollapsed}
+  return <div ref={workspace} className="workspace" data-workspace={variant} data-sidebar-collapsed={sidebarCollapsed} data-details-collapsed={detailsCollapsed}
     data-resizing={resizing ?? undefined} style={{ "--sidebar-width": `${widths.sidebar}px`, "--details-width": `${widths.details}px` } as CSSProperties}>
     {children}
     {(["sidebar", "details"] as const).map(side => {

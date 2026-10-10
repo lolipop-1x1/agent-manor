@@ -247,7 +247,7 @@ export default {
   "codeMap.activity.range_other": "0 → {{count, number}} 次",
   "codeMap.coverage.lineFraction_other": "{{covered}} / {{count, number}} 行",
   "codeMap.coverage.fileFraction_other": "{{covered}} / {{count, number}} 个文件",
-  "codeMap.coverage.nearFiles_other": "{{count, number}} 个文件 · 不计入精确覆盖",
+  "codeMap.coverage.nearFiles_other": "{{count, number}} 个文件",
   "codeMap.table.title_other": "文件列表 · {{count, number}} 个",
   "codeMap.gaps.count_other": "{{count, number}} 项采集缺口与范围限制",
   "codeMap.code.current": "当前代码：{{path}}",

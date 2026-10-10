@@ -1,6 +1,21 @@
 import type { MessageCatalog } from "../../types.js";
 
 export default {
+  "common.appearance.menu": "外观",
+  "common.appearance.mode": "显示模式",
+  "common.appearance.auto": "跟随系统",
+  "common.appearance.light": "明亮",
+  "common.appearance.dark": "深色",
+  "common.appearance.color": "主题色",
+  "common.appearance.blue": "蓝色",
+  "common.appearance.terracotta": "赤陶",
+  "common.appearance.celadon": "青瓷",
+  "common.appearance.amber": "琥珀",
+  "common.appearance.berry": "莓红",
+  "common.appearance.graphite": "石墨",
+  "common.appearance.custom": "自定义主题色",
+  "common.appearance.apply": "应用",
+
   "common.autoRefresh.sessions": "会话库自动刷新",
   "common.autoRefresh.map": "代码地图自动刷新",
   "common.autoRefresh.off": "关闭",

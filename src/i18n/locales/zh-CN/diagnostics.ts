@@ -1,7 +1,9 @@
 import type { MessageCatalog } from "../../types.js";
 
 export default {
-  "diagnostics.service.preferences.fields": "请求体只能包含 language、sessionsAutoRefreshInterval 或 mapAutoRefreshInterval",
+  "diagnostics.service.preferences.appearance": "外观设置无效。",
+
+  "diagnostics.service.preferences.fields": "请求体只能包含 language、sessionsAutoRefreshInterval、mapAutoRefreshInterval 或 appearance",
   "diagnostics.service.preferences.interval": "刷新间隔必须是受支持的毫秒间隔",
   "diagnostics.service.input.sessionIdentity": "会话筛选必须同时提供 sessionClient 和 clientSessionId",
   "diagnostics.history.adapters.claude.m001": "后台任务返回仅确认已接收；后续通知形态未适配，当前活动保持 unknown",

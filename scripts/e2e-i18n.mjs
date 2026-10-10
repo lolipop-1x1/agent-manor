@@ -67,6 +67,18 @@ try {
   page.on("pageerror",error=>page.i18nErrors.push(error.message));
   page.on("request",req=>{if(req.method()==="GET" && /\/(coverage|file|sources)(\?|$)/.test(req.url()))page.i18nQueries.push(req.url())});
   const button=name=>page.getByRole("button",{name,exact:true});
+
+    const toggleTheme = async () => {
+      const english = await page.locator("html").getAttribute("lang") === "en";
+      const dark = await page.locator("html").getAttribute("data-theme") !== "dark";
+      await button(english ? "Appearance" : "外观").click();
+      await page.getByRole("combobox", { name: english ? "Display mode" : "显示模式", exact: true }).click();
+      const saved = page.waitForResponse(response => response.url().endsWith("/api/v1/preferences") && response.request().method() === "PUT");
+      await page.getByRole("option", { name: english ? dark ? "Dark" : "Light" : dark ? "深色" : "明亮", exact: true }).click();
+      await saved;
+      await page.waitForFunction(dark => document.documentElement.dataset.theme === (dark ? "dark" : "light"), dark);
+      await page.keyboard.press("Escape");
+    };
   const menu=async (name,option)=>{const response=page.waitForResponse(res=>res.url().endsWith("/api/v1/preferences")&&res.request().method()==="PUT");await button(name).click();await page.getByRole("menuitemradio",{name:option,exact:true}).click();await response;await page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))));await page.waitForLoadState("networkidle")};
   await page.setViewportSize({width:1440,height:1000});
   await page.getByRole("heading",{name:"代码活动地图",exact:true}).waitFor();
@@ -90,7 +102,7 @@ try {
   ensure((await page.getByRole("dialog",{name:"Map statistics"}).innerText()).includes("Coverage statistics"),"帮助未翻译");
   await button("Close Map statistics").click();
   const time=page.getByRole("combobox",{name:"Map time",exact:true});
-  await time.focus();await page.keyboard.press("ArrowDown");await page.getByRole("option",{name:"Custom",exact:true}).focus();await page.keyboard.press("Enter");
+  await time.click();await page.getByRole("option",{name:"Custom",exact:true}).click();
   await button("Map start date").click();
   ensure(await button("Previous month").count()===1,"英文日历月份导航未翻译");
   const dateDetail=page.waitForResponse(response=>response.url().includes("/file?")&&response.url().includes("from="));
@@ -114,7 +126,7 @@ try {
   await page.unroute("**/api/v1/preferences");
   await page.route("**/api/v1/preferences",async route=>{if(route.request().method()==="PUT")await route.fulfill({status:500,contentType:"application/json",body:'{"error":{"code":"INTERNAL_ERROR","message":"synthetic"}}'});else await route.continue()});
   await menu("显示语言","English");
-  ensure((await page.getByRole("alert").innerText()).includes("were not saved"),"保存失败没有明确反馈");
+  ensure((await page.getByRole("alert").innerText()).includes("偏好设置未保存"),"保存失败没有明确反馈");
   await page.unroute("**/api/v1/preferences");
   const synchronized=page.waitForResponse(response=>response.url().endsWith("/api/v1/preferences")&&response.request().method()==="GET");
   await page.evaluate(()=>window.dispatchEvent(new Event("focus")));await synchronized;await page.waitForFunction(()=>document.documentElement.lang==="zh-CN");
@@ -144,7 +156,7 @@ try {
   await page.getByText("原始合成旧诊断",{exact:false}).waitFor();
   ensure((await page.locator(".map-main").innerText()).includes("原始详情"),"旧诊断未说明原始详情");
   await page.unroute("**/coverage?**");await button("加载最新结果").click();await page.locator(".code-map").waitFor();await menu("显示语言","English");
-  for(const theme of ["dark","light"]){if(await page.locator("html").getAttribute("data-theme")!==theme)await button("Toggle theme").click();for(const width of [1440,390]){await page.setViewportSize({width,height:900});ensure(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),"主题或窄屏横向溢出");await button("Display language").click();const box=await page.getByRole("menu",{name:"Display language"}).boundingBox();ensure(box.x>=0&&box.x+box.width<=width,"窄屏语言菜单超出视口");await page.keyboard.press("Escape")}}
+  for(const theme of ["dark","light"]){if(await page.locator("html").getAttribute("data-theme")!==theme)await toggleTheme();for(const width of [1440,390]){await page.setViewportSize({width,height:900});ensure(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),"主题或窄屏横向溢出");await button("Display language").click();const box=await page.getByRole("menu",{name:"Display language"}).boundingBox();ensure(box.x>=0&&box.x+box.width<=width,"窄屏语言菜单超出视口");await page.keyboard.press("Escape")}}
   await page.setViewportSize({width:1440,height:1000});
   const other=await page.context().newPage();
   await other.goto(page.url());await other.getByRole("heading",{name:"Code activity map",exact:true}).waitFor();
@@ -195,6 +207,18 @@ try {
   page.on('pageerror',error=>page.errors.push(error.message));
   page.on('request',request=>{if(request.url().includes('/api/v1/resources/'))(request.method()==='GET'?page.resourceQueries:page.resourceWrites).push(request.url())});
   const button=name=>page.getByRole('button',{name,exact:true});
+
+    const toggleTheme = async () => {
+      const english = await page.locator("html").getAttribute("lang") === "en";
+      const dark = await page.locator("html").getAttribute("data-theme") !== "dark";
+      await button(english ? "Appearance" : "外观").click();
+      await page.getByRole("combobox", { name: english ? "Display mode" : "显示模式", exact: true }).click();
+      const saved = page.waitForResponse(response => response.url().endsWith("/api/v1/preferences") && response.request().method() === "PUT");
+      await page.getByRole("option", { name: english ? dark ? "Dark" : "Light" : dark ? "深色" : "明亮", exact: true }).click();
+      await saved;
+      await page.waitForFunction(dark => document.documentElement.dataset.theme === (dark ? "dark" : "light"), dark);
+      await page.keyboard.press("Escape");
+    };
   const language=async(value)=>{
    await page.evaluate(async language=>{await fetch('/api/v1/preferences',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({language})});window.dispatchEvent(new Event('focus'))},value);
    await page.waitForFunction(language=>document.documentElement.lang===language,value);await page.waitForLoadState('networkidle');
@@ -217,7 +241,7 @@ try {
   ensure(!(await page.locator('.resources-shell').innerText()).includes('resources.'),'资源目录key泄漏');
   await button('Resource map help').click();ensure((await page.getByRole('dialog',{name:'Resource map help'}).innerText()).includes('Area and statistical scope'),'地图帮助未翻译');await button('Close Resource map help').click();
   await button('Usage definitions').click();ensure((await page.getByRole('dialog',{name:'Usage definitions'}).innerText()).includes('Known results'),'统计帮助未翻译');await button('Close Usage definitions').click();
-  await button('MCP').click();await button('List').click();await button('View usage details for map-mcp-000').click();await page.locator('.resource-tool-list button').filter({hasText:'lookup'}).click();await page.waitForLoadState('networkidle');
+  await button('MCP').click();await button('List').click();await button('View usage details for map-mcp-000').click();await page.getByText("Usage statistics and distribution", {exact:true}).click();await page.locator('.resource-tool-list button').filter({hasText:'lookup'}).click();await page.waitForLoadState('networkidle');
   const mcpHash=await page.evaluate(()=>location.hash),mcpQueries=page.resourceQueries.length;await language('zh-CN');
   ensure(mcpHash===await page.evaluate(()=>location.hash)&&mcpQueries===page.resourceQueries.length,'MCP工具选中或请求改变');
   ensure(await page.locator('.resource-tool-list button[aria-pressed="true"] strong').innerText()==='lookup','MCP工具名称被翻译');
@@ -228,7 +252,9 @@ try {
   await button('资源开始日期').click();await button('清空').click();await page.getByRole('combobox',{name:'资源使用时间',exact:true}).click();await page.getByRole('option',{name:'全部历史',exact:true}).click();
   await language('en');await button('Skill').click();
   await button('Local resources').click();
+  const guideResults=page.waitForResponse(response=>response.url().includes('/resources/local?')&&/[?&]q=guide(?:&|$)/.test(response.url())&&response.ok());
   await page.getByRole('textbox',{name:'Search resource names or paths',exact:true}).fill('guide');
+  await guideResults;
   await button('View local details for guide').click();await page.locator('.resource-detail-heading h2').filter({hasText:'guide'}).waitFor();
   await button('Preview Disable for the Codex entry of guide').click();
   await page.getByRole('dialog',{name:'Disable preview',exact:true}).waitFor();
@@ -238,7 +264,7 @@ try {
   const previewQueries=page.resourceQueries.length,previewWrites=page.resourceWrites.length;await language('zh-CN');
   await page.getByRole('dialog',{name:'停用预览',exact:true}).waitFor();
   ensure(previewPath===await page.locator('.resource-dialog .resource-facts dd').nth(1).innerText(),'预览路径改变');
-  ensure(previewQueries===page.resourceQueries.length&&previewWrites===page.resourceWrites.length,'打开预览切换语言发起额外资源请求');
+  ensure(previewQueries===page.resourceQueries.length&&previewWrites===page.resourceWrites.length,'打开预览切换语言发起额外资源请求: '+JSON.stringify({reads:page.resourceQueries.slice(previewQueries),writes:page.resourceWrites.slice(previewWrites)}));
   await button('确认停用').click();await page.getByText('本地已修改',{exact:true}).waitFor();
   ensure((await page.locator('.resource-dialog').innerText()).includes('本地修改完成'),'管理结果未翻译');
   await page.waitForLoadState('networkidle');
@@ -274,7 +300,7 @@ try {
   await page.getByRole('textbox',{name:'Search resource names or paths',exact:true}).fill('legacy');await page.getByText('人工旧诊断',{exact:true}).waitFor();ensure((await page.getByRole('alert').innerText()).includes('Original details'),'旧诊断缺少原始详情');await page.unroute('**/resources/local?**');
   await page.getByRole('textbox',{name:'Search resource names or paths',exact:true}).fill('not-found');await page.getByText('No matching local resources',{exact:true}).waitFor();
   await button('Reset filters').click();await page.waitForLoadState('networkidle');
-  for(const theme of ['light','dark']){if(await page.locator('html').getAttribute('data-theme')!==theme)await button('Toggle theme').click();for(const width of [1440,390]){await page.setViewportSize({width,height:900});ensure(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),'资源页横向溢出')}}
+  for(const theme of ['light','dark']){if(await page.locator('html').getAttribute('data-theme')!==theme)await toggleTheme();for(const width of [1440,390]){await page.setViewportSize({width,height:900});ensure(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),'资源页横向溢出')}}
   await button('Open resource filters').click();await page.getByRole('dialog',{name:'Resource filters',exact:true}).waitFor();await button('Done').click();
   ensure(page.errors.length===0,'浏览器运行错误');
   return {passed:true,checks,mapCameraPreserved:true,zeroSectionPreserved:true,previewPreserved:true,zeroExtraLanguageResourceRequests:true,management:['disable','restore','trash','restore'],diagnosticsRerendered:true,legacyOriginalVisible:true,partialManagementDetails:true,mcpToolPreserved:true,dateBoundaryPreserved:true,emptyState:true,themesAndMobile:true,errors:page.errors};
@@ -331,6 +357,18 @@ try {
     page.on("request", request => { if (request.method() === "GET" && /\/api\/v1\/sessions(?:\/|\?)/.test(request.url())) page.sessionQueries.push(request.url()); });
     page.on("pageerror", error => page.sessionErrors.push(error.message));
     const button = name => page.getByRole("button", { name, exact: true });
+
+    const toggleTheme = async () => {
+      const english = await page.locator("html").getAttribute("lang") === "en";
+      const dark = await page.locator("html").getAttribute("data-theme") !== "dark";
+      await button(english ? "Appearance" : "外观").click();
+      await page.getByRole("combobox", { name: english ? "Display mode" : "显示模式", exact: true }).click();
+      const saved = page.waitForResponse(response => response.url().endsWith("/api/v1/preferences") && response.request().method() === "PUT");
+      await page.getByRole("option", { name: english ? dark ? "Dark" : "Light" : dark ? "深色" : "明亮", exact: true }).click();
+      await saved;
+      await page.waitForFunction(dark => document.documentElement.dataset.theme === (dark ? "dark" : "light"), dark);
+      await page.keyboard.press("Escape");
+    };
     const tab = name => page.getByRole("tab", { name, exact: true });
     const language = async (name, value) => {
       const saved = page.waitForResponse(response => response.url().endsWith("/api/v1/preferences") && response.request().method() === "PUT");
@@ -400,7 +438,7 @@ try {
     await language("Display language", "Simplified Chinese");
     ensure((await page.locator(".session-message-scroll .session-notice.is-danger").innerText()).includes("当前索引范围中没有可定位的调用证据"), "已有产品错误随语言重新呈现");
     ensure(page.sessionQueries.length === errorQueries, "错误重译没有额外会话GET");
-    await button("切换主题").click();
+    await toggleTheme();
     await page.setViewportSize({ width: 390, height: 844 });
     await button("会话统计").click();
     ensure(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), "窄屏深色界面无页面横向溢出");

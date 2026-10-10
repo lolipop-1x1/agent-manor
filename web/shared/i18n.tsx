@@ -1,3 +1,4 @@
+import { defaultAppearance, isAppearance, type Appearance } from "../../src/appearance";
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import * as Dropdown from "@radix-ui/react-dropdown-menu";
 import { Check, Translate, WarningCircle } from "@phosphor-icons/react";
@@ -16,6 +17,8 @@ export const clientLabel = (client: Client): string => client === "codeflicker-d
 export const formatList = (values: string[]): string => new Intl.ListFormat(currentLanguage, { style: "short", type: "unit" }).format(values);
 
 interface I18nContextValue {
+  appearance: Appearance;
+  setAppearance: (patch: Partial<Appearance>) => Promise<void>;
   language: Language;
   preference: LanguagePreference;
   setPreference: (preference: LanguagePreference) => Promise<void>;
@@ -29,6 +32,7 @@ const browserLanguage = () => detectLanguage(navigator.languages.length ? naviga
 
 function validatePreferences(body: PreferencesResponse): PreferencesResponse {
   if (!isLanguagePreference(body.language) || !isAutoRefreshInterval(body.sessionsAutoRefreshInterval) || !isAutoRefreshInterval(body.mapAutoRefreshInterval)) throw new Error("INVALID_PREFERENCE");
+  if (body.appearance !== undefined && !isAppearance(body.appearance)) throw new Error("INVALID_APPEARANCE");
   return body;
 }
 
@@ -40,12 +44,15 @@ async function readPreference(signal?: AbortSignal): Promise<PreferencesResponse
 }
 
 export function I18nProvider({ children }: { children: ReactNode }) {
+  const [appearance, updateAppearance] = useState<Appearance>(defaultAppearance);
   const [preference, updatePreference] = useState<LanguagePreference | null>(null);
   const [refreshIntervals, updateRefreshIntervals] = useState<Record<RefreshScope, AutoRefreshInterval>>({ sessions: 0, map: 0 });
   const [error, setError] = useState<"read" | "save" | null>(null);
   const [saving, setSaving] = useState(false);
   const requestId = useRef(0);
   const pendingWrite = useRef(false);
+  const writeQueue = useRef<Promise<void>>(Promise.resolve());
+  const writeCount = useRef(0);
   const language = preference && preference !== "auto" ? preference : browserLanguage();
   currentLanguage = language;
   useEffect(() => { document.documentElement.lang = language; }, [language]);
@@ -54,8 +61,17 @@ export function I18nProvider({ children }: { children: ReactNode }) {
     const synchronize = () => {
       if (pendingWrite.current) return;
       const id = ++requestId.current;
-      void readPreference(controller.signal).then(value => {
+      void readPreference(controller.signal).then(async value => {
         if (id !== requestId.current) return;
+        if (!value.appearance) {
+          let legacy: string | null = null;
+          try { legacy = localStorage.getItem("agent-manor-theme"); } catch { /* 浏览器禁用存储时仍使用共享偏好。 */ }
+          if (legacy === "light" || legacy === "dark") {
+            await savePreference({ appearance: { mode: legacy } });
+            return;
+          }
+        }
+        updateAppearance(value.appearance ?? defaultAppearance);
         updatePreference(value.language); updateRefreshIntervals({ sessions: value.sessionsAutoRefreshInterval, map: value.mapAutoRefreshInterval }); setError(null);
       }).catch(() => {
         if (controller.signal.aborted || id !== requestId.current) return;
@@ -66,28 +82,35 @@ export function I18nProvider({ children }: { children: ReactNode }) {
     window.addEventListener("focus", synchronize);
     return () => { controller.abort(); window.removeEventListener("focus", synchronize); };
   }, []);
-  const savePreference = useCallback(async (patch: Partial<PreferencesResponse>) => {
-    if (pendingWrite.current) return;
+  const savePreference = useCallback((patch: Omit<Partial<PreferencesResponse>, "appearance"> & { appearance?: Partial<Appearance> }) => {
     pendingWrite.current = true;
-    const id = ++requestId.current;
-    if (patch.language !== undefined) updatePreference(patch.language);
+    writeCount.current += 1;
+    ++requestId.current;
     setSaving(true); setError(null);
-    try {
-      const response = await fetch("/api/v1/preferences", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(patch) });
-      if (!response.ok) throw new Error(String(response.status));
-      const body = await response.json() as PreferencesResponse;
-      validatePreferences(body);
-      if (id === requestId.current) { updatePreference(body.language); updateRefreshIntervals({ sessions: body.sessionsAutoRefreshInterval, map: body.mapAutoRefreshInterval }); }
-    } catch {
-      if (id === requestId.current) setError("save");
-    } finally {
-      if (id === requestId.current) { pendingWrite.current = false; setSaving(false); }
-    }
+    const operation = writeQueue.current.then(async () => {
+      try {
+        const response = await fetch("/api/v1/preferences", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(patch) });
+        if (!response.ok) throw new Error(String(response.status));
+        const body = validatePreferences(await response.json() as PreferencesResponse);
+        updatePreference(body.language); updateAppearance(body.appearance ?? defaultAppearance);
+        updateRefreshIntervals({ sessions: body.sessionsAutoRefreshInterval, map: body.mapAutoRefreshInterval });
+        if (body.appearance) { try { localStorage.removeItem("agent-manor-theme"); } catch { /* 共享偏好已经保存。 */ } }
+        setError(null);
+      } catch {
+        updatePreference(value => value ?? "auto"); setError("save");
+      } finally {
+        writeCount.current -= 1;
+        if (!writeCount.current) { pendingWrite.current = false; setSaving(false); }
+      }
+    });
+    writeQueue.current = operation;
+    return operation;
   }, []);
+  const setAppearance = useCallback((patch: Partial<Appearance>) => savePreference({ appearance: patch }), [savePreference]);
   const setPreference = useCallback((language: LanguagePreference) => savePreference({ language }), [savePreference]);
   const setAutoRefreshInterval = useCallback((scope: RefreshScope, interval: AutoRefreshInterval) => savePreference(scope === "sessions"
     ? { sessionsAutoRefreshInterval: interval } : { mapAutoRefreshInterval: interval }), [savePreference]);
-  const value = useMemo(() => ({ language, preference: preference ?? "auto", setPreference, refreshIntervals, setAutoRefreshInterval, saving, error }), [language, preference, setPreference, refreshIntervals, setAutoRefreshInterval, saving, error]);
+  const value = useMemo(() => ({ appearance, setAppearance, language, preference: preference ?? "auto", setPreference, refreshIntervals, setAutoRefreshInterval, saving, error }), [appearance, setAppearance, language, preference, setPreference, refreshIntervals, setAutoRefreshInterval, saving, error]);
   if (preference === null) return <div className="query-loading" role="status">{t("common.loading")}</div>;
   return <I18nContext.Provider value={value}>{children}</I18nContext.Provider>;
 }
