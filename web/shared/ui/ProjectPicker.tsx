@@ -6,9 +6,9 @@ import type { FilterOption } from "./FilterSelect";
 import "./filter-controls.css";
 import { useI18n } from "../i18n";
 
-export function ProjectPicker({ value, options, onChange, label, placeholder, container }: {
+export function ProjectPicker({ value, options, onChange, label, placeholder, container, modal = false }: {
   value: string; options: FilterOption[]; onChange: (value: string) => void;
-  label?: string; placeholder?: string; container?: HTMLElement | null;
+  label?: string; placeholder?: string; container?: HTMLElement | null; modal?: boolean;
 }) {
   const { t } = useI18n();
   const [open, setOpen] = useState(false);
@@ -17,7 +17,7 @@ export function ProjectPicker({ value, options, onChange, label, placeholder, co
   const menuLabel = label ? t("common.picker.menu", { label }) : t("common.project.menu");
   const searchLabel = label ? t("common.picker.search", { label }) : t("common.project.search");
   const optionsLabel = label ? t("common.picker.options", { label }) : t("common.project.options");
-  return <Popover.Root open={open} onOpenChange={setOpen}>
+  return <Popover.Root open={open} onOpenChange={setOpen} modal={modal}>
     <Popover.Trigger className="filter-trigger" aria-label={displayLabel} title={selected?.description ?? selected?.label}>
       <span>{selected?.label ?? (label ?? t("common.project.all"))}</span><CaretDown size={14} aria-hidden="true" />
     </Popover.Trigger>

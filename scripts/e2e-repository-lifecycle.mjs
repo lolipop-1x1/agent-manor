@@ -111,6 +111,7 @@ try {
   }
   const indexed = await api("/sessions/status?summary=true");
   assert.ok(indexed.projects.includes(globalProject));
+  assert.equal(indexed.projects[0], beta, "全局项目未按最新会话活动排序");
   fixture = { alpha, beta, globalProject, alphaId: initial.repository.id, base, artifacts, count: indexed.projects.length };
   await browser(["open", base, "--headed", "--browser=chrome"]); opened = true;
   await step("全局项目、已登记标记、名称与路径搜索、同名项目、长列表和键盘", async (page, f, u) => {
@@ -121,7 +122,17 @@ try {
     await u.map("alpha-repository"); await u.register(); await u.button(u.names.project).click();
     const search = page.getByRole("combobox", { name: u.names.search, exact: true });
     u.ensure(await page.getByRole("option").count() === f.count, "候选没有来自完整全局索引");
+    u.ensure((await page.getByRole("option").first().innerText()).includes(f.beta), "登记候选未保留最近活动顺序");
     u.ensure(!(await page.getByRole("option").allTextContents()).some(text => text === "无项目"), "无项目成为候选");
+    u.ensure(await page.locator(".project-picker-menu").evaluate(menu => {
+      const bounds = menu.getBoundingClientRect();
+      return [bounds.top + 10, (bounds.top + bounds.bottom) / 2, bounds.bottom - 10]
+        .every(y => menu.contains(document.elementFromPoint(bounds.x + bounds.width / 2, y)));
+    }), "项目弹层被父容器裁剪或遮挡");
+    const options = page.locator(".project-picker-options");
+    const scrollBefore = await options.evaluate(node => node.scrollTop);
+    await options.hover(); await page.mouse.wheel(0, 300);
+    await page.waitForFunction(before => document.querySelector(".project-picker-options").scrollTop > before, scrollBefore);
     await search.fill("alpha-repository"); u.ensure((await page.getByRole("option").allTextContents()).some(text => text.includes("已登记")), "缺少已登记标记");
     await search.fill(f.globalProject); await page.getByRole("option").filter({ hasText: f.globalProject }).waitFor();
     await search.fill("shared"); await page.getByRole("option").filter({ hasText: "/first/shared" }).waitFor();
@@ -132,7 +143,12 @@ try {
     await search.fill("synthetic-project-44"); await page.waitForFunction(count => document.querySelectorAll('[role="option"]').length < count, f.count);
     await page.getByRole("option").filter({ hasText: "synthetic-project-44" }).waitFor();
     await search.fill("zzzzzzzzzzzzzzzzzzzzzzzz"); await page.getByText("没有匹配结果", { exact: true }).waitFor();
-    await search.fill(""); await page.waitForFunction(count => document.querySelectorAll('[role="option"]').length === count, f.count); await page.getByRole("option").last().scrollIntoViewIfNeeded();
+    await search.fill(""); await page.waitForFunction(count => document.querySelectorAll('[role="option"]').length === count, f.count);
+    u.ensure((await page.getByRole("option").first().innerText()).includes(f.beta), "清空搜索后未恢复最近活动顺序");
+    await search.fill("repository"); await page.waitForFunction(count => document.querySelectorAll('[role="option"]').length === count, f.count);
+    await search.fill("");
+    u.ensure((await page.getByRole("option").first().innerText()).includes(f.beta), "清空匹配全部项目的搜索后未恢复最近活动顺序");
+    await page.getByRole("option").last().scrollIntoViewIfNeeded();
     u.ensure(await page.locator(".project-picker-options").evaluate(node => node.scrollTop) > 0, "长列表不能独立滚动");
     await page.screenshot({ path: f.artifacts + "/register-projects-zh-light.png" });
     await search.press("Escape"); u.ensure(await u.dialog().isVisible(), "关闭项目列表同时关闭登记弹窗");
@@ -141,6 +157,31 @@ try {
     await page.waitForFunction(path => document.querySelector('[role="option"][data-selected="true"]')?.textContent.includes(path), f.beta); await search.press("Enter");
     u.ensure(await u.dialog().getByRole("textbox", { name: u.names.path, exact: true }).inputValue() === f.beta, "键盘选择未填入路径");
     await u.dialog().getByRole("button", { name: u.names.cancel, exact: true }).click();
+  });
+  await step("项目弹层在低高度、窄屏和长路径下完整可见且可滚动", async (page, f, u) => {
+    for (const viewport of [{ width: 1440, height: 600 }, { width: 760, height: 428 }, { width: 390, height: 500 }]) {
+      await page.setViewportSize(viewport); await u.register(); await u.button(u.names.project).click();
+      const search = page.getByRole("combobox", { name: u.names.search, exact: true });
+      u.ensure(await page.locator(".project-picker-menu").evaluate(menu => {
+        const bounds = menu.getBoundingClientRect();
+        return bounds.x >= 0 && bounds.right <= innerWidth && bounds.y >= 0 && bounds.bottom <= innerHeight
+          && [bounds.top + 10, (bounds.top + bounds.bottom) / 2, bounds.bottom - 10]
+            .every(y => menu.contains(document.elementFromPoint(bounds.x + bounds.width / 2, y)));
+      }), "项目弹层被裁剪、遮挡或超出视口 " + JSON.stringify(viewport));
+      const options = page.locator(".project-picker-options");
+      const before = await options.evaluate(node => node.scrollTop);
+      await options.hover(); await page.mouse.wheel(0, before > 0 ? -300 : 300);
+      await page.waitForFunction(value => document.querySelector(".project-picker-options").scrollTop !== value, before);
+      await search.fill(f.globalProject); await page.getByRole("option").filter({ hasText: f.globalProject }).click();
+      u.ensure(await u.dialog().getByRole("textbox", { name: u.names.path, exact: true }).inputValue() === f.globalProject, "长路径项目鼠标选择失败");
+      await u.button(u.names.project).click(); await search.press("Escape");
+      await page.waitForFunction(label => document.activeElement?.getAttribute("aria-label") === label, u.names.project);
+      u.ensure(await u.dialog().isVisible(), "Escape 关闭了登记弹窗");
+      await u.button(u.names.project).click();
+      await page.screenshot({ path: f.artifacts + "/picker-" + viewport.width + "x" + viewport.height + ".png" });
+      await search.press("Escape"); await u.dialog().getByRole("button", { name: u.names.cancel, exact: true }).click();
+    }
+    await page.setViewportSize({ width: 1440, height: 960 });
   });
   await step("候选失败和重试、手动无效路径、子目录与重复登记不启动任务", async (page, f, u) => {
     const pattern = "**/api/v1/sessions/status?summary=true";
@@ -323,7 +364,7 @@ try {
   assert.deepEqual(retained.projects, indexed.projects); assert.equal(retained.sessionCount, indexed.sessionCount);
   assert.equal(await readFile(join(alpha, "src/alpha.ts"), "utf8"), "export const synthetic = 1;\n");
   assert.equal(await readFile(join(beta, "src/beta.ts"), "utf8"), "export const synthetic = 1;\n");
-  await writeFile(join(artifacts, "result.json"), JSON.stringify({ passed: true, checks, languages: ["zh-CN", "en"], themes: ["light", "dark"], viewport: [1440, 390], sessionsRetained: true }, null, 2) + "\n");
+  await writeFile(join(artifacts, "result.json"), JSON.stringify({ passed: true, checks, languages: ["zh-CN", "en"], themes: ["light", "dark"], viewport: [1440, 760, 390], sessionsRetained: true }, null, 2) + "\n");
   console.log(`仓库生命周期浏览器验收通过：${checks.length} 组。`);
 } catch (error) {
   if (opened) await browser(["screenshot", "--filename", join(artifacts, "failure.png")]).catch(() => {});

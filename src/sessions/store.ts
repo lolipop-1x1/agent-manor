@@ -159,8 +159,9 @@ export class SessionStore {
     } else if (state.version) {
       result.sessionCount = (this.database.prepare("SELECT COUNT(*) AS count FROM session_version_sessions WHERE version=?").get(state.version) as { count: number }).count;
       result.sourceCount = (this.database.prepare("SELECT COUNT(*) AS count FROM session_version_sources WHERE version=?").get(state.version) as { count: number }).count;
-      result.projects = (this.database.prepare(`SELECT DISTINCT r.project FROM session_version_sessions v JOIN session_revisions r ON r.id=v.revision
-        WHERE v.version=? AND r.project IS NOT NULL ORDER BY r.project`).all(state.version) as { project: string }[]).map(row => row.project);
+      result.projects = (this.database.prepare(`SELECT r.project FROM session_version_sessions v JOIN session_revisions r ON r.id=v.revision
+        WHERE v.version=? AND r.project IS NOT NULL GROUP BY r.project
+        ORDER BY MAX(COALESCE(session_time_ms(r.updated_at),session_time_ms(r.started_at))) DESC,r.project`).all(state.version) as { project: string }[]).map(row => row.project);
       this.statusMetadata = { version: state.version, sessionCount: result.sessionCount, sourceCount: result.sourceCount, projects: [...result.projects] };
     }
     if (latestJob) result.job = decode(latestJob);

@@ -44,13 +44,13 @@ function Empty({ title, children, action }: { title: string; children: ReactNode
   return <div className="empty-state"><MapTrifold size={32} /><h2>{title}</h2><p>{children}</p>{action}</div>;
 }
 
-function Modal({ open, onOpenChange, title, description, children, wide = false, fallbackFocus, contentRef, busy = false }: {
+function Modal({ open, onOpenChange, title, description, children, wide = false, fallbackFocus, busy = false }: {
   open: boolean; onOpenChange: (open: boolean) => void; title: string; description: string; children: ReactNode; wide?: boolean; fallbackFocus?: RefObject<HTMLElement | null>;
-  contentRef?: (element: HTMLDivElement | null) => void; busy?: boolean;
+  busy?: boolean;
 }) {
   useI18n();
   const returnFocus = useRef<HTMLElement | null>(null);
-  return <Dialog.Root open={open} onOpenChange={next => { if (!busy) onOpenChange(next); }}><Dialog.Portal><Dialog.Overlay className="dialog-overlay" /><Dialog.Content ref={contentRef} className={`dialog-content${wide ? " wide" : ""}`}
+  return <Dialog.Root open={open} onOpenChange={next => { if (!busy) onOpenChange(next); }}><Dialog.Portal><Dialog.Overlay className="dialog-overlay" /><Dialog.Content className={`dialog-content${wide ? " wide" : ""}`}
     onEscapeKeyDown={event => { if (busy) event.preventDefault(); }} onInteractOutside={event => { if (busy) event.preventDefault(); }}
     onOpenAutoFocus={() => { returnFocus.current = document.activeElement instanceof HTMLElement ? document.activeElement : null; }}
     onCloseAutoFocus={event => {
@@ -251,7 +251,6 @@ export function useCodeMapPage({ active, theme, onSession }: {
   const [registerPath, setRegisterPath] = useState("");
   const [registerError, setRegisterError] = useState<unknown>(null);
   const [registering, setRegistering] = useState(false);
-  const [registerContainer, setRegisterContainer] = useState<HTMLDivElement | null>(null);
   const [projects, setProjects] = useState<string[]>([]);
   const [projectsLoading, setProjectsLoading] = useState(false);
   const [projectsError, setProjectsError] = useState<unknown>(null);
@@ -589,12 +588,12 @@ export function useCodeMapPage({ active, theme, onSession }: {
       <FilePane repoId={repoId} detail={detail} loading={detailLoading} error={detailError} retry={() => setDetailRetry(value => value + 1)} collapsed={detailsCollapsed} toggle={() => setDetailsCollapsed(value => !value)} metric={metric} theme={theme} query={query} sessions={availableMapSessions} openSession={event => void openSession(event)} />
     </ResizableWorkspace>}
     {!repository && !initialLoading && <div className="first-register"><button ref={repositoryTrigger} className="button primary" onClick={() => { setRegisterError(null); setRegisterOpen(true); }}><Plus size={17} />{t("codeMap.repository.registerLocal")}</button></div>}
-    <Modal open={registerOpen} onOpenChange={setRegisterOpen} fallbackFocus={repositoryTrigger} contentRef={setRegisterContainer} busy={registering} title={t("codeMap.repository.registerTitle")} description={t("codeMap.repository.registerDescription")}>
+    <Modal open={registerOpen} onOpenChange={setRegisterOpen} fallbackFocus={repositoryTrigger} busy={registering} title={t("codeMap.repository.registerTitle")} description={t("codeMap.repository.registerDescription")}>
       <form className="register-form" onSubmit={event => void register(event)}>
         <fieldset className="repository-project-field" disabled={registering}>
           {projectsLoading ? <p className="muted" role="status">{t("codeMap.repository.projectsLoading")}</p>
             : projectsError ? <Notice danger action={<button type="button" className="button subtle" onClick={() => setProjectsRetry(value => value + 1)}>{t("common.retry")}</button>}><strong>{t("codeMap.repository.projectsError")}</strong><br /><ErrorDetails error={projectsError} /></Notice>
-              : projects.length ? <ProjectPicker label={t("codeMap.repository.project")} placeholder={t("codeMap.repository.projectSearch")} value={registerPath} options={projectOptions} container={registerContainer} onChange={path => { setRegisterPath(path); setRegisterError(null); }} />
+              : projects.length ? <ProjectPicker modal label={t("codeMap.repository.project")} placeholder={t("codeMap.repository.projectSearch")} value={registerPath} options={projectOptions} onChange={path => { setRegisterPath(path); setRegisterError(null); }} />
                 : <p className="muted" role="status">{t("codeMap.repository.projectsEmpty")}</p>}
         </fieldset>
         <label>{t("codeMap.repository.path")}<input value={registerPath} disabled={registering} onChange={event => { setRegisterPath(event.target.value); setRegisterError(null); }} placeholder="/absolute/path/to/repository" autoComplete="off" required /></label>

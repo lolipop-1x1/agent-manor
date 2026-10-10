@@ -146,7 +146,9 @@ test("删除接口清理全部仓库专属数据，保留其他仓库、会话�
   assert.deepEqual(await apiRequest(service.instance, "/sessions/status"), sessionStatus);
   assert.deepEqual(await apiRequest(service.instance, "/sessions?pageSize=200"), sessions);
   assert.deepEqual(await apiRequest(service.instance, "/resources/usage?kind=mcp"), favoriteUsage);
-  assert.deepEqual(await apiRequest(service.instance, "/resources/status"), resourceStatus);
+  const retainedResourceStatus = await apiRequest<ResourceStatus>(service.instance, "/resources/status");
+  assert.deepEqual({ ...retainedResourceStatus, projects: [...retainedResourceStatus.projects].sort() },
+    { ...resourceStatus, projects: [...resourceStatus.projects].sort() });
   assert.deepEqual(await apiRequest(service.instance, `/repositories/${other.repository.id}/coverage`), otherCoverage);
   assert.equal(await readFile(join(repository, "src/a.ts"), "utf8"), "alpha\nbeta\n");
   assert.ok((await readFile(source, "utf8")).includes("resource-call"));

@@ -83,6 +83,31 @@ function source(store: SessionStore, summary: SessionSourceMeta, messages: Sessi
   return { path: summary.path, revision: pending.revision, fingerprint: "synthetic-fingerprint" };
 }
 
+test("全局项目按最新会话活动排序，跨客户端聚合、时间回退与发布缓存保持一致", async () => fixture(store => {
+  const summaries = [
+    meta("recent-old", { project: "/workspace/z-recent", updatedAt: "2026-01-01T00:00:00Z" }),
+    meta("recent-new", { client: "claude", sourceId: "claude:recent-new", project: "/workspace/z-recent", updatedAt: "2026-01-04T00:30:00Z" }),
+    meta("offset", { project: "/workspace/a-offset", updatedAt: "2026-01-04T08:00:00+08:00" }),
+    meta("started-only", { project: "/workspace/b-started", startedAt: "2026-01-03T00:00:00Z", updatedAt: undefined }),
+    meta("invalid-updated", { project: "/workspace/c-fallback", startedAt: "2026-01-02T00:00:00Z", updatedAt: "invalid" }),
+    meta("equal-z", { project: "/workspace/equal-z", updatedAt: "2026-01-01T00:00:00Z" }),
+    meta("equal-a", { project: "/workspace/equal-a", updatedAt: "2026-01-01T08:00:00+08:00" }),
+    meta("undated-z", { project: "/workspace/undated-z", startedAt: undefined, updatedAt: undefined }),
+    meta("undated-a", { project: "/workspace/undated-a", startedAt: undefined, updatedAt: undefined }),
+    meta("no-project", { project: undefined, updatedAt: "2026-01-06T00:00:00Z" }),
+  ];
+  const revisions = summaries.map(summary => source(store, summary, []));
+  store.publish(store.createJob().id, revisions, []);
+  const expected = ["/workspace/z-recent", "/workspace/a-offset", "/workspace/b-started", "/workspace/c-fallback",
+    "/workspace/equal-a", "/workspace/equal-z", "/workspace/undated-a", "/workspace/undated-z"];
+  assert.deepEqual(store.status().projects, expected);
+  assert.deepEqual(store.statusSummary().projects, expected);
+  const latest = source(store, meta("offset-later", { project: "/workspace/a-offset", updatedAt: "2026-01-05T00:00:00Z" }), []);
+  store.publish(store.createJob().id, [...revisions, latest], []);
+  assert.deepEqual(store.statusSummary().projects, [expected[1], expected[0], ...expected.slice(2)]);
+  assert.deepEqual(store.status().projects, store.statusSummary().projects);
+}));
+
 test("轻量状态保留数量与任务，缺口按版本读取且发布后不返回旧状态", async () => fixture(store => {
   assert.equal(store.statusSummary().gapCount, 0);
   assert.equal(store.currentVersion(), undefined);
