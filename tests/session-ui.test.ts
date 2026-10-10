@@ -70,10 +70,20 @@ test("默认搜索只包含用户与 AI 正文，过程选项加入完整记录�
   assert.deepEqual(searchKinds(true), ["user", "assistant", "thinking", "tool_call", "tool_result", "system", "context", "compression"]);
 });
 
-test("消息命中强制打开轨迹视图，标题命中保留当前模式", () => {
+test("可见对话命中使用简易对话，过程与隐藏回复使用轨迹，标题保留模式", () => {
   const hit: SessionSearchHit = { session: summary, messageId: "tool-result-1", kind: "tool_result", snippet: "合成工具结果" };
   assert.equal(searchHitMode(hit, "brief"), "trace");
-  assert.equal(searchHitMode({ ...hit, messageId: undefined, kind: "title" }, "full"), "full");
+  for (const kind of ["user", "assistant"] as const) {
+    assert.equal(searchHitMode({ ...hit, kind, briefVisible: true }, "trace"), "brief");
+    assert.equal(searchHitMode({ ...hit, kind, briefVisible: false }, "brief"), "trace");
+    assert.equal(searchHitMode({ ...hit, kind }, "brief"), "trace");
+  }
+  for (const kind of searchKinds(true).filter(kind => kind !== "user" && kind !== "assistant")) {
+    assert.equal(searchHitMode({ ...hit, kind, briefVisible: true }, "brief"), "trace");
+  }
+  for (const mode of ["brief", "full", "trace"] as const) {
+    assert.equal(searchHitMode({ ...hit, messageId: undefined, kind: "title" }, mode), mode);
+  }
 });
 
 test("轮次按消息序号排序并保留明确轮次，未知轮次不推断编号", () => {

@@ -1,4 +1,5 @@
 import { useEffect, useState, type ReactNode } from "react";
+import { MagnifyingGlass } from "@phosphor-icons/react";
 import type { SessionGroupedSearchResult, SessionSearchGroup, SessionSearchHit, SessionSearchResult } from "../../../src/session-contracts";
 import { isAborted, request } from "../../shared/api";
 import { t, useI18n } from "../../shared/i18n";
@@ -47,9 +48,10 @@ function SearchGroup({ group, query, params, onSelect }: { group: SessionSearchG
 }
 export function SessionSearchGroups({ data, query, params, onPage, onSelect }: { data: SessionGroupedSearchResult; query: string; params: string; onPage: (page: number) => void; onSelect: (hit: SessionSearchHit) => void }) {
   useI18n();
-  return <section aria-label={t("sessions.search.globalHits")}><p className="session-search-totals">{t("sessions.search.groupTotals", { sessions: data.total, hits: data.hitCount })}</p>
+  return <section aria-label={t("sessions.search.globalHits")}>
+    {!!data.groups.length && <p className="session-search-totals">{t("sessions.search.groupTotals", { sessions: data.total, hits: data.hitCount })}</p>}
     {data.groups.map(group => <SearchGroup key={`${data.version}-${group.session.id}-${query}`} group={group} query={query} params={params} onSelect={onSelect} />)}
-    {!data.groups.length && <p>{t("sessions.search.empty")}</p>}
+    {!data.groups.length && <div className="session-empty-list session-search-empty" role="status"><MagnifyingGlass size={22} aria-hidden="true" /><p>{t("sessions.search.empty")}</p></div>}
     {data.total > data.pageSize && <Pager page={data.page} pageSize={data.pageSize} total={data.total} onChange={onPage} label={t("sessions.list.pagination")} />}
   </section>;
 }

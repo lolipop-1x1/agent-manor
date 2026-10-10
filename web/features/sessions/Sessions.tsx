@@ -6,8 +6,9 @@ import { SessionJump } from "./SessionJump";
 import { CopyButton } from "./SessionCopy";
 import { collectDialogue, dialogueMarkdown } from "./session-export";
 import { readSessionFilters, writeSessionFilters } from "./session-address";
-import { CaretDown, CaretLeft, CaretRight, ChatCircle, DownloadSimple, MagnifyingGlass, MapTrifold } from "@phosphor-icons/react";
+import { CaretDown, CaretLeft, CaretRight, ChatCircle, DownloadSimple, MagnifyingGlass, MapTrifold, X } from "@phosphor-icons/react";
 import * as Tooltip from "@radix-ui/react-tooltip";
+import * as Popover from "@radix-ui/react-popover";
 import type { Client } from "../../../src/clients";
 import { CLIENTS } from "../../../src/clients";
 import type { SessionGroupedSearchResult, SessionIndexStatus, SessionIndexSummary, SessionJob, SessionListResult, SessionMessage, SessionMessageResult, SessionProfile, SessionQuery, SessionRefreshOptions, SessionSearchHit, SessionSearchResult, SessionSummary, SessionTimelineResult } from "../../../src/session-contracts";
@@ -59,12 +60,11 @@ function SearchHitList({ hits, total, page, pageSize, onPage, onSelect, title, q
 }) {
   useI18n();
   return <section className="session-hits" aria-label={title}>
-    <div className="session-section-heading"><h3>{title}</h3><span>{t("sessions.search.matchCount", { count: total })}</span></div>
     {hits.map((hit, index) => <button className="session-hit" key={`${hit.session.id}-${hit.messageId ?? hit.kind}-${index}`} onClick={() => onSelect(hit)}>
       <span className="session-hit-kind">{hit.kind === "title" ? t("sessions.search.title") : t(kindLabels[hit.kind])}</span>
       <span className="session-hit-snippet"><Highlight text={hit.snippet} query={query} /></span>
     </button>)}
-    {!hits.length && <p className="muted small">{t("sessions.search.empty")}</p>}
+    {!hits.length && <div className="session-empty-list session-search-empty" role="status"><MagnifyingGlass size={22} aria-hidden="true" /><p>{t("sessions.search.empty")}</p></div>}
     {total > pageSize && <Pager page={page} pageSize={pageSize} total={total} onChange={onPage} label={t("sessions.search.pagination", { title })} />}
   </section>;
 }
@@ -183,6 +183,8 @@ export default function Sessions({ active, target, onMap, autoRefreshError }: { 
   const [compactPanel, setCompactPanel] = useState<"list" | "profile" | null>(null);
   const [localHitIndex, setLocalHitIndex] = useState(-1);
   const [showLocalHits, setShowLocalHits] = useState(false);
+  const localSearchInput = useRef<HTMLInputElement>(null);
+  const localSearchResults = useRef<HTMLDivElement>(null);
   const readingPane = useRef<HTMLDivElement>(null);
   const readingPositions = useRef(new Map<string, ReadingPosition>());
   const readingLoaded = useRef(false);
@@ -721,13 +723,30 @@ export default function Sessions({ active, target, onMap, autoRefreshError }: { 
               </div>
             </div>
             <div className="session-view-actions">
-              <label className="session-search-field local"><MagnifyingGlass size={15} aria-hidden="true" /><span className="sr-only">{t("sessions.search.localLabel")}</span><input aria-label={t("sessions.search.localLabel")} value={localQuery} onChange={event => changeLocalQuery(event.target.value)} onFocus={() => localQuery && setShowLocalHits(true)} placeholder={t("sessions.search.localPlaceholder")} disabled={!selectedSessionId} />{localQuery && <button aria-label={t("sessions.search.clearLocal")} onClick={() => changeLocalQuery("")}>×</button>}</label>
+              <Popover.Root open={active && showLocalHits && !!localQuery} onOpenChange={setShowLocalHits}>
+                <Popover.Anchor asChild><label className="session-search-field local"><MagnifyingGlass size={15} aria-hidden="true" /><span className="sr-only">{t("sessions.search.localLabel")}</span><input ref={localSearchInput} aria-label={t("sessions.search.localLabel")} aria-haspopup="dialog" aria-expanded={showLocalHits && !!localQuery} aria-controls={showLocalHits && localQuery ? "session-local-results" : undefined} value={localQuery} onChange={event => changeLocalQuery(event.target.value)} onFocus={() => localQuery && setShowLocalHits(true)} onClick={() => localQuery && setShowLocalHits(true)} onKeyDown={event => {
+                  if (event.key === "ArrowDown" && localQuery) { event.preventDefault(); setShowLocalHits(true); localSearchResults.current?.querySelector<HTMLButtonElement>(".session-hit")?.focus(); }
+                }} placeholder={t("sessions.search.localPlaceholder")} disabled={!selectedSessionId} />{localQuery && <button aria-label={t("sessions.search.clearLocal")} onClick={() => changeLocalQuery("")}>×</button>}</label></Popover.Anchor>
+                <Popover.Portal><Popover.Content ref={localSearchResults} id="session-local-results" className="filter-menu session-local-results" side="bottom" align="end" sideOffset={6} collisionPadding={12} aria-label={t("sessions.search.localHits")}
+                  onOpenAutoFocus={event => event.preventDefault()} onCloseAutoFocus={event => event.preventDefault()}
+                  onEscapeKeyDown={event => { event.stopPropagation(); localSearchInput.current?.focus(); }}
+                  onInteractOutside={event => { if (localSearchInput.current?.parentElement?.contains(event.target as Node)) event.preventDefault(); }}>
+                  <div className="session-local-results-heading"><h3>{t("sessions.search.localHits")}</h3><Popover.Close className="icon-button" aria-label={t("sessions.search.collapse")} onClick={() => localSearchInput.current?.focus()}><X size={15} aria-hidden="true" /></Popover.Close></div>
+                  <label className="session-process-toggle"><input type="checkbox" checked={includeProcess} onChange={event => setIncludeProcess(event.target.checked)} /><span>{t("sessions.search.process")}</span></label>
+                  {localSearchError && localQuery.trim() === debouncedLocalQuery ? <Notice danger><SessionError error={localSearchError} /></Notice> : localSearchLoading || !visibleLocalSearch ? <p className="session-local-search-status" role="status">{t(localSearchLoading ? "sessions.search.searching" : "sessions.search.waiting")}</p> : <>
+                    {!!visibleLocalSearch.total && <div className="session-local-navigation"><span>{t("sessions.search.position", { position: formatCount(localHitIndex < 0 ? 0 : (visibleLocalSearch.page - 1) * visibleLocalSearch.pageSize + localHitIndex + 1), count: visibleLocalSearch.total })}</span>
+                      <button className="icon-button" aria-label={t("sessions.search.previous")} disabled={!visibleLocalSearch.hits.length || visibleLocalSearch.page === 1 && localHitIndex <= 0} onClick={() => { localSearchInput.current?.focus(); moveLocalHit(-1); }}><CaretLeft size={14} /></button>
+                      <button className="icon-button" aria-label={t("sessions.search.next")} disabled={!visibleLocalSearch.hits.length || (localHitIndex + 1 >= visibleLocalSearch.hits.length && visibleLocalSearch.page * visibleLocalSearch.pageSize >= visibleLocalSearch.total)} onClick={() => { localSearchInput.current?.focus(); moveLocalHit(1); }}><CaretRight size={14} /></button>
+                    </div>}
+                    <SearchHitList query={debouncedLocalQuery} title={t("sessions.search.localHits")} hits={visibleLocalSearch.hits} total={visibleLocalSearch.total} page={visibleLocalSearch.page} pageSize={visibleLocalSearch.pageSize} onPage={setLocalSearchPage} onSelect={hit => { localSearchInput.current?.focus(); setLocalHitIndex(visibleLocalSearch.hits.indexOf(hit)); selectHit(hit); }} />
+                  </>}
+                </Popover.Content></Popover.Portal>
+              </Popover.Root>
               <Tooltip.Root><Tooltip.Trigger asChild>
                 <button className="button session-export-button" aria-label={t(exporting ? "sessions.export.loading" : "sessions.export.branch")} disabled={!selectedSession || exporting} onClick={() => void exportDialogue()}><DownloadSimple size={15} aria-hidden="true" /><span className="session-export-label">{t(exporting ? "sessions.export.loading" : "sessions.export.short")}</span></button>
               </Tooltip.Trigger><Tooltip.Portal><Tooltip.Content className="tooltip" sideOffset={6}>{t("sessions.export.branch")}<Tooltip.Arrow /></Tooltip.Content></Tooltip.Portal></Tooltip.Root>
             </div>
           </div>
-          {localQuery && <label className="session-process-toggle local-process"><input type="checkbox" checked={includeProcess} onChange={event => setIncludeProcess(event.target.checked)} /><span>{t("sessions.search.process")}</span></label>}
           {!inScope && <Notice action={<button className="text-button" onClick={clearFilters}>{t("sessions.filter.clearAll")}</button>}>{t("sessions.filter.outside")}</Notice>}
           {exportError && <Notice danger>{t("sessions.export.failed")}</Notice>}
           {speed.scopeUnknown && <span className="session-speed-badge is-missing">{t("sessions.speed.scopeUnknown")}</span>}
@@ -735,12 +754,6 @@ export default function Sessions({ active, target, onMap, autoRefreshError }: { 
             setBranch(value); setFocusMessageId(undefined); setTraceSelection(undefined); setTurnPosition(undefined); setMessagePage(1); setMessageOffset(undefined); pageScroll.current = true;
             if (selectedSessionId) updateAddress(selectedSessionId, { mode, branch: value });
           }} /></div>}
-          {localQuery && <div className="session-local-navigation"><span>{localSearchLoading ? t("sessions.search.searching") : visibleLocalSearch ? t("sessions.search.position", { position: formatCount(localHitIndex < 0 ? 0 : (visibleLocalSearch.page - 1) * visibleLocalSearch.pageSize + localHitIndex + 1), count: visibleLocalSearch.total }) : t("sessions.search.waiting")}</span>
-            <button className="icon-button" aria-label={t("sessions.search.previous")} disabled={!visibleLocalSearch?.hits.length || visibleLocalSearch.page === 1 && localHitIndex <= 0} onClick={() => moveLocalHit(-1)}><CaretLeft size={14} /></button>
-            <button className="icon-button" aria-label={t("sessions.search.next")} disabled={!visibleLocalSearch?.hits.length || (localHitIndex + 1 >= visibleLocalSearch.hits.length && visibleLocalSearch.page * visibleLocalSearch.pageSize >= visibleLocalSearch.total)} onClick={() => moveLocalHit(1)}><CaretRight size={14} /></button>
-            <button className="text-button" onClick={() => setShowLocalHits(value => !value)}>{showLocalHits ? t("sessions.search.collapse") : t("sessions.search.show")}</button>
-          </div>}
-          {showLocalHits && localQuery && <div className="session-local-results">{localSearchError && <Notice danger><SessionError error={localSearchError} /></Notice>}{visibleLocalSearch && debouncedLocalQuery && <SearchHitList query={debouncedLocalQuery} title={t("sessions.search.localHits")} hits={visibleLocalSearch.hits} total={visibleLocalSearch.total} page={visibleLocalSearch.page} pageSize={visibleLocalSearch.pageSize} onPage={setLocalSearchPage} onSelect={hit => { setLocalHitIndex(visibleLocalSearch.hits.indexOf(hit)); selectHit(hit); }} />}</div>}
           {selectedMessageData && <nav className="session-turn-navigation" aria-label={t("sessions.turn.navigation")}>
             <button className="text-button" disabled={!selectedMessageData.totalTurns || currentTurn === 1} onClick={() => jumpTurn(1)}>{t("sessions.turn.first")}</button>
             <button className="icon-button" aria-label={t("sessions.turn.previous")} disabled={currentTurn <= 1} onClick={() => jumpTurn(currentTurn - 1)}><CaretLeft size={14} /></button>

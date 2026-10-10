@@ -1,7 +1,7 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode, type RefObject } from "react";
 import * as Dialog from "@radix-ui/react-dialog";
 import * as Dropdown from "@radix-ui/react-dropdown-menu";
-import { ArrowClockwise, ArrowSquareOut, CaretDown, CaretLeft, CaretRight, Check, Code, FileCode, Folder, MagnifyingGlass, MapTrifold, Plus, Stack, WarningCircle, X } from "@phosphor-icons/react";
+import { ArrowClockwise, ArrowSquareOut, CaretDown, CaretLeft, CaretRight, CaretUp, Check, Code, FileCode, Folder, MagnifyingGlass, MapTrifold, Plus, Stack, WarningCircle, X } from "@phosphor-icons/react";
 import type { Client, CoverageQuery, CoverageResult, EvidenceResponse, FileCategory, FileDetail, FileEvent, Filters, Gap, HistoryEvent, IndexMaintenanceResult, Job, JobResponse, MapSession, MapSessionsResponse, RegisterRepositoryResponse, Repository, SourcesResponse, StatusResponse } from "../../../src/contracts";
 import type { SessionSummary } from "../../../src/session-contracts";
 import { CLIENTS } from "../../../src/clients";
@@ -226,6 +226,15 @@ export function useCodeMapPage({ active, theme, onSession }: {
   const { language, refreshIntervals: { map: mapAutoRefreshInterval } } = useI18n();
   const repositoryTrigger = useRef<HTMLButtonElement>(null);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [narrow, setNarrow] = useState(() => globalThis.matchMedia("(max-width: 767px)").matches);
+  const [navigationOpen, setNavigationOpen] = useState(false);
+  const navigationCollapsed = narrow ? !navigationOpen : sidebarCollapsed;
+  useEffect(() => {
+    const media = globalThis.matchMedia("(max-width: 767px)");
+    const change = () => setNarrow(media.matches);
+    media.addEventListener("change", change);
+    return () => media.removeEventListener("change", change);
+  }, []);
   const [detailsCollapsed, setDetailsCollapsed] = useState(false);
   const [repositories, setRepositories] = useState<Repository[]>([]);
   const [jobs, setJobs] = useState<Job[]>([]);
@@ -443,7 +452,7 @@ export function useCodeMapPage({ active, theme, onSession }: {
       {indexMaintenance.details && <details><summary>{t("common.originalDetails")}</summary><pre tabIndex={0}>{indexMaintenance.details}</pre></details>}
     </Notice>,
     page: (
-    <section className="product-view" hidden={!active} aria-label={t("codeMap.view.map")}>
+    <section className="product-view code-map-page" hidden={!active} aria-label={t("codeMap.view.map")}>
     {!!initialError && <Notice danger action={<button className="button subtle" onClick={() => setStatusRetry(value => value + 1)}>{t("codeMap.refresh.retryConnection")}</button>}><ErrorDetails error={initialError} /></Notice>}
     {!!actionError && <Notice danger action={<button className="button subtle" onClick={() => setActionError(null)}>{t("common.close")}</button>}><ErrorDetails error={actionError} /></Notice>}
     {job && <div className={`result-status${job.status === "failed" ? " failed" : ""}`} role="status">
@@ -452,10 +461,12 @@ export function useCodeMapPage({ active, theme, onSession }: {
           : <><Check size={16} /><span>{t("codeMap.refresh.complete")}</span><small>{dateLabel(job.finishedAt)}</small></>}
     </div>}
     {coverage?.stale && !jobActive(job) && job?.status !== "failed" && <Notice action={<button className="text-button" onClick={() => void runRefresh()}>{t("codeMap.refresh.action")}</button>}>{t("codeMap.refresh.stale", { date: dateLabel(coverage.createdAt) })}</Notice>}
-    {initialLoading && !repository ? <Empty title={t("codeMap.empty.connect")}>{t("codeMap.empty.loading")}</Empty> : !repository ? <Empty title={t("codeMap.empty.start")}>{t("codeMap.empty.register")}<br />{t("codeMap.empty.local")}</Empty> : <ResizableWorkspace sidebarCollapsed={sidebarCollapsed} detailsCollapsed={detailsCollapsed}>
-      <aside className={`sidebar${sidebarCollapsed ? " panel-collapsed" : ""}`} aria-label={t("codeMap.repository.navigation")}>
-        <div className="pane-heading"><span>{t("codeMap.repository.navigation")}</span><Hint label={sidebarCollapsed ? t("codeMap.repository.expand") : t("codeMap.repository.collapse")}><button className="icon-button panel-toggle" aria-label={sidebarCollapsed ? t("codeMap.repository.expand") : t("codeMap.repository.collapse")} aria-expanded={!sidebarCollapsed} aria-controls="repository-navigation-content" onClick={() => setSidebarCollapsed(value => !value)}>{sidebarCollapsed ? <CaretRight size={17} /> : <CaretLeft size={17} />}</button></Hint></div>
-        <div id="repository-navigation-content" className="sidebar-content" hidden={sidebarCollapsed}><div className="repository-picker"><Dropdown.Root><Dropdown.Trigger ref={repositoryTrigger} className="repository-trigger"><Folder size={19} weight="duotone" /><strong>{repository.name}</strong><CaretDown size={14} /></Dropdown.Trigger><Dropdown.Portal><Dropdown.Content className="dropdown-content" sideOffset={6}>{repositories.map(repo => <Dropdown.Item key={repo.id} className="dropdown-item" onSelect={() => chooseRepo(repo.id)}>{repo.id === repoId && <Check size={14} />}<span>{repo.name}<small>{repo.path}</small></span></Dropdown.Item>)}<Dropdown.Separator className="dropdown-separator" /><Dropdown.Item className="dropdown-item" onSelect={() => setRegisterOpen(true)}><Plus size={15} />{t("codeMap.repository.register")}</Dropdown.Item></Dropdown.Content></Dropdown.Portal></Dropdown.Root></div>
+    {initialLoading && !repository ? <Empty title={t("codeMap.empty.connect")}>{t("codeMap.empty.loading")}</Empty> : !repository ? <Empty title={t("codeMap.empty.start")}>{t("codeMap.empty.register")}<br />{t("codeMap.empty.local")}</Empty> : <ResizableWorkspace sidebarCollapsed={navigationCollapsed} detailsCollapsed={detailsCollapsed}>
+      <aside className={`sidebar${navigationCollapsed ? " panel-collapsed" : ""}`} aria-label={t("codeMap.repository.navigation")}>
+        {narrow ? <button className="repository-navigation-toggle" aria-label={t(navigationCollapsed ? "codeMap.repository.expandScope" : "codeMap.repository.collapseScope", { repository: repository.name, directory: directory || t("codeMap.directory.root") })} aria-expanded={!navigationCollapsed} aria-controls="repository-navigation-content" onClick={() => setNavigationOpen(value => !value)}>
+          <Folder size={18} aria-hidden="true" /><span><strong>{repository.name}</strong><small title={directory || repository.path}>{directory || t("codeMap.directory.root")}</small></span>{navigationCollapsed ? <CaretDown size={17} aria-hidden="true" /> : <CaretUp size={17} aria-hidden="true" />}
+        </button> : <div className="pane-heading"><span>{t("codeMap.repository.navigation")}</span><Hint label={navigationCollapsed ? t("codeMap.repository.expand") : t("codeMap.repository.collapse")}><button className="icon-button panel-toggle" aria-label={navigationCollapsed ? t("codeMap.repository.expand") : t("codeMap.repository.collapse")} aria-expanded={!navigationCollapsed} aria-controls="repository-navigation-content" onClick={() => setSidebarCollapsed(value => !value)}>{navigationCollapsed ? <CaretRight size={17} /> : <CaretLeft size={17} />}</button></Hint></div>}
+        <div id="repository-navigation-content" className="sidebar-content" hidden={navigationCollapsed}><div className="repository-picker"><Dropdown.Root><Dropdown.Trigger ref={repositoryTrigger} className="repository-trigger"><Folder size={19} weight="duotone" /><strong>{repository.name}</strong><CaretDown size={14} /></Dropdown.Trigger><Dropdown.Portal><Dropdown.Content className="dropdown-content" sideOffset={6}>{repositories.map(repo => <Dropdown.Item key={repo.id} className="dropdown-item" onSelect={() => chooseRepo(repo.id)}>{repo.id === repoId && <Check size={14} />}<span>{repo.name}<small>{repo.path}</small></span></Dropdown.Item>)}<Dropdown.Separator className="dropdown-separator" /><Dropdown.Item className="dropdown-item" onSelect={() => setRegisterOpen(true)}><Plus size={15} />{t("codeMap.repository.register")}</Dropdown.Item></Dropdown.Content></Dropdown.Portal></Dropdown.Root></div>
         <p className="repo-path" title={repository.path}>{repository.path}</p><div className="sidebar-label">{t("codeMap.repository.directories")}</div><DirectoryTree key={repoId} files={rootCoverage?.files ?? []} selected={directory} browse={browse} />
         <div className="sidebar-bottom"><button className="text-button" onClick={() => setRegisterOpen(true)}><Plus size={14} />{t("codeMap.repository.other")}</button></div></div>
       </aside>

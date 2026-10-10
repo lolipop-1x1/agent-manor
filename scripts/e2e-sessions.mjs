@@ -275,6 +275,25 @@ try {
     await page.locator(".session-message.is-focused, .trace-detail-body").filter({ hasText: "局部轨迹标记" }).waitFor();
     expect((await page.locator(".session-message.is-focused, .trace-detail-body").innerText()).includes("局部轨迹标记"), "隐藏工具响应未展开定位");
     await page.getByLabel("搜索会话标题和消息").fill("");
+    const localSearch = page.getByRole("textbox", { name: "在当前会话搜索", exact: true });
+    const localResults = page.getByRole("dialog", { name: "当前会话命中", exact: true });
+    const readingBeforeEmpty = await page.locator(".session-message-scroll").innerText();
+    await localSearch.fill("不存在的合成搜索命中");
+    await localResults.getByRole("status").filter({ hasText: "没有找到匹配记录。" }).waitFor();
+    expect(await page.locator(".session-message-scroll").innerText() === readingBeforeEmpty, "零命中浮层应保留当前对话");
+    expect(await localResults.getByRole("button", { name: "下一个搜索命中", exact: true }).count() === 0, "零命中不应出现无效命中导航");
+    const searchBounds = await localSearch.evaluate(element => {
+      const bounds = element.closest(".session-search-field").getBoundingClientRect();
+      return { right: bounds.right, bottom: bounds.bottom };
+    });
+    const resultsBounds = await localResults.boundingBox();
+    expect(Math.abs(resultsBounds.y - searchBounds.bottom - 6) < 2, "会话内结果应贴近搜索框下沿");
+    expect(Math.abs(resultsBounds.x + resultsBounds.width - searchBounds.right) < 2, "会话内结果应与搜索框右沿对齐");
+    await localSearch.press("Escape");
+    await localResults.waitFor({ state: "hidden" });
+    expect(await localSearch.evaluate(element => element === document.activeElement), "关闭结果后应保留搜索框焦点");
+    await localSearch.click();
+    await localResults.getByRole("status").filter({ hasText: "没有找到匹配记录。" }).waitFor();
     await page.getByLabel("在当前会话搜索").fill("局部轨迹标记");
     await page.getByRole("region", { name: "当前会话命中", exact: true }).locator(".session-hit").first().click();
     expect((await page.locator(".session-message.is-focused, .trace-detail-body").innerText()).includes("局部轨迹标记"), "会话内搜索未定位过程记录");

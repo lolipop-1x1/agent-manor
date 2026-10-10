@@ -225,6 +225,8 @@ export interface SessionSearchHit {
   messageId?: string;
   turnId?: string;
   kind: MessageKind | "title";
+  /** 全部分支下是否可在简易对话精确定位；标题不提供此字段。 */
+  briefVisible?: boolean;
   snippet: string;
 }
 export interface SessionSearchResult {

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode, type RefObject } from "react";
 import * as Dialog from "@radix-ui/react-dialog";
-import { ArrowClockwise, ArrowSquareOut, CaretLeft, CaretRight, Funnel, MagnifyingGlass, Plus, Star, X } from "@phosphor-icons/react";
+import * as Dropdown from "@radix-ui/react-dropdown-menu";
+import { ArrowClockwise, ArrowSquareOut, CaretDown, CaretLeft, CaretRight, Check, Funnel, MagnifyingGlass, Plus, Star, X } from "@phosphor-icons/react";
 import { CLIENTS, type Client } from "../../../src/clients";
 import type { ResourceKind, ResourceUsageDetail, ResourceUsageDistribution, ResourceUsageEvidenceResult, ResourceUsageStats, ResourceUsageTrend } from "../../../src/resource-contracts";
 import type { ResourceInventoryDiagnostic, ResourceInventoryEntry, ResourceManualSource } from "../../../src/resource-inventory-contracts";
@@ -88,7 +89,7 @@ function address(route: ResourceRoute) {
     evidencePage: route.evidencePage === 1 ? undefined : route.evidencePage })}`;
 }
 const shortPath = (path: string) => path.split(/[\\/]/).filter(Boolean).at(-1) ?? path;
-const usageAgentLabel = (row: { clients: Client[] }) => row.clients.length === 1 ? clientLabel(row.clients[0]!) : row.clients.length ? t("resources.agentCount", { count: row.clients.length }) : t("resources.client.notRecorded");
+const usageAgentLabel = (row: { clients: Client[] }) => row.clients.length ? t("resources.agentCount", { count: row.clients.length }) : t("resources.client.notRecorded");
 const observationNames = { recorded: "resources.observation.recorded", unknown: "resources.observation.unknown", insufficient: "resources.observation.insufficient" };
 const observationLabel = (row: ResourceLocalRow) => row.observation === "recorded" && row.usage?.events === 0 ? t("resources.candidate.unused") : t(observationNames[row.observation]);
 const sourceStateNames = { ok: "resources.source.ok", missing: "resources.source.missing", unreadable: "resources.source.unreadable", invalid: "resources.source.invalid", unsupported: "resources.source.unsupported" };
@@ -174,7 +175,7 @@ function OverviewTable({ rows, route, onSort, onSelect, onFavorite, onManage, fa
     <button aria-label={t("resources.sortColumn", { column: column.label })} onClick={() => onSort(column.value)}>{column.label}<span aria-hidden="true">{route.sort === column.value ? route.order === "asc" ? "↑" : "↓" : "↕"}</span></button>
   </th>;
   return <div className="resource-overview-scroll"><table className="resource-overview-table" aria-label={t("resources.overview", { kind: route.kind === "skill" ? t("resources.kind.skill") : t("resources.kind.mcp") })}>
-    <thead><tr>{heading(columns[0]!)}<th scope="col">{t("resources.agent.label")}</th>{columns.slice(1).map(heading)}<th scope="col">{t("resources.column.management")}</th></tr></thead>
+    <thead><tr>{heading(columns[0]!)}<th scope="col">{t("resources.agent.involved")}</th>{columns.slice(1).map(heading)}<th scope="col">{t("resources.column.management")}</th></tr></thead>
     <tbody>{rows.map(row => <tr className={`resource-overview-row${route.id === row.identity.id ? " is-selected" : ""}`} key={row.identity.id}>
       <th scope="row"><div className="resource-overview-name"><button aria-label={t("resources.viewUsage", { name: messageText(row.identity.nameDescriptor, row.identity.name) })} onClick={() => onSelect(row.identity.id)}>{messageText(row.identity.nameDescriptor, row.identity.name)}</button><FavoriteButton name={messageText(row.identity.nameDescriptor, row.identity.name)} favorite={row.favorite} disabled={favoritePending === row.identity.id} onClick={() => onFavorite(row.identity.id, row.favorite)} /></div></th>
       <td className="resource-overview-agents" title={formatList(row.clients.map(clientLabel))}>{usageAgentLabel(row)}</td>
@@ -616,7 +617,16 @@ export default function Resources({ active, onSession }: { active: boolean; onSe
       <main className="resources-main">
         <header className="resources-heading"><div><h1>{t("resources.title")}</h1></div><div className="resources-heading-actions"><button className="icon-button resource-mobile-filter" aria-label={t("resources.filters.open")} onClick={() => setFiltersOpen(true)}><Funnel size={18} /></button><button className="button" disabled={refreshing} onClick={() => void refresh()}><ArrowClockwise size={15} className={refreshing ? "spinning" : ""} />{refreshing ? t("resources.refresh.loading") : t("resources.refresh.label")}</button></div></header>
         <div className="resource-kind-tabs" role="group" aria-label={t("resources.kind.label")}>{(["skill", "mcp"] as const).map(kind => <button key={kind} aria-pressed={route.kind === kind} className={route.kind === kind ? "is-selected" : ""} onClick={() => update({ kind, id: "", page: 1, tool: "", zeroPage: 1, metric: kind === route.kind ? route.metric : "uses", maxValue: kind === route.kind ? route.maxValue : "", candidate: kind === "mcp" && route.candidate === "duplicate" ? "all" : route.candidate, sort: kind === route.kind ? route.sort : "uses", order: kind === route.kind ? route.order : "desc" })}>{kind === "skill" ? t("resources.kind.skill") : t("resources.kind.mcp")}</button>)}<UsageHelp kind={route.kind} /></div>
-        <nav className="resource-view-tabs" aria-label={t("resources.view.label")}>{tabs.map(tab => <button key={tab.value} aria-current={route.tab === tab.value ? "page" : undefined} onClick={() => update({ tab: tab.value, id: "", page: 1, tool: "" }, true)}>{tab.value === "usage" ? overviewLabel : t(tab.labelKey)}</button>)}</nav>
+        <nav className="resource-view-tabs" aria-label={t("resources.view.label")}>
+          {tabs.slice(0, 2).map(tab => <button key={tab.value} aria-current={route.tab === tab.value ? "page" : undefined} onClick={() => update({ tab: tab.value, id: "", page: 1, tool: "" }, true)}>{tab.value === "usage" ? overviewLabel : t(tab.labelKey)}</button>)}
+          <Dropdown.Root><Dropdown.Trigger className="resource-management-trigger" aria-label={t("resources.management.views")} aria-current={!historyView ? "page" : undefined} data-active={!historyView}>
+            {historyView ? t("resources.management.views") : t(tabs.find(tab => tab.value === route.tab)!.labelKey)}<CaretDown size={14} aria-hidden="true" />
+          </Dropdown.Trigger><Dropdown.Portal><Dropdown.Content className="filter-menu resource-management-menu" align="end" sideOffset={6} collisionPadding={12}>
+            <Dropdown.RadioGroup value={route.tab} onValueChange={value => update({ tab: value as ResourceTab, id: "", page: 1, tool: "" }, true)}>
+              {tabs.slice(2).map(tab => <Dropdown.RadioItem key={tab.value} className="filter-option" value={tab.value}>{t(tab.labelKey)}<Dropdown.ItemIndicator className="filter-check"><Check size={14} aria-hidden="true" /></Dropdown.ItemIndicator></Dropdown.RadioItem>)}
+            </Dropdown.RadioGroup>
+          </Dropdown.Content></Dropdown.Portal></Dropdown.Root>
+        </nav>
         <div className="resource-list-toolbar"><label className="resource-search"><MagnifyingGlass size={16} /><input aria-label={t("resources.search.label")} value={route.q} placeholder={t("resources.search.label")} onChange={event => filter({ q: event.target.value })} />{route.q && <button className="icon-button" aria-label={t("resources.search.clear")} onClick={() => filter({ q: "" })}><X size={14} /></button>}</label>
           {overviewRanking && overviewData && (!listLoading || mapView && mapLoadedScope.current === JSON.stringify(mapQuery)) && <span>{t(route.kind === "skill" ? "resources.skillCount" : "resources.mcpCount", { count: overviewData.total })}</span>}{route.tab === "local" && !listLoading && local && <span>{t("resources.resourceCount", { count: local.total })}</span>}
           {route.tab === "operations" && !listLoading && operations && <span>{t("resources.operationCount", { count: operations.total })}</span>}{!historyView && route.tab !== "operations" && !listLoading && archives && <span>{t("resources.resourceCount", { count: archives.total })}</span>}
@@ -628,7 +638,13 @@ export default function Resources({ active, onSession }: { active: boolean; onSe
         {error && <div className="resource-alert" role="alert"><ResourceErrorText error={error} /><button className="text-button" onClick={() => setReload(value => value + 1)}>{t("common.retry")}</button></div>}
         {feedback && <div className={`resource-feedback${mapView ? " resource-map-feedback" : ""}`} role="status">{t(feedback.key, feedback.params)}<button className="icon-button" aria-label={t("resources.feedback.close")} onClick={() => setFeedback(null)}><X size={14} /></button></div>}
         {overviewRanking && overviewData && (!listLoading || mapView && mapLoadedScope.current === JSON.stringify(mapQuery)) && <>
-          <div className="resource-quick-filters" role="group" aria-label={t("resources.quickFilters", { kind: route.kind === "skill" ? t("resources.kind.skill") : t("resources.kind.mcp") })}>{overviewCandidates.map(candidate => <button key={candidate.value} aria-pressed={route.candidate === candidate.value || candidate.value === "all" && !overviewCandidates.some(item => item.value === route.candidate)} onClick={() => filter({ candidate: candidate.value, favorite: false })}>{t(candidate.labelKey)}<strong>{fmt(overviewData.counts[candidate.value])}</strong></button>)}</div>
+          <div className="resource-quick-filters" role="group" aria-label={t("resources.quickFilters", { kind: route.kind === "skill" ? t("resources.kind.skill") : t("resources.kind.mcp") })}>
+            <div className="resource-usage-filters" role="group" aria-label={t("resources.usageStates")}>{overviewCandidates.slice(0, 3).map(candidate => <button key={candidate.value} aria-pressed={route.candidate === candidate.value || candidate.value === "all" && !overviewCandidates.some(item => item.value === route.candidate)} onClick={() => filter({ candidate: candidate.value, favorite: false })}>{t(candidate.labelKey)}<strong>{fmt(overviewData.counts[candidate.value])}</strong></button>)}</div>
+            <div className="resource-attention-filters" data-active={["low", "old"].includes(route.candidate)} role="group" aria-label={t("resources.attention.filter")}>
+              <FilterSelect label={t("resources.attention.filter")} value={["low", "old"].includes(route.candidate) ? route.candidate : "all"} options={[{ value: "all", label: t("resources.attention.any") }, ...overviewCandidates.filter(candidate => ["low", "old"].includes(candidate.value)).map(candidate => ({ value: candidate.value, label: t("resources.candidate.withCount", { label: t(candidate.labelKey), count: overviewData.counts[candidate.value] }) }))]} onChange={value => filter({ candidate: value as ResourceRoute["candidate"], favorite: false })} />
+              <button aria-pressed={route.candidate === "favorite"} onClick={() => filter({ candidate: route.candidate === "favorite" ? "all" : "favorite", favorite: false })}><Star size={14} weight={route.candidate === "favorite" ? "fill" : "regular"} aria-hidden="true" />{t("resources.candidate.favorite")}<strong>{fmt(overviewData.counts.favorite)}</strong></button>
+            </div>
+          </div>
           {!!overviewData.coverage?.missingTimeEvents && <div className="resource-range-summary"><span className="resource-state is-warning">{t("resources.missingTimeCount", { count: overviewData.coverage.missingTimeEvents })}</span></div>}
         </>}
         <div className={`resource-list-scroll${mapView ? " resource-map-scroll" : ""}`} ref={listScroll} aria-busy={listLoading}>

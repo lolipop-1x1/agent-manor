@@ -3,6 +3,7 @@ node_modules/
 dist/
 *.tgz
 .local/
+.impeccable/critique/
 .env
 .env.*
 *.sqlite

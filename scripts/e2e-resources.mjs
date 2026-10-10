@@ -47,7 +47,9 @@ const step = async (name, code) => {
   return output;
 };
 const select = (label, option) => `await page.getByRole("combobox", {name:${JSON.stringify(label)},exact:true}).click(); await page.getByRole("option",{name:${JSON.stringify(option)},exact:true}).click();`;
-const view = label => `await page.getByRole("navigation",{name:"资源视图"}).getByRole("button",{name:${JSON.stringify(label)},exact:true}).click();`;
+const view = label => ["已停用", "回收区", "操作记录"].includes(label)
+  ? `await page.getByRole("button",{name:"管理记录",exact:true}).click(); await page.getByRole("menuitemradio",{name:${JSON.stringify(label)},exact:true}).click();`
+  : `await page.getByRole("navigation",{name:"资源视图"}).getByRole("button",{name:${JSON.stringify(label)},exact:true}).click();`;
 const search = name => `await page.getByRole("textbox",{name:"搜索资源名称或路径",exact:true}).fill(${JSON.stringify(name)});`;
 const local = name => `${view("本地资源")} ${search(name)} await page.getByRole("button",{name:${JSON.stringify(`查看${name}的本地详情`)},exact:true}).click(); await page.locator(".resource-detail-heading h2").filter({hasText:${JSON.stringify(name)}}).waitFor();`;
 const screenshot = name => `await page.screenshot({path:${JSON.stringify(join(artifacts, name))}});`;
@@ -230,7 +232,7 @@ try {
   await step("旧备用链接归回收区并保留恢复入口", `
     await page.evaluate(()=>location.hash='#resources?kind=skill&tab=standby&q=sample-01');
     const nav=page.getByRole("navigation",{name:"资源视图",exact:true});
-    await nav.getByRole("button",{name:"回收区",exact:true}).waitFor();
+    await nav.getByRole("button",{name:"管理记录",exact:true}).filter({hasText:"回收区"}).waitFor();
     await page.waitForFunction(()=>new URLSearchParams(location.hash.split('?')[1]).get('tab')==='trash');
     expect(await nav.getByRole("button",{name:"备用",exact:true}).count()===0,"旧链接仍显示备用标签");
     await page.getByRole("button",{name:"查看sample-01的恢复记录",exact:true}).click();
@@ -473,7 +475,7 @@ try {
     const row=page.getByRole("table",{name:"Skill 总览",exact:true}).getByRole("row").filter({has:page.getByRole("button",{name:"查看guide的使用详情",exact:true})});
     await row.getByRole("button",{name:"查看guide的使用详情",exact:true}).waitFor();
     expect(await row.count()===1,"同名Skill仍按来源拆成多行");
-    expect((await row.locator(".resource-overview-agents").innerText())===${JSON.stringify(`${guideOverview.clients.length} 个 Agent`)},"总览遗漏历史或本地Agent入口");
+    expect((await row.locator(".resource-overview-agents").innerText())===${JSON.stringify(`涉及 ${guideOverview.clients.length} 个 Agent`)},"总览遗漏历史或本地Agent入口");
     expect(await row.locator(".resource-row-subtitle").count()===0,"Skill排行仍展示单项目或路径");
     expect((await row.getByRole("cell").nth(2).innerText())==="3","使用会话未取并集");
     expect((await row.getByRole("cell").nth(1).innerText())===${JSON.stringify(String(guideOverview.stats.events))},"Skill调用次数没有包含成功读取");
@@ -482,11 +484,11 @@ try {
     expect(await page.locator(".resources-shell").getByRole("button",{name:"筛选项目",exact:true}).count()===0,"旧项目筛选仍可见");
     const detail=page.getByRole("complementary",{name:"资源详情",exact:true});
     await detail.getByRole("heading",{name:"guide",exact:true}).waitFor();
-    expect((await detail.locator(".resource-detail-heading>div>span").innerText())===${JSON.stringify(`${guideOverview.clients.length} 个 Agent`)},"总览详情的Agent范围与列表不一致");
+    expect((await detail.locator(".resource-detail-heading>div>span").innerText())===${JSON.stringify(`涉及 ${guideOverview.clients.length} 个 Agent`)},"总览详情的Agent范围与列表不一致");
     expect(/3\\s*使用会话/.test(await detail.locator(".resource-stats").innerText()),"详情会话并集错误");
     expect(/5\\s*成功读取/.test(await detail.locator(".resource-stats").innerText()),"详情读取证据丢失");
     expect((await detail.locator(".resource-tags").first().innerText()).includes("部分未关联"),"部分历史未关联状态被隐藏");
-    const agents=detail.locator(".resource-detail-section").filter({has:page.getByRole("heading",{name:"Agent 分布",exact:true})});
+    const agents=detail.locator(".resource-detail-section").filter({has:page.getByRole("heading",{name:"使用 Agent 分布",exact:true})});
     const projects=detail.locator(".resource-detail-section").filter({has:page.getByRole("heading",{name:"项目分布",exact:true})});
     expect(await agents.locator(".resource-distribution>div").count()===2,"Agent分布未合并");
     expect(await projects.locator(".resource-distribution>div").count()===2,"项目来源未保留");
@@ -526,7 +528,7 @@ try {
     ${select("资源Agent", "Codex")}
     await page.waitForFunction(()=>{const row=[...document.querySelectorAll(".resource-overview-row")].find(element=>element.querySelector('[aria-label="查看guide的使用详情"]'));return row&&row.querySelectorAll("td")[2].textContent==="2"});
     const codexRow=page.getByRole("table",{name:"Skill 总览",exact:true}).getByRole("row").filter({has:page.getByRole("button",{name:"查看guide的使用详情",exact:true})});
-    expect((await codexRow.locator(".resource-overview-agents").innerText()).includes("Codex"),"单Agent筛选名称错误");
+    expect((await codexRow.locator(".resource-overview-agents").getAttribute("title")).includes("Codex"),"单Agent筛选名称错误");
     expect(await page.evaluate(()=>new URLSearchParams(location.hash.split("?")[1]).get("id"))===${JSON.stringify(guideRank.identity.id)},"筛选改变了Skill身份");
     ${select("资源Agent", "Claude Code")}
     await page.waitForFunction(()=>{const row=[...document.querySelectorAll(".resource-overview-row")].find(element=>element.querySelector('[aria-label="查看guide的使用详情"]'));return row&&row.querySelectorAll("td")[2].textContent==="1"});
@@ -557,7 +559,7 @@ try {
     const table=page.getByRole("table",{name:"Skill 总览",exact:true}); await table.waitFor();
     expect(await table.getByRole("columnheader").count()===6,"总览列数错误");
     const quick=page.getByRole("group",{name:"Skill 快速筛选",exact:true});
-    expect(await quick.getByRole("button").count()===6,"快捷筛选缺失");
+    expect(await quick.getByRole("button").count()===4 && await quick.getByRole("combobox",{name:"关注条件",exact:true}).count()===1,"快捷筛选缺失");
     expect((await quick.getByRole("button",{name:/^全部/}).innerText()).includes(${JSON.stringify(String(overview.counts.all))}),"全部计数错误");
     ${screenshot("overview-synthetic-light.png")}
     await quick.getByRole("button",{name:/^已使用/}).click();
@@ -823,12 +825,12 @@ try {
     expect(await table.getByRole("button",{name:"按调用次数排序",exact:true}).count()===1,"MCP缺少调用次数列");
     expect(await table.getByRole("columnheader").filter({hasText:"调用次数"}).getAttribute("aria-sort")==="descending","MCP默认没有按调用次数降序");
     const quick=page.getByRole("group",{name:"MCP 快速筛选",exact:true});
-    expect(await quick.getByRole("button").count()===6,"MCP快捷筛选缺失");
+    expect(await quick.getByRole("button").count()===4 && await quick.getByRole("combobox",{name:"关注条件",exact:true}).count()===1,"MCP快捷筛选缺失");
     expect((await quick.getByRole("button",{name:/^全部/}).innerText()).includes(${JSON.stringify(String(mcpOverview.counts.all))}),"MCP快捷计数错误");
     const row=table.getByRole("row").filter({has:page.getByRole("button",{name:"查看sample的使用详情",exact:true})});
     expect(await row.count()===1,"同名服务仍按Agent或项目拆行");
     expect((await row.getByRole("cell").nth(2).innerText())==="3","服务使用会话被重复累计");
-    expect((await row.locator('.resource-overview-agents').innerText())===${JSON.stringify(`${mcpSample.clients.length} 个 Agent`)},"服务遗漏本地或历史Agent");
+    expect((await row.locator('.resource-overview-agents').innerText())===${JSON.stringify(`涉及 ${mcpSample.clients.length} 个 Agent`)},"服务遗漏本地或历史Agent");
     expect(await page.locator('.resources-shell').getByRole("button",{name:"筛选项目",exact:true}).count()===0,"MCP总览仍受项目筛选");
     ${screenshot("mcp-overview-light.png")}
     await row.getByRole("button",{name:"查看sample的使用详情",exact:true}).click();

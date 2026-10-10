@@ -57,6 +57,8 @@
 .session-empty-list { display: grid; justify-items: center; gap: 10px; padding: 32px 12px; color: var(--muted); text-align: center; }
 .session-empty-list strong { color: var(--text); font-size: 12px; }
 .session-empty-list p { font-size: 10px; line-height: 1.7; }
+.session-search-empty { gap: 8px; padding: 24px 12px; }
+.session-search-empty p { font-size: 11px; }
 .session-pager { display: flex; align-items: center; justify-content: center; gap: 9px; padding: 9px 2px; color: var(--muted); font-size: 10px; }
 .session-pager .icon-button { width: 27px; min-height: 27px; padding: 3px; }
 .session-index-gaps { margin-top: 10px; border-top: 1px solid var(--border); padding-top: 9px; color: var(--muted); font-size: 10px; }
@@ -188,8 +190,18 @@
 .session-turn-navigation input { width: 52px; border: 1px solid var(--border); border-radius: 4px; padding: 4px; color: var(--text); background: var(--surface); font: inherit; }
 .session-turn-navigation .icon-button, .session-local-navigation .icon-button { width: 26px; min-height: 26px; padding: 3px; }
 .session-turn-range { margin-left: auto; font-size: 10px; }
-.session-local-navigation { display: flex; align-items: center; gap: 5px; padding-bottom: 9px; color: var(--muted); font-size: 11px; }
-.session-local-results { position: absolute; top: 100%; left: 0; right: 0; z-index: 12; max-height: min(300px, 45dvh); overflow: auto; border: 1px solid var(--border); border-radius: 6px; background: var(--surface); box-shadow: 0 8px 24px #0002; }
+.session-local-navigation { display: flex; align-items: center; gap: 5px; padding: 4px 10px; color: var(--muted); font-size: 11px; }
+.session-local-results { width: min(480px, calc(100vw - 24px)); max-width: var(--radix-popover-content-available-width); max-height: min(360px, 50dvh, var(--radix-popover-content-available-height)); overflow: auto; padding: 0; }
+.session-local-results-heading { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 8px 10px; border-bottom: 1px solid var(--border); }
+.session-local-results-heading h3 { margin: 0; font-size: 12px; }
+.session-local-results-heading .icon-button { width: 28px; min-height: 28px; padding: 4px; }
+.session-local-results > .session-process-toggle { margin: 0; padding: 8px 10px; }
+.session-local-results .session-hits { margin: 0; border: 0; border-radius: 0; }
+.session-local-results .session-hit-snippet { white-space: normal; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow-wrap: anywhere; }
+.session-local-search-status { margin: 0; padding: 24px 10px; color: var(--muted); font-size: 11px; text-align: center; }
+@media (max-width: 767px) {
+  .session-local-results { width: var(--radix-popover-trigger-width); }
+}
 .session-list .session-hits { margin: 0; border: 0; }
 .session-list .session-hit { grid-template-columns: minmax(0, 1fr); }
 .session-list .session-hit-kind { grid-row: auto; justify-self: start; }
@@ -335,7 +347,7 @@
 .session-group-title strong { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; font-size: 12px; }
 .session-search-group > small { display: block; color: var(--muted); font-size: 10px; margin: 5px 0; }
 .session-search-group .session-hit { padding: 6px; margin: 3px 0; font-size: 11px; }
-.sessions-shell mark { background: color-mix(in srgb, var(--accent) 18%, transparent); color: var(--text); border-radius: 2px; }
+.sessions-shell mark, .session-local-results mark { background: color-mix(in srgb, var(--accent) 18%, transparent); color: var(--text); border-radius: 2px; }
 .session-question-menu { width: min(540px, calc(100vw - 24px)); max-height: min(500px, var(--radix-popover-content-available-height)); overflow-y: auto; padding: 8px; }
 .session-question-menu .filter-option { display: flex; align-items: flex-start; flex-direction: column; gap: 4px; white-space: normal; width: 100%; text-align: left; border: 0; }
 .session-question-menu .filter-option span:first-child { color: var(--accent); font-size: 11px; }
@@ -376,5 +388,4 @@
 .session-evidence-copy time { color: var(--muted); font-size: 10px; }
 .session-tool-outcomes { color: var(--muted); display: flex; gap: 8px; flex-wrap: wrap; margin-top: 5px; font-size: 10px; }
 .session-usage-grid .session-partial-badge { display: block; margin-top: 5px; width: fit-content; font-size: 10px; }
-.local-process { display: flex; justify-content: flex-end; margin-top: -5px; margin-bottom: 7px; }
 .session-mode-tabs button { display: inline-flex; align-items: center; gap: 4px; }

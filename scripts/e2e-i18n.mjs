@@ -81,7 +81,7 @@ try {
   await menu("显示语言","English");
   ensure(await page.locator("html").getAttribute("lang")==="en","HTML语言未更新");
   const after=await snapshot();
-  ensure(before.scale===after.scale && before.file===after.file,"地图缩放或选中文件丢失");
+  ensure(before.scale===after.scale && before.file===after.file,"地图缩放或选中文件丢失 " + JSON.stringify({before,after}));
   ensure(after.directory==="Select directory src/nested" && after.queries===before.queries,"切换语言改变目录或发起额外查询");
   ensure((await page.locator(".metrics").innerText()).includes("Exact read line coverage"),"地图统计未翻译");
   await button("Display language").click(); await page.keyboard.press("Escape");
@@ -245,14 +245,14 @@ try {
   const resultQueries=page.resourceQueries.length;await language('en');
   ensure((await page.locator('.resource-dialog').innerText()).includes('Local state changed'),'已存结果未切换');
   ensure(resultQueries===page.resourceQueries.length,'结果切换语言额外查询');
-  await button('Done').click();await button('Disabled').click();
+  await button('Done').click();await button('Management records').click();await page.getByRole('menuitemradio',{name:'Disabled',exact:true}).click();
   await button('View recovery record for guide').click();await button('Preview restore').click();await button('Confirm Restore').click();
   await page.getByText('Local state changed',{exact:true}).waitFor();await button('Done').click();
   await button('Local resources').click();await button('View local details for guide').click();
   await button('Manage guide').click();await page.getByRole('dialog',{name:'Manage individual entries',exact:true}).waitFor();
   await page.getByRole('button',{name:/^Move .*guide.* to recovery$/}).click();await button('Confirm Move to trash').click();
   await page.getByText('Local state changed',{exact:true}).waitFor();await button('Done').click();
-  await button('Trash').click();await button('View recovery record for guide').click();await button('Preview restore').click();await button('Confirm Restore').click();
+  await button('Management records').click();await page.getByRole('menuitemradio',{name:'Trash',exact:true}).click();await button('View recovery record for guide').click();await button('Preview restore').click();await button('Confirm Restore').click();
   await page.getByText('Local state changed',{exact:true}).waitFor();await button('Done').click();
   await button('Local resources').click();await button('View local details for guide').click();await button('Preview Disable for the Codex entry of guide').click();
   await page.route('**/resources/apply',route=>route.fulfill({status:200,contentType:'application/json',body:JSON.stringify({id:'synthetic-partial',previewId:'synthetic-preview',action:'disable',entryId:'synthetic-entry',name:'guide',resource:{kind:'skill',client:'codex',scope:'user'},status:'partial',message:'人工原始部分反馈',messageDescriptor:{key:'diagnostics.resources.management.m034'},details:[{key:'diagnostics.resources.management.m031'}],createdAt:'2026-10-07T00:00:00Z',localState:'partial',clientEffect:'unknown'})}));
@@ -261,7 +261,7 @@ try {
   const partialQueries=page.resourceQueries.length,partialWrites=page.resourceWrites.length;await language('zh-CN');
   ensure((await page.locator('.resource-dialog').innerText()).includes('恢复材料校验失败'),'部分反馈details未随语言切换');
   ensure(partialQueries===page.resourceQueries.length&&partialWrites===page.resourceWrites.length,'部分反馈切换语言额外请求');await button('完成').click();await page.unroute('**/resources/apply');await language('en');
-  await button('Operations').click();await page.locator('.resource-row-main').first().click();
+  await button('Management records').click();await page.getByRole('menuitemradio',{name:'Operations',exact:true}).click();await page.locator('.resource-row-main').first().click();
   ensure((await page.locator('.resource-detail-scroll').innerText()).includes('Original details'),'管理记录缺少原始详情');
   const operationQueries=page.resourceQueries.length;await language('zh-CN');ensure(operationQueries===page.resourceQueries.length,'操作记录切换语言发起额外查询');
   ensure((await page.locator('.resource-detail-scroll').innerText()).includes('原始详情'),'操作记录未翻译');

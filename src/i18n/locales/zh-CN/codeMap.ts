@@ -106,6 +106,8 @@ export default {
   "codeMap.empty.register": "登记本机 Git 仓库以查看活动。",
   "codeMap.empty.local": "本地分析 · 历史只读",
   "codeMap.repository.navigation": "仓库导航",
+  "codeMap.repository.expandScope": "展开仓库导航：{{repository}}，{{directory}}",
+  "codeMap.repository.collapseScope": "收起仓库导航：{{repository}}，{{directory}}",
   "codeMap.repository.expand": "展开仓库导航",
   "codeMap.repository.collapse": "收起仓库导航",
   "codeMap.repository.register": "登记仓库",

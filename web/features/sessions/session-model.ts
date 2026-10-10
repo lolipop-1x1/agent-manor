@@ -149,7 +149,8 @@ export function groupedTurns(messages: SessionMessage[]): { id: string; messages
 }
 
 export function searchHitMode(hit: SessionSearchHit, current: "brief" | "full" | "trace"): "brief" | "full" | "trace" {
-  return hit.messageId ? "trace" : current;
+  if (!hit.messageId) return current;
+  return (hit.kind === "user" || hit.kind === "assistant") && hit.briefVisible === true ? "brief" : "trace";
 }
 
 export function displayRecorded(value: number | null | undefined, language: Language = getLanguage()): string {

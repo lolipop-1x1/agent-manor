@@ -17,6 +17,9 @@ import { sessionTitle } from "./title.js";
 import { initializeSearchIndex, prepareSearchIndex, searchMatch } from "./search-index.js";
 
 interface JsonRow { json: string }
+interface SearchMessageRow extends JsonRow {
+  revision: string; message_id?: string; turn_id?: string; kind: SessionSearchResult["hits"][number]["kind"];
+}
 interface MessageMetadataRow extends JsonRow {
   id: string; ordinal: number; record_line: number; turn_id: string; kind: SessionMessage["kind"];
   final: SessionMessage["final"] | null; call_id: string | null; copied: number | null;
@@ -594,9 +597,14 @@ export class SessionStore {
     return { branch, values };
   }
 
-  private readingScope(revision: string, session: SessionSummary, query: SessionMessageQuery) {
+  private readingScope(revision: string, session: SessionSummary, query: SessionMessageQuery, turnIds?: string[]) {
     const scope = this.readingBranch(session, query);
-    const branch = scope.branch, values: SqlValue[] = [revision, ...scope.values];
+    let branch = scope.branch;
+    const values: SqlValue[] = [revision, ...scope.values];
+    if (turnIds) {
+      branch += " AND turn_id IN (SELECT value FROM json_each(?))";
+      values.push(JSON.stringify(turnIds));
+    }
     if (query.mode !== "brief") return { values, cte: `WITH scoped AS MATERIALIZED (
       SELECT id,ordinal,CASE WHEN turn_id='' THEN 'unknown' ELSE turn_id END AS turn_id,kind,final FROM session_messages WHERE revision=?${branch}
     ), visible AS (SELECT * FROM scoped)` };
@@ -612,6 +620,26 @@ export class SessionStore {
       SELECT * FROM ranked ${query.mode === "brief" ? "WHERE kind='user' OR (kind='assistant' AND (final IS NOT NULL OR (finals=0 AND has_body=1 AND answer_rank=1)))" : ""}
     )`;
     return { cte, values };
+  }
+
+  private searchBriefVisible(rows: SearchMessageRow[], version: string) {
+    const batches = new Map<string, SearchMessageRow[]>();
+    for (const row of rows) {
+      if (!row.message_id || (row.kind !== "user" && row.kind !== "assistant")) continue;
+      const batch = batches.get(row.revision) ?? [];
+      batch.push(row); batches.set(row.revision, batch);
+    }
+    const visible = new Map<string, Set<string>>();
+    for (const [revision, batch] of batches) {
+      // 必须对命中所在完整轮次排名，不能只筛命中消息，否则中间回复会变成兜底终答。
+      const turnIds = [...new Set(batch.flatMap(row => !row.turn_id || row.turn_id === "unknown" ? ["", "unknown"] : [row.turn_id]))];
+      const { cte, values } = this.readingScope(revision, this.summary(batch[0]!, version), { mode: "brief", branch: "all" }, turnIds);
+      const ids = batch.map(row => row.message_id!);
+      const matches = this.database.prepare(`${cte} SELECT id FROM visible WHERE id IN (SELECT value FROM json_each(?))`)
+        .all(...values, JSON.stringify(ids)) as { id: string }[];
+      visible.set(revision, new Set(matches.map(row => row.id)));
+    }
+    return visible;
   }
 
   matches(id: string, query: SessionQuery = {}): { version: string; matches: boolean } {
@@ -889,13 +917,15 @@ export class SessionStore {
         JOIN session_revisions r ON r.id=ranked.revision LEFT JOIN session_messages m ON m.revision=ranked.revision AND m.id=ranked.message_id WHERE rank<=3
     ) SELECT *,substr(body,MAX(1,instr(lower(body),lower(?))-70),240) AS text,
       length(body) AS text_length,MAX(1,instr(lower(body),lower(?))-70) AS text_start FROM bodies ORDER BY updated_at DESC,session_id,rank`)
-      .all(...values, pageSize, (page - 1) * pageSize, needle, needle) as (JsonRow & { session_id: string; message_id?: string; turn_id?: string;
-        kind: SessionSearchResult["hits"][number]["kind"]; match_count: number; text: string; text_start: number; text_length: number })[];
+      .all(...values, pageSize, (page - 1) * pageSize, needle, needle) as (SearchMessageRow & { session_id: string;
+        match_count: number; text: string; text_start: number; text_length: number })[];
+    const briefVisible = this.searchBriefVisible(rows, version);
     const groups: SessionGroupedSearchResult["groups"] = [];
     for (const row of rows) {
       let group = groups.find(item => item.session.id === row.session_id);
       if (!group) { group = { session: this.summary(row, version), matchCount: row.match_count, hits: [] }; groups.push(group); }
       group.hits.push({ session: group.session, messageId: row.message_id ?? undefined, turnId: row.turn_id ?? undefined, kind: row.kind,
+        ...(row.message_id ? { briefVisible: briefVisible.get(row.revision)?.has(row.message_id) ?? false } : {}),
         snippet: (row.text_start > 1 ? "…" : "") + row.text + (row.text_length > row.text_start - 1 + 240 ? "…" : "") });
     }
     return { version, groups, ...counts, page, pageSize };
@@ -913,12 +943,14 @@ export class SessionStore {
     ), bodies AS MATERIALIZED (
       SELECT page.*,CASE WHEN page.message_id IS NULL THEN r.title ELSE m.text END AS body FROM page
         JOIN session_revisions r ON r.id=page.revision LEFT JOIN session_messages m ON m.revision=page.revision AND m.id=page.message_id
-    ) SELECT session_id,message_id,turn_id,kind,json,substr(body,MAX(1,instr(lower(body),lower(?))-70),240) AS text,length(body) AS text_length,
+    ) SELECT session_id,message_id,turn_id,kind,revision,json,substr(body,MAX(1,instr(lower(body),lower(?))-70),240) AS text,length(body) AS text_length,
       MAX(1,instr(lower(body),lower(?))-70) AS text_start FROM bodies ORDER BY updated_at DESC,session_id,ordinal,message_id`)
-      .all(...values, pageSize, (page - 1) * pageSize, needle, needle) as (JsonRow & { message_id?: string; turn_id?: string; kind: SessionSearchResult["hits"][number]["kind"]; text: string; text_start: number; text_length: number })[];
+      .all(...values, pageSize, (page - 1) * pageSize, needle, needle) as (SearchMessageRow & { text: string; text_start: number; text_length: number })[];
+    const briefVisible = this.searchBriefVisible(rows, version);
     const hits = rows.map(row => {
       const session = this.summary(row, version);
       return { session, messageId: row.message_id ?? undefined, turnId: row.turn_id ?? undefined, kind: row.kind,
+        ...(row.message_id ? { briefVisible: briefVisible.get(row.revision)?.has(row.message_id) ?? false } : {}),
         snippet: (row.text_start > 1 ? "…" : "") + row.text + (row.text_length > row.text_start - 1 + 240 ? "…" : "") };
     });
     return { version, hits, total, page, pageSize };

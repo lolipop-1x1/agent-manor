@@ -245,12 +245,12 @@ try {
       expect((!route.candidate||route.candidate==='all')&&!route.reviewPage&&!route.reviewSize,'旧待检查视图状态仍保留');
       expect(route.id===id&&route.client==='codex'&&route.q==='map-'&&route.view==='map'&&route.metric==='sessions','兼容旧链接丢失范围或选择');
       const quick=page.getByRole('group',{name:(kind==='skill'?'Skill':'MCP')+' 快速筛选',exact:true});
-      expect(await quick.getByRole('button').count()===6,'仍有待检查快捷分类');
-      await quick.getByRole('button',{name:/^低频/}).click();
+      expect(await quick.getByRole('button').count()===4 && await quick.getByRole('combobox',{name:'关注条件',exact:true}).count()===1,'仍有待检查快捷分类');
+      await quick.getByRole('combobox',{name:'关注条件',exact:true}).click(); await page.getByRole('option',{name:/^低频/}).click();
       const threshold=page.getByRole('spinbutton',{name:'低频使用会话阈值',exact:true});
       await threshold.fill('1');
       await page.waitForFunction(()=>new URLSearchParams(location.hash.split('?')[1]).get('low')==='1');
-      await quick.getByRole('button',{name:/^长期未用/}).click();
+      await quick.getByRole('combobox',{name:'关注条件',exact:true}).click(); await page.getByRole('option',{name:/^长期未用/}).click();
       const days=page.getByRole('spinbutton',{name:'长期未用天数阈值',exact:true});
       await days.fill('180');
       await page.waitForFunction(()=>new URLSearchParams(location.hash.split('?')[1]).get('inactive')==='180');
@@ -386,7 +386,7 @@ try {
   await assert.rejects(readFile(fixture.sharedMapLink), { code: "ENOENT" });
   assert.ok((await readFile(join(fixture.userHome, ".codex", "skills", "map-skill-001", "SKILL.md"), "utf8")).includes("人工地图资源"));
   await step("共享入口恢复后返回地图保留历史", `
-    await page.getByRole('navigation',{name:'资源视图',exact:true}).getByRole('button',{name:'回收区',exact:true}).click();
+    await page.getByRole('button',{name:'管理记录',exact:true}).click(); await page.getByRole('menuitemradio',{name:'回收区',exact:true}).click();
     await page.getByRole('button',{name:'查看map-skill-001的恢复记录',exact:true}).click();
     await page.getByRole('button',{name:'预览恢复',exact:true}).click();
     const dialog=page.getByRole('dialog',{name:'恢复预览',exact:true});
@@ -449,7 +449,7 @@ try {
   assert.equal(await readFile(fixture.claudeConfigPath, "utf8"), claudeConfigBefore, "所选注册操作误改其他 Agent");
   assert.deepEqual(parseToml(await readFile(fixture.configPath, "utf8")).mcp_servers.sample, parseToml(configBefore).mcp_servers.sample);
   await step("MCP 恢复保持原始配置与地图证据", `
-    await page.getByRole('navigation',{name:'资源视图',exact:true}).getByRole('button',{name:'已停用',exact:true}).click();
+    await page.getByRole('button',{name:'管理记录',exact:true}).click(); await page.getByRole('menuitemradio',{name:'已停用',exact:true}).click();
     await page.getByRole('button',{name:'查看map-mcp-001的恢复记录',exact:true}).click();
     await page.getByRole('button',{name:'预览恢复',exact:true}).click();
     const dialog=page.getByRole('dialog',{name:'恢复预览',exact:true});
@@ -609,7 +609,7 @@ try {
     await detail.getByRole('heading',{name:'map-skill-002',exact:true}).waitFor();
     await page.getByRole('group',{name:'资源使用地图',exact:true}).waitFor();
     expect(/1\\s*显式调用/.test(await detail.locator('.resource-stats').innerText()),'回收抹掉真实历史');
-    await page.getByRole('navigation',{name:'资源视图',exact:true}).getByRole('button',{name:'回收区',exact:true}).click();
+    await page.getByRole('button',{name:'管理记录',exact:true}).click(); await page.getByRole('menuitemradio',{name:'回收区',exact:true}).click();
     await page.getByRole('button',{name:'查看map-skill-002的恢复记录',exact:true}).click();
     await page.getByRole('button',{name:'预览恢复',exact:true}).click();
     const restore=page.getByRole('dialog',{name:'恢复预览',exact:true});

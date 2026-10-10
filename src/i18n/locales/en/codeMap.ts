@@ -107,6 +107,8 @@ export default {
   "codeMap.empty.register": "Register a local Git repository to view activity.",
   "codeMap.empty.local": "Local analysis · Read-only history",
   "codeMap.repository.navigation": "Repository navigation",
+  "codeMap.repository.expandScope": "Expand repository navigation: {{repository}}, {{directory}}",
+  "codeMap.repository.collapseScope": "Collapse repository navigation: {{repository}}, {{directory}}",
   "codeMap.repository.expand": "Expand repository navigation",
   "codeMap.repository.collapse": "Collapse repository navigation",
   "codeMap.repository.register": "Register repository",

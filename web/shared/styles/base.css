@@ -317,6 +317,16 @@ input[type="checkbox"] { accent-color: var(--accent); }
   .code-map { height: 420px; }
 }
 @media (max-width: 767px) {
+  .repository-navigation-toggle { display: flex; align-items: center; gap: 9px; width: 100%; min-width: 0; padding: 2px 0; border: 0; background: transparent; color: var(--text); text-align: left; }
+  .repository-navigation-toggle > span { display: grid; min-width: 0; flex: 1; gap: 3px; }
+  .repository-navigation-toggle strong { font-size: 12px; font-weight: 600; }
+  .repository-navigation-toggle small { color: var(--muted); font-size: 10px; }
+  .repository-navigation-toggle strong, .repository-navigation-toggle small { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+  .repository-navigation-toggle > svg { flex-shrink: 0; }
+  .code-map-page .map-main { padding-top: 16px; }
+  .code-map-page .filters { margin-top: 14px; gap: 10px; }
+  .code-map-page .metrics { padding: 12px 0; }
+  .code-map-page .code-map { height: 300px; }
   .app-header { padding: 0 14px; height: 59px; gap: 9px; }
   .brand { font-size: 17px; gap: 7px; }
   .brand svg { width: 22px; }

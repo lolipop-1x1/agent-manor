@@ -982,6 +982,45 @@ test("对话兜底仅选本分支末条非空正文，不改写终态，分页�
   assert.equal(store.turnDirectory(id, { pageSize: 1, page: 2 }).turns[0]?.question, "问题二");
 }));
 
+test("搜索可见性复用全部分支的简易对话规则，保留终答、兜底与旧版本", async () => fixture(store => {
+  const id = "search-reading";
+  const records = [
+    message(id, 1, { turnId: "first", text: "needle 问题" }),
+    message(id, 2, { turnId: "first", kind: "assistant", text: "needle 中间回复" }),
+    message(id, 3, { turnId: "first", kind: "assistant", text: "needle 保存回复" }),
+    message(id, 4, { turnId: "first", kind: "assistant", text: " \n\t " }),
+    message(id, 5, { turnId: "second", kind: "assistant", text: "needle 终答", final: "explicit" }),
+    message(id, 6, { turnId: "second", kind: "assistant", text: "needle 后续正文" }),
+    message(id, 7, { turnId: "second", kind: "tool_result", text: "needle 工具结果" }),
+    message(id, 8, { turnId: "", kind: "assistant", text: "needle 未知轮中间回复" }),
+    message(id, 9, { turnId: "unknown", kind: "assistant", text: "needle 未知轮保存回复" }),
+  ];
+  const first = store.publish(store.createJob().id, [source(store, meta(id), records)], []);
+  const query = { q: "needle", pageSize: 100 };
+  const assertParity = (version: string) => {
+    const visible = new Set(store.messages(id, { version, mode: "brief", branch: "all", pageSize: 100 }).messages.map(item => item.id));
+    const result = store.search({ ...query, version });
+    for (const hit of result.hits) {
+      if (hit.messageId) assert.equal(hit.briefVisible, visible.has(hit.messageId), hit.snippet);
+      else assert.equal(hit.briefVisible, undefined);
+    }
+    for (const hit of store.groupedSearch({ ...query, version }).groups.flatMap(group => group.hits)) {
+      assert.equal(hit.briefVisible, result.hits.find(item => item.messageId === hit.messageId)?.briefVisible);
+    }
+    return result.hits;
+  };
+  const oldHits = assertParity(first);
+  assert.equal(oldHits.find(hit => hit.messageId === "message-3")?.briefVisible, true);
+  assert.equal(store.search({ ...query, version: first, q: "中间回复" }).hits.every(hit => hit.briefVisible === false), true);
+  const second = store.publish(store.createJob().id, [source(store, meta(id, { branches: [{ id: "other", label: "other", current: false }] }), [
+    ...records, message(id, 10, { turnId: "first", kind: "assistant", text: "needle 其他分支终答", final: "explicit", branchIds: ["other"], currentBranch: false }),
+  ])], []);
+  const newHits = assertParity(second);
+  assert.equal(newHits.find(hit => hit.messageId === "message-3")?.briefVisible, false);
+  assert.equal(newHits.find(hit => hit.messageId === "message-10")?.briefVisible, true);
+  assert.deepEqual(assertParity(first), oldHits);
+}));
+
 test("会话级搜索按全量会话分页，保留记录级总数、展开及范围判断", async () => fixture(store => {
   const revisions = [source(store, meta("many", { project: "/synthetic/a" }), Array.from({ length: 30 }, (_, index) => message("many", index, { text: `needle ${index}` }))),
     source(store, meta("few", { project: "/synthetic/b" }), [message("few", 0, { text: "needle" })]),
