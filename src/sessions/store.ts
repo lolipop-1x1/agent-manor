@@ -8,6 +8,7 @@ import { clientIds } from "../clients.js";
 import type { Client } from "../clients.js";
 import type { SourceLocation } from "../history/types.js";
 import type { ResourceEventStream, ResourceHistoryIdentity, ResourceUsageIdentity, ResourceUsageEvent, ResourceUsageQuery } from "../resource-contracts.js";
+import type { UsageSource } from "../usage-contracts.js";
 import type { SessionGroupedSearchResult, SessionTurnDirectory, SessionIndexStatus, SessionJob, SessionListResult, SessionMessage, SessionMessageQuery, SessionMessageResult, SessionProfile, SessionProfileQuery, SessionQuery, SessionRefreshOptions, SessionSearchResult, SessionSink, SessionSourceMeta, SessionSummary, SessionTimelineEvent, SessionTimelineQuery, SessionTimelineResult, SessionUsage } from "../session-contracts.js";
 import { StoreError } from "../index/store.js";
 import { summarizeRequestSpeed } from "../session-speed.js";
@@ -776,6 +777,36 @@ export class SessionStore {
             (SELECT value FROM json_each(u.json,'$.requestMessageIds') UNION SELECT json_extract(u.json,'$.timing.end.messageId')))) OR
         (COALESCE(json_array_length(u.json,'$.requestMessageIds'),0)=0 AND json_extract(u.json,'$.timing.end.messageId') IS NULL AND NOT EXISTS
           (SELECT 1 FROM session_messages m WHERE m.revision=u.revision AND m.copied=1 AND m.turn_id=u.turn_id)))`;
+  }
+
+  /** 批量读取已发布用量和会话身份，不加载消息正文，也不逐会话查询父关系。 */
+  usageSource(requestedVersion?: string): UsageSource {
+    return this.database.transaction(() => {
+      const version = this.version(requestedVersion);
+      const rows = this.database.prepare(`SELECT r.json,relation.parent FROM session_version_sessions v
+        JOIN session_revisions r ON r.id=v.revision LEFT JOIN session_version_relations relation
+          ON relation.version=v.version AND relation.child=v.session_id
+        WHERE v.version=? ORDER BY v.session_id`).all(version) as (JsonRow & { parent: string | null })[];
+      const sessions = rows.map(row => {
+        const { path: _path, sourceId: _sourceId, ...summary } = decode<SessionSourceMeta>(row);
+        if (row.parent) { summary.parentSessionId = row.parent; summary.relationship = "child"; }
+        return sessionTitle(summary);
+      });
+      const byId = new Map(sessions.map(summary => [summary.id, summary]));
+      for (const summary of sessions) {
+        const parent = summary.parentSessionId ? byId.get(summary.parentSessionId) : undefined;
+        if (!parent) continue;
+        summary.parentTitle = parent.title;
+        summary.parentTitleDescriptor = parent.titleOrigin === "fallback" ? {
+          key: parent.relationship === "child" ? "sessions.title.childFallback" : "sessions.title.unnamed",
+          ...(parent.relationship === "child" ? { params: { id: parent.clientSessionId.slice(-8) } } : {}),
+        } : undefined;
+      }
+      const usages = this.database.prepare(`SELECT v.session_id,u.json FROM session_version_sessions v
+        JOIN session_usage u ON u.revision=v.revision WHERE v.version=? AND ${this.eligibleUsageWhere()}
+        ORDER BY v.session_id,u.rowid`).all(version) as (JsonRow & { session_id: string })[];
+      return { version, sessions, requests: usages.map(row => ({ sessionId: row.session_id, usage: decode<SessionUsage>(row) })) };
+    })();
   }
 
   private usagesForTurns(revision: string, sessionId: string, turnIds: string[]): SessionProfile["steps"] {

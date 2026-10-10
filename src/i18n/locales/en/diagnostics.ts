@@ -1,6 +1,16 @@
 import type { MessageCatalog } from "../../types.js";
 
 export default {
+  "diagnostics.usage.invalidQuery": "The usage query field {{field}} is invalid",
+  "diagnostics.usage.versionMismatch": "The session index version has changed; load the latest usage results",
+  "diagnostics.usage.priceVersionMismatch": "The price version is unavailable; load the latest prices",
+  "diagnostics.usage.input.invalid": "Invalid usage parameter: {{field}}",
+  "diagnostics.usage.pricing.fetch": "The price catalog could not be updated. Local prices remain available.",
+  "diagnostics.usage.pricing.invalidCatalog": "The price catalog is invalid. The previous catalog was retained.",
+  "diagnostics.usage.pricing.invalidConfiguration": "Invalid model prices or mappings.",
+  "diagnostics.usage.pricing.versionMissing": "This price version is no longer available. Reload the usage report.",
+  "diagnostics.usage.pricing.closed": "The price service has stopped.",
+  "diagnostics.usage.pricing.storage": "The local price settings could not be saved.",
   "diagnostics.service.preferences.appearance": "Invalid appearance preferences.",
 
   "diagnostics.service.preferences.fields": "The request body can only contain language, sessionsAutoRefreshInterval, mapAutoRefreshInterval, or appearance",

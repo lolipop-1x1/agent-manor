@@ -7,6 +7,7 @@ import { useVisiblePolling } from "../shared/refresh/useVisiblePolling";
 import { AutoRefreshControl } from "../shared/ui/AutoRefreshControl";
 import Sessions from "../features/sessions/Sessions";
 import Resources from "../features/resources/Resources";
+import Usage from "../features/usage/Usage";
 import { LanguageMenu, LanguageNotice, t, useI18n } from "../shared/i18n";
 import { useTheme } from "../shared/theme";
 import { AppearanceMenu } from "../shared/ui/AppearanceMenu";
@@ -25,12 +26,13 @@ export function App() {
     observer.observe(frame);
     return () => { observer.disconnect(); document.documentElement.style.removeProperty("--app-header-height"); };
   }, []);
-  type ProductView = "map" | "sessions" | "resources";
-  const hashView = (): ProductView => location.hash.startsWith("#sessions") ? "sessions" : location.hash.startsWith("#resources") ? "resources" : "map";
+  type ProductView = "map" | "sessions" | "resources" | "usage";
+  const hashView = (): ProductView => location.hash.startsWith("#sessions") ? "sessions" : location.hash.startsWith("#resources") ? "resources" : location.hash.startsWith("#usage") ? "usage" : "map";
   const [view, setView] = useState<ProductView>(hashView);
-  const viewScroll = useRef({ map: 0, sessions: 0, resources: 0 });
+  const viewScroll = useRef({ map: 0, sessions: 0, resources: 0, usage: 0 });
   const sessionAddress = useRef(location.hash.startsWith("#sessions") ? location.hash : "#sessions");
   const resourceAddress = useRef(location.hash.startsWith("#resources") ? location.hash : "#resources");
+  const usageAddress = useRef(location.hash.startsWith("#usage") ? location.hash : "#usage");
   const activeView = useRef(view);
   const activateView = useCallback((next: ProductView) => {
     if (activeView.current !== next) viewScroll.current[activeView.current] = globalThis.scrollY;
@@ -38,7 +40,7 @@ export function App() {
     setView(next);
   }, []);
   useLayoutEffect(() => { globalThis.scrollTo(0, viewScroll.current[view]); }, [view]);
-  useEffect(() => { document.title = `AgentManor · ${t({ map: "codeMap.title", sessions: "codeMap.navigation.sessions", resources: "codeMap.navigation.resources" }[view])}`; }, [view, language]);
+  useEffect(() => { document.title = `AgentManor · ${t({ map: "codeMap.title", sessions: "codeMap.navigation.sessions", resources: "codeMap.navigation.resources", usage: "usage.title" }[view])}`; }, [view, language]);
   const [sessionTarget, setSessionTarget] = useState<{ sessionId: string; messageId?: string; mode?: "brief" | "full" | "trace"; page?: number; turnPosition?: number; branch?: string }>();
   useEffect(() => {
     const navigate = () => {
@@ -60,7 +62,8 @@ export function App() {
   const switchView = (next: ProductView) => {
     if (location.hash.startsWith("#resources")) resourceAddress.current = location.hash;
     if (location.hash.startsWith("#sessions")) sessionAddress.current = location.hash;
-    activateView(next); location.hash = next === "resources" ? resourceAddress.current : next === "sessions" ? sessionAddress.current : next;
+    if (location.hash.startsWith("#usage")) usageAddress.current = location.hash;
+    activateView(next); location.hash = next === "resources" ? resourceAddress.current : next === "sessions" ? sessionAddress.current : next === "usage" ? usageAddress.current : next;
   };
   const openResourceSession = (target: { sessionId: string; messageId: string }) => {
     resourceAddress.current = location.hash;
@@ -75,6 +78,7 @@ export function App() {
     if (!signal.aborted) setAutoRefreshError(null);
   }, error => setAutoRefreshError(error instanceof Error ? error : new Error(String(error))));
   const openMapSession = (target: { sessionId: string; messageId?: string }) => {
+    if (location.hash.startsWith("#usage")) usageAddress.current = location.hash;
     setSessionTarget(target); activateView("sessions");
     const destination = new URLSearchParams({ id: target.sessionId });
     if (target.messageId) destination.set("message", target.messageId);
@@ -88,9 +92,9 @@ export function App() {
   };
   return <Tooltip.Provider delayDuration={350}>
     <div ref={headerFrame}>
-    <header className="app-header"><a className="brand" href="/" aria-label={t("codeMap.navigation.home")}><svg width="30" height="20" viewBox="8 16 48 32" fill="currentColor" aria-hidden="true" focusable="false"><path d="M14 18a3 3 0 0 0-4 2.8v22.4a3 3 0 0 0 4 2.8l10-6a2 2 0 0 0 1-1.8V25.8a2 2 0 0 0-1-1.8z" /><rect x="28" y="27" width="8" height="10" rx="2" /><path d="M14 18a3 3 0 0 0-4 2.8v22.4a3 3 0 0 0 4 2.8l10-6a2 2 0 0 0 1-1.8V25.8a2 2 0 0 0-1-1.8z" transform="translate(64 0) scale(-1 1)" /></svg><span>Agent<strong>Manor</strong></span></a><span className="header-divider" /><nav className="product-nav" aria-label={t("codeMap.navigation.title")}><button aria-current={view === "map" ? "page" : undefined} onClick={() => switchView("map")}>{t("codeMap.navigation.map")}</button><button aria-current={view === "sessions" ? "page" : undefined} onClick={() => switchView("sessions")}>{t("codeMap.navigation.sessions")}</button><button aria-current={view === "resources" ? "page" : undefined} onClick={() => switchView("resources")}>{t("codeMap.navigation.resources")}</button></nav>
+    <header className="app-header"><a className="brand" href="/" aria-label={t("codeMap.navigation.home")}><svg width="30" height="20" viewBox="8 16 48 32" fill="currentColor" aria-hidden="true" focusable="false"><path d="M14 18a3 3 0 0 0-4 2.8v22.4a3 3 0 0 0 4 2.8l10-6a2 2 0 0 0 1-1.8V25.8a2 2 0 0 0-1-1.8z" /><rect x="28" y="27" width="8" height="10" rx="2" /><path d="M14 18a3 3 0 0 0-4 2.8v22.4a3 3 0 0 0 4 2.8l10-6a2 2 0 0 0 1-1.8V25.8a2 2 0 0 0-1-1.8z" transform="translate(64 0) scale(-1 1)" /></svg><span>Agent<strong>Manor</strong></span></a><span className="header-divider" /><nav className="product-nav" aria-label={t("codeMap.navigation.title")}><button aria-current={view === "map" ? "page" : undefined} onClick={() => switchView("map")}>{t("codeMap.navigation.map")}</button><button aria-current={view === "sessions" ? "page" : undefined} onClick={() => switchView("sessions")}>{t("codeMap.navigation.sessions")}</button><button aria-current={view === "resources" ? "page" : undefined} onClick={() => switchView("resources")}>{t("codeMap.navigation.resources")}</button><button aria-current={view === "usage" ? "page" : undefined} onClick={() => switchView("usage")}>{t("usage.title")}</button></nav>
       <div className="header-actions">{map.sourceAction}
-        {view !== "resources" && <AutoRefreshControl scope={view === "sessions" ? "sessions" : "map"} />}
+        {(view === "map" || view === "sessions") && <AutoRefreshControl scope={view === "sessions" ? "sessions" : "map"} />}
         <LanguageMenu />
         <AppearanceMenu />
         {map.refreshAction}
@@ -102,5 +106,6 @@ export function App() {
     {map.page}
     <section className="product-view" hidden={view !== "sessions"} aria-label={t("codeMap.view.sessions")}><Sessions active={view === "sessions"} target={sessionTarget} onMap={openMap} autoRefreshError={autoRefreshError} /></section>
     <section className="product-view" hidden={view !== "resources"} aria-label={t("codeMap.view.resources")}><Resources active={view === "resources"} onSession={openResourceSession} /></section>
+    <section className="product-view" hidden={view !== "usage"} aria-label={t("usage.title")}><Usage active={view === "usage"} onSession={openMapSession} /></section>
   </Tooltip.Provider>;
 }

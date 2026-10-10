@@ -25,6 +25,8 @@ import { ResourceService } from "./resources/service.js";
 import { registerResourceRoutes } from "./service/resource-routes.js";
 import { readPreferences, registerPreferenceRoutes } from "./service/preferences.js";
 import { compactIndexAtStartup } from "./index/maintenance.js";
+import { PricingService } from "./usage/pricing.js";
+import { registerUsageRoutes } from "./service/usage-routes.js";
 
 export interface ServiceOptions {
   home?: string;
@@ -33,6 +35,7 @@ export interface ServiceOptions {
   staticRoot?: string;
   startupRefresh?: boolean;
   resourceInventory?: ResourceInventoryOptions;
+  usagePricing?: { fetch?: typeof globalThis.fetch; now?: () => Date };
 }
 
 function statusCode(code: ApiErrorCode): number {
@@ -59,6 +62,7 @@ export async function startService(options: ServiceOptions = {}) {
   let manager: WorkerManager | undefined;
   let sessions: SessionStore | undefined;
   let resourceManager: ResourceManager | undefined;
+  let pricing: PricingService | undefined;
   const app = Fastify({ logger: false, bodyLimit: 65_536, forceCloseConnections: true });
   const instance: ServiceInstance = { id: randomUUID(), pid: process.pid, host: "127.0.0.1", port: requestedPort, startedAt: new Date().toISOString() };
   try {
@@ -70,6 +74,7 @@ export async function startService(options: ServiceOptions = {}) {
     const library = sessions;
     const worker = manager;
     resourceManager = new ResourceManager(home);
+    pricing = new PricingService(home, options.usagePricing);
     const management = resourceManager;
     const resources = new ResourceService(library, management, options.resourceInventory ?? { environment: process.env }, () =>
       [...new Set([...index.listRepositories().map(repository => repository.path), ...library.status().projects])]);
@@ -78,6 +83,7 @@ export async function startService(options: ServiceOptions = {}) {
       index.close();
       library.close();
       management.close();
+      pricing?.close();
       await removeInstance(home, instance);
       await release();
     });
@@ -89,6 +95,7 @@ export async function startService(options: ServiceOptions = {}) {
       reply.code(statusCode(code)).send({ error: { code, message: known ? error.message : malformed ? "无效 HTTP 请求" : "本地服务处理失败", messageDescriptor: known ? error.messageDescriptor : malformed ? { key: "diagnostics.server.m002" } : { key: "diagnostics.server.m003" } } });
     });
     app.setNotFoundHandler((_request, reply) => { reply.code(404).send({ error: { code: "FILE_NOT_FOUND", message: "资源不存在", messageDescriptor: { key: "diagnostics.server.m004" } } }); });
+    registerUsageRoutes(app, library, pricing);
     app.addHook("onRequest", async (request) => {
       let host: URL;
       try { host = new URL(`http://${request.headers.host ?? ""}`); } catch { throw new ServiceError("FORBIDDEN", "无效 Host", { key: "diagnostics.server.m005" }); }
@@ -312,6 +319,7 @@ export async function startService(options: ServiceOptions = {}) {
     try { store?.close(); } catch { /* 初始化失败时可能已关闭。 */ }
     try { sessions?.close(); } catch { /* 初始化失败时可能已关闭。 */ }
     try { resourceManager?.close(); } catch { /* 初始化失败时可能已关闭。 */ }
+    pricing?.close();
     await release();
     throw error;
   }

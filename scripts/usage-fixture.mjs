@@ -1,0 +1,58 @@
+import { mkdir, mkdtemp, rm, realpath } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { AnalysisStore } from "../dist/index/store.js";
+import { SessionStore } from "../dist/sessions/store.js";
+import { startService } from "../dist/server.js";
+import { clientIds } from "../dist/clients.js";
+import { writePreferences } from "../dist/service/preferences.js";
+
+// 全部为隔离合成数据，价格写入只影响临时数据目录。
+export async function usageFixture() {
+  const directory = await realpath(await mkdtemp(join(tmpdir(), "manor-usage-e2e-")));
+  const home = join(directory, "data"); await mkdir(home);
+  const path = join(home, "index.sqlite"); new AnalysisStore(path).close();
+  const store = new SessionStore(path), sources = [];
+  const models = ["fixture-fast", "fixture-reasoning", "fixture-large"];
+  const prices = Object.fromEntries(models.map((model, index) => [model, { id: model, name: model,
+    cost: { input: 1 + index * 2, output: 5 + index * 5, cache_read: 0.1 + index * 0.2, cache_write: 1.25 + index * 2.5 },
+    limit: { context: 100_000, output: 16_000 } }]));
+  for (let sessionIndex = 0; sessionIndex < 36; sessionIndex++) {
+    const id = `fixture-session-${String(sessionIndex).padStart(2, "0")}`;
+    const child = sessionIndex > 0 && sessionIndex % 6 === 0;
+    const summary = { id, client: sessionIndex % 2 ? "claude" : "codex", clientSessionId: id,
+      sourceId: `synthetic:${id}`, path: `/synthetic/history/${id}.jsonl`, title: `合成项目任务 ${String(sessionIndex + 1).padStart(2, "0")}`,
+      titleOrigin: "recorded", project: sessionIndex === 35 ? undefined : `/synthetic/projects/${["atlas", "workbench", "index", "atlas-copy"][sessionIndex % 4]}`,
+      models: sessionIndex === 34 ? ["fixture-unpriced"] : models, messageCount: 0, turnCount: 0, gaps: [],
+      ...(child ? { relationship: "child", parentSessionId: "fixture-session-00" } : {}),
+      ...(sessionIndex === 33 ? { executionMode: "quiet" } : {}) };
+    const pending = store.createRevision(summary.path, "synthetic");
+    let ordinal = 0;
+    for (let day = 0; day < 28; day++) {
+      const time = new Date(); time.setDate(time.getDate() - day); time.setHours(12 + sessionIndex % 5, sessionIndex, 0, 0);
+      const messageId = `${id}:message:${day}`;
+      pending.sink.message({ id: messageId, sessionId: id, ordinal: ordinal++, recordLine: day + 1, turnId: `turn-${day}`,
+        kind: "assistant", final: "explicit", occurredAt: time.toISOString(), text: `合成请求记录 ${day + 1}：用量定位验证。` });
+      const input = Math.round((12000 + sessionIndex * 1100) * (1 + 0.45 * Math.sin(day * 0.7 + sessionIndex)));
+      pending.sink.usage({ id: `${id}:usage:${day}`, messageId, turnId: `turn-${day}`, occurredAt: time.toISOString(),
+        model: sessionIndex === 34 ? "fixture-unpriced" : models[(day + sessionIndex) % 3],
+        inputTokens: input, outputTokens: 500 + day * 30 + sessionIndex * 20, cachedInputTokens: Math.round(input * 0.6), cacheWriteTokens: 0 });
+    }
+    if (sessionIndex === 35) pending.sink.usage({ id: `${id}:undated`, model: "fixture-unpriced", inputTokens: 500, outputTokens: 50 });
+    pending.flush(); store.finishRevision(pending.revision, summary);
+    sources.push({ path: summary.path, revision: pending.revision, fingerprint: "synthetic" });
+  }
+  const missing = { id: "fixture-no-usage", client: "codex", clientSessionId: "fixture-no-usage", title: "合成未记录用量", titleOrigin: "recorded",
+    sourceId: "synthetic:no-usage", path: "/synthetic/history/no-usage.jsonl", models: [], messageCount: 0, turnCount: 0, gaps: [] };
+  const pending = store.createRevision(missing.path, "synthetic"); pending.flush(); store.finishRevision(pending.revision, missing);
+  sources.push({ path: missing.path, revision: pending.revision, fingerprint: "synthetic" });
+  store.publish(store.createJob().id, sources, []); store.close();
+  await writePreferences(home, "zh-CN");
+  const service = await startService({ home, startupRefresh: false,
+    roots: Object.fromEntries(clientIds.map(client => [client, []])),
+    resourceInventory: { userHome: join(directory, "isolated-user"), environment: {} },
+    usagePricing: { fetch: async () => Response.json({ fixture: { id: "fixture", name: "Synthetic prices", models: prices } }) } });
+  const base = `http://127.0.0.1:${service.instance.port}`;
+  await fetch(`${base}/api/v1/usage/pricing/refresh`, { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
+  return { directory, home, service, base, close: async () => { await service.close(); await rm(directory, { recursive: true, force: true }); } };
+}

@@ -1,6 +1,16 @@
 import type { MessageCatalog } from "../../types.js";
 
 export default {
+  "diagnostics.usage.invalidQuery": "用量查询字段 {{field}} 无效",
+  "diagnostics.usage.versionMismatch": "会话索引版本已变化，请加载最新用量结果",
+  "diagnostics.usage.priceVersionMismatch": "价格版本不可用，请加载最新价格",
+  "diagnostics.usage.input.invalid": "无效用量参数：{{field}}",
+  "diagnostics.usage.pricing.fetch": "价格目录更新失败，继续使用本地价格。",
+  "diagnostics.usage.pricing.invalidCatalog": "价格目录无效，已保留上一有效目录。",
+  "diagnostics.usage.pricing.invalidConfiguration": "模型价格或计价映射无效。",
+  "diagnostics.usage.pricing.versionMissing": "该价格版本已不可用，请重新加载用量统计。",
+  "diagnostics.usage.pricing.closed": "价格服务已停止。",
+  "diagnostics.usage.pricing.storage": "无法保存本地价格配置。",
   "diagnostics.service.preferences.appearance": "外观设置无效。",
 
   "diagnostics.service.preferences.fields": "请求体只能包含 language、sessionsAutoRefreshInterval、mapAutoRefreshInterval 或 appearance",

@@ -20,6 +20,7 @@
     "docs/design/baseline-rules.md",
     "docs/design/matching-rules.md",
     "docs/design/session-history.md",
+    "docs/design/usage-statistics.md",
     "docs/design/resource-support.md",
     "docs/design/codeflicker-resource-sources.md",
     "docs/design/resource-history-parsing.md"
