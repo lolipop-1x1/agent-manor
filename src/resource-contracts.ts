@@ -90,7 +90,14 @@ export interface ResourceUsageCoverage {
   unscopedUnavailableGaps?: boolean;
 }
 
-export interface ResourceUsageRow {
+/** 收藏来源保留身份，允许在复用统计时重新投影标记。 */
+export interface ResourceFavoriteProjection {
+  favoriteIds?: string[];
+  localFavoriteIds?: string[];
+  protectedByConfiguration?: boolean;
+}
+
+export interface ResourceUsageRow extends ResourceFavoriteProjection {
   identity: ResourceUsageIdentity;
   stats: ResourceUsageStats;
   association: ResourceHistoryAssociation;

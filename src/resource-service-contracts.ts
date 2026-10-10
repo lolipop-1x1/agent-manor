@@ -1,5 +1,5 @@
 import type { ResourceInventoryBody, ResourceInventoryEntry, ResourceInventorySnapshot, ResourceManualSource } from "./resource-inventory-contracts.js";
-import type { ResourceKind, ResourceUsageDetail, ResourceUsageDistribution, ResourceUsageIdentity, ResourceUsageQuery, ResourceUsageResult, ResourceUsageStats, ResourceUsageTrend } from "./resource-contracts.js";
+import type { ResourceFavoriteProjection, ResourceKind, ResourceUsageDetail, ResourceUsageDistribution, ResourceUsageIdentity, ResourceUsageQuery, ResourceUsageResult, ResourceUsageStats, ResourceUsageTrend } from "./resource-contracts.js";
 import type { MessageDescriptor } from "./i18n/types.js";
 import type { Client } from "./clients.js";
 
@@ -9,7 +9,7 @@ export interface ResourceLocalQuery extends ResourceUsageQuery {
   lowSessions?: number;
   inactiveDays?: number;
 }
-export interface ResourceLocalRow {
+export interface ResourceLocalRow extends ResourceFavoriteProjection {
   body: ResourceInventoryBody;
   entries: ResourceInventoryEntry[];
   favorite: boolean;
@@ -58,7 +58,7 @@ export type ResourceOverviewCandidate = "all" | "used" | "unused" | "low" | "old
 export interface ResourceOverviewQuery extends Omit<ResourceLocalQuery, "candidate"> {
   candidate?: ResourceOverviewCandidate;
 }
-export interface ResourceOverviewRow {
+export interface ResourceOverviewRow extends ResourceFavoriteProjection {
   identity: ResourceUsageIdentity;
   stats: ResourceUsageStats | null;
   clients: Client[];
@@ -99,7 +99,7 @@ export interface ResourceMapQuery extends Omit<ResourceOverviewQuery, "page" | "
   maxValue?: number;
 }
 /** 地图只保存名称、统计和本体身份；不包含 MCP 注册值或历史正文。 */
-export interface ResourceMapNode {
+export interface ResourceMapNode extends ResourceFavoriteProjection {
   id: string;
   name: string;
   nameDescriptor?: MessageDescriptor;

@@ -92,6 +92,7 @@ test("收藏、索引发布、资源刷新和统计范围变化不会返回旧�
   const guide = first.resources.find(row => row.identity.name === "guide")!;
   service.setFavorite(guide.identity.id, true);
   assert.equal((await service.overview({ kind: "skill" })).resources.find(row => row.identity.id === guide.identity.id)?.favorite, true);
+  assert.equal(reads, 1, "收藏变化不重新聚合已有历史");
   const beforeNoOp = reads;
   publish();
   assert.equal(library.status().version, firstVersion, "无变化发布保留内容版本与缓存");
@@ -112,7 +113,37 @@ test("收藏、索引发布、资源刷新和统计范围变化不会返回旧�
   const dated = await service.overview({ kind: "skill", from: "2090-01-01T00:00:00Z" });
   assert.equal(dated.stats?.successfulReads, 0);
   await service.overview({ kind: "skill", lowSessions: 9 });
-  assert.equal(reads, 7);
+  assert.equal(reads, 6);
+}));
+
+test("收藏变化复用历史并同步别名、本地保护、地图与筛选计数", async () => fixture(async (service, library) => {
+  const first = await service.overview({ kind: "skill" });
+  const guide = first.resources.find(row => row.identity.name === "guide")!;
+  const detail = await service.overviewDetail(guide.identity.id, { kind: "skill" });
+  const alias = detail.history!.origins[0]!.id;
+  let reads = 0;
+  const original = library.resourceEvents.bind(library);
+  library.resourceEvents = (...args) => { reads++; return original(...args); };
+  service.setFavorite(alias, true);
+  const inherited = await service.overview({ kind: "skill", candidate: "favorite" });
+  assert.equal(inherited.total, 1);
+  assert.equal(inherited.counts.favorite, 1);
+  assert.equal(inherited.resources[0]!.favorite, true);
+  assert.deepEqual(inherited.resources[0]!.stats, guide.stats);
+  assert.equal(reads, 0, "历史别名收藏不重新读取聚合事件");
+  service.setFavorite(detail.local[0]!.body.id, true);
+  service.setFavorite(guide.identity.id, false);
+  const before = reads;
+  const localOnly = await service.overview({ kind: "skill", candidate: "favorite" });
+  assert.equal(localOnly.total, 1);
+  assert.equal(localOnly.resources[0]!.favorite, false, "名称收藏与本地本体收藏独立");
+  assert.equal(localOnly.resources[0]!.protected, true);
+  const map = await service.map({ kind: "skill", metric: "uses" });
+  assert.equal(map.positive.find(row => row.id === guide.identity.id)!.protected, true);
+  service.setFavorite(detail.local[0]!.body.id, false);
+  assert.equal((await service.overview({ kind: "skill", candidate: "favorite" })).total, 0);
+  assert.equal((await service.overview({ kind: "skill" })).resources.find(row => row.identity.id === guide.identity.id)!.protected, false);
+  assert.equal(reads, before, "本地收藏变化、地图和筛选只重新投影状态");
 }));
 
 test("相同范围并发共享聚合，失败后可重试且范围缓存数量有界", async () => fixture(async (service, library) => {

@@ -241,9 +241,10 @@ function usageRow(target: UsageBucket, entries: readonly ResourceAssociationEntr
     reason: ambiguous ? "multiple_entries" : allLinked ? "recorded_path" : linked ? "partial_link"
       : origins.some(origin => origin.association.reason === "missing_path") ? "missing_path" : "not_discovered",
   };
-  const favorite = favorites.has(target.identity.id) || origins.some(origin => favorites.has(origin.identity.id));
+  const favoriteIds = [...new Set([target.identity.id, ...origins.map(origin => origin.identity.id)])];
+  const favorite = favoriteIds.some(id => favorites.has(id));
   return { identity: target.identity, stats: finish(target.accumulator), association,
-    clients: [...target.clients.keys()].sort() as ResourceUsageRow["clients"], favorite,
+    clients: [...target.clients.keys()].sort() as ResourceUsageRow["clients"], favorite, favoriteIds,
     paths: [...new Set(origins.flatMap(origin => origin.identity.path ?? []))].sort() };
 }
 

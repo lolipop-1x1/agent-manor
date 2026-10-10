@@ -35,9 +35,12 @@ function rowOf(bucket: OverviewBucket, history: ResourceUsageResult | null, quer
   const clients = [...new Set([...(bucket.history?.clients ?? []), ...local.flatMap(row => row.entries.map(entry => entry.client))])].sort();
   const favorite = Boolean(bucket.history?.favorite) || favorites.has(identity.id)
     || local.some(row => row.historyIds.some(id => favorites.has(id)));
+  const favoriteIds = [...new Set([identity.id, ...(bucket.history?.favoriteIds ?? []), ...local.flatMap(row => row.historyIds)])];
+  const localFavoriteIds = [...new Set(local.flatMap(row => row.favoriteIds ?? [row.body.id, ...row.entries.map(entry => entry.id)]))];
   const localFavorite = local.some(row => row.favorite || favorites.has(row.body.id)
     || row.entries.some(entry => favorites.has(entry.id)));
-  const protectedResource = favorite || localFavorite || local.some(row => row.protected || row.entries.some(entry => entry.protected));
+  const protectedByConfiguration = local.some(row => row.protectedByConfiguration ?? (row.protected && !row.favorite || row.entries.some(entry => entry.protected)));
+  const protectedResource = favorite || localFavorite || protectedByConfiguration;
   let stats = bucket.history?.stats ?? null;
   const incomplete = resourceOverviewIncomplete(history, clients, stats);
   const missingTimeEvents = stats?.missingTimeEvents ?? 0;
@@ -58,7 +61,7 @@ function rowOf(bucket: OverviewBucket, history: ResourceUsageResult | null, quer
   const thresholdMatches = resourceUsageThresholdMatches(stats, query, now);
   if (observation === "used" && thresholdMatches.low) rowCandidates.push("low");
   if (observation === "used" && thresholdMatches.old) rowCandidates.push("old");
-  return { identity, stats, clients, favorite, protected: protectedResource, observation, candidates: rowCandidates,
+  return { identity, stats, clients, favorite, favoriteIds, localFavoriteIds, protectedByConfiguration, protected: protectedResource, observation, candidates: rowCandidates,
     partial: incomplete || local.some(row => row.partial), usageUnassociated, missingTimeEvents,
     localBodyIds: [...new Set(local.map(row => row.body.id))].sort(), hasHistory: Boolean(bucket.history) };
 }

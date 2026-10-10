@@ -1,7 +1,7 @@
 import type { SessionStore } from "../sessions/store.js";
 import type { ResourceInventoryOptions, ResourceInventorySnapshot, ResourceManualSource } from "../resource-inventory-contracts.js";
 import type { ResourceLocalDetail, ResourceLocalQuery, ResourceLocalResult, ResourceLocalRow, ResourceStatus, ResourceStatusSummary, ResourceOverviewResult, ResourceOverviewQuery, ResourceOverviewDetail, ResourceMapQuery, ResourceMapResult } from "../resource-service-contracts.js";
-import type { ResourceUsageQuery, ResourceUsageResult } from "../resource-contracts.js";
+import type { ResourceUsageQuery } from "../resource-contracts.js";
 import { ServiceError } from "../service/input.js";
 import { StoreError } from "../index/store.js";
 import { scanResourceInventory } from "./inventory.js";
@@ -10,6 +10,7 @@ import { buildResourceOverview } from "./overview.js";
 import { buildResourceMap } from "./map.js";
 import { ResourceManager } from "./management.js";
 import { resourceUsageThresholdMatches } from "./classification.js";
+import { applyResourceFavorites } from "./favorites.js";
 
 export function summarizeResourceStatus(status: ResourceStatus): ResourceStatusSummary {
   const sources = new Map(status.sources.map(source => [source.id, source]));
@@ -29,7 +30,7 @@ export function summarizeResourceCoverage<T extends ResourceOverviewResult | Res
 export class ResourceService {
   private snapshot?: ResourceInventorySnapshot;
   private pending?: Promise<ResourceInventorySnapshot>;
-  private readonly overviewCache = new Map<string, Promise<{ history: ResourceUsageResult | null; local: Awaited<ReturnType<ResourceService["localRows"]>> }>>();
+  private readonly overviewCache = new Map<string, Promise<ReturnType<typeof overviewResourceUsage>>>();
   private overviewGeneration?: string;
   constructor(readonly library: SessionStore, readonly manager: ResourceManager,
     private readonly inventoryOptions: ResourceInventoryOptions, private readonly projects: () => string[]) {}
@@ -58,29 +59,25 @@ export class ResourceService {
   private async overviewData(query: ResourceOverviewQuery) {
     const scope = { kind: query.kind ?? "skill", client: query.client, from: query.from, to: query.to,
       version: query.version ?? this.library.currentVersion() };
-    const inventory = this.snapshot ? undefined : await this.inventory();
-    const favorites = this.manager.favorites();
-    const generation = JSON.stringify([scope.version, this.snapshot?.observedAt, favorites]);
+    const inventory = await this.inventory();
+    const generation = JSON.stringify([scope.version, inventory.observedAt]);
     if (this.overviewGeneration !== generation) { this.overviewCache.clear(); this.overviewGeneration = generation; }
     // 状态、排序和分页只改变视野；同一索引与盘点范围复用全量聚合。
     const key = JSON.stringify([scope, query.lowSessions, query.inactiveDays]);
     const localQuery = { ...scope, lowSessions: query.lowSessions, inactiveDays: query.inactiveDays };
     const cached = this.overviewCache.get(key);
-    if (cached) {
-      this.overviewCache.delete(key); this.overviewCache.set(key, cached);
-      const { history, local } = await cached;
-      // 观测期限与闲置状态随时间变化，复用历史但重新判断本地候选。
-      return { history, local: await this.localRows(localQuery, false, { inventory: local.inventory, history: local.history }) };
-    }
-    const value = (async () => {
-      const snapshot = inventory ?? await this.inventory();
-      const usage = overviewResourceUsage(this.library, scope, snapshot.entries, new Set(favorites));
-      const local = await this.localRows(localQuery, false, { inventory: snapshot, history: usage.local });
-      return { history: usage.history, local };
-    })();
+    const value = cached ?? Promise.resolve().then(() => overviewResourceUsage(this.library, scope, inventory.entries, new Set()));
+    this.overviewCache.delete(key);
     this.overviewCache.set(key, value);
     if (this.overviewCache.size > 8) this.overviewCache.delete(this.overviewCache.keys().next().value!);
-    try { return await value; } catch (error) { if (this.overviewCache.get(key) === value) this.overviewCache.delete(key); throw error; }
+    try {
+      const usage = await value;
+      const favorites = new Set(this.manager.favorites());
+      const history = usage.history ? { ...usage.history, resources: usage.history.resources.map(row => applyResourceFavorites(row, favorites)) } : null;
+      // 收藏及时间分类使用当前状态，历史与本地关联仍复用同一事件聚合。
+      const local = await this.localRows(localQuery, false, { inventory: await this.inventory(), history: usage.local });
+      return { history, local };
+    } catch (error) { if (this.overviewCache.get(key) === value) this.overviewCache.delete(key); throw error; }
   }
   async overview(query: ResourceOverviewQuery) {
     const { history, local } = await this.overviewData(query);
@@ -104,6 +101,7 @@ export class ResourceService {
     const legacy = resourceUsageDetail(this.library, id, { ...query, kind, project: undefined }, local.inventory.entries, new Set(this.manager.favorites()));
     const bodyIds = new Set(local.inventory.entries.filter(entry => legacy.resource.association.entryIds.includes(entry.id)).map(entry => entry.bodyId));
     return { resource: { identity: legacy.resource.identity, stats: legacy.resource.stats.events ? legacy.resource.stats : null, clients: legacy.resource.clients,
+      favoriteIds: legacy.resource.favoriteIds, protectedByConfiguration: false,
       favorite: legacy.resource.favorite, protected: legacy.resource.favorite, observation: legacy.resource.stats.events ? "used" : "unknown",
       partial: legacy.coverage.partial, usageUnassociated: legacy.resource.association.state !== "linked",
       missingTimeEvents: legacy.resource.stats.missingTimeEvents,
@@ -160,8 +158,9 @@ export class ResourceService {
       if (q && ![body.name, body.targetPath, ...entries.map(entry => entry.entryPath)].some(value => value?.toLocaleLowerCase().includes(q))) continue;
       const firstSeenAt = entries.map(entry => (entry as typeof entry & { firstSeenAt?: string }).firstSeenAt ?? entry.observedAt).sort()[0]!;
       const usage = history?.bodies.get(body.id);
-      const favorite = favoriteIds.has(body.id) || entries.some(entry => favoriteIds.has(entry.id) || favoriteIds.has(resourceOverviewIdentity({
-        id: entry.id, kind: entry.kind, name: entry.name, client: entry.client }).id)) || (usage?.favoriteIds.some(id => favoriteIds.has(id)) ?? false);
+      const rowFavoriteIds = [...new Set([body.id, ...entries.flatMap(entry => [entry.id, resourceOverviewIdentity({
+        id: entry.id, kind: entry.kind, name: entry.name, client: entry.client }).id]), ...(usage?.favoriteIds ?? [])])];
+      const favorite = rowFavoriteIds.some(id => favoriteIds.has(id));
       const usageUnassociated = entries.some(entry => history?.uncertain.has(JSON.stringify([entry.kind, entry.client, entry.name])));
       const missingTimeEvents = usage?.stats.missingTimeEvents ?? 0;
       const sourceUnavailable = entries.some(entry => entry.readState !== "present" || !entry.capabilities.inventory
@@ -181,9 +180,10 @@ export class ResourceService {
       const thresholdMatches = resourceUsageThresholdMatches(usage?.stats, query, now);
       if (thresholdMatches.low) candidates.push("low");
       if (usage?.stats.events && thresholdMatches.old) candidates.push("old");
-      const protectedEntry = favorite || entries.some(entry => entry.protected);
+      const protectedByConfiguration = entries.some(entry => entry.protected);
+      const protectedEntry = favorite || protectedByConfiguration;
       if (query.candidate && query.candidate !== "all" && query.candidate !== "review" && !candidates.includes(query.candidate)) continue;
-      rows.push({ body, entries, favorite, firstSeenAt, usage: observation === "recorded" ? usage?.stats ?? emptyResourceUsageStats() : null,
+      rows.push({ body, entries, favorite, favoriteIds: rowFavoriteIds, protectedByConfiguration, firstSeenAt, usage: observation === "recorded" ? usage?.stats ?? emptyResourceUsageStats() : null,
         historyIds: usage?.historyIds ?? [], observation, candidates, protected: protectedEntry, partial, usageUnassociated, missingTimeEvents });
     }
     const sort = query.sort ?? "sessions";

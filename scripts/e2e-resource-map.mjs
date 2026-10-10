@@ -550,11 +550,12 @@ try {
     await page.getByText('0 个 Skill',{exact:true}).waitFor();
     await page.waitForFunction(()=>!document.querySelector('.resource-list-scroll[aria-busy="true"]'));
     expect(await page.getByRole('button',{name:'查看map-system的使用详情',exact:true}).count()===0,'空结果保留旧节点');
+    const retainedMap=await page.getByRole('group',{name:'资源使用地图',exact:true}).elementHandle();
     let failed=false;
     await page.route('**/api/v1/resources/map?**',async route=>{if(!failed){failed=true;await route.fulfill({status:503,contentType:'application/json',body:JSON.stringify({error:{code:'TEST_FAILURE',message:'人工地图查询失败'}})})}else await route.continue()});
     await page.getByRole('textbox',{name:'搜索资源名称或路径',exact:true}).fill('map-skill-');
     await page.getByRole('alert').filter({hasText:'人工地图查询失败'}).waitFor();
-    expect(await page.getByRole('group',{name:'资源使用地图',exact:true}).count()===0,'失败后仍展示旧地图');
+    expect(await retainedMap.evaluate(element=>element.isConnected),'查询失败卸载了已有地图');
     await page.getByRole('button',{name:'重试',exact:true}).click();
     await page.locator('.resource-map-locator > span').filter({hasText:/^${fixture.count} 个色块$/}).waitFor();
     ${locateResource("map-skill-000")}

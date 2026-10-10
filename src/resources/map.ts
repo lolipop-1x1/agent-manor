@@ -25,7 +25,8 @@ export function buildResourceMap(overview: ResourceOverviewResult, history: Reso
     const node: ResourceMapNode = { id: row.identity.id, name: row.identity.name, ...(row.identity.nameDescriptor ? { nameDescriptor: row.identity.nameDescriptor } : {}), value, share: null, metrics,
       lastUsedAt: timestamp && Number.isFinite(Date.parse(timestamp)) ? timestamp : null,
       missingTimeEvents: row.missingTimeEvents ?? recorded.get(row.identity.id)?.missingTimeEvents ?? 0,
-      clients: row.clients, favorite: row.favorite,
+      clients: row.clients, favorite: row.favorite, favoriteIds: row.favoriteIds, localFavoriteIds: row.localFavoriteIds,
+      protectedByConfiguration: row.protectedByConfiguration,
       protected: row.protected, observation: row.observation, localBodyIds: row.localBodyIds, hasHistory: row.hasHistory,
       partial: row.partial, usageUnassociated: row.usageUnassociated };
     if (value === null) zero.push(node);

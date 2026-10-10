@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode, type RefObject } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type MouseEvent, type ReactNode, type RefObject } from "react";
 import * as Dialog from "@radix-ui/react-dialog";
 import { ArrowClockwise, ArrowSquareOut, CaretLeft, CaretRight, ClockCounterClockwise, Funnel, List, MagnifyingGlass, MapTrifold, Plus, Prohibit, Star, Trash, X } from "@phosphor-icons/react";
 import { CLIENTS, type Client } from "../../../src/clients";
@@ -14,6 +14,8 @@ import { ProjectPicker } from "../../shared/ui/ProjectPicker";
 import { ResourcePagination } from "../../shared/ui/ResourcePagination";
 import { ResourceMap } from "./ResourceMap";
 import { normalizeResourceRouteParams } from "./resource-usage-state";
+import { applyResourceFavorites } from "../../../src/resources/favorites";
+import { localFavoriteRow, mapFavorites, overviewFavorites, pendingFavoriteIds, type PendingFavorite } from "./resource-favorites";
 import { ResizableWorkspace } from "../../shared/layout/ResizableWorkspace";
 import { dateLabel, fmt } from "../../shared/format";
 import { timeFilters } from "../../shared/time-filters";
@@ -162,11 +164,17 @@ function ResourceEmpty({ children }: { children: ReactNode }) {
 function FavoriteButton({ name, favorite, disabled, onClick }: { name: string; favorite: boolean; disabled?: boolean; onClick: () => void }) {
   useI18n();
   return <button className={`icon-button resource-favorite${favorite ? " is-favorite" : ""}`} aria-label={t(favorite ? "resources.unfavoriteLabel" : "resources.favoriteLabel", { name })}
-    aria-pressed={favorite} disabled={disabled} onClick={onClick}><Star size={17} weight={favorite ? "fill" : "regular"} /></button>;
+    aria-pressed={favorite} aria-disabled={disabled || undefined} aria-busy={disabled || undefined} onClick={() => { if (!disabled) onClick(); }}><Star size={17} weight={favorite ? "fill" : "regular"} /></button>;
+}
+function selectResourceRow(event: MouseEvent<HTMLTableRowElement>, id: string, onSelect: (id: string) => void) {
+  const selection = globalThis.getSelection();
+  if (event.defaultPrevented || event.target instanceof Element && event.target.closest("button, a, input, select, textarea, summary, [role=button], [role=combobox]")
+    || selection && !selection.isCollapsed && event.currentTarget.contains(selection.anchorNode)) return;
+  onSelect(id);
 }
 function OverviewTable({ rows, route, onSort, onSelect, onFavorite, onManage, favoritePending }: {
   rows: ResourceOverviewRow[]; route: ResourceRoute; onSort: (sort: string) => void; onSelect: (id: string) => void;
-  onFavorite: (id: string, favorite: boolean) => void; onManage: (row: ResourceOverviewRow) => void; favoritePending: string | null;
+  onFavorite: (id: string, favorite: boolean) => void; onManage: (row: ResourceOverviewRow) => void; favoritePending: ReadonlySet<string>;
 }) {
   useI18n();
   const columns = [{ value: "name", label: route.kind === "skill" ? t("resources.kind.skill") : t("resources.column.server") }, { value: "uses", label: t("resources.column.calls") }, { value: "sessions", label: t("resources.column.sessions") }, { value: "recent", label: t("resources.column.recent") }];
@@ -175,8 +183,8 @@ function OverviewTable({ rows, route, onSort, onSelect, onFavorite, onManage, fa
   </th>;
   return <div className="resource-overview-scroll"><table className="resource-overview-table" aria-label={t("resources.overview", { kind: route.kind === "skill" ? t("resources.kind.skill") : t("resources.kind.mcp") })}>
     <thead><tr>{heading(columns[0]!)}<th scope="col">{t("resources.agent.involved")}</th>{columns.slice(1).map(heading)}<th scope="col">{t("resources.column.management")}</th></tr></thead>
-    <tbody>{rows.map(row => <tr className={`resource-overview-row${route.id === row.identity.id ? " is-selected" : ""}`} key={row.identity.id}>
-      <th scope="row"><div className="resource-overview-name"><button aria-label={t("resources.viewUsage", { name: messageText(row.identity.nameDescriptor, row.identity.name) })} onClick={() => onSelect(row.identity.id)}>{messageText(row.identity.nameDescriptor, row.identity.name)}</button><FavoriteButton name={messageText(row.identity.nameDescriptor, row.identity.name)} favorite={row.favorite} disabled={favoritePending === row.identity.id} onClick={() => onFavorite(row.identity.id, row.favorite)} /></div></th>
+    <tbody>{rows.map(row => <tr className={`resource-overview-row${route.id === row.identity.id ? " is-selected" : ""}`} key={row.identity.id} onClick={event => selectResourceRow(event, row.identity.id, onSelect)}>
+      <th scope="row"><div className="resource-overview-name"><button aria-label={t("resources.viewUsage", { name: messageText(row.identity.nameDescriptor, row.identity.name) })} onClick={() => onSelect(row.identity.id)}>{messageText(row.identity.nameDescriptor, row.identity.name)}</button><FavoriteButton name={messageText(row.identity.nameDescriptor, row.identity.name)} favorite={row.favorite} disabled={favoritePending.has(row.identity.id)} onClick={() => onFavorite(row.identity.id, row.favorite)} /></div></th>
       <td className="resource-overview-agents" title={formatList(row.clients.map(clientLabel))}>{usageAgentLabel(row)}</td>
       <td>{row.stats ? fmt(row.stats.events) : "—"}</td>
       <td>{row.stats ? fmt(row.stats.sessions) : "—"}</td>
@@ -246,9 +254,10 @@ export default function Resources({ active, onSession }: { active: boolean; onSe
   const [sourcesLoading, setSourcesLoading] = useState(false);
   const [sourcesRetry, setSourcesRetry] = useState(0);
   const [overview, setOverview] = useState<FavoriteResult<ResourceOverviewSummary> | null>(null);
+  const overviewRef = useRef(overview);
+  overviewRef.current = overview;
   const [map, setMap] = useState<ResourceMapSummary | null>(null);
   const mapLoadedQuery = useRef("");
-  const mapLoadedScope = useRef("");
   const [overviewDetail, setOverviewDetail] = useState<FavoriteResult<ResourceOverviewDetail> | null>(null);
   const [local, setLocal] = useState<ResourceLocalResult | null>(null);
   const [usageDetail, setUsageDetail] = useState<ResourceUsageDetail | null>(null);
@@ -264,8 +273,13 @@ export default function Resources({ active, onSession }: { active: boolean; onSe
   const [evidenceError, setEvidenceError] = useState<Error | null>(null);
   const [feedback, setFeedback] = useState<MessageDescriptor | null>(null);
   const [reload, setReload] = useState(0);
+  const [favoriteReload, setFavoriteReload] = useState(0);
   const [refreshing, setRefreshing] = useState(false);
-  const [favoritePending, setFavoritePending] = useState<string | null>(null);
+  const [favoritePending, setFavoritePending] = useState<ReadonlySet<string>>(new Set());
+  const favoriteBase = useRef<string[] | null>(null);
+  const favoriteActions = useRef(new Map<string, PendingFavorite>());
+  const favoriteRevision = useRef(0);
+  const favoriteQueue = useRef(Promise.resolve());
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [detailsCollapsed, setDetailsCollapsed] = useState(() => !route.id);
   useEffect(() => { setDetailsCollapsed(!route.id); }, [route.id]);
@@ -322,6 +336,25 @@ export default function Resources({ active, onSession }: { active: boolean; onSe
   const showLocal = (id: string) => { savedScroll.current = 0; update({ tab: "local", id, project: "all", page: 1, q: "", candidate: "all", favorite: false, evidencePage: 1, tool: "" }, true); };
   const select = (id: string) => { savedScroll.current = listScroll.current?.scrollTop ?? 0; setDetailsCollapsed(false); update({ id, evidencePage: 1, tool: "" }, true); };
   const showHistory = (id: string) => { savedScroll.current = 0; update({ tab: "usage", id, page: 1, q: "", candidate: "all", favorite: false, evidencePage: 1, tool: "" }, true); };
+  const currentFavorites = () => pendingFavoriteIds(favoriteBase.current ?? [], favoriteActions.current);
+  const acceptFavoriteIds = (ids: string[], revision: number) => {
+    if (revision === favoriteRevision.current) favoriteBase.current = ids;
+    return currentFavorites();
+  };
+  const syncFavorites = () => {
+    const favorites = currentFavorites(), favoriteIds = [...favorites];
+    setStatus(current => current ? { ...current, favoriteIds } : current);
+    setSourceStatus(current => current ? { ...current, favoriteIds } : current);
+    setOverview(current => current ? { ...overviewFavorites(current, favorites), favoriteIds } : current);
+    setMap(current => current ? mapFavorites(current, favorites) : current);
+    setLocal(current => current ? { ...current, rows: current.rows.map(row => localFavoriteRow(row, favorites)) } : current);
+    setUsageDetail(current => current ? { ...current, resource: applyResourceFavorites(current.resource, favorites) } : current);
+    setOverviewDetail(current => current ? { ...current, favoriteIds, resource: applyResourceFavorites(current.resource, favorites),
+      history: current.history ? { ...current.history, resource: applyResourceFavorites(current.history.resource, favorites) } : null,
+      local: current.local.map(row => localFavoriteRow(row, favorites)) } : current);
+    setLocalDetail(current => current ? { ...current, row: localFavoriteRow(current.row, favorites) } : current);
+    setEntriesTarget(current => current?.rows ? { ...current, rows: current.rows.map(row => localFavoriteRow(row, favorites)) } : current);
+  };
   useEffect(() => {
     const navigate = () => {
       if (!location.hash.startsWith("#resources")) return;
@@ -338,7 +371,10 @@ export default function Resources({ active, onSession }: { active: boolean; onSe
   useEffect(() => {
     if (!active || status && !reload) return;
     const controller = new AbortController();
-    void resourceApi.status(controller.signal).then(setStatus).catch(failure => { if (!isAborted(failure)) setError(failure instanceof Error ? failure : new Error(errorMessage(failure))); });
+    const revision = favoriteRevision.current;
+    void resourceApi.status(controller.signal).then(result => {
+      if (!controller.signal.aborted) { setStatus({ ...result, favoriteIds: [...acceptFavoriteIds(result.favoriteIds, revision)] }); syncFavorites(); }
+    }).catch(failure => { if (!isAborted(failure)) setError(failure instanceof Error ? failure : new Error(errorMessage(failure))); });
     return () => controller.abort();
   }, [active, reload]);
   useEffect(() => {
@@ -371,7 +407,8 @@ export default function Resources({ active, onSession }: { active: boolean; onSe
     metric: route.metric, maxValue: route.maxValue === "" ? undefined : Number(route.maxValue),
   }), [scopeQuery, queryText, route.candidate, route.favorite, route.low, route.inactive, route.metric, route.maxValue]);
   const listRequestQuery = mapView ? mapQuery : overviewRanking ? overviewQuery : localQuery;
-  const mapRequestKey = JSON.stringify([mapQuery, reload]);
+  const mapRequestKey = JSON.stringify([mapQuery, reload, favoriteReload]);
+  const hasListData = mapView ? !!map : overviewRanking ? !!overview : route.tab === "local" ? !!local : route.tab === "operations" ? !!operations : !!archives;
   useEffect(() => { try { localStorage.setItem("agent-manor:resource-view", route.view); } catch { /* 存储不可用时视图仍可切换。 */ } }, [route.view]);
   const managementQuery = useMemo(() => ({ kind: route.kind, client: route.client === "all" ? undefined : route.client, project: route.project === "all" ? undefined : route.project, q: queryText, page: route.page, pageSize: route.pageSize }), [route.kind, route.client, route.project, queryText, route.page, route.pageSize]);
   useEffect(() => {
@@ -379,16 +416,25 @@ export default function Resources({ active, onSession }: { active: boolean; onSe
     // 证据页返回时复用同范围的完整地图，保持已挂载相机的缩放与位置。
     if (mapView && map && mapLoadedQuery.current === mapRequestKey) { setListLoading(false); setError(null); return; }
     const controller = new AbortController(); setListLoading(true); setError(null);
+    const revision = favoriteRevision.current;
     const done = () => { if (!controller.signal.aborted) setListLoading(false); };
-    if (mapView) { if (mapLoadedScope.current !== JSON.stringify(mapQuery)) setMap(null); void resourceApi.map(mapQuery, controller.signal).then(result => {
-      mapLoadedQuery.current = mapRequestKey; mapLoadedScope.current = JSON.stringify(mapQuery); setMap(result);
+    if (mapView) { void resourceApi.map(mapQuery, controller.signal).then(result => {
+      if (controller.signal.aborted) return;
+      mapLoadedQuery.current = mapRequestKey; setMap(favoriteBase.current ? mapFavorites(result, currentFavorites()) : result);
     }).catch(failure => { if (!isAborted(failure)) setError(failure instanceof Error ? failure : new Error(errorMessage(failure))); }).finally(done); }
     else if (overviewRanking) void resourceApi.overview(overviewQuery, controller.signal).then(result => {
-      setOverview(result); if (result.favoriteIds) setStatus(current => current ? { ...current, favoriteIds: result.favoriteIds! } : current);
+      if (controller.signal.aborted) return;
+      const favorites = result.favoriteIds ? acceptFavoriteIds(result.favoriteIds, revision) : currentFavorites();
+      setOverview(overviewFavorites(result, favorites)); setStatus(current => current ? { ...current, favoriteIds: [...favorites] } : current);
+      if (result.page !== routeRef.current.page) update({ page: result.page });
     }).catch(failure => { if (!isAborted(failure)) setError(failure instanceof Error ? failure : new Error(errorMessage(failure))); }).finally(done);
-    else void resourceApi.local(localQuery, controller.signal).then(setLocal).catch(failure => { if (!isAborted(failure)) setError(failure instanceof Error ? failure : new Error(errorMessage(failure))); }).finally(done);
+    else void resourceApi.local(localQuery, controller.signal).then(result => {
+      if (controller.signal.aborted) return;
+      setLocal(favoriteBase.current ? { ...result, rows: result.rows.map(row => localFavoriteRow(row, currentFavorites())) } : result);
+      if (result.page !== routeRef.current.page) update({ page: result.page });
+    }).catch(failure => { if (!isAborted(failure)) setError(failure instanceof Error ? failure : new Error(errorMessage(failure))); }).finally(done);
     return () => controller.abort();
-  }, [active, mapView, listRequestQuery, mapRequestKey, overviewRanking, route.tab, reload, invalidTime]);
+  }, [active, mapView, listRequestQuery, mapRequestKey, overviewRanking, route.tab, reload, favoriteReload, invalidTime]);
   useEffect(() => {
     if (!active || route.tab === "usage" || route.tab === "local") return;
     const controller = new AbortController(); setListLoading(true); setError(null);
@@ -401,8 +447,14 @@ export default function Resources({ active, onSession }: { active: boolean; onSe
     if (!active) return;
     if (!route.id || invalidTime || route.tab !== "usage" && route.tab !== "local") { setUsageDetail(null); setOverviewDetail(null); setLocalDetail(null); setDetailLoading(false); return; }
     const controller = new AbortController(); setDetailLoading(true); setDetailError(null); setUsageDetail(null); setOverviewDetail(null); setLocalDetail(null);
-    const task = overviewRanking ? resourceApi.overviewDetail(route.id, { ...scopeQuery, lowSessions: route.low, inactiveDays: route.inactive }, controller.signal).then(result => { setOverviewDetail(result); setUsageDetail(result.history); if (result.favoriteIds) setStatus(current => current ? { ...current, favoriteIds: result.favoriteIds! } : current); })
-      : resourceApi.localDetail(route.id, { ...scopeQuery, lowSessions: route.low, inactiveDays: route.inactive }, controller.signal).then(setLocalDetail);
+    const revision = favoriteRevision.current;
+    const task = overviewRanking ? resourceApi.overviewDetail(route.id, { ...scopeQuery, lowSessions: route.low, inactiveDays: route.inactive }, controller.signal).then(result => {
+      if (controller.signal.aborted) return;
+      if (result.favoriteIds) acceptFavoriteIds(result.favoriteIds, revision);
+      setOverviewDetail(result); setUsageDetail(result.history); syncFavorites();
+    }) : resourceApi.localDetail(route.id, { ...scopeQuery, lowSessions: route.low, inactiveDays: route.inactive }, controller.signal).then(result => {
+      if (!controller.signal.aborted) setLocalDetail(favoriteBase.current ? { ...result, row: localFavoriteRow(result.row, currentFavorites()) } : result);
+    });
     void task.catch(failure => { if (!isAborted(failure)) setDetailError(failure instanceof Error ? failure : new Error(errorMessage(failure))); }).finally(() => { if (!controller.signal.aborted) setDetailLoading(false); });
     return () => controller.abort();
   }, [active, route.id, route.tab, scopeQuery, overviewRanking, route.low, route.inactive, reload, invalidTime]);
@@ -431,12 +483,31 @@ export default function Resources({ active, onSession }: { active: boolean; onSe
   }, [active, detailLoading, evidenceLoading, usageDetail, compact]);
 
   const favorite = async (id: string, current = !!status?.favoriteIds.includes(id)) => {
-    setFavoritePending(id); setError(null);
-    try {
-      const result = await resourceApi.favorite(id, !current);
-      setStatus(current => current ? { ...current, favoriteIds: result.favoriteIds } : current); setReload(value => value + 1);
-    } catch (failure) { setError(failure instanceof Error ? failure : new Error(errorMessage(failure))); }
-    finally { setFavoritePending(null); }
+    if (favoriteActions.current.has(id)) return;
+    favoriteBase.current ??= status?.favoriteIds ?? overview?.favoriteIds ?? [];
+    const row = overview?.resources.find(row => row.identity.id === id) ?? (overviewDetail?.resource.identity.id === id ? overviewDetail.resource : null);
+    const removedIds = id.startsWith("resource:") ? row?.favoriteIds ?? usageDetail?.origins.map(origin => origin.id).concat(id) ?? [id] : [id];
+    favoriteActions.current.set(id, { value: !current, removedIds }); favoriteRevision.current++;
+    setFavoritePending(new Set(favoriteActions.current.keys())); setError(null); syncFavorites();
+    // 写入按点击顺序保存，各资源仍即时响应；全量收藏响应不会相互覆盖。
+    const task = favoriteQueue.current.then(async () => {
+      let saved = false;
+      try {
+        const result = await resourceApi.favorite(id, !current);
+        favoriteBase.current = result.favoriteIds;
+        saved = true;
+      } catch (failure) { setError(failure instanceof Error ? failure : new Error(errorMessage(failure))); }
+      finally {
+        favoriteActions.current.delete(id); favoriteRevision.current++;
+        setFavoritePending(new Set(favoriteActions.current.keys())); syncFavorites();
+        const currentRoute = routeRef.current;
+        const visible = overviewRef.current?.resources.some(row => row.favoriteIds?.includes(id) || row.localFavoriteIds?.includes(id));
+        // 详情可能来自其他分页；只重查列表计数，不重取详情和证据。
+        if (saved && (currentRoute.candidate === "favorite" || currentRoute.favorite || currentRoute.view === "map"
+          || currentRoute.tab === "usage" && !visible)) setFavoriteReload(value => value + 1);
+      }
+    });
+    favoriteQueue.current = task; await task;
   };
   const refresh = async () => {
     setRefreshing(true); setError(null);
@@ -551,7 +622,7 @@ export default function Resources({ active, onSession }: { active: boolean; onSe
   const selectedOperation = operations?.operations.find(item => item.id === route.id);
   const overviewLocal = overviewDetail && <section className="resource-detail-section resource-local-entries"><header><h3>{t("resources.detail.bodies")}</h3><span>{t("resources.bodyCount", { count: overviewDetail.local.length })}</span></header>
     {overviewDetail.local.length ? overviewDetail.local.map((row, index) => <div className="resource-entry" key={row.body.id}>
-      <header><strong>{row.body.name}</strong><FavoriteButton name={t("resources.bodyName", { name: row.body.name, index: index + 1 })} favorite={!!status?.favoriteIds.includes(row.body.id)} disabled={favoritePending === row.body.id || !status} onClick={() => void favorite(row.body.id)} /></header>
+      <header><strong>{row.body.name}</strong><FavoriteButton name={t("resources.bodyName", { name: row.body.name, index: index + 1 })} favorite={!!status?.favoriteIds.includes(row.body.id)} disabled={favoritePending.has(row.body.id) || !status} onClick={() => void favorite(row.body.id)} /></header>
       {row.entries.map(entry => <Entry key={entry.id} entry={entry} onManage={input => void showManagement(input)} />)}
       <p className="resource-path">{t("resources.detail.realTarget")}: {row.body.targetPath ?? row.entries[0]?.entryPath ?? t("resources.detail.bodyUnknown")}</p>
       <div className="resource-tags"><span>{formatList([...new Set(row.entries.map(entry => clientLabel(entry.client)))]) || t("resources.client.notRecorded")}</span><span>{t("resources.entryCount", { count: row.entries.length })}</span><span className={row.observation === "recorded" ? "" : "is-warning"}>{observationLabel(row)}</span></div>
@@ -564,7 +635,7 @@ export default function Resources({ active, onSession }: { active: boolean; onSe
     : localDetail ? <button className="button resource-manage" data-manage-resource={localDetail.row.body.id} aria-label={t("resources.management.resource", { name: localDetail.row.body.name })} onClick={() => void openEntries(localDetail.row.body.id, localDetail.row.body.name, [localDetail.row])}>{t("resources.management.manage")}</button> : null;
   const detail = <>
     {detailLoading ? <div role="status" className="resource-loading">{t("resources.loading.detail")}</div> : detailError ? <div className="resource-alert" role="alert"><ResourceErrorText error={detailError} /><button className="text-button" onClick={() => setReload(value => value + 1)}>{t("common.retry")}</button></div> : usageDetail ? <>
-      <div className="resource-detail-heading"><div><span>{usageAgentLabel(overviewDetail?.resource ?? usageDetail.resource)}</span><h2>{messageText(usageDetail.resource.identity.nameDescriptor, usageDetail.resource.identity.name)}</h2></div><FavoriteButton name={messageText(usageDetail.resource.identity.nameDescriptor, usageDetail.resource.identity.name)} favorite={overviewDetail?.resource.favorite ?? usageDetail.resource.favorite} disabled={favoritePending === route.id} onClick={() => void favorite(overviewDetail?.resource.identity.id ?? route.id, overviewDetail?.resource.favorite ?? usageDetail.resource.favorite)} /></div>
+      <div className="resource-detail-heading"><div><span>{usageAgentLabel(overviewDetail?.resource ?? usageDetail.resource)}</span><h2>{messageText(usageDetail.resource.identity.nameDescriptor, usageDetail.resource.identity.name)}</h2></div><FavoriteButton name={messageText(usageDetail.resource.identity.nameDescriptor, usageDetail.resource.identity.name)} favorite={overviewDetail?.resource.favorite ?? usageDetail.resource.favorite} disabled={favoritePending.has(route.id)} onClick={() => void favorite(overviewDetail?.resource.identity.id ?? route.id, overviewDetail?.resource.favorite ?? usageDetail.resource.favorite)} /></div>
       {detailManagement}
       {overviewDetail && <div className="resource-tags"><span className={overviewDetail.resource.observation === "unknown" || overviewDetail.resource.observation === "insufficient" ? "is-warning" : ""}>{t(overviewObservationNames[overviewDetail.resource.observation])}</span></div>}
       {overviewLocal}
@@ -586,13 +657,13 @@ export default function Resources({ active, onSession }: { active: boolean; onSe
         </> : <ResourceEmpty>{t("resources.evidence.empty")}</ResourceEmpty>}
       </section>
     </> : overviewDetail ? <>
-      <div className="resource-detail-heading"><div><span>{usageAgentLabel(overviewDetail.resource)}</span><h2>{messageText(overviewDetail.resource.identity.nameDescriptor, overviewDetail.resource.identity.name)}</h2></div><FavoriteButton name={messageText(overviewDetail.resource.identity.nameDescriptor, overviewDetail.resource.identity.name)} favorite={overviewDetail.resource.favorite} disabled={favoritePending === route.id} onClick={() => void favorite(overviewDetail.resource.identity.id, overviewDetail.resource.favorite)} /></div>
+      <div className="resource-detail-heading"><div><span>{usageAgentLabel(overviewDetail.resource)}</span><h2>{messageText(overviewDetail.resource.identity.nameDescriptor, overviewDetail.resource.identity.name)}</h2></div><FavoriteButton name={messageText(overviewDetail.resource.identity.nameDescriptor, overviewDetail.resource.identity.name)} favorite={overviewDetail.resource.favorite} disabled={favoritePending.has(route.id)} onClick={() => void favorite(overviewDetail.resource.identity.id, overviewDetail.resource.favorite)} /></div>
       {detailManagement}
       <div className="resource-tags"><span className={overviewDetail.resource.observation === "unknown" || overviewDetail.resource.observation === "insufficient" ? "is-warning" : ""}>{t(overviewObservationNames[overviewDetail.resource.observation])}</span></div>
       {overviewLocal}
       <details className="resource-usage-summary"><summary>{t("resources.detail.usageSummary")}</summary><Stats stats={overviewDetail.resource.stats} kind={route.kind} /></details>
     </> : localDetail ? <>
-      <div className="resource-detail-heading"><div><span>{route.kind === "skill" ? t("resources.detail.localSkill") : t("resources.detail.localMcp")}</span><h2>{localDetail.row.body.name}</h2></div><FavoriteButton name={localDetail.row.body.name} favorite={!!status?.favoriteIds.includes(route.id)} disabled={favoritePending === route.id || !status} onClick={() => void favorite(route.id)} /></div>
+      <div className="resource-detail-heading"><div><span>{route.kind === "skill" ? t("resources.detail.localSkill") : t("resources.detail.localMcp")}</span><h2>{localDetail.row.body.name}</h2></div><FavoriteButton name={localDetail.row.body.name} favorite={!!status?.favoriteIds.includes(route.id)} disabled={favoritePending.has(route.id) || !status} onClick={() => void favorite(route.id)} /></div>
       {detailManagement}
       <div className="resource-tags"><span className={localDetail.row.observation !== "recorded" ? "is-warning" : ""}>{observationLabel(localDetail.row)}</span></div>
       <section className="resource-detail-section"><header><h3>{t("resources.detail.clientEntries")}</h3><span>{t("resources.entryCount", { count: localDetail.row.entries.length })}</span></header>{localDetail.row.entries.map(entry => <Entry key={entry.id} entry={entry} onManage={input => void showManagement(input)} />)}</section>
@@ -637,9 +708,10 @@ export default function Resources({ active, onSession }: { active: boolean; onSe
           {overviewRanking && <div className="resource-display-switch" role="group" aria-label={t("resources.view.display")}>{(["list", "map"] as const).map(view => <button key={view} aria-pressed={route.view === view} onClick={() => update({ view })}>{view === "list" ? <List size={15} aria-hidden="true" /> : <MapTrifold size={15} aria-hidden="true" />}{view === "list" ? t("resources.view.list") : t("resources.view.map")}</button>)}</div>}
         </div>
         <div className="resource-list-summary">
+          <span className="resource-list-progress" role={listLoading && hasListData ? "status" : undefined} aria-label={listLoading && hasListData ? t("resources.loading.resources") : undefined}>{listLoading && hasListData && <ArrowClockwise size={14} className="spinning" aria-hidden="true" />}</span>
           {!historyView && <strong>{t(tabs.find(tab => tab.value === route.tab)!.labelKey)}</strong>}
-          {overviewRanking && overviewData && (!listLoading || mapView && mapLoadedScope.current === JSON.stringify(mapQuery)) && <span>{t(route.kind === "skill" ? "resources.skillCount" : "resources.mcpCount", { count: overviewData.total })}</span>}{route.tab === "local" && !listLoading && local && <span>{t("resources.localCount", { count: local.total })}</span>}
-          {route.tab === "operations" && !listLoading && operations && <span>{t("resources.operationCount", { count: operations.total })}</span>}{!historyView && route.tab !== "operations" && !listLoading && archives && <span>{t("resources.resourceCount", { count: archives.total })}</span>}
+          {overviewRanking && overviewData && <span>{t(route.kind === "skill" ? "resources.skillCount" : "resources.mcpCount", { count: overviewData.total })}</span>}{route.tab === "local" && local && <span>{t("resources.localCount", { count: local.total })}</span>}
+          {route.tab === "operations" && operations && <span>{t("resources.operationCount", { count: operations.total })}</span>}{!historyView && route.tab !== "operations" && archives && <span>{t("resources.resourceCount", { count: archives.total })}</span>}
         </div>
         {mapView && <div className="resource-map-settings">
           {mapView && <><FilterSelect label={t("resources.map.metricFilter")} value={route.metric} options={[{ value: "uses", label: t("resources.sort.calls") }, { value: "sessions", label: t("resources.sort.sessions") }]} onChange={value => filter({ metric: value as ResourceRoute["metric"], maxValue: "" })} /><label className="resource-map-limit">{t(route.metric === "sessions" ? "resources.sort.sessions" : "resources.sort.calls")} ≤<input type="number" min="0" step="1" aria-label={t("resources.map.limit", { metric: t(route.metric === "sessions" ? "resources.sort.sessions" : "resources.sort.calls") })} value={route.maxValue} placeholder={t("resources.map.unlimited")} onChange={event => { const value = event.target.value; if (value === "" || /^\d+$/.test(value) && Number.isSafeInteger(Number(value))) filter({ maxValue: value }); }} /></label></>}
@@ -647,7 +719,7 @@ export default function Resources({ active, onSession }: { active: boolean; onSe
         {invalidTime && <div className="resource-alert" role="alert">{t("resources.time.invalidRange")}</div>}
         {error && <div className="resource-alert" role="alert"><ResourceErrorText error={error} /><button className="text-button" onClick={() => setReload(value => value + 1)}>{t("common.retry")}</button></div>}
         {feedback && <div className={`resource-feedback${mapView ? " resource-map-feedback" : ""}`} role="status">{t(feedback.key, feedback.params)}<button className="icon-button" aria-label={t("resources.feedback.close")} onClick={() => setFeedback(null)}><X size={14} /></button></div>}
-        {overviewRanking && overviewData && (!listLoading || mapView && mapLoadedScope.current === JSON.stringify(mapQuery)) && <>
+        {overviewRanking && overviewData && <>
           <div className="resource-quick-filters" role="group" aria-label={t("resources.quickFilters", { kind: route.kind === "skill" ? t("resources.kind.skill") : t("resources.kind.mcp") })}>
             <div className="resource-usage-filters" role="group" aria-label={t("resources.usageStates")}>{overviewCandidates.slice(0, 3).map(candidate => <button key={candidate.value} aria-pressed={route.candidate === candidate.value || candidate.value === "all" && !overviewCandidates.some(item => item.value === route.candidate)} onClick={() => filter({ candidate: candidate.value, favorite: false })}>{t(candidate.labelKey)}<strong>{fmt(overviewData.counts[candidate.value])}</strong></button>)}</div>
             <div className="resource-attention-filters" data-active={["low", "old"].includes(route.candidate)} role="group" aria-label={t("resources.attention.filter")}>
@@ -658,20 +730,20 @@ export default function Resources({ active, onSession }: { active: boolean; onSe
           {!!overviewData.coverage?.missingTimeEvents && <div className="resource-range-summary"><span className="resource-state is-warning">{t("resources.missingTimeCount", { count: overviewData.coverage.missingTimeEvents })}</span></div>}
         </>}
         <div className={`resource-list-scroll${mapView ? " resource-map-scroll" : ""}`} ref={listScroll} aria-busy={listLoading}>
-          {listLoading && !(mapView && map && mapLoadedScope.current === JSON.stringify(mapQuery)) ? <div role="status" className="resource-loading">{t("resources.loading.resources")}</div> : invalidTime ? null : mapView ? map && <ResourceMap data={map} selected={route.id} onSelect={select} zeroPage={route.zeroPage} zeroSize={route.zeroSize} onZeroPage={zeroPage => update({ zeroPage })} onZeroSize={zeroSize => update({ zeroSize, zeroPage: 1 })} /> : overviewRanking ? overview?.resources.length ? <OverviewTable rows={overview.resources} route={route} onSort={sort} onSelect={select} onManage={row => void openEntries(row.identity.id, messageText(row.identity.nameDescriptor, row.identity.name))} onFavorite={(id, current) => void favorite(id, current)} favoritePending={favoritePending} /> : <ResourceEmpty>{t("resources.empty.kind", { kind: route.kind === "skill" ? t("resources.kind.skill") : t("resources.kind.mcp") })}</ResourceEmpty> : route.tab === "local" ? local?.rows.length ? <div className="resource-overview-scroll"><table className="resource-overview-table resource-local-table" aria-label={t("resources.tab.local")}>
+          {listLoading && !hasListData ? <div role="status" className="resource-loading">{t("resources.loading.resources")}</div> : invalidTime ? null : mapView ? map && <ResourceMap data={map} selected={route.id} onSelect={select} zeroPage={route.zeroPage} zeroSize={route.zeroSize} onZeroPage={zeroPage => update({ zeroPage })} onZeroSize={zeroSize => update({ zeroSize, zeroPage: 1 })} /> : overviewRanking ? overview?.resources.length ? <OverviewTable rows={overview.resources} route={route} onSort={sort} onSelect={select} onManage={row => void openEntries(row.identity.id, messageText(row.identity.nameDescriptor, row.identity.name))} onFavorite={(id, current) => void favorite(id, current)} favoritePending={favoritePending} /> : <ResourceEmpty>{t("resources.empty.kind", { kind: route.kind === "skill" ? t("resources.kind.skill") : t("resources.kind.mcp") })}</ResourceEmpty> : route.tab === "local" ? local?.rows.length ? <div className="resource-overview-scroll"><table className="resource-overview-table resource-local-table" aria-label={t("resources.tab.local")}>
             <thead><tr><th scope="col">{t("resources.sort.name")}</th><th scope="col">{t("resources.client.label")}</th><th scope="col">{t("resources.facts.scope")}</th><th scope="col">{t("resources.detail.clientEntries")}</th><th scope="col">{t("resources.detail.observation")}</th></tr></thead>
-            <tbody>{local.rows.map(row => <tr className={`resource-overview-row${route.id === row.body.id ? " is-selected" : ""}`} key={row.body.id}>
-              <th scope="row"><div className="resource-overview-name"><button onClick={() => select(row.body.id)} aria-label={t("resources.viewLocal", { name: row.body.name })}>{row.body.name}</button><FavoriteButton name={row.body.name} favorite={!!status?.favoriteIds.includes(row.body.id)} disabled={favoritePending === row.body.id || !status} onClick={() => void favorite(row.body.id)} /></div><div className="resource-row-subtitle" title={row.body.targetPath ?? row.entries[0]?.entryPath}>{row.body.targetPath ?? row.entries[0]?.entryPath}</div></th>
+            <tbody>{local.rows.map(row => <tr className={`resource-overview-row${route.id === row.body.id ? " is-selected" : ""}`} key={row.body.id} onClick={event => selectResourceRow(event, row.body.id, select)}>
+              <th scope="row"><div className="resource-overview-name"><button onClick={() => select(row.body.id)} aria-label={t("resources.viewLocal", { name: row.body.name })}>{row.body.name}</button><FavoriteButton name={row.body.name} favorite={!!status?.favoriteIds.includes(row.body.id)} disabled={favoritePending.has(row.body.id) || !status} onClick={() => void favorite(row.body.id)} /></div><div className="resource-row-subtitle" title={row.body.targetPath ?? row.entries[0]?.entryPath}>{row.body.targetPath ?? row.entries[0]?.entryPath}</div></th>
               <td>{formatList([...new Set(row.entries.map(entry => clientLabel(entry.client)))])}</td>
               <td>{formatList([...new Set(row.entries.map(entry => t(entry.scope === "user" ? "resources.scope.user" : "resources.scope.project")))])}</td>
               <td>{t("resources.entryCount", { count: row.entries.length })}</td>
               <td><div className="resource-tags"><span className={row.observation === "recorded" ? "" : "is-warning"}>{observationLabel(row)}</span>{row.candidates.includes("broken") && <span className="is-warning">{t("resources.candidate.broken")}</span>}</div>{row.usage && <span className="resource-row-subtitle">{t("resources.map.callValue", { count: row.usage.events })} · {t("resources.sessionCount", { count: row.usage.sessions })}</span>}</td>
             </tr>)}</tbody></table></div> : <ResourceEmpty>{t(emptyLocalKey)}{emptyLocalKey !== "resources.empty.local" && <button className="text-button" onClick={() => setSourcesOpen(true)}>{t("resources.source.title")}</button>}</ResourceEmpty> : route.tab === "operations" ? operations?.operations.length ? <div className="resource-rows">{operations.operations.map(operation => <div className={`resource-row${route.id === operation.id ? " is-selected" : ""}`} key={operation.id}><button className="resource-row-main" aria-label={t("resources.viewOperation", { name: operation.name, action: t(actionNames[operation.action]) })} onClick={() => select(operation.id)}><div className="resource-row-heading"><strong>{operation.name}</strong><span>{t(actionNames[operation.action])}</span></div><div className="resource-row-metrics"><span>{clientLabel(operation.resource.client)}</span><span>{dateLabel(operation.createdAt)}</span></div><div className="resource-tags"><span className={operation.status === "success" ? "" : "is-warning"}>{t(operationStatusNames[operation.status])}</span><span>{operation.clientEffect === "pending_reload" ? t("resources.clientEffect.pending") : t("resources.clientEffect.unknown")}</span></div></button></div>)}</div> : <ResourceEmpty>{t("resources.empty.operations")}</ResourceEmpty> : archives?.archives.length ? <div className="resource-rows">{archives.archives.map(archive => <div className={`resource-row${route.id === archive.id ? " is-selected" : ""}`} key={archive.id}><button className="resource-row-main" aria-label={t("resources.viewRecovery", { name: archive.entry.name })} onClick={() => select(archive.id)}><div className="resource-row-heading"><strong>{archive.entry.name}</strong><span>{clientLabel(archive.entry.client)}</span></div><div className="resource-row-subtitle" title={archive.originalPath}>{archive.originalPath}</div><div className="resource-row-metrics"><span>{dateLabel(archive.createdAt)}</span></div><div className="resource-tags"><span>{t(archiveNames[archive.state])}</span><span className={!archive.restorable ? "is-warning" : ""}>{archive.restorable ? t("resources.archive.restorable") : t("resources.archive.unavailable")}</span>{archive.operationStatus === "partial" && <span className="is-warning">{t("resources.operation.partial")}</span>}</div></button></div>)}</div> : <ResourceEmpty>{t("resources.empty.archive", { state: t(tabs.find(tab => tab.value === route.tab)!.labelKey) })}</ResourceEmpty>}
         </div>
-        {overviewRanking && !mapView && overview && !listLoading && <ResourcePagination page={overview.page} total={overview.total} pageSize={overview.pageSize} label={overviewLabel} onPageSizeChange={pageSize => filter({ pageSize })} onChange={pageChange} />}
-        {route.tab === "local" && local && !listLoading && <ResourcePagination page={local.page} total={local.total} pageSize={local.pageSize} label={t("resources.tab.local")} onPageSizeChange={pageSize => filter({ pageSize })} onChange={pageChange} />}
-        {route.tab === "operations" && operations && !listLoading && <ResourcePagination page={operations.page} total={operations.total} pageSize={operations.pageSize} label={t("resources.tab.operations")} onPageSizeChange={pageSize => filter({ pageSize })} onChange={pageChange} />}
-        {!historyView && route.tab !== "operations" && archives && !listLoading && <ResourcePagination page={archives.page} total={archives.total} pageSize={archives.pageSize} label={t("resources.archive.records")} onPageSizeChange={pageSize => filter({ pageSize })} onChange={pageChange} />}
+        {overviewRanking && !mapView && overview && <ResourcePagination page={overview.page} total={overview.total} pageSize={overview.pageSize} label={overviewLabel} onPageSizeChange={pageSize => filter({ pageSize })} onChange={pageChange} />}
+        {route.tab === "local" && local && <ResourcePagination page={local.page} total={local.total} pageSize={local.pageSize} label={t("resources.tab.local")} onPageSizeChange={pageSize => filter({ pageSize })} onChange={pageChange} />}
+        {route.tab === "operations" && operations && <ResourcePagination page={operations.page} total={operations.total} pageSize={operations.pageSize} label={t("resources.tab.operations")} onPageSizeChange={pageSize => filter({ pageSize })} onChange={pageChange} />}
+        {!historyView && route.tab !== "operations" && archives && <ResourcePagination page={archives.page} total={archives.total} pageSize={archives.pageSize} label={t("resources.archive.records")} onPageSizeChange={pageSize => filter({ pageSize })} onChange={pageChange} />}
       </main>
       <aside className={`resource-details${detailsCollapsed ? " panel-collapsed" : ""}`} aria-label={t("resources.detail.title")}>
         <div className="pane-heading"><span>{t("resources.detail.title")}</span><button className="icon-button panel-toggle" aria-label={detailsCollapsed ? t("resources.detail.expand") : t("resources.detail.collapse")} aria-expanded={!detailsCollapsed} aria-controls="resource-detail-content" onClick={() => setDetailsCollapsed(value => !value)}>{detailsCollapsed ? <CaretLeft size={17} /> : <CaretRight size={17} />}</button></div>
