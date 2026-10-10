@@ -24,7 +24,11 @@ agent-manor coverage <repositoryId> --json
 agent-manor web
 ```
 
-登记返回 `{repository, job}`。`--wait` 等待完成；检查 `job.status` 为 `completed` 后使用 `job.version`，失败时有 `job.error`。普通查询会连接现有后台或按需启动，启动时检查已登记仓库；如果返回 `ANALYSIS_NOT_READY`，先查询任务或执行 `refresh --wait`。
+首次登记返回 `{repository, job}`。`--wait` 等待完成；检查 `job.status` 为 `completed` 后使用 `job.version`，失败时有 `job.error`。重复登记同一仓库返回 `{repository}`，不再次启动分析；需要更新时显式执行 `refresh --wait`。普通查询会连接现有后台或按需启动，启动时检查已登记仓库；如果返回 `ANALYSIS_NOT_READY`，先查询任务或执行 `refresh --wait`。
+
+Web 登记弹窗可以从全局会话库选择项目，按名称或完整路径搜索，选择后填入绝对路径；也可以直接输入或修改路径。历史项目路径不保证当前有效，提交时校验可读取的 Git 仓库；子目录归到所属仓库根目录，不同 worktree 独立登记。已登记项目显示标记，重复提交进入已有仓库。项目候选为空或加载失败时，手动路径仍可使用。
+
+仓库下拉菜单的“删除当前仓库”先展示名称、完整路径和清理范围。确认后删除该仓库登记、分析版本、来源与映射缓存、任务记录和手动关联，保留本地 Git 目录、原始历史、全局会话库及资源数据；删除后会话项目仍可用于重新登记。分析中也可删除：排队任务跳过，运行任务在检查点退出，旧结果不能写回。重新登记会重建分析，不恢复已删除的任务历史和手动关联。删除后切换到剩余仓库，全部删除后回到登记空状态。
 
 覆盖率返回 `version`、`baselineHash`、`createdAt`、`stale`、`filters`、`summary`、`files` 和 `gaps`。将返回的版本与相同筛选带入文件、活动和证据查询，避免把不同刷新结果混在一起：
 

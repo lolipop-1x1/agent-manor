@@ -1,6 +1,29 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { ApiError, errorMessage, request } from "../web/shared/api.ts";
+import type { DeleteRepositoryResponse, RegisterRepositoryResponse } from "../src/contracts.js";
+
+test("登记复用可返回无任务响应，删除请求保留响应和对象不存在错误", async () => {
+  const nativeFetch = globalThis.fetch;
+  const requests: { path: string; method?: string; body?: BodyInit | null }[] = [];
+  const repository = { id: "synthetic-repository", name: "synthetic", path: "/synthetic/repository", head: "synthetic-head", stale: false };
+  globalThis.fetch = async (input, init) => {
+    const path = String(input);
+    requests.push({ path, method: init?.method, body: init?.body });
+    const missing = path.endsWith("/missing");
+    const body = missing ? { error: { code: "REPOSITORY_NOT_FOUND", message: "仓库尚未登记", messageDescriptor: { key: "diagnostics.index.store.m002" } } }
+      : init?.method === "POST" ? { repository } : { repositoryId: repository.id };
+    return new Response(JSON.stringify(body), { status: missing ? 404 : 200, headers: { "Content-Type": "application/json" } });
+  };
+  try {
+    const registered = await request<RegisterRepositoryResponse>("/repositories", { method: "POST", body: { path: repository.path } });
+    assert.deepEqual(registered.repository, repository);
+    assert.equal(Object.hasOwn(registered, "job"), false);
+    assert.deepEqual(await request<DeleteRepositoryResponse>(`/repositories/${repository.id}`, { method: "DELETE" }), { repositoryId: repository.id });
+    assert.deepEqual(requests[1], { path: `/api/v1/repositories/${repository.id}`, method: "DELETE", body: undefined });
+    await assert.rejects(request("/repositories/missing", { method: "DELETE" }), error => error instanceof ApiError && error.code === "REPOSITORY_NOT_FOUND");
+  } finally { globalThis.fetch = nativeFetch; }
+});
 
 test("响应体 JSON 解析被中止时保留 AbortError", async () => {
   let markBodyStarted!: () => void;

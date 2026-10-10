@@ -388,6 +388,7 @@ test("事务发布失败不泄漏新版、缓存或完成任务；已有version�
   database.exec("DROP TRIGGER reject_publish");
   const snapshot = store.getSnapshot(repositoryId);
   const duplicateJob = store.createJob(repositoryId);
+  store.updateJob(duplicateJob.id, { status: "running" });
   assert.throws(() => store.publish({ snapshot: { ...snapshot, createdAt: "changed" }, sources: store.listSources(repositoryId), parsed: [], mappings: [],
     stats: { sourcesParsed: 0, parsedRecords: 0, mappingsComputed: 0, mappingsReused: 0 }, clearCache: false, jobId: duplicateJob.id }), /UNIQUE/);
   assert.equal(store.getSnapshot(repositoryId).createdAt, snapshot.createdAt);
@@ -412,6 +413,7 @@ test("大结果分块发布，来源汇总与解析游标完整往返，重开�
   snapshot.gaps = sources.gaps;
   const job = store.createJob(repositoryId);
   const stringify = JSON.stringify;
+  store.updateJob(job.id, { status: "running" });
   // 缩小字符串上限复现聚合溢出，避免回归测试为此分配半 GB 以上内存。
   JSON.stringify = ((...args: Parameters<typeof JSON.stringify>) => {
     const value = stringify(...args);
@@ -557,6 +559,7 @@ test("按成功发布顺序保留每仓库最近两版，淘汰分块而保留�
   try {
     for (const [index, version] of ["z-first", "a-second", "m-third"].entries()) {
       const job = store.createJob(repositoryId);
+      store.updateJob(job.id, { status: "running" });
       store.publish({ snapshot: { ...snapshot, version, createdAt: `2026-01-0${3 - index}T00:00:00Z`,
         events: snapshot.events.map(event => ({ ...event, output: "完整长结果".repeat(4096) })) },
       sources: { ...sources, version }, parsed, mappings: [],
@@ -590,6 +593,7 @@ test("淘汰阶段失败回滚新版、分块、仓库指针及任务完成状�
   const beforeCache = store.getParsedSources(repositoryId);
   const snapshot = store.getSnapshot(repositoryId);
   const job = store.createJob(repositoryId);
+  store.updateJob(job.id, { status: "running" });
   try {
     database.exec("CREATE TRIGGER reject_prune BEFORE DELETE ON versions BEGIN SELECT RAISE(ABORT,'synthetic prune failure'); END");
     assert.throws(() => store.publish({ snapshot: { ...snapshot, version: "failed-third" }, sources: { ...store.listSources(repositoryId), version: "failed-third" }, parsed: [], mappings: [],
@@ -600,7 +604,7 @@ test("淘汰阶段失败回滚新版、分块、仓库指针及任务完成状�
     assert.equal(store.getRepository(repositoryId).version, second);
     assert.equal(store.getSnapshot(repositoryId, first).events.length, 1);
     assert.equal(store.getSnapshot(repositoryId, second).events.length, 1);
-    assert.equal(store.getJob(job.id).status, "queued");
+    assert.equal(store.getJob(job.id).status, "running");
     assert.throws(() => store.getSnapshot(repositoryId, "failed-third"), error => error instanceof StoreError && error.code === "VERSION_NOT_FOUND");
     database.exec("DROP TRIGGER reject_prune");
   } finally { database.close(); }

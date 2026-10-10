@@ -258,7 +258,7 @@ export interface FileDetail extends VersionedResult {
   events: FileEvent[];
 }
 
-export type JobStatus = "queued" | "running" | "completed" | "failed";
+export type JobStatus = "queued" | "running" | "completed" | "failed" | "cancelled";
 
 export interface Job {
   id: string;
@@ -329,7 +329,11 @@ export interface RegisterRepositoryRequest {
 
 export interface RegisterRepositoryResponse {
   repository: Repository;
-  job: Job;
+  job?: Job;
+}
+
+export interface DeleteRepositoryResponse {
+  repositoryId: string;
 }
 
 export interface EventsResponse {

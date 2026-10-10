@@ -6,7 +6,11 @@ import { request as httpRequest } from "node:http";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import test from "node:test";
-import type { CoverageResult, EvidenceResponse, EventsResponse, FileDetail, JobResponse, MapSessionsResponse, RegisterRepositoryResponse, SourcesResponse } from "../src/contracts.js";
+import Database from "better-sqlite3";
+import type { CoverageResult, DeleteRepositoryResponse, EvidenceResponse, EventsResponse, FileDetail, JobResponse, MapSessionsResponse, RegisterRepositoryResponse, RepositoriesResponse, SourcesResponse } from "../src/contracts.js";
+import type { SessionIndexStatus, SessionJob, SessionListResult } from "../src/session-contracts.js";
+import type { ResourceUsageResult } from "../src/resource-contracts.js";
+import type { ResourceStatus } from "../src/resource-service-contracts.js";
 import { clientIds } from "../src/clients.js";
 import { startService } from "../src/server.js";
 import { apiRequest, delay, RequestError, serviceUrl } from "../src/service/runtime.js";
@@ -40,9 +44,11 @@ async function fixture(runFixture: (context: { directory: string; repository: st
   const source = join(sources, "source.jsonl");
   await writeFile(source, history(repository));
   await writeFile(join(sources, "orphan.jsonl"), history(undefined, "orphan"));
-  const service = await startService({ home: join(directory, "data"), roots: isolatedHistoryRoots({ codex: sources }), staticRoot });
+  const service = await startService({ home: join(directory, "data"), roots: isolatedHistoryRoots({ codex: sources }), staticRoot,
+    resourceInventory: { userHome: join(directory, "user"), environment: {} } });
   try {
     const register = await apiRequest<RegisterRepositoryResponse>(service.instance, "/repositories", "POST", { path: repository });
+    assert.ok(register.job);
     await wait(service, register.job.id);
     await runFixture({ directory, repository, source, service, register });
   } finally {
@@ -59,6 +65,121 @@ async function wait(service: Awaited<ReturnType<typeof startService>>, jobId: st
   }
   throw new Error("测试刷新超时");
 }
+
+test("重复登记复用已有仓库和分析，子目录归根，worktree 独立登记", async () => fixture(async ({ directory, repository, service, register }) => {
+  const initial = await apiRequest<{ jobs: unknown[] }>(service.instance, "/status");
+  const existing = (await apiRequest<RepositoriesResponse>(service.instance, "/repositories")).repositories[0];
+  for (const path of [repository, join(repository, "src")]) {
+    const reused = await apiRequest<RegisterRepositoryResponse>(service.instance, "/repositories", "POST", { path });
+    assert.deepEqual(reused.repository, existing);
+    assert.equal(Object.hasOwn(reused, "job"), false);
+    assert.deepEqual((await apiRequest<{ jobs: unknown[] }>(service.instance, "/status")).jobs, initial.jobs);
+  }
+  await run("git", ["-C", repository, "add", "."]);
+  await run("git", ["-C", repository, "-c", "user.name=fixture", "-c", "user.email=fixture@example.invalid", "commit", "-qm", "fixture"]);
+  const worktree = join(directory, "separate-worktree");
+  await run("git", ["-C", repository, "worktree", "add", "-b", "separate-fixture", worktree]);
+  const separate = await apiRequest<RegisterRepositoryResponse>(service.instance, "/repositories", "POST", { path: join(worktree, "src") });
+  assert.ok(separate.job);
+  assert.notEqual(separate.repository.id, register.repository.id);
+  assert.equal(separate.repository.path, worktree);
+  await wait(service, separate.job.id);
+  assert.equal((await apiRequest<RepositoriesResponse>(service.instance, "/repositories")).repositories.length, 2);
+}));
+
+test("删除接口清理全部仓库专属数据，保留其他仓库、会话与资源，重启及重登边界稳定", async () => fixture(async ({ directory, repository, source, service, register }) => {
+  const base = `/repositories/${register.repository.id}`;
+  await appendFile(source, encode([
+    { timestamp: "2026-01-01T00:00:03Z", type: "response_item", payload: { type: "function_call", name: "mcp__synthetic__lookup", call_id: "resource-call", arguments: "{}" } },
+    { timestamp: "2026-01-01T00:00:04Z", type: "response_item", payload: { type: "function_call_output", call_id: "resource-call", output: "synthetic result" } },
+  ]));
+  const sources = await apiRequest<SourcesResponse>(service.instance, `${base}/sources`);
+  const orphan = sources.unassociated.find(candidate => candidate.sessionId === "orphan");
+  assert.ok(orphan);
+  const association = await apiRequest<JobResponse>(service.instance, `${base}/associations`, "POST", { sourceId: orphan.sourceId });
+  await wait(service, association.job.id);
+  const sessionRefresh = await apiRequest<{ job: SessionJob }>(service.instance, "/sessions/refresh", "POST");
+  for (let attempt = 0; attempt < 200; attempt++) {
+    const { job } = await apiRequest<{ job: SessionJob }>(service.instance, `/jobs/${sessionRefresh.job.id}`);
+    if (job.status === "complete") break;
+    assert.notEqual(job.status, "failed", job.error);
+    await delay(25);
+  }
+  const otherPath = join(directory, "other-repository");
+  await mkdir(otherPath);
+  await run("git", ["init", "-q", otherPath]);
+  await writeFile(join(otherPath, "other.ts"), "other\n");
+  const other = await apiRequest<RegisterRepositoryResponse>(service.instance, "/repositories", "POST", { path: otherPath });
+  assert.ok(other.job);
+  await wait(service, other.job.id);
+  const otherCoverage = await apiRequest<CoverageResult>(service.instance, `/repositories/${other.repository.id}/coverage`);
+  const sessionStatus = await apiRequest<SessionIndexStatus>(service.instance, "/sessions/status");
+  const sessions = await apiRequest<SessionListResult>(service.instance, "/sessions?pageSize=200");
+  assert.ok(sessionStatus.version);
+  assert.ok(sessionStatus.projects.includes(repository));
+  assert.equal(sessions.total, 2);
+  const usage = await apiRequest<ResourceUsageResult>(service.instance, "/resources/usage?kind=mcp");
+  assert.equal(usage.stats.mcpCalls, 1);
+  const resourceId = usage.resources[0]!.identity.id;
+  await apiRequest(service.instance, "/resources/favorites", "POST", { id: resourceId, value: true });
+  const favoriteUsage = await apiRequest<ResourceUsageResult>(service.instance, "/resources/usage?kind=mcp");
+  const resourceStatus = await apiRequest<ResourceStatus>(service.instance, "/resources/status");
+  const previousCoverage = await apiRequest<CoverageResult>(service.instance, `${base}/coverage`);
+  const database = new Database(join(directory, "data/index.sqlite"), { readonly: true });
+  const tables = ["repositories", "manual_associations", "jobs", "versions", "source_cache", "mapping_cache", "tracked_sources", "payload_parts"];
+  const rows = (table: string, id: string) => database.prepare(`SELECT * FROM ${table} WHERE ${table === "repositories" ? "id" : "repository_id"}=? ORDER BY 1,2`).all(id);
+  const otherRows = tables.map(table => rows(table, other.repository.id));
+  for (const table of tables) assert.ok(rows(table, register.repository.id).length, `${table} 必须有待清理数据`);
+  const jobs = rows("jobs", register.repository.id) as { id: string }[];
+  try {
+    assert.deepEqual(await apiRequest<DeleteRepositoryResponse>(service.instance, base, "DELETE"), { repositoryId: register.repository.id });
+    for (const [index, table] of tables.entries()) {
+      assert.deepEqual(rows(table, register.repository.id), [], `${table} 清理完毕`);
+      assert.deepEqual(rows(table, other.repository.id), otherRows[index], `${table} 保留其他仓库`);
+    }
+  } finally { database.close(); }
+  for (const path of [`${base}/coverage`, `${base}/sources`, `${base}/sessions`]) {
+    await assert.rejects(apiRequest(service.instance, path), error => error instanceof RequestError && error.code === "REPOSITORY_NOT_FOUND");
+  }
+  for (const job of jobs) await assert.rejects(apiRequest(service.instance, `/jobs/${job.id}`), error => error instanceof RequestError && error.code === "JOB_NOT_FOUND");
+  await assert.rejects(apiRequest(service.instance, base, "DELETE"), error => error instanceof RequestError && error.code === "REPOSITORY_NOT_FOUND");
+  assert.deepEqual(await apiRequest(service.instance, "/sessions/status"), sessionStatus);
+  assert.deepEqual(await apiRequest(service.instance, "/sessions?pageSize=200"), sessions);
+  assert.deepEqual(await apiRequest(service.instance, "/resources/usage?kind=mcp"), favoriteUsage);
+  assert.deepEqual(await apiRequest(service.instance, "/resources/status"), resourceStatus);
+  assert.deepEqual(await apiRequest(service.instance, `/repositories/${other.repository.id}/coverage`), otherCoverage);
+  assert.equal(await readFile(join(repository, "src/a.ts"), "utf8"), "alpha\nbeta\n");
+  assert.ok((await readFile(source, "utf8")).includes("resource-call"));
+  await service.close();
+  const restarted = await startService({ home: join(directory, "data"), roots: isolatedHistoryRoots({ codex: join(directory, "history") }),
+    staticRoot: join(directory, "web"), startupRefresh: false, resourceInventory: { userHome: join(directory, "user"), environment: {} } });
+  try {
+    assert.deepEqual((await apiRequest<RepositoriesResponse>(restarted.instance, "/repositories")).repositories.map(item => item.id), [other.repository.id]);
+    await assert.rejects(apiRequest(restarted.instance, `${base}/coverage`), error => error instanceof RequestError && error.code === "REPOSITORY_NOT_FOUND");
+    assert.deepEqual(await apiRequest(restarted.instance, "/sessions?pageSize=200"), sessions);
+    assert.deepEqual(await apiRequest(restarted.instance, "/resources/usage?kind=mcp"), favoriteUsage);
+    const registeredAgain = await apiRequest<RegisterRepositoryResponse>(restarted.instance, "/repositories", "POST", { path: repository });
+    assert.ok(registeredAgain.job);
+    assert.equal(registeredAgain.repository.id, register.repository.id);
+    assert.ok(jobs.every(job => job.id !== registeredAgain.job!.id));
+    await wait(restarted, registeredAgain.job.id);
+    const reanalyzed = await apiRequest<CoverageResult>(restarted.instance, `${base}/coverage`);
+    assert.equal(reanalyzed.summary.lineCount, previousCoverage.summary.lineCount);
+    for (const job of jobs) await assert.rejects(apiRequest(restarted.instance, `/jobs/${job.id}`), error => error instanceof RequestError && error.code === "JOB_NOT_FOUND");
+    const check = new Database(join(directory, "data/index.sqlite"), { readonly: true });
+    try {
+      assert.equal((check.prepare("SELECT COUNT(*) AS count FROM manual_associations WHERE repository_id=?").get(register.repository.id) as { count: number }).count, 0);
+    } finally { check.close(); }
+  } finally { await restarted.close(); }
+}));
+
+test("删除接口拒绝非空请求体和跨站写入，不存在仓库返回稳定 404", async () => fixture(async ({ service, register }) => {
+  const base = `/repositories/${register.repository.id}`;
+  await assert.rejects(apiRequest(service.instance, base, "DELETE", { path: "/synthetic" }), error => error instanceof RequestError && error.code === "INVALID_INPUT");
+  await assert.rejects(apiRequest(service.instance, "/repositories/missing", "DELETE"), error => error instanceof RequestError && error.code === "REPOSITORY_NOT_FOUND");
+  assert.equal((await fetch(`${serviceUrl(service.instance)}/api/v1${base}`, { method: "DELETE", headers: { "sec-fetch-site": "cross-site" } })).status, 403);
+  assert.equal((await apiRequest<RepositoriesResponse>(service.instance, "/repositories")).repositories.length, 1);
+}));
 
 test("真实 HTTP 可查询并回读已删编辑、目录及无路径搜索，不增加当前覆盖", async () => fixture(async ({ service, register, source, repository }) => {
   const base = `/repositories/${register.repository.id}`;

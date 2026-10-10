@@ -34,11 +34,13 @@ export async function publishClientQueryFixture(home: string, repositoryPath: st
   const store = new AnalysisStore(join(home, "index.sqlite"));
   try {
     await store.registerRepository(repositoryPath);
+    const job = store.createJob(snapshot.repository.id);
+    store.updateJob(job.id, { status: "running" });
     store.publish({
       snapshot,
       sources: { version: snapshot.version, sources: sources.map(source => ({ ...source, eventCount: events.filter(event => event.client === source.client).length, completeBytes: 0, association: "automatic" })), unassociated: [], gaps: [] },
       parsed: [], mappings: [], stats: { sourcesParsed: 0, parsedRecords: 0, mappingsComputed: mappings.length, mappingsReused: 0 },
-      clearCache: false, jobId: store.createJob(snapshot.repository.id).id,
+      clearCache: false, jobId: job.id,
     });
   } finally { store.close(); }
   return snapshot;

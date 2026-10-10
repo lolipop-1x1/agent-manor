@@ -16,6 +16,7 @@ export interface WorkerManagerOptions {
 export class WorkerManager {
   private worker: Worker;
   private readonly pending = new Map<string, ((job: Job) => void)[]>();
+  private readonly cancelled = new Map<string, Job>();
   private readonly active = new Set<string>();
   private readonly sessionActive = new Set<string>();
   private readonly sessionRequests = new Map<string, string>();
@@ -70,13 +71,32 @@ export class WorkerManager {
   }
   clearCache(repositoryId: string): Job { return this.enqueue(repositoryId, true); }
 
+  deleteRepository(repositoryId: string): void {
+    // 清理失败时不撤销任务；事务成功后旧任务结果只保留给内存等待者。
+    const jobs = this.store.deleteRepository(repositoryId);
+    const jobIds: string[] = [];
+    for (const job of jobs) {
+      // 已发布但完成消息还未抵达的任务，也必须收束已有等待者。
+      if (job.status !== "queued" && job.status !== "running" && !this.active.has(job.id) && !this.pending.has(job.id)) continue;
+      jobIds.push(job.id);
+      const cancelled: Job = { ...job, status: "cancelled", phase: "仓库分析已取消", phaseDescriptor: { key: "diagnostics.index.store.cancelled" }, progress: 1,
+        finishedAt: new Date().toISOString() };
+      this.cancelled.set(job.id, cancelled);
+      this.active.delete(job.id);
+      for (const resolve of this.pending.get(job.id) ?? []) resolve(cancelled);
+      this.pending.delete(job.id);
+    }
+    this.lastMapChecks.delete(repositoryId);
+    if (!this.closed && !this.failure && jobIds.length) this.worker.postMessage({ type: "cancel", jobIds });
+  }
+
   /** 多个可见标签页共享检查间隔，手动刷新仍保持原有排队语义。 */
   autoRefreshRepository(repositoryId: string, now = Date.now(), interval = 60_000): Job | undefined {
     this.store.getRepository(repositoryId);
     if (!interval) return undefined;
     for (const id of this.active) {
-      const job = this.store.getJob(id);
-      if (job.repositoryId === repositoryId) return job;
+      const job = this.store.findJob(id);
+      if (job?.repositoryId === repositoryId) return job;
     }
     if (now - (this.lastMapChecks.get(repositoryId) ?? -Infinity) < interval) return undefined;
     const job = this.refresh(repositoryId);
@@ -113,8 +133,10 @@ export class WorkerManager {
   }
 
   waitForJob(jobId: string): Promise<Job> {
+    const cancelled = this.cancelled.get(jobId);
+    if (cancelled) return Promise.resolve(cancelled);
     const job = this.store.getJob(jobId);
-    if (job.status === "completed" || job.status === "failed") return Promise.resolve(job);
+    if (job.status === "completed" || job.status === "failed" || job.status === "cancelled") return Promise.resolve(job);
     return new Promise((resolve) => {
       this.pending.set(jobId, [...(this.pending.get(jobId) ?? []), resolve]);
     });
@@ -123,7 +145,8 @@ export class WorkerManager {
   private finished(jobId: string): void {
     if (this.sessionActive.delete(jobId)) { this.sessionRequests.delete(jobId); return; }
     this.active.delete(jobId);
-    const job = this.store.getJob(jobId);
+    const job = this.cancelled.get(jobId) ?? this.store.findJob(jobId);
+    if (!job) return;
     for (const resolve of this.pending.get(jobId) ?? []) resolve(job);
     this.pending.delete(jobId);
   }
@@ -137,8 +160,8 @@ export class WorkerManager {
       this.sessionRequests.delete(id);
     }
     for (const id of [...this.active]) {
-      const job = this.store.getJob(id);
-      if (job.status !== "completed" && job.status !== "failed") this.store.failJob(id, error, errorDescriptor);
+      const job = this.store.findJob(id);
+      if (job && job.status !== "completed" && job.status !== "failed") this.store.failJob(id, error, errorDescriptor);
       this.finished(id);
     }
   }

@@ -334,6 +334,7 @@ export default {
   "diagnostics.index.store.m007": "The refresh job does not exist",
   "diagnostics.index.store.m008": "Refresh failed",
   "diagnostics.index.store.m009": "Analysis complete",
+  "diagnostics.index.store.cancelled": "Repository analysis cancelled",
   "diagnostics.index.workerManager.m001": "The analysis worker has closed",
   "diagnostics.index.workerManager.m002": "The session indexing worker is unavailable",
   "diagnostics.server.m001": "Port must be an integer from 0 to 65535",

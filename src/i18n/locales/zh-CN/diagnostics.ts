@@ -334,6 +334,7 @@ export default {
   "diagnostics.index.store.m007": "刷新任务不存在",
   "diagnostics.index.store.m008": "刷新失败",
   "diagnostics.index.store.m009": "分析完成",
+  "diagnostics.index.store.cancelled": "仓库分析已取消",
   "diagnostics.index.workerManager.m001": "分析 Worker 已关闭",
   "diagnostics.index.workerManager.m002": "会话索引 Worker 不可用",
   "diagnostics.server.m001": "端口必须是 0 到 65535 的整数",

@@ -1,0 +1,11 @@
+.repository-project-field { border: 0; padding: 0; margin: 0 0 16px; min-width: 0; }
+.repository-project-field .filter-trigger { width: 100%; }
+.repository-project-field > p { margin: 0; font-size: 12px; line-height: 1.6; }
+.repository-delete-action { color: var(--danger); }
+.repository-delete-target { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 10px 16px; font-size: 12px; line-height: 1.6; }
+.repository-delete-target dt { color: var(--muted); }
+.repository-delete-target dd { margin: 0; overflow-wrap: anywhere; }
+.repository-delete-scope h3 { font-size: 12px; margin: 18px 0 7px; }
+.repository-delete-scope p { color: var(--muted); font-size: 12px; line-height: 1.8; }
+.repository-delete-button { color: var(--danger); background: var(--danger-bg); border-color: var(--danger); }
+.repository-delete-button:hover { background: color-mix(in srgb, var(--danger) 14%, var(--surface)); }

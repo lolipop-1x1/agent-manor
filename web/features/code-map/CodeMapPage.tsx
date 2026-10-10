@@ -1,9 +1,9 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode, type RefObject } from "react";
 import * as Dialog from "@radix-ui/react-dialog";
 import * as Dropdown from "@radix-ui/react-dropdown-menu";
-import { ArrowClockwise, ArrowSquareOut, CaretDown, CaretLeft, CaretRight, CaretUp, Check, CircleNotch, Code, FileCode, Folder, MagnifyingGlass, MapTrifold, Plus, Stack, WarningCircle, X } from "@phosphor-icons/react";
-import type { Client, CoverageQuery, CoverageResult, EvidenceResponse, FileCategory, FileDetail, FileEvent, Filters, Gap, HistoryEvent, IndexMaintenanceResult, Job, JobResponse, MapSession, MapSessionsResponse, RegisterRepositoryResponse, Repository, SourcesResponse, StatusResponse } from "../../../src/contracts";
-import type { SessionSummary } from "../../../src/session-contracts";
+import { ArrowClockwise, ArrowSquareOut, CaretDown, CaretLeft, CaretRight, CaretUp, Check, CircleNotch, Code, FileCode, Folder, MagnifyingGlass, MapTrifold, Plus, Stack, Trash, WarningCircle, X } from "@phosphor-icons/react";
+import type { Client, CoverageQuery, CoverageResult, DeleteRepositoryResponse, EvidenceResponse, FileCategory, FileDetail, FileEvent, Filters, Gap, HistoryEvent, IndexMaintenanceResult, Job, JobResponse, MapSession, MapSessionsResponse, RegisterRepositoryResponse, Repository, SourcesResponse, StatusResponse } from "../../../src/contracts";
+import type { SessionIndexSummary, SessionSummary } from "../../../src/session-contracts";
 import { CLIENTS } from "../../../src/clients";
 import { ApiError, errorMessage, isAborted, request } from "../../shared/api";
 import { queryString, repositoryPath } from "./api";
@@ -21,6 +21,7 @@ import { boundQuery, categoryNames, fileHighlights, filename, gapNames, metricNa
 import { dateLabel, fmt, percent } from "../../shared/format";
 import { timeFilters } from "../../shared/time-filters";
 import { type Theme } from "../../shared/theme";
+import "./repository-dialog.css";
 
 const kindKeys = { read: "codeMap.kind.read", edit: "codeMap.kind.edit", search: "codeMap.kind.search", other: "codeMap.kind.other" };
 const statusKeys = { success: "codeMap.status.success", failure: "codeMap.status.failure", unknown: "codeMap.status.unknown" };
@@ -43,19 +44,21 @@ function Empty({ title, children, action }: { title: string; children: ReactNode
   return <div className="empty-state"><MapTrifold size={32} /><h2>{title}</h2><p>{children}</p>{action}</div>;
 }
 
-function Modal({ open, onOpenChange, title, description, children, wide = false, fallbackFocus }: {
+function Modal({ open, onOpenChange, title, description, children, wide = false, fallbackFocus, contentRef, busy = false }: {
   open: boolean; onOpenChange: (open: boolean) => void; title: string; description: string; children: ReactNode; wide?: boolean; fallbackFocus?: RefObject<HTMLElement | null>;
+  contentRef?: (element: HTMLDivElement | null) => void; busy?: boolean;
 }) {
   useI18n();
   const returnFocus = useRef<HTMLElement | null>(null);
-  return <Dialog.Root open={open} onOpenChange={onOpenChange}><Dialog.Portal><Dialog.Overlay className="dialog-overlay" /><Dialog.Content className={`dialog-content${wide ? " wide" : ""}`}
+  return <Dialog.Root open={open} onOpenChange={next => { if (!busy) onOpenChange(next); }}><Dialog.Portal><Dialog.Overlay className="dialog-overlay" /><Dialog.Content ref={contentRef} className={`dialog-content${wide ? " wide" : ""}`}
+    onEscapeKeyDown={event => { if (busy) event.preventDefault(); }} onInteractOutside={event => { if (busy) event.preventDefault(); }}
     onOpenAutoFocus={() => { returnFocus.current = document.activeElement instanceof HTMLElement ? document.activeElement : null; }}
     onCloseAutoFocus={event => {
       const target = returnFocus.current?.isConnected && returnFocus.current !== document.body ? returnFocus.current : fallbackFocus?.current;
       if (target?.isConnected) { event.preventDefault(); target.focus(); }
     }}>
     <Dialog.Title>{title}</Dialog.Title><Dialog.Description className="dialog-description">{description}</Dialog.Description>
-    <Dialog.Close asChild><button className="icon-button dialog-close" aria-label={t("codeMap.dialog.close")}><X size={18} /></button></Dialog.Close>{children}
+    <Dialog.Close asChild><button className="icon-button dialog-close" disabled={busy} aria-label={t("codeMap.dialog.close")}><X size={18} /></button></Dialog.Close>{children}
   </Dialog.Content></Dialog.Portal></Dialog.Root>;
 }
 
@@ -248,6 +251,19 @@ export function useCodeMapPage({ active, theme, onSession }: {
   const [registerPath, setRegisterPath] = useState("");
   const [registerError, setRegisterError] = useState<unknown>(null);
   const [registering, setRegistering] = useState(false);
+  const [registerContainer, setRegisterContainer] = useState<HTMLDivElement | null>(null);
+  const [projects, setProjects] = useState<string[]>([]);
+  const [projectsLoading, setProjectsLoading] = useState(false);
+  const [projectsError, setProjectsError] = useState<unknown>(null);
+  const [projectsRetry, setProjectsRetry] = useState(0);
+  const [deleteTarget, setDeleteTarget] = useState<Repository | null>(null);
+  const [deleteError, setDeleteError] = useState<unknown>(null);
+  const [deleting, setDeleting] = useState(false);
+  const pageEpoch = useRef(0);
+  const currentRepoId = useRef(repoId);
+  const currentRepositories = useRef(repositories);
+  currentRepoId.current = repoId; currentRepositories.current = repositories;
+  const renderEpoch = pageEpoch.current;
   const [client, setClient] = useState<Client | "all">("all");
   const [mapSession, setMapSession] = useState<MapSession>();
   const [mapSessionList, setMapSessionList] = useState<MapSessionsResponse>();
@@ -291,32 +307,62 @@ export function useCodeMapPage({ active, theme, onSession }: {
   const invalidTime = window === "custom" && from && to && from > to;
   const query = coverage ? boundQuery(filters, coverage.version) : undefined;
   const chooseRepo = useCallback((id: string) => {
+    if (id === currentRepoId.current) return;
+    pageEpoch.current += 1; currentRepoId.current = id;
     setRepoId(id); setMapSession(undefined); setMapSessionList(undefined); setVersion(undefined); setDirectory(""); setSelected(null); setDetail(null); setCoverage(null); setRootCoverage(null); setActionError(null);
-    localStorage.setItem("agent-manor-repository", id);
+    setJob(null); setCoverageError(null); setDetailError(null); setMapSessionsError(null); setCoverageLoading(false); setDetailLoading(false); setMapSessionsLoading(false);
+    loadedCoverage.current = "";
+    if (id) localStorage.setItem("agent-manor-repository", id); else localStorage.removeItem("agent-manor-repository");
+  }, []);
+  const applyStatus = useCallback((result: StatusResponse) => {
+    currentRepositories.current = result.repositories;
+    setRepositories(result.repositories); setJobs(result.jobs);
+    const maintenance = result.indexMaintenance;
+    setIndexMaintenance(maintenance && (maintenance.status === "failed" || maintenance.reason === "insufficientSpace" || maintenance.reason === "busy") ? maintenance : null);
+    const current = currentRepoId.current;
+    const next = result.repositories.some(repo => repo.id === current) ? current
+      : (!current ? result.repositories.find(repo => repo.id === localStorage.getItem("agent-manor-repository"))?.id : undefined) ?? result.repositories[0]?.id ?? "";
+    if (next !== current) chooseRepo(next);
+  }, [chooseRepo]);
+  const recoverMissingRepository = useCallback((failure: unknown) => {
+    if (!(failure instanceof ApiError) || !["REPOSITORY_NOT_FOUND", "JOB_NOT_FOUND"].includes(failure.code)) return false;
+    setStatusRetry(value => value + 1);
+    return true;
   }, []);
   useEffect(() => {
     const controller = new AbortController();
+    const epoch = pageEpoch.current;
     setInitialLoading(true); setInitialError(null);
     void request<StatusResponse>("/status?summary=true", { signal: controller.signal }).then(result => {
-      setRepositories(result.repositories); setJobs(result.jobs);
-      const maintenance = result.indexMaintenance;
-      setIndexMaintenance(maintenance && (maintenance.status === "failed" || maintenance.reason === "insufficientSpace" || maintenance.reason === "busy") ? maintenance : null);
-      setRepoId(current => result.repositories.some(repo => repo.id === current) ? current
-        : result.repositories.find(repo => repo.id === localStorage.getItem("agent-manor-repository"))?.id ?? result.repositories[0]?.id ?? "");
-    }).catch(failure => { if (!isAborted(failure)) setInitialError(failure); })
+      if (!controller.signal.aborted && pageEpoch.current === epoch) applyStatus(result);
+    }).catch(failure => { if (!controller.signal.aborted && pageEpoch.current === epoch && !isAborted(failure)) setInitialError(failure); })
       .finally(() => { if (!controller.signal.aborted) setInitialLoading(false); });
     return () => controller.abort();
-  }, [statusRetry]);
+  }, [statusRetry, applyStatus]);
+  useEffect(() => {
+    if (!registerOpen) return;
+    const controller = new AbortController();
+    setProjectsLoading(true); setProjectsError(null); setProjects([]);
+    void request<SessionIndexSummary>("/sessions/status?summary=true", { signal: controller.signal })
+      .then(result => { if (!controller.signal.aborted) setProjects([...new Set(result.projects.filter(Boolean))]); })
+      .catch(failure => { if (!controller.signal.aborted && !isAborted(failure)) setProjectsError(failure); })
+      .finally(() => { if (!controller.signal.aborted) setProjectsLoading(false); });
+    return () => controller.abort();
+  }, [registerOpen, projectsRetry]);
   useVisiblePolling(mapAutoRefreshInterval > 0 && active && !!repoId, mapAutoRefreshInterval, async signal => {
-    const result = await request<{ job?: Job }>(`${repositoryPath(repoId)}/auto-refresh`, { method: "POST", body: {}, signal });
-    if (!signal.aborted && result.job) recordJob(result.job);
-  }, failure => setActionError(failure));
-  useVisiblePolling(mapAutoRefreshInterval > 0 && active && !!repoId, 5000, async signal => {
+    const epoch = pageEpoch.current;
+    try {
+      const result = await request<{ job?: Job }>(`${repositoryPath(repoId)}/auto-refresh`, { method: "POST", body: {}, signal });
+      if (!signal.aborted && epoch === pageEpoch.current && result.job) recordJob(result.job);
+    } catch (failure) { if (!signal.aborted && epoch === pageEpoch.current && !recoverMissingRepository(failure)) setActionError(failure); }
+  });
+  useVisiblePolling(active && !!repoId, 5000, async signal => {
+    const epoch = pageEpoch.current;
     const result = await request<StatusResponse>("/status?summary=true", { signal });
-    if (signal.aborted) return;
-    setRepositories(result.repositories); setJobs(result.jobs);
+    if (signal.aborted || pageEpoch.current !== epoch) return;
+    applyStatus(result);
     const published = result.repositories.find(repo => repo.id === repoId)?.version;
-    if (published && coverage?.repository.id === repoId && coverage.version !== published) setVersion(published);
+    if (published && currentRepoId.current === repoId && coverage?.version !== published) setVersion(published);
   });
   useEffect(() => {
     const latest = [...jobs].reverse().filter(item => item.repositoryId === repoId).sort((a, b) => Number(jobActive(b)) - Number(jobActive(a))
@@ -328,6 +374,7 @@ export function useCodeMapPage({ active, theme, onSession }: {
     const requestKey = `${repoId}:${filterKey}:${reload}`;
     if (coverage?.version === version && loadedCoverage.current === requestKey) return;
     const controller = new AbortController();
+    const epoch = pageEpoch.current;
     setCoverageLoading(true); setCoverageError(null);
     void (async () => {
       const rootQuery = { ...filters, directory: undefined, version, summary: true };
@@ -335,54 +382,64 @@ export function useCodeMapPage({ active, theme, onSession }: {
       if (version && root.version !== version) throw new ApiError("VERSION_MISMATCH", "统计结果版本已变化，请刷新后重试。", { key: "codeMap.error.versionCoverage" });
       const scoped = directory ? await request<CoverageResult>(`${repositoryPath(repoId)}/coverage${queryString(boundQuery(filters, root.version), { summary: "true" })}`, { signal: controller.signal }) : root;
       if (scoped.version !== root.version) throw new ApiError("VERSION_MISMATCH", "目录统计与仓库结果版本不一致，请刷新后重试。", { key: "codeMap.error.versionDirectory" });
+      if (controller.signal.aborted || epoch !== pageEpoch.current) return;
       loadedCoverage.current = requestKey;
       setCoverageKey(filterKey); setRootCoverage(root); setCoverage(scoped); setVersion(root.version);
       setSelected(current => scoped.files.some(file => file.path === current) ? current : null);
       setRepositories(current => current.map(repo => repo.id === repoId ? scoped.repository : repo));
-    })().catch(failure => { if (!isAborted(failure)) { setCoverageError(failure); setCoverage(current => current?.repository.id === repoId && coverageKey === filterKey ? current : null); } })
-      .finally(() => { if (!controller.signal.aborted) setCoverageLoading(false); });
+    })().catch(failure => { if (!controller.signal.aborted && epoch === pageEpoch.current && !isAborted(failure) && !recoverMissingRepository(failure)) { setCoverageError(failure); setCoverage(current => current?.repository.id === repoId && coverageKey === filterKey ? current : null); } })
+      .finally(() => { if (!controller.signal.aborted && epoch === pageEpoch.current) setCoverageLoading(false); });
     return () => controller.abort();
   }, [active, repoId, filterKey, version, reload, invalidTime]);
   useEffect(() => {
     if (!active || !coverage || coverage.repository.id !== repoId) return;
     const controller = new AbortController();
+    const epoch = pageEpoch.current;
     setMapSessionsLoading(true); setMapSessionsError(null); setMapSessionList(undefined);
     void request<MapSessionsResponse>(`${repositoryPath(repoId)}/sessions${queryString({ version: coverage.version })}`, { signal: controller.signal })
       .then(result => {
+        if (controller.signal.aborted || epoch !== pageEpoch.current) return;
         if (result.version !== coverage.version) throw new ApiError("VERSION_MISMATCH", "会话列表与地图结果版本不一致，请刷新后重试。", { key: "codeMap.error.versionSessions" });
         setMapSessionList(result);
-      }).catch(failure => { if (!isAborted(failure)) setMapSessionsError(failure); })
-      .finally(() => { if (!controller.signal.aborted) setMapSessionsLoading(false); });
+      }).catch(failure => { if (!controller.signal.aborted && epoch === pageEpoch.current && !isAborted(failure) && !recoverMissingRepository(failure)) setMapSessionsError(failure); })
+      .finally(() => { if (!controller.signal.aborted && epoch === pageEpoch.current) setMapSessionsLoading(false); });
     return () => controller.abort();
   }, [active, repoId, coverage?.version, mapSessionsRetry]);
   useEffect(() => {
     if (!active) return;
     if (!repoId || !selected || !coverage || !query || coverageLoading || invalidTime) { setDetail(null); setDetailLoading(false); setDetailError(null); return; }
     const controller = new AbortController();
+    const epoch = pageEpoch.current;
     setDetailLoading(true); setDetailError(null); setDetail(null);
     void request<FileDetail>(`${repositoryPath(repoId)}/file${queryString(query, { path: selected })}`, { signal: controller.signal })
-      .then(result => { if (result.version !== query.version) throw new ApiError("VERSION_MISMATCH", "文件详情与地图结果版本不一致，请刷新后重试。", { key: "codeMap.error.versionFile" }); setDetail(result); })
-      .catch(failure => { if (!isAborted(failure)) setDetailError(failure); })
-      .finally(() => { if (!controller.signal.aborted) setDetailLoading(false); });
+      .then(result => { if (controller.signal.aborted || epoch !== pageEpoch.current) return; if (result.version !== query.version) throw new ApiError("VERSION_MISMATCH", "文件详情与地图结果版本不一致，请刷新后重试。", { key: "codeMap.error.versionFile" }); setDetail(result); })
+      .catch(failure => { if (!controller.signal.aborted && epoch === pageEpoch.current && !isAborted(failure) && !recoverMissingRepository(failure)) setDetailError(failure); })
+      .finally(() => { if (!controller.signal.aborted && epoch === pageEpoch.current) setDetailLoading(false); });
     return () => controller.abort();
   }, [active, repoId, selected, coverage?.version, filterKey, detailRetry, coverageLoading, invalidTime]);
   useEffect(() => {
     if (!job || !jobActive(job)) return;
     let cancelled = false;
     const controller = new AbortController();
+    const epoch = pageEpoch.current;
     let timer: ReturnType<typeof setTimeout>;
     const poll = async () => {
       try {
         const response = await request<JobResponse>(`/jobs/${encodeURIComponent(job.id)}`, { signal: controller.signal });
-        if (!cancelled) { recordJob(response.job); setActionError(null); }
-      } catch (failure) { if (!cancelled && !isAborted(failure)) setActionError(failure); }
-      if (!cancelled) timer = setTimeout(() => void poll(), 1200);
+        if (!cancelled && epoch === pageEpoch.current) { recordJob(response.job); setActionError(null); }
+      } catch (failure) {
+        if (!cancelled && epoch === pageEpoch.current && !isAborted(failure)) {
+          if (recoverMissingRepository(failure)) { setJobs(current => current.filter(item => item.id !== job.id)); setJob(null); return; }
+          setActionError(failure);
+        }
+      }
+      if (!cancelled && epoch === pageEpoch.current) timer = setTimeout(() => void poll(), 1200);
     };
     timer = setTimeout(() => void poll(), 300);
     return () => { cancelled = true; controller.abort(); clearTimeout(timer); };
   }, [job?.id, job?.status]);
   useEffect(() => {
-    if (job?.status === "completed" && job.version && coverage?.repository.id === repoId && job.version !== coverage.version) { setVersion(job.version); setReload(value => value + 1); }
+    if (job?.status === "completed" && job.repositoryId === repoId && job.version && job.version !== coverage?.version) { setVersion(job.version); setReload(value => value + 1); }
   }, [job?.id, job?.status, job?.version]);
   const openSession = async (event: HistoryEvent) => {
     try {
@@ -422,20 +479,45 @@ export function useCodeMapPage({ active, theme, onSession }: {
   });
   const runRefresh = async () => {
     if (!repoId) return;
+    const epoch = pageEpoch.current;
     setActionPending(true); setActionError(null);
-    try { const response = await request<JobResponse>(`${repositoryPath(repoId)}/refresh`, { method: "POST" }); recordJob(response.job); }
-    catch (failure) { setActionError(failure); }
+    try { const response = await request<JobResponse>(`${repositoryPath(repoId)}/refresh`, { method: "POST" }); if (epoch === pageEpoch.current) recordJob(response.job); }
+    catch (failure) { if (epoch === pageEpoch.current && !recoverMissingRepository(failure)) setActionError(failure); }
     finally { setActionPending(false); }
   };
   const register = async (event: FormEvent) => {
+    if (registering) { event.preventDefault(); return; }
     event.preventDefault(); setRegistering(true); setRegisterError(null);
     try {
       const response = await request<RegisterRepositoryResponse>("/repositories", { method: "POST", body: { path: registerPath.trim() } });
-      setRepositories(current => [...current.filter(repo => repo.id !== response.repository.id), response.repository]);
-      chooseRepo(response.repository.id); recordJob(response.job); setRegisterOpen(false); setRegisterPath("");
+      const next = currentRepositories.current.some(repo => repo.id === response.repository.id)
+        ? currentRepositories.current.map(repo => repo.id === response.repository.id ? response.repository : repo)
+        : [...currentRepositories.current, response.repository];
+      currentRepositories.current = next; setRepositories(next);
+      chooseRepo(response.repository.id); if (response.job) recordJob(response.job);
+      setRegisterOpen(false); setRegisterPath("");
     } catch (failure) { setRegisterError(failure); }
     finally { setRegistering(false); }
   };
+  const deleteRepository = async () => {
+    if (!deleteTarget || deleting) return;
+    const target = deleteTarget;
+    setDeleting(true); setDeleteError(null);
+    try {
+      await request<DeleteRepositoryResponse>(repositoryPath(target.id), { method: "DELETE" });
+      const remaining = currentRepositories.current.filter(repo => repo.id !== target.id);
+      currentRepositories.current = remaining; setRepositories(remaining);
+      setJobs(current => current.filter(item => item.repositoryId !== target.id));
+      if (currentRepoId.current === target.id) chooseRepo(remaining[0]?.id ?? "");
+      else { pageEpoch.current += 1; setReload(value => value + 1); }
+      setDeleteTarget(null);
+    } catch (failure) { setDeleteError(failure); }
+    finally { setDeleting(false); }
+  };
+  const projectOptions = projects.map(path => ({ value: path,
+    label: repositories.some(repo => repo.path === path) ? t("codeMap.repository.projectRegistered", { project: filename(path) || path }) : filename(path) || path,
+    description: path,
+  }));
   const visible = useMemo(() => coverage?.files.filter(file => file.path.toLocaleLowerCase().includes(search.toLocaleLowerCase())) ?? [], [coverage?.files, search]);
   const s = coverage?.summary;
   const retainedCoverageLoading = coverageLoading && coverage?.repository.id === repoId && coverageKey === filterKey;
@@ -446,7 +528,7 @@ export function useCodeMapPage({ active, theme, onSession }: {
   const mapLegend = <div className="map-legend"><span>{metric === "activity" ? t("codeMap.metric.activity") : t("codeMap.exactCoverage")}</span><span className="legend-scale">{[0, 1, 2, 3, 4].map(tone => <i key={tone} className={`tone-${tone}`} />)}</span><span>{metric === "activity" ? t("codeMap.activity.range", { count: visible.reduce((max, file) => Math.max(max, metricValue(file, metric)), 0) }) : "0 → 100%"}</span><span className="near-key legend-near" /><span>{t("codeMap.near")}</span><small>{t("codeMap.area")}</small></div>;
   return {
     openMap,
-    sourceAction: active && repository && <SourcesDialog repo={repository} query={query} gapCount={coverage?.gapCount ?? coverage?.gaps.length ?? 0} onJob={recordJob} />,
+    sourceAction: active && repository && <SourcesDialog key={repoId} repo={repository} query={query} gapCount={coverage?.gapCount ?? coverage?.gaps.length ?? 0} onJob={next => { if (renderEpoch === pageEpoch.current) recordJob(next); }} />,
     refreshAction: <button hidden={!active} className="button primary refresh-button" onClick={() => void runRefresh()} disabled={!repository || actionPending || jobActive(job)} title={coverage ? t("codeMap.analysis.info", { date: dateLabel(coverage.createdAt) }) : undefined} aria-label={jobActive(job) ? t("codeMap.refresh.running") : t("codeMap.refresh.action")}><ArrowClockwise size={16} className={jobActive(job) ? "spinning" : ""} /><span className="refresh-label">{jobActive(job) ? t("codeMap.refresh.running") : t("codeMap.refresh.action")}</span></button>,
     maintenanceNotice: indexMaintenance && <Notice danger={indexMaintenance.status === "failed"} action={<button className="button subtle" onClick={() => setIndexMaintenance(null)}>{t("common.close")}</button>}>
       {messageText(indexMaintenance.messageDescriptor, t("diagnostics.index.maintenance.error"))}
@@ -458,7 +540,8 @@ export function useCodeMapPage({ active, theme, onSession }: {
     {!!actionError && <Notice danger action={<button className="button subtle" onClick={() => setActionError(null)}>{t("common.close")}</button>}><ErrorDetails error={actionError} /></Notice>}
     {job && job.status !== "completed" && <div className={`result-status${job.status === "failed" ? " failed" : ""}`} role="status">
       {job.status === "failed" ? <><WarningCircle size={16} /><span>{t("codeMap.refresh.failure", { reason: refreshFailureReason(job), context: t(coverage ? "codeMap.refresh.previous" : "codeMap.refresh.noResults") })}</span><button className="text-button" disabled={actionPending} onClick={() => void runRefresh()}>{t("codeMap.refresh.retry")}</button></>
-        : <><ArrowClockwise size={15} className="spinning" /><span>{job.status === "queued" ? t("codeMap.refresh.queued") : isMessageDescriptorKnown(job.phaseDescriptor) ? messageText(job.phaseDescriptor, job.phase) : t("common.originalDetail", { detail: job.phase })}</span><progress max="1" value={Math.max(0, Math.min(1, job.progress))} aria-label={t("codeMap.refresh.progress")} /><small>{new Intl.NumberFormat(language, { style: "percent", maximumFractionDigits: 0 }).format(job.progress)}{coverage ? t("codeMap.refresh.retained") : ""}</small></>}
+        : job.status === "cancelled" ? <span>{t("codeMap.refresh.cancelled")}</span>
+          : <><ArrowClockwise size={15} className="spinning" /><span>{job.status === "queued" ? t("codeMap.refresh.queued") : isMessageDescriptorKnown(job.phaseDescriptor) ? messageText(job.phaseDescriptor, job.phase) : t("common.originalDetail", { detail: job.phase })}</span><progress max="1" value={Math.max(0, Math.min(1, job.progress))} aria-label={t("codeMap.refresh.progress")} /><small>{new Intl.NumberFormat(language, { style: "percent", maximumFractionDigits: 0 }).format(job.progress)}{coverage ? t("codeMap.refresh.retained") : ""}</small></>}
     </div>}
     {coverage?.stale && !jobActive(job) && job?.status !== "failed" && <Notice action={<button className="text-button" onClick={() => void runRefresh()}>{t("codeMap.refresh.action")}</button>}>{t("codeMap.refresh.stale", { date: dateLabel(coverage.createdAt) })}</Notice>}
     {initialLoading && !repository ? <Empty title={t("codeMap.empty.connect")}>{t("codeMap.empty.loading")}</Empty> : !repository ? <Empty title={t("codeMap.empty.start")}>{t("codeMap.empty.register")}<br />{t("codeMap.empty.local")}</Empty> : <ResizableWorkspace sidebarCollapsed={navigationCollapsed} detailsCollapsed={detailsCollapsed}>
@@ -466,9 +549,9 @@ export function useCodeMapPage({ active, theme, onSession }: {
         {narrow ? <button className="repository-navigation-toggle" aria-label={t(navigationCollapsed ? "codeMap.repository.expandScope" : "codeMap.repository.collapseScope", { repository: repository.name, directory: directory || t("codeMap.directory.root") })} aria-expanded={!navigationCollapsed} aria-controls="repository-navigation-content" onClick={() => setNavigationOpen(value => !value)}>
           <Folder size={18} aria-hidden="true" /><span><strong>{repository.name}</strong><small title={directory || repository.path}>{directory || t("codeMap.directory.root")}</small></span>{navigationCollapsed ? <CaretDown size={17} aria-hidden="true" /> : <CaretUp size={17} aria-hidden="true" />}
         </button> : <div className="pane-heading"><span>{t("codeMap.repository.navigation")}</span><Hint label={navigationCollapsed ? t("codeMap.repository.expand") : t("codeMap.repository.collapse")}><button className="icon-button panel-toggle" aria-label={navigationCollapsed ? t("codeMap.repository.expand") : t("codeMap.repository.collapse")} aria-expanded={!navigationCollapsed} aria-controls="repository-navigation-content" onClick={() => setSidebarCollapsed(value => !value)}>{navigationCollapsed ? <CaretRight size={17} /> : <CaretLeft size={17} />}</button></Hint></div>}
-        <div id="repository-navigation-content" className="sidebar-content" hidden={navigationCollapsed}><div className="repository-picker"><Dropdown.Root><Dropdown.Trigger ref={repositoryTrigger} className="repository-trigger"><Folder size={19} weight="duotone" /><strong>{repository.name}</strong><CaretDown size={14} /></Dropdown.Trigger><Dropdown.Portal><Dropdown.Content className="dropdown-content" sideOffset={6}>{repositories.map(repo => <Dropdown.Item key={repo.id} className="dropdown-item" onSelect={() => chooseRepo(repo.id)}>{repo.id === repoId && <Check size={14} />}<span>{repo.name}<small>{repo.path}</small></span></Dropdown.Item>)}<Dropdown.Separator className="dropdown-separator" /><Dropdown.Item className="dropdown-item" onSelect={() => setRegisterOpen(true)}><Plus size={15} />{t("codeMap.repository.register")}</Dropdown.Item></Dropdown.Content></Dropdown.Portal></Dropdown.Root></div>
+        <div id="repository-navigation-content" className="sidebar-content" hidden={navigationCollapsed}><div className="repository-picker"><Dropdown.Root><Dropdown.Trigger ref={repositoryTrigger} className="repository-trigger" aria-label={t("codeMap.repository.choose")}><Folder size={19} weight="duotone" /><strong>{repository.name}</strong><CaretDown size={14} /></Dropdown.Trigger><Dropdown.Portal><Dropdown.Content className="dropdown-content" sideOffset={6}>{repositories.map(repo => <Dropdown.Item key={repo.id} className="dropdown-item" onSelect={() => chooseRepo(repo.id)}>{repo.id === repoId && <Check size={14} />}<span>{repo.name}<small>{repo.path}</small></span></Dropdown.Item>)}<Dropdown.Separator className="dropdown-separator" /><Dropdown.Item className="dropdown-item" onSelect={() => { setRegisterError(null); setRegisterOpen(true); }}><Plus size={15} />{t("codeMap.repository.register")}</Dropdown.Item><Dropdown.Separator className="dropdown-separator" /><Dropdown.Item className="dropdown-item repository-delete-action" onSelect={() => { setDeleteError(null); setDeleteTarget({ ...repository }); }}><Trash size={15} />{t("codeMap.repository.deleteCurrent")}</Dropdown.Item></Dropdown.Content></Dropdown.Portal></Dropdown.Root></div>
         <p className="repo-path" title={repository.path}>{repository.path}</p><div className="sidebar-label">{t("codeMap.repository.directories")}</div><DirectoryTree key={repoId} files={rootCoverage?.files ?? []} selected={directory} browse={browse} />
-        <div className="sidebar-bottom"><button className="text-button" onClick={() => setRegisterOpen(true)}><Plus size={14} />{t("codeMap.repository.other")}</button></div></div>
+        <div className="sidebar-bottom"><button className="text-button" onClick={() => { setRegisterError(null); setRegisterOpen(true); }}><Plus size={14} />{t("codeMap.repository.other")}</button></div></div>
       </aside>
       <main className="map-main"><div className="page-heading"><h1>{t("codeMap.title")}</h1><div className="map-heading-tools">
         <span className="map-query-progress">{(mapSessionsLoading || retainedCoverageLoading) && <span className="map-query-loading" role="status" aria-label={t(retainedCoverageLoading ? "codeMap.coverage.loading" : "codeMap.session.loading")} title={t(retainedCoverageLoading ? "codeMap.coverage.loading" : "codeMap.session.loading")}><CircleNotch size={17} aria-hidden="true" /></span>}</span>
@@ -501,9 +584,27 @@ export function useCodeMapPage({ active, theme, onSession }: {
       </main>
       <FilePane repoId={repoId} detail={detail} loading={detailLoading} error={detailError} retry={() => setDetailRetry(value => value + 1)} collapsed={detailsCollapsed} toggle={() => setDetailsCollapsed(value => !value)} metric={metric} theme={theme} query={query} sessions={availableMapSessions} openSession={event => void openSession(event)} />
     </ResizableWorkspace>}
-    {!repository && !initialLoading && <div className="first-register"><button className="button primary" onClick={() => setRegisterOpen(true)}><Plus size={17} />{t("codeMap.repository.registerLocal")}</button></div>}
-    <Modal open={registerOpen} onOpenChange={setRegisterOpen} fallbackFocus={repositoryTrigger} title={t("codeMap.repository.registerTitle")} description={t("codeMap.repository.registerDescription")}>
-      <form className="register-form" onSubmit={event => void register(event)}><label>{t("codeMap.repository.path")}<input value={registerPath} onChange={event => setRegisterPath(event.target.value)} placeholder="/absolute/path/to/repository" autoComplete="off" required /></label>{!!registerError && <Notice danger><ErrorDetails error={registerError} /></Notice>}<div className="dialog-end"><button type="button" className="button subtle" onClick={() => setRegisterOpen(false)}>{t("common.cancel")}</button><button type="submit" className="button primary" disabled={registering || !registerPath.trim()}>{registering ? t("codeMap.repository.registering") : t("codeMap.repository.registerAnalyze")}</button></div></form>
+    {!repository && !initialLoading && <div className="first-register"><button ref={repositoryTrigger} className="button primary" onClick={() => { setRegisterError(null); setRegisterOpen(true); }}><Plus size={17} />{t("codeMap.repository.registerLocal")}</button></div>}
+    <Modal open={registerOpen} onOpenChange={setRegisterOpen} fallbackFocus={repositoryTrigger} contentRef={setRegisterContainer} busy={registering} title={t("codeMap.repository.registerTitle")} description={t("codeMap.repository.registerDescription")}>
+      <form className="register-form" onSubmit={event => void register(event)}>
+        <fieldset className="repository-project-field" disabled={registering}>
+          {projectsLoading ? <p className="muted" role="status">{t("codeMap.repository.projectsLoading")}</p>
+            : projectsError ? <Notice danger action={<button type="button" className="button subtle" onClick={() => setProjectsRetry(value => value + 1)}>{t("common.retry")}</button>}><strong>{t("codeMap.repository.projectsError")}</strong><br /><ErrorDetails error={projectsError} /></Notice>
+              : projects.length ? <ProjectPicker label={t("codeMap.repository.project")} placeholder={t("codeMap.repository.projectSearch")} value={registerPath} options={projectOptions} container={registerContainer} onChange={path => { setRegisterPath(path); setRegisterError(null); }} />
+                : <p className="muted" role="status">{t("codeMap.repository.projectsEmpty")}</p>}
+        </fieldset>
+        <label>{t("codeMap.repository.path")}<input value={registerPath} disabled={registering} onChange={event => { setRegisterPath(event.target.value); setRegisterError(null); }} placeholder="/absolute/path/to/repository" autoComplete="off" required /></label>
+        {!!registerError && <Notice danger><ErrorDetails error={registerError} /></Notice>}
+        <div className="dialog-end"><button type="button" className="button subtle" disabled={registering} onClick={() => setRegisterOpen(false)}>{t("common.cancel")}</button><button type="submit" className="button primary" disabled={registering || !registerPath.trim()}>{registering ? t("codeMap.repository.registering") : t("codeMap.repository.registerAnalyze")}</button></div>
+      </form>
+    </Modal>
+    <Modal open={deleteTarget !== null} onOpenChange={open => { if (!open) setDeleteTarget(null); }} fallbackFocus={repositoryTrigger} busy={deleting} title={t("codeMap.repository.deleteTitle")} description={t("codeMap.repository.deleteDescription")}>
+      {deleteTarget && <>
+        <dl className="repository-delete-target"><dt>{t("codeMap.repository.deleteName")}</dt><dd>{deleteTarget.name}</dd><dt>{t("codeMap.repository.path")}</dt><dd><code>{deleteTarget.path}</code></dd></dl>
+        <div className="repository-delete-scope"><h3>{t("codeMap.repository.deleteClearsTitle")}</h3><p>{t("codeMap.repository.deleteClears")}</p><h3>{t("codeMap.repository.deleteKeepsTitle")}</h3><p>{t("codeMap.repository.deleteKeeps")}</p></div>
+        {!!deleteError && <Notice danger><ErrorDetails error={deleteError} /></Notice>}
+        <div className="dialog-end"><button type="button" className="button subtle" disabled={deleting} onClick={() => setDeleteTarget(null)}>{t("common.cancel")}</button><button type="button" className="button repository-delete-button" disabled={deleting} onClick={() => void deleteRepository()}>{deleting ? t("codeMap.repository.deleting") : t("codeMap.repository.deleteConfirm")}</button></div>
+      </>}
     </Modal>
     </section>
     ),

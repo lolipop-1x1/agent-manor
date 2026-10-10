@@ -2,12 +2,13 @@ import { errorDescriptor } from "../i18n/diagnostics.js";
 import { createHash, randomUUID } from "node:crypto";
 import { realpath } from "node:fs/promises";
 import { isAbsolute, relative, resolve, sep } from "node:path";
+import { setImmediate } from "node:timers/promises";
 import type { AnalysisSnapshot, Gap, HistoryEvent, ParsedSource, SourceSummary } from "../contracts.js";
 import { eventFilePaths, getRepository, hashContent, mappingCacheKey, MATCHING_RULE_VERSION, matchEvent, scanRepository } from "../analysis/index.js";
 import { associateSource, associationMetadata, canonicalPath, createSourceAssociationCache, discoverSources, historicalWorktrees, normalizeHistoryPath, parseSource, resolveSharedHistory } from "../history/index.js";
 import type { DiscoverRoots, ParsedHistorySource, SourceLocation } from "../history/index.js";
 import { sourceLocationKey } from "../history/types.js";
-import { AnalysisStore } from "./store.js";
+import { AnalysisStore, JobCancelledError } from "./store.js";
 import type { RefreshStats } from "./store.js";
 import { sourceQuickStamp } from "../history/quick-check.js";
 import { PARSER_RULE_VERSION } from "../version.js";
@@ -41,12 +42,21 @@ function eventsBySource(events: HistoryEvent[]): Map<string, HistoryEvent[]> {
 }
 
 /** 增量计算写入内存；成功后才提交缓存、结果版本和任务完成状态。 */
-export async function refreshRepository(store: AnalysisStore, jobId: string, roots?: DiscoverRoots, clearCache = false): Promise<void> {
-  const job = store.getJob(jobId);
-  const repository = store.getRepository(job.repositoryId);
-  store.updateJob(jobId, { status: "running", phase: "盘点当前仓库", phaseDescriptor: { key: "diagnostics.index.refresh.m001" }, progress: 0.05, startedAt: new Date().toISOString() });
+export async function refreshRepository(store: AnalysisStore, jobId: string, roots?: DiscoverRoots, clearCache = false, isCancelled: () => boolean = () => false): Promise<void> {
+  const job = store.findJob(jobId);
+  if (!job || job.status !== "queued") return;
+  const checkpoint = async () => {
+    // 同步映射批次之间接收撤销消息，同时以数据库中的旧任务身份兜底。
+    await setImmediate();
+    if (isCancelled()) throw new JobCancelledError();
+    store.assertRunningJob(jobId, job.repositoryId);
+  };
   try {
+    const repository = store.getRepository(job.repositoryId);
+    store.updateJob(jobId, { status: "running", phase: "盘点当前仓库", phaseDescriptor: { key: "diagnostics.index.refresh.m001" }, progress: 0.05, startedAt: new Date().toISOString() });
+    await checkpoint();
     const baseline = await scanRepository(repository.path);
+    await checkpoint();
     const discoveryCache = clearCache ? [] : store.getDiscoveryCache(repository.id);
     let locations: SourceLocation[];
     try { locations = await discoverSources(roots, { cachedSources: discoveryCache }); }
@@ -55,6 +65,7 @@ export async function refreshRepository(store: AnalysisStore, jobId: string, roo
       if (!missing(error)) throw error;
       locations = await discoverSources(roots, { cachedSources: discoveryCache });
     }
+    await checkpoint();
     const tracked = store.getTrackedSources(repository.id);
     const cached = clearCache ? [] : store.getParsedSourceLocations(repository.id);
     const manual = store.getManualAssociations(repository.id);
@@ -79,6 +90,7 @@ export async function refreshRepository(store: AnalysisStore, jobId: string, roo
     }
 
     async function readSource(location: SourceLocation): Promise<ParsedHistorySource> {
+      await checkpoint();
       const previous = byPath.get(sourceLocationKey(location)) ?? (location.sourceId ? byId.get(location.sourceId) : undefined);
       const old = previous ? store.getParsedSource(repository.id, previous.sourceId, previous.path) as ParsedHistorySource | undefined : undefined;
       const oldCursor = old?.cursor as { ruleVersion?: string; format?: string; quickStamp?: string; associationOnly?: boolean;
@@ -98,6 +110,7 @@ export async function refreshRepository(store: AnalysisStore, jobId: string, roo
         stats.sourcesParsed++;
         stats.parsedRecords += (source.cursor as { parsedRecords?: number } | undefined)?.parsedRecords ?? 0;
       }
+      await checkpoint();
       const after = before && await sourceQuickStamp(location);
       if (source.cursor && typeof source.cursor === "object" && !Array.isArray(source.cursor)) {
         source.cursor = { ...source.cursor, quickStamp: after === before ? before : undefined } as ParsedHistorySource["cursor"];
@@ -145,6 +158,7 @@ export async function refreshRepository(store: AnalysisStore, jobId: string, roo
 
     store.updateJob(jobId, { phase: "解析关联历史", phaseDescriptor: { key: "diagnostics.index.refresh.m003" }, progress: 0.2 });
     for (const [index, location] of locations.entries()) {
+      if (index % 32 === 0) await checkpoint();
       if (await possible(location)) await parse(location);
       if ((index + 1) % 32 === 0 || index === locations.length - 1) store.updateJob(jobId, { progress: 0.2 + 0.35 * (index + 1) / locations.length });
     }
@@ -175,6 +189,7 @@ export async function refreshRepository(store: AnalysisStore, jobId: string, roo
     }
 
     let worktrees = await historicalWorktrees(parsed.flatMap(source => source.events), baseline);
+    await checkpoint();
     for (const location of locations) {
       const cwd = normalizeHistoryPath(location.cwd);
       if (!parsedPaths.has(sourceLocationKey(location)) && cwd && isAbsolute(cwd)) {
@@ -206,6 +221,7 @@ export async function refreshRepository(store: AnalysisStore, jobId: string, roo
       if (metadataPaths.has(sourceLocationKey(source)) && required.has(source.sourceId)) {
         const before = await sourceQuickStamp(source);
         parsed[index] = await parseSource(source.path, source.client, undefined, source.format, { location: source });
+        await checkpoint();
         reusedParsed.delete(JSON.stringify([source.sourceId, source.path]));
         const after = before && await sourceQuickStamp(source);
         const cursor = parsed[index]!.cursor;
@@ -225,6 +241,7 @@ export async function refreshRepository(store: AnalysisStore, jobId: string, roo
       return parents.size === 1 ? { ...source, parentSessionId: [...parents][0] } : source;
     });
     worktrees = await historicalWorktrees(shared.events, baseline);
+    await checkpoint();
     const events = new Map<string, HistoryEvent>();
     const associated = new Set<string>();
     const sources: SourceSummary[] = [];
@@ -234,6 +251,7 @@ export async function refreshRepository(store: AnalysisStore, jobId: string, roo
       // 手动关联只补无 cwd 的相对路径，不覆盖已有工作目录或外部绝对路径。
       const constrained = manual.has(source.sourceId) ? relevant.map((event) => ({ ...event, cwd: event.cwd ?? source.cwd ?? repository.path })) : relevant;
       const association = await associateSource({ ...source, events: constrained }, baseline, worktrees, associationCache);
+      await checkpoint();
       if (association.associated || manual.has(source.sourceId)) {
         associated.add(source.sourceId);
         sources.push(summary(source, manual.has(source.sourceId) ? "manual" : "automatic"));
@@ -268,7 +286,8 @@ export async function refreshRepository(store: AnalysisStore, jobId: string, roo
     const reusedVersion = !clearCache && repository.version
       && store.getRefreshStats(repository.id, repository.version).resultFingerprint === stats.resultFingerprint ? repository.version : undefined;
     store.updateJob(jobId, { phase: "对应当前源码", phaseDescriptor: { key: "diagnostics.index.refresh.m006" }, progress: 0.6 });
-    for (const event of selectedEvents) {
+    for (const [index, event] of selectedEvents.entries()) {
+      if (index % 32 === 0) await checkpoint();
       if (event.kind !== "read" && event.kind !== "edit") continue;
       for (const path of eventFilePaths(event, baseline.repository)) {
         const file = files.get(path);
@@ -288,10 +307,12 @@ export async function refreshRepository(store: AnalysisStore, jobId: string, roo
     const snapshot: AnalysisSnapshot = { repository: publishedRepository, version, baseline,
       sources: snapshotSources, events: selectedEvents, mappings: mappingEntries.map((entry) => entry.mapping),
       gaps: [...new Map(gaps.map((gap) => [JSON.stringify(gap), gap])).values()], createdAt: new Date().toISOString(), previousVersion: repository.version };
+    await checkpoint();
     store.updateJob(jobId, { phase: "发布完整结果", phaseDescriptor: { key: "diagnostics.index.refresh.m007" }, progress: 0.95 });
     store.publish({ snapshot, sources: { version, sources, unassociated, gaps: snapshot.gaps },
       parsed, mappings: mappingEntries, stats, clearCache, jobId, reusedParsed, reusedVersion });
   } catch (error) {
+    if (error instanceof JobCancelledError || !store.findJob(jobId)) return;
     store.failJob(jobId, error instanceof Error ? error.message : String(error), errorDescriptor(error));
   }
 }

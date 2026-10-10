@@ -16,6 +16,11 @@ export class StoreError extends Error {
   }
 }
 
+/** 已撤销的任务不会再发布，也不回写失败记录。 */
+export class JobCancelledError extends Error {
+  constructor() { super("仓库分析已取消"); this.name = "JobCancelledError"; }
+}
+
 export interface RefreshStats {
   sourcesParsed: number;
   parsedRecords: number;
@@ -137,10 +142,28 @@ export class AnalysisStore {
   }
 
   async registerRepository(path: string): Promise<Repository> {
+    return (await this.registerRepositoryResult(path)).repository;
+  }
+
+  async registerRepositoryResult(path: string): Promise<{ repository: Repository; created: boolean }> {
     const repository = await getRepository(path);
-    this.database.prepare("INSERT OR IGNORE INTO repositories(id,json,stale) VALUES(?,?,1)")
+    const result = this.database.prepare("INSERT OR IGNORE INTO repositories(id,json,stale) VALUES(?,?,1)")
       .run(repository.id, JSON.stringify(repository));
-    return this.getRepository(repository.id);
+    return { repository: this.getRepository(repository.id), created: result.changes > 0 };
+  }
+
+  /** 先获得写锁，使发布与删除只能按完整事务的提交顺序生效。 */
+  deleteRepository(id: string): Job[] {
+    return this.database.transaction(() => {
+      this.getRepository(id);
+      const jobs = (this.database.prepare("SELECT json FROM jobs WHERE repository_id=?").all(id) as JsonRow[])
+        .map(row => JSON.parse(row.json) as Job);
+      for (const table of ["manual_associations", "jobs", "versions", "source_cache", "mapping_cache", "tracked_sources", "payload_parts"]) {
+        this.database.prepare(`DELETE FROM ${table} WHERE repository_id=?`).run(id);
+      }
+      this.database.prepare("DELETE FROM repositories WHERE id=?").run(id);
+      return jobs;
+    }).immediate();
   }
 
   private repository(row: RepositoryRow): Repository {
@@ -274,9 +297,19 @@ export class AnalysisStore {
   }
 
   getJob(id: string): RefreshJob {
+    const job = this.findJob(id);
+    if (!job) throw new StoreError("JOB_NOT_FOUND", "刷新任务不存在", { key: "diagnostics.index.store.m007" });
+    return job;
+  }
+
+  findJob(id: string): RefreshJob | undefined {
     const row = this.database.prepare("SELECT json FROM jobs WHERE id=?").get(id) as JsonRow | undefined;
-    if (!row) throw new StoreError("JOB_NOT_FOUND", "刷新任务不存在", { key: "diagnostics.index.store.m007" });
-    return JSON.parse(row.json) as RefreshJob;
+    return row ? JSON.parse(row.json) as RefreshJob : undefined;
+  }
+
+  assertRunningJob(id: string, repositoryId: string): void {
+    const job = this.findJob(id);
+    if (!job || job.repositoryId !== repositoryId || job.status !== "running") throw new JobCancelledError();
   }
 
   listJobs(): RefreshJob[] {
@@ -290,14 +323,14 @@ export class AnalysisStore {
     return job;
   }
 
-  failJob(id: string, error: string, errorDescriptor?: MessageDescriptor): Job {
-    const existing = this.getJob(id);
-    if (existing.status === "failed") return existing;
+  failJob(id: string, error: string, errorDescriptor?: MessageDescriptor): Job | undefined {
     return this.database.transaction(() => {
+      const existing = this.findJob(id);
+      if (!existing || existing.status === "failed" || existing.status === "completed") return existing;
       const job = this.updateJob(id, { status: "failed", phase: "刷新失败", phaseDescriptor: { key: "diagnostics.index.store.m008" }, progress: 1, finishedAt: new Date().toISOString(), error, errorDescriptor });
       this.database.prepare("UPDATE repositories SET stale=1 WHERE id=?").run(job.repositoryId);
       return job;
-    })();
+    }).immediate();
   }
 
   recoverJobs(): void {
@@ -310,6 +343,8 @@ export class AnalysisStore {
     this.database.transaction(() => {
       const { snapshot } = input;
       const repositoryId = snapshot.repository.id;
+      // 检查与全部写入共享写锁；同路径重登也不会恢复旧任务身份。
+      this.assertRunningJob(input.jobId, repositoryId);
       const { gaps: _sourceGaps, ...savedSources } = input.sources;
       const savedSnapshot = { ...snapshot, sources: snapshot.sources.map((source) => this.sourceMetadata(source)) };
       // 无变化检查沿用完整旧版；发布时统计和创建时间保持不可变。
@@ -354,7 +389,7 @@ export class AnalysisStore {
         .run(repositoryId, repositoryId);
       this.database.prepare(`DELETE FROM versions WHERE repository_id=? AND version IN (${expired})`)
         .run(repositoryId, repositoryId);
-    })();
+    }).immediate();
   }
 
   close(): void { this.database.close(); }

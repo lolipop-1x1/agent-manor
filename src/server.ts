@@ -5,7 +5,7 @@ import { randomUUID } from "node:crypto";
 import { existsSync, lstatSync, realpathSync } from "node:fs";
 import { join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
-import type { AnalysisSnapshot, ApiErrorCode, CoverageQuery, FileDetail, Filters, ServiceInstance } from "./contracts.js";
+import type { AnalysisSnapshot, ApiErrorCode, CoverageQuery, DeleteRepositoryResponse, FileDetail, Filters, RegisterRepositoryResponse, ServiceInstance } from "./contracts.js";
 import { buildCoverage, eventFilePaths, filterEvents, filterHistoricalEvents, getHotspots, getUnreadFiles, selectedSource } from "./analysis/coverage.js";
 import { mapSessions } from "./analysis/sessions.js";
 import type { DiscoverRoots } from "./history/index.js";
@@ -129,16 +129,21 @@ export async function startService(options: ServiceOptions = {}) {
       setImmediate(() => { void app.close(); });
     });
     app.get("/api/v1/repositories", async () => ({ repositories: index.listRepositories() }));
-    app.post("/api/v1/repositories", async (request) => {
+    app.post("/api/v1/repositories", async (request): Promise<RegisterRepositoryResponse> => {
       const path = bodyText(request.body, "path");
-      let repository;
-      try { repository = await index.registerRepository(path); }
+      let result;
+      try { result = await index.registerRepositoryResult(path); }
       catch { throw new ServiceError("INVALID_INPUT", "path 必须是可读取的 Git 仓库", { key: "diagnostics.server.m013" }); }
-      return { repository, job: worker.refresh(repository.id) };
+      return result.created ? { repository: result.repository, job: worker.refresh(result.repository.id) } : { repository: result.repository };
     });
     const base = "/api/v1/repositories/:id";
     type RepositoryParams = { id: string };
     type Query = Record<string, unknown>;
+    app.delete<{ Params: RepositoryParams }>(base, async (request): Promise<DeleteRepositoryResponse> => {
+      emptyBody(request.body);
+      worker.deleteRepository(request.params.id);
+      return { repositoryId: request.params.id };
+    });
     app.get<{ Querystring: Query }>("/api/v1/sessions/status", async request => queryBoolean(request.query.summary, "summary") ? library.statusSummary() : library.status());
     app.get<{ Querystring: Query }>("/api/v1/sessions/gaps", async request => library.indexGaps(textValue(request.query.version, "version")));
     app.get<{ Querystring: Query }>("/api/v1/sessions", async request => library.list(sessionQuery(request.query)));

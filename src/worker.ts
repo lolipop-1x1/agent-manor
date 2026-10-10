@@ -15,6 +15,8 @@ const store = new AnalysisStore(options.dbPath);
 const sessions = new SessionStore(options.dbPath);
 let queue = Promise.resolve();
 let pending = 0;
+const cancelled = new Set<string>();
+const queued = new Set<string>();
 
 // 回收和解析共用串行 Worker，短批次之间让出执行权以接收新任务。
 const reclaimTimer = setInterval(() => {
@@ -24,16 +26,23 @@ const reclaimTimer = setInterval(() => {
   if (reclaim.status !== "skipped" || reclaim.reason !== "threshold") port.postMessage({ reclaim });
 }, 1_000).unref();
 
-port.on("message", (message: { type: string; jobId: string; clearCache?: boolean }) => {
+port.on("message", (message: { type: string; jobId: string; jobIds?: string[]; clearCache?: boolean }) => {
+  if (message.type === "cancel") {
+    for (const id of message.jobIds ?? []) if (queued.has(id)) cancelled.add(id);
+    return;
+  }
   if (message.type !== "refresh" && message.type !== "sessions") return;
   pending += 1;
+  queued.add(message.jobId);
   queue = queue.then(async () => {
     if (message.type === "sessions") await refreshSessions(sessions, message.jobId, options.roots, Boolean(message.clearCache));
-    else await refreshRepository(store, message.jobId, options.roots, Boolean(message.clearCache));
+    else if (!cancelled.has(message.jobId) && store.findJob(message.jobId)) {
+      await refreshRepository(store, message.jobId, options.roots, Boolean(message.clearCache), () => cancelled.has(message.jobId));
+    }
     port.postMessage({ jobId: message.jobId });
   }).catch((error: unknown) => {
     const owner = message.type === "sessions" ? sessions : store;
     owner.failJob(message.jobId, error instanceof Error ? error.message : String(error), errorDescriptor(error));
     port.postMessage({ jobId: message.jobId });
-  }).finally(() => { pending -= 1; });
+  }).finally(() => { cancelled.delete(message.jobId); queued.delete(message.jobId); pending -= 1; });
 });
