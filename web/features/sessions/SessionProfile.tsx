@@ -136,13 +136,15 @@ export function SessionProfilePane({ profile, loading, error, includeChildren, s
   useEffect(() => {
     if (!profile || visibleTab !== "usage" || collapsed) return;
     const controller = new AbortController(); setUsageLoading(true); setUsageError(undefined);
-    void request<SessionProfile>(`/sessions/${encodeURIComponent(profile.sessionIds[0]!)}/profile${sessionParams({ version: profile.version, includeChildren: profile.scope === "tree", stepOffset: (stepPage - 1) * 12, stepLimit: 12 })}`, { signal: controller.signal })
+    void request<SessionProfile>(`/sessions/${encodeURIComponent(profile.sessionIds[0]!)}/profile${sessionParams({ version: profile.version, includeChildren: profile.scope === "tree" })}`, { signal: controller.signal })
       .then(result => { if (!controller.signal.aborted) setUsageDetails(result); })
       .catch(error => { if (!isAborted(error)) setUsageError(error instanceof Error ? error : new Error(String(error))); })
       .finally(() => { if (!controller.signal.aborted) setUsageLoading(false); });
     return () => controller.abort();
-  }, [profile?.version, profile?.sessionIds[0], profile?.scope, visibleTab, collapsed, stepPage, usageRetry]);
+  }, [profile?.version, profile?.sessionIds[0], profile?.scope, visibleTab, collapsed, usageRetry]);
   const visibleUsage = usageDetails?.version === profile?.version && usageDetails?.scope === profile?.scope && usageDetails?.sessionIds[0] === profile?.sessionIds[0] ? usageDetails : undefined;
+  const stepOffset = (stepPage - 1) * 12;
+  const visibleSteps = visibleUsage?.steps.slice(stepOffset, stepOffset + 12) ?? [];
   const failureCount = profile?.tools.reduce((total, item) => total + item.failure, 0) ?? 0;
   const peak = profile?.peakInputRequest ?? profile?.steps.find(step => step.inputTokens === profile.usage.peakInputTokens && !!step.messageId);
   const metric = ([key, label]: typeof metrics[number]) => {
@@ -201,7 +203,7 @@ export function SessionProfilePane({ profile, loading, error, includeChildren, s
           {visibleUsage && <><p className="session-request-range">{t("sessions.profile.requestRange", { from: (visibleUsage.stepsOffset ?? 0) + 1, to: (visibleUsage.stepsOffset ?? 0) + visibleUsage.steps.length, total: visibleUsage.stepsTotal ?? profile.usage.requests })}</p>
           {visibleUsage.steps.filter(step => usageSeries.some(([key]) => step[key] !== undefined)).length > 1 && <UsageChart profile={visibleUsage} onFocusStep={onFocusStep} />}
             <div className="session-step-table"><table><thead><tr><th>{t("sessions.profile.request")}</th>{usageSeries.filter(([key]) => profile.usage.recordedRequests?.[key] || profile.steps.some(step => step[key] !== undefined)).map(([key, label]) => <th key={key}>{t(label)}</th>)}{hasSpeed && <th aria-label={t("sessions.speed.label")}><SpeedColumnHeader /></th>}</tr></thead><tbody>
-              {visibleUsage.steps.map((step, index) => <tr key={`${step.sessionId}:${step.id}`}><td>{requestLocation(step) ? <button aria-label={t("sessions.profile.requestNumber", { number: formatCount((visibleUsage.stepsOffset ?? 0) + index + 1) })} onClick={() => onFocusStep(step)}>#{formatCount((visibleUsage.stepsOffset ?? 0) + index + 1)}</button> : <span>#{formatCount((visibleUsage.stepsOffset ?? 0) + index + 1)}</span>}</td>
+              {visibleSteps.map((step, index) => <tr key={`${step.sessionId}:${step.id}`}><td>{requestLocation(step) ? <button aria-label={t("sessions.profile.requestNumber", { number: formatCount(stepOffset + index + 1) })} onClick={() => onFocusStep(step)}>#{formatCount(stepOffset + index + 1)}</button> : <span>#{formatCount(stepOffset + index + 1)}</span>}</td>
                 {usageSeries.filter(([key]) => profile.usage.recordedRequests?.[key] || profile.steps.some(item => item[key] !== undefined)).map(([key]) => <td key={key}>{step[key] === undefined ? "—" : displayRecorded(step[key])}</td>)}{hasSpeed && <td><RequestSpeedBadge usage={step} compact onLocate={messageId => onFocusStep({ ...step, messageId })} /></td>}</tr>)}
             </tbody></table></div>
             {(visibleUsage.stepsTotal ?? profile.usage.requests) > 12 && <Pager page={stepPage} pageSize={12} total={visibleUsage.stepsTotal ?? profile.usage.requests} onChange={setStepPage} label={t("sessions.profile.requestPagination")} showEnds />}</>}
