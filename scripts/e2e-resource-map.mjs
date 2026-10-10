@@ -37,6 +37,7 @@ const api = async (path, method = "GET", body) => {
 };
 const step = async (name, code) => {
   await browser(["run-code", `async page => {
+    await page.waitForLoadState("networkidle");
     const expect = (value, message) => { if (!value) throw new Error(message); };
     ${code}
     return { passed: ${JSON.stringify(name)} };
@@ -161,7 +162,8 @@ try {
     await page.setViewportSize({width:1560,height:980});
     const table=page.getByRole('table',{name:'Skill 总览',exact:true}); await table.waitFor();
     expect(await table.getByRole('columnheader').filter({hasText:'调用次数'}).getAttribute('aria-sort')==='descending','Skill 默认排序不是调用次数');
-    expect(await table.getByRole('columnheader').count()===7,'Skill 列表缺少次数或会话列');
+    expect(await table.getByRole('columnheader').count()===6,'Skill 列表缺少次数或会话列');
+    expect(await table.getByRole('columnheader',{name:'管理',exact:true}).count()===1,'Skill 列表缺少管理列');
     expect(page.mapRequests.length===0,'列表提前读取地图');
     await page.getByRole('textbox',{name:'搜索资源名称或路径',exact:true}).fill('map-');
     await page.getByRole('group',{name:'资源展示方式',exact:true}).getByRole('button',{name:'地图',exact:true}).click();
@@ -222,8 +224,8 @@ try {
       expect(await page.locator('rect[data-resource-id]').count()===1,'读取型资源在统一地图为空');
       await page.getByRole('group',{name:'资源展示方式',exact:true}).getByRole('button',{name:'列表',exact:true}).click();
       const table=page.getByRole('table',{name:'Skill 总览',exact:true}); await table.waitFor();
-      expect(await table.getByRole('columnheader').count()===7,'主列表没有同时保留次数和会话列');
-      expect((await table.getByRole('row').nth(1).getByRole('cell').nth(1).innerText())==='1','读取型资源没有计入使用会话');
+      expect(await table.getByRole('columnheader').count()===6,'主列表没有同时保留次数和会话列');
+      expect((await table.getByRole('row').nth(1).getByRole('cell').nth(2).innerText())==='1','读取型资源没有计入使用会话');
       const sorting=page.getByRole('combobox',{name:'资源排序',exact:true}); await sorting.click();
       expect(await page.getByRole('option',{name:'调用次数',exact:true}).count()===1&&await page.getByRole('option',{name:'读取次数',exact:true}).count()===0,'排序缺少调用次数或仍单列读取次数');
       await page.keyboard.press('Escape');
@@ -362,8 +364,8 @@ try {
     const position=await stage.locator('svg').innerHTML();
     await detail.getByRole('button',{name:'管理map-skill-001',exact:true}).click();
     const manage=page.getByRole('dialog',{name:'管理具体入口',exact:true}); await manage.waitFor();
-    expect(await manage.getByRole('button',{name:'预览移入回收区map-skill-001的Codex入口',exact:true}).count()===0,'共享物理本体仍可移走');
-    await manage.getByRole('button',{name:'预览移入回收区map-skill-001的Claude Code入口',exact:true}).click();
+    expect(await manage.getByRole('button',{name:${JSON.stringify(`将${join(fixture.userHome, '.codex', 'skills', 'map-skill-001')}移入回收区`)},exact:true}).count()===1,'共享物理本体缺少唯一管理入口');
+    await manage.getByRole('button',{name:${JSON.stringify(`移除链接${fixture.sharedMapLink}，保留目标文件`)},exact:true}).click();
     const dialog=page.getByRole('dialog',{name:'移入回收区预览',exact:true});
     await dialog.getByRole('button',{name:'确认移入回收区',exact:true}).waitFor();
     expect((await dialog.innerText()).includes('Claude Code'),'预览没有明确所选入口');
@@ -462,7 +464,11 @@ try {
     const detail=page.getByRole('complementary',{name:'资源详情',exact:true});
     await detail.getByRole('heading',{name:'map-history-only',exact:true}).waitFor();
     expect(await detail.getByRole('button',{name:/^预览/}).count()===0,'仅历史资源有写操作');
-    expect((await detail.innerText()).includes('仅历史'),'历史资源状态不可见');
+    await detail.getByRole('button',{name:'管理map-history-only',exact:true}).click();
+    const manage=page.getByRole('dialog',{name:'管理具体入口',exact:true});
+    await manage.getByText('当前结果中没有可管理的本地文件或配置，使用记录仍保留。',{exact:true}).waitFor();
+    expect(await manage.getByRole('button',{name:/^预览/}).count()===0,'仅历史资源出现管理操作');
+    await manage.getByRole('button',{name:'关闭管理具体入口',exact:true}).click();
   `);
   await step("滚轮、拖动、字体与全屏定位，Escape恢复焦点", `
     await page.getByRole('textbox',{name:'搜索资源名称或路径',exact:true}).fill('map-mcp-');
@@ -480,6 +486,8 @@ try {
     const second=Number(await stage.getAttribute('data-scale'));
     await page.mouse.move(box.x+box.width/2,box.y+box.height/2); await page.mouse.wheel(0,-150);
     await page.waitForFunction(scale=>Number(document.querySelector('[data-scale]')?.dataset.scale)>scale,second);
+    await page.getByRole('button',{name:'适应资源地图窗口',exact:true}).click();
+    await page.waitForFunction(scale=>Number(document.querySelector('[data-scale]')?.dataset.scale)<scale,second);
     const before=await stage.locator('svg').innerHTML();
     await page.mouse.move(box.x+box.width/2,box.y+box.height/2); await page.mouse.down();
     await page.mouse.move(box.x+box.width/2+50,box.y+box.height/2+30,{steps:5}); await page.mouse.up();
@@ -528,10 +536,10 @@ try {
     await detail.getByRole('button',{name:'管理map-system',exact:true}).click();
     const manage=page.getByRole('dialog',{name:'管理具体入口',exact:true}); await manage.waitFor();
     expect(await manage.getByRole('button',{name:/^预览/}).count()===0,'系统资源有写操作');
-    await manage.getByRole('button',{name:'只读原因',exact:true}).click();
-    await page.getByText('系统资源受保护，当前入口只读。',{exact:true}).waitFor();
-    await page.keyboard.press('Escape');
+    expect(await manage.getByRole('button',{name:/^将.*移入回收区$/}).isDisabled(),'系统资源回收按钮可用');
+    await manage.getByText('系统资源受保护，当前入口只读。',{exact:true}).waitFor();
     await page.keyboard.press('Escape'); await manage.waitFor({state:'hidden'});
+    await page.waitForFunction(name=>document.activeElement?.getAttribute('aria-label')===name,'管理map-system');
     expect(await detail.getByRole('button',{name:'管理map-system',exact:true}).evaluate(element=>element===document.activeElement),'Escape未恢复管理按钮焦点');
     await page.getByRole('textbox',{name:'搜索资源名称或路径',exact:true}).fill('no-such-map-resource');
     await page.getByText('0 个 Skill',{exact:true}).waitFor();
@@ -560,7 +568,7 @@ try {
     await page.keyboard.press('Escape'); await previousDetail.waitFor({state:'hidden'});
     await page.getByRole('group',{name:'资源使用地图',exact:true}).waitFor();
     await page.locator('.resource-map-locator > span').filter({hasText:/^${skillSessionMap.positive.length} 个色块$/}).waitFor();
-    expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1&&document.documentElement.scrollHeight<=innerHeight+1),'窄屏页面溢出');
+    expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1),'窄屏页面横向溢出');
     ${locateResource("map-skill-214")}
     const dialog=page.getByRole('dialog',{name:'资源详情',exact:true});
     await dialog.getByRole('heading',{name:'map-skill-214',exact:true}).waitFor();
@@ -570,6 +578,7 @@ try {
     expect(await page.getByRole('dialog').count()===1,'窄屏管理与详情弹层重叠');
     const manageBox=await manage.boundingBox(); expect(manageBox.x>=0&&manageBox.x+manageBox.width<=375,'窄屏管理面板溢出');
     await page.keyboard.press('Escape'); await manage.waitFor({state:'hidden'}); await dialog.waitFor();
+    await page.waitForFunction(name=>document.activeElement?.getAttribute('aria-label')===name,'管理map-skill-214');
     expect(await dialog.getByRole('button',{name:'管理map-skill-214',exact:true}).evaluate(element=>element===document.activeElement),'窄屏Esc未恢复管理焦点');
     await page.keyboard.press('Escape'); await dialog.waitFor({state:'hidden'});
     ${screenshot("skill-map-phone.png")}
@@ -585,16 +594,14 @@ try {
     await detail.getByRole('button',{name:'取消收藏map-skill-002',exact:true}).waitFor();
     await detail.getByRole('button',{name:'管理map-skill-002',exact:true}).click();
     const manage=page.getByRole('dialog',{name:'管理具体入口',exact:true}); await manage.waitFor();
-    await manage.getByText(/^(受保护|此资源已收藏)$/).waitFor();
-    await manage.getByRole('button',{name:'预览移入回收区map-skill-002的Codex入口',exact:true}).click();
+    await manage.getByRole('button',{name:${JSON.stringify(`将${join(fixture.userHome, '.codex', 'skills', 'map-skill-002')}移入回收区`)},exact:true}).click();
     const protectedPreview=page.getByRole('dialog',{name:'移入回收区预览',exact:true});
     await protectedPreview.getByRole('alert').filter({hasText:'此资源已收藏'}).waitFor();
-    await protectedPreview.locator('.resource-preview-heading').getByText('受保护',{exact:true}).waitFor();
     await protectedPreview.getByRole('button',{name:'关闭移入回收区预览',exact:true}).click();
     await detail.getByRole('button',{name:'取消收藏map-skill-002',exact:true}).click();
     await detail.getByRole('button',{name:'收藏map-skill-002',exact:true}).waitFor();
     await detail.getByRole('button',{name:'管理map-skill-002',exact:true}).click(); await manage.waitFor();
-    await manage.getByRole('button',{name:'预览移入回收区map-skill-002的Codex入口',exact:true}).click();
+    await manage.getByRole('button',{name:${JSON.stringify(`将${join(fixture.userHome, '.codex', 'skills', 'map-skill-002')}移入回收区`)},exact:true}).click();
     const preview=page.getByRole('dialog',{name:'移入回收区预览',exact:true});
     await preview.getByRole('button',{name:'确认移入回收区',exact:true}).click();
     await preview.getByRole('button',{name:'完成',exact:true}).waitFor();

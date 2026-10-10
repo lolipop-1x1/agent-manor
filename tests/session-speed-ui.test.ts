@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { SessionMessage } from "../src/session-contracts.ts";
 import { isMessageDescriptorKnown, translate } from "../src/i18n/index.ts";
-import { formatRequestSpeed, messageSpeedRequest, requestLocation, sessionSpeedMap, type SpeedStep } from "../web/session-speed-model.ts";
+import { formatRequestSpeed, messageSpeedRequest, requestLocation, sessionSpeedMap, type SpeedStep } from "../web/features/sessions/session-speed-model.ts";
 
 const step = (id: string, fields: Partial<SpeedStep> = {}): SpeedStep => ({
   id, sessionId: "synthetic-session", turnId: "round-one", outputTokens: 400,

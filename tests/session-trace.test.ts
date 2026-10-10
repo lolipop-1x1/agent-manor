@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { SessionMessage } from "../src/session-contracts.ts";
-import { timelineCenteredScroll, timelineFraction, timelineNodes, timelinePosition, timelineProjection, timelineVisibleMarks, timelineZoomScroll, tracePreview, traceTurns, traceWindow } from "../web/session-trace-model.ts";
+import { timelineCenteredScroll, timelineFraction, timelineNodes, timelinePosition, timelineProjection, timelineVisibleMarks, timelineZoomScroll, tracePreview, traceTurns, traceWindow } from "../web/features/sessions/session-trace-model.ts";
 
 const message = (ordinal: number, kind: SessionMessage["kind"], fields: Partial<SessionMessage> = {}): SessionMessage => ({
   id: `message-${ordinal}`, sessionId: "session-example", ordinal, recordLine: ordinal, turnId: "turn-one", kind, text: "合成记录", ...fields,
@@ -52,7 +52,7 @@ test("大轨迹只投影可见窗口，首末边界不丢记录", () => {
 });
 
 test("总览覆盖全部节点并按事件、轮次和记录时间投影，缺失时间不补造", async () => {
-  const { timelineNodes, timelineProjection } = await import("../web/session-trace-model.js");
+  const { timelineNodes, timelineProjection } = await import("../web/features/sessions/session-trace-model.js");
   const nodes = timelineNodes([
     message(1, "context", { turnId: "initial" }),
     message(2, "user", { occurredAt: "2026-01-01T00:00:00Z" }),

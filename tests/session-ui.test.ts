@@ -3,8 +3,8 @@ import { test } from "node:test";
 import type { Client } from "../src/clients.ts";
 import type { SessionMessage, SessionSearchHit } from "../src/session-contracts.ts";
 import { translate } from "../src/i18n/index.ts";
-import { panelSemantics } from "../web/workspace-layout.ts";
-import { sessionDisplayTitle, sessionParentTitle, sessionResourceName, sessionMessageText, displayRecorded, executionEntryLabel, groupedTurns, searchHitMode, searchKinds, sessionParams, turnTitle, usageAxis, usageIndexAt, usageSegments, workspaceSessionSemantics } from "../web/session-model.ts";
+import { panelSemantics } from "../web/shared/layout/workspace-layout.ts";
+import { sessionDisplayTitle, sessionParentTitle, sessionResourceName, sessionMessageText, displayRecorded, executionEntryLabel, groupedTurns, searchHitMode, searchKinds, sessionParams, turnTitle, usageAxis, usageIndexAt, usageSegments, workspaceSessionSemantics } from "../web/features/sessions/session-model.ts";
 
 const summary = {
   id: "session-a", client: "codex" as Client, clientSessionId: "external-a", title: "合成会话", titleOrigin: "recorded" as const,

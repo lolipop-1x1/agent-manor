@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { startVisiblePolling } from "../web/visible-polling.ts";
-import { completeMessage } from "../web/session-message-content.ts";
+import { startVisiblePolling } from "../web/shared/refresh/visible-polling.ts";
+import { completeMessage } from "../web/features/sessions/session-message-content.ts";
 import type { SessionMessage } from "../src/session-contracts.ts";
-import { sessionParams } from "../web/session-model.ts";
+import { sessionParams } from "../web/features/sessions/session-model.ts";
 
 test("有界查询参数真正编码到请求，显式零偏移与摘要开关保持语义", () => {
   const query = new URLSearchParams(sessionParams({ summary: true, stepLimit: 12, stepOffset: 0, maxEvents: 1800,
@@ -93,7 +93,7 @@ test("完整正文按消息身份和版本读取，预览末尾不混入复制�
 });
 
 test("完整轮复制复用同版查询、视图分支和语言，只导出指定轮次", async () => {
-  const { completeTurnMarkdown } = await import("../web/session-message-content.ts");
+  const { completeTurnMarkdown } = await import("../web/features/sessions/session-message-content.ts");
   const original = globalThis.fetch;
   globalThis.fetch = async input => {
     const query = new URL(String(input), "http://example.invalid").searchParams;

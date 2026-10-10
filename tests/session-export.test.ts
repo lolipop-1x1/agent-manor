@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { SessionMessage, SessionMessageResult } from "../src/session-contracts.js";
-import { collectDialogue, dialogueMarkdown } from "../web/session-export.js";
-import { readSessionFilters, writeSessionFilters } from "../web/session-address.js";
+import { collectDialogue, dialogueMarkdown } from "../web/features/sessions/session-export.js";
+import { readSessionFilters, writeSessionFilters } from "../web/features/sessions/session-address.js";
 
 const summary = { id: "synthetic", client: "codex" as const, clientSessionId: "synthetic", title: "合成标题", titleOrigin: "recorded" as const, messageCount: 205, turnCount: 103, models: [], gaps: [] };
 const messages: SessionMessage[] = Array.from({ length: 205 }, (_, index) => ({ id: `message-${index}`, sessionId: summary.id, ordinal: index, recordLine: index + 1, turnId: `turn-${Math.floor(index / 2)}`, kind: index % 2 ? "assistant" : "user", text: `完整正文 ${index}`, ...(index % 2 ? { final: "explicit" as const } : {}) }));
@@ -39,7 +39,7 @@ test("查找地址无损编码中文、路径和过程筛选，兼容旧定位�
 });
 
 test("代码复制从完整 Markdown 取正文，预览截止不会截断长代码或带入后文", async () => {
-  const { completeCodeBlocks } = await import("../web/session-code.js");
+  const { completeCodeBlocks } = await import("../web/features/sessions/session-code.js");
   const code = "const value = 1;\n".repeat(1000);
   const source = `开头\n\n\`\`\`ts\n${code}\`\`\`\n后面的说明`;
   assert.equal(completeCodeBlocks(source).get(source.indexOf("```")), code);

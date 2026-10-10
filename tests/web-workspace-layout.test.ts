@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { panelWidthRange, workspaceWidths } from "../web/workspace-layout.ts";
+import { panelWidthRange, workspaceWidths } from "../web/shared/layout/workspace-layout.ts";
 
 const expanded = { sidebar: false, details: false };
 

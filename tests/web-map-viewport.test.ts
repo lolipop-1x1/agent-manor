@@ -1,11 +1,9 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { FileCoverage } from "../src/contracts.ts";
-import { fileLabelRect } from "../web/model.ts";
-import {
-  clipRect, fitCamera, layoutMap, locateCamera, panCamera, projectRect, refreshCamera, resizeCamera, visibleTiles, zoomCamera,
-  type MapCamera, type MapPoint, type MapRect, type MapSize,
-} from "../web/map-viewport.ts";
+import { fileLabelRect } from "../web/features/code-map/model.ts";
+import { clipRect, fitCamera, locateCamera, panCamera, projectRect, resizeCamera, zoomCamera, type MapCamera, type MapPoint, type MapRect, type MapSize } from "../web/shared/map/geometry.ts";
+import { layoutMap, refreshCamera, visibleTiles } from "../web/features/code-map/map-layout.ts";
 
 const file = (path: string, lineCount: number): FileCoverage => ({ path, lineCount, category: "source", hash: "synthetic", readExactLines: 0, readNearLines: 0, editExactLines: 0, editNearLines: 0, readCount: 0, editCount: 0, searchCount: 0, failedCount: 0, unknownCount: 0, activityCount: 0, readExactRanges: [], readNearRanges: [], editExactRanges: [], editNearRanges: [] });
 const close = (actual: number, expected: number, tolerance = 1e-7) => assert.ok(Math.abs(actual - expected) <= tolerance, `${actual} 应接近 ${expected}`);

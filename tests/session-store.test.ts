@@ -1091,7 +1091,7 @@ test("有界轨迹保留跨页可信配对，整范围重复身份不从单页�
   assert.equal(first.relatedMessages?.[0]?.textLength, 600); assert.equal(first.relatedMessages?.[0]?.textTruncated, true);
   assert.equal([...first.relatedMessages![0]!.text].length, 10);
   assert.equal(store.messages(id, { mode: "full", messageId: "message-300", pageSize: 1 }).messages[0]?.text, records[300]?.text);
-  const { traceTurns } = await import("../web/session-trace-model.js");
+  const { traceTurns } = await import("../web/features/sessions/session-trace-model.js");
   const full = traceTurns(store.messages(id, { mode: "trace", pageSize: 200, pageUnit: "turn" }).messages, []);
   const page = traceTurns(first.messages, [], first.toolPairs, first.relatedMessages);
   assert.deepEqual(page[0]?.records.find(record => record.message.id === "message-299")?.result?.id, "message-300");
@@ -1112,7 +1112,7 @@ test("聚合轨迹用完整轮次和时间坐标，替换选中代表不会移�
   assert.equal(initial.events.length, 4); assert.ok(initial.events.every(event => event.turnId === "turn-first"));
   assert.deepEqual(initial.projection, focused.projection); assert.equal(initial.projection?.totalTurns, 5); assert.equal(initial.projection?.missingTime, 1);
   assert.equal(initial.projection?.timeEnd, Date.UTC(2026, 0, 1) + 1003_000);
-  const { timelineNodes, timelineProjection } = await import("../web/session-trace-model.js");
+  const { timelineNodes, timelineProjection } = await import("../web/features/sessions/session-trace-model.js");
   for (const mode of ["turn", "time"] as const) {
     const before = timelineProjection(timelineNodes(initial.events), mode, initial.projection), after = timelineProjection(timelineNodes(focused.events), mode, focused.projection);
     for (const span of before.spans) {
@@ -1131,7 +1131,7 @@ test("空轮身份归一为未知轮，跨页工具输入结果保持同一详�
   const records = [message(id, 0, { turnId: "", kind: "tool_call", callId: "unknown-call" }), message(id, 1, { turnId: "", kind: "tool_result", callId: "unknown-call" })];
   store.publish(store.createJob().id, [source(store, meta(id), records)], []);
   const result = store.messages(id, { mode: "trace", pageUnit: "turn", messageLimit: 1, messageOffset: 1 });
-  const { traceTurns } = await import("../web/session-trace-model.js");
+  const { traceTurns } = await import("../web/features/sessions/session-trace-model.js");
   const turns = traceTurns(result.messages, [], result.toolPairs, result.relatedMessages);
   assert.equal(turns[0]?.id, "unknown"); assert.equal(turns[0]?.records[0]?.message.id, "message-0"); assert.equal(turns[0]?.records[0]?.result?.id, "message-1");
 }));
@@ -1145,7 +1145,7 @@ test("显式有界总览跨聚合阈值沿用同一原始记录坐标，工具�
   const aggregate = store.timeline(id, { maxEvents: 3 }), complete = store.timeline(id, { maxEvents: 4 });
   assert.equal(aggregate.aggregated, true); assert.equal(complete.aggregated, false);
   assert.deepEqual(aggregate.projection, complete.projection);
-  const { timelineNodes, timelineProjection } = await import("../web/session-trace-model.js");
+  const { timelineNodes, timelineProjection } = await import("../web/features/sessions/session-trace-model.js");
   for (const mode of ["sequence", "turn", "time"] as const) {
     const left = timelineProjection(timelineNodes(aggregate.events, false), mode, aggregate.projection);
     const right = timelineProjection(timelineNodes(complete.events), mode, complete.projection);

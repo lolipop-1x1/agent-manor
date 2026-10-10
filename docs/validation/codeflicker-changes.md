@@ -51,5 +51,5 @@
 - `tests/service-cli.test.ts`
 - `tests/service-http.test.ts`
 - `tests/web-model.test.ts`
-- `web/App.tsx`
-- `web/style.css`
+- `web/app/App.tsx`
+- `web/shared/styles/base.css`

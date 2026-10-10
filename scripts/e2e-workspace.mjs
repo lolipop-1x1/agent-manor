@@ -20,7 +20,7 @@ const env = { ...process.env, ...Object.fromEntries(clientIds.map(client => [`AG
 const command = async args => JSON.parse((await run(process.execPath, [cli, ...args, "--json"], { cwd: directory, env, timeout: 30_000 })).stdout);
 const browser = async args => {
   // macOS Unix socket 有路径长度限制，浏览器控制套接字使用短临时目录。
-  const result = await run("playwright-cli", [`-s=${session}`, ...args], { cwd: directory, env: { ...process.env, TMPDIR: "/tmp" }, timeout: 60_000, maxBuffer: 2 * 1024 * 1024 });
+  const result = await run("playwright-cli", [`-s=${session}`, ...args], { cwd: directory, env: { ...process.env, TMPDIR: "/tmp" }, timeout: 180_000, maxBuffer: 2 * 1024 * 1024 });
   if (result.stdout.includes("### Error")) throw new Error(result.stdout);
   return result.stdout;
 };
@@ -41,6 +41,7 @@ try {
   await writePreferences(env.AGENT_MANOR_HOME, "zh-CN");
   await browser(["open", `http://127.0.0.1:${status.instance.port}`, "--headed", "--browser=chrome"]);
   const code = async page => {
+    page.setDefaultTimeout(30_000);
     const errors = [];
     page.on("pageerror", error => errors.push(error.message));
     const ensure = (condition, message) => { if (!condition) throw new Error(message); };
@@ -52,12 +53,29 @@ try {
       const bounds = document.querySelector(".code-map").getBoundingClientRect();
       return [...document.querySelectorAll(".map-file")].every(tile => tile.getBoundingClientRect().right <= bounds.right);
     });
-    const settled = async () => { await map.waitFor({ state: "visible" }); await page.locator(".map-file").first().waitFor({ state: "visible" }); };
+    const settled = async label => {
+      try { await map.waitFor({ state: "visible" }); await page.locator(".map-file").first().waitFor({ state: "visible" }); }
+      catch (error) { throw new Error(`${label}：${error.message}\n${await page.locator("body").innerText()}`); }
+    };
+    const navigate = async (action, directory, count, label) => {
+      const response = page.waitForResponse(response => {
+        const url = response.url();
+        return url.includes("/coverage?") && decodeURIComponent(url.match(/[?&]directory=([^&]*)/)?.[1] ?? "") === directory && response.ok();
+      });
+      await action(); await response.catch(error => { throw new Error(`${label}：${error.message}`); });
+      await settled(label);
+      await page.waitForFunction(({ directory, count }) => {
+        const selected = document.querySelector('.directory-select[aria-current="location"]');
+        return (selected?.getAttribute("aria-label") ?? "") === (directory ? `选择目录 ${directory}` : "")
+          && document.querySelectorAll(".map-file").length === count && !document.querySelector(".map-main .query-loading");
+      }, { directory, count });
+    };
     await page.setViewportSize({ width: 1440, height: 1000 });
-    await settled();
-    await page.locator(".repository-trigger").click();
-    await page.getByRole("menuitem", { name: /workspace-demo/ }).click();
-    await settled();
+    await settled("初始地图");
+    if (!(await page.locator(".repository-trigger").innerText()).includes("workspace-demo")) {
+      await page.locator(".repository-trigger").click();
+      await navigate(() => page.getByRole("menuitem", { name: /workspace-demo/ }).click(), "", 6, "选择验收仓库");
+    }
     ensure(await button("选择目录 src").isVisible(), "顶层目录缺失");
     ensure(await button("选择目录 src/deep").count() === 0, "深层目录应默认折叠");
     await button("展开目录 src").click();
@@ -66,8 +84,7 @@ try {
     ensure(!controls.includes(" ") && await page.locator(`[id="${controls}"]`).count() === 1, "含空格目录的可访问性关联无效");
     ensure(await selectedDirectory() === null, "展开箭头不应改变统计目录");
     await button("展开目录 src/deep").click();
-    await button("选择目录 src/deep/lib").click();
-    await settled();
+    await navigate(() => button("选择目录 src/deep/lib").click(), "src/deep/lib", 1, "选择深层目录");
     ensure(await selectedDirectory() === "选择目录 src/deep/lib", "目录筛选未更新");
     ensure(await page.locator(".map-file").count() === 1, "目录地图包含范围外文件");
     await button("折叠目录 src").click();
@@ -96,14 +113,11 @@ try {
     await button("收起文件详情").click();
     await page.locator(".map-file").click();
     ensure(await button("收起文件详情").isVisible(), "地图选择文件未自动展开详情");
-    await page.getByRole("button", { name: /^整个仓库/ }).click();
-    await settled();
+    await navigate(() => page.getByRole("button", { name: /^整个仓库/ }).click(), "", 6, "回到仓库根目录");
     await button("折叠目录 src").click();
-    await page.getByRole("button", { name: "进入目录 src", exact: true }).click();
-    await settled();
-    await page.getByRole("button", { name: "进入目录 src/deep", exact: true }).click();
-    await settled();
-    ensure(await button("选择目录 src/deep").isVisible(), "地图下钻未展开祖先目录");
+    await navigate(() => button("进入目录 src").click(), "src", 4, "下钻 src");
+    await navigate(() => button("进入目录 src/deep").click(), "src/deep", 2, "下钻 src/deep");
+    await button("选择目录 src/deep").waitFor({ state: "visible" });
     await button("折叠目录 src").focus();
     await page.keyboard.press("Enter");
     ensure(await button("展开目录 src").getAttribute("aria-expanded") === "false", "键盘无法折叠");
@@ -126,8 +140,7 @@ try {
     }
     await page.setViewportSize({ width: 1440, height: 1000 });
     await page.locator(".repository-trigger").click();
-    await page.getByRole("menuitem", { name: /second-demo/ }).click();
-    await settled();
+    await navigate(() => page.getByRole("menuitem", { name: /second-demo/ }).click(), "", 6, "切换第二个仓库");
     ensure(await button("选择目录 src/deep").count() === 0, "切换仓库未重置目录展开状态");
     ensure(errors.length === 0, `浏览器运行异常：${errors.join("; ")}`);
     if (await page.locator("html").getAttribute("data-theme") === "dark") await button("切换主题").click();

@@ -2,9 +2,10 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { FileCoverage, FileDetail } from "../src/contracts.ts";
 import { clientIds } from "../src/clients.ts";
-import { queryString } from "../web/api.ts";
+import { queryString } from "../web/features/code-map/api.ts";
 import { translate } from "../src/i18n/index.ts";
-import { boundQuery, directories, directoryTree, fileHighlights, metricValue, refreshFailureReason, timeFilters } from "../web/model.ts";
+import { boundQuery, directories, directoryTree, fileHighlights, metricValue, refreshFailureReason } from "../web/features/code-map/model.ts";
+import { timeFilters } from "../web/shared/time-filters.ts";
 
 const file = (path: string, lineCount: number): FileCoverage => ({ path, lineCount, category: "source", hash: "hash", readExactLines: 1, readNearLines: 1, editExactLines: 0, editNearLines: 0, readCount: 2, editCount: 0, searchCount: 0, failedCount: 0, unknownCount: 0, activityCount: 2, readExactRanges: [{ start: 1, end: 1 }], readNearRanges: [{ start: 2, end: 2 }], editExactRanges: [], editNearRanges: [] });
 

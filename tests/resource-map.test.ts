@@ -14,8 +14,8 @@ import { ResourceService } from "../src/resources/service.js";
 import { resourceMapQuery } from "../src/service/resource-input.js";
 import { registerResourceRoutes } from "../src/service/resource-routes.js";
 import { layoutResourceMap, locateResourceMapCamera, panResourceMapCamera, resizeResourceMapCamera,
-  resourceMapProjectRect, resourceMapScreenRect, resourceMapTileAt, zoomResourceMapCamera } from "../web/resource-map-layout.js";
-import { clipRect, projectRect } from "../web/map-viewport.js";
+  resourceMapProjectRect, resourceMapScreenRect, resourceMapTileAt, zoomResourceMapCamera } from "../web/features/resources/resource-map-layout.js";
+import { clipRect, projectRect } from "../web/shared/map/geometry.js";
 
 const recordedAt = "2026-01-02T12:00:00Z";
 async function fixture(run: (context: Awaited<ReturnType<typeof resourceFixture>>, store: SessionStore,

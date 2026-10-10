@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { ApiError, errorMessage, request } from "../web/api.ts";
+import { ApiError, errorMessage, request } from "../web/shared/api.ts";
 
 test("响应体 JSON 解析被中止时保留 AbortError", async () => {
   let markBodyStarted!: () => void;

@@ -119,6 +119,21 @@ try {
     await page.waitForFunction(() => document.querySelectorAll('[role="option"]').length === 1 && document.querySelector('[role="option"]')?.textContent.includes("读取入口"));
     await search.press("ArrowDown"); await search.press("Enter"); await settle();
     ensure((await picker().innerText()).includes("读取入口"), "键盘无法选择会话");
+    // 页面切换仅隐藏非活动视图，保留页面节点、筛选与地图视野。
+    const beforeScale = await page.locator(".code-map").getAttribute("data-scale");
+    await button("放大地图").click();
+    await page.waitForFunction(previous => Number(document.querySelector(".code-map").dataset.scale) > Number(previous), beforeScale);
+    const scale = await page.locator(".code-map").getAttribute("data-scale");
+    const retained = await page.evaluateHandle(() => [".code-map", ".sessions-shell", ".resources-shell"].map(selector => document.querySelector(selector)));
+    for (const [name, activeIndex] of [["资源管理", 2], ["会话库", 1], ["代码地图", 0]]) {
+      await page.getByRole("navigation", { name: "功能导航", exact: true }).getByRole("button", { name, exact: true }).click();
+      await page.waitForFunction(index => [...document.querySelectorAll(".product-view")].every((view, position) => view.hidden === (position !== index)), activeIndex);
+      ensure(await page.evaluate(nodes => [".code-map", ".sessions-shell", ".resources-shell"].every((selector, index) => nodes[index]?.isConnected && nodes[index] === document.querySelector(selector)), retained), "跨页面切换重建了页面节点");
+    }
+    await settle();
+    ensure((await picker().innerText()).includes("读取入口"), "跨页面切换丢失地图会话筛选");
+    ensure(await page.locator(".code-map").getAttribute("data-scale") === scale, `跨页面切换丢失地图视野：${scale} → ${await page.locator(".code-map").getAttribute("data-scale")}`);
+    await retained.dispose();
     await page.screenshot({ path: fixture.artifacts + "/session-selected.png" });
     await button("切换主题").click(); await picker().click(); await search.fill("map-child");
     await page.screenshot({ path: fixture.artifacts + "/session-dark-menu.png" }); await search.press("Escape");
@@ -134,7 +149,7 @@ try {
     await page.screenshot({ path: fixture.artifacts + "/session-mobile-menu.png" });
     await page.getByRole("combobox", { name: "Search Filter sessions", exact: true }).press("Escape");
     ensure(errors.length === 0, "浏览器脚本出现错误");
-    return { passed: true, scopes: ["map-a", "map-b", "map-child", "map-empty", "all"], keyboard: true, languages: ["zh-CN", "en"], narrow: true };
+    return { passed: true, scopes: ["map-a", "map-b", "map-child", "map-empty", "all"], retainedPages: true, keyboard: true, languages: ["zh-CN", "en"], narrow: true };
   };
   const result = await browser(["run-code", `async page => (${verify.toString()})(page, ${JSON.stringify({ artifacts })})`]);
   await writeFile(join(artifacts, "result.txt"), result);

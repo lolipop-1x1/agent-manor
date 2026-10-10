@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { formatDate, formatPercent, translate } from "../src/i18n/index.js";
-import { resourceQuery } from "../web/resource-api.js";
-import { timeFilters } from "../web/model.js";
+import { resourceQuery } from "../web/features/resources/resource-api.js";
+import { timeFilters } from "../web/shared/time-filters.js";
 import type { ResourceMapNode } from "../src/resource-service-contracts.js";
-import { normalizeResourceRouteParams, resourceMapCompactTitleKey, resourceMapValueMessage } from "../web/resource-usage-state.js";
+import { normalizeResourceRouteParams, resourceMapCompactTitleKey, resourceMapValueMessage } from "../web/features/resources/resource-usage-state.js";
 
 test("趋势活动与会话各自使用复数，独立数量不串用单数规则", () => {
   for (const [events, sessions, expected] of [[1, 1, "1 activity · 1 session"], [1, 2, "1 activity · 2 sessions"],
