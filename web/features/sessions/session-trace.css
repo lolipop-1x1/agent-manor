@@ -1,6 +1,5 @@
 .session-message-scroll.is-trace { display: flex; flex-direction: column; overflow: hidden; padding-bottom: 5px; }
-.session-message-scroll.is-trace > .session-trace-children { flex: 0 0 auto; max-height: 110px; overflow: auto; margin-bottom: 5px; }
-.session-trace { display: flex; flex: 1; flex-direction: column; min-height: 0; min-width: 0; }
+.session-trace { position: relative; display: flex; flex: 1; flex-direction: column; min-height: 0; min-width: 0; }
 .trace-toolbar { display: flex; flex: 0 0 auto; justify-content: space-between; align-items: center; gap: 8px; min-height: 34px; font-size: 11px; }
 .trace-toolbar small { color: var(--muted); font-size: 10px; }
 .trace-toolbar > div { display: flex; align-items: center; gap: 12px; }
@@ -36,20 +35,20 @@
 .trace-group strong, .trace-group small { flex-shrink: 0; }
 .trace-group small { font-size: 9px; color: var(--muted); }
 .trace-group span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); }
-.trace-inspector { display: flex; flex-direction: column; flex: 0 1 auto; max-height: 44%; min-height: 130px; margin-top: 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--surface); overflow: hidden; }
+.trace-inspector { display: flex; flex-direction: column; height: 100%; min-height: 0; box-sizing: border-box; border: 1px solid var(--border); border-radius: 6px; background: var(--surface); overflow: hidden; }
 .trace-inspector > header { display: flex; align-items: center; gap: 12px; flex: 0 0 auto; min-height: 34px; padding: 3px 10px; background: var(--surface-alt); }
 .trace-inspector > header > strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; }
 .trace-inspector > header > .icon-button { margin-left: auto; min-height: 25px; width: 25px; flex-shrink: 0; }
 .trace-inspector [role="tablist"] { display: flex; gap: 4px; flex-shrink: 0; }
 .trace-inspector [role="tab"] { border: 0; padding: 5px 7px; border-radius: 4px; background: transparent; color: var(--muted); font-size: 10px; }
 .trace-inspector [role="tab"][aria-selected="true"] { background: var(--accent-soft); color: var(--accent); }
-.trace-inspector-scroll { min-height: 0; overflow: auto; overscroll-behavior: contain; padding: 8px 12px; scrollbar-width: thin; }
+.trace-inspector-scroll { flex: 1; min-width: 0; min-height: 0; overflow: auto; overscroll-behavior: contain; padding: 8px 12px; scrollbar-width: thin; }
 .trace-source { color: var(--muted); font-size: 9px; overflow-wrap: anywhere; }
 .trace-usage > div { display: flex; flex-wrap: wrap; gap: 6px 12px; padding-top: 8px; font-size: 10px; color: var(--muted); }
 .trace-usage strong { width: 100%; color: var(--text); font-size: 10px; }
 .trace-usage b { color: var(--text); font-weight: 500; }
 .trace-detail-meta { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; color: var(--muted); font-size: 10px; margin-bottom: 8px; }
-.trace-detail-meta time { margin-left: auto; }
+
 .trace-detail-body { border-top: 1px solid var(--border); margin-top: 10px; padding-top: 10px; font-size: 12px; line-height: 1.7; overflow-wrap: anywhere; }
 .trace-detail-body .session-message-text > :first-child { margin-top: 0; }
 .trace-detail-body .session-message-text h1, .trace-detail-body .session-message-text h2 { font-size: 15px; }
@@ -110,3 +109,40 @@
 .trace-group button.session-speed-badge.is-missing { color: var(--muted); background: var(--surface-alt); }
 .trace-group .session-copy-control { flex-shrink: 0; }
 .trace-group .session-copy-control button { width: 26px; height: 26px; padding: 4px; }
+
+.trace-timeline-shell { flex: 0 0 auto; min-width: 0; }
+.trace-split { display: flex; flex: 1; flex-direction: column; min-height: 0; min-width: 0; }
+.trace-upper { display: flex; flex: 1 1 0; flex-direction: column; min-height: 0; min-width: 0; }
+.trace-upper .trace-ledger { min-height: 0; }
+.trace-detail-slot { flex: 0 0 calc((100% - 10px) * var(--trace-detail-percent) / 100); min-height: 0; min-width: 0; }
+.trace-detail-resizer { flex: 0 0 10px; position: relative; cursor: row-resize; touch-action: none; outline-offset: -2px; }
+.trace-detail-resizer::after { content: ""; position: absolute; height: 2px; width: 44px; left: calc(50% - 22px); top: 4px; background: var(--border); border-radius: 2px; }
+.trace-detail-resizer:hover::after, .trace-detail-resizer:focus-visible::after { background: var(--accent); }
+.trace-detail-resizer:focus-visible { outline: 2px solid var(--accent); }
+.session-trace.is-detail-expanded .trace-timeline-shell, .session-trace.is-detail-expanded .trace-upper, .session-trace.is-detail-expanded .trace-detail-resizer { visibility: hidden; }
+.session-trace.is-detail-expanded .trace-inspector { position: absolute; inset: 0; z-index: 6; }
+.trace-detail-heading { min-width: 0; flex: 1 1 180px; }
+.trace-detail-heading > strong { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
+.trace-inspector > header { flex-wrap: wrap; gap: 6px 12px; padding: 8px 12px; }
+.trace-detail-heading .trace-detail-meta { margin: 4px 0 0; gap: 4px 10px; }
+.trace-detail-meta .is-failure { color: var(--danger); }
+.trace-detail-actions { display: flex; flex: 0 0 auto; align-items: center; gap: 6px; margin-left: auto; }
+.trace-detail-actions .text-button { white-space: nowrap; }
+.trace-detail-navigation { display: flex; justify-content: space-between; flex-wrap: wrap; gap: 6px; border-bottom: 1px solid var(--border); padding: 6px 12px; }
+.trace-detail-navigation > div { display: flex; gap: 10px; }
+.trace-detail-navigation .text-button { display: inline-flex; align-items: center; gap: 4px; }
+.trace-inspector .trace-detail-tabs { padding: 4px 12px; border-bottom: 1px solid var(--border); }
+.trace-detail-body { min-width: 0; }
+.trace-detail-body pre { max-width: 100%; overflow-x: auto; overscroll-behavior-x: contain; }
+.trace-detail-body .trace-raw-content { white-space: pre; overflow-wrap: normal; }
+.trace-detail-body .session-message-text table { display: block; max-width: 100%; overflow-x: auto; }
+.trace-timeline-head .trace-timeline-toggle { display: inline-flex; align-items: center; gap: 4px; }
+.trace-timeline-toggle[aria-expanded="false"] svg { transform: rotate(-90deg); }
+.trace-timeline.is-collapsed .trace-timeline-head { border-bottom: 0; }
+.trace-timeline.is-collapsed .trace-timeline-head > [role="group"], .trace-timeline.is-collapsed .trace-timeline-zoom { display: none; }
+@media (max-width: 767px) {
+  .trace-inspector > header { padding: 6px 8px; }
+  .trace-detail-heading { flex-basis: 140px; }
+  .trace-detail-navigation { padding: 6px 8px; }
+  .trace-timeline-legend { flex-wrap: wrap; }
+}

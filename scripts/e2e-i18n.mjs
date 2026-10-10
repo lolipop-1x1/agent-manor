@@ -271,14 +271,14 @@ try {
   const resultQueries=page.resourceQueries.length;await language('en');
   ensure((await page.locator('.resource-dialog').innerText()).includes('Local state changed'),'已存结果未切换');
   ensure(resultQueries===page.resourceQueries.length,'结果切换语言额外查询');
-  await button('Done').click();await button('Management records').click();await page.getByRole('menuitemradio',{name:'Disabled',exact:true}).click();
+  await button('Done').click();await page.getByRole('navigation',{name:'Management records',exact:true}).getByRole('button',{name:'Disabled',exact:true}).click();
   await button('View recovery record for guide').click();await button('Preview restore').click();await button('Confirm Restore').click();
   await page.getByText('Local state changed',{exact:true}).waitFor();await button('Done').click();
   await button('Local resources').click();await button('View local details for guide').click();
   await button('Manage guide').click();await page.getByRole('dialog',{name:'Manage individual entries',exact:true}).waitFor();
   await page.getByRole('button',{name:/^Move .*guide.* to recovery$/}).click();await button('Confirm Move to trash').click();
   await page.getByText('Local state changed',{exact:true}).waitFor();await button('Done').click();
-  await button('Management records').click();await page.getByRole('menuitemradio',{name:'Trash',exact:true}).click();await button('View recovery record for guide').click();await button('Preview restore').click();await button('Confirm Restore').click();
+  await page.getByRole('navigation',{name:'Management records',exact:true}).getByRole('button',{name:'Trash',exact:true}).click();await button('View recovery record for guide').click();await button('Preview restore').click();await button('Confirm Restore').click();
   await page.getByText('Local state changed',{exact:true}).waitFor();await button('Done').click();
   await button('Local resources').click();await button('View local details for guide').click();await button('Preview Disable for the Codex entry of guide').click();
   await page.route('**/resources/apply',route=>route.fulfill({status:200,contentType:'application/json',body:JSON.stringify({id:'synthetic-partial',previewId:'synthetic-preview',action:'disable',entryId:'synthetic-entry',name:'guide',resource:{kind:'skill',client:'codex',scope:'user'},status:'partial',message:'人工原始部分反馈',messageDescriptor:{key:'diagnostics.resources.management.m034'},details:[{key:'diagnostics.resources.management.m031'}],createdAt:'2026-10-07T00:00:00Z',localState:'partial',clientEffect:'unknown'})}));
@@ -287,7 +287,7 @@ try {
   const partialQueries=page.resourceQueries.length,partialWrites=page.resourceWrites.length;await language('zh-CN');
   ensure((await page.locator('.resource-dialog').innerText()).includes('恢复材料校验失败'),'部分反馈details未随语言切换');
   ensure(partialQueries===page.resourceQueries.length&&partialWrites===page.resourceWrites.length,'部分反馈切换语言额外请求');await button('完成').click();await page.unroute('**/resources/apply');await language('en');
-  await button('Management records').click();await page.getByRole('menuitemradio',{name:'Operations',exact:true}).click();await page.locator('.resource-row-main').first().click();
+  await page.getByRole('navigation',{name:'Management records',exact:true}).getByRole('button',{name:'Operations',exact:true}).click();await page.locator('.resource-row-main').first().click();
   ensure((await page.locator('.resource-detail-scroll').innerText()).includes('Original details'),'管理记录缺少原始详情');
   const operationQueries=page.resourceQueries.length;await language('zh-CN');ensure(operationQueries===page.resourceQueries.length,'操作记录切换语言发起额外查询');
   ensure((await page.locator('.resource-detail-scroll').innerText()).includes('原始详情'),'操作记录未翻译');
@@ -380,6 +380,7 @@ try {
     if (await page.locator(".session-turn").first().getAttribute("open") === null) await page.locator(".session-turn").first().locator("summary").click();
     ensure((await page.locator(".session-message-text").first().innerText()).includes("真实正文样本-1"), "简易视图保留真实中文消息");
     await button("全部记录").click(); await page.waitForLoadState("networkidle");
+    await page.locator(".session-turn-position").click();
     await button("末轮").click(); await page.waitForLoadState("networkidle");
     if (await page.locator(".session-turn").first().getAttribute("open") === null) await page.locator(".session-turn").first().locator("summary").click();
     await page.waitForLoadState("networkidle");
@@ -389,6 +390,7 @@ try {
     ensure(await page.locator(".session-turn[open]").count() === beforeFull.expanded && await page.evaluate(() => location.hash) === beforeFull.hash, "完整视图展开和消息定位保持");
     ensure(page.sessionQueries.length === beforeFull.queries, "完整视图切换没有额外会话GET");
     ensure(await page.getByRole("heading", { name: "未命名会话", exact: true }).count() === 1, "真实同名标题不翻译");
+    await page.locator(".session-turn-position").click();
     ensure(await button("Last turn").isDisabled(), "完整视图保持末轮定位");
     await button("First turn").click(); await page.waitForLoadState("networkidle");
     await button("Execution trace").click(); await page.getByRole("group", { name: "Timeline arrangement", exact: true }).waitFor();

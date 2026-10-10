@@ -1207,3 +1207,19 @@ test("空会话的有界轨迹投影返回零计数，不返回空值或虚构�
   assert.deepEqual(result.events, []); assert.equal(result.total, 0); assert.equal(result.aggregated, false);
   assert.deepEqual(result.projection, { totalTurns: 0, missingTime: 0 });
 }));
+
+test("问题目录读取有界前缀，保留长技能链接后的问题和技能轮次", async () => fixture(store => {
+  const id = "directory-preview";
+  const link = `[$review](/synthetic/${"nested/".repeat(30)}SKILL.md) 请检查实际问题`;
+  const skill = `<skill><name>review</name><path>/synthetic/SKILL.md</path>${"技能内容".repeat(2000)}</skill>`;
+  store.publish(store.createJob().id, [source(store, meta(id), [
+    message(id, 1, { turnId: "first", text: link }),
+    message(id, 2, { turnId: "second", text: skill }),
+  ])], []);
+  const directory = store.turnDirectory(id, { pageSize: 50 });
+  assert.equal(directory.total, 2);
+  assert.equal(directory.turns[0]?.question, link);
+  assert.equal(directory.turns[1]?.question, skill.slice(0, 4096));
+  assert.deepEqual(directory.turns.map(turn => turn.position), [1, 2]);
+  assert.equal(store.messages(id, { mode: "full", maxTextChars: 10000 }).messages[1]?.text, skill);
+}));

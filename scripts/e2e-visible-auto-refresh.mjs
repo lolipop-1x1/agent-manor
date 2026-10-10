@@ -171,6 +171,7 @@ try {
     await page.unroute('**/profile?*summary=true*');
     await page.locator('.session-message-scroll').getByRole('button',{name:'重试',exact:true}).click();
     await page.locator('.session-message-scroll[data-version=${JSON.stringify(failed.version)}]').waitFor();
+    await page.locator(".session-turn-position").click();
     await page.getByRole('button',{name:'末轮',exact:true}).click();
     await page.getByText('新版回答 112',{exact:true}).waitFor();
     await page.locator('.session-message-scroll').evaluate(pane=>pane.scrollTop=pane.scrollHeight);
@@ -182,12 +183,13 @@ try {
     await page.getByText('新版回答 113',{exact:true}).waitFor();
     expect(await page.locator('.session-message-scroll').evaluate(pane=>pane.scrollHeight-pane.scrollTop-pane.clientHeight<32),'末尾阅读未接续新内容');
     await page.goto(${JSON.stringify(`${base}/#sessions?id=${sid}&mode=full&turn=1`)});
-    await page.getByRole('navigation',{name:'当前轮次记录分页',exact:true}).waitFor();
-    expect(await page.locator('.session-message').count()<=300,'长轮正文未有界');
-    await page.getByRole('button',{name:'当前轮次记录分页下一页',exact:true}).click();
-    await page.getByRole('navigation',{name:'当前轮次记录分页',exact:true}).filter({hasText:'2 /'}).waitFor();
-    await page.getByRole('button',{name:'当前轮次记录分页下一页',exact:true}).click();
-    await page.getByRole('navigation',{name:'当前轮次记录分页',exact:true}).filter({hasText:'3 /'}).waitFor();
+    await page.getByRole('button',{name:'加载后续内容',exact:true}).waitFor();
+    expect(await page.locator('.session-message').count()<=300,'长轮首段正文未有界');
+    await page.getByRole('button',{name:'加载后续内容',exact:true}).evaluate(node=>node.click());
+    await page.locator('.session-message').nth(300).waitFor();
+    await page.getByRole('button',{name:'加载后续内容',exact:true}).evaluate(node=>node.click());
+    await page.locator('.session-message').nth(600).waitFor();
+    expect(await page.locator('.session-message').count()<=1200,'连续阅读驻留窗口未有界');
     const expand=page.locator('.session-text-expand').filter({hasText:'展开全部内容'}).first();
     await expand.waitFor();await expand.click();await page.getByText('长正文末尾完整标记',{exact:false}).waitFor();
     await page.context().grantPermissions(['clipboard-read','clipboard-write']);
@@ -211,15 +213,16 @@ try {
   `);
   await step("分支切换清除长轮偏移，短分支仍显示完整当前回答", `
     await page.goto(${JSON.stringify(`${base}/#sessions?id=${encodeURIComponent(branchSession.id)}&mode=full&branch=old-350`)});
-    await page.getByRole('navigation',{name:'当前轮次记录分页',exact:true}).waitFor();
-    await page.getByRole('button',{name:'当前轮次记录分页下一页',exact:true}).click();
-    await page.getByRole('navigation',{name:'当前轮次记录分页',exact:true}).filter({hasText:'2 /'}).waitFor();
+    await page.getByRole('button',{name:'加载后续内容',exact:true}).waitFor();
+    await page.getByRole('button',{name:'加载后续内容',exact:true}).evaluate(node=>node.click());
+    await page.locator('.session-message').nth(300).waitFor();
     await page.getByRole('combobox',{name:'阅读分支',exact:true}).click();
     await page.getByRole('option',{name:'当前分支',exact:true}).click();
     await page.locator('.session-turn summary').filter({hasText:'2 条记录'}).waitFor();
     const closed=page.locator('.session-turn:not([open]) summary').first();if(await closed.count())await closed.click();
     await page.getByText('短分支当前回答',{exact:true}).waitFor();
-    expect(await page.getByRole('navigation',{name:'当前轮次记录分页',exact:true}).count()===0,'短分支保留旧偏移分页');
+    expect(await page.locator('.session-reading-boundary').count()===0,'短分支保留旧窗口边界');
+    expect(await page.locator('.session-message').count()===2,'短分支混入旧分支消息');
   `);
   const endpoint = (await api(`/sessions/${sid}/timeline?maxEvents=1800`)).events.at(-1);
   await step("跨页聚合图选中后新页到达仍定位虚拟列表目标", `

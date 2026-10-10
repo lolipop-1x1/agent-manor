@@ -112,7 +112,12 @@ progress::-moz-progress-bar { background: var(--accent); border-radius: 3px; }
 .map-main { min-width: 0; padding: 20px 22px 24px; }
 .page-heading { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px; }
 .filters { position: relative; display: flex; align-items: center; flex-wrap: wrap; gap: 8px 12px; margin-top: 14px; min-height: 34px; border-bottom: 1px solid var(--border); padding-bottom: 12px; }
-.map-query-loading { position: absolute; bottom: 1px; left: 0; color: var(--muted); font-size: 10px; line-height: 12px; }
+.map-heading-tools { display: flex; align-items: center; gap: 8px; }
+.map-query-progress { display: flex; align-items: center; justify-content: center; width: 20px; height: 20px; }
+.map-query-loading { display: inline-flex; color: var(--accent); }
+.map-query-loading svg { animation: map-query-spin 1s linear infinite; }
+@keyframes map-query-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .map-query-loading svg { animation: none; } }
 .select-field { display: inline-flex; align-items: center; gap: 7px; font-size: 11px; }
 .select-field > span { color: var(--muted); }
 .map-session-filter { min-width: 0; max-width: 100%; }

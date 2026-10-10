@@ -48,8 +48,8 @@ const step = async (name, code) => {
 };
 const select = (label, option) => `await page.getByRole("combobox", {name:${JSON.stringify(label)},exact:true}).click(); await page.getByRole("option",{name:${JSON.stringify(option)},exact:true}).click();`;
 const view = label => ["已停用", "回收区", "操作记录"].includes(label)
-  ? `await page.getByRole("button",{name:"管理记录",exact:true}).click(); await page.getByRole("menuitemradio",{name:${JSON.stringify(label)},exact:true}).click();`
-  : `await page.getByRole("navigation",{name:"资源视图"}).getByRole("button",{name:${JSON.stringify(label)},exact:true}).click();`;
+  ? `await page.getByRole("navigation",{name:"管理记录",exact:true}).getByRole("button",{name:${JSON.stringify(label)},exact:true}).click();`
+  : `await page.getByRole("navigation",{name:"资源视图"}).getByRole("button",{name:${JSON.stringify(label.endsWith(" 总览") ? "使用总览" : label)},exact:true}).click();`;
 const search = name => `{
   const input=page.getByRole("textbox",{name:"搜索资源名称或路径",exact:true});
   const value=${JSON.stringify(name)};
@@ -244,8 +244,8 @@ try {
   assert.equal((await api("/resources/apply", "POST", { previewId: legacyPreview.id, confirmed: true })).status, "success");
   await step("旧备用链接归回收区并保留恢复入口", `
     await page.evaluate(()=>location.hash='#resources?kind=skill&tab=standby&q=sample-01');
-    const nav=page.getByRole("navigation",{name:"资源视图",exact:true});
-    await nav.getByRole("button",{name:"管理记录",exact:true}).filter({hasText:"回收区"}).waitFor();
+    const nav=page.getByRole("navigation",{name:"管理记录",exact:true});
+    await nav.locator('button[aria-current="page"]').filter({hasText:"回收区"}).waitFor();
     await page.waitForFunction(()=>new URLSearchParams(location.hash.split('?')[1]).get('tab')==='trash');
     expect(await nav.getByRole("button",{name:"备用",exact:true}).count()===0,"旧链接仍显示备用标签");
     await page.getByRole("button",{name:"查看sample-01的恢复记录",exact:true}).click();

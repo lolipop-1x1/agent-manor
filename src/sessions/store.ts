@@ -656,7 +656,7 @@ export class SessionStore {
       WHERE turn_id NOT LIKE '%:turn:0' GROUP BY turn_id), directory AS (
       SELECT *,ROW_NUMBER() OVER (ORDER BY ordinal,id) AS position FROM rounds)`;
     const total = (this.database.prepare(`${groups} SELECT COUNT(*) AS count FROM directory`).get(...values) as { count: number }).count;
-    const turns = this.database.prepare(`${groups} SELECT id,position,COALESCE((SELECT substr(text,1,160) FROM session_messages m
+    const turns = this.database.prepare(`${groups} SELECT id,position,COALESCE((SELECT substr(text,1,4096) FROM session_messages m
       WHERE m.revision=? AND m.id IN (SELECT id FROM scoped WHERE turn_id=directory.id AND kind='user') ORDER BY ordinal,id LIMIT 1),'') AS question
       FROM directory ORDER BY position LIMIT ? OFFSET ?`).all(...values, revision, pageSize, (page - 1) * pageSize) as SessionTurnDirectory["turns"];
     return { version, turns, total, page, pageSize };

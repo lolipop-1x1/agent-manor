@@ -2,7 +2,7 @@ import { clientLabel, getLanguage, isMessageDescriptorKnown, messageText, t, use
 import { formatDateTime, formatNumber } from "../../../src/i18n";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { SessionSearchGroups, Highlight } from "./SessionSearchGroups";
-import { SessionJump } from "./SessionJump";
+import { SessionTurnNavigation } from "./SessionTurnNavigation";
 import { CopyButton } from "./SessionCopy";
 import { collectDialogue, dialogueMarkdown } from "./session-export";
 import { readSessionFilters, writeSessionFilters } from "./session-address";
@@ -28,11 +28,13 @@ import { DatePicker } from "../../shared/ui/DatePicker";
 import { SessionRefreshActions, SessionRefreshStatus } from "./SessionRefresh";
 import { useVisiblePolling } from "../../shared/refresh/useVisiblePolling";
 import { completeTurnMarkdown } from "./session-message-content";
+import { useContinuousReading } from "./useContinuousReading";
 import "./session.css";
+import "./session-reading.css";
 
 type Mode = "brief" | "full" | "trace";
 type Target = { sessionId: string; messageId?: string; mode?: Mode; page?: number; turnPosition?: number; branch?: string };
-type ReadingPosition = { branch?: string; mode: Mode; page: number; focus?: string; position?: number; scroll: number; expanded: string[] };
+type ReadingPosition = { branch?: string; mode: Mode; page: number; focus?: string; position?: number; scroll: number; expanded: string[]; anchor?: { messageId: string; offset: number } };
 type RefreshAnchor = { sessionId: string; messageId?: string; offset: number; scroll: number; atEnd: boolean };
 
 const modeLabels: Record<Mode, string> = { brief: "sessions.mode.brief", full: "sessions.mode.full", trace: "sessions.mode.trace" };
@@ -179,7 +181,6 @@ export default function Sessions({ active, target, onMap, autoRefreshError }: { 
   const captureRefreshAnchor = useRef<() => RefreshAnchor | undefined>(() => undefined);
   const [turnPosition, setTurnPosition] = useState<number>();
   const [currentTurn, setCurrentTurn] = useState(1);
-  const [turnInput, setTurnInput] = useState("1");
   const [compactPanel, setCompactPanel] = useState<"list" | "profile" | null>(null);
   const [localHitIndex, setLocalHitIndex] = useState(-1);
   const [showLocalHits, setShowLocalHits] = useState(false);
@@ -221,6 +222,7 @@ export default function Sessions({ active, target, onMap, autoRefreshError }: { 
   }, [active, client, project, from, to, debouncedGlobalQuery, includeProcess, includeSubagents, executionMode]);
   const searchBookmark = useRef<ReadingPosition | undefined>(undefined);
   const restoreScroll = useRef<number | undefined>(undefined);
+  const restoreReadingAnchor = useRef<ReadingPosition["anchor"]>(undefined);
   const readyScrollRestore = useRef(false);
   const pendingHit = useRef<"first" | "last" | undefined>(undefined);
   const pageScroll = useRef(true);
@@ -375,7 +377,6 @@ export default function Sessions({ active, target, onMap, autoRefreshError }: { 
         if (!anchor) setMessagePage(result.page);
         const current = result.turns?.find(turn => turn.position === turnPosition || !!focusMessageId && turn.id === (result.messages.find(message => message.id === focusMessageId)?.turnId || "unknown"));
         setCurrentTurn(current?.position ?? result.turns?.[0]?.position ?? 1);
-        setTurnInput(String(current?.position ?? result.turns?.[0]?.position ?? 1));
         if (turnPosition && current) setExpandedTurns(new Set([current.id]));
         if (mode === "brief") setExpandedTurns(new Set(result.messages.map(message => message.turnId || "unknown")));
         else if (anchor?.atEnd && result.messages.at(-1)) setExpandedTurns(current => new Set(current).add(result.messages.at(-1)!.turnId));
@@ -390,6 +391,18 @@ export default function Sessions({ active, target, onMap, autoRefreshError }: { 
     return () => controller.abort();
   }, [active, indexReady, selectedSessionId, messageQuery, focusMessageId, reload, messageRetry, profileRetry, includeChildren, timelineRetry]);
 
+  const continuous = useContinuousReading({
+    enabled: active && mode !== "trace" && !messageLoading && messageDataKey === `${selectedSessionId}${messageQuery}`,
+    base: messageData?.session.id === selectedSessionId ? messageData : undefined,
+    context: `${selectedSessionId}${messageQuery}:${traceFocusRequest}`, pane: readingPane, mode, branch,
+    onLoaded: (messages, resident) => setExpandedTurns(current => {
+      const residentTurns = new Set(resident.map(message => message.turnId || "unknown"));
+      const next = new Set([...current].filter(id => residentTurns.has(id)));
+      for (const message of messages) next.add(message.turnId || "unknown");
+      return next;
+    }),
+  });
+
   useLayoutEffect(() => {
     if (!active || !messageData || messageData.session.id !== selectedSessionId || messageDataKey !== `${selectedSessionId}${messageQuery}` || !readingPane.current) return;
     if (refreshAnchor.current?.sessionId === selectedSessionId && mode === "trace") refreshAnchor.current = undefined;
@@ -400,7 +413,12 @@ export default function Sessions({ active, target, onMap, autoRefreshError }: { 
       refreshAnchor.current = undefined; pageScroll.current = false; return;
     }
     if (restoreScroll.current !== undefined) {
-      if (readyScrollRestore.current) { readingPane.current.scrollTop = restoreScroll.current; restoreScroll.current = undefined; readyScrollRestore.current = false; pageScroll.current = false; }
+      if (readyScrollRestore.current) {
+        const pane = readingPane.current, anchor = restoreReadingAnchor.current;
+        const node = anchor && document.getElementById(`session-message-${anchor.messageId}`);
+        pane.scrollTop = node && anchor ? pane.scrollTop + node.getBoundingClientRect().top - pane.getBoundingClientRect().top - anchor.offset : restoreScroll.current;
+        restoreScroll.current = undefined; restoreReadingAnchor.current = undefined; readyScrollRestore.current = false; pageScroll.current = false;
+      }
       return;
     }
     if (!pageScroll.current) return;
@@ -458,13 +476,13 @@ export default function Sessions({ active, target, onMap, autoRefreshError }: { 
     if (!target?.sessionId) return;
     evidenceRequest.current?.abort();
     const saved = readingPositions.current.get(target.sessionId);
-    const restore = saved && !target.messageId && (!target.page || target.page === saved.page) && (!target.mode || target.mode === saved.mode);
-    restoreScroll.current = restore ? saved.scroll : undefined; readyScrollRestore.current = false;
+    const restore = saved && !target.messageId && (target.turnPosition === undefined || target.turnPosition === saved.position) && (!target.page || target.page === saved.page) && (!target.mode || target.mode === saved.mode);
+    restoreScroll.current = restore ? saved.scroll : undefined; restoreReadingAnchor.current = restore ? saved.anchor : undefined; readyScrollRestore.current = false;
     setExpandedTurns(new Set(restore ? saved.expanded : []));
     setMessageOffset(undefined); setAnchorMissing(false);
     setSelectedSessionId(target.sessionId);
     setSelectedSummary(undefined);
-    setFocusMessageId(target.messageId);
+    setFocusMessageId(target.messageId ?? (restore ? saved.focus : undefined));
     setMessagePage(target.page ?? (restore ? saved.page : 1));
     setTurnPosition(target.turnPosition ?? (restore ? saved.position : undefined));
     setBranch(target.branch ?? (target.messageId ? "all" : restore ? saved.branch : undefined));
@@ -480,7 +498,7 @@ export default function Sessions({ active, target, onMap, autoRefreshError }: { 
     }
   }, [target?.sessionId, selectedSessionId, sessionList]);
 
-  const selectedMessageData = messageData?.session.id === selectedSessionId ? messageData : undefined;
+  const selectedMessageData = mode !== "trace" ? continuous.data : messageData?.session.id === selectedSessionId ? messageData : undefined;
   const selectedProfile = profile && profile.version === selectedMessageData?.version && profile.sessionIds[0] === selectedSessionId ? profile : null;
   const selectedSession = selectedMessageData?.session ?? selectedSummary ?? sessionList?.sessions.find(session => session.id === selectedSessionId);
   const mapForSession = (path?: string, project?: string) => onMap(path, project, selectedSession);
@@ -501,8 +519,14 @@ export default function Sessions({ active, target, onMap, autoRefreshError }: { 
       atEnd: mode !== "trace" && !!last && !selectedMessageData.hasMoreMessages && pane.scrollHeight - pane.clientHeight - pane.scrollTop < 32 };
   };
 
-  const captureReading = (): ReadingPosition => ({ mode, branch, page: selectedMessageData?.page ?? messagePage, focus: mode === "trace" ? traceSelection ?? focusMessageId : focusMessageId, position: turnPosition,
-    scroll: readingPane.current?.scrollTop ?? 0, expanded: [...expandedTurns] });
+  const captureReading = (): ReadingPosition => {
+    const visible = mode !== "trace" ? captureRefreshAnchor.current() : undefined;
+    const anchor = visible?.messageId ? { messageId: visible.messageId, offset: visible.offset } : undefined;
+    return { mode, branch, page: selectedMessageData?.page ?? messagePage,
+      focus: anchor?.messageId ?? (mode === "trace" ? traceSelection ?? focusMessageId : focusMessageId),
+      position: turnPosition, anchor,
+      scroll: readingPane.current?.scrollTop ?? 0, expanded: [...expandedTurns] };
+  };
   const rememberReading = () => {
     if (selectedSessionId) readingPositions.current.set(selectedSessionId, captureReading());
     try { sessionStorage.setItem("manor.session-reading", JSON.stringify([...readingPositions.current])); } catch { /* 地址仍保留定位。 */ }
@@ -526,7 +550,7 @@ export default function Sessions({ active, target, onMap, autoRefreshError }: { 
     setSelectedSessionId(id); setSelectedSummary(typeof session === "string" ? undefined : session); setMessageOffset(undefined); setAnchorMissing(false);
     setFocusMessageId(saved?.focus); setMessagePage(saved?.page ?? 1); setTurnPosition(saved?.position);
     setMode(saved?.mode ?? "brief"); setBranch(saved?.branch); setExpandedTurns(new Set(saved?.expanded));
-    restoreScroll.current = saved?.scroll; readyScrollRestore.current = false; pageScroll.current = !saved;
+    restoreScroll.current = saved?.scroll; restoreReadingAnchor.current = saved?.anchor; readyScrollRestore.current = false; pageScroll.current = !saved;
     setLocalQuery(""); searchBookmark.current = undefined; setShowLocalHits(false); setCompactPanel(null); setExportError(undefined);
     updateAddress(id, saved ?? { mode: "brief", branch: undefined });
   };
@@ -590,14 +614,14 @@ export default function Sessions({ active, target, onMap, autoRefreshError }: { 
   };
   const trackTraceTurn = (id: string) => {
     const turn = selectedMessageData?.turns?.find(turn => turn.id === id);
-    if (turn) { setCurrentTurn(turn.position); if (document.activeElement?.id !== "session-turn-jump") setTurnInput(String(turn.position)); }
+    if (turn) setCurrentTurn(turn.position);
   };
   const jumpTurn = (position: number) => {
     setMessageOffset(undefined); setAnchorMissing(false);
     setTraceFocusRequest(value => value + 1);
     setTraceSelection(undefined);
     const bounded = Math.max(1, Math.min(selectedMessageData?.totalTurns ?? 1, position));
-    setTurnInput(String(bounded)); setCurrentTurn(bounded); setTurnPosition(bounded); setFocusMessageId(undefined);
+    setCurrentTurn(bounded); setTurnPosition(bounded); setFocusMessageId(undefined);
     const resident = selectedMessageData?.turns?.find(turn => turn.position === bounded);
     if (resident) setExpandedTurns(current => new Set(current).add(resident.id));
     pageScroll.current = true; restoreScroll.current = undefined;
@@ -618,7 +642,7 @@ export default function Sessions({ active, target, onMap, autoRefreshError }: { 
     setLocalQuery(value); setLocalHitIndex(-1); setShowLocalHits(!!value);
     if (!value && searchBookmark.current) {
       const saved = searchBookmark.current; setMode(saved.mode); setBranch(saved.branch); setMessagePage(saved.page); setTurnPosition(saved.position);
-      setFocusMessageId(saved.focus); setExpandedTurns(new Set(saved.expanded)); restoreScroll.current = saved.scroll;
+      setFocusMessageId(saved.focus); setExpandedTurns(new Set(saved.expanded)); restoreScroll.current = saved.scroll; restoreReadingAnchor.current = saved.anchor;
       readyScrollRestore.current = false;
       setMessageRetry(value => value + 1); searchBookmark.current = undefined;
       if (selectedSessionId) updateAddress(selectedSessionId, saved, true);
@@ -711,15 +735,27 @@ export default function Sessions({ active, target, onMap, autoRefreshError }: { 
         <div className="session-main-controls">
           <div className="session-compact-actions"><button className="button subtle" aria-expanded={compactPanel === "list"} onClick={() => { setLeftCollapsed(false); setCompactPanel(value => value === "list" ? null : "list"); }}>{t("sessions.list.title")}</button><button className="button subtle" aria-expanded={compactPanel === "profile"} onClick={() => { setRightCollapsed(false); setCompactPanel(value => value === "profile" ? null : "profile"); }}>{t("sessions.reading.stats")}</button></div>
           {selectedSession?.parentSessionId && selectedSession.parentTitle && <button className="text-button session-parent-link" title={sessionParentTitle(selectedSession)} onClick={() => selectSession(selectedSession.parentSessionId!)}><CaretLeft size={13} />{t("sessions.reading.parent")}</button>}
-          <div className="sessions-main-heading">
-            <div>
-              <h1 title={selectedSession ? sessionDisplayTitle(selectedSession) : undefined}>{selectedSession ? <Highlight text={sessionDisplayTitle(selectedSession)} query={debouncedGlobalQuery} /> : (selectedSessionId ? t("sessions.reading.loadingSession") : t("sessions.reading.selectHistory"))}</h1>
-              {selectedSession && <p className="session-main-meta" title={selectedSession.project}>{clientLabel(selectedSession.client)} · {shortProject(selectedSession.project)} · {selectedSession.startedAt && <>{dateLabel(selectedSession.startedAt)} · </>}{t("sessions.turnCount", { count: selectedSession.turnCount })}{selectedSession.relationship ? ` · ${selectedSession.relationship === "fork" ? t("sessions.relationship.fork") : t("sessions.relationship.childAgent")}` : ""}</p>}
-              {selectedSession && (selectedSession.projectOrigin || selectedSession.executionEntries?.length) && <details className="session-technical-details"><summary>{t("sessions.details.source")}</summary>
-                {selectedSession.projectOrigin && <p>{t(selectedSession.projectOrigin === "tool_path" ? "sessions.reading.projectActivity" : selectedSession.projectOrigin === "client_metadata" ? "sessions.reading.projectMetadata" : "sessions.reading.projectCwd")}</p>}
-                {selectedSession.executionEntries?.map(entry => <p key={`${entry.entrypoint}:${entry.recordLine}`}>{executionEntryLabel(selectedSession.client, entry)}</p>)}
-              </details>}
-            </div><button className="button subtle session-map-button" onClick={() => mapForSession(undefined, selectedSession?.project)} disabled={!selectedSession?.project}><MapTrifold size={16} />{t("sessions.reading.map")}</button>
+          <div className="session-reading-header">
+            <div className="sessions-main-heading">
+              <div className="session-heading-copy">
+                <h1 title={selectedSession ? sessionDisplayTitle(selectedSession) : undefined}>{selectedSession ? <Highlight text={sessionDisplayTitle(selectedSession)} query={debouncedGlobalQuery} /> : (selectedSessionId ? t("sessions.reading.loadingSession") : t("sessions.reading.selectHistory"))}</h1>
+                <div className="session-meta-line">
+                  {selectedSession && <p className="session-main-meta" title={selectedSession.project}>{clientLabel(selectedSession.client)} · {shortProject(selectedSession.project)} · {selectedSession.startedAt && <>{dateLabel(selectedSession.startedAt)} · </>}{t("sessions.turnCount", { count: selectedSession.turnCount })}{selectedSession.relationship ? ` · ${selectedSession.relationship === "fork" ? t("sessions.relationship.fork") : t("sessions.relationship.childAgent")}` : ""}</p>}
+                  {selectedSession && (selectedSession.projectOrigin || selectedSession.executionEntries?.length) && <Popover.Root key={selectedSession.id}><Popover.Trigger className="text-button session-source-trigger">{t("sessions.details.source")}<CaretDown size={11} aria-hidden="true" /></Popover.Trigger>
+                    <Popover.Portal><Popover.Content className="filter-menu session-source-details" align="start" sideOffset={6} collisionPadding={12} aria-label={t("sessions.details.source")}>
+                      {selectedSession.projectOrigin && <p>{t(selectedSession.projectOrigin === "tool_path" ? "sessions.reading.projectActivity" : selectedSession.projectOrigin === "client_metadata" ? "sessions.reading.projectMetadata" : "sessions.reading.projectCwd")}</p>}
+                      {selectedSession.executionEntries?.map(entry => <p key={`${entry.entrypoint}:${entry.recordLine}`}>{executionEntryLabel(selectedSession.client, entry)}</p>)}
+                    </Popover.Content></Popover.Portal>
+                  </Popover.Root>}
+                </div>
+              </div>
+              <div className="session-heading-actions">
+                <button className="button subtle session-map-button" onClick={() => mapForSession(undefined, selectedSession?.project)} disabled={!selectedSession?.project}><MapTrifold size={16} />{t("sessions.reading.map")}</button>
+                <Tooltip.Root><Tooltip.Trigger asChild>
+                  <button className="button session-export-button" aria-label={t(exporting ? "sessions.export.loading" : "sessions.export.branch")} disabled={!selectedSession || exporting} onClick={() => void exportDialogue()}><DownloadSimple size={15} aria-hidden="true" /><span className="session-export-label">{t(exporting ? "sessions.export.loading" : "sessions.export.short")}</span></button>
+                </Tooltip.Trigger><Tooltip.Portal><Tooltip.Content className="tooltip" sideOffset={6}>{t("sessions.export.branch")}<Tooltip.Arrow /></Tooltip.Content></Tooltip.Portal></Tooltip.Root>
+              </div>
+            </div>
           </div>
           <div className="session-view-toolbar">
             <div className="session-view-options">
@@ -747,9 +783,7 @@ export default function Sessions({ active, target, onMap, autoRefreshError }: { 
                   </>}
                 </Popover.Content></Popover.Portal>
               </Popover.Root>
-              <Tooltip.Root><Tooltip.Trigger asChild>
-                <button className="button session-export-button" aria-label={t(exporting ? "sessions.export.loading" : "sessions.export.branch")} disabled={!selectedSession || exporting} onClick={() => void exportDialogue()}><DownloadSimple size={15} aria-hidden="true" /><span className="session-export-label">{t(exporting ? "sessions.export.loading" : "sessions.export.short")}</span></button>
-              </Tooltip.Trigger><Tooltip.Portal><Tooltip.Content className="tooltip" sideOffset={6}>{t("sessions.export.branch")}<Tooltip.Arrow /></Tooltip.Content></Tooltip.Portal></Tooltip.Root>
+              {selectedMessageData && <SessionTurnNavigation key={selectedMessageData.session.id} sessionId={selectedMessageData.session.id} version={selectedMessageData.version} mode={mode} branch={branch ?? (mode === "brief" ? "current" : "all")} current={currentTurn} total={selectedMessageData.totalTurns ?? 0} onJump={jumpTurn} />}
             </div>
           </div>
           {!inScope && <Notice action={<button className="text-button" onClick={clearFilters}>{t("sessions.filter.clearAll")}</button>}>{t("sessions.filter.outside")}</Notice>}
@@ -759,17 +793,10 @@ export default function Sessions({ active, target, onMap, autoRefreshError }: { 
             setBranch(value); setFocusMessageId(undefined); setTraceSelection(undefined); setTurnPosition(undefined); setMessagePage(1); setMessageOffset(undefined); pageScroll.current = true;
             if (selectedSessionId) updateAddress(selectedSessionId, { mode, branch: value });
           }} /></div>}
-          {selectedMessageData && <nav className="session-turn-navigation" aria-label={t("sessions.turn.navigation")}>
-            <button className="text-button" disabled={!selectedMessageData.totalTurns || currentTurn === 1} onClick={() => jumpTurn(1)}>{t("sessions.turn.first")}</button>
-            <button className="icon-button" aria-label={t("sessions.turn.previous")} disabled={currentTurn <= 1} onClick={() => jumpTurn(currentTurn - 1)}><CaretLeft size={14} /></button>
-            <form onSubmit={event => { event.preventDefault(); if (turnInput) jumpTurn(Number(turnInput)); }}><label><span className="sr-only">{t("sessions.turn.jumpInput")}</span><input id="session-turn-jump" aria-label={t("sessions.turn.jumpInput")} type="number" min="1" max={selectedMessageData.totalTurns || 1} value={turnInput === "0" ? "" : turnInput} placeholder={t("sessions.kind.context")} onChange={event => setTurnInput(event.target.value)} /><span>{t("sessions.turn.ofTotal", { count: selectedMessageData.totalTurns ?? 0 })}</span></label><button className="text-button" type="submit">{t("sessions.turn.jump")}</button></form>
-            <button className="icon-button" aria-label={t("sessions.turn.next")} disabled={currentTurn >= (selectedMessageData.totalTurns ?? 0)} onClick={() => jumpTurn(currentTurn + 1)}><CaretRight size={14} /></button>
-            <button className="text-button" disabled={currentTurn >= (selectedMessageData.totalTurns ?? 0)} onClick={() => jumpTurn(selectedMessageData.totalTurns!)}>{t("sessions.turn.last")}</button>
-            <SessionJump sessionId={selectedMessageData.session.id} version={selectedMessageData.version} mode={mode} branch={branch ?? (mode === "brief" ? "current" : "all")} onJump={jumpTurn} />
-          </nav>}
         </div>
         <div ref={readingPane} className={`session-message-scroll${mode === "trace" ? " is-trace" : ""}`} data-version={selectedMessageData?.version} aria-label={t("sessions.reading.area")} onScroll={() => {
           if (mode === "trace") return;
+          continuous.onScroll();
           const pane = readingPane.current; if (!pane || !selectedMessageData?.turns) return;
           const top = pane.getBoundingClientRect().top;
           const visible = [...pane.querySelectorAll<HTMLElement>(".session-turn")].filter(node => node.getBoundingClientRect().top <= top + 30).at(-1);
@@ -778,17 +805,18 @@ export default function Sessions({ active, target, onMap, autoRefreshError }: { 
           const preferredVisible = preferred && preferred.getBoundingClientRect().bottom > top && preferred.getBoundingClientRect().top < pane.getBoundingClientRect().bottom;
           const preferredTurn = focusMessageId ? selectedMessageData.messages.find(message => message.id === focusMessageId)?.turnId || "unknown" : selectedMessageData.turns.find(turn => turn.position === turnPosition)?.id;
           const item = selectedMessageData.turns.find(turn => preferredVisible ? turn.id === preferredTurn : visible?.id === `session-turn-${turn.id}`) ?? selectedMessageData.turns[0];
-          if (item) { setCurrentTurn(item.position); if (document.activeElement?.id !== "session-turn-jump") setTurnInput(String(item.position)); }
+          if (item) setCurrentTurn(item.position);
         }}>
           {status?.stale && <Notice>{t("sessions.status.previous")}</Notice>}
           {anchorMissing && <Notice>{t("sessions.reading.anchorMissing")}</Notice>}
           {selectedSessionId ? <>
             {messageError && <Notice danger action={<button className="text-button" onClick={() => setMessageRetry(value => value + 1)}>{t("common.retry")}</button>}><SessionError error={messageError} /></Notice>}
             {messageLoading && <p className="session-message-loading" role="status">{t("sessions.reading.loadingMessages", { mode: t(modeLabels[mode]) })}</p>}
-            {mode === "trace" && profile?.sessionIds[0] === selectedSessionId && profile.children.length > 0 && <details className="session-trace-children">
-              <summary>{t("sessions.reading.childrenCount", { count: profile.children.length })}</summary>
-              {profile.children.map(child => <button className="session-child" key={child.id} onClick={() => selectSession(child)}><strong>{sessionDisplayTitle(child)}</strong></button>)}
-            </details>}
+            {mode !== "trace" && continuous.earlier && <div className="session-reading-boundary" data-direction="earlier">
+              {continuous.error && continuous.errorDirection === "earlier" && <span role="alert"><SessionError error={continuous.error} /></span>}
+              <button className="text-button" disabled={!!continuous.loading || messageLoading} onClick={() => void continuous.load("earlier")}>{t(continuous.error && continuous.errorDirection === "earlier" ? "common.retry" : "sessions.reading.loadEarlier")}</button>
+              {continuous.loading === "earlier" && <span role="status">{t("common.loading")}</span>}
+            </div>}
             {selectedMessageData && <>
               {!selectedMessageData.messages.length && !messageLoading ? <div className="session-message-empty">
                 <h2>{mode === "brief" && selectedMessageData.session.messageCount > 0 ? t("sessions.reading.emptyBrief") : t("sessions.reading.empty")}</h2>
@@ -797,7 +825,7 @@ export default function Sessions({ active, target, onMap, autoRefreshError }: { 
                   : t("sessions.reading.emptyHelp")}</p>
                 {mode === "brief" && selectedMessageData.session.messageCount > 0 && <button className="text-button" onClick={() => changeMode("full")}>{t("sessions.reading.viewFull")}</button>}
               </div> : <>
-                {(selectedMessageData.turns?.reduce((total, turn) => total + turn.messageCount, 0) ?? 0) > 300 && <Pager page={Math.floor((selectedMessageData.messageOffset ?? 0) / 300) + 1} pageSize={300} total={selectedMessageData.turns!.reduce((total, turn) => total + turn.messageCount, 0)} label={t("sessions.reading.recordPagination")} onChange={page => { setMessageOffset((page - 1) * 300); pageScroll.current = true; }} showEnds />}
+                {mode === "trace" && (selectedMessageData.turns?.reduce((total, turn) => total + turn.messageCount, 0) ?? 0) > 300 && <Pager page={Math.floor((selectedMessageData.messageOffset ?? 0) / 300) + 1} pageSize={300} total={selectedMessageData.turns!.reduce((total, turn) => total + turn.messageCount, 0)} label={t("sessions.reading.recordPagination")} onChange={page => { setMessageOffset((page - 1) * 300); pageScroll.current = true; }} showEnds />}
                 {mode === "trace" ? <SessionTrace key={selectedMessageData.session.id} version={selectedMessageData.version} branch={branch} turnDirectory={selectedMessageData.turns} messages={selectedMessageData.messages} toolPairs={selectedMessageData.toolPairs} relatedMessages={selectedMessageData.relatedMessages} steps={readingSteps} speed={speed} onFocusStep={focusStep} focusMessageId={focusMessageId} focusRequest={traceFocusRequest} focusTurnId={selectedMessageData.turns?.find(turn => turn.position === turnPosition)?.id}
                   timeline={timeline?.sessionId === selectedMessageData.session.id && timeline.data.version === selectedMessageData.version ? timeline.data : undefined} timelineLoading={timelineLoading} timelineError={timelineError} onRetryTimeline={() => setTimelineRetry(value => value + 1)} onTimelineSelect={event => focusStep({ id: event.id, sessionId: event.sessionId, messageId: event.id })}
                   query={debouncedLocalQuery || debouncedGlobalQuery} project={selectedMessageData.session.project} onMap={mapForSession} onInspect={inspectTrace} onViewTurn={trackTraceTurn} /> :
@@ -805,6 +833,11 @@ export default function Sessions({ active, target, onMap, autoRefreshError }: { 
                     onMap={mapForSession} query={debouncedLocalQuery || debouncedGlobalQuery} speed={speed} expanded={expandedTurns.has(turn.id)} onToggle={open => toggleTurn(turn.id, open)} version={selectedMessageData.version} branch={branch} />)}</div>}
               </>}
             </>}
+            {mode !== "trace" && continuous.later && <div className="session-reading-boundary" data-direction="later">
+              {continuous.error && continuous.errorDirection === "later" && <span role="alert"><SessionError error={continuous.error} /></span>}
+              <button className="text-button" disabled={!!continuous.loading || messageLoading} onClick={() => void continuous.load("later")}>{t(continuous.error && continuous.errorDirection === "later" ? "common.retry" : "sessions.reading.loadLater")}</button>
+              {continuous.loading === "later" && <span role="status">{t("common.loading")}</span>}
+            </div>}
             {currentMessage && <span className="sr-only" aria-live="polite">{t("sessions.reading.located", { kind: t(kindLabels[currentMessage.kind]) })}</span>}
           </> : <div className="session-message-empty"><ChatCircle size={30} aria-hidden="true" /><h2>{t("sessions.reading.select")}</h2><p className="muted">{t("sessions.reading.selectHelp")}</p></div>}
         </div>

@@ -64,14 +64,17 @@ try {
     });
     const text = language === "zh-CN" ? kind === "sessions" ? "正在读取地图会话…" : "正在查询所选范围…"
       : kind === "sessions" ? "Loading map sessions…" : "Loading selected scope…";
-    const loading = page.getByRole("status").filter({ hasText: text });
+    const loading = page.getByRole("status", { name: text, exact: true });
     try {
       if (kind === "sessions") await page.reload();
       else await page.getByRole("button", { name: language === "zh-CN" ? "刷新分析" : "Refresh analysis", exact: true }).click();
       await loading.waitFor(); await page.locator(".metrics").waitFor(); await page.locator(".code-map").waitFor();
       await frames();
       const before = await positions();
-      const height = (await loading.boundingBox()).height;
+      const loadingBounds = await loading.boundingBox();
+      const filters = await page.locator(".filters").boundingBox();
+      ensure(loadingBounds.y + loadingBounds.height <= filters.y, "加载状态与筛选控件重叠");
+      const height = loadingBounds.height;
       await page.screenshot({ path: `${fixture.artifacts}/${language}-${width}-${kind}-loading.png` });
       release(); await loading.waitFor({ state: "hidden" }); await page.waitForLoadState("networkidle"); await frames();
       const after = await positions();

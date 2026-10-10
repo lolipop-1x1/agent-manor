@@ -1,0 +1,6 @@
+.session-message-scroll:not(.is-trace) { overflow-anchor: none; }
+.session-reading-boundary { display: flex; align-items: center; justify-content: center; gap: 12px; min-height: 44px; padding: 4px 12px; color: var(--muted); font-size: 12px; }
+.session-reading-boundary .text-button { min-height: 34px; }
+
+.session-reading-boundary { flex-wrap: wrap; }
+.session-reading-boundary [role="alert"] { color: var(--danger); }

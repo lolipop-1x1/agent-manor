@@ -10,6 +10,7 @@ import { HelpPopover } from "../../shared/ui/HelpPopover";
 import { SessionEvidence } from "./SessionEvidence";
 import { summarizeRequestSpeed } from "../../../src/session-speed";
 import { AverageSpeedMetric, RequestSpeedBadge, SpeedAlgorithmHelp, SpeedColumnHeader } from "./SessionSpeed";
+import { usageCoverage } from "./session-usage-coverage";
 import { requestLocation } from "./session-speed-model";
 import { isAborted, request } from "../../shared/api";
 
@@ -147,13 +148,11 @@ export function SessionProfilePane({ profile, loading, error, includeChildren, s
   const visibleSteps = visibleUsage?.steps.slice(stepOffset, stepOffset + 12) ?? [];
   const failureCount = profile?.tools.reduce((total, item) => total + item.failure, 0) ?? 0;
   const peak = profile?.peakInputRequest ?? profile?.steps.find(step => step.inputTokens === profile.usage.peakInputTokens && !!step.messageId);
+  const coverage = profile ? usageCoverage(profile.usage, [...primaryMetrics, ...(profile.usage.peakInputTokens !== null ? [metrics[5]] : []), ...extraMetrics]) : [];
   const metric = ([key, label]: typeof metrics[number]) => {
     if (!profile) return null;
-    const field = key === "peakInputTokens" ? "inputTokens" : key === "peakContextTokens" ? "contextTokens" : key;
-    const recorded = field === "inputTokens" ? profile.usage.inputRecordedRequests : field === "cachedInputTokens" ? profile.usage.cacheRecordedRequests
-      : field === "contextTokens" ? undefined : profile.usage.recordedRequests?.[field];
     return <div key={key}><strong>{key === "peakInputTokens" && peak ? <button className="session-stat-link session-peak-link" aria-label={t("sessions.evidence.peak", { value: formatCount(profile.usage.peakInputTokens!) })} onClick={() => onFocusStep(peak)}>{displayRecorded(profile.usage[key])}<Crosshair size={13} aria-hidden="true" /></button> : displayRecorded(profile.usage[key])}</strong><span>{t(label)}</span>
-      {recorded !== undefined && recorded < profile.usage.requests && <small className="session-partial-badge">{t("sessions.usage.recordedRange", { count: recorded, total: profile.usage.requests })}</small>}</div>;
+      </div>;
   };
   return <aside className={`evidence-pane session-profile${collapsed ? " panel-collapsed" : ""}`} aria-label={t("sessions.profile.title")}>
     <div className="pane-heading"><span>{t("sessions.profile.title")}</span><div className="session-profile-heading-actions">
@@ -192,6 +191,7 @@ export function SessionProfilePane({ profile, loading, error, includeChildren, s
           </HelpPopover></div></div>
             <div className="session-usage-grid">{primaryMetrics.map(metric)}<AverageSpeedMetric summary={speedSummary} />
               {profile.usage.peakInputTokens !== null && metric(["peakInputTokens", "sessions.profile.maxInput"])}{extraMetrics.map(metric)}</div>
+            {coverage.length > 0 && <div className="session-usage-coverage">{coverage.map(group => <p key={group.count}><span>{group.labels.map(label => t(label)).join(" · ")}</span><strong>{t("sessions.usage.recordedRange", { count: group.count, total: group.total })}</strong></p>)}</div>}
             {profile.usage.cacheReadRatio !== null && profile.usage.inputRecordedRequests === profile.usage.requests && profile.usage.cacheRecordedRequests === profile.usage.requests && <div className="session-cache-ratio"><div><span>{t("sessions.profile.cacheRatio")}</span><strong>{normalizedRatio(profile.usage.cacheReadRatio)}</strong></div></div>}
           </section>
         </>}

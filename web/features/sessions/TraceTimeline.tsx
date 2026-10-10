@@ -1,7 +1,7 @@
 import { getLanguage, t, useI18n } from "../../shared/i18n";
 import { formatDateTime, formatNumber, formatPercent, formatTime } from "../../../src/i18n";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { Crosshair, Minus, Plus, Resize } from "@phosphor-icons/react";
+import { CaretDown, Crosshair, Minus, Plus, Resize } from "@phosphor-icons/react";
 import type { SessionTimelineEvent, SessionTimelineResult } from "../../../src/session-contracts";
 import { SessionError } from "./SessionControls";
 import { kindLabels } from "./SessionMessage";
@@ -16,6 +16,7 @@ export function TraceTimeline({ data, sessionId, selectedId, loading, error, onS
   onSelect: (event: SessionTimelineEvent) => void; onRetry: () => void;
 }) {
   useI18n();
+  const [collapsed, setCollapsed] = useState(false);
   const [mode, setMode] = useState<TraceProjection>("sequence");
   const [hover, setHover] = useState<{ index: number; x: number; y: number }>();
   const [zoom, setZoom] = useState(1);
@@ -96,8 +97,8 @@ export function TraceTimeline({ data, sessionId, selectedId, loading, error, onS
   const label = (event: SessionTimelineEvent) => `#${formatNumber(getLanguage(), event.ordinal)} · ${event.usage ? t("sessions.timeline.usage") : event.tool ?? t(kindLabels[event.kind])} · ${turnTitle(event.turnId, 1)}`;
   const nearest = (x: number, lane: number) => spans.filter(span => span.lane === lane).reduce<typeof spans[number] | undefined>((best, span) => !best || Math.abs(span.x - x) < Math.abs(best.x - x) ? span : best, undefined);
   const time = (value: number) => formatTime(getLanguage(), value);
-  return <section className="trace-timeline" data-version={shownData?.version} aria-label={t("sessions.timeline.title")}>
-    <div className="trace-timeline-head"><div role="group" aria-label={t("sessions.timeline.arrangement")}>{Object.entries(projections).map(([key, name]) => <button key={key} className="text-button" aria-pressed={mode === key} onClick={() => { setMode(key as TraceProjection); setHover(undefined); }}>{t(name)}</button>)}</div>
+  return <section className={`trace-timeline${collapsed ? " is-collapsed" : ""}`} data-version={shownData?.version} aria-label={t("sessions.timeline.title")}>
+    <div className="trace-timeline-head"><button className="text-button trace-timeline-toggle" aria-expanded={!collapsed} onClick={() => { setCollapsed(value => !value); setHover(undefined); }}><CaretDown size={13} aria-hidden="true" />{t(collapsed ? "sessions.timeline.expand" : "sessions.timeline.collapse")}</button><div role="group" aria-label={t("sessions.timeline.arrangement")}>{Object.entries(projections).map(([key, name]) => <button key={key} className="text-button" aria-pressed={mode === key} onClick={() => { setMode(key as TraceProjection); setHover(undefined); }}>{t(name)}</button>)}</div>
       <div className="trace-timeline-actions"><span>{loading || detailLoading ? t("sessions.timeline.loading") : shownData?.aggregated ? t("sessions.timeline.aggregatedCount", { count: shownData.total ?? events.length }) : t("sessions.timeline.nodeCount", { count: nodes.length })}</span>
         <div className="map-zoom-controls trace-timeline-zoom" role="group" aria-label={t("sessions.timeline.zoomControls")}>
           <Hint label={t("sessions.timeline.zoomOut")}><button className="icon-button" aria-label={t("sessions.timeline.zoomOut")} disabled={zoom <= 1 || !spans.length} onClick={() => changeZoom(zoom / 2)}><Minus size={14} aria-hidden="true" /></button></Hint>
@@ -106,7 +107,7 @@ export function TraceTimeline({ data, sessionId, selectedId, loading, error, onS
           <Hint label={t("sessions.timeline.fit")}><button className="icon-button" aria-label={t("sessions.timeline.fit")} disabled={!spans.length} onClick={fit}><Resize size={14} aria-hidden="true" /></button></Hint>
           <Hint label={t("sessions.timeline.locate")}><button className="icon-button" aria-label={t("sessions.timeline.locate")} disabled={!selected} onClick={locate}><Crosshair size={14} aria-hidden="true" /></button></Hint>
         </div></div></div>
-    {error || detailError ? <p className="trace-timeline-error" role="alert"><SessionError error={(error ?? detailError)!} /> <button className="text-button" onClick={() => { setDetailRetry(value => value + 1); onRetry(); }}>{t("sessions.timeline.retry")}</button></p> : <>
+    {error || detailError ? <p className="trace-timeline-error" role="alert"><SessionError error={(error ?? detailError)!} /> <button className="text-button" onClick={() => { setDetailRetry(value => value + 1); onRetry(); }}>{t("sessions.timeline.retry")}</button></p> : <div className="trace-timeline-body" hidden={collapsed}>
       <div className="trace-timeline-plot"><div className="trace-lane-labels" aria-hidden="true"><span>{t("sessions.usage.input")}</span><span>{t("sessions.timeline.model")}</span><span>{t("sessions.message.tool")}</span></div>
         <div ref={viewport} className="trace-timeline-viewport" onScroll={event => { setScroll(event.currentTarget.scrollLeft); setHover(undefined); }}>
         <svg viewBox={`0 0 ${plotWidth} 66`} style={{ width: plotWidth }} role="group" tabIndex={0} aria-label={t("sessions.timeline.keyboard")} onKeyDown={event => {
@@ -142,6 +143,6 @@ export function TraceTimeline({ data, sessionId, selectedId, loading, error, onS
       </div>
       <div className="trace-timeline-foot"><div className="trace-timeline-legend"><span><i className="key-user" />{t("sessions.kind.user")}</span><span><i className="key-context" />{t("sessions.kind.context")}</span><span><i className="key-model" />{t("sessions.timeline.model")}</span><span><i className="key-tool" />{t("sessions.message.tool")}</span></div>
         {mode === "time" && <span>{spans.length ? `${time(start)} → ${time(end)}` : t("sessions.timeline.noTime")}</span>}{missing > 0 && <span>{t("sessions.timeline.missingTime", { count: missing })}</span>}</div>
-    </>}
+    </div>}
   </section>;
 }

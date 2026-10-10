@@ -133,6 +133,7 @@ try {
         await page.waitForLoadState("networkidle");
         const turn = page.locator(".session-turn").first();
         await turn.locator(".session-speed-badge").filter({ hasText: "平均 ≈ 26 tok/s" }).waitFor();
+        await page.locator(".session-turn-position").click();
         await page.getByRole("spinbutton", { name: "跳转轮次", exact: true }).fill("1"); await button("跳转").click();
         await page.waitForLoadState("networkidle");
         await turn.locator(".kind-assistant .session-speed-badge").filter({ hasText: "请求 ≈ 20 tok/s" }).waitFor();
@@ -150,6 +151,7 @@ try {
         ensure(await turn.getAttribute("open") === null && await turn.locator("summary .session-speed-badge").evaluate(element => element === document.activeElement), `${file} 帮助关闭焦点恢复`);
         await button("全部记录").click();
         await page.waitForLoadState("networkidle");
+        await page.locator(".session-turn-position").click();
         await page.getByRole("spinbutton", { name: "跳转轮次", exact: true }).fill("1"); await button("跳转").click();
         await page.waitForLoadState("networkidle");
         await turn.locator(".kind-thinking .session-speed-badge").filter({ hasText: "请求 ≈ 40 tok/s" }).waitFor();
@@ -315,8 +317,9 @@ try {
       await button("全部记录").click(); await page.waitForLoadState("networkidle");
       await page.locator(".session-turn").first().locator("summary .session-speed-badge").filter({ hasText: "平均 ≈ 27 tok/s" }).waitFor();
       await choose("阅读分支", "合成旧分支");
+      await page.locator(".session-turn-position").click();
       await page.getByRole("spinbutton", { name: "跳转轮次", exact: true }).fill("12"); await button("跳转").click(); await page.waitForLoadState("networkidle");
-      ensure(await page.getByRole("spinbutton", { name: "跳转轮次", exact: true }).inputValue() === "12", "分支第12轮分页定位");
+      ensure(await page.locator(".session-turn-position").getAttribute("data-turn") === "12", "分支第12轮分页定位");
       await page.getByRole("tab", { name: "用量", exact: true }).click();
       await button("包含子会话").click(); await page.waitForLoadState("networkidle");
       await button("请求明细分页下一页").click();
@@ -327,11 +330,11 @@ try {
       await page.getByRole("tooltip").getByText("请求 ≈ 40 tok/s", { exact: true }).waitFor();
       page.speedQueries = [];
       page.on("request", request => { if (request.method() === "GET" && /\/api\/v1\/sessions(?:\/|\?)/.test(request.url())) page.speedQueries.push(request.url()); });
-      const before = { hash: await page.evaluate(() => location.hash), turn: await page.getByRole("spinbutton", { name: "跳转轮次", exact: true }).inputValue(),
+      const before = { hash: await page.evaluate(() => location.hash), turn: await page.locator(".session-turn-position").getAttribute("data-turn"),
         expanded: await page.locator(".session-turn[open]").count(), selected: await slider.getAttribute("aria-valuenow"), queries: page.speedQueries.length };
       await language("显示语言", "English");
       ensure(await button("All records").getAttribute("aria-pressed") === "true" && await button("Execution trace").count() === 1, "英文完整与执行轨迹名称正确");
-      ensure(await page.evaluate(() => location.hash) === before.hash && await page.getByRole("spinbutton", { name: "Turn to jump to", exact: true }).inputValue() === before.turn, "英文切换保留会话模式分支与轮次地址");
+      ensure(await page.evaluate(() => location.hash) === before.hash && await page.locator(".session-turn-position").getAttribute("data-turn") === before.turn, "英文切换保留会话模式分支与轮次地址");
       ensure(await page.getByRole("combobox", { name: "Reading branch", exact: true }).innerText() === "合成旧分支" && await page.locator(".session-turn[open]").count() === before.expanded, "英文切换保留分支与展开状态");
       ensure(await button("Include child sessions").getAttribute("aria-pressed") === "true" && await page.getByRole("tab", { name: "Usage", exact: true }).getAttribute("aria-selected") === "true", "英文切换保留统计范围与用量页");
       ensure(await page.getByRole("slider", { name: "Select usage request", exact: true }).getAttribute("aria-valuenow") === before.selected && await firstRequest.getByRole("button", { name: "Request 13", exact: true }).isVisible(), "英文切换保留曲线请求与请求明细分页");
@@ -376,11 +379,13 @@ try {
       await button("对话").click(); await page.waitForLoadState("networkidle");
       await page.locator(".session-turn").first().locator("summary .session-speed-badge").filter({ hasText: "平均 ≈ 200 tok/s" }).waitFor();
       ensure(await page.locator(".session-turn").count() === 10, "110轮历史按完整轮次分页");
+      await page.locator(".session-turn-position").click();
       await button("末轮").click(); await page.waitForLoadState("networkidle");
       await page.locator(".kind-user .session-message-text").getByText("合成速度问题 110", { exact: true }).waitFor();
-      await page.waitForFunction(() => document.querySelector('input[aria-label="跳转轮次"]')?.value === "110");
-      ensure(await page.getByRole("spinbutton", { name: "跳转轮次", exact: true }).inputValue() === "110", "末轮跳转到第11页");
+      await page.waitForFunction(() => document.querySelector(".session-turn-position")?.dataset.turn === "110");
+      ensure(await page.locator(".session-turn-position").getAttribute("data-turn") === "110", "末轮跳转到第11页");
       ensure(await page.locator(".session-turn").last().locator("summary .session-speed-badge").innerText() === "平均 ≈ 200 tok/s", "跨页末轮保持六请求平均");
+      await page.locator(".session-turn-position").click();
       await button("首轮").click(); await page.waitForLoadState("networkidle");
       await button("执行轨迹").click(); await page.waitForLoadState("networkidle");
       await page.locator(".trace-toolbar").getByText("180 个执行节点", { exact: true }).waitFor();
@@ -416,8 +421,8 @@ try {
       await page.screenshot({ path: ARTIFACTS + "/long-history-request-660.png" });
       await profile.getByRole("button", { name: "请求 660", exact: true }).click(); await page.waitForLoadState("networkidle");
       await page.locator(".trace-inspector header .session-speed-badge").filter({ hasText: "请求 ≈ 200 tok/s" }).waitFor();
-      await page.waitForFunction(() => document.querySelector('input[aria-label="跳转轮次"]')?.value === "110");
-      ensure(await page.getByRole("spinbutton", { name: "跳转轮次", exact: true }).inputValue() === "110", "跨页请求定位到实际第110轮轨迹");
+      await page.waitForFunction(() => document.querySelector(".session-turn-position")?.dataset.turn === "110");
+      ensure(await page.locator(".session-turn-position").getAttribute("data-turn") === "110", "跨页请求定位到实际第110轮轨迹");
       ensure(page.speedErrors.length === 0, "长历史Chrome无运行时异常");
       return { checks, requests: 660, turns: 110, virtualRows: true };
     };

@@ -7,12 +7,13 @@ import { CopyButton, CopyCodeBlock } from "./SessionCopy";
 import { Highlight } from "./SessionSearchGroups";
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { Clock, MapTrifold } from "@phosphor-icons/react";
+import { Clock, Info, MapTrifold } from "@phosphor-icons/react";
 import type { MessageKind, SessionMessage, SessionUsage } from "../../../src/session-contracts";
 import { displayRecorded, sessionResourceName, sessionMessageText } from "./session-model";
 import { completeMessage } from "./session-message-content";
 import { isAborted } from "../../shared/api";
 import { SessionError } from "./SessionControls";
+import { HelpPopover } from "../../shared/ui/HelpPopover";
 
 export const kindLabels: Record<MessageKind, string> = {
   user: "sessions.kind.user", assistant: "sessions.kind.assistant", thinking: "sessions.kind.thinking", tool_call: "sessions.kind.toolCall", tool_result: "sessions.kind.toolResult", system: "sessions.kind.system", context: "sessions.kind.context", compression: "sessions.kind.compression",
@@ -90,9 +91,8 @@ export const MessageCard = memo(function MessageCard({ message, mode, focused, p
     <div className="session-message-marker" aria-hidden="true" />
     <header className="session-message-head">
       {isTool && <span className={`session-kind kind-${message.kind}`}>{t(kindLabels[message.kind])}</span>}
-      <strong>{isTool ? message.tool ?? t("sessions.message.tool") : message.kind === "assistant" ? message.model ?? t("sessions.message.aiReply") : t(kindLabels[message.kind])}</strong>
+      <strong>{isTool ? message.tool ?? t("sessions.message.tool") : message.kind === "assistant" ? message.model ? t("sessions.message.aiModel", { model: message.model }) : t("sessions.message.aiReply") : t(kindLabels[message.kind])}</strong>
       {usage && <RequestSpeedBadge usage={usage} />}
-      {message.unconfirmed && <span className="session-evidence-label">{t("sessions.message.unconfirmed")}</span>}
       {message.final && mode !== "brief" && <span className={`session-final is-${message.final}`}>{message.final === "explicit" ? t("sessions.message.finalExplicit") : t("sessions.message.finalInferred")}</span>}
       {message.currentBranch === false && <span className="session-evidence-label">{t("sessions.message.otherBranch")}</span>}
       {message.copied && <span className="session-evidence-label">{t("sessions.message.copied")}</span>}
@@ -100,7 +100,10 @@ export const MessageCard = memo(function MessageCard({ message, mode, focused, p
       {message.status && <span className={`session-status is-${message.status}`}>{t(statusLabels[message.status])}</span>}
       {message.durationMs !== undefined && <span className="session-duration"><Clock size={12} />{displayRecorded(message.durationMs)} ms</span>}
       {message.occurredAt && <time>{formatDateTime(getLanguage(), message.occurredAt)}</time>}
-      {message.kind === "assistant" && <CopyButton text={message.text} getText={() => completeMessage(message, version).then(value => value.text)} label={t("sessions.copy.reply")} />}
+      {message.kind === "assistant" && <div className="session-message-actions">
+        {message.unconfirmed && <HelpPopover label={t("sessions.message.replyDetails")} trigger={<button className="icon-button" aria-label={t("sessions.message.replyDetails")}><Info size={15} aria-hidden="true" /></button>}><p>{t("sessions.message.unconfirmedHelp")}</p></HelpPopover>}
+        <CopyButton text={message.text} getText={() => completeMessage(message, version).then(value => value.text)} label={t("sessions.copy.reply")} />
+      </div>}
     </header>
     {(message.callId || message.resource || mode === "trace") && <details className="session-message-metadata"><summary>{t("sessions.message.metadata")}</summary>
       {message.resource && <div>{t(resourceLabels[message.resource.kind])} · {message.resource.server ? `${message.resource.server} / ` : ""}{sessionResourceName(message.resource)}</div>}

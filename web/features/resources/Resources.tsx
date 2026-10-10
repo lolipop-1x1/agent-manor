@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode, type RefObject } from "react";
 import * as Dialog from "@radix-ui/react-dialog";
-import * as Dropdown from "@radix-ui/react-dropdown-menu";
-import { ArrowClockwise, ArrowSquareOut, CaretDown, CaretLeft, CaretRight, Check, Funnel, MagnifyingGlass, Plus, Star, X } from "@phosphor-icons/react";
+import { ArrowClockwise, ArrowSquareOut, CaretLeft, CaretRight, ClockCounterClockwise, Funnel, List, MagnifyingGlass, MapTrifold, Plus, Prohibit, Star, Trash, X } from "@phosphor-icons/react";
 import { CLIENTS, type Client } from "../../../src/clients";
 import type { ResourceKind, ResourceUsageDetail, ResourceUsageDistribution, ResourceUsageEvidenceResult, ResourceUsageStats, ResourceUsageTrend } from "../../../src/resource-contracts";
 import type { ResourceInventoryDiagnostic, ResourceInventoryEntry, ResourceManualSource } from "../../../src/resource-inventory-contracts";
@@ -540,6 +539,11 @@ export default function Resources({ active, onSession }: { active: boolean; onSe
       {route.candidate === "old" && <label className="resource-field">{t("resources.candidate.oldThreshold")}<input type="number" min="1" max="3650" aria-label={t("resources.candidate.oldThresholdAria")} value={route.inactive} onChange={event => { const value = Number(event.target.value); if (Number.isSafeInteger(value) && value > 0 && value <= 3650) filter({ inactive: value }); }} /></label>}
     </>}
     <button className="button subtle resource-reset" onClick={reset}>{t("resources.filters.reset")}</button>
+    <nav className="resource-management-nav" aria-label={t("resources.management.views")}>
+      {tabs.slice(2).map(tab => <button key={tab.value} aria-current={route.tab === tab.value ? "page" : undefined} onClick={() => { update({ tab: tab.value, id: "", page: 1, tool: "" }, true); setFiltersOpen(false); }}>
+        {tab.value === "disabled" ? <Prohibit size={17} aria-hidden="true" /> : tab.value === "trash" ? <Trash size={17} aria-hidden="true" /> : <ClockCounterClockwise size={17} aria-hidden="true" />}{t(tab.labelKey)}
+      </button>)}
+    </nav>
     <div className="resource-filter-footer"><button className="text-button" onClick={() => setSourcesOpen(true)}>{t("resources.source.title")}</button><button className="text-button" onClick={() => { const client = route.client === "all" ? "codex" : route.client as Client; setSource({ client, kind: route.kind, path: "", format: route.kind === "skill" ? "skill-directory" : client === "codex" ? "toml" : "json" }); setSourceKeys(registrationKeys(client)); setSourceError(null); setSourceAdding(true); }}><Plus size={14} />{t("resources.source.add")}</button></div>
   </div>;
 
@@ -625,18 +629,16 @@ export default function Resources({ active, onSession }: { active: boolean; onSe
       <main className="resources-main">
         <header className="resources-heading"><h1>{t("resources.title")}</h1><div className="resource-kind-tabs" role="group" aria-label={t("resources.kind.label")}>{(["skill", "mcp"] as const).map(kind => <button key={kind} aria-pressed={route.kind === kind} className={route.kind === kind ? "is-selected" : ""} onClick={() => update({ kind, id: "", page: 1, tool: "", zeroPage: 1, metric: kind === route.kind ? route.metric : "uses", maxValue: kind === route.kind ? route.maxValue : "", candidate: kind === "mcp" && route.candidate === "duplicate" ? "all" : route.candidate, sort: kind === route.kind ? route.sort : "uses", order: kind === route.kind ? route.order : "desc" })}>{kind === "skill" ? t("resources.kind.skill") : t("resources.kind.mcp")}</button>)}<UsageHelp kind={route.kind} /></div><div className="resources-heading-actions"><button className="icon-button resource-mobile-filter" aria-label={t("resources.filters.open")} onClick={() => setFiltersOpen(true)}><Funnel size={18} /></button><button className="button" disabled={refreshing} onClick={() => void refresh()}><ArrowClockwise size={15} className={refreshing ? "spinning" : ""} />{refreshing ? t("resources.refresh.loading") : t("resources.refresh.label")}</button></div></header>
 
-        <nav className="resource-view-tabs" aria-label={t("resources.view.label")}>
-          {tabs.slice(0, 2).map(tab => <button key={tab.value} aria-current={route.tab === tab.value ? "page" : undefined} onClick={() => update({ tab: tab.value, id: "", page: 1, tool: "" }, true)}>{tab.value === "usage" ? overviewLabel : t(tab.labelKey)}</button>)}
-          <Dropdown.Root><Dropdown.Trigger className="resource-management-trigger" aria-label={t("resources.management.views")} aria-current={!historyView ? "page" : undefined} data-active={!historyView}>
-            {historyView ? t("resources.management.views") : t(tabs.find(tab => tab.value === route.tab)!.labelKey)}<CaretDown size={14} aria-hidden="true" />
-          </Dropdown.Trigger><Dropdown.Portal><Dropdown.Content className="filter-menu resource-management-menu" align="end" sideOffset={6} collisionPadding={12}>
-            <Dropdown.RadioGroup value={route.tab} onValueChange={value => update({ tab: value as ResourceTab, id: "", page: 1, tool: "" }, true)}>
-              {tabs.slice(2).map(tab => <Dropdown.RadioItem key={tab.value} className="filter-option" value={tab.value}>{t(tab.labelKey)}<Dropdown.ItemIndicator className="filter-check"><Check size={14} aria-hidden="true" /></Dropdown.ItemIndicator></Dropdown.RadioItem>)}
-            </Dropdown.RadioGroup>
-          </Dropdown.Content></Dropdown.Portal></Dropdown.Root>
-        </nav>
-        <div className="resource-list-toolbar">{overviewRanking && <div className="resource-display-switch" role="group" aria-label={t("resources.view.display")}>{(["list", "map"] as const).map(view => <button key={view} aria-pressed={route.view === view} onClick={() => update({ view })}>{view === "list" ? t("resources.view.list") : t("resources.view.map")}</button>)}</div>}<label className="resource-search"><MagnifyingGlass size={16} /><input aria-label={t("resources.search.label")} value={route.q} placeholder={t("resources.search.label")} onChange={event => filter({ q: event.target.value })} />{route.q && <button className="icon-button" aria-label={t("resources.search.clear")} onClick={() => filter({ q: "" })}><X size={14} /></button>}</label>
-          {overviewRanking && overviewData && (!listLoading || mapView && mapLoadedScope.current === JSON.stringify(mapQuery)) && <span>{t(route.kind === "skill" ? "resources.skillCount" : "resources.mcpCount", { count: overviewData.total })}</span>}{route.tab === "local" && !listLoading && local && <span>{t("resources.resourceCount", { count: local.total })}</span>}
+        <div className="resource-list-toolbar">
+          <nav className="resource-view-tabs" aria-label={t("resources.view.label")}>
+            {tabs.slice(0, 2).map(tab => <button key={tab.value} aria-current={route.tab === tab.value ? "page" : undefined} onClick={() => update({ tab: tab.value, id: "", page: 1, tool: "" }, true)}>{t(tab.labelKey)}</button>)}
+          </nav>
+          <label className="resource-search"><MagnifyingGlass size={16} aria-hidden="true" /><input aria-label={t("resources.search.label")} value={route.q} placeholder={t("resources.search.label")} onChange={event => filter({ q: event.target.value })} />{route.q && <button className="icon-button" aria-label={t("resources.search.clear")} onClick={() => filter({ q: "" })}><X size={14} /></button>}</label>
+          {overviewRanking && <div className="resource-display-switch" role="group" aria-label={t("resources.view.display")}>{(["list", "map"] as const).map(view => <button key={view} aria-pressed={route.view === view} onClick={() => update({ view })}>{view === "list" ? <List size={15} aria-hidden="true" /> : <MapTrifold size={15} aria-hidden="true" />}{view === "list" ? t("resources.view.list") : t("resources.view.map")}</button>)}</div>}
+        </div>
+        <div className="resource-list-summary">
+          {!historyView && <strong>{t(tabs.find(tab => tab.value === route.tab)!.labelKey)}</strong>}
+          {overviewRanking && overviewData && (!listLoading || mapView && mapLoadedScope.current === JSON.stringify(mapQuery)) && <span>{t(route.kind === "skill" ? "resources.skillCount" : "resources.mcpCount", { count: overviewData.total })}</span>}{route.tab === "local" && !listLoading && local && <span>{t("resources.localCount", { count: local.total })}</span>}
           {route.tab === "operations" && !listLoading && operations && <span>{t("resources.operationCount", { count: operations.total })}</span>}{!historyView && route.tab !== "operations" && !listLoading && archives && <span>{t("resources.resourceCount", { count: archives.total })}</span>}
         </div>
         {mapView && <div className="resource-map-settings">

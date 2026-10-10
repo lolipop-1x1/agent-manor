@@ -77,9 +77,23 @@ try {
     await page.keyboard.press("Escape");
     ensure(await button("Appearance").evaluate(element => element === document.activeElement), "Escape关闭外观弹层并恢复触发器焦点");
     await button("Appearance").click();
+    const verifyFavicon = async () => page.evaluate(async () => {
+      const link = document.querySelector('link[rel="icon"]');
+      const icon = new Image(); icon.src = link.href; await icon.decode();
+      const colors = getComputedStyle(document.documentElement);
+      const rgb = name => colors.getPropertyValue(name).trim().slice(1).match(/../g).map(channel => parseInt(channel, 16));
+      return [16, 32].every(size => {
+        const canvas = document.createElement("canvas"); canvas.width = canvas.height = size;
+        const context = canvas.getContext("2d"); context.drawImage(icon, 0, 0, size, size);
+        const background = [...context.getImageData(size / 2, size / 8, 1, 1).data].slice(0, 3);
+        const foreground = [...context.getImageData(size / 2, size / 2, 1, 1).data].slice(0, 3);
+        return JSON.stringify(background) === JSON.stringify(rgb("--accent")) && JSON.stringify(foreground) === JSON.stringify(rgb("--on-accent"));
+      });
+    });
     const accents = new Set();
     for (const preset of ["Blue", "Terracotta", "Celadon", "Amber", "Berry", "Graphite"]) {
       await choose(preset); ensure(await button(preset).getAttribute("aria-pressed") === "true", `预设 ${preset} 选中可见`);
+      ensure(await verifyFavicon(), `预设 ${preset} 的16/32像素标签图标跟随主题`);
       accents.add(await page.evaluate(() => getComputedStyle(document.documentElement).getPropertyValue("--accent")));
     }
     ensure(accents.size === 6, "六种预设具有不同主题色");
@@ -87,6 +101,7 @@ try {
       await mode(display);
       for (const color of ["#000000", "#ffffff", "#ff0000", "#00ff00", "#0000ff", "#ffff00"]) {
         await page.getByLabel("Custom color", { exact: true }).fill(color); await choose("Apply");
+        ensure(await verifyFavicon(), `${display} ${color} 标签图标可解码且颜色正确`);
         const ratios = await page.evaluate(() => {
           const style = getComputedStyle(document.documentElement), hex = name => style.getPropertyValue(name).trim();
           const lum = color => { const rgb = [1, 3, 5].map(i => parseInt(color.slice(i, i + 2), 16) / 255).map(c => c <= .04045 ? c / 12.92 : ((c + .055) / 1.055) ** 2.4); return rgb[0] * .2126 + rgb[1] * .7152 + rgb[2] * .0722; };

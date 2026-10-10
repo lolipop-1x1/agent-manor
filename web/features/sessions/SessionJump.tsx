@@ -4,6 +4,7 @@ import type { SessionTurnDirectory } from "../../../src/session-contracts";
 import { isAborted, request } from "../../shared/api";
 import { sessionParams, turnTitle } from "./session-model";
 import { t, useI18n } from "../../shared/i18n";
+import { questionPreview } from "./session-question-preview";
 import { Pager, SessionError } from "./SessionControls";
 
 export function SessionJump({ sessionId, version, branch, mode, onJump }: { sessionId: string; version: string; branch?: string; mode: "brief" | "full" | "trace"; onJump: (position: number) => void }) {
@@ -21,9 +22,13 @@ export function SessionJump({ sessionId, version, branch, mode, onJump }: { sess
     return () => controller.abort();
   }, [open, sessionId, version, branch, mode, page]);
   return <Popover.Root open={open} onOpenChange={setOpen}><Popover.Trigger className="text-button">{t("sessions.turn.byQuestion")}</Popover.Trigger>
-    <Popover.Portal><Popover.Content className="filter-menu session-question-menu" align="start" sideOffset={6} collisionPadding={12} aria-label={t("sessions.turn.byQuestion")} onEscapeKeyDown={event => event.stopPropagation()}>
+    <Popover.Portal><Popover.Content className="filter-menu session-question-menu" align="end" sideOffset={6} collisionPadding={12} aria-label={t("sessions.turn.byQuestion")} onEscapeKeyDown={event => event.stopPropagation()}>
       {error ? <div role="alert"><SessionError error={error} /></div> : data ? <>
-        {data.turns.map(turn => <button className="filter-option" key={turn.id} onClick={() => { onJump(turn.position); setOpen(false); }}><span>{turnTitle(turn.id, turn.position)}</span><span>{turn.question || t("sessions.turn.noQuestion")}</span></button>)}
+        {data.turns.map(turn => {
+          const preview = questionPreview(turn.question);
+          const summary = preview.text || (preview.skills.length ? t("sessions.turn.skillContext", { names: preview.skills.join(", ") }) : t("sessions.turn.noQuestion"));
+          return <button className="session-question-row" key={turn.id} onClick={() => { onJump(turn.position); setOpen(false); }}><span>{turnTitle(turn.id, turn.position)}</span><span title={summary}>{summary}</span></button>;
+        })}
         {!data.turns.length && <p>{t("sessions.search.empty")}</p>}
         {data.total > data.pageSize && <Pager page={page} pageSize={data.pageSize} total={data.total} onChange={setPage} label={t("sessions.turn.navigation")} />}
       </> : <p role="status">{t("common.loading")}</p>}

@@ -1,7 +1,7 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode, type RefObject } from "react";
 import * as Dialog from "@radix-ui/react-dialog";
 import * as Dropdown from "@radix-ui/react-dropdown-menu";
-import { ArrowClockwise, ArrowSquareOut, CaretDown, CaretLeft, CaretRight, CaretUp, Check, Code, FileCode, Folder, MagnifyingGlass, MapTrifold, Plus, Stack, WarningCircle, X } from "@phosphor-icons/react";
+import { ArrowClockwise, ArrowSquareOut, CaretDown, CaretLeft, CaretRight, CaretUp, Check, CircleNotch, Code, FileCode, Folder, MagnifyingGlass, MapTrifold, Plus, Stack, WarningCircle, X } from "@phosphor-icons/react";
 import type { Client, CoverageQuery, CoverageResult, EvidenceResponse, FileCategory, FileDetail, FileEvent, Filters, Gap, HistoryEvent, IndexMaintenanceResult, Job, JobResponse, MapSession, MapSessionsResponse, RegisterRepositoryResponse, Repository, SourcesResponse, StatusResponse } from "../../../src/contracts";
 import type { SessionSummary } from "../../../src/session-contracts";
 import { CLIENTS } from "../../../src/clients";
@@ -470,11 +470,13 @@ export function useCodeMapPage({ active, theme, onSession }: {
         <p className="repo-path" title={repository.path}>{repository.path}</p><div className="sidebar-label">{t("codeMap.repository.directories")}</div><DirectoryTree key={repoId} files={rootCoverage?.files ?? []} selected={directory} browse={browse} />
         <div className="sidebar-bottom"><button className="text-button" onClick={() => setRegisterOpen(true)}><Plus size={14} />{t("codeMap.repository.other")}</button></div></div>
       </aside>
-      <main className="map-main"><div className="page-heading"><h1>{t("codeMap.title")}</h1><HelpPopover label={t("codeMap.help.title")}><dl>
+      <main className="map-main"><div className="page-heading"><h1>{t("codeMap.title")}</h1><div className="map-heading-tools">
+        <span className="map-query-progress">{(mapSessionsLoading || retainedCoverageLoading) && <span className="map-query-loading" role="status" aria-label={t(retainedCoverageLoading ? "codeMap.coverage.loading" : "codeMap.session.loading")} title={t(retainedCoverageLoading ? "codeMap.coverage.loading" : "codeMap.session.loading")}><CircleNotch size={17} aria-hidden="true" /></span>}</span>
+        <HelpPopover label={t("codeMap.help.title")}><dl>
         <div><dt>{t("codeMap.help.coverageTitle")}</dt><dd>{t("codeMap.help.coverage")}</dd></div>
         <div><dt>{t("codeMap.help.filtersTitle")}</dt><dd>{t("codeMap.help.filters")}</dd></div>
         <div><dt>{t("codeMap.session.helpTitle")}</dt><dd>{t("codeMap.session.help")}</dd></div>
-        <div><dt>{t("codeMap.help.baselineTitle")}</dt><dd>{t("codeMap.help.baseline")}</dd></div></dl></HelpPopover></div>
+        <div><dt>{t("codeMap.help.baselineTitle")}</dt><dd>{t("codeMap.help.baseline")}</dd></div></dl></HelpPopover></div></div>
         <div className="filters"><div className="select-field"><span>{t("codeMap.filter.client")}</span><FilterSelect label={t("codeMap.filter.clientLabel")} value={client} options={[{ value: "all", label: t("codeMap.filter.allClients") }, ...CLIENTS.map(client => ({ value: client.id, label: clientLabel(client.id) }))]} onChange={value => { setClient(value as Client | "all"); if (value !== "all" && value !== mapSession?.client) setMapSession(undefined); }} /></div>
           <div className="select-field map-session-filter"><span>{t("codeMap.session.label")}</span><ProjectPicker label={t("codeMap.session.filter")} placeholder={t("codeMap.session.search")} value={mapSession ? mapSessionKey(mapSession) : "all"} options={[{ value: "all", label: t("codeMap.session.all") }, ...mapSessionOptions]} onChange={value => setMapSession(value === "all" ? undefined : availableMapSessions.find(session => mapSessionKey(session) === value) ?? mapSession)} />
             {mapSession && <Hint label={t("codeMap.session.clear")}><button className="icon-button" aria-label={t("codeMap.session.clear")} onClick={() => setMapSession(undefined)}><X size={14} /></button></Hint>}
@@ -482,7 +484,6 @@ export function useCodeMapPage({ active, theme, onSession }: {
           <div className="select-field"><span>{t("codeMap.filter.time")}</span><FilterSelect label={t("codeMap.filter.timeLabel")} value={window} options={[{ value: "all", label: t("codeMap.filter.allHistory") }, { value: "7", label: t("codeMap.filter.week") }, { value: "30", label: t("codeMap.filter.month") }, { value: "custom", label: t("codeMap.filter.custom") }]} onChange={value => { setWindow(value); setTimeAnchor(Date.now()); }} /></div>
           <div className="select-field"><span>{t("codeMap.filter.file")}</span><FilterSelect label={t("codeMap.filter.categoryLabel")} value={category} options={[{ value: "source", label: t("common.category.source") }, { value: "config", label: t("common.category.config") }, { value: "docs", label: t("common.category.docs") }, { value: "unknown", label: t("common.category.unknown") }, { value: "all", label: t("codeMap.filter.allText") }]} onChange={value => { setCategory(value as FileCategory | "all"); setSelected(null); }} /></div>
           <label className="search-box"><MagnifyingGlass size={17} /><input aria-label={t("codeMap.filter.search")} placeholder={t("codeMap.filter.search")} value={search} onChange={event => setSearch(event.target.value)} />{search && <button aria-label={t("codeMap.filter.clearSearch")} onClick={() => setSearch("")}><X size={14} /></button>}</label>
-          {(mapSessionsLoading || retainedCoverageLoading) && <span className="map-query-loading" role="status">{t(retainedCoverageLoading ? "codeMap.coverage.loading" : "codeMap.session.loading")}</span>}
         </div>
         {!!mapSessionsError && <Notice danger action={<button className="text-button" onClick={() => setMapSessionsRetry(value => value + 1)}>{t("common.retry")}</button>}><ErrorDetails error={mapSessionsError} /></Notice>}
         {window === "custom" && <div className="date-range"><span>{t("codeMap.filter.startDate")}</span><DatePicker label={t("codeMap.filter.startDateLabel")} value={from} onChange={setFrom} /><span>{t("codeMap.filter.to")}</span><DatePicker label={t("codeMap.filter.endDateLabel")} value={to} onChange={setTo} /></div>}
