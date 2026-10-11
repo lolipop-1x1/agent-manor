@@ -19,6 +19,11 @@ export interface UsageQuery {
 export interface UsageSource {
   version: string; sessions: SessionSummary[]; requests: { sessionId: string; usage: SessionUsage }[];
 }
+export interface UsagePreparationStatus {
+  state: "idle" | "preparing" | "ready" | "failed";
+  version?: string; priceVersion?: string; timezone?: string;
+  preparedSessions: number; totalSessions: number;
+}
 export interface ModelPriceRates {
   input: number; output: number; cacheRead?: number; cacheWrite?: number; reasoning?: number; inputAudio?: number; outputAudio?: number;
 }

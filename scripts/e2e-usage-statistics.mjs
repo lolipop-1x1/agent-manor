@@ -140,6 +140,8 @@ try {
     }
     await page.setViewportSize({ width: 1440, height: 1080 }); const savedMetrics = await metrics(), savedHash = await page.evaluate(() => location.hash);
     await button("显示语言").click(); await page.getByRole("menuitemradio", { name: "English", exact: true }).click(); await page.waitForLoadState("networkidle");
+    // 偏好保存后才异步重绘；网络空闲不保证目标文案已经提交。
+    await page.getByRole("heading", { name: "Usage", exact: true }).waitFor();
     ensure(await page.getByRole("heading", { name: "Usage", exact: true }).count() === 1, "英文统计入口没有翻译");
     ensure(await page.evaluate(() => location.hash) === savedHash, "语言切换改变筛选地址");
     ensure((await metrics()).includes("1,008") && savedMetrics.includes("1,008"), "语言切换丢失统计数值");

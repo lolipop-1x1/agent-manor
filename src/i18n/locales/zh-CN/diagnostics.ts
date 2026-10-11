@@ -5,6 +5,8 @@ export default {
   "diagnostics.usage.versionMismatch": "会话索引版本已变化，请加载最新用量结果",
   "diagnostics.usage.priceVersionMismatch": "价格版本不可用，请加载最新价格",
   "diagnostics.usage.input.invalid": "无效用量参数：{{field}}",
+  "diagnostics.usage.worker.stopped": "用量统计后台已停止。",
+  "diagnostics.usage.worker.unexpectedExit": "用量统计后台意外停止（{{code}}）。",
   "diagnostics.usage.pricing.fetch": "价格目录更新失败，继续使用本地价格。",
   "diagnostics.usage.pricing.invalidCatalog": "价格目录无效，已保留上一有效目录。",
   "diagnostics.usage.pricing.invalidConfiguration": "模型价格或计价映射无效。",

@@ -16,6 +16,8 @@ import { initializeIndexSchema } from "../index/schema.js";
 import { resourceGapRelevant } from "../resources/coverage.js";
 import { sessionTitle } from "./title.js";
 import { initializeSearchIndex, prepareSearchIndex, searchMatch } from "./search-index.js";
+import { initializeUsageFacts, prepareUsageFacts, readUsageFactMetadata, readUsageFacts, usageFactsReady } from "./usage-facts.js";
+import type { UsageFactMetadata } from "./usage-facts.js";
 
 interface JsonRow { json: string }
 interface SearchMessageRow extends JsonRow {
@@ -115,6 +117,7 @@ export class SessionStore {
       CREATE TABLE IF NOT EXISTS session_version_publication_inputs (version TEXT PRIMARY KEY REFERENCES session_versions(id) ON DELETE CASCADE, gaps TEXT NOT NULL);
     `);
         this.database.prepare("INSERT OR IGNORE INTO session_state(id,json) VALUES(1,?)").run(JSON.stringify({ stale: false }));
+        initializeUsageFacts(this.database);
         initializeSearchIndex(this.database);
       });
     } catch (error) { this.database.close(); throw error; }
@@ -261,10 +264,13 @@ export class SessionStore {
   }
 
   finishRevision(id: string, meta: SessionSourceMeta): void {
-    const counts = this.database.prepare("SELECT COUNT(*) AS messages,COUNT(DISTINCT CASE WHEN kind='user' THEN turn_id END) AS turns FROM session_messages WHERE revision=?").get(id) as { messages: number; turns: number };
-    const summary = sessionTitle({ ...meta, messageCount: counts.messages, turnCount: counts.turns });
-    this.database.prepare("UPDATE session_revisions SET session_id=?,client=?,project=?,title=?,started_at=?,updated_at=?,json=? WHERE id=?")
-      .run(meta.id, meta.client, meta.project ?? null, summary.title, meta.startedAt ?? null, meta.updatedAt ?? null, JSON.stringify(summary), id);
+    this.database.transaction(() => {
+      const counts = this.database.prepare("SELECT COUNT(*) AS messages,COUNT(DISTINCT CASE WHEN kind='user' THEN turn_id END) AS turns FROM session_messages WHERE revision=?").get(id) as { messages: number; turns: number };
+      const summary = sessionTitle({ ...meta, messageCount: counts.messages, turnCount: counts.turns });
+      this.database.prepare("UPDATE session_revisions SET session_id=?,client=?,project=?,title=?,started_at=?,updated_at=?,json=? WHERE id=?")
+        .run(meta.id, meta.client, meta.project ?? null, summary.title, meta.startedAt ?? null, meta.updatedAt ?? null, JSON.stringify(summary), id);
+      this.ensureUsageFacts(id);
+    }).immediate();
   }
 
   removeRevision(id: string): void { this.database.prepare("DELETE FROM session_revisions WHERE id=?").run(id); }
@@ -777,6 +783,108 @@ export class SessionStore {
             (SELECT value FROM json_each(u.json,'$.requestMessageIds') UNION SELECT json_extract(u.json,'$.timing.end.messageId')))) OR
         (COALESCE(json_array_length(u.json,'$.requestMessageIds'),0)=0 AND json_extract(u.json,'$.timing.end.messageId') IS NULL AND NOT EXISTS
           (SELECT 1 FROM session_messages m WHERE m.revision=u.revision AND m.copied=1 AND m.turn_id=u.turn_id)))`;
+  }
+
+  usageVersion(requestedVersion?: string): string { return this.version(requestedVersion); }
+
+  /** 请求下钻只读取目标身份及其父标题，完整版本仍使用同一存在性校验。 */
+  usageFactSession(requestedVersion: string, sessionId: string): { revision: string; session: SessionSummary } | undefined {
+    return this.database.transaction(() => {
+      const version = this.version(requestedVersion);
+      const row = this.database.prepare(`SELECT r.id AS revision,r.json,relation.parent FROM session_version_sessions v
+        JOIN session_revisions r ON r.id=v.revision LEFT JOIN session_version_relations relation
+          ON relation.version=v.version AND relation.child=v.session_id
+        WHERE v.version=? AND v.session_id=?`).get(version, sessionId) as (JsonRow & { revision: string; parent: string | null }) | undefined;
+      if (!row) return;
+      const { path: _path, sourceId: _sourceId, ...summary } = decode<SessionSourceMeta>(row);
+      if (row.parent) { summary.parentSessionId = row.parent; summary.relationship = "child"; }
+      const session = sessionTitle(summary);
+      if (session.parentSessionId) {
+        const parentRow = this.database.prepare(`SELECT r.json,relation.parent FROM session_version_sessions v
+          JOIN session_revisions r ON r.id=v.revision LEFT JOIN session_version_relations relation
+            ON relation.version=v.version AND relation.child=v.session_id
+          WHERE v.version=? AND v.session_id=?`).get(version, session.parentSessionId) as (JsonRow & { parent: string | null }) | undefined;
+        if (parentRow) {
+          const parentSummary = decode<SessionSummary>(parentRow);
+          if (parentRow.parent) { parentSummary.parentSessionId = parentRow.parent; parentSummary.relationship = "child"; }
+          const parent = sessionTitle(parentSummary);
+          session.parentTitle = parent.title;
+          session.parentTitleDescriptor = parent.titleOrigin === "fallback" ? {
+            key: parent.relationship === "child" ? "sessions.title.childFallback" : "sessions.title.unnamed",
+            ...(parent.relationship === "child" ? { params: { id: parent.clientSessionId.slice(-8) } } : {}),
+          } : undefined;
+        }
+      }
+      return { revision: row.revision, session };
+    })();
+  }
+
+  /** 只读取版本内身份和关系，统计后台按修订补齐事实，不读取原请求 JSON。 */
+  usageFactSessions(requestedVersion?: string): { version: string; sessions: { revision: string; session: SessionSummary }[] } {
+    return this.database.transaction(() => {
+      const version = this.version(requestedVersion);
+      const rows = this.database.prepare(`SELECT r.id AS revision,r.json,relation.parent FROM session_version_sessions v
+        JOIN session_revisions r ON r.id=v.revision LEFT JOIN session_version_relations relation
+          ON relation.version=v.version AND relation.child=v.session_id
+        WHERE v.version=? ORDER BY v.session_id`).all(version) as (JsonRow & { revision: string; parent: string | null })[];
+      const sessions = rows.map(row => {
+        const { path: _path, sourceId: _sourceId, ...summary } = decode<SessionSourceMeta>(row);
+        if (row.parent) { summary.parentSessionId = row.parent; summary.relationship = "child"; }
+        return { revision: row.revision, session: sessionTitle(summary) };
+      });
+      const byId = new Map(sessions.map(row => [row.session.id, row.session]));
+      for (const { session } of sessions) {
+        const parent = session.parentSessionId ? byId.get(session.parentSessionId) : undefined;
+        if (!parent) continue;
+        session.parentTitle = parent.title;
+        session.parentTitleDescriptor = parent.titleOrigin === "fallback" ? {
+          key: parent.relationship === "child" ? "sessions.title.childFallback" : "sessions.title.unnamed",
+          ...(parent.relationship === "child" ? { params: { id: parent.clientSessionId.slice(-8) } } : {}),
+        } : undefined;
+      }
+      return { version, sessions };
+    })();
+  }
+
+  ensureUsageFacts(revision: string): void { prepareUsageFacts(this.database, revision, this.eligibleUsageWhere()); }
+
+  /** 旧索引补齐按小批次提交；单修订保持保存点原子，批次失败整体回滚。 */
+  ensureUsageFactsBatch(revisions: string[]): void {
+    this.database.transaction(() => {
+      const eligible = this.eligibleUsageWhere();
+      for (const revision of new Set(revisions)) prepareUsageFacts(this.database, revision, eligible);
+    }).immediate();
+  }
+
+  usageFactMetadata(revisions: string[]): UsageFactMetadata[] {
+    return this.database.transaction(() => readUsageFactMetadata(this.database, revisions))();
+  }
+
+  usageFacts(revision: string): SessionUsage[] {
+    return this.database.transaction(() => {
+      if (!this.database.prepare("SELECT 1 FROM session_revisions WHERE id=?").get(revision)) {
+        throw new StoreError("SOURCE_NOT_FOUND", "会话不存在于当前索引版本", { key: "diagnostics.sessions.store.m011" });
+      }
+      if (!usageFactsReady(this.database, revision)) {
+        throw new StoreError("ANALYSIS_NOT_READY", "会话索引尚未完成", { key: "diagnostics.sessions.store.m009" });
+      }
+      return readUsageFacts(this.database, revision);
+    })();
+  }
+
+  /** 原始证据只加载页内请求，并验证会话属于指定的完整发布版本。 */
+  usageEvidence(requestedVersion: string, sessionId: string, ids: string[]): SessionUsage[] {
+    return this.database.transaction(() => {
+      const version = this.version(requestedVersion);
+      const selected = this.database.prepare("SELECT revision FROM session_version_sessions WHERE version=? AND session_id=?")
+        .get(version, sessionId) as { revision: string } | undefined;
+      if (!selected) throw new StoreError("SOURCE_NOT_FOUND", "会话不存在于当前索引版本", { key: "diagnostics.sessions.store.m011" });
+      if (!ids.length) return [];
+      const rows = this.database.prepare(`SELECT id,json FROM session_usage
+        WHERE revision=? AND id IN (SELECT value FROM json_each(?))`).all(selected.revision, JSON.stringify(ids)) as (JsonRow & { id: string })[];
+      const byId = new Map(rows.map(row => [row.id, decode<SessionUsage>(row)]));
+      return [...new Set(ids)].flatMap(id => { const usage = byId.get(id); return usage ? [usage] : []; });
+    })();
   }
 
   /** 批量读取已发布用量和会话身份，不加载消息正文，也不逐会话查询父关系。 */

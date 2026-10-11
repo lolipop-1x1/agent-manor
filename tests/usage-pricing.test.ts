@@ -7,7 +7,7 @@ import type { SessionUsage } from "../src/session-contracts.js";
 import type { PricingConfiguration } from "../src/usage-contracts.js";
 import { bundledPriceSnapshot } from "../src/usage/bundled-prices.js";
 import { parsePriceCatalog } from "../src/usage/price-catalog.js";
-import { PricingService } from "../src/usage/pricing.js";
+import { createPricingEstimator, PricingService } from "../src/usage/pricing.js";
 import { createPriceResolver } from "../src/usage/price-resolution.js";
 
 const date = "2026-10-11T00:00:00.000Z";
@@ -23,6 +23,26 @@ function workspace(t: { after(fn: () => void): void }): string {
   const home = mkdtempSync(join(tmpdir(), "usage-pricing-test-"));
   t.after(() => rmSync(home, { recursive: true, force: true })); return home;
 }
+
+test("后台固定快照估价与完整估价相同，精简结果不复制价格证据", async t => {
+  const pricing = new PricingService(workspace(t), { fetch: async () => response(fixture()), now: () => new Date(date) });
+  await pricing.refresh();
+  pricing.configure({ overrides: [{ model: "custom-model", input: 1, output: 3, cacheRead: 0.2, cacheWrite: 2 }],
+    mappings: [{ model: "alias", targetModel: "example-model", targetProvider: "example-provider" }] });
+  const view = pricing.view(), full = createPricingEstimator(view.status, true), light = createPricingEstimator(view.status);
+  for (const client of ["codex", "claude"]) for (const fields of [
+    {}, { model: "custom-model" }, { model: "alias" }, { model: "missing" }, { model: undefined },
+    { inputTokens: undefined }, { outputTokens: undefined }, { cacheWriteTokens: undefined }, { cachedInputTokens: undefined },
+    { cachedInputTokens: 200 }, { inputTokens: 0, outputTokens: 0 },
+  ]) {
+    const usage = request(fields), expected = view.estimate(usage, client), { price: _price, ...withoutPrice } = expected;
+    assert.deepEqual(full(usage, client), expected);
+    assert.deepEqual(light(usage, client), withoutPrice);
+  }
+  assert.equal(pricing.version(), view.status.version);
+  const { configuration: _configuration, prices: _prices, ...summary } = pricing.status();
+  assert.deepEqual(pricing.summary(), summary);
+});
 
 test("随包价格包含完整公开目录、日期及可用的精确服务商标识", t => {
   const pricing = new PricingService(workspace(t));

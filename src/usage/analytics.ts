@@ -337,3 +337,8 @@ export function buildUsageRequestPage(source: UsageSource, query: UsageQuery, pr
   return { version: source.version, priceVersion: pricing.version, sessionId,
     requests: requests.slice((page - 1) * pageSize, page * pageSize).map(({ usage, cost }) => ({ usage, cost })), total: requests.length, page, pageSize };
 }
+
+// 汇总路径复用实时分析的筛选和时间口径，实时函数继续作为差异验收依据。
+export { accumulator, add, calendarDay, compareValues, coverageOf, fillDays, fillHours, includes, instant, intervalKey,
+  matchesCoverage, matchesSession, matchesThreshold, queryOf, requestOrder, timeKeys };
+export type { Accumulator, Coverage, Estimate, Request };

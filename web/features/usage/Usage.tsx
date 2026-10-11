@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import * as Popover from "@radix-ui/react-popover";
 import { ArrowClockwise, ArrowSquareOut, CaretDown, Funnel, X } from "@phosphor-icons/react";
 import type { SessionIndexSummary } from "../../../src/session-contracts";
-import type { PricingStatus, UsageGroup, UsageInterval, UsageMetric, UsageQuery, UsageReport, UsageRequestPage, UsageTimeBucket } from "../../../src/usage-contracts";
+import type { PricingStatus, UsageGroup, UsageInterval, UsageMetric, UsagePreparationStatus, UsageQuery, UsageReport, UsageRequestPage, UsageTimeBucket } from "../../../src/usage-contracts";
 import { CLIENTS } from "../../../src/clients";
 import { usageDimensionValue } from "../../../src/usage/dimensions";
 import { ApiError, errorMessage, isAborted, request } from "../../shared/api";
@@ -29,6 +29,7 @@ export default function Usage({ active, onSession }: { active: boolean; onSessio
   const loadedQuery = useRef("");
   const [facets, setFacets] = useState<UsageReport["facets"]>({ clients: [], projects: [], models: [] });
   const [error, setError] = useState<Error | null>(null); const [loading, setLoading] = useState(false);
+  const [preparation, setPreparation] = useState<{ queryKey: string; status: UsagePreparationStatus } | null>(null);
   const [requests, setRequests] = useState<UsageRequestPage | null>(null); const [requestError, setRequestError] = useState<Error | null>(null); const [requestLoading, setRequestLoading] = useState(false);
   const [pricesOpen, setPricesOpen] = useState(false);
   const patch = (value: Partial<UsageRoute>, reset = true) => setRoute(current => ({ ...current, ...(reset ? { page: 1, selectedSession: undefined, requestPage: 1 } : {}), ...value }));
@@ -55,15 +56,43 @@ export default function Usage({ active, onSession }: { active: boolean; onSessio
     || route.minCost !== undefined && route.maxCost !== undefined && route.minCost > route.maxCost
     || route.window === "custom" && !!route.from && !!route.to && route.from > route.to;
   useEffect(() => {
+    setPreparation(null);
     if (invalid) { setLoading(false); return; }
     if (!active || !queryKey) return;
     const controller = new AbortController(); setLoading(true); setError(null);
+    const statusController = new AbortController();
+    const parameters = new URLSearchParams(queryKey);
+    const identity = new URLSearchParams();
+    for (const key of ["version", "priceVersion", "timezone"]) { const value = parameters.get(key); if (value) identity.set(key, value); }
+    let pending = true;
+    let timer: ReturnType<typeof globalThis.setTimeout>;
+    const stopPreparation = () => { pending = false; globalThis.clearTimeout(timer); statusController.abort(); };
+    const fail = (failure: unknown) => {
+      if (controller.signal.aborted || isAborted(failure)) return;
+      stopPreparation(); setPreparation(null);
+      setError(failure instanceof Error ? failure : new ApiError("QUERY_FAILED", "", { key: "common.error.query" })); setLoading(false);
+      controller.abort();
+    };
+    const pollPreparation = async () => {
+      try {
+        const status = await request<UsagePreparationStatus>(`/usage/status?${identity}`, { signal: statusController.signal });
+        if (!pending || statusController.signal.aborted) return;
+        const matches = status.version === identity.get("version") && status.priceVersion === identity.get("priceVersion") && status.timezone === identity.get("timezone");
+        if (matches && status.state === "failed") { fail(new ApiError("USAGE_PREPARATION_FAILED", "", { key: "usage.preparing.failed" })); return; }
+        setPreparation(matches && status.state === "preparing" ? { queryKey, status } : null);
+        if (matches && status.state === "ready") { stopPreparation(); return; }
+        timer = globalThis.setTimeout(() => { void pollPreparation(); }, 1000);
+      } catch (failure) { if (pending) fail(failure); }
+    };
+    // 轻量查询不轮询；报告仍在等待时才检查相同版本的后台准备状态。
+    timer = globalThis.setTimeout(() => { void pollPreparation(); }, 1000);
     if (loadedQuery.current !== queryKey) setReport(null);
     void request<UsageReport>(`/usage?${queryKey}`, { signal: controller.signal }).then(result => {
       if (controller.signal.aborted) return;
+      stopPreparation(); setPreparation(null);
       loadedQuery.current = queryKey; setReport(result); setFacets(result.facets); setLoading(false);
-    }).catch(failure => { if (!isAborted(failure)) { setError(failure instanceof Error ? failure : new ApiError("QUERY_FAILED", "", { key: "common.error.query" })); setLoading(false); } });
-    return () => controller.abort();
+    }).catch(fail);
+    return () => { controller.abort(); stopPreparation(); };
   }, [active, queryKey, invalid, revision]);
   useEffect(() => {
     if (!active || !pricing?.refreshing) return;
@@ -113,6 +142,7 @@ export default function Usage({ active, onSession }: { active: boolean; onSessio
   };
   const openSession = (sessionId: string, messageId?: string) => onSession({ sessionId, ...(messageId ? { messageId } : {}) });
   const selectedSession = report?.sessions.find(row => row.session.id === route.selectedSession);
+  const preparing = preparation?.queryKey === queryKey ? preparation.status : null;
   return <main className="usage-page">
     <div className="usage-page-heading"><h1>{t("usage.title")}</h1><div><HelpPopover label={t("usage.help.title")}><p>{t("usage.help.tokens")}</p><p>{t("usage.help.cost")}</p><p>{t("usage.help.cache")}</p>{report && <p>{t("usage.help.version", { version: report.version, priceVersion: report.priceVersion })}</p>}</HelpPopover><button onClick={() => setPricesOpen(true)} disabled={!pricing}>{t("usage.pricing.open")}</button><button className="icon-button" onClick={() => setRevision(current => current + 1)} aria-label={t("usage.refresh")} disabled={loading}><ArrowClockwise size={18} /></button></div></div>
     <div className="usage-filters"><div className="usage-date-controls"><FilterSelect label={t("usage.filter.date")} value={route.window} options={["today", "yesterday", "7", "14", "30", "90", "all", "custom"].map(item => ({ value: item, label: t(`usage.window.${item}`) }))} onChange={window => patch({ window: window as DateWindow, timeFrom: undefined, timeTo: undefined })} />{route.window === "custom" && <><DatePicker label={t("usage.filter.from")} value={route.from ?? ""} onChange={from => patch({ from: from || undefined, timeFrom: undefined, timeTo: undefined })} /><span>–</span><DatePicker label={t("usage.filter.to")} value={route.to ?? ""} onChange={to => patch({ to: to || undefined, timeFrom: undefined, timeTo: undefined })} /></>}</div>
@@ -126,7 +156,7 @@ export default function Usage({ active, onSession }: { active: boolean; onSessio
     {invalid && <div className="usage-notice danger" role="alert">{t("usage.filter.invalidRange")}</div>}
     {pricing && <div className="usage-pricing-state"><span>{t(`usage.pricing.${pricing.source}`)}</span>{pricing.fetchedAt && <span>{t("usage.pricing.updated", { time: dateTime(pricing.fetchedAt) })}</span>}{pricing.refreshing && <span role="status">{t("usage.pricing.refreshing")}</span>}{pricing.error && <span className="usage-warning">{t("usage.pricing.fallback")} {message(pricing.errorDescriptor, pricing.error)}</span>}</div>}
     {error && <div className="usage-notice danger" role="alert">{errorMessage(error)}<button onClick={() => setRevision(current => current + 1)}>{t("usage.retry")}</button></div>}
-    {loading && !invalid && <div className="usage-loading" role="status">{t("usage.loading")}</div>}
+    {loading && !invalid && <div className="usage-loading" role="status"><span>{t(preparing ? "usage.preparing" : "usage.loading")}</span>{preparing && preparing.totalSessions > 0 && <div className="usage-preparation-progress"><progress aria-label={t("usage.preparing")} value={Math.min(preparing.preparedSessions, preparing.totalSessions)} max={preparing.totalSessions} /><span>{t("usage.preparing.progress", { prepared: preparing.preparedSessions, total: preparing.totalSessions })}</span></div>}</div>}
     {report && loadedQuery.current === queryKey && !invalid && <>
       <div className="usage-range">{t("usage.chart.range", { from: report.query.from ? date(report.query.from.includes("T") ? report.query.from : `${report.query.from}T00:00:00`) : t("usage.window.all"), to: report.query.to ? date(report.query.to.includes("T") ? report.query.to : `${report.query.to}T00:00:00`) : t("usage.window.all"), timezone: report.timezone })}</div>
       <div className="usage-metrics">{[{ key: "tokens", display: value(report.totals.tokens), unit: t("usage.unit.tokens") }, { key: "cost", display: value(report.totals.estimatedCost, true), unit: "USD" }, { key: "requests", display: value(report.totals.requests), unit: "" }, { key: "sessions", display: value(report.totals.sessions), unit: "" }, { key: "cacheRatio", display: report.totals.cacheReadRatio === null ? "—" : percent(report.totals.cacheReadRatio), unit: "" }].map(item => <div key={item.key}><span>{t(`usage.metric.${item.key}`)}</span><strong>{item.display}<small>{item.unit}</small></strong></div>)}</div>

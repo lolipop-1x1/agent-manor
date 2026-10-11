@@ -27,6 +27,7 @@ import { readPreferences, registerPreferenceRoutes } from "./service/preferences
 import { compactIndexAtStartup } from "./index/maintenance.js";
 import { PricingService } from "./usage/pricing.js";
 import { registerUsageRoutes } from "./service/usage-routes.js";
+import { UsageManager } from "./usage/manager.js";
 
 export interface ServiceOptions {
   home?: string;
@@ -63,6 +64,7 @@ export async function startService(options: ServiceOptions = {}) {
   let sessions: SessionStore | undefined;
   let resourceManager: ResourceManager | undefined;
   let pricing: PricingService | undefined;
+  let usageManager: UsageManager | undefined;
   const app = Fastify({ logger: false, bodyLimit: 65_536, forceCloseConnections: true });
   const instance: ServiceInstance = { id: randomUUID(), pid: process.pid, host: "127.0.0.1", port: requestedPort, startedAt: new Date().toISOString() };
   try {
@@ -75,10 +77,12 @@ export async function startService(options: ServiceOptions = {}) {
     const worker = manager;
     resourceManager = new ResourceManager(home);
     pricing = new PricingService(home, options.usagePricing);
+    usageManager = new UsageManager(library, pricing, join(home, "usage-rollups.sqlite"));
     const management = resourceManager;
     const resources = new ResourceService(library, management, options.resourceInventory ?? { environment: process.env }, () =>
       [...new Set([...index.listRepositories().map(repository => repository.path), ...library.status().projects])]);
     app.addHook("onClose", async () => {
+      await usageManager?.close();
       await worker.close();
       index.close();
       library.close();
@@ -95,7 +99,7 @@ export async function startService(options: ServiceOptions = {}) {
       reply.code(statusCode(code)).send({ error: { code, message: known ? error.message : malformed ? "无效 HTTP 请求" : "本地服务处理失败", messageDescriptor: known ? error.messageDescriptor : malformed ? { key: "diagnostics.server.m002" } : { key: "diagnostics.server.m003" } } });
     });
     app.setNotFoundHandler((_request, reply) => { reply.code(404).send({ error: { code: "FILE_NOT_FOUND", message: "资源不存在", messageDescriptor: { key: "diagnostics.server.m004" } } }); });
-    registerUsageRoutes(app, library, pricing);
+    registerUsageRoutes(app, usageManager, pricing);
     app.addHook("onRequest", async (request) => {
       let host: URL;
       try { host = new URL(`http://${request.headers.host ?? ""}`); } catch { throw new ServiceError("FORBIDDEN", "无效 Host", { key: "diagnostics.server.m005" }); }
@@ -308,6 +312,7 @@ export async function startService(options: ServiceOptions = {}) {
     if (!address || typeof address === "string") throw new DiagnosticError("未取得本地监听端口", { key: "diagnostics.server.m019" });
     instance.port = address.port;
     await writeInstance(home, instance);
+    usageManager.start();
     if (options.startupRefresh !== false) {
       worker.refreshSessions();
       for (const repository of index.listRepositories()) worker.refresh(repository.id);
@@ -316,6 +321,7 @@ export async function startService(options: ServiceOptions = {}) {
   } catch (error) {
     await app.close().catch(() => undefined);
     await manager?.close().catch(() => undefined);
+    await usageManager?.close().catch(() => undefined);
     try { store?.close(); } catch { /* 初始化失败时可能已关闭。 */ }
     try { sessions?.close(); } catch { /* 初始化失败时可能已关闭。 */ }
     try { resourceManager?.close(); } catch { /* 初始化失败时可能已关闭。 */ }

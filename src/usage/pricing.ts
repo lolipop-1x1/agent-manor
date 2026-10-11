@@ -70,12 +70,12 @@ function inputParts(usage: SessionUsage, client?: string): { input?: number; rea
   return { input, read, write, fresh, inconsistent };
 }
 
-function requestCost(usage: SessionUsage, price: ModelPrice | undefined, client?: string): RequestCost {
+function requestCost(usage: SessionUsage, price: ModelPrice | undefined, client?: string, includePrice = true): RequestCost {
   const parts = inputParts(usage, client);
   const extra = parts.fresh === undefined ? {} : { freshInputTokens: parts.fresh };
   if (!usage.model) return { amount: null, coverage: "missing", reason: "model_missing", ...extra };
   if (!price) return { amount: null, coverage: "missing", reason: "price_missing", ...extra };
-  if (price.tiers?.length && parts.input === undefined) return { amount: null, coverage: "missing", reason: "tier_unknown", price: structuredClone(price), ...extra };
+  if (price.tiers?.length && parts.input === undefined) return { amount: null, coverage: "missing", reason: "tier_unknown", ...(includePrice ? { price: structuredClone(price) } : {}), ...extra };
   const tier = price.tiers?.filter(item => parts.input! >= item.context).at(-1);
   const { context: _context, ...tierRates } = tier ?? {};
   const applicable = { ...price, ...tierRates };
@@ -101,7 +101,13 @@ function requestCost(usage: SessionUsage, price: ModelPrice | undefined, client?
   } else add(output, applicable.output);
   const coverage = !missingTokens && !missingPrice && !ambiguous ? "complete" : computed > 0 ? "partial" : "missing";
   return { amount: computed > 0 ? amount / 1_000_000 : null, coverage, ...(coverage === "complete" ? {} : { reason: ambiguous ? "semantics_unknown" as const : missingTokens ? "tokens_missing" as const : "price_missing" as const }),
-    price: structuredClone(applicable), appliedContextThreshold: tier?.context ?? 0, ...extra };
+    ...(includePrice ? { price: structuredClone(applicable) } : {}), appliedContextThreshold: tier?.context ?? 0, ...extra };
+}
+
+/** 后台汇总使用固定价格快照，完整价格证据只在当前页按需附加。 */
+export function createPricingEstimator(status: PricingStatus, includePrice = false): PricingView["estimate"] {
+  const resolve = createPriceResolver(status.prices, status.configuration);
+  return (usage, client) => requestCost(usage, usage.model ? resolve(usage.model) : undefined, client, includePrice);
 }
 
 /** 本地配置独立保存，后台刷新只更新自动目录；每次查询使用固定价格视图。 */
@@ -169,6 +175,16 @@ export class PricingService {
   }
 
   estimate(usage: SessionUsage, client?: string): RequestCost { return this.current.estimate(usage, client); }
+
+  version(): string { return this.current.status.version; }
+
+  summary(version?: string): Omit<PricingStatus, "configuration" | "prices"> {
+    const view = version === undefined || version === this.current.status.version ? this.current : this.versions.get(version);
+    if (!view) throw new ServiceError("VERSION_NOT_FOUND", "价格版本已不可用，请重新查询", descriptor("versionMissing"));
+    const { configuration: _configuration, prices: _prices, ...status } = view.status;
+    return { ...status, ...(view === this.current ? { source: this.source, lastAttemptAt: this.lastAttemptAt, refreshing: !!this.pending,
+      error: this.error, errorDescriptor: this.errorDescriptor && { ...this.errorDescriptor } } : {}) };
+  }
 
   configure(configuration: PricingConfiguration): PricingStatus {
     if (this.closed) throw new ServiceError("INTERNAL_ERROR", "价格服务已关闭", descriptor("closed"));
