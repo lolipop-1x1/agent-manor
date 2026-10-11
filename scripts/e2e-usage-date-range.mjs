@@ -29,13 +29,13 @@ try {
     const navigate = async query => { await page.goto(`${options.base}/#usage?${query}`); await ready(); };
     const layout = async () => page.locator(".usage-trend-plot").evaluate(plot => {
       const bounds = plot.getBoundingClientRect(), scroll = plot.parentElement;
-      const targets = [...plot.querySelectorAll(".usage-bucket-targets button")];
+      const selector = plot.querySelector("[role=slider]");
       const ticks = [...plot.querySelectorAll("svg > text")].map(tick => {
         const box = tick.getBoundingClientRect(); return { label: tick.textContent, left: box.left, right: box.right };
       });
-      return { count: targets.length, first: targets[0]?.getAttribute("aria-label"), last: targets.at(-1)?.getAttribute("aria-label"),
+      return { count: Number(selector?.getAttribute("aria-valuemax")), first: ticks[0]?.label, last: ticks.at(-1)?.label,
         left: bounds.left, right: bounds.right, width: scroll.clientWidth, scrollWidth: scroll.scrollWidth, ticks,
-        lastVisible: targets.at(-1)?.getBoundingClientRect().right <= scroll.getBoundingClientRect().right + 1 };
+        lastVisible: selector?.getBoundingClientRect().right <= scroll.getBoundingClientRect().right + 1 };
     });
     const verifyLayout = async (firstYear, lastYear) => {
       const chart = await layout();
@@ -57,7 +57,9 @@ try {
       ensure(all.count === 315, "全部日期图表遗漏日桶");
       const range = await page.locator(".usage-range").innerText();
       ensure(range.includes("2025") && range.includes("2026") && !range.includes(zh ? "全部日期" : "All dates"), "全部日期范围没有采用实际起止");
+      await button(zh ? "日历热力图" : "Calendar heatmap").click();
       ensure((await page.locator(".usage-heatmap-months").innerText()).includes("2025") && (await page.locator(".usage-heatmap-months").innerText()).includes("2026"), "热力图月份缺少年份");
+      await button(zh ? "时间趋势" : "Usage over time").click();
       await page.screenshot({ path: `${options.artifacts}/${language}-all.png`, fullPage: true });
       const values = await page.locator(".usage-metrics").innerText();
       await button(zh ? "折线" : "Lines").click(); await verifyLayout("2025", "2026");
@@ -67,8 +69,8 @@ try {
       }
       await navigate("window=custom&from=2025-12-28&to=2026-01-04&interval=day");
       ensure((await verifyLayout("2025", "2026")).count === 8, "跨年自定义区间边界错误");
-      await page.locator(".usage-bucket-targets button").first().focus();
-      ensure((await page.locator('[aria-labelledby="usage-trend-title"] .usage-chart-detail').innerText()).includes("2025"), "选中日期缺少年份");
+      await page.getByRole("slider").press("Home");
+      ensure((await page.locator('[aria-labelledby="usage-time-title"] .usage-chart-detail').innerText()).includes("2025"), "选中日期缺少年份");
       await button(zh ? "筛选这个区间" : "Filter this interval").click(); await ready();
       const selected = await page.evaluate(() => location.hash);
       ensure(selected.includes("from=2025-12-28") && selected.includes("to=2025-12-28"), "带年份日期下钻改变了真实边界");
@@ -77,8 +79,8 @@ try {
       ensure((await verifyLayout("2026", "2026")).count === 30, "30天区间没有保留完整日桶");
       await navigate("window=custom&from=2025-12-31&to=2026-01-01&interval=hour");
       ensure((await verifyLayout("2025", "2026")).count === 48, "跨年小时区间没有保留全部小时");
-      await page.locator(".usage-bucket-targets button").last().focus();
-      ensure((await page.locator('[aria-labelledby="usage-trend-title"] .usage-chart-detail').innerText()).includes("2026"), "小时提示缺少年份");
+      await page.getByRole("slider").press("End");
+      ensure((await page.locator('[aria-labelledby="usage-time-title"] .usage-chart-detail').innerText()).includes("2026"), "小时提示缺少年份");
       await page.setViewportSize({ width: 390, height: 844 }); await verifyLayout("2025", "2026");
       await navigate("window=all&interval=day"); await verifyLayout("2025", "2026");
       ensure(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), "窄屏图表使整页横向溢出");

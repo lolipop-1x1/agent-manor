@@ -29,9 +29,11 @@ try {
     await dialog.getByRole("textbox", { name: "搜索原始模型、计价模型或服务商", exact: true }).fill("fixture-unpriced");
     const row = dialog.locator("tbody tr").filter({ has: page.getByText("fixture-unpriced", { exact: true }) });
     ensure((await row.innerText()).includes("模型身份存在冲突"), "同名不同标准身份没有解释冲突");
-    ensure((await row.innerText()).includes("待匹配价格"), "目录存在候选却显示没有价格");
-    ensure((await dialog.innerText()).includes("请求明细按记录的服务商和时间取价"), "模型名默认匹配与请求取价范围没有说明");
-    await row.getByRole("button", { name: "查看 2 个相关候选", exact: true }).click();
+    ensure(await row.getByRole("button", { name: "修改映射", exact: true }).isVisible(), "价格冲突没有提供调整映射入口");
+    await button("价格依据与规则").click();
+    ensure((await page.locator(".help-popover-body").innerText()).includes("请求明细按记录的服务商和时间取价"), "匹配范围帮助没有说明");
+    await button("关闭价格依据与规则").click();
+    await row.getByRole("button", { name: "修改映射", exact: true }).click();
     ensure(await button("保存配置").isDisabled(), "歧义候选被自动选成第一个");
     const target = button("计价模型及服务商"); await target.click();
     ensure(await page.getByRole("option").count() === 2, "相关候选菜单混入无关型号");
@@ -42,8 +44,8 @@ try {
     await target.click(); await page.keyboard.press("Escape"); ensure(await target.evaluate(element => element === document.activeElement), "Escape 没有恢复候选按钮焦点");
     const saved = page.waitForResponse(response => response.url().endsWith("/usage/pricing") && response.request().method() === "PUT");
     await button("保存配置").click(); ensure((await saved).ok(), "候选映射保存失败");
-    await dialog.locator(".usage-price-editor").waitFor({ state: "hidden" });
-    ensure((await row.innerText()).includes("手动映射 → beta / fixture-unpriced"), "调整映射没有显示用户选中的目标");
+    await dialog.locator(".pricing-editor").waitFor({ state: "hidden" });
+    ensure((await row.innerText()).includes("beta / fixture-unpriced"), "调整映射没有显示用户选中的目标");
     await row.getByRole("button", { name: "修改映射", exact: true }).click();
     ensure((await target.innerText()).includes("fixture-unpriced"), "已有有效映射没有预填目标");
     await button("取消").click(); await button("删除映射，恢复自动").click();

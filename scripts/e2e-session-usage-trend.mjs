@@ -62,8 +62,8 @@ try {
     await page.getByRole("button", { name: zh ? "会话库" : "Sessions", exact: true }).click();
     await page.locator(".session-list-item").filter({ hasText: "长会话工作区验收" }).click();
     const cost = page.getByRole("group", { name: zh ? "估算费用" : "Estimated cost", exact: true });
-    await cost.getByText("0.39", { exact: true }).waitFor();
-    ensure((await cost.innerText()).includes("USD"), "会话概览费用缺少币种");
+    await cost.getByText("$0.39", { exact: true }).waitFor();
+    ensure((await cost.innerText()).includes("$"), "会话概览费用缺少美元符号");
     await page.getByRole("tab", { name: zh ? "用量" : "Usage", exact: true }).click();
     for (const total of [210, 216]) {
       if (total === 216) {
@@ -71,7 +71,7 @@ try {
         await page.waitForFunction(total => document.querySelector(".session-chart-hit")?.getAttribute("aria-valuemax") === String(total), total);
       }
       await page.locator(".session-step-table tbody tr").first().waitFor(); await page.waitForLoadState("networkidle");
-      await cost.getByText("0.39", { exact: true }).waitFor();
+      await cost.getByText("$0.39", { exact: true }).waitFor();
       const hit = page.getByRole("slider", { name: zh ? "选择用量请求" : "Select usage request", exact: true });
       ensure(await hit.getAttribute("aria-valuemax") === String(total), `趋势末请求应为 ${total}，实际为 ${await hit.getAttribute("aria-valuemax")}`);
       const table = page.locator(".session-step-table tbody tr");
@@ -99,14 +99,14 @@ try {
       await page.screenshot({ path: `${fixture.artifacts}/${fixture.language}-${total}.png` });
     }
     await page.locator(".session-list-item").filter({ hasText: "长会话工作区验收" }).click();
-    await cost.getByText("0.39", { exact: true }).waitFor();
+    await cost.getByText("$0.39", { exact: true }).waitFor();
     await page.getByRole("tab", { name: zh ? "概览" : "Overview", exact: true }).click();
     const costRoute = /\/api\/v1\/sessions\/[^/]+\/cost(?:\?|$)/;
     await page.route(costRoute, async route => { await page.waitForTimeout(500); await route.continue(); });
     await page.getByRole("button", { name: zh ? "自身" : "Self", exact: true }).click();
-    ensure(await cost.getByText("0.39", { exact: true }).count() === 0, "范围已切换但仍显示旧费用");
+    ensure(await cost.getByText("$0.39", { exact: true }).count() === 0, "范围已切换但仍显示旧费用");
     await page.getByRole("button", { name: zh ? "包含子会话" : "Include child sessions", exact: true }).click();
-    await cost.getByText("0.39", { exact: true }).waitFor();
+    await cost.getByText("$0.39", { exact: true }).waitFor();
     await page.unroute(costRoute);
     await page.screenshot({ path: `${fixture.artifacts}/${fixture.language}-cost-overview.png` });
     const price = async overrides => {
@@ -116,21 +116,21 @@ try {
       await page.getByRole("button", { name: zh ? "会话库" : "Sessions", exact: true }).click();
     };
     await price([{ model: "fixture-model", input: 4, output: 20, cacheRead: 0.4 }]);
-    await cost.getByText("0.78", { exact: true }).waitFor();
+    await cost.getByText("$0.78", { exact: true }).waitFor();
     await price([{ model: "fixture-model", input: 0, output: 0, cacheRead: 0 }]);
-    await cost.getByText("0.00", { exact: true }).waitFor();
+    await cost.getByText("$0.00", { exact: true }).waitFor();
     ensure(!(await cost.innerText()).includes(zh ? "未定价" : "unpriced"), "明确零价被当作未定价");
     await price([]);
     await cost.getByText("—", { exact: true }).waitFor();
     await cost.getByText(zh ? "完整估价 0 · 部分 0 · 未定价 216" : "Fully priced 0 · partial 0 · unpriced 216", { exact: true }).waitFor();
     await page.screenshot({ path: `${fixture.artifacts}/${fixture.language}-cost-unpriced.png` });
     await price([{ model: "fixture-model", input: 2, output: 10 }]);
-    await cost.getByText("0.34", { exact: true }).waitFor();
+    await cost.getByText("$0.34", { exact: true }).waitFor();
     await cost.getByText(zh ? "已知费用小计" : "Known cost subtotal", { exact: true }).waitFor();
     await cost.getByText(zh ? "完整估价 0 · 部分 216 · 未定价 0" : "Fully priced 0 · partial 216 · unpriced 0", { exact: true }).waitFor();
     await page.screenshot({ path: `${fixture.artifacts}/${fixture.language}-cost-partial.png` });
     await price([{ model: "fixture-model", input: 2, output: 10, cacheRead: 0.2 }]);
-    await cost.getByText("0.39", { exact: true }).waitFor();
+    await cost.getByText("$0.39", { exact: true }).waitFor();
     await page.getByRole("button", { name: zh ? "统计口径" : "Statistics methodology", exact: true }).click();
     await page.getByText(zh ? "可估价请求依据：历史单价 0 · 当前快照 0 · 用户单价 216" : "Priced requests: historical 0 · current snapshot 0 · manual 216", { exact: true }).waitFor();
     await page.keyboard.press("Escape");
@@ -141,14 +141,14 @@ try {
     ensure(await page.locator(".session-usage-grid").first().isVisible(), "费用错误阻断会话画像");
     await page.unroute(costRoute);
     await cost.getByRole("button", { name: zh ? "重试" : "Retry", exact: true }).click();
-    await cost.getByText("0.39", { exact: true }).waitFor();
+    await cost.getByText("$0.39", { exact: true }).waitFor();
     await page.getByRole("button", { name: zh ? "外观" : "Appearance", exact: true }).click();
     await page.getByRole("combobox", { name: zh ? "显示模式" : "Display mode", exact: true }).click();
     await page.getByRole("option", { name: zh ? "深色" : "Dark", exact: true }).click();
     await page.getByRole("dialog", { name: zh ? "外观" : "Appearance", exact: true }).press("Escape");
     await page.setViewportSize({ width: 390, height: 844 });
     await page.getByRole("button", { name: zh ? "会话统计" : "Session statistics", exact: true }).click();
-    await cost.getByText("0.39", { exact: true }).waitFor();
+    await cost.getByText("$0.39", { exact: true }).waitFor();
     ensure(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth), "费用导致窄屏横向溢出");
     await page.screenshot({ path: `${fixture.artifacts}/${fixture.language}-cost-mobile-dark.png` });
     await page.setViewportSize({ width: 1560, height: 1080 });

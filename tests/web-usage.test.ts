@@ -63,8 +63,8 @@ test("动态图表与筛选标识在中英文目录中完整，产品不展示�
 test("用量会话、无时间请求和档位数量采用英语复数及中文格式", () => {
   assert.equal(translate("en", "usage.coverage.noUsage", { count: 1 }), "1 session has no recorded usage");
   assert.equal(translate("en", "usage.coverage.noUsage", { count: 2 }), "2 sessions have no recorded usage");
-  assert.equal(translate("en", "usage.coverage.undated", { count: 1, tokens: "120", cost: "0.1" }), "Date unknown: 1 request · 120 tokens · 0.1 USD");
-  assert.equal(translate("en", "usage.coverage.undated", { count: 2, tokens: "240", cost: "0.2" }), "Date unknown: 2 requests · 240 tokens · 0.2 USD");
+  assert.equal(translate("en", "usage.coverage.undated", { count: 1, tokens: "120", cost: "$0.10" }), "Date unknown: 1 request · 120 tokens · $0.10");
+  assert.equal(translate("en", "usage.coverage.undated", { count: 2, tokens: "240", cost: "$0.20" }), "Date unknown: 2 requests · 240 tokens · $0.20");
   assert.equal(translate("en", "usage.pricing.tiers", { count: 1 }), "1 context tier");
   assert.equal(translate("en", "usage.pricing.tiers", { count: 2 }), "2 context tiers");
   assert.equal(translate("zh-CN", "usage.coverage.noUsage", { count: 1 }), "1 个会话未记录用量");

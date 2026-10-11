@@ -1,0 +1,76 @@
+.usage-charts .usage-section-title { margin-bottom: 20px; }
+.usage-charts .usage-section-title h2 { font-size: 15px; }
+.usage-charts .usage-time-analysis { padding-top: 24px; }
+.usage-charts .usage-time-actions { gap: 12px; }
+.usage-charts .usage-time-switch button { display: inline-flex; align-items: center; justify-content: center; gap: 7px; min-height: 34px; padding: 7px 12px; font-size: 12px; }
+.usage-charts .usage-time-switch button:hover { color: var(--text); }
+.usage-charts .usage-time-switch button[aria-pressed="true"] { color: var(--accent); }
+.usage-charts .usage-trend-header { display: grid; grid-template-columns: 76px minmax(0, 1fr); align-items: baseline; }
+.usage-charts .usage-chart-unit { color: var(--muted); font-size: 12px; }
+.usage-charts .usage-chart-legend { margin-left: 0; gap: 8px 20px; margin-bottom: 14px; }
+.usage-charts .usage-chart-legend button { gap: 7px; font-size: 12px; color: var(--text); padding-block: 5px; }
+.usage-charts .usage-chart-legend button[aria-pressed="false"] { color: var(--muted); opacity: 1; }
+.usage-charts .usage-chart-legend button[aria-pressed="false"] i { outline: 1px solid var(--border); }
+.usage-charts .usage-chart-legend i, .usage-charts .usage-composition-values i { width: 10px; height: 10px; }
+.usage-charts .usage-trend-plot { height: 320px; }
+.usage-charts .usage-trend-plot svg text { font-size: 12px; }
+.usage-charts .usage-chart-reference { stroke: var(--accent); stroke-width: 1; stroke-dasharray: 3 3; vector-effect: non-scaling-stroke; }
+.usage-charts .usage-bucket-selector { position: absolute; cursor: crosshair; touch-action: pan-y; }
+.usage-charts .usage-bucket-selector:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+.usage-charts .usage-chart-detail { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 14px 20px; font-size: 12px; padding-top: 18px; min-height: 62px; }
+.usage-charts .usage-selected-values { display: flex; align-items: baseline; flex-wrap: wrap; gap: 7px 16px; min-width: 0; }
+.usage-charts .usage-selected-values strong { font-size: 13px; font-weight: 600; }
+.usage-charts .usage-selected-values > .usage-number { font-size: 15px; font-weight: 600; }
+.usage-charts .usage-chart-detail > button { margin-left: 0; white-space: nowrap; font-size: 12px; }
+.usage-charts .usage-record-status { display: inline-flex; flex-wrap: wrap; gap: 4px 8px; font-size: 11px; line-height: 1.5; }
+.usage-charts .usage-record-status:empty { display: none; }
+.usage-charts .usage-detail-groups { display: flex; flex-wrap: wrap; grid-column: 1 / -1; gap: 7px 22px; margin: 0; }
+.usage-charts .usage-detail-groups > div { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
+.usage-charts .usage-detail-groups dt { color: var(--muted); overflow-wrap: anywhere; }
+.usage-charts .usage-detail-groups dd { margin: 0; font-variant-numeric: tabular-nums; }
+.usage-charts .usage-analysis-row { gap: 40px; }
+.usage-charts .usage-composition-strip { height: 20px; margin-bottom: 24px; }
+.usage-charts .usage-composition-values { font-size: 13px; gap: 16px; margin-bottom: 6px; }
+.usage-charts .usage-composition-values dd { font-weight: 500; }
+.usage-charts .usage-composition-status, .usage-charts .usage-ranking-unit { font-size: 12px; }
+.usage-charts .usage-ranking-unit { color: var(--muted); }
+.usage-charts .usage-ranking { gap: 4px; }
+.usage-charts .usage-rank-row { grid-template-columns: minmax(120px, 1fr) minmax(60px, .8fr) minmax(96px, max-content) 48px; gap: 12px; padding: 8px 0; font-size: 13px; }
+.usage-charts .usage-rank-row:not(:disabled):hover { background: var(--surface-alt); }
+.usage-charts .usage-rank-label { display: grid; gap: 3px; min-width: 0; white-space: normal; }
+.usage-charts .usage-rank-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.usage-charts .usage-rank-track { height: 10px; }
+.usage-charts .usage-rank-row small { font-size: 12px; }
+.usage-charts .usage-heatmap-scale { font-size: 12px; margin-bottom: 18px; gap: 6px; }
+.usage-charts .usage-heatmap-scale i { width: 13px; height: 13px; }
+.usage-charts .usage-calendar-missing-key { display: inline-flex; gap: 6px; align-items: center; }
+.usage-charts .usage-heatmap-scroll { padding: 4px 4px 10px; }
+.usage-charts .usage-heatmap { grid-template-rows: repeat(7, 16px); grid-auto-columns: 16px; }
+.usage-charts .usage-calendar-weekdays { grid-template-rows: repeat(7, 16px); font-size: 11px; line-height: 16px; margin-top: 28px; }
+.usage-charts .usage-heatmap-months { height: 28px; font-size: 12px; }
+.usage-charts .usage-heatmap button[aria-pressed="true"] { outline: 2px solid var(--accent); outline-offset: 1px; }
+.usage-charts .usage-heatmap button:focus-visible { outline-offset: 2px; }
+.usage-chart-coverage-list { display: grid; gap: 12px; margin: 12px 0 0; }
+.usage-chart-coverage-list dt { font-weight: 600; overflow-wrap: anywhere; }
+.usage-chart-coverage-list dd { margin: 4px 0 0; color: var(--muted); font-variant-numeric: tabular-nums; }
+
+@media (max-width: 900px) {
+  .usage-charts .usage-analysis-row { grid-template-columns: 1fr; gap: 0; }
+}
+@media (max-width: 767px) {
+  .usage-charts .usage-trend-header { grid-template-columns: 1fr; gap: 4px; }
+  .usage-charts .usage-time-actions { gap: 8px; }
+  .usage-charts .usage-chart-detail { gap: 12px; }
+  .usage-charts .usage-heatmap-scale > span:last-child { width: auto; }
+}
+@media (max-width: 479px) {
+  .usage-charts .usage-time-analysis > .usage-section-title { align-items: flex-start; gap: 12px; }
+  .usage-charts .usage-time-actions { justify-content: space-between; width: 100%; }
+  .usage-charts .usage-time-switch { flex: 1; }
+  .usage-charts .usage-time-switch button { flex: 1; padding-inline: 8px; }
+  .usage-charts .usage-chart-detail { grid-template-columns: 1fr; }
+  .usage-charts .usage-chart-detail > button { justify-self: start; }
+  .usage-charts .usage-detail-groups { grid-column: 1; }
+  .usage-charts .usage-rank-row { grid-template-columns: minmax(0, 1fr) max-content 48px; }
+  .usage-charts .usage-rank-track { display: none; }
+}
