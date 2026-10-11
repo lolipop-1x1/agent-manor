@@ -10,7 +10,7 @@ import { decomposeUsage, nonnegative, percent, quantile, selectFeaturedInsights 
 
 type Request = OverviewRequest & { session: SessionSummary; day: string | null };
 interface PeriodRequests { all: Request[]; complete: Request[]; tokens: number; input: number; output: number }
-const identity = (...parts: (string | number)[]) => JSON.stringify(parts);
+const identity = (...parts: (string | number | null)[]) => JSON.stringify(parts);
 const knownModel = (request: Request) => Boolean(request.usage.model?.trim());
 const completeTokens = (request: OverviewRequest) => nonnegative(request.usage.inputTokens) && nonnegative(request.usage.outputTokens);
 const totalTokens = (request: OverviewRequest) => request.usage.inputTokens! + request.usage.outputTokens!;
@@ -415,14 +415,14 @@ export function generateOverviewInsights(source: OverviewSource, query: Overview
       values: { success: tool.results.success, failure: tool.results.failure, unknown: tool.results.unknown,
         resultCoverage: tool.results.coverage, failureRate: eligible ? tool.results.failureRate : null,
         failureDays: tool.days.filter(day => day.failures > 0).length, sessions: tool.sessions, server: tool.server ?? null },
-      evidence: { kind: "failures", tool: tool.name, status: "failure" } });
+      evidence: { kind: "failures", tool: tool.name, toolId: tool.key, server: tool.server, status: "failure" } });
   }
   if (report.range.comparison) {
     const comparison = report.range.comparison;
     const failureGroups = (period: OverviewPeriod) => {
       const groups = new Map<string, typeof pairedCalls>();
       for (const call of pairedCalls) if (inPeriod(call.occurredAt, period, report.timezone)) {
-        const key = identity(call.tool ?? "", call.resource?.server ?? "");
+        const key = identity(call.tool ?? null, call.resource?.server ?? null);
         const group = groups.get(key) ?? []; group.push(call); groups.set(key, group);
       }
       return groups;
@@ -441,21 +441,22 @@ export function generateOverviewInsights(source: OverviewSource, query: Overview
         missing: currentGroup.length - current.known, period: comparison.current, previousPeriod: comparison.previous,
         values: { currentFailures: current.failure, currentKnown: current.known, currentCalls: currentGroup.length,
           previousFailures: previous.failure, previousKnown: previous.known, previousCalls: previousGroup.length },
-        evidence: { kind: "tools", tool: currentGroup[0]!.tool, period: "current" } });
+        evidence: { kind: "tools", tool: currentGroup[0]!.tool, toolId: key, server: currentGroup[0]!.resource?.server, period: "current" } });
     }
   }
 
   // 12：原始调用身份与顺序保留，后续成功不改称重试或任务恢复。
   for (const sequence of report.process.failureSequences) {
     if (!sequence.calls.length) continue;
-    add({ rule: "12", type: "investigation", key: "followupCalls", object: identity(sequence.sessionId, sequence.turnId, sequence.tool),
+    add({ rule: "12", type: "investigation", key: "followupCalls", object: identity(sequence.sessionId, sequence.turnId, sequence.tool, sequence.server ?? ""),
       metric: "later_same_turn_calls", params: { tool: sequence.tool, calls: sequence.calls.length, failures: sequence.failures.length },
       current: sequence.calls.length, sample: sequence.failures.length,
       missing: sequence.calls.filter(call => call.status === "unknown").length,
       values: { success: sequence.calls.filter(call => call.status === "success").length,
         failure: sequence.calls.filter(call => call.status === "failure").length,
         unknown: sequence.calls.filter(call => call.status === "unknown").length, truncated: sequence.truncated },
-      evidence: { kind: "sequence", sessionId: sequence.sessionId, turnId: sequence.turnId, tool: sequence.tool, sort: "ordinal" } });
+      evidence: { kind: "sequence", sessionId: sequence.sessionId, turnId: sequence.turnId, tool: sequence.tool,
+        toolId: identity(sequence.tool, sequence.server ?? null), server: sequence.server, sort: "ordinal" } });
   }
 
   // 13：日期集合由真实活动建立，不以会话摘要跨度填满中间日期。

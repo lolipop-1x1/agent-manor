@@ -396,3 +396,19 @@ test("未知资源不生成偏好或MCP种类，未知项目和工具保留覆�
   assert.equal(mcp.current, 1); assert.equal(mcp.sample, 20); assert.equal(mcp.missing, 10);
   assert.equal(result.insights.find(item => item.metric === "mcp_tool_share")?.descriptor.params?.tool, "unknown");
 });
+
+test("同名工具的失败洞察与后续过程绑定服务器身份", () => {
+  const input = source();
+  for (const server of ["server-a", "server-b"]) input.events.push(event(`failure-${server}`, "main", { ordinal: server === "server-a" ? 2 : 3,
+    kind: "tool_call", tool: "search", status: "failure", resource: { kind: "mcp", name: server, server } }));
+  const result = analyze(input, query, report => {
+    report.process.failureSequences = ["server-a", "server-b"].map(server => ({ sessionId: "main", turnId: "main:turn:1", tool: "search", server,
+      failures: [`failure-${server}`], calls: [{ messageId: `later-${server}`, ordinal: 4, status: "success" }], truncated: false }));
+  });
+  const failures = result.insights.filter(item => item.rule === "11");
+  assert.equal(failures.length, 2);
+  assert.deepEqual(new Set(failures.map(item => item.evidence.toolId)), new Set(['["search","server-a"]', '["search","server-b"]']));
+  const followups = result.insights.filter(item => item.rule === "12");
+  assert.equal(followups.length, 2);
+  assert.deepEqual(new Set(followups.map(item => item.evidence.server)), new Set(["server-a", "server-b"]));
+});
