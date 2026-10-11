@@ -7,10 +7,12 @@ export function PriceDetails({ price, cost, threshold, catalog = false }: { pric
   const from = cost?.priceEffectiveFrom ?? price.effectiveFrom, to = cost?.priceEffectiveTo ?? price.effectiveTo;
   const sourceUrl = cost?.priceSourceUrl ?? price.sourceUrl;
   const provider = cost?.priceProvider ?? price.provider;
+  const model = cost?.priceModel ?? price.model;
+  const matchBasis = cost?.priceMatchBasis ?? price.matchBasis;
   const apiBaselineForProvider = cost?.apiBaselineForProvider ?? price.apiBaselineForProvider;
   const rateKeys = ["input", "output", "cacheRead", "cacheWrite", "reasoning", "inputAudio", "outputAudio"] as const;
   const rates = (value: ModelPrice) => rateKeys.filter(key => value[key] !== undefined).map(key => <div key={key}><dt>{t(`usage.pricing.${key}`)}</dt><dd>{number(value[key]!, { maximumFractionDigits: 6 })}</dd></div>);
-  return <><div className="usage-price-basis"><small>{t(`usage.pricing.basis.${basis}`)}</small>{apiBaselineForProvider && <small>{t("usage.pricing.apiBaseline", { provider: apiBaselineForProvider })}</small>}{basis === "historical" && <small>{t("usage.pricing.effectivePeriod", { from: from ? dateTime(from) : t("usage.pricing.openStart"), to: to ? dateTime(to) : t("usage.pricing.openEnd") })}</small>}</div><details className="usage-price-details"><summary>{t(catalog ? "usage.pricing.rules" : "usage.pricing.applied")}</summary>
+  return <><div className="usage-price-basis"><small>{t(`usage.pricing.basis.${basis}`)}</small>{basis !== "manual" && matchBasis && <small>{t(`usage.pricing.match.${matchBasis}`)}</small>}{!catalog && <small>{t("usage.pricing.appliedModel", { provider, model })}</small>}{apiBaselineForProvider && <small>{t("usage.pricing.apiBaseline", { provider: apiBaselineForProvider })}</small>}{basis === "historical" && <small>{t("usage.pricing.effectivePeriod", { from: from ? dateTime(from) : t("usage.pricing.openStart"), to: to ? dateTime(to) : t("usage.pricing.openEnd") })}</small>}</div><details className="usage-price-details"><summary>{t(catalog ? "usage.pricing.rules" : "usage.pricing.applied")}</summary>
     <p>{basis === "manual" && provider === "manual" ? t("usage.pricing.globalScope") : t("usage.pricing.appliedProvider", { provider })}</p>
     {apiBaselineForProvider && <p>{t("usage.pricing.apiBaselineEvidence", { provider: apiBaselineForProvider })}</p>}
     {sourceUrl && <p><a href={sourceUrl} target="_blank" rel="noreferrer">{t("usage.pricing.source")}</a></p>}

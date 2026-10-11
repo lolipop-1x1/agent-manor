@@ -55,13 +55,13 @@ test("同模型服务商覆盖可共存，全局覆盖最高，网络更新与�
   assert.equal(JSON.parse(readFileSync(join(home, "usage-pricing.json"), "utf8")).overrides.length, 3);
 });
 
-test("明确服务商优先于标准模型原厂基准，映射目标仍支持服务商覆盖", async t => {
+test("标准模型原厂基准优先于渠道目录，手动映射目标仍支持服务商覆盖", async t => {
   const service = new PricingService(workspace(t), { fetch: async () => response({ openai: { models: { "gpt-example": { cost: { input: 1, output: 2 } } } },
     reseller: { models: { "gpt-example": { cost: { input: 10, output: 20 } } } } }), now: () => new Date(date) });
   await service.refresh();
   assert.equal(service.estimate(request({ model: "gpt-example" })).price?.provider, "openai");
-  assert.equal(service.estimate(request({ model: "gpt-example", provider: "reseller" })).price?.provider, "reseller");
-  assert.equal(service.estimate(request({ model: "gpt-example", provider: "unknown" })).amount, null);
+  assert.equal(service.estimate(request({ model: "gpt-example", provider: "reseller" })).price?.provider, "openai");
+  assert.equal(service.estimate(request({ model: "gpt-example", provider: "unknown" })).price?.provider, "openai");
   service.configure({ overrides: [{ model: "gpt-example", provider: "reseller", input: 7, output: 14 }],
     mappings: [{ model: "shared-model", targetProvider: "reseller", targetModel: "gpt-example" }] });
   const cost = service.estimate(request()); assert.equal(cost.price?.provider, "reseller"); assert.equal(cost.price?.input, 7);
@@ -211,7 +211,7 @@ test("历史缓存内容版本不一致时拒绝有效数值的损坏内容", ()
   assert.throws(() => parseStoredHistoricalPriceSnapshot(snapshot));
 });
 
-test("原生官方渠道只使用明确标记的API估算基准，订阅与未知渠道不借用API价格", async t => {
+test("原生渠道与订阅渠道均采用对应模型的官方 API 估算基准", async t => {
   const prices = { deepseek: { models: { "deepseek-example": { cost: { input: 2, output: 4 } } } },
     openai: { models: { "gpt-example": { cost: { input: 1, output: 2 } } } } };
   const service = new PricingService(workspace(t), { fetch: async () => response(prices), now: () => new Date(date) });
@@ -224,8 +224,8 @@ test("原生官方渠道只使用明确标记的API估算基准，订阅与未�
   assert.equal(createPricingEstimator(service.status())(usage).apiBaselineForProvider, "deepseek-official");
   assert.equal(service.estimate({ ...usage, model: "deepseek/deepseek-example" }).amount, cost.amount);
   assert.equal(service.estimate({ ...usage, model: "deepseek-official/deepseek-example" }).amount, cost.amount);
-  assert.equal(service.estimate(request({ model: "gpt-example", provider: "openai-codex" })).amount, null);
-  assert.equal(service.estimate(request({ model: "deepseek-example", provider: "custom-gateway" })).amount, null);
+  assert.equal(service.estimate(request({ model: "gpt-example", provider: "openai-codex" })).amount, 120 / 1_000_000);
+  assert.equal(service.estimate(request({ model: "deepseek-example", provider: "custom-gateway" })).amount, 240 / 1_000_000);
   assert.equal(service.estimate(request({ model: "missing-model", provider: "deepseek-official" })).amount, null);
   service.configure({ overrides: [{ model: "deepseek-example", provider: "deepseek-official", input: 3, output: 6 }], mappings: [] });
   assert.equal(service.estimate(usage).amount, 360 / 1_000_000);
@@ -234,7 +234,7 @@ test("原生官方渠道只使用明确标记的API估算基准，订阅与未�
   assert.equal(service.estimate(usage).amount, 0); assert.equal(service.estimate(usage).apiBaselineForProvider, undefined);
 });
 
-test("渠道自身的精确价格优先于原厂估算基准，原厂历史价格仍按请求日期选择", async t => {
+test("原厂估算基准优先于渠道价格，原厂历史价格仍按请求日期选择", async t => {
   const prices = { deepseek: { models: { "deepseek-example": { cost: { input: 2, output: 4 } } } },
     "deepseek-official": { models: { "deepseek-example": { cost: { input: 9, output: 18 } } } } };
   const historical = [{ id: "deepseek", models: [{ id: "deepseek-example", prices: [
@@ -243,8 +243,8 @@ test("渠道自身的精确价格优先于原厂估算基准，原厂历史价�
   const service = new PricingService(workspace(t), { fetch: async url => response(url === historyUrl ? historical : prices), now: () => new Date(date) });
   await service.refresh();
   const usage = request({ model: "deepseek-example", provider: "deepseek-official" });
-  assert.equal(service.estimate(usage).amount, 1080 / 1_000_000);
-  assert.equal(service.estimate(usage).apiBaselineForProvider, undefined);
+  assert.equal(service.estimate(usage).amount, 360 / 1_000_000);
+  assert.equal(service.estimate(usage).apiBaselineForProvider, "deepseek-official");
   const fallback = new PricingService(workspace(t), { fetch: async url => response(url === historyUrl ? historical : { deepseek: prices.deepseek }), now: () => new Date(date) });
   await fallback.refresh();
   const cost = fallback.estimate(usage);

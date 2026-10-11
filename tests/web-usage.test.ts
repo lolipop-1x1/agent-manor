@@ -56,7 +56,7 @@ test("组成只绘制互斥桶，推理输出与缓存输入不重复堆叠", ()
 });
 
 test("动态图表与筛选标识在中英文目录中完整，产品不展示稳定标识", () => {
-  const keys = ["title", "group.model", "interval.hour", "metric.cost", "composition.cacheRead", "filter.relationship", "filter.minTokens", "reason.tier_unknown", "pricing.manual", "pricing.restore", "tokens.input"];
+  const keys = ["title", "group.model", "interval.hour", "metric.cost", "composition.cacheRead", "filter.relationship", "filter.minTokens", "reason.tier_unknown", "pricing.manual", "pricing.restore", "pricing.editMap", "pricing.match.official", "pricing.match.catalog", "tokens.input"];
   for (const language of ["zh-CN", "en"] as const) for (const key of keys) assert.notEqual(translate(language, `usage.${key}`), translate(language, "common.translationUnavailable"));
 });
 

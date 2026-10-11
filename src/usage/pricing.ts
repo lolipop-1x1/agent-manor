@@ -74,7 +74,8 @@ function inputParts(usage: SessionUsage, client?: string): { input?: number; rea
 function requestCost(usage: SessionUsage, price: ModelPrice | undefined, client?: string, includePrice = true): RequestCost {
   const parts = inputParts(usage, client);
   const extra: Partial<RequestCost> = { ...(parts.fresh === undefined ? {} : { freshInputTokens: parts.fresh }),
-    ...(price ? { priceBasis: price.source === "manual" ? "manual" : price.priceBasis ?? "current_snapshot", priceProvider: price.provider,
+    ...(price ? { priceBasis: price.source === "manual" ? "manual" : price.priceBasis ?? "current_snapshot", priceProvider: price.provider, priceModel: price.model,
+      ...(price.matchBasis ? { priceMatchBasis: price.matchBasis } : {}),
       priceSourceUrl: price.source === "manual" ? undefined : price.sourceUrl ?? priceSourceUrl,
       priceEffectiveFrom: price.effectiveFrom, priceEffectiveTo: price.effectiveTo,
       ...(price.apiBaselineForProvider ? { apiBaselineForProvider: price.apiBaselineForProvider } : {}) } : {}) };

@@ -31,7 +31,7 @@ export async function usageFixture({ failHistoricalPrices = false } = {}) {
     const summary = { id, client: sessionIndex % 2 ? "claude" : "codex", clientSessionId: id,
       sourceId: `synthetic:${id}`, path: `/synthetic/history/${id}.jsonl`, title: `合成项目任务 ${String(sessionIndex + 1).padStart(2, "0")}`,
       titleOrigin: "recorded", project: sessionIndex === 35 ? undefined : `/synthetic/projects/${["atlas", "workbench", "index", "atlas-copy"][sessionIndex % 4]}`,
-      models: sessionIndex === 34 ? ["fixture-unpriced"] : sessionIndex === 0 ? [...models, "gpt-fixture", "deepseek-chat", "gpt-codex-fixture"] : models, messageCount: 0, turnCount: 0, gaps: [],
+      models: sessionIndex === 34 ? ["fixture-unpriced"] : sessionIndex === 0 ? [...models, "gpt-fixture", "deepseek-chat", "gpt-codex-fixture", "gateway/claude-77.6-sonnet", "alternate/deepseek-fixture-v77-flash-0731", "gateway/gpt-plan-fixture:free"] : models, messageCount: 0, turnCount: 0, gaps: [],
       ...(child ? { relationship: "child", parentSessionId: "fixture-session-00" } : {}),
       ...(sessionIndex === 33 ? { executionMode: "quiet" } : {}) };
     const pending = store.createRevision(summary.path, "synthetic");
@@ -43,8 +43,8 @@ export async function usageFixture({ failHistoricalPrices = false } = {}) {
         kind: "assistant", final: "explicit", occurredAt: time.toISOString(), text: `合成请求记录 ${day + 1}：用量定位验证。` });
       const input = Math.round((12000 + sessionIndex * 1100) * (1 + 0.45 * Math.sin(day * 0.7 + sessionIndex)));
       pending.sink.usage({ id: `${id}:usage:${day}`, messageId, turnId: `turn-${day}`, occurredAt: time.toISOString(),
-        model: sessionIndex === 34 ? "fixture-unpriced" : sessionIndex === 0 && day < 3 ? ["gpt-fixture", "deepseek-chat", "gpt-codex-fixture"][day] : models[(day + sessionIndex) % 3],
-        ...(sessionIndex === 0 && day === 1 ? { provider: "deepseek-official" } : sessionIndex === 0 && day === 2 ? { provider: "openai-codex" } : {}),
+        model: sessionIndex === 34 ? "fixture-unpriced" : sessionIndex === 0 && day < 6 ? ["gpt-fixture", "deepseek-chat", "gpt-codex-fixture", "gateway/claude-77.6-sonnet", "alternate/deepseek-fixture-v77-flash-0731", "gateway/gpt-plan-fixture:free"][day] : models[(day + sessionIndex) % 3],
+        ...(sessionIndex === 0 && day === 1 ? { provider: "deepseek-official" } : sessionIndex === 0 && day === 2 ? { provider: "openai-codex" } : sessionIndex === 0 && day === 5 ? { provider: "token-plan" } : {}),
         inputTokens: input, outputTokens: 500 + day * 30 + sessionIndex * 20, cachedInputTokens: Math.round(input * 0.6), cacheWriteTokens: 0 });
     }
     if (sessionIndex === 35) {
@@ -68,7 +68,10 @@ export async function usageFixture({ failHistoricalPrices = false } = {}) {
       if (url === historicalPriceSourceUrl) return failHistoricalPrices ? new Response("synthetic price failure", { status: 503 }) : Response.json(historicalPrices);
       if (url !== priceSourceUrl) throw new Error("unexpected synthetic price source");
       return Response.json({ fixture: { id: "fixture", name: "Synthetic prices", models: prices },
-      openai: { models: { "gpt-fixture": { cost: { input: 2, output: 5, cache_read: 0.1 } }, "gpt-codex-fixture": { cost: { input: 3, output: 6, cache_read: 0.3 } } } },
+      openai: { models: { "gpt-fixture": { cost: { input: 2, output: 5, cache_read: 0.1 } }, "gpt-codex-fixture": { cost: { input: 3, output: 6, cache_read: 0.3 } }, "gpt-plan-fixture": { cost: { input: 2, output: 5, cache_read: 0.1 } } } },
+      anthropic: { models: { "claude-sonnet-77-6": { cost: { input: 3, output: 15, cache_read: 0.3, cache_write: 3.75 } } } },
+      openrouter: { models: { "deepseek/deepseek-fixture-v77-flash-0731": { cost: { input: 0.02, output: 0.6, cache_read: 0.01 } } } },
+      "token-plan": { models: { "gpt-plan-fixture": { cost: { input: 0, output: 0, cache_read: 0 } } } },
       deepseek: { models: { "deepseek-chat": { cost: { input: 0.3, output: 1.2, cache_read: 0.03 } } } },
       reseller: { models: { "gpt-fixture": { cost: { input: 20, output: 50, cache_read: 1 } } } } });
     } } });

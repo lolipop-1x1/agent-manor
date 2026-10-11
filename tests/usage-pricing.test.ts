@@ -107,8 +107,8 @@ test("标准 OpenAI 模型以精确原厂价格估算，Codex 缓存分项正常
     const result = pricing.estimate(usage, "codex");
     assert.equal(result.price?.provider, "openai"); assert.equal(result.coverage, "complete");
     assert.equal(result.amount, (80 * 2 + 20 * 0.1 + 10 * 5) / 1_000_000);
-    assert.equal(pricing.estimate({ ...usage, model: `reseller/${model}` }, "codex").price?.input, 20);
-    assert.equal(pricing.estimate({ ...usage, model: `unknown/${model}` }, "codex").amount, null);
+    assert.equal(pricing.estimate({ ...usage, model: `reseller/${model}` }, "codex").price?.input, 2);
+    assert.equal(pricing.estimate({ ...usage, model: `unknown/${model}` }, "codex").price?.provider, "openai");
     assert.equal(usage.model, model);
   }
   const model = names[0]!;
@@ -126,7 +126,8 @@ test("原厂基准不猜相似模型、其它系列或无法匹配的服务商",
     other: { models: { "gpt-absent": { cost: { input: 10, output: 30 } }, "org/model": { cost: { input: 3, output: 8 } } } },
   }, date).prices;
   const resolve = createPriceResolver(prices, { overrides: [], mappings: [] });
-  for (const model of ["shared-example", "gpt-absent", "gpt-example-preview", "unknown/gpt-example"]) assert.equal(resolve(model), undefined);
+  for (const model of ["shared-example", "gpt-absent", "gpt-example-preview"]) assert.equal(resolve(model), undefined);
+  assert.equal(resolve("unknown/gpt-example")?.provider, "openai");
   assert.equal(resolve("reseller/gpt-absent")?.input, 20);
   assert.equal(resolve("org/model")?.provider, "other");
 });

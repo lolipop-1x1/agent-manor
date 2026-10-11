@@ -33,6 +33,7 @@ export interface ModelPrice extends ModelPriceRates {
   source: "network" | "cache" | "bundled" | "manual";
   sourceUrl?: string; priceBasis?: "historical"; effectiveFrom?: string; effectiveTo?: string;
   apiBaselineForProvider?: string;
+  matchBasis?: "official" | "catalog";
 }
 export interface PriceSnapshot {
   version: string; fetchedAt?: string; sourceUrl: string; currency: "USD"; prices: ModelPrice[];
@@ -56,6 +57,7 @@ export interface RequestCost {
   priceBasis?: "manual" | "historical" | "current_snapshot";
   priceProvider?: string; priceSourceUrl?: string; priceEffectiveFrom?: string; priceEffectiveTo?: string;
   apiBaselineForProvider?: string;
+  priceMatchBasis?: "official" | "catalog"; priceModel?: string;
 }
 export interface UsageTotals {
   requests: number; sessions: number; tokens: number | null; inputTokens: number | null; outputTokens: number | null;

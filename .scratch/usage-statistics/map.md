@@ -2,6 +2,8 @@
 
 ## 已作决策
 
+- 2026-10-11：[通用模型识别与官方 API 优先估价](issues/09-automatic-model-matching.md) 与 [自动映射调整界面](issues/10-automatic-mapping-interface.md) 已实现：任意渠道名称结构匹配同版本，免费、订阅和 Token Plan 均按官方优先 API 基准估算，手动配置优先；自动目标可修改及恢复。750 项自动测试、147 项隔离 Chrome 检查及 20 组真实 API 前后对照通过，Token 与原始分组不变。验证及支持边界见 [验收记录](../../docs/validation/usage-statistics.md)。
+
 - 2026-10-11：[请求用量去重与输入归一化](issues/08-request-usage-normalization.md) 已完成：对齐原生响应身份与累计投影，按各客户端实际分桶口径保留输入；721 项自动测试及 70 项隔离浏览器检查通过，受影响的真实来源已重算并通过 API 与页面回读。验证从已索引事实的计价公式扩展到原始用量记录。
 
 - 2026-10-11：[标准 OpenAI 模型定价修复](issues/07-openai-price-resolution.md) 已完成：无前缀标准模型采用精确原厂 API 基准，更新解析规则版本并重估汇总；目录与已记录模型展示和编辑保持一致。713 项自动测试与 70 项合成浏览器检查通过，真实历史固定版本前后对照及独立公式复算一致。
