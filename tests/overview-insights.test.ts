@@ -381,3 +381,18 @@ test("同价费用比较只使用完整计价请求，并保留两期计价不�
   assert.ok(Math.abs(cost.previous! - .002) < 1e-10);
   assert.equal(cost.sample, 40); assert.equal(cost.missing, 1); assert.equal(cost.values?.priceVersion, pricing.status.version);
 });
+
+test("未知资源不生成偏好或MCP种类，未知项目和工具保留覆盖", () => {
+  const result = analyze(source(), query, report => {
+    report.resources.skills = [resource("unknown-skill", { nameDescriptor: { key: "sessions.resource.nameUnrecorded" } }),
+      resource("known-skill", { projects: [{ key: "unknown", name: "unknown", count: 25, sessions: 5 }] })];
+    report.resources.mcp = [resource("unknown-server", { kind: "mcp", nameDescriptor: { key: "sessions.resource.nameUnrecorded" } }),
+      resource("known-server", { kind: "mcp", uses: 30,
+        tools: [{ key: "unknown", name: "unknown", count: 10, sessions: 5 }, { key: "literal:unknown", name: "literal:unknown", count: 20, sessions: 5 }] })];
+  });
+  assert.equal(result.insights.some(item => item.object === "unknown-skill" || item.object === "unknown-server"), false);
+  assert.equal(result.insights.find(item => item.object === "known-skill")?.values?.projects, 0);
+  const mcp = result.insights.find(item => item.metric === "mcp_tools")!;
+  assert.equal(mcp.current, 1); assert.equal(mcp.sample, 20); assert.equal(mcp.missing, 10);
+  assert.equal(result.insights.find(item => item.metric === "mcp_tool_share")?.descriptor.params?.tool, "unknown");
+});

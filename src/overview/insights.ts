@@ -5,7 +5,7 @@ import type { SessionSummary } from "../session-contracts.js";
 import type { PricingView } from "../usage/pricing.js";
 import { buildDelegation, isActivityEvent, matchesGlobalSession, pairToolCalls, selectedSource, validDuration } from "./analytics.js";
 import { inPeriod, localDay } from "./dates.js";
-import { usageDimensionKey } from "../usage/dimensions.js";
+import { usageDimensionKey, usageDimensionValue } from "../usage/dimensions.js";
 import { decomposeUsage, nonnegative, percent, quantile, selectFeaturedInsights } from "./insight-math.js";
 
 type Request = OverviewRequest & { session: SessionSummary; day: string | null };
@@ -185,12 +185,12 @@ export function generateOverviewInsights(source: OverviewSource, query: Overview
 
   // 03、04：频度、广度与日期窗口各保留自己的分母。
   for (const resource of [...report.resources.skills, ...report.resources.mcp]) {
-    if (resource.sessions < 5) continue;
+    if (resource.sessions < 5 || resource.nameDescriptor?.key === "sessions.resource.nameUnrecorded") continue;
     add({ rule: "03", type: "feature", key: "resource", object: resource.id, metric: "resource_breadth",
       params: { name: resource.name, sessions: resource.sessions, calls: resource.uses, weeks: resource.activeWeeks },
       current: resource.sessions, sample: resource.sessions,
       values: { uses: resource.uses, activeWeeks: resource.activeWeeks, persistent: resource.activeWeeks >= 4,
-        averagePerSession: resource.averagePerSession, projects: resource.projects.length,
+        averagePerSession: resource.averagePerSession, projects: resource.projects.filter(project => project.key !== "unknown").length,
         explicitCalls: resource.explicitCalls, successfulReads: resource.successfulReads },
       evidence: { kind: "resources", resourceId: resource.id } });
   }
@@ -381,7 +381,8 @@ export function generateOverviewInsights(source: OverviewSource, query: Overview
 
   // 09、10：只统计实际使用，资源对在会话或真实轮次中去重。
   for (const resource of report.resources.mcp) {
-    const knownTools = resource.tools.filter(tool => tool.name && tool.name !== "none");
+    if (resource.nameDescriptor?.key === "sessions.resource.nameUnrecorded") continue;
+    const knownTools = resource.tools.filter(tool => usageDimensionValue(tool.key) !== undefined);
     const calls = knownTools.reduce((sum, tool) => sum + tool.count, 0);
     if (calls < 20) continue;
     add({ rule: "09", type: "feature", key: "mcp", object: resource.id, metric: "mcp_tools",
@@ -389,10 +390,10 @@ export function generateOverviewInsights(source: OverviewSource, query: Overview
       sample: calls, missing: resource.uses - calls, values: { sessions: resource.sessions },
       evidence: { kind: "resources", resourceId: resource.id, resourceKind: "mcp" } });
     const tool = [...knownTools].sort((left, right) => right.count - left.count || left.name.localeCompare(right.name))[0];
-    if (tool) add({ rule: "09", type: "feature", key: "mcpTool", object: identity(resource.id, tool.name), metric: "mcp_tool_share",
-      params: { server: resource.name, tool: tool.name, calls: tool.count, total: calls }, current: tool.count, sample: calls,
+    if (tool) add({ rule: "09", type: "feature", key: "mcpTool", object: identity(resource.id, tool.key), metric: "mcp_tool_share",
+      params: { server: resource.name, tool: usageDimensionValue(tool.key)!, calls: tool.count, total: calls }, current: tool.count, sample: calls,
       missing: resource.uses - calls, values: { share: tool.count / calls, sessions: tool.sessions },
-      evidence: { kind: "resources", resourceId: resource.id, tool: tool.name, resourceKind: "mcp" } });
+      evidence: { kind: "resources", resourceId: resource.id, tool: usageDimensionValue(tool.key)!, resourceKind: "mcp" } });
   }
   for (const combination of [...report.resources.combinations.sessions, ...report.resources.combinations.turns]) {
     if (combination.sessions < 3) continue;
