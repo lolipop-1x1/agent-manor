@@ -119,7 +119,7 @@ export function buildOverviewEvidence(source: OverviewSource, input: OverviewQue
         request.usage.timing?.end?.source !== "mirror" ? request.usage.timing?.end?.messageId : undefined]
         .some(id => id && included.has(`${request.sessionId}\u0000${id}`))).map(requestRow));
     }
-  } else if (evidence.kind === "requests" || evidence.kind === "timing") {
+  } else if (evidence.kind === "requests" || evidence.kind === "timing" || evidence.kind === "sequence" && evidence.scope === "usage") {
     rows = selected.requests.filter(request => (!evidence.turnId || request.usage.turnId === evidence.turnId)
       && (!evidence.requestId || request.usage.id === evidence.requestId)
       && (evidence.ordinalFrom === undefined || request.ordinal !== undefined && request.ordinal >= evidence.ordinalFrom)

@@ -431,6 +431,11 @@ test("洞察到证据链保留完整模型变化、峰值身份与各MCP服务�
     const evidence = buildOverviewEvidence(input, query, transition.evidence, pricing, now);
     assert.equal(evidence.total, transition.count);
     assert.ok(evidence.rows.every(row => transition.kind === "switch" ? row.values?.previousModel === transition.fromModel : row.relationship === "child"));
+    if (transition.kind === "switch") {
+      const sequence = buildOverviewEvidence(input, query, { ...transition.evidence, kind: "sequence", scope: "usage" }, pricing, now);
+      assert.equal(sequence.total, transition.count);
+      assert.ok(sequence.rows.every(row => row.kind === "sequence" && row.requestId));
+    }
   }
   for (const insight of result.insights.filter(item => item.rule === "11")) {
     const evidence = buildOverviewEvidence(input, query, insight.evidence, pricing, now);
