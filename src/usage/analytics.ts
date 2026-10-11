@@ -32,6 +32,7 @@ function accumulator(): Accumulator {
     cacheReadTokens: null, cacheWriteTokens: null, reasoningTokens: null, estimatedCost: null, cacheReadRatio: null, cacheReadRatioRequests: 0,
     completeTokenRequests: 0, partialTokenRequests: 0, missingTokenRequests: 0,
     pricedRequests: 0, partiallyPricedRequests: 0, unpricedRequests: 0, missingTimeRequests: 0,
+    historicalPricedRequests: 0, currentSnapshotPricedRequests: 0, manualPricedRequests: 0,
   } };
 }
 
@@ -53,6 +54,11 @@ function add(target: Accumulator, request: Request): void {
   sum("estimatedCost", cost.amount);
   totals[request.coverage === "complete" ? "completeTokenRequests" : request.coverage === "partial" ? "partialTokenRequests" : "missingTokenRequests"] += 1;
   totals[cost.coverage === "complete" ? "pricedRequests" : cost.coverage === "partial" ? "partiallyPricedRequests" : "unpricedRequests"] += 1;
+  if (cost.amount !== null) {
+    const basis = cost.priceBasis === "historical" ? "historicalPricedRequests"
+      : cost.priceBasis === "manual" ? "manualPricedRequests" : "currentSnapshotPricedRequests";
+    totals[basis] += 1;
+  }
   if (request.time === undefined) totals.missingTimeRequests += 1;
   if (numeric(usage.inputTokens) && numeric(usage.cachedInputTokens) && usage.cachedInputTokens <= usage.inputTokens) {
     target.pairedInput += usage.inputTokens; target.pairedCache += usage.cachedInputTokens;
@@ -318,7 +324,7 @@ export function buildUsageReport(source: UsageSource, query: UsageQuery, pricing
     }
   }
   buckets.sort((left, right) => selected.query.interval === "hour" ? Date.parse(left.key) - Date.parse(right.key) : left.key.localeCompare(right.key));
-  const { configuration: _configuration, prices: _prices, ...status } = pricing;
+  const { configuration: _configuration, prices: _prices, historicalPrices: _historicalPrices, ...status } = pricing;
   const pageSize = selected.query.pageSize!, page = selected.query.page!;
   return { version: source.version, priceVersion: pricing.version, timezone: selected.timezone, query: selected.query,
     totals: summarize(selected.requests), undated: summarize(selected.undated), buckets, days,

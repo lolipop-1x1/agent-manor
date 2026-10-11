@@ -77,6 +77,8 @@ export interface SessionUsage {
   messageId?: string;
   turnId?: string;
   model?: string;
+  /** 来源明确记录的计价服务商，不根据客户端名称推断。 */
+  provider?: string;
   inputTokens?: number;
   outputTokens?: number;
   cachedInputTokens?: number;

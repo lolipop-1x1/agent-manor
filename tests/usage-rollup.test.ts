@@ -5,6 +5,7 @@ import type { PricingStatus, RequestCost, UsageQuery, UsageReport, UsageSource }
 import { buildUsageReport } from "../src/usage/analytics.js";
 import { buildUsageRollup, buildUsageRollupReport, canUseUsageRollup, combineUsageRollups } from "../src/usage/rollup.js";
 import type { UsageRollup } from "../src/usage/rollup-contracts.js";
+import { createPricingEstimator } from "../src/usage/pricing.js";
 
 const pricing: PricingStatus = { version: "prices-1", source: "bundled", sourceUrl: "https://example.invalid/prices",
   refreshing: false, currency: "USD", configuration: { overrides: [], mappings: [] }, prices: [] };
@@ -85,6 +86,29 @@ const mixed = source([
   ["undated", usage("no-time", { occurredAt: undefined, inputTokens: undefined, outputTokens: undefined })],
   ["child", usage("invalid-input", { inputTokens: -10, outputTokens: NaN })],
 ]);
+
+test("小时汇总保留服务商与计价依据，历史、当前快照和手动覆盖的计数与精确分析一致", () => {
+  const status: PricingStatus = { ...pricing, configuration: { overrides: [{ model: "manual-model", input: 0, output: 0 }], mappings: [] },
+    prices: [{ model: "shared-model", provider: "alpha", source: "network", input: 2, output: 4, cacheRead: 1 },
+      { model: "shared-model", provider: "beta", source: "network", input: 8, output: 16, cacheRead: 4 }],
+    historicalPrices: [{ model: "shared-model", provider: "alpha", source: "network", input: 3, output: 9, cacheRead: 1,
+      priceBasis: "historical", effectiveFrom: "2025-01-01T00:00:00Z", effectiveTo: "2026-02-01T00:00:00Z" }] };
+  const input = source([session("priced")], [
+    ["priced", usage("history", { model: "shared-model", provider: "alpha" })],
+    ["priced", usage("snapshot", { model: "shared-model", provider: "beta" })],
+    ["priced", usage("manual", { model: "manual-model" })],
+    ["priced", usage("unknown", { model: "shared-model", provider: "missing" })],
+  ]);
+  const pricingEstimate = createPricingEstimator(status);
+  const rollup = buildUsageRollup(input, "UTC", pricingEstimate);
+  const aggregated = buildUsageRollupReport(rollup, { timezone: "UTC" }, status);
+  const exact = buildUsageReport(input, { timezone: "UTC" }, status, pricingEstimate);
+  assert.deepEqual(aggregated.totals, exact.totals);
+  assert.deepEqual([exact.totals.historicalPricedRequests, exact.totals.currentSnapshotPricedRequests, exact.totals.manualPricedRequests], [1, 1, 1]);
+  assert.equal(exact.totals.unpricedRequests, 1);
+  assert.equal("historicalPrices" in aggregated.pricing, false, "普通统计报告不传输完整历史价格表");
+  assert.equal(aggregated.sessions[0]?.requests.find(item => item.usage.id === "snapshot")?.usage.provider, "beta");
+});
 
 test("小时汇总与实时分析在全套筛选、阈值、排序及分页下保持一致", () => {
   const rollup = buildUsageRollup(mixed, "UTC", estimate);

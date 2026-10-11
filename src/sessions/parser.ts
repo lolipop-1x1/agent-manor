@@ -136,6 +136,7 @@ export async function parseSessionSource(source: SourceLocation, sink: SessionSi
   let pendingBytes = 0;
   let turnId = `${id}:turn:0`;
   let currentModel: string | undefined;
+  let currentProvider: string | undefined;
   let candidate: SessionMessage | undefined;
   let interrupted = false;
   let desktopTurn: string | undefined;
@@ -253,6 +254,7 @@ export async function parseSessionSource(source: SourceLocation, sink: SessionSi
     }
     const inheritedHeader = source.client === "codex" && record.type === "session_meta"
       && (string(payload.id) ?? string(payload.session_id)) !== rawId;
+    if (source.client === "codex" && record.type === "session_meta" && !inheritedHeader) currentProvider = string(payload.model_provider);
     const occurredAt = source.format === DESKTOP_FORMAT || ideSnapshot ? desktopTimestamp(record) : string(record.timestamp) ?? string(payload.timestamp);
     if (occurredAt) {
       if (!meta.startedAt || occurredAt < meta.startedAt) meta.startedAt = occurredAt;
@@ -378,7 +380,7 @@ export async function parseSessionSource(source: SourceLocation, sink: SessionSi
       if (record.type === "token_usage_record") {
         if (!copied) {
           const usageId = usage.codex(payload.usage, payload.thread_token_usage, string(payload.response_id),
-            { turnId, model: currentModel, occurredAt, requestGroup: timing?.codexRequestGroup() });
+            { turnId, model: currentModel, provider: currentProvider, occurredAt, requestGroup: timing?.codexRequestGroup() });
           timing?.codexUsage(usageId, { occurredAt, recordLine: line, messageId: usageId ? usageMarkers.get(usageId)?.id : undefined });
         }
         continue;
@@ -391,7 +393,7 @@ export async function parseSessionSource(source: SourceLocation, sink: SessionSi
           const info = object(payload.info);
           if (!copied) {
             const usageId = usage.codex({ ...object(info.last_token_usage), context_tokens: object(info.last_token_usage).context_tokens ?? object(info.last_token_usage).total_tokens },
-              info.total_token_usage, undefined, { turnId, model: currentModel, occurredAt, requestGroup: timing?.codexRequestGroup() });
+              info.total_token_usage, undefined, { turnId, model: currentModel, provider: currentProvider, occurredAt, requestGroup: timing?.codexRequestGroup() });
             timing?.codexUsage(usageId, { occurredAt, recordLine: line, messageId: usageId ? usageMarkers.get(usageId)?.id : undefined });
           }
         } else if (payload.type === "agent_reasoning") {

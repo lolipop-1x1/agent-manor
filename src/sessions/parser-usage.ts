@@ -70,7 +70,7 @@ export class UsageParser {
   }
 
   codex(raw: unknown, cumulative: unknown, requestId: string | undefined,
-    context: { messageId?: string; turnId: string; model?: string; occurredAt?: string; requestGroup?: string }): string | undefined {
+    context: { messageId?: string; turnId: string; model?: string; provider?: string; occurredAt?: string; requestGroup?: string }): string | undefined {
     const usage = object(raw);
     if (!Object.keys(usage).length) return;
     const total = object(cumulative);

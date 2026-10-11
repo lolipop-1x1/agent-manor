@@ -149,6 +149,28 @@ test("CLI 压缩规则升级重解析旧分类，之后恢复快检且保留其�
   assert.equal((await refresh(store, roots, { client: "codeflicker" })).counts!.quickReused, 1);
 }));
 
+test("服务商规则升级重解析原始来源并保留用量事实，之后恢复快速复用", async () => fixture(async (store, directory) => {
+  const root = join(directory, "sessions"); await mkdir(root);
+  await writeFile(join(root, "provider.jsonl"), encode({ type: "session_meta", payload: {
+    id: "provider-demo", cwd: "/workspace/demo", model_provider: "synthetic-provider",
+  } }) + encode({ type: "token_usage_record", payload: { response_id: "request", usage: {
+    input_tokens: 100, output_tokens: 10, cached_input_tokens: 80,
+  } } }));
+  const roots = isolatedHistoryRoots({ codex: root });
+  await refresh(store, roots, { client: "codex" });
+  const previous = store.cachedRevisions()[0]!;
+  const database = new Database(store.dbPath);
+  try {
+    database.prepare("UPDATE session_revisions SET fingerprint=replace(fingerprint, ':usage-provider-v1', ''),metadata_fingerprint='previous-provider-rule' WHERE id=?").run(previous.revision);
+  } finally { database.close(); }
+  assert.equal((await refresh(store, roots, { client: "codex" })).counts!.parsed, 1);
+  const current = store.cachedRevisions()[0]!;
+  assert.notEqual(current.revision, previous.revision);
+  assert.equal(store.usageFacts(current.revision)[0]?.provider, "synthetic-provider");
+  assert.equal(store.usageFacts(current.revision)[0]?.inputTokens, 100);
+  assert.equal((await refresh(store, roots, { client: "codex" })).counts!.quickReused, 1);
+}));
+
 test("正文、标题及规则变化使快检失效，完整校验能发现错误变化指示", async () => fixture(async (store, directory) => {
   const home = join(directory, "client"); const root = join(home, "sessions"); await mkdir(root, { recursive: true });
   const path = join(root, "sample.jsonl");

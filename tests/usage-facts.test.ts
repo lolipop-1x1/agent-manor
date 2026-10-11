@@ -37,7 +37,7 @@ function compact(usage: SessionUsage): SessionUsage {
 
 test("修订完成时生成结构化事实，缺失、零、原始时间与请求顺序保持不变", async () => fixture((store, path) => {
   const values: SessionUsage[] = [
-    { id: "z-zero", model: "synthetic-model", inputTokens: 0, outputTokens: 0, cachedInputTokens: 0, cacheWriteTokens: 0,
+    { id: "z-zero", model: "synthetic-model", provider: "example-provider", inputTokens: 0, outputTokens: 0, cachedInputTokens: 0, cacheWriteTokens: 0,
       reasoningOutputTokens: 0, contextTokens: 0, occurredAt: "2026-01-01T08:00:00+08:00", messageId: "message-0", turnId: "turn",
       requestMessageIds: ["message-0"], timing: { basis: "recorded", method: "claude_message_boundary", completion: "explicit", durationMs: 10 } },
     { id: "a-missing" }, { id: "invalid-time", occurredAt: "invalid", model: "", inputTokens: 12, outputTokens: 3 },

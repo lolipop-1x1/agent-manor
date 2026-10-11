@@ -31,6 +31,8 @@ export interface ModelPrice extends ModelPriceRates {
   provider: string; model: string; name?: string; fetchedAt?: string;
   tiers?: (Partial<ModelPriceRates> & { context: number })[];
   source: "network" | "cache" | "bundled" | "manual";
+  sourceUrl?: string; priceBasis?: "historical"; effectiveFrom?: string; effectiveTo?: string;
+  apiBaselineForProvider?: string;
 }
 export interface PriceSnapshot {
   version: string; fetchedAt?: string; sourceUrl: string; currency: "USD"; prices: ModelPrice[];
@@ -42,11 +44,18 @@ export interface PricingStatus {
   version: string; fetchedAt?: string; lastAttemptAt?: string; source: "network" | "cache" | "bundled";
   refreshing: boolean; error?: string; errorDescriptor?: MessageDescriptor; currency: "USD"; sourceUrl: string;
   configuration: PricingConfiguration; prices: ModelPrice[];
+  historicalPrices?: ModelPrice[];
+  history?: { sourceUrl: string; fetchedAt?: string; source?: "network" | "cache";
+    error?: string; errorDescriptor?: MessageDescriptor };
 }
+export type PricingSummary = Omit<PricingStatus, "configuration" | "prices" | "historicalPrices">;
 export interface RequestCost {
   amount: number | null; coverage: "complete" | "partial" | "missing";
   reason?: "model_missing" | "price_missing" | "tokens_missing" | "tier_unknown" | "semantics_unknown";
   price?: ModelPrice; freshInputTokens?: number; appliedContextThreshold?: number;
+  priceBasis?: "manual" | "historical" | "current_snapshot";
+  priceProvider?: string; priceSourceUrl?: string; priceEffectiveFrom?: string; priceEffectiveTo?: string;
+  apiBaselineForProvider?: string;
 }
 export interface UsageTotals {
   requests: number; sessions: number; tokens: number | null; inputTokens: number | null; outputTokens: number | null;
@@ -54,6 +63,7 @@ export interface UsageTotals {
   reasoningTokens: number | null; estimatedCost: number | null; cacheReadRatio: number | null; cacheReadRatioRequests: number;
   completeTokenRequests: number; partialTokenRequests: number; missingTokenRequests: number;
   pricedRequests: number; partiallyPricedRequests: number; unpricedRequests: number; missingTimeRequests: number;
+  historicalPricedRequests: number; currentSnapshotPricedRequests: number; manualPricedRequests: number;
 }
 export interface UsageSeries {
   key: string; label: string; totals: UsageTotals;
@@ -74,5 +84,5 @@ export interface UsageReport {
   groups: UsageSeries[]; sessions: UsageSessionRow[]; totalSessions: number; page: number; pageSize: number;
   missingUsageSessions: number;
   facets: { clients: string[]; projects: string[]; models: string[] };
-  pricing: Omit<PricingStatus, "configuration" | "prices">;
+  pricing: PricingSummary;
 }

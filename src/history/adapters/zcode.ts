@@ -179,11 +179,17 @@ function buildRecords(messages: Record<string, unknown>[], parts: Record<string,
     const cacheBucketsMatch = read !== undefined && write !== undefined
       && number(rawUsage.cacheReadTokens) === read && number(rawUsage.cacheWriteTokens) === write;
     const providerInputMatches = input !== undefined && number(anthropicUsage.input_tokens) === input;
-    const knownTotalInput = providerInputMatches && rawInputMatches && cacheBucketsMatch && read !== undefined && write !== undefined
+    // model_usage 的普通输入与缓存桶由原始用量核验；供应商补充元数据缺失不否定已有分项。
+    const validBuckets = [input, read, write].every(value => Number.isSafeInteger(value) && value! >= 0);
+    const optionalProviderMatches = anthropicUsage.input_tokens === undefined || providerInputMatches;
+    const zeroBuckets = input === 0 && read === 0 && write === 0
+      && [rawUsage.inputTokens, rawUsage.cacheReadTokens, rawUsage.cacheWriteTokens].every(value => value === undefined || number(value) === 0);
+    const verifiedBuckets = rawInputMatches && cacheBucketsMatch || zeroBuckets;
+    const knownTotalInput = validBuckets && verifiedBuckets && optionalProviderMatches && read !== undefined && write !== undefined
       ? input + read + write : undefined;
     if (input !== undefined && knownTotalInput === undefined) {
       meta.gaps ??= [];
-      meta.gaps.push({ kind: "unsupported_format", message: "ZCode model_usage 输入与 provider 原始口径未充分对照，未将 input/cache 归一化为总输入", messageDescriptor: { key: "diagnostics.history.adapters.zcode.m007" } });
+      meta.gaps.push({ kind: "unsupported_format", message: "ZCode 输入或缓存分项缺少可核验的原始记录或存在冲突，未计算总输入", messageDescriptor: { key: "diagnostics.history.adapters.zcode.m007" } });
     }
     if (reasoning !== undefined && output !== undefined) {
       meta.gaps ??= [];
@@ -201,6 +207,7 @@ function buildRecords(messages: Record<string, unknown>[], parts: Record<string,
       requestTiming: requestTiming(row),
       turnKey: parentUser ? turnByMessage.get(parentUser) ?? parentUser : string(row.turn_id),
       usage: {
+        provider: string(row.provider_id),
         inputTokens: knownTotalInput,
         outputTokens: output,
         cachedInputTokens: read,

@@ -349,7 +349,8 @@ async function snapshot(location: SourceLocation): Promise<NormalizedSnapshot> {
       const content = contentBlocks(message.content);
       const text = content.filter(block => block.type === "text").map(block => string(block.text) ?? "").filter(Boolean).join("\n");
       const reasoning = content.filter(block => block.type === "reasoning").map(block => string(block.text) ?? "").filter(Boolean).join("\n");
-      const usage = dshUsage(data.usage ?? message.usage);
+      const nativeUsage = dshUsage(data.usage ?? message.usage);
+      const usage = nativeUsage ? { ...nativeUsage, provider: string(object(message.source).provider) } : undefined;
       const request = dshRequest(data, seq, row.line);
       const requestTiming = header.isSeeded === true && inheritedCut === undefined ? undefined : request.requestTiming;
       const model = string(object(message.source).model) ?? string(object(data.usage).model);

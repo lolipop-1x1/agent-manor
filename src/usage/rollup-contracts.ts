@@ -1,7 +1,7 @@
 import type { SessionSummary, SessionUsage } from "../session-contracts.js";
 import type { RequestCost, UsageTotals } from "../usage-contracts.js";
 
-export type CompactUsage = Pick<SessionUsage, "id" | "model" | "occurredAt" | "inputTokens" | "outputTokens"
+export type CompactUsage = Pick<SessionUsage, "id" | "model" | "provider" | "occurredAt" | "inputTokens" | "outputTokens"
   | "cachedInputTokens" | "cacheWriteTokens" | "reasoningOutputTokens" | "contextTokens" | "messageId" | "turnId">;
 export interface UsageRollupPreview { usage: CompactUsage; cost: Omit<RequestCost, "price">; time?: number }
 export interface UsageRollupCell {

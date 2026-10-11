@@ -139,3 +139,5 @@
 .usage-price-details dl { display: grid; gap: 4px; margin: 6px 0; }
 .usage-price-details dl > div { display: flex; gap: 16px; justify-content: space-between; }
 .usage-price-details dd { margin: 0; font-variant-numeric: tabular-nums; }
+.usage-price-basis { max-width: 310px; white-space: normal; }
+.usage-price-scope { margin: 0 0 12px; color: var(--muted); font-size: 11px; }

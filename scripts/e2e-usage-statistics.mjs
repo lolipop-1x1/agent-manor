@@ -9,7 +9,7 @@ const run = promisify(execFile);
 const fixture = await usageFixture();
 const artifacts = fileURLToPath(new URL("../.local/usage-statistics-e2e/", import.meta.url));
 const session = `usage-statistics-${process.pid}`;
-let opened = false;
+let opened = false, historyFailureFixture;
 const browser = async args => {
   const { stdout } = await run("playwright-cli", [`-s=${session}`, ...args], {
     cwd: fixture.directory, env: { ...process.env, TMPDIR: "/tmp" }, timeout: 60_000, maxBuffer: 4 * 1024 * 1024,
@@ -20,6 +20,109 @@ const browser = async args => {
 try {
   await mkdir(artifacts, { recursive: true });
   await browser(["open", `${fixture.base}/#usage`, "--headed", "--browser=chrome"]); opened = true;
+  const verifyPricing = async (page, options) => {
+    let checks = 0;
+    const ensure = (condition, message) => { if (!condition) throw new Error(message); checks++; };
+    const button = name => page.getByRole("button", { name, exact: true });
+    const api = path => page.evaluate(async path => (await (await fetch(`/api/v1${path}`)).json()), path);
+    const ready = async () => { await page.locator(".usage-metrics").waitFor(); await page.waitForLoadState("networkidle"); };
+    const filter = async model => { await page.goto(`${options.base}/#usage?window=all&models=${encodeURIComponent(JSON.stringify([model]))}`); await ready(); };
+    const requestCosts = async model => {
+      const status = await api("/sessions/status?summary=true"), pricing = await api("/usage/pricing");
+      const query = await page.evaluate(({ version, priceVersion, model }) => new URLSearchParams({ version, priceVersion, models: JSON.stringify([model]), timezone: "UTC" }).toString(), { version: status.version, priceVersion: pricing.version, model });
+      const report = await api(`/usage?${query}`);
+      return { report, page: await api(`/usage/requests?${query}&sessionId=${encodeURIComponent(report.sessions[0].session.id)}`) };
+    };
+    await page.setViewportSize({ width: 1440, height: 1080 }); await ready();
+    const automatic = await api("/usage/pricing");
+    ensure(automatic.history?.fetchedAt && !automatic.history.error, "历史价格目录没有成功获取");
+    ensure(automatic.prices.every(price => price.priceBasis !== "historical"), "历史全表混入普通目录");
+    const history = await requestCosts("fixture-fast");
+    ensure(history.report.totals.historicalPricedRequests > 0 && history.report.totals.currentSnapshotPricedRequests === 0, "历史计价覆盖数量错误");
+    ensure(history.page.requests.some(item => item.cost.price.input === 0.5) && history.page.requests.some(item => item.cost.price.input === 1.5), "相同模型没有按发生日期选择不同价格");
+    ensure(history.page.requests.every(item => item.cost.priceBasis === "historical" && item.cost.priceProvider === "fixture"), "历史单价缺少计价依据与服务商");
+    const deepseek = await requestCosts("deepseek-chat");
+    const baselineRequest = deepseek.page.requests[0];
+    ensure(deepseek.report.totals.requests === 1 && baselineRequest.cost.apiBaselineForProvider === "deepseek-official" && baselineRequest.cost.priceProvider === "deepseek", "官方渠道 API 基准缺少原渠道或精确计价服务商");
+    const baselineExpected = ((baselineRequest.usage.inputTokens - baselineRequest.usage.cachedInputTokens) * 0.3 + baselineRequest.usage.cachedInputTokens * 0.03 + baselineRequest.usage.outputTokens * 1.2) / 1_000_000;
+    ensure(Math.abs(baselineRequest.cost.amount - baselineExpected) < 1e-10, "官方渠道回退没有使用精确模型的 API 分项单价");
+    const subscription = await requestCosts("gpt-codex-fixture");
+    ensure(subscription.page.requests[0].cost.amount === null && subscription.page.requests[0].cost.reason === "price_missing" && !subscription.page.requests[0].cost.apiBaselineForProvider, "订阅渠道误套用 OpenAI API 单价");
+    await filter("deepseek-chat");
+    await page.locator(".usage-session-section tbody tr").first().getByRole("button", { name: "查看请求明细", exact: true }).click();
+    const baselineRow = page.locator(".usage-request-section tbody tr").first(); await baselineRow.waitFor();
+    ensure(await baselineRow.getByText("API 单价估算基准 · 原渠道 deepseek-official", { exact: true }).isVisible(), "API 估算基准没有直接可见的原渠道标记");
+    await baselineRow.getByText("查看适用单价", { exact: true }).click();
+    ensure((await baselineRow.innerText()).includes("不能证明请求实际使用的 API 端点或账单金额"), "API 基准展开证据没有说明端点与账单边界");
+    const baselineHash = await page.evaluate(() => location.hash);
+    await button("显示语言").click(); await page.getByRole("menuitemradio", { name: "English", exact: true }).click();
+    await page.getByRole("heading", { name: "Usage", exact: true }).waitFor();
+    ensure(await baselineRow.getByText("API rate estimate basis · original channel deepseek-official", { exact: true }).isVisible(), "API 基准原渠道缺少英文状态");
+    ensure((await baselineRow.innerText()).includes("does not confirm the actual API endpoint or billed amount"), "API 基准英文证据边界缺失");
+    ensure(await page.evaluate(() => location.hash) === baselineHash, "API 基准语言切换改变了请求范围");
+    await button("Display language").click(); await page.getByRole("menuitemradio", { name: "Simplified Chinese", exact: true }).click();
+    await page.getByRole("heading", { name: "用量统计", exact: true }).waitFor();
+    await filter("fixture-fast");
+    ensure((await page.locator(".usage-coverage").innerText()).includes("历史单价"), "主指标没有显示计价依据覆盖");
+    await page.locator(".usage-session-section tbody tr").first().getByRole("button", { name: "查看请求明细", exact: true }).click();
+    const requestRows = page.locator(".usage-request-section tbody tr"); await requestRows.first().waitFor();
+    ensure((await requestRows.first().innerText()).includes("历史单价估算") && (await requestRows.first().innerText()).includes("生效区间"), "请求缺少历史估算与有效区间");
+    await requestRows.first().getByText("查看适用单价", { exact: true }).click();
+    ensure((await requestRows.first().innerText()).includes("采用服务商：fixture"), "适用价格没有显示服务商");
+    ensure(await requestRows.first().getByRole("link", { name: "价格来源", exact: true }).count() === 1, "适用价格没有来源链接");
+    await page.setViewportSize({ width: 390, height: 900 });
+    ensure(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), "历史价格明细使窄屏整页溢出");
+    await page.setViewportSize({ width: 1440, height: 1080 });
+    await button("管理模型价格").click();
+    const dialog = page.getByRole("dialog", { name: "模型价格", exact: true });
+    const search = dialog.getByRole("textbox", { name: "搜索原始模型、计价模型或服务商", exact: true });
+    await search.fill("fixture-fast");
+    ensure(await dialog.locator("tbody tr").count() === 2, "历史多个区间显示成重复的普通价格");
+    const save = async action => { const response = page.waitForResponse(res => res.url().endsWith("/usage/pricing") && res.request().method() === "PUT"); await action(); ensure((await response).ok(), "价格配置保存失败"); await dialog.locator(".usage-price-editor").waitFor({ state: "hidden" }); };
+    const add = async (provider, rate) => {
+      await button("设置任意模型价格").click();
+      await dialog.getByLabel("原始模型名", { exact: true }).fill("gpt-fixture");
+      await dialog.getByLabel("服务商（可选）", { exact: true }).fill(provider);
+      await dialog.getByLabel("普通输入单价", { exact: true }).fill(rate);
+      await dialog.getByLabel("输出单价", { exact: true }).fill(rate);
+      await dialog.getByLabel("缓存读取单价", { exact: true }).fill("0.1");
+      await save(() => button("保存配置").click());
+    };
+    await search.fill("gpt-fixture");
+    await add("openai", "3"); await add("reseller", "4");
+    ensure((await api("/usage/pricing")).configuration.overrides.length === 2, "同名模型的服务商覆盖互相删除");
+    await add("", "9");
+    ensure((await api("/usage/pricing")).configuration.overrides.length === 3, "全局覆盖没有与服务商覆盖共存");
+    ensure(await dialog.getByText("所有服务商 · 最高优先级", { exact: true }).first().isVisible(), "全局作用范围没有显示");
+    await button("更新价格目录").click(); await page.waitForLoadState("networkidle");
+    ensure((await api("/usage/pricing")).configuration.overrides.length === 3, "网络更新删除用户覆盖");
+    const global = await requestCosts("gpt-fixture");
+    ensure(global.page.requests[0].cost.price.input === 9 && global.page.requests[0].cost.priceBasis === "manual", "全局覆盖不是最高优先级");
+    ensure(global.report.totals.manualPricedRequests === 1, "用户价格覆盖请求计数错误");
+    await button("关闭模型价格").click(); await filter("gpt-fixture");
+    await page.locator(".usage-session-section tbody tr").first().getByRole("button", { name: "查看请求明细", exact: true }).click();
+    const manualRequest = page.locator(".usage-request-section tbody tr").first(); await manualRequest.waitFor();
+    ensure((await manualRequest.innerText()).includes("用户单价估算") && (await manualRequest.innerText()).includes("所有服务商 · 最高优先级"), "全局用户价格误显示为实际服务商");
+    await button("管理模型价格").click(); await search.fill("gpt-fixture");
+    const manualRow = label => dialog.locator("tbody tr").filter({ hasText: label });
+    await save(() => manualRow("所有服务商 · 最高优先级").getByRole("button", { name: "恢复自动价格", exact: true }).click());
+    ensure((await api("/usage/pricing")).configuration.overrides.length === 2, "恢复全局价格误删服务商价格");
+    ensure((await requestCosts("gpt-fixture")).page.requests[0].cost.price.input === 3, "恢复全局后没有采用对应服务商覆盖");
+    await manualRow("仅服务商：reseller").getByRole("button", { name: "修改价格", exact: true }).click();
+    await dialog.getByLabel("原始模型名", { exact: true }).fill("renamed-fixture");
+    await dialog.getByLabel("服务商（可选）", { exact: true }).fill("renamed-provider");
+    await save(() => button("保存配置").click());
+    const edited = (await api("/usage/pricing")).configuration.overrides;
+    ensure(edited.length === 2 && edited.some(item => item.model === "renamed-fixture" && item.provider === "renamed-provider") && !edited.some(item => item.provider === "reseller"), "编辑身份后旧覆盖残留或其他覆盖丢失");
+    await search.fill("renamed-fixture"); await save(() => manualRow("仅服务商：renamed-provider").getByRole("button", { name: "恢复自动价格", exact: true }).click());
+    ensure((await api("/usage/pricing")).configuration.overrides.length === 1, "恢复指定服务商覆盖误删其他条目");
+    await search.fill("gpt-fixture"); await save(() => manualRow("仅服务商：openai").getByRole("button", { name: "恢复自动价格", exact: true }).click());
+    ensure((await api("/usage/pricing")).configuration.overrides.length === 0, "价格验证没有恢复初始配置");
+    await button("关闭模型价格").click(); await page.goto(`${options.base}/#usage`); await ready();
+    return { passed: true, checks, historicalDates: true, providerOverrides: true, globalPriority: true, restoreIdentity: true, narrowDetails: true, explicitApiBaseline: true, subscriptionNoFallback: true };
+  };
+  const pricingOutput = await browser(["run-code", `async page => (${verifyPricing.toString()})(page, ${JSON.stringify({ base: fixture.base })})`]);
+  console.log(pricingOutput.split("### Ran Playwright code")[0]);
   const verify = async (page, options) => {
     let checks = 0;
     const ensure = (condition, message) => { if (!condition) throw new Error(message); checks++; };
@@ -118,9 +221,9 @@ try {
     await reseller.getByRole("button", { name: "修改价格", exact: true }).click();
     ensure(await dialog.getByLabel("服务商（可选）", { exact: true }).inputValue() === "reseller", "目录编辑服务商不匹配");
     ensure(await dialog.getByLabel("普通输入单价", { exact: true }).inputValue() === "20", "转售目录错误显示原厂价格");
-    ensure(await dialog.getByLabel("原始模型名", { exact: true }).inputValue() === "reseller/gpt-fixture", "目录编辑没有限定服务商名称");
+    ensure(await dialog.getByLabel("原始模型名", { exact: true }).inputValue() === "gpt-fixture", "目录编辑没有保留裸模型名称");
     await dialog.getByLabel("普通输入单价", { exact: true }).fill("21"); await save(() => button("保存配置").click());
-    ensure((await api("/usage/pricing")).configuration.overrides.some(item => item.model === "reseller/gpt-fixture" && item.input === 21), "服务商限定覆盖未保存");
+    ensure((await api("/usage/pricing")).configuration.overrides.some(item => item.model === "gpt-fixture" && item.provider === "reseller" && item.input === 21), "服务商限定覆盖未保存");
     await save(() => dialog.getByRole("button", { name: "恢复自动价格", exact: true }).click());
     await dialog.getByRole("textbox", { name: "搜索原始模型、计价模型或服务商", exact: true }).fill("fixture-fast");
     await dialog.locator("tbody tr").first().getByRole("button", { name: "修改价格", exact: true }).click();
@@ -233,8 +336,42 @@ try {
     return { passed: true, checks, errors, errorLanguage: true, retrySameVersion: true, priceValidationLanguage: true, literalUnknownIdentity: true, appliedRates: true };
   };
   const failures = await browser(["run-code", `async page => (${verifyFailures.toString()})(page, ${JSON.stringify({ base: fixture.base, artifacts })})`]);
-  await writeFile(`${artifacts}/report.txt`, `${output}\n${failures}`); console.log(failures.split("### Ran Playwright code")[0]);
+  console.log(failures.split("### Ran Playwright code")[0]);
+  historyFailureFixture = await usageFixture({ failHistoricalPrices: true });
+  const verifyMissingHistory = async (page, options) => {
+    let checks = 0; const ensure = (condition, message) => { if (!condition) throw new Error(message); checks++; };
+    await page.goto(`${options.base}/#usage`); await page.locator(".usage-metrics").waitFor(); await page.waitForLoadState("networkidle");
+    ensure((await page.locator(".usage-pricing-state").allInnerTexts()).join(" ").includes("历史价格不可用"), "缺少历史目录却显示历史已覆盖");
+    ensure((await page.locator(".usage-coverage").innerText()).includes("历史单价 0"), "历史获取失败仍计为历史估价");
+    const priced = await page.evaluate(async () => {
+      const index = await (await fetch("/api/v1/sessions/status?summary=true")).json(), pricing = await (await fetch("/api/v1/usage/pricing")).json();
+      const query = new URLSearchParams({ version: index.version, priceVersion: pricing.version, timezone: "UTC" });
+      return (await fetch(`/api/v1/usage?${query}`)).json();
+    });
+    ensure(priced.totals.currentSnapshotPricedRequests > 0 && priced.totals.historicalPricedRequests === 0, "历史更新失败未保留当前快照估价");
+    await page.getByRole("button", { name: "显示语言", exact: true }).click();
+    await page.getByRole("menuitemradio", { name: "English", exact: true }).click();
+    await page.getByRole("heading", { name: "Usage", exact: true }).waitFor();
+    ensure((await page.locator(".usage-pricing-state").allInnerTexts()).join(" ").includes("Historical prices unavailable"), "历史价格失败状态缺少英文");
+    ensure((await page.locator(".usage-coverage").innerText()).includes("historical 0"), "英文计价依据覆盖未显示");
+    await page.getByRole("button", { name: "Manage model prices", exact: true }).click();
+    const dialog = page.getByRole("dialog", { name: "Model prices", exact: true });
+    ensure((await dialog.innerText()).includes("Historical prices unavailable"), "价格管理缺少历史失败状态");
+    await dialog.getByRole("button", { name: "Set a price for any model", exact: true }).click();
+    ensure(await dialog.getByText("All providers · highest priority", { exact: true }).count() === 1, "英文全局价格作用范围缺失");
+    await dialog.getByLabel("Provider (optional)", { exact: true }).fill("fixture");
+    ensure(await dialog.getByText("Only provider: fixture", { exact: true }).count() === 1, "英文服务商价格作用范围缺失");
+    await page.setViewportSize({ width: 390, height: 900 });
+    const bounds = await dialog.boundingBox(); ensure(bounds.x >= 0 && bounds.x + bounds.width <= 390, "历史失败价格管理窄屏越界");
+    await page.keyboard.press("Escape");
+    ensure(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), "英文历史失败状态使整页溢出");
+    return { passed: true, checks, historyFailure: true, currentFallback: true, english: true, mobile: true };
+  };
+  const historyFailureOutput = await browser(["run-code", `async page => (${verifyMissingHistory.toString()})(page, ${JSON.stringify({ base: historyFailureFixture.base })})`]);
+  console.log(historyFailureOutput.split("### Ran Playwright code")[0]);
+  await writeFile(`${artifacts}/report.txt`, `${pricingOutput}\n${output}\n${failures}\n${historyFailureOutput}`);
+
 } catch (error) {
   if (opened) await browser(["screenshot", `--filename=${artifacts}/failure.png`]).catch(() => {});
   throw error;
-} finally { if (opened) await browser(["close"]).catch(() => {}); await fixture.close(); }
+} finally { if (opened) await browser(["close"]).catch(() => {}); await historyFailureFixture?.close(); await fixture.close(); }

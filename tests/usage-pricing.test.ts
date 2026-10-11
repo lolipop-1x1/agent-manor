@@ -10,6 +10,7 @@ import { bundledPriceSnapshot } from "../src/usage/bundled-prices.js";
 import { parsePriceCatalog, priceContentVersion } from "../src/usage/price-catalog.js";
 import { createPricingEstimator, PricingService } from "../src/usage/pricing.js";
 import { createPriceResolver } from "../src/usage/price-resolution.js";
+import { historicalPriceSourceUrl } from "../src/usage/historical-prices.js";
 
 const date = "2026-10-11T00:00:00.000Z";
 const fixture = (cost: Record<string, unknown> = { input: 2, output: 5, cache_read: 0.1, cache_write: 1 }) => ({
@@ -153,23 +154,24 @@ test("网络更新逐模型保留旧缓存与随包兜底，并记录各自日�
   assert.equal(reopened.status().source, "cache"); assert.equal(reopened.estimate(request()).price?.fetchedAt, date);
 });
 
-test("网络地址固定、不携带历史，24小时复用且并发刷新合并", async t => {
+test("两个公开网络地址固定、不携带会话数据，24小时复用且并发刷新合并", async t => {
   let calls = 0; let now = new Date(date);
   let release!: () => void; const gate = new Promise<void>(resolve => { release = resolve; });
   const fetcher: typeof fetch = async (url, options) => {
-    calls += 1; assert.equal(url, "https://models.dev/api.json"); assert.equal(options?.method, undefined); assert.equal(options?.body, undefined);
+    calls += 1; assert.ok(url === "https://models.dev/api.json" || url === historicalPriceSourceUrl); assert.equal(options?.method, undefined); assert.equal(options?.body, undefined);
     assert.equal(options?.credentials, "omit"); assert.equal(options?.redirect, "error");
-    assert.deepEqual(options?.headers, { Accept: "application/json" }); await gate; return response(fixture());
+    assert.deepEqual(options?.headers, { Accept: "application/json" }); await gate;
+    return response(url === historicalPriceSourceUrl ? [{ id: "example-provider", models: [] }] : fixture());
   };
   const home = workspace(t); const pricing = new PricingService(home, { fetch: fetcher, now: () => now });
   const first = pricing.refresh(); const second = pricing.refresh(true);
   assert.equal(first, second); assert.equal(pricing.status().refreshing, true); release(); await first;
-  await pricing.refresh(); assert.equal(calls, 1);
+  await pricing.refresh(); assert.equal(calls, 2);
   const reopened = new PricingService(home, { fetch: fetcher, now: () => now });
-  await reopened.refresh(); assert.equal(calls, 1);
-  now = new Date(now.getTime() + 24 * 60 * 60 * 1000);
   await reopened.refresh(); assert.equal(calls, 2);
-  await reopened.refresh(true); assert.equal(calls, 3);
+  now = new Date(now.getTime() + 24 * 60 * 60 * 1000);
+  await reopened.refresh(); assert.equal(calls, 4);
+  await reopened.refresh(true); assert.equal(calls, 6);
 });
 
 test("HTTP失败、空目录、损坏JSON及无效单价不覆盖成功缓存", async t => {

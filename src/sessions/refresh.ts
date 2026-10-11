@@ -109,9 +109,12 @@ export async function refreshSessions(store: SessionStore, jobId: string, roots?
       const desktopResourceFingerprint = source.client === "codeflicker-desktop" ? ":skill-directory-v1" : "";
       const contextUsageFingerprint = source.client === "codex" ? ":active-context-v1" : "";
       const requestUsageFingerprint = ["codex", "workbuddy", "dsh"].includes(source.client) ? ":request-usage-v2" : "";
+      const pricingProviderFingerprint = ["codex", "pi", "zcode", "dsh"].includes(source.client) ? ":usage-provider-v1" : "";
+      const zcodeInputFingerprint = source.client === "zcode" ? ":input-buckets-v3" : "";
+      const opencodeOutputFingerprint = source.client === "opencode" ? ":output-buckets-v2" : "";
       // 请求计时按来源升级；桌面冲突校验单独失效，不重建其他来源。
       const requestTimingFingerprint = source.client === "codeflicker-desktop" ? ":request-timing-v3" : ":request-timing-v2";
-      const metadataSuffix = `${requestTimingFingerprint}${contextUsageFingerprint}${requestUsageFingerprint}${titleFingerprint}${childTitleFingerprint}${projectFingerprint}${desktopFingerprint}${desktopResourceFingerprint}`;
+      const metadataSuffix = `${requestTimingFingerprint}${contextUsageFingerprint}${requestUsageFingerprint}${pricingProviderFingerprint}${zcodeInputFingerprint}${opencodeOutputFingerprint}${titleFingerprint}${childTitleFingerprint}${projectFingerprint}${desktopFingerprint}${desktopResourceFingerprint}`;
       const metadataFingerprint = createHash("sha256").update(JSON.stringify({ rule: SESSION_INDEX_RULE_VERSION, source: location, metadataSuffix })).digest("hex");
       let stamp: string | undefined;
       try { stamp = await sourceQuickStamp(source); }

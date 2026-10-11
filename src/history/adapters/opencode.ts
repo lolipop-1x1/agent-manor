@@ -49,11 +49,24 @@ function usageEvent(key: string, tokensValue: unknown, model: string | undefined
   const write = number(cache.write);
   const output = number(tokens.output);
   const reasoning = number(tokens.reasoning);
+  const inputTotal = total([input, read, write]);
+  const reportedTotal = number(tokens.total);
+  let outputTotal = total([output, reasoning]);
+  if (reportedTotal !== undefined && inputTotal !== undefined && output !== undefined) {
+    // 已保存的总量区分推理子集与独立推理桶，避免新旧格式重复累加。
+    if (reportedTotal === inputTotal + output && (reasoning === undefined || reasoning <= output)) outputTotal = output;
+    else if (reasoning !== undefined && reportedTotal === inputTotal + output + reasoning) outputTotal = output + reasoning;
+    else {
+      outputTotal = undefined;
+      meta.gaps ??= [];
+      meta.gaps.push({ kind: "ambiguous", message: "OpenCode 总量与输出及推理分项冲突，未计算总输出", messageDescriptor: { key: "diagnostics.history.adapters.opencode.usageConflict" } });
+    }
+  }
   if (input !== undefined && (read === undefined || write === undefined)) {
     meta.gaps ??= [];
     meta.gaps.push({ kind: "unsupported_format", message: "OpenCode 用量缺少缓存分项，未计算总输入", messageDescriptor: { key: "diagnostics.history.adapters.opencode.m002" } });
   }
-  if (output !== undefined && reasoning === undefined) {
+  if (output !== undefined && reasoning === undefined && outputTotal === undefined) {
     meta.gaps ??= [];
     meta.gaps.push({ kind: "unsupported_format", message: "OpenCode 用量缺少 reasoning 分项，未计算总输出", messageDescriptor: { key: "diagnostics.history.adapters.opencode.m003" } });
   }
@@ -61,8 +74,8 @@ function usageEvent(key: string, tokensValue: unknown, model: string | undefined
     key, kind: "context", text, model, occurredAt,
     usageKey: key,
     usage: {
-      inputTokens: total([input, read, write]),
-      outputTokens: total([output, reasoning]),
+      inputTokens: inputTotal,
+      outputTokens: outputTotal,
       cachedInputTokens: read,
       cacheWriteTokens: write,
       reasoningOutputTokens: reasoning,

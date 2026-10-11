@@ -139,6 +139,25 @@ test("WorkBuddy 已核验总输入与缓存数组归一化，镜像不再使输�
   assert.equal(collected.usage[0]?.cacheWriteTokens, undefined, "未记录的收费桶仍保留未知");
 }));
 
+test("WorkBuddy 空正文保留原生用量，同一响应的重复投影只计一次", async () => temporary(async directory => {
+  const path = join(directory, "wb-empty.jsonl");
+  const providerData = { messageId: "empty-response", model: "synthetic-model", usage: {
+    inputTokens: 100, outputTokens: 10, totalTokens: 110, inputTokensDetails: [{ cached_tokens: 80 }],
+  } };
+  await writeFile(path, serialized([
+    { type: "message", id: "user", sessionId: "wb-empty", role: "user", content: "合成请求" },
+    { type: "message", id: "empty-a", sessionId: "wb-empty", role: "assistant", content: [], providerData },
+    { type: "message", id: "empty-b", sessionId: "wb-empty", role: "assistant", content: [], providerData },
+  ]));
+  const collected = sink();
+  parseNormalizedSession(await workbuddyAdapter.readRecords!({ path, client: "workbuddy", format: "workbuddy-jsonl" }), collected.value);
+  assert.equal(collected.usage.length, 1);
+  assert.equal(collected.usage[0]?.inputTokens, 100);
+  assert.equal(collected.usage[0]?.outputTokens, 10);
+  assert.equal(collected.usage[0]?.provider, undefined, "客户端名称不能充当服务商");
+  assert.ok(collected.messages.some(message => message.id === collected.usage[0]?.messageId));
+}));
+
 test("WorkBuddy 投影独立验证总量，缓存与推理详情保持 provider 优先", async () => temporary(async directory => {
   const path = join(directory, "wb-projections.jsonl");
   await writeFile(path, serialized([

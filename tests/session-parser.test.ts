@@ -322,6 +322,18 @@ test("Codex 压缩后保留压缩请求，忽略零状态投影，之后的双�
   assert.equal(sample.usages.reduce((sum, item) => sum + item.inputTokens! + item.outputTokens!, 0), 350);
 });
 
+test("Codex 压缩元数据中的最近用量是已记录响应的副本，原生与旧式投影仍只计一次", async () => {
+  const native = requestUsage("compression-response", usageValue(1000, 100), usageValue(200, 40));
+  const sample = await parsed("codex", [meta({ model_provider: "synthetic-provider" }), user(), native,
+    { type: "compacted", payload: { message: "合成压缩摘要", latest_token_usage_record: native.payload } },
+    counted(usageValue(1000, 100), usageValue(200, 40))]);
+  assert.equal(sample.usages.length, 1);
+  assert.equal(sample.usages[0]?.inputTokens, 200);
+  assert.equal(sample.usages[0]?.outputTokens, 40);
+  assert.equal(sample.usages[0]?.provider, "synthetic-provider");
+  assert.equal(sample.messages.filter(message => message.kind === "compression").length, 1);
+});
+
 test("Codex 旧的未记录事件组不阻止当前响应镜像配对，重复零上下文状态不计请求", async () => {
   const sample = await parsed("codex", [meta(), user(), call("earlier", "read"), result("earlier", "合成结果"),
     call("current", "read"), requestUsage("current", usageValue(1000, 100), usageValue(100, 10)),

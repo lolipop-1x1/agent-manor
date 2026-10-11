@@ -142,7 +142,7 @@ function insertZCodeConversation(database: Database.Database) {
   const insertUsage = database.prepare("INSERT INTO model_usage VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)");
   insertUsage.run("attempt-zero", "request-one", 0, "session-one", "turn-one", "assistant-one", "user-one", "anthropic", "fixture-model", "completed", "2026-01-01T00:00:01.000Z", 10, 4, 1, 3, 2, 14, rawUsage, metadata);
   insertUsage.run("attempt-one", "request-one", 1, "session-one", "turn-one", "assistant-one", "user-one", "anthropic", "fixture-model", "error", "2026-01-01T00:00:02.000Z", 10, 4, 1, 3, 2, 14, rawUsage, metadata);
-  const unverifiedRaw = JSON.stringify({ inputTokens: 20, outputTokens: 8, cacheReadTokens: 4, cacheWriteTokens: 2, totalTokens: 28 });
+  const unverifiedRaw = JSON.stringify({ inputTokens: 21, outputTokens: 8, cacheReadTokens: 4, cacheWriteTokens: 2, totalTokens: 29 });
   insertUsage.run("attempt-unknown", "request-two", 0, "session-one", "turn-one", "assistant-one", "user-one", "other", "fixture-model", "completed", "2026-01-01T00:00:03.000Z", 20, 8, 2, 2, 4, 28, unverifiedRaw, "{}");
   database.prepare("INSERT INTO turn_usage VALUES(?,?,?,?)").run("turn-aggregate", "session-one", 1_000, 1_000);
 }
@@ -181,6 +181,29 @@ test("OpenCode 普通 JSONL 之外的 SQLite 多会话快照包含 WAL、Task �
   assert.equal(generic.relationships.length, 0);
   assert.ok(generic.gaps.some(gap => gap.kind === "ambiguous"));
   writer.close();
+})));
+
+test("OpenCode 依据原始总量区分独立推理与已包含推理，冲突总量保留未知", async () => temporary(directory => registerAdapters(async () => {
+  const path = join(directory, "opencode.db");
+  const database = new Database(path);
+  try {
+    createOpenCodeSchema(database);
+    insertOpenCodeSession(database, { id: "usage", directory: "/synthetic/repo" });
+    for (const [index, [model, reportedTotal]] of [["separate", 59], ["included", 56], ["conflict", 99]].entries()) {
+      insertOpenCodeMessage(database, "usage", `assistant-${index}`, "assistant", index + 1, {
+        providerID: "example-provider", modelID: model,
+        tokens: { input: 40, output: 10, reasoning: 3, total: reportedTotal, cache: { read: 5, write: 1 } },
+      });
+    }
+    const snapshot = await opencodeAdapter.readRecords!({ path, client: "opencode", format: OPENCODE_FORMAT, selector: "usage", sessionId: "usage" });
+    const usages: SessionUsage[] = [];
+    parseNormalizedSession(snapshot, { message: () => undefined, usage: value => usages.push(value) });
+    assert.equal(usages.length, 3);
+    assert.equal(usages.find(usage => usage.model === "example-provider/separate")!.outputTokens, 13);
+    assert.equal(usages.find(usage => usage.model === "example-provider/included")!.outputTokens, 10);
+    assert.equal(usages.find(usage => usage.model === "example-provider/conflict")!.outputTokens, undefined);
+    assert.ok(usages.every(usage => usage.inputTokens === 46 && usage.reasoningOutputTokens === 3));
+  } finally { database.close(); }
 })));
 
 test("OpenCode parseSource 提取 native read/edit/bash 结果并可按原始证据回查", async () => temporary(directory => registerAdapters(async () => {
@@ -418,6 +441,49 @@ test("SQLite JSON 损坏、未知 schema 与迭代预算均显式保留缺口", 
   assert.ok((await zcodeAdapter.readRecords!(zcodeSources[0]!)).meta.gaps?.some(gap => gap.kind === "unsupported_format"));
 })));
 
+test("ZCode 缺少供应商补充元数据时仍保留已核验的输入与缓存用量", async () => temporary(async directory => registerAdapters(async () => {
+  const paths = await createZCodeSchema(directory);
+  try {
+    paths.db.prepare("INSERT INTO session VALUES(?,?,?,?)").run("session-one", "/synthetic/project", "Synthetic usage", null);
+    paths.db.prepare("INSERT INTO model_usage VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)").run(
+      "attempt-one", "request-one", 0, "session-one", "turn-one", null, null, "example-provider", "fixture-model", "completed",
+      "2026-01-01T00:00:01.000Z", 100, 7, null, 0, 25, 107,
+      JSON.stringify({ inputTokens: 100, outputTokens: 7, cacheReadTokens: 25, cacheWriteTokens: 0, totalTokens: 107 }),
+      JSON.stringify({ rawFinishReason: "stop" }));
+    const found = await zcodeAdapter.discoverFile!({ path: paths.dbPath, client: "zcode", format: ZCODE_FORMAT });
+    const snapshot = await zcodeAdapter.readRecords!(found[0]!);
+    const usages: SessionUsage[] = [];
+    parseNormalizedSession(snapshot, { message: () => undefined, usage: value => usages.push(value) });
+    assert.equal(usages.length, 1);
+    assert.equal(usages[0]!.inputTokens, 125);
+    assert.equal(usages[0]!.provider, "example-provider");
+    assert.equal(usages[0]!.outputTokens, 7);
+    assert.equal(usages[0]!.cachedInputTokens, 25);
+    assert.equal(usages[0]!.cacheWriteTokens, 0);
+    assert.ok(!snapshot.meta.gaps?.some(gap => gap.messageDescriptor?.key === "diagnostics.history.adapters.zcode.m007"));
+  } finally { paths.db.close(); paths.index.close(); }
+})));
+
+test("ZCode 确认零输入允许缺原始桶，但明确冲突不能伪装为零", async () => temporary(async directory => registerAdapters(async () => {
+  const paths = await createZCodeSchema(directory);
+  try {
+    paths.db.prepare("INSERT INTO session VALUES(?,?,?,?)").run("session-one", "/synthetic/project", "Synthetic zero usage", null);
+    const insert = paths.db.prepare("INSERT INTO model_usage VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)");
+    for (const [index, raw] of [{}, { inputTokens: 1 }, { cacheReadTokens: 1 }].entries()) {
+      insert.run(`attempt-${index}`, `request-${index}`, 0, "session-one", "turn-one", null, null, "example-provider", "fixture-model", "completed",
+        "2026-01-01T00:00:01.000Z", 0, 7, null, 0, 0, 7, JSON.stringify(raw), "{}");
+    }
+    const found = await zcodeAdapter.discoverFile!({ path: paths.dbPath, client: "zcode", format: ZCODE_FORMAT });
+    const snapshot = await zcodeAdapter.readRecords!(found[0]!);
+    const usages: SessionUsage[] = [];
+    parseNormalizedSession(snapshot, { message: () => undefined, usage: value => usages.push(value) });
+    assert.equal(usages.length, 3);
+    assert.equal(usages.filter(usage => usage.inputTokens === 0).length, 1);
+    assert.equal(usages.filter(usage => usage.inputTokens === undefined).length, 2);
+    assert.equal(snapshot.meta.gaps?.filter(gap => gap.messageDescriptor?.key === "diagnostics.history.adapters.zcode.m007").length, 2);
+  } finally { paths.db.close(); paths.index.close(); }
+})));
+
 test("ZCode 任务索引按 session.id 关联；model_usage 按尝试计数，忽略消息与 turn_usage 汇总", async () => temporary(async directory => registerAdapters(async () => {
   const paths = await createZCodeSchema(directory);
   paths.db.pragma("journal_mode = WAL");
@@ -463,7 +529,7 @@ test("ZCode 任务索引按 session.id 关联；model_usage 按尝试计数，�
   assert.equal(assistants.find(item => item.text === "failed response")?.final, undefined);
   assert.equal([...messages.values()].filter(item => item.text === "model usage attempt").length, 3);
   assert.ok(summary.gaps.some(gap => gap.message.includes("包含关系未核验")));
-  assert.ok(summary.gaps.some(gap => gap.message.includes("未充分对照")));
+  assert.ok(summary.gaps.some(gap => gap.messageDescriptor?.key === "diagnostics.history.adapters.zcode.m007"));
   paths.index.prepare("UPDATE tasks SET title=? WHERE task_id=?").run("Changed title", "session-one");
   const changed = await zcodeAdapter.readRecords!({ ...found[0]! });
   assert.notEqual(changed.hash, snapshot.hash);

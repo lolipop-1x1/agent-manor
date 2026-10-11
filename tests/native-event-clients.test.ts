@@ -306,6 +306,27 @@ test("DSH 同身份副本优先选择完整旧代际，记录不完整新副本�
   assert.match(conflictSelected?.adapterGap?.message ?? "", /选择完整且已适配的来源 v4/);
 }));
 
+test("DSH 完整 V3 与 V4 同身份副本只选择一份，并保留明确服务商", async () => temporary(async directory => {
+  const paths = [join(directory, "same.v3.jsonl"), join(directory, "same.v4.jsonl")];
+  const sources = [];
+  for (const [index, path] of paths.entries()) {
+    await writeFile(path, encode([dshHeader(index + 3, "same-synthetic-session"),
+      dshEvent("assistant/message", 1, { turn: 1, step: 1,
+        message: { role: "assistant", source: { kind: "model", model: "synthetic-model", provider: "synthetic-provider" }, content: [] },
+        usage: { inputTokens: 8, cacheReadTokens: 2, cacheWriteTokens: 1, outputTokens: 4, reasoningTokens: 1 } }),
+    ]));
+    sources.push(...await dshAdapter.discoverFile!({ client: "dsh", format: DSH_FORMAT, path }));
+  }
+  const selected = dshAdapter.selectSources!(sources);
+  assert.equal(selected.length, 1);
+  assert.equal(selected[0]?.path, paths[1]);
+  const session = sink(await dshAdapter.readRecords!(selected[0]!) as NormalizedSnapshot);
+  assert.equal(session.usage.length, 1);
+  assert.equal(session.usage[0]?.inputTokens, 11);
+  assert.equal(session.usage[0]?.outputTokens, 4);
+  assert.equal(session.usage[0]?.provider, "synthetic-provider");
+}));
+
 test("DSH 和 Pi 来源缺失时传播 I/O 错误，不返回空快照", async () => temporary(async directory => {
   register(dshAdapter);
   register(piAdapter);
@@ -361,7 +382,7 @@ function piEntry(type: string, id: string, parentId: string | null, body: Record
 }
 
 function piAssistant(id: string, parentId: string, text: string, stopReason: string, usage = { input: 8, output: 4, cacheRead: 2, cacheWrite: 1, reasoning: 1 }, contentExtra: unknown[] = []) {
-  return piEntry("message", id, parentId, { message: { role: "assistant", content: [{ type: "text", text }, ...contentExtra], model: "model-pi", stopReason, usage, timestamp: 1_800_000_000_000 } });
+  return piEntry("message", id, parentId, { message: { role: "assistant", content: [{ type: "text", text }, ...contentExtra], provider: "synthetic-provider", model: "model-pi", stopReason, usage, timestamp: 1_800_000_000_000 } });
 }
 
 test("Pi 分支各自保留 final、当前叶定位、复制继承、注入与完整模型 usage", async () => temporary(async directory => {
@@ -418,9 +439,17 @@ test("Pi 分支各自保留 final、当前叶定位、复制继承、注入与�
   assert.ok(session.metadata.branches?.filter(branch => !branch.current).every(branch => branch.labelDescriptor?.key === "sessions.branch.number"));
   assert.equal(session.usage.length, 8);
   assert.equal(session.usage.some(value => value.inputTokens === 1998), false);
+  const finalUsage = session.usage.find(value => value.messageId === finals.find(message => message.text === "branch A final")?.id)!;
+  assert.equal(finalUsage.provider, "synthetic-provider");
+  const compactionMessage = session.messages.find(message => message.text === "compact summary")!;
+  const compactionUsage = session.usage.filter(value => value.messageId === compactionMessage.id);
+  assert.equal(compactionUsage.length, 1, "压缩请求自身用量只计一次");
+  assert.deepEqual([compactionUsage[0]?.inputTokens, compactionUsage[0]?.outputTokens, compactionUsage[0]?.reasoningOutputTokens], [5, 2, 1]);
+  assert.equal(compactionUsage[0]?.provider, undefined, "压缩记录未声明服务商时不借用助手的服务商");
   const extraUsageMessage = session.messages.find(message => message.text === "cache_warm")!;
   const extraUsage = session.usage.find(value => value.messageId === extraUsageMessage.id)!;
   assert.deepEqual([extraUsage.inputTokens, extraUsage.cachedInputTokens, extraUsage.cacheWriteTokens], [7, 2, 1]);
+  assert.equal(extraUsage.provider, "synthetic");
   assert.equal(extraUsageMessage.recordLine, entries.findIndex(entry => "id" in entry && entry.id === "extra-usage") + 1);
   assert.equal(extraUsage.turnId, extraUsageMessage.turnId, "用量位置不依赖最终发布顺序");
   const read = parsed.events.find(event => event.tool === "read");

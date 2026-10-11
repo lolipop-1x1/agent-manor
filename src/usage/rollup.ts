@@ -12,11 +12,12 @@ const PREVIEW_LIMIT = 12;
 const nullableTotals = ["tokens", "inputTokens", "outputTokens", "freshInputTokens", "cacheReadTokens", "cacheWriteTokens",
   "reasoningTokens", "estimatedCost"] as const;
 const countTotals = ["requests", "cacheReadRatioRequests", "completeTokenRequests", "partialTokenRequests", "missingTokenRequests",
-  "pricedRequests", "partiallyPricedRequests", "unpricedRequests", "missingTimeRequests"] as const;
+  "pricedRequests", "partiallyPricedRequests", "unpricedRequests", "missingTimeRequests",
+  "historicalPricedRequests", "currentSnapshotPricedRequests", "manualPricedRequests"] as const;
 
 function compactUsage(usage: SessionUsage): CompactUsage {
   const result: CompactUsage = { id: usage.id };
-  for (const key of ["model", "occurredAt", "inputTokens", "outputTokens", "cachedInputTokens", "cacheWriteTokens",
+  for (const key of ["model", "provider", "occurredAt", "inputTokens", "outputTokens", "cachedInputTokens", "cacheWriteTokens",
     "reasoningOutputTokens", "contextTokens", "messageId", "turnId"] as const) {
     if (usage[key] !== undefined) Object.assign(result, { [key]: usage[key] });
   }
@@ -182,7 +183,7 @@ export function buildUsageRollupReport(rollup: UsageRollup, requested: UsageQuer
     }
   }
   buckets.sort((left, right) => query.interval === "hour" ? Date.parse(left.key) - Date.parse(right.key) : left.key.localeCompare(right.key));
-  const { configuration: _configuration, prices: _prices, ...status } = pricing;
+  const { configuration: _configuration, prices: _prices, historicalPrices: _historicalPrices, ...status } = pricing;
   const page = query.page!, pageSize = query.pageSize!;
   const models = new Set(rollup.models);
   if (rollup.sessions.some(session => !hasUsage.has(session.id))) models.add("unknown");

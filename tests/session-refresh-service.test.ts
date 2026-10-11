@@ -99,7 +99,9 @@ test("请求用量规则升级使旧事实失效，局部刷新仍复用范围�
     const originalCount = count(old.revision);
     assert.ok(originalCount > 0);
     database.prepare("UPDATE session_revisions SET fingerprint=replace(fingerprint, ':request-usage-v2', ''),metadata_fingerprint='previous-rule' WHERE id=?").run(old.revision);
-    database.prepare(`INSERT INTO session_usage_facts SELECT revision,id || ':duplicate',ordinal+1,time_ms,occurred_at,model,
+    database.prepare(`INSERT INTO session_usage_facts (revision,id,ordinal,time_ms,occurred_at,model,provider,
+      input_tokens,output_tokens,cache_read_tokens,cache_write_tokens,reasoning_tokens,context_tokens,eligible)
+      SELECT revision,id || ':duplicate',ordinal+1,time_ms,occurred_at,model,provider,
       input_tokens,output_tokens,cache_read_tokens,cache_write_tokens,reasoning_tokens,context_tokens,eligible
       FROM session_usage_facts WHERE revision=? LIMIT 1`).run(old.revision);
     assert.equal(count(old.revision), originalCount + 1);

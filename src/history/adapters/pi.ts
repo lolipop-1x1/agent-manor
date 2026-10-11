@@ -62,7 +62,8 @@ function hasToolCalls(message: Record<string, unknown>): Record<string, unknown>
 }
 
 function assistantUsage(message: Record<string, unknown>): NormalizedEvent["usage"] {
-  return piUsage(message.usage);
+  const usage = piUsage(message.usage);
+  return usage ? { ...usage, provider: string(message.provider) } : undefined;
 }
 
 function readEvidence(inputValue: unknown, resultValue: unknown): ReturnType<typeof toolEvidence> {
@@ -340,7 +341,8 @@ async function snapshot(location: SourceLocation): Promise<NormalizedSnapshot> {
       continue;
     }
     if (entry.type === "usage") {
-      const usage = piUsage(entry.usage);
+      const nativeUsage = piUsage(entry.usage);
+      const usage = nativeUsage ? { ...nativeUsage, provider: string(entry.provider) } : undefined;
       add({ key: "", kind: "context", text: string(entry.kind) ?? "usage", model: string(entry.model), usageKey: usage ? `${id}:usage` : undefined, usage }, ":usage");
       continue;
     }

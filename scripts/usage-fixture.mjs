@@ -6,9 +6,11 @@ import { SessionStore } from "../dist/sessions/store.js";
 import { startService } from "../dist/server.js";
 import { clientIds } from "../dist/clients.js";
 import { writePreferences } from "../dist/service/preferences.js";
+import { historicalPriceSourceUrl } from "../dist/usage/historical-prices.js";
+import { priceSourceUrl } from "../dist/usage/price-catalog.js";
 
 // 全部为隔离合成数据，价格写入只影响临时数据目录。
-export async function usageFixture() {
+export async function usageFixture({ failHistoricalPrices = false } = {}) {
   const directory = await realpath(await mkdtemp(join(tmpdir(), "manor-usage-e2e-")));
   const home = join(directory, "data"); await mkdir(home);
   const path = join(home, "index.sqlite"); new AnalysisStore(path).close();
@@ -18,13 +20,18 @@ export async function usageFixture() {
     cost: { input: 1 + index * 2, output: 5 + index * 5, cache_read: 0.1 + index * 0.2, cache_write: 1.25 + index * 2.5 },
     limit: { context: 100_000, output: 16_000 } }]));
   prices["fixture-large"].cost.tiers = [{ tier: { type: "context", size: 20_000 }, input: 7.5, output: 22.5, cache_read: 0.75, cache_write: 9.375 }];
+  const changedAt = new Date(); changedAt.setUTCDate(changedAt.getUTCDate() - 14);
+  const historicalPrices = [{ id: "fixture", models: [{ id: "fixture-fast", prices: [
+    { prices: { input_mtok: 0.5, output_mtok: 2, cache_read_mtok: 0.05, cache_write_mtok: 0.625 } },
+    { constraint: { start_date: changedAt.toISOString().slice(0, 10) }, prices: { input_mtok: 1.5, output_mtok: 6, cache_read_mtok: 0.15, cache_write_mtok: 1.875 } },
+  ] }] }];
   for (let sessionIndex = 0; sessionIndex < 36; sessionIndex++) {
     const id = `fixture-session-${String(sessionIndex).padStart(2, "0")}`;
     const child = sessionIndex > 0 && sessionIndex % 6 === 0;
     const summary = { id, client: sessionIndex % 2 ? "claude" : "codex", clientSessionId: id,
       sourceId: `synthetic:${id}`, path: `/synthetic/history/${id}.jsonl`, title: `合成项目任务 ${String(sessionIndex + 1).padStart(2, "0")}`,
       titleOrigin: "recorded", project: sessionIndex === 35 ? undefined : `/synthetic/projects/${["atlas", "workbench", "index", "atlas-copy"][sessionIndex % 4]}`,
-      models: sessionIndex === 34 ? ["fixture-unpriced"] : sessionIndex === 0 ? [...models, "gpt-fixture"] : models, messageCount: 0, turnCount: 0, gaps: [],
+      models: sessionIndex === 34 ? ["fixture-unpriced"] : sessionIndex === 0 ? [...models, "gpt-fixture", "deepseek-chat", "gpt-codex-fixture"] : models, messageCount: 0, turnCount: 0, gaps: [],
       ...(child ? { relationship: "child", parentSessionId: "fixture-session-00" } : {}),
       ...(sessionIndex === 33 ? { executionMode: "quiet" } : {}) };
     const pending = store.createRevision(summary.path, "synthetic");
@@ -36,7 +43,8 @@ export async function usageFixture() {
         kind: "assistant", final: "explicit", occurredAt: time.toISOString(), text: `合成请求记录 ${day + 1}：用量定位验证。` });
       const input = Math.round((12000 + sessionIndex * 1100) * (1 + 0.45 * Math.sin(day * 0.7 + sessionIndex)));
       pending.sink.usage({ id: `${id}:usage:${day}`, messageId, turnId: `turn-${day}`, occurredAt: time.toISOString(),
-        model: sessionIndex === 34 ? "fixture-unpriced" : sessionIndex === 0 && day === 0 ? "gpt-fixture" : models[(day + sessionIndex) % 3],
+        model: sessionIndex === 34 ? "fixture-unpriced" : sessionIndex === 0 && day < 3 ? ["gpt-fixture", "deepseek-chat", "gpt-codex-fixture"][day] : models[(day + sessionIndex) % 3],
+        ...(sessionIndex === 0 && day === 1 ? { provider: "deepseek-official" } : sessionIndex === 0 && day === 2 ? { provider: "openai-codex" } : {}),
         inputTokens: input, outputTokens: 500 + day * 30 + sessionIndex * 20, cachedInputTokens: Math.round(input * 0.6), cacheWriteTokens: 0 });
     }
     if (sessionIndex === 35) {
@@ -56,9 +64,14 @@ export async function usageFixture() {
   const service = await startService({ home, startupRefresh: false,
     roots: Object.fromEntries(clientIds.map(client => [client, []])),
     resourceInventory: { userHome: join(directory, "isolated-user"), environment: {} },
-    usagePricing: { fetch: async () => Response.json({ fixture: { id: "fixture", name: "Synthetic prices", models: prices },
-      openai: { models: { "gpt-fixture": { cost: { input: 2, output: 5, cache_read: 0.1 } } } },
-      reseller: { models: { "gpt-fixture": { cost: { input: 20, output: 50, cache_read: 1 } } } } }) } });
+    usagePricing: { fetch: async url => {
+      if (url === historicalPriceSourceUrl) return failHistoricalPrices ? new Response("synthetic price failure", { status: 503 }) : Response.json(historicalPrices);
+      if (url !== priceSourceUrl) throw new Error("unexpected synthetic price source");
+      return Response.json({ fixture: { id: "fixture", name: "Synthetic prices", models: prices },
+      openai: { models: { "gpt-fixture": { cost: { input: 2, output: 5, cache_read: 0.1 } }, "gpt-codex-fixture": { cost: { input: 3, output: 6, cache_read: 0.3 } } } },
+      deepseek: { models: { "deepseek-chat": { cost: { input: 0.3, output: 1.2, cache_read: 0.03 } } } },
+      reseller: { models: { "gpt-fixture": { cost: { input: 20, output: 50, cache_read: 1 } } } } });
+    } } });
   const base = `http://127.0.0.1:${service.instance.port}`;
   await fetch(`${base}/api/v1/usage/pricing/refresh`, { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
   return { directory, home, service, base, close: async () => { await service.close(); await rm(directory, { recursive: true, force: true }); } };

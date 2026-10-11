@@ -4,7 +4,7 @@ import type { UsageRollup } from "./rollup-contracts.js";
 import { USAGE_FACT_FORMAT_VERSION } from "../sessions/usage-facts.js";
 import { accumulator } from "./analytics.js";
 
-const ROLLUP_FORMAT_VERSION = 1;
+const ROLLUP_FORMAT_VERSION = 2;
 const format = ROLLUP_FORMAT_VERSION * 1000 + USAGE_FACT_FORMAT_VERSION;
 const maxDiskBytes = 256 * 1024 * 1024;
 const totalDefaults = accumulator().totals;
