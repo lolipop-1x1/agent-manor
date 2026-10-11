@@ -118,7 +118,8 @@ test("仅有明确生效日期的历史条目不覆盖日期之前，免费与�
   const free = service.estimate(request({ provider: "alpha" })); assert.equal(free.priceBasis, "historical"); assert.equal(free.amount, 0);
   assert.equal(service.estimate(request({ model: "only-history", provider: "alpha" })).amount, 600 / 1_000_000);
   assert.equal(service.estimate(request({ model: "only-history", provider: "alpha", occurredAt: undefined })).amount, null);
-  assert.equal(service.estimate(request({ model: "unconstrained-model", provider: "alpha" })).reason, "price_missing");
+  const snapshot = service.estimate(request({ model: "unconstrained-model", provider: "alpha" }));
+  assert.equal(snapshot.amount, 0); assert.equal(snapshot.priceBasis, "current_snapshot");
   service.configure({ overrides: [{ model: "shared-model", provider: "alpha", input: 7, output: 14 }], mappings: [] });
   assert.equal(service.estimate(request({ provider: "alpha" })).priceBasis, "manual");
 });

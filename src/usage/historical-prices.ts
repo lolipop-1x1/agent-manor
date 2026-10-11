@@ -44,7 +44,7 @@ function rates(value: unknown): Pick<ModelPrice, keyof ModelPriceRates | "tiers"
   return { input: result.input, output: result.output, ...result, ...(sorted.length ? { tiers: sorted } : {}) };
 }
 
-/** 只导入有明确日期变化的精确身份；单一当前价格和未支持的约束不冒充历史依据。 */
+/** 明确日期序列保留历史依据；无日期单价只作为当前快照，未支持约束整模型跳过。 */
 export function parseHistoricalPriceCatalog(value: unknown, fetchedAt: string): PriceSnapshot {
   if (!Array.isArray(value) || !value.length || !instant(fetchedAt)) return invalid();
   const prices: ModelPrice[] = [], seen = new Set<string>();
@@ -52,21 +52,27 @@ export function parseHistoricalPriceCatalog(value: unknown, fetchedAt: string): 
     if (!record(provider) || !validPriceIdentity(provider.id) || !Array.isArray(provider.models)) return invalid();
     for (const model of provider.models) {
       if (!record(model) || !validPriceIdentity(model.id)) return invalid();
-      if (!Array.isArray(model.prices) || !model.prices.length) continue;
+      if (record(model.prices) && model.prices.constraint !== undefined) continue;
+      // 嵌入、仅输入和其它计价单位不适用于当前请求费用结构，不能阻断文本目录。
+      const entries = record(model.prices) ? [{ prices: model.prices }] : model.prices;
+      if (!Array.isArray(entries) || !entries.length) continue;
+      if (entries.some(item => record(item) && record(item.prices) && (item.prices.input_mtok == null || item.prices.output_mtok == null))) continue;
       const identity = priceKey({ provider: provider.id, model: model.id });
       if (seen.has(identity)) return invalid();
       seen.add(identity);
-      if (model.prices.some(item => !record(item) || item.constraint !== undefined && (!record(item.constraint)
+      if (entries.some(item => !record(item) || item.constraint !== undefined && (!record(item.constraint)
         || Object.keys(item.constraint).some(key => key !== "start_date")))) continue;
       const periods: { from?: string; price: ModelPrice }[] = [];
-      for (const item of model.prices) {
+      for (const item of entries) {
         if (!record(item)) return invalid();
         const from = record(item.constraint) ? effectiveDate(item.constraint.start_date) : undefined;
         if (periods.length && (from === undefined || periods.at(-1)!.from !== undefined && from <= periods.at(-1)!.from!)) return invalid();
         periods.push({ from, price: { provider: provider.id, model: model.id, ...rates(item.prices),
           source: "network", fetchedAt, sourceUrl: historicalPriceSourceUrl, priceBasis: "historical", ...(from ? { effectiveFrom: from } : {}) } });
       }
-      if (!periods.some(period => period.from !== undefined)) continue;
+      if (!periods.some(period => period.from !== undefined)) {
+        prices.push({ ...periods[0]!.price, priceBasis: "current_snapshot" }); continue;
+      }
       for (let index = 0; index < periods.length; index += 1) {
         const price = periods[index]!.price, to = periods[index + 1]?.from;
         prices.push({ ...price, ...(to ? { effectiveTo: to } : {}) });
@@ -77,7 +83,7 @@ export function parseHistoricalPriceCatalog(value: unknown, fetchedAt: string): 
   return { version: priceContentVersion(prices), fetchedAt, sourceUrl: historicalPriceSourceUrl, currency: "USD", prices };
 }
 
-/** 缓存保存已归一化的日期区间；完整校验后才用于估价。 */
+/** 缓存保存已归一化的历史区间及当前快照；完整校验后才用于估价。 */
 export function parseStoredHistoricalPriceSnapshot(value: unknown): PriceSnapshot {
   if (!record(value) || value.sourceUrl !== historicalPriceSourceUrl || value.currency !== "USD"
     || !instant(value.fetchedAt) || !Array.isArray(value.prices)) return invalid();
@@ -86,12 +92,29 @@ export function parseStoredHistoricalPriceSnapshot(value: unknown): PriceSnapsho
   const seen = new Set<string>();
   for (const price of storedPrices) {
     if (!record(price) || !validPriceIdentity(price.provider) || !validPriceIdentity(price.model)
-      || price.priceBasis !== "historical" || price.sourceUrl !== historicalPriceSourceUrl
+      || price.priceBasis !== "historical" && price.priceBasis !== "current_snapshot" || price.sourceUrl !== historicalPriceSourceUrl
+      || price.source !== "network" && price.source !== "cache" || price.fetchedAt !== value.fetchedAt
+      || price.priceBasis === "current_snapshot" && (price.effectiveFrom !== undefined || price.effectiveTo !== undefined)
       || price.effectiveFrom !== undefined && !instant(price.effectiveFrom)
       || price.effectiveTo !== undefined && !instant(price.effectiveTo)
       || price.effectiveFrom !== undefined && price.effectiveTo !== undefined && price.effectiveFrom >= price.effectiveTo) return invalid();
     const identity = JSON.stringify([price.provider, price.model, price.effectiveFrom ?? ""]);
     if (seen.has(identity)) return invalid(); seen.add(identity);
+    if (price.tiers !== undefined) {
+      if (!Array.isArray(price.tiers)) return invalid();
+      let previous = 0;
+      for (const tier of price.tiers) {
+        if (!record(tier) || !Number.isSafeInteger(tier.context) || Number(tier.context) <= previous) return invalid();
+        let count = 0;
+        for (const target of Object.values(fields)) {
+          if (tier[target] === undefined) continue;
+          if (price[target] === undefined || !validPriceNumber(tier[target])) return invalid();
+          count += 1;
+        }
+        if (!count) return invalid();
+        previous = Number(tier.context);
+      }
+    }
     const provider = models.get(price.provider) ?? { id: price.provider, models: [] };
     let model = provider.models.find(item => item.id === price.model);
     if (!model) { model = { id: price.model, prices: [] }; provider.models.push(model); }

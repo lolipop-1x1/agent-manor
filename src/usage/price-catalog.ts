@@ -9,6 +9,8 @@ const record = (value: unknown): value is Record<string, unknown> => !!value && 
 export const validPriceNumber = (value: unknown): value is number => typeof value === "number" && Number.isFinite(value) && value >= 0;
 export const validPriceIdentity = (value: unknown): value is string => typeof value === "string" && !!value.trim() && value.length <= 2048
   && !/[\u0000-\u001f]/.test(value);
+const validCanonicalIdentity = (value: unknown): value is string => validPriceIdentity(value)
+  && value.split("/").length === 2 && value.split("/").every(part => part.trim().length > 0);
 export const priceKey = (value: Pick<ModelPrice, "provider" | "model">): string => JSON.stringify([value.provider, value.model]);
 
 /** 来源和抓取时间不改变单价内容版本；实际日期仍随每条价格保存。 */
@@ -35,6 +37,7 @@ export function parsePriceCatalog(value: unknown, fetchedAt: string, source: Mod
     if (!validPriceIdentity(provider) || !record(entry) || !record(entry.models)) throw new Error("invalid_price_catalog");
     for (const [model, data] of Object.entries(entry.models)) {
       if (!validPriceIdentity(model) || !record(data)) throw new Error("invalid_price_catalog");
+      if (data.canonical_model_id !== undefined && !validCanonicalIdentity(data.canonical_model_id)) throw new Error("invalid_price_catalog");
       if (data.cost === undefined) continue;
       if (!record(data.cost)) throw new Error("invalid_price_catalog");
       const cost = rates(data.cost);
@@ -58,6 +61,7 @@ export function parsePriceCatalog(value: unknown, fetchedAt: string, source: Mod
       tiers.sort((left, right) => left.context - right.context);
       if (tiers.some((tier, index) => index > 0 && tiers[index - 1]!.context === tier.context)) throw new Error("invalid_price_catalog");
       prices.push({ provider, model, ...(validPriceIdentity(data.name) ? { name: data.name } : {}),
+        ...(data.canonical_model_id === undefined ? {} : { canonicalModelId: data.canonical_model_id as string }),
         ...cost as ModelPriceRates, ...(tiers.length ? { tiers } : {}), source, fetchedAt });
     }
   }
@@ -78,6 +82,10 @@ export function parseStoredPriceSnapshot(value: unknown): PriceSnapshot {
     const price: ModelPrice = { model: item.model, provider: item.provider, input: item.input, output: item.output, source: "cache",
       fetchedAt: typeof item.fetchedAt === "string" && Number.isFinite(Date.parse(item.fetchedAt)) ? item.fetchedAt : value.fetchedAt };
     if (validPriceIdentity(item.name)) price.name = item.name;
+    if (item.canonicalModelId !== undefined) {
+      if (!validCanonicalIdentity(item.canonicalModelId)) throw new Error("invalid_price_catalog");
+      price.canonicalModelId = item.canonicalModelId;
+    }
     for (const key of Object.values(fields)) {
       if (item[key] === undefined) continue;
       if (!validPriceNumber(item[key])) throw new Error("invalid_price_catalog");

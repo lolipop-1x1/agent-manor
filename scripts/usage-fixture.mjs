@@ -10,7 +10,7 @@ import { historicalPriceSourceUrl } from "../dist/usage/historical-prices.js";
 import { priceSourceUrl } from "../dist/usage/price-catalog.js";
 
 // 全部为隔离合成数据，价格写入只影响临时数据目录。
-export async function usageFixture({ failHistoricalPrices = false, days = 28, now = new Date() } = {}) {
+export async function usageFixture({ failHistoricalPrices = false, matchingCandidates = false, days = 28, now = new Date() } = {}) {
   const directory = await realpath(await mkdtemp(join(tmpdir(), "manor-usage-e2e-")));
   const home = join(directory, "data"); await mkdir(home);
   const path = join(home, "index.sqlite"); new AnalysisStore(path).close();
@@ -68,6 +68,9 @@ export async function usageFixture({ failHistoricalPrices = false, days = 28, no
       if (url === historicalPriceSourceUrl) return failHistoricalPrices ? new Response("synthetic price failure", { status: 503 }) : Response.json(historicalPrices);
       if (url !== priceSourceUrl) throw new Error("unexpected synthetic price source");
       return Response.json({ fixture: { id: "fixture", name: "Synthetic prices", models: prices },
+      ...(matchingCandidates ? Object.fromEntries(["alpha", "beta"].map(provider => [provider, { models: { "fixture-unpriced": {
+        canonical_model_id: `${provider}/fixture-unpriced`, cost: { input: 1, output: 3, cache_read: 0.1 },
+      } } }])) : {}),
       openai: { models: { "gpt-fixture": { cost: { input: 2, output: 5, cache_read: 0.1 } }, "gpt-codex-fixture": { cost: { input: 3, output: 6, cache_read: 0.3 } }, "gpt-plan-fixture": { cost: { input: 2, output: 5, cache_read: 0.1 } } } },
       anthropic: { models: { "claude-sonnet-77-6": { cost: { input: 3, output: 15, cache_read: 0.3, cache_write: 3.75 } } } },
       openrouter: { models: { "deepseek/deepseek-fixture-v77-flash-0731": { cost: { input: 0.02, output: 0.6, cache_read: 0.01 } } } },

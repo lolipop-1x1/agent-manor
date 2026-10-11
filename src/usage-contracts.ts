@@ -33,9 +33,10 @@ export interface ModelPriceRates {
 }
 export interface ModelPrice extends ModelPriceRates {
   provider: string; model: string; name?: string; fetchedAt?: string;
+  canonicalModelId?: string;
   tiers?: (Partial<ModelPriceRates> & { context: number })[];
   source: "network" | "cache" | "bundled" | "manual";
-  sourceUrl?: string; priceBasis?: "historical"; effectiveFrom?: string; effectiveTo?: string;
+  sourceUrl?: string; priceBasis?: "historical" | "current_snapshot"; effectiveFrom?: string; effectiveTo?: string;
   apiBaselineForProvider?: string;
   matchBasis?: "official" | "catalog";
 }
@@ -54,9 +55,11 @@ export interface PricingStatus {
     error?: string; errorDescriptor?: MessageDescriptor };
 }
 export type PricingSummary = Omit<PricingStatus, "configuration" | "prices" | "historicalPrices">;
+export type PriceResolutionReason = "identity_conflict" | "provider_required" | "api_price_missing" | "model_unknown" | "mapping_missing";
 export interface RequestCost {
   amount: number | null; coverage: "complete" | "partial" | "missing";
   reason?: "model_missing" | "price_missing" | "tokens_missing" | "tier_unknown" | "semantics_unknown";
+  priceResolutionReason?: PriceResolutionReason;
   price?: ModelPrice; freshInputTokens?: number; appliedContextThreshold?: number;
   priceBasis?: "manual" | "historical" | "current_snapshot";
   priceProvider?: string; priceSourceUrl?: string; priceEffectiveFrom?: string; priceEffectiveTo?: string;

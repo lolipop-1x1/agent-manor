@@ -115,6 +115,8 @@
 .usage-price-fields { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin: 16px 0; }
 .usage-editor-actions { display: flex; justify-content: flex-end; gap: 8px; }
 .usage-editor-actions .primary { background: var(--accent); color: var(--on-accent); border-color: var(--accent); }
+.usage-mapping-feedback { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 16px; margin-bottom: 12px; font-size: 11px; }
+.usage-mapping-feedback:empty { display: none; }
 .usage-mappings { display: grid; gap: 8px; font-size: 11px; border-block: 1px solid var(--border); padding: 12px 0; margin: 12px 0; }
 .usage-mappings > div { display: flex; justify-content: space-between; align-items: center; gap: 10px; overflow-wrap: anywhere; }
 .usage-price-dialog footer { font-size: 10px; margin-top: 16px; color: var(--muted); overflow-wrap: anywhere; }

@@ -7,7 +7,7 @@ import { ApiError, errorMessage, request } from "../../shared/api";
 import { useI18n } from "../../shared/i18n";
 import { ProjectPicker } from "../../shared/ui/ProjectPicker";
 import { ResourcePagination } from "../../shared/ui/ResourcePagination";
-import { createPriceResolver } from "../../../src/usage/price-resolution";
+import { createPriceMatcher, type PriceMatch } from "../../../src/usage/price-resolution";
 import { PriceDetails } from "./PriceDetails";
 
 interface PriceDraft { model: string; provider: string; input: string; output: string; cacheRead: string; cacheWrite: string; original?: { model: string; provider: string } }
@@ -18,21 +18,22 @@ export function PricingManager({ status, models, onChange, open, onOpenChange }:
 }) {
   const { t, number, dateTime, message } = useI18n();
   const dialog = useRef<HTMLDivElement>(null);
+  const opener = useRef<HTMLElement | null>(null);
   const [search, setSearch] = useState(""); const [page, setPage] = useState(1);
   const [draft, setDraft] = useState<PriceDraft | null>(null);
-  const [mapping, setMapping] = useState<{ model: string; target: string; original?: string } | null>(null);
+  const [mapping, setMapping] = useState<{ model: string; target: string; original?: string; relatedOnly?: boolean } | null>(null);
   const [saving, setSaving] = useState(false); const [error, setError] = useState<Error | null>(null); const [saved, setSaved] = useState(false);
+  const match = useMemo(() => createPriceMatcher(status.prices, status.configuration, status.historicalPrices), [status]);
   const rows = useMemo(() => {
-    const resolve = createPriceResolver(status.prices, status.configuration);
-    const items: { model: string; provider: string; price?: ModelPrice; manual: boolean; recorded?: boolean }[] = status.prices.filter(price => price.source !== "manual").map(price => ({ model: `${price.provider}/${price.model}`, provider: price.provider, price, manual: false }));
+    const items: { model: string; provider: string; price?: ModelPrice; resolution?: PriceMatch; manual: boolean; recorded?: boolean }[] = status.prices.filter(price => price.source !== "manual").map(price => ({ model: `${price.provider}/${price.model}`, provider: price.provider, price, manual: false }));
     for (const price of status.configuration.overrides) items.unshift({ model: price.model, provider: price.provider ?? "", price: { ...price, provider: price.provider ?? "manual", source: "manual" }, manual: true });
     for (const model of [...models, ...status.configuration.mappings.map(mapping => mapping.model)]) if (!items.some(item => (item.recorded || item.manual) && item.model === model)) {
-      const price = resolve(model);
-      items.unshift({ model, provider: price?.provider ?? "", price, manual: false, recorded: true });
+      const resolution = match(model), price = resolution.price;
+      items.unshift({ model, provider: price?.provider ?? "", price, resolution, manual: false, recorded: true });
     }
     const query = search.toLowerCase();
-    return items.filter(item => `${item.model} ${item.provider} ${item.price?.model ?? ""} ${status.configuration.mappings.filter(value => value.model === item.model).map(value => `${value.targetModel} ${value.targetProvider}`).join(" ")}`.toLowerCase().includes(query));
-  }, [status, models, search]);
+    return items.filter(item => `${item.model} ${item.provider} ${item.price?.model ?? ""} ${item.resolution?.canonicalModelId ?? ""} ${item.resolution?.candidates.map(price => `${price.provider} ${price.model} ${price.name ?? ""}`).join(" ") ?? ""} ${status.configuration.mappings.filter(value => value.model === item.model).map(value => `${value.targetModel} ${value.targetProvider}`).join(" ")}`.toLowerCase().includes(query));
+  }, [status, models, search, match]);
   const save = async (configuration: PricingConfiguration) => {
     setSaving(true); setError(null); setSaved(false);
     try { const result = await request<PricingStatus>("/usage/pricing", { method: "PUT", body: configuration as unknown as JsonValue }); onChange(result); setDraft(null); setMapping(null); setSaved(true); }
@@ -47,16 +48,23 @@ export function PricingManager({ status, models, onChange, open, onOpenChange }:
     void save({ ...status.configuration, overrides: [...status.configuration.overrides.filter(value => !sameOverride(value, override) && (!draft.original || !sameOverride(value, draft.original))), override] });
   };
   const edit = (model: string, provider: string, price?: ModelPrice | ModelPriceOverride, manual = false) => { setMapping(null); setError(null); setDraft({ model, provider, input: price ? String(price.input) : "", output: price ? String(price.output) : "", cacheRead: price?.cacheRead === undefined ? "" : String(price.cacheRead), cacheWrite: price?.cacheWrite === undefined ? "" : String(price.cacheWrite), ...(manual ? { original: { model, provider } } : {}) }); };
-  const editMapping = (model: string, price?: ModelPrice) => {
+  const editMapping = (model: string, price?: ModelPrice, relatedOnly = false) => {
     const configured = status.configuration.mappings.find(value => value.model === model);
-    const automatic = price?.source === "manual" ? createPriceResolver(status.prices, { overrides: [], mappings: [] })(model) : price;
+    const automatic = price?.source === "manual" ? createPriceMatcher(status.prices, { overrides: [], mappings: [] }, status.historicalPrices)(model).price : price;
+    const configuredTarget = configured && JSON.stringify([configured.targetProvider, configured.targetModel]);
+    const target = configured ? price && targetOptions.some(option => option.value === configuredTarget) ? configuredTarget! : "" : automatic ? JSON.stringify([automatic.provider, automatic.model]) : "";
     setDraft(null); setError(null);
-    setMapping({ model, ...(configured ? { original: configured.model } : {}), target: configured ? JSON.stringify([configured.targetProvider, configured.targetModel]) : automatic ? JSON.stringify([automatic.provider, automatic.model]) : "" });
+    setMapping({ model, ...(configured ? { original: configured.model } : {}), target, relatedOnly });
   };
   const refresh = async () => { setSaving(true); setError(null); try { onChange(await request<PricingStatus>("/usage/pricing/refresh", { method: "POST", body: {} })); } catch (failure) { setError(failure instanceof Error ? failure : new ApiError("QUERY_FAILED", "", { key: "common.error.query" })); } finally { setSaving(false); } };
-  const targetOptions = useMemo(() => status.prices.map(price => ({ value: JSON.stringify([price.provider, price.model]), label: price.name ?? price.model, description: `${price.provider} / ${price.model}` })), [status.prices]);
+  const targetOptions = useMemo(() => [...new Map([...(status.historicalPrices ?? []), ...status.prices].map(price => [JSON.stringify([price.provider, price.model]), price])).values()].map(price => ({ value: JSON.stringify([price.provider, price.model]), label: price.name ?? price.model, description: `${price.provider} / ${price.model}` })), [status.prices, status.historicalPrices]);
+  const mappingResolution = mapping?.model.trim() ? match(mapping.model.trim()) : undefined;
+  const relatedTargets = new Set(mappingResolution?.candidates.map(price => JSON.stringify([price.provider, price.model])));
+  const mappingOptions = mapping?.relatedOnly ? targetOptions.filter(option => relatedTargets.has(option.value) || option.value === mapping.target) : targetOptions;
   const current = Math.min(page, Math.max(1, Math.ceil(rows.length / 20)));
-  return <Dialog.Root open={open} onOpenChange={onOpenChange}><Dialog.Portal><Dialog.Overlay className="usage-dialog-overlay" /><Dialog.Content ref={dialog} className="usage-price-dialog" aria-describedby="usage-pricing-description">
+  return <Dialog.Root open={open} onOpenChange={onOpenChange}><Dialog.Portal><Dialog.Overlay className="usage-dialog-overlay" /><Dialog.Content ref={dialog} className="usage-price-dialog" aria-describedby="usage-pricing-description"
+    onOpenAutoFocus={() => { opener.current = document.activeElement instanceof HTMLElement ? document.activeElement : null; }}
+    onCloseAutoFocus={event => { event.preventDefault(); opener.current?.focus(); }}>
     <header><Dialog.Title>{t("usage.pricing.title")}</Dialog.Title><Dialog.Close className="icon-button" aria-label={t("common.closeNamed", { label: t("usage.pricing.title") })}><X size={18} /></Dialog.Close></header>
     <Dialog.Description id="usage-pricing-description">{t("usage.pricing.description")} {t("usage.pricing.automaticBasis")}</Dialog.Description>
     <div className="usage-price-source"><span>{t(`usage.pricing.${status.source}`)}</span><span>{status.fetchedAt ? t("usage.pricing.updated", { time: dateTime(status.fetchedAt) }) : t("usage.pricing.bundled")}</span><a href={status.sourceUrl} target="_blank" rel="noreferrer">models.dev</a><button className="text-button" onClick={() => void refresh()} disabled={saving || status.refreshing}><ArrowClockwise size={14} />{t(status.refreshing ? "usage.pricing.refreshing" : "usage.pricing.refresh")}</button></div>
@@ -72,7 +80,8 @@ export function PricingManager({ status, models, onChange, open, onOpenChange }:
       </div><p className="usage-price-scope">{draft.provider.trim() ? t("usage.pricing.providerScope", { provider: draft.provider.trim() }) : t("usage.pricing.globalScope")}</p><div className="usage-editor-actions"><button type="submit" className="primary" disabled={saving}>{t("usage.pricing.save")}</button><button type="button" onClick={() => setDraft(null)} disabled={saving}>{t("usage.pricing.cancel")}</button></div>
     </form>}
     {mapping && <form className="usage-price-editor" onSubmit={event => { event.preventDefault(); if (!mapping.model.trim() || !mapping.target) return; const [targetProvider, targetModel] = JSON.parse(mapping.target) as [string, string]; void save({ ...status.configuration, mappings: [...status.configuration.mappings.filter(value => value.model !== mapping.model.trim() && value.model !== mapping.original), { model: mapping.model.trim(), targetModel, targetProvider }] }); }}>
-      <h3>{t("usage.pricing.editMap")}</h3><div className="usage-price-fields"><label>{t("usage.pricing.model")}<input value={mapping.model} required onChange={event => setMapping({ ...mapping, model: event.target.value })} /></label><label>{t("usage.pricing.target")}<ProjectPicker value={mapping.target} label={t("usage.pricing.target")} options={targetOptions} onChange={target => setMapping({ ...mapping, target })} container={dialog.current} modal /></label></div>
+      <h3>{t("usage.pricing.editMap")}</h3><div className="usage-price-fields"><label>{t("usage.pricing.model")}<input value={mapping.model} required onChange={event => setMapping({ ...mapping, model: event.target.value, relatedOnly: false })} /></label><label>{t("usage.pricing.target")}<ProjectPicker value={mapping.target} label={t("usage.pricing.target")} options={mappingOptions} onChange={target => setMapping({ ...mapping, target })} container={dialog.current} modal /></label></div>
+      <div className="usage-mapping-feedback">{mappingResolution?.reason && <span className="usage-warning">{t(`usage.pricing.reason.${mappingResolution.reason}`)}</span>}{!!relatedTargets.size && <button className="text-button" type="button" aria-pressed={!!mapping.relatedOnly} onClick={() => setMapping({ ...mapping, relatedOnly: !mapping.relatedOnly })}>{t(mapping.relatedOnly ? "usage.pricing.allTargets" : "usage.pricing.relatedTargets", { count: relatedTargets.size })}</button>}</div>
       <div className="usage-editor-actions"><button className="primary" disabled={saving || !mapping.target}>{t("usage.pricing.save")}</button><button type="button" onClick={() => setMapping(null)} disabled={saving}>{t("usage.pricing.cancel")}</button></div>
     </form>}
     {status.configuration.mappings.length > 0 && <div className="usage-mappings">{status.configuration.mappings.map(value => <div key={value.model}><span>{t("usage.pricing.mapping", { model: value.model, provider: value.targetProvider, target: value.targetModel })}</span><button className="text-button" disabled={saving} onClick={() => void save({ ...status.configuration, mappings: status.configuration.mappings.filter(item => item.model !== value.model) })}>{t("usage.pricing.removeMap")}</button></div>)}</div>}
@@ -81,7 +90,7 @@ export function PricingManager({ status, models, onChange, open, onOpenChange }:
         const configured = status.configuration.mappings.find(value => value.model === row.model);
         const recorded = row.recorded || row.manual && models.includes(row.model);
         const mappingLabel = recorded && !row.manual ? configured ? t("usage.pricing.manualMapping", { provider: configured.targetProvider, target: configured.targetModel }) : row.price?.matchBasis ? t("usage.pricing.automaticMapping", { provider: row.price.provider, target: row.price.model }) : undefined : undefined;
-        return <tr key={`${row.model}:${row.provider}:${row.manual}:${index}`}><td><strong>{row.model}</strong><small>{row.manual ? row.provider ? t("usage.pricing.providerScope", { provider: row.provider }) : t("usage.pricing.globalScope") : row.recorded ? t("usage.pricing.recorded") : row.provider}</small></td><td>{row.manual ? t("usage.pricing.manual") : row.price && "source" in row.price ? t(`usage.pricing.${row.price.source}`) : t("usage.pricing.unpriced")}{row.price && "source" in row.price && <><small>{mappingLabel ?? (row.manual && !row.provider ? row.price.model : `${row.price.provider} / ${row.price.model}`)}</small><PriceDetails price={row.price} catalog /></>}</td>{(["input", "output", "cacheRead", "cacheWrite"] as const).map(key => <td key={key} className="usage-number">{row.price?.[key] === undefined ? "—" : number(row.price[key]!, { maximumFractionDigits: 6 })}</td>)}<td><button className="text-button" onClick={() => edit(row.recorded || row.manual ? row.model : row.price!.model, row.recorded ? "" : row.provider, row.price, row.manual)}>{t("usage.pricing.edit")}</button>{recorded && <button className="text-button" disabled={saving} onClick={() => editMapping(row.model, row.price)}>{t("usage.pricing.editMap")}</button>}{row.manual && <button className="text-button" disabled={saving} onClick={() => void save({ ...status.configuration, overrides: status.configuration.overrides.filter(value => !sameOverride(value, row)) })}>{t("usage.pricing.restore")}</button>}</td></tr>;
+        return <tr key={`${row.model}:${row.provider}:${row.manual}:${index}`}><td><strong>{row.model}</strong><small>{row.manual ? row.provider ? t("usage.pricing.providerScope", { provider: row.provider }) : t("usage.pricing.globalScope") : row.recorded ? t("usage.pricing.recorded") : row.provider}</small></td><td>{row.manual ? t("usage.pricing.manual") : row.price && "source" in row.price ? t(`usage.pricing.${row.price.source}`) : t("usage.pricing.unmatched")}{row.price && "source" in row.price ? <><small>{mappingLabel ?? (row.manual && !row.provider ? row.price.model : `${row.price.provider} / ${row.price.model}`)}</small><PriceDetails price={row.price} catalog /></> : <>{mappingLabel && <small>{mappingLabel}</small>}{row.resolution?.reason && <small className="usage-warning">{t(`usage.pricing.reason.${row.resolution.reason}`)}</small>}{!!row.resolution?.candidates.length && <button className="text-button" disabled={saving} onClick={() => editMapping(row.model, row.price, true)}>{t("usage.pricing.relatedTargets", { count: row.resolution.candidates.length })}</button>}</>}</td>{(["input", "output", "cacheRead", "cacheWrite"] as const).map(key => <td key={key} className="usage-number">{row.price?.[key] === undefined ? "—" : number(row.price[key]!, { maximumFractionDigits: 6 })}</td>)}<td><button className="text-button" onClick={() => edit(row.recorded || row.manual ? row.model : row.price!.model, row.recorded ? "" : row.provider, row.price, row.manual)}>{t("usage.pricing.edit")}</button>{recorded && <button className="text-button" disabled={saving} onClick={() => editMapping(row.model, row.price)}>{t("usage.pricing.editMap")}</button>}{row.manual && <button className="text-button" disabled={saving} onClick={() => void save({ ...status.configuration, overrides: status.configuration.overrides.filter(value => !sameOverride(value, row)) })}>{t("usage.pricing.restore")}</button>}</td></tr>;
       })}
     </tbody></table></div>{!rows.length && <div className="usage-empty">{t("usage.pricing.empty")}</div>}
     <ResourcePagination label={t("usage.pricing.title")} page={current} total={rows.length} pageSize={20} onChange={setPage} />

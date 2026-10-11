@@ -5,8 +5,9 @@ import type { MessageDescriptor } from "../i18n/types.js";
 import type { SessionUsage } from "../session-contracts.js";
 import { ServiceError } from "../service/input.js";
 import type { ModelPrice, ModelPriceRates, PriceSnapshot, PricingConfiguration, PricingStatus, PricingSummary, RequestCost } from "../usage-contracts.js";
-import { createPriceResolver, PRICE_RESOLUTION_VERSION } from "./price-resolution.js";
+import { createPriceMatcher, PRICE_RESOLUTION_VERSION, type PriceMatch } from "./price-resolution.js";
 import { bundledPriceSnapshot } from "./bundled-prices.js";
+import { officialApiPrices } from "./official-api-prices.js";
 import { parsePriceCatalog, parseStoredPriceSnapshot, priceContentVersion, priceKey, priceSourceUrl, validPriceIdentity, validPriceNumber } from "./price-catalog.js";
 import { historicalPriceSourceUrl, parseHistoricalPriceCatalog, parseStoredHistoricalPriceSnapshot } from "./historical-prices.js";
 
@@ -71,7 +72,8 @@ function inputParts(usage: SessionUsage, client?: string): { input?: number; rea
   return { input, read, write, fresh, inconsistent };
 }
 
-function requestCost(usage: SessionUsage, price: ModelPrice | undefined, client?: string, includePrice = true): RequestCost {
+function requestCost(usage: SessionUsage, match: PriceMatch | undefined, client?: string, includePrice = true): RequestCost {
+  const price = match?.price;
   const parts = inputParts(usage, client);
   const extra: Partial<RequestCost> = { ...(parts.fresh === undefined ? {} : { freshInputTokens: parts.fresh }),
     ...(price ? { priceBasis: price.source === "manual" ? "manual" : price.priceBasis ?? "current_snapshot", priceProvider: price.provider, priceModel: price.model,
@@ -80,7 +82,7 @@ function requestCost(usage: SessionUsage, price: ModelPrice | undefined, client?
       priceEffectiveFrom: price.effectiveFrom, priceEffectiveTo: price.effectiveTo,
       ...(price.apiBaselineForProvider ? { apiBaselineForProvider: price.apiBaselineForProvider } : {}) } : {}) };
   if (!usage.model) return { amount: null, coverage: "missing", reason: "model_missing", ...extra };
-  if (!price) return { amount: null, coverage: "missing", reason: "price_missing", ...extra };
+  if (!price) return { amount: null, coverage: "missing", reason: "price_missing", ...(match?.reason ? { priceResolutionReason: match.reason } : {}), ...extra };
   if (price.tiers?.length && parts.input === undefined) return { amount: null, coverage: "missing", reason: "tier_unknown", ...(includePrice ? { price: structuredClone(price) } : {}), ...extra };
   const tier = price.tiers?.filter(item => parts.input! >= item.context).at(-1);
   const { context: _context, ...tierRates } = tier ?? {};
@@ -112,8 +114,8 @@ function requestCost(usage: SessionUsage, price: ModelPrice | undefined, client?
 
 /** 后台汇总使用固定价格快照，完整价格证据只在当前页按需附加。 */
 export function createPricingEstimator(status: PricingStatus, includePrice = false): PricingView["estimate"] {
-  const resolve = createPriceResolver(status.prices, status.configuration, status.historicalPrices);
-  return (usage, client) => requestCost(usage, usage.model ? resolve(usage.model, usage.provider, usage.occurredAt) : undefined, client, includePrice);
+  const match = createPriceMatcher(status.prices, status.configuration, status.historicalPrices);
+  return (usage, client) => requestCost(usage, usage.model ? match(usage.model, usage.provider, usage.occurredAt) : undefined, client, includePrice);
 }
 
 /** 本地配置独立保存，后台刷新只更新自动目录；每次查询使用固定价格视图。 */
@@ -159,11 +161,12 @@ export class PricingService {
   private failure(key: string, message: string): void { this.error = message; this.errorDescriptor = descriptor(key); }
 
   private capture(): void {
-    const catalog = new Map(bundledPriceSnapshot.prices.map(price => [priceKey(price), price]));
+    const fallback = this.historySnapshot?.prices.filter(price => price.priceBasis === "current_snapshot") ?? [];
+    const catalog = new Map([...fallback, ...bundledPriceSnapshot.prices, ...officialApiPrices].map(price => [priceKey(price), price]));
     for (const price of this.snapshot?.prices ?? []) catalog.set(priceKey(price), price);
     const automatic = [...catalog.values()];
-    const historicalPrices = this.historySnapshot?.prices ?? [];
-    const resolve = createPriceResolver(automatic, this.configuration, historicalPrices);
+    const historicalPrices = this.historySnapshot?.prices.filter(price => price.priceBasis === "historical") ?? [];
+    const match = createPriceMatcher(automatic, this.configuration, historicalPrices);
     const listed = new Map(catalog);
     for (const price of this.configuration.overrides) {
       const manual: ModelPrice = { ...price, provider: price.provider ?? "manual", source: "manual" }; listed.set(priceKey(manual), manual);
@@ -175,7 +178,7 @@ export class PricingService {
       fetchedAt: this.snapshot?.fetchedAt ?? bundledPriceSnapshot.fetchedAt, lastAttemptAt: this.lastAttemptAt, refreshing: false,
       error: this.error, errorDescriptor: this.errorDescriptor, configuration: structuredClone(this.configuration), prices,
       ...(historicalPrices.length ? { historicalPrices: structuredClone(historicalPrices) } : {}), history: this.historyStatus && structuredClone(this.historyStatus) };
-    this.current = { status, estimate: (usage, client) => requestCost(usage, usage.model ? resolve(usage.model, usage.provider, usage.occurredAt) : undefined, client) };
+    this.current = { status, estimate: (usage, client) => requestCost(usage, usage.model ? match(usage.model, usage.provider, usage.occurredAt) : undefined, client) };
     this.versions.delete(version); this.versions.set(version, this.current);
     // 旧视图只在进程内短期保留；不存在的版本明确失败，不偷偷改成最新单价。
     while (this.versions.size > 8) this.versions.delete(this.versions.keys().next().value!);
