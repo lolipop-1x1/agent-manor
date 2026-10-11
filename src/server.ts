@@ -28,6 +28,8 @@ import { compactIndexAtStartup } from "./index/maintenance.js";
 import { PricingService } from "./usage/pricing.js";
 import { registerUsageRoutes } from "./service/usage-routes.js";
 import { UsageManager } from "./usage/manager.js";
+import { OverviewManager } from "./overview/manager.js";
+import { registerOverviewRoutes } from "./service/overview-routes.js";
 
 export interface ServiceOptions {
   home?: string;
@@ -65,6 +67,7 @@ export async function startService(options: ServiceOptions = {}) {
   let resourceManager: ResourceManager | undefined;
   let pricing: PricingService | undefined;
   let usageManager: UsageManager | undefined;
+  let overviewManager: OverviewManager | undefined;
   const app = Fastify({ logger: false, bodyLimit: 65_536, forceCloseConnections: true });
   const instance: ServiceInstance = { id: randomUUID(), pid: process.pid, host: "127.0.0.1", port: requestedPort, startedAt: new Date().toISOString() };
   try {
@@ -78,10 +81,12 @@ export async function startService(options: ServiceOptions = {}) {
     resourceManager = new ResourceManager(home);
     pricing = new PricingService(home, options.usagePricing);
     usageManager = new UsageManager(library, pricing, join(home, "usage-rollups.sqlite"));
+    overviewManager = new OverviewManager(library, pricing, () => index.listRepositories());
     const management = resourceManager;
     const resources = new ResourceService(library, management, options.resourceInventory ?? { environment: process.env }, () =>
       [...new Set([...index.listRepositories().map(repository => repository.path), ...library.status().projects])]);
     app.addHook("onClose", async () => {
+      await overviewManager?.close();
       await usageManager?.close();
       await worker.close();
       index.close();
@@ -100,6 +105,7 @@ export async function startService(options: ServiceOptions = {}) {
     });
     app.setNotFoundHandler((_request, reply) => { reply.code(404).send({ error: { code: "FILE_NOT_FOUND", message: "资源不存在", messageDescriptor: { key: "diagnostics.server.m004" } } }); });
     registerUsageRoutes(app, usageManager, pricing, library);
+    registerOverviewRoutes(app, overviewManager);
     app.addHook("onRequest", async (request) => {
       let host: URL;
       try { host = new URL(`http://${request.headers.host ?? ""}`); } catch { throw new ServiceError("FORBIDDEN", "无效 Host", { key: "diagnostics.server.m005" }); }
@@ -322,6 +328,7 @@ export async function startService(options: ServiceOptions = {}) {
     await app.close().catch(() => undefined);
     await manager?.close().catch(() => undefined);
     await usageManager?.close().catch(() => undefined);
+    await overviewManager?.close().catch(() => undefined);
     try { store?.close(); } catch { /* 初始化失败时可能已关闭。 */ }
     try { sessions?.close(); } catch { /* 初始化失败时可能已关闭。 */ }
     try { resourceManager?.close(); } catch { /* 初始化失败时可能已关闭。 */ }

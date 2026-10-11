@@ -1,0 +1,75 @@
+import assert from "node:assert/strict";
+import { mkdir, mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import test from "node:test";
+import { AnalysisStore } from "../src/index/store.js";
+import type { OverviewEvidencePage, OverviewReport } from "../src/overview-contracts.js";
+import type { SessionSourceMeta } from "../src/session-contracts.js";
+import { startService } from "../src/server.js";
+import { SessionStore } from "../src/sessions/store.js";
+import { isolatedHistoryRoots } from "./helpers/history-roots.js";
+
+test("总览后台 HTTP 保持全局与模型局部范围，证据分页不泄露正文且固定版本", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "manor-overview-service-")), home = join(directory, "data");
+  await mkdir(home); new AnalysisStore(join(home, "index.sqlite")).close();
+  const store = new SessionStore(join(home, "index.sqlite"));
+  const summary: SessionSourceMeta = { id: "synthetic-overview-session", client: "codex", clientSessionId: "synthetic-overview-session",
+    title: "合成总览会话", titleOrigin: "recorded", sourceId: "codex:synthetic-overview-session", path: "/synthetic/history/overview.jsonl",
+    project: "/synthetic/project", models: ["synthetic-model"], messageCount: 0, turnCount: 0, gaps: [] };
+  const revision = store.createRevision(summary.path, "synthetic");
+  revision.sink.message({ id: "synthetic-user", sessionId: summary.id, ordinal: 0, recordLine: 1, turnId: "synthetic-turn",
+    kind: "user", text: "synthetic-secret-body", occurredAt: "2026-10-11T01:00:00Z" });
+  for (let index = 0; index < 31; index++) {
+    const messageId = `synthetic-message-${index}`;
+    revision.sink.message({ id: messageId, sessionId: summary.id, ordinal: index + 1, recordLine: index + 2, turnId: "synthetic-turn",
+      kind: "assistant", text: "synthetic-secret-body", occurredAt: "2026-10-11T01:00:00Z" });
+    revision.sink.usage({ id: `synthetic-request-${String(index).padStart(2, "0")}`, messageId, turnId: "synthetic-turn", model: "synthetic-model",
+      occurredAt: "2026-10-11T01:00:00Z", inputTokens: 100, outputTokens: 20, cachedInputTokens: 40, cacheWriteTokens: 0 });
+  }
+  revision.sink.message({ id: "synthetic-copied", sessionId: summary.id, ordinal: 32, recordLine: 33, turnId: "copied-turn",
+    kind: "assistant", text: "synthetic-secret-body", copied: true, occurredAt: "2026-10-11T01:00:00Z" });
+  revision.sink.usage({ id: "synthetic-copied-request", messageId: "synthetic-copied", model: "synthetic-model", inputTokens: 999999, outputTokens: 999999,
+    occurredAt: "2026-10-11T01:00:00Z" });
+  revision.sink.message({ id: "synthetic-call", sessionId: summary.id, ordinal: 33, recordLine: 34, turnId: "synthetic-turn", kind: "tool_call",
+    text: "synthetic-secret-body", occurredAt: "2026-10-11T01:00:01Z", callId: "synthetic-call-id", tool: "mcp__synthetic__query",
+    resource: { kind: "mcp", name: "synthetic", server: "synthetic" } });
+  revision.sink.message({ id: "synthetic-result", sessionId: summary.id, ordinal: 34, recordLine: 35, turnId: "synthetic-turn", kind: "tool_result",
+    text: "synthetic-secret-body", occurredAt: "2026-10-11T01:00:02Z", callId: "synthetic-call-id", tool: "mcp__synthetic__query", status: "failure" });
+  revision.flush(); store.finishRevision(revision.revision, summary);
+  const version = store.publish(store.createJob().id, [{ path: summary.path, revision: revision.revision, fingerprint: "synthetic" }], []);
+  store.close();
+  const service = await startService({ home, startupRefresh: false, roots: isolatedHistoryRoots(),
+    resourceInventory: { userHome: join(directory, "isolated-user"), environment: {} },
+    usagePricing: { fetch: (async () => { throw new Error("synthetic network failure"); }) as typeof fetch } });
+  const base = `http://127.0.0.1:${service.instance.port}/api/v1`;
+  const read = async <T>(path: string): Promise<T> => {
+    const response = await fetch(`${base}${path}`);
+    assert.equal(response.status, 200, await response.clone().text());
+    const body = await response.text(); assert.ok(!body.includes("synthetic-secret-body"));
+    return JSON.parse(body) as T;
+  };
+  try {
+    const params = new URLSearchParams({ version, window: "custom", from: "2026-10-11", to: "2026-10-11", timezone: "Asia/Shanghai" });
+    const [first, duplicate] = await Promise.all([read<OverviewReport>(`/overview/report?${params}`), read<OverviewReport>(`/overview/report?${params}`)]);
+    assert.deepEqual(first, duplicate);
+    assert.equal(first.summary.sessions, 1); assert.equal(first.summary.requests, 31); assert.equal(first.summary.tokens, 31 * 120);
+    assert.equal(first.summary.activeDays, 1); assert.equal(first.process.failures, 1);
+    assert.equal(first.resources.mcp[0]!.uses, 1); assert.equal(first.resources.mcp[0]!.results.failure, 1);
+    const fixed = new URLSearchParams(params); fixed.set("priceVersion", first.priceVersion);
+    const evidence = { kind: "requests", page: 2, pageSize: 12 };
+    fixed.set("evidence", JSON.stringify(evidence));
+    const page = await read<OverviewEvidencePage>(`/overview/evidence?${fixed}`);
+    assert.equal(page.version, first.version); assert.equal(page.priceVersion, first.priceVersion);
+    assert.equal(page.total, 31); assert.equal(page.rows.length, 12);
+    params.set("models", '["synthetic-unobserved-model"]');
+    const filtered = await read<OverviewReport>(`/overview/report?${params}`);
+    assert.equal(filtered.summary.requests, 31); assert.equal(filtered.usage.totals.requests, 0);
+    assert.equal(filtered.process.failures, 1); assert.equal(filtered.resources.mcp[0]!.uses, 1);
+    assert.equal(filtered.summary.activeDays, 1);
+    assert.equal((await fetch(`${base}/overview/report?window=unknown`)).status, 400);
+    assert.equal((await fetch(`${base}/overview/report?version=synthetic-unavailable`)).status, 404);
+    assert.equal((await fetch(`${base}/overview/report?priceVersion=synthetic-unavailable`)).status, 404);
+    assert.equal((await fetch(`${base}/overview/evidence?evidence=${encodeURIComponent('{"kind":"tools","pageSize":201}')}`)).status, 400);
+  } finally { await service.close(); await rm(directory, { recursive: true, force: true }); }
+});
