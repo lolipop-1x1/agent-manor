@@ -2,7 +2,8 @@
 
 ## 模块布局
 
-- `app/`：应用导航、主题、跨页面跳转与四个页面的组装。
+- `app/`：应用导航、主题、跨页面跳转与五个页面的组装。
+- `features/overview/`：默认总览、跨模块统计、活动日历与同版本证据调查；完整规则见 [总览看板](../docs/design/overview-dashboard.md)。
 - `features/code-map/`：代码地图、仓库筛选、文件详情、覆盖与证据展示。`CodeMapPage.tsx` 的 `useCodeMapPage` 封装页面状态，向应用返回页面内容、页头操作、维护提示和地图定位入口，保持既有页面与页头布局。
 - `features/sessions/`：会话列表、消息、画像、执行轨迹、搜索、速度与导出。`useContinuousReading.ts` 管理对话／全部记录的有界连续阅读与消息锚点；`SessionTurnNavigation.tsx` 统一轮次导航；`SessionTrace.tsx` 组织全宽节点表格和下方可调、可放大的正文详情。
 - `features/resources/`：资源清单、使用统计、资源地图与管理操作。
@@ -13,9 +14,9 @@
 
 功能模块优先就近放置展示、模型与样式。`app` 组装功能，功能引用共享能力，`shared` 不反向引用功能；功能间的跳转通过应用层的目标参数与回调协调。共享契约、客户端定义和翻译目录继续复用仓库的 `src/`。
 
-四个页面始终挂载，通过 `hidden` 和 `active` 切换显示与请求；不要改成按当前页条件挂载，以免丢失筛选、阅读位置和地图视野。保留 `web/main.tsx`、Vite 根目录 `web` 及构建产物 `dist/web`。
+五个页面始终挂载，通过 `hidden` 和 `active` 切换显示与请求；不要改成按当前页条件挂载，以免丢失筛选、阅读位置和地图视野。保留 `web/main.tsx`、Vite 根目录 `web` 及构建产物 `dist/web`。
 
-外观、会话阅读和资源导航的操作入口见 [使用指南](../docs/usage.md)，呈现规范见 [设计系统](../DESIGN.md)，连续阅读与执行轨迹的数据边界见 [会话设计](../docs/design/session-history.md)。近期浏览器验收范围与重放命令见 [工作台验收](../docs/validation/workbench-refinements.md)。
+外观、会话阅读和资源导航的操作入口见 [使用指南](../docs/usage.md)，呈现规范见 [设计系统](../DESIGN.md)，连续阅读与执行轨迹的数据边界见 [会话设计](../docs/design/session-history.md)。近期浏览器验收范围与重放命令见 [工作台验收](../docs/validation/workbench-refinements.md)，总览的统计、调查与性能证据见 [总览看板验收](../docs/validation/overview-dashboard.md)。
 
 ## 正式代码活动地图
 
