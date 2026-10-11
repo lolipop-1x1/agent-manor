@@ -90,6 +90,8 @@ export function buildOverviewEvidence(source: OverviewSource, input: OverviewQue
   }
   const eventMatch = (event: OverviewEvent) => (!evidence.turnId || event.turnId === evidence.turnId)
     && (!evidence.tool || event.tool === evidence.tool) && (!evidence.status || event.status === evidence.status)
+    && (!evidence.server || event.resource?.server === evidence.server)
+    && (!evidence.toolId || JSON.stringify([event.tool ?? null, event.resource?.server ?? null]) === evidence.toolId)
     && (!evidence.category || toolCategory(event.tool, event.resource) === evidence.category);
   const base = (sessionId: string): Omit<OverviewEvidenceRow, "id" | "kind"> => {
     const session = byId.get(sessionId)!;
@@ -113,7 +115,8 @@ export function buildOverviewEvidence(source: OverviewSource, input: OverviewQue
     rows = selected.events.filter(event => eventMatch(event) && (evidence.kind !== "compressions" || event.kind === "compression")).map(eventRow);
     if (evidence.kind === "activity") {
       const included = new Set(rows.map(row => `${row.sessionId}\u0000${row.messageId}`));
-      rows.push(...selected.requests.filter(request => ![request.usage.messageId, ...(request.usage.requestMessageIds ?? [])]
+      rows.push(...selected.requests.filter(request => ![request.usage.messageId, ...(request.usage.requestMessageIds ?? []),
+        request.usage.timing?.end?.source !== "mirror" ? request.usage.timing?.end?.messageId : undefined]
         .some(id => id && included.has(`${request.sessionId}\u0000${id}`))).map(requestRow));
     }
   } else if (evidence.kind === "requests" || evidence.kind === "timing") {
@@ -128,6 +131,8 @@ export function buildOverviewEvidence(source: OverviewSource, input: OverviewQue
     rows = selected.resources.filter(event => (!evidence.resourceId || resourceIdentity(event) === evidence.resourceId)
       && (!evidence.resourceKind || (event.kind === "mcp" ? "mcp" : "skill") === evidence.resourceKind)
       && (!evidence.resourceEvidenceKind || event.kind === evidence.resourceEvidenceKind)
+      && (!evidence.server || event.server === evidence.server)
+      && (!evidence.toolId || JSON.stringify([event.tool ?? null, event.server ?? null]) === evidence.toolId)
       && (!evidence.tool || event.tool === evidence.tool) && (!evidence.turnId || event.turnId === evidence.turnId)
       && (!evidence.status || event.status === evidence.status)).map(event => ({ ...base(event.sessionId), id: event.id,
       kind: evidence.kind, messageId: event.messageId, resultMessageId: event.resultMessageId, turnId: event.turnId,
@@ -140,7 +145,8 @@ export function buildOverviewEvidence(source: OverviewSource, input: OverviewQue
     const calls = pairToolCalls(source.events.filter(isActivityEvent)).filter(event => selectedIds.has(`${event.sessionId}\u0000${event.id}`));
     if (evidence.kind === "sequence") {
       const sequences = failureSequences(source, calls).filter(sequence => (!evidence.turnId || sequence.turnId === evidence.turnId)
-        && (!evidence.tool || sequence.tool === evidence.tool));
+        && (!evidence.tool || sequence.tool === evidence.tool) && (!evidence.server || sequence.server === evidence.server)
+        && (!evidence.toolId || JSON.stringify([sequence.tool, sequence.server ?? null]) === evidence.toolId));
       const included = new Set(sequences.flatMap(sequence => sequence.calls.map(call => `${sequence.sessionId}\u0000${call.messageId}`)));
       rows = calls.filter(event => included.has(`${event.sessionId}\u0000${event.id}`)).map(eventRow);
     } else rows = calls.filter(event => eventMatch(event) && (evidence.kind !== "failures" || event.status === "failure")).map(eventRow);

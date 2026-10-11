@@ -80,3 +80,18 @@ test("主子模型组合回查子会话自身记录和父自身模型，不按�
   assert.equal(evidence.rows[0]!.values!.parentModels, '["model-a"]'); assert.equal(evidence.rows[0]!.values!.childModels, '["model-b"]');
   assert.equal(evidence.rows[0]!.values!.requests, 1);
 });
+test("工具同名不同服务器用opaque identity精确调查，不串失败后续", () => {
+  const input = source({ sessions: [session("a")], events: [event("a", "user"),
+    event("a", "failed-a", undefined, { ordinal: 2, kind: "tool_call", tool: "search", status: "failure", resource: { kind: "mcp", name: "search", server: "server-a" } }),
+    event("a", "success-b", undefined, { ordinal: 3, kind: "tool_call", tool: "search", status: "success", resource: { kind: "mcp", name: "search", server: "server-b" } })] });
+  const calls = buildOverviewEvidence(input, query, { kind: "tools", toolId: JSON.stringify(["search", "server-a"]) }, pricing, now);
+  assert.equal(calls.total, 1); assert.equal(calls.rows[0]!.messageId, "failed-a");
+  const sequence = buildOverviewEvidence(input, query, { kind: "sequence", server: "server-a", tool: "search" }, pricing, now);
+  assert.deepEqual(sequence.rows.map(row => row.messageId), ["failed-a"]);
+});
+test("模型请求通过结束边界关联消息时不重复增加活动记录", () => {
+  const input = source({ sessions: [session("a")], events: [event("a", "response", undefined, { kind: "assistant" })],
+    requests: [request("a", "request", undefined, { timing: { basis: "recorded", method: "zcode_request_span", completion: "explicit",
+      end: { messageId: "response", recordLine: 1 } } })] });
+  assert.equal(buildOverviewEvidence(input, query, { kind: "activity" }, pricing, now).total, 1);
+});
