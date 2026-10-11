@@ -143,6 +143,7 @@ export interface OverviewFailureSequence {
   sessionId: string;
   turnId: string;
   tool: string;
+  server?: string;
   failures: string[];
   /** 多次失败的共同后续调用按身份只存一份。 */
   calls: { messageId: string; resultMessageId?: string; ordinal: number; status: "success" | "failure" | "unknown" }[];
@@ -254,6 +255,8 @@ export interface OverviewEvidenceQuery {
   resourceId2?: string;
   resourceEvidenceKind?: "skill_call" | "skill_read" | "mcp";
   tool?: string;
+  toolId?: string;
+  server?: string;
   category?: OverviewToolCategory;
   status?: "success" | "failure" | "unknown";
   timingGroup?: string;
