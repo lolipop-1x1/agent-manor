@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { SessionMessage } from "../src/session-contracts.ts";
-import { timelineCenteredScroll, timelineFraction, timelineNodes, timelinePosition, timelineProjection, timelineVisibleMarks, timelineZoomScroll, tracePreview, traceTurns, traceWindow } from "../web/features/sessions/session-trace-model.ts";
+import { timelineCenteredScroll, timelineFraction, timelineNodes, timelinePosition, timelineProjection, timelineVisibleMarks, timelineZoomScroll, traceAnchoredScroll, tracePreview, traceTurns, traceWindow } from "../web/features/sessions/session-trace-model.ts";
 
 const message = (ordinal: number, kind: SessionMessage["kind"], fields: Partial<SessionMessage> = {}): SessionMessage => ({
   id: `message-${ordinal}`, sessionId: "session-example", ordinal, recordLine: ordinal, turnId: "turn-one", kind, text: "合成记录", ...fields,
@@ -49,6 +49,16 @@ test("大轨迹只投影可见窗口，首末边界不丢记录", () => {
   assert.ok(last.end - last.start < 40);
   assert.deepEqual(traceWindow(0, 0, 400), { start: 0, end: 0 });
   assert.equal(tracePreview("  第一行\n  第二行 "), "第一行 第二行");
+});
+
+test("轨迹补入前文、裁剪远端与跨段配对后保持可见节点及行内位置", () => {
+  const previous = Array.from({ length: 300 }, (_, index) => `record-${index}`);
+  const prepended = [...Array.from({ length: 300 }, (_, index) => `earlier-${index}`), ...previous];
+  assert.equal(traceAnchoredScroll(previous, prepended, 85, 200), 12085);
+  assert.equal(traceAnchoredScroll(prepended, previous, 12085, 200), 85);
+  assert.equal(traceAnchoredScroll(previous, previous.filter(key => key !== "record-1"), 85, 200), 45);
+  assert.equal(traceAnchoredScroll(previous, [...previous, "later"], 85, 200), 85);
+  assert.equal(traceAnchoredScroll(["turn:one", "record:last"], ["turn:one", "record:earlier", "record:last"], 0, 400), 40);
 });
 
 test("总览覆盖全部节点并按事件、轮次和记录时间投影，缺失时间不补造", async () => {

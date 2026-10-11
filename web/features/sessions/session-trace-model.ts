@@ -122,6 +122,18 @@ export function tracePreview(text: string): string {
 }
 
 export const TRACE_ROW_HEIGHT = 40;
+export function traceAnchoredScroll(previous: string[], next: string[], scroll: number, height: number): number {
+  const first = Math.floor(scroll / TRACE_ROW_HEIGHT);
+  const end = Math.min(previous.length, Math.ceil((scroll + height) / TRACE_ROW_HEIGHT));
+  for (const recordsOnly of [true, false]) {
+    for (let index = first; index < end; index++) {
+      if (recordsOnly && previous[index]!.startsWith("turn:")) continue;
+      const target = next.indexOf(previous[index]!);
+      if (target >= 0) return Math.max(0, scroll + (target - index) * TRACE_ROW_HEIGHT);
+    }
+  }
+  return scroll;
+}
 export function traceWindow(total: number, scroll: number, height: number) {
   const start = Math.max(0, Math.floor(scroll / TRACE_ROW_HEIGHT) - 8);
   const end = Math.min(total, Math.ceil((scroll + height) / TRACE_ROW_HEIGHT) + 8);

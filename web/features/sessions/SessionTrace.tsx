@@ -1,7 +1,7 @@
 import { getLanguage, t, useI18n } from "../../shared/i18n";
 import { formatNumber, formatTime } from "../../../src/i18n";
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from "react";
-import { ArrowsOut, ArrowLeft, CaretDown, CaretLeft, CaretRight, X } from "@phosphor-icons/react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type RefObject } from "react";
+import { ArrowsOut, ArrowLeft, CaretDown, CaretLeft, CaretRight, CircleNotch, X } from "@phosphor-icons/react";
 import type { SessionMessage, SessionMessageResult, SessionProfile, SessionTimelineEvent, SessionTimelineResult } from "../../../src/session-contracts";
 import { MessageBody, kindLabels, resourceLabels } from "./SessionMessage";
 import { TraceTimeline } from "./TraceTimeline";
@@ -9,13 +9,14 @@ import { CopyButton } from "./SessionCopy";
 import { Highlight } from "./SessionSearchGroups";
 import { HelpPopover } from "../../shared/ui/HelpPopover";
 import { displayRecorded, sessionResourceName, sessionMessageText, turnTitle } from "./session-model";
-import { TRACE_ROW_HEIGHT, tracePreview, traceTurns, traceWindow, type TraceRecord } from "./session-trace-model";
+import { TRACE_ROW_HEIGHT, traceAnchoredScroll, tracePreview, traceTurns, traceWindow, type TraceRecord } from "./session-trace-model";
 import "./session-trace.css";
 import { AverageSpeedBadge, RequestSpeedBadge, SpeedColumnHeader } from "./SessionSpeed";
 import { messageSpeedRequest, type SessionSpeedMap } from "./session-speed-model";
 import { completeMessage, completeTurnMarkdown } from "./session-message-content";
 import { isAborted, } from "../../shared/api";
 import { SessionError } from "./SessionControls";
+import type { useContinuousReading } from "./useContinuousReading";
 
 const statuses = { success: "sessions.status.success", failure: "sessions.status.failure", unknown: "sessions.status.unknown" };
 const tokenFields = [
@@ -25,10 +26,12 @@ const tokenFields = [
 const timeLabel = (value?: string) => value ? formatTime(getLanguage(), value) : "";
 type Entry = { turnId: string; title: string; record?: TraceRecord; count: number };
 
-export function SessionTrace({ messages, steps, focusMessageId, focusRequest, focusTurnId, project, query = "", timeline, timelineLoading, timelineError, onRetryTimeline, onTimelineSelect, onMap, onInspect, onViewTurn, speed, onFocusStep, version, branch, turnDirectory, toolPairs, relatedMessages }: {
+export function SessionTrace({ messages, steps, focusMessageId, focusRequest, focusTurnId, project, query = "", timeline, timelineLoading, timelineError, onRetryTimeline, onTimelineSelect, onMap, onInspect, onViewTurn, speed, onFocusStep, version, branch, turnDirectory, toolPairs, relatedMessages, pane: viewport, reading }: {
+  pane: RefObject<HTMLDivElement | null>;
+  reading: Pick<ReturnType<typeof useContinuousReading>, "loading" | "error" | "errorDirection" | "load" | "onScroll" | "onWheel">;
   speed: SessionSpeedMap; onFocusStep: (step: SessionProfile["steps"][number]) => void;
   messages: SessionMessage[]; steps: SessionProfile["steps"]; focusMessageId?: string; focusRequest: number; focusTurnId?: string; project?: string; query?: string;
-  onMap: (path?: string, project?: string) => void; onInspect: (message: SessionMessage) => void; onViewTurn: (id: string) => void;
+  onMap: (path?: string, project?: string) => void; onInspect: (message: SessionMessage) => void; onViewTurn: (id: string, messageId?: string) => void;
   timeline?: SessionTimelineResult; timelineLoading: boolean; timelineError?: Error; onRetryTimeline: () => void; onTimelineSelect: (event: SessionTimelineEvent) => void;
   version: string; branch?: string; turnDirectory?: SessionMessageResult["turns"]; toolPairs?: SessionMessageResult["toolPairs"]; relatedMessages?: SessionMessage[];
 }) {
@@ -57,7 +60,7 @@ export function SessionTrace({ messages, steps, focusMessageId, focusRequest, fo
   const [activeTurn, setActiveTurn] = useState(focusTurnId);
   const [scroll, setScroll] = useState(0);
   const [height, setHeight] = useState(400);
-  const viewport = useRef<HTMLDivElement>(null);
+  const programmaticScroll = useRef(false);
   const pendingScroll = useRef<string | undefined>(focusMessageId);
   const alignScroll = useRef(true);
   const records = useMemo(() => turns.flatMap(turn => turn.records), [turns]);
@@ -83,6 +86,24 @@ export function SessionTrace({ messages, steps, focusMessageId, focusRequest, fo
     return [group, ...(collapsed.has(turn.id) ? [] : turn.records.map(record => ({ ...group, record })))];
   }), [turns, collapsed, language, turnDirectory]);
   const window = traceWindow(entries.length, scroll, height);
+  const previousEntries = useRef(entries);
+  useLayoutEffect(() => {
+    const previous = previousEntries.current;
+    previousEntries.current = entries;
+    const node = viewport.current;
+    if (!node || pendingScroll.current || previous === entries) return;
+    const key = (entry: Entry) => entry.record ? `record:${entry.record.message.id}` : `turn:${entry.turnId}`;
+    // 虚拟行可能暂时不在 DOM 中，按稳定节点身份恢复行内位置。
+    const top = traceAnchoredScroll(previous.map(key), entries.map(key), scroll, node.clientHeight);
+    // 保留短页原有的尾部空白，使补入前文后的节点仍能停在原位置。
+    node.style.setProperty("--trace-tail-space", `${Math.max(0, top + node.clientHeight - entries.length * TRACE_ROW_HEIGHT)}px`);
+    if (top !== node.scrollTop) { programmaticScroll.current = true; node.scrollTop = top; }
+    setScroll(node.scrollTop);
+  }, [entries]);
+  useLayoutEffect(() => {
+    const entry = entries[Math.floor(scroll / TRACE_ROW_HEIGHT)];
+    if (entry) onViewTurn(entry.turnId, entry.record?.message.id ?? turns.find(turn => turn.id === entry.turnId)?.messages[0]?.id);
+  }, [entries, scroll]);
 
   useLayoutEffect(() => {
     setSelectedId(focusMessageId);
@@ -105,7 +126,9 @@ export function SessionTrace({ messages, steps, focusMessageId, focusRequest, fo
     const index = entries.findIndex(entry => entry.record?.message.id === id || entry.record?.result?.id === id || !entry.record && entry.turnId === id);
     if (index < 0) return;
     const top = index * TRACE_ROW_HEIGHT;
-    if (alignScroll.current || top < node.scrollTop || top + TRACE_ROW_HEIGHT > node.scrollTop + node.clientHeight) node.scrollTop = top;
+    if (alignScroll.current || top < node.scrollTop || top + TRACE_ROW_HEIGHT > node.scrollTop + node.clientHeight) {
+      if (node.scrollTop !== top) { programmaticScroll.current = true; node.scrollTop = top; }
+    }
     setScroll(node.scrollTop); pendingScroll.current = undefined;
   }, [entries, selectedId, height, focusRequest, collapsed, expanded]);
 
@@ -125,7 +148,7 @@ export function SessionTrace({ messages, steps, focusMessageId, focusRequest, fo
     pendingScroll.current = undefined;
     setExpanded(false);
     requestAnimationFrame(() => {
-      if (viewport.current) viewport.current.scrollTop = savedScroll.current;
+      if (viewport.current) { programmaticScroll.current = true; viewport.current.scrollTop = savedScroll.current; }
       setScroll(savedScroll.current);
       expandButton.current?.focus({ preventScroll: true });
     });
@@ -154,14 +177,17 @@ export function SessionTrace({ messages, steps, focusMessageId, focusRequest, fo
     <div ref={split} className="trace-split" style={{ "--trace-detail-percent": detailPercent } as CSSProperties}>
     <div className="trace-upper" inert={expanded && !!selected}>
     <div className="trace-toolbar"><span><strong>{t("sessions.trace.nodeCount", { count: records.length })}</strong> <small>· {t("sessions.trace.pageRecords", { count: messages.length })}</small></span>
+      {reading.loading && <span className="trace-reading-progress" role="status" aria-label={t("common.loading")}><CircleNotch size={14} className="is-spinning" aria-hidden="true" /></span>}
       <div><HelpPopover iconOnly label={t("sessions.trace.help")}><dl><div><dt>{t("sessions.trace.overview")}</dt><dd>{t("sessions.trace.overviewHelp")}</dd></div>
         <div><dt>{t("sessions.trace.nodes")}</dt><dd>{t("sessions.trace.nodesHelp")}</dd></div>
         <div><dt>{t("sessions.trace.contextRecords")}</dt><dd>{t("sessions.trace.contextHelp")}</dd></div></dl></HelpPopover><button className="text-button" onClick={() => setCollapsed(new Set())}>{t("sessions.trace.expandAll")}</button><button className="text-button" onClick={() => setCollapsed(new Set(turns.map(turn => turn.id)))}>{t("sessions.trace.collapseAll")}</button></div></div>
     <div className="trace-ledger" role="table" aria-label={t("sessions.trace.table")} aria-rowcount={entries.length + 1} aria-colcount={columnCount} style={ledgerStyle}>
       <div className="trace-columns" role="row"><span role="columnheader">{t("sessions.trace.ordinal")}</span><span role="columnheader">{t("sessions.trace.eventModel")}</span><span role="columnheader">{t("sessions.trace.inputParams")}</span><span role="columnheader">{t("sessions.trace.outputResult")}</span>{hasSpeed && <span role="columnheader" aria-label={t("sessions.speed.label")}><SpeedColumnHeader /></span>}{hasTiming && <span role="columnheader">{t("sessions.trace.timeDuration")}</span>}{hasUsage && <span role="columnheader">{t("sessions.trace.tokenInOut")}</span>}</div>
-      <div ref={viewport} className="trace-ledger-scroll" role="rowgroup" tabIndex={-1} onScroll={event => {
+      <div ref={viewport} className="trace-ledger-scroll" role="rowgroup" tabIndex={-1} onWheel={event => {
+        if (!event.ctrlKey && Math.abs(event.deltaY) > Math.abs(event.deltaX)) reading.onWheel(event.deltaY);
+      }} onScroll={event => {
         const top = event.currentTarget.scrollTop; setScroll(top);
-        const entry = entries[Math.floor(top / TRACE_ROW_HEIGHT)]; if (entry) onViewTurn(entry.turnId);
+        reading.onScroll(programmaticScroll.current); programmaticScroll.current = false;
       }}>
         <div aria-hidden="true" style={{ height: window.start * TRACE_ROW_HEIGHT }} />
         {entries.slice(window.start, window.end).map((entry, offset) => {
@@ -195,9 +221,10 @@ export function SessionTrace({ messages, steps, focusMessageId, focusRequest, fo
             {hasUsage && <span role="cell" className="trace-facts"><span>{value ? `${value.inputTokens === undefined ? "—" : displayRecorded(value.inputTokens)} / ${value.outputTokens === undefined ? "—" : displayRecorded(value.outputTokens)}` : usage.length ? t("sessions.usage.recordCount", { count: usage.length }) : "—"}</span><small>{value?.cachedInputTokens !== undefined ? t("sessions.trace.cache", { value: displayRecorded(value.cachedInputTokens) }) : ""}</small></span>}
           </div>;
         })}
-        <div aria-hidden="true" style={{ height: (entries.length - window.end) * TRACE_ROW_HEIGHT }} />
+        <div aria-hidden="true" style={{ height: `calc(${(entries.length - window.end) * TRACE_ROW_HEIGHT}px + var(--trace-tail-space, 0px))` }} />
       </div>
     </div>
+    {reading.error && <div className="trace-reading-error" role="alert"><SessionError error={reading.error} /><button className="text-button" onClick={() => void reading.load(reading.errorDirection ?? "later")}>{t("common.retry")}</button></div>}
     </div>
     {selected && selectedMessage ? <>
       <div className="trace-detail-resizer" role="separator" tabIndex={expanded ? -1 : 0} aria-label={t("sessions.trace.resizeDetails")}

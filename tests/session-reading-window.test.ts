@@ -36,3 +36,16 @@ test("驻留裁剪后仍可向被裁掉的一侧重新读取", () => {
   assert.equal(backward.length, 4);
   assert.deepEqual(readingNeighbor(backward.at(-1)!, "later"), { page: 2, offset: 300 });
 });
+
+test("轨迹跨段合并保留完整范围确认的工具配对与伙伴记录", () => {
+  const first = segment(1), next = segment(1, 300);
+  first.toolPairs = [{ callMessageId: "call-first", resultMessageId: "result-first" }];
+  next.toolPairs = [...first.toolPairs, { callMessageId: "call-next", resultMessageId: "result-next" }];
+  first.relatedMessages = [{ id: "result-first" } as SessionMessageResult["messages"][number]];
+  next.relatedMessages = [...first.relatedMessages, { id: "call-next" } as SessionMessageResult["messages"][number]];
+  const result = mergeReadingSegments([first, next]);
+  assert.deepEqual(result.toolPairs, next.toolPairs);
+  assert.deepEqual(result.relatedMessages?.map(message => message.id), ["result-first", "call-next"]);
+  assert.equal(mergeReadingSegments([segment(1)]).toolPairs, undefined);
+  assert.deepEqual(mergeReadingSegments([{ ...segment(1), toolPairs: [] }]).toolPairs, []);
+});

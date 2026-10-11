@@ -143,6 +143,7 @@ export default function Sessions({ active, target, onMap, autoRefreshError }: { 
   const [messagePage, setMessagePage] = useState(1);
   const [focusMessageId, setFocusMessageId] = useState<string>();
   const [traceSelection, setTraceSelection] = useState<string>();
+  const [traceVisibleMessage, setTraceVisibleMessage] = useState<string>();
   const [traceFocusRequest, setTraceFocusRequest] = useState(0);
   const [timeline, setTimeline] = useState<{ sessionId: string; data: SessionTimelineResult }>();
   const [timelineLoading, setTimelineLoading] = useState(false);
@@ -187,6 +188,7 @@ export default function Sessions({ active, target, onMap, autoRefreshError }: { 
   const localSearchInput = useRef<HTMLInputElement>(null);
   const localSearchResults = useRef<HTMLDivElement>(null);
   const readingPane = useRef<HTMLDivElement>(null);
+  const tracePane = useRef<HTMLDivElement>(null);
   const readingPositions = useRef(new Map<string, ReadingPosition>());
   const readingLoaded = useRef(false);
   if (!readingLoaded.current) {
@@ -392,9 +394,9 @@ export default function Sessions({ active, target, onMap, autoRefreshError }: { 
   }, [active, indexReady, selectedSessionId, messageQuery, focusMessageId, reload, messageRetry, profileRetry, includeChildren, timelineRetry]);
 
   const continuous = useContinuousReading({
-    enabled: active && mode !== "trace" && !messageLoading && messageDataKey === `${selectedSessionId}${messageQuery}`,
+    enabled: active && !messageLoading && messageDataKey === `${selectedSessionId}${messageQuery}`,
     base: messageData?.session.id === selectedSessionId ? messageData : undefined,
-    context: `${selectedSessionId}${messageQuery}:${traceFocusRequest}`, pane: readingPane, mode, branch,
+    context: `${selectedSessionId}${messageQuery}:${traceFocusRequest}`, pane: mode === "trace" ? tracePane : readingPane, mode, branch,
     onLoaded: (messages, resident) => setExpandedTurns(current => {
       const residentTurns = new Set(resident.map(message => message.turnId || "unknown"));
       const next = new Set([...current].filter(id => residentTurns.has(id)));
@@ -498,7 +500,8 @@ export default function Sessions({ active, target, onMap, autoRefreshError }: { 
     }
   }, [target?.sessionId, selectedSessionId, sessionList]);
 
-  const selectedMessageData = mode !== "trace" ? continuous.data : messageData?.session.id === selectedSessionId ? messageData : undefined;
+  const selectedMessageData = continuous.data;
+  const traceSegment = continuous.segments.find(segment => segment.messages.some(message => message.id === traceVisibleMessage)) ?? continuous.segments[0] ?? selectedMessageData;
   const selectedProfile = profile && profile.version === selectedMessageData?.version && profile.sessionIds[0] === selectedSessionId ? profile : null;
   const selectedSession = selectedMessageData?.session ?? selectedSummary ?? sessionList?.sessions.find(session => session.id === selectedSessionId);
   const mapForSession = (path?: string, project?: string) => onMap(path, project, selectedSession);
@@ -612,9 +615,10 @@ export default function Sessions({ active, target, onMap, autoRefreshError }: { 
     trackTraceTurn(message.turnId || "unknown");
     updateAddress(message.sessionId, { mode: "trace", focus: message.id });
   };
-  const trackTraceTurn = (id: string) => {
+  const trackTraceTurn = (id: string, messageId?: string) => {
     const turn = selectedMessageData?.turns?.find(turn => turn.id === id);
     if (turn) setCurrentTurn(turn.position);
+    if (messageId) setTraceVisibleMessage(messageId);
   };
   const jumpTurn = (position: number) => {
     setMessageOffset(undefined); setAnchorMissing(false);
@@ -825,8 +829,10 @@ export default function Sessions({ active, target, onMap, autoRefreshError }: { 
                   : t("sessions.reading.emptyHelp")}</p>
                 {mode === "brief" && selectedMessageData.session.messageCount > 0 && <button className="text-button" onClick={() => changeMode("full")}>{t("sessions.reading.viewFull")}</button>}
               </div> : <>
-                {mode === "trace" && (selectedMessageData.turns?.reduce((total, turn) => total + turn.messageCount, 0) ?? 0) > 300 && <Pager page={Math.floor((selectedMessageData.messageOffset ?? 0) / 300) + 1} pageSize={300} total={selectedMessageData.turns!.reduce((total, turn) => total + turn.messageCount, 0)} label={t("sessions.reading.recordPagination")} onChange={page => { setMessageOffset((page - 1) * 300); pageScroll.current = true; }} showEnds />}
-                {mode === "trace" ? <SessionTrace key={selectedMessageData.session.id} version={selectedMessageData.version} branch={branch} turnDirectory={selectedMessageData.turns} messages={selectedMessageData.messages} toolPairs={selectedMessageData.toolPairs} relatedMessages={selectedMessageData.relatedMessages} steps={readingSteps} speed={speed} onFocusStep={focusStep} focusMessageId={focusMessageId} focusRequest={traceFocusRequest} focusTurnId={selectedMessageData.turns?.find(turn => turn.position === turnPosition)?.id}
+                {mode === "trace" && traceSegment && (traceSegment.turns?.reduce((total, turn) => total + turn.messageCount, 0) ?? 0) > 300 && <Pager page={Math.floor((traceSegment.messageOffset ?? 0) / 300) + 1} pageSize={300} total={traceSegment.turns!.reduce((total, turn) => total + turn.messageCount, 0)} label={t("sessions.reading.recordPagination")} onChange={page => {
+                  setFocusMessageId(undefined); setTraceSelection(undefined); setTurnPosition(undefined); setMessagePage(traceSegment.page); setMessageOffset((page - 1) * 300); pageScroll.current = true;
+                }} showEnds />}
+                {mode === "trace" ? <SessionTrace key={`${selectedMessageData.session.id}:${messageDataKey}`} pane={tracePane} reading={continuous} version={selectedMessageData.version} branch={branch} turnDirectory={selectedMessageData.turns} messages={selectedMessageData.messages} toolPairs={selectedMessageData.toolPairs} relatedMessages={selectedMessageData.relatedMessages} steps={readingSteps} speed={speed} onFocusStep={focusStep} focusMessageId={focusMessageId} focusRequest={traceFocusRequest} focusTurnId={selectedMessageData.turns?.find(turn => turn.position === turnPosition)?.id}
                   timeline={timeline?.sessionId === selectedMessageData.session.id && timeline.data.version === selectedMessageData.version ? timeline.data : undefined} timelineLoading={timelineLoading} timelineError={timelineError} onRetryTimeline={() => setTimelineRetry(value => value + 1)} onTimelineSelect={event => focusStep({ id: event.id, sessionId: event.sessionId, messageId: event.id })}
                   query={debouncedLocalQuery || debouncedGlobalQuery} project={selectedMessageData.session.project} onMap={mapForSession} onInspect={inspectTrace} onViewTurn={trackTraceTurn} /> :
                   <div className="session-turns">{turns.map((turn, index) => <TurnTimeline key={turn.id} turn={turn} position={selectedMessageData.turns?.find(item => item.id === turn.id)?.position ?? index + 1} count={selectedMessageData.turns?.find(item => item.id === turn.id)?.messageCount} mode={mode} focusMessageId={focusMessageId} project={selectedMessageData.session.project}

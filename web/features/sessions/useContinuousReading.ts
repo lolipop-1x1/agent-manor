@@ -30,7 +30,7 @@ export function useContinuousReading({ enabled, base, context, pane, mode, branc
   }, [base, context, enabled]);
   useLayoutEffect(() => {
     const current = pane.current;
-    if (!anchor.current || !current) return;
+    if (mode === "trace" || !anchor.current || !current) return;
     const node = document.getElementById(anchor.current.id);
     if (node && current.contains(node)) current.scrollTop += node.getBoundingClientRect().top - current.getBoundingClientRect().top - anchor.current.offset;
     previousTop.current = current.scrollTop;
@@ -60,7 +60,7 @@ export function useContinuousReading({ enabled, base, context, pane, mode, branc
       const retainedIds = new Set(next.flatMap(segment => segment.messages.map(message => `session-message-${message.id}`)));
       const retainedTurns = new Set(next.flatMap(segment => segment.messages.map(message => `session-turn-${message.turnId || "unknown"}`)));
       const current = pane.current;
-      if (current) {
+      if (current && mode !== "trace") {
         const top = current.getBoundingClientRect().top;
         const candidates = [...current.querySelectorAll<HTMLElement>(".session-message, .session-turn")];
         const node = candidates.find(node => retainedIds.has(node.id) && node.getBoundingClientRect().bottom > top)
@@ -76,7 +76,7 @@ export function useContinuousReading({ enabled, base, context, pane, mode, branc
     }
   };
   useEffect(() => {
-    if (!enabled || !base) return;
+    if (!enabled || !base || mode === "trace") return;
     const frame = requestAnimationFrame(() => {
       const current = pane.current;
       // 定位页的顶部也可能没有可触发的滚动距离，先补一段前文并保留定位锚点。
@@ -84,16 +84,22 @@ export function useContinuousReading({ enabled, base, context, pane, mode, branc
     });
     return () => cancelAnimationFrame(frame);
   }, [base, context, enabled]);
-  const onScroll = () => {
+  const onScroll = (programmatic = false) => {
     const current = pane.current;
     if (!current) return;
     const previous = previousTop.current;
     previousTop.current = current.scrollTop;
-    if (error || anchor.current) return;
+    if (programmatic || error || anchor.current) return;
     if (current.scrollTop < previous && current.scrollTop < 120) void load("earlier");
     else if (current.scrollTop > previous && current.scrollHeight - current.clientHeight - current.scrollTop < 120) void load("later");
   };
-  return { data, loading, error, errorDirection, load, onScroll,
+  const onWheel = (delta: number) => {
+    const current = pane.current;
+    if (!current || error || anchor.current) return;
+    if (delta < 0 && current.scrollTop < Math.max(120, -delta)) void load("earlier");
+    else if (delta > 0 && current.scrollHeight - current.clientHeight - current.scrollTop < Math.max(120, delta)) void load("later");
+  };
+  return { data, segments, loading, error, errorDirection, load, onScroll, onWheel,
     earlier: !!segments.length && !!readingNeighbor(segments[0]!, "earlier"),
     later: !!segments.length && !!readingNeighbor(segments.at(-1)!, "later") };
 }

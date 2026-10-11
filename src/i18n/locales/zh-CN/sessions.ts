@@ -405,7 +405,7 @@ export default {
   "sessions.reading.pageTurns_other": "当前页 {{count, number}} 轮",
   "sessions.reading.evidenceMissing": "当前索引范围中没有可定位的调用证据，请刷新后重试。",
   "sessions.trace.nodeCount_other": "{{count, number}} 个执行节点",
-  "sessions.trace.pageRecords_other": "本页 {{count, number}} 条原始记录",
+  "sessions.trace.pageRecords_other": "已载入 {{count, number}} 条原始记录",
   "sessions.trace.viewRecord": "查看记录 {{number}}：{{name}}",
   "sessions.trace.cache": "缓存 {{value}}",
   "sessions.trace.sourceRecord": "记录来源 · 第 {{number}} 条",
