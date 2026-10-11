@@ -86,6 +86,7 @@ test("工具同名不同服务器用opaque identity精确调查，不串失败�
     event("a", "success-b", undefined, { ordinal: 3, kind: "tool_call", tool: "search", status: "success", resource: { kind: "mcp", name: "search", server: "server-b" } })] });
   const calls = buildOverviewEvidence(input, query, { kind: "tools", toolId: JSON.stringify(["search", "server-a"]) }, pricing, now);
   assert.equal(calls.total, 1); assert.equal(calls.rows[0]!.messageId, "failed-a");
+  assert.equal(calls.rows[0]!.values!.server, "server-a");
   const sequence = buildOverviewEvidence(input, query, { kind: "sequence", server: "server-a", tool: "search" }, pricing, now);
   assert.deepEqual(sequence.rows.map(row => row.messageId), ["failed-a"]);
 });

@@ -102,7 +102,7 @@ export function buildOverviewEvidence(source: OverviewSource, input: OverviewQue
     kind: evidence.kind, messageId: event.id, resultMessageId: event.resultMessageId, turnId: event.turnId,
     ordinal: event.ordinal, occurredAt: event.occurredAt, day: localDay(event.occurredAt, timezone) ?? undefined,
     tool: event.tool, status: event.status, durationMs: event.durationMs, model: event.model,
-    values: { eventKind: event.kind, pairing: event.pairing ?? null } });
+    values: { eventKind: event.kind, pairing: event.pairing ?? null, server: event.resource?.server ?? null } });
   const requestRow = (request: OverviewRequest): OverviewEvidenceRow => ({ ...base(request.sessionId),
     id: `${request.sessionId}:${request.usage.id}`, kind: evidence.kind, requestId: request.usage.id,
     messageId: request.usage.messageId ?? request.usage.requestMessageIds?.[0], ordinal: request.ordinal, turnId: request.usage.turnId,
@@ -139,7 +139,7 @@ export function buildOverviewEvidence(source: OverviewSource, input: OverviewQue
       ordinal: event.ordinal, occurredAt: event.occurredAt, day: localDay(event.occurredAt, timezone) ?? undefined,
       resourceId: resourceIdentity(event), resourceName: event.kind === "mcp" ? event.server ?? event.name : event.name,
       resourceKind: event.kind === "mcp" ? "mcp" : "skill", resourceEvidenceKind: event.kind,
-      tool: event.tool, status: event.status, durationMs: event.durationMs, values: { pairing: event.pairing } }));
+      tool: event.tool, status: event.status, durationMs: event.durationMs, values: { pairing: event.pairing, server: event.server ?? null } }));
   } else if (evidence.kind === "tools" || evidence.kind === "failures" || evidence.kind === "sequence") {
     const selectedIds = new Set(selected.events.filter(event => event.kind === "tool_call").map(event => `${event.sessionId}\u0000${event.id}`));
     const calls = pairToolCalls(source.events.filter(isActivityEvent)).filter(event => selectedIds.has(`${event.sessionId}\u0000${event.id}`));
