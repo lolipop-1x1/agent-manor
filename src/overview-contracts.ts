@@ -231,6 +231,8 @@ export interface OverviewEvidenceQuery {
   from?: string;
   to?: string;
   day?: string;
+  /** 仅调查缺少可靠发生时间的事实，不把它们放入日期桶。 */
+  undated?: boolean;
   client?: string;
   project?: string;
   model?: string;
@@ -332,5 +334,5 @@ export interface OverviewReport {
   insights: OverviewInsight[];
   featuredInsights: OverviewInsight[];
   facets: { clients: string[]; projects: string[]; models: string[] };
-  coverage: { gaps: Gap[]; missingTimeEvents: number; missingTimeRequests: number; missingTimeResources: number };
+  coverage: { gaps: Gap[]; gapCount: number; missingTimeEvents: number; missingTimeRequests: number; missingTimeResources: number };
 }
