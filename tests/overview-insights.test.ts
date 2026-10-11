@@ -5,6 +5,7 @@ import type { SessionSummary, SessionUsage } from "../src/session-contracts.js";
 import type { PricingView } from "../src/usage/pricing.js";
 import { buildOverviewReport, resultCounts } from "../src/overview/analytics.js";
 import { generateOverviewInsights } from "../src/overview/insights.js";
+import { buildOverviewEvidence } from "../src/overview/evidence.js";
 import { decomposeUsage, selectFeaturedInsights } from "../src/overview/insight-math.js";
 import en from "../src/i18n/locales/en/overview-insights.js";
 import zh from "../src/i18n/locales/zh-CN/overview-insights.js";
@@ -411,4 +412,28 @@ test("同名工具的失败洞察与后续过程绑定服务器身份", () => {
   const followups = result.insights.filter(item => item.rule === "12");
   assert.equal(followups.length, 2);
   assert.deepEqual(new Set(followups.map(item => item.evidence.server)), new Set(["server-a", "server-b"]));
+});
+
+test("洞察到证据链保留完整模型变化、峰值身份与各MCP服务器", () => {
+  const input = source([session("parent"), session("child", { relationship: "child", parentSessionId: "parent" })]);
+  input.requests = [
+    { sessionId: "parent", ordinal: 1, usage: usage("first") },
+    { sessionId: "parent", ordinal: 2, usage: usage("changed", { model: "model-b", inputTokens: 200 }) },
+    { sessionId: "child", ordinal: 1, usage: usage("child-model", { model: "model-b" }) },
+    { sessionId: "parent", ordinal: 3, usage: usage("partial-big", { inputTokens: 50000, outputTokens: undefined }) },
+  ];
+  for (const server of ["server-a", "server-b"]) input.events.push(event(`failure-${server}`, "parent", { ordinal: server === "server-a" ? 10 : 11,
+    kind: "tool_call", tool: "search", status: "failure", resource: { kind: "mcp", name: server, server } }));
+  const result = analyze(input);
+  const peak = result.insights.find(item => item.metric === "request_peak")!;
+  assert.equal(buildOverviewEvidence(input, query, peak.evidence, pricing, now).rows[0]?.requestId, "changed");
+  for (const transition of result.modelTransitions) {
+    const evidence = buildOverviewEvidence(input, query, transition.evidence, pricing, now);
+    assert.equal(evidence.total, transition.count);
+    assert.ok(evidence.rows.every(row => transition.kind === "switch" ? row.values?.previousModel === transition.fromModel : row.relationship === "child"));
+  }
+  for (const insight of result.insights.filter(item => item.rule === "11")) {
+    const evidence = buildOverviewEvidence(input, query, insight.evidence, pricing, now);
+    assert.equal(evidence.total, 1); assert.equal(evidence.rows[0]?.values?.server, insight.evidence.server);
+  }
 });

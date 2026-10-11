@@ -158,7 +158,7 @@ export function generateOverviewInsights(source: OverviewSource, query: Overview
       for (const [metric, current, previous] of [["sessions", nextActivity.sessionDates.size, priorActivity.sessionDates.size],
         ["activeDays", nextActivity.days.size, priorActivity.days.size]] as const) if (current !== previous) add({ rule: "13", type: "change",
         key: `change.${metric}`, metric, params: { current, previous }, current, previous, sample: nextActivity.sessionDates.size,
-        period: comparison.current, previousPeriod: comparison.previous, evidence: { kind: "sessions", period: "current" } });
+        period: comparison.current, previousPeriod: comparison.previous, evidence: { kind: "activity", period: "current" } });
     }
   }
 
@@ -355,12 +355,12 @@ export function generateOverviewInsights(source: OverviewSource, query: Overview
     comparablePairs += pairs; switches += changes;
   }
   for (const group of switchGroups.values()) modelTransitions.push({ kind: "switch", fromModel: group.from, toModel: group.to,
-    count: group.count, sessions: group.sessions.size, evidence: { kind: "sequence", scope: "usage", transition: "switch",
+    count: group.count, sessions: group.sessions.size, evidence: { kind: "requests", scope: "usage", transition: "switch",
       modelFrom: group.from, modelTo: group.to, sort: "ordinal" } });
   if (comparableSessions >= 10) add({ rule: "08", type: "feature", key: "switch", metric: "session_model_switch",
     params: { switched: switchedSessions, sessions: comparableSessions }, current: switchedSessions, sample: comparableSessions,
     missing: sessionUsage.size - comparableSessions, values: { switches, comparablePairs, ratio: switchedSessions / comparableSessions },
-    evidence: { kind: "sequence", scope: "usage", sort: "ordinal" } });
+    evidence: { kind: "requests", scope: "usage", sort: "ordinal" } });
   const sessionModels = new Map([...groupRequests(selected.filter(knownModel), request => request.sessionId)].map(([sessionId, rows]) =>
     [sessionId, new Set(rows.map(request => request.usage.model!))]));
   const childModels = new Map<string, { parent: string; child: string; count: number; sessions: Set<string> }>();
@@ -496,7 +496,7 @@ export function generateOverviewInsights(source: OverviewSource, query: Overview
         values: { compressions: compression.length, firstRequest: first.usage.id, lastRequest: last.usage.id,
           firstCacheRead: first.usage.cachedInputTokens ?? null, lastCacheRead: last.usage.cachedInputTokens ?? null,
           firstCacheWrite: first.usage.cacheWriteTokens ?? null, lastCacheWrite: last.usage.cacheWriteTokens ?? null },
-        evidence: { kind: "sequence", scope: "usage", sessionId, model: first.usage.model!, ordinalFrom: first.ordinal!, ordinalTo: last.ordinal!, sort: "ordinal" } });
+        evidence: { kind: "requests", scope: "usage", sessionId, model: first.usage.model!, ordinalFrom: first.ordinal!, ordinalTo: last.ordinal!, sort: "ordinal" } });
       segment = [];
     };
     for (const request of group) {
