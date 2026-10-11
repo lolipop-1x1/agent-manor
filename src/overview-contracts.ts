@@ -216,6 +216,8 @@ export interface OverviewRepository {
   baselineHash?: string;
   createdAt?: string;
   summary?: CoverageSummary;
+  readCoveredFiles?: number;
+  editCoveredFiles?: number;
   comparisonSummary?: CoverageSummary;
   previousSummary?: CoverageSummary;
   activity?: { read: number; edit: number; failure: number };
