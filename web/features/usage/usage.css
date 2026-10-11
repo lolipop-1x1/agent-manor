@@ -48,7 +48,7 @@
 .usage-chart-legend button { display: inline-flex; align-items: center; gap: 5px; padding: 3px 0; max-width: 260px; border: 0; background: transparent; color: var(--muted); font-size: 10px; overflow-wrap: anywhere; }
 .usage-chart-legend button[aria-pressed="false"] { opacity: .4; text-decoration: line-through; }
 .usage-chart-legend i, .usage-composition-values i { display: inline-block; width: 8px; height: 8px; flex-shrink: 0; border-radius: 2px; }
-.usage-trend-scroll { overflow-x: auto; scrollbar-width: thin; }
+.usage-trend-scroll { min-width: 0; }
 .usage-trend-plot { position: relative; height: 260px; }
 .usage-trend-plot svg { display: block; width: 100%; height: 100%; overflow: visible; }
 .usage-trend-plot svg text { fill: var(--muted); font-size: 10px; font-variant-numeric: tabular-nums; }

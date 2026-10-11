@@ -10,7 +10,7 @@ import { historicalPriceSourceUrl } from "../dist/usage/historical-prices.js";
 import { priceSourceUrl } from "../dist/usage/price-catalog.js";
 
 // 全部为隔离合成数据，价格写入只影响临时数据目录。
-export async function usageFixture({ failHistoricalPrices = false } = {}) {
+export async function usageFixture({ failHistoricalPrices = false, days = 28, now = new Date() } = {}) {
   const directory = await realpath(await mkdtemp(join(tmpdir(), "manor-usage-e2e-")));
   const home = join(directory, "data"); await mkdir(home);
   const path = join(home, "index.sqlite"); new AnalysisStore(path).close();
@@ -20,7 +20,7 @@ export async function usageFixture({ failHistoricalPrices = false } = {}) {
     cost: { input: 1 + index * 2, output: 5 + index * 5, cache_read: 0.1 + index * 0.2, cache_write: 1.25 + index * 2.5 },
     limit: { context: 100_000, output: 16_000 } }]));
   prices["fixture-large"].cost.tiers = [{ tier: { type: "context", size: 20_000 }, input: 7.5, output: 22.5, cache_read: 0.75, cache_write: 9.375 }];
-  const changedAt = new Date(); changedAt.setUTCDate(changedAt.getUTCDate() - 14);
+  const changedAt = new Date(now); changedAt.setUTCDate(changedAt.getUTCDate() - 14);
   const historicalPrices = [{ id: "fixture", models: [{ id: "fixture-fast", prices: [
     { prices: { input_mtok: 0.5, output_mtok: 2, cache_read_mtok: 0.05, cache_write_mtok: 0.625 } },
     { constraint: { start_date: changedAt.toISOString().slice(0, 10) }, prices: { input_mtok: 1.5, output_mtok: 6, cache_read_mtok: 0.15, cache_write_mtok: 1.875 } },
@@ -36,8 +36,8 @@ export async function usageFixture({ failHistoricalPrices = false } = {}) {
       ...(sessionIndex === 33 ? { executionMode: "quiet" } : {}) };
     const pending = store.createRevision(summary.path, "synthetic");
     let ordinal = 0;
-    for (let day = 0; day < 28; day++) {
-      const time = new Date(); time.setDate(time.getDate() - day); time.setHours(12 + sessionIndex % 5, sessionIndex, 0, 0);
+    for (let day = 0; day < days; day++) {
+      const time = new Date(now); time.setDate(time.getDate() - day); time.setHours(12 + sessionIndex % 5, sessionIndex, 0, 0);
       const messageId = `${id}:message:${day}`;
       pending.sink.message({ id: messageId, sessionId: id, ordinal: ordinal++, recordLine: day + 1, turnId: `turn-${day}`,
         kind: "assistant", final: "explicit", occurredAt: time.toISOString(), text: `合成请求记录 ${day + 1}：用量定位验证。` });
