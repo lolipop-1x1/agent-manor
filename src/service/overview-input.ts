@@ -14,11 +14,13 @@ const validDay = (value: unknown): value is string => {
 };
 
 export function overviewQuery(raw: Record<string, unknown>, allowEvidence = false): OverviewQuery {
-  const allowed = new Set<string>([...fields, "window", ...(allowEvidence ? ["evidence"] : [])]);
+  const allowed = new Set<string>([...fields, "window", "anchorDay", ...(allowEvidence ? ["evidence"] : [])]);
   for (const field of Object.keys(raw)) if (!allowed.has(field)) invalid(field);
   if (raw.window !== undefined && !windows.includes(raw.window as OverviewWindow)) invalid("window");
   const basic = usageQuery(Object.fromEntries(fields.filter(field => raw[field] !== undefined).map(field => [field, raw[field]])));
   const query: OverviewQuery = { window: raw.window as OverviewWindow | undefined ?? "365" };
+  const anchorDay = raw.anchorDay;
+  if (anchorDay !== undefined) { if (!validDay(anchorDay)) invalid("anchorDay"); query.anchorDay = anchorDay as string; }
   for (const field of fields) if (basic[field] !== undefined) Object.assign(query, { [field]: basic[field] });
   for (const field of ["from", "to"] as const) if (query[field] !== undefined && !validDay(query[field])) invalid(field);
   if (query.from && query.to && (Date.parse(query.to) - Date.parse(query.from)) / 86_400_000 > 36_600) invalid("from/to");
@@ -34,7 +36,7 @@ const enums = {
   sort: ["recent", "tokens", "duration", "ordinal"],
   transition: ["switch", "delegation"],
 } as const;
-const textFields = ["from", "to", "day", "client", "project", "model", "modelFrom", "modelTo", "sessionId", "requestId", "turnId", "resourceId", "resourceId2", "tool", "toolId", "server", "timingGroup", "rule"] as const;
+const textFields = ["from", "to", "day", "client", "project", "model", "modelFrom", "modelTo", "sessionId", "requestId", "turnId", "resourceId", "resourceId2", "tool", "toolId", "toolKey", "server", "timingGroup", "rule"] as const;
 
 export function overviewEvidenceQuery(raw: unknown): OverviewEvidenceQuery {
   const encoded = textValue(raw, "evidence", true)!;

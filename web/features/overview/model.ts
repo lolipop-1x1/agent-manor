@@ -66,3 +66,10 @@ export function streakRange(days: { day: string; sessions: number }[], range: { 
   }
   return result;
 }
+
+/** 将本地日历日期构造成本地日期对象，避免 ISO 字符串按 UTC 解读后错日。 */
+export function overviewCalendarDate(day: string): Date {
+  const [year, month, date] = day.split("-").map(Number);
+  const value = new Date(0); value.setFullYear(year!, month! - 1, date!); value.setHours(12, 0, 0, 0);
+  return value;
+}

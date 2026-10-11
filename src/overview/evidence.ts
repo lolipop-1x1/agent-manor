@@ -5,7 +5,7 @@ import type { PricingView } from "../usage/pricing.js";
 import { StoreError } from "../index/store.js";
 import { instant } from "../usage/analytics.js";
 import { usageDimensionKey } from "../usage/dimensions.js";
-import { failureSequences, isActivityEvent, matchesGlobalSession, pairToolCalls, resourceIdentity, resourceObservations,
+import { failureSequences, isActivityEvent, matchesGlobalSession, pairToolCalls, resourceIdentity, resourceNameDescriptor, resourceObservations,
   selectedSource, timingGroupId, toolCategory, trueTurnIds, validDuration } from "./analytics.js";
 import { daysBetween, localDay, resolveOverviewRange, resolveTimezone } from "./dates.js";
 
@@ -23,8 +23,9 @@ export function buildOverviewEvidence(source: OverviewSource, input: OverviewQue
   if (evidence.period === "previous") { if (!range.comparison) return empty(); period = range.comparison.previous; }
   if (evidence.period === "recent") { if (!range.recent) return empty(); period = range.recent.current; }
   if (evidence.period === "recent_previous") { if (!range.recent) return empty(); period = range.recent.previous; }
-  if (evidence.day) period = { from: evidence.day, to: evidence.day };
-  if (evidence.from || evidence.to) period = { from: evidence.from ?? period.from, to: evidence.to ?? period.to };
+  const from = evidence.day ?? evidence.from, to = evidence.day ?? evidence.to;
+  period = { from: from && from > period.from ? from : period.from, to: to && to < period.to ? to : period.to };
+  if (period.from > period.to) return empty();
   const evidenceRange = resolveOverviewRange(source, { ...query, window: "custom", ...period }, now);
   evidenceRange.all = evidence.undated === true || range.all && (!evidence.period || evidence.period === "selected") && !evidence.from && !evidence.to && !evidence.day;
   const scopedQuery: OverviewQuery = { ...query,
@@ -83,13 +84,15 @@ export function buildOverviewEvidence(source: OverviewSource, input: OverviewQue
           nextModel: reliable(request) && reliable(next) ? next!.usage.model! : null,
           previousRequestId: reliable(request) && reliable(previous) ? previous!.usage.id : null,
           nextRequestId: reliable(request) && reliable(next) ? next!.usage.id : null,
-          sequenceBreak: !joined, eventOrdinal: currentOrdinal ?? null, compressions: JSON.stringify(compressions),
+          sequenceBreak: !joined, eventOrdinal: currentOrdinal ?? null,
+          compressions: previousOrdinal !== undefined && currentOrdinal !== undefined && previousOrdinal < currentOrdinal ? JSON.stringify(compressions) : null,
         });
       }
     }
   }
   const eventMatch = (event: OverviewEvent) => (!evidence.turnId || event.turnId === evidence.turnId)
     && (!evidence.tool || event.tool === evidence.tool) && (!evidence.status || event.status === evidence.status)
+    && (evidence.toolKey === undefined || usageDimensionKey(event.tool) === evidence.toolKey)
     && (!evidence.server || event.resource?.server === evidence.server)
     && (!evidence.toolId || JSON.stringify([event.tool ?? null, event.resource?.server ?? null]) === evidence.toolId)
     && (!evidence.category || toolCategory(event.tool, event.resource) === evidence.category);
@@ -133,11 +136,12 @@ export function buildOverviewEvidence(source: OverviewSource, input: OverviewQue
       && (!evidence.resourceEvidenceKind || event.kind === evidence.resourceEvidenceKind)
       && (!evidence.server || event.server === evidence.server)
       && (!evidence.toolId || JSON.stringify([event.tool ?? null, event.server ?? null]) === evidence.toolId)
-      && (!evidence.tool || event.tool === evidence.tool) && (!evidence.turnId || event.turnId === evidence.turnId)
+      && (!evidence.tool || event.tool === evidence.tool) && (evidence.toolKey === undefined || usageDimensionKey(event.tool) === evidence.toolKey) && (!evidence.turnId || event.turnId === evidence.turnId)
       && (!evidence.status || event.status === evidence.status)).map(event => ({ ...base(event.sessionId), id: event.id,
       kind: evidence.kind, messageId: event.messageId, resultMessageId: event.resultMessageId, turnId: event.turnId,
       ordinal: event.ordinal, occurredAt: event.occurredAt, day: localDay(event.occurredAt, timezone) ?? undefined,
       resourceId: resourceIdentity(event), resourceName: event.kind === "mcp" ? event.server ?? event.name : event.name,
+      resourceNameDescriptor: resourceNameDescriptor(event),
       resourceKind: event.kind === "mcp" ? "mcp" : "skill", resourceEvidenceKind: event.kind,
       tool: event.tool, status: event.status, durationMs: event.durationMs, values: { pairing: event.pairing, server: event.server ?? null } }));
   } else if (evidence.kind === "tools" || evidence.kind === "failures" || evidence.kind === "sequence") {
@@ -172,7 +176,7 @@ export function buildOverviewEvidence(source: OverviewSource, input: OverviewQue
       && (!evidence.observationState || observation.state === evidence.observationState)).flatMap(observation => {
       const first = selected.resources.find(event => event.id === observation.firstEventId); if (!first) return [];
       return [{ ...base(first.sessionId), id: observation.resourceId, kind: evidence.kind, messageId: first.messageId,
-        resourceId: observation.resourceId, resourceName: observation.name, resourceKind: observation.kind, occurredAt: first.occurredAt,
+        resourceId: observation.resourceId, resourceName: observation.name, resourceNameDescriptor: observation.nameDescriptor, resourceKind: observation.kind, occurredAt: first.occurredAt,
         values: { firstDay: observation.firstDay, from: observation.window.from, to: observation.window.to,
           state: observation.state, reused: observation.reused, subsequentDays: observation.subsequentDays } }];
     });

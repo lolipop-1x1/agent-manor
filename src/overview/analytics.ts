@@ -10,7 +10,7 @@ import { requestSpeed, speedOutputTokens } from "../session-speed.js";
 import { resourceGapRelevant } from "../resources/coverage.js";
 import { resourceHistoryIdentity, resourceOverviewIdentity } from "../resources/usage.js";
 import { buildUsageReport, instant, intervalKey, timeKeys } from "../usage/analytics.js";
-import { usageDimensionKey } from "../usage/dimensions.js";
+import { usageDimensionKey, usageDimensionValue } from "../usage/dimensions.js";
 import { addDays, daysBetween, localDay, resolveOverviewRange, resolveTimezone } from "./dates.js";
 
 const nonnegative = (value: number | undefined): value is number => value !== undefined && Number.isFinite(value) && value >= 0;
@@ -32,6 +32,9 @@ export function resourceIdentity(event: ResourceUsageEvent): string {
 }
 export function knownResourceIdentity(event: ResourceUsageEvent): boolean {
   return resourceOverviewIdentity(resourceHistoryIdentity(event), event.source.sourceId).grouping !== "source";
+}
+export function resourceNameDescriptor(event: ResourceUsageEvent) {
+  return knownResourceIdentity(event) ? event.nameDescriptor : { key: "sessions.resource.nameUnrecorded" };
 }
 export function validResource(event: ResourceUsageEvent): boolean {
   return event.kind !== "skill_read" || event.status === "success";
@@ -81,10 +84,11 @@ export function toolCategory(tool?: string, resource?: OverviewEvent["resource"]
   return "other";
 }
 function aggregateCount<T>(items: T[], identity: (item: T) => string, sessionId: (item: T) => string,
-  status?: (item: T) => "success" | "failure" | "unknown" | undefined): OverviewCountRow[] {
+  status?: (item: T) => "success" | "failure" | "unknown" | undefined, dimension = false): OverviewCountRow[] {
   const groups = new Map<string, T[]>();
   for (const item of items) { const key = identity(item), group = groups.get(key) ?? []; group.push(item); groups.set(key, group); }
-  return [...groups].map(([key, group]) => ({ key, name: key, count: group.length, sessions: new Set(group.map(sessionId)).size,
+  return [...groups].map(([key, group]) => ({ key, name: dimension ? usageDimensionValue(key) ?? "未知" : key,
+    ...(dimension && usageDimensionValue(key) === undefined ? { nameDescriptor: { key: "overview.unknown" } } : {}), count: group.length, sessions: new Set(group.map(sessionId)).size,
     ...(status ? { results: resultCounts(group.map(status)) } : {}) })).sort((a, b) => b.count - a.count || a.key.localeCompare(b.key));
 }
 function streaks(days: Set<string>, range: OverviewRange): { current: number; longest: number } {
@@ -169,6 +173,7 @@ export function resourceObservations(source: OverviewSource, selected: OverviewS
       : relevantGap || !knownResourceIdentity(first.event) ? "insufficient_coverage" : "mature";
     const subsequentDays = new Set(dated.filter(value => value.day >= from && value.day <= to).map(value => value.day)).size;
     return [{ resourceId, name: first.event.kind === "mcp" ? first.event.server ?? first.event.name : first.event.name,
+      nameDescriptor: resourceNameDescriptor(first.event),
       kind: first.event.kind === "mcp" ? "mcp" as const : "skill" as const, firstDay: first.day,
       window: { from, to }, state, reused: state === "mature" ? subsequentDays > 0 : null, subsequentDays, firstEventId: first.event.id }];
   });
@@ -209,13 +214,13 @@ function buildResources(source: OverviewSource, selected: OverviewSource, range:
     const sessions = new Set(events.map(event => event.sessionId)).size, calls = events.filter(event => event.kind !== "skill_read");
     const identity = resourceOverviewIdentity(resourceHistoryIdentity(first), first.source.sourceId);
     return { id, kind: first.kind === "mcp" ? "mcp" : "skill", name: identity.name,
-      ...(!knownResourceIdentity(first) ? { nameDescriptor: { key: "sessions.resource.nameUnrecorded" } } : first.nameDescriptor ? { nameDescriptor: first.nameDescriptor } : {}), uses: events.length, sessions,
+      nameDescriptor: resourceNameDescriptor(first), uses: events.length, sessions,
       explicitCalls: events.filter(event => event.kind === "skill_call").length, successfulReads: events.filter(event => event.kind === "skill_read").length,
       activeWeeks: new Set(dates.map(day => intervalKey(day, "week"))).size, firstDay: dates[0] ?? null, lastDay: dates.at(-1) ?? null,
       averagePerSession: sessions ? events.length / sessions : null,
       clients: aggregateCount(events, event => event.client, event => event.sessionId),
-      projects: aggregateCount(events, event => usageDimensionKey(event.project), event => event.sessionId),
-      tools: aggregateCount(calls, event => usageDimensionKey(event.tool), event => event.sessionId, event => event.status),
+      projects: aggregateCount(events, event => usageDimensionKey(event.project), event => event.sessionId, undefined, true),
+      tools: aggregateCount(calls, event => usageDimensionKey(event.tool), event => event.sessionId, event => event.status, true),
       days, results: resultCounts(calls.map(event => event.status)) };
   });
   const sessionIds = new Set(selected.sessions.map(session => session.id)), turns = trueTurnIds(source);
@@ -283,10 +288,10 @@ function buildProcess(source: OverviewSource, selected: OverviewSource, usageSel
       counts.calls += 1; if (event.status === "failure") counts.failures += 1; dayCounts.set(day, counts);
     }
     const dates = [...dayCounts.keys()].sort();
-    return { key, name: first.tool ?? "unknown", server: first.resource?.server, category: toolCategory(first.tool, first.resource),
+    return { key, name: first.tool ?? "未知", ...(first.tool === undefined ? { nameDescriptor: { key: "overview.unknown" } } : {}), server: first.resource?.server, category: toolCategory(first.tool, first.resource),
       count: values.length, sessions: new Set(values.map(sessionId)).size, results: resultCounts(values.map(status)), activeDays: dates.length,
       clients: aggregateCount(values, event => sessionById.get(event.sessionId)!.client, sessionId, status),
-      projects: aggregateCount(values, event => usageDimensionKey(sessionById.get(event.sessionId)!.project), sessionId, status),
+      projects: aggregateCount(values, event => usageDimensionKey(sessionById.get(event.sessionId)!.project), sessionId, status, true),
       days: dates.map(day => ({ day, ...dayCounts.get(day)! })) };
   }).sort((a, b) => b.count - a.count || a.key.localeCompare(b.key));
   const timingGroups = new Map<string, OverviewSource["requests"]>();
@@ -362,6 +367,7 @@ export function buildOverviewReport(source: OverviewSource, input: OverviewQuery
     throw new StoreError("INVALID_INPUT", "无效总览筛选", { key: "diagnostics.usage.invalidQuery", params: { field: key } });
   }
   const range = resolveOverviewRange(source, query, now), selected = selectedSource(source, query, range), usageSelected = selectedSource(source, query, range, true);
+  query.anchorDay = range.today;
   const costs = new WeakMap<SessionUsage, Map<string, ReturnType<PricingView["estimate"]>>>();
   const estimate: PricingView["estimate"] = (usage, client) => {
     const clientKey = client ?? "", values = costs.get(usage) ?? new Map<string, ReturnType<PricingView["estimate"]>>();
@@ -387,7 +393,7 @@ export function buildOverviewReport(source: OverviewSource, input: OverviewQuery
   const requestDistribution = (dimension: "client" | "project" | "model") => {
     const requests = usageSelected.requests;
     const rows = aggregateCount(requests, request => dimension === "model" ? usageDimensionKey(request.usage.model)
-      : dimension === "project" ? usageDimensionKey(sessionById.get(request.sessionId)!.project) : sessionById.get(request.sessionId)!.client, request => request.sessionId);
+      : dimension === "project" ? usageDimensionKey(sessionById.get(request.sessionId)!.project) : sessionById.get(request.sessionId)!.client, request => request.sessionId, undefined, dimension !== "client");
     return rows.map(row => { const group = requests.filter(request => (dimension === "model" ? usageDimensionKey(request.usage.model)
       : dimension === "project" ? usageDimensionKey(sessionById.get(request.sessionId)!.project) : sessionById.get(request.sessionId)!.client) === row.key);
       const tokens = group.flatMap(request => nonnegative(request.usage.inputTokens) || nonnegative(request.usage.outputTokens)

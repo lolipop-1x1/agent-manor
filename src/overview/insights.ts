@@ -447,14 +447,15 @@ export function generateOverviewInsights(source: OverviewSource, query: Overview
 
   // 12：原始调用身份与顺序保留，后续成功不改称重试或任务恢复。
   for (const sequence of report.process.failureSequences) {
-    if (!sequence.calls.length) continue;
+    const laterCalls = sequence.calls.slice(1);
+    if (!laterCalls.length) continue;
     add({ rule: "12", type: "investigation", key: "followupCalls", object: identity(sequence.sessionId, sequence.turnId, sequence.tool, sequence.server ?? ""),
-      metric: "later_same_turn_calls", params: { tool: sequence.tool, calls: sequence.calls.length, failures: sequence.failures.length },
-      current: sequence.calls.length, sample: sequence.failures.length,
-      missing: sequence.calls.filter(call => call.status === "unknown").length,
-      values: { success: sequence.calls.filter(call => call.status === "success").length,
-        failure: sequence.calls.filter(call => call.status === "failure").length,
-        unknown: sequence.calls.filter(call => call.status === "unknown").length, truncated: sequence.truncated },
+      metric: "later_same_turn_calls", params: { tool: sequence.tool, calls: laterCalls.length, failures: sequence.failures.length },
+      current: laterCalls.length, sample: sequence.failures.length,
+      missing: laterCalls.filter(call => call.status === "unknown").length,
+      values: { success: laterCalls.filter(call => call.status === "success").length,
+        failure: laterCalls.filter(call => call.status === "failure").length,
+        unknown: laterCalls.filter(call => call.status === "unknown").length, truncated: sequence.truncated },
       evidence: { kind: "sequence", sessionId: sequence.sessionId, turnId: sequence.turnId, tool: sequence.tool,
         toolId: identity(sequence.tool, sequence.server ?? null), server: sequence.server, sort: "ordinal" } });
   }
@@ -480,6 +481,10 @@ export function generateOverviewInsights(source: OverviewSource, query: Overview
 
   // 14：输入走势限定同一模型片段，压缩只标位置和已记录分项。
   const compressionBySession = new Map<string, typeof selectedEvents>();
+  const eventById = new Map(events.map(event => [`${event.sessionId}\u0000${event.id}`, event]));
+  const eventOrdinal = (request: Request) => [request.usage.messageId, ...(request.usage.requestMessageIds ?? [])]
+    .flatMap(id => id !== undefined && eventById.has(`${request.sessionId}\u0000${id}`) ? [eventById.get(`${request.sessionId}\u0000${id}`)!.ordinal] : [])
+    .sort((a, b) => a - b)[0];
   for (const event of selectedEvents) if (event.kind === "compression") {
     const group = compressionBySession.get(event.sessionId) ?? []; group.push(event); compressionBySession.set(event.sessionId, group);
   }
@@ -488,12 +493,15 @@ export function generateOverviewInsights(source: OverviewSource, query: Overview
     const flush = () => {
       if (segment.length < 2) { segment = []; return; }
       const first = segment[0]!; const last = segment.at(-1)!;
-      const compression = (compressionBySession.get(sessionId) ?? []).filter(event => event.ordinal >= first.ordinal! && event.ordinal <= last.ordinal!);
-      if (first.usage.inputTokens !== last.usage.inputTokens || compression.length) add({ rule: "14", type: "investigation", key: "input",
+      const firstOrdinal = eventOrdinal(first), lastOrdinal = eventOrdinal(last);
+      const positionsKnown = firstOrdinal !== undefined && lastOrdinal !== undefined && firstOrdinal < lastOrdinal;
+      const compression = positionsKnown
+        ? (compressionBySession.get(sessionId) ?? []).filter(event => event.ordinal > firstOrdinal && event.ordinal <= lastOrdinal) : [];
+      if (first.usage.inputTokens !== last.usage.inputTokens || compression.length) add({ rule: "14", type: "investigation", key: positionsKnown ? "input" : "inputUnmapped",
         object: identity(sessionId, first.usage.id, last.usage.id), metric: "input_sequence",
-        params: { model: first.usage.model!, requests: segment.length, first: first.usage.inputTokens!, last: last.usage.inputTokens!, compressions: compression.length },
+        params: { model: first.usage.model!, requests: segment.length, first: first.usage.inputTokens!, last: last.usage.inputTokens!, ...(positionsKnown ? { compressions: compression.length } : {}) },
         current: last.usage.inputTokens!, previous: first.usage.inputTokens!, sample: segment.length,
-        values: { compressions: compression.length, firstRequest: first.usage.id, lastRequest: last.usage.id,
+        values: { compressions: positionsKnown ? compression.length : null, firstRequest: first.usage.id, lastRequest: last.usage.id,
           firstCacheRead: first.usage.cachedInputTokens ?? null, lastCacheRead: last.usage.cachedInputTokens ?? null,
           firstCacheWrite: first.usage.cacheWriteTokens ?? null, lastCacheWrite: last.usage.cacheWriteTokens ?? null },
         evidence: { kind: "requests", scope: "usage", sessionId, model: first.usage.model!, ordinalFrom: first.ordinal!, ordinalTo: last.ordinal!, sort: "ordinal" } });

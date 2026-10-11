@@ -12,6 +12,8 @@ export interface OverviewQuery {
   timezone?: string;
   version?: string;
   priceVersion?: string;
+  /** 报告快照的本地日期；下钻沿用，刷新时重新获取。 */
+  anchorDay?: string;
   clients?: string[];
   projects?: string[];
   /** 模型条件仅作用于用量区域及用量洞察。 */
@@ -58,6 +60,7 @@ export interface OverviewResultCounts {
 export interface OverviewCountRow {
   key: string;
   name: string;
+  nameDescriptor?: MessageDescriptor;
   count: number;
   sessions: number;
   requests?: number;
@@ -105,6 +108,7 @@ export interface OverviewResourceRow {
 export interface OverviewResourceObservation {
   resourceId: string;
   name: string;
+  nameDescriptor?: MessageDescriptor;
   kind: "skill" | "mcp";
   firstDay: string;
   window: OverviewPeriod;
@@ -167,6 +171,7 @@ export interface OverviewProcess {
   categories: OverviewCountRow[];
   results: OverviewResultCounts;
   failures: number;
+  /** 聚合内部使用；HTTP 报告返回空数组，完整过程通过分页证据查询。 */
   failureSequences: OverviewFailureSequence[];
   compressions: number;
   compressionSessions: number;
@@ -256,6 +261,7 @@ export interface OverviewEvidenceQuery {
   resourceEvidenceKind?: "skill_call" | "skill_read" | "mcp";
   tool?: string;
   toolId?: string;
+  toolKey?: string;
   server?: string;
   category?: OverviewToolCategory;
   status?: "success" | "failure" | "unknown";
@@ -286,6 +292,7 @@ export interface OverviewEvidenceRow {
   tool?: string;
   resourceId?: string;
   resourceName?: string;
+  resourceNameDescriptor?: MessageDescriptor;
   resourceKind?: "skill" | "mcp";
   resourceEvidenceKind?: "skill_call" | "skill_read" | "mcp";
   status?: "success" | "failure" | "unknown";

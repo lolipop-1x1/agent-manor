@@ -24,6 +24,7 @@ export default {
   "overview.insight.followupCalls": "{{tool}}：{{failures, number}} 次失败之后，同一用户轮次内出现 {{calls, number}} 个独立后续调用。",
   "overview.insight.crossDay": "{{sessions, number}} 个有日期活动的会话中，{{crossDay, number}} 个在多个日期续用。",
   "overview.insight.input": "{{model}}：同一片段的 {{requests, number}} 个请求中，输入从 {{first, number}} 变为 {{last, number}} Token，片段内有 {{compressions, number}} 次压缩记录。",
+  "overview.insight.inputUnmapped": "{{model}}：同一片段的 {{requests, number}} 个请求中，输入从 {{first, number}} 变为 {{last, number}} Token，压缩位置未确认。",
   "overview.insight.compression": "{{sessions, number}} 个会话中记录了 {{count, number}} 次压缩。",
   "overview.insight.hotspot.read": "{{repository}} · {{path}}：同一文件基线的读取次数从 {{previous, number}} 变为 {{current, number}}。",
   "overview.insight.hotspot.edit": "{{repository}} · {{path}}：同一文件基线的修改次数从 {{previous, number}} 变为 {{current, number}}。",

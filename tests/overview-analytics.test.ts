@@ -1,10 +1,48 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { buildOverviewReport, pairToolCalls } from "../src/overview/analytics.js";
-import { addDays, localDay, resolveOverviewRange } from "../src/overview/dates.js";
+import { addDays, localDay, prepareOverviewDateCache, resolveOverviewRange } from "../src/overview/dates.js";
+import { translate } from "../src/i18n/index.js";
+import { buildOverviewEvidence } from "../src/overview/evidence.js";
 import { event, now, pricing, request, resource, session, source } from "./overview-fixtures.js";
 
 const query = { window: "custom" as const, from: "2026-01-01", to: "2026-02-15", timezone: "UTC" };
+test("维度身份与显示名称独立，缺失名称翻译而同名原文保留", () => {
+  const input = source({ sessions: [session("missing"), session("literal", { project: "unknown" }), session("prefixed", { project: "literal:x" })],
+    events: [event("missing", "missing-tool", undefined, { kind: "tool_call" }), event("literal", "literal-tool", undefined, { kind: "tool_call", tool: "unknown" })],
+    requests: [request("missing", "missing", undefined, { model: undefined }), request("literal", "literal", undefined, { model: "unknown" }), request("prefixed", "prefixed", undefined, { model: "literal:x" })],
+    resources: [resource("missing", "a"), resource("literal", "b", "skill-a", undefined, { project: "unknown" }), resource("prefixed", "c", "skill-a", undefined, { project: "literal:x" })] });
+  const report = buildOverviewReport(input, query, pricing, now);
+  for (const rows of [report.distributions.models, report.distributions.projects, report.resources.skills[0]!.projects]) {
+    assert.equal(rows.find(row => row.key === "literal:unknown")!.name, "unknown");
+    assert.equal(rows.find(row => row.key === "literal:literal:x")!.name, "literal:x");
+    const missing = rows.find(row => row.key === "unknown")!;
+    assert.equal(translate("en", missing.nameDescriptor!.key), "Unknown");
+    assert.equal(rows.find(row => row.key === "literal:unknown")!.nameDescriptor, undefined);
+  }
+  assert.equal(buildOverviewEvidence(input, report.query, { kind: "requests", scope: "usage", model: "literal:unknown" }, pricing, now).rows[0]!.model, "unknown");
+  assert.equal(translate("en", report.process.tools.find(row => row.key === "[null,null]")!.nameDescriptor!.key), "Unknown");
+  assert.equal(report.process.tools.find(row => row.key === '["unknown",null]')!.name, "unknown");
+});
+test("产品生成的资源缺失名称描述贯通排行、观察和证据", () => {
+  const input = source({ sessions: [session("a")], resources: [resource("a", "missing", "未记录名称", undefined, { nameDescriptor: { key: "sessions.resource.nameUnrecorded" } })] });
+  const report = buildOverviewReport(input, query, pricing, now);
+  for (const row of [report.resources.skills[0]!, report.resources.observations[0]!]) assert.equal(translate("en", row.nameDescriptor!.key), "Name not recorded");
+  for (const kind of ["resources", "observations"] as const) {
+    const row = buildOverviewEvidence(input, report.query, { kind }, pricing, now).rows[0]!;
+    assert.equal(translate("en", row.resourceNameDescriptor!.key), "Name not recorded");
+  }
+});
+test("后台日期缓存不改变跨日、夏令时和时区切换的日历语义", () => {
+  const timestamp = "2026-03-08T07:30:00Z";
+  prepareOverviewDateCache("version-a", "America/Los_Angeles");
+  assert.equal(localDay(timestamp, "America/Los_Angeles"), "2026-03-07");
+  assert.equal(localDay(timestamp, "America/Los_Angeles"), "2026-03-07");
+  assert.equal(localDay(timestamp, "UTC"), "2026-03-08");
+  prepareOverviewDateCache("version-b", "UTC");
+  assert.equal(localDay(timestamp, "UTC"), "2026-03-08");
+  assert.equal(localDay(undefined, "UTC"), null);
+});
 test("总览按自身活动统计主子会话，继承分叉及摘要跨度不增加活动", () => {
   const sessions = [session("main"), ...Array.from({ length: 4 }, (_, index) => session(`child-${index}`, { relationship: "child", parentSessionId: "main" })),
     session("copied-fork", { relationship: "fork", startedAt: "2026-01-01T00:00:00Z", updatedAt: "2026-02-15T00:00:00Z" })];

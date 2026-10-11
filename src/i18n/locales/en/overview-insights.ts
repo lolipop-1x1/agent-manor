@@ -24,6 +24,7 @@ export default {
   "overview.insight.followupCalls": "{{tool}}: {{calls, number}} distinct later calls follow {{failures, number}} failures within the same user turns.",
   "overview.insight.crossDay": "{{crossDay, number}} of {{sessions, number}} sessions with dated activity span multiple active dates.",
   "overview.insight.input": "{{model}}: a sequence of {{requests, number}} requests records input tokens from {{first, number}} to {{last, number}}, with {{compressions, number}} compression events in the same segment.",
+  "overview.insight.inputUnmapped": "{{model}}: a sequence of {{requests, number}} requests records input tokens from {{first, number}} to {{last, number}}. Compression positions are unconfirmed.",
   "overview.insight.compression": "{{count, number}} compression events are recorded across {{sessions, number}} sessions.",
   "overview.insight.hotspot.read": "{{repository}} · {{path}}: recorded reads changed from {{previous, number}} to {{current, number}} on the same file baseline.",
   "overview.insight.hotspot.edit": "{{repository}} · {{path}}: recorded edits changed from {{previous, number}} to {{current, number}} on the same file baseline.",

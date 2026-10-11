@@ -1,8 +1,17 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { defaultOverviewRoute, overviewAddress, overviewQuery, overviewRange, readOverviewRoute, streakRange, validOverviewRange } from "../web/features/overview/model.ts";
+import { defaultOverviewRoute, overviewAddress, overviewCalendarDate, overviewQuery, overviewRange, readOverviewRoute, streakRange, validOverviewRange } from "../web/features/overview/model.ts";
+import { formatDate } from "../src/i18n/format.ts";
 import { readUsageRoute, usageQuery } from "../web/features/usage/model.ts";
 import { translate } from "../src/i18n/index.ts";
+test("总览本地日历日期按显示语言格式化，保留日期和月份", () => {
+  const day = overviewCalendarDate("2026-01-01");
+  assert.equal(day.getFullYear(), 2026); assert.equal(day.getMonth(), 0); assert.equal(day.getDate(), 1);
+  assert.equal(formatDate("en", day), "Jan 1, 2026"); assert.equal(formatDate("zh-CN", day), "2026年1月1日");
+  assert.equal(formatDate("en", day, { year: "numeric", month: "short" }), "Jan 2026");
+  assert.equal(overviewCalendarDate("0004-02-29").getFullYear(), 4);
+  assert.equal(overviewCalendarDate("0004-02-29").getDate(), 29);
+});
 
 test("总览默认覆盖含今天的365个本地日期，跨年不截断", () => {
   const range = overviewRange(defaultOverviewRoute(), new Date(2025, 0, 7, 12));
@@ -17,6 +26,7 @@ test("总览地址保留筛选和局部视图，格式错误不污染查询", ()
   const invalid = readOverviewRoute('#overview?window=wrong&clients=bad&projects=%5B2%5D&from=2025-02-30&metric=invalid');
   assert.equal(invalid.window, "365"); assert.equal(invalid.from, undefined); assert.equal(invalid.clients, undefined); assert.equal(invalid.metric, "tokens");
   assert.equal(validOverviewRange({ ...route, from: "2025-04-01" }), false);
+  assert.equal("anchorDay" in readOverviewRoute("#overview?anchorDay=2025-01-01"), false);
 });
 
 test("局部显示选项不改变后端统计范围，模型只作为独立用量条件传入", () => {

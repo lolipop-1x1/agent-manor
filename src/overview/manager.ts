@@ -6,6 +6,7 @@ import type { SessionStore } from "../sessions/store.js";
 import { UsageResultCache } from "../usage/cache.js";
 import type { PricingService } from "../usage/pricing.js";
 import type { OverviewWorkerRequest, OverviewWorkerResponse } from "./worker-contracts.js";
+import { localDay } from "./dates.js";
 
 type Result = OverviewReport | OverviewEvidencePage;
 interface Pending { resolve(value: Result): void; reject(error: Error): void }
@@ -18,7 +19,7 @@ export class OverviewManager {
   private closed = false;
   private readonly pending = new Map<number, Pending>();
   private readonly inFlight = new Map<string, Promise<Result>>();
-  private readonly cache = new UsageResultCache<Result>(16 * 1024 * 1024, 24);
+  private readonly cache = new UsageResultCache<Result>(32 * 1024 * 1024, 24);
 
   constructor(private readonly sessions: SessionStore, private readonly pricing: PricingService,
     private readonly repositories: () => Repository[], private readonly now: () => Date = () => new Date()) {}
@@ -55,7 +56,7 @@ export class OverviewManager {
     const fixed = { ...query, version: this.sessions.usageVersion(query.version), priceVersion: pricing.version,
       timezone: query.timezone ?? Intl.DateTimeFormat().resolvedOptions().timeZone };
     const now = this.now();
-    const day = new Intl.DateTimeFormat("en-CA", { timeZone: fixed.timezone, year: "numeric", month: "2-digit", day: "2-digit" }).format(now);
+    const day = fixed.anchorDay ?? localDay(now, fixed.timezone)!;
     const repositories = this.repositories();
     const key = JSON.stringify([type, Object.fromEntries(Object.entries(fixed).sort(([a], [b]) => a.localeCompare(b))),
       evidence, day, repositories.map(row => [row.id, row.version, row.stale])]);

@@ -4,6 +4,17 @@ import { calendarDay, instant } from "../usage/analytics.js";
 import { usageDimensionKey } from "../usage/dimensions.js";
 
 const formatters = new Map<string, Intl.DateTimeFormat>();
+const maxDateCacheEntries = 1_000_000;
+let dateCacheScope: string | undefined;
+let dateCacheTimezone: string | undefined;
+const dateCache = new Map<string | number, string>();
+
+/** 后台同一事实版本及统计时区复用日期投影，切换来源或时区时释放。 */
+export function prepareOverviewDateCache(version: string, timezone: string): void {
+  const scope = JSON.stringify([version, timezone]);
+  if (dateCacheScope === scope) return;
+  dateCache.clear(); dateCacheScope = scope; dateCacheTimezone = timezone;
+}
 export function resolveTimezone(value?: string): string {
   const timezone = value ?? Intl.DateTimeFormat().resolvedOptions().timeZone;
   try { new Intl.DateTimeFormat("en", { timeZone: timezone }); }
@@ -11,6 +22,9 @@ export function resolveTimezone(value?: string): string {
   return timezone;
 }
 export function localDay(value: string | number | Date | undefined, timezone: string): string | null {
+  const key = value instanceof Date ? value.getTime() : value;
+  const cached = timezone === dateCacheTimezone && key !== undefined ? dateCache.get(key) : undefined;
+  if (cached !== undefined) return cached;
   const time = typeof value === "string" ? instant(value) : value instanceof Date ? value.getTime() : value;
   if (time === undefined || !Number.isFinite(time)) return null;
   let formatter = formatters.get(timezone);
@@ -20,7 +34,9 @@ export function localDay(value: string | number | Date | undefined, timezone: st
     while (formatters.size > 16) formatters.delete(formatters.keys().next().value!);
   }
   const parts = Object.fromEntries(formatter.formatToParts(time).map(part => [part.type, part.value]));
-  return `${parts.year}-${parts.month}-${parts.day}`;
+  const day = `${parts.year}-${parts.month}-${parts.day}`;
+  if (timezone === dateCacheTimezone && key !== undefined && dateCache.size < maxDateCacheEntries) dateCache.set(key, day);
+  return day;
 }
 export function addDays(day: string, delta: number): string {
   const date = new Date(`${day}T00:00:00Z`);
@@ -35,7 +51,9 @@ export function inPeriod(value: string | undefined, period: OverviewPeriod, time
   return day !== null && day >= period.from && day <= period.to;
 }
 export function resolveOverviewRange(source: OverviewSource, query: OverviewQuery, now = new Date()): OverviewRange {
-  const timezone = resolveTimezone(query.timezone), today = localDay(now, timezone)!;
+  const timezone = resolveTimezone(query.timezone);
+  if (query.anchorDay !== undefined && !calendarDay(query.anchorDay)) invalid("anchorDay");
+  const today = query.anchorDay ?? localDay(now, timezone)!;
   const window = query.window ?? (query.from || query.to ? "custom" : "365");
   if (!["365", "7", "30", "90", "year", "all", "custom"].includes(window)) invalid("window");
   for (const field of ["from", "to"] as const) if (query[field] !== undefined && !calendarDay(query[field]!)) invalid(field);

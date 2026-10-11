@@ -2,9 +2,27 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { buildOverviewEvidence } from "../src/overview/evidence.js";
 import { resourceIdentity } from "../src/overview/analytics.js";
+import { buildOverviewReport } from "../src/overview/analytics.js";
 import { event, now, pricing, request, resource, session, source } from "./overview-fixtures.js";
 
 const query = { window: "custom" as const, from: "2026-01-01", to: "2026-02-15", timezone: "UTC" };
+test("月份追加边界与所选比较期取交，前期不被裁到当期", () => {
+  const input = source({ sessions: [session("a")], requests: [request("a", "before", "2026-02-05"), request("a", "inside", "2026-02-15"), request("a", "previous", "2026-02-04")] });
+  const filters = { ...query, from: "2026-02-10", to: "2026-02-20", anchorDay: "2026-03-01" };
+  assert.deepEqual(buildOverviewEvidence(input, filters, { kind: "requests", from: "2026-02-01", to: "2026-02-28" }, pricing, now).rows.map(row => row.requestId), ["inside"]);
+  assert.deepEqual(buildOverviewEvidence(input, filters, { kind: "requests", period: "previous", day: "2026-02-04" }, pricing, now).rows.map(row => row.requestId), ["previous"]);
+  assert.equal(buildOverviewEvidence(input, filters, { kind: "requests", day: "2026-02-05", period: "current" }, pricing, now).total, 0);
+});
+test("跨午夜沿用报告快照日期，比较和近期证据不漂移", () => {
+  const firstNow = new Date("2026-03-01T12:00:00Z"), nextNow = new Date("2026-03-02T12:00:00Z");
+  const input = source({ sessions: [session("a")], requests: [request("a", "february", "2026-02-28"), request("a", "march", "2026-03-01")] });
+  const report = buildOverviewReport(input, { window: "365", timezone: "UTC" }, pricing, firstNow);
+  for (const period of ["current", "previous", "recent", "recent_previous"] as const) {
+    const first = buildOverviewEvidence(input, report.query, { kind: "requests", period }, pricing, firstNow);
+    const later = buildOverviewEvidence(input, report.query, { kind: "requests", period }, pricing, nextNow);
+    assert.deepEqual(later.range, first.range); assert.deepEqual(later.rows, first.rows);
+  }
+});
 test("证据分页不改变完整数量，定位字段完整且不包含消息正文", () => {
   const input = source({ sessions: [session("a")], events: Array.from({ length: 6 }, (_, index) => event("a", `event-${index}`, `2026-01-0${index + 1}`)) });
   const first = buildOverviewEvidence(input, query, { kind: "activity", pageSize: 2 }, pricing, now);
@@ -89,6 +107,14 @@ test("工具同名不同服务器用opaque identity精确调查，不串失败�
   assert.equal(calls.rows[0]!.values!.server, "server-a");
   const sequence = buildOverviewEvidence(input, query, { kind: "sequence", server: "server-a", tool: "search" }, pricing, now);
   assert.deepEqual(sequence.rows.map(row => row.messageId), ["failed-a"]);
+});
+test("资源工具维度身份区分缺失、原名unknown和literal前缀", () => {
+  const input = source({ sessions: [session("a")], resources: [resource("a", "missing", "server-a", undefined, { kind: "mcp", server: "server-a" }),
+    resource("a", "literal", "server-a", undefined, { kind: "mcp", server: "server-a", tool: "unknown" }),
+    resource("a", "prefixed", "server-a", undefined, { kind: "mcp", server: "server-a", tool: "literal:x" })] });
+  for (const [toolKey, id] of [["unknown", "missing"], ["literal:unknown", "literal"], ["literal:literal:x", "prefixed"]]) {
+    assert.deepEqual(buildOverviewEvidence(input, query, { kind: "resources", toolKey }, pricing, now).rows.map(row => row.id), [id]);
+  }
 });
 test("模型请求通过结束边界关联消息时不重复增加活动记录", () => {
   const input = source({ sessions: [session("a")], events: [event("a", "response", undefined, { kind: "assistant" })],

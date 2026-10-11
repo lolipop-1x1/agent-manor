@@ -50,6 +50,15 @@ function resource(id: string, extra: Partial<OverviewResourceRow> = {}): Overvie
     firstDay: "2026-02-01", lastDay: "2026-02-25", averagePerSession: 5, clients: [], projects: [], tools: [], days: [],
     results: resultCounts(Array(25).fill("success")), ...extra };
 }
+test("失败调查保留起点，后续调用洞察只计算起点之后", () => {
+  const input = source();
+  input.events.push(event("failed", "main", { ordinal: 2, kind: "tool_call", tool: "read_file", status: "failure" }));
+  assert.equal(analyze(input).insights.some(item => item.rule === "12"), false);
+  input.events.push(event("followup", "main", { ordinal: 3, kind: "tool_call", tool: "read_file", status: "success" }));
+  const insight = analyze(input).insights.find(item => item.rule === "12")!;
+  assert.equal(insight.current, 1); assert.equal(insight.values?.failure, 0);
+  assert.deepEqual(buildOverviewEvidence(input, query, insight.evidence, pricing, now).rows.map(row => row.messageId), ["failed", "followup"]);
+});
 
 test("用量变化采用对称贡献，完整子集分母与缺失分项保留", () => {
   assert.deepEqual(decomposeUsage(20, 2000, 40, 6000), { previousMean: 100, currentMean: 150, countContribution: 2500, meanContribution: 1500 });
@@ -194,7 +203,7 @@ test("单条明确失败可以调查，低结果覆盖不输出失败率重点",
 test("同轮次失败后续保持独立调用，不重复引用共同后续、不声称任务恢复", () => {
   const result = analyze(source(), query, report => {
     report.process.failureSequences = [{ sessionId: "main", turnId: "main:turn:1", tool: "read_file", failures: ["failure-a", "failure-b"],
-      calls: [{ messageId: "later-a", ordinal: 3, status: "failure" }, { messageId: "later-b", resultMessageId: "result-b", ordinal: 4, status: "success" }], truncated: true }];
+      calls: [{ messageId: "failure-a", ordinal: 2, status: "failure" }, { messageId: "later-a", ordinal: 3, status: "failure" }, { messageId: "later-b", resultMessageId: "result-b", ordinal: 4, status: "success" }], truncated: true }];
   });
   const insight = result.insights.find(item => item.rule === "12")!;
   assert.equal(insight.current, 2); assert.equal(insight.sample, 2); assert.equal(insight.values?.success, 1);
@@ -211,16 +220,19 @@ test("跨日续用使用真实日期集合，而不是摘要时间铺满日期",
 test("输入走势按模型片段分开，不跨模型变化推断压缩节省", () => {
   const input = source();
   input.requests = [
-    { sessionId: "main", ordinal: 1, usage: usage("a", { inputTokens: 100 }) },
-    { sessionId: "main", ordinal: 3, usage: usage("b", { inputTokens: 300 }) },
+    { sessionId: "main", ordinal: 1, usage: usage("a", { inputTokens: 100, messageId: "message-a" }) },
+    { sessionId: "main", ordinal: 3, usage: usage("b", { inputTokens: 300, messageId: "message-b" }) },
     { sessionId: "main", ordinal: 4, usage: usage("c", { model: "model-b", inputTokens: 50 }) },
     { sessionId: "main", ordinal: 5, usage: usage("d", { model: "model-b", inputTokens: 80 }) },
   ];
   input.events.push(event("compression", "main", { ordinal: 2, kind: "compression" }));
+  input.events.push(event("message-a", "main", { ordinal: 1, kind: "assistant" }), event("message-b", "main", { ordinal: 3, kind: "assistant" }));
   const segments = analyze(input).insights.filter(item => item.metric === "input_sequence");
   assert.equal(segments.length, 2);
   assert.deepEqual(segments.map(item => [item.previous, item.current]).sort((a, b) => a[0]! - b[0]!), [[50, 80], [100, 300]]);
   assert.equal(segments.find(item => item.previous === 100)?.values?.compressions, 1);
+  const unmapped = segments.find(item => item.previous === 50)!;
+  assert.equal(unmapped.values?.compressions, null); assert.equal(unmapped.descriptor.key, "overview.insight.inputUnmapped");
 });
 
 test("仓库比较使用完整日期comparison值，不用含当天的selected热点", () => {
@@ -404,7 +416,7 @@ test("同名工具的失败洞察与后续过程绑定服务器身份", () => {
     kind: "tool_call", tool: "search", status: "failure", resource: { kind: "mcp", name: server, server } }));
   const result = analyze(input, query, report => {
     report.process.failureSequences = ["server-a", "server-b"].map(server => ({ sessionId: "main", turnId: "main:turn:1", tool: "search", server,
-      failures: [`failure-${server}`], calls: [{ messageId: `later-${server}`, ordinal: 4, status: "success" }], truncated: false }));
+      failures: [`failure-${server}`], calls: [{ messageId: `failure-${server}`, ordinal: server === "server-a" ? 2 : 3, status: "failure" }, { messageId: `later-${server}`, ordinal: 4, status: "success" }], truncated: false }));
   });
   const failures = result.insights.filter(item => item.rule === "11");
   assert.equal(failures.length, 2);

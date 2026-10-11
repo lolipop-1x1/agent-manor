@@ -3,12 +3,13 @@ import test from "node:test";
 import { overviewEvidenceQuery, overviewQuery } from "../src/service/overview-input.js";
 
 test("总览查询只接受本地日期和独立模型范围，保留数组中的路径", () => {
+  assert.equal(overviewQuery({ anchorDay: "2026-10-12" }).anchorDay, "2026-10-12");
   assert.deepEqual(overviewQuery({ window: "custom", from: "2026-10-01", to: "2026-10-12", timezone: "Asia/Shanghai",
     clients: '["codex"]', projects: '["/synthetic/project,one"]', models: '["synthetic-model"]' }), {
     window: "custom", from: "2026-10-01", to: "2026-10-12", timezone: "Asia/Shanghai",
     clients: ["codex"], projects: ["/synthetic/project,one"], models: ["synthetic-model"],
   });
-  for (const raw of [{ from: "2026-02-31" }, { from: "2026-10-01T00:00:00Z" }, { window: "unknown" },
+  for (const raw of [{ anchorDay: "2026-02-31" }, { anchorDay: "2026-10-01T00:00:00Z" }, { anchorDay: ["2026-10-12"] }, { from: "2026-02-31" }, { from: "2026-10-01T00:00:00Z" }, { window: "unknown" },
     { timezone: "synthetic-invalid" }, { clients: '["synthetic-invalid"]' }, { from: "2026-10-12", to: "2026-10-01" },
     { from: "1900-01-01", to: "9999-12-31" }, { relationship: "child" }, { evidence: "{}" }]) {
     assert.throws(() => overviewQuery(raw), { code: "INVALID_INPUT" });

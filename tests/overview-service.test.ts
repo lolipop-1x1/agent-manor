@@ -36,6 +36,10 @@ test("总览后台 HTTP 保持全局与模型局部范围，证据分页不泄�
     resource: { kind: "mcp", name: "synthetic", server: "synthetic" } });
   revision.sink.message({ id: "synthetic-result", sessionId: summary.id, ordinal: 34, recordLine: 35, turnId: "synthetic-turn", kind: "tool_result",
     text: "synthetic-secret-body", occurredAt: "2026-10-11T01:00:02Z", callId: "synthetic-call-id", tool: "mcp__synthetic__query", status: "failure" });
+  revision.sink.message({ id: "synthetic-followup", sessionId: summary.id, ordinal: 35, recordLine: 36, turnId: "synthetic-turn", kind: "tool_call",
+    text: "synthetic-secret-body", occurredAt: "2026-10-11T01:00:03Z", tool: "mcp__synthetic__query", status: "success",
+    resource: { kind: "mcp", name: "synthetic", server: "synthetic" } });
+  revision.sink.usage({ id: "synthetic-outside-request", model: "synthetic-model", inputTokens: 100, outputTokens: 20, occurredAt: "2026-10-05T01:00:00Z" });
   revision.flush(); store.finishRevision(revision.revision, summary);
   const version = store.publish(store.createJob().id, [{ path: summary.path, revision: revision.revision, fingerprint: "synthetic" }], []);
   store.close();
@@ -55,8 +59,16 @@ test("总览后台 HTTP 保持全局与模型局部范围，证据分页不泄�
     assert.deepEqual(first, duplicate);
     assert.equal(first.summary.sessions, 1); assert.equal(first.summary.requests, 31); assert.equal(first.summary.tokens, 31 * 120);
     assert.equal(first.summary.activeDays, 1); assert.equal(first.process.failures, 1);
-    assert.equal(first.resources.mcp[0]!.uses, 1); assert.equal(first.resources.mcp[0]!.results.failure, 1);
+    assert.equal(first.resources.mcp[0]!.uses, 2); assert.equal(first.resources.mcp[0]!.results.failure, 1);
+    assert.deepEqual(first.process.failureSequences, []);
+    assert.equal(first.insights.find(insight => insight.rule === "12")?.current, 1);
     const fixed = new URLSearchParams(params); fixed.set("priceVersion", first.priceVersion);
+    fixed.set("anchorDay", first.query.anchorDay!);
+    fixed.set("evidence", JSON.stringify({ kind: "requests", from: "2026-10-01", to: "2026-10-31" }));
+    assert.equal((await read<OverviewEvidencePage>(`/overview/evidence?${fixed}`)).total, 31);
+    fixed.set("evidence", JSON.stringify({ kind: "sequence", tool: "mcp__synthetic__query", sort: "ordinal", pageSize: 1 }));
+    const sequence = await read<OverviewEvidencePage>(`/overview/evidence?${fixed}`);
+    assert.equal(sequence.total, 2); assert.equal(sequence.rows.length, 1); assert.equal(sequence.rows[0]!.messageId, "synthetic-call");
     const evidence = { kind: "requests", page: 2, pageSize: 12 };
     fixed.set("evidence", JSON.stringify(evidence));
     const page = await read<OverviewEvidencePage>(`/overview/evidence?${fixed}`);
@@ -65,7 +77,7 @@ test("总览后台 HTTP 保持全局与模型局部范围，证据分页不泄�
     params.set("models", '["synthetic-unobserved-model"]');
     const filtered = await read<OverviewReport>(`/overview/report?${params}`);
     assert.equal(filtered.summary.requests, 31); assert.equal(filtered.usage.totals.requests, 0);
-    assert.equal(filtered.process.failures, 1); assert.equal(filtered.resources.mcp[0]!.uses, 1);
+    assert.equal(filtered.process.failures, 1); assert.equal(filtered.resources.mcp[0]!.uses, 2);
     assert.equal(filtered.summary.activeDays, 1);
     assert.equal((await fetch(`${base}/overview/report?window=unknown`)).status, 400);
     assert.equal((await fetch(`${base}/overview/report?version=synthetic-unavailable`)).status, 404);

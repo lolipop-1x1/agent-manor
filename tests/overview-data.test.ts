@@ -6,6 +6,10 @@ import { tmpdir } from "node:os";
 import type { SessionMessage, SessionSourceMeta, SessionUsage } from "../src/session-contracts.js";
 import { SessionStore } from "../src/sessions/store.js";
 import { loadOverviewSource } from "../src/overview/data.js";
+import { buildOverviewReport } from "../src/overview/analytics.js";
+import { generateOverviewInsights } from "../src/overview/insights.js";
+import { buildOverviewEvidence } from "../src/overview/evidence.js";
+import { now, pricing } from "./overview-fixtures.js";
 
 async function fixture(run: (store: SessionStore) => void): Promise<void> {
   const directory = await mkdtemp(join(tmpdir(), "manor-overview-facts-"));
@@ -24,6 +28,19 @@ function publishSource(store: SessionStore, id: string, messages: SessionMessage
 const message = (sessionId: string, id: string, ordinal: number, extra: Partial<SessionMessage> = {}): SessionMessage => ({
   sessionId, id, ordinal, recordLine: ordinal + 1, turnId: "turn-a", kind: "user", text: "合成正文", occurredAt: "2026-01-01T12:00:00Z", ...extra,
 });
+test("请求存储顺序与消息坐标分别保留，压缩洞察和请求明细一致", async () => fixture(store => {
+  const revision = publishSource(store, "a", [message("a", "first", 100, { kind: "assistant" }), message("a", "compact", 101, { kind: "compression" }), message("a", "last", 102, { kind: "assistant" })],
+    [{ id: "first-request", messageId: "first", model: "model-a", occurredAt: "2026-01-01T12:00:00Z", inputTokens: 100, outputTokens: 10 },
+      { id: "last-request", requestMessageIds: ["last"], model: "model-a", occurredAt: "2026-01-01T12:00:00Z", inputTokens: 100, outputTokens: 10 }]);
+  const version = store.publish(store.createJob().id, [revision], []), input = loadOverviewSource(store, version);
+  assert.deepEqual(input.requests.map(request => request.ordinal), [1, 2]);
+  const report = buildOverviewReport(input, { window: "all", timezone: "UTC" }, pricing, now);
+  const insight = generateOverviewInsights(input, report.query, pricing, report, now).insights.find(item => item.metric === "input_sequence")!;
+  assert.equal(insight.values?.compressions, 1);
+  const evidence = buildOverviewEvidence(input, report.query, insight.evidence, pricing, now);
+  assert.deepEqual(evidence.rows.map(row => row.values?.eventOrdinal), [100, 102]);
+  assert.equal(JSON.parse(String(evidence.rows[1]!.values?.compressions)).length, 1);
+}));
 test("事实投影读取完整固定版本，正文、工具参数及继承副本均不进入总览source", async () => fixture(store => {
   const revision = publishSource(store, "a", [
     message("a", "user", 1, { text: "synthetic-body-marker".repeat(20000) }),
