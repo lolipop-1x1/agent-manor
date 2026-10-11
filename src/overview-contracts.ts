@@ -62,6 +62,7 @@ export interface OverviewCountRow {
   sessions: number;
   requests?: number;
   tokens?: number | null;
+  estimatedCost?: number | null;
   results?: OverviewResultCounts;
 }
 export interface OverviewActivityDay {
@@ -155,7 +156,8 @@ export interface OverviewTimingGroup {
   basis: "recorded" | "estimated";
   method: string;
   samples: number;
-  duration: { medianMs: number | null; p90Ms: number | null; maxMs: number | null; averageMs: number | null };
+  duration: { medianMs: number | null; p90Ms: number | null; maxMs: number | null; averageMs: number | null;
+    histogram?: { fromMs: number; toMs: number; count: number }[] };
   speed: { samples: number; median: number | null; p90: number | null; average: number | null };
   longest: { sessionId: string; requestId: string; messageId?: string; durationMs: number }[];
 }
@@ -237,7 +239,13 @@ export interface OverviewEvidenceQuery {
   project?: string;
   model?: string;
   sessionId?: string;
+  requestId?: string;
   turnId?: string;
+  ordinalFrom?: number;
+  ordinalTo?: number;
+  modelFrom?: string;
+  modelTo?: string;
+  transition?: "switch" | "delegation";
   relationship?: "main" | "child" | "fork";
   resourceId?: string;
   resourceKind?: "skill" | "mcp";
@@ -315,6 +323,24 @@ export interface OverviewInsight {
   values?: Record<string, string | number | boolean | null>;
   evidence: OverviewEvidenceQuery;
 }
+export interface OverviewProjectMonth {
+  month: string;
+  project: string | null;
+  sessions: number;
+  requests: number;
+  tokens: number | null;
+  completeTokenRequests: number;
+  partialTokenRequests: number;
+  missingTokenRequests: number;
+}
+export interface OverviewModelTransition {
+  kind: "switch" | "delegation";
+  fromModel: string;
+  toModel: string;
+  count: number;
+  sessions: number;
+  evidence: OverviewEvidenceQuery;
+}
 export interface OverviewReport {
   version: string;
   priceVersion: string;
@@ -327,6 +353,8 @@ export interface OverviewReport {
   usage: UsageReport;
   activity: OverviewActivity;
   distributions: { clients: OverviewCountRow[]; projects: OverviewCountRow[]; models: OverviewCountRow[] };
+  projectMonths: OverviewProjectMonth[];
+  modelTransitions: OverviewModelTransition[];
   resources: OverviewResources;
   process: OverviewProcess;
   delegation: OverviewDelegation;
