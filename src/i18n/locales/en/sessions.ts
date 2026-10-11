@@ -1,6 +1,8 @@
 import type { MessageCatalog } from "../../types.js";
 
 export default {
+  "sessions.profile.costSubtotal": "Known cost subtotal",
+  "sessions.profile.costHelp": "Costs cover all recorded requests in this session, including undated requests. Including child sessions adds their own new usage; detail pagination does not change the amount. Rates follow Usage statistics. Free channels and Token Plan requests also use API benchmark rates.",
   "sessions.reading.loadEarlier": "Load earlier content",
   "sessions.reading.loadLater": "Load later content",
   "sessions.message.aiModel": "AI · {{model}}",

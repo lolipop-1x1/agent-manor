@@ -1,6 +1,8 @@
 import type { MessageCatalog } from "../../types.js";
 
 export default {
+  "sessions.profile.costSubtotal": "已知费用小计",
+  "sessions.profile.costHelp": "费用覆盖当前会话的全部已记录请求，包括没有时间的请求；包含子会话时纳入已关联子会话各自新增的用量，明细分页不改变金额。单价与用量统计页一致，免费渠道和 Token Plan 套餐内请求也按 API 基准估算。",
   "sessions.reading.loadEarlier": "加载更早内容",
   "sessions.reading.loadLater": "加载后续内容",
   "sessions.message.aiModel": "AI · {{model}}",

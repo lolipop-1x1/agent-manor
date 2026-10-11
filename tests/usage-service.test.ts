@@ -53,6 +53,12 @@ test("用量 HTTP 固定索引与价格版本，覆盖多页请求、手动价�
     assert.equal(report.totals.pricedRequests, 31);
     assert.ok(Math.abs(report.totals.estimatedCost! - 31 * (60 * 4 + 40 * 0.4 + 20 * 20) / 1_000_000) < 1e-10);
     assert.equal(report.buckets.reduce((sum, bucket) => sum + bucket.totals.tokens!, 0), report.totals.tokens);
+    const sessionCost = await api<{ version: string; priceVersion: string; totals: UsageReport["totals"] }>(`/sessions/${summary.id}/cost?version=${version}&priceVersion=${custom.version}`);
+    assert.equal(sessionCost.version, version);
+    assert.equal(sessionCost.priceVersion, custom.version);
+    assert.equal(sessionCost.totals.requests, 31);
+    assert.equal(sessionCost.totals.estimatedCost, report.totals.estimatedCost);
+    assert.equal(sessionCost.totals.pricedRequests, 31);
     const page = await api<UsageRequestPage>(`/usage/requests?${params}&sessionId=${summary.id}&requestPage=2&requestPageSize=12`);
     assert.equal(page.total, 31); assert.equal(page.requests.length, 12);
     assert.equal(page.requests[0]!.usage.id, "synthetic-request-12");

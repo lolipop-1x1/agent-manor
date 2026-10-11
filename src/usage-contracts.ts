@@ -19,6 +19,10 @@ export interface UsageQuery {
 export interface UsageSource {
   version: string; sessions: SessionSummary[]; requests: { sessionId: string; usage: SessionUsage }[];
 }
+export interface SessionCostSummary {
+  version: string; priceVersion: string; currency: "USD";
+  scope: "self" | "tree"; sessionIds: string[]; totals: UsageTotals;
+}
 export interface UsagePreparationStatus {
   state: "idle" | "preparing" | "ready" | "failed";
   version?: string; priceVersion?: string; timezone?: string;

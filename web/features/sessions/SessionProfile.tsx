@@ -3,6 +3,7 @@ import { formatDateTime, formatNumber, formatPercent } from "../../../src/i18n";
 import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { CaretLeft, CaretRight, Crosshair } from "@phosphor-icons/react";
 import type { SessionProfile, SessionSummary, SessionTimelineEvent } from "../../../src/session-contracts";
+import type { SessionCostSummary } from "../../../src/usage-contracts";
 import { sessionDisplayTitle, displayRecorded, sessionResourceName, sessionParams, usageAxis, usageIndexAt, usageSegments, type EvidenceTarget } from "./session-model";
 import { kindLabels, resourceLabels } from "./SessionMessage";
 import { Notice, Pager, SessionDiagnostic, SessionError } from "./SessionControls";
@@ -111,19 +112,22 @@ const metrics = [
   ["reasoningOutputTokens", "sessions.profile.reasoningTokens"], ["peakInputTokens", "sessions.profile.maxInput"], ["peakContextTokens", "sessions.profile.peakContext"],
 ] as const;
 
-export function SessionProfilePane({ profile, loading, error, includeChildren, setIncludeChildren, collapsed, setCollapsed, onRetry, onSelectChild, onFocusStep, onFind, onFocusEvent }: {
+export function SessionProfilePane({ active, profile, loading, error, includeChildren, setIncludeChildren, collapsed, setCollapsed, onRetry, onSelectChild, onFocusStep, onFind, onFocusEvent }: {
+  active: boolean;
   profile: SessionProfile | null; loading: boolean; error: Error | null; includeChildren: boolean; setIncludeChildren: (value: boolean) => void;
   collapsed: boolean; setCollapsed: (value: boolean) => void; onRetry: () => void;
   onSelectChild: (session: SessionSummary) => void; onFocusStep: (step: SessionProfile["steps"][number]) => void; onFind: (target: EvidenceTarget) => void;
   onFocusEvent: (event: SessionTimelineEvent) => void;
 }) {
-  useI18n();
+  const { number } = useI18n();
   const [tab, setTab] = useState<"overview" | "calls" | "usage">("overview");
   const [stepPage, setStepPage] = useState(1);
   const [usageDetails, setUsageDetails] = useState<SessionProfile>();
   const [usageLoading, setUsageLoading] = useState(false);
   const [usageError, setUsageError] = useState<Error>();
   const [usageRetry, setUsageRetry] = useState(0);
+  const [costState, setCostState] = useState<{ key: string; loading: boolean; value?: SessionCostSummary; error?: Error }>();
+  const [costRetry, setCostRetry] = useState(0);
   const hasCalls = !!profile && (profile.tools.length > 0 || profile.resources.length > 0);
   const visibleMetrics = profile ? metrics.filter(([key]) => profile.usage[key] !== null) : [];
   const hasUsage = visibleMetrics.length > 0 || !!profile?.usage.requests;
@@ -132,6 +136,22 @@ export function SessionProfilePane({ profile, loading, error, includeChildren, s
   const visibleTab = tab === "calls" && !hasCalls || tab === "usage" && !hasUsage ? "overview" : tab;
   const primaryMetrics = visibleMetrics.filter(([key]) => key === "inputTokens" || key === "outputTokens");
   const extraMetrics = visibleMetrics.filter(([key]) => visibleTab === "usage" && !["inputTokens", "outputTokens", "peakInputTokens"].includes(key));
+  const requestedScope = includeChildren ? "tree" : "self";
+  const costKey = JSON.stringify([profile?.version, profile?.sessionIds[0], requestedScope]);
+  useEffect(() => {
+    if (!profile || !active || collapsed || !profile.usage.requests || profile.scope !== requestedScope) { setCostState(undefined); return; }
+    const controller = new AbortController(); setCostState({ key: costKey, loading: true });
+    void request<SessionCostSummary>(`/sessions/${encodeURIComponent(profile.sessionIds[0]!)}/cost${sessionParams({ version: profile.version, includeChildren: profile.scope === "tree" })}`, { signal: controller.signal })
+      .then(result => { if (!controller.signal.aborted) setCostState({ key: costKey, loading: false, value: result }); })
+      .catch(failure => { if (!controller.signal.aborted && !isAborted(failure)) setCostState({ key: costKey, loading: false, error: failure instanceof Error ? failure : new Error(String(failure)) }); });
+    return () => controller.abort();
+  }, [active, costKey, requestedScope, profile?.scope, profile?.usage.requests, collapsed, costRetry]);
+  const currentCost = costState?.key === costKey ? costState : undefined;
+  const costLoading = loading || !!currentCost?.loading;
+  const costError = currentCost?.error;
+  const cost = currentCost?.value;
+  const visibleCost = profile?.scope === requestedScope && cost?.version === profile?.version && cost?.scope === requestedScope && cost?.sessionIds[0] === profile?.sessionIds[0] ? cost : undefined;
+  const incompleteCost = !!visibleCost && (visibleCost.totals.partiallyPricedRequests > 0 || visibleCost.totals.unpricedRequests > 0);
   useEffect(() => { setStepPage(1); }, [profile?.sessionIds[0], profile?.scope]);
   useEffect(() => { setStepPage(page => Math.min(page, Math.max(1, Math.ceil((profile?.usage.requests ?? 0) / 12)))); }, [profile?.usage.requests]);
   useEffect(() => {
@@ -187,11 +207,18 @@ export function SessionProfilePane({ profile, loading, error, includeChildren, s
         {visibleTab !== "calls" && hasUsage && <>
           <section className="session-profile-section"><div className="session-section-heading"><h3>{t("sessions.trace.usageRequest")}</h3><div className="section-actions"><span>{t("sessions.profile.requestCount", { count: profile.usage.requests })}</span><HelpPopover iconOnly label={t("sessions.profile.statsHelp")}>
             <p>{t("sessions.profile.cacheHelp")}</p><p>{t("sessions.profile.scopeHelp", { scope: profile.scope === "tree" ? t("sessions.profile.selfTree") : t("sessions.profile.currentSelf") })}</p>
+            <p>{t("sessions.profile.costHelp")}</p><p>{t("usage.help.cost")}</p>
+            {visibleCost && <><p>{t("usage.coverage.cost", { complete: visibleCost.totals.pricedRequests, partial: visibleCost.totals.partiallyPricedRequests, missing: visibleCost.totals.unpricedRequests })}</p><p>{t("usage.coverage.priceBasis", { historical: visibleCost.totals.historicalPricedRequests, snapshot: visibleCost.totals.currentSnapshotPricedRequests, manual: visibleCost.totals.manualPricedRequests })}</p></>}
             <p>{isMessageDescriptorKnown(profile.estimate.methodDescriptor) ? messageText(profile.estimate.methodDescriptor, profile.estimate.method) : profile.estimate.method}</p><SpeedAlgorithmHelp />
           </HelpPopover></div></div>
             <div className="session-usage-grid">{primaryMetrics.map(metric)}<AverageSpeedMetric summary={speedSummary} />
               {profile.usage.peakInputTokens !== null && metric(["peakInputTokens", "sessions.profile.maxInput"])}{extraMetrics.map(metric)}</div>
             {coverage.length > 0 && <div className="session-usage-coverage">{coverage.map(group => <p key={group.count}><span>{group.labels.map(label => t(label)).join(" · ")}</span><strong>{t("sessions.usage.recordedRange", { count: group.count, total: group.total })}</strong></p>)}</div>}
+            <div className="session-cost" role="group" aria-label={t("usage.metric.cost")} data-price-version={visibleCost?.priceVersion}>
+              <div className="session-cost-heading"><span>{t("usage.metric.cost")}</span>{costLoading ? <span role="status">{t("common.loading")}</span> : <strong><span className="session-cost-value">{visibleCost?.totals.estimatedCost == null ? "—" : number(visibleCost.totals.estimatedCost, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span><small>USD</small></strong>}</div>
+              {costError && <Notice danger action={<button className="text-button" onClick={() => setCostRetry(value => value + 1)}>{t("common.retry")}</button>}><SessionError error={costError} /></Notice>}
+              {incompleteCost && <div className="session-cost-coverage">{visibleCost.totals.estimatedCost !== null && <strong>{t("sessions.profile.costSubtotal")}</strong>}<span>{t("usage.coverage.cost", { complete: visibleCost.totals.pricedRequests, partial: visibleCost.totals.partiallyPricedRequests, missing: visibleCost.totals.unpricedRequests })}</span></div>}
+            </div>
             {profile.usage.cacheReadRatio !== null && profile.usage.inputRecordedRequests === profile.usage.requests && profile.usage.cacheRecordedRequests === profile.usage.requests && <div className="session-cache-ratio"><div><span>{t("sessions.profile.cacheRatio")}</span><strong>{normalizedRatio(profile.usage.cacheReadRatio)}</strong></div></div>}
           </section>
         </>}

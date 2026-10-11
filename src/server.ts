@@ -99,7 +99,7 @@ export async function startService(options: ServiceOptions = {}) {
       reply.code(statusCode(code)).send({ error: { code, message: known ? error.message : malformed ? "无效 HTTP 请求" : "本地服务处理失败", messageDescriptor: known ? error.messageDescriptor : malformed ? { key: "diagnostics.server.m002" } : { key: "diagnostics.server.m003" } } });
     });
     app.setNotFoundHandler((_request, reply) => { reply.code(404).send({ error: { code: "FILE_NOT_FOUND", message: "资源不存在", messageDescriptor: { key: "diagnostics.server.m004" } } }); });
-    registerUsageRoutes(app, usageManager, pricing);
+    registerUsageRoutes(app, usageManager, pricing, library);
     app.addHook("onRequest", async (request) => {
       let host: URL;
       try { host = new URL(`http://${request.headers.host ?? ""}`); } catch { throw new ServiceError("FORBIDDEN", "无效 Host", { key: "diagnostics.server.m005" }); }

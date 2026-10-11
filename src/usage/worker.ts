@@ -6,7 +6,7 @@ import { ServiceError } from "../service/input.js";
 import { SessionStore } from "../sessions/store.js";
 import type { UsageFactMetadata } from "../sessions/usage-facts.js";
 import type { PricingStatus, UsagePreparationStatus, UsageQuery, UsageSource } from "../usage-contracts.js";
-import { buildUsageReport, buildUsageRequestPage, queryOf, timeKeys } from "./analytics.js";
+import { accumulator, add, buildUsageReport, buildUsageRequestPage, coverageOf, instant, queryOf, timeKeys } from "./analytics.js";
 import { UsageResultCache } from "./cache.js";
 import { createPricingEstimator } from "./pricing.js";
 import { buildUsageRollup, buildUsageRollupReport, canUseUsageRollup, combineUsageRollups } from "./rollup.js";
@@ -196,7 +196,21 @@ async function handle(message: UsageWorkerRequest): Promise<void> {
   try {
     const query = validate(message.query, message.pricing), estimate = createPricingEstimator(message.pricing);
     let result;
-    if (message.type === "requests") {
+    if (message.type === "sessionCost") {
+      const total = accumulator();
+      // 只读当前画像范围的精简事实；价格缓存不进入纯画像摘要，也不等待全历史汇总。
+      for (const sessionId of message.sessionIds!) {
+        const target = sessions.usageFactSession(query.version!, sessionId);
+        if (!target) throw new StoreError("SOURCE_NOT_FOUND", "会话不存在于当前索引版本", { key: "diagnostics.sessions.store.m011" });
+        sessions.ensureUsageFacts(target.revision);
+        for (const usage of sessions.usageFacts(target.revision)) {
+          add(total, { session: target.session, usage, cost: estimate(usage, target.session.client), coverage: coverageOf(usage), time: instant(usage.occurredAt) });
+        }
+        await nextTurn();
+      }
+      result = { version: query.version!, priceVersion: message.pricing.version, currency: message.pricing.currency,
+        scope: message.scope!, sessionIds: message.sessionIds!, totals: total.totals };
+    } else if (message.type === "requests") {
       const target = sessions.usageFactSession(query.version!, message.sessionId!);
       if (target) sessions.ensureUsageFacts(target.revision);
       const source: UsageSource = { version: query.version!, sessions: target ? [target.session] : [],

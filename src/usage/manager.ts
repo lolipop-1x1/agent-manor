@@ -1,16 +1,16 @@
 import { Worker } from "node:worker_threads";
 import type { MessageDescriptor } from "../i18n/types.js";
 import { StoreError } from "../index/store.js";
-import type { SessionUsage } from "../session-contracts.js";
+import type { SessionProfile, SessionUsage } from "../session-contracts.js";
 import type { SessionStore } from "../sessions/store.js";
-import type { RequestCost, UsagePreparationStatus, UsageQuery, UsageReport, UsageRequestPage } from "../usage-contracts.js";
+import type { RequestCost, SessionCostSummary, UsagePreparationStatus, UsageQuery, UsageReport, UsageRequestPage } from "../usage-contracts.js";
 import { queryOf, timeKeys } from "./analytics.js";
 import { UsageResultCache } from "./cache.js";
 import type { PricingService } from "./pricing.js";
 import { preparationKey } from "./worker-contracts.js";
 import type { UsageWorkerRequest, UsageWorkerResponse } from "./worker-contracts.js";
 
-type Result = UsageReport | UsageRequestPage;
+type Result = UsageReport | UsageRequestPage | SessionCostSummary;
 interface Pending {
   query: UsageQuery;
   resolve(result: Result | null): void;
@@ -86,6 +86,7 @@ export class UsageManager {
   }
 
   private hydrate(result: Result): Result {
+    if ("scope" in result) return result;
     const view = this.pricing.view(result.priceVersion);
     const restore = (sessionId: string, requests: { usage: SessionUsage; cost: RequestCost }[], client?: string) => {
       if (!requests.length) return [];
@@ -104,7 +105,7 @@ export class UsageManager {
     return { ...result, requests: restore(result.sessionId, result.requests) };
   }
 
-  private execute(type: UsageWorkerRequest["type"], query: UsageQuery, extra: Pick<UsageWorkerRequest, "sessionId" | "page" | "pageSize"> = {}): Promise<Result | null> {
+  private execute(type: UsageWorkerRequest["type"], query: UsageQuery, extra: Pick<UsageWorkerRequest, "sessionId" | "page" | "pageSize" | "sessionIds" | "scope"> = {}): Promise<Result | null> {
     if (this.closed) return Promise.reject(interrupted());
     const key = requestKey(type, query, extra), current = this.inFlight.get(key);
     if (current) return current;
@@ -132,6 +133,12 @@ export class UsageManager {
 
   async requests(query: UsageQuery, sessionId: string, page = 1, pageSize = 100): Promise<UsageRequestPage> {
     const result = await this.execute("requests", this.fixed(query), { sessionId, page, pageSize }) as UsageRequestPage;
+    return structuredClone(result);
+  }
+
+  async sessionCost(profile: Pick<SessionProfile, "version" | "sessionIds" | "scope">, priceVersion?: string): Promise<SessionCostSummary> {
+    const result = await this.execute("sessionCost", this.fixed({ version: profile.version, priceVersion }),
+      { sessionIds: profile.sessionIds, scope: profile.scope }) as SessionCostSummary;
     return structuredClone(result);
   }
 

@@ -110,7 +110,7 @@ export default function Usage({ active, onSession }: { active: boolean; onSessio
     return () => controller.abort();
   }, [active, requestQueryKey]);
   const updatePrice = useCallback((value: PricingStatus) => { setPricing(value); setVersions(current => current ? { ...current, price: value.version } : current); }, []);
-  const value = (amount: number | null | undefined, cost = false) => amount == null ? "—" : number(amount, cost ? { minimumFractionDigits: 2, maximumFractionDigits: 6 } : {});
+  const value = (amount: number | null | undefined, cost = false) => amount == null ? "—" : number(amount, cost ? { minimumFractionDigits: 2, maximumFractionDigits: 2 } : {});
   const metric = route.metric ?? "tokens"; const group = route.groupBy ?? "model";
   const labels = (values: string[], kind: UsageGroup) => values.map(item => { const original = usageDimensionValue(item); return { value: item, label: kind === "project" && original !== undefined ? original.split(/[\\/]/).filter(Boolean).at(-1) ?? original : groupLabel(item, kind, t("usage.unknown")), ...(kind === "project" && original !== undefined ? { description: original } : {}) }; });
   const filterDefinitions = [

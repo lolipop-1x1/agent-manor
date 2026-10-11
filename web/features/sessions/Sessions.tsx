@@ -844,7 +844,7 @@ export default function Sessions({ active, target, onMap, autoRefreshError }: { 
 
       </main>
 
-      <SessionProfilePane profile={selectedProfile} loading={profileLoading} error={profileError} includeChildren={includeChildren} setIncludeChildren={setIncludeChildren}
+      <SessionProfilePane active={active} profile={selectedProfile} loading={profileLoading} error={profileError} includeChildren={includeChildren} setIncludeChildren={setIncludeChildren}
         collapsed={rightCollapsed} setCollapsed={value => { setRightCollapsed(value); setCompactPanel(null); }}
         onRetry={() => setProfileRetry(value => value + 1)} onSelectChild={selectSession} onFocusStep={focusStep} onFind={findEvidence} onFocusEvent={event => focusStep({ id: event.id, sessionId: event.sessionId, messageId: event.id })} />
     </ResizableWorkspace>

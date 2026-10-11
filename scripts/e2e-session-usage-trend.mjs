@@ -34,9 +34,13 @@ try {
   await writeFile(join(history, "parent.jsonl"), encodeSession(parent));
   await writeFile(join(history, "child.jsonl"), encodeSession(child));
   service = await startService({ home, startupRefresh: false, roots: Object.fromEntries(clientIds.map(client => [client, client === "codex" ? [history] : []])),
-    resourceInventory: { userHome: join(directory, "isolated-user"), environment: {} } });
+    resourceInventory: { userHome: join(directory, "isolated-user"), environment: {} },
+    usagePricing: { fetch: async () => { throw new Error("synthetic offline"); } } });
   const base = `http://127.0.0.1:${service.instance.port}`;
   const api = async (path, options) => { const response = await fetch(`${base}/api/v1${path}`, options); assert.equal(response.status, 200); return response.json(); };
+  await api("/usage/pricing", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({
+    overrides: [{ model: "fixture-model", input: 2, output: 10, cacheRead: 0.2 }], mappings: [],
+  }) });
   const { job } = await api("/sessions/refresh", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
   for (let attempt = 0; attempt < 200; attempt++) {
     const result = await api(`/jobs/${job.id}`); assert.notEqual(result.job.status, "failed");
@@ -57,6 +61,9 @@ try {
     await page.setViewportSize({ width: 1560, height: 1080 }); await page.reload();
     await page.getByRole("button", { name: zh ? "会话库" : "Sessions", exact: true }).click();
     await page.locator(".session-list-item").filter({ hasText: "长会话工作区验收" }).click();
+    const cost = page.getByRole("group", { name: zh ? "估算费用" : "Estimated cost", exact: true });
+    await cost.getByText("0.39", { exact: true }).waitFor();
+    ensure((await cost.innerText()).includes("USD"), "会话概览费用缺少币种");
     await page.getByRole("tab", { name: zh ? "用量" : "Usage", exact: true }).click();
     for (const total of [210, 216]) {
       if (total === 216) {
@@ -64,6 +71,7 @@ try {
         await page.waitForFunction(total => document.querySelector(".session-chart-hit")?.getAttribute("aria-valuemax") === String(total), total);
       }
       await page.locator(".session-step-table tbody tr").first().waitFor(); await page.waitForLoadState("networkidle");
+      await cost.getByText("0.39", { exact: true }).waitFor();
       const hit = page.getByRole("slider", { name: zh ? "选择用量请求" : "Select usage request", exact: true });
       ensure(await hit.getAttribute("aria-valuemax") === String(total), `趋势末请求应为 ${total}，实际为 ${await hit.getAttribute("aria-valuemax")}`);
       const table = page.locator(".session-step-table tbody tr");
@@ -72,7 +80,7 @@ try {
       const before = await chart();
       ensure(before[0].split(" ").length === total, "趋势没有包含全部请求");
       ensure(await table.count() === 12 && (await table.first().innerText()).startsWith("#1\t"), "范围切换后请求表应从首页开始");
-      const profileRequests = []; const record = request => { if (request.url().includes("/profile")) profileRequests.push(request.url()); };
+      const profileRequests = []; const record = request => { if (/\/(profile|cost)(\?|$)/.test(request.url())) profileRequests.push(request.url()); };
       page.on("request", record);
       await pager.getByRole("button", { name: zh ? "请求明细分页下一页" : "Request details pagination next page", exact: true }).click();
       ensure((await table.first().innerText()).startsWith("#13\t"), "请求表没有翻到第二页");
@@ -80,7 +88,7 @@ try {
       await pager.getByRole("button", { name: zh ? "请求明细分页末页" : "Request details pagination last page", exact: true }).click();
       ensure((await table.last().innerText()).startsWith(`#${total}\t`), "表格末页请求编号错误");
       ensure(JSON.stringify(await chart()) === JSON.stringify(before), "表格末页改变了完整趋势");
-      page.off("request", record); ensure(profileRequests.length === 0, "表格翻页重复获取画像");
+      page.off("request", record); ensure(profileRequests.length === 0, "表格翻页重复获取画像或费用");
       await hit.focus(); await page.keyboard.press("End");
       ensure(await hit.getAttribute("aria-valuenow") === String(total), "图表键盘未覆盖末请求");
       const tooltip = page.getByRole("tooltip"); await tooltip.waitFor();
@@ -90,13 +98,71 @@ try {
       ensure((await page.locator(".session-message.is-focused, .trace-detail-body").innerText()).includes(zh ? "请求用量（记录值）" : "Request usage (recorded values)"), "图表末请求未定位用量记录");
       await page.screenshot({ path: `${fixture.artifacts}/${fixture.language}-${total}.png` });
     }
+    await page.locator(".session-list-item").filter({ hasText: "长会话工作区验收" }).click();
+    await cost.getByText("0.39", { exact: true }).waitFor();
+    await page.getByRole("tab", { name: zh ? "概览" : "Overview", exact: true }).click();
+    const costRoute = /\/api\/v1\/sessions\/[^/]+\/cost(?:\?|$)/;
+    await page.route(costRoute, async route => { await page.waitForTimeout(500); await route.continue(); });
+    await page.getByRole("button", { name: zh ? "自身" : "Self", exact: true }).click();
+    ensure(await cost.getByText("0.39", { exact: true }).count() === 0, "范围已切换但仍显示旧费用");
+    await page.getByRole("button", { name: zh ? "包含子会话" : "Include child sessions", exact: true }).click();
+    await cost.getByText("0.39", { exact: true }).waitFor();
+    await page.unroute(costRoute);
+    await page.screenshot({ path: `${fixture.artifacts}/${fixture.language}-cost-overview.png` });
+    const price = async overrides => {
+      const response = await page.request.put(`${fixture.base}/api/v1/usage/pricing`, { data: { overrides, mappings: [] } });
+      ensure(response.ok(), "合成价格未保存");
+      await page.getByRole("button", { name: zh ? "用量统计" : "Usage", exact: true }).click();
+      await page.getByRole("button", { name: zh ? "会话库" : "Sessions", exact: true }).click();
+    };
+    await price([{ model: "fixture-model", input: 4, output: 20, cacheRead: 0.4 }]);
+    await cost.getByText("0.78", { exact: true }).waitFor();
+    await price([{ model: "fixture-model", input: 0, output: 0, cacheRead: 0 }]);
+    await cost.getByText("0.00", { exact: true }).waitFor();
+    ensure(!(await cost.innerText()).includes(zh ? "未定价" : "unpriced"), "明确零价被当作未定价");
+    await price([]);
+    await cost.getByText("—", { exact: true }).waitFor();
+    await cost.getByText(zh ? "完整估价 0 · 部分 0 · 未定价 216" : "Fully priced 0 · partial 0 · unpriced 216", { exact: true }).waitFor();
+    await page.screenshot({ path: `${fixture.artifacts}/${fixture.language}-cost-unpriced.png` });
+    await price([{ model: "fixture-model", input: 2, output: 10 }]);
+    await cost.getByText("0.34", { exact: true }).waitFor();
+    await cost.getByText(zh ? "已知费用小计" : "Known cost subtotal", { exact: true }).waitFor();
+    await cost.getByText(zh ? "完整估价 0 · 部分 216 · 未定价 0" : "Fully priced 0 · partial 216 · unpriced 0", { exact: true }).waitFor();
+    await page.screenshot({ path: `${fixture.artifacts}/${fixture.language}-cost-partial.png` });
+    await price([{ model: "fixture-model", input: 2, output: 10, cacheRead: 0.2 }]);
+    await cost.getByText("0.39", { exact: true }).waitFor();
+    await page.getByRole("button", { name: zh ? "统计口径" : "Statistics methodology", exact: true }).click();
+    await page.getByText(zh ? "可估价请求依据：历史单价 0 · 当前快照 0 · 用户单价 216" : "Priced requests: historical 0 · current snapshot 0 · manual 216", { exact: true }).waitFor();
+    await page.keyboard.press("Escape");
+    await page.route(costRoute, route => route.fulfill({ status: 503, contentType: "application/json", body: JSON.stringify({ error: { code: "INTERNAL_ERROR", message: "synthetic pricing failure", messageDescriptor: { key: "common.error.query" } } }) }));
+    await page.getByRole("button", { name: zh ? "收起会话画像" : "Collapse session profile", exact: true }).click();
+    await page.getByRole("button", { name: zh ? "展开会话画像" : "Expand session profile", exact: true }).click();
+    await cost.getByRole("button", { name: zh ? "重试" : "Retry", exact: true }).waitFor();
+    ensure(await page.locator(".session-usage-grid").first().isVisible(), "费用错误阻断会话画像");
+    await page.unroute(costRoute);
+    await cost.getByRole("button", { name: zh ? "重试" : "Retry", exact: true }).click();
+    await cost.getByText("0.39", { exact: true }).waitFor();
+    await page.getByRole("button", { name: zh ? "外观" : "Appearance", exact: true }).click();
+    await page.getByRole("combobox", { name: zh ? "显示模式" : "Display mode", exact: true }).click();
+    await page.getByRole("option", { name: zh ? "深色" : "Dark", exact: true }).click();
+    await page.getByRole("dialog", { name: zh ? "外观" : "Appearance", exact: true }).press("Escape");
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.getByRole("button", { name: zh ? "会话统计" : "Session statistics", exact: true }).click();
+    await cost.getByText("0.39", { exact: true }).waitFor();
+    ensure(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth), "费用导致窄屏横向溢出");
+    await page.screenshot({ path: `${fixture.artifacts}/${fixture.language}-cost-mobile-dark.png` });
+    await page.setViewportSize({ width: 1560, height: 1080 });
+    await page.getByRole("button", { name: zh ? "外观" : "Appearance", exact: true }).click();
+    await page.getByRole("combobox", { name: zh ? "显示模式" : "Display mode", exact: true }).click();
+    await page.getByRole("option", { name: zh ? "明亮" : "Light", exact: true }).click();
+    await page.getByRole("dialog", { name: zh ? "外观" : "Appearance", exact: true }).press("Escape");
     ensure(errors.length === 0, errors.join(";"));
-    return { passed: true, language: fixture.language, scopes: [210, 216], errors };
+    return { passed: true, language: fixture.language, scopes: [210, 216], cost: ["overview", "scope", "pagination", "manual-update", "zero", "unpriced", "partial", "help", "retry", "mobile-dark"], errors };
   };
   const reports = [];
   for (const language of ["zh-CN", "en"]) {
     await api("/preferences", { method: "PUT", headers: { "Content-Type": "application/json", "x-agent-manor-instance": service.instance.id }, body: JSON.stringify({ language }) });
-    const result = await browser(["run-code", `async page => (${verify.toString()})(page, ${JSON.stringify({ language, artifacts })})`]);
+    const result = await browser(["run-code", `async page => (${verify.toString()})(page, ${JSON.stringify({ language, artifacts, base })})`]);
     reports.push(result); console.log(result.split("### Ran Playwright code")[0]);
   }
   await writeFile(join(artifacts, "report.txt"), reports.join("\n"));
