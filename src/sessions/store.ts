@@ -9,6 +9,7 @@ import type { Client } from "../clients.js";
 import type { SourceLocation } from "../history/types.js";
 import type { ResourceEventStream, ResourceHistoryIdentity, ResourceUsageIdentity, ResourceUsageEvent, ResourceUsageQuery } from "../resource-contracts.js";
 import type { UsageSource } from "../usage-contracts.js";
+import type { OverviewEvent, OverviewSource } from "../overview-contracts.js";
 import type { SessionGroupedSearchResult, SessionTurnDirectory, SessionIndexStatus, SessionJob, SessionListResult, SessionMessage, SessionMessageQuery, SessionMessageResult, SessionProfile, SessionProfileQuery, SessionQuery, SessionRefreshOptions, SessionSearchResult, SessionSink, SessionSourceMeta, SessionSummary, SessionTimelineEvent, SessionTimelineQuery, SessionTimelineResult, SessionUsage } from "../session-contracts.js";
 import { StoreError } from "../index/store.js";
 import { summarizeRequestSpeed } from "../session-speed.js";
@@ -786,6 +787,42 @@ export class SessionStore {
   }
 
   usageVersion(requestedVersion?: string): string { return this.version(requestedVersion); }
+
+  /** 总览后台读取完整版本的轻量事实，不查询消息正文与工具参数。 */
+  overviewSource(requestedVersion?: string): OverviewSource {
+    return this.database.transaction(() => {
+      const { version, sessions } = this.usageFactSessions(requestedVersion);
+      const eventRows = this.database.prepare(`SELECT v.session_id,m.id,m.ordinal,m.turn_id,m.kind,m.call_id,
+        json_extract(m.json,'$.occurredAt') AS occurred_at,json_extract(m.json,'$.model') AS model,
+        json_extract(m.json,'$.tool') AS tool,json_extract(m.json,'$.status') AS status,
+        json_extract(m.json,'$.durationMs') AS duration_ms,json_extract(m.json,'$.contextSource') AS context_source,
+        json_extract(m.json,'$.contextEvidence') AS context_evidence,json_extract(m.json,'$.resource') AS resource
+        FROM session_version_sessions v JOIN session_messages m ON m.revision=v.revision
+        WHERE v.version=? AND m.copied IS NOT 1
+        AND m.kind IN ('user','assistant','thinking','tool_call','tool_result','compression')
+        ORDER BY v.session_id,m.ordinal,m.id`).iterate(version) as Iterable<{
+          session_id: string; id: string; ordinal: number; turn_id: string; kind: OverviewEvent["kind"];
+          call_id: string | null; occurred_at: string | null; model: string | null; tool: string | null;
+          status: OverviewEvent["status"] | null; duration_ms: number | null;
+          context_source: OverviewEvent["contextSource"] | null; context_evidence: OverviewEvent["contextEvidence"] | null;
+          resource: string | null;
+        }>;
+      const events: OverviewEvent[] = [];
+      for (const row of eventRows) events.push({ id: row.id, sessionId: row.session_id, ordinal: row.ordinal,
+        turnId: row.turn_id, kind: row.kind, callId: row.call_id ?? undefined, occurredAt: row.occurred_at ?? undefined,
+        model: row.model ?? undefined, tool: row.tool ?? undefined, status: row.status ?? undefined,
+        durationMs: row.duration_ms ?? undefined, contextSource: row.context_source ?? undefined,
+        contextEvidence: row.context_evidence ?? undefined, ...(row.resource ? { resource: JSON.parse(row.resource) } : {}) });
+      const requestRows = this.database.prepare(`SELECT v.session_id,u.rowid AS ordinal,u.json
+        FROM session_version_sessions v JOIN session_usage u ON u.revision=v.revision
+        WHERE v.version=? AND ${this.eligibleUsageWhere()} ORDER BY v.session_id,u.rowid`).iterate(version) as Iterable<JsonRow & { session_id: string; ordinal: number }>;
+      const requests: OverviewSource["requests"] = [];
+      for (const row of requestRows) requests.push({ sessionId: row.session_id, ordinal: row.ordinal, usage: decode<SessionUsage>(row) });
+      const resources = [...this.resourceEvents({ version }).events];
+      const gaps = JSON.parse((this.database.prepare("SELECT gaps FROM session_versions WHERE id=?").get(version) as { gaps: string }).gaps) as Gap[];
+      return { version, sessions: sessions.map(row => row.session), events, requests, resources, gaps };
+    })();
+  }
 
   /** 请求下钻只读取目标身份及其父标题，完整版本仍使用同一存在性校验。 */
   usageFactSession(requestedVersion: string, sessionId: string): { revision: string; session: SessionSummary } | undefined {
