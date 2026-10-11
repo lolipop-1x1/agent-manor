@@ -33,7 +33,7 @@ import "./session.css";
 import "./session-reading.css";
 
 type Mode = "brief" | "full" | "trace";
-type Target = { sessionId: string; messageId?: string; mode?: Mode; page?: number; turnPosition?: number; branch?: string };
+type Target = { sessionId: string; version?: string; messageId?: string; mode?: Mode; page?: number; turnPosition?: number; branch?: string };
 type ReadingPosition = { branch?: string; mode: Mode; page: number; focus?: string; position?: number; scroll: number; expanded: string[]; anchor?: { messageId: string; offset: number } };
 type RefreshAnchor = { sessionId: string; messageId?: string; offset: number; scroll: number; atEnd: boolean };
 
@@ -332,8 +332,9 @@ export default function Sessions({ active, target, onMap, autoRefreshError }: { 
     return () => controller.abort();
   }, [active, indexReady, selectedSessionId, listQuery, globalSearchQuery, invalidDates]);
 
+  const readingVersion = target?.sessionId === selectedSessionId && target?.version ? target.version : status?.version;
   const messageQuery = useMemo(() => sessionParams({
-    version: status?.version,
+    version: readingVersion,
     page: focusMessageId ? undefined : messagePage,
     pageSize: TURN_PAGE_SIZE,
     pageUnit: "turn",
@@ -341,7 +342,7 @@ export default function Sessions({ active, target, onMap, autoRefreshError }: { 
     mode, branch,
     messageId: focusMessageId,
     messageLimit: 300, messageOffset, maxTextChars: 6000,
-  }), [status?.version, focusMessageId, messagePage, mode, turnPosition, branch, messageOffset]);
+  }), [readingVersion, focusMessageId, messagePage, mode, turnPosition, branch, messageOffset]);
   useEffect(() => {
     if (!active || !selectedSessionId) { setMessageLoading(false); return; }
     if (!indexReady) return;
@@ -350,8 +351,8 @@ export default function Sessions({ active, target, onMap, autoRefreshError }: { 
     setMessageError(null);
     setProfileLoading(true); setProfileError(null);
     if (mode === "trace") { setTimelineLoading(true); setTimelineError(undefined); }
-    const anchor = messageData?.session.id === selectedSessionId && messageData.version !== status?.version ? captureRefreshAnchor.current() : undefined;
-    const id = encodeURIComponent(selectedSessionId), version = status?.version;
+    const anchor = messageData?.session.id === selectedSessionId && messageData.version !== readingVersion ? captureRefreshAnchor.current() : undefined;
+    const id = encodeURIComponent(selectedSessionId), version = readingVersion;
     const fetchMessages = (query: string) => request<SessionMessageResult>(`/sessions/${id}/messages${query}`, { signal: controller.signal });
     const anchored = anchor?.messageId && !anchor.atEnd ? sessionParams({ ...Object.fromEntries(new URLSearchParams(messageQuery)), messageId: anchor.messageId, turnPosition: undefined, messageOffset: undefined }) : messageQuery;
     void Promise.all([
@@ -439,7 +440,7 @@ export default function Sessions({ active, target, onMap, autoRefreshError }: { 
   }, [active, focusMessageId, messageData, messageDataKey, messageQuery, expandedTurns, selectedSessionId, turnPosition, mode, traceFocusRequest]);
 
   const localSearchQuery = useMemo(() => sessionParams({ q: debouncedLocalQuery || undefined, kinds: searchKinds(includeProcess),
-    sessionId: selectedSessionId, page: localSearchPage, pageSize: 12, version: status?.version }), [debouncedLocalQuery, includeProcess, selectedSessionId, localSearchPage, status?.version]);
+    sessionId: selectedSessionId, page: localSearchPage, pageSize: 12, version: readingVersion }), [debouncedLocalQuery, includeProcess, selectedSessionId, localSearchPage, readingVersion]);
   useEffect(() => {
     if (!active || !indexReady || !selectedSessionId || !debouncedLocalQuery) { setLocalSearch(null); setLocalSearchError(null); return; }
     const controller = new AbortController();
@@ -588,7 +589,7 @@ export default function Sessions({ active, target, onMap, autoRefreshError }: { 
       const ids = profile?.scope === "tree" ? profile.sessionIds : [selectedSessionId];
       for (const id of ids) {
         try {
-          const result = await request<SessionMessageResult>(`/sessions/${encodeURIComponent(id)}/messages${sessionParams({ ...evidence, mode: "trace", pageUnit: "turn", pageSize: TURN_PAGE_SIZE, version: status?.version })}`, { signal: controller.signal });
+          const result = await request<SessionMessageResult>(`/sessions/${encodeURIComponent(id)}/messages${sessionParams({ ...evidence, mode: "trace", pageUnit: "turn", pageSize: TURN_PAGE_SIZE, version: readingVersion })}`, { signal: controller.signal });
           if (result.focusMessageId) focusStep({ id: result.focusMessageId, sessionId: id, messageId: result.focusMessageId });
           return;
         } catch (error) { if (!(error instanceof ApiError && error.code === "SOURCE_NOT_FOUND")) throw error; }
@@ -597,9 +598,9 @@ export default function Sessions({ active, target, onMap, autoRefreshError }: { 
     } catch (error) { if (!isAborted(error)) setMessageError(error instanceof Error ? error : new Error(String(error))); }
   };
   const exportDialogue = async () => {
-    if (!selectedSessionId || !status?.version) return;
+    if (!selectedSessionId || !readingVersion) return;
     setExporting(true); setExportError(undefined);
-    const id = selectedSessionId, version = status.version, language = getLanguage();
+    const id = selectedSessionId, version = readingVersion, language = getLanguage();
     const exportBranch = !branch || branch === "all" ? "current" : branch;
     try {
       const messages = await collectDialogue(page => request<SessionMessageResult>(`/sessions/${encodeURIComponent(id)}/messages${sessionParams({ version, mode: "brief", branch: exportBranch, page, pageSize: 200 })}`), version);

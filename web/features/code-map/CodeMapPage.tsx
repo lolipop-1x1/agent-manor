@@ -277,6 +277,7 @@ export function useCodeMapPage({ active, theme, onSession }: {
   const [directory, setDirectory] = useState("");
   const [search, setSearch] = useState("");
   const [metric, setMetric] = useState<Metric>("read");
+  const pinnedVersion = useRef<string | undefined>(undefined);
   const [version, setVersion] = useState<string | undefined>();
   const [coverage, setCoverage] = useState<CoverageResult | null>(null);
   const [coverageKey, setCoverageKey] = useState("");
@@ -308,6 +309,7 @@ export function useCodeMapPage({ active, theme, onSession }: {
   const chooseRepo = useCallback((id: string, reset = false) => {
     if (id === currentRepoId.current && !reset) return;
     pageEpoch.current += 1; currentRepoId.current = id;
+    pinnedVersion.current = undefined;
     setRepoId(id); setMapSession(undefined); setMapSessionList(undefined); setVersion(undefined); setDirectory(""); setSelected(null); setDetail(null); setCoverage(null); setRootCoverage(null); setActionError(null);
     setJob(null); setCoverageError(null); setDetailError(null); setMapSessionsError(null); setCoverageLoading(false); setDetailLoading(false); setMapSessionsLoading(false);
     loadedCoverage.current = "";
@@ -365,7 +367,7 @@ export function useCodeMapPage({ active, theme, onSession }: {
     if (signal.aborted || pageEpoch.current !== epoch) return;
     applyStatus(result);
     const published = result.repositories.find(repo => repo.id === repoId)?.version;
-    if (published && currentRepoId.current === repoId && coverage?.version !== published) setVersion(published);
+    if (!pinnedVersion.current && published && currentRepoId.current === repoId && coverage?.version !== published) setVersion(published);
   });
   useEffect(() => {
     const latest = [...jobs].reverse().filter(item => item.repositoryId === repoId).sort((a, b) => Number(jobActive(b)) - Number(jobActive(a))
@@ -442,7 +444,7 @@ export function useCodeMapPage({ active, theme, onSession }: {
     return () => { cancelled = true; controller.abort(); clearTimeout(timer); };
   }, [job?.id, job?.status]);
   useEffect(() => {
-    if (job?.status === "completed" && job.repositoryId === repoId && job.version && job.version !== coverage?.version) { setVersion(job.version); setReload(value => value + 1); }
+    if (!pinnedVersion.current && job?.status === "completed" && job.repositoryId === repoId && job.version && job.version !== coverage?.version) { setVersion(job.version); setReload(value => value + 1); }
   }, [job?.id, job?.status, job?.version]);
   const openSession = async (event: HistoryEvent) => {
     try {
@@ -456,9 +458,9 @@ export function useCodeMapPage({ active, theme, onSession }: {
       onSession(result.target);
     } catch (failure) { setActionError(failure); }
   };
-  const openMap = (path?: string, project?: string, session?: SessionSummary) => {
+  const openMap = (path?: string, project?: string, session?: SessionSummary, scope?: { repositoryId: string; version?: string; from: string; to: string; clients?: string[] }) => {
     const repo = [...repositories].sort((a, b) => b.path.length - a.path.length).find(candidate =>
-      project === candidate.path || project?.startsWith(`${candidate.path}/`) || path?.startsWith(`${candidate.path}/`));
+      scope?.repositoryId === candidate.id || project === candidate.path || project?.startsWith(`${candidate.path}/`) || path?.startsWith(`${candidate.path}/`));
     if (!repo) { setActionError(new ApiError("REPOSITORY_NOT_REGISTERED", "此会话项目尚未登记代码地图，请先登记本机仓库。", { key: "codeMap.error.repositoryMissing" })); return; }
     if (repo.id !== repoId) chooseRepo(repo.id);
     const local = path?.startsWith(`${repo.path}/`) ? path.slice(repo.path.length + 1) : path?.startsWith("/") ? undefined : path;
@@ -466,6 +468,11 @@ export function useCodeMapPage({ active, theme, onSession }: {
     setMapSession(session ? { client: session.client, clientSessionId: session.clientSessionId, title: session.title, eventCount: 0,
       ...(session.titleOrigin === "fallback" ? { titleDescriptor: { key: session.relationship === "child" ? "sessions.title.childFallback" : "sessions.title.unnamed", params: { id: session.clientSessionId.slice(-8) } } } : {}),
     } : undefined);
+    if (scope) {
+      pinnedVersion.current = scope.version; setVersion(scope.version);
+      setWindow("custom"); setFrom(scope.from); setTo(scope.to);
+      setClient(scope.clients?.length === 1 && CLIENTS.some(item => item.id === scope.clients![0]) ? scope.clients[0] as Client : "all");
+    } else pinnedVersion.current = undefined;
     setSelected(local ?? null); setDetailsCollapsed(false);
   };
   const browse = (path: string) => { setDirectory(path); setSelected(null); };
@@ -481,6 +488,7 @@ export function useCodeMapPage({ active, theme, onSession }: {
     description: t("codeMap.session.selectedOption", { client: clientLabel(mapSession.client), id: mapSession.clientSessionId }),
   });
   const runRefresh = async () => {
+    pinnedVersion.current = undefined;
     if (!repoId) return;
     const epoch = pageEpoch.current;
     setActionPending(true); setActionError(null);

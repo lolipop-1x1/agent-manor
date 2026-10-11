@@ -1,0 +1,48 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+import { defaultOverviewRoute, overviewAddress, overviewQuery, overviewRange, readOverviewRoute, streakRange, validOverviewRange } from "../web/features/overview/model.ts";
+import { readUsageRoute, usageQuery } from "../web/features/usage/model.ts";
+import { translate } from "../src/i18n/index.ts";
+
+test("总览默认覆盖含今天的365个本地日期，跨年不截断", () => {
+  const range = overviewRange(defaultOverviewRoute(), new Date(2025, 0, 7, 12));
+  assert.deepEqual(range, { from: "2024-01-09", to: "2025-01-07" });
+  assert.deepEqual(overviewRange({ ...defaultOverviewRoute(), window: "year" }, new Date(2025, 4, 5)), { from: "2025-01-01", to: "2025-05-05" });
+  assert.deepEqual(overviewRange({ ...defaultOverviewRoute(), window: "all" }), {});
+});
+
+test("总览地址保留筛选和局部视图，格式错误不污染查询", () => {
+  const route = { ...defaultOverviewRoute(), window: "custom" as const, from: "2025-01-01", to: "2025-03-01", clients: ["codex"], projects: ["/example/project"], models: ["example-model"], activity: "tokens" as const, interval: "month" as const };
+  assert.deepEqual(readOverviewRoute(overviewAddress(route)), route);
+  const invalid = readOverviewRoute('#overview?window=wrong&clients=bad&projects=%5B2%5D&from=2025-02-30&metric=invalid');
+  assert.equal(invalid.window, "365"); assert.equal(invalid.from, undefined); assert.equal(invalid.clients, undefined); assert.equal(invalid.metric, "tokens");
+  assert.equal(validOverviewRange({ ...route, from: "2025-04-01" }), false);
+});
+
+test("局部显示选项不改变后端统计范围，模型只作为独立用量条件传入", () => {
+  const route = { ...defaultOverviewRoute(), models: ["example-model"] };
+  const now = new Date(2025, 0, 7);
+  const first = overviewQuery(route, "index-a", "prices-a", now);
+  assert.deepEqual(overviewQuery({ ...route, activity: "tools", metric: "requests", interval: "month", distribution: "tool", process: "timing", combinationUnit: "turn" }, "index-a", "prices-a", now), first);
+  assert.deepEqual(first.models, ["example-model"]);
+});
+
+test("连续活跃只还原真实连续日期，今天宽限与历史末日分别处理", () => {
+  const days = [{ day: "2025-01-01", sessions: 1 }, { day: "2025-01-02", sessions: 1 }, { day: "2025-01-03", sessions: 1 }, { day: "2025-01-04", sessions: 0 }];
+  assert.deepEqual(streakRange(days, { from: "2025-01-01", to: "2025-01-04", includesToday: true }), { from: "2025-01-01", to: "2025-01-03" });
+  assert.deepEqual(streakRange(days, { from: "2025-01-04", to: "2025-01-04", includesToday: true }), { from: "2025-01-04", to: "2025-01-04" });
+  assert.deepEqual(streakRange(days, { from: "2025-01-01", to: "2025-01-04", includesToday: false }), { from: "2025-01-04", to: "2025-01-04" });
+  assert.deepEqual(streakRange([{ day: "2025-01-01", sessions: 1 }, { day: "2025-01-05", sessions: 1 }], { from: "2025-01-01", to: "2025-01-05", includesToday: false }, true), { from: "2025-01-05", to: "2025-01-05" });
+});
+
+test("用量下钻保留总览的索引和价格版本", () => {
+  const route = readUsageRoute("#usage?window=custom&from=2025-01-01&to=2025-01-05&version=index-old&priceVersion=prices-old");
+  const query = usageQuery(route, "index-new", "prices-new");
+  assert.equal(query.version, "index-old"); assert.equal(query.priceVersion, "prices-old");
+});
+
+test("总览动态文案使用真实参数并支持中英文", () => {
+  assert.equal(translate("zh-CN", "overview.timing.durationValue", { value: "3.2" }), "3.2 秒");
+  assert.equal(translate("en", "overview.timing.durationValue", { value: "3.2" }), "3.2 s");
+  assert.ok(translate("en", "overview.help.versions", { version: "index-a", priceVersion: "price-b", timezone: "UTC" }).includes("index-a"));
+});

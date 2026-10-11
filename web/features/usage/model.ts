@@ -28,6 +28,7 @@ export function readUsageRoute(hash: string): UsageRoute {
   if (timeFrom && timeTo && /T.*(?:Z|[+-]\d{2}:\d{2})$/.test(timeFrom) && /T.*(?:Z|[+-]\d{2}:\d{2})$/.test(timeTo) && Number.isFinite(Date.parse(timeFrom)) && Date.parse(timeTo) > Date.parse(timeFrom)) { route.timeFrom = timeFrom; route.timeTo = timeTo; }
   for (const key of ["page", "requestPage"] as const) { const value = Number(params.get(key)); if (Number.isSafeInteger(value) && value > 0) route[key] = value; }
   if ([20, 50, 100].includes(Number(params.get("pageSize")))) route.pageSize = Number(params.get("pageSize"));
+  route.version = params.get("version") || undefined; route.priceVersion = params.get("priceVersion") || undefined;
   route.selectedSession = params.get("selectedSession") || undefined;
   if (params.get("chart") === "line") route.chart = "line";
   if (params.get("attribution") === "bar") route.attribution = "bar";
@@ -50,7 +51,7 @@ export function usageQuery(route: UsageRoute, version: string, priceVersion: str
     const start = new Date(end); if (window !== "today" && window !== "yesterday") start.setDate(start.getDate() - Number(window) + 1);
     query.from = localDay(start); query.to = localDay(end);
   }
-  return { ...query, version, priceVersion, timezone: Intl.DateTimeFormat().resolvedOptions().timeZone };
+  return { ...query, version: route.version ?? version, priceVersion: route.priceVersion ?? priceVersion, timezone: Intl.DateTimeFormat().resolvedOptions().timeZone };
 }
 export function metricValue(totals: UsageTotals, metric: UsageMetric): number | null { return metric === "cost" ? totals.estimatedCost : metric === "requests" ? totals.requests : totals.tokens; }
 export function activeFilterCount(route: UsageRoute): number {
