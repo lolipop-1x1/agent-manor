@@ -204,6 +204,7 @@ export interface OverviewRepositoryHotspot {
   read: number;
   edit: number;
   failure: number;
+  comparison?: { read: number; edit: number; failure: number };
   previous?: { read: number; edit: number; failure: number };
 }
 export interface OverviewRepository {
@@ -213,8 +214,10 @@ export interface OverviewRepository {
   baselineHash?: string;
   createdAt?: string;
   summary?: CoverageSummary;
+  comparisonSummary?: CoverageSummary;
   previousSummary?: CoverageSummary;
   activity?: { read: number; edit: number; failure: number };
+  comparisonActivity?: { read: number; edit: number; failure: number };
   previousActivity?: { read: number; edit: number; failure: number };
   hotspots: OverviewRepositoryHotspot[];
   gapCount: number;
