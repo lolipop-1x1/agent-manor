@@ -158,13 +158,6 @@ input::placeholder { color: var(--muted); }
 .map-error { color: var(--danger); font-size: 12px; margin-bottom: 8px; }
 .code-map { height: clamp(450px, 65dvh, 850px); position: relative; background: var(--surface-alt); border: 1px solid var(--border); border-radius: 5px; overflow: hidden; touch-action: none; cursor: grab; user-select: none; }
 .code-map.dragging, .code-map.dragging * { cursor: grabbing; }
-.map-colors { position: absolute; inset: 0; pointer-events: none; }
-.map-colors .tone-0 { fill: var(--map-0); }
-.map-colors .tone-1 { fill: var(--map-1); }
-.map-colors .tone-2 { fill: var(--map-2); }
-.map-colors .tone-3 { fill: var(--map-3); }
-.map-colors .tone-4 { fill: var(--map-4); }
-.map-boundary { fill: none; stroke-width: 1; }
 .map-hover-hint { position: absolute; z-index: 5; display: grid; gap: 4px; padding: 9px 11px; border: 1px solid var(--border); border-radius: 5px; background: var(--surface); color: var(--text); font-size: 11px; box-shadow: 0 3px 14px #00000020; pointer-events: none; overflow-wrap: anywhere; }
 .map-hover-hint strong { font-size: 12px; }
 .map-hover-hint small { color: var(--muted); }

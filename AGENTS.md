@@ -15,6 +15,7 @@
 ### 前端统一组件
 
 - 后续前端开发先复用项目现有的统一组件；新增同类交互不要在页面中另写一套控件。通用交互优先基于现有 Radix 组件封装，复用主题、尺寸、焦点及弹层规范。
+- 矩形地图的填充与边界统一复用 `web/shared/map/MapTileLayer.tsx`，调用方提供屏幕矩形和色阶；固定 1px 共享边界、主题边界色、小块无间隔／无边界及时间缺失虚线由组件处理，不在功能页面重复实现。
 - 普通枚举筛选统一复用 `web/shared/ui/FilterSelect.tsx`，底层采用 Radix Select；项目等选项较多的筛选复用 `web/shared/ui/ProjectPicker.tsx`，采用 Radix Popover 与 cmdk，支持名称及完整路径搜索。
 - 日期选择统一复用 `web/shared/ui/DatePicker.tsx`，采用 Radix Popover 与 React DayPicker；沿用本机时区和 `YYYY-MM-DD` 筛选值，提供选择及清空入口。
 - 资源列表分页统一复用 `web/shared/ui/ResourcePagination.tsx`，提供当前区间、首尾页、页码、直接跳转及每页条数；不要另写只有上一页／下一页的分页控件。

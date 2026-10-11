@@ -252,6 +252,23 @@ test("原值线性布局严格一比十，零值和未知无伪造面积，顺�
   assert.deepEqual(layoutResourceMap([node("zero", 0), node("unknown", null)]).tiles, []);
 });
 
+test("资源地图小块无间隔，放大后恢复固定一像素间隔且原始几何不变", () => {
+  for (const [width, height] of [[8, 20], [20, 8], [.2, .1], [9, 10]] as const) {
+    const tile = { id: "boundary", node: node("boundary", 1), x: 10, y: 20, width, height };
+    const original = structuredClone(tile);
+    const camera = { x: 30, y: 40, scale: 1 };
+    const screen = resourceMapScreenRect(tile, camera);
+    const expected = width <= 8 || height <= 8
+      ? { x: 40, y: 60, width, height }
+      : { x: 40.5, y: 60.5, width: 8, height: 9 };
+    assert.deepEqual(screen, expected);
+    const enlarged = resourceMapScreenRect(tile, { ...camera, scale: 100 });
+    assert.equal(enlarged.width, width * 100 - 1);
+    assert.equal(enlarged.height, height * 100 - 1);
+    assert.deepEqual(tile, original);
+  }
+});
+
 test("巨大次数差仍保留每个微小正值的真实面积与定位几何，不使用最小权重", () => {
   for (const maximum of [1e12, Number.MAX_SAFE_INTEGER, 1e30]) {
     const nodes = [node("one", 1), node("two", 2), node("three", 3), node("large", maximum)];

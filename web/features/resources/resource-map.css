@@ -16,11 +16,6 @@
 .resource-map-locator > span { color: var(--muted); white-space: nowrap; font-size: 11px; font-variant-numeric: tabular-nums; }
 .resource-map-canvas { position: relative; flex: 1; min-height: 240px; overflow: hidden; border: 1px solid var(--border); border-radius: 5px; background: var(--surface-alt); touch-action: none; cursor: grab; user-select: none; }
 .resource-map-canvas.dragging, .resource-map-canvas.dragging * { cursor: grabbing; }
-.resource-map-colors { position: absolute; inset: 0; pointer-events: none; }
-.resource-map-colors .recency-recent { fill: var(--map-4); }
-.resource-map-colors .recency-older { fill: var(--map-1); }
-.resource-map-colors .recency-old { fill: var(--map-0); }
-.resource-map-colors .recency-missing { fill: var(--surface-alt); stroke: var(--near); stroke-width: 1; stroke-dasharray: 3 2; }
 .resource-map-tile { position: absolute; border: 1px solid transparent; border-radius: 0; padding: 0; color: var(--text); background: transparent; text-align: left; overflow: hidden; }
 .resource-map-tile.recency-recent { color: var(--map-4-text); }
 .resource-map-tile.recency-older { color: var(--map-1-text); }

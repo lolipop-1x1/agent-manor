@@ -1,7 +1,7 @@
 import { hierarchy, treemap, treemapBinary } from "d3";
 import type { ResourceMapNode } from "../../../src/resource-service-contracts";
 import type { MapCamera, MapPoint, MapRect, MapSize } from "../../shared/map/geometry";
-import { fitCamera } from "../../shared/map/geometry";
+import { fitCamera, mapTileFillRect } from "../../shared/map/geometry";
 
 export interface ResourceMapTile extends MapRect { id: string; node: ResourceMapNode }
 export interface ResourceMapLayout { bounds: MapRect; tiles: ResourceMapTile[]; maxScale: number }
@@ -38,10 +38,7 @@ export function layoutResourceMap(nodes: readonly ResourceMapNode[]): ResourceMa
 
 /** 间隔在屏幕坐标里扣除，不参与线性布局或占比计算。 */
 export function resourceMapScreenRect(tile: ResourceMapTile, camera: ResourceMapCamera): MapRect {
-  const projected = resourceMapProjectRect(tile, camera);
-  const insetX = Math.min(0.5, projected.width / 2), insetY = Math.min(0.5, projected.height / 2);
-  return { x: projected.x + insetX, y: projected.y + insetY,
-    width: Math.max(0, projected.width - insetX * 2), height: Math.max(0, projected.height - insetY * 2) };
+  return mapTileFillRect(resourceMapProjectRect(tile, camera));
 }
 
 export function resourceMapProjectRect(rect: MapRect, camera: ResourceMapCamera): MapRect {

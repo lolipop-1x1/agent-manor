@@ -7,6 +7,7 @@ import { fileLabelRect, metricNames, metricValue, type Metric } from "./model";
 import { fmt, percent } from "../../shared/format";
 import { clipRect, fitCamera, locateCamera, panCamera, projectRect, resizeCamera, zoomCamera, type MapCamera, type MapPoint, type MapRect } from "../../shared/map/geometry";
 import { layoutMap, refreshCamera, visibleTiles, type MapTile } from "./map-layout";
+import { MapTileLayer, type MapTone } from "../../shared/map/MapTileLayer";
 
 const position = (rect: MapRect): CSSProperties => ({ left: rect.x, top: rect.y, width: rect.width, height: rect.height });
 const valueLabel = (file: FileCoverage, metric: Metric) => metric === "activity" ? t("codeMap.activity.calls", { count: file.activityCount }) : percent(metricValue(file, metric), file.lineCount);
@@ -93,22 +94,9 @@ export function CodeMap({ files, directory, metric, selected, browse, select, he
   const maxCount = useMemo(() => files.reduce((max, file) => Math.max(max, file.activityCount), 1), [files]);
   const tone = (file: FileCoverage) => {
     const value = metricValue(file, metric);
-    return value === 0 ? 0 : Math.min(4, Math.ceil(value / (metric === "activity" ? maxCount : file.lineCount) * 4));
+    return value === 0 ? 0 : Math.min(4, Math.ceil(value / (metric === "activity" ? maxCount : file.lineCount) * 4)) as MapTone;
   };
-  const paths = useMemo(() => {
-    const result = { fills: ["", "", "", "", ""], borders: ["", "", "", "", ""] };
-    for (const { tile, visible: rect } of visible) {
-      // 只绘制屏幕内的浮点几何，不把超大坐标或屏幕外节点交给 DOM。
-      const gap = rect.width > 8 && rect.height > 8 ? .5 : 0;
-      const width = rect.width - gap * 2;
-      const height = rect.height - gap * 2;
-      const level = tone(tile.file);
-      result.fills[level] += `M${rect.x + gap},${rect.y + gap}h${width}v${height}h${-width}Z`;
-      // 边界沿原始共享边缘绘制，保持 1px，不叠加成相邻块的两圈内描边。
-      if (gap) result.borders[level] += `M${rect.x},${rect.y}h${rect.width}v${rect.height}h${-rect.width}Z`;
-    }
-    return result;
-  }, [visible, metric, maxCount]);
+  const colorTiles = useMemo(() => visible.map(({ tile, visible: rect }) => ({ rect, tone: tone(tile.file) })), [visible, metric, maxCount]);
   const readable = useMemo(() => visible.filter(({ visible: rect }) => rect.width >= 28 && rect.height >= 16), [visible]);
   const headings = useMemo(() => layout.directories.filter(node => node.depth === 1).flatMap(node => {
     const rect = clipRect(projectRect(node, camera), size);
@@ -208,8 +196,7 @@ export function CodeMap({ files, directory, metric, selected, browse, select, he
       }} onKeyDown={keyboard}
       onClickCapture={event => { if (suppressClick.current) { event.preventDefault(); event.stopPropagation(); } }}
       onClick={event => { if (!(event.target as HTMLElement).closest("button") && event.detail !== 0) { const tile = tileAt(localPoint(event)); if (tile) { select(tile.path); setHint(null); } } }}>
-      <svg className="map-colors" width={size.width} height={size.height} aria-hidden="true">{paths.fills.map((path, i) => <path key={i} className={`tone-${i}`} d={path} />)}
-        {paths.borders.map((path, i) => <path key={`border-${i}`} className="map-boundary" stroke={`var(--map-${i}-border)`} d={path} />)}</svg>
+      <MapTileLayer className="map-colors" tiles={colorTiles} size={size} />
       {readable.map(({ tile, visible: rect }) => {
         const file = tile.file;
         const near = metric === "edit" ? file.editNearLines : file.readNearLines;

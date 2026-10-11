@@ -5,8 +5,9 @@ import { ProjectPicker } from "../../shared/ui/ProjectPicker";
 import { HelpPopover } from "../../shared/ui/HelpPopover";
 import { ResourcePagination } from "../../shared/ui/ResourcePagination";
 import { dateLabel, fmt } from "../../shared/format";
-import { clipRect, fitCamera, type MapPoint, type MapRect } from "../../shared/map/geometry";
-import { layoutResourceMap, locateResourceMapCamera, panResourceMapCamera, resizeResourceMapCamera, resourceMapScreenRect, resourceMapTileAt, zoomResourceMapCamera, type ResourceMapCamera } from "./resource-map-layout";
+import { clipRect, fitCamera, mapTileFillRect, type MapPoint, type MapRect } from "../../shared/map/geometry";
+import { MapTileLayer } from "../../shared/map/MapTileLayer";
+import { layoutResourceMap, locateResourceMapCamera, panResourceMapCamera, resizeResourceMapCamera, resourceMapProjectRect, resourceMapTileAt, zoomResourceMapCamera, type ResourceMapCamera } from "./resource-map-layout";
 import { formatList, getLanguage, messageText, t, useI18n } from "../../shared/i18n";
 import { formatPercent } from "../../../src/i18n";
 import { resourceMapCompactTitleKey, resourceMapValueMessage } from "./resource-usage-state";
@@ -25,6 +26,7 @@ const tone = (node: ResourceMapNode, today: number) => {
   const days = (today - dateDay(new Date(node.lastUsedAt))) / 86400000;
   return days <= 30 ? "recent" : days <= 90 ? "older" : "old";
 };
+const recencyLevels = { recent: 4, older: 1, old: 0, missing: "missing" } as const;
 const statusLabel = (node: ResourceMapNode) => formatList([node.favorite && t("resources.candidate.favorite"), node.protected && t("resources.protected")].filter(Boolean) as string[]);
 
 interface ResourceMapProps {
@@ -124,9 +126,10 @@ export function ResourceMap({ data, selected, onSelect, zeroPage, zeroSize, onZe
     onSelect(id); setHint(null);
   };
   const visible = useMemo(() => layout.tiles.flatMap(tile => {
-    const rect = clipRect(resourceMapScreenRect(tile, camera), size);
-    return rect ? [{ tile, rect }] : [];
+    const boundary = clipRect(resourceMapProjectRect(tile, camera), size);
+    return boundary ? [{ tile, rect: mapTileFillRect(boundary), boundary }] : [];
   }), [layout, camera, size]);
+  const colorTiles = useMemo(() => visible.map(({ tile, boundary: rect }) => ({ rect, tone: recencyLevels[tone(tile.node, today)] })), [visible, today]);
   const localPoint = (event: { clientX: number; clientY: number }) => {
     const bounds = host.current!.getBoundingClientRect(); return { x: event.clientX - bounds.left, y: event.clientY - bounds.top };
   };
@@ -209,10 +212,10 @@ export function ResourceMap({ data, selected, onSelect, zeroPage, zeroSize, onZe
         onPointerLeave={event => { if (!host.current!.hasPointerCapture(event.pointerId)) { pointers.current.delete(event.pointerId); gesture.current = null; setHint(null); } }}
         onClickCapture={event => { if (suppressClick.current) { event.preventDefault(); event.stopPropagation(); } }}
         onClick={event => { if (!(event.target as Element).closest("button") && event.detail !== 0) { const tile = tileAt(localPoint(event)); if (tile) void chooseResource(tile.id); } }}>
-        <svg className="resource-map-colors" width={size.width} height={size.height} aria-hidden="true">{visible.map(({ tile, rect }) => <rect key={tile.id} data-resource-id={tile.id} className={`recency-${tone(tile.node, today)}`} x={rect.x} y={rect.y} width={rect.width} height={rect.height} />)}</svg>
+        <MapTileLayer className="resource-map-colors" tiles={colorTiles} size={size} />
         {visible.filter(({ rect }) => rect.width >= 28 && rect.height >= 18).map(({ tile, rect }) => {
           const node = tile.node;
-          return <button key={tile.id} style={position(rect)} className={`resource-map-tile recency-${tone(node, today)}${selected === tile.id ? " is-selected" : ""}`} aria-label={t("resources.viewUsage", { name: messageText(node.nameDescriptor, node.name) })} aria-describedby={hint?.node.id === tile.id ? tooltipId : undefined}
+          return <button key={tile.id} data-resource-id={tile.id} style={position(rect)} className={`resource-map-tile recency-${tone(node, today)}${selected === tile.id ? " is-selected" : ""}`} aria-label={t("resources.viewUsage", { name: messageText(node.nameDescriptor, node.name) })} aria-describedby={hint?.node.id === tile.id ? tooltipId : undefined}
             onClick={() => void chooseResource(tile.id)} onFocus={() => setHint({ node, point: { x: rect.x, y: rect.y } })} onBlur={() => setHint(null)}>
             <span className="resource-map-tile-copy">{rect.width >= 48 && rect.height >= 28 && <strong>{messageText(node.nameDescriptor, node.name)}</strong>}{rect.width >= 80 && rect.height >= 55 && <span>{metricValue(data.metric, node.value!)}</span>}{rect.width >= 130 && rect.height >= 88 && <small>{shareLabel(node.share)}{node.favorite && <Star size={12} weight="fill" />}{node.protected && <ShieldCheck size={12} />}</small>}</span>
           </button>;

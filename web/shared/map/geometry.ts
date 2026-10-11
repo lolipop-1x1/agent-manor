@@ -62,6 +62,12 @@ export function projectRect(bounds: MapRect, camera: MapCamera): MapRect {
   return { x: bounds.x * camera.scale + camera.x, y: bounds.y * camera.scale + camera.y, width: bounds.width * camera.scale, height: bounds.height * camera.scale };
 }
 
+/** 两类地图共用屏幕间隔，小块保留完整填充以免遮住微小正值。 */
+export function mapTileFillRect(rect: MapRect): MapRect {
+  const gap = rect.width > 8 && rect.height > 8 ? .5 : 0;
+  return { x: rect.x + gap, y: rect.y + gap, width: rect.width - gap * 2, height: rect.height - gap * 2 };
+}
+
 /** 返回屏幕内可见部分，标签可据此定位，不使用裁剪后的尺寸改变面积。 */
 export function clipRect(bounds: MapRect, viewport: MapSize): MapRect | null {
   const x = Math.max(0, bounds.x);

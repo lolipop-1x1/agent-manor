@@ -48,6 +48,45 @@ const step = async (name, code) => {
 const select = (label, option) => `await page.getByRole('combobox',{name:${JSON.stringify(label)},exact:true}).click(); await page.getByRole('option',{name:${JSON.stringify(option)},exact:true}).click();`;
 const locateResource = name => `await page.getByRole('button',{name:'定位资源',exact:true}).click(); await page.getByRole('combobox',{name:'定位资源搜索',exact:true}).fill(${JSON.stringify(name)}); await page.getByRole('option',{name:${JSON.stringify(name)},exact:true}).click();`;
 const screenshot = name => `await page.screenshot({path:${JSON.stringify(join(artifacts, name))}});`;
+const boundaryRendering = () => {
+  const layer = document.querySelector(".resource-map-colors"), style = getComputedStyle(document.documentElement);
+  const fills = [...layer.querySelectorAll('path[class^="tone-"]')], borders = [...layer.querySelectorAll(".map-boundary")];
+  const rectangles = path => [...path.matchAll(/M([\d.eE+-]+),([\d.eE+-]+)h([\d.eE+-]+)v([\d.eE+-]+)h[\d.eE+-]+Z/g)].map(match => match.slice(1, 5).map(Number));
+  const near = (a, b) => Math.abs(a - b) < .001;
+  const matches = (fill, border) => near(fill[0], border[0] + .5) && near(fill[1], border[1] + .5) && near(fill[2], border[2] - 1) && near(fill[3], border[3] - 1);
+  const allBorders = borders.flatMap(path => rectangles(path.getAttribute("d")));
+  const lum = color => {
+    const channels = [1, 3, 5].map(index => parseInt(color.slice(index, index + 2), 16) / 255).map(c => c <= .04045 ? c / 12.92 : ((c + .055) / 1.055) ** 2.4);
+    return channels[0] * .2126 + channels[1] * .7152 + channels[2] * .0722;
+  };
+  const contrast = (a, b) => (Math.max(lum(a), lum(b)) + .05) / (Math.min(lum(a), lum(b)) + .05);
+  return {
+    nodes: layer.children.length,
+    tiles: fills.reduce((count, path) => count + rectangles(path.getAttribute("d")).length, 0),
+    painted: borders.filter(path => path.getAttribute("d")).length,
+    small: fills.flatMap(path => rectangles(path.getAttribute("d"))).filter(fill => (fill[2] <= 8 || fill[3] <= 8) && !allBorders.some(border => matches(fill, border))).length,
+    styles: borders.every(path => {
+      const computed = getComputedStyle(path), tone = path.dataset.tone;
+      return computed.fill === "none" && computed.stroke !== "none" && computed.strokeWidth === "1px"
+        && (tone === "missing" ? computed.strokeDasharray !== "none" : computed.strokeDasharray === "none"
+          && contrast(style.getPropertyValue(`--map-${tone}`).trim(), style.getPropertyValue(`--map-${tone}-border`).trim()) >= 2);
+    }),
+    geometry: borders.every(path => {
+      const fillsForTone = rectangles(layer.querySelector(`.tone-${path.dataset.tone}`).getAttribute("d"));
+      return rectangles(path.getAttribute("d")).every(border => border[2] > 8 && border[3] > 8 && fillsForTone.some(fill => matches(fill, border)));
+    }),
+  };
+};
+const resourceTileAreas = (tiles, ids) => {
+  const rectangles = [...document.querySelectorAll('.resource-map-colors path[class^="tone-"]')].flatMap(path =>
+    [...path.getAttribute("d").matchAll(/M([\d.eE+-]+),([\d.eE+-]+)h([\d.eE+-]+)v([\d.eE+-]+)h[\d.eE+-]+Z/g)].map(match => match.slice(1, 5).map(Number)));
+  return ids.map(id => {
+    const tile = tiles.find(node => node.dataset.resourceId === id);
+    // CSS 样式会舍入小数，面积比例从同位置的实际 SVG 浮点几何读取。
+    const rect = rectangles.find(([x, y]) => Math.abs(x - parseFloat(tile.style.left)) < .001 && Math.abs(y - parseFloat(tile.style.top)) < .001);
+    return (rect[2] + 1) * (rect[3] + 1);
+  });
+};
 
 try {
   await mkdir(artifacts, { recursive: true });
@@ -152,7 +191,7 @@ try {
   const claudeConfigBefore = await readFile(fixture.claudeConfigPath, "utf8");
   assert.ok(!JSON.stringify(maps).includes("synthetic-secret-keep-private"));
   assert.ok(!JSON.stringify(maps).includes("synthetic-map-secret"));
-  await api("/preferences", "PUT", { language: "zh-CN" });
+  await api("/preferences", "PUT", { language: "zh-CN", appearance: { mode: "light", preset: "terracotta" } });
   await browser(["open", `${base}/#resources`, "--headed", "--browser=chrome"]);
 
   await step("首次列表、地图按需查询与完整范围", `
@@ -174,9 +213,33 @@ try {
     expect(page.mapRequests.every(url=>!url.includes('pageSize=')&&!url.includes('&page=')),'地图沿用列表分页');
     expect(await page.getByRole('combobox',{name:'地图面积指标',exact:true}).count()===1,'地图缺少次数与会话指标切换');
     expect(page.mapRequests.every(url=>/[?&]metric=uses(?:&|$)/.test(url)),'地图默认未使用合并调用次数');
-    const area=await page.locator('rect[data-resource-id]').evaluateAll((rects,ids)=>ids.map(id=>{const rect=rects.find(node=>node.getAttribute('data-resource-id')===id);return (Number(rect.getAttribute('width'))+1)*(Number(rect.getAttribute('height'))+1)}),${JSON.stringify([maps.skill.positive.find(row=>row.name==='map-skill-000').id,maps.skill.positive.find(row=>row.name==='map-skill-001').id])});
+    const area=await page.locator('.resource-map-tile[data-resource-id]').evaluateAll(${resourceTileAreas.toString()},${JSON.stringify([maps.skill.positive.find(row=>row.name==='map-skill-000').id,maps.skill.positive.find(row=>row.name==='map-skill-001').id])});
     expect(Math.abs(area[0]/area[1]-100/11)<1e-7,'面积未包含重复调用与成功读取');
     ${screenshot("skill-map-light.png")}
+  `);
+  await step("共享地图绘制、固定边界、时间虚线与主题切换状态保留", `
+    const settled=()=>page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))));
+    const check=async()=>{const state=await page.evaluate(${boundaryRendering.toString()});expect(state.tiles>200&&state.nodes<=12&&state.painted===4&&state.styles&&state.geometry,'共享填充或边界规则不符合要求：'+JSON.stringify(state))};
+    await check();
+    const tile=page.getByRole('button',{name:'查看map-skill-002的使用详情',exact:true});
+    await tile.click(); await tile.focus(); await page.keyboard.press('Tab'); await page.keyboard.press('Shift+Tab');
+    await page.getByRole('complementary',{name:'资源详情',exact:true}).getByRole('heading',{name:'map-skill-002',exact:true}).waitFor();
+    await page.waitForLoadState('networkidle'); await settled();
+    expect(await tile.evaluate(node=>getComputedStyle(node).boxShadow!=='none'&&getComputedStyle(node).outlineStyle!=='none'),'选中或键盘焦点被普通边界覆盖');
+    await page.getByRole('button',{name:'放大资源地图',exact:true}).click();
+    await settled();
+    const scale=await page.locator('.resource-map-canvas').getAttribute('data-scale');
+    ${screenshot("boundaries-light-zoom.png")}
+    for(const mode of ['light','dark']) for(const preset of ['blue','terracotta','celadon','amber','berry','graphite','custom']) {
+      await page.evaluate(async appearance=>{const response=await fetch('/api/v1/preferences',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({appearance})});if(!response.ok)throw new Error('合成外观更新失败');window.dispatchEvent(new Event('focus'))},{mode,preset,customColor:'#ffff00'});
+      await page.waitForFunction(theme=>document.documentElement.dataset.theme===theme,mode); await page.waitForLoadState('networkidle'); await settled();
+      const state=await page.evaluate(${boundaryRendering.toString()});
+      expect(state.nodes<=12&&state.painted>0&&state.styles&&state.geometry,'深浅主题共享边界失败 '+mode+' '+preset);
+      expect(await page.locator('.resource-map-canvas').getAttribute('data-scale')===scale,'主题切换改变地图缩放 '+mode+' '+preset);
+      expect(await tile.getAttribute('class').then(value=>value.includes('is-selected')),'主题切换丢失资源选择');
+      if(mode==='dark'&&preset==='terracotta'){${screenshot("boundaries-dark-zoom.png")}}
+    }
+    await page.getByRole('button',{name:'适应资源地图窗口',exact:true}).click();
   `);
   await step("悬停与键盘展示调用次数，读取型资源直接进入地图", `
     const tile=page.getByRole('button',{name:'查看map-skill-001的使用详情',exact:true});
@@ -222,7 +285,7 @@ try {
       const route=await page.evaluate(()=>Object.fromEntries(new URLSearchParams(location.hash.split('?')[1])));
       expect(route.metric==='uses'&&route.sort==='uses'&&!('maxValue' in route),'旧链接未统一指标或误用次数上限');
       expect(route.client==='codex'&&route.q==='map-read-000','兼容旧链接丢失统计范围');
-      expect(await page.locator('rect[data-resource-id]').count()===1,'读取型资源在统一地图为空');
+      expect((await page.evaluate(${boundaryRendering.toString()})).tiles===1,'读取型资源在统一地图为空');
       await page.getByRole('group',{name:'资源展示方式',exact:true}).getByRole('button',{name:'列表',exact:true}).click();
       const table=page.getByRole('table',{name:'Skill 总览',exact:true}); await table.waitFor();
       expect(await table.getByRole('columnheader').count()===6,'主列表没有同时保留次数和会话列');
@@ -278,7 +341,7 @@ try {
   await step("会话上限、零值保留与列表范围", `
     await page.getByRole('spinbutton',{name:'地图使用会话数上限',exact:true}).fill('1');
     await page.waitForFunction(()=>new URLSearchParams(location.hash.split('?')[1]).get('maxValue')==='1');
-    await page.waitForFunction(()=>document.querySelectorAll('rect[data-resource-id]').length>200);
+    await page.waitForFunction(()=>[...document.querySelectorAll('.resource-map-colors path[class^="tone-"]')].reduce((count,path)=>count+(path.getAttribute('d').match(/M/g)?.length??0),0)>200);
     expect(await page.getByRole('button',{name:'查看map-skill-001的使用详情',exact:true}).count()===0,'上限没有过滤多会话资源');
     expect(!(await page.locator('.resource-list-scroll').innerText()).includes('待检查'),'仍有待检查分类');
     expect(await page.locator('.resource-map-compact summary').count()===1,'上限删除无面积入口');
@@ -634,6 +697,26 @@ try {
   assert.ok((await readFile(join(fixture.userHome,'.codex','skills','map-skill-002','SKILL.md'),'utf8')).includes('map-skill-002'));
 
   assert.equal(await readFile(fixture.configPath, "utf8"), configBefore);
+  const boundaryNodes = ["map-skill-000", "map-skill-002", "map-undated"].map((name, index) => ({
+    ...maps.skill.positive.find(node => node.name === name), value: index === 0 ? 1e12 : 1, share: (index === 0 ? 1e12 : 1) / (1e12 + 2),
+  }));
+  await step("悬殊面积的小块无间隔无边界，定位后恢复固定细线与时间虚线", `
+    const payload=${JSON.stringify({ ...maps.skill, positive: boundaryNodes, zero: [], review: [], total: 3, totalValue: 1e12 + 2 })};
+    await page.route('**/api/v1/resources/map?**',route=>route.fulfill({status:200,contentType:'application/json',body:JSON.stringify(payload)}));
+    await page.getByRole('textbox',{name:'搜索资源名称或路径',exact:true}).fill('map-');
+    await page.locator('.resource-map-locator > span').filter({hasText:/^3 个色块$/}).waitFor();
+    await page.getByRole('button',{name:'适应资源地图窗口',exact:true}).click();
+    const small=await page.evaluate(${boundaryRendering.toString()});
+    expect(small.tiles===3&&small.small===2&&small.styles&&small.geometry,'微小正值被间隔吞没或加上边界：'+JSON.stringify(small));
+    ${locateResource("map-skill-002")}
+    const enlarged=await page.evaluate(${boundaryRendering.toString()});
+    expect(enlarged.painted>0&&enlarged.styles&&enlarged.geometry,'放大微小块后没有恢复中性细边界');
+    ${locateResource("map-undated")}
+    const missing=page.locator('.resource-map-colors .map-boundary[data-tone="missing"]');
+    expect(await missing.getAttribute('d').then(Boolean)&&await missing.evaluate(node=>getComputedStyle(node).strokeDasharray!=='none'),'时间缺失块放大后没有恢复虚线');
+    ${screenshot("boundaries-tiny-located.png")}
+    await page.unroute('**/api/v1/resources/map?**');
+  `);
   await writeFile(join(artifacts, "report.json"), JSON.stringify({ passed: true, checks, elapsedMs: Date.now() - started }, null, 2));
   console.log(`PASS 资源地图 Chrome 端到端 ${checks.length} 项`);
 } catch (error) {
