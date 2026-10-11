@@ -64,6 +64,7 @@ test("总览后台 HTTP 保持全局与模型局部范围，证据分页不泄�
     assert.equal(first.insights.find(insight => insight.rule === "12")?.current, 1);
     const fixed = new URLSearchParams(params); fixed.set("priceVersion", first.priceVersion);
     fixed.set("anchorDay", first.query.anchorDay!);
+    assert.deepEqual(await read<OverviewReport>(`/overview/report?${fixed}`), first);
     fixed.set("evidence", JSON.stringify({ kind: "requests", from: "2026-10-01", to: "2026-10-31" }));
     assert.equal((await read<OverviewEvidencePage>(`/overview/evidence?${fixed}`)).total, 31);
     fixed.set("evidence", JSON.stringify({ kind: "sequence", tool: "mcp__synthetic__query", sort: "ordinal", pageSize: 1 }));

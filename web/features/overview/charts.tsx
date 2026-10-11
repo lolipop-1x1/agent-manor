@@ -32,7 +32,18 @@ export function ActivityCalendar({ report, metric, onDay, onRange }: { report: O
   const facts = new Map(report.activity.days.map(day => [day.day, day]));
   const max = Math.max(1, ...days.map(day => dayValue(facts.get(day) ?? { day, sessions: 0, events: 0, requests: 0, tokens: null, toolCalls: 0 }, metric) ?? 0));
   const offset = dayDate(from).getDay();
-  useEffect(() => { const el = scroll.current; if (el) el.scrollLeft = el.scrollWidth; }, [from, to]);
+  useEffect(() => {
+    const el = scroll.current; if (!el) return;
+    let atEnd = true, width = el.clientWidth;
+    const track = () => { if (el.clientWidth === width) atEnd = el.scrollWidth - el.clientWidth - el.scrollLeft <= 1; };
+    const resize = new ResizeObserver(() => {
+      width = el.clientWidth;
+      if (atEnd) el.scrollLeft = el.scrollWidth;
+    });
+    el.scrollLeft = el.scrollWidth;
+    el.addEventListener("scroll", track); resize.observe(el);
+    return () => { el.removeEventListener("scroll", track); resize.disconnect(); };
+  }, [from, to]);
   const current = selected ? facts.get(selected) : undefined;
   const amount = (value: number | null | undefined) => value == null ? "—" : metric === "tokens" ? formatTokenMillions(language, value) : number(value);
   const move = (day: string, step: number) => { const next = days[Math.max(0, Math.min(days.length - 1, days.indexOf(day) + step))]!; setFocusDay(next); buttons.current.get(next)?.focus(); };

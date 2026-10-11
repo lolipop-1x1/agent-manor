@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { UsageTimeBucket, UsageTotals } from "../src/usage-contracts.ts";
-import { composition, compositionIsPartial, defaultRoute, metricValue, readUsageRoute, usageAddress, usageParameters, usageQuery, usageDailyMetrics } from "../web/features/usage/model.ts";
+import { composition, compositionIsPartial, defaultRoute, incomingUsageRoute, metricValue, readUsageRoute, usageAddress, usageParameters, usageQuery, usageDailyMetrics } from "../web/features/usage/model.ts";
 import { translate } from "../src/i18n/index.ts";
 
 const totals = (): UsageTotals => ({ requests: 1, sessions: 1, tokens: 250, inputTokens: 200, outputTokens: 50, freshInputTokens: 100, cacheReadTokens: 80, cacheWriteTokens: 20, reasoningTokens: 30, estimatedCost: .0003, cacheReadRatio: .4, cacheReadRatioRequests: 1, completeTokenRequests: 1, partialTokenRequests: 0, missingTokenRequests: 0, pricedRequests: 1, partiallyPricedRequests: 0, unpricedRequests: 0, missingTimeRequests: 0 });
@@ -95,4 +95,17 @@ test("日均包含空白日期但不补造费用，峰值同额取最早日期�
   assert.equal(usageDailyMetrics([days[0]!]).peak?.totals.estimatedCost, 0);
   days[0]!.totals.requests = 0;
   assert.equal(usageDailyMetrics([days[0]!]).activeDays, 0);
+});
+
+test("隐藏用量页激活先采纳总览传入地址，内部筛选修改才写回地址", () => {
+  const old = defaultRoute(), oldAddress = usageAddress(old);
+  const target = usageAddress({ ...old, window: "custom", from: "2026-10-12", to: "2026-10-12",
+    clients: ["codex"], projects: ["/workspace/project-a"], version: "synthetic-index", priceVersion: "synthetic-prices" });
+  const adopted = incomingUsageRoute(target, oldAddress, old)!;
+  const query = usageQuery(adopted, "synthetic-current-index", "synthetic-current-prices");
+  assert.equal(query.from, "2026-10-12"); assert.equal(query.to, "2026-10-12");
+  assert.deepEqual(query.clients, ["codex"]); assert.deepEqual(query.projects, ["/workspace/project-a"]);
+  assert.equal(query.version, "synthetic-index"); assert.equal(query.priceVersion, "synthetic-prices");
+  assert.equal(incomingUsageRoute(target, target, { ...adopted, metric: "cost" }), null);
+  assert.equal(incomingUsageRoute(target, oldAddress, adopted), null);
 });

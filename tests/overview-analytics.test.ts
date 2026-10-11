@@ -4,6 +4,7 @@ import { buildOverviewReport, pairToolCalls } from "../src/overview/analytics.js
 import { addDays, localDay, prepareOverviewDateCache, resolveOverviewRange } from "../src/overview/dates.js";
 import { translate } from "../src/i18n/index.js";
 import { buildOverviewEvidence } from "../src/overview/evidence.js";
+import { generateOverviewInsights } from "../src/overview/insights.js";
 import { event, now, pricing, request, resource, session, source } from "./overview-fixtures.js";
 
 const query = { window: "custom" as const, from: "2026-01-01", to: "2026-02-15", timezone: "UTC" };
@@ -42,6 +43,23 @@ test("后台日期缓存不改变跨日、夏令时和时区切换的日历语�
   prepareOverviewDateCache("version-b", "UTC");
   assert.equal(localDay(timestamp, "UTC"), "2026-03-08");
   assert.equal(localDay(undefined, "UTC"), null);
+});
+test("活动本地小时投影在夏令时重复小时、半小时时区与缓存复用后保持完整统计", () => {
+  const input = source({ sessions: [session("a")], events: [
+    event("a", "first", undefined, { occurredAt: "2026-11-01T05:30:00Z" }),
+    event("a", "repeated", undefined, { occurredAt: "2026-11-01T06:30:00Z" }),
+    event("a", "invalid", undefined, { occurredAt: "2026-02-30T12:00:00Z" }),
+  ] });
+  const filters = { window: "all" as const, timezone: "America/New_York" };
+  const expected = buildOverviewReport(input, filters, pricing, new Date("2026-11-02T12:00:00Z"));
+  assert.equal(expected.activity.hours[1]!.events, 2); assert.equal(expected.activity.weekdays[0]!.events, 2);
+  assert.equal(expected.activity.missingTimeEvents, 1);
+  prepareOverviewDateCache(input.version, filters.timezone);
+  assert.deepEqual(buildOverviewReport(input, filters, pricing, new Date("2026-11-02T12:00:00Z")), expected);
+  assert.deepEqual(buildOverviewReport(input, filters, pricing, new Date("2026-11-02T12:00:00Z")), expected);
+  prepareOverviewDateCache(input.version, "Asia/Kolkata");
+  const shifted = buildOverviewReport(input, { ...filters, timezone: "Asia/Kolkata" }, pricing, new Date("2026-11-02T12:00:00Z"));
+  assert.equal(shifted.activity.hours[11]!.events, 1); assert.equal(shifted.activity.hours[12]!.events, 1);
 });
 test("总览按自身活动统计主子会话，继承分叉及摘要跨度不增加活动", () => {
   const sessions = [session("main"), ...Array.from({ length: 4 }, (_, index) => session(`child-${index}`, { relationship: "child", parentSessionId: "main" })),
@@ -106,6 +124,32 @@ test("局部模型筛选只改变用量区域、计时与委派用量，六指�
   const report = buildOverviewReport(input, { ...query, models: ["model-a"] }, pricing, now);
   assert.equal(report.summary.requests, 2); assert.equal(report.summary.tokens, 300); assert.equal(report.usage.totals.requests, 1);
   assert.equal(report.summary.sessions, 2); assert.equal(report.resources.skills[0]!.uses, 1); assert.equal(report.summary.modelCount, 2);
+});
+test("同范围全局core复用与独立模型报告、全部洞察及逐条分页证据完全等价", () => {
+  const input = source({ sessions: [session("main", { project: "/workspace/a", childSessionIds: ["child"] }),
+    session("child", { project: "/workspace/a", parentSessionId: "main", relationship: "child" }), session("fork", { relationship: "fork" })],
+    events: [event("main", "user"), event("child", "child-user"), event("fork", "fork-user"),
+      event("main", "failure", undefined, { ordinal: 2, kind: "tool_call", tool: "read_file", status: "failure" }),
+      event("main", "followup", undefined, { ordinal: 3, kind: "tool_call", tool: "read_file", status: "success" }),
+      event("main", "compression", undefined, { ordinal: 4, kind: "compression" })],
+    resources: [resource("main", "skill"), resource("child", "mcp", "server-a", undefined, { kind: "mcp", server: "server-a", tool: "mcp__server-a__query" })],
+    requests: Array.from({ length: 60 }, (_, index) => ({ ...request(index % 3 ? "main" : "child", `request-${index}`, index < 20 ? "2026-01-01" : "2026-02-01",
+      { model: index % 2 ? "model-a" : "model-b", inputTokens: index * 10, cachedInputTokens: 5,
+        timing: { basis: "recorded", method: "zcode_request_span", completion: "explicit", durationMs: 1000 + index } }), ordinal: index + 1 })) });
+  const original = buildOverviewReport(input, query, pricing, now), before = structuredClone(original);
+  for (const models of [["model-a"], ["model-b"], ["synthetic-missing"], undefined]) {
+    const filters = { ...query, models }, expected = buildOverviewReport(input, filters, pricing, now);
+    const reused = buildOverviewReport(input, filters, pricing, now, original);
+    assert.deepEqual(reused, expected);
+    const freshInsights = generateOverviewInsights(input, filters, pricing, expected, now);
+    const reusedInsights = generateOverviewInsights(input, filters, pricing, reused, now);
+    assert.deepEqual(reusedInsights, freshInsights);
+    for (const insight of freshInsights.insights) for (const page of [1, 2]) {
+      const evidence = { ...insight.evidence, page, pageSize: 2 };
+      assert.deepEqual(buildOverviewEvidence(input, reused.query, evidence, pricing, now), buildOverviewEvidence(input, expected.query, evidence, pricing, now));
+    }
+  }
+  assert.deepEqual(original, before);
 });
 test("Skill显式三次和成功读取两次合计五、会话一，失败读取不计使用", () => {
   const input = source({ sessions: [session("a")], events: [event("a", "user")], resources: [

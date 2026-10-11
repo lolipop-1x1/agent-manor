@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { defaultOverviewRoute, overviewAddress, overviewCalendarDate, overviewQuery, overviewRange, readOverviewRoute, streakRange, validOverviewRange } from "../web/features/overview/model.ts";
+import { defaultOverviewRoute, incomingOverviewRoute, overviewAddress, overviewCalendarDate, overviewQuery, overviewRange, readOverviewRoute, streakRange, validOverviewRange } from "../web/features/overview/model.ts";
 import { formatDate } from "../src/i18n/format.ts";
 import { readUsageRoute, usageQuery } from "../web/features/usage/model.ts";
 import { translate } from "../src/i18n/index.ts";
@@ -55,4 +55,13 @@ test("总览动态文案使用真实参数并支持中英文", () => {
   assert.equal(translate("zh-CN", "overview.timing.durationValue", { value: "3.2" }), "3.2 秒");
   assert.equal(translate("en", "overview.timing.durationValue", { value: "3.2" }), "3.2 s");
   assert.ok(translate("en", "overview.help.versions", { version: "index-a", priceVersion: "price-b", timezone: "UTC" }).includes("index-a"));
+});
+
+test("隐藏总览页激活先采纳外部筛选，内部模型修改不被旧地址覆盖", () => {
+  const old = defaultOverviewRoute(), previous = overviewAddress(old);
+  const target = overviewAddress({ ...old, window: "custom", from: "2026-01-01", to: "2026-01-02", clients: ["codex"] });
+  const adopted = incomingOverviewRoute(target, previous, old)!;
+  assert.equal(adopted.from, "2026-01-01"); assert.deepEqual(adopted.clients, ["codex"]);
+  assert.equal(incomingOverviewRoute(target, target, { ...adopted, models: ["model-a"] }), null);
+  assert.equal(incomingOverviewRoute(target, previous, adopted), null);
 });

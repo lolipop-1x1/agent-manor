@@ -57,6 +57,7 @@ export class OverviewManager {
       timezone: query.timezone ?? Intl.DateTimeFormat().resolvedOptions().timeZone };
     const now = this.now();
     const day = fixed.anchorDay ?? localDay(now, fixed.timezone)!;
+    fixed.anchorDay = day;
     const repositories = this.repositories();
     const key = JSON.stringify([type, Object.fromEntries(Object.entries(fixed).sort(([a], [b]) => a.localeCompare(b))),
       evidence, day, repositories.map(row => [row.id, row.version, row.stale])]);

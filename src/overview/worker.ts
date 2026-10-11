@@ -1,6 +1,6 @@
 import { parentPort, workerData } from "node:worker_threads";
 import { AnalysisStore, StoreError } from "../index/store.js";
-import type { OverviewSource } from "../overview-contracts.js";
+import type { OverviewReport, OverviewSource } from "../overview-contracts.js";
 import { SessionStore } from "../sessions/store.js";
 import { ServiceError } from "../service/input.js";
 import { createPricingEstimator } from "../usage/pricing.js";
@@ -15,6 +15,7 @@ import { prepareOverviewDateCache, resolveTimezone } from "./dates.js";
 const { dbPath } = workerData as { dbPath: string };
 const sessions = new SessionStore(dbPath), repositories = new AnalysisStore(dbPath);
 let source: OverviewSource | undefined;
+let globalCore: { key: string; report: OverviewReport } | undefined;
 
 parentPort!.on("message", (request: OverviewWorkerRequest) => {
   try {
@@ -28,8 +29,13 @@ parentPort!.on("message", (request: OverviewWorkerRequest) => {
       if (!request.evidence) throw new StoreError("INVALID_INPUT", "总览调查缺少查询范围", { key: "diagnostics.server.m002" });
       result = buildOverviewEvidence(source, request.query, request.evidence, pricing, now);
     } else {
-      const report = buildOverviewReport(source, request.query, pricing, now);
-      report.repositories = buildOverviewRepositories(repositories, request.repositories, source, request.query, report.range, report.timezone);
+      const key = JSON.stringify([Object.fromEntries(Object.entries({ ...request.query, models: undefined }).sort(([a], [b]) => a.localeCompare(b))),
+        request.repositories.map(row => [row.id, row.version, row.stale])]);
+      if (globalCore?.key !== key) globalCore = undefined;
+      const report = buildOverviewReport(source, request.query, pricing, now, globalCore?.report);
+      report.repositories = globalCore?.report.repositories
+        ?? buildOverviewRepositories(repositories, request.repositories, source, request.query, report.range, report.timezone);
+      if (!request.query.models?.length) globalCore = { key, report: { ...report, process: { ...report.process } } };
       Object.assign(report, generateOverviewInsights(source, request.query, pricing, report, now));
       // 后续调用组仅供生成洞察；完整过程由固定版本的分页证据查询读取。
       report.process.failureSequences = [];

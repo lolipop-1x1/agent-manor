@@ -9,9 +9,9 @@ import { StoreError } from "../index/store.js";
 import { requestSpeed, speedOutputTokens } from "../session-speed.js";
 import { resourceGapRelevant } from "../resources/coverage.js";
 import { resourceHistoryIdentity, resourceOverviewIdentity } from "../resources/usage.js";
-import { buildUsageReport, instant, intervalKey, timeKeys } from "../usage/analytics.js";
+import { buildUsageReport, instant, intervalKey } from "../usage/analytics.js";
 import { usageDimensionKey, usageDimensionValue } from "../usage/dimensions.js";
-import { addDays, daysBetween, localDay, resolveOverviewRange, resolveTimezone } from "./dates.js";
+import { activityTime, addDays, daysBetween, localDay, resolveOverviewRange, resolveTimezone } from "./dates.js";
 
 const nonnegative = (value: number | undefined): value is number => value !== undefined && Number.isFinite(value) && value >= 0;
 export function isActivityEvent(event: OverviewEvent): boolean {
@@ -39,16 +39,16 @@ export function resourceNameDescriptor(event: ResourceUsageEvent) {
 export function validResource(event: ResourceUsageEvent): boolean {
   return event.kind !== "skill_read" || event.status === "success";
 }
-export function selectedSource(source: OverviewSource, query: OverviewQuery, range: OverviewRange, usageScope = false): OverviewSource {
+export function selectedSource(source: OverviewSource, query: OverviewQuery, range: OverviewRange, usageScope = false, requestsOnly = false): OverviewSource {
   const sessions = source.sessions.filter(session => matchesGlobalSession(session, query)), ids = new Set(sessions.map(session => session.id));
   const dated = (value?: string) => {
     const day = localDay(value, query.timezone!);
     return day === null ? range.all : day >= range.from && day <= range.to;
   };
-  return { ...source, sessions, events: source.events.filter(event => ids.has(event.sessionId) && isActivityEvent(event) && dated(event.occurredAt)),
+  return { ...source, sessions, events: requestsOnly ? [] : source.events.filter(event => ids.has(event.sessionId) && isActivityEvent(event) && dated(event.occurredAt)),
     requests: source.requests.filter(request => ids.has(request.sessionId) && dated(request.usage.occurredAt)
       && (!usageScope || !query.models?.length || query.models.includes(usageDimensionKey(request.usage.model)))),
-    resources: source.resources.filter(event => ids.has(event.sessionId) && validResource(event) && dated(event.occurredAt)) };
+    resources: requestsOnly ? [] : source.resources.filter(event => ids.has(event.sessionId) && validResource(event) && dated(event.occurredAt)) };
 }
 export function resultCounts(statuses: readonly ("success" | "failure" | "unknown" | undefined)[]): OverviewResultCounts {
   const success = statuses.filter(status => status === "success").length, failure = statuses.filter(status => status === "failure").length;
@@ -133,7 +133,7 @@ function buildActivity(selected: OverviewSource, source: OverviewSource, range: 
   const weekday = Array.from({ length: 7 }, () => ({ count: 0, sessions: new Set<string>() }));
   const hours = Array.from({ length: 24 }, () => ({ count: 0, sessions: new Set<string>() }));
   const weekdayHours = new Map<string, { weekday: number; hour: number; count: number; sessions: Set<string> }>();
-  const keys = timeKeys(timezone, "hour"), eventIds = new Set(selected.events.filter(event => instant(event.occurredAt) !== undefined)
+  const eventIds = new Set(selected.events.filter(event => localDay(event.occurredAt, timezone) !== null)
     .map(event => `${event.sessionId}\u0000${event.id}`));
   const activityPoints = [...selected.events.map(event => ({ sessionId: event.sessionId, occurredAt: event.occurredAt })),
     ...selected.requests.filter(request => ![request.usage.messageId, ...(request.usage.requestMessageIds ?? []),
@@ -141,8 +141,8 @@ function buildActivity(selected: OverviewSource, source: OverviewSource, range: 
       .some(id => id !== undefined && eventIds.has(`${request.sessionId}\u0000${id}`)))
       .map(request => ({ sessionId: request.sessionId, occurredAt: request.usage.occurredAt }))];
   for (const point of activityPoints) {
-    const time = instant(point.occurredAt); if (time === undefined) continue;
-    const { day, bucket } = keys(time), wd = new Date(`${day}T00:00:00Z`).getUTCDay(), hour = Number(bucket.slice(11, 13));
+    const time = activityTime(point.occurredAt, timezone); if (!time) continue;
+    const { weekday: wd, hour } = time;
     weekday[wd]!.count += 1; weekday[wd]!.sessions.add(point.sessionId); hours[hour]!.count += 1; hours[hour]!.sessions.add(point.sessionId);
     const key = `${wd}:${hour}`, value = weekdayHours.get(key) ?? { weekday: wd, hour, count: 0, sessions: new Set<string>() };
     value.count += 1; value.sessions.add(point.sessionId); weekdayHours.set(key, value);
@@ -272,11 +272,11 @@ export function quantile(values: readonly number[], q: number): number | null {
   const sorted = [...values].sort((a, b) => a - b), index = (sorted.length - 1) * q, low = Math.floor(index), fraction = index - low;
   return sorted[low]! + (sorted[Math.min(low + 1, sorted.length - 1)]! - sorted[low]!) * fraction;
 }
-function buildProcess(source: OverviewSource, selected: OverviewSource, usageSelected: OverviewSource, timezone: string): OverviewProcess {
+function buildProcess(source: OverviewSource, selected: OverviewSource, usageSelected: OverviewSource, timezone: string, global?: OverviewProcess): OverviewProcess {
   const sessionById = new Map(source.sessions.map(session => [session.id, session]));
   const selectedIds = new Set(selected.events.filter(event => event.kind === "tool_call").map(event => `${event.sessionId}\u0000${event.id}`));
   // 结果可以稍晚于调用落在范围外，唯一配对仍属于同一个范围内调用。
-  const calls = pairToolCalls(source.events.filter(isActivityEvent)).filter(event => selectedIds.has(`${event.sessionId}\u0000${event.id}`));
+  const calls = global ? [] : pairToolCalls(source.events.filter(isActivityEvent)).filter(event => selectedIds.has(`${event.sessionId}\u0000${event.id}`));
   const groups = new Map<string, OverviewEvent[]>();
   for (const call of calls) { const id = JSON.stringify([call.tool ?? null, call.resource?.server ?? null]), values = groups.get(id) ?? []; values.push(call); groups.set(id, values); }
   const tools: OverviewToolRow[] = [...groups].map(([key, values]) => {
@@ -314,24 +314,25 @@ function buildProcess(source: OverviewSource, selected: OverviewSource, usageSel
       longest: [...requests].sort((a, b) => b.usage.timing!.durationMs! - a.usage.timing!.durationMs! || a.usage.id.localeCompare(b.usage.id)).slice(0, 5)
         .map(request => ({ sessionId: request.sessionId, requestId: request.usage.id, messageId: request.usage.messageId, durationMs: request.usage.timing!.durationMs! })) };
   }).sort((a, b) => b.samples - a.samples || a.id.localeCompare(b.id));
+  if (global) return { ...global, timing, missingTimingRequests };
   const compressions = selected.events.filter(event => event.kind === "compression");
   return { tools, categories: aggregateCount(calls, event => toolCategory(event.tool, event.resource), event => event.sessionId, event => event.status),
     results: resultCounts(calls.map(event => event.status)), failures: calls.filter(event => event.status === "failure").length,
     failureSequences: failureSequences(source, calls), compressions: compressions.length,
     compressionSessions: new Set(compressions.map(event => event.sessionId)).size, timing, missingTimingRequests };
 }
-export function buildDelegation(source: OverviewSource, selected: OverviewSource, usageSelected: OverviewSource, activeIds: Set<string>, timezone: string): OverviewDelegation {
+export function buildDelegation(source: OverviewSource, selected: OverviewSource, usageSelected: OverviewSource, activeIds: Set<string>, timezone: string, global?: OverviewDelegation): OverviewDelegation {
   const byId = new Map(source.sessions.map(session => [session.id, session])), children = new Map<string, SessionSummary[]>();
   for (const session of source.sessions) if (session.relationship === "child" && session.parentSessionId) {
     const group = children.get(session.parentSessionId) ?? []; group.push(session); children.set(session.parentSessionId, group);
   }
   let eligibleMainSessions = 0, withChildActivity = 0, unknownMainSessions = 0, unknownRelationshipSessions = 0;
-  const datedActivityIds = new Set([...source.events.filter(event => isActivityEvent(event) && localDay(event.occurredAt, timezone) !== null).map(event => event.sessionId),
+  const datedActivityIds = global ? new Set<string>() : new Set([...source.events.filter(event => isActivityEvent(event) && localDay(event.occurredAt, timezone) !== null).map(event => event.sessionId),
     ...source.requests.filter(request => localDay(request.usage.occurredAt, timezone) !== null).map(request => request.sessionId)]);
   const selectedRequests = usageSelected.requests;
   const relationUnknown = (session: SessionSummary) => session.relationship === "child" && (!session.parentSessionId || !byId.has(session.parentSessionId))
     || session.gaps.some(gap => ["diagnostics.sessions.store.m004", "diagnostics.sessions.store.m005", "diagnostics.sessions.store.m006", "diagnostics.sessions.store.m017"].includes(gap.messageDescriptor?.key ?? ""));
-  for (const session of selected.sessions) {
+  for (const session of global ? [] : selected.sessions) {
     if (!activeIds.has(session.id) || session.relationship === "fork") continue;
     if (relationUnknown(session)) { unknownRelationshipSessions += 1; continue; }
     if (session.relationship === "child") continue;
@@ -352,12 +353,14 @@ export function buildDelegation(source: OverviewSource, selected: OverviewSource
     const values = requests.filter(request => nonnegative(request.usage.inputTokens) && nonnegative(request.usage.outputTokens));
     return values.length ? values.reduce((sum, request) => sum + request.usage.inputTokens! + request.usage.outputTokens!, 0) : null;
   };
-  return { eligibleMainSessions, withChildActivity, unknownMainSessions, unknownRelationshipSessions,
-    forkSessions: selected.sessions.filter(session => activeIds.has(session.id) && session.relationship === "fork").length,
+  return { eligibleMainSessions: global?.eligibleMainSessions ?? eligibleMainSessions, withChildActivity: global?.withChildActivity ?? withChildActivity,
+    unknownMainSessions: global?.unknownMainSessions ?? unknownMainSessions, unknownRelationshipSessions: global?.unknownRelationshipSessions ?? unknownRelationshipSessions,
+    forkSessions: global?.forkSessions ?? selected.sessions.filter(session => activeIds.has(session.id) && session.relationship === "fork").length,
     childRequests: child.length, assignedRequests: assigned.length, childTokens: tokens(child), assignedTokens: tokens(assigned) };
 }
 
-export function buildOverviewReport(source: OverviewSource, input: OverviewQuery, pricing: PricingView, now = new Date()): OverviewReport {
+/** global 仅由后台在同一完整全局范围内提供，模型相关字段始终重新计算。 */
+export function buildOverviewReport(source: OverviewSource, input: OverviewQuery, pricing: PricingView, now = new Date(), shared?: OverviewReport): OverviewReport {
   const timezone = resolveTimezone(input.timezone), query: OverviewQuery = { ...input, timezone, version: source.version, priceVersion: pricing.status.version };
   if (input.version !== undefined && input.version !== source.version || input.priceVersion !== undefined && input.priceVersion !== pricing.status.version) {
     throw new StoreError("VERSION_NOT_FOUND", "总览版本已不可用", { key: "diagnostics.usage.versionMismatch" });
@@ -366,7 +369,8 @@ export function buildOverviewReport(source: OverviewSource, input: OverviewQuery
     && (!Array.isArray(query[key]) || query[key]!.some(value => typeof value !== "string" || !value))) {
     throw new StoreError("INVALID_INPUT", "无效总览筛选", { key: "diagnostics.usage.invalidQuery", params: { field: key } });
   }
-  const range = resolveOverviewRange(source, query, now), selected = selectedSource(source, query, range), usageSelected = selectedSource(source, query, range, true);
+  const range = resolveOverviewRange(source, query, now), selected = selectedSource(source, query, range, false, !!shared);
+  const usageSelected = { ...selected, requests: selected.requests.filter(request => !query.models?.length || query.models.includes(usageDimensionKey(request.usage.model))) };
   query.anchorDay = range.today;
   const costs = new WeakMap<SessionUsage, Map<string, ReturnType<PricingView["estimate"]>>>();
   const estimate: PricingView["estimate"] = (usage, client) => {
@@ -377,25 +381,27 @@ export function buildOverviewReport(source: OverviewSource, input: OverviewQuery
   const usageQuery = { version: source.version, priceVersion: pricing.status.version, timezone, clients: query.clients,
     projects: query.projects?.map(project => project === "none" ? "unknown" : project), ...(range.all ? {} : { from: range.from, to: range.to }),
     interval: "week" as const, page: 1, pageSize: 5, groupBy: "model" as const };
-  const global = buildUsageReport(source, usageQuery, pricing.status, estimate);
+  const global = shared?.usage ?? buildUsageReport(source, usageQuery, pricing.status, estimate);
   const usage = query.models?.length ? buildUsageReport(source, { ...usageQuery, models: query.models }, pricing.status, estimate) : global;
   // 首屏报告不重复返回会话内原请求，明细由独立分页证据接口读取。
-  global.sessions = global.sessions.map(row => ({ ...row, requests: [], requestsLimited: row.requestsTotal > 0 }));
+  if (!shared) global.sessions = global.sessions.map(row => ({ ...row, requests: [], requestsLimited: row.requestsTotal > 0 }));
   if (usage !== global) usage.sessions = usage.sessions.map(row => ({ ...row, requests: [], requestsLimited: row.requestsTotal > 0 }));
-  const { activity, activeIds } = buildActivity(selected, source, range, timezone, global.days);
+  const { activity, activeIds } = shared ? { activity: shared.activity, activeIds: new Set<string>() } : buildActivity(selected, source, range, timezone, global.days);
   const activeSessions = selected.sessions.filter(session => activeIds.has(session.id)), activeDays = new Set(activity.days.filter(day => day.sessions > 0).map(day => day.day));
-  const streak = streaks(activeDays, range), resources = buildResources(source, selected, range, timezone);
-  const complete = selected.requests.filter(request => nonnegative(request.usage.inputTokens) && nonnegative(request.usage.outputTokens))
+  const streak = streaks(activeDays, range), resources = shared?.resources ?? buildResources(source, selected, range, timezone);
+  const complete = (shared ? [] : selected.requests).filter(request => nonnegative(request.usage.inputTokens) && nonnegative(request.usage.outputTokens))
     .sort((a, b) => b.usage.inputTokens! + b.usage.outputTokens! - a.usage.inputTokens! - a.usage.outputTokens!
       || (a.usage.occurredAt ?? "").localeCompare(b.usage.occurredAt ?? "") || `${a.sessionId}:${a.usage.id}`.localeCompare(`${b.sessionId}:${b.usage.id}`));
   const peak = complete[0], totals = global.totals;
-  const process = buildProcess(source, selected, usageSelected, timezone), sessionById = new Map(source.sessions.map(session => [session.id, session]));
+  const process = buildProcess(source, selected, usageSelected, timezone, shared?.process), sessionById = new Map(source.sessions.map(session => [session.id, session]));
   const requestDistribution = (dimension: "client" | "project" | "model") => {
     const requests = usageSelected.requests;
-    const rows = aggregateCount(requests, request => dimension === "model" ? usageDimensionKey(request.usage.model)
-      : dimension === "project" ? usageDimensionKey(sessionById.get(request.sessionId)!.project) : sessionById.get(request.sessionId)!.client, request => request.sessionId, undefined, dimension !== "client");
-    return rows.map(row => { const group = requests.filter(request => (dimension === "model" ? usageDimensionKey(request.usage.model)
-      : dimension === "project" ? usageDimensionKey(sessionById.get(request.sessionId)!.project) : sessionById.get(request.sessionId)!.client) === row.key);
+    const identity = (request: OverviewSource["requests"][number]) => dimension === "model" ? usageDimensionKey(request.usage.model)
+      : dimension === "project" ? usageDimensionKey(sessionById.get(request.sessionId)!.project) : sessionById.get(request.sessionId)!.client;
+    const groups = new Map<string, OverviewSource["requests"]>();
+    for (const request of requests) { const key = identity(request), group = groups.get(key) ?? []; group.push(request); groups.set(key, group); }
+    const rows = aggregateCount(requests, identity, request => request.sessionId, undefined, dimension !== "client");
+    return rows.map(row => { const group = groups.get(row.key)!;
       const tokens = group.flatMap(request => nonnegative(request.usage.inputTokens) || nonnegative(request.usage.outputTokens)
         ? [(nonnegative(request.usage.inputTokens) ? request.usage.inputTokens : 0) + (nonnegative(request.usage.outputTokens) ? request.usage.outputTokens : 0)] : []);
       const costs = group.flatMap(request => { const amount = estimate(request.usage, sessionById.get(request.sessionId)!.client).amount;
@@ -405,7 +411,7 @@ export function buildOverviewReport(source: OverviewSource, input: OverviewQuery
   };
   const scopedIds = new Set(selected.sessions.map(session => session.id));
   return { version: source.version, priceVersion: pricing.status.version, timezone, query, range, totals, usage,
-    summary: { sessions: activeSessions.length, mainSessions: activeSessions.filter(session => session.relationship !== "child" && session.relationship !== "fork").length,
+    summary: shared?.summary ?? { sessions: activeSessions.length, mainSessions: activeSessions.filter(session => session.relationship !== "child" && session.relationship !== "fork").length,
       childSessions: activeSessions.filter(session => session.relationship === "child").length, forkSessions: activeSessions.filter(session => session.relationship === "fork").length,
       requests: totals.requests, tokens: totals.tokens, estimatedCost: totals.estimatedCost,
       tokenCoverage: totals.tokens === null ? "missing" : totals.partialTokenRequests || totals.missingTokenRequests ? "partial" : "complete",
@@ -417,12 +423,12 @@ export function buildOverviewReport(source: OverviewSource, input: OverviewQuery
       peak: peak ? { sessionId: peak.sessionId, requestId: peak.usage.id, messageId: peak.usage.messageId,
         occurredAt: peak.usage.occurredAt, tokens: peak.usage.inputTokens! + peak.usage.outputTokens! } : null },
     activity, distributions: { clients: requestDistribution("client"), projects: requestDistribution("project"), models: requestDistribution("model") },
-    resources, process, delegation: buildDelegation(source, selected, usageSelected, activeIds, timezone), repositories: [], insights: [], featuredInsights: [],
+    resources, process, delegation: buildDelegation(source, selected, usageSelected, activeIds, timezone, shared?.delegation), repositories: [], insights: [], featuredInsights: [],
     projectMonths: [], modelTransitions: [],
-    facets: { clients: [...new Set(source.sessions.map(session => session.client))].sort(),
+    facets: shared?.facets ?? { clients: [...new Set(source.sessions.map(session => session.client))].sort(),
       projects: [...new Set(source.sessions.flatMap(session => session.project ?? []))].sort(),
       models: [...new Set(source.requests.flatMap(request => request.usage.model ?? []))].sort() },
-    coverage: { gaps: source.gaps.slice(0, 100), gapCount: source.gaps.length, missingTimeEvents: activity.missingTimeEvents,
+    coverage: shared?.coverage ?? { gaps: source.gaps.slice(0, 100), gapCount: source.gaps.length, missingTimeEvents: activity.missingTimeEvents,
       missingTimeRequests: source.requests.filter(request => scopedIds.has(request.sessionId) && localDay(request.usage.occurredAt, timezone) === null).length,
       missingTimeResources: resources.missingTimeEvents } };
 }

@@ -13,7 +13,7 @@ import { HelpPopover } from "../../shared/ui/HelpPopover";
 import { MultiFilterPicker } from "../../shared/ui/MultiFilterPicker";
 import { ResourcePagination } from "../../shared/ui/ResourcePagination";
 import { sessionDisplayTitle } from "../sessions/session-model";
-import { activeFilterCount, defaultRoute, readUsageRoute, usageAddress, usageParameters, usageQuery, type DateWindow, type UsageRoute } from "./model";
+import { activeFilterCount, defaultRoute, incomingUsageRoute, readUsageRoute, usageAddress, usageParameters, usageQuery, type DateWindow, type UsageRoute } from "./model";
 import { UsageMetrics } from "./UsageMetrics";
 import { TokenAmount } from "./TokenAmount";
 import { PricingManager } from "./PricingManager";
@@ -24,6 +24,7 @@ import "./usage.css";
 export default function Usage({ active, onSession }: { active: boolean; onSession: (target: { sessionId: string; messageId?: string }) => void }) {
   const { t, number, date, dateTime, message, language } = useI18n();
   const [route, setRoute] = useState(() => readUsageRoute(location.hash));
+  const lastAddress = useRef(location.hash), adoptingAddress = useRef(false);
   const [revision, setRevision] = useState(0);
   const [versions, setVersions] = useState<{ index: string; price: string } | null>(null);
   const [pricing, setPricing] = useState<PricingStatus | null>(null);
@@ -41,7 +42,14 @@ export default function Usage({ active, onSession }: { active: boolean; onSessio
     const navigate = () => { if (location.hash.startsWith("#usage")) setRoute(readUsageRoute(location.hash)); };
     globalThis.addEventListener("hashchange", navigate); return () => globalThis.removeEventListener("hashchange", navigate);
   }, []);
-  useEffect(() => { if (active && location.hash.startsWith("#usage")) history.replaceState(null, "", usageAddress(route)); }, [active, route]);
+  useEffect(() => {
+    if (!active || !location.hash.startsWith("#usage")) return;
+    const incoming = incomingUsageRoute(location.hash, lastAddress.current, route);
+    lastAddress.current = location.hash; adoptingAddress.current = incoming !== null;
+    if (incoming) { setRoute(incoming); return; }
+    const address = usageAddress(route); lastAddress.current = address;
+    history.replaceState(null, "", address);
+  }, [active, route]);
   useEffect(() => {
     if (!active) return;
     const controller = new AbortController(); setLoading(true); setError(null);
@@ -62,7 +70,7 @@ export default function Usage({ active, onSession }: { active: boolean; onSessio
   useEffect(() => {
     setPreparation(null);
     if (invalid) { setLoading(false); return; }
-    if (!active || !queryKey) return;
+    if (!active || !queryKey || adoptingAddress.current) return;
     const controller = new AbortController(); setLoading(true); setError(null);
     const statusController = new AbortController();
     const parameters = new URLSearchParams(queryKey);

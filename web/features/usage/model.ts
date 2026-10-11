@@ -37,6 +37,12 @@ export function readUsageRoute(hash: string): UsageRoute {
   return route;
 }
 export function usageAddress(route: UsageRoute): string { return `#usage?${usageParameters(route)}`; }
+/** 激活隐藏页面时先采纳外部地址，随后才允许内部筛选写回地址。 */
+export function incomingUsageRoute(address: string, previous: string, route: UsageRoute): UsageRoute | null {
+  if (address === previous) return null;
+  const incoming = readUsageRoute(address);
+  return usageAddress(incoming) === usageAddress(route) ? null : incoming;
+}
 export function usageParameters(value: object): string {
   const params = new URLSearchParams();
   for (const [key, entry] of Object.entries(value)) if (entry !== undefined && entry !== "" && (!Array.isArray(entry) || entry.length)) params.set(key, Array.isArray(entry) ? JSON.stringify(entry) : String(entry));

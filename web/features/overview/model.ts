@@ -29,6 +29,11 @@ export function overviewParameters(value: object): string {
   return params.toString();
 }
 export const overviewAddress = (route: OverviewRoute): string => `#overview?${overviewParameters(route)}`;
+export function incomingOverviewRoute(address: string, previous: string, route: OverviewRoute): OverviewRoute | null {
+  if (address === previous) return null;
+  const incoming = readOverviewRoute(address);
+  return overviewAddress(incoming) === overviewAddress(route) ? null : incoming;
+}
 export function overviewRange(route: OverviewRoute, now = new Date()): { from?: string; to?: string } {
   if (route.window === "all") return {};
   if (route.window === "custom") return { from: route.from, to: route.to };

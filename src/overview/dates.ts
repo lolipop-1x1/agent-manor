@@ -4,10 +4,12 @@ import { calendarDay, instant } from "../usage/analytics.js";
 import { usageDimensionKey } from "../usage/dimensions.js";
 
 const formatters = new Map<string, Intl.DateTimeFormat>();
+const hourFormatters = new Map<string, Intl.DateTimeFormat>();
 const maxDateCacheEntries = 1_000_000;
 let dateCacheScope: string | undefined;
 let dateCacheTimezone: string | undefined;
-const dateCache = new Map<string | number, string>();
+interface DateProjection { day: string; time: number; activity?: { weekday: number; hour: number } }
+const dateCache = new Map<string | number, DateProjection>();
 
 /** 后台同一事实版本及统计时区复用日期投影，切换来源或时区时释放。 */
 export function prepareOverviewDateCache(version: string, timezone: string): void {
@@ -22,6 +24,23 @@ export function resolveTimezone(value?: string): string {
   return timezone;
 }
 export function localDay(value: string | number | Date | undefined, timezone: string): string | null {
+  return dateProjection(value, timezone)?.day ?? null;
+}
+/** 星期与小时只使用活动需要的本地投影，重复事实不再构造完整时间桶。 */
+export function activityTime(value: string | undefined, timezone: string): DateProjection["activity"] | null {
+  const projection = dateProjection(value, timezone); if (!projection) return null;
+  if (!projection.activity) {
+    let formatter = hourFormatters.get(timezone);
+    if (!formatter) {
+      formatter = new Intl.DateTimeFormat("en", { timeZone: timezone, hourCycle: "h23", hour: "2-digit" });
+      hourFormatters.set(timezone, formatter);
+      while (hourFormatters.size > 16) hourFormatters.delete(hourFormatters.keys().next().value!);
+    }
+    projection.activity = { weekday: new Date(`${projection.day}T00:00:00Z`).getUTCDay(), hour: Number(formatter.format(projection.time)) };
+  }
+  return projection.activity;
+}
+function dateProjection(value: string | number | Date | undefined, timezone: string): DateProjection | null {
   const key = value instanceof Date ? value.getTime() : value;
   const cached = timezone === dateCacheTimezone && key !== undefined ? dateCache.get(key) : undefined;
   if (cached !== undefined) return cached;
@@ -34,9 +53,9 @@ export function localDay(value: string | number | Date | undefined, timezone: st
     while (formatters.size > 16) formatters.delete(formatters.keys().next().value!);
   }
   const parts = Object.fromEntries(formatter.formatToParts(time).map(part => [part.type, part.value]));
-  const day = `${parts.year}-${parts.month}-${parts.day}`;
-  if (timezone === dateCacheTimezone && key !== undefined && dateCache.size < maxDateCacheEntries) dateCache.set(key, day);
-  return day;
+  const projection = { day: `${parts.year}-${parts.month}-${parts.day}`, time };
+  if (timezone === dateCacheTimezone && key !== undefined && dateCache.size < maxDateCacheEntries) dateCache.set(key, projection);
+  return projection;
 }
 export function addDays(day: string, delta: number): string {
   const date = new Date(`${day}T00:00:00Z`);

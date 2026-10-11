@@ -15,8 +15,10 @@ const knownModel = (request: Request) => Boolean(request.usage.model?.trim());
 const completeTokens = (request: OverviewRequest) => nonnegative(request.usage.inputTokens) && nonnegative(request.usage.outputTokens);
 const totalTokens = (request: OverviewRequest) => request.usage.inputTokens! + request.usage.outputTokens!;
 
-function periodRequests(requests: Request[], period: OverviewPeriod, timezone: string): PeriodRequests {
-  const all = requests.filter(request => inPeriod(request.usage.occurredAt, period, timezone));
+const requestInPeriod = (request: Request, period: OverviewPeriod) => request.day !== null && request.day >= period.from && request.day <= period.to;
+
+function periodRequests(requests: Request[], period: OverviewPeriod): PeriodRequests {
+  const all = requests.filter(request => requestInPeriod(request, period));
   const complete = all.filter(completeTokens);
   return { all, complete, tokens: complete.reduce((sum, request) => sum + totalTokens(request), 0),
     input: complete.reduce((sum, request) => sum + request.usage.inputTokens!, 0),
@@ -65,7 +67,7 @@ export function generateOverviewInsights(source: OverviewSource, query: Overview
   });
   const modelMatches = (request: Request) => !query.models?.length || query.models.includes(usageDimensionKey(request.usage.model));
   const requests = allRequests.filter(modelMatches);
-  const selected = requests.filter(request => report.range.all || inPeriod(request.usage.occurredAt, report.range, report.timezone));
+  const selected = requests.filter(request => report.range.all || requestInPeriod(request, report.range));
   const complete = selected.filter(completeTokens);
   const events = source.events.filter(event => sessions.has(event.sessionId) && isActivityEvent(event));
   const selectedEvents = events.filter(event => report.range.all || inPeriod(event.occurredAt, report.range, report.timezone));
@@ -107,8 +109,8 @@ export function generateOverviewInsights(source: OverviewSource, query: Overview
 
   // 01：只有两期同口径完整请求进入构成拆分，部分量保留为缺失数。
   const compareUsage = (comparison: NonNullable<OverviewReport["range"]["comparison"]>, recent: boolean) => {
-    const current = periodRequests(requests, comparison.current, report.timezone);
-    const previous = periodRequests(requests, comparison.previous, report.timezone);
+    const current = periodRequests(requests, comparison.current);
+    const previous = periodRequests(requests, comparison.previous);
     if (current.complete.length < 20 || previous.complete.length < 20 || current.tokens === previous.tokens) return;
     const composition = decomposeUsage(previous.complete.length, previous.tokens, current.complete.length, current.tokens)!;
     add({ rule: "01", type: "change", key: recent ? "recentUsage" : "usage",
@@ -138,8 +140,8 @@ export function generateOverviewInsights(source: OverviewSource, query: Overview
   };
   if (report.range.comparison) {
     const comparison = report.range.comparison;
-    const current = periodRequests(requests, comparison.current, report.timezone);
-    const previous = periodRequests(requests, comparison.previous, report.timezone);
+    const current = periodRequests(requests, comparison.current);
+    const previous = periodRequests(requests, comparison.previous);
     if (current.all.length >= 20 && previous.all.length >= 20 && current.all.length !== previous.all.length) add({ rule: "01", type: "change",
       key: "change.requests", metric: "request_count", params: { current: current.all.length, previous: previous.all.length },
       current: current.all.length, previous: previous.all.length, sample: current.all.length, period: comparison.current, previousPeriod: comparison.previous,
@@ -244,8 +246,8 @@ export function generateOverviewInsights(source: OverviewSource, query: Overview
 
   if (report.range.comparison) {
     const comparison = report.range.comparison;
-    const current = periodRequests(requests, comparison.current, report.timezone);
-    const previous = periodRequests(requests, comparison.previous, report.timezone);
+    const current = periodRequests(requests, comparison.current);
+    const previous = periodRequests(requests, comparison.previous);
     // 06：缓存比较限定客户端与原始模型，fresh 使用既有分项归一化规则。
     const cacheGroups = (rows: Request[]) => groupRequests(rows, request => knownModel(request)
       ? identity(request.session.client, request.usage.model!) : undefined);
@@ -341,7 +343,7 @@ export function generateOverviewInsights(source: OverviewSource, query: Overview
     for (let index = 1; index < group.length; index++) {
       const left = group[index - 1]!; const right = group[index]!;
       if (!left.day || !right.day || !knownModel(left) || !knownModel(right) || !modelMatches(left) || !modelMatches(right)
-        || !inPeriod(left.usage.occurredAt, report.range, report.timezone) || !inPeriod(right.usage.occurredAt, report.range, report.timezone)) continue;
+        || !requestInPeriod(left, report.range) || !requestInPeriod(right, report.range)) continue;
       pairs += 1;
       if (left.usage.model !== right.usage.model) {
         changes += 1;
@@ -509,7 +511,7 @@ export function generateOverviewInsights(source: OverviewSource, query: Overview
     };
     for (const request of group) {
       if (!request.day || !knownModel(request) || !nonnegative(request.usage.inputTokens) || !modelMatches(request)
-        || !inPeriod(request.usage.occurredAt, report.range, report.timezone)) { flush(); continue; }
+        || !requestInPeriod(request, report.range)) { flush(); continue; }
       if (segment.length && segment[0]!.usage.model !== request.usage.model) flush();
       segment.push(request);
     }
@@ -539,7 +541,7 @@ export function generateOverviewInsights(source: OverviewSource, query: Overview
   // 16：两期覆盖按可归日事实比较，无时间记录单列为报告整体缺口。
   if (report.range.comparison) {
     const comparison = report.range.comparison;
-    const next = periodRequests(requests, comparison.current, report.timezone); const prior = periodRequests(requests, comparison.previous, report.timezone);
+    const next = periodRequests(requests, comparison.current); const prior = periodRequests(requests, comparison.previous);
     const validTiming = (request: Request) => validDuration(request.usage);
     for (const [metric, predicate] of [["tokens", completeTokens], ["models", knownModel], ["timing", validTiming]] as const) {
       const currentKnown = next.all.filter(predicate).length; const previousKnown = prior.all.filter(predicate).length;

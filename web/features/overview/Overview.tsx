@@ -13,12 +13,13 @@ import { TokenAmount } from "../usage/TokenAmount";
 import { composition } from "../usage/model";
 import { ActivityCalendar, ActivityDistributions, UsageTrend } from "./charts";
 import { Investigation, type InvestigationSelection, type OverviewMapTarget, type OverviewSessionTarget } from "./Investigation";
-import { defaultOverviewRoute, overviewAddress, overviewParameters, overviewQuery, readOverviewRoute, shortName, streakRange, validOverviewRange, type OverviewRoute, type OverviewWindow } from "./model";
+import { defaultOverviewRoute, incomingOverviewRoute, overviewAddress, overviewParameters, overviewQuery, readOverviewRoute, shortName, streakRange, validOverviewRange, type OverviewRoute, type OverviewWindow } from "./model";
 import "./overview.css";
 
 export default function Overview({ active, onSession, onUsage, onMap }: { active: boolean; onSession: (target: OverviewSessionTarget) => void; onUsage: (hash: string) => void; onMap: (target: OverviewMapTarget) => void }) {
   const { t, number, percent, message, date, language } = useI18n();
   const [route, setRoute] = useState(() => readOverviewRoute(location.hash));
+  const lastAddress = useRef(location.hash), adoptingAddress = useRef(false);
   const [report, setReport] = useState<OverviewReport | null>(null);
   const [loadedKey, setLoadedKey] = useState("");
   const [queryDate, setQueryDate] = useState(() => new Date());
@@ -34,10 +35,17 @@ export default function Overview({ active, onSession, onUsage, onMap }: { active
   const key = overviewParameters(query); const invalid = !validOverviewRange(route); const pending = loading || key !== loadedKey || invalid;
   useEffect(() => { setSelection(null); }, [key]);
   const patch = (value: Partial<OverviewRoute>) => { if (["window", "from", "to", "clients", "projects"].some(field => field in value)) { newSnapshot.current = true; setQueryDate(new Date()); } setRoute(current => ({ ...current, ...value })); };
-  useEffect(() => { if (!active) return; const read = () => { if (location.hash.startsWith("#overview")) setRoute(readOverviewRoute(location.hash)); }; read(); globalThis.addEventListener("hashchange", read); return () => globalThis.removeEventListener("hashchange", read); }, [active]);
-  useEffect(() => { if (active) history.replaceState(null, "", overviewAddress(route)); }, [active, route]);
+  useEffect(() => { const read = () => { if (location.hash.startsWith("#overview")) setRoute(readOverviewRoute(location.hash)); }; globalThis.addEventListener("hashchange", read); return () => globalThis.removeEventListener("hashchange", read); }, []);
   useEffect(() => {
-    if (!active || invalid) return;
+    if (!active || !location.hash.startsWith("#overview")) return;
+    const incoming = incomingOverviewRoute(location.hash, lastAddress.current, route);
+    lastAddress.current = location.hash; adoptingAddress.current = incoming !== null;
+    if (incoming) { newSnapshot.current = true; setQueryDate(new Date()); setRoute(incoming); return; }
+    const address = overviewAddress(route); lastAddress.current = address;
+    history.replaceState(null, "", address);
+  }, [active, route]);
+  useEffect(() => {
+    if (!active || invalid || adoptingAddress.current) return;
     const controller = new AbortController(); setLoading(true); setError(null);
     const requestQuery = report && reportScope.current === scopeKey && !newSnapshot.current ? { ...query, anchorDay: report.query.anchorDay, version: report.version, priceVersion: report.priceVersion } : query;
     void request<OverviewReport>(`/overview/report?${overviewParameters(requestQuery)}`, { signal: controller.signal }).then(result => { if (!controller.signal.aborted) { setReport(result); setLoadedKey(key); reportScope.current = scopeKey; newSnapshot.current = false; } }).catch(failure => { if (!isAborted(failure)) setError(failure instanceof Error ? failure : new Error(String(failure))); }).finally(() => { if (!controller.signal.aborted) setLoading(false); });

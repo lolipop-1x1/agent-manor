@@ -24,6 +24,13 @@ test("后台跨午夜缓存沿用报告日期，显式新报告重新计算完�
   try {
     const query = { window: "365" as const, timezone: "UTC", clients: ["codex"], projects: ["/synthetic/project"], models: ["synthetic-model"] };
     const report = await manager.report(query);
+    const dispatched = (manager as unknown as { nextId: number }).nextId;
+    assert.deepEqual(await manager.report(report.query), report);
+    assert.equal((manager as unknown as { nextId: number }).nextId, dispatched);
+    await manager.report({ ...report.query, models: ["synthetic-other-model"] });
+    const filteredDispatches = (manager as unknown as { nextId: number }).nextId;
+    assert.deepEqual(await manager.report(report.query), report);
+    assert.equal((manager as unknown as { nextId: number }).nextId, filteredDispatches);
     now = new Date("2026-03-02T12:00:00Z");
     assert.equal(report.query.anchorDay, "2026-03-01");
     assert.deepEqual((await manager.report(report.query)).range, report.range);
