@@ -25,8 +25,8 @@ try {
     const ensure = (condition, message) => { if (!condition) throw new Error(message); checks++; };
     const button = name => page.getByRole("button", { name, exact: true });
     const api = path => page.evaluate(async path => (await (await fetch(`/api/v1${path}`)).json()), path);
-    const ready = async () => { await page.locator(".usage-metrics").waitFor(); await page.waitForLoadState("networkidle"); };
-    const filter = async model => { await page.goto(`${options.base}/#usage?window=all&models=${encodeURIComponent(JSON.stringify([model]))}`); await ready(); };
+    const ready = async () => { await page.locator(".usage-results[aria-busy='false']").waitFor(); await page.waitForLoadState("networkidle"); };
+    const filter = async model => { const result = page.waitForResponse(response => /\/api\/v1\/usage\?/.test(response.url())); await page.goto(`${options.base}/#usage?window=all&models=${encodeURIComponent(JSON.stringify([model]))}`); await result; await ready(); };
     const requestCosts = async model => {
       const status = await api("/sessions/status?summary=true"), pricing = await api("/usage/pricing");
       const query = await page.evaluate(({ version, priceVersion, model }) => new URLSearchParams({ version, priceVersion, models: JSON.stringify([model]), timezone: "UTC" }).toString(), { version: status.version, priceVersion: pricing.version, model });
@@ -51,14 +51,14 @@ try {
     await filter("deepseek-chat");
     await page.locator(".usage-session-section tbody tr").first().getByRole("button", { name: "查看请求明细", exact: true }).click();
     const baselineRow = page.locator(".usage-request-section tbody tr").first(); await baselineRow.waitFor();
-    await baselineRow.getByText("查看适用单价", { exact: true }).click();
-    ensure(await baselineRow.getByText("API 单价估算基准 · 原渠道 deepseek-official", { exact: true }).isVisible(), "API 估算基准展开没有原渠道标记");
-    ensure((await baselineRow.innerText()).includes("不能证明请求实际使用的 API 端点或账单金额"), "API 基准展开证据没有说明端点与账单边界");
+    await baselineRow.getByRole("button", { name: "查看适用单价", exact: true }).click();
+    ensure(await page.locator(".usage-price-details").getByText("API 单价估算基准 · 原渠道 deepseek-official", { exact: true }).isVisible(), "API 估算基准展开没有原渠道标记");
+    ensure((await page.locator(".usage-price-details").innerText()).includes("不能证明请求实际使用的 API 端点或账单金额"), "API 基准展开证据没有说明端点与账单边界");
     const baselineHash = await page.evaluate(() => location.hash);
     await page.evaluate(async () => { await fetch("/api/v1/preferences", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ language: "en" }) }); dispatchEvent(new Event("focus")); });
     await page.getByRole("heading", { name: "Request details", exact: true }).waitFor();
-    ensure(await baselineRow.getByText("API rate estimate basis · original channel deepseek-official", { exact: true }).isVisible(), "API 基准原渠道缺少英文状态");
-    ensure((await baselineRow.innerText()).includes("does not confirm the actual API endpoint or billed amount"), "API 基准英文证据边界缺失");
+    ensure(await page.locator(".usage-price-details").getByText("API rate estimate basis · original channel deepseek-official", { exact: true }).isVisible(), "API 基准原渠道缺少英文状态");
+    ensure((await page.locator(".usage-price-details").innerText()).includes("does not confirm the actual API endpoint or billed amount"), "API 基准英文证据边界缺失");
     ensure(await page.evaluate(() => location.hash) === baselineHash, "API 基准语言切换改变了请求范围");
     await button("Close Request details").click();
     await button("Display language").click(); await page.getByRole("menuitemradio", { name: "Simplified Chinese", exact: true }).click();
@@ -69,10 +69,10 @@ try {
     await button("关闭统计口径与范围").click();
     await page.locator(".usage-session-section tbody tr").first().getByRole("button", { name: "查看请求明细", exact: true }).click();
     const requestRows = page.locator(".usage-request-section tbody tr"); await requestRows.first().waitFor();
-    await requestRows.first().getByText("查看适用单价", { exact: true }).click();
-    ensure((await requestRows.first().innerText()).includes("历史单价估算") && (await requestRows.first().innerText()).includes("生效区间"), "请求展开缺少历史估算与有效区间");
-    ensure((await requestRows.first().innerText()).includes("采用服务商：fixture"), "适用价格没有显示服务商");
-    ensure(await requestRows.first().getByRole("link", { name: "价格来源", exact: true }).count() === 1, "适用价格没有来源链接");
+    await requestRows.first().getByRole("button", { name: "查看适用单价", exact: true }).click();
+    ensure((await page.locator(".usage-price-details").innerText()).includes("历史单价估算") && (await page.locator(".usage-price-details").innerText()).includes("生效区间"), "请求展开缺少历史估算与有效区间");
+    ensure((await page.locator(".usage-price-details").innerText()).includes("采用服务商：fixture"), "适用价格没有显示服务商");
+    ensure(await page.locator(".usage-price-details").getByRole("link", { name: "价格来源", exact: true }).count() === 1, "适用价格没有来源链接");
     await page.setViewportSize({ width: 390, height: 900 });
     ensure(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), "历史价格明细使窄屏整页溢出");
     await page.setViewportSize({ width: 1440, height: 1080 });
@@ -107,8 +107,8 @@ try {
     await button("关闭模型价格").click(); await filter("gpt-fixture");
     await page.locator(".usage-session-section tbody tr").first().getByRole("button", { name: "查看请求明细", exact: true }).click();
     const manualRequest = page.locator(".usage-request-section tbody tr").first(); await manualRequest.waitFor();
-    await manualRequest.getByText("查看适用单价", { exact: true }).click();
-    ensure((await manualRequest.innerText()).includes("用户单价估算") && (await manualRequest.innerText()).includes("所有服务商 · 最高优先级"), "全局用户价格误显示为实际服务商");
+    await manualRequest.getByRole("button", { name: "查看适用单价", exact: true }).click();
+    ensure((await page.locator(".usage-price-details").innerText()).includes("用户单价估算") && (await page.locator(".usage-price-details").innerText()).includes("所有服务商 · 最高优先级"), "全局用户价格误显示为实际服务商");
     if (await page.getByRole("dialog", { name: "请求明细", exact: true }).count()) await button("关闭请求明细").click();
     await button("管理模型价格").click();
     await page.getByRole("combobox", { name: "显示范围", exact: true }).click(); await page.getByRole("option", { name: "完整价格目录", exact: true }).click(); await search.fill("gpt-fixture");
@@ -136,7 +136,7 @@ try {
     const ensure = (condition, message) => { if (!condition) throw new Error(message); checks++; };
     const button = name => page.getByRole("button", { name, exact: true });
     const api = async path => page.evaluate(async path => (await fetch(`/api/v1${path}`)).json(), path);
-    const ready = async () => { await page.locator(".usage-metrics").waitFor(); await page.waitForLoadState("networkidle"); };
+    const ready = async () => { await page.locator(".usage-results[aria-busy='false']").waitFor(); await page.waitForLoadState("networkidle"); };
     const model = "gateway/claude-77.6-sonnet", target = "anthropic / claude-sonnet-77-6";
     const report = async raw => api(`/usage?models=${encodeURIComponent(JSON.stringify([raw]))}&timezone=UTC`);
     const baseline = await report(model);
@@ -148,8 +148,8 @@ try {
     await page.goto(`${options.base}/#usage?window=all&models=${encodeURIComponent(JSON.stringify([model]))}`); await ready();
     await page.locator(".usage-session-section tbody tr").first().getByRole("button", { name: "查看请求明细", exact: true }).click();
     const requestRow = page.locator(".usage-request-section tbody tr").first(); await requestRow.waitFor();
-    await requestRow.getByText("查看适用单价", { exact: true }).click();
-    ensure((await requestRow.innerText()).includes("官方 API 基准估算") && (await requestRow.innerText()).includes(target), "请求没有显示自动采用的模型及官方基准");
+    await requestRow.getByRole("button", { name: "查看适用单价", exact: true }).click();
+    ensure((await page.locator(".usage-price-details").innerText()).includes("官方 API 基准估算") && (await page.locator(".usage-price-details").innerText()).includes(target), "请求没有显示自动采用的模型及官方基准");
     if (await page.getByRole("dialog", { name: "请求明细", exact: true }).count()) await button("关闭请求明细").click();
     await button("管理模型价格").click();
     await page.getByRole("combobox", { name: "显示范围", exact: true }).click(); await page.getByRole("option", { name: "完整价格目录", exact: true }).click();
@@ -205,8 +205,8 @@ try {
     await button("显示语言").click(); await page.getByRole("menuitemradio", { name: "English", exact: true }).click();
     await page.getByRole("heading", { name: "Usage", exact: true }).waitFor();
     await page.locator(".usage-session-section tbody tr").first().getByRole("button", { name: "Inspect requests", exact: true }).click();
-    await requestRow.getByText("View applied rates", { exact: true }).click();
-    ensure((await requestRow.innerText()).includes("Official API benchmark estimate"), "自动基准缺少英文");
+    await requestRow.getByRole("button", { name: "View applied rates", exact: true }).click();
+    ensure((await page.locator(".usage-price-details").innerText()).includes("Official API benchmark estimate"), "自动基准缺少英文");
     await button("Close Request details").click();
     ensure(await page.evaluate(() => location.hash) === hash, "映射语言切换改变筛选");
     await button("Manage model prices").click();
@@ -229,7 +229,7 @@ try {
     const errors = []; page.on("pageerror", error => errors.push(error.message));
     page.setDefaultTimeout(15_000);
     const button = name => page.getByRole("button", { name, exact: true });
-    const ready = async () => { await page.locator(".usage-metrics").waitFor(); await page.waitForLoadState("networkidle"); };
+    const ready = async () => { await page.locator(".usage-results[aria-busy='false']").waitFor(); await page.waitForLoadState("networkidle"); };
     const change = async action => { const response = page.waitForResponse(res => /\/api\/v1\/usage\?/.test(res.url())); await action(); try { await response; await ready(); } catch (error) { throw new Error(`${action.toString()}: ${error.message}`); } };
     const choose = async (label, value) => { await page.getByRole("combobox", { name: label, exact: true }).click(); await change(() => page.getByRole("option", { name: value, exact: true }).click()); };
     const metrics = () => page.locator(".usage-metrics").innerText();
@@ -241,9 +241,9 @@ try {
     await page.setViewportSize({ width: 1440, height: 1080 }); await ready();
     ensure(await page.getByRole("heading", { name: "用量统计", exact: true }).count() === 1, "独立统计入口未显示");
     ensure((await metrics()).includes("1,008"), "默认范围请求数错误");
-    const undated = page.locator(".usage-notice").filter({ hasText: "日期无法判断" });
-    ensure((await undated.innerText()).includes("完整用量 2 · 部分 1 · 未记录 0"), "无时间的部分 Token 小计没有独立覆盖状态");
-    ensure((await undated.innerText()).includes("完整估价 0 · 部分 0 · 未定价 3"), "无时间费用小计没有独立定价覆盖状态");
+    const undatedText = async () => { await button("统计口径与范围").click(); const help = page.getByRole("dialog", { name: "统计口径与范围", exact: true }); const text = await help.innerText(); await help.getByRole("button", { name: "关闭统计口径与范围", exact: true }).click(); return text; };
+    ensure((await undatedText()).includes("完整用量 2 · 部分 1 · 未记录 0"), "无时间的部分 Token 小计没有独立覆盖状态");
+    ensure((await undatedText()).includes("完整估价 0 · 部分 0 · 未定价 3"), "无时间费用小计没有独立定价覆盖状态");
     const fullMetrics = await metrics(), fullPlot = await plot();
     const pager = page.getByRole("navigation", { name: "会话明细", exact: true });
     await change(() => pager.getByRole("button", { name: "会话明细下一页", exact: true }).click());
@@ -299,7 +299,7 @@ try {
     await choose("归因维度", "项目"); await choose("时间粒度", "周"); await choose("时间粒度", "月");
     await choose("日期范围", "今天"); await choose("时间粒度", "小时");
     ensure(await hit.getAttribute("aria-valuemax") === "24", "小时趋势没有保留空时间间距");
-    await hit.press("Home"); for (let index = 0; index < 12; index++) await hit.press("ArrowRight"); await change(() => button("筛选这个区间").click());
+    await hit.press("Home"); for (let index = 0; index < 12; index++) await hit.press("ArrowRight"); await change(() => button("只看这一小时").click());
     ensure((await page.evaluate(() => location.hash)).includes("timeFrom"), "小时区间没有准确时间筛选");
     await button("开始日期").click(); await change(() => button("清空").click());
     ensure(!(await page.evaluate(() => location.hash)).includes("timeFrom"), "清空日期遗留小时筛选");
@@ -346,7 +346,7 @@ try {
     await page.getByRole("option").filter({ hasText: "fixture / fixture-fast" }).first().click(); await save(() => button("保存配置").click());
     ensure((await api("/usage/pricing")).configuration.mappings[0].targetProvider === "fixture", "映射没有保留服务商");
     await button("关闭模型价格").click(); await ready();
-    ensure((await undated.innerText()).includes("完整估价 0 · 部分 1 · 未定价 2"), "无时间的费用小计没有区分部分估价与未定价");
+    ensure((await undatedText()).includes("完整估价 0 · 部分 1 · 未定价 2"), "无时间的费用小计没有区分部分估价与未定价");
     await page.setViewportSize({ width: 1440, height: 1360 }); await page.evaluate(() => scrollTo(0, 0));
     await page.screenshot({ path: `${options.artifacts}/zh-overview.png` });
     await page.screenshot({ path: `${options.artifacts}/zh-desktop.png`, fullPage: true });
@@ -381,7 +381,7 @@ try {
     let checks = 0; const errors = []; page.on("pageerror", error => errors.push(error.message));
     const ensure = (condition, message) => { if (!condition) throw new Error(message); checks++; };
     const button = name => page.getByRole("button", { name, exact: true });
-    const ready = async () => { await page.locator(".usage-metrics").waitFor(); await page.waitForLoadState("networkidle"); };
+    const ready = async () => { await page.locator(".usage-results[aria-busy='false']").waitFor(); await page.waitForLoadState("networkidle"); };
     const language = async (trigger, option) => { await button(trigger).click(); await page.getByRole("menuitemradio", { name: option, exact: true }).click(); await page.waitForLoadState("networkidle"); };
     const queries = []; const record = req => { if (/\/api\/v1\/usage\?/.test(req.url())) queries.push(req.url()); }; page.on("request", record);
     let failed = false;
@@ -431,13 +431,13 @@ try {
     await filterModel("fixture-large");
     await page.locator(".usage-session-section tbody tr").first().getByRole("button", { name: "查看请求明细", exact: true }).click();
     await page.locator(".usage-request-section tbody tr").first().waitFor();
-    const rates = page.getByText("查看适用单价", { exact: true }).first(); await rates.waitFor(); await rates.click();
+    const rates = page.getByRole("button", { name: "查看适用单价", exact: true }).first(); await rates.waitFor(); await rates.click();
     ensure((await page.locator(".usage-request-section").innerText()).includes("总输入达到 20,000 Token 时适用"), "请求没有展示实际计价档位");
     if (await page.getByRole("dialog", { name: "请求明细", exact: true }).count()) await button("关闭请求明细").click();
     await button("管理模型价格").click();
     await page.getByRole("combobox", { name: "显示范围", exact: true }).click(); await page.getByRole("option", { name: "完整价格目录", exact: true }).click(); dialog = page.getByRole("dialog", { name: "模型价格", exact: true });
     await dialog.getByRole("textbox", { name: "搜索原始模型、计价模型或服务商", exact: true }).fill("fixture-large");
-    await dialog.getByText("查看价格规则", { exact: true }).first().click();
+    await dialog.getByRole("button", { name: "查看价格规则", exact: true }).first().click();
     ensure((await dialog.innerText()).includes("总输入达到 20,000 Token 时适用"), "目录没有展示价格档位规则");
     await button("关闭模型价格").click();
     await page.goto(`${options.base}/#usage`); await ready();
@@ -450,7 +450,7 @@ try {
   historyFailureFixture = await usageFixture({ failHistoricalPrices: true });
   const verifyMissingHistory = async (page, options) => {
     let checks = 0; const ensure = (condition, message) => { if (!condition) throw new Error(message); checks++; };
-    await page.goto(`${options.base}/#usage`); await page.locator(".usage-metrics").waitFor(); await page.waitForLoadState("networkidle");
+    await page.goto(`${options.base}/#usage`); await page.locator(".usage-results[aria-busy='false']").waitFor(); await page.waitForLoadState("networkidle");
     ensure((await page.locator(".usage-pricing-state").allInnerTexts()).join(" ").includes("历史价格不可用"), "缺少历史目录却显示历史已覆盖");
     await page.getByRole("button", { name: "统计口径与范围", exact: true }).click();
     ensure((await page.locator(".help-popover-body").innerText()).includes("历史单价 0"), "历史获取失败仍计为历史估价");

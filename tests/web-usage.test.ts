@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import type { UsageTotals } from "../src/usage-contracts.ts";
-import { composition, compositionIsPartial, defaultRoute, metricValue, readUsageRoute, usageAddress, usageParameters, usageQuery } from "../web/features/usage/model.ts";
+import type { UsageTimeBucket, UsageTotals } from "../src/usage-contracts.ts";
+import { bucketChangesRange, bucketFilter, composition, compositionIsPartial, defaultRoute, metricValue, readUsageRoute, usageAddress, usageParameters, usageQuery } from "../web/features/usage/model.ts";
 import { translate } from "../src/i18n/index.ts";
 
 const totals = (): UsageTotals => ({ requests: 1, sessions: 1, tokens: 250, inputTokens: 200, outputTokens: 50, freshInputTokens: 100, cacheReadTokens: 80, cacheWriteTokens: 20, reasoningTokens: 30, estimatedCost: .0003, cacheReadRatio: .4, cacheReadRatioRequests: 1, completeTokenRequests: 1, partialTokenRequests: 0, missingTokenRequests: 0, pricedRequests: 1, partiallyPricedRequests: 0, unpricedRequests: 0, missingTimeRequests: 0 });
@@ -70,4 +70,22 @@ test("用量会话、无时间请求和档位数量采用英语复数及中文�
   assert.equal(translate("zh-CN", "usage.coverage.noUsage", { count: 1 }), "1 个会话未记录用量");
   assert.equal(translate("zh-CN", "usage.coverage.cache", { count: 1, requests: 3 }), "缓存比例覆盖：1 / 3 条请求");
   assert.equal(translate("en", "usage.pricing.contextThreshold", { count: 20000 }), "Applies from 20,000 input tokens");
+});
+
+const bucket = (key: string): UsageTimeBucket => ({ key, totals: totals(), groups: [] });
+test("时间下钻隐藏同一天或已裁剪的相同区间，保留周月与精确小时边界", () => {
+  const day = { from: "2026-10-11", to: "2026-10-11", interval: "day" as const };
+  assert.equal(bucketChangesRange(day, bucket("2026-10-11")), false);
+  assert.equal(bucketChangesRange({ interval: "day" }, bucket("2026-10-11")), true);
+  const week = { from: "2026-10-07", to: "2026-10-11", interval: "week" as const };
+  assert.deepEqual(bucketFilter(week, bucket("2026-10-05")), { window: "custom", from: "2026-10-07", to: "2026-10-11", timeFrom: undefined, timeTo: undefined });
+  assert.equal(bucketChangesRange(week, bucket("2026-10-05")), false);
+  assert.equal(bucketChangesRange(week, bucket("2026-10-11"), true), true);
+  assert.equal(bucketFilter({ interval: "month" }, bucket("2026-02-01")).to, "2026-02-28");
+  const hour = { from: "2026-10-11T00:15:00Z", to: "2026-10-11T00:45:00Z", interval: "hour" as const };
+  const selected = bucketFilter(hour, bucket("2026-10-11T00:00:00Z"));
+  assert.equal(selected.timeFrom, "2026-10-11T00:15:00.000Z");
+  assert.equal(selected.timeTo, "2026-10-11T00:45:00.000Z");
+  assert.equal(bucketChangesRange(hour, bucket("2026-10-11T00:00:00Z")), false);
+  assert.equal(bucketChangesRange({ from: "2026-10-11T08:15:00+08:00", to: "2026-10-11T08:45:00+08:00", interval: "hour" }, bucket("2026-10-11T00:00:00Z")), false);
 });

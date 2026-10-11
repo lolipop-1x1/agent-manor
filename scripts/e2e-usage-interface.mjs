@@ -24,7 +24,7 @@ try {
     let checks = 0; const errors = []; page.on("pageerror", error => errors.push(error.message));
     const ensure = (condition, message) => { if (!condition) throw new Error(message); checks++; };
     const button = name => page.getByRole("button", { name, exact: true });
-    const ready = async () => { await page.locator(".usage-metrics").waitFor(); await page.waitForLoadState("networkidle"); };
+    const ready = async () => { await page.locator(".usage-results[aria-busy='false']").waitFor(); await page.waitForLoadState("networkidle"); };
     const api = path => page.evaluate(async path => (await fetch(`/api/v1${path}`)).json(), path);
     await page.setViewportSize({ width: 1440, height: 1080 }); await ready();
     const initialHash = await page.evaluate(() => location.hash);
@@ -46,7 +46,7 @@ try {
     await page.unroute("**/api/v1/usage/requests?**"); await button("重试").click(); await requests.locator("tbody tr").first().waitFor();
     ensure(await requests.locator("thead th").count() === 9 && await requests.locator("tbody tr").first().evaluate(row => getComputedStyle(row.children[1]).textAlign === "left" && getComputedStyle(row.children[2]).textAlign === "right" && getComputedStyle(row.children[7]).textAlign === "left"), "请求明细没有保留九列或文字与数字对齐不正确");
     const bounds = await requests.boundingBox(); ensure(bounds.y >= 0 && bounds.y + bounds.height <= 1080, "请求明细超出当前视口");
-    ensure(await requests.locator("details:not([open])").count() > 0, "价格元信息没有默认收起");
+    ensure(await requests.locator(".usage-price-details").count() === 0 && await requests.getByRole("button", { name: "查看适用单价", exact: true }).count() > 0, "价格元信息没有收进图标");
     await button("关闭请求明细").click();
     ensure(await trigger.evaluate(element => element === document.activeElement), "关闭明细没有恢复触发按钮焦点");
     ensure(Math.abs(await page.evaluate(() => scrollY) - scrollBefore) < 2, "关闭明细丢失列表滚动位置");

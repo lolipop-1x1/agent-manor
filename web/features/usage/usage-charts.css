@@ -22,8 +22,6 @@
 .usage-charts .usage-selected-values strong { font-size: 13px; font-weight: 600; }
 .usage-charts .usage-selected-values > .usage-number { font-size: 15px; font-weight: 600; }
 .usage-charts .usage-chart-detail > button { margin-left: 0; white-space: nowrap; font-size: 12px; }
-.usage-charts .usage-record-status { display: inline-flex; flex-wrap: wrap; gap: 4px 8px; font-size: 11px; line-height: 1.5; }
-.usage-charts .usage-record-status:empty { display: none; }
 .usage-charts .usage-detail-groups { display: flex; flex-wrap: wrap; grid-column: 1 / -1; gap: 7px 22px; margin: 0; }
 .usage-charts .usage-detail-groups > div { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
 .usage-charts .usage-detail-groups dt { color: var(--muted); overflow-wrap: anywhere; }
@@ -32,7 +30,7 @@
 .usage-charts .usage-composition-strip { height: 20px; margin-bottom: 24px; }
 .usage-charts .usage-composition-values { font-size: 13px; gap: 16px; margin-bottom: 6px; }
 .usage-charts .usage-composition-values dd { font-weight: 500; }
-.usage-charts .usage-composition-status, .usage-charts .usage-ranking-unit { font-size: 12px; }
+.usage-charts .usage-ranking-unit { font-size: 12px; }
 .usage-charts .usage-ranking-unit { color: var(--muted); }
 .usage-charts .usage-ranking { gap: 4px; }
 .usage-charts .usage-rank-row { grid-template-columns: minmax(120px, 1fr) minmax(60px, .8fr) minmax(96px, max-content) 48px; gap: 12px; padding: 8px 0; font-size: 13px; }

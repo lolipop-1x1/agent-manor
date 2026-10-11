@@ -1,6 +1,20 @@
 import type { MessageCatalog } from "../../types.js";
 
 export default {
+  "usage.metric.costSubtotal": "Estimated cost subtotal",
+  "usage.filter.coverage.all.help": "Include all requests, regardless of whether input and output Token counts are recorded.",
+  "usage.filter.coverage.complete.help": "Both input and output Token counts are recorded. Cache breakdowns may still be missing.",
+  "usage.filter.coverage.partial.help": "Only one of input or output Token counts is recorded.",
+  "usage.filter.coverage.missing.help": "Neither input nor output Token counts are recorded. This also includes sessions with no usage records.",
+  "usage.filter.pricing.all.help": "Include all requests, regardless of how much of their cost can be estimated.",
+  "usage.filter.pricing.complete.help": "All Token components required for pricing have values and matching rates.",
+  "usage.filter.pricing.partial.help": "Only some components can be priced. The amount is a subtotal of the known components.",
+  "usage.filter.pricing.missing.help": "No cost can be estimated because a price or the required Token components are missing.",
+  "usage.chart.filter.hour": "Show only this hour",
+  "usage.chart.filter.day": "Show only this day",
+  "usage.chart.filter.week": "Show only this week",
+  "usage.chart.filter.month": "Show only this month",
+
   "usage.coverage.unpriced_one": "{{count, number}} unpriced request",
   "usage.coverage.partialPrice_one": "{{count, number}} request with a partial estimate",
   "usage.pricing.help": "Price sources and rules",

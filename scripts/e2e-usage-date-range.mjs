@@ -25,8 +25,8 @@ try {
     let checks = 0; const errors = []; page.on("pageerror", error => errors.push(error.message));
     const ensure = (condition, message) => { if (!condition) throw new Error(message); checks++; };
     const button = name => page.getByRole("button", { name, exact: true });
-    const ready = async () => { await page.locator(".usage-metrics").waitFor(); await page.waitForLoadState("networkidle"); };
-    const navigate = async query => { await page.goto(`${options.base}/#usage?${query}`); await ready(); };
+    const ready = async () => { await page.locator(".usage-results[aria-busy='false']").waitFor(); await page.waitForLoadState("networkidle"); };
+    const navigate = async query => { const result = page.waitForResponse(response => /\/api\/v1\/usage\?/.test(response.url())); await page.goto(`${options.base}/#usage?${query}`); await result; await ready(); };
     const layout = async () => page.locator(".usage-trend-plot").evaluate(plot => {
       const bounds = plot.getBoundingClientRect(), scroll = plot.parentElement;
       const selector = plot.querySelector("[role=slider]");
@@ -71,7 +71,7 @@ try {
       ensure((await verifyLayout("2025", "2026")).count === 8, "跨年自定义区间边界错误");
       await page.getByRole("slider").press("Home");
       ensure((await page.locator('[aria-labelledby="usage-time-title"] .usage-chart-detail').innerText()).includes("2025"), "选中日期缺少年份");
-      await button(zh ? "筛选这个区间" : "Filter this interval").click(); await ready();
+      await button(zh ? "只看这一天" : "Show only this day").click(); await ready();
       const selected = await page.evaluate(() => location.hash);
       ensure(selected.includes("from=2025-12-28") && selected.includes("to=2025-12-28"), "带年份日期下钻改变了真实边界");
       ensure((await verifyLayout("2025", "2025")).count === 1, "单日图表没有保留唯一日期");

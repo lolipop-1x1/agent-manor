@@ -13,7 +13,7 @@ import { HelpPopover } from "../../shared/ui/HelpPopover";
 import { MultiFilterPicker } from "../../shared/ui/MultiFilterPicker";
 import { ResourcePagination } from "../../shared/ui/ResourcePagination";
 import { sessionDisplayTitle } from "../sessions/session-model";
-import { activeFilterCount, defaultRoute, localDay, readUsageRoute, usageAddress, usageParameters, usageQuery, type DateWindow, type UsageRoute } from "./model";
+import { activeFilterCount, bucketChangesRange, bucketFilter, defaultRoute, readUsageRoute, usageAddress, usageParameters, usageQuery, type DateWindow, type UsageRoute } from "./model";
 import { PricingManager } from "./PricingManager";
 import { UsageRequestDialog } from "./UsageRequestDialog";
 import { groupLabel, UsageCharts } from "./UsageCharts";
@@ -88,7 +88,6 @@ export default function Usage({ active, onSession }: { active: boolean; onSessio
     };
     // 轻量查询不轮询；报告仍在等待时才检查相同版本的后台准备状态。
     timer = globalThis.setTimeout(() => { void pollPreparation(); }, 1000);
-    if (loadedQuery.current !== queryKey) setReport(null);
     void request<UsageReport>(`/usage?${queryKey}`, { signal: controller.signal }).then(result => {
       if (controller.signal.aborted) return;
       stopPreparation(); setPreparation(null);
@@ -125,22 +124,7 @@ export default function Usage({ active, onSession }: { active: boolean; onSessio
   const moreCount = moreFilters.filter(item => route[item.key] && route[item.key] !== "all").length + numberFilters.filter(key => route[key] !== undefined).length;
   const filterGroup = (key: string) => { const include = group === "model" ? "models" : group === "project" ? "projects" : "clients"; const exclude = group === "model" ? "excludeModels" : group === "project" ? "excludeProjects" : "excludeClients"; patch({ [include]: [key], [exclude]: [] }); };
   const filterBucket = (bucket: UsageTimeBucket, day = false) => {
-    if (!day && route.interval === "hour") {
-      const start = new Date(Math.max(Date.parse(bucket.key), report?.query.from?.includes("T") ? Date.parse(report.query.from) : -Infinity));
-      const end = new Date(Math.min(Date.parse(bucket.key) + 3600000, report?.query.to?.includes("T") ? Date.parse(report.query.to) : Infinity));
-      patch({ window: "custom", timeFrom: start.toISOString(), timeTo: end.toISOString(), from: localDay(start), to: localDay(start) }); return;
-    }
-    const start = new Date(`${bucket.key}T00:00:00`); const end = new Date(start);
-    if (!day && route.interval === "week") end.setDate(end.getDate() + 6);
-    if (!day && route.interval === "month") { end.setMonth(end.getMonth() + 1); end.setDate(0); }
-    if (report?.query.from?.includes("T") && report.query.to?.includes("T")) {
-      const endExclusive = new Date(end); endExclusive.setDate(endExclusive.getDate() + 1);
-      const from = new Date(Math.max(start.getTime(), Date.parse(report.query.from))); const to = new Date(Math.min(endExclusive.getTime(), Date.parse(report.query.to)));
-      patch({ window: "custom", timeFrom: from.toISOString(), timeTo: to.toISOString(), from: localDay(from), to: localDay(from) }); return;
-    }
-    if (report?.query.from && localDay(start) < report.query.from) start.setTime(new Date(`${report.query.from}T00:00:00`).getTime());
-    if (report?.query.to && localDay(end) > report.query.to) end.setTime(new Date(`${report.query.to}T00:00:00`).getTime());
-    patch({ window: "custom", from: localDay(start), to: localDay(end), timeFrom: undefined, timeTo: undefined });
+    if (report && !loading && loadedQuery.current === queryKey && bucketChangesRange(report.query, bucket, day)) patch(bucketFilter(report.query, bucket, day));
   };
   const openSession = (sessionId: string, messageId?: string) => onSession({ sessionId, ...(messageId ? { messageId } : {}) });
   const selectedSession = report?.sessions.find(row => row.session.id === route.selectedSession);
@@ -148,6 +132,7 @@ export default function Usage({ active, onSession }: { active: boolean; onSessio
   const rangeTo = report?.query.to ?? report?.days.at(-1)?.key;
   const rangeLabel = (value?: string) => value ? value.includes("T") ? dateTime(value, { timeZone: report!.timezone, year: "numeric", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }) : date(`${value}T00:00:00`) : t("common.timeUnknown");
   const priceHistory = report && loadedQuery.current === queryKey ? report.pricing.history : pricing?.history;
+  const pending = loading || loadedQuery.current !== queryKey || invalid;
   const preparing = preparation?.queryKey === queryKey ? preparation.status : null;
   const inspectSession = (sessionId: string, trigger: HTMLElement) => { requestTrigger.current = trigger; patch({ selectedSession: sessionId, requestPage: 1 }, false); };
   const coverageIndicator = (row: UsageReport["sessions"][number], cost = false) => {
@@ -162,16 +147,16 @@ export default function Usage({ active, onSession }: { active: boolean; onSessio
   return <main className="usage-page">
     <div className="usage-page-heading"><h1>{t("usage.title")}</h1><div>
       <HelpPopover label={t("usage.help.title")}><p>{t("usage.help.tokens")}</p><p>{t("usage.help.cost")}</p><p>{t("usage.help.cache")}</p>
-        {report && <><h3>{t("usage.coverage.title")}</h3><p>{t("usage.coverage.tokens", { complete: report.totals.completeTokenRequests, partial: report.totals.partialTokenRequests, missing: report.totals.missingTokenRequests })}</p><p>{t("usage.coverage.cost", { complete: report.totals.pricedRequests, partial: report.totals.partiallyPricedRequests, missing: report.totals.unpricedRequests })}</p><p>{t("usage.coverage.priceBasis", { historical: report.totals.historicalPricedRequests, snapshot: report.totals.currentSnapshotPricedRequests, manual: report.totals.manualPricedRequests })}</p><p>{t("usage.coverage.cache", { count: report.totals.cacheReadRatioRequests, requests: report.totals.requests })}</p></>}
+        {report && <><h3>{t("usage.coverage.title")}</h3><p>{t("usage.coverage.tokens", { complete: report.totals.completeTokenRequests, partial: report.totals.partialTokenRequests, missing: report.totals.missingTokenRequests })}</p><p>{t("usage.coverage.cost", { complete: report.totals.pricedRequests, partial: report.totals.partiallyPricedRequests, missing: report.totals.unpricedRequests })}</p><p>{t("usage.coverage.priceBasis", { historical: report.totals.historicalPricedRequests, snapshot: report.totals.currentSnapshotPricedRequests, manual: report.totals.manualPricedRequests })}</p><p>{t("usage.coverage.cache", { count: report.totals.cacheReadRatioRequests, requests: report.totals.requests })}</p><p>{t("usage.coverage.noUsage", { count: report.missingUsageSessions })}</p>{report.undated.requests > 0 && <><p>{t("usage.coverage.undated", { count: report.undated.requests, tokens: value(report.undated.tokens), cost: value(report.undated.estimatedCost, true) })}</p><p>{t(report.query.from || report.query.to ? "usage.coverage.undatedExcluded" : "usage.coverage.undatedIncluded")}</p><p>{t("usage.coverage.tokens", { complete: report.undated.completeTokenRequests, partial: report.undated.partialTokenRequests, missing: report.undated.missingTokenRequests })}</p><p>{t("usage.coverage.cost", { complete: report.undated.pricedRequests, partial: report.undated.partiallyPricedRequests, missing: report.undated.unpricedRequests })}</p></>}</>}
         {pricing && <><h3>{t("usage.pricing.help")}</h3><p>{t("usage.pricing.automaticBasis")}</p><p>{t(`usage.pricing.${pricing.source}`)}{pricing.fetchedAt && <> · {t("usage.pricing.updated", { time: dateTime(pricing.fetchedAt) })}</>}</p>{pricing.error && <p className="usage-warning">{message(pricing.errorDescriptor, pricing.error)}</p>}</>}
         {priceHistory && <p>{t("usage.pricing.history")}{priceHistory.fetchedAt && <> · {t("usage.pricing.updated", { time: dateTime(priceHistory.fetchedAt) })}</>}{priceHistory.error && <> · {message(priceHistory.errorDescriptor, priceHistory.error)}</>}</p>}
         {report && <details><summary>{t("usage.help.diagnostics")}</summary><p>{t("usage.help.version", { version: report.version, priceVersion: report.priceVersion })}</p></details>}
-      </HelpPopover><button onClick={() => setPricesOpen(true)} disabled={!pricing}>{t("usage.pricing.open")}</button><button className="icon-button" onClick={() => setRevision(current => current + 1)} aria-label={t("usage.refresh")} disabled={loading}><ArrowClockwise size={18} /></button>
+      </HelpPopover><button onClick={() => setPricesOpen(true)} disabled={!pricing}>{t("usage.pricing.open")}</button><button className="icon-button" onClick={() => setRevision(current => current + 1)} aria-label={t("usage.refresh")} disabled={loading}><ArrowClockwise size={18} className={loading ? "is-spinning" : undefined} aria-hidden="true" /></button>
     </div></div>
     <div className="usage-filters"><div className="usage-date-controls"><FilterSelect label={t("usage.filter.date")} value={route.window} options={["today", "yesterday", "7", "14", "30", "90", "all", "custom"].map(item => ({ value: item, label: t(`usage.window.${item}`) }))} onChange={window => patch({ window: window as DateWindow, timeFrom: undefined, timeTo: undefined })} />{route.window === "custom" && <><DatePicker label={t("usage.filter.from")} value={route.from ?? ""} onChange={from => patch({ from: from || undefined, timeFrom: undefined, timeTo: undefined })} /><span>–</span><DatePicker label={t("usage.filter.to")} value={route.to ?? ""} onChange={to => patch({ to: to || undefined, timeFrom: undefined, timeTo: undefined })} /></>}</div>
       {filterDefinitions.map(filter => <MultiFilterPicker key={filter.include} label={t(filter.label)} options={filter.options} included={route[filter.include] ?? []} excluded={route[filter.exclude] ?? []} onChange={(included, excluded) => patch({ [filter.include]: included, [filter.exclude]: excluded })} />)}
       <Popover.Root><Popover.Trigger className="usage-more-trigger"><Funnel size={15} />{t("usage.filter.more", { count: moreCount })}<CaretDown size={14} /></Popover.Trigger><Popover.Portal><Popover.Content className="filter-menu usage-more-menu" align="end" sideOffset={6} collisionPadding={12} aria-label={t("usage.filter.more", { count: moreCount })}>
-        {moreFilters.map(filter => <label key={filter.key}><span>{t(`usage.filter.${filter.key}`)}</span><FilterSelect label={t(`usage.filter.${filter.key}`)} value={route[filter.key] ?? "all"} options={filter.options.map(item => ({ value: item, label: t(`usage.${item}`) }))} onChange={value => patch({ [filter.key]: value })} /></label>)}
+        {moreFilters.map(filter => <label key={filter.key}><span>{t(`usage.filter.${filter.key}`)}</span><FilterSelect label={t(`usage.filter.${filter.key}`)} value={route[filter.key] ?? "all"} options={filter.options.map(item => ({ value: item, label: t(`usage.${item}`), ...(filter.key === "coverage" || filter.key === "pricing" ? { description: t(`usage.filter.${filter.key}.${item}.help`) } : {}) }))} onChange={value => patch({ [filter.key]: value })} /></label>)}
         {numberFilters.map(key => <label key={key}><span>{t(`usage.filter.${key}`)}</span><input type="number" min="0" step={key.includes("Cost") ? "any" : "1"} value={route[key] ?? ""} onChange={event => patch({ [key]: event.target.value === "" ? undefined : Number(event.target.value) })} /></label>)}
       </Popover.Content></Popover.Portal></Popover.Root>
     </div>
@@ -183,8 +168,8 @@ export default function Usage({ active, onSession }: { active: boolean; onSessio
       {(priceHistory?.error || priceHistory && !priceHistory.fetchedAt) && <span className="usage-warning">{t(priceHistory?.fetchedAt ? "usage.pricing.historyFallbackShort" : "usage.pricing.historyUnavailableShort")}</span>}
     </div>}
     {error && <div className="usage-notice danger" role="alert">{errorMessage(error)}<button onClick={() => setRevision(current => current + 1)}>{t("usage.retry")}</button></div>}
-    {loading && !invalid && <div className="usage-loading" role="status"><span>{t(preparing ? "usage.preparing" : "usage.loading")}</span>{preparing && preparing.totalSessions > 0 && <div className="usage-preparation-progress"><progress aria-label={t("usage.preparing")} value={Math.min(preparing.preparedSessions, preparing.totalSessions)} max={preparing.totalSessions} /><span>{t("usage.preparing.progress", { prepared: preparing.preparedSessions, total: preparing.totalSessions })}</span></div>}</div>}
-    {report && loadedQuery.current === queryKey && !invalid && <>
+    {loading && !invalid && <div className={report ? "usage-update-status" : "usage-loading"} role="status"><span>{t(preparing ? "usage.preparing" : "usage.loading")}</span>{preparing && preparing.totalSessions > 0 && <div className="usage-preparation-progress"><progress aria-label={t("usage.preparing")} value={Math.min(preparing.preparedSessions, preparing.totalSessions)} max={preparing.totalSessions} /><span>{t("usage.preparing.progress", { prepared: preparing.preparedSessions, total: preparing.totalSessions })}</span></div>}</div>}
+    {report && <div className="usage-results" aria-busy={pending}>
       <div className="usage-range">{t("usage.chart.range", { from: rangeLabel(rangeFrom), to: rangeLabel(rangeTo), timezone: report.timezone })}</div>
       <div className="usage-metrics">{[
         { key: "tokens", display: value(report.totals.tokens), compact: report.totals.tokens === null ? "—" : number(report.totals.tokens, { notation: "compact", maximumFractionDigits: 2 }), unit: t("usage.unit.tokens") },
@@ -192,15 +177,9 @@ export default function Usage({ active, onSession }: { active: boolean; onSessio
         { key: "requests", display: value(report.totals.requests), compact: number(report.totals.requests, { notation: "compact", maximumFractionDigits: 2 }), unit: "" },
         { key: "sessions", display: value(report.totals.sessions), compact: value(report.totals.sessions), unit: "" },
         { key: "cacheRatio", display: report.totals.cacheReadRatio === null ? "—" : percent(report.totals.cacheReadRatio), compact: report.totals.cacheReadRatio === null ? "—" : percent(report.totals.cacheReadRatio), unit: "" },
-      ].map(item => <div key={item.key}><span>{t(`usage.metric.${item.key}`)}{item.key === "cost" && report.totals.estimatedCost !== null && report.totals.partiallyPricedRequests + report.totals.unpricedRequests > 0 && <span className="usage-subtotal">{t("usage.coverage.subtotal")}</span>}</span><strong title={item.display}><span className="usage-metric-full">{item.display}</span><span className="usage-metric-compact" aria-hidden="true">{item.compact}</span>{item.unit && <small>{item.unit}</small>}</strong></div>)}</div>
-      {(report.totals.unpricedRequests + report.totals.partiallyPricedRequests + report.missingUsageSessions > 0) && <div className="usage-coverage">
-        {report.totals.unpricedRequests > 0 && <button className="usage-warning" onClick={() => patch({ pricing: "missing" })}>{t("usage.coverage.unpriced", { count: report.totals.unpricedRequests })}</button>}
-        {report.totals.partiallyPricedRequests > 0 && <button className="usage-warning" onClick={() => patch({ pricing: "partial" })}>{t("usage.coverage.partialPrice", { count: report.totals.partiallyPricedRequests })}</button>}
-        {report.missingUsageSessions > 0 && <button onClick={() => patch({ coverage: "missing" })}>{t("usage.coverage.noUsage", { count: report.missingUsageSessions })}</button>}
-      </div>}
-      {report.undated.requests > 0 && <div className="usage-notice"><span>{t("usage.coverage.undated", { count: report.undated.requests, tokens: value(report.undated.tokens), cost: value(report.undated.estimatedCost, true) })}</span><span>{t(route.window === "all" ? "usage.coverage.undatedIncluded" : "usage.coverage.undatedExcluded")}</span>{report.undated.partialTokenRequests + report.undated.missingTokenRequests > 0 && <span className="usage-warning">{t("usage.coverage.tokens", { complete: report.undated.completeTokenRequests, partial: report.undated.partialTokenRequests, missing: report.undated.missingTokenRequests })}</span>}{report.undated.partiallyPricedRequests + report.undated.unpricedRequests > 0 && <span className="usage-warning">{t("usage.coverage.cost", { complete: report.undated.pricedRequests, partial: report.undated.partiallyPricedRequests, missing: report.undated.unpricedRequests })}</span>}</div>}
+      ].map(item => <div key={item.key}><span>{t(item.key === "cost" && report.totals.estimatedCost !== null && report.totals.partiallyPricedRequests + report.totals.unpricedRequests > 0 ? "usage.metric.costSubtotal" : `usage.metric.${item.key}`)}</span><strong title={item.display}><span className="usage-metric-full">{item.display}</span><span className="usage-metric-compact" aria-hidden="true">{item.compact}</span>{item.unit && <small>{item.unit}</small>}</strong></div>)}</div>
       <div className="usage-chart-controls"><div role="group" aria-label={t("usage.chart.metric")} className="usage-segmented">{(["tokens", "cost", "requests"] as const).map(item => <button key={item} aria-pressed={metric === item} onClick={() => patch({ metric: item }, false)}>{t(`usage.metric.${item}`)}</button>)}</div><div><FilterSelect label={t("usage.group.label")} value={group} options={["model", "project", "client"].map(item => ({ value: item, label: t(`usage.group.${item}`) }))} onChange={groupBy => patch({ groupBy: groupBy as UsageGroup }, false)} /><FilterSelect label={t("usage.interval.label")} value={route.interval ?? "day"} options={["hour", "day", "week", "month"].map(item => ({ value: item, label: t(`usage.interval.${item}`) }))} onChange={interval => patch({ interval: interval as UsageInterval }, false)} /><div className="usage-segmented" role="group" aria-label={t("usage.chart.type")}><button aria-pressed={route.chart === "bar"} onClick={() => patch({ chart: "bar" }, false)}>{t("usage.chart.bar")}</button><button aria-pressed={route.chart === "line"} onClick={() => patch({ chart: "line" }, false)}>{t("usage.chart.line")}</button></div></div></div>
-      <UsageCharts report={report} metric={metric} group={group} chart={route.chart} onBucket={filterBucket} onGroup={filterGroup} />
+      <div className="usage-report-body" inert={pending}><UsageCharts report={report} metric={report.query.metric ?? "tokens"} group={report.query.groupBy ?? "model"} chart={route.chart} onBucket={filterBucket} onGroup={filterGroup} />
       <section className="usage-session-section" aria-labelledby="usage-session-title"><div className="usage-section-title"><h2 id="usage-session-title">{t("usage.sessions.title")}</h2><div><FilterSelect label={t("usage.sessions.sort")} value={route.sort ?? "tokens"} options={["tokens", "cost", "requests", "recent"].map(item => ({ value: item, label: t(item === "recent" ? "usage.sessions.recent" : `usage.metric.${item}`) }))} onChange={sort => patch({ sort: sort as UsageQuery["sort"] })} /><FilterSelect label={t("usage.sessions.direction")} value={route.direction ?? "desc"} options={["desc", "asc"].map(item => ({ value: item, label: t(`usage.sessions.${item}`) }))} onChange={direction => patch({ direction: direction as "asc" | "desc" })} /></div></div>
         <div className="usage-table-scroll"><table className="usage-table usage-session-table"><thead><tr><th>{t("usage.sessions.name")}</th><th>{t("usage.sessions.project")}</th><th>{t("usage.metric.tokens")}</th><th>{t("usage.metric.cost")}</th><th>{t("usage.metric.requests")}</th><th>{t("usage.sessions.time")}</th><th aria-label={t("usage.sessions.actions")} /></tr></thead><tbody>{report.sessions.map(row => <tr key={row.session.id} data-selected={route.selectedSession === row.session.id}
           onClick={event => { if (!(event.target as HTMLElement).closest("button, a, input, summary")) { const trigger = event.currentTarget.querySelector<HTMLButtonElement>(".usage-session-name"); if (trigger) inspectSession(row.session.id, trigger); } }}>
@@ -212,9 +191,9 @@ export default function Usage({ active, onSession }: { active: boolean; onSessio
         </tr>)}</tbody></table></div>
         {!report.sessions.length && <div className="usage-empty">{t("usage.empty")}</div>}
         <ResourcePagination label={t("usage.sessions.title")} page={report.page} total={report.totalSessions} pageSize={report.pageSize} onChange={page => patch({ page, selectedSession: undefined }, false)} onPageSizeChange={pageSize => patch({ pageSize })} />
-      </section>
+      </section></div>
 
-    </>}
+    </div>}
     <UsageRequestDialog active={active} session={selectedSession} requests={requests} loading={requestLoading} error={requestError} returnFocus={requestTrigger}
       onClose={() => patch({ selectedSession: undefined }, false)} onPage={requestPage => patch({ requestPage }, false)} onRetry={() => setRequestRevision(current => current + 1)} onSession={openSession} />
     {pricing && <PricingManager status={pricing} models={facets.models.flatMap(model => { const original = usageDimensionValue(model); return original === undefined ? [] : [original]; })} onChange={updatePrice} open={pricesOpen} onOpenChange={setPricesOpen} />}

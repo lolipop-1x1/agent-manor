@@ -51,3 +51,8 @@
 .language-menu { min-width: 210px; max-height: var(--radix-dropdown-menu-content-available-height); overflow-y: auto; }
 .language-menu .filter-option { padding-left: 29px; }
 .language-menu .filter-check { position: absolute; left: 9px; margin-left: 0; }
+
+.filter-option-with-help { position: relative; display: flex; align-items: center; gap: 2px; }
+.filter-option-with-help > .filter-option-tooltip-target { flex: 1; min-width: 0; }
+.filter-option-with-help > .help-trigger { flex-shrink: 0; }
+.filter-menu > [data-radix-popper-content-wrapper]:has(> .filter-option-tooltip) { pointer-events: none; }

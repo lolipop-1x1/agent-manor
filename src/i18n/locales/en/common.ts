@@ -1,6 +1,7 @@
 import type { MessageCatalog } from "../../types.js";
 
 export default {
+  "common.optionHelp": "{{filter}} · {{option}}",
   "common.appearance.menu": "Appearance",
   "common.appearance.mode": "Display mode",
   "common.appearance.auto": "Use system",

@@ -1,0 +1,122 @@
+import assert from "node:assert/strict";
+import { execFile } from "node:child_process";
+import { mkdir, writeFile } from "node:fs/promises";
+import { fileURLToPath } from "node:url";
+import { promisify } from "node:util";
+import { usageFixture } from "./usage-fixture.mjs";
+
+// 写操作和异常注入只使用隔离的合成历史、价格与偏好。
+const run = promisify(execFile), fixture = await usageFixture();
+const artifacts = fileURLToPath(new URL("../.local/usage-cleanup-e2e/", import.meta.url));
+const session = `usage-cleanup-${process.pid}`;
+let opened = false;
+const browser = async args => {
+  const { stdout } = await run("playwright-cli", [`-s=${session}`, ...args], {
+    cwd: fixture.directory, env: { ...process.env, TMPDIR: "/tmp" }, timeout: 60_000, maxBuffer: 4 * 1024 * 1024,
+  });
+  if (stdout.includes("### Error")) throw new Error(stdout);
+  return stdout;
+};
+try {
+  await mkdir(artifacts, { recursive: true });
+  await browser(["open", `${fixture.base}/#usage?window=all`, "--headed", "--browser=chrome"]); opened = true;
+  const verify = async (page, options) => {
+    let checks = 0; const errors = []; page.on("pageerror", error => errors.push(error.message));
+    const ensure = (condition, message) => { if (!condition) throw new Error(message); checks++; };
+    const button = name => page.getByRole("button", { name, exact: true });
+    const ready = async () => { await page.locator(".usage-results[aria-busy='false']").waitFor(); await page.waitForLoadState("networkidle"); };
+    await page.setViewportSize({ width: 1440, height: 1080 }); await ready();
+    ensure(await page.locator(".usage-coverage").count() === 0, "覆盖计数仍然常驻");
+    ensure(await page.locator(".usage-charts .usage-warning, .usage-record-status").count() === 0, "图表仍然有黄色小字");
+    ensure(!(await page.locator(".usage-metrics").innerText()).includes("费用 小计"), "费用小计仍然是第二段黄字");
+    await button("更多筛选 · 0").click();
+    for (const kind of ["用量完整性", "定价覆盖"]) {
+      await page.getByRole("combobox", { name: kind, exact: true }).click();
+      const list = page.getByRole("listbox"); ensure(await list.getByRole("option").count() === 4, "解释改变选项数量");
+      ensure(await list.getByRole("button").count() === 4, "选项缺少解释图标");
+      const option = list.getByRole("option", { name: "完整", exact: true });
+      ensure((await option.getAttribute("aria-description")).length > 10, "选项无辅助技术解释");
+      await option.focus(); await page.getByRole("tooltip").waitFor();
+      ensure((await page.getByRole("tooltip").innerText()).includes(kind === "用量完整性" ? "输入与输出" : "计价所需"), "键盘解释含义错误");
+      await list.getByRole("button", { name: `${kind} · 完整`, exact: true }).click();
+      const help = page.getByRole("dialog", { name: "完整", exact: true }); await help.waitFor();
+      ensure((await help.innerText()).includes(kind === "用量完整性" ? "细分项" : "完整估算"), "点击解释内容错误");
+      ensure(await list.getByRole("option", { name: "全部", exact: true }).getAttribute("data-state") === "checked", "查看解释误选筛选");
+      await help.getByRole("button", { name: "关闭完整", exact: true }).click();
+      await page.keyboard.press("Escape");
+      ensure(await page.getByRole("combobox", { name: kind, exact: true }).evaluate(element => element === document.activeElement), "关闭选项未恢复筛选焦点");
+    }
+    await page.keyboard.press("Escape");
+    const results = await page.locator(".usage-results").elementHandle();
+    const position = await page.locator(".usage-metrics").boundingBox();
+    let releases = [];
+    await page.route("**/api/v1/usage?*", async route => { await new Promise(resolve => releases.push(resolve)); await route.continue().catch(() => undefined); });
+    await button("估算费用").click(); await page.locator(".usage-results[aria-busy='true']").waitFor();
+    ensure(await results.evaluate(element => element.isConnected), "切换指标卸载报告");
+    ensure(await page.locator(".usage-report-body").getAttribute("inert") !== null, "更新中旧结果仍可下钻");
+    ensure(await page.locator(".usage-loading").count() === 0, "更新插入大块加载文案");
+    ensure(Math.abs((await page.locator(".usage-metrics").boundingBox()).y - position.y) < 1, "切换指标改变指标位置");
+    await button("已记录请求").click();
+    await page.waitForTimeout(100); for (const release of releases) release(); releases = [];
+    await ready(); await page.unroute("**/api/v1/usage?*");
+    ensure(await button("已记录请求").getAttribute("aria-pressed") === "true", "连续切换没有保留末次选择");
+    ensure(await results.evaluate(element => element.isConnected), "返回新结果替换了页面根节点");
+    ensure(await page.locator(".usage-chart-unit").innerText() === "请求数", "最终图表指标和选择不同");
+    let refreshRelease, markRefreshHeld;
+    const refreshHeld = new Promise(resolve => { markRefreshHeld = resolve; });
+    await page.route("**/api/v1/usage?*", async route => { await new Promise(resolve => { refreshRelease = resolve; markRefreshHeld(); }); await route.continue(); });
+    await button("刷新统计").click(); await page.locator(".usage-results[aria-busy='true']").waitFor();
+    ensure(await results.evaluate(element => element.isConnected), "刷新卸载报告");
+    ensure(Math.abs((await page.locator(".usage-metrics").boundingBox()).y - position.y) < 1, "刷新挤开内容");
+    ensure(await page.locator(".usage-loading").count() === 0, "刷新仍然有加载块");
+    await refreshHeld; refreshRelease(); await ready(); await page.unroute("**/api/v1/usage?*");
+    await page.route("**/api/v1/usage?*", route => route.fulfill({ status: 503, contentType: "application/json", body: JSON.stringify({ error: { code: "INTERNAL_ERROR", message: "synthetic query failure", messageDescriptor: { key: "common.error.http", params: { status: 503 } } } }) }));
+    await button("估算费用").click(); await page.getByRole("alert").waitFor();
+    ensure(await results.evaluate(element => element.isConnected), "失败清空上一完整结果");
+    ensure(await page.locator(".usage-report-body").getAttribute("inert") !== null, "失败旧结果可按新条件下钻");
+    await page.unroute("**/api/v1/usage?*"); await button("重试").click(); await ready();
+    ensure(await page.locator(".usage-report-body").getAttribute("inert") === null, "重试成功未恢复操作");
+    ensure(await page.locator(".usage-charts .usage-warning").count() === 0, "费用指标黄字未清理");
+    await button("只看这一天").click(); await ready();
+    ensure(await page.getByRole("button", { name: /^只看这/ }).count() === 0, "已有相同日期仍展示无效筛选");
+    ensure(await page.getByRole("combobox", { name: "日期范围", exact: true }).innerText() === "自定义", "时间下钻没有收窄日期");
+    await button("清除筛选").click(); await ready();
+    await page.getByRole("combobox", { name: "日期范围", exact: true }).click(); await page.getByRole("option", { name: "全部日期", exact: true }).click(); await ready();
+    await button("查看请求明细").first().click(); const dialog = page.getByRole("dialog", { name: "请求明细", exact: true });
+    await dialog.locator("tbody tr").first().waitFor();
+    ensure(await dialog.locator("thead th").count() === 9, "请求表不再保留九列");
+    ensure(await dialog.locator("summary").count() === 0 && await dialog.locator(".usage-price-details").count() === 0, "请求行仍重复说明小字");
+    const applied = dialog.getByRole("button", { name: "查看适用单价", exact: true }).first(); await applied.click();
+    const rates = page.getByRole("dialog", { name: "查看适用单价", exact: true }); await rates.waitFor();
+    ensure((await rates.innerText()).includes("$"), "单价没有美元符号");
+    await rates.getByRole("button", { name: "关闭查看适用单价", exact: true }).click();
+    ensure(await applied.evaluate(element => element === document.activeElement), "单价说明关闭未恢复行图标焦点");
+    await button("关闭请求明细").click();
+    await page.screenshot({ path: `${options.artifacts}/zh-desktop.png`, fullPage: true });
+    await page.setViewportSize({ width: 390, height: 844 });
+    ensure(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), "窄屏整体溢出");
+    await button("更多筛选 · 0").click(); await page.getByRole("combobox", { name: "定价覆盖", exact: true }).click();
+    await page.getByRole("button", { name: "定价覆盖 · 部分记录", exact: true }).click();
+    const mobileHelp = page.getByRole("dialog", { name: "部分记录", exact: true }); await mobileHelp.waitFor();
+    const bounds = await mobileHelp.boundingBox(); ensure(bounds.x >= 0 && bounds.x + bounds.width <= 390, "窄屏解释超出视口");
+    await page.screenshot({ path: `${options.artifacts}/zh-mobile-help.png` });
+    await mobileHelp.getByRole("button", { name: "关闭部分记录", exact: true }).click(); await page.keyboard.press("Escape"); await page.keyboard.press("Escape");
+    await page.setViewportSize({ width: 1440, height: 1080 });
+    await button("显示语言").click(); await page.getByRole("menuitemradio", { name: "English", exact: true }).click();
+    await button("More filters · 0").click(); await page.getByRole("combobox", { name: "Pricing coverage", exact: true }).click();
+    const enComplete = page.getByRole("option", { name: "Complete", exact: true });
+    ensure((await enComplete.getAttribute("aria-description")).includes("pricing"), "英文说明缺失");
+    await page.getByRole("button", { name: "Pricing coverage · Complete", exact: true }).click();
+    const enHelp = page.getByRole("dialog", { name: "Complete", exact: true }); await enHelp.waitFor();
+    ensure((await enHelp.innerText()).includes("matching rates"), "英文说明错误");
+    await enHelp.getByRole("button", { name: "Close Complete", exact: true }).click(); await page.keyboard.press("Escape"); await page.keyboard.press("Escape");
+    ensure(errors.length === 0, `浏览器错误：${errors.join(";")}`);
+    return { passed: true, checks, errors, stableRefresh: true, rapidQueries: true, failureRecovery: true, dropdownHelp: true, requestRates: true, timeDrilldown: true, englishAndMobile: true };
+  };
+  const output = await browser(["run-code", `async page => (${verify.toString()})(page, ${JSON.stringify({ artifacts })})`]);
+  console.log(output.split("### Ran Playwright code")[0]); await writeFile(`${artifacts}/report.txt`, output);
+  assert.match(output, /"passed"\s*:\s*true/);
+} catch (error) {
+  if (opened) await browser(["screenshot", `--filename=${artifacts}/failure.png`]).catch(() => undefined);
+  throw error;
+} finally { if (opened) await browser(["close"]).catch(() => undefined); await fixture.close(); }

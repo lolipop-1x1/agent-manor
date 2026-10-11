@@ -6,7 +6,7 @@ import { clientLabel, useI18n } from "../../shared/i18n";
 import { CLIENTS } from "../../../src/clients";
 import { usageDimensionValue } from "../../../src/usage/dimensions";
 import { HelpPopover } from "../../shared/ui/HelpPopover";
-import { composition, compositionIsPartial, metricValue } from "./model";
+import { bucketChangesRange, composition, compositionIsPartial, metricValue } from "./model";
 import "./usage-charts.css";
 
 export function groupLabel(value: string, group: UsageGroup, unknown: string): string {
@@ -46,9 +46,6 @@ export function UsageCharts({ report, metric, group, chart, onBucket, onGroup }:
     ? t("usage.coverage.cost", { complete: totals.pricedRequests, partial: totals.partiallyPricedRequests, missing: totals.unpricedRequests })
     : metric === "tokens" && totals.partialTokenRequests + totals.missingTokenRequests > 0
       ? t("usage.coverage.tokens", { complete: totals.completeTokenRequests, partial: totals.partialTokenRequests, missing: totals.missingTokenRequests }) : null;
-  const coverageStatus = (totals: UsageTotals) => metric === "cost"
-    ? [...(totals.partiallyPricedRequests ? [t("usage.chart.partialCost")] : []), ...(totals.unpricedRequests ? [t("usage.chart.unpriced")] : [])]
-    : metric === "tokens" ? [...(totals.partialTokenRequests ? [t("usage.chart.partialTokens")] : []), ...(totals.missingTokenRequests ? [t("usage.chart.missingTokens")] : [])] : [];
   const allGroups = [...report.groups].sort((left, right) => (metricValue(right.totals, metric) ?? -1) - (metricValue(left.totals, metric) ?? -1));
   const series = allGroups.slice(0, 5); const rest = allGroups.slice(5);
   const displaySeries = [...series.map(item => ({ key: item.key, label: label(item.key) })), ...(rest.length ? [{ key: "__other", label: t("usage.chart.other") }] : [])];
@@ -92,13 +89,12 @@ export function UsageCharts({ report, metric, group, chart, onBucket, onGroup }:
   const selectedTime = timeView === "trend" ? active : day;
   const renderBucketDetail = (bucket: UsageTimeBucket, isDay = false) => <div className="usage-chart-detail" aria-live="polite">
     <div className="usage-selected-values"><strong>{isDay ? dayLabel(bucket.key) : bucketLabel(bucket)}</strong><span className="usage-number">{formatValue(metricValue(bucket.totals, metric))} {unit}</span>
-      <span className="usage-record-status" title={coverageText(bucket.totals) ?? undefined}>{coverageStatus(bucket.totals).map(status => <span key={status} className="usage-warning">{status}</span>)}</span>
     </div>
-    <button className="text-button" onClick={() => onBucket(bucket, isDay || undefined)}>{t("usage.chart.filterBucket")}</button>
+    {bucketChangesRange(report.query, bucket, isDay) && <button className="text-button" onClick={() => onBucket(bucket, isDay || undefined)}>{t(`usage.chart.filter.${isDay ? "day" : report.query.interval ?? "day"}`)}</button>}
     {!isDay && <dl className="usage-detail-groups">{bucket.groups.map(item => <div key={item.key}><dt>{label(item.key)}</dt><dd>{formatValue(metricValue(item.totals, metric))}</dd></div>)}</dl>}
   </div>;
-  const renderRanking = (item: Pick<UsageSeries, "key"> & { value: number | null; text: string; status: string[]; coverage?: string | null }, index: number) => <button key={item.key} className="usage-rank-row" onClick={() => { if (item.key !== "__other") onGroup(item.key); }} disabled={item.key === "__other"} style={{ "--usage-series": `var(--usage-series-${index % 6})` } as CSSProperties}>
-    <span className="usage-rank-label"><span className="usage-rank-name" title={item.text}>{item.text}</span><span className="usage-record-status" title={item.coverage ?? undefined}>{item.status.map(status => <span key={status} className="usage-warning">{status}</span>)}</span></span>
+  const renderRanking = (item: Pick<UsageSeries, "key"> & { value: number | null; text: string; coverage?: string | null }, index: number) => <button key={item.key} className="usage-rank-row" onClick={() => { if (item.key !== "__other") onGroup(item.key); }} disabled={item.key === "__other"} style={{ "--usage-series": `var(--usage-series-${index % 6})` } as CSSProperties}>
+    <span className="usage-rank-label"><span className="usage-rank-name" title={item.coverage ? `${item.text} — ${item.coverage}` : item.text}>{item.text}</span></span>
     <span className="usage-rank-track"><span style={{ width: `${item.value === null ? 0 : Math.max(0, item.value / Math.max(1, metricValue(allGroups[0]?.totals ?? report.totals, metric) ?? 1) * 100)}%` }} /></span>
     <span className="usage-number">{formatValue(item.value)}</span><small>{item.value !== null && totalsValue ? percent(item.value / totalsValue, { maximumFractionDigits: 1 }) : "—"}</small>
   </button>;
@@ -155,11 +151,11 @@ export function UsageCharts({ report, metric, group, chart, onBucket, onGroup }:
         {day && renderBucketDetail(day, true)}{!calendar.length && <div className="usage-empty">{t("usage.chart.noData")}</div>}
       </>}
     </section>
-    <div className="usage-analysis-row"><section className="usage-chart-section" aria-labelledby="usage-composition-title"><div className="usage-section-title"><h2 id="usage-composition-title">{t("usage.chart.composition")}</h2><div>{partialComposition && <span className="usage-composition-status usage-warning">{t("usage.chart.compositionPartial")}</span>}<HelpPopover label={t("usage.chart.compositionHelp")} iconOnly><p>{t("usage.chart.compositionHelpText")}</p>{partialComposition && <p>{t("usage.composition.partial")}</p>}<p>{t("usage.coverage.tokens", { complete: report.totals.completeTokenRequests, partial: report.totals.partialTokenRequests, missing: report.totals.missingTokenRequests })}</p></HelpPopover></div></div>
+    <div className="usage-analysis-row"><section className="usage-chart-section" aria-labelledby="usage-composition-title"><div className="usage-section-title"><h2 id="usage-composition-title">{t("usage.chart.composition")}</h2><div><HelpPopover label={t("usage.chart.compositionHelp")} iconOnly><p>{t("usage.chart.compositionHelpText")}</p>{partialComposition && <p>{t("usage.composition.partial")}</p>}<p>{t("usage.coverage.tokens", { complete: report.totals.completeTokenRequests, partial: report.totals.partialTokenRequests, missing: report.totals.missingTokenRequests })}</p></HelpPopover></div></div>
       <div className="usage-composition-strip" aria-hidden="true">{compositionItems.map((item, index) => <span key={item.key} style={{ width: `${compositionTotal ? (item.value ?? 0) / compositionTotal * 100 : 0}%`, background: `var(--usage-series-${index})` }} />)}</div>
-      <dl className="usage-composition-values">{compositionItems.map((item, index) => <div key={item.key}><dt><i style={{ background: `var(--usage-series-${index})` }} />{t(`usage.composition.${item.key}`)}</dt><dd title={item.value === null ? t("usage.chart.missing") : undefined}>{item.value === null ? <span className="usage-warning">{t("usage.chart.missing")}</span> : number(item.value)}</dd></div>)}</dl>
+      <dl className="usage-composition-values">{compositionItems.map((item, index) => <div key={item.key}><dt><i style={{ background: `var(--usage-series-${index})` }} />{t(`usage.composition.${item.key}`)}</dt><dd title={item.value === null ? t("usage.chart.missing") : undefined}>{item.value === null ? "—" : number(item.value)}</dd></div>)}</dl>
     </section><section className="usage-chart-section" aria-labelledby="usage-ranking-title"><div className="usage-section-title"><h2 id="usage-ranking-title">{t("usage.chart.ranking")}</h2><div><span className="usage-ranking-unit">{t(`usage.group.${group}`)}{unit && ` · ${unit}`}</span><HelpPopover label={t("usage.chart.rankingHelp")} iconOnly><p>{t("usage.chart.rankingHelpText")}</p><dl className="usage-chart-coverage-list">{allGroups.filter(item => coverageText(item.totals)).map(item => <div key={item.key}><dt>{label(item.key)}</dt><dd>{coverageText(item.totals)}</dd></div>)}</dl></HelpPopover></div></div>
-      <div className="usage-ranking">{ranked.map((item, index) => renderRanking({ key: item.key, value: metricValue(item.totals, metric), text: label(item.key), status: coverageStatus(item.totals), coverage: coverageText(item.totals) }, index))}{remainder.length > 0 && renderRanking({ key: "__other", value: remainingValue, text: t("usage.chart.other"), status: [...new Set(remainder.flatMap(item => coverageStatus(item.totals)))] }, 4)}{!ranked.length && <div className="usage-empty">{t("usage.chart.noData")}</div>}</div>
+      <div className="usage-ranking">{ranked.map((item, index) => renderRanking({ key: item.key, value: metricValue(item.totals, metric), text: label(item.key), coverage: coverageText(item.totals) }, index))}{remainder.length > 0 && renderRanking({ key: "__other", value: remainingValue, text: t("usage.chart.other") }, 4)}{!ranked.length && <div className="usage-empty">{t("usage.chart.noData")}</div>}</div>
     </section></div>
   </div>;
 }

@@ -76,7 +76,7 @@ try {
     status = { state: "preparing", preparedSessions: 0, totalSessions: 0 };
     await progress.waitFor({ state: "hidden" });
     ensure(await page.getByText("正在准备统计…", { exact: true }).count() === 1, "未确定总量时丢失准备状态");
-    ensure(!(await page.locator(".usage-loading").innerText()).includes("%"), "未确定总量时虚构百分比");
+    ensure(!(await page.getByRole("status").filter({ hasText: "正在准备统计…" }).innerText()).includes("%"), "未确定总量时虚构百分比");
     const reportCount = reports.length;
     await button("显示语言").click(); await page.getByRole("menuitemradio", { name: "English", exact: true }).click();
     await page.getByText("Preparing usage statistics…", { exact: true }).waitFor();

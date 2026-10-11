@@ -1,4 +1,4 @@
-import type { UsageMetric, UsageQuery, UsageTotals } from "../../../src/usage-contracts";
+import type { UsageMetric, UsageQuery, UsageTimeBucket, UsageTotals } from "../../../src/usage-contracts";
 
 export type DateWindow = "today" | "yesterday" | "7" | "14" | "30" | "90" | "all" | "custom";
 export interface UsageRoute extends UsageQuery { window: DateWindow; selectedSession?: string; requestPage?: number; chart: "bar" | "line"; timeFrom?: string; timeTo?: string }
@@ -62,4 +62,31 @@ export function composition(totals: UsageTotals) {
 export function compositionIsPartial(totals: UsageTotals): boolean {
   const items = composition(totals);
   return items.some(item => item.value === null) || totals.tokens !== null && items.reduce((sum, item) => sum + (item.value ?? 0), 0) !== totals.tokens;
+}
+
+/** 选中区间沿用报告边界，日期上界包含当天，精确时间上界不包含该时刻。 */
+export function bucketFilter(query: UsageQuery, bucket: UsageTimeBucket, day = false): Partial<UsageRoute> {
+  const hourly = !day && query.interval === "hour";
+  const start = new Date(hourly ? bucket.key : `${bucket.key}T00:00:00`);
+  const end = new Date(start);
+  if (hourly) end.setTime(end.getTime() + 3600000);
+  else if (!day && query.interval === "week") end.setDate(end.getDate() + 7);
+  else if (!day && query.interval === "month") end.setMonth(end.getMonth() + 1);
+  else end.setDate(end.getDate() + 1);
+  const boundary = (value: string, upper = false) => {
+    const date = new Date(value.includes("T") ? value : `${value}T00:00:00`);
+    if (upper && !value.includes("T")) date.setDate(date.getDate() + 1);
+    return date.getTime();
+  };
+  if (query.from) start.setTime(Math.max(start.getTime(), boundary(query.from)));
+  if (query.to) end.setTime(Math.min(end.getTime(), boundary(query.to, true)));
+  const precise = hourly || !!query.from?.includes("T") || !!query.to?.includes("T");
+  return { window: "custom", from: localDay(start), to: localDay(new Date(end.getTime() - 1)),
+    timeFrom: precise ? start.toISOString() : undefined, timeTo: precise ? end.toISOString() : undefined };
+}
+export function bucketChangesRange(query: UsageQuery, bucket: UsageTimeBucket, day = false): boolean {
+  const range = bucketFilter(query, bucket, day);
+  const same = (current: string | undefined, selected: string | undefined) => current?.includes("T") && selected?.includes("T")
+    ? Date.parse(current) === Date.parse(selected) : current === selected;
+  return !same(query.from, range.timeFrom ?? range.from) || !same(query.to, range.timeTo ?? range.to);
 }

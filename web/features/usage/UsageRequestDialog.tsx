@@ -41,8 +41,8 @@ export function UsageRequestDialog({ active, session, requests, loading, error, 
               trigger={<button className="usage-state-trigger" aria-label={t(item.cost.coverage === "partial" ? "usage.chart.partialCost" : "usage.chart.unpriced")}><WarningCircle size={16} /></button>}>
               <p>{item.cost.reason === "price_missing" && item.cost.priceResolutionReason ? t(`usage.pricing.reason.${item.cost.priceResolutionReason}`) : item.cost.reason ? t(`usage.reason.${item.cost.reason}`) : t(`usage.${item.cost.coverage}`)}</p>
             </HelpPopover>}</div></td>
-            <td className="usage-request-price">{item.cost.price ? <><span>{(item.cost.priceProvider ?? item.cost.price.provider) === "manual" ? t("usage.pricing.globalScope") : item.cost.priceProvider ?? item.cost.price.provider} / {item.cost.price.model}</span>
-              <PriceDetails price={item.cost.price} cost={item.cost} threshold={item.cost.appliedContextThreshold} /></> : "—"}</td>
+            <td className="usage-request-price">{item.cost.price ? <div className="usage-price-target"><span>{(item.cost.priceProvider ?? item.cost.price.provider) === "manual" ? t("usage.pricing.globalScope") : item.cost.priceProvider ?? item.cost.price.provider} / {item.cost.price.model}</span>
+              <PriceDetails container={container} price={item.cost.price} cost={item.cost} threshold={item.cost.appliedContextThreshold} /></div> : "—"}</td>
             <td><button className="text-button" onClick={() => session && onSession(session.session.id, item.usage.messageId ?? item.usage.requestMessageIds?.[0])} title={!item.usage.messageId && !item.usage.requestMessageIds?.length ? t("usage.sessions.noLocator") : undefined}><ArrowSquareOut size={15} />{t("usage.sessions.open")}</button></td>
           </tr>)}</tbody></table>{!requests.requests.length && <div className="usage-empty">{t("usage.sessions.emptyRequests")}</div>}</div>}
         </div>

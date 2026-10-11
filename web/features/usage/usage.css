@@ -26,9 +26,7 @@
 .usage-metrics > div > span { font-size: 13px; color: var(--muted); }
 .usage-metrics strong { display: flex; gap: 7px; align-items: baseline; font-size: 25px; font-weight: 600; letter-spacing: -.7px; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .usage-metrics strong small { font-size: 12px; letter-spacing: 0; font-weight: 400; color: var(--muted); }
-.usage-coverage { display: flex; flex-wrap: wrap; align-items: center; gap: 7px 20px; font-size: 12px; padding: 11px 0; color: var(--muted); }
-.usage-coverage button { border: 0; background: transparent; color: inherit; padding: 0; font: inherit; text-decoration: underline; text-underline-offset: 3px; }
-.usage-warning, .usage-coverage .usage-warning { color: var(--near); }
+.usage-warning { color: var(--near); }
 .usage-notice { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 14px; padding: 10px 12px; border: 1px solid var(--border); border-radius: 5px; margin: 8px 0 14px; background: var(--surface-alt); font-size: 13px; line-height: 1.6; color: var(--near); }
 .usage-notice.danger { color: var(--danger); border-color: color-mix(in srgb, var(--danger) 28%, var(--border)); background: var(--danger-bg); }
 .usage-notice button { margin-left: auto; }
@@ -110,9 +108,7 @@
 .usage-heatmap-months { position: relative; height: 24px; color: var(--muted); font-size: 12px; }
 .usage-heatmap-months span { position: absolute; white-space: nowrap; }
 
-.usage-price-details { min-width: 160px; margin-top: 5px; font-size: 13px; }
-.usage-price-details summary { cursor: pointer; color: var(--muted); }
-.usage-price-details summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.usage-price-details { min-width: 0; font-size: 13px; }
 .usage-price-details p { margin: 6px 0; white-space: normal; }
 .usage-price-details dl { display: grid; gap: 4px; margin: 6px 0; }
 .usage-price-details dl > div { display: flex; gap: 16px; justify-content: space-between; }
@@ -120,7 +116,6 @@
 .usage-price-basis { max-width: 310px; white-space: normal; }
 
 .usage-metric-compact { display: none; }
-.usage-subtotal { margin-left: 7px; color: var(--near); font-size: 12px; }
 .usage-range { margin: 18px 0 12px; }
 .usage-metrics { padding-block: 20px; }
 .usage-value-state { display: flex; justify-content: flex-end; align-items: center; gap: 6px; }
@@ -147,8 +142,7 @@
 .usage-request-table td:first-child { min-width: 150px; width: 155px; white-space: nowrap; }
 .usage-request-table td:nth-child(2) { min-width: 150px; width: 190px; }
 .usage-request-price { min-width: 195px; }
-.usage-request-price > span { display: block; color: var(--muted); overflow-wrap: anywhere; }
-.usage-request-dialog .usage-price-details { min-width: 0; font-size: 12px; margin-top: 4px; }
+.usage-price-target > span { color: var(--muted); overflow-wrap: anywhere; }
 .usage-request-dialog footer { padding: 8px 24px; border-top: 1px solid var(--border); }
 .usage-page .filter-trigger { font-size: 12px; }
 @media (max-width: 1100px) {
@@ -170,7 +164,6 @@
   .usage-request-body { padding-inline: 16px; }
   .usage-request-dialog footer { padding-inline: 16px; }
   .usage-page-heading > div { gap: 6px; }
-  .usage-coverage { gap: 8px 16px; line-height: 1.5; }
 }
 
 .usage-request-actions { display: flex; align-items: flex-start; gap: 12px; }
@@ -180,3 +173,10 @@
 
 .usage-page .resource-pager, .usage-request-dialog .resource-pager, .pricing-workspace .resource-pager { font-size: 12px; }
 .usage-page .resource-page-range, .usage-page .resource-page-current, .usage-request-dialog .resource-page-range, .usage-request-dialog .resource-page-current, .pricing-workspace .resource-page-range, .pricing-workspace .resource-page-current { font-size: 12px; }
+
+.usage-update-status { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+.usage-price-target { display: flex; align-items: center; gap: 6px; }
+.usage-price-target > span { min-width: 0; }
+.usage-price-target > .help-trigger { flex-shrink: 0; }
+.usage-page-heading .is-spinning { animation: spin 1.1s linear infinite; }
+@media (prefers-reduced-motion: reduce) { .usage-page-heading .is-spinning { animation: none; } }

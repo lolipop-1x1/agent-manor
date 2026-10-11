@@ -1,6 +1,7 @@
 import type { MessageCatalog } from "../../types.js";
 
 export default {
+  "common.optionHelp": "{{filter}} · {{option}}",
   "common.appearance.menu": "外观",
   "common.appearance.mode": "显示模式",
   "common.appearance.auto": "跟随系统",

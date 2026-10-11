@@ -41,7 +41,6 @@
 .pricing-workspace .pricing-table td:last-child { min-width: 124px; }
 .pricing-workspace .pricing-table .usage-number { white-space: nowrap; font-variant-numeric: tabular-nums; }
 .pricing-workspace .pricing-table small { font-size: 12px; }
-.pricing-workspace .pricing-table .usage-price-details { font-size: 12px; }
 .pricing-workspace .pricing-row-status { color: var(--muted); }
 .pricing-workspace .pricing-row-actions .text-button { font-size: 12px; line-height: 1.6; }
 .pricing-workspace .pricing-row-actions .text-button + .text-button { margin-top: 3px; }
@@ -97,5 +96,4 @@
 .pricing-workspace .pricing-table th:nth-child(n+3):nth-child(-n+6), .pricing-workspace .pricing-table td.usage-number { text-align: right; }
 .pricing-workspace .pricing-row-target { display: block; color: var(--text); overflow-wrap: anywhere; }
 .pricing-workspace .pricing-row-status + .pricing-row-target { margin-top: 3px; }
-.pricing-workspace .pricing-table .usage-price-details { margin-top: 4px; }
 .pricing-workspace *, .pricing-workspace *::before, .pricing-workspace *::after { box-sizing: border-box; }

@@ -1,6 +1,20 @@
 import type { MessageCatalog } from "../../types.js";
 
 export default {
+  "usage.metric.costSubtotal": "估算费用小计",
+  "usage.filter.coverage.all.help": "包含所有请求，不限制输入、输出 Token 是否有记录。",
+  "usage.filter.coverage.complete.help": "输入与输出 Token 都有记录；缓存等细分项仍可能缺失。",
+  "usage.filter.coverage.partial.help": "输入与输出 Token 中，只有一项有记录。",
+  "usage.filter.coverage.missing.help": "输入与输出 Token 都没有记录，也包含没有用量记录的会话。",
+  "usage.filter.pricing.all.help": "包含所有请求，不限制费用是否能够完整估算。",
+  "usage.filter.pricing.complete.help": "计价所需的 Token 分项与对应单价齐全，可以完整估算。",
+  "usage.filter.pricing.partial.help": "只能对部分分项计价，金额为已知分项的小计。",
+  "usage.filter.pricing.missing.help": "缺少价格或必要的 Token 分项，无法计算费用。",
+  "usage.chart.filter.hour": "只看这一小时",
+  "usage.chart.filter.day": "只看这一天",
+  "usage.chart.filter.week": "只看这一周",
+  "usage.chart.filter.month": "只看这个月",
+
   "usage.pricing.help": "价格依据与规则",
   "usage.pricing.listScope": "显示范围",
   "usage.pricing.scope.recorded": "已记录与配置",
