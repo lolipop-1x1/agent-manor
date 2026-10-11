@@ -1,6 +1,6 @@
-import { useMemo, useRef, useState, type FormEvent } from "react";
+import { Fragment, useMemo, useRef, useState, type FormEvent } from "react";
 import * as Dialog from "@radix-ui/react-dialog";
-import { ArrowClockwise, ArrowLeft, MagnifyingGlass, Plus, X } from "@phosphor-icons/react";
+import { ArrowClockwise, ArrowLeft, CaretDown, CaretUp, CaretUpDown, MagnifyingGlass, Plus, X } from "@phosphor-icons/react";
 import type { JsonValue } from "../../../src/contracts";
 import type { ModelPrice, ModelPriceOverride, PricingConfiguration, PricingStatus } from "../../../src/usage-contracts";
 import { ApiError, errorMessage, request } from "../../shared/api";
@@ -9,13 +9,13 @@ import { FilterSelect } from "../../shared/ui/FilterSelect";
 import { HelpPopover } from "../../shared/ui/HelpPopover";
 import { ProjectPicker } from "../../shared/ui/ProjectPicker";
 import { ResourcePagination } from "../../shared/ui/ResourcePagination";
-import { createPriceMatcher, type PriceMatch } from "../../../src/usage/price-resolution";
+import { createPriceMatcher } from "../../../src/usage/price-resolution";
 import { PriceDetails } from "./PriceDetails";
+import { selectPriceRows, type PriceRow, type PriceListState, type PriceListSort, type PriceSortKey } from "./pricing-list";
 import "./pricing-manager.css";
 
 interface PriceDraft { model: string; provider: string; input: string; output: string; cacheRead: string; cacheWrite: string; original?: { model: string; provider: string } }
 interface MappingDraft { model: string; target: string; original?: string; relatedOnly?: boolean }
-interface PriceRow { model: string; provider: string; price?: ModelPrice; resolution?: PriceMatch; manual: boolean; recorded?: boolean }
 const blankDraft = (): PriceDraft => ({ model: "", provider: "", input: "", output: "", cacheRead: "", cacheWrite: "" });
 const sameOverride = (value: ModelPriceOverride, identity: { model: string; provider?: string }) => value.model === identity.model && (value.provider ?? "") === (identity.provider ?? "");
 export function PricingManager({ status, models, onChange, open, onOpenChange }: {
@@ -28,6 +28,8 @@ export function PricingManager({ status, models, onChange, open, onOpenChange }:
   const searchInput = useRef<HTMLInputElement>(null);
   const [search, setSearch] = useState(""); const [page, setPage] = useState(1);
   const [scope, setScope] = useState("recorded");
+  const [state, setState] = useState<PriceListState>("all");
+  const [sort, setSort] = useState<PriceListSort | null>(null);
   const [draft, setDraft] = useState<PriceDraft | null>(null);
   const [mapping, setMapping] = useState<MappingDraft | null>(null);
   const [saving, setSaving] = useState(false); const [error, setError] = useState<Error | null>(null); const [saved, setSaved] = useState(false);
@@ -38,11 +40,12 @@ export function PricingManager({ status, models, onChange, open, onOpenChange }:
     for (const price of status.configuration.overrides) items.unshift({ model: price.model, provider: price.provider ?? "", price: { ...price, provider: price.provider ?? "manual", source: "manual" }, manual: true });
     for (const model of [...models, ...status.configuration.mappings.map(value => value.model)]) if (!items.some(item => (item.recorded || item.manual) && item.model === model)) {
       const resolution = match(model), price = resolution.price;
-      items.unshift({ model, provider: price?.provider ?? "", price, resolution, manual: false, recorded: true });
+      items.unshift({ model, provider: price?.provider ?? "", price, resolution, manual: false, recorded: true, mapped: status.configuration.mappings.some(value => value.model === model) });
     }
     const query = search.toLowerCase();
-    return items.filter(item => `${item.model} ${item.provider} ${item.price?.model ?? ""} ${item.resolution?.canonicalModelId ?? ""} ${item.resolution?.candidates.map(price => `${price.provider} ${price.model} ${price.name ?? ""}`).join(" ") ?? ""} ${status.configuration.mappings.filter(value => value.model === item.model).map(value => `${value.targetModel} ${value.targetProvider}`).join(" ")}`.toLowerCase().includes(query));
-  }, [status, models, search, scope, match]);
+    return selectPriceRows(items.filter(item => `${item.model} ${item.provider} ${item.price?.model ?? ""} ${item.resolution?.canonicalModelId ?? ""} ${item.resolution?.candidates.map(price => `${price.provider} ${price.model} ${price.name ?? ""}`).join(" ") ?? ""} ${status.configuration.mappings.filter(value => value.model === item.model).map(value => `${value.targetModel} ${value.targetProvider}`).join(" ")}`.toLowerCase().includes(query)), state, sort);
+  }, [status, models, search, scope, match, state, sort]);
+  const sortHeader = (key: PriceSortKey, label: string) => <th aria-sort={sort?.key === key ? sort.direction === "asc" ? "ascending" : "descending" : "none"}><button type="button" className="pricing-sort" onClick={() => { setSort({ key, direction: sort?.key === key && sort.direction === "asc" ? "desc" : "asc" }); setPage(1); }}>{label}{sort?.key === key ? sort.direction === "asc" ? <CaretUp size={13} aria-hidden="true" /> : <CaretDown size={13} aria-hidden="true" /> : <CaretUpDown size={13} aria-hidden="true" />}</button></th>;
   const closeEditor = () => {
     setDraft(null); setMapping(null); setError(null);
     requestAnimationFrame(() => (editorOpener.current?.isConnected ? editorOpener.current : searchInput.current)?.focus({ preventScroll: true }));
@@ -98,13 +101,13 @@ export function PricingManager({ status, models, onChange, open, onOpenChange }:
     <Dialog.Description id="usage-pricing-description" className="pricing-description">{t("usage.pricing.description")}</Dialog.Description>
     <div className="pricing-list" hidden={editing}>
       <header className="pricing-list-header"><Dialog.Title>{t("usage.pricing.title")}</Dialog.Title><div><HelpPopover label={t("usage.pricing.help")} container={dialog} iconOnly>{help}</HelpPopover><button className="text-button" onClick={() => void refresh()} disabled={saving || status.refreshing}><ArrowClockwise size={15} aria-hidden="true" />{t(status.refreshing ? "usage.pricing.refreshing" : "usage.pricing.refresh")}</button><Dialog.Close className="icon-button" aria-label={t("common.closeNamed", { label: t("usage.pricing.title") })}><X size={18} aria-hidden="true" /></Dialog.Close></div></header>
-      <div className="pricing-list-toolbar"><FilterSelect label={t("usage.pricing.listScope")} value={scope} options={[{ value: "recorded", label: t("usage.pricing.scope.recorded") }, { value: "catalog", label: t("usage.pricing.scope.catalog") }]} onChange={value => { setScope(value); setPage(1); }} container={dialog} /><label className="pricing-search"><MagnifyingGlass size={17} aria-hidden="true" /><input ref={searchInput} value={search} onChange={event => { setSearch(event.target.value); setPage(1); }} placeholder={t("usage.pricing.search")} aria-label={t("usage.pricing.search")} /></label><button className="button" onClick={event => edit("", "", event.currentTarget)} disabled={saving}><Plus size={15} aria-hidden="true" />{t("usage.pricing.add")}</button><button className="button" onClick={event => editMapping("", event.currentTarget)} disabled={saving}>{t("usage.pricing.map")}</button></div>
+      <div className="pricing-list-toolbar"><FilterSelect label={t("usage.pricing.listScope")} value={scope} options={[{ value: "recorded", label: t("usage.pricing.scope.recorded") }, { value: "catalog", label: t("usage.pricing.scope.catalog") }]} onChange={value => { setScope(value); setPage(1); }} container={dialog} /><FilterSelect label={t("usage.pricing.filterState")} value={state} options={["all", "unmatched", "automatic", "mapping", "manual"].map(value => ({ value, label: t(`usage.pricing.state.${value}`) }))} onChange={value => { setState(value as PriceListState); setPage(1); }} container={dialog} /><label className="pricing-search"><MagnifyingGlass size={17} aria-hidden="true" /><input ref={searchInput} value={search} onChange={event => { setSearch(event.target.value); setPage(1); }} placeholder={t("usage.pricing.search")} aria-label={t("usage.pricing.search")} /></label><button className="button" onClick={event => edit("", "", event.currentTarget)} disabled={saving}><Plus size={15} aria-hidden="true" />{t("usage.pricing.add")}</button><button className="button" onClick={event => editMapping("", event.currentTarget)} disabled={saving}>{t("usage.pricing.map")}</button></div>
       <div className="pricing-list-status">
         {status.error && <div className="pricing-notice" role="status">{t("usage.pricing.sourceFallback")}</div>}
         {status.history && (!status.history.fetchedAt || status.history.error) && <div className="pricing-notice" role="status">{t(status.history.fetchedAt ? "usage.pricing.historyFallbackShort" : "usage.pricing.historyUnavailableShort")}</div>}
         {error && <div className="pricing-notice danger" role="alert">{errorMessage(error)}</div>}{saved && <div role="status" className="pricing-save-status">{t("usage.pricing.saved")}</div>}
       </div>
-      <div className="pricing-table-heading"><span>{t("usage.pricing.rateLabel")}</span></div><div className="pricing-list-scroll"><table className="usage-table pricing-table"><thead><tr><th>{t("usage.pricing.model")}</th><th>{t("usage.pricing.effective")}</th><th>{t("usage.pricing.input")}</th><th>{t("usage.pricing.output")}</th><th>{t("usage.pricing.cacheRead")}</th><th>{t("usage.pricing.cacheWrite")}</th><th /></tr></thead><tbody>
+      <div className="pricing-table-heading"><span>{t("usage.pricing.rateLabel")}</span></div><div className="pricing-list-scroll"><table className="usage-table pricing-table"><thead><tr>{sortHeader("model", t("usage.pricing.model"))}{sortHeader("effective", t("usage.pricing.effective"))}{(["input", "output", "cacheRead", "cacheWrite"] as const).map(key => <Fragment key={key}>{sortHeader(key, t(`usage.pricing.${key}`))}</Fragment>)}<th /></tr></thead><tbody>
         {rows.slice((current - 1) * 20, current * 20).map(row => {
           const configured = status.configuration.mappings.find(value => value.model === row.model);
           const recorded = row.recorded || row.manual && (models.includes(row.model) || !!configured);

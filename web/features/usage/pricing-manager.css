@@ -35,6 +35,11 @@
 .pricing-workspace .pricing-table-heading { display: flex; justify-content: flex-end; padding: 0 22px 8px; color: var(--muted); font-size: 12px; }
 .pricing-workspace .pricing-table { min-width: 980px; font-size: 13px; }
 .pricing-workspace .pricing-table th { position: sticky; top: 0; z-index: 1; padding: 10px 14px; font-size: 12px; }
+.pricing-workspace .pricing-sort { display: flex; align-items: center; gap: 5px; width: 100%; border: 0; padding: 0; background: transparent; color: inherit; font: inherit; cursor: pointer; white-space: nowrap; }
+.pricing-workspace .pricing-sort svg { flex: none; color: var(--muted); }
+.pricing-workspace th[aria-sort="ascending"] .pricing-sort svg, .pricing-workspace th[aria-sort="descending"] .pricing-sort svg { color: var(--accent); }
+.pricing-workspace .pricing-sort:focus-visible { outline: 2px solid var(--accent); outline-offset: 4px; border-radius: 2px; }
+.pricing-workspace .pricing-table th:nth-child(n+3):nth-child(-n+6) .pricing-sort { justify-content: flex-end; }
 .pricing-workspace .pricing-table td { padding: 13px 14px; }
 .pricing-workspace .pricing-table td:first-child { min-width: 190px; max-width: 260px; overflow-wrap: anywhere; }
 .pricing-workspace .pricing-table td:nth-child(2) { min-width: 210px; max-width: 280px; }

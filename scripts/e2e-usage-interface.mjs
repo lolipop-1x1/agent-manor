@@ -77,7 +77,7 @@ try {
       await button("外观").click(); await page.getByRole("combobox", { name: "显示模式", exact: true }).click(); await page.getByRole("option", { name: theme === "dark" ? "深色" : "明亮", exact: true }).click(); await page.keyboard.press("Escape");
       await page.setViewportSize({ width: 390, height: 844 });
       ensure(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), "窄屏用量页整体横向溢出");
-      ensure(await page.locator(".usage-metric-compact").first().isVisible(), "窄屏长数字未采用紧凑显示");
+      ensure((await page.locator(".usage-metrics strong").first().innerText()).includes("M"), "窄屏Token未采用百万单位");
       await button("管理模型价格").click(); await button("设置任意模型价格").click();
       const saveBounds = await button("保存配置").boundingBox(); ensure(saveBounds.y >= 0 && saveBounds.y + saveBounds.height <= 844, "窄屏价格保存不可见");
       await page.screenshot({ path: `${options.artifacts}/zh-price-editor-${theme}.png` });

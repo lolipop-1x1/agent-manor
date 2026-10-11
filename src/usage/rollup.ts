@@ -185,10 +185,17 @@ export function buildUsageRollupReport(rollup: UsageRollup, requested: UsageQuer
   buckets.sort((left, right) => query.interval === "hour" ? Date.parse(left.key) - Date.parse(right.key) : left.key.localeCompare(right.key));
   const { configuration: _configuration, prices: _prices, historicalPrices: _historicalPrices, ...status } = pricing;
   const page = query.page!, pageSize = query.pageSize!;
+  const selectedProjects = new Set<string>(), selectedModels = new Set<string>();
+  for (const cell of cells) {
+    const project = sessions.get(cell.sessionId)!.project;
+    if (project !== undefined) selectedProjects.add(project);
+    if (cell.model !== undefined) selectedModels.add(cell.model);
+  }
   const models = new Set(rollup.models);
   if (rollup.sessions.some(session => !hasUsage.has(session.id))) models.add("unknown");
   return { version: rollup.version, priceVersion: pricing.version, timezone: rollup.timezone, query,
     totals: summarize(cells), undated: summarize(undated), buckets, days, groups: grouped(cells, query, sessions),
+    projectCount: selectedProjects.size, modelCount: selectedModels.size,
     sessions: rows.slice((page - 1) * pageSize, page * pageSize), totalSessions: rows.length, page, pageSize, missingUsageSessions,
     facets: { clients: [...new Set(rollup.sessions.map(session => session.client))].sort(),
       projects: [...new Set(rollup.sessions.map(session => usageDimensionKey(session.project)))].sort(), models: [...models].sort() }, pricing: status };

@@ -7,6 +7,7 @@ import { useI18n } from "../../shared/i18n";
 import { HelpPopover } from "../../shared/ui/HelpPopover";
 import { ResourcePagination } from "../../shared/ui/ResourcePagination";
 import { sessionDisplayTitle } from "../sessions/session-model";
+import { TokenAmount } from "./TokenAmount";
 import { PriceDetails } from "./PriceDetails";
 
 export function UsageRequestDialog({ active, session, requests, loading, error, returnFocus, onClose, onPage, onRetry, onSession }: {
@@ -35,8 +36,8 @@ export function UsageRequestDialog({ active, session, requests, loading, error, 
             <th>{t("usage.composition.cacheRead")}</th><th>{t("usage.composition.cacheWrite")}</th><th>{t("usage.metric.cost")}</th><th>{t("usage.pricing.effective")}</th><th aria-label={t("usage.sessions.open")} />
           </tr></thead><tbody>{requests.requests.map(item => <tr key={item.usage.id}>
             <td>{item.usage.occurredAt ? dateTime(item.usage.occurredAt) : t("common.timeUnknown")}</td><td>{item.usage.model ?? t("usage.unknown")}</td>
-            <td className="usage-number">{value(item.usage.inputTokens)}</td><td className="usage-number">{value(item.usage.outputTokens)}</td>
-            <td className="usage-number">{value(item.usage.cachedInputTokens)}</td><td className="usage-number">{value(item.usage.cacheWriteTokens)}</td>
+            <td className="usage-number"><TokenAmount value={item.usage.inputTokens} /></td><td className="usage-number"><TokenAmount value={item.usage.outputTokens} /></td>
+            <td className="usage-number"><TokenAmount value={item.usage.cachedInputTokens} /></td><td className="usage-number"><TokenAmount value={item.usage.cacheWriteTokens} /></td>
             <td className="usage-number"><div className="usage-value-state">{value(item.cost.amount, true)}{item.cost.coverage !== "complete" && <HelpPopover container={container} label={t(item.cost.coverage === "partial" ? "usage.chart.partialCost" : "usage.chart.unpriced")}
               trigger={<button className="usage-state-trigger" aria-label={t(item.cost.coverage === "partial" ? "usage.chart.partialCost" : "usage.chart.unpriced")}><WarningCircle size={16} /></button>}>
               <p>{item.cost.reason === "price_missing" && item.cost.priceResolutionReason ? t(`usage.pricing.reason.${item.cost.priceResolutionReason}`) : item.cost.reason ? t(`usage.reason.${item.cost.reason}`) : t(`usage.${item.cost.coverage}`)}</p>

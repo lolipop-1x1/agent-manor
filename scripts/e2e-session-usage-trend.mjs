@@ -101,6 +101,15 @@ try {
     await page.locator(".session-list-item").filter({ hasText: "长会话工作区验收" }).click();
     await cost.getByText("$0.39", { exact: true }).waitFor();
     await page.getByRole("tab", { name: zh ? "概览" : "Overview", exact: true }).click();
+    const cache = page.locator(".session-cache-ratio");
+    ensure(await cache.count() === 1, "完整缓存占比没有显示");
+    const styles = await page.evaluate(() => {
+      const ratio = document.querySelector(".session-cache-ratio"), amount = document.querySelector(".session-cost");
+      return { ratioBackground: getComputedStyle(ratio).backgroundColor, amountBackground: getComputedStyle(amount).backgroundColor,
+        ratioColor: getComputedStyle(ratio.querySelector("strong")).color, amountColor: getComputedStyle(amount.querySelector("strong")).color };
+    });
+    ensure(styles.ratioBackground === styles.amountBackground && styles.ratioColor === styles.amountColor, "缓存占比未采用普通费用行样式");
+
     const costRoute = /\/api\/v1\/sessions\/[^/]+\/cost(?:\?|$)/;
     await page.route(costRoute, async route => { await page.waitForTimeout(500); await route.continue(); });
     await page.getByRole("button", { name: zh ? "自身" : "Self", exact: true }).click();

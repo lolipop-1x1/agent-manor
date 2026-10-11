@@ -91,7 +91,7 @@ export interface UsageReport {
   version: string; priceVersion: string; timezone: string; query: UsageQuery;
   totals: UsageTotals; undated: UsageTotals; buckets: UsageTimeBucket[]; days: UsageTimeBucket[];
   groups: UsageSeries[]; sessions: UsageSessionRow[]; totalSessions: number; page: number; pageSize: number;
-  missingUsageSessions: number;
+  missingUsageSessions: number; projectCount: number; modelCount: number;
   facets: { clients: string[]; projects: string[]; models: string[] };
   pricing: PricingSummary;
 }

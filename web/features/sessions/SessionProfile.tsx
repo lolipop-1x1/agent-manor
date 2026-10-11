@@ -219,7 +219,7 @@ export function SessionProfilePane({ active, profile, loading, error, includeChi
               {costError && <Notice danger action={<button className="text-button" onClick={() => setCostRetry(value => value + 1)}>{t("common.retry")}</button>}><SessionError error={costError} /></Notice>}
               {incompleteCost && <div className="session-cost-coverage">{visibleCost.totals.estimatedCost !== null && <strong>{t("sessions.profile.costSubtotal")}</strong>}<span>{t("usage.coverage.cost", { complete: visibleCost.totals.pricedRequests, partial: visibleCost.totals.partiallyPricedRequests, missing: visibleCost.totals.unpricedRequests })}</span></div>}
             </div>
-            {profile.usage.cacheReadRatio !== null && profile.usage.inputRecordedRequests === profile.usage.requests && profile.usage.cacheRecordedRequests === profile.usage.requests && <div className="session-cache-ratio"><div><span>{t("sessions.profile.cacheRatio")}</span><strong>{normalizedRatio(profile.usage.cacheReadRatio)}</strong></div></div>}
+            {profile.usage.cacheReadRatio !== null && profile.usage.inputRecordedRequests === profile.usage.requests && profile.usage.cacheRecordedRequests === profile.usage.requests && <div className="session-cache-ratio"><div className="session-cost-heading"><span>{t("sessions.profile.cacheRatio")}</span><strong>{normalizedRatio(profile.usage.cacheReadRatio)}</strong></div></div>}
           </section>
         </>}
         {visibleTab === "usage" && profile.usage.requests > 0 && <section className="session-profile-section"><div className="session-section-heading"><h3>{t("sessions.profile.trend")}</h3><HelpPopover label={t("sessions.profile.chartHelp")}>

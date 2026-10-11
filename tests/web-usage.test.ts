@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { UsageTimeBucket, UsageTotals } from "../src/usage-contracts.ts";
-import { bucketChangesRange, bucketFilter, composition, compositionIsPartial, defaultRoute, metricValue, readUsageRoute, usageAddress, usageParameters, usageQuery } from "../web/features/usage/model.ts";
+import { composition, compositionIsPartial, defaultRoute, metricValue, readUsageRoute, usageAddress, usageParameters, usageQuery, usageDailyMetrics } from "../web/features/usage/model.ts";
 import { translate } from "../src/i18n/index.ts";
 
 const totals = (): UsageTotals => ({ requests: 1, sessions: 1, tokens: 250, inputTokens: 200, outputTokens: 50, freshInputTokens: 100, cacheReadTokens: 80, cacheWriteTokens: 20, reasoningTokens: 30, estimatedCost: .0003, cacheReadRatio: .4, cacheReadRatioRequests: 1, completeTokenRequests: 1, partialTokenRequests: 0, missingTokenRequests: 0, pricedRequests: 1, partiallyPricedRequests: 0, unpricedRequests: 0, missingTimeRequests: 0 });
@@ -26,7 +26,7 @@ test("多选地址保留路径、逗号、中文与排除，不把数组转换�
   const query = usageQuery(restored, "i", "p");
   const params = new URLSearchParams(usageParameters(query));
   assert.deepEqual(JSON.parse(params.get("projects")!), route.projects);
-  for (const key of ["window", "chart", "selectedSession", "requestPage", "timeFrom", "timeTo"]) assert.equal(params.has(key), false);
+  for (const key of ["window", "chart", "attribution", "selectedSession", "requestPage", "timeFrom", "timeTo"]) assert.equal(params.has(key), false);
 });
 
 test("地址校验不接受无效日期、非有限数值、负范围和同项包含排除", () => {
@@ -73,19 +73,26 @@ test("用量会话、无时间请求和档位数量采用英语复数及中文�
 });
 
 const bucket = (key: string): UsageTimeBucket => ({ key, totals: totals(), groups: [] });
-test("时间下钻隐藏同一天或已裁剪的相同区间，保留周月与精确小时边界", () => {
-  const day = { from: "2026-10-11", to: "2026-10-11", interval: "day" as const };
-  assert.equal(bucketChangesRange(day, bucket("2026-10-11")), false);
-  assert.equal(bucketChangesRange({ interval: "day" }, bucket("2026-10-11")), true);
-  const week = { from: "2026-10-07", to: "2026-10-11", interval: "week" as const };
-  assert.deepEqual(bucketFilter(week, bucket("2026-10-05")), { window: "custom", from: "2026-10-07", to: "2026-10-11", timeFrom: undefined, timeTo: undefined });
-  assert.equal(bucketChangesRange(week, bucket("2026-10-05")), false);
-  assert.equal(bucketChangesRange(week, bucket("2026-10-11"), true), true);
-  assert.equal(bucketFilter({ interval: "month" }, bucket("2026-02-01")).to, "2026-02-28");
-  const hour = { from: "2026-10-11T00:15:00Z", to: "2026-10-11T00:45:00Z", interval: "hour" as const };
-  const selected = bucketFilter(hour, bucket("2026-10-11T00:00:00Z"));
-  assert.equal(selected.timeFrom, "2026-10-11T00:15:00.000Z");
-  assert.equal(selected.timeTo, "2026-10-11T00:45:00.000Z");
-  assert.equal(bucketChangesRange(hour, bucket("2026-10-11T00:00:00Z")), false);
-  assert.equal(bucketChangesRange({ from: "2026-10-11T08:15:00+08:00", to: "2026-10-11T08:45:00+08:00", interval: "hour" }, bucket("2026-10-11T00:00:00Z")), false);
+test("默认地址为30天及矩形归因，显式选择仍可恢复且视图不参与统计查询", () => {
+  assert.equal(readUsageRoute("#usage").window, "30");
+  assert.equal(readUsageRoute("#usage").attribution, "treemap");
+  const route = readUsageRoute("#usage?window=today&attribution=bar");
+  assert.equal(route.window, "today"); assert.equal(route.attribution, "bar");
+  assert.equal("attribution" in usageQuery(route, "i", "p"), false);
+});
+
+test("日均包含空白日期但不补造费用，峰值同额取最早日期，活跃按请求记录", () => {
+  const days = [bucket("2026-01-01"), bucket("2026-01-02"), bucket("2026-01-03")];
+  days[0]!.totals.estimatedCost = null;
+  days[1]!.totals.estimatedCost = 6;
+  days[2]!.totals.estimatedCost = 6;
+  const result = usageDailyMetrics(days);
+  assert.equal(result.averageCost, 4); assert.equal(result.peak?.key, "2026-01-02"); assert.equal(result.activeDays, 3);
+  assert.deepEqual(usageDailyMetrics([]), { averageCost: null, peak: undefined, activeDays: 0 });
+  assert.equal(usageDailyMetrics([days[0]!]).averageCost, null);
+  days[0]!.totals.estimatedCost = 0;
+  assert.equal(usageDailyMetrics([days[0]!]).averageCost, 0);
+  assert.equal(usageDailyMetrics([days[0]!]).peak?.totals.estimatedCost, 0);
+  days[0]!.totals.requests = 0;
+  assert.equal(usageDailyMetrics([days[0]!]).activeDays, 0);
 });

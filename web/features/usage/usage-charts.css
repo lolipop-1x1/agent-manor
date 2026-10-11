@@ -17,15 +17,6 @@
 .usage-charts .usage-chart-reference { stroke: var(--accent); stroke-width: 1; stroke-dasharray: 3 3; vector-effect: non-scaling-stroke; }
 .usage-charts .usage-bucket-selector { position: absolute; cursor: crosshair; touch-action: pan-y; }
 .usage-charts .usage-bucket-selector:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
-.usage-charts .usage-chart-detail { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 14px 20px; font-size: 12px; padding-top: 18px; min-height: 62px; }
-.usage-charts .usage-selected-values { display: flex; align-items: baseline; flex-wrap: wrap; gap: 7px 16px; min-width: 0; }
-.usage-charts .usage-selected-values strong { font-size: 13px; font-weight: 600; }
-.usage-charts .usage-selected-values > .usage-number { font-size: 15px; font-weight: 600; }
-.usage-charts .usage-chart-detail > button { margin-left: 0; white-space: nowrap; font-size: 12px; }
-.usage-charts .usage-detail-groups { display: flex; flex-wrap: wrap; grid-column: 1 / -1; gap: 7px 22px; margin: 0; }
-.usage-charts .usage-detail-groups > div { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
-.usage-charts .usage-detail-groups dt { color: var(--muted); overflow-wrap: anywhere; }
-.usage-charts .usage-detail-groups dd { margin: 0; font-variant-numeric: tabular-nums; }
 .usage-charts .usage-analysis-row { gap: 40px; }
 .usage-charts .usage-composition-strip { height: 20px; margin-bottom: 24px; }
 .usage-charts .usage-composition-values { font-size: 13px; gap: 16px; margin-bottom: 6px; }
@@ -58,7 +49,6 @@
 @media (max-width: 767px) {
   .usage-charts .usage-trend-header { grid-template-columns: 1fr; gap: 4px; }
   .usage-charts .usage-time-actions { gap: 8px; }
-  .usage-charts .usage-chart-detail { gap: 12px; }
   .usage-charts .usage-heatmap-scale > span:last-child { width: auto; }
 }
 @media (max-width: 479px) {
@@ -66,9 +56,36 @@
   .usage-charts .usage-time-actions { justify-content: space-between; width: 100%; }
   .usage-charts .usage-time-switch { flex: 1; }
   .usage-charts .usage-time-switch button { flex: 1; padding-inline: 8px; }
-  .usage-charts .usage-chart-detail { grid-template-columns: 1fr; }
-  .usage-charts .usage-chart-detail > button { justify-self: start; }
-  .usage-charts .usage-detail-groups { grid-column: 1; }
   .usage-charts .usage-rank-row { grid-template-columns: minmax(0, 1fr) max-content 48px; }
   .usage-charts .usage-rank-track { display: none; }
 }
+
+.usage-charts .usage-chart-legend button { max-width: 240px; min-width: 0; }
+.usage-charts .usage-chart-legend button span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.usage-charts .usage-chart-legend button i { flex-shrink: 0; }
+.usage-attribution-switch button { display: inline-flex; align-items: center; justify-content: center; padding: 7px; }
+.usage-attribution-map { position: relative; width: 100%; height: 300px; overflow: hidden; }
+.usage-attribution-map .map-tile-layer { position: absolute; inset: 0; }
+.usage-attribution-tile { position: absolute; display: flex; flex-direction: column; align-items: flex-start; justify-content: center; gap: 7px; padding: 12px; border: 0; background: transparent; color: var(--text); text-align: left; overflow: hidden; font-size: 13px; }
+.usage-attribution-tile:has(.is-compact) { padding: 5px; }
+.usage-attribution-tile strong.is-compact { font-size: 12px; }
+.usage-attribution-tile span { width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.usage-attribution-tile strong { font-size: 20px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.usage-attribution-tile em { font-size: 12px; font-style: normal; font-variant-numeric: tabular-nums; }
+.usage-attribution-tone-0 { color: var(--map-0-text, var(--text)); }
+.usage-attribution-tone-1 { color: var(--map-1-text, var(--text)); }
+.usage-attribution-tone-2 { color: var(--map-2-text, var(--text)); }
+.usage-attribution-tone-3 { color: var(--map-3-text, var(--on-accent)); }
+.usage-attribution-tone-4 { color: var(--map-4-text, var(--on-accent)); }
+.usage-attribution-tooltip { max-width: min(360px, calc(100vw - 24px)); white-space: normal; overflow-wrap: anywhere; line-height: 1.6; }
+.usage-attribution-tile:hover { box-shadow: inset 0 0 0 2px var(--accent); }
+.usage-page .usage-attribution-tile:focus-visible:focus-visible { outline-offset: -3px; }
+.usage-time-popover { box-sizing: border-box; z-index: 55; width: min(380px, calc(100vw - 24px)); max-height: min(360px, var(--radix-popover-content-available-height)); overflow: auto; padding: 16px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); color: var(--text); box-shadow: 0 8px 30px #0000001f; font-size: 13px; }
+.usage-time-popover header { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.usage-time-popover header strong { font-size: 14px; font-weight: 600; }
+.usage-time-total { font-size: 22px; font-weight: 650; margin: 12px 0 16px; font-variant-numeric: tabular-nums; }
+.usage-time-popover dl { display: grid; gap: 12px; margin: 0; }
+.usage-time-popover dl > div { display: flex; align-items: baseline; justify-content: space-between; gap: 20px; }
+.usage-time-popover dt { min-width: 0; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.usage-time-popover dd { margin: 0; flex-shrink: 0; font-variant-numeric: tabular-nums; }
+@media (max-width: 479px) { .usage-charts .usage-chart-legend button { max-width: 160px; } }

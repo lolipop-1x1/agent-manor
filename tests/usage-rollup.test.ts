@@ -229,3 +229,18 @@ test("费用阈值与费用排序回到精确事实路径，防止浮点加法�
   }
   assert.equal(canUseUsageRollup({ minTokens: 0, maxTokens: 1000, sort: "tokens", metric: "requests" }), true);
 });
+
+test("项目与原始模型计数来自最终请求集合，不受分组与分页影响，真实unknown不算缺失", () => {
+  for (const groupBy of ["client", "model", "project"] as const) for (const page of [1, 2]) {
+    const report = compare(mixed, { groupBy, page, pageSize: 1 });
+    assert.equal(report.projectCount, 4); assert.equal(report.modelCount, 5);
+  }
+  const selected = compare(mixed, { projects: ["/workspace/a"], models: ["model-a"] });
+  assert.equal(selected.projectCount, 1); assert.equal(selected.modelCount, 1);
+  const missing = compare(mixed, { models: ["unknown"] });
+  assert.equal(missing.projectCount, 1); assert.equal(missing.modelCount, 0);
+  const literal = compare(mixed, { models: ["literal:unknown"] });
+  assert.equal(literal.modelCount, 1); assert.equal(literal.projectCount, 1);
+  const empty = compare(mixed, { minTokens: 1e20 });
+  assert.equal(empty.projectCount, 0); assert.equal(empty.modelCount, 0);
+});

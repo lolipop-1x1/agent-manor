@@ -326,8 +326,14 @@ export function buildUsageReport(source: UsageSource, query: UsageQuery, pricing
   buckets.sort((left, right) => selected.query.interval === "hour" ? Date.parse(left.key) - Date.parse(right.key) : left.key.localeCompare(right.key));
   const { configuration: _configuration, prices: _prices, historicalPrices: _historicalPrices, ...status } = pricing;
   const pageSize = selected.query.pageSize!, page = selected.query.page!;
+  const projects = new Set<string>(), models = new Set<string>();
+  for (const request of selected.requests) {
+    if (request.session.project !== undefined) projects.add(request.session.project);
+    if (request.usage.model !== undefined) models.add(request.usage.model);
+  }
   return { version: source.version, priceVersion: pricing.version, timezone: selected.timezone, query: selected.query,
     totals: summarize(selected.requests), undated: summarize(selected.undated), buckets, days,
+    projectCount: projects.size, modelCount: models.size,
     groups: grouped(selected.requests, selected.query), sessions: selected.rows.slice((page - 1) * pageSize, page * pageSize),
     totalSessions: selected.rows.length, page, pageSize, missingUsageSessions: selected.missingUsageSessions, facets: selected.facets, pricing: status };
 }

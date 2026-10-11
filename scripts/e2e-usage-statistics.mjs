@@ -299,7 +299,12 @@ try {
     await choose("归因维度", "项目"); await choose("时间粒度", "周"); await choose("时间粒度", "月");
     await choose("日期范围", "今天"); await choose("时间粒度", "小时");
     ensure(await hit.getAttribute("aria-valuemax") === "24", "小时趋势没有保留空时间间距");
-    await hit.press("Home"); for (let index = 0; index < 12; index++) await hit.press("ArrowRight"); await change(() => button("只看这一小时").click());
+    await hit.press("Home"); for (let index = 0; index < 12; index++) await hit.press("ArrowRight");
+    const hourlyHash = await page.evaluate(() => location.hash); await hit.press("Enter");
+    ensure(await page.evaluate(() => location.hash) === hourlyHash, "查看小时改变日期筛选"); await page.keyboard.press("Escape");
+    const hour = await api("/usage?interval=hour&from=" + new Date().toLocaleDateString("sv-SE") + "&to=" + new Date().toLocaleDateString("sv-SE"));
+    const selectedHour = hour.buckets[12].key; const selectedDate = new Date(selectedHour).toLocaleDateString("sv-SE");
+    await change(() => page.goto(`${options.base}/#usage?window=custom&from=${selectedDate}&to=${selectedDate}&timeFrom=${encodeURIComponent(selectedHour)}&timeTo=${encodeURIComponent(new Date(Date.parse(selectedHour) + 3600000).toISOString())}&interval=hour`));
     ensure((await page.evaluate(() => location.hash)).includes("timeFrom"), "小时区间没有准确时间筛选");
     await button("开始日期").click(); await change(() => button("清空").click());
     ensure(!(await page.evaluate(() => location.hash)).includes("timeFrom"), "清空日期遗留小时筛选");
@@ -308,7 +313,7 @@ try {
     await reset();
     await button("日历热力图").click();
     await page.locator(".usage-heatmap button").last().click(); await ready();
-    ensure((await page.evaluate(() => location.hash)).includes("window=custom"), "热图没有追加日期范围");
+    ensure(!(await page.evaluate(() => location.hash)).includes("window=custom"), "查看热图改变日期筛选"); await page.keyboard.press("Escape");
     await reset();
     if (await page.getByRole("dialog", { name: "请求明细", exact: true }).count()) await button("关闭请求明细").click();
     await button("管理模型价格").click();
@@ -411,7 +416,7 @@ try {
     await button("Cancel").click(); await button("Close Model prices").click();
     await language("Display language", "Simplified Chinese");
     const filterModel = async key => {
-      const params = await page.evaluate(key => new URLSearchParams({ window: "all", models: JSON.stringify([key]) }).toString(), key);
+      const params = await page.evaluate(key => new URLSearchParams({ window: "all", attribution: "bar", models: JSON.stringify([key]) }).toString(), key);
       await page.goto(`${options.base}/#usage?${params}`); await ready();
       const report = await page.evaluate(async () => {
         const index = await (await fetch("/api/v1/sessions/status?summary=true")).json();
@@ -423,6 +428,7 @@ try {
       return report;
     };
     const named = await filterModel("literal:unknown"); ensure(named.totals.requests === 1, "真实unknown模型与缺模型合并");
+    await button("横条排行").click();
     ensure((await page.locator(".usage-ranking").innerText()).includes("unknown"), "真实unknown模型被翻译");
     ensure(await button("移除 unknown").count() === 1, "真实模型筛选标签的可访问名称没有恢复原文");
     const missing = await filterModel("unknown"); ensure(missing.totals.requests === 1, "缺模型筛选包含真实unknown模型");

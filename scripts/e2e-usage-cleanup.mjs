@@ -77,11 +77,12 @@ try {
     await page.unroute("**/api/v1/usage?*"); await button("重试").click(); await ready();
     ensure(await page.locator(".usage-report-body").getAttribute("inert") === null, "重试成功未恢复操作");
     ensure(await page.locator(".usage-charts .usage-warning").count() === 0, "费用指标黄字未清理");
-    await button("只看这一天").click(); await ready();
-    ensure(await page.getByRole("button", { name: /^只看这/ }).count() === 0, "已有相同日期仍展示无效筛选");
-    ensure(await page.getByRole("combobox", { name: "日期范围", exact: true }).innerText() === "自定义", "时间下钻没有收窄日期");
-    await button("清除筛选").click(); await ready();
-    await page.getByRole("combobox", { name: "日期范围", exact: true }).click(); await page.getByRole("option", { name: "全部日期", exact: true }).click(); await ready();
+    const intervalHash = await page.evaluate(() => location.hash);
+    await page.getByRole("slider").press("Home");
+    await page.getByRole("dialog", { name: "时间区间明细", exact: true }).waitFor();
+    ensure(await page.getByRole("button", { name: /^只看这/ }).count() === 0, "仍有图表日期筛选按钮");
+    ensure(await page.evaluate(() => location.hash) === intervalHash, "查看时间明细改变日期筛选");
+    await page.keyboard.press("Escape");
     await button("查看请求明细").first().click(); const dialog = page.getByRole("dialog", { name: "请求明细", exact: true });
     await dialog.locator("tbody tr").first().waitFor();
     ensure(await dialog.locator("thead th").count() === 9, "请求表不再保留九列");
@@ -111,7 +112,7 @@ try {
     ensure((await enHelp.innerText()).includes("matching rates"), "英文说明错误");
     await enHelp.getByRole("button", { name: "Close Complete", exact: true }).click(); await page.keyboard.press("Escape"); await page.keyboard.press("Escape");
     ensure(errors.length === 0, `浏览器错误：${errors.join(";")}`);
-    return { passed: true, checks, errors, stableRefresh: true, rapidQueries: true, failureRecovery: true, dropdownHelp: true, requestRates: true, timeDrilldown: true, englishAndMobile: true };
+    return { passed: true, checks, errors, stableRefresh: true, rapidQueries: true, failureRecovery: true, dropdownHelp: true, requestRates: true, intervalInspection: true, englishAndMobile: true };
   };
   const output = await browser(["run-code", `async page => (${verify.toString()})(page, ${JSON.stringify({ artifacts })})`]);
   console.log(output.split("### Ran Playwright code")[0]); await writeFile(`${artifacts}/report.txt`, output);
