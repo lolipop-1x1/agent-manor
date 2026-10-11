@@ -6,7 +6,7 @@ import type { SourceLocation } from "../types.js";
 import type { HistoryAdapter } from "./types.js";
 import { createNormalizedAdapter, normalizedHash, normalizedRecord, normalizedSnapshot } from "./normalized.js";
 import type { NormalizedEvent, NormalizedSnapshot, RawHistoryRecord } from "./normalized.js";
-import { addGap, eventTime, fileSessionId, nativeSourceId, normalizeUsage, readJsonlHeader, readJsonlRows, sessionIds, siblingDatabase, sourceFor, textOf } from "./native-jsonl.js";
+import { addGap, eventTime, fileSessionId, nativeSourceId, normalizeUsage, readJsonlHeader, readJsonlRows, sessionIds, siblingDatabase, sourceFor, textOf, tokenField } from "./native-jsonl.js";
 
 export const WORKBUDDY_FORMAT = "workbuddy-jsonl";
 
@@ -53,11 +53,22 @@ function usageFrom(record: Record<string, unknown>, gap: (gap: Gap) => void): { 
   const provider = object(record.providerData);
   const message = object(record.message);
   const raws = [provider.usage, message.usage, provider.rawUsage, record.usage, record.rawUsage];
-  const projections = raws.map(value => normalizeUsage([value], () => undefined)).filter(Boolean);
+  const normalize = (values: unknown[], report: (gap: Gap) => void) => {
+    const direct = values.map(object);
+    const input = tokenField(direct, ["input_tokens", "prompt_tokens"]);
+    const output = tokenField(direct, ["output_tokens", "completion_tokens"]);
+    const total = tokenField(direct, ["total_tokens"]);
+    // 来源总量确认缓存已经包含在 input 内；未记录的收费分项继续保留未知。
+    const inclusive = input !== undefined && output !== undefined && total === input + output;
+    const usage = normalizeUsage(values, inclusive ? () => undefined : report);
+    return usage && inclusive ? { ...usage, inputTokens: input } : usage;
+  };
+  const projections = raws.map(value => normalize([value], () => undefined)).filter(Boolean);
   if (new Set(projections.map(value => JSON.stringify(value))).size > 1) {
     gap({ kind: "ambiguous", message: "WorkBuddy message/provider/raw 用量投影不同，按 providerData.usage 优先并保留原始行", messageDescriptor: { key: "diagnostics.history.adapters.workbuddy.m001" } });
   }
-  const usage = normalizeUsage(raws, gap);
+  const selected = raws.find(value => normalize([value], () => undefined) !== undefined);
+  const usage = selected === undefined ? undefined : normalize([selected], gap);
   const key = string(provider.messageId) ?? string(record.id);
   if (!usage && raws.some(value => Object.keys(object(value)).length > 0)) {
     gap({ kind: "unsupported_format", message: "WorkBuddy 原生用量记录只含未归一化字段，保留原行并标记采集缺口", messageDescriptor: { key: "diagnostics.history.adapters.workbuddy.m002" } });

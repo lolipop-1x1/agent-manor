@@ -59,14 +59,16 @@ export function normalizeUsage(raws: readonly unknown[], gap: (gap: Gap) => void
   const direct = raws.map(object).filter(value => Object.keys(value).length > 0);
   const inputDetails = ["prompt_tokens_details", "inputTokensDetails"];
   const outputDetails = ["output_tokens_details", "outputTokensDetails", "completion_tokens_details", "completionTokensDetails"];
-  const inputs = [...direct, ...direct.flatMap(value => inputDetails.map(key => object(value[key])).filter(item => Object.keys(item).length > 0))];
-  const outputs = [...direct, ...direct.flatMap(value => outputDetails.map(key => object(value[key])).filter(item => Object.keys(item).length > 0))];
+  const details = (keys: string[]) => direct.flatMap(value => keys.flatMap(key =>
+    (Array.isArray(value[key]) ? value[key] : [value[key]]).map(object).filter(item => Object.keys(item).length > 0)));
+  const inputs = [...direct, ...details(inputDetails)];
+  const outputs = [...direct, ...details(outputDetails)];
   if (!direct.length) return undefined;
   const inputAliases = ["input_tokens", "inputTokens", "prompt_tokens", "promptTokens"];
   const readAliases = ["cache_read_input_tokens", "cacheReadInputTokens", "cached_tokens", "cachedTokens", "prompt_cache_hit_tokens"];
   const writeAliases = ["cache_creation_input_tokens", "cacheCreationInputTokens", "cache_write_input_tokens", "cacheWriteInputTokens", "prompt_cache_write_tokens"];
   const outputAliases = ["output_tokens", "outputTokens", "completion_tokens", "completionTokens"];
-  const reasoningAliases = ["reasoning_output_tokens", "reasoningOutputTokens", "reasoningTokens", "completion_thinking_tokens"];
+  const reasoningAliases = ["reasoning_output_tokens", "reasoningOutputTokens", "reasoningTokens", "reasoning_tokens", "completion_thinking_tokens"];
   const cacheRead = tokenField(inputs, readAliases);
   const cacheWrite = tokenField(inputs, writeAliases);
   const input = tokenField(direct, inputAliases);

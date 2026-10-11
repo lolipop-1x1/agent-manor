@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -6,7 +7,7 @@ import { test } from "node:test";
 import type { SessionUsage } from "../src/session-contracts.js";
 import type { PricingConfiguration } from "../src/usage-contracts.js";
 import { bundledPriceSnapshot } from "../src/usage/bundled-prices.js";
-import { parsePriceCatalog } from "../src/usage/price-catalog.js";
+import { parsePriceCatalog, priceContentVersion } from "../src/usage/price-catalog.js";
 import { createPricingEstimator, PricingService } from "../src/usage/pricing.js";
 import { createPriceResolver } from "../src/usage/price-resolution.js";
 
@@ -90,6 +91,51 @@ test("同名服务商不混价；用户映射与明确前缀匹配目标，原�
     mappings: [{ model: "example-model", targetModel: "target-model", targetProvider: "example-provider" }] });
   assert.equal(pricing.estimate(request()).price?.source, "manual");
   assert.equal(pricing.estimate(request()).amount, 110 / 1_000_000);
+});
+
+test("标准 OpenAI 模型以精确原厂价格估算，Codex 缓存分项正常计价", async t => {
+  const names = ["gpt-example", "chatgpt-example", "codex-example", "o3-example"];
+  const catalog = {
+    openai: { models: Object.fromEntries(names.map(model => [model, { cost: { input: 2, output: 5, cache_read: 0.1 } }])) },
+    reseller: { models: Object.fromEntries(names.map(model => [model, { cost: { input: 20, output: 50, cache_read: 1 } }])) },
+  };
+  const pricing = new PricingService(workspace(t), { fetch: async () => response(catalog), now: () => new Date(date) });
+  await pricing.refresh();
+  for (const model of names) {
+    const usage = request({ model, cacheWriteTokens: undefined });
+    const result = pricing.estimate(usage, "codex");
+    assert.equal(result.price?.provider, "openai"); assert.equal(result.coverage, "complete");
+    assert.equal(result.amount, (80 * 2 + 20 * 0.1 + 10 * 5) / 1_000_000);
+    assert.equal(pricing.estimate({ ...usage, model: `reseller/${model}` }, "codex").price?.input, 20);
+    assert.equal(pricing.estimate({ ...usage, model: `unknown/${model}` }, "codex").amount, null);
+    assert.equal(usage.model, model);
+  }
+  const model = names[0]!;
+  pricing.configure({ overrides: [], mappings: [{ model, targetModel: model, targetProvider: "reseller" }] });
+  assert.equal(pricing.estimate(request({ model }), "codex").price?.provider, "reseller");
+  pricing.configure({ ...pricing.status().configuration, overrides: [{ model, input: 7, output: 9, cacheRead: 0.3 }] });
+  assert.equal(pricing.estimate(request({ model }), "codex").price?.source, "manual");
+  assert.equal(pricing.estimate(request({ model }), "codex").price?.input, 7);
+});
+
+test("原厂基准不猜相似模型、其它系列或无法匹配的服务商", () => {
+  const prices = parsePriceCatalog({
+    openai: { models: { "gpt-example": { cost: { input: 2, output: 5 } }, "shared-example": { cost: { input: 2, output: 5 } } } },
+    reseller: { models: { "gpt-absent": { cost: { input: 20, output: 50 } }, "shared-example": { cost: { input: 20, output: 50 } } } },
+    other: { models: { "gpt-absent": { cost: { input: 10, output: 30 } }, "org/model": { cost: { input: 3, output: 8 } } } },
+  }, date).prices;
+  const resolve = createPriceResolver(prices, { overrides: [], mappings: [] });
+  for (const model of ["shared-example", "gpt-absent", "gpt-example-preview", "unknown/gpt-example"]) assert.equal(resolve(model), undefined);
+  assert.equal(resolve("reseller/gpt-absent")?.input, 20);
+  assert.equal(resolve("org/model")?.provider, "other");
+});
+
+test("解析口径升级改变价格版本，避免复用旧的未定价持久汇总", t => {
+  const home = workspace(t), pricing = new PricingService(home), status = pricing.status();
+  const legacy = createHash("sha256").update(JSON.stringify({ prices: priceContentVersion(status.prices), mappings: status.configuration.mappings })).digest("hex").slice(0, 24);
+  assert.notEqual(status.version, legacy);
+  assert.equal(new PricingService(home).version(), status.version);
+  assert.throws(() => pricing.view(legacy), { code: "VERSION_NOT_FOUND" });
 });
 
 test("网络更新逐模型保留旧缓存与随包兜底，并记录各自日期", async t => {

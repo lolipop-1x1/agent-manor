@@ -185,6 +185,22 @@ test("DSH V3 工具结果包装保留调用配对，缺失缓存桶时不伪造�
   assert.equal(session.usage[0]?.outputTokens, 4);
 }));
 
+test("DSH 总量恒等式核验缺省缓存桶，缺失或冲突总量仍保持未知", async () => temporary(async directory => {
+  const path = join(directory, "session.v4.jsonl");
+  const usages = [{ inputTokens: 100, cacheReadTokens: 80, outputTokens: 10, totalTokens: 190 },
+    { inputTokens: 100, outputTokens: 10, totalTokens: 110 },
+    { inputTokens: 100, cacheReadTokens: 80, outputTokens: 10, totalTokens: 110 },
+    { inputTokens: 100, outputTokens: 10 },
+    { inputTokens: 100, cacheReadTokens: 80, cacheWriteTokens: -1, outputTokens: 10, totalTokens: 190 }];
+  await writeFile(path, encode([dshHeader(4, "synthetic-total-usage"), ...usages.map((usage, seq) =>
+    dshEvent("assistant/message", seq, { turn: 1, step: seq + 1, usage,
+      message: { role: "assistant", source: { kind: "model", model: "synthetic-model" }, content: [{ type: "text", text: "合成响应" }] } }))]));
+  const session = sink(await dshAdapter.readRecords!({ path, client: "dsh", format: DSH_FORMAT }) as NormalizedSnapshot);
+  assert.deepEqual(session.usage.map(item => item.inputTokens), [180, 100, undefined, undefined, undefined]);
+  assert.deepEqual(session.usage.map(item => item.cachedInputTokens), [80, 0, 80, undefined, 80]);
+  assert.deepEqual(session.usage.map(item => item.cacheWriteTokens), [0, 0, undefined, undefined, undefined]);
+}));
+
 test("DSH 官方过程事件与未知语义 gap 不令完整 V3 输给损坏 V4", async () => temporary(async directory => {
   register(dshAdapter);
   const id = "synthetic-dsh-boundaries";

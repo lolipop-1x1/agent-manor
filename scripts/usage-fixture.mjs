@@ -24,7 +24,7 @@ export async function usageFixture() {
     const summary = { id, client: sessionIndex % 2 ? "claude" : "codex", clientSessionId: id,
       sourceId: `synthetic:${id}`, path: `/synthetic/history/${id}.jsonl`, title: `合成项目任务 ${String(sessionIndex + 1).padStart(2, "0")}`,
       titleOrigin: "recorded", project: sessionIndex === 35 ? undefined : `/synthetic/projects/${["atlas", "workbench", "index", "atlas-copy"][sessionIndex % 4]}`,
-      models: sessionIndex === 34 ? ["fixture-unpriced"] : models, messageCount: 0, turnCount: 0, gaps: [],
+      models: sessionIndex === 34 ? ["fixture-unpriced"] : sessionIndex === 0 ? [...models, "gpt-fixture"] : models, messageCount: 0, turnCount: 0, gaps: [],
       ...(child ? { relationship: "child", parentSessionId: "fixture-session-00" } : {}),
       ...(sessionIndex === 33 ? { executionMode: "quiet" } : {}) };
     const pending = store.createRevision(summary.path, "synthetic");
@@ -36,7 +36,7 @@ export async function usageFixture() {
         kind: "assistant", final: "explicit", occurredAt: time.toISOString(), text: `合成请求记录 ${day + 1}：用量定位验证。` });
       const input = Math.round((12000 + sessionIndex * 1100) * (1 + 0.45 * Math.sin(day * 0.7 + sessionIndex)));
       pending.sink.usage({ id: `${id}:usage:${day}`, messageId, turnId: `turn-${day}`, occurredAt: time.toISOString(),
-        model: sessionIndex === 34 ? "fixture-unpriced" : models[(day + sessionIndex) % 3],
+        model: sessionIndex === 34 ? "fixture-unpriced" : sessionIndex === 0 && day === 0 ? "gpt-fixture" : models[(day + sessionIndex) % 3],
         inputTokens: input, outputTokens: 500 + day * 30 + sessionIndex * 20, cachedInputTokens: Math.round(input * 0.6), cacheWriteTokens: 0 });
     }
     if (sessionIndex === 35) {
@@ -56,7 +56,9 @@ export async function usageFixture() {
   const service = await startService({ home, startupRefresh: false,
     roots: Object.fromEntries(clientIds.map(client => [client, []])),
     resourceInventory: { userHome: join(directory, "isolated-user"), environment: {} },
-    usagePricing: { fetch: async () => Response.json({ fixture: { id: "fixture", name: "Synthetic prices", models: prices } }) } });
+    usagePricing: { fetch: async () => Response.json({ fixture: { id: "fixture", name: "Synthetic prices", models: prices },
+      openai: { models: { "gpt-fixture": { cost: { input: 2, output: 5, cache_read: 0.1 } } } },
+      reseller: { models: { "gpt-fixture": { cost: { input: 20, output: 50, cache_read: 1 } } } } }) } });
   const base = `http://127.0.0.1:${service.instance.port}`;
   await fetch(`${base}/api/v1/usage/pricing/refresh`, { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
   return { directory, home, service, base, close: async () => { await service.close(); await rm(directory, { recursive: true, force: true }); } };

@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import Database from "better-sqlite3";
 import { execFile } from "node:child_process";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -76,6 +77,44 @@ test("HTTP 与 CLI 支持范围和完整校验，未传参数兼容全部快速�
     assert.equal(rebuilt.counts?.parsed, 2);
   } finally {
     await service.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("请求用量规则升级使旧事实失效，局部刷新仍复用范围外客户端", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "manor-usage-rule-"));
+  const roots = await fixture(directory);
+  const index = new AnalysisStore(join(directory, "index.sqlite"));
+  const sessions = new SessionStore(index.dbPath);
+  const manager = new WorkerManager(index, { roots }, sessions);
+  const database = new Database(index.dbPath);
+  async function wait(id: string) {
+    for (let count = 0; count < 600 && ["queued", "running"].includes(sessions.getJob(id).status); count++) await delay(20);
+    assert.equal(sessions.getJob(id).status, "complete", sessions.getJob(id).error);
+  }
+  try {
+    await wait(manager.refreshSessions().id);
+    const old = sessions.usageFactSessions().sessions.find(item => item.session.client === "codex")!;
+    const count = (revision: string) => (database.prepare("SELECT count(*) AS count FROM session_usage_facts WHERE revision=?").get(revision) as { count: number }).count;
+    const originalCount = count(old.revision);
+    assert.ok(originalCount > 0);
+    database.prepare("UPDATE session_revisions SET fingerprint=replace(fingerprint, ':request-usage-v2', ''),metadata_fingerprint='previous-rule' WHERE id=?").run(old.revision);
+    database.prepare(`INSERT INTO session_usage_facts SELECT revision,id || ':duplicate',ordinal+1,time_ms,occurred_at,model,
+      input_tokens,output_tokens,cache_read_tokens,cache_write_tokens,reasoning_tokens,context_tokens,eligible
+      FROM session_usage_facts WHERE revision=? LIMIT 1`).run(old.revision);
+    assert.equal(count(old.revision), originalCount + 1);
+    const refresh = manager.refreshSessions(false, { client: "codex", mode: "quick" });
+    await wait(refresh.id);
+    assert.equal(sessions.getJob(refresh.id).counts?.parsed, 1);
+    const current = sessions.usageFactSessions().sessions.find(item => item.session.client === "codex")!;
+    assert.notEqual(current.revision, old.revision);
+    assert.equal(count(current.revision), originalCount);
+    const all = manager.refreshSessions();
+    await wait(all.id);
+    assert.equal(sessions.getJob(all.id).counts?.parsed, 0);
+    assert.equal(sessions.getJob(all.id).counts?.quickReused, 2);
+  } finally {
+    database.close(); await manager.close(); sessions.close(); index.close();
     await rm(directory, { recursive: true, force: true });
   }
 });

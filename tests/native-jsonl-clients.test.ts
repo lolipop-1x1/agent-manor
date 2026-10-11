@@ -84,7 +84,7 @@ test("WorkBuddy 用 sessions 精确补齐无正文 sessionId，并保留会话�
   assert.equal(collected.messages.filter(message => message.kind === "tool_result" && message.status === "success").length, 3);
   assert.ok(collected.messages.some(message => message.kind === "tool_result" && message.status === "unknown"));
   assert.equal(collected.usage.length, 2);
-  assert.ok(collected.usage.every(usage => usage.inputTokens === undefined));
+  assert.deepEqual(collected.usage.map(usage => usage.inputTokens), [undefined, 100]);
   assert.deepEqual(collected.usage.map(usage => usage.cachedInputTokens).sort(), [12, 20]);
   assert.ok(meta.gaps.some(gap => gap.kind === "ambiguous" && gap.message.includes("分母")));
   assert.equal(collected.messages.find(message => message.kind === "assistant")?.final, undefined);
@@ -117,6 +117,45 @@ test("WorkBuddy 用 sessions 精确补齐无正文 sessionId，并保留会话�
   const secondSnapshot = await workbuddyAdapter.readRecords!(second[0]!);
   assert.equal(second[0]!.sessionId, "wb-session-2");
   assert.ok(!secondSnapshot.meta.gaps.some(gap => gap.message.includes("未能与 sessions")));
+}));
+
+test("WorkBuddy 已核验总输入与缓存数组归一化，镜像不再使输入缺失", async () => temporary(async directory => {
+  const path = join(directory, "wb-usage.jsonl");
+  const usage = { inputTokens: 100, outputTokens: 10, totalTokens: 110,
+    inputTokensDetails: [{ cached_tokens: 80 }], outputTokensDetails: [{ reasoning_tokens: 3 }] };
+  await writeFile(path, serialized([
+    { type: "message", id: "user", sessionId: "wb-usage", role: "user", content: "合成请求" },
+    { type: "function_call", id: "call", sessionId: "wb-usage", callId: "tool", name: "Read", arguments: {},
+      providerData: { messageId: "response", model: "synthetic-model", usage },
+      message: { usage: { input_tokens: 100, output_tokens: 10, total_tokens: 110, cache_read_input_tokens: 80 } } },
+  ]));
+  const snapshot = await workbuddyAdapter.readRecords!({ path, client: "workbuddy", format: "workbuddy-jsonl" });
+  const collected = sink(); parseNormalizedSession(snapshot, collected.value);
+  assert.equal(collected.usage.length, 1);
+  assert.equal(collected.usage[0]?.inputTokens, 100);
+  assert.equal(collected.usage[0]?.outputTokens, 10);
+  assert.equal(collected.usage[0]?.cachedInputTokens, 80);
+  assert.equal(collected.usage[0]?.reasoningOutputTokens, 3);
+  assert.equal(collected.usage[0]?.cacheWriteTokens, undefined, "未记录的收费桶仍保留未知");
+}));
+
+test("WorkBuddy 投影独立验证总量，缓存与推理详情保持 provider 优先", async () => temporary(async directory => {
+  const path = join(directory, "wb-projections.jsonl");
+  await writeFile(path, serialized([
+    { type: "function_call", id: "first", sessionId: "wb-projections", callId: "first", name: "Read", arguments: {},
+      providerData: { messageId: "first-response", usage: { inputTokens: 100, outputTokens: 10, totalTokens: 110,
+        inputTokensDetails: [{ cached_tokens: 80 }], outputTokensDetails: [{ reasoning_tokens: 3 }] } },
+      message: { usage: { input_tokens: 100, output_tokens: 10, total_tokens: 110, cache_read_input_tokens: 90, reasoning_tokens: 4 } } },
+    { type: "function_call", id: "second", sessionId: "wb-projections", callId: "second", name: "Read", arguments: {},
+      providerData: { messageId: "second-response", usage: { inputTokens: 100, outputTokens: 10, cache_read_input_tokens: 80 } },
+      message: { usage: { total_tokens: 110 } } },
+  ]));
+  const snapshot = await workbuddyAdapter.readRecords!({ path, client: "workbuddy", format: "workbuddy-jsonl" });
+  const collected = sink(); parseNormalizedSession(snapshot, collected.value);
+  assert.equal(collected.usage[0]?.inputTokens, 100);
+  assert.equal(collected.usage[0]?.cachedInputTokens, 80);
+  assert.equal(collected.usage[0]?.reasoningOutputTokens, 3);
+  assert.equal(collected.usage[1]?.inputTokens, undefined, "不能拼接两个投影的字段来证明总量恒等式");
 }));
 
 test("WorkBuddy JSON 参数字符串可提取已证实读写，未知终态和未知事件保留缺口", async () => temporary(async directory => {

@@ -1,6 +1,8 @@
 import type { ModelPrice, PricingConfiguration } from "../usage-contracts.js";
 
 const key = (provider: string, model: string) => `${provider}\0${model}`;
+// 解析口径变化必须使持久费用汇总失效，Token 事实仍可复用。
+export const PRICE_RESOLUTION_VERSION = 2;
 
 /** 统计和价格管理共享同一解析顺序，原始模型名不会被映射改写。 */
 export function createPriceResolver(prices: ModelPrice[], configuration: PricingConfiguration): (model: string) => ModelPrice | undefined {
@@ -25,6 +27,11 @@ export function createPriceResolver(prices: ModelPrice[], configuration: Pricing
       const provider = model.slice(0, slash), targetModel = model.slice(slash + 1);
       const qualified = manualPrice(targetModel, provider) ?? catalog.get(key(provider, targetModel));
       if (qualified) return qualified;
+    }
+    // 未声明服务商的标准 OpenAI 名称使用精确原厂条目作为 API 估算基准。
+    if (slash < 0 && /^(?:gpt-|chatgpt-|codex-|o\d+(?:-|$))/.test(model)) {
+      const original = catalog.get(key("openai", model));
+      if (original) return original;
     }
     const matches = exact.get(model);
     return matches?.length === 1 ? matches[0] : undefined;

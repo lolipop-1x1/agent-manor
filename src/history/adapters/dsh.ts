@@ -82,10 +82,16 @@ function tokenCount(value: unknown): number | undefined {
 function dshUsage(value: unknown): NormalizedEvent["usage"] {
   const usage = object(value);
   const uncached = tokenCount(usage.inputTokens);
-  const cacheRead = tokenCount(usage.cacheReadTokens);
-  const cacheWrite = tokenCount(usage.cacheWriteTokens);
+  let cacheRead = tokenCount(usage.cacheReadTokens);
+  let cacheWrite = tokenCount(usage.cacheWriteTokens);
   const output = tokenCount(usage.outputTokens);
   const reasoning = tokenCount(usage.reasoningTokens);
+  // 总量恒等式确认省略桶为零；缺少总量或分项冲突时不补造输入。
+  if (uncached !== undefined && output !== undefined
+    && (usage.cacheReadTokens === undefined || cacheRead !== undefined) && (usage.cacheWriteTokens === undefined || cacheWrite !== undefined)
+    && tokenCount(usage.totalTokens) === uncached + (cacheRead ?? 0) + (cacheWrite ?? 0) + output) {
+    cacheRead ??= 0; cacheWrite ??= 0;
+  }
   const normalized = {
     ...(uncached !== undefined && cacheRead !== undefined && cacheWrite !== undefined
       ? { inputTokens: uncached + cacheRead + cacheWrite } : {}),

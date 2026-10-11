@@ -288,6 +288,56 @@ test("Codex 用量投影两个顺序均去重，同值独立 response 身份不�
   assert.equal(equalRequests.usages.reduce((sum, usage) => sum + usage.inputTokens!, 0), 200);
 });
 
+test("Codex 原生响应后的不同累计基数投影去重，独立同值请求仍分别计数", async () => {
+  const native = requestUsage("one", usageValue(1000, 100), usageValue(100, 10));
+  const legacy = counted(usageValue(900, 80), usageValue(100, 10));
+  const sample = await parsed("codex", [meta(), user(), native, legacy, legacy]);
+  assert.equal(sample.usages.length, 1);
+  assert.equal(sample.usages.reduce((sum, item) => sum + item.inputTokens! + item.outputTokens!, 0), 110);
+  const distinct = await parsed("codex", [meta(), user(), native, legacy,
+    requestUsage("two", usageValue(1100, 110), usageValue(100, 10)), counted(usageValue(1000, 90), usageValue(100, 10))]);
+  assert.equal(distinct.usages.length, 2);
+  const legacyOnlyNext = await parsed("codex", [meta(), user(), assistant("first", "首次响应"), native,
+    assistant("second", "独立响应"), counted(usageValue(1100, 110), usageValue(100, 10))]);
+  assert.equal(legacyOnlyNext.usages.length, 2, "新的助手事件组不能与之前的原生响应按同值配对");
+});
+
+test("Codex 旧式进度不同于后续原生响应时保留明确身份，缺少新助手事件也不能按同值吞掉请求", async () => {
+  for (const prefix of [[], [assistant("legacy", "合成旧式响应")]]) {
+    const sample = await parsed("codex", [meta(), user(), ...prefix,
+      counted(usageValue(900, 80), usageValue(100, 10)),
+      requestUsage("new-response", usageValue(1000, 100), usageValue(100, 10))]);
+    assert.equal(sample.usages.length, 2);
+    assert.equal(sample.usages.reduce((sum, item) => sum + item.inputTokens! + item.outputTokens!, 0), 220);
+  }
+});
+
+test("Codex 压缩后保留压缩请求，忽略零状态投影，之后的双记录仍去重", async () => {
+  const sample = await parsed("codex", [meta(), user(), requestUsage("compression", usageValue(1000, 100), usageValue(200, 40)),
+    { type: "compacted", payload: { message: "合成压缩摘要" } },
+    counted(usageValue(800, 60), { ...usageValue(0, 0), cached_input_tokens: 0, reasoning_output_tokens: 0, total_tokens: 50 }),
+    call("next", "read"), requestUsage("next", usageValue(1100, 110), usageValue(100, 10)), result("next", "结果"),
+    counted(usageValue(900, 70), usageValue(100, 10))]);
+  assert.equal(sample.usages.length, 2);
+  assert.equal(sample.usages.reduce((sum, item) => sum + item.inputTokens! + item.outputTokens!, 0), 350);
+});
+
+test("Codex 旧的未记录事件组不阻止当前响应镜像配对，重复零上下文状态不计请求", async () => {
+  const sample = await parsed("codex", [meta(), user(), call("earlier", "read"), result("earlier", "合成结果"),
+    call("current", "read"), requestUsage("current", usageValue(1000, 100), usageValue(100, 10)),
+    result("current", "合成结果"), counted(usageValue(900, 90), usageValue(100, 10)),
+    counted(usageValue(900, 90), { ...usageValue(0, 0), total_tokens: 50 }),
+    counted(usageValue(900, 90), { ...usageValue(0, 0), total_tokens: 50 })]);
+  assert.equal(sample.usages.filter(item => item.inputTokens !== undefined).length, 1);
+  assert.equal(sample.usages.find(item => item.inputTokens !== undefined)?.inputTokens, 100);
+  const legacy = await parsed("codex", [meta(), user(), counted(),
+    counted(usageValue(), { ...usageValue(0, 0), total_tokens: 50 }), counted()]);
+  assert.equal(legacy.usages.length, 1, "没有累计回退的零状态不能使已计请求重新计数");
+  const boundary = await parsed("codex", [meta(), user(), assistant("legacy", "独立旧式请求"), counted(),
+    assistant("native", "独立原生请求"), requestUsage("new-response")]);
+  assert.equal(boundary.usages.length, 2, "不同助手事件组不因跨投影累计值相同而合并");
+});
+
 test("Claude 同一模型请求流式片段保留过程但用量只计最新，缓存输入归一化", async () => {
   const native = (uuid: string, content: unknown[], usage: unknown, extra = {}) => ({ type: "assistant", uuid, sessionId: "sample-claude", timestamp,
     message: { id: "request-one", role: "assistant", model: "fixture-claude", content, usage, ...extra } });

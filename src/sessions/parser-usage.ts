@@ -18,6 +18,7 @@ export class UsageParser {
   private generation = 0;
   private cumulativeInput?: number;
   private afterCompression = false;
+  private projection?: { id: string; requestKey?: string; signature: string; turnId: string; model?: string; requestGroup?: string };
 
   constructor(private readonly sessionId: string, private readonly sink: SessionSink,
     private readonly gap: (kind: "ambiguous" | "unsupported_format", message: string, messageDescriptor?: MessageDescriptor) => void) {}
@@ -46,7 +47,7 @@ export class UsageParser {
     return this.publish(requestId, { id: `${this.sessionId}:usage:${digest(requestId)}`, ...context, messageId: undefined });
   }
 
-  compression(): void { this.afterCompression = true; }
+  compression(): void { this.afterCompression = true; this.projection = undefined; }
 
   native(client: "claude" | "codeflicker", raw: unknown, requestId: string, context: { messageId?: string; turnId: string; model?: string; occurredAt?: string }, identifyMissing = false): string | undefined {
     const usage = object(raw);
@@ -69,26 +70,41 @@ export class UsageParser {
   }
 
   codex(raw: unknown, cumulative: unknown, requestId: string | undefined,
-    context: { messageId?: string; turnId: string; model?: string; occurredAt?: string }): string | undefined {
+    context: { messageId?: string; turnId: string; model?: string; occurredAt?: string; requestGroup?: string }): string | undefined {
     const usage = object(raw);
     if (!Object.keys(usage).length) return;
     const total = object(cumulative);
     const cumulativeInput = tokens(total.input_tokens);
-    const checkpoint = Object.keys(total).length ? digest(total) : undefined;
+    const checkpoint = Object.keys(total).length ? digest([total.input_tokens, total.cached_input_tokens,
+      total.cache_write_input_tokens ?? 0, total.output_tokens, total.reasoning_output_tokens, total.total_tokens]) : undefined;
     const regressed = cumulativeInput !== undefined && this.cumulativeInput !== undefined && cumulativeInput < this.cumulativeInput;
-    // 压缩零快照描述累计状态重置，不是一次输出零 Token 的模型调用。
-    if (!requestId && (this.afterCompression || regressed) && cumulativeInput === 0 && tokens(total.output_tokens) === 0
+    // 零用量仅报告上下文状态；只有压缩或累计回退时重置旧式进度。
+    if (!requestId && (this.afterCompression || (tokens(usage.total_tokens) ?? 0) > 0 || regressed && cumulativeInput === 0 && tokens(total.output_tokens) === 0)
       && tokens(usage.input_tokens) === 0 && tokens(usage.output_tokens) === 0) {
-      this.generation += 1;
-      this.checkpoint = undefined; this.checkpointId = undefined; this.checkpointRequest = undefined;
-      this.cumulativeInput = 0; this.afterCompression = false;
+      if (this.afterCompression || regressed) {
+        this.generation += 1;
+        this.checkpoint = undefined; this.checkpointId = undefined; this.checkpointRequest = undefined;
+      }
+      this.cumulativeInput = cumulativeInput; this.afterCompression = false;
       return;
     }
     this.afterCompression = false;
-    if (cumulativeInput !== undefined && this.cumulativeInput !== undefined && cumulativeInput < this.cumulativeInput) this.generation += 1;
+    if (!requestId && regressed) this.generation += 1;
     const requestKey = requestId ? `response:${requestId}` : undefined;
     const known = requestKey ? this.requests.get(requestKey) : undefined;
+    const signature = digest([usage.input_tokens, usage.cached_input_tokens, usage.cache_write_input_tokens ?? 0,
+      usage.output_tokens, usage.reasoning_output_tokens]);
+    const previous = this.projection;
     const sameCheckpoint = checkpoint !== undefined && checkpoint === this.checkpoint;
+    // 原生响应后的旧式投影按事件组配对；反向关联还须进度一致，避免吞掉明确的新响应身份。
+    const mirrored = previous && Boolean(previous.requestKey) !== Boolean(requestKey) && previous.signature === signature
+      && previous.turnId === context.turnId && previous.model === context.model && previous.requestGroup === context.requestGroup
+      && (!requestKey || sameCheckpoint);
+    if (mirrored && !requestKey) {
+      this.checkpoint = checkpoint; this.checkpointId = previous.id; this.checkpointRequest = previous.requestKey;
+      this.cumulativeInput = cumulativeInput; this.projection = undefined;
+      return previous.id;
+    }
     if (!requestKey && sameCheckpoint) return this.checkpointId;
     if (!requestKey && !checkpoint) {
       this.gap("ambiguous", "Codex 单次用量缺少请求身份及累计进度，未纳入请求统计", { key: "diagnostics.sessions.parserUsage.m003" });
@@ -97,10 +113,11 @@ export class UsageParser {
     if (sameCheckpoint && requestKey && this.checkpointRequest && this.checkpointRequest !== requestKey) {
       this.gap("ambiguous", "不同 Codex 请求记录相同累计进度，按明确请求身份分别保留", { key: "diagnostics.sessions.parserUsage.m004" });
     }
-    const id = known?.id ?? (sameCheckpoint && !this.checkpointRequest ? this.checkpointId : undefined)
+    const id = known?.id ?? (mirrored ? previous.id : undefined)
       ?? `${this.sessionId}:usage:${requestKey ? digest(requestKey) : `${this.generation}:${checkpoint}`}`;
     const input = tokens(usage.input_tokens);
-    const value: SessionUsage = { id, ...context, inputTokens: input, outputTokens: tokens(usage.output_tokens),
+    const { requestGroup: _requestGroup, ...usageContext } = context;
+    const value: SessionUsage = { id, ...usageContext, inputTokens: input, outputTokens: tokens(usage.output_tokens),
       cachedInputTokens: tokens(usage.cached_input_tokens), cacheWriteTokens: tokens(usage.cache_write_input_tokens),
       reasoningOutputTokens: tokens(usage.reasoning_output_tokens), contextTokens: tokens(usage.context_tokens) };
     this.recordedRequests.add(id);
@@ -109,7 +126,9 @@ export class UsageParser {
       this.gap("ambiguous", "缓存读取超过总输入，未计算该请求的缓存比例", { key: "diagnostics.sessions.parserUsage.m002" });
     }
     this.publish(requestKey ?? `checkpoint:${this.generation}:${checkpoint}`, value);
-    if (checkpoint) { this.checkpoint = checkpoint; this.checkpointId = id; this.checkpointRequest = requestKey; this.cumulativeInput = cumulativeInput; }
+    if (checkpoint) { this.checkpoint = checkpoint; this.checkpointId = id; this.checkpointRequest = requestKey; }
+    if (!requestKey) this.cumulativeInput = cumulativeInput;
+    this.projection = mirrored ? undefined : { id, requestKey, signature, turnId: context.turnId, model: context.model, requestGroup: context.requestGroup };
     return id;
   }
 }

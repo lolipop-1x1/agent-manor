@@ -5,7 +5,7 @@ import type { MessageDescriptor } from "../i18n/types.js";
 import type { SessionUsage } from "../session-contracts.js";
 import { ServiceError } from "../service/input.js";
 import type { ModelPrice, ModelPriceRates, PriceSnapshot, PricingConfiguration, PricingStatus, RequestCost } from "../usage-contracts.js";
-import { createPriceResolver } from "./price-resolution.js";
+import { createPriceResolver, PRICE_RESOLUTION_VERSION } from "./price-resolution.js";
 import { bundledPriceSnapshot } from "./bundled-prices.js";
 import { parsePriceCatalog, parseStoredPriceSnapshot, priceContentVersion, priceKey, priceSourceUrl, validPriceIdentity, validPriceNumber } from "./price-catalog.js";
 
@@ -153,7 +153,8 @@ export class PricingService {
       const manual: ModelPrice = { ...price, provider: price.provider ?? "manual", source: "manual" }; listed.set(priceKey(manual), manual);
     }
     const prices = [...listed.values()].sort((left, right) => priceKey(left) < priceKey(right) ? -1 : priceKey(left) > priceKey(right) ? 1 : 0);
-    const version = createHash("sha256").update(JSON.stringify({ prices: priceContentVersion(prices), mappings: this.configuration.mappings })).digest("hex").slice(0, 24);
+    const version = createHash("sha256").update(JSON.stringify({ prices: priceContentVersion(prices), mappings: this.configuration.mappings,
+      resolution: PRICE_RESOLUTION_VERSION })).digest("hex").slice(0, 24);
     const status: PricingStatus = { version, currency: "USD", sourceUrl: priceSourceUrl, source: this.source,
       fetchedAt: this.snapshot?.fetchedAt ?? bundledPriceSnapshot.fetchedAt, lastAttemptAt: this.lastAttemptAt, refreshing: false,
       error: this.error, errorDescriptor: this.errorDescriptor, configuration: structuredClone(this.configuration), prices };

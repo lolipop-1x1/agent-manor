@@ -151,6 +151,8 @@ export class RequestTimingParser {
     }
   }
 
+  codexRequestGroup(): string | undefined { return (this.active ?? this.latestGroup ?? this.endedWithoutUsage)?.key; }
+
   interrupt(alias?: string): void {
     const key = alias ? this.nativeAliases.get(alias) : undefined;
     const group = alias ? key ? this.groups.get(key) : undefined : this.active ?? this.latestGroup;
