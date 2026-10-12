@@ -66,6 +66,7 @@ export interface OverviewCountRow {
   requests?: number;
   tokens?: number | null;
   estimatedCost?: number | null;
+  costCoverage?: RequestCost["coverage"];
   results?: OverviewResultCounts;
 }
 export interface OverviewActivityDay {

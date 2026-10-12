@@ -6,7 +6,7 @@ import type { PricingStatus, UsageReport } from "../usage-contracts.js";
 import type { OverviewInsightContext } from "./insights.js";
 export interface OverviewWorkerRequest {
   id: number;
-  type: "report" | "snapshot" | "panel" | "detail" | "evidence";
+  type: "prepare" | "report" | "snapshot" | "panel" | "detail" | "evidence";
   query: OverviewQuery;
   pricing: PricingStatus;
   repositories: Repository[];
