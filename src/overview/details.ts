@@ -275,9 +275,13 @@ export function factDetail(store: OverviewFactStore, snapshot: OverviewSnapshot,
     const dayRows = read<{ key: string; day: string; calls: number; failures: number }>(`${sql}
       SELECT key,overview_local_day(time_ms,?) AS day,COUNT(*) AS calls,SUM(CASE WHEN status='failure' THEN 1 ELSE 0 END) AS failures FROM selected
       WHERE key IN (SELECT value FROM json_each(?)) AND time_ms IS NOT NULL GROUP BY key,day ORDER BY day`, [...selectedValues, snapshot.timezone, JSON.stringify(groups.map(row => row.key))]);
+    const firstRecords = read<EventRecord & { key: string }>(`${sql},first AS (SELECT revision,id,key,
+      ROW_NUMBER() OVER (PARTITION BY key ORDER BY session_id,ordinal,id) AS position FROM selected WHERE key IN (SELECT value FROM json_each(?)))
+      SELECT f.*,r.session_id,s.key FROM first s JOIN overview_fact_events f ON f.revision=s.revision AND f.id=s.id
+      JOIN overview_fact_revisions r ON r.revision=f.revision WHERE position=1`, [...selectedValues, JSON.stringify(groups.map(row => row.key))]);
+    const firstByKey = new Map(firstRecords.map(row => [row.key, row]));
     rows = groups.map(row => {
-      const first = read<EventRecord>(`${sql} SELECT f.*,r.session_id FROM selected s JOIN overview_fact_events f
-        ON f.revision=s.revision AND f.id=s.id JOIN overview_fact_revisions r ON r.revision=f.revision WHERE s.key=? ORDER BY s.session_id,s.ordinal,s.id LIMIT 1`, [...selectedValues, row.key])[0]!;
+      const first = firstByKey.get(row.key)!;
       const event = store.decodeEvent(first), days = dayRows.filter(day => day.key === row.key).map(({ day, calls, failures }) => ({ day, calls, failures }));
       return { key: row.key, name: event.tool ?? "未知", ...(event.tool === undefined ? { nameDescriptor: { key: "overview.unknown" } } : {}),
         category: toolCategory(event.tool, event.resource), server: event.resource?.server, count: row.count, sessions: row.sessions,

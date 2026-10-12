@@ -124,6 +124,22 @@ test("资源和工具身份先分页，仅解码所选页首记录，费用排�
   const grouped = buildUsageReport(usageInput, { groupBy: "model" }, pricing.status, pricing.estimate);
   assert.equal(usageRankingDetail(grouped, report, { view: "ranking", dimension: "model", sort: "cost" }).rows[0]?.costCoverage, "partial");
 });
+test("工具排行批量恢复页内首记录，查询次数不随工具数增加", async () => {
+  const input = source({ sessions: [session("main")], events: Array.from({ length: 150 }, (_, index) => event("main", `tool-${index}`, "2026-01-01", {
+    ordinal: index + 1, kind: "tool_call", tool: `tool-${index}`, status: "success" })) });
+  await withFacts(input, async (facts, original) => {
+    const report = buildOverviewReport(original, { window: "all", timezone: "UTC" }, pricing, now); await facts.prepare(report.query, now);
+    let queries = 0, decoded = 0;
+    const read = facts.readRows.bind(facts), decode = facts.decodeEvent.bind(facts);
+    facts.readRows = <T>(sql: string, values: (string | number | null)[] = []) => { queries++; return read<T>(sql, values); };
+    facts.decodeEvent = row => { decoded++; return decode(row); };
+    const page = factDetail(facts, report, { view: "ranking", dimension: "tool", pageSize: 100 }, now);
+    assert.equal(page.total, 150); assert.equal(page.rows.length, 100); assert.equal(decoded, 100);
+    assert.ok(queries <= 5, "页内首记录通过一次批量查询读取，不能为每个工具重扫历史");
+    const expected = report.process.tools.slice(0, 100);
+    assert.deepEqual(page.rows, expected.map(row => ({ ...row, clients: [], projects: [] })));
+  });
+});
 test("核心资源变化和确凿过程候选先筛身份，不解码全部事件及请求", async () => {
   const sessions = Array.from({ length: 10 }, (_, index) => session(`main-${index}`));
   const input = source({ sessions, events: sessions.flatMap((item, index) => [event(item.id, `user-${index}`, "2026-02-01"),
