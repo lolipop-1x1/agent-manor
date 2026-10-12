@@ -268,6 +268,7 @@ export default {
   "diagnostics.sessions.store.m009": "会话索引尚未完成",
   "diagnostics.overview.cacheUnavailable": "总览统计缓存无法读写，请检查本机数据目录权限和磁盘空间后重试",
   "diagnostics.overview.cacheCapacity": "总览统计缓存容量不足，已保留完成的数据，当前范围暂无法准备",
+  "diagnostics.overview.memoryCapacity": "本次总览查询超过统计内存预算，请缩小范围或使用分区调查；上一完整结果仍保留",
   "diagnostics.sessions.store.m010": "会话索引版本不存在",
   "diagnostics.sessions.store.m011": "会话不存在于当前索引版本",
   "diagnostics.sessions.store.m012": "会话分支不存在",

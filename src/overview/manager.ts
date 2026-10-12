@@ -40,9 +40,10 @@ export class OverviewManager {
   private createWorker(lane: Lane): Worker {
     const extension = import.meta.url.endsWith(".ts") ? "ts" : "js";
     const url = new URL(`./worker.${extension}`, import.meta.url), workerData = { dbPath: this.sessions.dbPath };
+    const resourceLimits = { maxOldGenerationSizeMb: 512 };
     const worker = extension === "ts"
-      ? new Worker(`import('tsx/esm/api').then(({register}) => { register(); return import(${JSON.stringify(url.href)}); });`, { eval: true, workerData })
-      : new Worker(url, { workerData });
+      ? new Worker(`import('tsx/esm/api').then(({register}) => { register(); return import(${JSON.stringify(url.href)}); });`, { eval: true, workerData, resourceLimits })
+      : new Worker(url, { workerData, resourceLimits });
     worker.on("message", (message: OverviewWorkerResponse) => {
       if (this.closed || this.workers.get(lane) !== worker) return;
       const request = this.pending.get(message.id); if (!request) return;
@@ -53,7 +54,9 @@ export class OverviewManager {
     const fail = (error: Error) => {
       if (this.closed || this.workers.get(lane) !== worker) return;
       this.workers.delete(lane); void worker.terminate().catch(() => undefined);
-      for (const [id, request] of this.pending) if (request.lane === lane) { request.reject(error); this.pending.delete(id); }
+      const failure = "code" in error && error.code === "ERR_WORKER_OUT_OF_MEMORY"
+        ? new StoreError("ANALYSIS_NOT_READY", "总览请求超过统计内存预算", { key: "diagnostics.overview.memoryCapacity" }) : error;
+      for (const [id, request] of this.pending) if (request.lane === lane) { request.reject(failure); this.pending.delete(id); }
     };
     worker.on("error", fail); worker.on("exit", () => fail(stopped()));
     this.workers.set(lane, worker); return worker;

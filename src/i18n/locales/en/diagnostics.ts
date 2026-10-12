@@ -268,6 +268,7 @@ export default {
   "diagnostics.sessions.store.m009": "Session indexing is not complete yet",
   "diagnostics.overview.cacheUnavailable": "Overview cache is unavailable. Check local data directory permissions and disk space, then retry",
   "diagnostics.overview.cacheCapacity": "Overview cache capacity is insufficient. Completed data is retained; the current range cannot be prepared",
+  "diagnostics.overview.memoryCapacity": "This overview query exceeds the statistics memory budget. Narrow the range or use panel investigations; the previous complete result is retained",
   "diagnostics.sessions.store.m010": "The session index version does not exist",
   "diagnostics.sessions.store.m011": "The session does not exist in the current index version",
   "diagnostics.sessions.store.m012": "The session branch does not exist",
