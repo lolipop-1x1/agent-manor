@@ -455,10 +455,11 @@ export class SessionStore {
   }
 
   /** 资源查询只读取已发布调用的元信息；配对命中调用索引，不读取消息正文。 */
-  resourceEvents(query: ResourceUsageQuery = {}, identity?: ResourceHistoryIdentity | ResourceUsageIdentity): ResourceEventStream {
+  resourceEvents(query: ResourceUsageQuery = {}, identity?: ResourceHistoryIdentity | ResourceUsageIdentity, revision?: string): ResourceEventStream {
     const version = this.version(query.version);
     const parts = ["v.version=?"];
     const values: SqlValue[] = [version];
+    if (revision !== undefined) { parts.push("v.revision=?"); values.push(revision); }
     for (const [column, value] of [["r.client", query.client ?? identity?.client], ["r.project", query.project ?? identity?.project]] as const) {
       if (column === "r.project" && value === "none") parts.push("r.project IS NULL");
       else if (value !== undefined) { parts.push(`${column}=?`); values.push(value); }
@@ -525,7 +526,7 @@ export class SessionStore {
           source: { path: row.source_path, sourceId: row.source_id, revision: row.revision, fingerprint: row.fingerprint, recordLine: row.record_line } };
       }
     })();
-    const allGaps = JSON.parse((this.database.prepare("SELECT gaps FROM session_versions WHERE id=?").get(version) as { gaps: string }).gaps) as Gap[];
+    const allGaps = revision === undefined ? JSON.parse((this.database.prepare("SELECT gaps FROM session_versions WHERE id=?").get(version) as { gaps: string }).gaps) as Gap[] : [];
     const sourceIds = [...new Set(allGaps.flatMap(gap => gap.sourceId ?? []))];
     const sourceClients = new Map<string, Set<Client>>();
     if (sourceIds.length) {
@@ -787,6 +788,53 @@ export class SessionStore {
   }
 
   usageVersion(requestedVersion?: string): string { return this.version(requestedVersion); }
+
+  overviewGaps(requestedVersion?: string): Gap[] {
+    const version = this.version(requestedVersion);
+    return JSON.parse((this.database.prepare("SELECT gaps FROM session_versions WHERE id=?").get(version) as { gaps: string }).gaps) as Gap[];
+  }
+
+  /** 派生缓存只保留仍属于完整发布版本的会话修订。 */
+  overviewRetainedRevisions(): string[] {
+    return (this.database.prepare("SELECT DISTINCT revision FROM session_version_sessions").all() as { revision: string }[])
+      .map(row => row.revision);
+  }
+
+  /** 按不可变修订读取窄事实；完整请求正文与工具参数不进入派生缓存。 */
+  overviewRevisionFacts(revision: string, sessionId: string): Pick<OverviewSource, "events" | "requests"> {
+    this.ensureUsageFacts(revision);
+    const events = (this.database.prepare(`SELECT id,ordinal,turn_id,kind,call_id,
+      json_extract(json,'$.occurredAt') AS occurred_at,json_extract(json,'$.model') AS model,
+      json_extract(json,'$.tool') AS tool,json_extract(json,'$.status') AS status,
+      json_extract(json,'$.durationMs') AS duration_ms,json_extract(json,'$.contextSource') AS context_source,
+      json_extract(json,'$.contextEvidence') AS context_evidence,json_extract(json,'$.resource') AS resource
+      FROM session_messages WHERE revision=? AND copied IS NOT 1
+        AND kind IN ('user','assistant','thinking','tool_call','tool_result','compression') ORDER BY ordinal,id`)
+      .all(revision) as { id: string; ordinal: number; turn_id: string; kind: OverviewEvent["kind"];
+        call_id: string | null; occurred_at: string | null; model: string | null; tool: string | null;
+        status: OverviewEvent["status"] | null; duration_ms: number | null;
+        context_source: OverviewEvent["contextSource"] | null; context_evidence: OverviewEvent["contextEvidence"] | null;
+        resource: string | null }[]).map(row => ({ id: row.id, sessionId, ordinal: row.ordinal, turnId: row.turn_id,
+      kind: row.kind, callId: row.call_id ?? undefined, occurredAt: row.occurred_at ?? undefined,
+      model: row.model ?? undefined, tool: row.tool ?? undefined, status: row.status ?? undefined,
+      durationMs: row.duration_ms ?? undefined, contextSource: row.context_source ?? undefined,
+      contextEvidence: row.context_evidence ?? undefined, ...(row.resource ? { resource: JSON.parse(row.resource) } : {}) }));
+    const metadata = new Map((this.database.prepare(`SELECT f.id,f.ordinal,u.message_id,u.turn_id,
+      json_extract(u.json,'$.requestMessageIds') AS members,json_extract(u.json,'$.timing') AS timing
+      FROM session_usage_facts f JOIN session_usage u ON u.revision=f.revision AND u.id=f.id
+      WHERE f.revision=? AND f.eligible=1 ORDER BY f.ordinal`).all(revision) as {
+        id: string; ordinal: number; message_id: string | null; turn_id: string | null; members: string | null; timing: string | null }[])
+      .map(row => [row.id, row]));
+    const requests = this.usageFacts(revision).map(usage => {
+      const row = metadata.get(usage.id)!;
+      return { sessionId, ordinal: row.ordinal, usage: { ...usage,
+        ...(row.message_id !== null ? { messageId: row.message_id } : {}),
+        ...(row.turn_id !== null ? { turnId: row.turn_id } : {}),
+        ...(row.members ? { requestMessageIds: JSON.parse(row.members) as string[] } : {}),
+        ...(row.timing ? { timing: JSON.parse(row.timing) as SessionUsage["timing"] } : {}) } };
+    });
+    return { events, requests };
+  }
 
   /** 总览后台读取完整版本的轻量事实，不查询消息正文与工具参数。 */
   overviewSource(requestedVersion?: string): OverviewSource {
