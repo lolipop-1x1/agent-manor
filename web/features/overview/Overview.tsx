@@ -129,7 +129,8 @@ export default function Overview({ active, onSession, onUsage, onMap }: { active
     </div></div>}
     {report && <Investigation active={active} report={report} selection={selection} pending={pending} returnFocus={trigger} onSelect={setSelection} onClose={() => setSelection(null)} onReload={refresh} onSession={onSession} onMap={onMap} />}
   </main>;
-}function ResourceTrend({ days, from, to }: { days: { day: string; uses: number }[]; from: string; to: string }) {
+}
+function ResourceTrend({ days, from, to }: { days: { day: string; uses: number }[]; from: string; to: string }) {
   const start = Date.parse(`${from}T00:00:00Z`); const span = Math.max(1, Date.parse(`${to}T00:00:00Z`) - start + 86_400_000);
   const buckets = Array.from({ length: 12 }, () => 0);
   for (const day of days) { const index = Math.max(0, Math.min(11, Math.floor((Date.parse(`${day.day}T00:00:00Z`) - start) / span * 12))); buckets[index] = (buckets[index] ?? 0) + day.uses; }
