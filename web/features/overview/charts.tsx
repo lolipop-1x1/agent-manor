@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import * as Popover from "@radix-ui/react-popover";
 import * as Tooltip from "@radix-ui/react-tooltip";
-import type { OverviewActivityDay, OverviewReport, OverviewViewReport } from "../../../src/overview-contracts";
+import type { OverviewActivityDay, OverviewReport } from "../../../src/overview-contracts";
 import { useI18n } from "../../shared/i18n";
 import { FilterSelect } from "../../shared/ui/FilterSelect";
 import { localDay } from "../usage/model";
@@ -74,21 +74,4 @@ export function ActivityDistributions({ report }: { report: Pick<OverviewReport,
   const weekdayMax = Math.max(1, ...report.activity.weekdays.map(row => row.events));
   const hourMax = Math.max(1, ...report.activity.hours.map(row => row.events));
   return <div className="overview-activity-distributions"><div><h3>{t("overview.activity.weekdays")}</h3><div className="overview-weekdays">{report.activity.weekdays.map(row => <Tooltip.Root key={row.weekday}><Tooltip.Trigger asChild><div tabIndex={0}><span className="overview-mini-bar" style={{ height: `${row.events / weekdayMax * 38}px` }} /><span>{date(new Date(2024, 0, 7 + row.weekday), { weekday: "short" })}</span></div></Tooltip.Trigger><Tooltip.Portal><Tooltip.Content className="tooltip">{number(row.events)} {t("overview.metric.events")}</Tooltip.Content></Tooltip.Portal></Tooltip.Root>)}</div></div><div><h3>{t("overview.activity.hours")}</h3><div className="overview-hours">{report.activity.hours.map(row => <Tooltip.Root key={row.hour}><Tooltip.Trigger asChild><div tabIndex={0} aria-label={`${number(row.hour)}:00 · ${number(row.events)} ${t("overview.metric.events")}`}><span className="overview-mini-bar" style={{ height: `${row.events / hourMax * 38}px` }} /></div></Tooltip.Trigger><Tooltip.Portal><Tooltip.Content className="tooltip">{number(row.hour)}:00 · {number(row.events)} {t("overview.metric.events")}</Tooltip.Content></Tooltip.Portal></Tooltip.Root>)}</div><div className="overview-hour-labels"><span>0</span><span>6</span><span>12</span><span>18</span><span>23</span></div></div></div>;
-}
-
-export function UsageTrend({ report, route, onBucket }: { report: Required<Pick<OverviewViewReport, "range" | "usage">>; route: OverviewRoute; onBucket: (from: string, to: string) => void }) {
-  const { t, number, date, language } = useI18n();
-  const buckets = useMemo(() => {
-    const groups = new Map<string, { from: string; to: string; value: number | null }>();
-    for (const day of report.usage.days) {
-      const d = dayDate(day.key); if (route.interval === "week") d.setDate(d.getDate() - (d.getDay() + 6) % 7);
-      const key = route.interval === "month" ? day.key.slice(0, 7) : route.interval === "week" ? localDay(d) : day.key;
-      const value = route.metric === "tokens" ? day.totals.tokens : route.metric === "cost" ? day.totals.estimatedCost : day.totals.requests;
-      const group = groups.get(key); if (group) { group.to = day.key; if (value !== null) group.value = (group.value ?? 0) + value; } else groups.set(key, { from: day.key, to: day.key, value });
-    }
-    return [...groups.values()];
-  }, [report.usage.days, route.interval, route.metric]);
-  const max = Math.max(1, ...buckets.map(bucket => bucket.value ?? 0));
-  const amount = (value: number | null) => value == null ? "—" : route.metric === "tokens" ? formatTokenMillions(language, value) : number(value, route.metric === "cost" ? { style: "currency", currency: "USD", maximumFractionDigits: 2 } : {});
-  return <div className="overview-trend"><div className="overview-trend-axis"><span>{amount(max)}</span><span>{amount(max / 2)}</span><span>0</span></div><div className="overview-trend-plot"><div className="overview-trend-bars" role="group" aria-label={t("overview.usage.title")}>{buckets.map(bucket => <Tooltip.Root key={bucket.from}><Tooltip.Trigger asChild><button aria-label={`${date(dayDate(bucket.from))} – ${date(dayDate(bucket.to))} · ${amount(bucket.value)}`} onClick={() => onBucket(bucket.from, bucket.to)}><span style={{ height: `${(bucket.value ?? 0) / max * 100}%` }} className={bucket.value == null ? "is-unknown" : ""} /></button></Tooltip.Trigger><Tooltip.Portal><Tooltip.Content className="tooltip">{date(dayDate(bucket.from))} – {date(dayDate(bucket.to))}<br />{amount(bucket.value)}</Tooltip.Content></Tooltip.Portal></Tooltip.Root>)}</div><div className="overview-trend-labels"><span>{date(dayDate(report.range.from), { month: "short", day: "numeric" })}</span><span>{date(dayDate(report.range.to), { month: "short", day: "numeric" })}</span></div></div></div>;
 }

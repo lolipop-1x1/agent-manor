@@ -7,6 +7,7 @@ import { clientLabel, useI18n } from "../../shared/i18n";
 import { CLIENTS } from "../../../src/clients";
 import { usageDimensionValue } from "../../../src/usage/dimensions";
 import { HelpPopover } from "../../shared/ui/HelpPopover";
+import { useChartWidth } from "../../shared/charts/useChartWidth";
 import { composition, compositionIsPartial, metricValue } from "./model";
 import { formatTokenMillions } from "./format";
 import { TokenAmount } from "./TokenAmount";
@@ -26,7 +27,6 @@ export function UsageCharts({ report, metric, group, chart, attribution, onAttri
   const { t, number, date, dateTime, percent, language } = useI18n();
   const plot = useRef<HTMLDivElement>(null);
   const dayButtons = useRef(new Map<string, HTMLButtonElement>());
-  const [canvasWidth, setCanvasWidth] = useState(1000);
   const [timeView, setTimeView] = useState<"trend" | "calendar">("trend");
   const [selected, setSelected] = useState("");
   const [daySelected, setDaySelected] = useState("");
@@ -45,11 +45,7 @@ export function UsageCharts({ report, metric, group, chart, attribution, onAttri
   const closeDetail = () => { restoreDetailFocus.current = pinned.current || document.activeElement === detailTrigger.current; pinned.current = false; setDetail(null); };
   useEffect(() => { pinned.current = false; restoreDetailFocus.current = false; setDetail(null); }, [report, timeView]);
   const hasBuckets = report.buckets.length > 0;
-  useEffect(() => {
-    if (!plot.current) return;
-    const observer = new ResizeObserver(entries => { const width = entries[0]?.contentRect.width; if (width) setCanvasWidth(width); });
-    observer.observe(plot.current); return () => observer.disconnect();
-  }, [hasBuckets, timeView]);
+  const canvasWidth = useChartWidth(plot, hasBuckets && timeView === "trend");
   const formatValue = (value: number | null) => value === null ? "—" : metric === "tokens" ? formatTokenMillions(language, value) : number(value, metric === "cost" ? { style: "currency", currency: "USD", currencyDisplay: "narrowSymbol", minimumFractionDigits: 2, maximumFractionDigits: 2 } : {});
   const compactValue = (value: number) => metric === "tokens" ? formatTokenMillions(language, value) : number(value, { notation: "compact", ...(metric === "cost" ? { style: "currency", currency: "USD", currencyDisplay: "narrowSymbol", minimumFractionDigits: 2, maximumFractionDigits: 2 } : { maximumFractionDigits: 1 }) });
   const unit = metric === "tokens" ? t("usage.unit.millions") : metric === "cost" ? "" : t("usage.unit.requests");
