@@ -198,7 +198,7 @@ export function factDetail(store: OverviewFactStore, snapshot: OverviewSnapshot,
   } else if (query.view === "months") {
     const sessions = JSON.stringify(scope.source.sessions.map(session => ({ id: session.id, project: session.project ?? null })));
     const models = snapshot.query.models?.length ? ` AND ${dimensionSql("f.model")} IN (SELECT value FROM json_each(?))` : "";
-    const sql = `WITH session_meta AS (SELECT value->>'$.id' AS id,value->>'$.project' AS project FROM json_each(?)),
+    const sql = `WITH session_meta AS MATERIALIZED (SELECT CAST(value->>'$.id' AS TEXT) AS id,value->>'$.project' AS project FROM json_each(?)),
       active AS (SELECT r.session_id,substr(overview_local_day(f.time_ms,?),1,7) AS month FROM overview_fact_events f
         JOIN overview_fact_revisions r ON r.revision=f.revision WHERE f.revision IN (SELECT value FROM json_each(?)) AND f.active=1 AND f.time_ms IS NOT NULL AND ${rangeWhere}
         UNION SELECT r.session_id,substr(overview_local_day(f.time_ms,?),1,7) FROM overview_fact_requests f JOIN overview_fact_revisions r ON r.revision=f.revision
@@ -246,7 +246,7 @@ export function factDetail(store: OverviewFactStore, snapshot: OverviewSnapshot,
   } else if (query.view === "timings" || query.view === "timing") {
     const sessions = JSON.stringify(scope.source.sessions.map(session => ({ id: session.id, client: session.client })));
     const models = snapshot.query.models?.length ? ` AND ${dimensionSql("f.model")} IN (SELECT value FROM json_each(?))` : "";
-    const sql = `WITH session_meta AS (SELECT value->>'$.id' AS id,value->>'$.client' AS client FROM json_each(?)),
+    const sql = `WITH session_meta AS MATERIALIZED (SELECT CAST(value->>'$.id' AS TEXT) AS id,value->>'$.client' AS client FROM json_each(?)),
       eligible AS (SELECT f.revision,f.id,json_array(s.client,f.model,COALESCE(json_extract(f.json,'$.usage.timing.window'),'response'),
         json_extract(f.json,'$.usage.timing.basis'),json_extract(f.json,'$.usage.timing.method')) AS group_id FROM overview_fact_requests f
         JOIN overview_fact_revisions r ON r.revision=f.revision JOIN session_meta s ON s.id=r.session_id

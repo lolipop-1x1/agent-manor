@@ -65,6 +65,35 @@ test("计时列表先按组分页，单对象只返回同客户端模型依据�
     assert.equal(single.total, 1); assert.deepEqual(single.rows, page.rows);
   });
 });
+test("计时和月度分组物化会话元数据，用索引关联请求而非逐请求扫描会话列表", async () => {
+  const sessions = Array.from({ length: 30 }, (_, index) => session(`session-${index}`, { client: index % 2 ? "pi" : "codex" }));
+  const input = source({ sessions, requests: sessions.flatMap(item => Array.from({ length: 4 }, (_, index) => request(item.id,
+    `request-${item.id}-${index}`, "2026-01-01", { model: `model-${index}`, outputTokens: 20,
+      timing: { basis: "recorded", method: "zcode_request_span", completion: "explicit", durationMs: (index + 1) * 1000 } }))) });
+  await withFacts(input, async (facts, original) => {
+    const report = buildOverviewReport(original, { window: "all", timezone: "UTC" }, pricing, now); await facts.prepare(report.query, now);
+    const plans: string[][] = [], read = facts.readRows.bind(facts);
+    facts.readRows = <T>(sql: string, values: (string | number | null)[] = []) => {
+      if (sql.includes("session_meta")) plans.push(read<{ detail: string }>(`EXPLAIN QUERY PLAN ${sql}`, values).map(row => row.detail));
+      return read<T>(sql, values);
+    };
+    const page = factDetail(facts, report, { view: "timings", pageSize: 100 }, now);
+    assert.deepEqual(normalized(page.rows), normalized(report.process.timing));
+    assert.equal(plans.length, 3);
+    for (const plan of plans) {
+      assert.ok(plan.some(detail => detail === "MATERIALIZE session_meta"), JSON.stringify(plan));
+      assert.ok(plan.some(detail => /SEARCH s USING AUTOMATIC.*INDEX \(id=\?\)/.test(detail)), JSON.stringify(plan));
+    }
+    plans.length = 0;
+    const months = factDetail(facts, report, { view: "months", pageSize: 100 }, now);
+    assert.deepEqual(normalized(months.rows), normalized(projectMonths(original, report)));
+    assert.equal(plans.length, 2);
+    for (const plan of plans) {
+      assert.ok(plan.some(detail => detail === "MATERIALIZE session_meta"), JSON.stringify(plan));
+      assert.ok(plan.some(detail => /SEARCH s USING AUTOMATIC.*INDEX \(id=\?\)/.test(detail)), JSON.stringify(plan));
+    }
+  });
+});
 test("窄SQL分页与完整统计在时区、模型、父子、未知及配对上保持等价", async () => {
   const sessions = Array.from({ length: 6 }, (_, index) => session(`session-${index}`, { project: index === 5 ? undefined : `/workspace/project-${index % 2}`,
     ...(index === 1 ? { relationship: "child" as const, parentSessionId: "session-0" } : index === 2 ? { relationship: "fork" as const } : {}) }));
