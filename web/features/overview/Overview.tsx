@@ -24,6 +24,8 @@ export default function Overview({ active, onSession, onUsage, onMap }: { active
   const lastAddress = useRef(location.hash), adoptingAddress = useRef(false);
   const [batch, setBatch] = useState<OverviewPanelBatch | null>(null);
   const distributionRoute = useRef(route.distribution); distributionRoute.current = route.distribution;
+  const distributionListeners = useRef(new Set<() => void>());
+  useEffect(() => { for (const listener of distributionListeners.current) listener(); }, [route.distribution]);
   const globalRequest = useRef<AbortController | null>(null);
   const [distributionView, setDistributionView] = useState<OverviewDistributionView | null>(null);
   const [distributionLoading, setDistributionLoading] = useState(false);
@@ -76,6 +78,7 @@ export default function Overview({ active, onSession, onUsage, onMap }: { active
       next => { if (!controller.signal.aborted) setBatch(current => visibleOverviewBatch(current, next)); },
       (panel, value) => { if (!controller.signal.aborted) { if (panel === "distribution") distributionFailureDimension.current = distributionRoute.current; setPanelErrors(current => ({ ...current, [panel]: failure(value) })); } },
       () => distributionRoute.current,
+      listener => { distributionListeners.current.add(listener); return () => { distributionListeners.current.delete(listener); }; },
     ).then(result => { if (!controller.signal.aborted) { setBatch(result); reportScope.current = scopeKey; newSnapshot.current = false; } }).catch(value => { if (!controller.signal.aborted && !isAborted(value)) setError(failure(value)); }).finally(() => { if (!controller.signal.aborted) { globalRequest.current = null; setLoading(false); } });
     return () => { controller.abort(); if (globalRequest.current === controller) globalRequest.current = null; };
   }, [active, key, revision, invalid]);

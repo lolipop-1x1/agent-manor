@@ -99,3 +99,47 @@ test("核心分区重启复用持久结果，模型身份重绑定且已淘汰�
     await assert.rejects(restarted.panel({ ...query, priceVersion: "synthetic-missing" }, "core"), { code: "VERSION_NOT_FOUND" });
   } finally { await first.close(); await restarted?.close(); store.close(); await rm(directory, { recursive: true, force: true }); }
 });
+
+test("过程分析通道被占用时，轻量用量、当前维度和候选通道仍独立完成", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "manor-overview-lanes-")), store = new SessionStore(join(directory, "index.sqlite"));
+  const path = "/synthetic/history/lanes.jsonl", revision = store.createRevision(path, "synthetic");
+  revision.sink.message({ id: "message-lane", sessionId: "session-lane", ordinal: 0, recordLine: 1, turnId: "turn-lane", kind: "assistant", text: "合成正文", occurredAt: "2026-03-01T12:00:00Z" });
+  revision.sink.usage({ id: "request-lane", messageId: "message-lane", model: "model-lane", inputTokens: 100, outputTokens: 20, occurredAt: "2026-03-01T12:00:00Z" });
+  revision.flush(); store.finishRevision(revision.revision, { id: "session-lane", client: "codex", clientSessionId: "session-lane", path, sourceId: "source-lane",
+    project: "/synthetic/project", title: "合成通道会话", titleOrigin: "recorded", messageCount: 1, turnCount: 1, models: ["model-lane"], gaps: [] });
+  const version = store.publish(store.createJob().id, [{ path, revision: revision.revision, fingerprint: "synthetic" }], []);
+  const manager = new OverviewManager(store, new PricingService(directory), () => [], () => new Date("2026-03-01T12:00:00Z"));
+  const internal = manager as unknown as { dispatch(type: string, ...parameters: unknown[]): Promise<unknown>; workers: Map<string, import("node:worker_threads").Worker> };
+  const dispatch = internal.dispatch.bind(manager), calls: { type: string; lane: string; panel?: string }[] = [];
+  let release!: () => void, started!: () => void, analysisBlocked = false, processComplete = false;
+  const held = new Promise<void>(resolve => { release = resolve; }), entered = new Promise<void>(resolve => { started = resolve; });
+  internal.dispatch = (type, ...parameters) => {
+    const lane = parameters[1] as string, panel = (parameters[2] as { panel?: string } | undefined)?.panel;
+    calls.push({ type, lane, panel });
+    if (lane === "analysis" && panel === "process") { analysisBlocked = true; started(); }
+    // 模拟过程 Worker 的同步查询占用整个 analysis 通道，其他通道使用真实 Worker。
+    return lane === "analysis" && analysisBlocked ? held.then(() => dispatch(type, ...parameters)) : dispatch(type, ...parameters);
+  };
+  const query = { version, window: "365" as const, timezone: "UTC" }, deadline = new AbortController();
+  let process: ReturnType<OverviewManager["panel"]> | undefined, light: Promise<unknown> | undefined;
+  try {
+    await manager.panel(query, "resources");
+    process = manager.panel(query, "process").then(result => { processComplete = true; return result; });
+    await entered;
+    light = Promise.all([manager.panel(query, "usage"), manager.panel(query, "distribution", "project"), manager.panel(query, "facets")]);
+    const results = await Promise.race([light, delay(5000, undefined, { signal: deadline.signal }).then(() => { throw new Error("轻量分区仍被过程通道阻塞"); })]) as Awaited<ReturnType<OverviewManager["panel"]>>[];
+    assert.equal(processComplete, false, "过程gate尚未释放，轻量分区已成功");
+    assert.equal(results[0]!.data.usage!.totals.requests, 1); assert.equal(results[1]!.data.distribution![0]!.key, "/synthetic/project");
+    assert.deepEqual(results[2]!.data.facets!.models, ["model-lane"]);
+    assert.deepEqual(calls.filter(call => ["usage", "distribution", "facets"].includes(call.panel ?? "")).map(call => call.lane), ["usage", "usage", "usage"]);
+    assert.deepEqual(calls.filter(call => call.type === "prepare").map(call => call.lane), ["core"], "事实仍只通过核心通道准备一次");
+    assert.equal(calls.find(call => call.panel === "resources")!.lane, "analysis");
+    assert.equal(calls.find(call => call.panel === "process")!.lane, "analysis");
+    const usageWorker = internal.workers.get("usage")!, analysisWorker = internal.workers.get("analysis")!;
+    assert.notEqual(usageWorker.threadId, analysisWorker.threadId); assert.equal(usageWorker.resourceLimits.maxOldGenerationSizeMb, 512);
+    release(); assert.equal((await process).data.process!.tools.length, 0);
+  } finally {
+    deadline.abort(); release(); await process?.catch(() => undefined); await light?.catch(() => undefined);
+    await manager.close(); store.close(); await rm(directory, { recursive: true, force: true });
+  }
+});

@@ -307,7 +307,7 @@ test("全局更新期间改变维度只补新快照分布，所有必需区域�
   assert.equal(extra.get("version"), snapshot.version); assert.equal(extra.get("dimension"), "client");
   clientGate.resolve(distributionResult("client")); update(await run);
   assert.equal(visible.key, "refresh"); assert.equal(visible.dimension, "client"); assert.equal(visible.complete, true);
-  assert.equal(visible.distributions.project?.snapshot.version, snapshot.version); assert.equal(visible.distributions.client?.snapshot.version, snapshot.version);
+  assert.equal(visible.distributions.project, undefined); assert.equal(visible.distributions.client?.snapshot.version, snapshot.version);
   assert.equal(replaceOverviewPanel(visible, previous.snapshot, distributionResult("model", previous.snapshot)), visible);
   assert.equal(visibleOverviewDistribution(visibleOverviewDistribution(null, previous, "project"), visible, "model"), null);
 });
@@ -378,4 +378,69 @@ test("首次分布失败后改选当前维度，补读和工具切换按当前�
 
 test("分布响应必须符合请求维度，不能将其他维度排名伪装成当前选择", async () => {
   await assert.rejects(loadOverviewPanel(snapshot, "distribution", async <T>(): Promise<T> => distributionResult("project") as T, new AbortController().signal, "model"), OverviewSnapshotMismatch);
+});
+
+function dimensionSelection(initial: "project" | "model" | "client" | "tool" = "project") {
+  let dimension = initial; const listeners = new Set<() => void>();
+  return { current: () => dimension, select: (next: typeof dimension) => { dimension = next; for (const listener of listeners) listener(); }, subscribe: (listener: () => void) => { listeners.add(listener); return () => { listeners.delete(listener); }; } };
+}
+
+for (const mode of ["first", "refresh"] as const) test(`${mode}：项目请求未返回时立即补读模型，当前必需结果成功即可完成`, async () => {
+  const h = harness(), modelGate = deferred<OverviewPanelResult>(), controller = new AbortController(), selection = dimensionSelection();
+  let projectSignal: AbortSignal | undefined, completed = false;
+  const previous = mode === "refresh" ? completeBatch({ ...snapshot, version: "index-old" }) : null;
+  let visible: OverviewPanelBatch | null = previous;
+  const delivered: OverviewPanelBatch[] = [];
+  const update = (next: OverviewPanelBatch) => { delivered.push(next); visible = visibleOverviewBatch(visible, next); };
+  const transport = async <T>(path: string, signal: AbortSignal): Promise<T> => {
+    const params = new URL(`http://example.invalid${path}`).searchParams;
+    if (params.get("dimension") === "project") projectSignal = signal;
+    if (params.get("dimension") === "model") { h.paths.push(path); return modelGate.promise as Promise<T>; }
+    return h.transport<T>(path);
+  };
+  const run = loadOverviewPanels({}, mode, transport, controller.signal, update, update, undefined, selection.current, selection.subscribe).then(result => { completed = true; update(result); return result; });
+  try {
+    await flush();
+    for (const panel of requiredOverviewPanels("tool")) h.resolve(panel);
+    await flush(); selection.select("model"); await flush();
+    assert.equal(h.paths.filter(path => path.includes("dimension=model")).length, 1, "选择通知立刻请求新维度，不等待项目响应");
+    assert.equal(projectSignal!.aborted, true);
+    assert.equal(completed, false); if (previous) assert.equal(visible, previous);
+    modelGate.resolve(distributionResult("model")); await flush();
+    assert.equal(completed, true, "模型和基础分区齐备后完成，未释放项目gate");
+    assert.equal(visible!.complete, true); assert.equal(visible!.dimension, "model");
+    const published = delivered.length;
+    h.resolve("distribution"); await flush(); assert.equal(delivered.length, published, "项目迟到不再发布分区");
+    selection.select("client"); await flush(); assert.equal(h.paths.filter(path => path.includes("dimension=client")).length, 0, "已完成批次取消维度监听");
+  } finally { controller.abort(); for (const panel of requiredOverviewPanels("project")) h.resolve(panel); modelGate.resolve(distributionResult("model")); await run.catch(() => undefined); }
+});
+
+for (const mode of ["first", "refresh"] as const) test(`${mode}：切换工具立即完成已就绪基础批次，不等待未返回项目分布`, async () => {
+  const h = harness(), controller = new AbortController(), selection = dimensionSelection(); let completed = false;
+  const run = loadOverviewPanels({}, mode, h.transport, controller.signal, () => {}, () => {}, undefined, selection.current, selection.subscribe).then(result => { completed = true; return result; });
+  try {
+    await flush(); for (const panel of requiredOverviewPanels("tool")) h.resolve(panel);
+    await flush(); selection.select("tool"); await flush();
+    assert.equal(completed, true, "工具使用process，项目未返回不阻断当前批次");
+    const result = await run; assert.equal(result.dimension, "tool"); assert.equal(result.complete, true);
+    assert.equal(result.distributions.project, undefined); assert.equal(h.paths.length, 9);
+  } finally { controller.abort(); h.resolve("distribution"); await run.catch(() => undefined); }
+});
+
+test("基础区加载期间完成的维度可以回选缓存，废弃请求失败不污染当前选择", async () => {
+  const h = harness(), modelGate = deferred<OverviewPanelResult>(), controller = new AbortController(), selection = dimensionSelection(), errors: OverviewPanel[] = [];
+  let modelSignal: AbortSignal | undefined;
+  const transport = async <T>(path: string, signal: AbortSignal): Promise<T> => {
+    if (new URL(`http://example.invalid${path}`).searchParams.get("dimension") === "model") { modelSignal = signal; h.paths.push(path); return modelGate.promise as Promise<T>; }
+    return h.transport<T>(path);
+  };
+  const run = loadOverviewPanels({}, "cache-in-flight", transport, controller.signal, () => {}, () => {}, panel => errors.push(panel), selection.current, selection.subscribe);
+  try {
+    await flush(); h.resolve("distribution"); await flush();
+    selection.select("model"); await flush(); assert.equal(h.paths.length, 10);
+    selection.select("project"); await flush(); assert.equal(modelSignal!.aborted, true); assert.equal(h.paths.length, 10);
+    modelGate.reject(new Error("Unused model failure")); await flush(); assert.deepEqual(errors, []);
+    for (const panel of requiredOverviewPanels("tool")) h.resolve(panel);
+    const result = await run; assert.equal(result.dimension, "project"); assert.equal(result.distributions.model, undefined); assert.equal(result.complete, true);
+  } finally { controller.abort(); for (const panel of requiredOverviewPanels("project")) h.resolve(panel); modelGate.resolve(distributionResult("model")); await run.catch(() => undefined); }
 });

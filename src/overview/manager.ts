@@ -13,7 +13,7 @@ import type { OverviewWorkerRequest, OverviewWorkerResponse, OverviewWorkerResul
 import { localDay, resolveOverviewRange, resolveTimezone } from "./dates.js";
 import { OverviewResultStore } from "./result-store.js";
 
-type Lane = "core" | "analysis" | "detail" | "repositories";
+type Lane = "core" | "usage" | "analysis" | "detail" | "repositories";
 type RequestExtra = Pick<OverviewWorkerRequest, "panel" | "dimension" | "detail" | "evidence">;
 interface Pending { lane: Lane; resolve(value: OverviewWorkerResult): void; reject(error: Error): void }
 const stopped = () => new StoreError("INTERNAL_ERROR", "总览统计后台已停止", { key: "diagnostics.server.m003" });
@@ -200,6 +200,7 @@ export class OverviewManager {
     const cached = this.cache.get(key) ?? this.persisted.get(key, (value): value is OverviewWorkerResult => this.valid(value, fixed, type, extra));
     if (cached) { this.cache.set(key, cached); return Promise.resolve(this.bindQuery(cached, fixed)); }
     const lane: Lane = type === "snapshot" || type === "panel" && extra.panel === "core" ? "core"
+      : type === "panel" && ["usage", "distribution", "facets"].includes(extra.panel ?? "") ? "usage"
       : type === "detail" || type === "evidence" ? "detail" : extra.panel === "repositories" ? "repositories" : "analysis";
     const preparation = type === "panel" && extra.panel === "repositories" && fixed.window !== "all" ? Promise.resolve() : this.ensureFacts(fixed);
     const response = preparation.then(() => this.payload(type, fixed, extra)).then(payload => this.dispatch(type, fixed, lane, extra, payload))

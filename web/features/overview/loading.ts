@@ -21,33 +21,58 @@ export async function loadOverviewPanel(snapshot: OverviewSnapshot, panel: Overv
   return result;
 }
 
-/** 固定一个快照后并发获取必需分区，维度变化只补读缺少的分布。 */
-export async function loadOverviewPanels(query: OverviewQuery, key: string, transport: Transport, signal: AbortSignal, onSnapshot: (batch: OverviewPanelBatch) => void, onPanel: (batch: OverviewPanelBatch) => void, onError?: (panel: OverviewPanel, error: unknown) => void, currentDimension: () => Distribution = () => "project"): Promise<OverviewPanelBatch> {
+/** 固定快照后的基础区并行读取；选择通知取消废弃分布并立即补读当前维度。 */
+export async function loadOverviewPanels(query: OverviewQuery, key: string, transport: Transport, signal: AbortSignal, onSnapshot: (batch: OverviewPanelBatch) => void, onPanel: (batch: OverviewPanelBatch) => void, onError?: (panel: OverviewPanel, error: unknown) => void, currentDimension: () => Distribution = () => "project", subscribeDimension?: (listener: () => void) => () => void): Promise<OverviewPanelBatch> {
   const snapshot = await transport<OverviewSnapshot>(`/overview/snapshot?${overviewParameters(query)}`, signal);
   let batch: OverviewPanelBatch = { key, snapshot, panels: {}, distributions: {}, dimension: currentDimension(), complete: false };
   if (signal.aborted) throw new DOMException("", "AbortError");
   onSnapshot(batch);
-  const receive = async (panel: OverviewPanel, dimension?: OverviewDistributionDimension) => {
-    try {
-      const result = await loadOverviewPanel(snapshot, panel, transport, signal, dimension);
+  return new Promise<OverviewPanelBatch>((resolve, reject) => {
+    const basePanels = requiredOverviewPanels("tool"), failures: unknown[] = [];
+    let remaining = basePanels.length, finished = false, distributionFailure: unknown;
+    let distributionRequest: AbortController | undefined, unsubscribe = () => {};
+    const cleanup = () => { finished = true; distributionRequest?.abort(); unsubscribe(); signal.removeEventListener("abort", abort); };
+    const abort = () => { if (!finished) { cleanup(); reject(new DOMException("", "AbortError")); } };
+    const finish = () => {
+      if (finished) return;
+      if (batch.dimension !== currentDimension()) { changeDimension(); return; }
+      if (remaining) return;
+      const failure = failures[0] ?? distributionFailure;
+      if (failure) { cleanup(); reject(failure); }
+      else if (batch.dimension === "tool" || batch.distributions[batch.dimension]) { cleanup(); resolve({ ...batch, complete: true }); }
+    };
+    const publish = (result: OverviewPanelResult) => {
       batch = replaceOverviewPanel(batch, snapshot, result)!;
       onPanel({ ...batch, complete: false });
-    } catch (error) { if (!signal.aborted && (panel !== "distribution" || dimension === currentDimension())) onError?.(panel, error); throw error; }
-  };
-  const initialDimension = batch.dimension;
-  const panels = requiredOverviewPanels(initialDimension);
-  const results = await Promise.allSettled(panels.map(panel => receive(panel, panel === "distribution" && initialDimension !== "tool" ? initialDimension : undefined)));
-  if (signal.aborted) throw new DOMException("", "AbortError");
-  const failure = results.find((result, index) => result.status === "rejected" && (panels[index] !== "distribution" || initialDimension === currentDimension()));
-  if (failure?.status === "rejected") throw failure.reason;
-  // 全局更新期间的局部切换必须属于新快照，不能补入仍显示的旧快照。
-  while (true) {
-    const dimension = currentDimension();
-    batch = { ...batch, dimension };
-    if (dimension === "tool" || batch.distributions[dimension]) break;
-    try { await receive("distribution", dimension); } catch (error) { if (signal.aborted || dimension === currentDimension()) throw error; }
-  }
-  return { ...batch, complete: true };
+    };
+    const changeDimension = () => {
+      if (finished) return;
+      const dimension = currentDimension();
+      if (batch.dimension === dimension && distributionRequest) { finish(); return; }
+      distributionRequest?.abort(); distributionRequest = undefined; distributionFailure = undefined;
+      batch = { ...batch, dimension, complete: false };
+      if (dimension === "tool" || batch.distributions[dimension]) { finish(); return; }
+      const controller = new AbortController(); distributionRequest = controller;
+      void loadOverviewPanel(snapshot, "distribution", transport, controller.signal, dimension).then(result => {
+        if (finished || controller.signal.aborted) return;
+        if (dimension !== currentDimension()) { changeDimension(); return; }
+        publish(result); finish();
+      }).catch(error => {
+        if (finished || controller.signal.aborted) return;
+        if (dimension !== currentDimension()) { changeDimension(); return; }
+        distributionFailure = error; onError?.("distribution", error); finish();
+      });
+    };
+    signal.addEventListener("abort", abort, { once: true });
+    if (signal.aborted) { abort(); return; }
+    unsubscribe = subscribeDimension?.(changeDimension) ?? unsubscribe;
+    changeDimension();
+    for (const panel of basePanels) void loadOverviewPanel(snapshot, panel, transport, signal).then(result => {
+      if (!finished) publish(result);
+    }).catch(error => {
+      if (!finished) { failures.push(error); onError?.(panel, error); }
+    }).finally(() => { remaining -= 1; finish(); });
+  });
 }
 
 const canonical = (value: unknown): unknown => Array.isArray(value) ? value.map(canonical) : value && typeof value === "object" ? Object.fromEntries(Object.entries(value).filter(([, item]) => item !== undefined).sort(([a], [b]) => a.localeCompare(b)).map(([key, item]) => [key, canonical(item)])) : value;
