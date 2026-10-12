@@ -827,6 +827,13 @@ export class SessionStore {
     })();
   }
 
+  /** 活动原记录按当前页恢复原状态，不把配对后的工具结果覆盖原事件显示。 */
+  overviewActivityStatuses(revision: string, ids: string[]): { id: string; status: OverviewEvent["status"] | null }[] {
+    return this.overviewStatement(`SELECT id,json_extract(json,'$.status') AS status FROM session_messages
+      WHERE revision=? AND id IN (SELECT value FROM json_each(?)) AND copied IS NOT 1`)
+      .all(revision, JSON.stringify(ids)) as { id: string; status: OverviewEvent["status"] | null }[];
+  }
+
   /** 按不可变修订读取窄事实；完整请求正文与工具参数不进入派生缓存。 */
   overviewRevisionFacts(revision: string, sessionId: string): Pick<OverviewSource, "events" | "requests"> {
     this.ensureUsageFacts(revision);

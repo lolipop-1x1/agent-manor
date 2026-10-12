@@ -70,7 +70,7 @@ export class OverviewManager {
   private key(type: OverviewWorkerRequest["type"], query: OverviewQuery, extra: object): string {
     const panel = (extra as { panel?: OverviewPanel }).panel;
     const semantic = type === "panel" && ["core", "resources", "repositories"].includes(panel ?? "") ? { ...query, models: undefined } : query;
-    return JSON.stringify([3, type, Object.fromEntries(Object.entries(semantic).sort(([a], [b]) => a.localeCompare(b))), extra,
+    return JSON.stringify([4, type, Object.fromEntries(Object.entries(semantic).sort(([a], [b]) => a.localeCompare(b))), extra,
       type === "report" || panel === "repositories" ? this.repositories().map(row => [row.id, row.version, row.stale]) : undefined]);
   }
   private valid(value: unknown, query: OverviewQuery, type: OverviewWorkerRequest["type"]): value is OverviewWorkerResult {

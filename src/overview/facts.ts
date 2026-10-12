@@ -338,6 +338,16 @@ export class OverviewFactStore {
       kind: row.kind, turnId: row.turn_id, tool: row.tool ?? undefined, status: row.status ?? undefined };
   }
 
+  hydrateActivityEvents(rows: EventRow[]): OverviewEvent[] {
+    const byRevision = new Map<string, string[]>(), statuses = new Map<string, OverviewEvent["status"] | null>();
+    for (const row of rows) { const ids = byRevision.get(row.revision) ?? []; ids.push(row.id); byRevision.set(row.revision, ids); }
+    for (const [revision, ids] of byRevision) for (const row of this.sessions.overviewActivityStatuses(revision, ids)) {
+      statuses.set(JSON.stringify([revision, row.id]), row.status);
+    }
+    return rows.map(row => ({ ...this.decodeEvent(row), status: statuses.get(JSON.stringify([row.revision, row.id])) ?? undefined,
+      pairing: undefined, resultMessageId: undefined }));
+  }
+
   decodeRequest(row: RequestRow): OverviewSource["requests"][number] {
     const projection = JSON.parse(row.json) as OverviewSource["requests"][number];
     return { sessionId: row.session_id, ordinal: row.ordinal, usage: { ...projection.usage, id: row.id,
