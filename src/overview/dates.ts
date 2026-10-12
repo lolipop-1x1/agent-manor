@@ -5,7 +5,7 @@ import { usageDimensionKey } from "../usage/dimensions.js";
 
 const formatters = new Map<string, Intl.DateTimeFormat>();
 const hourFormatters = new Map<string, Intl.DateTimeFormat>();
-const maxDateCacheEntries = 1_000_000;
+const maxDateCacheEntries = 20_000;
 let dateCacheScope: string | undefined;
 let dateCacheTimezone: string | undefined;
 interface DateProjection { day: string; time: number; activity?: { weekday: number; hour: number } }

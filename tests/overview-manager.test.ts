@@ -52,11 +52,20 @@ test("核心分区重启复用持久结果，模型身份重绑定且已淘汰�
   const version = store.publish(store.createJob().id, [{ path, revision: revision.revision, fingerprint: "synthetic" }], []);
   const prices = new PricingService(directory), clock = () => new Date("2026-03-01T12:00:00Z");
   const first = new OverviewManager(store, prices, () => [], clock);
+  const internal = first as unknown as { dispatch(type: string, ...parameters: unknown[]): Promise<unknown> };
+  const dispatch = internal.dispatch.bind(first), dispatchedTypes: string[] = [];
+  internal.dispatch = (type, ...parameters) => { dispatchedTypes.push(type); return dispatch(type, ...parameters); };
   const query = { window: "365" as const, timezone: "UTC", version };
   let restarted: OverviewManager | undefined;
   try {
-    const [core, duplicate] = await Promise.all([first.panel(query, "core"), first.panel(query, "core")]);
+    const [core, duplicate] = await Promise.all([first.panel(query, "core"), first.panel(query, "core"),
+      first.panel(query, "resources"), first.panel(query, "process")]);
     assert.deepEqual(core, duplicate); assert.equal(core.data.summary!.requests, 1);
+    assert.equal(dispatchedTypes.filter(type => type === "prepare").length, 1);
+    await first.panel({ ...query, window: "30", models: ["synthetic-other"] }, "core");
+    assert.equal(dispatchedTypes.filter(type => type === "prepare").length, 1);
+    await first.panel({ ...query, timezone: "America/New_York" }, "core");
+    assert.equal(dispatchedTypes.filter(type => type === "prepare").length, 2);
     await first.close(); restarted = new OverviewManager(store, prices, () => [], clock);
     assert.deepEqual(await restarted.panel(query, "core"), core);
     assert.equal((restarted as unknown as { nextId: number }).nextId, 0);

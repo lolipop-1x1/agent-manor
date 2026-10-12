@@ -24,6 +24,9 @@ export class OverviewManager {
   private closed = false;
   private readonly pending = new Map<number, Pending>();
   private readonly inFlight = new Map<string, Promise<OverviewWorkerResult>>();
+  private readonly preparedFacts = new Set<string>();
+  private readonly preparingFacts = new Map<string, Promise<void>>();
+  private preparation: Promise<void> = Promise.resolve();
   private readonly cache = new UsageResultCache<OverviewWorkerResult>(32 * 1024 * 1024, 48);
   private readonly persisted: OverviewResultStore;
   private readonly usage: UsageManager;
@@ -64,7 +67,7 @@ export class OverviewManager {
   private key(type: OverviewWorkerRequest["type"], query: OverviewQuery, extra: object): string {
     const panel = (extra as { panel?: OverviewPanel }).panel;
     const semantic = type === "panel" && ["core", "resources", "repositories"].includes(panel ?? "") ? { ...query, models: undefined } : query;
-    return JSON.stringify([2, type, Object.fromEntries(Object.entries(semantic).sort(([a], [b]) => a.localeCompare(b))), extra,
+    return JSON.stringify([3, type, Object.fromEntries(Object.entries(semantic).sort(([a], [b]) => a.localeCompare(b))), extra,
       type === "report" || panel === "repositories" ? this.repositories().map(row => [row.id, row.version, row.stale]) : undefined]);
   }
   private valid(value: unknown, query: OverviewQuery, type: OverviewWorkerRequest["type"]): value is OverviewWorkerResult {
@@ -125,6 +128,32 @@ export class OverviewManager {
     }
     return payload;
   }
+  private dispatch(type: OverviewWorkerRequest["type"], query: OverviewQuery, lane: Lane,
+    extra: Pick<OverviewWorkerRequest, "panel" | "detail" | "evidence"> = {}, payload: Partial<OverviewWorkerRequest> = {}): Promise<OverviewWorkerResult> {
+    if (this.closed) return Promise.reject(stopped());
+    const worker = this.workers.get(lane) ?? this.createWorker(lane), id = ++this.nextId;
+    return new Promise<OverviewWorkerResult>((resolve, reject) => {
+      this.pending.set(id, { lane, resolve, reject });
+      try { worker.postMessage({ id, type, query, pricing: this.pricing.view(query.priceVersion).status,
+        repositories: this.repositories(), now: this.now().toISOString(), ...extra, ...payload } satisfies OverviewWorkerRequest); }
+      catch (error) { this.pending.delete(id); reject(error instanceof Error ? error : new Error(String(error))); }
+    });
+  }
+  /** 同版本、时区只由核心通道回填一次；其他查询等待落盘，避免整库重复准备。 */
+  private ensureFacts(query: OverviewQuery): Promise<void> {
+    const key = JSON.stringify([query.version, query.timezone]);
+    if (this.preparedFacts.has(key)) return Promise.resolve();
+    const pending = this.preparingFacts.get(key);
+    if (pending) return pending;
+    const operation = this.preparation.then(async () => {
+      await this.dispatch("prepare", query, "core");
+      this.preparedFacts.add(key);
+      while (this.preparedFacts.size > 16) this.preparedFacts.delete(this.preparedFacts.values().next().value!);
+    }).finally(() => { if (this.preparingFacts.get(key) === operation) this.preparingFacts.delete(key); });
+    this.preparingFacts.set(key, operation);
+    this.preparation = operation.catch(() => undefined);
+    return operation;
+  }
   private execute(type: OverviewWorkerRequest["type"], query: OverviewQuery,
     extra: Pick<OverviewWorkerRequest, "panel" | "detail" | "evidence"> = {}): Promise<OverviewWorkerResult> {
     const fixed = this.fixed(query), key = this.key(type, fixed, extra), current = this.inFlight.get(key);
@@ -133,16 +162,9 @@ export class OverviewManager {
     if (cached) { this.cache.set(key, cached); return Promise.resolve(cached); }
     const lane: Lane = type === "snapshot" || type === "panel" && extra.panel === "core" ? "core"
       : type === "detail" || type === "evidence" ? "detail" : extra.panel === "repositories" ? "repositories" : "analysis";
-    const response = this.payload(type, fixed, extra).then(payload => {
-      if (this.closed) throw stopped();
-      const worker = this.workers.get(lane) ?? this.createWorker(lane), id = ++this.nextId;
-      return new Promise<OverviewWorkerResult>((resolve, reject) => {
-        this.pending.set(id, { lane, resolve, reject });
-        try { worker.postMessage({ id, type, query: fixed, pricing: this.pricing.view(fixed.priceVersion).status,
-          repositories: this.repositories(), now: this.now().toISOString(), ...extra, ...payload } satisfies OverviewWorkerRequest); }
-        catch (error) { this.pending.delete(id); reject(error instanceof Error ? error : new Error(String(error))); }
-      });
-    }).then(result => { this.cache.set(key, result); this.persisted.put(key, result); return result; })
+    const preparation = type === "panel" && extra.panel === "repositories" && fixed.window !== "all" ? Promise.resolve() : this.ensureFacts(fixed);
+    const response = preparation.then(() => this.payload(type, fixed, extra)).then(payload => this.dispatch(type, fixed, lane, extra, payload))
+      .then(result => { this.cache.set(key, result); this.persisted.put(key, result); return result; })
       .finally(() => { if (this.inFlight.get(key) === response) this.inFlight.delete(key); });
     this.inFlight.set(key, response); return response;
   }
@@ -173,7 +195,7 @@ export class OverviewManager {
     if (this.closed) return; this.closed = true;
     const workers = [...this.workers.values()]; this.workers.clear();
     for (const request of this.pending.values()) request.reject(stopped());
-    this.pending.clear(); this.inFlight.clear(); this.cache.clear(); this.persisted.close();
+    this.pending.clear(); this.inFlight.clear(); this.preparedFacts.clear(); this.preparingFacts.clear(); this.cache.clear(); this.persisted.close();
     await Promise.all(workers.map(worker => worker.terminate()));
     if (this.ownsUsage) await this.usage.close();
   }
