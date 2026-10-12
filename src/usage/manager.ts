@@ -136,6 +136,12 @@ export class UsageManager {
     return structuredClone({ ...result, pricing: this.pricing.summary(result.priceVersion) });
   }
 
+  /** 总览只需统计，不传输或恢复随后会被丢弃的原请求预览。 */
+  async summaryReport(query: UsageQuery): Promise<UsageReport> {
+    const result = await this.execute("summary", this.fixed(query)) as UsageReport;
+    return structuredClone({ ...result, pricing: this.pricing.summary(result.priceVersion) });
+  }
+
   async requests(query: UsageQuery, sessionId: string, page = 1, pageSize = 100): Promise<UsageRequestPage> {
     const result = await this.execute("requests", this.fixed(query), { sessionId, page, pageSize }) as UsageRequestPage;
     return structuredClone(result);

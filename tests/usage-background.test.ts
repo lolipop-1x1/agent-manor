@@ -47,6 +47,23 @@ function rounded(value: unknown): unknown {
   return value;
 }
 
+test("总览汇总保留统计且不在主线程读取原请求，完整用量报告仍可恢复证据", async () => fixture(async (store, prices, cachePath) => {
+  const revision = add(store, "main", Array.from({ length: 30 }, (_, index) => value(`request-${index}`)));
+  const version = store.publish(store.createJob().id, [revision], []), manager = new UsageManager(store, prices, cachePath);
+  const query = { version, timezone: "UTC", pageSize: 5 };
+  const original = store.usageEvidence.bind(store);
+  try {
+    store.usageEvidence = () => { throw new Error("总览不能恢复无用的原请求预览"); };
+    const summary = await manager.summaryReport(query);
+    assert.equal(summary.totals.requests, 30); assert.equal(summary.sessions[0]!.requestsTotal, 30);
+    assert.deepEqual(summary.sessions[0]!.requests, []); assert.equal(summary.sessions[0]!.requestsLimited, true);
+    store.usageEvidence = original;
+    const report = await manager.report(query);
+    assert.deepEqual(summary.totals, report.totals); assert.deepEqual(summary.groups, report.groups);
+    assert.ok(report.sessions[0]!.requests.length > 0); assert.ok(report.sessions[0]!.requests[0]!.usage.timing);
+  } finally { store.usageEvidence = original; await manager.close(); }
+}));
+
 async function waitUntil(check: () => boolean): Promise<void> {
   for (let attempt = 0; attempt < 600; attempt += 1) { if (check()) return; await pause(10); }
   assert.fail("合成后台任务未在限定时间内完成");

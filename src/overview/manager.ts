@@ -119,7 +119,7 @@ export class OverviewManager {
   }
   private async usageReport(snapshot: OverviewSnapshot, extra: UsageQuery = {}): Promise<UsageReport> {
     const query = snapshot.query;
-    const result = await this.usage.report({ version: snapshot.version, priceVersion: snapshot.priceVersion, timezone: snapshot.timezone,
+    const result = await this.usage.summaryReport({ version: snapshot.version, priceVersion: snapshot.priceVersion, timezone: snapshot.timezone,
       clients: query.clients, projects: query.projects?.map(project => project === "none" ? "unknown" : project),
       ...(snapshot.range.all ? {} : { from: snapshot.range.from, to: snapshot.range.to }), groupBy: "model", interval: "week",
       pageSize: 5, ...extra });

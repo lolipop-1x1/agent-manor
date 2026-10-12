@@ -240,6 +240,8 @@ async function handle(message: UsageWorkerRequest): Promise<void> {
         if (standalone()) update({ ...progress, state: "ready", preparedSessions: source.sessions.length, totalSessions: source.sessions.length });
       } catch (error) { if (standalone()) update({ ...progress, state: "failed" }); throw error; }
     }
+    if (message.type === "summary" && result && "sessions" in result) result = { ...result,
+      sessions: result.sessions.map(row => ({ ...row, requests: [], requestsLimited: row.requestsTotal > 0 })) };
     send({ id: message.id, type: "result", result });
   } catch (error) {
     const known = error instanceof StoreError || error instanceof ServiceError;
