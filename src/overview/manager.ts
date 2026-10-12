@@ -74,15 +74,24 @@ export class OverviewManager {
   private key(type: OverviewWorkerRequest["type"], query: OverviewQuery, extra: object): string {
     const panel = (extra as { panel?: OverviewPanel }).panel;
     const semantic = type === "panel" && ["core", "resources", "repositories"].includes(panel ?? "") ? { ...query, models: undefined } : query;
-    return JSON.stringify([5, type, Object.fromEntries(Object.entries(semantic).sort(([a], [b]) => a.localeCompare(b))), extra,
+    return JSON.stringify([5, type, this.canonicalQuery(semantic), extra,
       type === "report" || panel === "repositories" ? this.repositories().map(row => [row.id, row.version, row.stale]) : undefined]);
+  }
+  private canonicalQuery(query: OverviewQuery): object {
+    const window = query.window ?? (query.from || query.to ? "custom" : "365");
+    const range = window === "all" ? null : resolveOverviewRange({ version: query.version!, sessions: [], events: [], requests: [], resources: [], gaps: [] }, query, this.now());
+    return Object.fromEntries(Object.entries({ ...query, window, ...(range ? { from: range.from, to: range.to } : {}) })
+      .sort(([a], [b]) => a.localeCompare(b)));
+  }
+  private bindQuery(result: OverviewWorkerResult, query: OverviewQuery): OverviewWorkerResult {
+    return "snapshot" in result ? { ...result, snapshot: { ...result.snapshot, query } } : { ...result, query };
   }
   private valid(value: unknown, query: OverviewQuery, type: OverviewWorkerRequest["type"]): value is OverviewWorkerResult {
     if (!value || typeof value !== "object") return false;
     const result = value as OverviewWorkerResult, snapshot = "snapshot" in result ? result.snapshot : result;
     if (!("version" in snapshot) || snapshot.version !== query.version || snapshot.priceVersion !== query.priceVersion
       || snapshot.timezone !== query.timezone || !snapshot.range || snapshot.range.today !== query.anchorDay) return false;
-    const normalize = (value: OverviewQuery) => Object.fromEntries(Object.entries({ ...value, models: undefined }).sort(([a], [b]) => a.localeCompare(b)));
+    const normalize = (value: OverviewQuery) => this.canonicalQuery({ ...value, models: undefined });
     if (!("query" in snapshot) || JSON.stringify(normalize(snapshot.query)) !== JSON.stringify(normalize(query))) return false;
     if (query.window !== "all") {
       const expected = resolveOverviewRange({ version: query.version!, sessions: [], events: [], resources: [], requests: [], gaps: [] }, query, this.now());
@@ -164,14 +173,14 @@ export class OverviewManager {
   private execute(type: OverviewWorkerRequest["type"], query: OverviewQuery,
     extra: Pick<OverviewWorkerRequest, "panel" | "detail" | "evidence"> = {}): Promise<OverviewWorkerResult> {
     const fixed = this.fixed(query), key = this.key(type, fixed, extra), current = this.inFlight.get(key);
-    if (current) return current;
+    if (current) return current.then(result => this.bindQuery(result, fixed));
     const cached = this.cache.get(key) ?? this.persisted.get(key, (value): value is OverviewWorkerResult => this.valid(value, fixed, type));
-    if (cached) { this.cache.set(key, cached); return Promise.resolve(cached); }
+    if (cached) { this.cache.set(key, cached); return Promise.resolve(this.bindQuery(cached, fixed)); }
     const lane: Lane = type === "snapshot" || type === "panel" && extra.panel === "core" ? "core"
       : type === "detail" || type === "evidence" ? "detail" : extra.panel === "repositories" ? "repositories" : "analysis";
     const preparation = type === "panel" && extra.panel === "repositories" && fixed.window !== "all" ? Promise.resolve() : this.ensureFacts(fixed);
     const response = preparation.then(() => this.payload(type, fixed, extra)).then(payload => this.dispatch(type, fixed, lane, extra, payload))
-      .then(result => { this.cache.set(key, result); this.persisted.put(key, result); return result; })
+      .then(result => { this.cache.set(key, result); this.persisted.put(key, result); return this.bindQuery(result, fixed); })
       .finally(() => { if (this.inFlight.get(key) === response) this.inFlight.delete(key); });
     this.inFlight.set(key, response); return response;
   }

@@ -69,6 +69,11 @@ test("核心分区重启复用持久结果，模型身份重绑定且已淘汰�
     await first.close(); restarted = new OverviewManager(store, prices, () => [], clock);
     assert.deepEqual(await restarted.panel(query, "core"), core);
     assert.equal((restarted as unknown as { nextId: number }).nextId, 0);
+    const explicit = await restarted.panel({ ...query, from: core.snapshot.range.from, to: core.snapshot.range.to }, "core");
+    assert.deepEqual(explicit.data, core.data);
+    assert.equal(explicit.snapshot.query.from, core.snapshot.range.from);
+    assert.equal(explicit.snapshot.query.to, core.snapshot.range.to);
+    assert.equal((restarted as unknown as { nextId: number }).nextId, 0, "默认日期与同范围显式日期复用持久结果");
     const model = await restarted.panel({ ...query, models: ["synthetic-other"] }, "core");
     assert.deepEqual(model.data.summary, core.data.summary); assert.deepEqual(model.snapshot.query.models, ["synthetic-other"]);
     assert.equal((restarted as unknown as { nextId: number }).nextId, 0);
