@@ -41,3 +41,29 @@ test("后台跨午夜缓存沿用报告日期，显式新报告重新计算完�
     assert.equal((await manager.evidence(updated.query, { kind: "requests", period: "current", scope: "usage" })).total, 2);
   } finally { await manager.close(); store.close(); await rm(directory, { recursive: true, force: true }); }
 });
+
+test("核心分区重启复用持久结果，模型身份重绑定且已淘汰版本先拒绝", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "manor-overview-panels-")), store = new SessionStore(join(directory, "index.sqlite"));
+  const id = "synthetic-main", path = "/synthetic/main.jsonl", revision = store.createRevision(path, "synthetic");
+  revision.sink.message({ id: "synthetic-user", sessionId: id, ordinal: 0, recordLine: 1, turnId: "synthetic-turn", kind: "user", text: "合成正文", occurredAt: "2026-03-01T12:00:00Z" });
+  revision.sink.usage({ id: "synthetic-request", messageId: "synthetic-user", inputTokens: 100, outputTokens: 20, model: "synthetic-model", occurredAt: "2026-03-01T12:00:00Z" });
+  revision.flush(); store.finishRevision(revision.revision, { id, path, sourceId: "synthetic-source", client: "codex", clientSessionId: id,
+    title: "合成会话", titleOrigin: "recorded", models: ["synthetic-model"], messageCount: 1, turnCount: 1, gaps: [] });
+  const version = store.publish(store.createJob().id, [{ path, revision: revision.revision, fingerprint: "synthetic" }], []);
+  const prices = new PricingService(directory), clock = () => new Date("2026-03-01T12:00:00Z");
+  const first = new OverviewManager(store, prices, () => [], clock);
+  const query = { window: "365" as const, timezone: "UTC", version };
+  let restarted: OverviewManager | undefined;
+  try {
+    const [core, duplicate] = await Promise.all([first.panel(query, "core"), first.panel(query, "core")]);
+    assert.deepEqual(core, duplicate); assert.equal(core.data.summary!.requests, 1);
+    await first.close(); restarted = new OverviewManager(store, prices, () => [], clock);
+    assert.deepEqual(await restarted.panel(query, "core"), core);
+    assert.equal((restarted as unknown as { nextId: number }).nextId, 0);
+    const model = await restarted.panel({ ...query, models: ["synthetic-other"] }, "core");
+    assert.deepEqual(model.data.summary, core.data.summary); assert.deepEqual(model.snapshot.query.models, ["synthetic-other"]);
+    assert.equal((restarted as unknown as { nextId: number }).nextId, 0);
+    await assert.rejects(restarted.panel({ ...query, version: "synthetic-missing" }, "core"), { code: "VERSION_NOT_FOUND" });
+    await assert.rejects(restarted.panel({ ...query, priceVersion: "synthetic-missing" }, "core"), { code: "VERSION_NOT_FOUND" });
+  } finally { await first.close(); await restarted?.close(); store.close(); await rm(directory, { recursive: true, force: true }); }
+});

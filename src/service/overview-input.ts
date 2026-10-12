@@ -1,4 +1,4 @@
-import type { OverviewEvidenceQuery, OverviewQuery, OverviewWindow } from "../overview-contracts.js";
+import { overviewPanels, type OverviewDetailQuery, type OverviewEvidenceQuery, type OverviewPanel, type OverviewQuery, type OverviewWindow } from "../overview-contracts.js";
 import { ServiceError, textValue } from "./input.js";
 import { usageQuery } from "./usage-input.js";
 
@@ -62,4 +62,31 @@ export function overviewEvidenceQuery(raw: unknown): OverviewEvidenceQuery {
   }
   if (record.ordinalFrom !== undefined && record.ordinalTo !== undefined && Number(record.ordinalFrom) > Number(record.ordinalTo)) invalid("evidence.ordinalFrom/ordinalTo");
   return record as unknown as OverviewEvidenceQuery;
+}
+
+export function overviewPanel(raw: unknown): OverviewPanel {
+  if (typeof raw !== "string" || !(overviewPanels as readonly string[]).includes(raw)) invalid("panel");
+  return raw as OverviewPanel;
+}
+export function overviewDetailQuery(raw: unknown): OverviewDetailQuery {
+  const encoded = textValue(raw, "detail", true)!;
+  let value: unknown;
+  try { value = JSON.parse(encoded); } catch { invalid("detail"); }
+  if (!value || typeof value !== "object" || Array.isArray(value)) invalid("detail");
+  const record = value as Record<string, unknown>;
+  const choices = { view: ["resources", "resource", "ranking", "months", "transitions", "timings", "timing", "observations", "combinations"],
+    kind: ["skill", "mcp"], dimension: ["client", "project", "model", "tool"], unit: ["session", "turn"],
+    transition: ["all", "switch", "delegation"], sort: ["uses", "sessions", "count", "tokens", "cost"] };
+  const allowed = new Set([...Object.keys(choices), "resourceId", "timingGroup", "page", "pageSize"]);
+  for (const field of Object.keys(record)) if (!allowed.has(field)) invalid(`detail.${field}`);
+  if (!choices.view.includes(record.view as string)) invalid("detail.view");
+  for (const [field, values] of Object.entries(choices)) if (record[field] !== undefined && !values.includes(record[field] as string)) invalid(`detail.${field}`);
+  for (const field of ["resourceId", "timingGroup"]) if (record[field] !== undefined) textValue(record[field], `detail.${field}`);
+  for (const [field, maximum] of [["page", 1_000_000], ["pageSize", 100]] as const) {
+    if (record[field] !== undefined && (!Number.isSafeInteger(record[field]) || Number(record[field]) < 1 || Number(record[field]) > maximum)) invalid(`detail.${field}`);
+  }
+  if (record.view === "resource" && !record.resourceId) invalid("detail.resourceId");
+  if (record.view === "resource" && record.dimension === "model") invalid("detail.dimension");
+  if (record.view === "timing" && !record.timingGroup) invalid("detail.timingGroup");
+  return record as unknown as OverviewDetailQuery;
 }

@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { AnalysisStore } from "../src/index/store.js";
-import type { OverviewEvidencePage, OverviewReport } from "../src/overview-contracts.js";
+import type { OverviewDetailPage, OverviewEvidencePage, OverviewPanelResult, OverviewReport, OverviewSnapshot } from "../src/overview-contracts.js";
 import type { SessionSourceMeta } from "../src/session-contracts.js";
 import { startService } from "../src/server.js";
 import { SessionStore } from "../src/sessions/store.js";
@@ -61,10 +61,29 @@ test("总览后台 HTTP 保持全局与模型局部范围，证据分页不泄�
     assert.equal(first.summary.activeDays, 1); assert.equal(first.process.failures, 1);
     assert.equal(first.resources.mcp[0]!.uses, 2); assert.equal(first.resources.mcp[0]!.results.failure, 1);
     assert.deepEqual(first.process.failureSequences, []);
-    assert.equal(first.insights.find(insight => insight.rule === "12")?.current, 1);
+    assert.ok(first.insights.length <= 5);
+    assert.ok(first.insights.every(insight => !["10", "12", "14", "15"].includes(insight.rule)));
     const fixed = new URLSearchParams(params); fixed.set("priceVersion", first.priceVersion);
     fixed.set("anchorDay", first.query.anchorDay!);
     assert.deepEqual(await read<OverviewReport>(`/overview/report?${fixed}`), first);
+    const snapshot = await read<OverviewSnapshot>(`/overview/snapshot?${fixed}`);
+    const panels = await Promise.all(["core", "usage", "resources", "process", "repositories", "insights"].map(panel =>
+      read<OverviewPanelResult>(`/overview/panel?${fixed}&panel=${panel}`)));
+    for (const panel of panels) assert.deepEqual(panel.snapshot, snapshot);
+    const [core, usage, resources, process, repositories, insights] = panels;
+    assert.deepEqual(core!.data.summary, first.summary); assert.deepEqual(core!.data.activity, first.activity);
+    assert.deepEqual(core!.data.totals, first.totals); assert.equal(usage!.data.usage!.totals.requests, 31);
+    assert.equal(resources!.counts!.mcp, 1); assert.equal(resources!.data.resources!.mcp[0]!.uses, 2);
+    assert.deepEqual(resources!.data.resources!.mcp[0]!.days, first.resources.mcp[0]!.days);
+    assert.deepEqual(resources!.data.resources!.mcp[0]!.tools, []);
+    assert.equal(process!.data.process!.failures, 1); assert.deepEqual(process!.data.process!.timing, []);
+    assert.deepEqual(repositories!.data.repositories, []); assert.ok(insights!.data.insights!.length <= 5);
+    const resourceId = resources!.data.resources!.mcp[0]!.id;
+    const detail = await read<OverviewDetailPage>(`/overview/detail?${fixed}&detail=${encodeURIComponent(JSON.stringify({ view: "resource", resourceId, dimension: "tool", pageSize: 1 }))}`);
+    assert.deepEqual(detail.snapshot, snapshot); assert.equal(detail.total, 1); assert.equal(detail.rows.length, 1);
+    assert.equal(detail.object!.uses, 2); assert.deepEqual(detail.object!.tools, []);
+    const ranking = await read<OverviewDetailPage>(`/overview/detail?${fixed}&detail=${encodeURIComponent(JSON.stringify({ view: "ranking", dimension: "model", sort: "cost" }))}`);
+    assert.equal(ranking.total, 1); assert.equal((ranking.rows[0] as { requests: number }).requests, 31);
     fixed.set("evidence", JSON.stringify({ kind: "requests", from: "2026-10-01", to: "2026-10-31" }));
     assert.equal((await read<OverviewEvidencePage>(`/overview/evidence?${fixed}`)).total, 31);
     fixed.set("evidence", JSON.stringify({ kind: "sequence", tool: "mcp__synthetic__query", sort: "ordinal", pageSize: 1 }));
@@ -84,5 +103,8 @@ test("总览后台 HTTP 保持全局与模型局部范围，证据分页不泄�
     assert.equal((await fetch(`${base}/overview/report?version=synthetic-unavailable`)).status, 404);
     assert.equal((await fetch(`${base}/overview/report?priceVersion=synthetic-unavailable`)).status, 404);
     assert.equal((await fetch(`${base}/overview/evidence?evidence=${encodeURIComponent('{"kind":"tools","pageSize":201}')}`)).status, 400);
+    assert.equal((await fetch(`${base}/overview/panel?panel=unknown`)).status, 400);
+    assert.equal((await fetch(`${base}/overview/detail?detail=${encodeURIComponent('{"view":"resource"}')}`)).status, 400);
+    assert.equal((await fetch(`${base}/overview/detail?detail=${encodeURIComponent('{"view":"timings","pageSize":101}')}`)).status, 400);
   } finally { await service.close(); await rm(directory, { recursive: true, force: true }); }
 });

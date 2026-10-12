@@ -38,9 +38,8 @@ test("请求存储顺序与消息坐标分别保留，压缩洞察和请求明�
   const version = store.publish(store.createJob().id, [revision], []), input = loadOverviewSource(store, version);
   assert.deepEqual(input.requests.map(request => request.ordinal), [1, 2]);
   const report = buildOverviewReport(input, { window: "all", timezone: "UTC" }, pricing, now);
-  const insight = generateOverviewInsights(input, report.query, pricing, report, now).insights.find(item => item.metric === "input_sequence")!;
-  assert.equal(insight.values?.compressions, 1);
-  const evidence = buildOverviewEvidence(input, report.query, insight.evidence, pricing, now);
+  assert.equal(generateOverviewInsights(input, report.query, pricing, report).insights.some(item => item.metric === "input_sequence"), false);
+  const evidence = buildOverviewEvidence(input, report.query, { kind: "requests", scope: "usage", sort: "ordinal" }, pricing, now);
   assert.deepEqual(evidence.rows.map(row => row.values?.eventOrdinal), [100, 102]);
   assert.equal(JSON.parse(String(evidence.rows[1]!.values?.compressions)).length, 1);
 }));

@@ -70,7 +70,7 @@ export function pairToolCalls(events: OverviewEvent[]): OverviewEvent[] {
     return { ...event, status: event.status === "success" || event.status === "failure" ? event.status
       : result?.status === "success" || result?.status === "failure" ? result.status : "unknown",
     ...(result ? { resultMessageId: result.id } : {}),
-    pairing: group && (group.calls.length > 1 || group.results.length > 1) ? "ambiguous" : result ? "unique" : "missing" };
+    pairing: event.pairing ?? (group && (group.calls.length > 1 || group.results.length > 1) ? "ambiguous" : result ? "unique" : "missing") };
   });
 }
 export function toolCategory(tool?: string, resource?: OverviewEvent["resource"]): OverviewToolCategory {
@@ -200,7 +200,7 @@ export function resourceCombinations(source: OverviewSource, events: ResourceUsa
   return [...pairs].map(([id, value]) => ({ id, resources: value.resources, names: value.names, unit, count: value.count, sessions: value.sessions.size }))
     .sort((a, b) => b.count - a.count || a.id.localeCompare(b.id));
 }
-function buildResources(source: OverviewSource, selected: OverviewSource, range: OverviewRange, timezone: string): OverviewResources {
+export function buildResources(source: OverviewSource, selected: OverviewSource, range: OverviewRange, timezone: string, detail = true): OverviewResources {
   const groups = new Map<string, ResourceUsageEvent[]>();
   for (const event of selected.resources) { const id = resourceIdentity(event), events = groups.get(id) ?? []; events.push(event); groups.set(id, events); }
   const rows: OverviewResourceRow[] = [...groups].map(([id, events]) => {
@@ -218,16 +218,16 @@ function buildResources(source: OverviewSource, selected: OverviewSource, range:
       explicitCalls: events.filter(event => event.kind === "skill_call").length, successfulReads: events.filter(event => event.kind === "skill_read").length,
       activeWeeks: new Set(dates.map(day => intervalKey(day, "week"))).size, firstDay: dates[0] ?? null, lastDay: dates.at(-1) ?? null,
       averagePerSession: sessions ? events.length / sessions : null,
-      clients: aggregateCount(events, event => event.client, event => event.sessionId),
-      projects: aggregateCount(events, event => usageDimensionKey(event.project), event => event.sessionId, undefined, true),
-      tools: aggregateCount(calls, event => usageDimensionKey(event.tool), event => event.sessionId, event => event.status, true),
-      days, results: resultCounts(calls.map(event => event.status)) };
+      clients: detail ? aggregateCount(events, event => event.client, event => event.sessionId) : [],
+      projects: detail ? aggregateCount(events, event => usageDimensionKey(event.project), event => event.sessionId, undefined, true) : [],
+      tools: detail ? aggregateCount(calls, event => usageDimensionKey(event.tool), event => event.sessionId, event => event.status, true) : [],
+      days: detail ? days : [], results: resultCounts(calls.map(event => event.status)) };
   });
   const sessionIds = new Set(selected.sessions.map(session => session.id)), turns = trueTurnIds(source);
   return { skills: rows.filter(row => row.kind === "skill").sort((a, b) => b.sessions - a.sessions || b.uses - a.uses || a.id.localeCompare(b.id)),
     mcp: rows.filter(row => row.kind === "mcp").sort((a, b) => b.uses - a.uses || a.id.localeCompare(b.id)),
-    observations: resourceObservations(source, selected, range, timezone),
-    combinations: { sessions: resourceCombinations(source, selected.resources, "session"), turns: resourceCombinations(source, selected.resources, "turn") },
+    observations: detail ? resourceObservations(source, selected, range, timezone) : [],
+    combinations: detail ? { sessions: resourceCombinations(source, selected.resources, "session"), turns: resourceCombinations(source, selected.resources, "turn") } : { sessions: [], turns: [] },
     missingTimeEvents: source.resources.filter(event => sessionIds.has(event.sessionId) && validResource(event) && localDay(event.occurredAt, timezone) === null).length,
     missingTurnEvents: selected.resources.filter(event => !turns.has(`${event.sessionId}\u0000${event.turnId}`)).length };
 }
@@ -272,7 +272,7 @@ export function quantile(values: readonly number[], q: number): number | null {
   const sorted = [...values].sort((a, b) => a - b), index = (sorted.length - 1) * q, low = Math.floor(index), fraction = index - low;
   return sorted[low]! + (sorted[Math.min(low + 1, sorted.length - 1)]! - sorted[low]!) * fraction;
 }
-function buildProcess(source: OverviewSource, selected: OverviewSource, usageSelected: OverviewSource, timezone: string, global?: OverviewProcess): OverviewProcess {
+export function buildProcess(source: OverviewSource, selected: OverviewSource, usageSelected: OverviewSource, timezone: string, global?: OverviewProcess, detail = true): OverviewProcess {
   const sessionById = new Map(source.sessions.map(session => [session.id, session]));
   const selectedIds = new Set(selected.events.filter(event => event.kind === "tool_call").map(event => `${event.sessionId}\u0000${event.id}`));
   // 结果可以稍晚于调用落在范围外，唯一配对仍属于同一个范围内调用。
@@ -290,13 +290,13 @@ function buildProcess(source: OverviewSource, selected: OverviewSource, usageSel
     const dates = [...dayCounts.keys()].sort();
     return { key, name: first.tool ?? "未知", ...(first.tool === undefined ? { nameDescriptor: { key: "overview.unknown" } } : {}), server: first.resource?.server, category: toolCategory(first.tool, first.resource),
       count: values.length, sessions: new Set(values.map(sessionId)).size, results: resultCounts(values.map(status)), activeDays: dates.length,
-      clients: aggregateCount(values, event => sessionById.get(event.sessionId)!.client, sessionId, status),
-      projects: aggregateCount(values, event => usageDimensionKey(sessionById.get(event.sessionId)!.project), sessionId, status, true),
+      clients: detail ? aggregateCount(values, event => sessionById.get(event.sessionId)!.client, sessionId, status) : [],
+      projects: detail ? aggregateCount(values, event => usageDimensionKey(sessionById.get(event.sessionId)!.project), sessionId, status, true) : [],
       days: dates.map(day => ({ day, ...dayCounts.get(day)! })) };
   }).sort((a, b) => b.count - a.count || a.key.localeCompare(b.key));
   const timingGroups = new Map<string, OverviewSource["requests"]>();
   let missingTimingRequests = 0;
-  for (const request of usageSelected.requests) {
+  for (const request of detail ? usageSelected.requests : []) {
     if (!validDuration(request.usage)) { missingTimingRequests += 1; continue; }
     const session = sessionById.get(request.sessionId)!, id = timingGroupId(session, request.usage), values = timingGroups.get(id) ?? [];
     values.push(request); timingGroups.set(id, values);
@@ -318,17 +318,17 @@ function buildProcess(source: OverviewSource, selected: OverviewSource, usageSel
   const compressions = selected.events.filter(event => event.kind === "compression");
   return { tools, categories: aggregateCount(calls, event => toolCategory(event.tool, event.resource), event => event.sessionId, event => event.status),
     results: resultCounts(calls.map(event => event.status)), failures: calls.filter(event => event.status === "failure").length,
-    failureSequences: failureSequences(source, calls), compressions: compressions.length,
+    failureSequences: detail ? failureSequences(source, calls) : [], compressions: compressions.length,
     compressionSessions: new Set(compressions.map(event => event.sessionId)).size, timing, missingTimingRequests };
 }
-export function buildDelegation(source: OverviewSource, selected: OverviewSource, usageSelected: OverviewSource, activeIds: Set<string>, timezone: string, global?: OverviewDelegation): OverviewDelegation {
+export function buildDelegation(source: OverviewSource, selected: OverviewSource, usageSelected: OverviewSource, activeIds: Set<string>, timezone: string, global?: OverviewDelegation, datedIds?: Set<string>): OverviewDelegation {
   const byId = new Map(source.sessions.map(session => [session.id, session])), children = new Map<string, SessionSummary[]>();
   for (const session of source.sessions) if (session.relationship === "child" && session.parentSessionId) {
     const group = children.get(session.parentSessionId) ?? []; group.push(session); children.set(session.parentSessionId, group);
   }
   let eligibleMainSessions = 0, withChildActivity = 0, unknownMainSessions = 0, unknownRelationshipSessions = 0;
-  const datedActivityIds = global ? new Set<string>() : new Set([...source.events.filter(event => isActivityEvent(event) && localDay(event.occurredAt, timezone) !== null).map(event => event.sessionId),
-    ...source.requests.filter(request => localDay(request.usage.occurredAt, timezone) !== null).map(request => request.sessionId)]);
+  const datedActivityIds = datedIds ?? (global ? new Set<string>() : new Set([...source.events.filter(event => isActivityEvent(event) && localDay(event.occurredAt, timezone) !== null).map(event => event.sessionId),
+    ...source.requests.filter(request => localDay(request.usage.occurredAt, timezone) !== null).map(request => request.sessionId)]));
   const selectedRequests = usageSelected.requests;
   const relationUnknown = (session: SessionSummary) => session.relationship === "child" && (!session.parentSessionId || !byId.has(session.parentSessionId))
     || session.gaps.some(gap => ["diagnostics.sessions.store.m004", "diagnostics.sessions.store.m005", "diagnostics.sessions.store.m006", "diagnostics.sessions.store.m017"].includes(gap.messageDescriptor?.key ?? ""));

@@ -81,7 +81,7 @@ export async function startService(options: ServiceOptions = {}) {
     resourceManager = new ResourceManager(home);
     pricing = new PricingService(home, options.usagePricing);
     usageManager = new UsageManager(library, pricing, join(home, "usage-rollups.sqlite"));
-    overviewManager = new OverviewManager(library, pricing, () => index.listRepositories());
+    overviewManager = new OverviewManager(library, pricing, () => index.listRepositories(), undefined, usageManager);
     const management = resourceManager;
     const resources = new ResourceService(library, management, options.resourceInventory ?? { environment: process.env }, () =>
       [...new Set([...index.listRepositories().map(repository => repository.path), ...library.status().projects])]);
