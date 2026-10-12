@@ -95,3 +95,6 @@ export interface UsageReport {
   facets: { clients: string[]; projects: string[]; models: string[] };
   pricing: PricingSummary;
 }
+export type UsageStatistics = Pick<UsageReport,
+  "version" | "priceVersion" | "timezone" | "query" | "totals" | "undated" | "days" | "groups" | "facets">;
+export type UsageStatisticsView = "totals" | "trend" | "distribution";
