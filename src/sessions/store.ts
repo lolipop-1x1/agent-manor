@@ -17,7 +17,7 @@ import { initializeIndexSchema } from "../index/schema.js";
 import { resourceGapRelevant } from "../resources/coverage.js";
 import { sessionTitle } from "./title.js";
 import { initializeSearchIndex, prepareSearchIndex, searchMatch } from "./search-index.js";
-import { initializeUsageFacts, prepareUsageFacts, readUsageFactMetadata, readUsageFacts, usageFactsReady } from "./usage-facts.js";
+import { initializeUsageFacts, prepareUsageFacts, readUsageFactMetadata, readUsageFacts, usageFactsReady, USAGE_FACT_FORMAT_VERSION } from "./usage-facts.js";
 import type { UsageFactMetadata } from "./usage-facts.js";
 
 interface JsonRow { json: string }
@@ -65,6 +65,7 @@ export class SessionStore {
   private readonly database: Database.Database;
   private readonly profileSummaries = new Map<string, SessionProfile>();
   private readonly revisionUsageCounts = new Map<string, number>();
+  private readonly overviewStatements = new Map<string, Database.Statement>();
   private statusMetadata?: Pick<SessionIndexStatus, "version" | "sessionCount" | "sourceCount" | "projects">;
 
   constructor(dbPath: string) {
@@ -124,7 +125,17 @@ export class SessionStore {
     } catch (error) { this.database.close(); throw error; }
   }
 
-  close(): void { this.database.close(); }
+  close(): void { this.overviewStatements.clear(); this.database.close(); }
+
+  /** 总览逐修订复用固定 SQL，原生语句数量不随历史修订数增长。 */
+  private overviewStatement(sql: string): Database.Statement {
+    const cached = this.overviewStatements.get(sql);
+    if (cached) return cached.busy ? this.database.prepare(sql) : cached;
+    const statement = this.database.prepare(sql);
+    if (this.overviewStatements.size === 32) this.overviewStatements.delete(this.overviewStatements.keys().next().value!);
+    this.overviewStatements.set(sql, statement);
+    return statement;
+  }
 
   prepareSearchIndex(onProgress?: (progress: number) => void): Promise<void> { return prepareSearchIndex(this.database, onProgress); }
 
@@ -404,7 +415,7 @@ export class SessionStore {
   private version(requested?: string): string {
     const version = requested ?? this.currentVersion();
     if (!version) throw new StoreError("ANALYSIS_NOT_READY", "会话索引尚未完成", { key: "diagnostics.sessions.store.m009" });
-    if (!this.database.prepare("SELECT 1 FROM session_versions WHERE id=?").get(version)) throw new StoreError("VERSION_NOT_FOUND", "会话索引版本不存在", { key: "diagnostics.sessions.store.m010" });
+    if (!this.overviewStatement("SELECT 1 FROM session_versions WHERE id=?").get(version)) throw new StoreError("VERSION_NOT_FOUND", "会话索引版本不存在", { key: "diagnostics.sessions.store.m010" });
     return version;
   }
 
@@ -466,9 +477,9 @@ export class SessionStore {
     }
     if (identity?.client !== undefined && identity.project === undefined) parts.push("r.project IS NULL");
     const sessionFilter = parts.join(" AND ");
-    const sessionCount = (this.database.prepare(`SELECT COUNT(*) AS count FROM session_version_sessions v
+    const sessionCount = (this.overviewStatement(`SELECT COUNT(*) AS count FROM session_version_sessions v
       JOIN session_revisions r ON r.id=v.revision WHERE ${sessionFilter}`).get(...values) as { count: number }).count;
-    const clients = (this.database.prepare(`SELECT DISTINCT r.client FROM session_version_sessions v
+    const clients = (this.overviewStatement(`SELECT DISTINCT r.client FROM session_version_sessions v
       JOIN session_revisions r ON r.id=v.revision WHERE ${sessionFilter} ORDER BY r.client`).all(...values) as { client: Client }[]).map(row => row.client);
     const kind = query.kind ?? identity?.kind;
     if (kind) parts.push(kind === "mcp" ? "json_extract(m.json,'$.resource.kind')='mcp'" : "json_extract(m.json,'$.resource.kind') IN ('skill_call','skill_read')");
@@ -478,7 +489,7 @@ export class SessionStore {
         parts[parts.length - 1] = "json_extract(m.json,'$.resource.server') IS NULL";
       } else values.push(identity.kind === "mcp" ? identity.server! : identity.name);
     }
-    const rows = this.database.prepare(`SELECT m.id AS message_id,m.ordinal,m.turn_id,m.record_line,r.session_id,r.client,r.project,
+    const rows = this.overviewStatement(`SELECT m.id AS message_id,m.ordinal,m.turn_id,m.record_line,r.session_id,r.client,r.project,
       r.id AS revision,r.fingerprint,json_extract(r.json,'$.path') AS source_path,json_extract(r.json,'$.sourceId') AS source_id,
       json_extract(m.json,'$.resource.kind') AS resource_kind,json_extract(m.json,'$.resource.name') AS resource_name,
       json_extract(m.json,'$.resource.nameDescriptor') AS resource_name_descriptor,
@@ -526,12 +537,12 @@ export class SessionStore {
           source: { path: row.source_path, sourceId: row.source_id, revision: row.revision, fingerprint: row.fingerprint, recordLine: row.record_line } };
       }
     })();
-    const allGaps = revision === undefined ? JSON.parse((this.database.prepare("SELECT gaps FROM session_versions WHERE id=?").get(version) as { gaps: string }).gaps) as Gap[] : [];
+    const allGaps = revision === undefined ? JSON.parse((this.overviewStatement("SELECT gaps FROM session_versions WHERE id=?").get(version) as { gaps: string }).gaps) as Gap[] : [];
     const sourceIds = [...new Set(allGaps.flatMap(gap => gap.sourceId ?? []))];
     const sourceClients = new Map<string, Set<Client>>();
     if (sourceIds.length) {
       const wanted = new Set(sourceIds);
-      const records = this.database.prepare("SELECT DISTINCT json_extract(json,'$.sourceId') AS source_id,client FROM session_revisions").all() as { source_id: string; client: Client }[];
+      const records = this.overviewStatement("SELECT DISTINCT json_extract(json,'$.sourceId') AS source_id,client FROM session_revisions").all() as { source_id: string; client: Client }[];
       for (const record of records) if (wanted.has(record.source_id)) {
         let related = sourceClients.get(record.source_id);
         if (!related) { related = new Set(); sourceClients.set(record.source_id, related); }
@@ -791,18 +802,18 @@ export class SessionStore {
 
   overviewGaps(requestedVersion?: string): Gap[] {
     const version = this.version(requestedVersion);
-    return JSON.parse((this.database.prepare("SELECT gaps FROM session_versions WHERE id=?").get(version) as { gaps: string }).gaps) as Gap[];
+    return JSON.parse((this.overviewStatement("SELECT gaps FROM session_versions WHERE id=?").get(version) as { gaps: string }).gaps) as Gap[];
   }
 
   /** 派生缓存只保留仍属于完整发布版本的会话修订。 */
   overviewRetainedRevisions(): string[] {
-    return (this.database.prepare("SELECT DISTINCT revision FROM session_version_sessions").all() as { revision: string }[])
+    return (this.overviewStatement("SELECT DISTINCT revision FROM session_version_sessions").all() as { revision: string }[])
       .map(row => row.revision);
   }
 
   /** 只在时间桶回填或原事件调查时读取成员，避免在派生库复制请求成员表。 */
   overviewRequestMembers(revision: string, requestIds?: string[]): Iterable<{ id: string; messageId?: string; requestMessageIds?: string[]; endMessageId?: string }> {
-    const rows = this.database.prepare(`SELECT u.id,u.message_id,
+    const rows = this.overviewStatement(`SELECT u.id,u.message_id,
       json_extract(u.json,'$.requestMessageIds') AS members,
       CASE WHEN COALESCE(json_extract(u.json,'$.timing.end.source'),'')<>'mirror'
         THEN json_extract(u.json,'$.timing.end.messageId') END AS end_id
@@ -819,7 +830,7 @@ export class SessionStore {
   /** 按不可变修订读取窄事实；完整请求正文与工具参数不进入派生缓存。 */
   overviewRevisionFacts(revision: string, sessionId: string): Pick<OverviewSource, "events" | "requests"> {
     this.ensureUsageFacts(revision);
-    const events = (this.database.prepare(`SELECT id,ordinal,turn_id,kind,call_id,
+    const events = (this.overviewStatement(`SELECT id,ordinal,turn_id,kind,call_id,
       json_extract(json,'$.occurredAt') AS occurred_at,json_extract(json,'$.model') AS model,
       json_extract(json,'$.tool') AS tool,json_extract(json,'$.status') AS status,
       json_extract(json,'$.durationMs') AS duration_ms,json_extract(json,'$.contextSource') AS context_source,
@@ -835,20 +846,29 @@ export class SessionStore {
       model: row.model ?? undefined, tool: row.tool ?? undefined, status: row.status ?? undefined,
       durationMs: row.duration_ms ?? undefined, contextSource: row.context_source ?? undefined,
       contextEvidence: row.context_evidence ?? undefined, ...(row.resource ? { resource: JSON.parse(row.resource) } : {}) }));
-    const metadata = new Map((this.database.prepare(`SELECT f.id,f.ordinal,u.message_id,u.turn_id,
+    const requests = (this.overviewStatement(`SELECT f.id,f.ordinal,f.model,f.provider,f.occurred_at,
+      f.input_tokens,f.output_tokens,f.cache_read_tokens,f.cache_write_tokens,f.reasoning_tokens,f.context_tokens,u.message_id,u.turn_id,
       json_extract(u.json,'$.requestMessageIds') AS members,json_extract(u.json,'$.timing') AS timing
       FROM session_usage_facts f JOIN session_usage u ON u.revision=f.revision AND u.id=f.id
       WHERE f.revision=? AND f.eligible=1 ORDER BY f.ordinal`).all(revision) as {
-        id: string; ordinal: number; message_id: string | null; turn_id: string | null; members: string | null; timing: string | null }[])
-      .map(row => [row.id, row]));
-    const requests = this.usageFacts(revision).map(usage => {
-      const row = metadata.get(usage.id)!;
-      return { sessionId, ordinal: row.ordinal, usage: { ...usage,
+        id: string; ordinal: number; model: string | null; provider: string | null; occurred_at: string | null;
+        input_tokens: number | null; output_tokens: number | null; cache_read_tokens: number | null; cache_write_tokens: number | null;
+        reasoning_tokens: number | null; context_tokens: number | null;
+        message_id: string | null; turn_id: string | null; members: string | null; timing: string | null }[]).map(row =>
+      ({ sessionId, ordinal: row.ordinal, usage: { id: row.id,
+        ...(row.model !== null ? { model: row.model } : {}),
+        ...(row.provider !== null ? { provider: row.provider } : {}),
+        ...(row.occurred_at !== null ? { occurredAt: row.occurred_at } : {}),
+        ...(row.input_tokens !== null ? { inputTokens: row.input_tokens } : {}),
+        ...(row.output_tokens !== null ? { outputTokens: row.output_tokens } : {}),
+        ...(row.cache_read_tokens !== null ? { cachedInputTokens: row.cache_read_tokens } : {}),
+        ...(row.cache_write_tokens !== null ? { cacheWriteTokens: row.cache_write_tokens } : {}),
+        ...(row.reasoning_tokens !== null ? { reasoningOutputTokens: row.reasoning_tokens } : {}),
+        ...(row.context_tokens !== null ? { contextTokens: row.context_tokens } : {}),
         ...(row.message_id !== null ? { messageId: row.message_id } : {}),
         ...(row.turn_id !== null ? { turnId: row.turn_id } : {}),
         ...(row.members ? { requestMessageIds: JSON.parse(row.members) as string[] } : {}),
-        ...(row.timing ? { timing: JSON.parse(row.timing) as SessionUsage["timing"] } : {}) } };
-    });
+        ...(row.timing ? { timing: JSON.parse(row.timing) as SessionUsage["timing"] } : {}) } }));
     return { events, requests };
   }
 
@@ -947,7 +967,11 @@ export class SessionStore {
     })();
   }
 
-  ensureUsageFacts(revision: string): void { prepareUsageFacts(this.database, revision, this.eligibleUsageWhere()); }
+  ensureUsageFacts(revision: string): void {
+    if (this.overviewStatement("SELECT 1 FROM session_usage_fact_revisions WHERE revision=? AND format_version=?")
+      .get(revision, USAGE_FACT_FORMAT_VERSION)) return;
+    prepareUsageFacts(this.database, revision, this.eligibleUsageWhere());
+  }
 
   /** 旧索引补齐按小批次提交；单修订保持保存点原子，批次失败整体回滚。 */
   ensureUsageFactsBatch(revisions: string[]): void {

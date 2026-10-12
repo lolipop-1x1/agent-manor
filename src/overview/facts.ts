@@ -7,7 +7,7 @@ import type { ResourceUsageEvent } from "../resource-contracts.js";
 import type { UsageReport } from "../usage-contracts.js";
 import type { SessionStore } from "../sessions/store.js";
 import { StoreError } from "../index/store.js";
-import { isActivityEvent, knownResourceIdentity, matchesGlobalSession, pairToolCalls, resourceIdentity, validDuration, validResource } from "./analytics.js";
+import { isActivityEvent, knownResourceIdentity, matchesGlobalSession, pairToolCalls, resourceIdentity, toolCategory, validDuration, validResource } from "./analytics.js";
 import { addDays, localDay, prepareOverviewDateCache, resolveOverviewRange, resolveTimezone } from "./dates.js";
 
 const format = 2;
@@ -36,6 +36,8 @@ export class OverviewFactStore {
   private verified = new Set<string>();
   private preparedTimes = new Set<string>();
   private preparedScopes = new Set<string>();
+  private readonly statements = new Map<string, Database.Statement>();
+  private timeFormatter?: { timezone: string; value: Intl.DateTimeFormat };
   private metadata?: { version: string; source: OverviewSource; rows: ReturnType<SessionStore["usageFactSessions"]>["sessions"] };
   private pruneVersion?: string;
 
@@ -76,8 +78,10 @@ export class OverviewFactStore {
       if (typeof timing !== "string") return 0;
       try { return Number(validDuration({ id: "", timing: JSON.parse(timing) })); } catch { return 0; }
     });
+    this.database.function("overview_tool_category", { deterministic: true }, (tool, resourceKind) =>
+      toolCategory(typeof tool === "string" ? tool : undefined, resourceKind === "mcp" ? { kind: "mcp", name: "" } : undefined));
     if (this.readonly) {
-      this.database.prepare("SELECT 1 FROM overview_fact_revisions LIMIT 1").get();
+      this.statement("SELECT 1 FROM overview_fact_revisions LIMIT 1").get();
       return;
     }
     this.database.exec(`
@@ -114,6 +118,16 @@ export class OverviewFactStore {
     this.database.pragma(`max_page_count=${Math.max(1, Math.floor(this.maxBytes / pageSize))}`);
   }
 
+  /** 固定查询复用原生语句，避免按修订编译后等待 GC 才释放大量 SQLite 内存。 */
+  private statement(sql: string): Database.Statement {
+    const cached = this.statements.get(sql);
+    if (cached) return cached.busy ? this.database.prepare(sql) : cached;
+    const statement = this.database.prepare(sql);
+    if (this.statements.size === 32) this.statements.delete(this.statements.keys().next().value!);
+    this.statements.set(sql, statement);
+    return statement;
+  }
+
   /** 每个修订事务完成后让出执行，其他前台分区可以合作调度。 */
   async prepare(query: OverviewQuery = {}, now = new Date()): Promise<void> {
     if (this.readonly) throw new StoreError("ANALYSIS_NOT_READY", "总览事实须由写入者准备", { key: "diagnostics.overview.cacheUnavailable" });
@@ -124,7 +138,7 @@ export class OverviewFactStore {
     this.limitDisk();
     prepareOverviewDateCache(source.version, timezone);
     if (this.pruneVersion !== source.version) {
-      this.database.prepare("DELETE FROM overview_fact_revisions WHERE revision NOT IN (SELECT value FROM json_each(?))")
+      this.statement("DELETE FROM overview_fact_revisions WHERE revision NOT IN (SELECT value FROM json_each(?))")
         .run(JSON.stringify(this.sessions.overviewRetainedRevisions()));
       this.pruneVersion = source.version;
     }
@@ -155,7 +169,7 @@ export class OverviewFactStore {
 
   private ready(revision: string): boolean {
     if (this.verified.has(revision)) return true;
-    const row = this.database.prepare(`SELECT format,events,requests,resources,
+    const row = this.statement(`SELECT format,events,requests,resources,
       (SELECT COUNT(*) FROM overview_fact_events WHERE revision=r.revision) AS event_count,
       (SELECT COUNT(*) FROM overview_fact_requests WHERE revision=r.revision) AS request_count,
       (SELECT COUNT(*) FROM overview_fact_resources WHERE revision=r.revision) AS resource_count
@@ -169,7 +183,7 @@ export class OverviewFactStore {
   private timeReady(revision: string, timezone: string): boolean {
     const key = JSON.stringify([revision, timezone]);
     if (this.preparedTimes.has(key)) return true;
-    const ready = !!this.database.prepare("SELECT 1 FROM overview_fact_time_revisions WHERE revision=? AND timezone=?").get(revision, timezone);
+    const ready = !!this.statement("SELECT 1 FROM overview_fact_time_revisions WHERE revision=? AND timezone=?").get(revision, timezone);
     if (ready) this.preparedTimes.add(key);
     return ready;
   }
@@ -180,24 +194,24 @@ export class OverviewFactStore {
     const calls = new Map(pairToolCalls(facts.events.filter(isActivityEvent)).map(event => [event.id, event]));
     this.database.transaction(() => {
       if (this.ready(revision)) return;
-      this.database.prepare("DELETE FROM overview_fact_revisions WHERE revision=?").run(revision);
+      this.statement("DELETE FROM overview_fact_revisions WHERE revision=?").run(revision);
       const { recordLine: _recordLine, ...resourceSource } = resources[0]?.source ?? {};
-      this.database.prepare("INSERT INTO overview_fact_revisions VALUES(?,?,?,?,?,?,?,?)")
+      this.statement("INSERT INTO overview_fact_revisions VALUES(?,?,?,?,?,?,?,?)")
         .run(revision, sessionId, format, facts.events.length, facts.requests.length, resources.length, Date.now(), JSON.stringify(resourceSource));
-      const eventWrite = this.database.prepare("INSERT INTO overview_fact_events VALUES(?,?,?,?,?,?,?,?,?,?)");
+      const eventWrite = this.statement("INSERT INTO overview_fact_events VALUES(?,?,?,?,?,?,?,?,?,?)");
       for (const raw of facts.events) {
         const event = calls.get(raw.id) ?? raw;
         const { sessionId: _sessionId, id: _id, ordinal: _ordinal, kind: _kind, turnId: _turnId, tool, status, ...projection } = event;
         eventWrite.run(revision, event.id, event.ordinal, event.kind, Number(isActivityEvent(event)),
           time(event.occurredAt), tool ?? null, status ?? null, event.turnId, JSON.stringify(projection));
       }
-      const requestWrite = this.database.prepare("INSERT INTO overview_fact_requests VALUES(?,?,?,?,?,?,?,?,?,?)");
+      const requestWrite = this.statement("INSERT INTO overview_fact_requests VALUES(?,?,?,?,?,?,?,?,?,?)");
       for (const request of facts.requests) {
         const { requestMessageIds: _members, id: _id, occurredAt, model, inputTokens, outputTokens, messageId, ...usage } = request.usage;
         requestWrite.run(revision, request.usage.id, request.ordinal!, time(occurredAt), occurredAt ?? null,
           model ?? null, finite(inputTokens), finite(outputTokens), messageId ?? null, JSON.stringify({ usage }));
       }
-      const resourceWrite = this.database.prepare("INSERT INTO overview_fact_resources VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)");
+      const resourceWrite = this.statement("INSERT INTO overview_fact_resources VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)");
       for (const resource of resources) {
         const { sessionId: _sessionId, id: _id, ordinal: _ordinal, kind: _kind, name: _name, server: _server, tool: _tool,
           status: _status, turnId: _turnId, client: _client, project: _project, source, ...projection } = resource;
@@ -211,15 +225,17 @@ export class OverviewFactStore {
   }
 
   private prepareTimes(revision: string, timezone: string): void {
-    const events = this.database.prepare("SELECT id,time_ms,kind,active FROM overview_fact_events WHERE revision=?").all(revision) as {
+    const events = this.statement("SELECT id,time_ms,kind,active FROM overview_fact_events WHERE revision=?").all(revision) as {
       id: string; time_ms: number | null; kind: string; active: number }[];
-    const requests = this.database.prepare("SELECT id,time_ms FROM overview_fact_requests WHERE revision=? ORDER BY ordinal").all(revision) as FactRow[];
+    const requests = this.statement("SELECT id,time_ms FROM overview_fact_requests WHERE revision=? ORDER BY ordinal").all(revision) as FactRow[];
     const members = new Map<string, string[]>();
     for (const row of this.sessions.overviewRequestMembers(revision)) members.set(row.id,
       [...new Set([row.messageId, ...(row.requestMessageIds ?? []), row.endMessageId].filter((id): id is string => id !== undefined))]);
     const buckets = new Map<string, Bucket>(), activeEventDays = new Map<string, string>();
     // 回填只保留当前修订的投影，不把整库事件塞入全局日期缓存。
-    const formatter = new Intl.DateTimeFormat("en-CA", { timeZone: timezone, year: "numeric", month: "2-digit", day: "2-digit", hourCycle: "h23", hour: "2-digit" });
+    if (this.timeFormatter?.timezone !== timezone) this.timeFormatter = { timezone, value: new Intl.DateTimeFormat("en-CA", {
+      timeZone: timezone, year: "numeric", month: "2-digit", day: "2-digit", hourCycle: "h23", hour: "2-digit" }) };
+    const formatter = this.timeFormatter.value;
     const projections = new Map<number, { day: string; hour: number }>();
     const project = (milliseconds: number) => {
       let result = projections.get(milliseconds);
@@ -244,7 +260,7 @@ export class OverviewFactStore {
         const group = bucket(row.time_ms); group.events += 1; group.rhythm += 1;
         if (row.kind === "tool_call") group.tools += 1;
       }
-      const cross = this.database.prepare("INSERT INTO overview_fact_cross_links VALUES(?,?,?,?,?,?)");
+      const cross = this.statement("INSERT INTO overview_fact_cross_links VALUES(?,?,?,?,?,?)");
       for (const row of requests) {
         if (row.time_ms === null) continue;
         const group = bucket(row.time_ms); group.requests += 1;
@@ -254,9 +270,9 @@ export class OverviewFactStore {
           for (const linkedDay of linkedDays) cross.run(revision, timezone, row.id, group.day, group.hour, linkedDay);
         }
       }
-      const write = this.database.prepare("INSERT INTO overview_fact_buckets VALUES(?,?,?,?,?,?,?,?)");
+      const write = this.statement("INSERT INTO overview_fact_buckets VALUES(?,?,?,?,?,?,?,?)");
       for (const row of buckets.values()) write.run(revision, timezone, row.day, row.hour, row.events, row.requests, row.tools, row.rhythm);
-      this.database.prepare("INSERT INTO overview_fact_time_revisions VALUES(?,?)").run(revision, timezone);
+      this.statement("INSERT INTO overview_fact_time_revisions VALUES(?,?)").run(revision, timezone);
     }).immediate();
     this.preparedTimes.add(JSON.stringify([revision, timezone]));
   }
@@ -279,7 +295,7 @@ export class OverviewFactStore {
     if (query.window !== "all" || query.from) return resolveOverviewRange(source, { ...query, timezone }, now);
     this.requirePrepared(query, timezone);
     const revisions = this.revisions(query), ids = JSON.stringify(revisions);
-    const row = this.database.prepare(`SELECT MIN(time_ms) AS time_ms FROM (
+    const row = this.statement(`SELECT MIN(time_ms) AS time_ms FROM (
       SELECT MIN(time_ms) AS time_ms FROM overview_fact_events WHERE revision IN (SELECT value FROM json_each(?)) AND active=1
       UNION ALL SELECT MIN(time_ms) FROM overview_fact_requests WHERE revision IN (SELECT value FROM json_each(?)))`)
       .get(ids, ids) as { time_ms: number | null };
@@ -312,7 +328,7 @@ export class OverviewFactStore {
   }
 
   iterateRows<T>(sql: string, values: (string | number | null)[] = []): Iterable<T> {
-    const statement = this.database.prepare(sql);
+    const statement = this.statement(sql);
     if (!statement.readonly) throw new TypeError("总览详情只允许只读查询");
     return statement.iterate(...values) as Iterable<T>;
   }
@@ -354,7 +370,7 @@ export class OverviewFactStore {
     const key = JSON.stringify([this.sessions.usageVersion(query.version), timezone, query.clients, query.projects]);
     if (this.preparedScopes.has(key)) return;
     const revisions = this.revisions(query);
-    const count = (this.database.prepare(`SELECT COUNT(*) AS count FROM overview_fact_time_revisions t
+    const count = (this.statement(`SELECT COUNT(*) AS count FROM overview_fact_time_revisions t
       JOIN overview_fact_revisions r ON r.revision=t.revision AND r.format=?
       WHERE timezone=? AND t.revision IN (SELECT value FROM json_each(?))`)
       .get(format, timezone, JSON.stringify(revisions)) as { count: number }).count;
@@ -364,13 +380,13 @@ export class OverviewFactStore {
 
   activitySessions(query: OverviewQuery, now = new Date()): { activeIds: string[]; datedIds: string[] } {
     const { source, range, timezone, revisions } = this.sqlScope(query, now), json = JSON.stringify(revisions);
-    const active = new Set((this.database.prepare(`SELECT DISTINCT revision FROM overview_fact_buckets
+    const active = new Set((this.statement(`SELECT DISTINCT revision FROM overview_fact_buckets
       WHERE revision IN (SELECT value FROM json_each(?)) AND timezone=? AND day BETWEEN ? AND ?`)
       .all(json, timezone, range.from, range.to) as { revision: string }[]).map(row => row.revision));
     const global = JSON.stringify(this.meta(source.version).rows.map(row => row.revision));
-    const dated = new Set((this.database.prepare(`SELECT DISTINCT revision FROM overview_fact_buckets
+    const dated = new Set((this.statement(`SELECT DISTINCT revision FROM overview_fact_buckets
       WHERE revision IN (SELECT value FROM json_each(?)) AND timezone=?`).all(global, timezone) as { revision: string }[]).map(row => row.revision));
-    if (range.all) for (const row of this.database.prepare(`SELECT revision FROM overview_fact_events
+    if (range.all) for (const row of this.statement(`SELECT revision FROM overview_fact_events
       WHERE revision IN (SELECT value FROM json_each(?)) AND active=1 AND time_ms IS NULL
       UNION SELECT revision FROM overview_fact_requests WHERE revision IN (SELECT value FROM json_each(?)) AND time_ms IS NULL`)
       .all(json, json) as { revision: string }[]) active.add(row.revision);
@@ -382,10 +398,10 @@ export class OverviewFactStore {
     const { source, range, timezone, revisions, bounds } = this.sqlScope(query, now), json = JSON.stringify(revisions);
     const selectedSessions = source.sessions.filter(session => matchesGlobalSession(session, query));
     const revisionIds = new Map(this.meta(source.version).rows.map(row => [row.revision, row.session.id]));
-    const rows = this.database.prepare(`SELECT revision,day,hour,events,requests,tools,rhythm FROM overview_fact_buckets
+    const rows = this.statement(`SELECT revision,day,hour,events,requests,tools,rhythm FROM overview_fact_buckets
       WHERE revision IN (SELECT value FROM json_each(?)) AND timezone=? AND day BETWEEN ? AND ? ORDER BY day,hour,revision`)
       .all(json, timezone, range.from, range.to) as Bucket[];
-    const adjustments = this.database.prepare(`SELECT revision,day,hour,COUNT(DISTINCT request_id) AS count
+    const adjustments = this.statement(`SELECT revision,day,hour,COUNT(DISTINCT request_id) AS count
       FROM overview_fact_cross_links WHERE revision IN (SELECT value FROM json_each(?)) AND timezone=?
       AND day BETWEEN ? AND ? AND linked_day BETWEEN ? AND ? GROUP BY revision,day,hour`)
       .all(json, timezone, range.from, range.to, range.from, range.to) as { revision: string; day: string; hour: number; count: number }[];
@@ -407,12 +423,12 @@ export class OverviewFactStore {
       weekdays[weekday]!.events += rhythm; weekdays[weekday]!.sessions.add(id);
       hours[row.hour]!.events += rhythm; hours[row.hour]!.sessions.add(id);
     }
-    const missing = this.database.prepare(`SELECT
+    const missing = this.statement(`SELECT
       (SELECT COUNT(*) FROM overview_fact_events WHERE revision IN (SELECT value FROM json_each(?)) AND active=1 AND time_ms IS NULL) AS events,
       (SELECT COUNT(*) FROM overview_fact_requests WHERE revision IN (SELECT value FROM json_each(?)) AND time_ms IS NULL) AS requests,
       (SELECT COUNT(*) FROM overview_fact_resources WHERE revision IN (SELECT value FROM json_each(?)) AND valid=1 AND time_ms IS NULL) AS resources`)
       .get(json, json, json) as { events: number; requests: number; resources: number };
-    const missingSessions = this.database.prepare(`SELECT revision FROM overview_fact_events
+    const missingSessions = this.statement(`SELECT revision FROM overview_fact_events
       WHERE revision IN (SELECT value FROM json_each(?)) AND active=1 AND time_ms IS NULL
       UNION SELECT revision FROM overview_fact_requests WHERE revision IN (SELECT value FROM json_each(?)) AND time_ms IS NULL`)
       .all(json, json) as { revision: string }[];
@@ -437,20 +453,20 @@ export class OverviewFactStore {
     for (let day = endpoint; day >= range.from && activeDays.has(day); day = addDays(day, -1)) currentStreak += 1;
     for (const day of [...activeDays].sort()) { streak = previous && addDays(previous, 1) === day ? streak + 1 : 1; longestStreak = Math.max(longestStreak, streak); previous = day; }
     const dateSql = bounds ? "f.time_ms>=? AND f.time_ms<?" : "1", values = bounds ? [bounds.fromMs, bounds.toMs] : [];
-    const models = this.database.prepare(`SELECT DISTINCT f.model FROM overview_fact_requests f
+    const models = this.statement(`SELECT DISTINCT f.model FROM overview_fact_requests f
       WHERE f.revision IN (SELECT value FROM json_each(?)) AND f.model IS NOT NULL AND ${dateSql}`)
       .all(json, ...values) as { model: string }[];
-    const resourceCount = (this.database.prepare(`SELECT COUNT(DISTINCT f.resource_id) AS count FROM overview_fact_resources f
+    const resourceCount = (this.statement(`SELECT COUNT(DISTINCT f.resource_id) AS count FROM overview_fact_resources f
       WHERE f.revision IN (SELECT value FROM json_each(?)) AND f.known=1 AND f.valid=1 AND ${dateSql}`)
       .get(json, ...values) as { count: number }).count;
-    const peak = this.database.prepare(`SELECT f.revision,f.id,f.message_id,f.occurred_at,f.input_tokens+f.output_tokens AS tokens
+    const peak = this.statement(`SELECT f.revision,f.id,f.message_id,f.occurred_at,f.input_tokens+f.output_tokens AS tokens
       FROM overview_fact_requests f
       JOIN overview_fact_revisions r ON r.revision=f.revision
       WHERE f.revision IN (SELECT value FROM json_each(?)) AND f.input_tokens>=0 AND f.output_tokens>=0 AND ${dateSql}
       ORDER BY tokens DESC,COALESCE(f.occurred_at,''),r.session_id || ':' || f.id LIMIT 1`)
       .get(json, ...values) as { revision: string; id: string; message_id: string | null; occurred_at: string | null; tokens: number } | undefined;
     const globalRevisions = JSON.stringify(this.revisions({ version: source.version }));
-    const facetModels = (this.database.prepare(`SELECT DISTINCT model FROM overview_fact_requests WHERE revision IN (SELECT value FROM json_each(?))
+    const facetModels = (this.statement(`SELECT DISTINCT model FROM overview_fact_requests WHERE revision IN (SELECT value FROM json_each(?))
       AND model IS NOT NULL ORDER BY model`).all(globalRevisions) as { model: string }[]).map(row => row.model);
     const totals = usage.totals;
     return { totals, activity, summary: { sessions: active.length, mainSessions: active.filter(session => session.relationship !== "child" && session.relationship !== "fork").length,
@@ -477,7 +493,7 @@ export class OverviewFactStore {
     let decodingRevision: string | undefined;
     const read = (family: "event" | "request" | "resource", suffix = "", values: (string | number)[] = [], full = false) => {
       const table = family === "event" ? "events" : family === "request" ? "requests" : "resources";
-      return this.database.prepare(`SELECT f.*,r.session_id,r.resource_source_json FROM overview_fact_${table} f
+      return this.statement(`SELECT f.*,r.session_id,r.resource_source_json FROM overview_fact_${table} f
         JOIN overview_fact_revisions r ON r.revision=f.revision
         WHERE f.revision IN (SELECT value FROM json_each(?))${full ? "" : dateSql}${suffix} ORDER BY r.session_id,f.ordinal,f.id`)
         .iterate(json, ...(full ? [] : bounds), ...values) as Iterable<EventRow | RequestRow | ResourceRow>;
@@ -514,7 +530,7 @@ export class OverviewFactStore {
       if (!(error instanceof SyntaxError)) throw error;
       if (this.readonly) throw new StoreError("ANALYSIS_NOT_READY", "总览派生事实无法读取", { key: "diagnostics.overview.cacheUnavailable" });
       if (!decodingRevision) throw error;
-      this.database.prepare("DELETE FROM overview_fact_revisions WHERE revision=?").run(decodingRevision);
+      this.statement("DELETE FROM overview_fact_revisions WHERE revision=?").run(decodingRevision);
       this.verified.delete(decodingRevision);
       for (const key of this.preparedTimes) if (JSON.parse(key)[0] === decodingRevision) this.preparedTimes.delete(key);
       this.preparedScopes.clear();
@@ -531,7 +547,7 @@ export class OverviewFactStore {
     throw new StoreError("ANALYSIS_NOT_READY", "总览派生缓存已超过空间上限", { key: "diagnostics.overview.cacheCapacity" });
   }
 
-  close(): void { this.database.close(); }
+  close(): void { this.statements.clear(); this.timeFormatter = undefined; this.database.close(); }
 }
 
 function time(value?: string): number | null {

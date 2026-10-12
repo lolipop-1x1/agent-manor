@@ -293,6 +293,37 @@ test("读lane不回填或裁剪派生库，原请求成员只按当前页身份�
   } finally { reader.close(); store.overviewRevisionFacts = revisionRead; store.overviewRequestMembers = memberRead; }
 }));
 
+test("多修订回填复用有界SQL语句与本地时区格式器，分类SQL沿用工具规则", async () => fixture(async (store, path) => {
+  const entries = Array.from({ length: 80 }, (_, index) => {
+    const id = `synthetic-many-${index}`;
+    return revision(store, id, [message(id, "user", 0), message(id, "call", 1, { kind: "tool_call", tool: "mcp__server_a__read",
+      resource: { kind: "mcp", name: "server-a", server: "server-a" } })],
+    [{ id: "request", messageId: "call", occurredAt: "2026-03-07T12:00:00Z", model: "model-a", inputTokens: 100, outputTokens: 50 }]);
+  });
+  const version = store.publish(store.createJob().id, entries, []), prepare = Database.prototype.prepare;
+  const counts = new Map<string, number>();
+  Database.prototype.prepare = function (sql: string) { counts.set(sql, (counts.get(sql) ?? 0) + 1); return prepare.call(this, sql); };
+  const originalFormatter = Intl.DateTimeFormat; let activityFormatters = 0;
+  Intl.DateTimeFormat = new Proxy(originalFormatter, { construct(target, args) {
+    if (args[1]?.hour === "2-digit" && args[1]?.year === "numeric") activityFormatters++;
+    return Reflect.construct(target, args);
+  } });
+  const facts = new OverviewFactStore(store, { path });
+  try {
+    await facts.prepare({ version, timezone: "UTC" }, now);
+    assert.equal(activityFormatters, 1);
+    assert([...counts.values()].reduce((sum, count) => sum + count, 0) < 40,
+      JSON.stringify([...counts].filter(([, count]) => count > 1)));
+    assert(Math.max(...counts.values()) < 3);
+    const prepared = [...counts.values()].reduce((sum, count) => sum + count, 0);
+    await facts.prepare({ version, timezone: "UTC" }, now);
+    assert.equal([...counts.values()].reduce((sum, count) => sum + count, 0), prepared);
+    assert.deepEqual(facts.readRows<{ category: string }>(`SELECT overview_tool_category('exec_command',NULL) AS category
+      UNION ALL SELECT overview_tool_category('unclassified','mcp') UNION ALL SELECT overview_tool_category('read_file',NULL)`)
+      .map(row => row.category), ["command", "external", "read"]);
+  } finally { facts.close(); Database.prototype.prepare = prepare; Intl.DateTimeFormat = originalFormatter; }
+}));
+
 test("两个跨线程缓存读者并发首次准备，不覆盖完整修订或产生时间桶主键冲突", async () => fixture(async (store, path) => {
   history(store);
   const code = `const { parentPort,workerData }=require('node:worker_threads');
