@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { readFileSync } from "node:fs";
 import { defaultOverviewRoute, incomingOverviewRoute, overviewAddress, overviewCalendarDate, overviewQuery, overviewRange, readOverviewRoute, streakRange, validOverviewRange, overviewCostState } from "../web/features/overview/model.ts";
 import { formatDate } from "../src/i18n/format.ts";
 import { readUsageRoute, usageQuery } from "../web/features/usage/model.ts";
@@ -75,4 +76,29 @@ test("费用展示保留小计与未知，完整零费用不会被误认为缺�
   assert.deepEqual(overviewCostState(null), { amount: null, label: "usage.chart.unpriced", partial: false });
   assert.equal(translate("zh-CN", overviewCostState(12, "partial").label), "估算费用小计");
   assert.equal(translate("en", overviewCostState(null).label), "Unpriced");
+});
+
+
+test("费用状态使用共享可操作帮助与短提示，排行不把帮助按钮嵌入调查按钮", () => {
+  const cost = readFileSync(new URL("../web/features/overview/CostAmount.tsx", import.meta.url), "utf8");
+  const overview = readFileSync(new URL("../web/features/overview/Overview.tsx", import.meta.url), "utf8");
+  const investigation = readFileSync(new URL("../web/features/overview/Investigation.tsx", import.meta.url), "utf8");
+  assert.match(cost, /<HelpPopover label=\{label\} container=\{container\}/);
+  assert.match(cost, /trigger=\{<Tooltip.Trigger asChild><button[^>]*type="button"[^>]*aria-label=\{label\}/);
+  assert.match(cost, /<Tooltip.Content[^>]*>\{label\}<\/Tooltip.Content>/);
+  assert.doesNotMatch(cost, /title=\{/);
+  for (const button of overview.matchAll(/<button\b[\s\S]*?<\/button>/g)) assert.doesNotMatch(button[0], /<CostAmount/);
+  assert.match(overview, /<div className="overview-rank-row"[^>]*role="group"/);
+  assert.match(overview, /<CostAmount[^>]*onInspect=\{investigate\}/);
+  assert.match(investigation, /<CostAmount[^>]*container=\{container\}/);
+});
+
+test("原事件与未确认成员关联的独立请求使用不同React键，公开证据id保持原值", () => {
+  const source = readFileSync(new URL("../web/features/overview/Investigation.tsx", import.meta.url), "utf8");
+  assert.match(source, /records.rows.map\(row => <tr key=\{JSON.stringify\(\[row.id, row.requestId \?\? null, row.messageId \?\? null\]\)\}/);
+  const event = { id: "session-a:event-a", messageId: "event-a", requestId: undefined };
+  const request = { id: "session-a:event-a", messageId: "event-a", requestId: "request-a" };
+  const key = (row: typeof request | typeof event) => JSON.stringify([row.id, row.requestId ?? null, row.messageId ?? null]);
+  assert.notEqual(key(event), key(request));
+  assert.equal(event.id, request.id);
 });
