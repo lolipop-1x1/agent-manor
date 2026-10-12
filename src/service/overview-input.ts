@@ -1,4 +1,4 @@
-import { overviewPanels, type OverviewDetailQuery, type OverviewDistributionDimension, type OverviewEvidenceQuery, type OverviewPanel, type OverviewQuery, type OverviewWindow } from "../overview-contracts.js";
+import { overviewPanels, type OverviewDetailQuery, type OverviewDistributionDimension, type OverviewEvidenceQuery, type OverviewPanel, type OverviewQuery, type OverviewWindow, type WeeklyReviewDetailQuery } from "../overview-contracts.js";
 import { ServiceError, textValue } from "./input.js";
 import { usageQuery } from "./usage-input.js";
 
@@ -94,4 +94,27 @@ export function overviewDetailQuery(raw: unknown): OverviewDetailQuery {
   if (record.view === "resource" && record.dimension === "model") invalid("detail.dimension");
   if (record.view === "timing" && !record.timingGroup) invalid("detail.timingGroup");
   return record as unknown as OverviewDetailQuery;
+}
+
+export function weeklyReviewDetailQuery(raw: unknown): WeeklyReviewDetailQuery {
+  const encoded = textValue(raw, "detail", true)!;
+  let value: unknown;
+  try { value = JSON.parse(encoded); } catch { invalid("detail"); }
+  if (!value || typeof value !== "object" || Array.isArray(value)) invalid("detail");
+  const record = value as Record<string, unknown>;
+  const kinds = ["sessions", "rounds", "cache", "compressions", "projects", "delegation", "tools", "agents", "models", "reasoning", "prompts", "activity", "uncompressed"];
+  const allowed = new Set(["kind", "sort", "key", "filter", "page", "pageSize"]);
+  for (const field of Object.keys(record)) if (!allowed.has(field)) invalid(`detail.${field}`);
+  if (!kinds.includes(record.kind as string)) invalid("detail.kind");
+  if (record.sort !== undefined && !["recent", "duration", "tokens", "steps", "fresh"].includes(record.sort as string)) invalid("detail.sort");
+  if (record.key !== undefined) {
+    if (!["agents", "models", "reasoning", "projects", "tools", "compressions"].includes(record.kind as string)) invalid("detail.key");
+    textValue(record.key, "detail.key", true);
+  }
+  if (record.filter !== undefined && !(record.kind === "cache" ? ["zero", "partial", "full", "unknown"]
+    : record.kind === "rounds" ? ["explicit", "inferred", "unconfirmed"] : []).includes(record.filter as string)) invalid("detail.filter");
+  for (const [field, maximum] of [["page", 1_000_000], ["pageSize", 100]] as const) {
+    if (record[field] !== undefined && (!Number.isSafeInteger(record[field]) || Number(record[field]) < 1 || Number(record[field]) > maximum)) invalid(`detail.${field}`);
+  }
+  return record as unknown as WeeklyReviewDetailQuery;
 }

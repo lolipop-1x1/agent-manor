@@ -13,11 +13,32 @@ import { buildOverviewRepositories } from "./repositories.js";
 import { OverviewFactStore } from "./facts.js";
 import { factDelegation, factDetail, factMissingTimingRequests, factProcess, factResourceCandidates, factResources, usageRankingDetail } from "./details.js";
 import type { OverviewWorkerRequest, OverviewWorkerResponse } from "./worker-contracts.js";
+import { WeeklyReviewFactStore } from "./weekly-review-facts.js";
+import { buildWeeklyReview, weeklyReviewDetail } from "./weekly-review.js";
 import { prepareOverviewDateCache, resolveOverviewRange, resolveTimezone } from "./dates.js";
 
-const { dbPath, preparesFacts } = workerData as { dbPath: string; preparesFacts?: boolean };
-const sessions = new SessionStore(dbPath), repositories = new AnalysisStore(dbPath);
+const { dbPath, preparesFacts, reviewOnly } = workerData as { dbPath: string; preparesFacts?: boolean; reviewOnly?: boolean };
+const sessions = new SessionStore(dbPath, { readonly: reviewOnly }), repositories = reviewOnly ? undefined : new AnalysisStore(dbPath);
 let factStore: OverviewFactStore | undefined;
+let weeklyFacts: WeeklyReviewFactStore | undefined;
+let weeklyData: { key: string; data: ReturnType<typeof buildWeeklyReview> } | undefined;
+let weeklyPending: { key: string; promise: Promise<ReturnType<typeof buildWeeklyReview>> } | undefined;
+let weeklyQueue: Promise<unknown> = Promise.resolve();
+function preparedWeeklyReview(request: OverviewWorkerRequest, now: Date): Promise<ReturnType<typeof buildWeeklyReview>> {
+  const query = request.query, key = JSON.stringify([query.version, request.pricing.version, query.timezone, query.anchorDay, query.clients, query.projects]);
+  if (weeklyData?.key === key) return Promise.resolve(weeklyData.data);
+  if (weeklyPending?.key === key) return weeklyPending.promise;
+  const promise = weeklyQueue.catch(() => undefined).then(async () => {
+    if (weeklyData?.key === key) return weeklyData.data;
+    // 一次仅保留一个固定查询的中间聚合，详情复用价格与排行，不重复读取全部请求。
+    weeklyData = undefined;
+    const { facts } = await (weeklyFacts ??= new WeeklyReviewFactStore(sessions)).source(query, now);
+    const pricing = { status: request.pricing, estimate: createPricingEstimator(request.pricing, true) };
+    const data = buildWeeklyReview(facts, query, pricing, now);
+    weeklyData = { key, data }; return data;
+  }).finally(() => { if (weeklyPending?.promise === promise) weeklyPending = undefined; });
+  weeklyPending = { key, promise }; weeklyQueue = promise; return promise;
+}
 const facts = (writer = false) => factStore ??= new OverviewFactStore(sessions, { repairCorruption: writer || preparesFacts, readonly: !(writer || preparesFacts) });
 function distribution(report: UsageStatistics): OverviewCountRow[] {
   return report.groups.map(group => ({ key: group.key, name: usageDimensionValue(group.key) ?? "未知",
@@ -38,6 +59,13 @@ async function handle(request: OverviewWorkerRequest): Promise<void> {
     // 版本不可用时不允许从派生缓存或旧修订继续返回。
     const version = sessions.usageVersion(request.query.version), query = request.query, now = new Date(request.now);
     prepareOverviewDateCache(version, resolveTimezone(query.timezone));
+    if (request.type === "review" || request.type === "review_detail") {
+      const data = await preparedWeeklyReview(request, now);
+      const result = request.type === "review" ? data.review : weeklyReviewDetail(data, request.reviewDetail!);
+      // 与持久JSON缓存使用相同可序列化形态，重启复用不改变缺失字段。
+      parentPort!.postMessage({ id: request.id, type: "result", result: JSON.parse(JSON.stringify(result)) } satisfies OverviewWorkerResponse);
+      return;
+    }
     if (request.type === "prepare") await facts(true).prepare(query, now);
     else if (!(request.type === "panel" && request.panel === "repositories" || request.type === "detail" && request.detail?.view === "ranking" && request.detail.dimension !== "tool")
       || query.window === "all") facts().sqlScope(query, now);
@@ -66,7 +94,7 @@ async function handle(request: OverviewWorkerRequest): Promise<void> {
           ? { process: { ...request.globalProcess.process, missingTimingRequests: factMissingTimingRequests(facts(), snapshot, now) }, counts: request.globalProcess.counts }
           : factProcess(facts(), snapshot, now);
         output.data = { process: result.process }; output.counts = result.counts;
-      } else if (panel === "repositories") output.data = { repositories: buildOverviewRepositories(repositories, request.repositories,
+      } else if (panel === "repositories") output.data = { repositories: buildOverviewRepositories(repositories!, request.repositories,
         factStore ? factStore.snapshot(query) : metadata(), query, snapshot.range, snapshot.timezone) };
       else if (panel === "insights") {
         const { resources, previousResources, currentResources } = factResourceCandidates(facts(), snapshot, now), { process } = factProcess(facts(), snapshot, now, true);
@@ -85,7 +113,7 @@ async function handle(request: OverviewWorkerRequest): Promise<void> {
     } else {
       const narrow = await source("evidence", query, { fullSessions: true });
       const report = buildOverviewReport(narrow, query, pricing, now);
-      report.repositories = buildOverviewRepositories(repositories, request.repositories, facts().snapshot(query), query, report.range, report.timezone);
+      report.repositories = buildOverviewRepositories(repositories!, request.repositories, facts().snapshot(query), query, report.range, report.timezone);
       Object.assign(report, generateOverviewInsights(narrow, query, pricing, report));
       report.process.failureSequences = []; result = report;
     }
@@ -97,4 +125,4 @@ async function handle(request: OverviewWorkerRequest): Promise<void> {
   }
 }
 parentPort!.on("message", (request: OverviewWorkerRequest) => { void handle(request); });
-parentPort!.on("close", () => { factStore?.close(); sessions.close(); repositories.close(); });
+parentPort!.on("close", () => { factStore?.close(); weeklyFacts?.close(); sessions.close(); repositories?.close(); });

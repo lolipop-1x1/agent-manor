@@ -153,6 +153,12 @@ export class RequestTimingParser {
 
   codexRequestGroup(): string | undefined { return (this.active ?? this.latestGroup ?? this.endedWithoutUsage)?.key; }
 
+  codexReasoningSetting(): { reasoningEffort?: string } | undefined {
+    const group = this.active ?? this.latestGroup ?? this.endedWithoutUsage;
+    if (group && !this.active && (this.latestBoundary?.recordLine ?? 0) > (group.timing.end?.recordLine ?? 0)) return undefined;
+    return group ? { reasoningEffort: group.first.reasoningEffort } : undefined;
+  }
+
   interrupt(alias?: string): void {
     const key = alias ? this.nativeAliases.get(alias) : undefined;
     const group = alias ? key ? this.groups.get(key) : undefined : this.active ?? this.latestGroup;
@@ -167,7 +173,7 @@ export class RequestTimingParser {
     for (const group of this.groups.values()) {
       let id = group.usageId;
       if (!id && group.identified) id = this.usage.missing(group.key, { turnId: group.first.turnId,
-        model: group.first.model, occurredAt: group.timing.end?.occurredAt });
+        model: group.first.model, reasoningEffort: group.first.reasoningEffort, occurredAt: group.timing.end?.occurredAt });
       if (!id) continue;
       const start = group.timing.start?.occurredAt;
       const end = group.timing.end?.occurredAt;

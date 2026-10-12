@@ -51,6 +51,13 @@ test("全局 HTTP 和串行 Worker 完整发布三客户端、无项目会话及
     assert.equal(profile.usage.cachedInputTokens, 60);
     assert.equal(profile.usage.cacheReadRatio, 0.6);
     assert.ok(profile.steps[0]?.messageId, "请求步骤应定位实际用量记录");
+    assert.equal(profile.roundMetrics?.userTurns, 1);
+    assert.equal(profile.roundMetrics?.completedTurns, 1);
+    assert.equal(profile.roundMetrics?.averageSteps, 3, "工具参数请求与最终回复请求按已识别身份计步骤");
+    assert.equal(profile.roundMetrics?.averageDurationMs, 6000);
+    assert.equal(profile.roundMetrics?.averagePromptCharacters, 11, "明确注入内容不计提示词字数");
+    const profileSummary = await apiRequest<SessionProfile>(service.instance, `/sessions/${codex.id}/profile?summary=true`);
+    assert.deepEqual(profileSummary.roundMetrics, profile.roundMetrics);
     assert.equal(profile.tools.length, 2);
     assert.ok(profile.resources.some(resource => resource.kind === "mcp"));
     const base = await apiRequest<SessionSearchResult>(service.instance, "/sessions/search?q=局部轨迹标记");

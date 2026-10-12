@@ -3,7 +3,8 @@ import { overviewParameters } from "./model";
 
 type Distribution = OverviewDistributionDimension | "tool";
 type Transport = <T>(path: string, signal: AbortSignal) => Promise<T>;
-export const requiredOverviewPanels = (dimension: Distribution): OverviewPanel[] => [...overviewPanels, "facets", ...(dimension === "tool" ? [] : ["distribution" as const])];
+const dashboardPanels = overviewPanels.filter(panel => panel !== "insights");
+export const requiredOverviewPanels = (dimension: Distribution): OverviewPanel[] => [...dashboardPanels, "facets", ...(dimension === "tool" ? [] : ["distribution" as const])];
 export interface OverviewPanelBatch {
   key: string;
   snapshot: OverviewSnapshot;
@@ -95,7 +96,7 @@ export function replaceOverviewPanel(batch: OverviewPanelBatch | null, snapshot:
 
 /** 首次分区重试以当前维度判断完整性；局部切换不会撤销已经完整的报告。 */
 export function selectOverviewDimension(batch: OverviewPanelBatch, dimension: Distribution): OverviewPanelBatch {
-  const complete = ([...overviewPanels, "facets"] as OverviewPanel[]).every(panel => Boolean(batch.panels[panel])) && (dimension === "tool" || Boolean(batch.distributions[dimension]));
+  const complete = ([...dashboardPanels, "facets"] as OverviewPanel[]).every(panel => Boolean(batch.panels[panel])) && (dimension === "tool" || Boolean(batch.distributions[dimension]));
   return { ...batch, dimension, complete };
 }
 

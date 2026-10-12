@@ -1,8 +1,13 @@
 import type { FastifyInstance } from "fastify";
 import type { OverviewManager } from "../overview/manager.js";
-import { overviewDetailQuery, overviewDistributionDimension, overviewEvidenceQuery, overviewPanel, overviewQuery } from "./overview-input.js";
+import { overviewDetailQuery, overviewDistributionDimension, overviewEvidenceQuery, overviewPanel, overviewQuery, weeklyReviewDetailQuery } from "./overview-input.js";
 
 export function registerOverviewRoutes(app: FastifyInstance, overview: OverviewManager): void {
+  app.get<{ Querystring: Record<string, unknown> }>("/api/v1/overview/review", request => overview.review(overviewQuery(request.query)));
+  app.get<{ Querystring: Record<string, unknown> }>("/api/v1/overview/review/detail", request => {
+    const { detail, ...query } = request.query;
+    return overview.reviewDetail(overviewQuery(query), weeklyReviewDetailQuery(detail));
+  });
   app.get<{ Querystring: Record<string, unknown> }>("/api/v1/overview/snapshot", request => overview.snapshot(overviewQuery(request.query)));
   app.get<{ Querystring: Record<string, unknown> }>("/api/v1/overview/panel", request => {
     const { panel, dimension, ...query } = request.query, selectedPanel = overviewPanel(panel);

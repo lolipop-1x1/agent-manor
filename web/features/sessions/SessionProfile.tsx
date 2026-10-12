@@ -152,6 +152,7 @@ export function SessionProfilePane({ active, profile, loading, error, includeChi
   const cost = currentCost?.value;
   const visibleCost = profile?.scope === requestedScope && cost?.version === profile?.version && cost?.scope === requestedScope && cost?.sessionIds[0] === profile?.sessionIds[0] ? cost : undefined;
   const incompleteCost = !!visibleCost && (visibleCost.totals.partiallyPricedRequests > 0 || visibleCost.totals.unpricedRequests > 0);
+  const costLabel = incompleteCost && visibleCost?.totals.estimatedCost !== null ? "usage.metric.costSubtotal" : "usage.metric.cost";
   useEffect(() => { setStepPage(1); }, [profile?.sessionIds[0], profile?.scope]);
   useEffect(() => { setStepPage(page => Math.min(page, Math.max(1, Math.ceil((profile?.usage.requests ?? 0) / 12)))); }, [profile?.usage.requests]);
   useEffect(() => {
@@ -167,11 +168,17 @@ export function SessionProfilePane({ active, profile, loading, error, includeChi
   const stepOffset = (stepPage - 1) * 12;
   const visibleSteps = visibleUsage?.steps.slice(stepOffset, stepOffset + 12) ?? [];
   const failureCount = profile?.tools.reduce((total, item) => total + item.failure, 0) ?? 0;
+  const rounds = profile?.roundMetrics;
+  const roundDuration = rounds?.averageDurationMs;
+  const durationUnit = roundDuration != null && roundDuration >= 3_600_000 ? "hour" : roundDuration != null && roundDuration >= 60_000 ? "minute" : "second";
+  const durationDivisor = durationUnit === "hour" ? 3_600_000 : durationUnit === "minute" ? 60_000 : 1000;
   const peak = profile?.peakInputRequest ?? profile?.steps.find(step => step.inputTokens === profile.usage.peakInputTokens && !!step.messageId);
   const coverage = profile ? usageCoverage(profile.usage, [...primaryMetrics, ...(profile.usage.peakInputTokens !== null ? [metrics[5]] : []), ...extraMetrics]) : [];
   const metric = ([key, label]: typeof metrics[number]) => {
     if (!profile) return null;
-    return <div key={key}><strong>{key === "peakInputTokens" && peak ? <button className="session-stat-link session-peak-link" aria-label={t("sessions.evidence.peak", { value: formatCount(profile.usage.peakInputTokens!) })} onClick={() => onFocusStep(peak)}>{displayRecorded(profile.usage[key])}<Crosshair size={13} aria-hidden="true" /></button> : displayRecorded(profile.usage[key])}</strong><span>{t(label)}</span>
+    const partial = coverage.some(group => group.labels.includes(label));
+    const name = !partial ? t(label) : key === "peakInputTokens" ? t("sessions.profile.maxRecordedInput") : t("sessions.profile.recordedSubtotal", { label: t(label) });
+    return <div key={key}><strong>{key === "peakInputTokens" && peak ? <button className="session-stat-link session-peak-link" aria-label={t("sessions.evidence.peak", { value: formatCount(profile.usage.peakInputTokens!) })} onClick={() => onFocusStep(peak)}>{displayRecorded(profile.usage[key])}<Crosshair size={13} aria-hidden="true" /></button> : displayRecorded(profile.usage[key])}</strong><span>{name}</span>
       </div>;
   };
   return <aside className={`evidence-pane session-profile${collapsed ? " panel-collapsed" : ""}`} aria-label={t("sessions.profile.title")}>
@@ -193,9 +200,19 @@ export function SessionProfilePane({ active, profile, loading, error, includeChi
         {profile.missingChildren > 0 && <Notice>{t("sessions.profile.missingChildren", { count: profile.missingChildren })}</Notice>}
         {visibleTab === "overview" && <section className="session-profile-section"><div className="session-section-heading"><h3>{t("sessions.profile.content")}</h3><div className="section-actions">
           {failureCount > 0 ? <SessionEvidence kind="failure" profile={profile} onSelect={onFocusEvent}><button className="text-button">{t("sessions.evidence.failureCount", { count: failureCount })}</button></SessionEvidence> : <span>{profile.scope === "tree" ? t("sessions.profile.selfLinked") : t("sessions.profile.self")}</span>}
+          {rounds && <HelpPopover iconOnly label={t("sessions.profile.roundHelp")}>
+            <p>{t("sessions.profile.roundScopeHelp")}</p>
+            <p>{t("sessions.profile.roundStepsHelp", { total: rounds.userTurns, ended: rounds.completedTurns, count: rounds.stepTurns })}</p>
+            <p>{t("sessions.profile.roundDurationHelp", { count: rounds.timedTurns, ended: rounds.completedTurns })}</p>
+            <p>{t("sessions.profile.promptLengthHelp", { count: rounds.promptInputs })}</p>
+          </HelpPopover>}
         </div></div>
           <div className="session-usage-grid compact"><div><strong>{formatCount(profile.messageCount)}</strong><span>{t("sessions.profile.messages")}</span></div><div><strong>{formatCount(profile.turnCount)}</strong><span>{t("sessions.timeline.turn")}</span></div>
-            <div><strong>{formatCount(profile.estimate.total)}</strong><span>{t("sessions.profile.estimateTokens")}</span></div><div><strong>{profile.compressions > 0 ? <SessionEvidence kind="compression" profile={profile} onSelect={onFocusEvent}><button className="session-stat-link" aria-label={t("sessions.evidence.compressionCount", { count: profile.compressions })}>{formatCount(profile.compressions)}</button></SessionEvidence> : formatCount(profile.compressions)}</strong><span>{t("sessions.profile.compressions")}</span></div></div>
+            <div><strong>{formatCount(profile.estimate.total)}</strong><span>{t("sessions.profile.estimateTokens")}</span></div><div><strong>{profile.compressions > 0 ? <SessionEvidence kind="compression" profile={profile} onSelect={onFocusEvent}><button className="session-stat-link" aria-label={t("sessions.evidence.compressionCount", { count: profile.compressions })}>{formatCount(profile.compressions)}</button></SessionEvidence> : formatCount(profile.compressions)}</strong><span>{t("sessions.profile.compressions")}</span></div>
+            {rounds && <><div><strong>{rounds.averageSteps === null ? "—" : number(rounds.averageSteps, { maximumFractionDigits: 1 })}</strong><span>{t("sessions.profile.averageSteps")}</span></div>
+              <div><strong>{roundDuration == null ? "—" : number(roundDuration / durationDivisor, { style: "unit", unit: durationUnit, unitDisplay: "short", maximumFractionDigits: 1 })}</strong><span>{t("sessions.profile.averageRoundDuration")}</span></div>
+              <div><strong>{rounds.averagePromptCharacters === null ? "—" : number(rounds.averagePromptCharacters, { maximumFractionDigits: 1 })}</strong><span>{t("sessions.profile.averagePromptCharacters")}</span></div></>}
+          </div>
           <details className="session-stat-details"><summary>{t("sessions.profile.estimateKinds")}</summary>
             <p>{isMessageDescriptorKnown(profile.estimate.methodDescriptor) ? messageText(profile.estimate.methodDescriptor, profile.estimate.method) : profile.estimate.method}</p>
             {profile.estimate.byKind.filter(item => item.tokens > 0).map(item => <ProfileBar key={item.kind} label={t(kindLabels[item.kind])} count={item.tokens} max={Math.max(1, ...profile.estimate.byKind.map(value => value.tokens))} unit="tokens" />)}
@@ -207,19 +224,19 @@ export function SessionProfilePane({ active, profile, loading, error, includeChi
         {visibleTab !== "calls" && hasUsage && <>
           <section className="session-profile-section"><div className="session-section-heading"><h3>{t("sessions.trace.usageRequest")}</h3><div className="section-actions"><span>{t("sessions.profile.requestCount", { count: profile.usage.requests })}</span><HelpPopover iconOnly label={t("sessions.profile.statsHelp")}>
             <p>{t("sessions.profile.cacheHelp")}</p><p>{t("sessions.profile.scopeHelp", { scope: profile.scope === "tree" ? t("sessions.profile.selfTree") : t("sessions.profile.currentSelf") })}</p>
+            <p>{t("sessions.profile.coverageHelp", { input: profile.usage.inputRecordedRequests, requests: profile.usage.requests, cache: profile.usage.cacheRecordedRequests })}</p>
+            {coverage.map(group => <p key={group.count}>{t("sessions.profile.fieldCoverage", { fields: group.labels.map(label => t(label)).join(" · "), count: group.count, total: group.total })}</p>)}
             <p>{t("sessions.profile.costHelp")}</p><p>{t("usage.help.cost")}</p>
             {visibleCost && <><p>{t("usage.coverage.cost", { complete: visibleCost.totals.pricedRequests, partial: visibleCost.totals.partiallyPricedRequests, missing: visibleCost.totals.unpricedRequests })}</p><p>{t("usage.coverage.priceBasis", { historical: visibleCost.totals.historicalPricedRequests, snapshot: visibleCost.totals.currentSnapshotPricedRequests, manual: visibleCost.totals.manualPricedRequests })}</p></>}
             <p>{isMessageDescriptorKnown(profile.estimate.methodDescriptor) ? messageText(profile.estimate.methodDescriptor, profile.estimate.method) : profile.estimate.method}</p><SpeedAlgorithmHelp />
           </HelpPopover></div></div>
             <div className="session-usage-grid">{primaryMetrics.map(metric)}<AverageSpeedMetric summary={speedSummary} />
               {profile.usage.peakInputTokens !== null && metric(["peakInputTokens", "sessions.profile.maxInput"])}{extraMetrics.map(metric)}</div>
-            {coverage.length > 0 && <div className="session-usage-coverage">{coverage.map(group => <p key={group.count}><span>{group.labels.map(label => t(label)).join(" · ")}</span><strong>{t("sessions.usage.recordedRange", { count: group.count, total: group.total })}</strong></p>)}</div>}
-            <div className="session-cost" role="group" aria-label={t("usage.metric.cost")} data-price-version={visibleCost?.priceVersion}>
-              <div className="session-cost-heading"><span>{t("usage.metric.cost")}</span>{costLoading ? <span role="status">{t("common.loading")}</span> : <strong><span className="session-cost-value">{visibleCost?.totals.estimatedCost == null ? "—" : number(visibleCost.totals.estimatedCost, { style: "currency", currency: "USD", currencyDisplay: "narrowSymbol", minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span></strong>}</div>
+            <div className="session-cost" role="group" aria-label={t(costLabel)} data-price-version={visibleCost?.priceVersion}>
+              <div className="session-cost-heading"><span>{t(costLabel)}</span>{costLoading ? <span role="status">{t("common.loading")}</span> : <strong><span className="session-cost-value">{visibleCost?.totals.estimatedCost == null ? "—" : number(visibleCost.totals.estimatedCost, { style: "currency", currency: "USD", currencyDisplay: "narrowSymbol", minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span></strong>}</div>
               {costError && <Notice danger action={<button className="text-button" onClick={() => setCostRetry(value => value + 1)}>{t("common.retry")}</button>}><SessionError error={costError} /></Notice>}
-              {incompleteCost && <div className="session-cost-coverage">{visibleCost.totals.estimatedCost !== null && <strong>{t("sessions.profile.costSubtotal")}</strong>}<span>{t("usage.coverage.cost", { complete: visibleCost.totals.pricedRequests, partial: visibleCost.totals.partiallyPricedRequests, missing: visibleCost.totals.unpricedRequests })}</span></div>}
             </div>
-            {profile.usage.cacheReadRatio !== null && profile.usage.inputRecordedRequests === profile.usage.requests && profile.usage.cacheRecordedRequests === profile.usage.requests && <div className="session-cache-ratio"><div className="session-cost-heading"><span>{t("sessions.profile.cacheRatio")}</span><strong>{normalizedRatio(profile.usage.cacheReadRatio)}</strong></div></div>}
+            {profile.usage.cacheReadRatio !== null && <div className="session-cache-ratio"><div className="session-cost-heading"><span>{t(profile.usage.inputRecordedRequests === profile.usage.requests && profile.usage.cacheRecordedRequests === profile.usage.requests ? "sessions.profile.cacheRatio" : "sessions.profile.cacheRatioRecorded")}</span><strong>{normalizedRatio(profile.usage.cacheReadRatio)}</strong></div></div>}
           </section>
         </>}
         {visibleTab === "usage" && profile.usage.requests > 0 && <section className="session-profile-section"><div className="session-section-heading"><h3>{t("sessions.profile.trend")}</h3><HelpPopover label={t("sessions.profile.chartHelp")}>
@@ -227,7 +244,7 @@ export function SessionProfilePane({ active, profile, loading, error, includeChi
         </HelpPopover></div>
           {usageLoading && <p role="status">{t("sessions.profile.loading")}</p>}
           {usageError && <Notice danger action={<button className="text-button" onClick={() => setUsageRetry(value => value + 1)}>{t("common.retry")}</button>}><SessionError error={usageError} /></Notice>}
-          {visibleUsage && <><p className="session-request-range">{t("sessions.profile.requestRange", { from: (visibleUsage.stepsOffset ?? 0) + 1, to: (visibleUsage.stepsOffset ?? 0) + visibleUsage.steps.length, total: visibleUsage.stepsTotal ?? profile.usage.requests })}</p>
+          {visibleUsage && <>
           {visibleUsage.steps.filter(step => usageSeries.some(([key]) => step[key] !== undefined)).length > 1 && <UsageChart profile={visibleUsage} onFocusStep={onFocusStep} />}
             <div className="session-step-table"><table><thead><tr><th>{t("sessions.profile.request")}</th>{usageSeries.filter(([key]) => profile.usage.recordedRequests?.[key] || profile.steps.some(step => step[key] !== undefined)).map(([key, label]) => <th key={key}>{t(label)}</th>)}{hasSpeed && <th aria-label={t("sessions.speed.label")}><SpeedColumnHeader /></th>}</tr></thead><tbody>
               {visibleSteps.map((step, index) => <tr key={`${step.sessionId}:${step.id}`}><td>{requestLocation(step) ? <button aria-label={t("sessions.profile.requestNumber", { number: formatCount(stepOffset + index + 1) })} onClick={() => onFocusStep(step)}>#{formatCount(stepOffset + index + 1)}</button> : <span>#{formatCount(stepOffset + index + 1)}</span>}</td>

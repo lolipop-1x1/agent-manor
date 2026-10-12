@@ -217,10 +217,14 @@ async function snapshot(location: SourceLocation): Promise<NormalizedSnapshot> {
   }
   const currentPath = branchPaths.get(lastId ?? "") ?? [];
   const turnKeys = new Map<string, string>();
+  const reasoningSettings = new Map<string, string | undefined>();
   for (const path of branchPaths.values()) {
     let turnKey: string | undefined;
+    let reasoningEffort: string | undefined;
     for (const row of path) {
       const entryId = string(row.record.id)!;
+      if (row.record.type === "thinking_level_change") reasoningEffort = string(row.record.thinkingLevel);
+      reasoningSettings.set(entryId, reasoningEffort);
       if (row.record.type === "message" && object(row.record.message).role === "user") turnKey = entryId;
       turnKeys.set(entryId, turnKey ?? "");
     }
@@ -294,6 +298,7 @@ async function snapshot(location: SourceLocation): Promise<NormalizedSnapshot> {
         const resource = expandedSkill(text);
         add({ key: "", kind: "user", text, resource, status: resource ? "success" : undefined, occurredAt: time, turnKey: id });
       } else if (role === "assistant") {
+        const reasoningEffort = reasoningSettings.get(id);
         const blocks = Array.isArray(message.content) ? message.content.map(object) : [];
         const visible = blocks.filter(block => block.type === "text").map(block => string(block.text) ?? "").filter(Boolean).join("\n");
         const thinking = blocks.filter(block => block.type === "thinking").map(block => string(block.thinking) ?? "").filter(Boolean).join("\n");
@@ -301,14 +306,15 @@ async function snapshot(location: SourceLocation): Promise<NormalizedSnapshot> {
         const request = piRequest(message, entry, row.line, id);
         const model = string(message.model);
         const final = finalIds.has(id) ? "inferred" : undefined;
-        add({ key: "", kind: "assistant", ...(visible ? { text: visible } : {}), model, final, allowInferredFinal: false,
+        add({ key: "", kind: "assistant", ...(visible ? { text: visible } : {}), model, reasoningEffort, final, allowInferredFinal: false,
           interrupted: interruptedIds.has(id) || undefined, status: ["error"].includes(string(message.stopReason) ?? "") ? "failure" : undefined,
           ...request, usageKey: usage ? `${request.requestKey}:usage` : undefined, usage }, ":assistant");
-        if (thinking) add({ key: "", kind: "thinking", text: thinking, model, requestKey: request.requestKey }, ":thinking");
+        if (thinking) add({ key: "", kind: "thinking", text: thinking, model, reasoningEffort, requestKey: request.requestKey }, ":thinking");
         for (const block of hasToolCalls(message)) {
           const callId = string(block.id);
           if (!callId) continue;
-          add({ key: "", kind: "tool_call", callId, tool: string(block.name) ?? "unknown", input: block.arguments, requestKey: request.requestKey }, `:call:${callId}`);
+          add({ key: "", kind: "tool_call", callId, tool: string(block.name) ?? "unknown", input: block.arguments,
+            model, reasoningEffort, requestKey: request.requestKey }, `:call:${callId}`);
         }
       } else if (role === "toolResult") {
         const callId = string(message.toolCallId);
@@ -364,7 +370,7 @@ async function snapshot(location: SourceLocation): Promise<NormalizedSnapshot> {
       continue;
     }
     if (entry.type === "thinking_level_change") {
-      add({ key: "", kind: "context", text: string(entry.thinkingLevel) ?? "" }, ":thinking-level");
+      add({ key: "", kind: "context", text: string(entry.thinkingLevel) ?? "", reasoningEffort: string(entry.thinkingLevel) }, ":thinking-level");
       continue;
     }
     if (entry.type === "label") {

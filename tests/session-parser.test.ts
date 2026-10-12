@@ -215,13 +215,16 @@ test("Codex 内容分类元信息优先于正文格式，未知类型和真实�
     content: [{ type: "input_text", text: body }], internal_chat_message_metadata_passthrough: { content_item_kinds: kinds } });
   const instructions = "# AGENTS.md instructions\n<INSTRUCTIONS>合成规则</INSTRUCTIONS>";
   const sample = await parsed("codex", [meta(), marked("agents", "客户端保存的指令正文", ["agents_md.instructions", "environments.environment_context"]),
-    marked("page", "客户端保存的页面上下文", ["additional_content.codex_apps_open_page"]), marked("human", "真实请求", ["user.text"])]);
-  assert.deepEqual(sample.messages.map(message => message.kind), ["context", "context", "user"]);
-  assert.deepEqual(sample.messages.slice(0, 2).map(message => message.contextEvidence), ["client_metadata", "client_metadata"]);
+    marked("page", "客户端保存的页面上下文", ["additional_content.codex_apps_open_page"]),
+    marked("skill", "<skill><name>demo</name>合成技能指令</skill>", ["skills.selected_skill_instructions"]),
+    marked("human", "真实请求", ["user.text"])]);
+  assert.deepEqual(sample.messages.map(message => message.kind), ["context", "context", "context", "user"]);
+  assert.deepEqual(sample.messages.slice(0, 3).map(message => message.contextEvidence), ["client_metadata", "client_metadata", "client_metadata"]);
+  assert.equal(sample.messages[2]?.contextSource, "client");
   assert.equal(sample.messages[0]?.contextSource, "agents_md");
   assert.equal(sample.messages[0]?.text, "客户端保存的指令正文");
   assert.equal(sample.summary.turnCount, 1);
-  for (const kinds of [["user.text"], ["agents_md.instructions", "user.text"], ["unknown.kind"], ["constructor"], [], null, "agents_md.instructions"]) {
+  for (const kinds of [["user.text"], ["agents_md.instructions", "user.text"], ["skills.selected_skill_instructions", "user.text"], ["unknown.kind"], ["constructor"], [], null, "agents_md.instructions"]) {
     const human = await parsed("codex", [meta(), marked("human", instructions, kinds)]);
     assert.equal(human.messages[0]?.kind, "user", JSON.stringify(kinds));
     assert.equal(human.messages[0]?.text, instructions);

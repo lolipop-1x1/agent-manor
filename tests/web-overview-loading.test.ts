@@ -27,13 +27,13 @@ test("首次快照后必需分区并发，核心先呈现而慢区无需阻塞",
   const update = (next: OverviewPanelBatch) => { visible = visibleOverviewBatch(visible, next); };
   const run = loadOverviewPanels({}, "first", h.transport, signal, update, update);
   await flush();
-  assert.equal(h.paths.length, 9);
+  assert.equal(h.paths.length, 8);
   for (const path of h.paths.slice(1)) { const params = new URL(`http://example.invalid${path}`).searchParams; assert.equal(params.get("version"), "index-a"); assert.equal(params.get("priceVersion"), "prices-a"); assert.equal(params.get("anchorDay"), "2025-12-31"); assert.equal(params.get("models"), '["example-model"]'); }
   h.resolve("core"); await flush();
   assert.equal(visible!.complete, false); assert.ok(visible!.panels.core); assert.equal(visible!.panels.resources, undefined);
   for (const panel of requiredOverviewPanels("project").filter(value => value !== "core")) h.resolve(panel);
   const complete = await run;
-  assert.equal(complete.complete, true); assert.equal(Object.keys(complete.panels).length, 8);
+  assert.equal(complete.complete, true); assert.equal(Object.keys(complete.panels).length, 7);
 });
 
 test("已有完整批次保留旧布局，下一份必需分区齐备才整体替换", async () => {
@@ -174,7 +174,7 @@ test("首次反向完成顺序：资源和用量先到时立即保留真实分�
   assert.equal(visible!.panels.resources!.data.resources, emptyResources);
   assert.deepEqual(overviewModelOptions(undefined, visible!.panels.usage!.data.usage!.facets.models, "未知"), expectedOptions);
   assert.ok(expectedOptions.some(option => option.value === snapshot.query.models![0]));
-  for (const panel of ["insights", "repositories", "process", "facets", "distribution"] as const) h.resolve(panel);
+  for (const panel of ["repositories", "process", "facets", "distribution"] as const) h.resolve(panel);
   await flush(); assert.equal(visible!.complete, false);
   h.resolve("core", snapshot, { facets: { clients: ["codex"], projects: [], models: ["global-model", "example-model"] } });
   update(await run); assert.equal(visible!.complete, true);
@@ -189,7 +189,7 @@ test("首次核心失败不抹去已成功的资源和用量，也不伪造概�
   const run = loadOverviewPanels({}, "core-failed", h.transport, new AbortController().signal, update, update, panel => errors.push(panel));
   await flush(); h.resolve("resources", snapshot, { resources: emptyResources }); h.resolve("usage", snapshot, { usage: usageWithModels });
   h.gates.get("core")!.reject(new Error("synthetic core failure"));
-  for (const panel of ["insights", "repositories", "process", "facets", "distribution"] as const) h.resolve(panel);
+  for (const panel of ["repositories", "process", "facets", "distribution"] as const) h.resolve(panel);
   await assert.rejects(run, /synthetic core failure/);
   assert.equal(visible!.panels.core, undefined);
   assert.equal(visible!.panels.resources!.data.resources, emptyResources);
@@ -216,7 +216,7 @@ test("已有完整结果遇到反向完成或核心失败时，仍保留旧完�
   await flush(); h.resolve("resources", snapshot, { resources: emptyResources }); h.resolve("usage", snapshot, { usage: emptyUsage }); await flush();
   assert.equal(visible, previous);
   h.gates.get("core")!.reject(new Error("synthetic core failure"));
-  for (const panel of ["insights", "repositories", "process", "facets", "distribution"] as const) h.resolve(panel);
+  for (const panel of ["repositories", "process", "facets", "distribution"] as const) h.resolve(panel);
   await assert.rejects(run, /synthetic core failure/); assert.equal(visible, previous);
 });
 
@@ -245,7 +245,7 @@ test("默认批次只包含当前维度和独立候选，工具模式省略额�
   const run = loadOverviewPanels({}, "tool", h.transport, new AbortController().signal, () => {}, () => {}, undefined, () => "tool");
   await flush();
   const panels = h.paths.slice(1).map(path => new URL(`http://example.invalid${path}`).searchParams.get("panel"));
-  assert.deepEqual(panels, [...overviewPanels, "facets"]); assert.equal(h.paths.length, 8);
+  assert.deepEqual(panels, [...overviewPanels.filter(panel => panel !== "insights"), "facets"]); assert.equal(h.paths.length, 7);
   for (const panel of requiredOverviewPanels("tool")) h.resolve(panel);
   assert.equal((await run).dimension, "tool");
   assert.equal(h.paths.some(path => path.includes("delegation")), false);
@@ -302,7 +302,7 @@ test("全局更新期间改变维度只补新快照分布，所有必需区域�
   const run = loadOverviewPanels({}, "refresh", transport, new AbortController().signal, update, update, undefined, () => dimension);
   await flush(); dimension = "client";
   for (const panel of requiredOverviewPanels("project")) h.resolve(panel);
-  await flush(); assert.equal(visible, previous); assert.equal(h.paths.length, 10);
+  await flush(); assert.equal(visible, previous); assert.equal(h.paths.length, 9);
   const extra = new URL(`http://example.invalid${h.paths.at(-1)}`).searchParams;
   assert.equal(extra.get("version"), snapshot.version); assert.equal(extra.get("dimension"), "client");
   clientGate.resolve(distributionResult("client")); update(await run);
@@ -423,7 +423,7 @@ for (const mode of ["first", "refresh"] as const) test(`${mode}：切换工具�
     await flush(); selection.select("tool"); await flush();
     assert.equal(completed, true, "工具使用process，项目未返回不阻断当前批次");
     const result = await run; assert.equal(result.dimension, "tool"); assert.equal(result.complete, true);
-    assert.equal(result.distributions.project, undefined); assert.equal(h.paths.length, 9);
+    assert.equal(result.distributions.project, undefined); assert.equal(h.paths.length, 8);
   } finally { controller.abort(); h.resolve("distribution"); await run.catch(() => undefined); }
 });
 
@@ -437,8 +437,8 @@ test("基础区加载期间完成的维度可以回选缓存，废弃请求失�
   const run = loadOverviewPanels({}, "cache-in-flight", transport, controller.signal, () => {}, () => {}, panel => errors.push(panel), selection.current, selection.subscribe);
   try {
     await flush(); h.resolve("distribution"); await flush();
-    selection.select("model"); await flush(); assert.equal(h.paths.length, 10);
-    selection.select("project"); await flush(); assert.equal(modelSignal!.aborted, true); assert.equal(h.paths.length, 10);
+    selection.select("model"); await flush(); assert.equal(h.paths.length, 9);
+    selection.select("project"); await flush(); assert.equal(modelSignal!.aborted, true); assert.equal(h.paths.length, 9);
     modelGate.reject(new Error("Unused model failure")); await flush(); assert.deepEqual(errors, []);
     for (const panel of requiredOverviewPanels("tool")) h.resolve(panel);
     const result = await run; assert.equal(result.dimension, "project"); assert.equal(result.distributions.model, undefined); assert.equal(result.complete, true);

@@ -4,6 +4,117 @@ import type { ResourceUsageEvent } from "./resource-contracts.js";
 import type { SessionMessage, SessionSummary, SessionUsage } from "./session-contracts.js";
 import type { RequestCost, UsageReport, UsageStatistics, UsageTotals } from "./usage-contracts.js";
 
+export interface WeeklyReviewDistribution {
+  average: number | null;
+  median: number | null;
+  p90: number | null;
+  maximum: number | null;
+  samples: number;
+  missing: number;
+}
+export interface WeeklyReviewRank {
+  key: string;
+  name: string;
+  nameDescriptor?: MessageDescriptor;
+  count: number;
+  share: number | null;
+  sessions: number;
+  requests: number;
+  tokens: number | null;
+  tokenSamples: number;
+  tokenMissing: number;
+  estimatedCost: number | null;
+  costCoverage: RequestCost["coverage"];
+}
+export interface WeeklyReviewRecord {
+  id: string;
+  sessionId: string;
+  title: string;
+  titleOrigin?: SessionSummary["titleOrigin"];
+  client: string;
+  project?: string;
+  relationship?: SessionSummary["relationship"];
+  turnId?: string;
+  messageId?: string;
+  requestId?: string;
+  occurredAt?: string;
+  startedAt?: string;
+  endedAt?: string;
+  steps?: number;
+  toolCalls?: number;
+  tokens?: number | null;
+  durationMs?: number | null;
+  inputTokens?: number;
+  cachedInputTokens?: number;
+  freshInputTokens?: number;
+  cacheShare?: number | null;
+  hypotheticalPremium?: number | null;
+  cost?: RequestCost;
+  model?: string;
+  reasoningEffort?: string;
+  promptCharacters?: number;
+  compressions?: number;
+  tool?: string;
+  server?: string;
+  failures?: number;
+  subsequentCalls?: number;
+  completion?: "explicit" | "inferred" | "unconfirmed";
+}
+export interface WeeklyReview {
+  version: string;
+  priceVersion: string;
+  timezone: string;
+  query: OverviewQuery;
+  range: OverviewRange;
+  sessions: { active: number; started: number; compressionSessions: number; compressions: number; compressionObservableSessions: number;
+    compressionRate: number | null; uncompressedPeakInput: WeeklyReviewDistribution };
+  rounds: { started: number; completed: number; inferred: number; unconfirmed: number; missingEndTime: number;
+    steps: WeeklyReviewDistribution; toolCalls: WeeklyReviewDistribution; tokens: WeeklyReviewDistribution; durationMs: WeeklyReviewDistribution;
+    topFiveTokenShare: number | null; longest: WeeklyReviewRecord[]; highestTokens: WeeklyReviewRecord[] };
+  cache: { requests: number; zero: number; partial: number; full: number; unknown: number; inputTokens: number | null;
+    cachedInputTokens: number | null; readShare: number | null; readShareSamples: number; readShareMissing: number; freshInputTokens: number | null; freshSamples: number;
+    hypotheticalPremium: number | null; premiumSamples: number; premiumMissing: number; largestFreshInputs: WeeklyReviewRecord[] };
+  preferences: { agents: WeeklyReviewRank[]; models: WeeklyReviewRank[]; reasoning: WeeklyReviewRank[];
+    promptCharacters: WeeklyReviewDistribution; promptInputs: number; promptMixedInputs: number | null;
+    hours: { hour: number; messages: number }[]; weekdays: { weekday: number; messages: number }[];
+    weekdayHours: { weekday: number; hour: number; messages: number }[]; busiestHour: number | null; userMessages: number };
+  extensions: { projects: WeeklyReviewRank[]; compressionLeaders: WeeklyReviewRecord[];
+    children: { sessions: number; requests: number; tokens: number | null; estimatedCost: number | null;
+      requestShare: number | null; tokenShare: number | null; costShare: number | null; costCoverage: RequestCost["coverage"];
+      tokenSamples: number; tokenMissing: number; userTokenSamples: number; userTokenMissing: number };
+    tools: { calls: number; failures: number; failedRounds: number; subsequentCalls: number; unknownResults: number } };
+  coverage: { gaps: Gap[]; gapCount: number; missingTimeEvents: number; missingTimeRequests: number;
+    unassignedRequests: number; excludedChildUserInputs: number; triggerIdentity: "unclassified";
+    automaticSessions: number | null; unknownTriggerSessions: number; unsupportedCompressionSessions: number; unknownForkSessions: number };
+}
+export type WeeklyReviewDetailKind = "sessions" | "rounds" | "cache" | "compressions" | "projects" | "delegation" | "tools"
+  | "agents" | "models" | "reasoning" | "prompts" | "activity" | "uncompressed";
+export interface WeeklyReviewDetailQuery {
+  kind: WeeklyReviewDetailKind;
+  key?: string;
+  filter?: "zero" | "partial" | "full" | "unknown" | "explicit" | "inferred" | "unconfirmed";
+  sort?: "recent" | "duration" | "tokens" | "steps" | "fresh";
+  page?: number;
+  pageSize?: number;
+}
+/** 复盘派生事实只保留输入长度及短定位片段，不复制工具参数或完整正文。 */
+export type WeeklyReviewEvent = OverviewEvent & { final?: SessionMessage["final"]; recordLine: number;
+  promptCharacters?: number; promptPreview?: string };
+export interface WeeklyReviewDetailPage {
+  version: string;
+  priceVersion: string;
+  timezone: string;
+  query: OverviewQuery;
+  range: OverviewRange;
+  detail: WeeklyReviewDetailQuery;
+  rows: WeeklyReviewRecord[];
+  ranks?: WeeklyReviewRank[];
+  total: number;
+  page: number;
+  pageSize: number;
+  review: Omit<WeeklyReview, "rounds" | "cache" | "preferences" | "extensions">;
+}
+
 export type OverviewWindow = "365" | "7" | "30" | "90" | "year" | "all" | "custom";
 export interface OverviewQuery {
   window?: OverviewWindow;

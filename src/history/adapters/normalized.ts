@@ -20,6 +20,7 @@ export interface NormalizedEvent {
   textDescriptor?: SessionMessage["textDescriptor"];
   occurredAt?: string;
   model?: string;
+  reasoningEffort?: string;
   callId?: string;
   tool?: string;
   input?: unknown;
@@ -182,6 +183,7 @@ export function parseNormalizedSession(snapshot: NormalizedSnapshot, sink: Sessi
     const value: SessionMessage = { id: `${id}:message:${normalizedHash(event.key).slice(0, 24)}`, sessionId: id,
       ordinal: previous ?? ++meta.messageCount, recordLine: row.line, turnId: turn, kind: event.kind,
       text: event.text ?? (event.input === undefined ? "" : JSON.stringify(event.input, null, 2)), textDescriptor: event.textDescriptor, occurredAt: event.occurredAt, model: event.model,
+      reasoningEffort: event.reasoningEffort,
       callId: event.callId, tool: event.tool, status: event.status, final: event.final, durationMs: event.durationMs,
       copied: event.copied, branchIds: event.branchIds, currentBranch: event.currentBranch,
       filePaths: paths.length ? paths : undefined, resource: event.kind === "tool_call" ? event.resource ?? callResource(event.tool ?? "", event.input, meta.project ?? source.cwd)
@@ -228,7 +230,7 @@ export function parseNormalizedSession(snapshot: NormalizedSnapshot, sink: Sessi
     const usageValue = event.usage && !event.copied ? { ...event.usage, id: `${id}:usage:${normalizedHash(event.usageKey ?? event.key).slice(0, 24)}`,
       messageId: messageIds.get(event.usageMessageKey ?? event.key) ?? value.id,
       turnId: event.turnKey && turns.has(event.turnKey) ? turns.get(event.turnKey) : value.turnId,
-      model: event.model, occurredAt: event.occurredAt } : undefined;
+      model: event.model, reasoningEffort: event.reasoningEffort ?? event.usage.reasoningEffort, occurredAt: event.occurredAt } : undefined;
     if (usageValue && !event.requestKey) sink.usage(usageValue);
     if (event.requestKey && !event.copied) {
       const group = requestGroups.get(event.requestKey) ?? { first: value, messages: new Set<string>() };
@@ -240,7 +242,8 @@ export function parseNormalizedSession(snapshot: NormalizedSnapshot, sink: Sessi
   }
   for (const [key, group] of requestGroups) {
     const usageValue = group.usage ?? { id: `${id}:usage:${normalizedHash(key).slice(0, 24)}`,
-      turnId: group.first.turnId, model: group.first.model, occurredAt: group.timing?.end?.occurredAt ?? group.first.occurredAt };
+      turnId: group.first.turnId, model: group.first.model, reasoningEffort: group.first.reasoningEffort,
+      occurredAt: group.timing?.end?.occurredAt ?? group.first.occurredAt };
     const timing = group.timing ? { ...group.timing, start: group.timing.start ? { ...group.timing.start } : undefined,
       end: group.timing.end ? { ...group.timing.end } : undefined, firstToken: group.timing.firstToken ? { ...group.timing.firstToken } : undefined } : undefined;
     if (timing) {

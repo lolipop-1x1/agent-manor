@@ -5,6 +5,7 @@ const contentSources = new Map<string, Context["contextSource"]>([
   ["agents_md.instructions", "agents_md"],
   ["environments.environment_context", "environment"],
   ["additional_content.codex_apps_open_page", "client"],
+  ["skills.selected_skill_instructions", "client"],
 ]);
 
 /** 优先采用客户端明确分类；旧日志仅从完整独立的包格式推断，混合请求仍为用户消息。 */

@@ -18,7 +18,7 @@ export class UsageParser {
   private generation = 0;
   private cumulativeInput?: number;
   private afterCompression = false;
-  private projection?: { id: string; requestKey?: string; signature: string; turnId: string; model?: string; requestGroup?: string };
+  private projection?: { id: string; requestKey?: string; signature: string; turnId: string; model?: string; reasoningEffort?: string; requestGroup?: string };
 
   constructor(private readonly sessionId: string, private readonly sink: SessionSink,
     private readonly gap: (kind: "ambiguous" | "unsupported_format", message: string, messageDescriptor?: MessageDescriptor) => void) {}
@@ -28,6 +28,7 @@ export class UsageParser {
     const merged = { ...previous, ...Object.fromEntries(Object.entries(value).filter(([, item]) => item !== undefined)) } as SessionUsage;
     merged.turnId = previous?.turnId ?? value.turnId;
     merged.messageId = previous?.messageId ?? value.messageId;
+    merged.reasoningEffort = previous?.reasoningEffort ?? value.reasoningEffort;
     this.requests.set(key, merged);
     this.requestKeys.set(merged.id, key);
     this.sink.usage(merged);
@@ -42,14 +43,14 @@ export class UsageParser {
 
   hasRecordedUsage(id: string): boolean { return this.recordedRequests.has(id); }
 
-  missing(requestId: string, context: { messageId?: string; turnId: string; model?: string; occurredAt?: string }): string {
+  missing(requestId: string, context: { messageId?: string; turnId: string; model?: string; reasoningEffort?: string; occurredAt?: string }): string {
     // 请求存在不代表原始用量记录存在，模型关联由 requestMessageIds 独立承载。
     return this.publish(requestId, { id: `${this.sessionId}:usage:${digest(requestId)}`, ...context, messageId: undefined });
   }
 
   compression(): void { this.afterCompression = true; this.projection = undefined; }
 
-  native(client: "claude" | "codeflicker", raw: unknown, requestId: string, context: { messageId?: string; turnId: string; model?: string; occurredAt?: string }, identifyMissing = false): string | undefined {
+  native(client: "claude" | "codeflicker", raw: unknown, requestId: string, context: { messageId?: string; turnId: string; model?: string; reasoningEffort?: string; occurredAt?: string }, identifyMissing = false): string | undefined {
     const usage = object(raw);
     if (!Object.keys(usage).length) return identifyMissing ? this.missing(requestId, context) : undefined;
     const input = tokens(usage.input_tokens);
@@ -70,7 +71,7 @@ export class UsageParser {
   }
 
   codex(raw: unknown, cumulative: unknown, requestId: string | undefined,
-    context: { messageId?: string; turnId: string; model?: string; provider?: string; occurredAt?: string; requestGroup?: string }): string | undefined {
+    context: { messageId?: string; turnId: string; model?: string; reasoningEffort?: string; provider?: string; occurredAt?: string; requestGroup?: string }): string | undefined {
     const usage = object(raw);
     if (!Object.keys(usage).length) return;
     const total = object(cumulative);
@@ -117,7 +118,9 @@ export class UsageParser {
       ?? `${this.sessionId}:usage:${requestKey ? digest(requestKey) : `${this.generation}:${checkpoint}`}`;
     const input = tokens(usage.input_tokens);
     const { requestGroup: _requestGroup, ...usageContext } = context;
-    const value: SessionUsage = { id, ...usageContext, inputTokens: input, outputTokens: tokens(usage.output_tokens),
+    const value: SessionUsage = { id, ...usageContext,
+      reasoningEffort: known ? known.reasoningEffort : mirrored ? previous?.reasoningEffort : context.reasoningEffort,
+      inputTokens: input, outputTokens: tokens(usage.output_tokens),
       cachedInputTokens: tokens(usage.cached_input_tokens), cacheWriteTokens: tokens(usage.cache_write_input_tokens),
       reasoningOutputTokens: tokens(usage.reasoning_output_tokens), contextTokens: tokens(usage.context_tokens) };
     this.recordedRequests.add(id);
@@ -128,7 +131,8 @@ export class UsageParser {
     this.publish(requestKey ?? `checkpoint:${this.generation}:${checkpoint}`, value);
     if (checkpoint) { this.checkpoint = checkpoint; this.checkpointId = id; this.checkpointRequest = requestKey; }
     if (!requestKey) this.cumulativeInput = cumulativeInput;
-    this.projection = mirrored ? undefined : { id, requestKey, signature, turnId: context.turnId, model: context.model, requestGroup: context.requestGroup };
+    this.projection = mirrored ? undefined : { id, requestKey, signature, turnId: context.turnId, model: context.model,
+      reasoningEffort: value.reasoningEffort, requestGroup: context.requestGroup };
     return id;
   }
 }

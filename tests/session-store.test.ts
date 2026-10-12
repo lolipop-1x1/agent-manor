@@ -757,6 +757,32 @@ test("画像返回超过 200 条的全部请求，父子明细与汇总共同排
   assert.equal(boundaryPage.stepsTotal, 258);
 }));
 
+test("单会话轮次平均值覆盖完整画像，自身统计不随包含子会话或请求分页改变", async () => fixture(store => {
+  const parent = source(store, meta("round-parent"), [
+    message("round-parent", 0, { text: "修复 ", recordLine: 1, occurredAt: "2026-10-05T09:00:00Z" }),
+    message("round-parent", 1, { text: "问题", recordLine: 1 }),
+    message("round-parent", 2, { kind: "assistant", final: "explicit", occurredAt: "2026-10-05T09:01:00Z" }),
+    message("round-parent", 3, { turnId: "turn-2", text: "检查", occurredAt: "2026-10-05T09:02:00Z" }),
+    message("round-parent", 4, { turnId: "turn-2", kind: "assistant", final: "explicit", occurredAt: "2026-10-05T09:04:00Z" }),
+    message("round-parent", 5, { turnId: "injected", text: "注入", contextSource: "client" }),
+    message("round-parent", 6, { turnId: "copied", copied: true, text: "继承" }),
+  ], [
+    { id: "parent-1", turnId: "turn-1" }, { id: "parent-2", turnId: "turn-1" }, { id: "parent-3", turnId: "turn-2" },
+  ]);
+  const child = source(store, meta("round-child", { parentSessionId: "round-parent", relationship: "child" }), [
+    message("round-child", 0, { text: "子需求", occurredAt: "2026-10-05T09:00:00Z" }),
+    message("round-child", 1, { kind: "assistant", final: "explicit", occurredAt: "2026-10-05T09:10:00Z" }),
+  ], [{ id: "child-request", turnId: "turn-1" }]);
+  store.publish(store.createJob().id, [parent, child], []);
+  const expected = { userTurns: 2, completedTurns: 2, stepTurns: 2, timedTurns: 2, promptInputs: 2,
+    averageSteps: 1.5, averageDurationMs: 90_000, averagePromptCharacters: 3 };
+  for (const query of [{}, { summary: true }, { includeChildren: true }, { includeChildren: true, stepOffset: 1, stepLimit: 1 }]) {
+    assert.deepEqual(store.profile("round-parent", query).roundMetrics, expected);
+  }
+  assert.equal(store.profile("round-child").roundMetrics?.averageDurationMs, 600_000);
+  assert.equal(store.profile("round-child").roundMetrics?.averagePromptCharacters, 3);
+}));
+
 test("画像采用同批缓存分母，未知保持null，reasoning不重复加输出，明确子关系与复制排除", async () => fixture(store => {
   const first = source(store, meta("parent", { childSessionIds: ["child", "missing-child"] }), [
     message("parent", 0, { model: "synthetic-model" }),

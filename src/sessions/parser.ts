@@ -10,7 +10,7 @@ import type { MessageKind, SessionMessage, SessionSink, SessionSourceMeta, Sessi
 import { object, string, tokens, UsageParser } from "./parser-usage.js";
 import { RequestTimingParser } from "./parser-timing.js";
 import { projectFromToolPaths } from "./parser-project.js";
-import { sessionTitle } from "./title.js";
+import { sessionTitle, userTitle } from "./title.js";
 import { codexContext } from "./codex-context.js";
 import { DESKTOP_FORMAT, desktopCalls, desktopIdentity, desktopResult, desktopTimestamp } from "../history/adapters/codeflicker-desktop.js";
 import type { DesktopModelRecord } from "./codeflicker-desktop.js";
@@ -79,22 +79,6 @@ function filePaths(input: unknown): string[] | undefined {
 
 interface Pending { message: SessionMessage; bytes: number; input: unknown }
 
-/** 只清理标题候选中的完整注入包，消息正文与轮次保持原样。 */
-function userTitle(body: string): string {
-  let value = body.trim();
-  const request = /(?:^|\n)## My request:\s*\n/.exec(value);
-  if (request && /(?:^|\n)<in-app-browser-context\b/.test(value.slice(0, request.index))) value = value.slice(request.index + request[0].length).trim();
-  while (value) {
-    const tag = value.startsWith("# AGENTS.md") ? "INSTRUCTIONS"
-      : /^<(INSTRUCTIONS|environment_context|in-app-browser-context|skill|recommended_plugins|turn_aborted)(?:\s[^>]*)?>/.exec(value)?.[1];
-    if (!tag) break;
-    const end = value.indexOf(`</${tag}>`);
-    if (end < 0) break;
-    value = value.slice(end + tag.length + 3).trim();
-  }
-  return value.replace(/\s+/g, " ").slice(0, 120);
-}
-
 export async function parseSessionSource(source: SourceLocation, sink: SessionSink, options: { byteLimit?: number; title?: string; projectMetadata?: { project?: string; ambiguous?: boolean }; desktopModels?: Map<string, DesktopModelRecord>; nativeSnapshot?: IdeSnapshot; normalizedSnapshot?: NormalizedSnapshot } = {}): Promise<SessionSourceMeta> {
   const adapter = historyAdapter(source.format ?? historyClient(source.client).format);
   if (adapter?.normalized) {
@@ -136,6 +120,7 @@ export async function parseSessionSource(source: SourceLocation, sink: SessionSi
   let pendingBytes = 0;
   let turnId = `${id}:turn:0`;
   let currentModel: string | undefined;
+  let currentReasoningEffort: string | undefined;
   let currentProvider: string | undefined;
   let candidate: SessionMessage | undefined;
   let interrupted = false;
@@ -285,6 +270,7 @@ export async function parseSessionSource(source: SourceLocation, sink: SessionSi
       const key = `desktop:${desktopIdentity(record.id) ?? line}`;
       const native = options.desktopModels?.get(string(object(object(record.extra)["claude-code"]).lastEntryUuid) ?? "");
       const model = string(record.model) ?? native?.model;
+      const reasoningEffort = string(record.reasoningEffort) ?? string(record.effort) ?? native?.reasoningEffort;
       let desktopRequest = native?.requestId ? desktopRequests.get(native.requestId) : undefined;
       if (!desktopRequest && native?.requestId) desktopRequest = { messages: new Set<string>() };
       if (desktopRequest && native?.requestId) {
@@ -292,6 +278,7 @@ export async function parseSessionSource(source: SourceLocation, sink: SessionSi
         desktopRequests.set(native.requestId, desktopRequest);
       }
       extra.model = model;
+      extra.reasoningEffort = reasoningEffort;
       // duration 是桌面累计运行时长，不能当作单次工具耗时。
       if (record.op === "turn_terminal") {
         const last = desktopIdentity(record.lastMessageId);
@@ -331,7 +318,7 @@ export async function parseSessionSource(source: SourceLocation, sink: SessionSi
             gap("unsupported_format", "桌面用量缺少已确认的执行后端，未计算总输入与缓存比例", { key: "diagnostics.sessions.parser.m009" });
           }
           const usageId = usage.native(nonCached ? "claude" : "codeflicker", normalized, native?.requestId ?? string(record.messageId) ?? key,
-            { messageId: emitted?.id ?? (calls[0] ? `${id}:message:${digest(`${key}:call:${calls[0].id}`)}` : undefined), turnId, model, occurredAt });
+            { messageId: emitted?.id ?? (calls[0] ? `${id}:message:${digest(`${key}:call:${calls[0].id}`)}` : undefined), turnId, model, reasoningEffort, occurredAt });
           if (desktopRequest) {
             desktopRequest.usageId = usageId;
             if (tokens(recorded.outputTokens) !== undefined && native?.timing?.outputTokens !== undefined
@@ -374,13 +361,16 @@ export async function parseSessionSource(source: SourceLocation, sink: SessionSi
       }
       if (record.type === "turn_context") {
         currentModel = string(payload.model) ?? currentModel; if (currentModel) models.add(currentModel);
+        // turn_context 是本轮配置快照，缺失或 null 不能沿用上轮档位。
+        currentReasoningEffort = string(payload.reasoning_effort) ?? string(payload.effort);
         if (!copied) timing?.context({ occurredAt, recordLine: line });
         continue;
       }
       if (record.type === "token_usage_record") {
         if (!copied) {
           const usageId = usage.codex(payload.usage, payload.thread_token_usage, string(payload.response_id),
-            { turnId, model: currentModel, provider: currentProvider, occurredAt, requestGroup: timing?.codexRequestGroup() });
+            { turnId, model: currentModel, ...(timing?.codexReasoningSetting() ?? { reasoningEffort: currentReasoningEffort }),
+              provider: currentProvider, occurredAt, requestGroup: timing?.codexRequestGroup() });
           timing?.codexUsage(usageId, { occurredAt, recordLine: line, messageId: usageId ? usageMarkers.get(usageId)?.id : undefined });
         }
         continue;
@@ -393,19 +383,22 @@ export async function parseSessionSource(source: SourceLocation, sink: SessionSi
           const info = object(payload.info);
           if (!copied) {
             const usageId = usage.codex({ ...object(info.last_token_usage), context_tokens: object(info.last_token_usage).context_tokens ?? object(info.last_token_usage).total_tokens },
-              info.total_token_usage, undefined, { turnId, model: currentModel, provider: currentProvider, occurredAt, requestGroup: timing?.codexRequestGroup() });
+              info.total_token_usage, undefined, { turnId, model: currentModel,
+                ...(timing?.codexReasoningSetting() ?? { reasoningEffort: currentReasoningEffort }),
+                provider: currentProvider, occurredAt, requestGroup: timing?.codexRequestGroup() });
             timing?.codexUsage(usageId, { occurredAt, recordLine: line, messageId: usageId ? usageMarkers.get(usageId)?.id : undefined });
           }
         } else if (payload.type === "agent_reasoning") {
           const key = `event:${string(payload.id) ?? line}`;
           const body = text(payload.message ?? payload.text);
-          message(key, "thinking", body, line, { ...extra, model: currentModel });
+          message(key, "thinking", body, line, { ...extra, model: currentModel, reasoningEffort: currentReasoningEffort });
           projectedReasoning = { key, text: body, turnId };
         } else if (!hasResponseTranscript && ["user_message", "agent_message"].includes(string(payload.type) ?? "")) {
           const body = text(payload.message ?? payload.text);
           const context = payload.type === "user_message" ? codexContext(body, passthrough.content_item_kinds) : undefined;
           const kind = payload.type === "user_message" ? context ? "context" : "user" : "assistant";
-          message(`event:${string(payload.id) ?? line}`, kind, body, line, { ...extra, ...context, model: kind === "user" ? undefined : currentModel }, kind === "user");
+          message(`event:${string(payload.id) ?? line}`, kind, body, line, { ...extra, ...context, model: kind === "user" ? undefined : currentModel,
+            reasoningEffort: kind === "assistant" ? currentReasoningEffort : undefined }, kind === "user");
         } else if (["task_aborted", "turn_aborted", "error"].includes(string(payload.type) ?? "")) {
           if (!copied) timing?.interrupt();
           interrupted = true; message(`event:${line}`, "system", display(payload), line, extra);
@@ -429,13 +422,15 @@ export async function parseSessionSource(source: SourceLocation, sink: SessionSi
       const type = string(payload.type);
       const key = string(payload.id) ? `response:${payload.id}` : `response:${line}`;
       extra.model = string(payload.model) ?? currentModel;
+      extra.reasoningEffort = currentReasoningEffort;
       if (type === "message" || type === "agent_message") {
         const role = type === "agent_message" ? "assistant" : string(payload.role);
         const body = text(payload.content);
         const context = role === "user" ? codexContext(body, passthrough.content_item_kinds) : undefined;
         const kind: MessageKind = role === "user" ? context ? "context" : "user" : role === "assistant" ? "assistant" : "system";
         const phase = string(payload.phase) ?? string(payload.channel) ?? string(passthrough.channel);
-        message(key, kind, body, line, { ...extra, ...context, final: kind === "assistant" && ["final", "final_answer"].includes(phase ?? "") ? "explicit" : undefined }, kind === "user");
+        message(key, kind, body, line, { ...extra, ...context, reasoningEffort: kind === "assistant" ? currentReasoningEffort : undefined,
+          final: kind === "assistant" && ["final", "final_answer"].includes(phase ?? "") ? "explicit" : undefined }, kind === "user");
       } else if (type === "reasoning") {
         const body = text(payload.summary) || text(payload.content);
         if (!body && payload.encrypted_content && projectedReasoning?.turnId !== turnId) gap("unsupported_format", "思考正文仅有加密内容，未解密或补造", { key: "diagnostics.sessions.parser.m012" });
@@ -470,6 +465,8 @@ export async function parseSessionSource(source: SourceLocation, sink: SessionSi
     const recordedModel = model && model !== "<synthetic>" && !(source.client === "codeflicker" && role === "attachment") ? model : undefined;
     if (recordedModel) models.add(recordedModel);
     extra.model = recordedModel;
+    extra.reasoningEffort = role === "assistant" ? string(record.effort) ?? string(record.reasoningEffort)
+      ?? string(native.reasoning_effort) ?? string(native.reasoningEffort) : undefined;
     if (record.type === "system" || record.type === "summary") {
       const compression = record.subtype === "compact_boundary" || record.type === "summary";
       message(`native:${nativeId}`, compression ? "compression" : "system", text(record.content ?? record.summary ?? native.content), line, extra); continue;
@@ -538,7 +535,7 @@ export async function parseSessionSource(source: SourceLocation, sink: SessionSi
         const persisted = source.client === "codeflicker" && record.type === "message" && Boolean(string(record.uuid)) && identified
           && Object.keys(object(native.usage)).length > 0 && !partial;
         const usageId = usage.native(source.client === "claude" ? "claude" : "codeflicker", native.usage, requestId,
-          { messageId: firstMessage?.id, turnId, model: recordedModel, occurredAt }, identified);
+          { messageId: firstMessage?.id, turnId, model: recordedModel, reasoningEffort: extra.reasoningEffort, occurredAt }, identified);
         timing?.nativeUsage(usageId, string(native.stop_reason), persisted, partial, { occurredAt, recordLine: line, messageId: firstMessage?.id });
       }
     }

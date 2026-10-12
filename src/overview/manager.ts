@@ -3,7 +3,7 @@ import { dirname, join } from "node:path";
 import type { Repository } from "../contracts.js";
 import { StoreError } from "../index/store.js";
 import type { OverviewDetailPage, OverviewDetailQuery, OverviewDistributionDimension, OverviewEvidencePage, OverviewEvidenceQuery, OverviewPanel,
-  OverviewPanelResult, OverviewQuery, OverviewReport, OverviewSnapshot } from "../overview-contracts.js";
+  OverviewPanelResult, OverviewQuery, OverviewReport, OverviewSnapshot, WeeklyReview, WeeklyReviewDetailPage, WeeklyReviewDetailQuery } from "../overview-contracts.js";
 import type { SessionStore } from "../sessions/store.js";
 import { UsageResultCache } from "../usage/cache.js";
 import { UsageManager } from "../usage/manager.js";
@@ -11,10 +11,11 @@ import type { PricingService } from "../usage/pricing.js";
 import type { UsageQuery, UsageStatistics, UsageStatisticsView } from "../usage-contracts.js";
 import type { OverviewWorkerRequest, OverviewWorkerResponse, OverviewWorkerResult } from "./worker-contracts.js";
 import { localDay, resolveOverviewRange, resolveTimezone } from "./dates.js";
+import { weeklyReviewRange } from "./weekly-review-facts.js";
 import { OverviewResultStore } from "./result-store.js";
 
-type Lane = "core" | "usage" | "analysis" | "detail" | "repositories";
-type RequestExtra = Pick<OverviewWorkerRequest, "panel" | "dimension" | "detail" | "evidence">;
+type Lane = "core" | "usage" | "analysis" | "detail" | "repositories" | "review";
+type RequestExtra = Pick<OverviewWorkerRequest, "panel" | "dimension" | "detail" | "evidence" | "reviewDetail">;
 interface Pending { lane: Lane; resolve(value: OverviewWorkerResult): void; reject(error: Error): void }
 const stopped = () => new StoreError("INTERNAL_ERROR", "总览统计后台已停止", { key: "diagnostics.server.m003" });
 
@@ -41,7 +42,7 @@ export class OverviewManager {
   }
   private createWorker(lane: Lane): Worker {
     const extension = import.meta.url.endsWith(".ts") ? "ts" : "js";
-    const url = new URL(`./worker.${extension}`, import.meta.url), workerData = { dbPath: this.sessions.dbPath, preparesFacts: lane === "core" };
+    const url = new URL(`./worker.${extension}`, import.meta.url), workerData = { dbPath: this.sessions.dbPath, preparesFacts: lane === "core", reviewOnly: lane === "review" };
     const resourceLimits = { maxOldGenerationSizeMb: lane === "repositories" ? 192 : 512, maxYoungGenerationSizeMb: 32 };
     const worker = extension === "ts"
       ? new Worker(`import('tsx/esm/api').then(({register}) => { register(); return import(${JSON.stringify(url.href)}); });`, { eval: true, workerData, resourceLimits })
@@ -58,7 +59,7 @@ export class OverviewManager {
           this.idleWorkers.delete(lane);
           if (this.workers.get(lane) !== worker) return;
           this.workers.delete(lane); void worker.terminate().catch(() => undefined);
-        }, lane === "repositories" ? 0 : 2000);
+        }, lane === "repositories" ? 0 : lane === "review" ? 120000 : 2000);
         timer.unref(); this.idleWorkers.set(lane, timer);
       }
     });
@@ -81,7 +82,7 @@ export class OverviewManager {
   private key(type: OverviewWorkerRequest["type"], query: OverviewQuery, extra: object): string {
     const panel = (extra as { panel?: OverviewPanel }).panel;
     const semantic = type === "panel" && ["core", "resources", "repositories", "facets"].includes(panel ?? "") ? { ...query, models: undefined } : query;
-    return JSON.stringify([6, type, this.canonicalQuery(semantic), extra,
+    return JSON.stringify([type === "review" || type === "review_detail" ? "weekly-review-v7" : 6, type, this.canonicalQuery(semantic), extra,
       type === "report" || panel === "repositories" ? this.repositories().map(row => [row.id, row.version, row.stale]) : undefined]);
   }
   private canonicalQuery(query: OverviewQuery): object {
@@ -98,6 +99,11 @@ export class OverviewManager {
     const result = value as OverviewWorkerResult, snapshot = "snapshot" in result ? result.snapshot : result;
     if (!("version" in snapshot) || snapshot.version !== query.version || snapshot.priceVersion !== query.priceVersion
       || snapshot.timezone !== query.timezone || !snapshot.range || snapshot.range.today !== query.anchorDay) return false;
+    if (type === "review" || type === "review_detail") {
+      if (JSON.stringify(snapshot.range) !== JSON.stringify(weeklyReviewRange(query, this.now()))) return false;
+      return type === "review" ? "rounds" in result && !!result.rounds.steps && "preferences" in result
+        : "rows" in result && Array.isArray(result.rows) && Number.isSafeInteger(result.total);
+    }
     const global = type === "panel" && ["core", "resources", "repositories", "facets"].includes(extra.panel ?? "");
     const normalize = (value: OverviewQuery) => this.canonicalQuery(global ? { ...value, models: undefined } : value);
     if (query.window !== "all") {
@@ -199,10 +205,10 @@ export class OverviewManager {
     if (current) return current.then(result => this.bindQuery(result, fixed));
     const cached = this.cache.get(key) ?? this.persisted.get(key, (value): value is OverviewWorkerResult => this.valid(value, fixed, type, extra));
     if (cached) { this.cache.set(key, cached); return Promise.resolve(this.bindQuery(cached, fixed)); }
-    const lane: Lane = type === "snapshot" || type === "panel" && extra.panel === "core" ? "core"
+    const lane: Lane = type === "review" || type === "review_detail" ? "review" : type === "snapshot" || type === "panel" && extra.panel === "core" ? "core"
       : type === "panel" && ["usage", "distribution", "facets"].includes(extra.panel ?? "") ? "usage"
       : type === "detail" || type === "evidence" ? "detail" : extra.panel === "repositories" ? "repositories" : "analysis";
-    const preparation = type === "panel" && extra.panel === "repositories" && fixed.window !== "all" ? Promise.resolve() : this.ensureFacts(fixed);
+    const preparation = type === "review" || type === "review_detail" || type === "panel" && extra.panel === "repositories" && fixed.window !== "all" ? Promise.resolve() : this.ensureFacts(fixed);
     const response = preparation.then(() => this.payload(type, fixed, extra)).then(payload => this.dispatch(type, fixed, lane, extra, payload))
       .then(result => {
         if (!this.valid(result, fixed, type, extra)) throw new StoreError("INTERNAL_ERROR", "总览统计快照不匹配", { key: "diagnostics.server.m003" });
@@ -228,6 +234,16 @@ export class OverviewManager {
   }
   async detail(query: OverviewQuery, detail: OverviewDetailQuery): Promise<OverviewDetailPage> {
     return structuredClone(await this.execute("detail", query, { detail }) as OverviewDetailPage);
+  }
+  private reviewQuery(query: OverviewQuery): OverviewQuery {
+    const fixed = this.fixed(query), range = weeklyReviewRange(fixed, this.now());
+    return { ...fixed, window: "custom", from: range.from, to: range.to, models: undefined };
+  }
+  async review(query: OverviewQuery): Promise<WeeklyReview> {
+    return structuredClone(await this.execute("review", this.reviewQuery(query)) as WeeklyReview);
+  }
+  async reviewDetail(query: OverviewQuery, reviewDetail: WeeklyReviewDetailQuery): Promise<WeeklyReviewDetailPage> {
+    return structuredClone(await this.execute("review_detail", this.reviewQuery(query), { reviewDetail }) as WeeklyReviewDetailPage);
   }
   async report(query: OverviewQuery): Promise<OverviewReport> {
     const result = await this.execute("report", query) as OverviewReport;

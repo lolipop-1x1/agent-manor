@@ -19,6 +19,8 @@ export interface SessionMessage {
   textDescriptor?: MessageDescriptor;
   occurredAt?: string;
   model?: string;
+  /** 来源明确记录的思考程度，保留原始配置取值。 */
+  reasoningEffort?: string;
   callId?: string;
   tool?: string;
   status?: "success" | "failure" | "unknown";
@@ -77,6 +79,8 @@ export interface SessionUsage {
   messageId?: string;
   turnId?: string;
   model?: string;
+  /** 请求生效时的明确思考设置，不根据推理 Token 推断。 */
+  reasoningEffort?: string;
   /** 来源明确记录的计价服务商，不根据客户端名称推断。 */
   provider?: string;
   inputTokens?: number;
@@ -251,6 +255,16 @@ export interface SessionProfileQuery extends SessionQuery {
   stepOffset?: number;
   stepLimit?: number;
 }
+export interface SessionRoundMetrics {
+  userTurns: number;
+  completedTurns: number;
+  stepTurns: number;
+  timedTurns: number;
+  promptInputs: number;
+  averageSteps: number | null;
+  averageDurationMs: number | null;
+  averagePromptCharacters: number | null;
+}
 export interface SessionProfile {
   version: string;
   scope: "self" | "tree";
@@ -258,6 +272,8 @@ export interface SessionProfile {
   missingChildren: number;
   messageCount: number;
   turnCount: number;
+  /** 始终统计当前会话自身，不将子会话消耗分摊到用户轮次。 */
+  roundMetrics?: SessionRoundMetrics;
   models: { model: string; count: number }[];
   usage: { requests: number; inputTokens: number | null; outputTokens: number | null; cachedInputTokens: number | null;
     cacheWriteTokens: number | null; reasoningOutputTokens: number | null; cacheReadRatio: number | null;

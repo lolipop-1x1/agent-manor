@@ -46,7 +46,7 @@ export async function loadDesktopTitles(sources: readonly SourceLocation[]): Pro
   return titles;
 }
 
-export interface DesktopModelRecord { model?: string; requestId?: string; timing?: SessionRequestTiming }
+export interface DesktopModelRecord { model?: string; reasoningEffort?: string; requestId?: string; timing?: SessionRequestTiming }
 
 /** 镜像列表和各文件身份均参与快检；只看目录时间会漏掉原文件追加。 */
 export async function desktopMirrorStamp(path: string): Promise<string | undefined> {
@@ -89,7 +89,7 @@ export async function desktopModels(path: string): Promise<{ entries: Map<string
     if (info.size > 64 * 1024 * 1024) { limited = true; hash.update(`${file.name}:oversized:${info.size}`); continue; }
     const lines = createInterface({ input: createReadStream(location), crlfDelay: Infinity });
     const nodes = new Map<string, { type: string; parent?: string; request?: string; at?: string; line: number }>();
-    const groups = new Map<string, { model?: string; first: string; last: string; output?: number; stop?: string; partial: boolean }>();
+    const groups = new Map<string, { model?: string; reasoningEffort?: string; first: string; last: string; output?: number; stop?: string; partial: boolean }>();
     let row = 0;
     for await (const line of lines) {
       row += 1;
@@ -104,11 +104,13 @@ export async function desktopModels(path: string): Promise<{ entries: Map<string
       nodes.set(uuid, { type: string(record.type) ?? "", parent: string(record.parentUuid), request,
         at: string(record.timestamp), line: row });
       if (record.type !== "assistant") continue;
-      if (!request) { entries.set(uuid, { model: string(message.model) }); continue; }
+      const reasoningEffort = string(record.effort) ?? string(record.reasoningEffort) ?? string(message.reasoning_effort);
+      if (!request) { entries.set(uuid, { model: string(message.model), reasoningEffort }); continue; }
       let group = groups.get(request);
       if (!group) { group = { first: uuid, last: uuid, partial: false }; groups.set(request, group); }
       group.last = uuid;
       group.model = string(message.model) ?? group.model;
+      group.reasoningEffort ??= reasoningEffort;
       group.output = tokens(object(message.usage).output_tokens) ?? group.output;
       group.stop = string(message.stop_reason) ?? group.stop;
       group.partial ||= record.isApiErrorMessage === true || record.interrupted === true;
@@ -135,7 +137,7 @@ export async function desktopModels(path: string): Promise<{ entries: Map<string
         const aliases = children.get(parentId!) ?? new Set<string>();
         aliases.add(request); children.set(parentId!, aliases);
       }
-      requests.set(request, { model: group.model, requestId: request, timing });
+      requests.set(request, { model: group.model, reasoningEffort: group.reasoningEffort, requestId: request, timing });
     }
     for (const [uuid, node] of nodes) {
       const key = node.request ?? (children.get(uuid)?.size === 1 ? [...children.get(uuid)!][0] : undefined);

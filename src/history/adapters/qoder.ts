@@ -48,17 +48,20 @@ function normalizeQoderRows(rows: readonly RawHistoryRecord[], gaps: Gap[]): { r
   if (directories.length === 0 && cwdValues.length > 1) addGap(gaps, "ambiguous", "Qoder 消息记录了多个 cwd，无法确认单一项目目录", { key: "diagnostics.history.adapters.qoder.m003" });
   const title = rows.find(row => row.record.type === "ai-title" && typeof row.record.aiTitle === "string")?.record.aiTitle as string | undefined;
   let activeModel: string | undefined;
+  let activeReasoningEffort: string | undefined;
   const normalized: ReturnType<typeof normalizedRecord>[] = [];
   const snapshots = new Map<string, Set<string>>();
   const requestUsages = new Map<string, { event: NormalizedEvent; fingerprint: string }>();
+  const requestEfforts = new Map<string, string | undefined>();
   for (const row of rows) {
     const record = row.record;
     const type = string(record.type) ?? "<缺少类型>";
     if (type === "runtime-config") {
       activeModel = string(record.model) ?? activeModel;
+      activeReasoningEffort = string(record.reasoningEffort);
       const config = { model: string(record.model), contextWindow: record.contextWindow, reasoningEffort: string(record.reasoningEffort) };
       normalized.push(normalizedRecord({ key: `runtime-config:${row.line}`, kind: "context", text: JSON.stringify(config),
-        model: string(record.model), occurredAt: eventTime(record.timestamp) }, row.raw, row.line));
+        model: string(record.model), reasoningEffort: activeReasoningEffort, occurredAt: eventTime(record.timestamp) }, row.raw, row.line));
       continue;
     }
     if (["workspace-directories", "ai-title", "last-prompt", "file-history-snapshot"].includes(type)) continue;
@@ -97,6 +100,8 @@ function normalizeQoderRows(rows: readonly RawHistoryRecord[], gaps: Gap[]): { r
     const usage = normalizeUsage([hasUsage], gap => addGap(gaps, gap.kind, gap.message, gap.messageDescriptor, gap.details));
     const usageKey = string(message.id) ?? recordId;
     const requestKey = type === "assistant" ? nativeRequest ?? `record:${recordId}` : undefined;
+    if (requestKey && !requestEfforts.has(requestKey)) requestEfforts.set(requestKey, activeReasoningEffort);
+    const reasoningEffort = requestKey ? requestEfforts.get(requestKey) : undefined;
     let usageAttached = false;
     const attachUsage = (event: NormalizedEvent) => {
       if (!usage || usageAttached) return;
@@ -116,7 +121,7 @@ function normalizeQoderRows(rows: readonly RawHistoryRecord[], gaps: Gap[]): { r
       normalized.push(normalizedRecord(event, row.raw, row.line));
     }
     if (type === "assistant" && !content.length) {
-      const event: NormalizedEvent = { key: `${recordId}:assistant`, kind: "assistant", text: "", occurredAt, model, requestKey, allowInferredFinal: false };
+      const event: NormalizedEvent = { key: `${recordId}:assistant`, kind: "assistant", text: "", occurredAt, model, reasoningEffort, requestKey, allowInferredFinal: false };
       if (message.stop_reason === "end_turn") event.final = "explicit";
       attachUsage(event);
       normalized.push(normalizedRecord(event, row.raw, row.line));
@@ -124,18 +129,18 @@ function normalizeQoderRows(rows: readonly RawHistoryRecord[], gaps: Gap[]): { r
     blocks.forEach((block, index) => {
       const key = `${recordId}:${index}`;
       if (type === "assistant" && block.type === "text") {
-        const event: NormalizedEvent = { key, kind: "assistant", text: string(block.text) ?? "", occurredAt, model, requestKey,
+        const event: NormalizedEvent = { key, kind: "assistant", text: string(block.text) ?? "", occurredAt, model, reasoningEffort, requestKey,
           final: message.stop_reason === "end_turn" ? "explicit" : undefined, allowInferredFinal: false };
         attachUsage(event);
         normalized.push(normalizedRecord(event, row.raw, row.line));
       } else if (type === "assistant" && block.type === "thinking") {
-        normalized.push(normalizedRecord({ key, kind: "thinking", text: string(block.thinking) ?? "", occurredAt, model, requestKey }, row.raw, row.line));
+        normalized.push(normalizedRecord({ key, kind: "thinking", text: string(block.thinking) ?? "", occurredAt, model, reasoningEffort, requestKey }, row.raw, row.line));
       } else if (type === "assistant" && block.type === "redacted_thinking") {
-        normalized.push(normalizedRecord({ key, kind: "thinking", text: "[原生记录标记为 redacted thinking]", occurredAt, model, requestKey }, row.raw, row.line));
+        normalized.push(normalizedRecord({ key, kind: "thinking", text: "[原生记录标记为 redacted thinking]", occurredAt, model, reasoningEffort, requestKey }, row.raw, row.line));
       } else if (type === "assistant" && block.type === "tool_use") {
         const callId = string(block.id);
         const event: NormalizedEvent = { key, kind: "tool_call", callId, tool: string(block.name) ?? "unknown",
-          input: block.input, occurredAt, model, requestKey };
+          input: block.input, occurredAt, model, reasoningEffort, requestKey };
         attachUsage(event);
         normalized.push(normalizedRecord(event, row.raw, row.line));
         if (!callId) addGap(gaps, "unpaired_call", "Qoder tool_use 缺少原生调用 id，无法配对结果", { key: "diagnostics.history.adapters.qoder.m006" });
@@ -162,7 +167,7 @@ function normalizeQoderRows(rows: readonly RawHistoryRecord[], gaps: Gap[]): { r
     }
     if (type === "assistant" && usage && !usageAttached) {
       const event: NormalizedEvent = { key: `${recordId}:usage`, kind: "context", text: "原生助手记录包含用量字段",
-        occurredAt, model, requestKey };
+        occurredAt, model, reasoningEffort, requestKey };
       attachUsage(event);
       normalized.push(normalizedRecord(event, row.raw, row.line));
     }

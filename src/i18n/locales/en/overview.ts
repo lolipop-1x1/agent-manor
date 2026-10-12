@@ -1,8 +1,10 @@
 import type { MessageCatalog } from "../../types.js";
 import overviewInsights from "./overview-insights.js";
+import overviewReview from "./overview-review.js";
 
 export default {
   ...overviewInsights,
+  ...overviewReview,
   "overview.timing.p90": "P90 duration",
   "overview.filter.allClients": "All clients",
   "overview.mcp.sort": "MCP sort",
