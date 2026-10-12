@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 import test from "node:test";
 import { OverviewManager } from "../src/overview/manager.js";
 import { SessionStore } from "../src/sessions/store.js";
@@ -66,6 +67,10 @@ test("核心分区重启复用持久结果，模型身份重绑定且已淘汰�
     assert.equal(dispatchedTypes.filter(type => type === "prepare").length, 1);
     await first.panel({ ...query, timezone: "America/New_York" }, "core");
     assert.equal(dispatchedTypes.filter(type => type === "prepare").length, 2);
+    await delay(2100);
+    assert.equal((first as unknown as { workers: Map<string, unknown> }).workers.size, 0);
+    assert.equal((await first.panel({ ...query, window: "7" }, "core")).data.summary!.requests, 1);
+    assert.equal(dispatchedTypes.filter(type => type === "prepare").length, 2, "闲置 Worker 重建后复用已落盘事实");
     await first.close(); restarted = new OverviewManager(store, prices, () => [], clock);
     assert.deepEqual(await restarted.panel(query, "core"), core);
     assert.equal((restarted as unknown as { nextId: number }).nextId, 0);

@@ -20,6 +20,7 @@ const stopped = () => new StoreError("INTERNAL_ERROR", "总览统计后台已停
 /** 核心、区域和调查互不排队；缓存命中先核对完整版本，再跳过事实及用量准备。 */
 export class OverviewManager {
   private readonly workers = new Map<Lane, Worker>();
+  private readonly idleWorkers = new Map<Lane, NodeJS.Timeout>();
   private nextId = 0;
   private closed = false;
   private readonly pending = new Map<number, Pending>();
@@ -50,9 +51,14 @@ export class OverviewManager {
       this.pending.delete(message.id);
       if (message.type === "result") request.resolve(message.result);
       else request.reject(new StoreError(message.error.code, message.error.message, message.error.messageDescriptor));
-      // 仓库正文投影的临时内存不驻留；完成后的摘要已由查询缓存保存。
-      if (lane === "repositories" && ![...this.pending.values()].some(value => value.lane === lane)) {
-        this.workers.delete(lane); void worker.terminate().catch(() => undefined);
+      // 结果已进入主线程及持久缓存，闲置通道释放 SQLite 与临时分析内存。
+      if (![...this.pending.values()].some(value => value.lane === lane)) {
+        const timer = setTimeout(() => {
+          this.idleWorkers.delete(lane);
+          if (this.workers.get(lane) !== worker) return;
+          this.workers.delete(lane); void worker.terminate().catch(() => undefined);
+        }, lane === "repositories" ? 0 : 2000);
+        timer.unref(); this.idleWorkers.set(lane, timer);
       }
     });
     const fail = (error: Error) => {
@@ -148,6 +154,7 @@ export class OverviewManager {
     extra: Pick<OverviewWorkerRequest, "panel" | "detail" | "evidence"> = {}, payload: Partial<OverviewWorkerRequest> = {}): Promise<OverviewWorkerResult> {
     if (this.closed) return Promise.reject(stopped());
     const worker = this.workers.get(lane) ?? this.createWorker(lane), id = ++this.nextId;
+    clearTimeout(this.idleWorkers.get(lane)); this.idleWorkers.delete(lane);
     return new Promise<OverviewWorkerResult>((resolve, reject) => {
       this.pending.set(id, { lane, resolve, reject });
       try { worker.postMessage({ id, type, query, pricing: this.pricing.view(query.priceVersion).status,
@@ -209,6 +216,8 @@ export class OverviewManager {
   }
   async close(): Promise<void> {
     if (this.closed) return; this.closed = true;
+    for (const timer of this.idleWorkers.values()) clearTimeout(timer);
+    this.idleWorkers.clear();
     const workers = [...this.workers.values()]; this.workers.clear();
     for (const request of this.pending.values()) request.reject(stopped());
     this.pending.clear(); this.inFlight.clear(); this.preparedFacts.clear(); this.preparingFacts.clear(); this.cache.clear(); this.persisted.close();
