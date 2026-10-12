@@ -1,6 +1,9 @@
 import type { MessageCatalog } from "../../types.js";
 
 export default {
+  "overview.insight.projectShareChange": "{{name}}：请求占比从 {{previous, number}}% 变为 {{current, number}}%。",
+  "overview.insight.modelShareChange": "{{name}}：请求占比从 {{previous, number}}% 变为 {{current, number}}%。",
+  "overview.insight.resourceChange": "{{name}}：使用会话从 {{previous, number}} 个变为 {{current, number}} 个。",
   "overview.insight.usage": "完整请求 Token 从 {{previous, number}} 变为 {{current, number}}；请求数量贡献 {{countContribution, number}}，单次用量贡献 {{meanContribution, number}}。",
   "overview.insight.concentration": "{{sessions, number}} 个用量完整的会话中，首位会话占 {{topOne, number}}%，前五位占 {{topFive, number}}%。",
   "overview.insight.peak": "单次完整请求用量峰值为 {{tokens, number}} Token。",

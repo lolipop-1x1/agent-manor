@@ -1,6 +1,9 @@
 import type { MessageCatalog } from "../../types.js";
 
 export default {
+  "overview.insight.projectShareChange": "{{name}}: request share changed from {{previous, number}}% to {{current, number}}%.",
+  "overview.insight.modelShareChange": "{{name}}: request share changed from {{previous, number}}% to {{current, number}}%.",
+  "overview.insight.resourceChange": "{{name}}: using sessions changed from {{previous, number}} to {{current, number}}.",
   "overview.insight.usage": "Complete-request tokens changed from {{previous, number}} to {{current, number}}; request count contributed {{countContribution, number}}, average size {{meanContribution, number}}.",
   "overview.insight.concentration": "Across {{sessions, number}} sessions with complete usage, the largest session accounts for {{topOne, number}}% and the top five for {{topFive, number}}%.",
   "overview.insight.peak": "The largest complete request records {{tokens, number}} tokens.",
