@@ -3,7 +3,7 @@ import type { PricingView } from "../usage/pricing.js";
 import { matchesGlobalSession } from "./analytics.js";
 import { buildOverviewEvidence } from "./evidence.js";
 import type { OverviewFactStore } from "./facts.js";
-import { factExtraEvidence } from "./evidence-extra.js";
+import { factExtraEvidence, hydrateFactRequestEvidence } from "./evidence-extra.js";
 
 type EventRecord = Parameters<OverviewFactStore["decodeEvent"]>[0];
 type RequestRecord = Parameters<OverviewFactStore["decodeRequest"]>[0];
@@ -39,6 +39,8 @@ export async function factEvidence(store: OverviewFactStore, snapshot: OverviewS
   const json = JSON.stringify(revisions), time = evidence.undated ? "f.time_ms IS NULL" : all ? "1" : "f.time_ms>=? AND f.time_ms<?";
   const values: Value[] = [json, ...(!all && !evidence.undated ? [scope.bounds!.fromMs, scope.bounds!.toMs] : [])];
   const baseValues = [...values];
+  const evidenceScope = { metadata, revisions, time, values: baseValues, initial, range: { ...scope.range, all },
+    query: { ...extra, ...(evidence.model ? { models: [evidence.model] } : {}) } };
   const where = [`f.revision IN (SELECT value FROM json_each(?))`, time];
   const event = evidence.kind === "tools" || evidence.kind === "failures" || evidence.kind === "compressions";
   const request = evidence.kind === "requests" || evidence.kind === "timing";
@@ -86,31 +88,12 @@ export async function factEvidence(store: OverviewFactStore, snapshot: OverviewS
       : evidence.sort === "ordinal" ? "session_id,ordinal,session_id||':'||id" : "time_ms DESC,session_id||':'||id";
     const page = store.readRows<EventRecord | RequestRecord | ResourceRecord>(`SELECT * FROM (${candidate}) ORDER BY ${order} LIMIT ? OFFSET ?`,
       [...parameters, initial.pageSize, (initial.page - 1) * initial.pageSize]);
+    if (request) return { ...initial, total, rows: hydrateFactRequestEvidence(store, snapshot, evidence, evidenceScope, page as RequestRecord[], pricing) };
     const source: OverviewSource = { ...metadata, events: [], requests: [], resources: [] };
-    if (request) await requestContext(store, source, page as RequestRecord[]);
-    else if (resource) source.resources = page.map(row => store.decodeResource(row as ResourceRecord));
+    if (resource) source.resources = page.map(row => store.decodeResource(row as ResourceRecord));
     else source.events = page.map(row => store.decodeEvent(row as EventRecord));
     return buildOverviewEvidence(source, snapshot.query, evidence, pricing, now, { range: snapshot.range, total,
       rowIds: new Set(page.map(row => resource ? row.id : `${row.session_id}:${row.id}`)) });
   }
-  return factExtraEvidence(store, snapshot, evidence, pricing, now, { metadata, revisions, time, values: baseValues, initial,
-    range: { ...scope.range, all }, query: { ...extra, ...(evidence.model ? { models: [evidence.model] } : {}) } });
-}
-
-async function requestContext(store: OverviewFactStore, source: OverviewSource, page: RequestRecord[]): Promise<void> {
-  if (!page.length) return;
-  const sessions = JSON.stringify([...new Set(page.map(row => row.session_id))]);
-  const context = store.readRows<RequestRecord>(`SELECT f.*,r.session_id FROM overview_fact_requests f JOIN overview_fact_revisions r ON r.revision=f.revision
-    WHERE r.session_id IN (SELECT value FROM json_each(?)) AND f.revision IN (SELECT value FROM json_each(?)) ORDER BY r.session_id,f.ordinal,f.id`,
-    [sessions, JSON.stringify([...new Set(page.map(row => row.revision))])]);
-  const ids = new Set(page.map(row => `${row.session_id}:${row.id}`));
-  const needed = context.filter((row, index) => ids.has(`${row.session_id}:${row.id}`)
-    || context[index + 1]?.session_id === row.session_id && ids.has(`${row.session_id}:${context[index + 1]!.id}`));
-  const hydrated = new Map(store.hydrateRequestMembers(needed).map(row => [`${row.sessionId}:${row.usage.id}`, row]));
-  source.requests = context.map(row => hydrated.get(`${row.session_id}:${row.id}`) ?? store.decodeRequest(row));
-  const members = JSON.stringify([...new Set([...hydrated.values()].flatMap(row => [row.usage.messageId, ...(row.usage.requestMessageIds ?? [])]).filter(Boolean))]);
-  source.events = store.readRows<EventRecord>(`SELECT f.*,r.session_id FROM overview_fact_events f JOIN overview_fact_revisions r ON r.revision=f.revision
-    WHERE r.session_id IN (SELECT value FROM json_each(?)) AND f.revision IN (SELECT value FROM json_each(?))
-      AND (f.kind='compression' OR f.id IN (SELECT value FROM json_each(?)))`,
-    [sessions, JSON.stringify([...new Set(page.map(row => row.revision))]), members]).map(row => store.decodeEvent(row));
+  return factExtraEvidence(store, snapshot, evidence, pricing, now, evidenceScope);
 }
