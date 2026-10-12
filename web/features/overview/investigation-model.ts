@@ -1,5 +1,5 @@
 import type { MessageDescriptor } from "../../../src/i18n/types";
-import type { OverviewDetailPage, OverviewEvidencePage, OverviewDetailQuery, OverviewEvidenceQuery, OverviewInsight, OverviewRepository, OverviewResourceRow, OverviewTimingGroup } from "../../../src/overview-contracts";
+import type { OverviewDelegation, OverviewDetailPage, OverviewEvidencePage, OverviewDetailQuery, OverviewEvidenceQuery, OverviewInsight, OverviewRepository, OverviewResourceRow, OverviewTimingGroup } from "../../../src/overview-contracts";
 
 export type InvestigationSelection = { view: "evidence"; title: string; titleDescriptor?: MessageDescriptor; evidence: OverviewEvidenceQuery; insight?: OverviewInsight }
   | { view: "resources"; title: string; kind: "skill" | "mcp" }
@@ -40,9 +40,10 @@ export interface InvestigationResult {
   selection: InvestigationSelection;
   controls: InvestigationControls;
   result: OverviewEvidencePage | OverviewDetailPage;
+  delegation?: OverviewDelegation;
 }
 
 /** 请求中的选择独立保留；已显示的标题、表头、数据和分页共同等待成功替换。 */
 export function visibleInvestigation(previous: InvestigationResult | null, selection: InvestigationSelection | null, controls: InvestigationControls, key: string) {
-  return key && previous ? previous : { key, selection, controls, result: null };
+  return key && previous ? previous : { key, selection, controls, result: null, delegation: undefined };
 }

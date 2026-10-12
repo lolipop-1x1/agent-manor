@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import * as Popover from "@radix-ui/react-popover";
 import * as Tooltip from "@radix-ui/react-tooltip";
-import type { OverviewActivityDay, OverviewReport } from "../../../src/overview-contracts";
+import type { OverviewActivityDay, OverviewReport, OverviewViewReport } from "../../../src/overview-contracts";
 import { useI18n } from "../../shared/i18n";
 import { FilterSelect } from "../../shared/ui/FilterSelect";
 import { localDay } from "../usage/model";
@@ -76,7 +76,7 @@ export function ActivityDistributions({ report }: { report: Pick<OverviewReport,
   return <div className="overview-activity-distributions"><div><h3>{t("overview.activity.weekdays")}</h3><div className="overview-weekdays">{report.activity.weekdays.map(row => <Tooltip.Root key={row.weekday}><Tooltip.Trigger asChild><div tabIndex={0}><span className="overview-mini-bar" style={{ height: `${row.events / weekdayMax * 38}px` }} /><span>{date(new Date(2024, 0, 7 + row.weekday), { weekday: "short" })}</span></div></Tooltip.Trigger><Tooltip.Portal><Tooltip.Content className="tooltip">{number(row.events)} {t("overview.metric.events")}</Tooltip.Content></Tooltip.Portal></Tooltip.Root>)}</div></div><div><h3>{t("overview.activity.hours")}</h3><div className="overview-hours">{report.activity.hours.map(row => <Tooltip.Root key={row.hour}><Tooltip.Trigger asChild><div tabIndex={0} aria-label={`${number(row.hour)}:00 · ${number(row.events)} ${t("overview.metric.events")}`}><span className="overview-mini-bar" style={{ height: `${row.events / hourMax * 38}px` }} /></div></Tooltip.Trigger><Tooltip.Portal><Tooltip.Content className="tooltip">{number(row.hour)}:00 · {number(row.events)} {t("overview.metric.events")}</Tooltip.Content></Tooltip.Portal></Tooltip.Root>)}</div><div className="overview-hour-labels"><span>0</span><span>6</span><span>12</span><span>18</span><span>23</span></div></div></div>;
 }
 
-export function UsageTrend({ report, route, onBucket }: { report: Pick<OverviewReport, "range" | "usage">; route: OverviewRoute; onBucket: (from: string, to: string) => void }) {
+export function UsageTrend({ report, route, onBucket }: { report: Required<Pick<OverviewViewReport, "range" | "usage">>; route: OverviewRoute; onBucket: (from: string, to: string) => void }) {
   const { t, number, date, language } = useI18n();
   const buckets = useMemo(() => {
     const groups = new Map<string, { from: string; to: string; value: number | null }>();

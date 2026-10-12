@@ -86,8 +86,9 @@ export function overviewCostState(value: number | null | undefined, coverage?: "
   return { amount, label: amount == null ? "usage.chart.unpriced" : coverage === "partial" ? "overview.metric.costSubtotal" : "overview.metric.cost", partial: amount != null && coverage === "partial" };
 }
 
-/** 总览候选保留原名称，用量候选已经携带查询身份，不能再次编码。 */
+/** 总览原名与用量查询身份合并，保留未知且每种身份只编码一次。 */
 export function overviewModelOptions(rawModels: string[] | undefined, usageKeys: string[] | undefined, unknownLabel: string): { value: string; label: string }[] {
-  return rawModels ? rawModels.map(value => ({ value: usageDimensionKey(value), label: value }))
-    : (usageKeys ?? []).map(value => ({ value, label: usageDimensionValue(value) ?? unknownLabel }));
+  const options = new Map((rawModels ?? []).map(value => [usageDimensionKey(value), { value: usageDimensionKey(value), label: value }]));
+  for (const value of usageKeys ?? []) if (!options.has(value)) options.set(value, { value, label: usageDimensionValue(value) ?? unknownLabel });
+  return [...options.values()];
 }
