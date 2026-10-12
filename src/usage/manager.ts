@@ -3,14 +3,15 @@ import type { MessageDescriptor } from "../i18n/types.js";
 import { StoreError } from "../index/store.js";
 import type { SessionProfile, SessionUsage } from "../session-contracts.js";
 import type { SessionStore } from "../sessions/store.js";
-import type { RequestCost, SessionCostSummary, UsagePreparationStatus, UsageQuery, UsageReport, UsageRequestPage } from "../usage-contracts.js";
+import type { RequestCost, SessionCostSummary, UsagePreparationStatus, UsageQuery, UsageReport, UsageRequestPage,
+  UsageStatistics, UsageStatisticsView } from "../usage-contracts.js";
 import { queryOf, timeKeys } from "./analytics.js";
 import { UsageResultCache } from "./cache.js";
 import type { PricingService } from "./pricing.js";
 import { preparationKey } from "./worker-contracts.js";
 import type { UsageWorkerRequest, UsageWorkerResponse } from "./worker-contracts.js";
 
-type Result = UsageReport | UsageRequestPage | SessionCostSummary;
+type Result = UsageReport | UsageRequestPage | SessionCostSummary | UsageStatistics;
 interface Pending {
   query: UsageQuery;
   resolve(result: Result | null): void;
@@ -91,7 +92,7 @@ export class UsageManager {
   }
 
   private hydrate(result: Result): Result {
-    if ("scope" in result) return result;
+    if ("totals" in result && !("sessions" in result)) return result;
     const view = this.pricing.view(result.priceVersion);
     const restore = (sessionId: string, requests: { usage: SessionUsage; cost: RequestCost }[], client?: string) => {
       if (!requests.length) return [];
@@ -105,12 +106,13 @@ export class UsageManager {
         return { usage, cost };
       });
     };
-    if ("totals" in result) return { ...result, sessions: result.sessions.map(row => ({ ...row,
+    if ("sessions" in result) return { ...result, sessions: result.sessions.map(row => ({ ...row,
       requests: restore(row.session.id, row.requests, row.session.client) })), pricing: this.pricing.summary(result.priceVersion) };
     return { ...result, requests: restore(result.sessionId, result.requests) };
   }
 
-  private execute(type: UsageWorkerRequest["type"], query: UsageQuery, extra: Pick<UsageWorkerRequest, "sessionId" | "page" | "pageSize" | "sessionIds" | "scope"> = {}): Promise<Result | null> {
+  private execute(type: UsageWorkerRequest["type"], query: UsageQuery,
+    extra: Pick<UsageWorkerRequest, "sessionId" | "page" | "pageSize" | "sessionIds" | "scope" | "view"> = {}): Promise<Result | null> {
     if (this.closed) return Promise.reject(interrupted());
     const key = requestKey(type, query, extra), current = this.inFlight.get(key);
     if (current) return current;
@@ -140,6 +142,12 @@ export class UsageManager {
   async summaryReport(query: UsageQuery): Promise<UsageReport> {
     const result = await this.execute("summary", this.fixed(query)) as UsageReport;
     return structuredClone({ ...result, pricing: this.pricing.summary(result.priceVersion) });
+  }
+
+  /** 只查询当前视图所需的聚合，缓存身份保留视图区分。 */
+  async statistics(query: UsageQuery, view: UsageStatisticsView): Promise<UsageStatistics> {
+    const result = await this.execute("statistics", this.fixed(query), { view }) as UsageStatistics;
+    return structuredClone(result);
   }
 
   async requests(query: UsageQuery, sessionId: string, page = 1, pageSize = 100): Promise<UsageRequestPage> {

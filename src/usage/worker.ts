@@ -5,11 +5,11 @@ import { StoreError } from "../index/store.js";
 import { ServiceError } from "../service/input.js";
 import { SessionStore } from "../sessions/store.js";
 import type { UsageFactMetadata } from "../sessions/usage-facts.js";
-import type { PricingStatus, UsagePreparationStatus, UsageQuery, UsageSource } from "../usage-contracts.js";
-import { accumulator, add, buildUsageReport, buildUsageRequestPage, coverageOf, instant, queryOf, timeKeys } from "./analytics.js";
+import type { PricingStatus, UsagePreparationStatus, UsageQuery, UsageReport, UsageSource } from "../usage-contracts.js";
+import { accumulator, add, buildUsageReport, buildUsageRequestPage, buildUsageStatistics, coverageOf, instant, queryOf, timeKeys } from "./analytics.js";
 import { UsageResultCache } from "./cache.js";
 import { createPricingEstimator } from "./pricing.js";
-import { buildUsageRollup, buildUsageRollupReport, canUseUsageRollup, combineUsageRollups } from "./rollup.js";
+import { buildUsageRollup, buildUsageRollupReport, buildUsageRollupStatistics, canUseUsageRollup, combineUsageRollups } from "./rollup.js";
 import type { UsageRollup } from "./rollup-contracts.js";
 import { UsageRollupStore } from "./rollup-store.js";
 import { preparationKey } from "./worker-contracts.js";
@@ -203,7 +203,7 @@ function compactSource(version: string): Promise<UsageSource> {
 async function handle(message: UsageWorkerRequest): Promise<void> {
   try {
     const query = validate(message.query, message.pricing), estimate = createPricingEstimator(message.pricing);
-    let result;
+    let result: Extract<UsageWorkerResponse, { type: "result" }>["result"];
     if (message.type === "sessionCost") {
       const total = accumulator();
       // 只读当前画像范围的精简事实；价格缓存不进入纯画像摘要，也不等待全历史汇总。
@@ -227,7 +227,9 @@ async function handle(message: UsageWorkerRequest): Promise<void> {
     } else if (message.type === "prepare") {
       await prepare(query, message.pricing); result = null;
     } else if (canUseUsageRollup(query)) {
-      result = buildUsageRollupReport(await queryRollup(query, message.pricing), query, message.pricing);
+      const rollup = await queryRollup(query, message.pricing);
+      result = message.type === "statistics" ? buildUsageRollupStatistics(rollup, query, message.pricing, message.view!)
+        : buildUsageRollupReport(rollup, query, message.pricing);
     } else {
       const progress = { version: query.version, priceVersion: query.priceVersion, timezone: query.timezone,
         preparedSessions: 0, totalSessions: 0 };
@@ -236,12 +238,15 @@ async function handle(message: UsageWorkerRequest): Promise<void> {
       if (standalone()) update({ ...progress, state: "preparing" });
       try {
         const source = await compactSource(query.version!);
-        result = buildUsageReport(source, query, message.pricing, estimate);
+        result = message.type === "statistics" ? buildUsageStatistics(source, query, message.pricing, estimate, message.view!)
+          : buildUsageReport(source, query, message.pricing, estimate);
         if (standalone()) update({ ...progress, state: "ready", preparedSessions: source.sessions.length, totalSessions: source.sessions.length });
       } catch (error) { if (standalone()) update({ ...progress, state: "failed" }); throw error; }
     }
-    if (message.type === "summary" && result && "sessions" in result) result = { ...result,
-      sessions: result.sessions.map(row => ({ ...row, requests: [], requestsLimited: row.requestsTotal > 0 })) };
+    if (message.type === "summary") {
+      const report = result as UsageReport;
+      result = { ...report, sessions: report.sessions.map(row => ({ ...row, requests: [], requestsLimited: row.requestsTotal > 0 })) };
+    }
     send({ id: message.id, type: "result", result });
   } catch (error) {
     const known = error instanceof StoreError || error instanceof ServiceError;

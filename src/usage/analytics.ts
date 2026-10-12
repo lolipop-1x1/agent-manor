@@ -1,6 +1,6 @@
 import type { SessionSummary, SessionUsage } from "../session-contracts.js";
 import type { PricingStatus, RequestCost, UsageGroup, UsageInterval, UsageQuery, UsageReport, UsageRequestPage, UsageSeries,
-  UsageSessionRow, UsageSource, UsageTimeBucket, UsageTotals } from "../usage-contracts.js";
+  UsageSessionRow, UsageSource, UsageStatistics, UsageStatisticsView, UsageTimeBucket, UsageTotals } from "../usage-contracts.js";
 import { StoreError } from "../index/store.js";
 import { usageDimensionKey, usageDimensionValue } from "./dimensions.js";
 
@@ -179,7 +179,7 @@ function requestOrder(left: Request, right: Request): number {
   return compareValues(left.time, right.time, "desc") || left.usage.id.localeCompare(right.usage.id);
 }
 
-function select(source: UsageSource, requested: UsageQuery, pricing: PricingStatus, estimate: Estimate): Selection {
+function select(source: UsageSource, requested: UsageQuery, pricing: PricingStatus, estimate: Estimate, includeRows = true): Selection {
   const query = queryOf(requested, source, pricing), timezone = query.timezone!;
   const keys = timeKeys(timezone, query.interval!);
   const sessions = new Map(source.sessions.map(session => [session.id, session]));
@@ -219,6 +219,7 @@ function select(source: UsageSource, requested: UsageQuery, pricing: PricingStat
     if (missing) missingUsageSessions += 1;
     for (const request of included) requests.push(request);
     for (const request of target.undated) undated.push(request);
+    if (!includeRows) continue;
     const evidence = [...target.dated, ...target.undated].sort(requestOrder);
     const latest = evidence.find(request => request.time !== undefined);
     rows.push({ session, totals, ...(latest ? { lastOccurredAt: new Date(latest.time!).toISOString() } : {}),
@@ -246,7 +247,7 @@ function grouped(requests: Request[], query: UsageQuery): UsageSeries[] {
   return [...groups].map(([key, result]) => ({ key, label: usageDimensionValue(key) ?? UNKNOWN, totals: result.totals }))
     .sort((left, right) => compareValues(value(left.totals), value(right.totals), "desc") || left.key.localeCompare(right.key));
 }
-function bucketed(requests: Request[], query: UsageQuery, dayOnly = false): UsageTimeBucket[] {
+function bucketed(requests: Request[], query: UsageQuery, dayOnly = false, includeGroups = true): UsageTimeBucket[] {
   const buckets = new Map<string, Request[]>();
   for (const request of requests) {
     const key = dayOnly ? request.day : request.bucket;
@@ -254,7 +255,7 @@ function bucketed(requests: Request[], query: UsageQuery, dayOnly = false): Usag
     if (!buckets.has(key)) buckets.set(key, []);
     buckets.get(key)!.push(request);
   }
-  return [...buckets].map(([key, values]) => ({ key, totals: summarize(values), groups: grouped(values, query) }));
+  return [...buckets].map(([key, values]) => ({ key, totals: summarize(values), groups: includeGroups ? grouped(values, query) : [] }));
 }
 function fillDays(days: UsageTimeBucket[], query: UsageQuery, timezone: string): UsageTimeBucket[] {
   const keys = timeKeys(timezone, "day");
@@ -336,6 +337,16 @@ export function buildUsageReport(source: UsageSource, query: UsageQuery, pricing
     projectCount: projects.size, modelCount: models.size,
     groups: grouped(selected.requests, selected.query), sessions: selected.rows.slice((page - 1) * pageSize, page * pageSize),
     totalSessions: selected.rows.length, page, pageSize, missingUsageSessions: selected.missingUsageSessions, facets: selected.facets, pricing: status };
+}
+
+/** 精确统计复用报告筛选，但不创建会话行、请求预览及未显示的分组。 */
+export function buildUsageStatistics(source: UsageSource, query: UsageQuery, pricing: PricingStatus, estimate: Estimate,
+  view: UsageStatisticsView): UsageStatistics {
+  const selected = select(source, query, pricing, estimate, false);
+  return { version: source.version, priceVersion: pricing.version, timezone: selected.timezone, query: selected.query,
+    totals: summarize(selected.requests), undated: summarize(selected.undated), facets: selected.facets,
+    days: view === "trend" ? fillDays(bucketed(selected.requests, selected.query, true, false), selected.query, selected.timezone) : [],
+    groups: view === "distribution" ? grouped(selected.requests, selected.query) : [] };
 }
 
 /** 请求证据独立分页；缺时间记录保留其状态，不混入有限日期范围的用量总量。 */

@@ -1,6 +1,6 @@
 import type { SessionSummary, SessionUsage } from "../session-contracts.js";
 import type { PricingStatus, UsageGroup, UsageQuery, UsageReport, UsageSeries, UsageSessionRow, UsageSource,
-  UsageTimeBucket, UsageTotals } from "../usage-contracts.js";
+  UsageStatistics, UsageStatisticsView, UsageTimeBucket, UsageTotals } from "../usage-contracts.js";
 import { StoreError } from "../index/store.js";
 import { accumulator, add, calendarDay, compareValues, coverageOf, fillDays, fillHours, includes, instant, intervalKey,
   matchesCoverage, matchesSession, matchesThreshold, queryOf, timeKeys } from "./analytics.js";
@@ -114,7 +114,8 @@ function grouped(cells: UsageRollupCell[], query: UsageQuery, sessions: Map<stri
   return [...groups].map(([key, result]) => ({ key, label: usageDimensionValue(key) ?? "unknown", totals: result.totals }))
     .sort((left, right) => compareValues(value(left.totals), value(right.totals), "desc") || left.key.localeCompare(right.key));
 }
-function bucketed(cells: UsageRollupCell[], query: UsageQuery, sessions: Map<string, SessionSummary>, dayOnly = false): UsageTimeBucket[] {
+function bucketed(cells: UsageRollupCell[], query: UsageQuery, sessions: Map<string, SessionSummary>, dayOnly = false,
+  includeGroups = true): UsageTimeBucket[] {
   const buckets = new Map<string, UsageRollupCell[]>();
   for (const cell of cells) {
     if (!cell.day) continue;
@@ -123,11 +124,10 @@ function bucketed(cells: UsageRollupCell[], query: UsageQuery, sessions: Map<str
     if (!values) { values = []; buckets.set(key, values); }
     values.push(cell);
   }
-  return [...buckets].map(([key, values]) => ({ key, totals: summarize(values), groups: grouped(values, query, sessions) }));
+  return [...buckets].map(([key, values]) => ({ key, totals: summarize(values), groups: includeGroups ? grouped(values, query, sessions) : [] }));
 }
 
-/** 只合并小时汇总；页面预览保留原请求身份，由调用方按最终页补全原始证据。 */
-export function buildUsageRollupReport(rollup: UsageRollup, requested: UsageQuery, pricing: PricingStatus): UsageReport {
+function select(rollup: UsageRollup, requested: UsageQuery, pricing: PricingStatus, includeRows = true) {
   const query = queryOf({ ...requested, timezone: requested.timezone ?? rollup.timezone }, { ...rollup, requests: [] }, pricing);
   if (!canUseUsageRollup(query) || query.timezone !== rollup.timezone) {
     throw new StoreError("INVALID_INPUT", "用量汇总的查询范围或时区不匹配", { key: "diagnostics.usage.invalidQuery", params: { field: "timezone/dateRange" } });
@@ -156,6 +156,7 @@ export function buildUsageRollupReport(rollup: UsageRollup, requested: UsageQuer
     if (missing) missingUsageSessions += 1;
     for (const cell of included) cells.push(cell);
     for (const cell of target.undated) undated.push(cell);
+    if (!includeRows) continue;
     const previews: UsageRollupPreview[] = [];
     let latestTime: number | undefined, requestsTotal = 0;
     for (const cell of [...target.dated, ...target.undated]) {
@@ -172,6 +173,16 @@ export function buildUsageRollupReport(rollup: UsageRollup, requested: UsageQuer
       : query.sort === "cost" ? row.totals.estimatedCost : query.sort === "requests" ? row.totals.requests : row.totals.tokens;
     return compareValues(value(left), value(right), query.direction!) || left.session.id.localeCompare(right.session.id);
   });
+  const models = new Set(rollup.models);
+  if (rollup.sessions.some(session => !hasUsage.has(session.id))) models.add("unknown");
+  return { query, sessions, cells, undated, rows, missingUsageSessions,
+    facets: { clients: [...new Set(rollup.sessions.map(session => session.client))].sort(),
+      projects: [...new Set(rollup.sessions.map(session => usageDimensionKey(session.project)))].sort(), models: [...models].sort() } };
+}
+
+/** 只合并小时汇总；页面预览保留原请求身份，由调用方按最终页补全原始证据。 */
+export function buildUsageRollupReport(rollup: UsageRollup, requested: UsageQuery, pricing: PricingStatus): UsageReport {
+  const { query, sessions, cells, undated, rows, missingUsageSessions, facets } = select(rollup, requested, pricing);
   const days = fillDays(bucketed(cells, query, sessions, true), query, rollup.timezone);
   const observedBuckets = query.interval === "day" ? days : bucketed(cells, query, sessions);
   const buckets = query.interval === "hour" ? fillHours(observedBuckets, days, query, rollup.timezone) : observedBuckets;
@@ -191,12 +202,19 @@ export function buildUsageRollupReport(rollup: UsageRollup, requested: UsageQuer
     if (project !== undefined) selectedProjects.add(project);
     if (cell.model !== undefined) selectedModels.add(cell.model);
   }
-  const models = new Set(rollup.models);
-  if (rollup.sessions.some(session => !hasUsage.has(session.id))) models.add("unknown");
   return { version: rollup.version, priceVersion: pricing.version, timezone: rollup.timezone, query,
     totals: summarize(cells), undated: summarize(undated), buckets, days, groups: grouped(cells, query, sessions),
     projectCount: selectedProjects.size, modelCount: selectedModels.size,
     sessions: rows.slice((page - 1) * pageSize, page * pageSize), totalSessions: rows.length, page, pageSize, missingUsageSessions,
-    facets: { clients: [...new Set(rollup.sessions.map(session => session.client))].sort(),
-      projects: [...new Set(rollup.sessions.map(session => usageDimensionKey(session.project)))].sort(), models: [...models].sort() }, pricing: status };
+    facets, pricing: status };
+}
+
+/** 按视图合并已准备的汇总，不读取预览，也不构建会话明细或其他维度。 */
+export function buildUsageRollupStatistics(rollup: UsageRollup, requested: UsageQuery, pricing: PricingStatus,
+  view: UsageStatisticsView): UsageStatistics {
+  const { query, sessions, cells, undated, facets } = select(rollup, requested, pricing, false);
+  return { version: rollup.version, priceVersion: pricing.version, timezone: rollup.timezone, query,
+    totals: summarize(cells), undated: summarize(undated), facets,
+    days: view === "trend" ? fillDays(bucketed(cells, query, sessions, true, false), query, rollup.timezone) : [],
+    groups: view === "distribution" ? grouped(cells, query, sessions) : [] };
 }
