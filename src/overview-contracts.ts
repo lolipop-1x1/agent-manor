@@ -376,3 +376,38 @@ export interface OverviewReport {
   facets: { clients: string[]; projects: string[]; models: string[] };
   coverage: { gaps: Gap[]; gapCount: number; missingTimeEvents: number; missingTimeRequests: number; missingTimeResources: number };
 }
+
+export const overviewPanels = ["core", "usage", "resources", "process", "repositories", "insights"] as const;
+export type OverviewPanel = typeof overviewPanels[number];
+/** 各区域及调查共享固定的完整索引、价格、本地日期和筛选。 */
+export interface OverviewSnapshot extends Pick<OverviewReport, "version" | "priceVersion" | "timezone" | "query" | "range"> {}
+export interface OverviewPanelResult {
+  snapshot: OverviewSnapshot;
+  panel: OverviewPanel;
+  data: Partial<OverviewReport>;
+  /** 首页截取行数不影响完整调查数量。 */
+  counts?: Partial<Record<"skills" | "mcp" | "clients" | "projects" | "models" | "tools" | "timing" | "observations" | "sessionCombinations" | "turnCombinations", number>>;
+}
+export type OverviewDetailView = "resources" | "resource" | "ranking" | "months" | "transitions" | "timings" | "timing" | "observations" | "combinations";
+export interface OverviewDetailQuery {
+  view: OverviewDetailView;
+  kind?: "skill" | "mcp";
+  resourceId?: string;
+  dimension?: "client" | "project" | "model" | "tool";
+  unit?: "session" | "turn";
+  transition?: "all" | "switch" | "delegation";
+  timingGroup?: string;
+  sort?: "uses" | "sessions" | "count" | "tokens";
+  page?: number;
+  pageSize?: number;
+}
+export type OverviewDetailRow = OverviewResourceRow | OverviewCountRow | OverviewResourceObservation | OverviewResourceCombination
+  | OverviewTimingGroup | OverviewProjectMonth | OverviewModelTransition;
+export interface OverviewDetailPage {
+  snapshot: OverviewSnapshot;
+  query: OverviewDetailQuery;
+  rows: OverviewDetailRow[];
+  total: number;
+  page: number;
+  pageSize: number;
+}
