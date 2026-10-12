@@ -1,3 +1,4 @@
+import { usageDimensionKey, usageDimensionValue } from "../../../src/usage/dimensions";
 import { localDay, validDay } from "../usage/model";
 
 export type OverviewWindow = "365" | "7" | "30" | "90" | "year" | "all" | "custom";
@@ -83,4 +84,10 @@ export function overviewCalendarDate(day: string): Date {
 export function overviewCostState(value: number | null | undefined, coverage?: "complete" | "partial" | "missing") {
   const amount = coverage === "missing" ? null : value ?? null;
   return { amount, label: amount == null ? "usage.chart.unpriced" : coverage === "partial" ? "overview.metric.costSubtotal" : "overview.metric.cost", partial: amount != null && coverage === "partial" };
+}
+
+/** 总览候选保留原名称，用量候选已经携带查询身份，不能再次编码。 */
+export function overviewModelOptions(rawModels: string[] | undefined, usageKeys: string[] | undefined, unknownLabel: string): { value: string; label: string }[] {
+  return rawModels ? rawModels.map(value => ({ value: usageDimensionKey(value), label: value }))
+    : (usageKeys ?? []).map(value => ({ value, label: usageDimensionValue(value) ?? unknownLabel }));
 }

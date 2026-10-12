@@ -3,6 +3,8 @@ import test from "node:test";
 import { readFileSync } from "node:fs";
 import { buildUsageReport } from "../src/usage/analytics.ts";
 import { usageDimensionKey } from "../src/usage/dimensions.ts";
+import type { PricingStatus, UsageSource } from "../src/usage-contracts.ts";
+import { overviewModelOptions } from "../web/features/overview/model.ts";
 import { overviewPanels, type OverviewPanel, type OverviewPanelResult, type OverviewResourceRow, type OverviewTimingGroup, type OverviewSnapshot } from "../src/overview-contracts.ts";
 import { investigationDetail, visibleInvestigation, type InvestigationResult } from "../web/features/overview/investigation-model.ts";
 import { loadOverviewPanels, sameOverviewSnapshot, visibleOverviewBatch, replaceOverviewPanel, OverviewSnapshotMismatch, type OverviewPanelBatch } from "../web/features/overview/loading.ts";
@@ -148,9 +150,14 @@ test("调查跨视图下钻保留完整旧面，首次打开和无需请求的�
 });
 
 
-const emptyUsage = buildUsageReport({ version: snapshot.version, sessions: [], requests: [] }, { timezone: snapshot.timezone, from: snapshot.range.from, to: snapshot.range.to },
-  { version: snapshot.priceVersion, source: "bundled", refreshing: false, currency: "USD", sourceUrl: "https://example.invalid/prices", configuration: { overrides: [], mappings: [] }, prices: [] }, () => ({ amount: null, coverage: "missing" }));
-const usageWithModels = { ...emptyUsage, facets: { ...emptyUsage.facets, models: ["example-model", "unknown"] } };
+const testPricing: PricingStatus = { version: snapshot.priceVersion, source: "bundled", refreshing: false, currency: "USD", sourceUrl: "https://example.invalid/prices", configuration: { overrides: [], mappings: [] }, prices: [] };
+const usageQuery = { timezone: snapshot.timezone, from: snapshot.range.from, to: snapshot.range.to };
+const emptyUsage = buildUsageReport({ version: snapshot.version, sessions: [], requests: [] }, usageQuery, testPricing, () => ({ amount: null, coverage: "missing" }));
+const modelNames = [undefined, "unknown", "literal:model-a", "example-model"];
+const sourceWithModels: UsageSource = { version: snapshot.version, sessions: [{ id: "session-models", client: "codex", clientSessionId: "session-models", title: "Synthetic model identities", titleOrigin: "recorded", models: modelNames.filter((model): model is string => model !== undefined), messageCount: 4, turnCount: 1, gaps: [], startedAt: "2025-12-30T00:00:00Z" }],
+  requests: modelNames.map((model, index) => ({ sessionId: "session-models", usage: { id: `request-${index}`, model, inputTokens: 100, outputTokens: 10, occurredAt: "2025-12-30T12:00:00Z" } })) };
+const usageWithModels = buildUsageReport(sourceWithModels, { ...usageQuery, models: snapshot.query.models }, testPricing, () => ({ amount: null, coverage: "missing" }));
+const expectedOptions = [{ value: "example-model", label: "example-model" }, { value: "literal:literal:model-a", label: "literal:model-a" }, { value: "literal:unknown", label: "unknown" }, { value: "unknown", label: "未知" }];
 const emptyResources = { skills: [], mcp: [], observations: [], combinations: { sessions: [], turns: [] }, missingTimeEvents: 0, missingTurnEvents: 0 };
 
 test("首次反向完成顺序：资源和用量先到时立即保留真实分区，概况最后再接入", async () => {
@@ -165,14 +172,13 @@ test("首次反向完成顺序：资源和用量先到时立即保留真实分�
   assert.equal(visible!.panels.usage!.data.usage, usageWithModels);
   assert.equal(visible!.panels.core, undefined);
   assert.equal(visible!.panels.resources!.data.resources, emptyResources);
-  assert.deepEqual(visible!.panels.usage!.data.usage!.facets.models, ["example-model", "unknown"]);
-  assert.ok(visible!.panels.usage!.data.usage!.facets.models.map(usageDimensionKey).includes(snapshot.query.models![0]!));
-  assert.notEqual(usageDimensionKey("unknown"), "unknown");
+  assert.deepEqual(overviewModelOptions(undefined, visible!.panels.usage!.data.usage!.facets.models, "未知"), expectedOptions);
+  assert.ok(expectedOptions.some(option => option.value === snapshot.query.models![0]));
   for (const panel of ["insights", "repositories", "process"] as const) h.resolve(panel);
   await flush(); assert.equal(visible!.complete, false);
   h.resolve("core", snapshot, { facets: { clients: ["codex"], projects: [], models: ["global-model", "example-model"] } });
   update(await run); assert.equal(visible!.complete, true);
-  assert.deepEqual(visible!.panels.core!.data.facets!.models, ["global-model", "example-model"]);
+  assert.deepEqual(overviewModelOptions(visible!.panels.core!.data.facets!.models, visible!.panels.usage!.data.usage!.facets.models, "未知"), [{ value: "global-model", label: "global-model" }, { value: "example-model", label: "example-model" }]);
 });
 
 test("首次核心失败不抹去已成功的资源和用量，也不伪造概况数值", async () => {
@@ -189,13 +195,14 @@ test("首次核心失败不抹去已成功的资源和用量，也不伪造概�
   assert.equal(visible!.panels.resources!.data.resources, emptyResources);
   assert.equal(visible!.panels.usage!.data.usage, usageWithModels);
   assert.equal(visible!.complete, false); assert.deepEqual(errors, ["core"]);
-  assert.deepEqual(visible!.panels.usage!.data.usage!.facets.models, ["example-model", "unknown"]);
-  assert.ok(visible!.panels.usage!.data.usage!.facets.models.map(usageDimensionKey).includes(snapshot.query.models![0]!));
+  assert.deepEqual(overviewModelOptions(undefined, visible!.panels.usage!.data.usage!.facets.models, "未知"), expectedOptions);
+  assert.ok(expectedOptions.some(option => option.value === snapshot.query.models![0]));
   const source = readFileSync(new URL("../web/features/overview/Overview.tsx", import.meta.url), "utf8");
   assert.match(source, /const report = batch \?/);
   assert.doesNotMatch(source, /const report = batch\?\.panels\.core/);
   assert.match(source, /as OverviewSnapshot & Partial<OverviewReport>/);
-  assert.match(source, /\(report.facets\?\.models \?\? report.usage.facets.models\).map\(value => \(\{ value: usageDimensionKey\(value\), label: value \}\)\)/);
+  assert.match(source, /overviewModelOptions\(report\?\.facets\?\.models, report\?\.usage\?\.facets.models, t\("overview.unknown"\)\)/);
+  assert.match(source, /options=\{\[\{ value: "__all__", label: t\("overview.all"\) \}, \.\.\.modelOptions\]\}/);
   assert.match(source, /\{report.resources \? resourceTable/);
   assert.match(source, /\{report.usage \? <section/);
   assert.match(source, /\{summary && activity \? <div className="overview-metrics"/);
@@ -211,4 +218,20 @@ test("已有完整结果遇到反向完成或核心失败时，仍保留旧完�
   h.gates.get("core")!.reject(new Error("synthetic core failure"));
   for (const panel of ["insights", "repositories", "process"] as const) h.resolve(panel);
   await assert.rejects(run, /synthetic core failure/); assert.equal(visible, previous);
+});
+
+
+test("两种模型来源只编码一次，真实用量facet保留缺失、原名unknown和literal前缀的回选身份", () => {
+  assert.deepEqual(usageWithModels.facets.models, expectedOptions.map(option => option.value));
+  const options = overviewModelOptions(undefined, usageWithModels.facets.models, "未知");
+  assert.deepEqual(options, expectedOptions);
+  assert.equal(overviewModelOptions(undefined, usageWithModels.facets.models, "Unknown").find(option => option.value === "unknown")!.label, "Unknown");
+  assert.equal(overviewModelOptions(undefined, usageWithModels.facets.models, "Unknown").find(option => option.value === "literal:unknown")!.label, "unknown");
+  for (const option of options) {
+    const selected = buildUsageReport(sourceWithModels, { ...usageQuery, groupBy: "model", models: [option.value] }, testPricing, () => ({ amount: null, coverage: "missing" }));
+    assert.equal(selected.totals.requests, 1);
+    assert.deepEqual(selected.groups.map(group => group.key), [option.value]);
+  }
+  assert.deepEqual(overviewModelOptions(["unknown", "literal:model-a"], usageWithModels.facets.models, "未知"), [{ value: usageDimensionKey("unknown"), label: "unknown" }, { value: usageDimensionKey("literal:model-a"), label: "literal:model-a" }]);
+  assert.deepEqual(overviewModelOptions([], usageWithModels.facets.models, "未知"), []);
 });
