@@ -6,6 +6,7 @@ export default {
   "diagnostics.usage.priceVersionMismatch": "The price version is unavailable; load the latest prices",
   "diagnostics.usage.input.invalid": "Invalid usage parameter: {{field}}",
   "diagnostics.usage.worker.stopped": "The usage statistics worker has stopped.",
+  "diagnostics.usage.worker.memoryCapacity": "This usage query exceeds the statistics memory budget. Narrow the range and try again.",
   "diagnostics.usage.worker.unexpectedExit": "The usage statistics worker stopped unexpectedly ({{code}}).",
   "diagnostics.usage.pricing.fetch": "The price catalog could not be updated. Local prices remain available.",
   "diagnostics.usage.pricing.invalidCatalog": "The price catalog is invalid. The previous catalog was retained.",

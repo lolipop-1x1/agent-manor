@@ -52,10 +52,11 @@ export class UsageManager {
     const extension = import.meta.url.endsWith(".ts") ? "ts" : "js";
     const url = new URL(`./worker.${extension}`, import.meta.url);
     const workerData = { dbPath: this.sessions.dbPath, cachePath: this.cachePath };
+    const resourceLimits = { maxOldGenerationSizeMb: 512, maxYoungGenerationSizeMb: 32 };
     // 源码运行时在 Worker 内注册 tsx，不依赖主线程的模块解析钩子。
     const worker = extension === "ts"
-      ? new Worker(`import('tsx/esm/api').then(({register}) => { register(); return import(${JSON.stringify(url.href)}); });`, { eval: true, workerData })
-      : new Worker(url, { workerData });
+      ? new Worker(`import('tsx/esm/api').then(({register}) => { register(); return import(${JSON.stringify(url.href)}); });`, { eval: true, workerData, resourceLimits })
+      : new Worker(url, { workerData, resourceLimits });
     worker.on("message", (message: UsageWorkerResponse) => {
       if (this.worker !== worker || this.closed) return;
       if (message.type === "status") { this.update(message.status); return; }
@@ -65,7 +66,11 @@ export class UsageManager {
       if (message.type === "result") request.resolve(message.result);
       else request.reject(new StoreError(message.error.code, message.error.message, message.error.messageDescriptor));
     });
-    worker.on("error", error => { if (this.worker === worker && !this.closed) this.failed(error.message); });
+    worker.on("error", error => {
+      if (this.worker !== worker || this.closed) return;
+      if ("code" in error && error.code === "ERR_WORKER_OUT_OF_MEMORY") this.failed("用量统计超过内存预算", { key: "diagnostics.usage.worker.memoryCapacity" });
+      else this.failed(error.message);
+    });
     worker.on("exit", code => {
       if (this.worker === worker && !this.closed) this.failed(`用量统计 Worker 意外停止（${code}）`,
         { key: "diagnostics.usage.worker.unexpectedExit", params: { code } });

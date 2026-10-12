@@ -40,7 +40,7 @@ export class OverviewManager {
   private createWorker(lane: Lane): Worker {
     const extension = import.meta.url.endsWith(".ts") ? "ts" : "js";
     const url = new URL(`./worker.${extension}`, import.meta.url), workerData = { dbPath: this.sessions.dbPath };
-    const resourceLimits = { maxOldGenerationSizeMb: 512 };
+    const resourceLimits = { maxOldGenerationSizeMb: lane === "repositories" ? 192 : 512, maxYoungGenerationSizeMb: 32 };
     const worker = extension === "ts"
       ? new Worker(`import('tsx/esm/api').then(({register}) => { register(); return import(${JSON.stringify(url.href)}); });`, { eval: true, workerData, resourceLimits })
       : new Worker(url, { workerData, resourceLimits });
@@ -50,6 +50,10 @@ export class OverviewManager {
       this.pending.delete(message.id);
       if (message.type === "result") request.resolve(message.result);
       else request.reject(new StoreError(message.error.code, message.error.message, message.error.messageDescriptor));
+      // 仓库正文投影的临时内存不驻留；完成后的摘要已由查询缓存保存。
+      if (lane === "repositories" && ![...this.pending.values()].some(value => value.lane === lane)) {
+        this.workers.delete(lane); void worker.terminate().catch(() => undefined);
+      }
     });
     const fail = (error: Error) => {
       if (this.closed || this.workers.get(lane) !== worker) return;
