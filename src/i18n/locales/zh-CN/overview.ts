@@ -204,7 +204,7 @@ export default {
   "overview.evidence.status": "结果",
   "overview.evidence.details": "统计详情",
   "overview.evidence.versionExpired": "当前报告的证据版本已失效，请重新加载总览",
-  "overview.help.global": "日期、客户端与项目控制整张总览；模型只筛选用量和模型分析。所有统计绑定完整会话索引，仓库保留各自版本。",
+  "overview.help.global": "最近七天复盘固定统计最近七个完整本地日历日，不含今天，只跟随客户端与项目筛选。所选时段概况及下方分析使用局部日期范围。全部统计与下钻绑定同一分析及价格版本；刷新成功后整体替换。",
   "overview.help.activity": "活跃包含有可靠事件时间的真实用户交互与 Agent 活动，含子会话和自动任务。系统提示、注入正文与已确认复制记录不计。连续活跃限于所选日期，今天尚无活动时可延续昨天。",
   "overview.help.usage": "Token 和估算费用沿用请求记录与计价口径。缺失分项保留小计；无时间记录不填入日期图。密集的每日数据显示为折线。悬停或使用方向键选择区间，点击或按 Enter 查看记录；触屏点击固定详情。",
   "overview.help.resources": "Skill 将显式调用和成功正文读取分别统计。MCP 先按服务器汇总，再查看工具。名称级历史统计不能作为本地资源管理对象。组合按会话或可靠用户轮次去重。",

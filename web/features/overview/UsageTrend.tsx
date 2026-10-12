@@ -10,7 +10,7 @@ import { trendAxis, trendBucketAt, trendBuckets, trendDateTicks, trendDisplay, t
 
 export function UsageTrend({ report, route, disabled = false, onBucket }: {
   report: Required<Pick<OverviewViewReport, "range" | "usage">>; route: OverviewRoute;
-  disabled?: boolean; onBucket: (from: string, to: string) => void;
+  disabled?: boolean; onBucket: (from: string, to: string, origin?: HTMLElement) => void;
 }) {
   const { t, number, date, language } = useI18n();
   const plot = useRef<HTMLDivElement>(null), selector = useRef<HTMLDivElement>(null);
@@ -23,7 +23,7 @@ export function UsageTrend({ report, route, disabled = false, onBucket }: {
   const cancelClose = () => { if (closeTimer.current !== null) { clearTimeout(closeTimer.current); closeTimer.current = null; } };
   useEffect(() => { setSelected(0); setDetail(false); pinned.current = false; cancelClose(); return cancelClose; }, [buckets, disabled]);
   const crossYear = buckets[0]?.from.slice(0, 4) !== buckets.at(-1)?.to.slice(0, 4);
-  const height = 180, left = 64, right = 12, top = 12, bottom = crossYear ? 44 : 30;
+  const height = 180, left = 86, right = 12, top = 12, bottom = crossYear ? 44 : 30;
   const plotWidth = Math.max(1, width - left - right), plotHeight = height - top - bottom;
   const axis = trendAxis(Math.max(0, ...buckets.map(bucket => bucket.value ?? 0)), route.metric === "requests");
   const dense = trendDisplay(route.interval, buckets.length, plotWidth) === "line";
@@ -32,8 +32,8 @@ export function UsageTrend({ report, route, disabled = false, onBucket }: {
   const barWidth = Math.min(18, plotWidth / Math.max(1, buckets.length) * .7);
   const activeIndex = Math.min(selected, buckets.length - 1), active = buckets[activeIndex];
   const amount = (value: number | null) => value == null ? "—" : route.metric === "tokens" ? formatTokenMillions(language, value)
-    : number(value, route.metric === "cost" ? { style: "currency", currency: "USD", minimumFractionDigits: 2, maximumFractionDigits: 2 } : {});
-  const axisAmount = (value: number) => route.metric === "cost" ? number(value, { style: "currency", currency: "USD", minimumFractionDigits: 2,
+    : number(value, route.metric === "cost" ? { style: "currency", currency: "USD", currencyDisplay: "narrowSymbol", minimumFractionDigits: 2, maximumFractionDigits: 2 } : {});
+  const axisAmount = (value: number) => route.metric === "cost" ? number(value, { style: "currency", currency: "USD", currencyDisplay: "narrowSymbol", minimumFractionDigits: 2,
     maximumFractionDigits: Math.min(6, Math.max(2, Math.ceil(-Math.log10(axis.ticks[1] ?? 1)))) }) : amount(value);
   const label = (bucket: typeof buckets[number]) => bucket.from === bucket.to ? date(overviewCalendarDate(bucket.from))
     : t("overview.range", { from: date(overviewCalendarDate(bucket.from)), to: date(overviewCalendarDate(bucket.to)) });
@@ -53,7 +53,7 @@ export function UsageTrend({ report, route, disabled = false, onBucket }: {
       closeTimer.current = setTimeout(() => setDetail(false), 150);
     }
   };
-  const openRecords = () => { if (!disabled && active) { close(); restoreFocus.current = false; onBucket(active.from, active.to); } };
+  const openRecords = () => { if (!disabled && active) { close(); restoreFocus.current = false; onBucket(active.from, active.to, selector.current ?? undefined); } };
   return <Popover.Root open={detail && !disabled} onOpenChange={open => { if (!open) close(); }}>
     <div ref={plot} className="overview-trend" data-chart={dense ? "line" : "bar"}>
       <svg viewBox={`0 0 ${width} ${height}`} preserveAspectRatio="none" role="img" aria-label={t("overview.usage.title")}>

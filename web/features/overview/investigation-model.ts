@@ -1,7 +1,7 @@
 import type { MessageDescriptor } from "../../../src/i18n/types";
 import type { OverviewDelegation, OverviewDetailPage, OverviewEvidencePage, OverviewDetailQuery, OverviewEvidenceQuery, OverviewInsight, OverviewRepository, OverviewResourceRow, OverviewTimingGroup } from "../../../src/overview-contracts";
 
-export type InvestigationSelection = { view: "evidence"; title: string; titleDescriptor?: MessageDescriptor; evidence: OverviewEvidenceQuery; insight?: OverviewInsight }
+export type InvestigationSelection = { view: "evidence"; title: string; titleDescriptor?: MessageDescriptor; evidence: OverviewEvidenceQuery; insight?: OverviewInsight; metric?: "tokens" | "cost" }
   | { view: "resources"; title: string; kind: "skill" | "mcp" }
   | { view: "resource"; title: string; resource: OverviewResourceRow }
   | { view: "ranking"; title: string; dimension: "project" | "client" | "model" | "tool"; metric?: "tokens" | "cost" | "requests" }

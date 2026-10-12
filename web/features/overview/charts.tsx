@@ -15,7 +15,7 @@ function sequence(from: string, to: string) {
   while (localDay(current) <= to) { days.push(localDay(current)); current.setDate(current.getDate() + 1); }
   return days;
 }
-export function ActivityCalendar({ report, metric, onDay, onRange }: { report: Pick<OverviewReport, "range" | "activity">; metric: OverviewRoute["activity"]; onDay: (day: string) => void; onRange: (day: string) => void }) {
+export function ActivityCalendar({ report, metric, onDay, onRange }: { report: Pick<OverviewReport, "range" | "activity">; metric: OverviewRoute["activity"]; onDay: (day: string, origin?: HTMLElement) => void; onRange: (day: string) => void }) {
   const { t, number, date, language } = useI18n();
   const years = [...new Set(report.activity.days.map(day => day.day.slice(0, 4)))];
   const [year, setYear] = useState(report.range.to.slice(0, 4));
@@ -64,7 +64,7 @@ export function ActivityCalendar({ report, metric, onDay, onRange }: { report: P
     <div className="overview-calendar-scale" aria-label={t("overview.activity.legend")}><span>{t("overview.activity.less")}</span>{[0, 1, 2, 3, 4].map(level => <i key={level} className={`level-${level}`} />)}<span>{t("overview.activity.more")}</span></div>
     <Popover.Root open={selected !== null} onOpenChange={open => { if (!open) setSelected(null); }}><Popover.Anchor virtualRef={{ current: { getBoundingClientRect: () => anchor.current?.getBoundingClientRect() ?? new DOMRect() } }} /><Popover.Portal><Popover.Content className="filter-menu overview-day-popover" sideOffset={7} collisionPadding={12} aria-label={t("overview.activity.dayDetails")} onCloseAutoFocus={event => { event.preventDefault(); anchor.current?.focus({ preventScroll: true }); }}>
       <strong>{selected && date(dayDate(selected))}</strong><dl>{["sessions", "requests", "tokens", "tools"].map(key => <div key={key}><dt>{t(`overview.metric.${key}`)}</dt><dd>{key === "tokens" ? formatTokenMillions(language, current?.tokens) : number(key === "tools" ? current?.toolCalls ?? 0 : key === "sessions" ? current?.sessions ?? 0 : current?.requests ?? 0)}</dd></div>)}</dl>
-      <div><button className="text-button" onClick={() => { if (selected) onDay(selected); setSelected(null); }}>{t("overview.activity.viewDay")}</button><button className="text-button" onClick={() => { if (selected) onRange(selected); setSelected(null); }}>{t("overview.activity.setRange")}</button></div>
+      <div><button className="text-button" onClick={() => { if (selected) onDay(selected, buttons.current.get(selected)); setSelected(null); }}>{t("overview.activity.viewDay")}</button><button className="text-button" onClick={() => { if (selected) onRange(selected); setSelected(null); }}>{t("overview.activity.setRange")}</button></div>
     </Popover.Content></Popover.Portal></Popover.Root>
   </div>;
 }

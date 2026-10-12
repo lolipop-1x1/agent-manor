@@ -56,3 +56,9 @@
 .filter-option-with-help > .filter-option-tooltip-target { flex: 1; min-width: 0; }
 .filter-option-with-help > .help-trigger { flex-shrink: 0; }
 .filter-menu > [data-radix-popper-content-wrapper]:has(> .filter-option-tooltip) { pointer-events: none; }
+
+.filter-group-label { padding: 10px 10px 5px; color: var(--muted); font-size: 11px; font-weight: 500; }
+.date-picker-menu table { margin: 0; width: auto; border-collapse: collapse; }
+.date-picker-menu th, .date-picker-menu td { padding: 0; text-align: center; border: 0; }
+.date-picker-menu th { position: static; background: transparent; }
+.date-picker-menu .rdp-day, .date-picker-menu .rdp-weekday { width: var(--rdp-day-width); }

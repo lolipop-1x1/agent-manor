@@ -1,6 +1,14 @@
 import type { MessageCatalog } from "../../types.js";
 
 export default {
+  "overview.rangeOverview": "Selected period",
+  "overview.review.presentation": "Detail view",
+  "overview.review.pane.records": "Records",
+  "overview.review.pane.statistics": "Statistics",
+  "overview.review.pane.rankings": "Rankings",
+  "overview.review.pane.activity": "Activity",
+  "overview.review.activityView": "Distribution",
+  "overview.review.messageCount": "{{count, number}} user messages",
   "overview.review.title": "Last 7 days in review",
   "overview.review.help": "Review definitions",
   "overview.review.range": "{{from}} – {{to}}",

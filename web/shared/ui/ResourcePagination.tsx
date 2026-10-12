@@ -4,9 +4,9 @@ import { FilterSelect } from "./FilterSelect";
 import { fmt } from "../format";
 import { useI18n } from "../i18n";
 
-export function ResourcePagination({ page, total, pageSize, onChange, onPageSizeChange, label }: {
+export function ResourcePagination({ page, total, pageSize, onChange, onPageSizeChange, label, container }: {
   page: number; total: number; pageSize: number; onChange: (page: number) => void;
-  onPageSizeChange?: (pageSize: number) => void; label: string;
+  onPageSizeChange?: (pageSize: number) => void; label: string; container?: HTMLElement | null;
 }) {
   const { t } = useI18n();
   const pages = Math.max(1, Math.ceil(total / pageSize));
@@ -36,6 +36,6 @@ export function ResourcePagination({ page, total, pageSize, onChange, onPageSize
       <input type="number" min="1" max={pages} value={target} onChange={event => setTarget(event.target.value)} aria-label={t("common.pagination.jumpInput", { label })} />
       <button className="text-button" aria-label={t("common.pagination.jumpLabel", { label })}>{t("common.pagination.jump")}</button>
     </form>
-    {onPageSizeChange && <FilterSelect label={t("common.pagination.pageSize", { label })} value={String(pageSize)} options={[20, 50, 100].map(value => ({ value: String(value), label: t("common.pagination.perPage", { count: value }) }))} onChange={value => onPageSizeChange(Number(value))} />}
+    {onPageSizeChange && <FilterSelect container={container} label={t("common.pagination.pageSize", { label })} value={String(pageSize)} options={[20, 50, 100].map(value => ({ value: String(value), label: t("common.pagination.perPage", { count: value }) }))} onChange={value => onPageSizeChange(Number(value))} />}
   </nav>;
 }

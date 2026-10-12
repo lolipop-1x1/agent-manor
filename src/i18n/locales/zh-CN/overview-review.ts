@@ -1,6 +1,14 @@
 import type { MessageCatalog } from "../../types.js";
 
 export default {
+  "overview.rangeOverview": "所选时段概况",
+  "overview.review.presentation": "详情视图",
+  "overview.review.pane.records": "记录",
+  "overview.review.pane.statistics": "完整统计",
+  "overview.review.pane.rankings": "排行",
+  "overview.review.pane.activity": "活动分布",
+  "overview.review.activityView": "分布维度",
+  "overview.review.messageCount": "{{count, number}} 条用户消息",
   "overview.review.title": "最近 7 天复盘",
   "overview.review.help": "复盘口径",
   "overview.review.range": "{{from}} – {{to}}",

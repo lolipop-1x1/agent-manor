@@ -8,6 +8,7 @@ import { HelpPopover } from "../../shared/ui/HelpPopover";
 import type { OverviewSessionTarget } from "./Investigation";
 import { overviewCalendarDate } from "./model";
 import { weeklyReviewDuration, weeklyReviewParameters, weeklyReviewRecordTitle, weeklyReviewFreshLabel, weeklyReviewCacheShareLabel } from "./review-model";
+import { TokenAmount } from "../usage/TokenAmount";
 import { WeeklyReviewDetails } from "./WeeklyReviewDetails";
 import "./weekly-review.css";
 
@@ -18,6 +19,7 @@ export function WeeklyReview({ active, clients, projects, revision, onSession }:
   const [result, setResult] = useState<{ key: string; review: Review } | null>(null);
   const [loading, setLoading] = useState(false), [error, setError] = useState<Error | null>(null), [retry, setRetry] = useState(0);
   const [selection, setSelection] = useState<WeeklyReviewDetailQuery | null>(null);
+  const [focusMetric, setFocusMetric] = useState<string | undefined>();
   const trigger = useRef<HTMLElement | null>(null);
   const parameters = weeklyReviewParameters({ clients, projects });
   const key = `${parameters}:${revision}:${retry}`;
@@ -34,21 +36,23 @@ export function WeeklyReview({ active, clients, projects, revision, onSession }:
     }).finally(() => { if (!controller.signal.aborted) setLoading(false); });
     return () => controller.abort();
   }, [active, key]);
-  const open = (kind: WeeklyReviewDetailKind, sort?: WeeklyReviewDetailQuery["sort"], filter?: WeeklyReviewDetailQuery["filter"]) => {
+  const open = (kind: WeeklyReviewDetailKind, sort?: WeeklyReviewDetailQuery["sort"], filter?: WeeklyReviewDetailQuery["filter"], focus?: string) => {
     trigger.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
-    setSelection({ kind, sort, filter: filter ?? (kind === "rounds" ? "explicit" : undefined) });
+    setFocusMetric(focus);
+    setSelection({ kind, sort, pageSize: 20, filter: filter ?? (kind === "rounds" ? "explicit" : undefined) });
   };
   const n = (value: number | null | undefined) => value == null ? "—" : number(value, { maximumFractionDigits: 1 });
-  const money = (value: number | null) => value == null ? "—" : number(value, { style: "currency", currency: "USD", minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const money = (value: number | null) => value == null ? "—" : number(value, { style: "currency", currency: "USD", currencyDisplay: "narrowSymbol", minimumFractionDigits: 2, maximumFractionDigits: 2 });
   const duration = (value: number | null | undefined) => {
     const display = weeklyReviewDuration(value); return display ? t(display.key, { value: number(display.value, { maximumFractionDigits: 1 }) }) : "—";
   };
   const client = (value: string) => CLIENTS.some(item => item.id === value) ? clientLabel(value as Client) : value;
   const rank = (rows: WeeklyReviewRank[], kind: "agents" | "models" | "reasoning") => {
     const row = rows.find(item => item.key !== "unknown") ?? rows[0];
-    return row ? <span className="weekly-review-preference"><span title={row.name}>{kind === "agents" ? client(row.name) : row.key === "unknown" ? t("overview.review.unknown") : row.name}</span><span>{t("overview.review.rankCount", { count: n(row.count), share: row.share == null ? "—" : percent(row.share) })}</span></span> : "—";
+    return row ? <span className="weekly-review-preference" title={row.name}>{kind === "agents" ? client(row.name) : row.key === "unknown" ? t("overview.review.unknown") : row.name}</span> : "—";
   };
-  const metric = (name: string, value: ReactNode, kind: WeeklyReviewDetailKind, sort?: WeeklyReviewDetailQuery["sort"]) => <button type="button" className="weekly-review-metric" key={name} onClick={() => open(kind, sort, name === "zero" ? "zero" : undefined)}><span>{t(`overview.review.${name}`)}</span><strong>{value}</strong></button>;
+  const metric = (name: string, value: ReactNode, kind: WeeklyReviewDetailKind, sort?: WeeklyReviewDetailQuery["sort"], primary = false) => <button type="button" className={`weekly-review-metric${primary ? " is-primary" : ""}`} key={name} onClick={() => open(kind, sort, name === "zero" ? "zero" : undefined, name)}><span>{t(`overview.review.${name}`)}</span><strong>{value}</strong><ArrowRight size={13} aria-hidden="true" /></button>;
+  const more = (name: string, kind: WeeklyReviewDetailKind, sort?: WeeklyReviewDetailQuery["sort"]) => <button className="text-button weekly-review-more" onClick={() => open(kind, sort)}>{t(`overview.review.${name}`)}<ArrowRight size={14} aria-hidden="true" /></button>;
   const peak = review?.preferences.busiestHour;
   const peakLabel = peak == null ? "—" : t("overview.review.hourRange", { from: time(new Date(2000, 0, 1, peak), { hour: "2-digit", minute: "2-digit" }), to: time(new Date(2000, 0, 1, peak + 1), { hour: "2-digit", minute: "2-digit" }) });
   return <section className="overview-section weekly-review" aria-busy={pending} aria-labelledby="weekly-review-title">
@@ -57,17 +61,17 @@ export function WeeklyReview({ active, clients, projects, revision, onSession }:
     {!review && !error && <div className="weekly-review-skeleton" aria-label={t("overview.loading")} role="status">{Array.from({ length: 4 }, (_, index) => <div key={index}>{Array.from({ length: 5 }, (_, row) => <i key={row} />)}</div>)}</div>}
     {review && <div inert={pending}>
       <div className="weekly-review-groups">
-        <div className="weekly-review-group"><h3>{t("overview.review.group.sessions")}</h3>{metric("active", n(review.sessions.active), "sessions")}{metric("completed", n(review.rounds.completed), "rounds")}{metric("compressionSessions", n(review.sessions.compressionSessions), "compressions")}{metric("compressions", n(review.sessions.compressions), "compressions")}</div>
-        <div className="weekly-review-group"><h3>{t("overview.review.group.rounds")}</h3>{metric("steps", n(review.rounds.steps.average), "rounds", "steps")}{metric("toolCalls", n(review.rounds.toolCalls.average), "rounds")}{metric("tokens", n(review.rounds.tokens.average), "rounds", "tokens")}{metric("duration", duration(review.rounds.durationMs.average), "rounds", "duration")}</div>
-        <div className="weekly-review-group"><h3>{t("overview.review.group.cache")}</h3>{metric("zero", n(review.cache.zero), "cache")}{metric(weeklyReviewCacheShareLabel(review.cache), review.cache.readShare == null ? "—" : percent(review.cache.readShare), "cache")}{metric(weeklyReviewFreshLabel(review.cache), n(review.cache.freshInputTokens), "cache", "fresh")}{metric(review.cache.premiumMissing ? "premiumSubtotal" : "premium", money(review.cache.hypotheticalPremium), "cache", "fresh")}{metric("uncompressed", n(review.sessions.uncompressedPeakInput.average), "uncompressed")}</div>
-        <div className="weekly-review-group"><h3>{t("overview.review.group.preferences")}</h3>{metric("agents", rank(review.preferences.agents, "agents"), "agents")}{metric("models", rank(review.preferences.models, "models"), "models")}{metric("reasoning", rank(review.preferences.reasoning, "reasoning"), "reasoning")}{metric("promptCharacters", n(review.preferences.promptCharacters.average), "prompts")}{metric("activity", peakLabel, "activity")}</div>
+        <div className="weekly-review-group"><h3>{t("overview.review.group.sessions")}</h3>{metric("active", n(review.sessions.active), "sessions", undefined, true)}{metric("completed", n(review.rounds.completed), "rounds")}{metric("compressionSessions", n(review.sessions.compressionSessions), "compressions")}{metric("compressions", n(review.sessions.compressions), "compressions")}<div className="weekly-review-group-actions">{more("projects", "projects")}{more("delegation", "delegation")}</div></div>
+        <div className="weekly-review-group"><h3>{t("overview.review.group.rounds")}</h3>{metric("duration", duration(review.rounds.durationMs.average), "rounds", "duration", true)}{metric("steps", n(review.rounds.steps.average), "rounds", "steps")}{metric("toolCalls", n(review.rounds.toolCalls.average), "rounds")}{metric("tokens", <TokenAmount value={review.rounds.tokens.average} />, "rounds", "tokens")}{more("tools", "tools")}</div>
+        <div className="weekly-review-group"><h3>{t("overview.review.group.cache")}</h3>{metric(weeklyReviewCacheShareLabel(review.cache), review.cache.readShare == null ? "—" : percent(review.cache.readShare), "cache", undefined, true)}{metric("zero", n(review.cache.zero), "cache")}{metric(weeklyReviewFreshLabel(review.cache), <TokenAmount value={review.cache.freshInputTokens} />, "cache", "fresh")}{metric(review.cache.premiumMissing ? "premiumSubtotal" : "premium", money(review.cache.hypotheticalPremium), "cache", "fresh")}{metric("uncompressed", <TokenAmount value={review.sessions.uncompressedPeakInput.average} />, "uncompressed")}{more("largeInputs", "cache", "fresh")}</div>
+        <div className="weekly-review-group"><h3>{t("overview.review.group.preferences")}</h3>{metric("activity", peakLabel, "activity", undefined, true)}{metric("agents", rank(review.preferences.agents, "agents"), "agents")}{metric("models", rank(review.preferences.models, "models"), "models")}{metric("reasoning", rank(review.preferences.reasoning, "reasoning"), "reasoning")}{metric("promptCharacters", n(review.preferences.promptCharacters.average), "prompts")}</div>
       </div>
       <div className="weekly-review-highlights">
-        <button className="weekly-review-highlight" onClick={() => open("rounds", "duration")}><span>{t("overview.review.longest")}</span><strong>{weeklyReviewRecordTitle(review.rounds.longest[0], language)}</strong><span>{duration(review.rounds.longest[0]?.durationMs)}</span><ArrowRight size={14} /></button>
-        <button className="weekly-review-highlight" onClick={() => open("rounds", "tokens")}><span>{t("overview.review.highestTokens")}</span><strong>{weeklyReviewRecordTitle(review.rounds.highestTokens[0], language)}</strong><span>{n(review.rounds.highestTokens[0]?.tokens)}</span><ArrowRight size={14} /></button>
+        <button className="weekly-review-highlight" title={weeklyReviewRecordTitle(review.rounds.longest[0], language)} onClick={() => open("rounds", "duration", undefined, "longest")}><span>{t("overview.review.longest")}</span><strong>{weeklyReviewRecordTitle(review.rounds.longest[0], language)}</strong><span>{duration(review.rounds.longest[0]?.durationMs)}</span><ArrowRight size={14} /></button>
+        <button className="weekly-review-highlight" title={weeklyReviewRecordTitle(review.rounds.highestTokens[0], language)} onClick={() => open("rounds", "tokens", undefined, "highestTokens")}><span>{t("overview.review.highestTokens")}</span><strong>{weeklyReviewRecordTitle(review.rounds.highestTokens[0], language)}</strong><span>{<TokenAmount value={review.rounds.highestTokens[0]?.tokens} />}</span><ArrowRight size={14} /></button>
       </div>
-      <div className="weekly-review-actions">{([['largeInputs', 'cache', 'fresh'], ['projects', 'projects'], ['delegation', 'delegation'], ['tools', 'tools']] as const).map(([name, kind, sort]) => <button key={name} className="text-button" onClick={() => open(kind, sort)}>{t(`overview.review.${name}`)}<ArrowRight size={14} /></button>)}</div>
+
     </div>}
-    {review && <WeeklyReviewDetails active={active} review={review} selection={selection} pending={pending} returnFocus={trigger} onSelect={setSelection} onClose={() => setSelection(null)} onReload={() => setRetry(value => value + 1)} onSession={onSession} />}
+    {review && <WeeklyReviewDetails active={active} review={review} selection={selection} pending={pending} focusMetric={focusMetric} returnFocus={trigger} onSelect={value => { if (value.kind !== selection?.kind) setFocusMetric(undefined); setSelection(value); }} onClose={() => setSelection(null)} onReload={() => setRetry(value => value + 1)} onSession={onSession} />}
   </section>;
 }

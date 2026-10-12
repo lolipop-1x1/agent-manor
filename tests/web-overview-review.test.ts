@@ -129,7 +129,8 @@ test("排行与子Agent部分Token覆盖不冒充全量，双方缺失样本按�
     assert.notEqual(translate(language, key), key);
   }
   const source = readFileSync(new URL("../web/features/overview/WeeklyReviewDetails.tsx", import.meta.url), "utf8");
-  assert.match(source, /\["name", "count", "share", "sessionCount", "requests", "tokenSubtotal", "cost"\]/);
+  assert.match(source, /const rankColumns = \["count", "share", "sessionCount"/);
+  assert.match(source, /\["tokenSubtotal", "cost"\]/);
   assert.match(source, /\["tokenSubtotal", review.extensions.children.tokens\]/);
   assert.match(source, /\["recordedTokenShare", review.extensions.children.tokenShare, "share"\]/);
   for (const field of ["tokenSamples", "tokenMissing", "userTokenSamples", "userTokenMissing"]) assert.ok(source.includes(`review.extensions.children.${field}`));
