@@ -7,7 +7,7 @@ import { usageDimensionKey, usageDimensionValue } from "../usage/dimensions.js";
 import { intervalKey } from "../usage/analytics.js";
 import { resourceGapRelevant } from "../resources/coverage.js";
 import type { OverviewFactStore } from "./facts.js";
-import type { UsageReport } from "../usage-contracts.js";
+import type { UsageStatistics } from "../usage-contracts.js";
 
 /** 月份及模型路径只在用户打开对应调查时构造。 */
 export function projectMonths(source: OverviewSource, snapshot: OverviewSnapshot): OverviewProjectMonth[] {
@@ -62,7 +62,7 @@ export function modelTransitions(source: OverviewSource, snapshot: OverviewSnaps
     .sort((a, b) => a.kind.localeCompare(b.kind) || b.count - a.count || a.fromModel.localeCompare(b.fromModel) || a.toModel.localeCompare(b.toModel));
 }
 /** 排行只扫描已经聚合的身份；分页后才构造展示行。 */
-export function usageRankingDetail(report: UsageReport, snapshot: OverviewSnapshot, query: OverviewDetailQuery): OverviewDetailPage {
+export function usageRankingDetail(report: UsageStatistics, snapshot: OverviewSnapshot, query: OverviewDetailQuery): OverviewDetailPage {
   const metric = query.sort === "tokens" ? "tokens" : query.sort === "cost" ? "estimatedCost" : query.sort === "sessions" ? "sessions" : "requests";
   const page = query.page ?? 1, pageSize = query.pageSize ?? 20;
   const identities = [...report.groups].sort((a, b) => (b.totals[metric] ?? -1) - (a.totals[metric] ?? -1) || a.key.localeCompare(b.key));

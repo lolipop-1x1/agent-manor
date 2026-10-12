@@ -2,18 +2,19 @@ import { Worker } from "node:worker_threads";
 import { dirname, join } from "node:path";
 import type { Repository } from "../contracts.js";
 import { StoreError } from "../index/store.js";
-import type { OverviewDetailPage, OverviewDetailQuery, OverviewEvidencePage, OverviewEvidenceQuery, OverviewPanel,
+import type { OverviewDetailPage, OverviewDetailQuery, OverviewDistributionDimension, OverviewEvidencePage, OverviewEvidenceQuery, OverviewPanel,
   OverviewPanelResult, OverviewQuery, OverviewReport, OverviewSnapshot } from "../overview-contracts.js";
 import type { SessionStore } from "../sessions/store.js";
 import { UsageResultCache } from "../usage/cache.js";
 import { UsageManager } from "../usage/manager.js";
 import type { PricingService } from "../usage/pricing.js";
-import type { UsageQuery, UsageReport } from "../usage-contracts.js";
+import type { UsageQuery, UsageStatistics, UsageStatisticsView } from "../usage-contracts.js";
 import type { OverviewWorkerRequest, OverviewWorkerResponse, OverviewWorkerResult } from "./worker-contracts.js";
 import { localDay, resolveOverviewRange, resolveTimezone } from "./dates.js";
 import { OverviewResultStore } from "./result-store.js";
 
 type Lane = "core" | "analysis" | "detail" | "repositories";
+type RequestExtra = Pick<OverviewWorkerRequest, "panel" | "dimension" | "detail" | "evidence">;
 interface Pending { lane: Lane; resolve(value: OverviewWorkerResult): void; reject(error: Error): void }
 const stopped = () => new StoreError("INTERNAL_ERROR", "总览统计后台已停止", { key: "diagnostics.server.m003" });
 
@@ -79,8 +80,8 @@ export class OverviewManager {
   }
   private key(type: OverviewWorkerRequest["type"], query: OverviewQuery, extra: object): string {
     const panel = (extra as { panel?: OverviewPanel }).panel;
-    const semantic = type === "panel" && ["core", "resources", "repositories"].includes(panel ?? "") ? { ...query, models: undefined } : query;
-    return JSON.stringify([5, type, this.canonicalQuery(semantic), extra,
+    const semantic = type === "panel" && ["core", "resources", "repositories", "facets"].includes(panel ?? "") ? { ...query, models: undefined } : query;
+    return JSON.stringify([6, type, this.canonicalQuery(semantic), extra,
       type === "report" || panel === "repositories" ? this.repositories().map(row => [row.id, row.version, row.stale]) : undefined]);
   }
   private canonicalQuery(query: OverviewQuery): object {
@@ -92,69 +93,81 @@ export class OverviewManager {
   private bindQuery(result: OverviewWorkerResult, query: OverviewQuery): OverviewWorkerResult {
     return "snapshot" in result ? { ...result, snapshot: { ...result.snapshot, query } } : { ...result, query };
   }
-  private valid(value: unknown, query: OverviewQuery, type: OverviewWorkerRequest["type"]): value is OverviewWorkerResult {
+  private valid(value: unknown, query: OverviewQuery, type: OverviewWorkerRequest["type"], extra: RequestExtra): value is OverviewWorkerResult {
     if (!value || typeof value !== "object") return false;
     const result = value as OverviewWorkerResult, snapshot = "snapshot" in result ? result.snapshot : result;
     if (!("version" in snapshot) || snapshot.version !== query.version || snapshot.priceVersion !== query.priceVersion
       || snapshot.timezone !== query.timezone || !snapshot.range || snapshot.range.today !== query.anchorDay) return false;
-    const normalize = (value: OverviewQuery) => this.canonicalQuery({ ...value, models: undefined });
-    if (!("query" in snapshot) || JSON.stringify(normalize(snapshot.query)) !== JSON.stringify(normalize(query))) return false;
+    const global = type === "panel" && ["core", "resources", "repositories", "facets"].includes(extra.panel ?? "");
+    const normalize = (value: OverviewQuery) => this.canonicalQuery(global ? { ...value, models: undefined } : value);
     if (query.window !== "all") {
       const expected = resolveOverviewRange({ version: query.version!, sessions: [], events: [], resources: [], requests: [], gaps: [] }, query, this.now());
       if (JSON.stringify(snapshot.range) !== JSON.stringify(expected)) return false;
     }
+    if (type === "evidence") return "rows" in result && Array.isArray(result.rows) && Number.isSafeInteger(result.total);
+    if (!("query" in snapshot) || JSON.stringify(normalize(snapshot.query)) !== JSON.stringify(normalize(query))) return false;
     if (type === "panel") {
-      if (!("panel" in result) || !result.data || typeof result.data !== "object") return false;
+      if (!("panel" in result) || result.panel !== extra.panel || result.dimension !== extra.dimension || !result.data || typeof result.data !== "object") return false;
       const data = result.data;
-      return result.panel === "core" ? !!data.summary && Number.isSafeInteger(data.summary.sessions) && !!data.totals && Array.isArray(data.activity?.days) && !!data.facets && !!data.coverage
-        : result.panel === "usage" ? !!data.usage?.totals && !!data.distributions && !!data.delegation
+      return result.panel === "core" ? !!data.summary && Number.isSafeInteger(data.summary.sessions) && !!data.totals && Array.isArray(data.activity?.days) && !!data.delegationSummary && !!data.coverage
+        : result.panel === "usage" ? !!data.usage?.totals && Array.isArray(data.usage.days) && !("sessions" in data.usage)
+        : result.panel === "distribution" ? Array.isArray(data.distribution)
+        : result.panel === "delegation" ? !!data.delegation && Number.isSafeInteger(data.delegation.assignedRequests)
+        : result.panel === "facets" ? Array.isArray(data.facets?.clients) && Array.isArray(data.facets?.projects) && Array.isArray(data.facets?.models)
         : result.panel === "resources" ? Array.isArray(data.resources?.skills) && Array.isArray(data.resources?.mcp)
         : result.panel === "process" ? Array.isArray(data.process?.tools) && !!data.process?.results
         : result.panel === "repositories" ? Array.isArray(data.repositories)
         : Array.isArray(data.insights) && Array.isArray(data.featuredInsights) && data.insights.length <= 5 && data.featuredInsights.length <= 5;
     }
-    if (type === "detail" || type === "evidence") return "rows" in result && Array.isArray(result.rows) && Number.isSafeInteger(result.total);
+    if (type === "detail") return "rows" in result && Array.isArray(result.rows) && Number.isSafeInteger(result.total);
     if (type === "report") return "summary" in result && Array.isArray(result.featuredInsights) && result.featuredInsights.length <= 5;
     return "query" in result && "range" in result;
   }
-  private async usageReport(snapshot: OverviewSnapshot, extra: UsageQuery = {}): Promise<UsageReport> {
+  private usageStatistics(snapshot: OverviewSnapshot, view: UsageStatisticsView, extra: UsageQuery = {}): Promise<UsageStatistics> {
     const query = snapshot.query;
-    const result = await this.usage.summaryReport({ version: snapshot.version, priceVersion: snapshot.priceVersion, timezone: snapshot.timezone,
+    return this.usage.statistics({ version: snapshot.version, priceVersion: snapshot.priceVersion, timezone: snapshot.timezone,
       clients: query.clients, projects: query.projects?.map(project => project === "none" ? "unknown" : project),
-      ...(snapshot.range.all ? {} : { from: snapshot.range.from, to: snapshot.range.to }), groupBy: "model", interval: "week",
-      pageSize: 5, ...extra });
-    return { ...result, sessions: result.sessions.map(row => ({ ...row, requests: [], requestsLimited: row.requestsTotal > 0 })) };
+      ...(snapshot.range.all ? {} : { from: snapshot.range.from, to: snapshot.range.to }), groupBy: "model", interval: "week", ...extra }, view);
   }
-  private async payload(type: OverviewWorkerRequest["type"], query: OverviewQuery, extra: Pick<OverviewWorkerRequest, "panel" | "detail" | "evidence">) {
+  private async payload(type: OverviewWorkerRequest["type"], query: OverviewQuery, extra: RequestExtra) {
     const payload: Partial<OverviewWorkerRequest> = {};
     if (type === "panel" && extra.panel === "core") {
-      payload.globalUsage = await this.usageReport(await this.snapshot(query));
+      payload.globalUsage = await this.usageStatistics(await this.snapshot(query), "totals");
     } else if (type === "panel" && extra.panel === "process" && query.models?.length) {
       const global = await this.panel({ ...query, models: undefined }, "process");
       payload.globalProcess = { process: global.data.process!, counts: global.counts };
-    } else if (type === "panel" && extra.panel === "usage" || type === "detail" && extra.detail?.view === "ranking" && extra.detail.dimension !== "tool") {
-      const snapshot = await this.snapshot(query), models = query.models;
-      const [clients, projects, model] = await Promise.all([this.usageReport(snapshot, { models, groupBy: "client" }),
-        this.usageReport(snapshot, { models, groupBy: "project" }), this.usageReport(snapshot, { models, groupBy: "model" })]);
-      payload.usage = model; payload.dimensions = { clients, projects, models: model };
+    } else if (type === "panel" && extra.panel === "usage") {
+      payload.usage = await this.usageStatistics(await this.snapshot(query), "trend", { models: query.models });
+    } else if (type === "panel" && extra.panel === "distribution" || type === "detail" && extra.detail?.view === "ranking" && extra.detail.dimension !== "tool") {
+      const dimension = extra.dimension ?? extra.detail?.dimension ?? "model";
+      payload.usage = await this.usageStatistics(await this.snapshot(query), "distribution", {
+        models: query.models, groupBy: dimension as OverviewDistributionDimension });
     } else if (type === "panel" && extra.panel === "insights") {
       const snapshot = await this.snapshot(query);
       const comparison = async (period: NonNullable<OverviewSnapshot["range"]["comparison"]>) => {
-        const read = (range: typeof period.current, groupBy: "project" | "model", coverage: "complete" | "all" = "complete") => this.usageReport(snapshot,
-          { ...range, models: query.models, coverage, groupBy });
+        const read = (range: typeof period.current, groupBy: "project" | "model", coverage: "complete" | "all" = "complete") => this.usageStatistics(snapshot,
+          coverage === "complete" ? "totals" : "distribution", { ...range, models: query.models, coverage, groupBy });
         const [current, previous, currentProjects, previousProjects, currentAll, previousAll] = await Promise.all([read(period.current, "model"),
           read(period.previous, "model"), read(period.current, "project", "all"), read(period.previous, "project", "all"),
-          this.usageReport(snapshot, { ...period.current, models: query.models }), this.usageReport(snapshot, { ...period.previous, models: query.models })]);
+          read(period.current, "model", "all"), read(period.previous, "model", "all")]);
         return { current, previous, currentProjects, previousProjects, currentModels: currentAll, previousModels: previousAll, currentMissing: currentAll.totals.requests - current.totals.requests,
           previousMissing: previousAll.totals.requests - previous.totals.requests };
       };
+      const recent = async (period: NonNullable<OverviewSnapshot["range"]["recent"]>) => {
+        const read = (range: typeof period.current, coverage: "complete" | "all") => this.usageStatistics(snapshot, "totals",
+          { ...range, models: query.models, coverage });
+        const [current, previous, currentAll, previousAll] = await Promise.all([read(period.current, "complete"), read(period.previous, "complete"),
+          read(period.current, "all"), read(period.previous, "all")]);
+        return { current, previous, currentMissing: currentAll.totals.requests - current.totals.requests,
+          previousMissing: previousAll.totals.requests - previous.totals.requests };
+      };
       payload.insightUsage = { comparison: snapshot.range.comparison ? await comparison(snapshot.range.comparison) : undefined,
-        recent: snapshot.range.recent ? await comparison(snapshot.range.recent) : undefined };
+        recent: snapshot.range.recent ? await recent(snapshot.range.recent) : undefined };
     }
     return payload;
   }
   private dispatch(type: OverviewWorkerRequest["type"], query: OverviewQuery, lane: Lane,
-    extra: Pick<OverviewWorkerRequest, "panel" | "detail" | "evidence"> = {}, payload: Partial<OverviewWorkerRequest> = {}): Promise<OverviewWorkerResult> {
+    extra: RequestExtra = {}, payload: Partial<OverviewWorkerRequest> = {}): Promise<OverviewWorkerResult> {
     if (this.closed) return Promise.reject(stopped());
     const worker = this.workers.get(lane) ?? this.createWorker(lane), id = ++this.nextId;
     clearTimeout(this.idleWorkers.get(lane)); this.idleWorkers.delete(lane);
@@ -181,16 +194,19 @@ export class OverviewManager {
     return operation;
   }
   private execute(type: OverviewWorkerRequest["type"], query: OverviewQuery,
-    extra: Pick<OverviewWorkerRequest, "panel" | "detail" | "evidence"> = {}): Promise<OverviewWorkerResult> {
+    extra: RequestExtra = {}): Promise<OverviewWorkerResult> {
     const fixed = this.fixed(query), key = this.key(type, fixed, extra), current = this.inFlight.get(key);
     if (current) return current.then(result => this.bindQuery(result, fixed));
-    const cached = this.cache.get(key) ?? this.persisted.get(key, (value): value is OverviewWorkerResult => this.valid(value, fixed, type));
+    const cached = this.cache.get(key) ?? this.persisted.get(key, (value): value is OverviewWorkerResult => this.valid(value, fixed, type, extra));
     if (cached) { this.cache.set(key, cached); return Promise.resolve(this.bindQuery(cached, fixed)); }
     const lane: Lane = type === "snapshot" || type === "panel" && extra.panel === "core" ? "core"
       : type === "detail" || type === "evidence" ? "detail" : extra.panel === "repositories" ? "repositories" : "analysis";
     const preparation = type === "panel" && extra.panel === "repositories" && fixed.window !== "all" ? Promise.resolve() : this.ensureFacts(fixed);
     const response = preparation.then(() => this.payload(type, fixed, extra)).then(payload => this.dispatch(type, fixed, lane, extra, payload))
-      .then(result => { this.cache.set(key, result); this.persisted.put(key, result); return this.bindQuery(result, fixed); })
+      .then(result => {
+        if (!this.valid(result, fixed, type, extra)) throw new StoreError("INTERNAL_ERROR", "总览统计快照不匹配", { key: "diagnostics.server.m003" });
+        this.cache.set(key, result); this.persisted.put(key, result); return this.bindQuery(result, fixed);
+      })
       .finally(() => { if (this.inFlight.get(key) === response) this.inFlight.delete(key); });
     this.inFlight.set(key, response); return response;
   }
@@ -202,10 +218,12 @@ export class OverviewManager {
     }
     return structuredClone(await this.execute("snapshot", fixed) as OverviewSnapshot);
   }
-  async panel(query: OverviewQuery, panel: OverviewPanel): Promise<OverviewPanelResult> {
-    const result = await this.execute("panel", query, { panel }) as OverviewPanelResult;
-    return structuredClone({ ...result, snapshot: { ...result.snapshot, query: { ...result.snapshot.query, models: query.models } }, data: { ...result.data, ...(result.data.usage
-      ? { usage: { ...result.data.usage, pricing: this.pricing.summary(result.snapshot.priceVersion) } } : {}) } });
+  async panel(query: OverviewQuery, panel: OverviewPanel, dimension?: OverviewDistributionDimension): Promise<OverviewPanelResult> {
+    if (panel === "distribution" ? !dimension || !["client", "project", "model"].includes(dimension) : dimension !== undefined) {
+      throw new StoreError("INVALID_INPUT", "无效总览参数：dimension", { key: "diagnostics.usage.input.invalid", params: { field: "dimension" } });
+    }
+    const result = await this.execute("panel", query, { panel, ...(dimension ? { dimension } : {}) }) as OverviewPanelResult;
+    return structuredClone({ ...result, snapshot: { ...result.snapshot, query: { ...result.snapshot.query, models: query.models } } });
   }
   async detail(query: OverviewQuery, detail: OverviewDetailQuery): Promise<OverviewDetailPage> {
     return structuredClone(await this.execute("detail", query, { detail }) as OverviewDetailPage);

@@ -1,6 +1,6 @@
 import type { SessionSummary, SessionUsage } from "../session-contracts.js";
 import type { ResourceUsageEvent } from "../resource-contracts.js";
-import type { OverviewActivity, OverviewActivityDay, OverviewCountRow, OverviewDelegation, OverviewEvent,
+import type { OverviewActivity, OverviewActivityDay, OverviewCountRow, OverviewDelegation, OverviewDelegationSummary, OverviewEvent,
   OverviewFailureSequence, OverviewProcess, OverviewQuery, OverviewRange, OverviewReport, OverviewResourceCombination,
   OverviewResourceObservation, OverviewResourceRow, OverviewResources, OverviewResultCounts, OverviewSource,
   OverviewTimingGroup, OverviewToolCategory, OverviewToolRow } from "../overview-contracts.js";
@@ -321,7 +321,11 @@ export function buildProcess(source: OverviewSource, selected: OverviewSource, u
     failureSequences: detail ? failureSequences(source, calls) : [], compressions: compressions.length,
     compressionSessions: new Set(compressions.map(event => event.sessionId)).size, timing, missingTimingRequests };
 }
-export function buildDelegation(source: OverviewSource, selected: OverviewSource, usageSelected: OverviewSource, activeIds: Set<string>, timezone: string, global?: OverviewDelegation, datedIds?: Set<string>): OverviewDelegation {
+const relationUnknown = (session: SessionSummary, byId: Map<string, SessionSummary>) => session.relationship === "child" && (!session.parentSessionId || !byId.has(session.parentSessionId))
+  || session.gaps.some(gap => ["diagnostics.sessions.store.m004", "diagnostics.sessions.store.m005", "diagnostics.sessions.store.m006", "diagnostics.sessions.store.m017"].includes(gap.messageDescriptor?.key ?? ""));
+
+/** 基础委派只判断会话身份与活动，不汇总请求或 Token。 */
+export function buildDelegationSummary(source: OverviewSource, selected: OverviewSource, activeIds: Set<string>, timezone: string, global?: OverviewDelegationSummary, datedIds?: Set<string>): OverviewDelegationSummary {
   const byId = new Map(source.sessions.map(session => [session.id, session])), children = new Map<string, SessionSummary[]>();
   for (const session of source.sessions) if (session.relationship === "child" && session.parentSessionId) {
     const group = children.get(session.parentSessionId) ?? []; group.push(session); children.set(session.parentSessionId, group);
@@ -329,12 +333,9 @@ export function buildDelegation(source: OverviewSource, selected: OverviewSource
   let eligibleMainSessions = 0, withChildActivity = 0, unknownMainSessions = 0, unknownRelationshipSessions = 0;
   const datedActivityIds = datedIds ?? (global ? new Set<string>() : new Set([...source.events.filter(event => isActivityEvent(event) && localDay(event.occurredAt, timezone) !== null).map(event => event.sessionId),
     ...source.requests.filter(request => localDay(request.usage.occurredAt, timezone) !== null).map(request => request.sessionId)]));
-  const selectedRequests = usageSelected.requests;
-  const relationUnknown = (session: SessionSummary) => session.relationship === "child" && (!session.parentSessionId || !byId.has(session.parentSessionId))
-    || session.gaps.some(gap => ["diagnostics.sessions.store.m004", "diagnostics.sessions.store.m005", "diagnostics.sessions.store.m006", "diagnostics.sessions.store.m017"].includes(gap.messageDescriptor?.key ?? ""));
   for (const session of global ? [] : selected.sessions) {
     if (!activeIds.has(session.id) || session.relationship === "fork") continue;
-    if (relationUnknown(session)) { unknownRelationshipSessions += 1; continue; }
+    if (relationUnknown(session, byId)) { unknownRelationshipSessions += 1; continue; }
     if (session.relationship === "child") continue;
     const knownChildren = children.get(session.id) ?? [], declared = new Set(session.childSessionIds ?? []);
     for (const child of knownChildren) declared.add(child.id);
@@ -347,16 +348,20 @@ export function buildDelegation(source: OverviewSource, selected: OverviewSource
     else if (uncertain) unknownMainSessions += 1;
     else eligibleMainSessions += 1;
   }
-  const assigned = selectedRequests.filter(request => { const session = byId.get(request.sessionId)!; return session.relationship !== "fork" && !relationUnknown(session); });
+  return { eligibleMainSessions: global?.eligibleMainSessions ?? eligibleMainSessions, withChildActivity: global?.withChildActivity ?? withChildActivity,
+    unknownMainSessions: global?.unknownMainSessions ?? unknownMainSessions, unknownRelationshipSessions: global?.unknownRelationshipSessions ?? unknownRelationshipSessions,
+    forkSessions: global?.forkSessions ?? selected.sessions.filter(session => activeIds.has(session.id) && session.relationship === "fork").length };
+}
+export function buildDelegation(source: OverviewSource, selected: OverviewSource, usageSelected: OverviewSource, activeIds: Set<string>, timezone: string, global?: OverviewDelegation, datedIds?: Set<string>): OverviewDelegation {
+  const summary = buildDelegationSummary(source, selected, activeIds, timezone, global, datedIds);
+  const byId = new Map(source.sessions.map(session => [session.id, session]));
+  const assigned = usageSelected.requests.filter(request => { const session = byId.get(request.sessionId)!; return session.relationship !== "fork" && !relationUnknown(session, byId); });
   const child = assigned.filter(request => byId.get(request.sessionId)!.relationship === "child");
   const tokens = (requests: OverviewSource["requests"]) => {
     const values = requests.filter(request => nonnegative(request.usage.inputTokens) && nonnegative(request.usage.outputTokens));
     return values.length ? values.reduce((sum, request) => sum + request.usage.inputTokens! + request.usage.outputTokens!, 0) : null;
   };
-  return { eligibleMainSessions: global?.eligibleMainSessions ?? eligibleMainSessions, withChildActivity: global?.withChildActivity ?? withChildActivity,
-    unknownMainSessions: global?.unknownMainSessions ?? unknownMainSessions, unknownRelationshipSessions: global?.unknownRelationshipSessions ?? unknownRelationshipSessions,
-    forkSessions: global?.forkSessions ?? selected.sessions.filter(session => activeIds.has(session.id) && session.relationship === "fork").length,
-    childRequests: child.length, assignedRequests: assigned.length, childTokens: tokens(child), assignedTokens: tokens(assigned) };
+  return { ...summary, childRequests: child.length, assignedRequests: assigned.length, childTokens: tokens(child), assignedTokens: tokens(assigned) };
 }
 
 /** global 仅由后台在同一完整全局范围内提供，模型相关字段始终重新计算。 */

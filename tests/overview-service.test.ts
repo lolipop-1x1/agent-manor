@@ -73,6 +73,18 @@ test("总览后台 HTTP 保持全局与模型局部范围，证据分页不泄�
     const [core, usage, resources, process, repositories, insights] = panels;
     assert.deepEqual(core!.data.summary, first.summary); assert.deepEqual(core!.data.activity, first.activity);
     assert.deepEqual(core!.data.totals, first.totals); assert.equal(usage!.data.usage!.totals.requests, 31);
+    assert.deepEqual(usage!.data.usage!.groups, []); assert(usage!.data.usage!.days.every(day => day.groups.length === 0));
+    assert.equal("sessions" in usage!.data.usage!, false); assert.equal("pricing" in usage!.data.usage!, false);
+    assert.equal("distributions" in usage!.data, false); assert.equal("delegation" in usage!.data, false);
+    assert.equal(core!.data.delegationSummary!.eligibleMainSessions, first.delegation.eligibleMainSessions);
+    const facets = await read<OverviewPanelResult>(`/overview/panel?${fixed}&panel=facets`);
+    assert.deepEqual(facets.data.facets, first.facets);
+    const distribution = await read<OverviewPanelResult>(`/overview/panel?${fixed}&panel=distribution&dimension=model`);
+    assert.deepEqual(distribution.snapshot, snapshot); assert.equal(distribution.dimension, "model");
+    assert.deepEqual(distribution.data.distribution, first.distributions.models);
+    assert.deepEqual(distribution.counts, { models: 1 });
+    const delegation = await read<OverviewPanelResult>(`/overview/panel?${fixed}&panel=delegation`);
+    assert.deepEqual(delegation.snapshot, snapshot); assert.deepEqual(delegation.data.delegation, first.delegation);
     assert.equal(resources!.counts!.mcp, 1); assert.equal(resources!.data.resources!.mcp[0]!.uses, 2);
     assert.deepEqual(resources!.data.resources!.mcp[0]!.days, first.resources.mcp[0]!.days);
     assert.deepEqual(resources!.data.resources!.mcp[0]!.tools, []);
@@ -104,6 +116,9 @@ test("总览后台 HTTP 保持全局与模型局部范围，证据分页不泄�
     assert.equal((await fetch(`${base}/overview/report?priceVersion=synthetic-unavailable`)).status, 404);
     assert.equal((await fetch(`${base}/overview/evidence?evidence=${encodeURIComponent('{"kind":"tools","pageSize":201}')}`)).status, 400);
     assert.equal((await fetch(`${base}/overview/panel?panel=unknown`)).status, 400);
+    assert.equal((await fetch(`${base}/overview/panel?panel=distribution`)).status, 400);
+    assert.equal((await fetch(`${base}/overview/panel?panel=distribution&dimension=tool`)).status, 400);
+    assert.equal((await fetch(`${base}/overview/panel?panel=usage&dimension=model`)).status, 400);
     assert.equal((await fetch(`${base}/overview/detail?detail=${encodeURIComponent('{"view":"resource"}')}`)).status, 400);
     assert.equal((await fetch(`${base}/overview/detail?detail=${encodeURIComponent('{"view":"timings","pageSize":101}')}`)).status, 400);
   } finally { await service.close(); await rm(directory, { recursive: true, force: true }); }

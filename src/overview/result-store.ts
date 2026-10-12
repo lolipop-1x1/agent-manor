@@ -1,7 +1,7 @@
 import { chmodSync } from "node:fs";
 import Database from "better-sqlite3";
 
-const format = 1, maxBytes = 64 * 1024 * 1024, maxEntries = 96, maxItemBytes = 4 * 1024 * 1024;
+const format = 2, maxBytes = 64 * 1024 * 1024, maxEntries = 96, maxItemBytes = 4 * 1024 * 1024;
 /** 分区结果有界持久化；无权限、坏文件及失效记录退回正常计算。 */
 export class OverviewResultStore {
   private database?: Database.Database;

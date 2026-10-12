@@ -1,23 +1,24 @@
 import type { OverviewInsight, OverviewPeriod, OverviewQuery, OverviewReport, OverviewResources, OverviewSource } from "../overview-contracts.js";
-import type { UsageReport } from "../usage-contracts.js";
+import type { UsageStatistics } from "../usage-contracts.js";
 import type { PricingView } from "../usage/pricing.js";
 import { buildUsageReport } from "../usage/analytics.js";
 import { selectedSource, buildResources } from "./analytics.js";
 import { decomposeUsage } from "./insight-math.js";
 
 export interface OverviewInsightUsage {
-  current: UsageReport;
-  previous: UsageReport;
-  currentProjects: UsageReport;
-  previousProjects: UsageReport;
-  currentModels?: UsageReport;
-  previousModels?: UsageReport;
+  current: UsageStatistics;
+  previous: UsageStatistics;
+  currentProjects: UsageStatistics;
+  previousProjects: UsageStatistics;
+  currentModels?: UsageStatistics;
+  previousModels?: UsageStatistics;
   currentMissing?: number;
   previousMissing?: number;
 }
+export type OverviewInsightTotals = Pick<OverviewInsightUsage, "current" | "previous" | "currentMissing" | "previousMissing">;
 export interface OverviewInsightContext {
   comparison?: OverviewInsightUsage;
-  recent?: OverviewInsightUsage;
+  recent?: OverviewInsightTotals;
   previousResources?: OverviewResources;
   currentResources?: OverviewResources;
 }
@@ -32,7 +33,7 @@ export function coreOverviewInsights(report: Pick<OverviewReport, "query" | "ran
     result.push({ ...value, period: value.period ?? { from: report.range.from, to: report.range.to }, missing: value.missing ?? 0,
       id: JSON.stringify([value.rule, value.metric, value.object, value.period ?? report.range]) });
   };
-  const usageChange = (values: OverviewInsightUsage | undefined, period: typeof report.range.comparison, recent: boolean) => {
+  const usageChange = (values: OverviewInsightTotals | undefined, period: typeof report.range.comparison, recent: boolean) => {
     if (!values || !period) return;
     const next = values.current.totals, prior = values.previous.totals;
     if (next.completeTokenRequests < 20 || prior.completeTokenRequests < 20 || next.tokens === null || prior.tokens === null

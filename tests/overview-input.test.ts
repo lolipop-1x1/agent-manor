@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { overviewEvidenceQuery, overviewQuery } from "../src/service/overview-input.js";
+import { overviewDistributionDimension, overviewEvidenceQuery, overviewPanel, overviewQuery } from "../src/service/overview-input.js";
 
 test("总览查询只接受本地日期和独立模型范围，保留数组中的路径", () => {
   assert.equal(overviewQuery({ anchorDay: "2026-10-12" }).anchorDay, "2026-10-12");
@@ -14,6 +14,16 @@ test("总览查询只接受本地日期和独立模型范围，保留数组中�
     { from: "1900-01-01", to: "9999-12-31" }, { relationship: "child" }, { evidence: "{}" }]) {
     assert.throws(() => overviewQuery(raw), { code: "INVALID_INPUT" });
   }
+});
+
+test("新增按需分区明确指定分布维度，其他分区拒绝维度参数", () => {
+  for (const panel of ["distribution", "delegation", "facets"]) assert.equal(overviewPanel(panel), panel);
+  for (const dimension of ["client", "project", "model"]) assert.equal(overviewDistributionDimension(dimension, "distribution"), dimension);
+  assert.equal(overviewDistributionDimension(undefined, "usage"), undefined);
+  for (const raw of [undefined, "tool", "unknown", ["model"]]) {
+    assert.throws(() => overviewDistributionDimension(raw, "distribution"), { code: "INVALID_INPUT" });
+  }
+  assert.throws(() => overviewDistributionDimension("model", "usage"), { code: "INVALID_INPUT" });
 });
 
 test("调查查询与总览边界分别编码，拒绝失效枚举、未知参数和越界分页", () => {

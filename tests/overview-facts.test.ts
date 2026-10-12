@@ -84,10 +84,13 @@ for (const timezone of ["UTC", "Asia/Shanghai", "America/New_York", "Pacific/Kir
       for (const query of queries) {
         await facts.prepare(query, now);
         const expected = buildOverviewReport(original, { ...query, models: undefined }, pricing, now);
-        const actual = facts.core(query, expected.usage, now);
+        const actual = facts.core(query, { ...expected.usage, days: [], groups: [] }, now);
         assert.deepEqual(value(actual.summary), value(expected.summary));
         assert.deepEqual(value(normalizedActivity(actual.activity)), value(normalizedActivity(expected.activity)));
-        assert.deepEqual(value(actual.facets), value(expected.facets));
+        assert.deepEqual(value(facts.facets(query)), value(expected.facets));
+        const { childRequests: _childRequests, assignedRequests: _assignedRequests, childTokens: _childTokens, assignedTokens: _assignedTokens, ...delegationSummary } = expected.delegation;
+        assert.deepEqual(actual.delegationSummary, delegationSummary);
+        assert.equal("delegation" in actual, false);
         assert.deepEqual(value(actual.coverage), value(expected.coverage));
         assert.deepEqual(facts.range(query, now), resolveOverviewRange(original, query, now));
       }
@@ -133,6 +136,7 @@ test("未完成准备不返回部分统计，按范围活动与全版本有日�
   try {
     const expected = buildOverviewReport(store.overviewSource(), query, pricing, now);
     assert.throws(() => facts.core(query, expected.usage, now), { code: "ANALYSIS_NOT_READY" });
+    assert.throws(() => facts.facets(query), { code: "ANALYSIS_NOT_READY" });
     assert.throws(() => facts.range({ window: "all", timezone: "UTC" }, now), { code: "ANALYSIS_NOT_READY" });
     await facts.prepare(query, now);
     assert.deepEqual(facts.activitySessions(query, now).activeIds, ["fork"]);

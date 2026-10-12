@@ -32,3 +32,14 @@ test("坏JSON、过大项、坏文件和不可写路径退回计算", async () =
     finally { bad.close(); unavailable.close(); }
   } finally { store.close(); await rm(directory, { recursive: true, force: true }); }
 });
+test("旧分区形状的持久缓存不进入新结果", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "manor-overview-old-result-")), path = join(directory, "cache.sqlite");
+  const store = new OverviewResultStore(path);
+  try {
+    store.put("legacy", { count: 1 });
+    const raw = new Database(path);
+    try { raw.prepare("UPDATE overview_results SET format=1 WHERE key='legacy'").run(); } finally { raw.close(); }
+    assert.equal(store.get("legacy", valid), undefined);
+    store.put("legacy", { count: 2 }); assert.deepEqual(store.get("legacy", valid), { count: 2 });
+  } finally { store.close(); await rm(directory, { recursive: true, force: true }); }
+});

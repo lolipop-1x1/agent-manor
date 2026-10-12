@@ -1,8 +1,8 @@
 import type { ApiErrorCode, Repository } from "../contracts.js";
 import type { MessageDescriptor } from "../i18n/types.js";
-import type { OverviewDetailPage, OverviewDetailQuery, OverviewEvidencePage, OverviewEvidenceQuery, OverviewPanel,
+import type { OverviewDetailPage, OverviewDetailQuery, OverviewDistributionDimension, OverviewEvidencePage, OverviewEvidenceQuery, OverviewPanel,
   OverviewPanelResult, OverviewQuery, OverviewReport, OverviewSnapshot } from "../overview-contracts.js";
-import type { PricingStatus, UsageReport } from "../usage-contracts.js";
+import type { PricingStatus, UsageStatistics } from "../usage-contracts.js";
 import type { OverviewInsightContext } from "./insights.js";
 export interface OverviewWorkerRequest {
   id: number;
@@ -12,12 +12,12 @@ export interface OverviewWorkerRequest {
   repositories: Repository[];
   now: string;
   panel?: OverviewPanel;
+  dimension?: OverviewDistributionDimension;
   detail?: OverviewDetailQuery;
   evidence?: OverviewEvidenceQuery;
-  usage?: UsageReport;
-  globalUsage?: UsageReport;
+  usage?: UsageStatistics;
+  globalUsage?: UsageStatistics;
   globalProcess?: { process: NonNullable<OverviewPanelResult["data"]["process"]>; counts?: Record<string, number> };
-  dimensions?: { clients: UsageReport; projects: UsageReport; models: UsageReport };
   insightUsage?: OverviewInsightContext;
 }
 export type OverviewWorkerResult = OverviewReport | OverviewEvidencePage | OverviewSnapshot | OverviewPanelResult | OverviewDetailPage;

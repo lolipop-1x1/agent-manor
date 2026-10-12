@@ -5,7 +5,7 @@ import { SessionStore } from "../sessions/store.js";
 import { ServiceError } from "../service/input.js";
 import { createPricingEstimator } from "../usage/pricing.js";
 import { usageDimensionValue } from "../usage/dimensions.js";
-import type { UsageReport } from "../usage-contracts.js";
+import type { UsageStatistics } from "../usage-contracts.js";
 import { buildOverviewReport } from "./analytics.js";
 import { factEvidence } from "./evidence-facts.js";
 import { coreOverviewInsights, generateOverviewInsights } from "./insights.js";
@@ -19,7 +19,7 @@ const { dbPath, preparesFacts } = workerData as { dbPath: string; preparesFacts?
 const sessions = new SessionStore(dbPath), repositories = new AnalysisStore(dbPath);
 let factStore: OverviewFactStore | undefined;
 const facts = (writer = false) => factStore ??= new OverviewFactStore(sessions, { repairCorruption: writer || preparesFacts, readonly: !(writer || preparesFacts) });
-function distribution(report: UsageReport): OverviewCountRow[] {
+function distribution(report: UsageStatistics): OverviewCountRow[] {
   return report.groups.map(group => ({ key: group.key, name: usageDimensionValue(group.key) ?? "未知",
     ...(usageDimensionValue(group.key) === undefined ? { nameDescriptor: { key: "overview.unknown" } } : {}),
     count: group.totals.requests, requests: group.totals.requests, sessions: group.totals.sessions,
@@ -50,14 +50,16 @@ async function handle(request: OverviewWorkerRequest): Promise<void> {
     let result;
     if (request.type === "snapshot" || request.type === "prepare") result = snapshot;
     else if (request.type === "panel") {
-      const panel = request.panel!, output: OverviewPanelResult = { snapshot, panel, data: {} };
+      const panel = request.panel!, output: OverviewPanelResult = { snapshot, panel, data: {}, ...(request.dimension ? { dimension: request.dimension } : {}) };
       if (panel === "core") output.data = facts().core(query, request.globalUsage!, now);
-      else if (panel === "usage") {
-        const full = { clients: distribution(request.dimensions!.clients), projects: distribution(request.dimensions!.projects), models: distribution(request.dimensions!.models) };
-        output.data = { usage: request.usage, distributions: { clients: leaders(full.clients), projects: leaders(full.projects), models: leaders(full.models) },
-          delegation: factDelegation(facts(), snapshot, now) };
-        output.counts = { clients: full.clients.length, projects: full.projects.length, models: full.models.length };
-      } else if (panel === "resources") {
+      else if (panel === "usage") output.data = { usage: request.usage };
+      else if (panel === "distribution") {
+        const rows = distribution(request.usage!);
+        output.data = { distribution: leaders(rows) };
+        output.counts = { [request.dimension === "client" ? "clients" : request.dimension === "project" ? "projects" : "models"]: rows.length };
+      } else if (panel === "delegation") output.data = { delegation: factDelegation(facts(), snapshot, now) };
+      else if (panel === "facets") output.data = { facets: facts().facets(query) };
+      else if (panel === "resources") {
         const result = factResources(facts(), snapshot, now); output.data = { resources: result.resources }; output.counts = result.counts;
       } else if (panel === "process") {
         const result = request.globalProcess
@@ -75,7 +77,7 @@ async function handle(request: OverviewWorkerRequest): Promise<void> {
     } else if (request.type === "detail") {
       const detail = request.detail!;
       result = detail.view === "ranking" && detail.dimension !== "tool"
-        ? usageRankingDetail(request.dimensions![detail.dimension === "client" ? "clients" : detail.dimension === "project" ? "projects" : "models"], snapshot, detail)
+        ? usageRankingDetail(request.usage!, snapshot, detail)
         : factDetail(facts(), snapshot, detail, now);
     } else if (request.type === "evidence") {
       const evidence = request.evidence!;

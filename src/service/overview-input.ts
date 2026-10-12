@@ -1,4 +1,4 @@
-import { overviewPanels, type OverviewDetailQuery, type OverviewEvidenceQuery, type OverviewPanel, type OverviewQuery, type OverviewWindow } from "../overview-contracts.js";
+import { overviewPanels, type OverviewDetailQuery, type OverviewDistributionDimension, type OverviewEvidenceQuery, type OverviewPanel, type OverviewQuery, type OverviewWindow } from "../overview-contracts.js";
 import { ServiceError, textValue } from "./input.js";
 import { usageQuery } from "./usage-input.js";
 
@@ -65,8 +65,13 @@ export function overviewEvidenceQuery(raw: unknown): OverviewEvidenceQuery {
 }
 
 export function overviewPanel(raw: unknown): OverviewPanel {
-  if (typeof raw !== "string" || !(overviewPanels as readonly string[]).includes(raw)) invalid("panel");
+  if (typeof raw !== "string" || ![...overviewPanels, "distribution", "delegation", "facets"].includes(raw)) invalid("panel");
   return raw as OverviewPanel;
+}
+export function overviewDistributionDimension(raw: unknown, panel: OverviewPanel): OverviewDistributionDimension | undefined {
+  if (panel !== "distribution") { if (raw !== undefined) invalid("dimension"); return; }
+  if (typeof raw !== "string" || !["client", "project", "model"].includes(raw)) invalid("dimension");
+  return raw as OverviewDistributionDimension;
 }
 export function overviewDetailQuery(raw: unknown): OverviewDetailQuery {
   const encoded = textValue(raw, "detail", true)!;

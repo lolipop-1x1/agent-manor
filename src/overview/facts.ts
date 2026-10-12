@@ -2,19 +2,19 @@ import Database from "better-sqlite3";
 import { chmodSync, renameSync, statSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { setImmediate as nextTurn } from "node:timers/promises";
-import type { OverviewActivity, OverviewEvent, OverviewQuery, OverviewRange, OverviewReport, OverviewSource } from "../overview-contracts.js";
+import type { OverviewActivity, OverviewEvent, OverviewPanelData, OverviewQuery, OverviewRange, OverviewReport, OverviewSource } from "../overview-contracts.js";
 import type { ResourceUsageEvent } from "../resource-contracts.js";
-import type { UsageReport } from "../usage-contracts.js";
+import type { UsageStatistics } from "../usage-contracts.js";
 import type { SessionStore } from "../sessions/store.js";
 import { StoreError } from "../index/store.js";
-import { isActivityEvent, knownResourceIdentity, matchesGlobalSession, pairToolCalls, resourceIdentity, toolCategory, validDuration, validResource } from "./analytics.js";
+import { buildDelegationSummary, isActivityEvent, knownResourceIdentity, matchesGlobalSession, pairToolCalls, resourceIdentity, toolCategory, validDuration, validResource } from "./analytics.js";
 import { addDays, localDay, prepareOverviewDateCache, resolveOverviewRange, resolveTimezone } from "./dates.js";
 
 const format = 2;
 const maximumBytes = 768 * 1024 * 1024;
 export type OverviewFactPurpose = "resources" | "process" | "requests" | "evidence";
 export interface OverviewFactOptions { fullSessions?: boolean; sessionIds?: string[]; eventKinds?: OverviewEvent["kind"][]; prepared?: boolean }
-export type OverviewCore = Pick<OverviewReport, "summary" | "totals" | "activity" | "facets" | "coverage">;
+export type OverviewCore = Pick<OverviewReport, "summary" | "totals" | "activity" | "coverage"> & Required<Pick<OverviewPanelData, "delegationSummary">>;
 interface FactRow { revision: string; id: string; time_ms: number | null; json: string }
 interface Bucket { revision: string; day: string; hour: number; events: number; requests: number; tools: number; rhythm: number }
 export interface OverviewFactScope {
@@ -404,7 +404,16 @@ export class OverviewFactStore {
     return { activeIds: [...active].map(revision => byId.get(revision)!), datedIds: [...dated].map(revision => byId.get(revision)!) };
   }
 
-  core(query: OverviewQuery, usage: UsageReport, now = new Date()): OverviewCore {
+  facets(query: OverviewQuery): OverviewReport["facets"] {
+    const source = this.snapshot(query), revisions = JSON.stringify(this.revisions({ version: source.version }));
+    this.requirePrepared({ version: source.version }, resolveTimezone(query.timezone));
+    const models = (this.statement(`SELECT DISTINCT model FROM overview_fact_requests WHERE revision IN (SELECT value FROM json_each(?))
+      AND model IS NOT NULL ORDER BY model`).all(revisions) as { model: string }[]).map(row => row.model);
+    return { clients: [...new Set(source.sessions.map(session => session.client))].sort(),
+      projects: [...new Set(source.sessions.flatMap(session => session.project ?? []))].sort(), models };
+  }
+
+  core(query: OverviewQuery, usage: UsageStatistics, now = new Date()): OverviewCore {
     const { source, range, timezone, revisions, bounds } = this.sqlScope(query, now), json = JSON.stringify(revisions);
     const selectedSessions = source.sessions.filter(session => matchesGlobalSession(session, query));
     const revisionIds = new Map(this.meta(source.version).rows.map(row => [row.revision, row.session.id]));
@@ -442,7 +451,12 @@ export class OverviewFactStore {
       WHERE revision IN (SELECT value FROM json_each(?)) AND active=1 AND time_ms IS NULL
       UNION SELECT revision FROM overview_fact_requests WHERE revision IN (SELECT value FROM json_each(?)) AND time_ms IS NULL`)
       .all(json, json) as { revision: string }[];
-    const tokens = new Map(usage.days.map(day => [day.key, day.totals.tokens]));
+    const tokenRows = this.statement(`SELECT overview_local_day(time_ms,?) AS day,
+      SUM(CASE WHEN input_tokens>=0 OR output_tokens>=0 THEN CASE WHEN input_tokens>=0 THEN input_tokens ELSE 0 END
+        + CASE WHEN output_tokens>=0 THEN output_tokens ELSE 0 END END) AS tokens
+      FROM overview_fact_requests WHERE revision IN (SELECT value FROM json_each(?)) AND time_ms IS NOT NULL
+      AND ${bounds ? "time_ms>=? AND time_ms<?" : "1"} GROUP BY day`).all(timezone, json, ...(bounds ? [bounds.fromMs, bounds.toMs] : [])) as { day: string; tokens: number | null }[];
+    const tokens = new Map(tokenRows.map(row => [row.day, row.tokens]));
     const days: OverviewActivity["days"] = [];
     for (let day = range.from; day <= range.to; day = addDays(day, 1)) {
       const point = points.get(day);
@@ -456,7 +470,7 @@ export class OverviewFactStore {
         .map(row => ({ ...row, sessions: row.sessions.size })),
       missingTimeEvents: missing.events, missingTimeSessions: missingSessions.length,
       datedSessions: sessionDates.size, crossDaySessions: [...sessionDates.values()].filter(dates => dates.size >= 2).length };
-    const { activeIds } = this.activitySessions(query, now), activeSet = new Set(activeIds), active = selectedSessions.filter(session => activeSet.has(session.id));
+    const { activeIds, datedIds } = this.activitySessions(query, now), activeSet = new Set(activeIds), active = selectedSessions.filter(session => activeSet.has(session.id));
     const activeDays = new Set(days.filter(day => day.sessions > 0).map(day => day.day));
     let endpoint = range.to, currentStreak = 0, longestStreak = 0, streak = 0, previous: string | undefined;
     if (endpoint === range.today && !activeDays.has(endpoint) && addDays(endpoint, -1) >= range.from) endpoint = addDays(endpoint, -1);
@@ -475,9 +489,6 @@ export class OverviewFactStore {
       WHERE f.revision IN (SELECT value FROM json_each(?)) AND f.input_tokens>=0 AND f.output_tokens>=0 AND ${dateSql}
       ORDER BY tokens DESC,COALESCE(f.occurred_at,''),r.session_id || ':' || f.id LIMIT 1`)
       .get(json, ...values) as { revision: string; id: string; message_id: string | null; occurred_at: string | null; tokens: number } | undefined;
-    const globalRevisions = JSON.stringify(this.revisions({ version: source.version }));
-    const facetModels = (this.statement(`SELECT DISTINCT model FROM overview_fact_requests WHERE revision IN (SELECT value FROM json_each(?))
-      AND model IS NOT NULL ORDER BY model`).all(globalRevisions) as { model: string }[]).map(row => row.model);
     const totals = usage.totals;
     return { totals, activity, summary: { sessions: active.length, mainSessions: active.filter(session => session.relationship !== "child" && session.relationship !== "fork").length,
       childSessions: active.filter(session => session.relationship === "child").length, forkSessions: active.filter(session => session.relationship === "fork").length,
@@ -487,8 +498,7 @@ export class OverviewFactStore {
       activeDays: activeDays.size, currentStreak, longestStreak, projectCount: new Set(active.flatMap(session => session.project ?? [])).size,
       modelCount: models.length, resourceCount, peak: peak ? { sessionId: revisionIds.get(peak.revision)!, requestId: peak.id,
         messageId: peak.message_id ?? undefined, occurredAt: peak.occurred_at ?? undefined, tokens: peak.tokens } : null },
-      facets: { clients: [...new Set(source.sessions.map(session => session.client))].sort(),
-        projects: [...new Set(source.sessions.flatMap(session => session.project ?? []))].sort(), models: facetModels },
+      delegationSummary: buildDelegationSummary(source, { ...source, sessions: selectedSessions }, activeSet, timezone, undefined, new Set(datedIds)),
       coverage: { gaps: source.gaps.slice(0, 100), gapCount: source.gaps.length, missingTimeEvents: missing.events,
         missingTimeRequests: missing.requests, missingTimeResources: missing.resources } };
   }
