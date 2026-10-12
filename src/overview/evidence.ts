@@ -1,5 +1,5 @@
 import type { OverviewEvidencePage, OverviewEvidenceQuery, OverviewEvidenceRow, OverviewEvent, OverviewPeriod,
-  OverviewQuery, OverviewRequest, OverviewSource } from "../overview-contracts.js";
+  OverviewQuery, OverviewRange, OverviewRequest, OverviewSource } from "../overview-contracts.js";
 import type { SessionSummary } from "../session-contracts.js";
 import type { PricingView } from "../usage/pricing.js";
 import { StoreError } from "../index/store.js";
@@ -10,12 +10,12 @@ import { failureSequences, isActivityEvent, matchesGlobalSession, pairToolCalls,
 import { daysBetween, localDay, resolveOverviewRange, resolveTimezone } from "./dates.js";
 
 export function buildOverviewEvidence(source: OverviewSource, input: OverviewQuery, evidence: OverviewEvidenceQuery,
-  pricing: PricingView, now = new Date()): OverviewEvidencePage {
+  pricing: PricingView, now = new Date(), prepared?: { range: OverviewRange; rowIds: Set<string>; total: number }) : OverviewEvidencePage {
   if (input.version !== undefined && input.version !== source.version || input.priceVersion !== undefined && input.priceVersion !== pricing.status.version) {
     throw new StoreError("VERSION_NOT_FOUND", "总览版本已不可用", { key: "diagnostics.usage.versionMismatch" });
   }
   const timezone = resolveTimezone(input.timezone), query = { ...input, timezone };
-  const range = resolveOverviewRange(source, query, now), page = evidence.page ?? 1, pageSize = evidence.pageSize ?? 25;
+  const range = prepared?.range ?? resolveOverviewRange(source, query, now), page = evidence.page ?? 1, pageSize = evidence.pageSize ?? 25;
   if (!Number.isInteger(page) || page < 1 || !Number.isInteger(pageSize) || pageSize < 1 || pageSize > 200) invalid("page");
   if (!["activity", "sessions", "requests", "resources", "tools", "failures", "compressions", "timing", "combinations", "observations", "sequence", "delegation"].includes(evidence.kind)) invalid("kind");
   let period: OverviewPeriod = range;
@@ -114,16 +114,17 @@ export function buildOverviewEvidence(source: OverviewSource, input: OverviewQue
     cacheWriteTokens: request.usage.cacheWriteTokens, durationMs: request.usage.timing?.durationMs, model: request.usage.model,
     usage: request.usage });
   let rows: OverviewEvidenceRow[] = [];
+  const includedRow = (sessionId: string, id: string) => !prepared || prepared.rowIds.has(`${sessionId}:${id}`);
   if (evidence.kind === "activity" || evidence.kind === "compressions") {
-    rows = selected.events.filter(event => eventMatch(event) && (evidence.kind !== "compressions" || event.kind === "compression")).map(eventRow);
+    rows = selected.events.filter(event => includedRow(event.sessionId, event.id) && eventMatch(event) && (evidence.kind !== "compressions" || event.kind === "compression")).map(eventRow);
     if (evidence.kind === "activity") {
       const included = new Set(rows.map(row => `${row.sessionId}\u0000${row.messageId}`));
-      rows.push(...selected.requests.filter(request => ![request.usage.messageId, ...(request.usage.requestMessageIds ?? []),
+      rows.push(...selected.requests.filter(request => includedRow(request.sessionId, request.usage.id) && ![request.usage.messageId, ...(request.usage.requestMessageIds ?? []),
         request.usage.timing?.end?.source !== "mirror" ? request.usage.timing?.end?.messageId : undefined]
         .some(id => id && included.has(`${request.sessionId}\u0000${id}`))).map(requestRow));
     }
   } else if (evidence.kind === "requests" || evidence.kind === "timing" || evidence.kind === "sequence" && evidence.scope === "usage") {
-    rows = selected.requests.filter(request => (!evidence.turnId || request.usage.turnId === evidence.turnId)
+    rows = selected.requests.filter(request => includedRow(request.sessionId, request.usage.id) && (!evidence.turnId || request.usage.turnId === evidence.turnId)
       && (!evidence.requestId || request.usage.id === evidence.requestId)
       && (evidence.ordinalFrom === undefined || request.ordinal !== undefined && request.ordinal >= evidence.ordinalFrom)
       && (evidence.ordinalTo === undefined || request.ordinal !== undefined && request.ordinal <= evidence.ordinalTo)
@@ -131,7 +132,7 @@ export function buildOverviewEvidence(source: OverviewSource, input: OverviewQue
       && (evidence.kind !== "timing" || validDuration(request.usage))
       && (!evidence.timingGroup || timingGroupId(byId.get(request.sessionId)!, request.usage) === evidence.timingGroup)).map(requestRow);
   } else if (evidence.kind === "resources") {
-    rows = selected.resources.filter(event => (!evidence.resourceId || resourceIdentity(event) === evidence.resourceId)
+    rows = selected.resources.filter(event => (!prepared || prepared.rowIds.has(event.id)) && (!evidence.resourceId || resourceIdentity(event) === evidence.resourceId)
       && (!evidence.resourceKind || (event.kind === "mcp" ? "mcp" : "skill") === evidence.resourceKind)
       && (!evidence.resourceEvidenceKind || event.kind === evidence.resourceEvidenceKind)
       && (!evidence.server || event.server === evidence.server)
@@ -153,7 +154,7 @@ export function buildOverviewEvidence(source: OverviewSource, input: OverviewQue
         && (!evidence.toolId || JSON.stringify([sequence.tool, sequence.server ?? null]) === evidence.toolId));
       const included = new Set(sequences.flatMap(sequence => sequence.calls.map(call => `${sequence.sessionId}\u0000${call.messageId}`)));
       rows = calls.filter(event => included.has(`${event.sessionId}\u0000${event.id}`)).map(eventRow);
-    } else rows = calls.filter(event => eventMatch(event) && (evidence.kind !== "failures" || event.status === "failure")).map(eventRow);
+    } else rows = calls.filter(event => includedRow(event.sessionId, event.id) && eventMatch(event) && (evidence.kind !== "failures" || event.status === "failure")).map(eventRow);
   } else if (evidence.kind === "combinations") {
     const turns = trueTurnIds(source), units = new Map<string, typeof selected.resources>();
     for (const event of selected.resources) {
@@ -182,7 +183,7 @@ export function buildOverviewEvidence(source: OverviewSource, input: OverviewQue
     });
   } else {
     const activeIds = new Set([...selected.events.map(event => event.sessionId), ...selected.requests.map(request => request.sessionId)]);
-    rows = sessions.filter(session => activeIds.has(session.id)).map(session => sessionRow(session));
+    rows = sessions.filter(session => activeIds.has(session.id) && (!prepared || prepared.rowIds.has(session.id))).map(session => sessionRow(session));
     if (evidence.rule === "13") rows = rows.filter(row => (row.dates?.length ?? 0) >= 2);
   }
   if (evidence.transition === "switch") {
@@ -203,14 +204,14 @@ export function buildOverviewEvidence(source: OverviewSource, input: OverviewQue
     : evidence.sort === "duration" ? (b.durationMs ?? -1) - (a.durationMs ?? -1) || a.id.localeCompare(b.id)
     : evidence.sort === "ordinal" ? a.sessionId.localeCompare(b.sessionId) || (a.ordinal ?? Number.MAX_SAFE_INTEGER) - (b.ordinal ?? Number.MAX_SAFE_INTEGER) || a.id.localeCompare(b.id)
     : (instant(b.occurredAt) ?? -Infinity) - (instant(a.occurredAt) ?? -Infinity) || a.id.localeCompare(b.id));
-  const pageRows = rows.slice((page - 1) * pageSize, page * pageSize);
+  const pageRows = prepared ? rows : rows.slice((page - 1) * pageSize, page * pageSize);
   prepareRequestContexts(new Set(pageRows.filter(row => row.requestId).map(row => row.sessionId)));
   for (const row of pageRows) if (row.usage) {
     row.cost = pricing.estimate(row.usage, byId.get(row.sessionId)!.client);
     row.values = requestContexts.get(`${row.sessionId}\u0000${row.requestId}`);
   }
   return { version: source.version, priceVersion: pricing.status.version, timezone, query: evidence, range,
-    rows: pageRows, total: rows.length, page, pageSize };
+    rows: pageRows, total: prepared?.total ?? rows.length, page, pageSize };
 
   function empty(): OverviewEvidencePage { return { version: source.version, priceVersion: pricing.status.version, timezone, query: evidence, range, rows: [], total: 0, page, pageSize }; }
   function sessionRow(session: SessionSummary): OverviewEvidenceRow {
