@@ -51,7 +51,8 @@ test("当前证据页与原统计在范围、排序、模型身份和请求上�
   facts.source = async () => { throw new Error("证据页不能恢复完整来源"); };
   for (const query of queries) {
     const report = buildOverviewReport(source, query, pricing, now); await facts.prepare(report.query, now);
-    for (const item of cases) for (const page of [1, 2]) {
+    const timingCase: OverviewEvidenceQuery[] = report.process.timing.slice(0, 1).map(group => ({ kind: "timing", timingGroup: group.id }));
+    for (const item of [...cases, ...timingCase]) for (const page of [1, 2]) {
       const evidence = { ...item, page, pageSize: 3 };
       const actual = await factEvidence(facts, report, evidence, pricing, now), expected = buildOverviewEvidence(source, report.query, evidence, pricing, now);
       assert.deepEqual(normalized(actual), normalized(expected), JSON.stringify({ query, evidence }));

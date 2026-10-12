@@ -55,7 +55,7 @@ export async function factEvidence(store: OverviewFactStore, snapshot: OverviewS
     if (evidence.ordinalFrom !== undefined) add("f.ordinal>=?", evidence.ordinalFrom);
     if (evidence.ordinalTo !== undefined) add("f.ordinal<=?", evidence.ordinalTo);
     if (evidence.kind === "timing") add("overview_valid_timing(json_extract(f.json,'$.usage.timing'))=1");
-    if (evidence.timingGroup) add(`json_array(json_extract(s.value,'$.client'),f.model,json_extract(f.json,'$.usage.timing.window'),
+    if (evidence.timingGroup) add(`json_array(json_extract(s.value,'$.client'),f.model,COALESCE(json_extract(f.json,'$.usage.timing.window'),'response'),
       json_extract(f.json,'$.usage.timing.basis'),json_extract(f.json,'$.usage.timing.method'))=?`, evidence.timingGroup);
   } else if (event || resource) {
     add(event ? "f.active=1" : "f.valid=1");
