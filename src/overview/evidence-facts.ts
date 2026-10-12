@@ -39,7 +39,7 @@ export async function factEvidence(store: OverviewFactStore, snapshot: OverviewS
   const json = JSON.stringify(revisions), time = evidence.undated ? "f.time_ms IS NULL" : all ? "1" : "f.time_ms>=? AND f.time_ms<?";
   const values: Value[] = [json, ...(!all && !evidence.undated ? [scope.bounds!.fromMs, scope.bounds!.toMs] : [])];
   const baseValues = [...values];
-  const evidenceScope = { metadata, revisions, time, values: baseValues, initial, range: { ...scope.range, all },
+  const evidenceScope = { metadata, revisions, globalRevisions: scope.revisions, time, values: baseValues, initial, range: { ...scope.range, all },
     query: { ...extra, ...(evidence.model ? { models: [evidence.model] } : {}) } };
   const where = [`f.revision IN (SELECT value FROM json_each(?))`, time];
   const event = evidence.kind === "tools" || evidence.kind === "failures" || evidence.kind === "compressions";

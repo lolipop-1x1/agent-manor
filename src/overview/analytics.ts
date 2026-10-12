@@ -404,10 +404,11 @@ export function buildOverviewReport(source: OverviewSource, input: OverviewQuery
     return rows.map(row => { const group = groups.get(row.key)!;
       const tokens = group.flatMap(request => nonnegative(request.usage.inputTokens) || nonnegative(request.usage.outputTokens)
         ? [(nonnegative(request.usage.inputTokens) ? request.usage.inputTokens : 0) + (nonnegative(request.usage.outputTokens) ? request.usage.outputTokens : 0)] : []);
-      const costs = group.flatMap(request => { const amount = estimate(request.usage, sessionById.get(request.sessionId)!.client).amount;
-        return amount !== null ? [amount] : []; });
+      const estimates = group.map(request => estimate(request.usage, sessionById.get(request.sessionId)!.client));
+      const costs = estimates.flatMap(cost => cost.amount === null ? [] : [cost.amount]);
       return { ...row, requests: row.count, tokens: tokens.length ? tokens.reduce((sum, value) => sum + value, 0) : null,
-        estimatedCost: costs.length ? costs.reduce((sum, value) => sum + value, 0) : null }; });
+        estimatedCost: costs.length ? costs.reduce((sum, value) => sum + value, 0) : null,
+        costCoverage: !costs.length ? "missing" as const : estimates.some(cost => cost.coverage !== "complete") ? "partial" as const : "complete" as const }; });
   };
   const scopedIds = new Set(selected.sessions.map(session => session.id));
   return { version: source.version, priceVersion: pricing.status.version, timezone, query, range, totals, usage,

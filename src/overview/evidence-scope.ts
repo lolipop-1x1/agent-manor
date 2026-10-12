@@ -4,6 +4,7 @@ import type { OverviewEvidencePage, OverviewQuery, OverviewRange, OverviewSource
 export interface FactEvidenceScope {
   metadata: OverviewSource;
   revisions: string[];
+  globalRevisions: string[];
   time: string;
   values: (string | number | null)[];
   initial: OverviewEvidencePage;
