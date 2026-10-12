@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { readFileSync } from "node:fs";
+import { buildUsageReport } from "../src/usage/analytics.ts";
 import { overviewPanels, type OverviewPanel, type OverviewPanelResult, type OverviewResourceRow, type OverviewTimingGroup, type OverviewSnapshot } from "../src/overview-contracts.ts";
 import { investigationDetail, visibleInvestigation, type InvestigationResult } from "../web/features/overview/investigation-model.ts";
 import { loadOverviewPanels, sameOverviewSnapshot, visibleOverviewBatch, replaceOverviewPanel, OverviewSnapshotMismatch, type OverviewPanelBatch } from "../web/features/overview/loading.ts";
@@ -12,7 +14,7 @@ function harness() {
   const gates = new Map<OverviewPanel, ReturnType<typeof deferred<OverviewPanelResult>>>();
   for (const panel of overviewPanels) gates.set(panel, deferred<OverviewPanelResult>());
   const transport = async <T>(path: string): Promise<T> => { paths.push(path); if (path.startsWith("/overview/snapshot")) return snapshot as T; const panel = new URL(`http://example.invalid${path}`).searchParams.get("panel") as OverviewPanel; return gates.get(panel)!.promise as Promise<T>; };
-  const resolve = (panel: OverviewPanel, fixed = snapshot) => gates.get(panel)!.resolve({ panel, snapshot: fixed, data: {} });
+  const resolve = (panel: OverviewPanel, fixed = snapshot, data: OverviewPanelResult["data"] = {}) => gates.get(panel)!.resolve({ panel, snapshot: fixed, data });
   return { paths, gates, transport, resolve };
 }
 
@@ -142,4 +144,61 @@ test("调查跨视图下钻保留完整旧面，首次打开和无需请求的�
   const categories = visibleInvestigation(previous, firstSelection, { ...controls, rankTab: "categories" }, "");
   assert.equal(categories.controls.rankTab, "categories");
   assert.equal(categories.result, null);
+});
+
+
+const emptyUsage = buildUsageReport({ version: snapshot.version, sessions: [], requests: [] }, { timezone: snapshot.timezone, from: snapshot.range.from, to: snapshot.range.to },
+  { version: snapshot.priceVersion, source: "bundled", refreshing: false, currency: "USD", sourceUrl: "https://example.invalid/prices", configuration: { overrides: [], mappings: [] }, prices: [] }, () => ({ amount: null, coverage: "missing" }));
+const emptyResources = { skills: [], mcp: [], observations: [], combinations: { sessions: [], turns: [] }, missingTimeEvents: 0, missingTurnEvents: 0 };
+
+test("首次反向完成顺序：资源和用量先到时立即保留真实分区，概况最后再接入", async () => {
+  const h = harness();
+  let visible: OverviewPanelBatch | null = null;
+  const update = (next: OverviewPanelBatch) => { visible = visibleOverviewBatch(visible, next); };
+  const run = loadOverviewPanels({}, "reverse-first", h.transport, new AbortController().signal, update, update);
+  await flush(); h.resolve("resources", snapshot, { resources: emptyResources }); await flush();
+  assert.equal(visible!.panels.resources!.data.resources, emptyResources);
+  assert.equal(visible!.panels.core, undefined);
+  h.resolve("usage", snapshot, { usage: emptyUsage }); await flush();
+  assert.equal(visible!.panels.usage!.data.usage, emptyUsage);
+  assert.equal(visible!.panels.core, undefined);
+  assert.equal(visible!.panels.resources!.data.resources, emptyResources);
+  for (const panel of ["insights", "repositories", "process"] as const) h.resolve(panel);
+  await flush(); assert.equal(visible!.complete, false); h.resolve("core");
+  update(await run); assert.equal(visible!.complete, true);
+});
+
+test("首次核心失败不抹去已成功的资源和用量，也不伪造概况数值", async () => {
+  const h = harness();
+  let visible: OverviewPanelBatch | null = null;
+  const errors: OverviewPanel[] = [];
+  const update = (next: OverviewPanelBatch) => { visible = visibleOverviewBatch(visible, next); };
+  const run = loadOverviewPanels({}, "core-failed", h.transport, new AbortController().signal, update, update, panel => errors.push(panel));
+  await flush(); h.resolve("resources", snapshot, { resources: emptyResources }); h.resolve("usage", snapshot, { usage: emptyUsage });
+  h.gates.get("core")!.reject(new Error("synthetic core failure"));
+  for (const panel of ["insights", "repositories", "process"] as const) h.resolve(panel);
+  await assert.rejects(run, /synthetic core failure/);
+  assert.equal(visible!.panels.core, undefined);
+  assert.equal(visible!.panels.resources!.data.resources, emptyResources);
+  assert.equal(visible!.panels.usage!.data.usage, emptyUsage);
+  assert.equal(visible!.complete, false); assert.deepEqual(errors, ["core"]);
+  const source = readFileSync(new URL("../web/features/overview/Overview.tsx", import.meta.url), "utf8");
+  assert.match(source, /const report = batch \?/);
+  assert.doesNotMatch(source, /const report = batch\?\.panels\.core/);
+  assert.match(source, /as OverviewSnapshot & Partial<OverviewReport>/);
+  assert.match(source, /\{report.resources \? resourceTable/);
+  assert.match(source, /\{report.usage \? <section/);
+  assert.match(source, /\{summary && activity \? <div className="overview-metrics"/);
+});
+
+test("已有完整结果遇到反向完成或核心失败时，仍保留旧完整批次而不混入新资源", async () => {
+  const previous: OverviewPanelBatch = { key: "old-complete", snapshot, panels: {}, complete: true };
+  let visible = previous;
+  const h = harness(), update = (next: OverviewPanelBatch) => { visible = visibleOverviewBatch(visible, next); };
+  const run = loadOverviewPanels({}, "next-incomplete", h.transport, new AbortController().signal, update, update);
+  await flush(); h.resolve("resources", snapshot, { resources: emptyResources }); h.resolve("usage", snapshot, { usage: emptyUsage }); await flush();
+  assert.equal(visible, previous);
+  h.gates.get("core")!.reject(new Error("synthetic core failure"));
+  for (const panel of ["insights", "repositories", "process"] as const) h.resolve(panel);
+  await assert.rejects(run, /synthetic core failure/); assert.equal(visible, previous);
 });

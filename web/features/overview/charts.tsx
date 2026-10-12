@@ -15,7 +15,7 @@ function sequence(from: string, to: string) {
   while (localDay(current) <= to) { days.push(localDay(current)); current.setDate(current.getDate() + 1); }
   return days;
 }
-export function ActivityCalendar({ report, metric, onDay, onRange }: { report: OverviewReport; metric: OverviewRoute["activity"]; onDay: (day: string) => void; onRange: (day: string) => void }) {
+export function ActivityCalendar({ report, metric, onDay, onRange }: { report: Pick<OverviewReport, "range" | "activity">; metric: OverviewRoute["activity"]; onDay: (day: string) => void; onRange: (day: string) => void }) {
   const { t, number, date, language } = useI18n();
   const years = [...new Set(report.activity.days.map(day => day.day.slice(0, 4)))];
   const [year, setYear] = useState(report.range.to.slice(0, 4));
@@ -69,14 +69,14 @@ export function ActivityCalendar({ report, metric, onDay, onRange }: { report: O
   </div>;
 }
 
-export function ActivityDistributions({ report }: { report: OverviewReport }) {
+export function ActivityDistributions({ report }: { report: Pick<OverviewReport, "activity"> }) {
   const { t, number, date } = useI18n();
   const weekdayMax = Math.max(1, ...report.activity.weekdays.map(row => row.events));
   const hourMax = Math.max(1, ...report.activity.hours.map(row => row.events));
   return <div className="overview-activity-distributions"><div><h3>{t("overview.activity.weekdays")}</h3><div className="overview-weekdays">{report.activity.weekdays.map(row => <Tooltip.Root key={row.weekday}><Tooltip.Trigger asChild><div tabIndex={0}><span className="overview-mini-bar" style={{ height: `${row.events / weekdayMax * 38}px` }} /><span>{date(new Date(2024, 0, 7 + row.weekday), { weekday: "short" })}</span></div></Tooltip.Trigger><Tooltip.Portal><Tooltip.Content className="tooltip">{number(row.events)} {t("overview.metric.events")}</Tooltip.Content></Tooltip.Portal></Tooltip.Root>)}</div></div><div><h3>{t("overview.activity.hours")}</h3><div className="overview-hours">{report.activity.hours.map(row => <Tooltip.Root key={row.hour}><Tooltip.Trigger asChild><div tabIndex={0} aria-label={`${number(row.hour)}:00 · ${number(row.events)} ${t("overview.metric.events")}`}><span className="overview-mini-bar" style={{ height: `${row.events / hourMax * 38}px` }} /></div></Tooltip.Trigger><Tooltip.Portal><Tooltip.Content className="tooltip">{number(row.hour)}:00 · {number(row.events)} {t("overview.metric.events")}</Tooltip.Content></Tooltip.Portal></Tooltip.Root>)}</div><div className="overview-hour-labels"><span>0</span><span>6</span><span>12</span><span>18</span><span>23</span></div></div></div>;
 }
 
-export function UsageTrend({ report, route, onBucket }: { report: OverviewReport; route: OverviewRoute; onBucket: (from: string, to: string) => void }) {
+export function UsageTrend({ report, route, onBucket }: { report: Pick<OverviewReport, "range" | "usage">; route: OverviewRoute; onBucket: (from: string, to: string) => void }) {
   const { t, number, date, language } = useI18n();
   const buckets = useMemo(() => {
     const groups = new Map<string, { from: string; to: string; value: number | null }>();
