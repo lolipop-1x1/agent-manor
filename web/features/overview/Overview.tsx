@@ -47,7 +47,8 @@ export default function Overview({ active, onSession, onUsage, onMap }: { active
   const patch = (value: Partial<OverviewRoute>) => { if (["window", "from", "to", "clients", "projects"].some(field => field in value)) { newSnapshot.current = true; setQueryDate(new Date()); } setRoute(current => ({ ...current, ...value })); };
   useEffect(() => { const read = () => { if (location.hash.startsWith("#overview")) setRoute(readOverviewRoute(location.hash)); }; globalThis.addEventListener("hashchange", read); return () => globalThis.removeEventListener("hashchange", read); }, []);
   useEffect(() => {
-    if (!active || !location.hash.startsWith("#overview")) return;
+    if (!active) return;
+    if (location.hash && location.hash !== "#" && !location.hash.startsWith("#overview")) return;
     const incoming = incomingOverviewRoute(location.hash, lastAddress.current, route);
     lastAddress.current = location.hash; adoptingAddress.current = incoming !== null;
     if (incoming) { newSnapshot.current = true; setQueryDate(new Date()); setRoute(incoming); return; }

@@ -31,7 +31,7 @@ export function overviewParameters(value: object): string {
 }
 export const overviewAddress = (route: OverviewRoute): string => `#overview?${overviewParameters(route)}`;
 export function incomingOverviewRoute(address: string, previous: string, route: OverviewRoute): OverviewRoute | null {
-  if (address === previous) return null;
+  if (!address.startsWith("#overview") || address === previous) return null;
   const incoming = readOverviewRoute(address);
   return overviewAddress(incoming) === overviewAddress(route) ? null : incoming;
 }

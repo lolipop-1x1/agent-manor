@@ -102,3 +102,21 @@ test("原事件与未确认成员关联的独立请求使用不同React键，公
   assert.notEqual(key(event), key(request));
   assert.equal(event.id, request.id);
 });
+
+
+test("默认入口和空fragment返回会话后沿用当前总览筛选，canonical地址可在刷新后还原", () => {
+  const current = { ...defaultOverviewRoute(), window: "custom" as const, from: "2026-01-01", to: "2026-01-05", models: ["literal:unknown"], clients: ["codex"], projects: ["/example/project"] };
+  for (const fragment of ["", "#"]) {
+    assert.equal(incomingOverviewRoute(fragment, "#sessions?id=session-a", current), null);
+    const canonical = overviewAddress(current);
+    assert.ok(canonical.startsWith("#overview?"));
+    assert.deepEqual(readOverviewRoute(canonical), current);
+    const next = { ...current, to: "2026-01-10", models: ["literal:literal:model-a"] };
+    assert.equal(incomingOverviewRoute(canonical, canonical, next), null);
+    assert.deepEqual(readOverviewRoute(overviewAddress(next)), next);
+  }
+  assert.equal(incomingOverviewRoute("#sessions?id=session-a", "#overview", current), null);
+  const source = readFileSync(new URL("../web/features/overview/Overview.tsx", import.meta.url), "utf8");
+  assert.match(source, /if \(location.hash && location.hash !== "#" && !location.hash.startsWith\("#overview"\)\) return;/);
+  assert.match(source, /const address = overviewAddress\(route\); lastAddress.current = address;\s*history.replaceState\(null, "", address\)/);
+});
