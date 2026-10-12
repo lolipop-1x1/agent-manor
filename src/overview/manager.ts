@@ -70,7 +70,7 @@ export class OverviewManager {
   private key(type: OverviewWorkerRequest["type"], query: OverviewQuery, extra: object): string {
     const panel = (extra as { panel?: OverviewPanel }).panel;
     const semantic = type === "panel" && ["core", "resources", "repositories"].includes(panel ?? "") ? { ...query, models: undefined } : query;
-    return JSON.stringify([4, type, Object.fromEntries(Object.entries(semantic).sort(([a], [b]) => a.localeCompare(b))), extra,
+    return JSON.stringify([5, type, Object.fromEntries(Object.entries(semantic).sort(([a], [b]) => a.localeCompare(b))), extra,
       type === "report" || panel === "repositories" ? this.repositories().map(row => [row.id, row.version, row.stale]) : undefined]);
   }
   private valid(value: unknown, query: OverviewQuery, type: OverviewWorkerRequest["type"]): value is OverviewWorkerResult {
@@ -118,12 +118,12 @@ export class OverviewManager {
     } else if (type === "panel" && extra.panel === "insights") {
       const snapshot = await this.snapshot(query);
       const comparison = async (period: NonNullable<OverviewSnapshot["range"]["comparison"]>) => {
-        const read = (range: typeof period.current, groupBy: "project" | "model") => this.usageReport(snapshot,
-          { ...range, models: query.models, coverage: "complete", groupBy });
+        const read = (range: typeof period.current, groupBy: "project" | "model", coverage: "complete" | "all" = "complete") => this.usageReport(snapshot,
+          { ...range, models: query.models, coverage, groupBy });
         const [current, previous, currentProjects, previousProjects, currentAll, previousAll] = await Promise.all([read(period.current, "model"),
-          read(period.previous, "model"), read(period.current, "project"), read(period.previous, "project"),
+          read(period.previous, "model"), read(period.current, "project", "all"), read(period.previous, "project", "all"),
           this.usageReport(snapshot, { ...period.current, models: query.models }), this.usageReport(snapshot, { ...period.previous, models: query.models })]);
-        return { current, previous, currentProjects, previousProjects, currentMissing: currentAll.totals.requests - current.totals.requests,
+        return { current, previous, currentProjects, previousProjects, currentModels: currentAll, previousModels: previousAll, currentMissing: currentAll.totals.requests - current.totals.requests,
           previousMissing: previousAll.totals.requests - previous.totals.requests };
       };
       payload.insightUsage = { comparison: snapshot.range.comparison ? await comparison(snapshot.range.comparison) : undefined,

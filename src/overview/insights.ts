@@ -10,6 +10,8 @@ export interface OverviewInsightUsage {
   previous: UsageReport;
   currentProjects: UsageReport;
   previousProjects: UsageReport;
+  currentModels?: UsageReport;
+  previousModels?: UsageReport;
   currentMissing?: number;
   previousMissing?: number;
 }
@@ -52,23 +54,27 @@ export function coreOverviewInsights(report: Pick<OverviewReport, "query" | "ran
   if (!result.length) usageChange(context.comparison, report.range.comparison, false);
   if (context.comparison && report.range.comparison) {
     for (const dimension of ["project", "model"] as const) {
-      const next = dimension === "project" ? context.comparison.currentProjects : context.comparison.current;
-      const prior = dimension === "project" ? context.comparison.previousProjects : context.comparison.previous;
-      if (next.totals.requests < 20 || prior.totals.requests < 20) continue;
+      const next = dimension === "project" ? context.comparison.currentProjects : context.comparison.currentModels ?? context.comparison.current;
+      const prior = dimension === "project" ? context.comparison.previousProjects : context.comparison.previousModels ?? context.comparison.previous;
+      const missing = next.groups.find(group => group.key === "unknown")?.totals.requests ?? 0;
+      const previousMissing = prior.groups.find(group => group.key === "unknown")?.totals.requests ?? 0;
+      const nextRequests = next.totals.requests - (dimension === "model" ? missing : 0);
+      const priorRequests = prior.totals.requests - (dimension === "model" ? previousMissing : 0);
+      if (nextRequests < 20 || priorRequests < 20) continue;
       const previous = new Map(prior.groups.map(group => [group.key, group]));
       const changes = next.groups.filter(group => group.key !== "unknown" && group.totals.requests >= 20)
-        .map(group => ({ group, prior: previous.get(group.key), shift: group.totals.requests / next.totals.requests
-          - (previous.get(group.key)?.totals.requests ?? 0) / prior.totals.requests }))
+        .map(group => ({ group, prior: previous.get(group.key), shift: group.totals.requests / nextRequests
+          - (previous.get(group.key)?.totals.requests ?? 0) / priorRequests }))
         .filter(value => value.prior && value.prior.totals.requests >= 20 && Math.abs(value.shift) >= .1)
         .sort((a, b) => Math.abs(b.shift) - Math.abs(a.shift) || a.group.key.localeCompare(b.group.key));
       const strongest = changes[0]; if (!strongest) continue;
-      const currentShare = strongest.group.totals.requests / next.totals.requests, previousShare = strongest.prior!.totals.requests / prior.totals.requests;
+      const currentShare = strongest.group.totals.requests / nextRequests, previousShare = strongest.prior!.totals.requests / priorRequests;
       add({ rule: dimension === "project" ? "07" : "08", type: "change", object: strongest.group.label,
         metric: `${dimension}_request_share`, descriptor: { key: `overview.insight.${dimension}ShareChange`,
           params: { name: strongest.group.label, current: currentShare * 100, previous: previousShare * 100 } },
-        current: currentShare, previous: previousShare, sample: next.totals.requests, period: report.range.comparison.current,
+        current: currentShare, previous: previousShare, sample: nextRequests, missing, period: report.range.comparison.current,
         previousPeriod: report.range.comparison.previous, values: { currentShare, previousShare, currentRequests: strongest.group.totals.requests,
-          previousRequests: strongest.prior!.totals.requests }, evidence: { kind: "requests", scope: "usage", period: "current",
+          previousRequests: strongest.prior!.totals.requests, previousMissing }, evidence: { kind: "requests", scope: "usage", period: "current",
           ...(dimension === "project" ? { project: strongest.group.key } : { model: strongest.group.key }) } });
     }
   }
@@ -105,13 +111,14 @@ export function coreOverviewInsights(report: Pick<OverviewReport, "query" | "ran
 
 /** 兼容完整报告入口仍使用同一有界洞察规则，详细序列另走调查。 */
 export function generateOverviewInsights(source: OverviewSource, query: OverviewQuery, pricing: PricingView, report: OverviewReport) {
-  const usage = (period: OverviewPeriod, groupBy: "project" | "model") => buildUsageReport(source, { version: source.version,
+  const usage = (period: OverviewPeriod, groupBy: "project" | "model", coverage: "complete" | "all" = "complete") => buildUsageReport(source, { version: source.version,
     timezone: report.timezone, priceVersion: pricing.status.version, from: period.from, to: period.to, clients: query.clients,
-    projects: query.projects, models: query.models, coverage: "complete", groupBy }, pricing.status, pricing.estimate);
+    projects: query.projects, models: query.models, coverage, groupBy }, pricing.status, pricing.estimate);
   const compare = (period: NonNullable<typeof report.range.comparison>): OverviewInsightUsage => {
     const current = usage(period.current, "model"), previous = usage(period.previous, "model");
     const all = (range: OverviewPeriod) => buildUsageReport(source, { ...current.query, ...range, coverage: "all" }, pricing.status, pricing.estimate);
-    return { current, previous, currentProjects: usage(period.current, "project"), previousProjects: usage(period.previous, "project"),
+    return { current, previous, currentProjects: usage(period.current, "project", "all"), previousProjects: usage(period.previous, "project", "all"),
+      currentModels: usage(period.current, "model", "all"), previousModels: usage(period.previous, "model", "all"),
       currentMissing: all(period.current).totals.requests - current.totals.requests, previousMissing: all(period.previous).totals.requests - previous.totals.requests };
   };
   const previous = report.range.comparison?.previous;

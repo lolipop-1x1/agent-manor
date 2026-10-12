@@ -105,6 +105,29 @@ test("项目和模型变化选择显著占比变化，保留精确调查维度",
   assert.equal(rows.find(row => row.rule === "07")?.evidence.project, "/synthetic/a");
   assert.equal(rows.find(row => row.rule === "08")?.evidence.model, "model-a");
 });
+test("Token 覆盖互换不制造项目或模型请求占比变化", () => {
+  const input = source([session("a", { project: "/synthetic/a" }), session("b", { project: "/synthetic/b" })]);
+  input.requests = [0, 1].flatMap(period => Array.from({ length: 200 }, (_, ordinal) => {
+    const group = ordinal < 100 ? "a" : "b", within = ordinal % 100;
+    const complete = within < (group === "a" ? period ? 70 : 30 : period ? 30 : 70);
+    return { sessionId: group, ordinal: period * 200 + ordinal, usage: usage(`${period}-${ordinal}`, {
+      model: `model-${group}`, outputTokens: complete ? 20 : undefined,
+      occurredAt: period ? "2026-02-10T12:00:00Z" : "2026-01-10T12:00:00Z" }) };
+  }));
+  assert.deepEqual(analyze(input).insights.filter(row => row.rule === "07" || row.rule === "08"), []);
+});
+test("请求分布保留未知归属覆盖，模型占比只使用已知模型分母", () => {
+  const input = source([session("a", { project: "/synthetic/a" }), session("b", { project: "/synthetic/b" }), session("unknown", { project: undefined })]);
+  input.requests = [0, 1].flatMap(period => Array.from({ length: 120 }, (_, ordinal) => ({
+    sessionId: ordinal >= 100 ? "unknown" : ordinal < (period ? 70 : 30) ? "a" : "b", ordinal: period * 120 + ordinal,
+    usage: usage(`${period}-${ordinal}`, { model: ordinal >= 100 ? undefined : ordinal < (period ? 70 : 30) ? "model-a" : "model-b",
+      occurredAt: period ? "2026-02-10T12:00:00Z" : "2026-01-10T12:00:00Z" }) })));
+  const rows = analyze(input).insights;
+  const project = rows.find(row => row.rule === "07")!, model = rows.find(row => row.rule === "08")!;
+  assert.equal(project.current, 70 / 120); assert.equal(project.sample, 120); assert.equal(project.missing, 20);
+  assert.equal(model.current, .7); assert.equal(model.sample, 100); assert.equal(model.missing, 20);
+  assert.equal(model.values?.previousMissing, 20);
+});
 test("保留名称的项目和模型变化使用查询身份回查原始请求", () => {
   for (const name of ["unknown", "literal:project-a"]) {
     const input = source([session("a", { project: name }), session("b", { project: "zz-synthetic" })]);
