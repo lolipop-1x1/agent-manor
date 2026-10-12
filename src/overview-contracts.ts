@@ -212,8 +212,6 @@ export interface OverviewRepositoryHotspot {
   read: number;
   edit: number;
   failure: number;
-  comparison?: { read: number; edit: number; failure: number };
-  previous?: { read: number; edit: number; failure: number };
 }
 export interface OverviewRepository {
   repository: Repository;
@@ -224,11 +222,7 @@ export interface OverviewRepository {
   summary?: CoverageSummary;
   readCoveredFiles?: number;
   editCoveredFiles?: number;
-  comparisonSummary?: CoverageSummary;
-  previousSummary?: CoverageSummary;
   activity?: { read: number; edit: number; failure: number };
-  comparisonActivity?: { read: number; edit: number; failure: number };
-  previousActivity?: { read: number; edit: number; failure: number };
   hotspots: OverviewRepositoryHotspot[];
   gapCount: number;
 }
@@ -397,7 +391,7 @@ export interface OverviewDetailQuery {
   unit?: "session" | "turn";
   transition?: "all" | "switch" | "delegation";
   timingGroup?: string;
-  sort?: "uses" | "sessions" | "count" | "tokens";
+  sort?: "uses" | "sessions" | "count" | "tokens" | "cost";
   page?: number;
   pageSize?: number;
 }
@@ -410,4 +404,6 @@ export interface OverviewDetailPage {
   total: number;
   page: number;
   pageSize: number;
+  object?: OverviewResourceRow;
+  counts?: Partial<Record<"clients" | "projects" | "tools", number>>;
 }
