@@ -266,6 +266,8 @@ export default {
   "diagnostics.sessions.store.m007": "One session has multiple source copies; the copy with more complete messages and a newer timestamp was used, without duplicate totals",
   "diagnostics.sessions.store.m008": "Indexing complete",
   "diagnostics.sessions.store.m009": "Session indexing is not complete yet",
+  "diagnostics.overview.cacheUnavailable": "Overview cache is unavailable. Check local data directory permissions and disk space, then retry",
+  "diagnostics.overview.cacheCapacity": "Overview cache capacity is insufficient. Completed data is retained; the current range cannot be prepared",
   "diagnostics.sessions.store.m010": "The session index version does not exist",
   "diagnostics.sessions.store.m011": "The session does not exist in the current index version",
   "diagnostics.sessions.store.m012": "The session branch does not exist",
