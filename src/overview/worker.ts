@@ -15,10 +15,10 @@ import { factDelegation, factDetail, factProcess, factResourceCandidates, factRe
 import type { OverviewWorkerRequest, OverviewWorkerResponse } from "./worker-contracts.js";
 import { prepareOverviewDateCache, resolveOverviewRange, resolveTimezone } from "./dates.js";
 
-const { dbPath } = workerData as { dbPath: string };
+const { dbPath, preparesFacts } = workerData as { dbPath: string; preparesFacts?: boolean };
 const sessions = new SessionStore(dbPath), repositories = new AnalysisStore(dbPath);
 let factStore: OverviewFactStore | undefined;
-const facts = (writer = false) => factStore ??= new OverviewFactStore(sessions, { repairCorruption: writer, readonly: !writer });
+const facts = (writer = false) => factStore ??= new OverviewFactStore(sessions, { repairCorruption: writer || preparesFacts, readonly: !(writer || preparesFacts) });
 function distribution(report: UsageReport): OverviewCountRow[] {
   return report.groups.map(group => ({ key: group.key, name: usageDimensionValue(group.key) ?? "未知",
     ...(usageDimensionValue(group.key) === undefined ? { nameDescriptor: { key: "overview.unknown" } } : {}),
