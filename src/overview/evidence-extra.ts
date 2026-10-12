@@ -3,7 +3,7 @@ import type { SessionSummary } from "../session-contracts.js";
 import type { PricingView } from "../usage/pricing.js";
 import { resourceGapRelevant } from "../resources/coverage.js";
 import { resourceNameDescriptor, toolCategory } from "./analytics.js";
-import { addDays, daysBetween, localDay } from "./dates.js";
+import { daysBetween, localDay } from "./dates.js";
 import type { FactEvidenceScope } from "./evidence-scope.js";
 import type { OverviewFactStore } from "./facts.js";
 
@@ -401,47 +401,60 @@ function eventEvidence(store: OverviewFactStore, evidence: OverviewEvidenceQuery
 }
 
 function observationEvidence(store: OverviewFactStore, evidence: OverviewEvidenceQuery, scope: FactEvidenceScope): OverviewEvidencePage {
-  interface Observation extends Candidate { first: ResourceRecord; days: Set<string>; gap: boolean }
-  const groups = new Map<string, Observation>(), sessionGaps = new Set(scope.metadata.sessions.filter(session => session.gaps.some(resourceGapRelevant)).map(session => session.id));
-  const sourceGaps = new Set(scope.metadata.gaps.filter(gap => gap.sourceId && resourceGapRelevant(gap)).map(gap => gap.sourceId));
+  interface FirstIdentity { resource_id: string; revision: string; id: string; session_id: string; day: string; time_ms: number; known: number }
+  interface ObservationIdentity extends FirstIdentity { from_day: string; to_day: string; state: string }
   const where = [revisionWhere, scope.time, "f.valid=1"], values = [...scope.values];
   if (evidence.resourceId) { where.push("f.resource_id=?"); values.push(evidence.resourceId); }
-  for (const raw of store.iterateRows<ResourceRecord>(`SELECT f.*,r.session_id,r.resource_source_json FROM overview_fact_resources f ${joinRevision} WHERE ${where.join(" AND ")}`, values)) {
-    const day = localDay(raw.time_ms ?? undefined, scope.initial.timezone);
-    const group = groups.get(raw.resource_id);
-    const sourceId = (JSON.parse(raw.resource_source_json ?? "{}") as { sourceId?: string }).sourceId;
-    const gap = sessionGaps.has(raw.session_id) || sourceGaps.has(sourceId);
-    if (!group) groups.set(raw.resource_id, { id: raw.resource_id, raw_id: raw.id, session_id: raw.session_id, revision: raw.revision,
-      ordinal: null, tokens: null, duration_ms: null, time_ms: raw.time_ms, first: raw, days: new Set(day ? [day] : []), gap });
-    else {
-      if (day) {
-        group.days.add(day);
-        const firstDay = localDay(group.first.time_ms ?? undefined, scope.initial.timezone);
-        if (!firstDay || day.localeCompare(firstDay) < 0 || day === firstDay
-          && (raw.ordinal < group.first.ordinal || raw.ordinal === group.first.ordinal && raw.id.localeCompare(group.first.id) < 0)) {
-          group.first = raw; group.raw_id = raw.id; group.session_id = raw.session_id; group.revision = raw.revision; group.time_ms = raw.time_ms;
-        }
-      }
-      group.gap ||= gap;
-    }
+  const selectedSql = `WITH selected AS (SELECT f.revision,f.id,f.resource_id,f.ordinal,f.time_ms,f.known,r.session_id,
+    overview_local_day(f.time_ms,?) AS day FROM overview_fact_resources f ${joinRevision} WHERE ${where.join(" AND ")})`;
+  const selectedValues = [scope.initial.timezone, ...values], firstIds = new Map<string, FirstIdentity>();
+  // 首日与最小序号在 SQL 筛定，只有并列身份需要保留原 localeCompare 次序。
+  for (const row of store.iterateRows<FirstIdentity>(`${selectedSql},first_days AS (
+    SELECT resource_id,MIN(day) AS day FROM selected WHERE time_ms IS NOT NULL GROUP BY resource_id),
+    first_ordinals AS (SELECT f.resource_id,d.day,MIN(f.ordinal) AS ordinal FROM selected f
+      JOIN first_days d ON d.resource_id=f.resource_id AND d.day=f.day GROUP BY f.resource_id)
+    SELECT f.resource_id,f.revision,f.id,f.session_id,f.day,f.time_ms,f.known FROM selected f
+      JOIN first_ordinals o ON o.resource_id=f.resource_id AND o.day=f.day AND o.ordinal=f.ordinal ORDER BY f.session_id,f.ordinal,f.id`, selectedValues)) {
+    const previous = firstIds.get(row.resource_id);
+    if (!previous || row.id.localeCompare(previous.id) < 0) firstIds.set(row.resource_id, row);
   }
-  const selection = new PageSelection<Observation & { state: string; from: string; to: string; subsequentDays: number }>(evidence, scope);
-  for (const group of groups.values()) {
-    const firstDay = localDay(group.first.time_ms ?? undefined, scope.initial.timezone); if (!firstDay) continue;
-    const from = addDays(firstDay, 1), to = addDays(firstDay, 30);
-    const state = to >= scope.range.today ? "observing" : from < scope.range.from || to > scope.range.to ? "outside_range"
-      : group.gap || !group.first.known ? "insufficient_coverage" : "mature";
-    if (evidence.observationState && evidence.observationState !== state) continue;
-    selection.add({ ...group, state, from, to, subsequentDays: [...group.days].filter(day => day >= from && day <= to).length });
-  }
-  return pageResult(scope, selection.page().map(group => {
-    const first = store.decodeResource(group.first);
-    return { ...base(scope, first.sessionId), id: group.id, kind: evidence.kind, messageId: first.messageId, resourceId: group.id,
+  if (!firstIds.size) return scope.initial;
+  const sessionGaps = scope.metadata.sessions.filter(session => session.gaps.some(resourceGapRelevant)).map(session => session.id);
+  const sourceGaps = scope.metadata.gaps.filter(gap => gap.sourceId && resourceGapRelevant(gap)).map(gap => gap.sourceId);
+  const gapRevisions = store.readRows<{ revision: string }>(`SELECT revision FROM overview_fact_revisions WHERE revision IN (SELECT value FROM json_each(?))
+    AND (session_id IN (SELECT value FROM json_each(?)) OR json_extract(resource_source_json,'$.sourceId') IN (SELECT value FROM json_each(?)))`,
+    [JSON.stringify(scope.revisions), JSON.stringify(sessionGaps), JSON.stringify(sourceGaps)]).map(row => row.revision);
+  const sql = `${selectedSql},first AS (SELECT value->>'$.resource_id' AS resource_id,value->>'$.revision' AS revision,value->>'$.id' AS id,
+    value->>'$.session_id' AS session_id,value->>'$.day' AS day,value->>'$.time_ms' AS time_ms,value->>'$.known' AS known,
+    date(value->>'$.day','+1 day') AS from_day,date(value->>'$.day','+30 day') AS to_day FROM json_each(?)),
+    coverage AS (SELECT resource_id,MAX(revision IN (SELECT value FROM json_each(?))) AS gap FROM selected GROUP BY resource_id),
+    states AS (SELECT s.*,CASE WHEN to_day>=? THEN 'observing' WHEN from_day<? OR to_day>? THEN 'outside_range'
+      WHEN c.gap OR s.known=0 THEN 'insufficient_coverage' ELSE 'mature' END AS state FROM first s JOIN coverage c ON c.resource_id=s.resource_id),
+    filtered AS (SELECT * FROM states${evidence.observationState ? " WHERE state=?" : ""})`;
+  const parameters = [...selectedValues, JSON.stringify([...firstIds.values()]), JSON.stringify(gapRevisions),
+    scope.range.today, scope.range.from, scope.range.to, ...(evidence.observationState ? [evidence.observationState] : [])];
+  const total = store.readRows<{ total: number }>(`${sql} SELECT COUNT(*) AS total FROM filtered`, parameters)[0]!.total;
+  const sessionOrder = JSON.stringify(scope.metadata.sessions.map(session => session.id).sort((a, b) => a.localeCompare(b)));
+  const order = evidence.sort === "ordinal" ? "(SELECT CAST(key AS INTEGER) FROM json_each(?) WHERE value=session_id),resource_id"
+    : evidence.sort === "tokens" || evidence.sort === "duration" ? "resource_id" : "time_ms DESC,resource_id";
+  const page = store.readRows<ObservationIdentity>(`${sql} SELECT * FROM filtered ORDER BY ${order} LIMIT ? OFFSET ?`,
+    [...parameters, ...(evidence.sort === "ordinal" ? [sessionOrder] : []), scope.initial.pageSize, (scope.initial.page - 1) * scope.initial.pageSize]);
+  const pageJson = JSON.stringify(page);
+  const records = store.readRows<ResourceRecord>(`SELECT f.*,r.session_id,r.resource_source_json FROM overview_fact_resources f ${joinRevision}
+    JOIN json_each(?) p ON f.revision=p.value->>'$.revision' AND f.id=p.value->>'$.id'`, [pageJson]);
+  const byId = new Map(records.map(record => [record.resource_id, record]));
+  const subsequentDays = new Map(store.readRows<{ resource_id: string; days: number }>(`${selectedSql}
+    SELECT f.resource_id,COUNT(DISTINCT f.day) AS days FROM selected f JOIN json_each(?) p ON f.resource_id=p.value->>'$.resource_id'
+    WHERE f.day>=p.value->>'$.from_day' AND f.day<=p.value->>'$.to_day' GROUP BY f.resource_id`, [...selectedValues, pageJson])
+    .map(row => [row.resource_id, row.days]));
+  return pageResult(scope, page.map(group => {
+    const first = store.decodeResource(byId.get(group.resource_id)!), days = subsequentDays.get(group.resource_id) ?? 0;
+    return { ...base(scope, first.sessionId), id: group.resource_id, kind: evidence.kind, messageId: first.messageId, resourceId: group.resource_id,
       resourceName: first.kind === "mcp" ? first.server ?? first.name : first.name, resourceNameDescriptor: resourceNameDescriptor(first),
       resourceKind: first.kind === "mcp" ? "mcp" : "skill", occurredAt: first.occurredAt,
-      values: { firstDay: localDay(first.occurredAt, scope.initial.timezone)!, from: group.from, to: group.to, state: group.state,
-        reused: group.state === "mature" ? group.subsequentDays > 0 : null, subsequentDays: group.subsequentDays } };
-  }), selection.total);
+      values: { firstDay: group.day, from: group.from_day, to: group.to_day, state: group.state,
+        reused: group.state === "mature" ? days > 0 : null, subsequentDays: days } };
+  }), total);
 }
 
 function combinationEvidence(store: OverviewFactStore, evidence: OverviewEvidenceQuery, scope: FactEvidenceScope): OverviewEvidencePage {

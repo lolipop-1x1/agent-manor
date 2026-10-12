@@ -187,6 +187,45 @@ test("大活动调查不调用完整 source，解码事件仅一页、成员按1
   } finally { facts.source = originalSource; }
 }, true));
 
+test("宽观察查询先分页身份，事件JSON与后续天数仅恢复当前页", async () => fixture(async (store, facts) => {
+  const retained = store.usageFactSessions().sessions.map(entry => ({ revision: entry.revision,
+    path: `/workspace/history/${entry.session.id}.jsonl`, fingerprint: `synthetic-${entry.session.id}` }));
+  const messages = Array.from({ length: 200 }, (_, index) => [
+    message("wide", `first-${index}`, index * 4 + 1, { kind: "tool_call", occurredAt: `${index < 10 ? "2026-03-10" : "2026-02-01"}T20:00:00Z`,
+      resource: { kind: "skill_call", name: `wide-resource-${index}` } }),
+    message("wide", `reuse-${index}`, index * 4 + 2, { kind: "tool_call", occurredAt: `${index < 10 ? "2026-03-11" : "2026-02-10"}T12:00:00Z`, resource: { kind: "skill_call", name: `wide-resource-${index}` } }),
+    message("wide", `same-day-${index}`, index * 4 + 3, { kind: "tool_call", occurredAt: `${index < 10 ? "2026-03-11" : "2026-02-10"}T13:00:00Z`, resource: { kind: "skill_call", name: `wide-resource-${index}` } }),
+    message("wide", `undated-${index}`, index * 4 + 4, { kind: "tool_call", occurredAt: undefined, resource: { kind: "skill_call", name: `wide-resource-${index}` } }),
+  ]).flat();
+  messages.push(message("wide", "only-undated", 801, { kind: "tool_call", occurredAt: undefined, resource: { kind: "skill_call", name: "only-undated" } }));
+  const early = Array.from({ length: 200 }, (_, index) => message("WIDE", `first-${index}`, index * 4 + 1,
+    { kind: "tool_call", occurredAt: `${index < 10 ? "2026-03-10" : "2026-02-01"}T01:00:00Z`, resource: { kind: "skill_call", name: `wide-resource-${index}` } }));
+  store.publish(store.createJob().id, [...retained, revision(store, "wide", messages, []), revision(store, "WIDE", early, [])], []);
+  await facts.prepare(query, now);
+  const source = store.overviewSource(), iterate = facts.iterateRows.bind(facts), decode = facts.decodeResource.bind(facts);
+  let restoredRecords = 0, decodedRecords = 0, subsequentObjects = 0;
+  facts.source = async () => { throw new Error("观察分页不得读取完整source"); };
+  facts.iterateRows = <T>(sql: string, parameters: (string | number | null)[] = []) => (function* () {
+    for (const row of iterate<T>(sql, parameters)) {
+      if (row && typeof row === "object" && "json" in row) restoredRecords += 1;
+      if (row && typeof row === "object" && "resource_id" in row && "days" in row) subsequentObjects += 1;
+      yield row;
+    }
+  })();
+  facts.decodeResource = row => { decodedRecords += 1; return decode(row); };
+  const cases: OverviewEvidenceQuery[] = [{ kind: "observations" }, { kind: "observations", observationState: "mature" },
+    { kind: "observations", observationState: "insufficient_coverage" }, { kind: "observations", observationState: "observing" },
+    { kind: "observations", from: "2026-02-02", to: "2026-02-10", observationState: "outside_range" },
+    { kind: "observations", undated: true }];
+  for (const evidence of cases) for (const sort of ["recent", "ordinal", "tokens", "duration"] as const) for (const page of [1, 2, 30]) {
+    restoredRecords = 0; decodedRecords = 0; subsequentObjects = 0;
+    await comparePage(facts, source, query, { ...evidence, sort, page, pageSize: 2 });
+    assert(restoredRecords <= 2, "页外事件JSON不得进入JavaScript");
+    assert(decodedRecords <= 2, "只解码页内首事件");
+    assert(subsequentObjects <= 2, "只读取页内资源后续日期统计");
+  }
+}));
+
 test("时间范围含夏令时和模型交集，旧关系版本不受新版本及追加身份影响", async () => fixture(async (store, facts, source) => {
   for (const timezone of ["Asia/Shanghai", "America/New_York", "Pacific/Kiritimati"]) {
     const input = { ...query, timezone }; await facts.prepare(input, now);
