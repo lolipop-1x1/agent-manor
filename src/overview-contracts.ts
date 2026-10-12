@@ -2,7 +2,7 @@ import type { CoverageSummary, Gap, Repository } from "./contracts.js";
 import type { MessageDescriptor } from "./i18n/types.js";
 import type { ResourceUsageEvent } from "./resource-contracts.js";
 import type { SessionMessage, SessionSummary, SessionUsage } from "./session-contracts.js";
-import type { RequestCost, UsageReport, UsageTotals } from "./usage-contracts.js";
+import type { RequestCost, UsageReport, UsageStatistics, UsageTotals } from "./usage-contracts.js";
 
 export type OverviewWindow = "365" | "7" | "30" | "90" | "year" | "all" | "custom";
 export interface OverviewQuery {
@@ -373,13 +373,24 @@ export interface OverviewReport {
 }
 
 export const overviewPanels = ["core", "usage", "resources", "process", "repositories", "insights"] as const;
-export type OverviewPanel = typeof overviewPanels[number];
+export type OverviewPanel = typeof overviewPanels[number] | "distribution" | "delegation" | "facets";
+export type OverviewDistributionDimension = "client" | "project" | "model";
+export type OverviewDelegationSummary = Pick<OverviewDelegation, "eligibleMainSessions" | "withChildActivity"
+  | "unknownMainSessions" | "forkSessions" | "unknownRelationshipSessions">;
 /** 各区域及调查共享固定的完整索引、价格、本地日期和筛选。 */
 export interface OverviewSnapshot extends Pick<OverviewReport, "version" | "priceVersion" | "timezone" | "query" | "range"> {}
+/** 页面分区只包含当前区域的数据；完整兼容报告仍使用 OverviewReport。 */
+export type OverviewPanelData = Partial<Omit<OverviewReport, "usage" | "distributions">> & {
+  usage?: UsageStatistics;
+  distribution?: OverviewCountRow[];
+  delegationSummary?: OverviewDelegationSummary;
+};
+export type OverviewViewReport = OverviewSnapshot & OverviewPanelData;
 export interface OverviewPanelResult {
   snapshot: OverviewSnapshot;
   panel: OverviewPanel;
-  data: Partial<OverviewReport>;
+  data: OverviewPanelData;
+  dimension?: OverviewDistributionDimension;
   /** 首页截取行数不影响完整调查数量。 */
   counts?: Partial<Record<"skills" | "mcp" | "clients" | "projects" | "models" | "tools" | "timing" | "observations" | "sessionCombinations" | "turnCombinations", number>>;
 }
