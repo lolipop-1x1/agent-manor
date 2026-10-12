@@ -1,6 +1,6 @@
 # 总览用量按需查询
 
-状态：已确认实施；评审基点 `b9e0501`。只拆用量的读取、计算和缓存，不删计时、资源或洞察功能，不改变统计口径。
+状态：已实现并验收；评审基点 `b9e0501`，结果见[验收记录](validation.md)。只拆用量的读取、计算和缓存，不删计时、资源或洞察功能，不改变统计口径。
 
 ## 用户结果
 
@@ -17,6 +17,7 @@
 - 总览既有六个默认分区保留；usage 分区只返回轻量 usage。新增按需 panel：distribution（额外 dimension=client|project|model）、delegation、facets。OverviewManager.panel(query, panel, dimension?)，distribution 的维度进入缓存身份，响应携带 dimension。
 - OverviewPanelResult.data 使用独立的页面数据类型：usage 为 UsageStatistics，支持 delegationSummary（OverviewDelegation 的五个基础身份计数）；完整 OverviewReport 不改。core 输出轻量 delegationSummary，保留主页的 withChildActivity。delegation 分区输出完整用量分摊；打开委派证据调查时读取，并与证据一起绑定快照。
 - 前端当前所需分区包含基础六项、facets 和当前非工具 distribution；维度切换只补 distribution。详细委派不进入默认批次。所有响应与同一 OverviewSnapshot 相符；新增 shape 更新结果缓存格式。
+- 用量趋势、当前分布与筛选项使用独立的轻量执行通道，避免排在过程统计后面；冷事实准备仍保持单个写入通道。加载中改选维度立即查询当前所需结果，废弃维度不阻塞批次完成。
 - 核心与洞察可复用 totals／distribution 轻量统计以避免旧 UsageReport 构建，但洞察规则及比较区间保持原约定，不增加功能。
 
 ## 验收
