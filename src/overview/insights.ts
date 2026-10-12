@@ -69,7 +69,7 @@ export function coreOverviewInsights(report: Pick<OverviewReport, "query" | "ran
         current: currentShare, previous: previousShare, sample: next.totals.requests, period: report.range.comparison.current,
         previousPeriod: report.range.comparison.previous, values: { currentShare, previousShare, currentRequests: strongest.group.totals.requests,
           previousRequests: strongest.prior!.totals.requests }, evidence: { kind: "requests", scope: "usage", period: "current",
-          ...(dimension === "project" ? { project: strongest.group.label } : { model: strongest.group.label }) } });
+          ...(dimension === "project" ? { project: strongest.group.key } : { model: strongest.group.key }) } });
     }
   }
   const resources = [...report.resources.skills, ...report.resources.mcp].filter(row => row.sessions >= 5 && row.activeWeeks >= 4

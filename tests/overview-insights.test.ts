@@ -105,6 +105,22 @@ test("项目和模型变化选择显著占比变化，保留精确调查维度",
   assert.equal(rows.find(row => row.rule === "07")?.evidence.project, "/synthetic/a");
   assert.equal(rows.find(row => row.rule === "08")?.evidence.model, "model-a");
 });
+test("保留名称的项目和模型变化使用查询身份回查原始请求", () => {
+  for (const name of ["unknown", "literal:project-a"]) {
+    const input = source([session("a", { project: name }), session("b", { project: "zz-synthetic" })]);
+    input.requests = ["previous", "current"].flatMap((period, index) => Array.from({ length: 100 }, (_, ordinal) => ({
+      sessionId: ordinal < (index ? 70 : 30) ? "a" : "b", ordinal: index * 100 + ordinal,
+      usage: usage(`${period}-${ordinal}`, { model: ordinal < (index ? 70 : 30) ? name : "model-b",
+        occurredAt: index ? "2026-02-10T12:00:00Z" : "2026-01-10T12:00:00Z" }) })));
+    const rows = analyze(input).insights.filter(row => row.rule === "07" || row.rule === "08");
+    assert.equal(rows.length, 2);
+    for (const insight of rows) {
+      assert.equal(insight.object, name);
+      assert.equal(insight.rule === "07" ? insight.evidence.project : insight.evidence.model, `literal:${name}`);
+      assert.equal(buildOverviewEvidence(input, query, insight.evidence, pricing, now).total, 70);
+    }
+  }
+});
 test("月份调查按需保持全局活跃会话，模型只影响请求和Token", () => {
   const input = source([session("a"), session("b")]);
   input.requests = [{ sessionId: "a", ordinal: 1, usage: usage("a", { model: "model-a" }) }, { sessionId: "b", ordinal: 1, usage: usage("b", { model: "model-b" }) }];
