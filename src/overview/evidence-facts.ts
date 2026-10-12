@@ -93,7 +93,8 @@ export async function factEvidence(store: OverviewFactStore, snapshot: OverviewS
     return buildOverviewEvidence(source, snapshot.query, evidence, pricing, now, { range: snapshot.range, total,
       rowIds: new Set(page.map(row => resource ? row.id : `${row.session_id}:${row.id}`)) });
   }
-  return factExtraEvidence(store, snapshot, evidence, pricing, now, { metadata, revisions, time, values: baseValues, initial });
+  return factExtraEvidence(store, snapshot, evidence, pricing, now, { metadata, revisions, time, values: baseValues, initial,
+    range: { ...scope.range, all }, query: { ...extra, ...(evidence.model ? { models: [evidence.model] } : {}) } });
 }
 
 async function requestContext(store: OverviewFactStore, source: OverviewSource, page: RequestRecord[]): Promise<void> {
