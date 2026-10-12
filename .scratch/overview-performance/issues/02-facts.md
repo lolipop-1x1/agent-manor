@@ -1,7 +1,7 @@
 # 按修订持久化事实与活动汇总
 
 Type: task
-Status: claimed
+Status: resolved
 Blocked by: 01
 
 ## Context
@@ -18,6 +18,10 @@ Blocked by: 01
 
 ## Answer
 
+已完成按不可变修订保存的 SQLite 窄事实与稀疏活动桶，新增或变化只准备相应修订；只读分析通道复用落盘结果。容量、权限、格式及损坏处理有明确边界，不复制整库到内存。日期投影、SQL statement 和时区 formatter 有界复用；跨版本、复制排除、原活动状态、连续记录与存储失败回归通过。
+
 ## Comments
 
 已认领。
+
+已整合并通过专项、统计差分与独立评审。

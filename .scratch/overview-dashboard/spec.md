@@ -2,7 +2,7 @@
 
 状态：已按规格建议约定与推荐布局完成开发、测试及真实数据页面验收。实施结果见任务记录，运行证据及边界见[总览看板验收](../../docs/validation/overview-dashboard.md)。
 
-页面布局与交互见 [design.md](design.md)，采用“节奏与洞察并列”。任务图见 [map.md](map.md) 的实施部分。
+页面布局与交互见 [design.md](design.md)，采用“节奏与洞察并列”。任务图见 [map.md](map.md) 的实施部分。后续[查询优化规格](../overview-performance/spec.md)覆盖本文的两期热点、完整洞察列表与集中读取约定；旧扩展规则保留为统计调查口径，不表示全部生成首页洞察。
 
 ## 目标
 

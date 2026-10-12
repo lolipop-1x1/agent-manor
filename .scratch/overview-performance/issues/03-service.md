@@ -1,7 +1,7 @@
 # 分区服务、核心洞察与按需调查
 
 Type: task
-Status: claimed
+Status: resolved
 Blocked by: 01
 
 ## Context
@@ -18,6 +18,10 @@ Blocked by: 01
 
 ## Answer
 
+已提供独立 snapshot／panel／detail 与分页证据，首页最多五条有价值洞察；两期热点字段、计算与洞察移除。复用用量小时汇总与有界分区结果，等价日期缓存、全局过程复用、页内批量恢复与闲置 Worker 回收已完成。独立评审发现的请求分母、观察分页、费用覆盖和写入角色问题均已修复；真实统计对照通过。
+
 ## Comments
 
 已认领。
+
+已整合并通过专项、统计差分与独立评审。

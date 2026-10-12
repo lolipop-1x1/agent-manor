@@ -1,5 +1,7 @@
 # 总览看板验收
 
+本文记录初版验收。后续查询、缓存与洞察调整见[总览性能优化验收](overview-performance.md)。
+
 验收于 2026-10-12，直接在 `main` 开发与整合。统计口径见[总览看板](../design/overview-dashboard.md)，交互入口见[使用指南](../usage.md#总览)。
 
 ## 自动检查

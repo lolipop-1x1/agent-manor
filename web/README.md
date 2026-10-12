@@ -3,7 +3,7 @@
 ## 模块布局
 
 - `app/`：应用导航、主题、跨页面跳转与五个页面的组装。
-- `features/overview/`：默认总览、跨模块统计、活动日历与同版本证据调查；完整规则见 [总览看板](../docs/design/overview-dashboard.md)。
+- `features/overview/`：默认总览、六分区独立首读与完整报告原子刷新、最多五条核心洞察、分页调查及单期仓库摘要；统计口径见 [总览看板](../docs/design/overview-dashboard.md)。
 - `features/code-map/`：代码地图、仓库筛选、文件详情、覆盖与证据展示。`CodeMapPage.tsx` 的 `useCodeMapPage` 封装页面状态，向应用返回页面内容、页头操作、维护提示和地图定位入口，保持既有页面与页头布局。
 - `features/sessions/`：会话列表、消息、画像、执行轨迹、搜索、速度与导出。`useContinuousReading.ts` 管理对话／全部记录的有界连续阅读与消息锚点；`SessionTurnNavigation.tsx` 统一轮次导航；`SessionTrace.tsx` 组织全宽节点表格和下方可调、可放大的正文详情。
 - `features/resources/`：资源清单、使用统计、资源地图与管理操作。
