@@ -117,3 +117,6 @@
 
 .overview-investigation-progress { display: inline-flex; align-items: center; justify-content: center; width: 24px; height: 24px; flex: none; color: var(--muted); }
 .overview-panel-placeholder { min-height: 170px; display: grid; place-items: center; color: var(--muted); }
+
+.overview-cost-value { display: inline-flex; align-items: center; justify-content: flex-end; gap: 5px; }
+.overview-cost-value > svg { color: var(--muted); flex: none; }

@@ -78,3 +78,9 @@ export function overviewCalendarDate(day: string): Date {
   const value = new Date(0); value.setFullYear(year!, month! - 1, date!); value.setHours(12, 0, 0, 0);
   return value;
 }
+
+/** 缺少完整计价依据时，小计与未知不能显示成完整估价。 */
+export function overviewCostState(value: number | null | undefined, coverage?: "complete" | "partial" | "missing") {
+  const amount = coverage === "missing" ? null : value ?? null;
+  return { amount, label: amount == null ? "usage.chart.unpriced" : coverage === "partial" ? "overview.metric.costSubtotal" : "overview.metric.cost", partial: amount != null && coverage === "partial" };
+}

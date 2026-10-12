@@ -68,6 +68,7 @@ export default {
   "overview.metric.tokens": "Total tokens",
   "overview.metric.tokenSubtotal": "Recorded token subtotal",
   "overview.metric.cost": "Estimated cost",
+  "overview.metric.costValue": "{{label}}: {{value}}",
   "overview.metric.costSubtotal": "Estimated cost subtotal",
   "overview.metric.activeDays": "Active days",
   "overview.metric.currentStreak": "Current activity streak",

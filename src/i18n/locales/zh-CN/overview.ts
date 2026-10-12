@@ -68,6 +68,7 @@ export default {
   "overview.metric.tokens": "Token 总量",
   "overview.metric.tokenSubtotal": "已记录 Token 小计",
   "overview.metric.cost": "估算费用",
+  "overview.metric.costValue": "{{label}}：{{value}}",
   "overview.metric.costSubtotal": "估算费用小计",
   "overview.metric.activeDays": "活跃天数",
   "overview.metric.currentStreak": "当前连续活跃",

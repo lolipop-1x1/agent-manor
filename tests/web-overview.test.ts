@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { defaultOverviewRoute, incomingOverviewRoute, overviewAddress, overviewCalendarDate, overviewQuery, overviewRange, readOverviewRoute, streakRange, validOverviewRange } from "../web/features/overview/model.ts";
+import { defaultOverviewRoute, incomingOverviewRoute, overviewAddress, overviewCalendarDate, overviewQuery, overviewRange, readOverviewRoute, streakRange, validOverviewRange, overviewCostState } from "../web/features/overview/model.ts";
 import { formatDate } from "../src/i18n/format.ts";
 import { readUsageRoute, usageQuery } from "../web/features/usage/model.ts";
 import { translate } from "../src/i18n/index.ts";
@@ -64,4 +64,15 @@ test("隐藏总览页激活先采纳外部筛选，内部模型修改不被旧�
   assert.equal(adopted.from, "2026-01-01"); assert.deepEqual(adopted.clients, ["codex"]);
   assert.equal(incomingOverviewRoute(target, target, { ...adopted, models: ["model-a"] }), null);
   assert.equal(incomingOverviewRoute(target, previous, adopted), null);
+});
+
+
+test("费用展示保留小计与未知，完整零费用不会被误认为缺失", () => {
+  assert.deepEqual(overviewCostState(12, "partial"), { amount: 12, label: "overview.metric.costSubtotal", partial: true });
+  assert.deepEqual(overviewCostState(0, "complete"), { amount: 0, label: "overview.metric.cost", partial: false });
+  assert.deepEqual(overviewCostState(0, "partial"), { amount: 0, label: "overview.metric.costSubtotal", partial: true });
+  assert.deepEqual(overviewCostState(0, "missing"), { amount: null, label: "usage.chart.unpriced", partial: false });
+  assert.deepEqual(overviewCostState(null), { amount: null, label: "usage.chart.unpriced", partial: false });
+  assert.equal(translate("zh-CN", overviewCostState(12, "partial").label), "估算费用小计");
+  assert.equal(translate("en", overviewCostState(null).label), "Unpriced");
 });

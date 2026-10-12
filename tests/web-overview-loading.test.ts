@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { overviewPanels, type OverviewPanel, type OverviewPanelResult, type OverviewResourceRow, type OverviewTimingGroup, type OverviewSnapshot } from "../src/overview-contracts.ts";
-import { investigationDetail } from "../web/features/overview/investigation-model.ts";
+import { investigationDetail, visibleInvestigation, type InvestigationResult } from "../web/features/overview/investigation-model.ts";
 import { loadOverviewPanels, sameOverviewSnapshot, visibleOverviewBatch, replaceOverviewPanel, OverviewSnapshotMismatch, type OverviewPanelBatch } from "../web/features/overview/loading.ts";
 
 const snapshot: OverviewSnapshot = { version: "index-a", priceVersion: "prices-a", timezone: "UTC", query: { window: "365", from: "2025-01-01", to: "2025-12-31", anchorDay: "2025-12-31", clients: ["codex"], models: ["example-model"] }, range: { from: "2025-01-01", to: "2025-12-31", today: "2025-12-31", includesToday: true, all: false, comparison: null, recent: null } };
@@ -99,4 +99,47 @@ test("失败分区独立恢复保留其余已完成结果，过期重试不修�
   assert.equal(complete.complete, true); assert.equal(complete.panels.core, partial.panels.core); assert.deepEqual(complete.panels.repositories?.data.repositories, []);
   const newer = { ...partial, snapshot: { ...snapshot, version: "index-b" } };
   assert.equal(replaceOverviewPanel(newer, snapshot, result), newer);
+});
+
+
+test("调查等待和失败时保留同一份标题、维度、排序、页码和行，成功后共同替换", () => {
+  const oldControls = { page: 3, pageSize: 20, rankTab: "ranking", transitionKind: "all", resourceSort: "uses", resourceDimension: "project" as const };
+  const oldSelection = { view: "ranking" as const, title: "Projects", dimension: "project" as const, metric: "cost" as const };
+  const oldQuery = investigationDetail(oldSelection, oldControls)!;
+  const previous: InvestigationResult = { key: "old", selection: oldSelection, controls: oldControls, result: { snapshot, query: oldQuery, rows: [{ key: "/example/project-a", name: "project-a", count: 20, sessions: 3, estimatedCost: 12, costCoverage: "partial" }], total: 70, page: 3, pageSize: 20 } };
+  const nextSelection = { view: "ranking" as const, title: "Models", dimension: "model" as const, metric: "tokens" as const };
+  const nextControls = { ...oldControls, page: 1, pageSize: 50 };
+  const nextQuery = investigationDetail(nextSelection, nextControls)!;
+  const waiting = visibleInvestigation(previous, nextSelection, nextControls, "next");
+  assert.equal(waiting.selection.title, "Projects");
+  assert.equal(waiting.controls.page, 3);
+  assert.equal(waiting.controls.pageSize, 20);
+  assert.equal(waiting.controls.rankTab, "ranking");
+  assert.equal(waiting.result, previous.result);
+  assert.equal(waiting.key === "next", false);
+  // 失败后只重试请求，不修改用于显示的旧结果或待请求条件。
+  assert.equal(visibleInvestigation(previous, nextSelection, nextControls, "next"), waiting);
+  assert.deepEqual(investigationDetail(nextSelection, nextControls), nextQuery);
+  const next: InvestigationResult = { key: "next", selection: nextSelection, controls: nextControls, result: { snapshot, query: nextQuery, rows: [{ key: "example-model", name: "example-model", count: 4, sessions: 2, tokens: 80 }], total: 1, page: 1, pageSize: 50 } };
+  const ready = visibleInvestigation(next, nextSelection, nextControls, "next");
+  assert.equal(ready.selection.title, "Models");
+  assert.equal(ready.controls.pageSize, 50);
+  assert.equal(ready.key, "next");
+  assert.equal(ready.result, next.result);
+});
+
+test("调查跨视图下钻保留完整旧面，首次打开和无需请求的分类不复用旧行", () => {
+  const controls = { page: 1, pageSize: 20, rankTab: "ranking", transitionKind: "all", resourceSort: "uses", resourceDimension: "project" as const };
+  const firstSelection = { view: "ranking" as const, title: "Tools", dimension: "tool" as const };
+  const previous: InvestigationResult = { key: "ranking", selection: firstSelection, controls, result: { snapshot, query: investigationDetail(firstSelection, controls)!, rows: [], total: 0, page: 1, pageSize: 20 } };
+  const next = { view: "evidence" as const, title: "Tool records", evidence: { kind: "tools" as const, toolId: "example-tool" } };
+  const waiting = visibleInvestigation(previous, next, controls, "evidence");
+  assert.equal(waiting.selection.view, "ranking");
+  assert.equal(waiting.result, previous.result);
+  const first = visibleInvestigation(null, next, controls, "evidence");
+  assert.equal(first.selection?.view, "evidence");
+  assert.equal(first.result, null);
+  const categories = visibleInvestigation(previous, firstSelection, { ...controls, rankTab: "categories" }, "");
+  assert.equal(categories.controls.rankTab, "categories");
+  assert.equal(categories.result, null);
 });
