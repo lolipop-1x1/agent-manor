@@ -11,7 +11,7 @@ import { factEvidence } from "./evidence-facts.js";
 import { coreOverviewInsights, generateOverviewInsights } from "./insights.js";
 import { buildOverviewRepositories } from "./repositories.js";
 import { OverviewFactStore } from "./facts.js";
-import { factDelegation, factDetail, factProcess, factResourceCandidates, factResources, usageRankingDetail } from "./details.js";
+import { factDelegation, factDetail, factMissingTimingRequests, factProcess, factResourceCandidates, factResources, usageRankingDetail } from "./details.js";
 import type { OverviewWorkerRequest, OverviewWorkerResponse } from "./worker-contracts.js";
 import { prepareOverviewDateCache, resolveOverviewRange, resolveTimezone } from "./dates.js";
 
@@ -60,7 +60,10 @@ async function handle(request: OverviewWorkerRequest): Promise<void> {
       } else if (panel === "resources") {
         const result = factResources(facts(), snapshot, now); output.data = { resources: result.resources }; output.counts = result.counts;
       } else if (panel === "process") {
-        const result = factProcess(facts(), snapshot, now); output.data = { process: result.process }; output.counts = result.counts;
+        const result = request.globalProcess
+          ? { process: { ...request.globalProcess.process, missingTimingRequests: factMissingTimingRequests(facts(), snapshot, now) }, counts: request.globalProcess.counts }
+          : factProcess(facts(), snapshot, now);
+        output.data = { process: result.process }; output.counts = result.counts;
       } else if (panel === "repositories") output.data = { repositories: buildOverviewRepositories(repositories, request.repositories,
         factStore ? factStore.snapshot(query) : metadata(), query, snapshot.range, snapshot.timezone) };
       else if (panel === "insights") {

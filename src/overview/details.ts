@@ -375,14 +375,21 @@ export function factProcess(store: OverviewFactStore, snapshot: OverviewSnapshot
     const key = toolCategory(row.tool ?? undefined, row.resource ? JSON.parse(row.resource) : undefined), ids = categorySessions.get(key) ?? new Set<string>(); ids.add(row.session_id); categorySessions.set(key, ids);
   }
   for (const row of categories.values()) row.sessions = categorySessions.get(row.key)?.size ?? 0;
-  const models = snapshot.query.models?.length ? ` AND ${dimensionSql("f.model")} IN (SELECT value FROM json_each(?))` : "";
-  const missingTimingRequests = store.readRows<{ count: number }>(`SELECT COUNT(*) AS count FROM overview_fact_requests f
-    WHERE f.revision IN (SELECT value FROM json_each(?)) AND ${where}${models} AND overview_valid_timing(json_extract(f.json,'$.usage.timing'))=0`,
-  [...values, ...(models ? [JSON.stringify(snapshot.query.models)] : [])])[0]!.count;
+  const missingTimingRequests = factMissingTimingRequests(store, snapshot, now);
   const process: OverviewProcess = { tools: [...tools.values()], categories: [...categories.values()].sort((a, b) => b.count - a.count || a.key.localeCompare(b.key)),
     results: counts(summary.calls ?? 0, summary.success ?? 0, summary.failure ?? 0), failures: summary.failure ?? 0, failureSequences: [], compressions: summary.compressions ?? 0,
     compressionSessions: summary.compressionSessions, timing: [], missingTimingRequests };
   return { process, counts: { tools: leading.total } };
+}
+
+/** 模型只影响请求计时覆盖，不重复计算全局工具与压缩统计。 */
+export function factMissingTimingRequests(store: OverviewFactStore, snapshot: OverviewSnapshot, now: Date): number {
+  const scope = store.sqlScope(snapshot.query, now), bounds = scope.bounds ? [scope.bounds.fromMs, scope.bounds.toMs] : [];
+  const where = scope.bounds ? "f.time_ms>=? AND f.time_ms<?" : "1";
+  const models = snapshot.query.models?.length ? ` AND ${dimensionSql("f.model")} IN (SELECT value FROM json_each(?))` : "";
+  return store.readRows<{ count: number }>(`SELECT COUNT(*) AS count FROM overview_fact_requests f
+    WHERE f.revision IN (SELECT value FROM json_each(?)) AND ${where}${models} AND overview_valid_timing(json_extract(f.json,'$.usage.timing'))=0`,
+  [JSON.stringify(scope.revisions), ...bounds, ...(models ? [JSON.stringify(snapshot.query.models)] : [])])[0]!.count;
 }
 
 /** 委派用量仅汇总已归属会话的必要数值，不恢复请求计时及成员JSON。 */

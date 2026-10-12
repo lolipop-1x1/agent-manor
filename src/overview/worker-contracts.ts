@@ -16,6 +16,7 @@ export interface OverviewWorkerRequest {
   evidence?: OverviewEvidenceQuery;
   usage?: UsageReport;
   globalUsage?: UsageReport;
+  globalProcess?: { process: NonNullable<OverviewPanelResult["data"]["process"]>; counts?: Record<string, number> };
   dimensions?: { clients: UsageReport; projects: UsageReport; models: UsageReport };
   insightUsage?: OverviewInsightContext;
 }

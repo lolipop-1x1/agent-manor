@@ -47,6 +47,8 @@ test("核心分区重启复用持久结果，模型身份重绑定且已淘汰�
   const directory = await mkdtemp(join(tmpdir(), "manor-overview-panels-")), store = new SessionStore(join(directory, "index.sqlite"));
   const id = "synthetic-main", path = "/synthetic/main.jsonl", revision = store.createRevision(path, "synthetic");
   revision.sink.message({ id: "synthetic-user", sessionId: id, ordinal: 0, recordLine: 1, turnId: "synthetic-turn", kind: "user", text: "合成正文", occurredAt: "2026-03-01T12:00:00Z" });
+  revision.sink.message({ id: "synthetic-tool", sessionId: id, ordinal: 1, recordLine: 2, turnId: "synthetic-turn", kind: "tool_call",
+    tool: "synthetic-tool", status: "unknown", text: "合成工具", occurredAt: "2026-03-01T12:00:00Z" });
   revision.sink.usage({ id: "synthetic-request", messageId: "synthetic-user", inputTokens: 100, outputTokens: 20, model: "synthetic-model", occurredAt: "2026-03-01T12:00:00Z" });
   revision.flush(); store.finishRevision(revision.revision, { id, path, sourceId: "synthetic-source", client: "codex", clientSessionId: id,
     title: "合成会话", titleOrigin: "recorded", models: ["synthetic-model"], messageCount: 1, turnCount: 1, gaps: [] });
@@ -55,7 +57,12 @@ test("核心分区重启复用持久结果，模型身份重绑定且已淘汰�
   const first = new OverviewManager(store, prices, () => [], clock);
   const internal = first as unknown as { dispatch(type: string, ...parameters: unknown[]): Promise<unknown> };
   const dispatch = internal.dispatch.bind(first), dispatchedTypes: string[] = [];
-  internal.dispatch = (type, ...parameters) => { dispatchedTypes.push(type); return dispatch(type, ...parameters); };
+  const processCalls: boolean[] = [];
+  internal.dispatch = (type, ...parameters) => {
+    dispatchedTypes.push(type);
+    if ((parameters[2] as { panel?: string } | undefined)?.panel === "process") processCalls.push(Boolean((parameters[3] as { globalProcess?: unknown })?.globalProcess));
+    return dispatch(type, ...parameters);
+  };
   const query = { window: "365" as const, timezone: "UTC", version };
   let restarted: OverviewManager | undefined;
   try {
@@ -63,6 +70,10 @@ test("核心分区重启复用持久结果，模型身份重绑定且已淘汰�
       first.panel(query, "resources"), first.panel(query, "process")]);
     assert.deepEqual(core, duplicate); assert.equal(core.data.summary!.requests, 1);
     assert.equal(dispatchedTypes.filter(type => type === "prepare").length, 1);
+    const globalProcess = await first.panel(query, "process"), localProcess = await first.panel({ ...query, models: ["synthetic-other"] }, "process");
+    assert.deepEqual(localProcess.data.process!.tools, globalProcess.data.process!.tools);
+    assert.equal(globalProcess.data.process!.missingTimingRequests, 1); assert.equal(localProcess.data.process!.missingTimingRequests, 0);
+    assert.deepEqual(processCalls, [false, true], "局部计时计数复用已缓存全局过程，不重扫工具排行");
     await first.panel({ ...query, window: "30", models: ["synthetic-other"] }, "core");
     assert.equal(dispatchedTypes.filter(type => type === "prepare").length, 1);
     await first.panel({ ...query, timezone: "America/New_York" }, "core");

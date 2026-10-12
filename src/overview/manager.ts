@@ -129,6 +129,9 @@ export class OverviewManager {
     const payload: Partial<OverviewWorkerRequest> = {};
     if (type === "panel" && extra.panel === "core") {
       payload.globalUsage = await this.usageReport(await this.snapshot(query));
+    } else if (type === "panel" && extra.panel === "process" && query.models?.length) {
+      const global = await this.panel({ ...query, models: undefined }, "process");
+      payload.globalProcess = { process: global.data.process!, counts: global.counts };
     } else if (type === "panel" && extra.panel === "usage" || type === "detail" && extra.detail?.view === "ranking" && extra.detail.dimension !== "tool") {
       const snapshot = await this.snapshot(query), models = query.models;
       const [clients, projects, model] = await Promise.all([this.usageReport(snapshot, { models, groupBy: "client" }),
