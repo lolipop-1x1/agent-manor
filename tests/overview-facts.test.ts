@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import Database from "better-sqlite3";
 import { mkdtemp, rm } from "node:fs/promises";
-import { statSync, writeFileSync } from "node:fs";
+import { readFileSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { Worker } from "node:worker_threads";
@@ -178,33 +178,119 @@ test("缺失派生行与失效格式按修订原子重建，完整源版本仍�
   finally { third.close(); }
 }));
 
-test("损坏JSON调查自动重建，损坏文件及不可写缓存使用内存且不影响原始索引", async () => fixture(async (store, path) => {
+test("损坏JSON只重建该修订，损坏文件及不可写缓存明确失败且不回填整库内存", async () => fixture(async (store, path) => {
   history(store); let facts = new OverviewFactStore(store, { path }); await facts.prepare({ timezone: "UTC" }, now); facts.close();
   const malformed = new Database(path); malformed.prepare("UPDATE overview_fact_requests SET json='{' WHERE id='associated'").run(); malformed.close();
   facts = new OverviewFactStore(store, { path });
-  const report = buildOverviewReport(store.overviewSource(), { timezone: "UTC" }, pricing, now);
+  const reads: string[] = [], original = store.overviewRevisionFacts.bind(store);
+  store.overviewRevisionFacts = (revision, id) => { reads.push(revision); return original(revision, id); };
   try { assert((await facts.source({ timezone: "UTC" }, "evidence", now)).requests.some(request => request.usage.id === "associated")); }
   finally { facts.close(); }
+  assert.equal(reads.length, 1);
   writeFileSync(path, "broken sqlite cache");
-  const broken = new OverviewFactStore(store, { path });
-  try { await broken.prepare({ timezone: "UTC" }, now); assert.deepEqual(value(broken.core({ timezone: "UTC" }, report.usage, now).summary), value(report.summary)); }
-  finally { broken.close(); }
+  assert.throws(() => new OverviewFactStore(store, { path }), { code: "ANALYSIS_NOT_READY" });
+  const repaired = new OverviewFactStore(store, { path, repairCorruption: true });
+  try { await repaired.prepare({ timezone: "UTC" }, now); assert.equal(repaired.activitySessions({ timezone: "UTC" }, now).activeIds.length, 3); }
+  finally { repaired.close(); }
+  assert.equal(readFileSync(`${path}.corrupt`, "utf8"), "broken sqlite cache");
   const blocked = join(path, "unwritable.sqlite");
-  const fallback = new OverviewFactStore(store, { path: blocked });
-  try { await fallback.prepare({ timezone: "UTC" }, now); assert.deepEqual(value(fallback.core({ timezone: "UTC" }, report.usage, now).summary), value(report.summary)); }
-  finally { fallback.close(); }
+  assert.throws(() => new OverviewFactStore(store, { path: blocked }), { code: "ANALYSIS_NOT_READY" });
+  assert.equal(store.overviewSource().sessions.length, 3);
 }));
 
-test("缓存体积限制改用内存，未变化修订不重复读取且持久文件有界", async () => fixture(async (store, path) => {
-  history(store); const facts = new OverviewFactStore(store, { path, maxBytes: 128 * 1024 });
+test("超额时不serialize、不清共享事实；另一个读者及重启仍复用完整修订", async () => fixture(async (store, path) => {
+  history(store); const first = new OverviewFactStore(store, { path }), limited = new OverviewFactStore(store, { path, maxBytes: 1 });
+  await first.prepare({ timezone: "UTC" }, now);
+  const report = buildOverviewReport(store.overviewSource(), { timezone: "UTC" }, pricing, now);
   const read = store.overviewRevisionFacts.bind(store); let reads = 0;
   store.overviewRevisionFacts = (revision, id) => { reads += 1; return read(revision, id); };
+  const serialize = Database.prototype.serialize;
+  Database.prototype.serialize = () => { throw new Error("禁止整库复制到内存"); };
   try {
-    await facts.prepare({ timezone: "UTC" }, now);
-    const initial = reads;
-    await facts.prepare({ timezone: "UTC" }, now);
-    assert.equal(reads, initial); assert(statSync(path).size <= 128 * 1024);
+    await assert.rejects(limited.prepare({ timezone: "UTC" }, now), { code: "ANALYSIS_NOT_READY" });
+    await first.prepare({ timezone: "UTC" }, now);
+    assert.deepEqual(value(first.core({ timezone: "UTC" }, report.usage, now).summary), value(report.summary));
+    assert.equal(reads, 0);
+    const restart = new OverviewFactStore(store, { path });
+    try { await restart.prepare({ timezone: "UTC" }, now); assert.equal(reads, 0); }
+    finally { restart.close(); }
+    assert(statSync(path).size > 1);
+  } finally { Database.prototype.serialize = serialize; limited.close(); first.close(); }
+}));
+
+test("有限日期保留资源无时间覆盖，SQL范围覆盖夏令时与严格本地日", async () => fixture(async (store, path) => {
+  const entry = revision(store, "resource-time", [
+    message("resource-time", "missing-resource", 1, { kind: "tool_call", occurredAt: undefined,
+      resource: { kind: "mcp", name: "server-a", server: "server-a" } }),
+    message("resource-time", "dst-before", 2, { occurredAt: "2026-03-08T04:59:59.999Z" }),
+    message("resource-time", "dst-start", 3, { occurredAt: "2026-03-08T05:00:00Z" }),
+    message("resource-time", "dst-end", 4, { occurredAt: "2026-03-09T03:59:59.999Z" }),
+    message("resource-time", "dst-after", 5, { occurredAt: "2026-03-09T04:00:00Z" }),
+  ], []);
+  store.publish(store.createJob().id, [entry], []);
+  const facts = new OverviewFactStore(store, { path });
+  const query: OverviewQuery = { window: "custom", from: "2026-03-08", to: "2026-03-08", timezone: "America/New_York" };
+  try {
+    const resources = await facts.source(query, "resources", now);
+    assert(resources.resources.some(row => row.id.includes("missing-resource")));
+    const report = buildOverviewReport(resources, query, pricing, now);
+    assert.equal(report.resources.missingTimeEvents, 1);
+    assert.equal(report.resources.mcp.length, 0);
+    const process = await facts.source(query, "process", now, { eventKinds: ["user"] });
+    const bounds = facts.sqlScope(query, now).bounds!;
+    assert.equal(bounds.toMs - bounds.fromMs, 23 * 3600000);
+    const rows = facts.readRows<{ id: string }>(`SELECT id FROM overview_fact_events WHERE time_ms>=? AND time_ms<? ORDER BY ordinal`, [bounds.fromMs, bounds.toMs]);
+    assert.deepEqual(rows.map(row => row.id), ["dst-start", "dst-end"]);
+    assert(process.events.some(row => row.id === "dst-start"));
+    assert.throws(() => facts.readRows("DELETE FROM overview_fact_events"), /只读/);
+    const autumn: OverviewQuery = { window: "custom", from: "2026-11-01", to: "2026-11-01", timezone: "America/New_York" };
+    const fall = facts.sqlScope(autumn, now).bounds!;
+    assert.equal(fall.toMs - fall.fromMs, 25 * 3600000);
   } finally { facts.close(); }
+}));
+
+test("SQLite容量上限回滚新增修订，保留旧版完整事实和并存读者", async () => fixture(async (store, path) => {
+  const { a, b, c, version } = history(store);
+  const writer = new OverviewFactStore(store, { path, maxBytes: 128 * 1024 });
+  await writer.prepare({ timezone: "UTC" }, now);
+  const reader = new OverviewFactStore(store, { path });
+  const original = buildOverviewReport(store.overviewSource(version), { version, timezone: "UTC" }, pricing, now);
+  try {
+    const large = revision(store, "large-new", Array.from({ length: 2000 }, (_, ordinal) => message("large-new", `synthetic-event-${ordinal}`.padEnd(80, "e"), ordinal)), []);
+    const next = store.publish(store.createJob().id, [a, b, c, large], []);
+    await assert.rejects(writer.prepare({ version: next, timezone: "UTC" }, now), error =>
+      !!error && typeof error === "object" && "messageDescriptor" in error
+        && (error.messageDescriptor as { key?: string })?.key === "diagnostics.overview.cacheCapacity");
+    assert(statSync(path).size <= 128 * 1024);
+    assert.equal(writer.readRows<{ count: number }>("SELECT COUNT(*) count FROM overview_fact_revisions WHERE revision=?", [large.revision])[0]!.count, 0);
+    await reader.prepare({ version, timezone: "UTC" }, now);
+    assert.deepEqual(value(reader.core({ version, timezone: "UTC" }, original.usage, now).summary), value(original.summary));
+  } finally { reader.close(); writer.close(); }
+}));
+
+test("读lane不回填或裁剪派生库，原请求成员只按当前页身份恢复", async () => fixture(async (store, path) => {
+  history(store); const writer = new OverviewFactStore(store, { path });
+  await writer.prepare({ timezone: "UTC" }, now); writer.close();
+  const reader = new OverviewFactStore(store, { path, readonly: true });
+  const revisionRead = store.overviewRevisionFacts.bind(store), memberRead = store.overviewRequestMembers.bind(store);
+  const requested: (string[] | undefined)[] = [];
+  store.overviewRevisionFacts = () => { throw new Error("读lane不得回填原事实"); };
+  store.overviewRequestMembers = (revision, ids) => { requested.push(ids); return memberRead(revision, ids); };
+  try {
+    const source = await reader.source({ timezone: "UTC" }, "process", now, { prepared: true });
+    assert(source.events.some(event => event.id === "call"));
+    assert.equal(requested.length, 0);
+    await assert.rejects(reader.prepare({ timezone: "UTC" }, now), { code: "ANALYSIS_NOT_READY" });
+    const rows = reader.readRows<Parameters<OverviewFactStore["decodeRequest"]>[0]>(`SELECT f.*,r.session_id FROM overview_fact_requests f
+      JOIN overview_fact_revisions r ON r.revision=f.revision WHERE f.id='associated'`);
+    const hydrated = reader.hydrateRequestMembers(rows);
+    assert.deepEqual(hydrated[0]!.usage.requestMessageIds, ["call", "assistant"]);
+    assert.deepEqual(requested, [["associated"]]);
+    const database = new Database(path);
+    try { database.prepare("UPDATE overview_fact_events SET json='{' WHERE id='call'").run(); } finally { database.close(); }
+    await assert.rejects(reader.source({ timezone: "UTC" }, "process", now, { prepared: true }), { code: "ANALYSIS_NOT_READY" });
+    assert.equal(reader.readRows<{ count: number }>("SELECT COUNT(*) count FROM overview_fact_revisions")[0]!.count, 3);
+  } finally { reader.close(); store.overviewRevisionFacts = revisionRead; store.overviewRequestMembers = memberRead; }
 }));
 
 test("两个跨线程缓存读者并发首次准备，不覆盖完整修订或产生时间桶主键冲突", async () => fixture(async (store, path) => {

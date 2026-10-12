@@ -800,6 +800,22 @@ export class SessionStore {
       .map(row => row.revision);
   }
 
+  /** 只在时间桶回填或原事件调查时读取成员，避免在派生库复制请求成员表。 */
+  overviewRequestMembers(revision: string, requestIds?: string[]): Iterable<{ id: string; messageId?: string; requestMessageIds?: string[]; endMessageId?: string }> {
+    const rows = this.database.prepare(`SELECT u.id,u.message_id,
+      json_extract(u.json,'$.requestMessageIds') AS members,
+      CASE WHEN COALESCE(json_extract(u.json,'$.timing.end.source'),'')<>'mirror'
+        THEN json_extract(u.json,'$.timing.end.messageId') END AS end_id
+      FROM session_usage_facts f JOIN session_usage u ON u.revision=f.revision AND u.id=f.id
+      WHERE f.revision=? AND f.eligible=1${requestIds ? " AND u.id IN (SELECT value FROM json_each(?))" : ""}
+      ORDER BY f.ordinal`).iterate(revision, ...(requestIds ? [JSON.stringify(requestIds)] : [])) as Iterable<{
+        id: string; message_id: string | null; members: string | null; end_id: string | null }>;
+    return (function* () {
+      for (const row of rows) yield { id: row.id, messageId: row.message_id ?? undefined,
+        requestMessageIds: row.members === null ? undefined : JSON.parse(row.members) as string[], endMessageId: row.end_id ?? undefined };
+    })();
+  }
+
   /** 按不可变修订读取窄事实；完整请求正文与工具参数不进入派生缓存。 */
   overviewRevisionFacts(revision: string, sessionId: string): Pick<OverviewSource, "events" | "requests"> {
     this.ensureUsageFacts(revision);
