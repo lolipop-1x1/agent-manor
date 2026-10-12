@@ -228,6 +228,58 @@ test("复盘Worker首次启动也不请求源库写锁，源索引持续刷新�
   } finally { writer.exec("ROLLBACK"); writer.close(); await manager.close(); }
 }));
 
+test("请求缺轮次时按消息身份定位并保留歧义，旧需求正文不参与周预览", async () => fixture(async (store, directory) => {
+  const messages = [message("indexed", "start", 1, "2026-10-04T01:00:00Z", { turnId: "cross" }),
+    message("indexed", "block", 2, "2026-10-04T01:00:00Z", { turnId: "cross", recordLine: 1 }),
+    ...Array.from({ length: 2000 }, (_, index) => message("indexed", `tool-${index}`, index + 3, "2026-10-04T02:00:00Z", { kind: "tool_call", turnId: "old" })),
+    message("indexed", "other", 2003, "2026-10-07T01:00:00Z", { turnId: "other" }),
+    message("indexed", "end", 2004, "2026-10-07T01:01:00Z", { turnId: "cross", kind: "assistant", final: "explicit" }),
+    ...Array.from({ length: 20 }, (_, index) => message("indexed", `old-user-${index}`, 3000 + index, "2026-10-01T01:00:00Z",
+      { turnId: `old-turn-${index}`, text: "旧需求正文".repeat(2000) }))];
+  const entry = revision(store, "indexed", messages, [
+    usage("linked", "2026-10-04T02:00:00Z", { turnId: undefined, messageId: "start", requestMessageIds: ["block"] }),
+    usage("ambiguous", "2026-10-07T01:00:00Z", { turnId: undefined, messageId: undefined, requestMessageIds: ["start", "other"] }),
+  ], { client: "claude" });
+  const version = store.publish(store.createJob().id, [entry], []), query = { version, timezone: "UTC", anchorDay: "2026-10-12" };
+  const prepare = Database.prototype.prepare, plans: string[][] = [];
+  let previews = 0;
+  Database.prototype.prepare = function (sql: string) {
+    if (sql.includes("AS prompt_characters")) this.function("substr", { deterministic: true }, (value, start, length) => {
+      previews += 1;
+      return [...String(value)].slice(Number(start) - 1, Number(start) - 1 + Number(length)).join("");
+    });
+    const statement = prepare.call(this, sql);
+    if (sql.includes("prompt_preview FROM session_messages") || sql.includes("AS resolved_turn")) {
+      const database = this, all = statement.all.bind(statement);
+      statement.all = (...args: unknown[]) => {
+        plans.push((prepare.call(database, `EXPLAIN QUERY PLAN ${sql}`).all(...args) as { detail: string }[]).map(row => row.detail));
+        return all(...args);
+      };
+    }
+    return statement;
+  };
+  const facts = new WeeklyReviewFactStore(store, join(directory, "indexed.sqlite"));
+  try {
+    const data = buildWeeklyReview((await facts.source(query, now)).facts, query, pricing, now);
+    assert.equal(data.review.rounds.completed, 1);
+    assert.equal(data.review.rounds.steps.average, 1);
+    assert.equal(data.review.rounds.tokens.average, 110);
+    assert.equal(data.review.coverage.unassignedRequests, 1);
+    assert.equal(previews, 3, "只恢复跨周轮次及周内相关需求预览");
+    assert(plans.some(plan => plan.some(row => row.includes("SEARCH m") && row.includes("revision=? AND id=?"))), "缺轮次请求按复合消息身份定位");
+    assert(!plans.some(plan => plan.some(row => row.startsWith("SEARCH m") && row.endsWith("(revision=?)"))), "请求关联不逐条扫描全部会话消息");
+    const overview = new OverviewFactStore(store);
+    try { await overview.prepare(query, now); } finally { overview.close(); }
+    const cached = new WeeklyReviewFactStore(store, join(directory, "indexed-cached.sqlite"));
+    try {
+      const actual = buildWeeklyReview((await cached.source(query, now)).facts, query, pricing, now);
+      assert.deepEqual(actual.review, data.review);
+      assert.deepEqual(actual.rows, data.rows, "窄请求缓存保留跨周完整轮次和无法唯一归属的请求");
+    } finally { cached.close(); }
+
+  } finally { facts.close(); Database.prototype.prepare = prepare; }
+}));
+
 test("既有总览窄缓存与源读取口径相同，跨窗口配对和纯结果活动不丢失", async () => fixture(async (store, directory) => {
   const a = revision(store, "cross-result", [
     message("cross-result", "old-user", 1, "2026-10-04T01:00:00Z"),
@@ -252,6 +304,71 @@ test("既有总览窄缓存与源读取口径相同，跨窗口配对和纯结�
     assert.deepEqual(result, expected);
     assert.equal(result.sessions.active, 2, "窗口内只有工具结果的会话仍有自身活动");
     assert.equal(result.extensions.tools.failures, 1, "窗口内调用的窗口外明确结果仍可配对");
+  } finally { cached.close(); }
+}));
+
+test("可选窄缓存的工具JSON损坏时退回源事实，不改变失败与轮次统计", async () => fixture(async (store, directory) => {
+  const version = history(store), query = { version, timezone: "Asia/Shanghai", anchorDay: "2026-10-12" };
+  const raw = new WeeklyReviewFactStore(store, join(directory, "corrupt-raw.sqlite"));
+  let expected;
+  try { expected = buildWeeklyReview((await raw.source(query, now)).facts, query, pricing, now); }
+  finally { raw.close(); }
+  const overview = new OverviewFactStore(store);
+  try { await overview.prepare(query, now); } finally { overview.close(); }
+  const database = new Database(join(directory, "overview-facts-v2.sqlite"));
+  try { database.prepare("UPDATE overview_fact_events SET json='{' WHERE id='failed-call'").run(); }
+  finally { database.close(); }
+  const cached = new WeeklyReviewFactStore(store, join(directory, "corrupt-cached.sqlite"));
+  try {
+    const actual = buildWeeklyReview((await cached.source(query, now)).facts, query, pricing, now);
+    assert.deepEqual(actual.review, expected.review);
+    assert.deepEqual(actual.rows, expected.rows);
+  } finally { cached.close(); }
+}));
+
+test("纯子Agent活动与用量仍可统计，同一来源在新版本恢复用户身份时不复用子Agent省略的轮次", async () => fixture(async (store, directory) => {
+  const parent = revision(store, "parent", [], [], { childSessionIds: ["role"] });
+  const child = revision(store, "role", [message("role", "user", 1, "2026-10-07T01:00:00Z"),
+    message("role", "final", 2, "2026-10-07T01:01:00Z", { kind: "assistant", final: "explicit" })],
+    [usage("role-request", "2026-10-07T01:00:30Z")]);
+  const active = revision(store, "only-thinking", [message("only-thinking", "thinking", 1, "2026-10-08T01:00:00Z", { kind: "thinking" })], [],
+    { relationship: "child", parentSessionId: "parent" });
+  const version = store.publish(store.createJob().id, [parent, child, active], []), query = { version, timezone: "UTC", anchorDay: "2026-10-12" };
+  const overview = new OverviewFactStore(store);
+  try { await overview.prepare(query, now); } finally { overview.close(); }
+  const cache = new WeeklyReviewFactStore(store, join(directory, "role-cache.sqlite"));
+  try {
+    const source = await cache.source(query, now), report = buildWeeklyReview(source.facts, query, pricing, now).review;
+    assert.equal(report.rounds.completed, 0);
+    assert.equal(report.extensions.children.sessions, 2);
+    assert.equal(report.extensions.children.requests, 1);
+    assert.deepEqual(source.facts.find(row => row.session.id === "only-thinking")!.activityDays, ["2026-10-08"]);
+    const independent = store.publish(store.createJob().id, [child], []);
+    const next = buildWeeklyReview((await cache.source({ ...query, version: independent }, now)).facts, { ...query, version: independent }, pricing, now).review;
+    assert.equal(next.rounds.completed, 1);
+    assert.equal(next.rounds.steps.average, 1);
+    assert.equal(next.preferences.promptCharacters.average, 4);
+    assert.equal(next.extensions.children.sessions, 0);
+  } finally { cache.close(); }
+}));
+
+test("窄事实的活动日投影保留夏令时边界与不同本地日期", async () => fixture(async (store, directory) => {
+  const entry = revision(store, "dst", [message("dst", "early", 1, "2026-03-08T04:59:59Z", { kind: "thinking" }),
+    message("dst", "late", 2, "2026-03-08T07:00:00Z", { kind: "assistant" }),
+    message("dst", "outside", 3, "2026-03-09T04:00:00Z", { kind: "thinking" })], [],
+    { startedAt: "2026-03-08T04:59:59Z", updatedAt: "2026-03-09T04:00:00Z" });
+  const version = store.publish(store.createJob().id, [entry], []), query = { version, timezone: "America/New_York", anchorDay: "2026-03-09" };
+  const raw = new WeeklyReviewFactStore(store, join(directory, "dst-raw.sqlite"));
+  let expected;
+  try { expected = await raw.source(query, now); } finally { raw.close(); }
+  assert.deepEqual(expected.facts[0]!.activityDays, ["2026-03-07", "2026-03-08"]);
+  const overview = new OverviewFactStore(store);
+  try { await overview.prepare(query, now); } finally { overview.close(); }
+  const cached = new WeeklyReviewFactStore(store, join(directory, "dst-cached.sqlite"));
+  try {
+    const actual = await cached.source(query, now);
+    assert.deepEqual(actual.facts[0]!.activityDays, expected.facts[0]!.activityDays);
+    assert.deepEqual(buildWeeklyReview(actual.facts, query, pricing, now).review, buildWeeklyReview(expected.facts, query, pricing, now).review);
   } finally { cached.close(); }
 }));
 

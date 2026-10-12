@@ -901,31 +901,43 @@ export class SessionStore {
 
   /** 七天复盘按候选修订读取轮次边界与长度；完整用户正文不离开原索引。 */
   weeklyReviewRevisionFacts(revision: string, sessionId: string, scope?: { fromMs: number; toMs: number; client?: Client; timezone?: string;
+    boundaryEvents?: WeeklyReviewEvent[];
+    includeRounds?: boolean;
+    requestFacts?: (turnIds: string[]) => OverviewSource["requests"] | undefined;
     processFacts?: (turnIds: string[]) => { events: WeeklyReviewEvent[]; retainedCompressions: number; missingTimeEvents: number; missingTimeRequests: number; activityDays: string[] } | undefined;
   }): {
     events: WeeklyReviewEvent[]; requests: OverviewSource["requests"]; retainedCompressions?: number; missingTimeEvents?: number; missingTimeRequests?: number; activityDays?: string[];
   } {
-    const columns = `id,ordinal,turn_id,record_line,kind,final,call_id,
+    const identityColumns = "id,ordinal,turn_id,record_line,kind,final,call_id";
+    const columns = `${identityColumns},
       json_extract(json,'$.occurredAt') AS occurred_at,json_extract(json,'$.tool') AS tool,
       json_extract(json,'$.status') AS status,json_extract(json,'$.contextSource') AS context_source,
       json_extract(json,'$.resource') AS resource,
-      CASE WHEN kind='user' AND json_extract(json,'$.contextSource') IS NULL AND COALESCE(json_extract(json,'$.resource.kind'),'')!='skill_read'${scope ? " AND usage_time_ms(json_extract(json,'$.occurredAt'))>=? AND usage_time_ms(json_extract(json,'$.occurredAt'))<?" : ""}
+      CASE WHEN ${scope?.includeRounds === false ? "0" : "kind='user'"} AND json_extract(json,'$.contextSource') IS NULL AND COALESCE(json_extract(json,'$.resource.kind'),'')!='skill_read'${scope ? " AND usage_time_ms(json_extract(json,'$.occurredAt'))>=? AND usage_time_ms(json_extract(json,'$.occurredAt'))<?" : ""}
         THEN session_prompt_characters(text) END AS prompt_characters,
-      CASE WHEN kind='user' THEN substr(text,1,120) END AS prompt_preview`;
+      ${scope ? "NULL" : "CASE WHEN kind='user' THEN substr(text,1,120) END"} AS prompt_preview`;
     type Row = { id: string; ordinal: number; turn_id: string; record_line: number; kind: WeeklyReviewEvent["kind"];
       final: WeeklyReviewEvent["final"] | null; call_id: string | null; occurred_at: string | null; tool: string | null;
       status: WeeklyReviewEvent["status"] | null; context_source: WeeklyReviewEvent["contextSource"] | null;
       resource: string | null; prompt_characters: number | null; prompt_preview: string | null };
-    const decode = (row: Row): WeeklyReviewEvent => ({ id: row.id, sessionId, ordinal: row.ordinal, turnId: row.turn_id, recordLine: row.record_line,
+    const boundaryMetadata = new Map(scope?.boundaryEvents?.map(event => [event.id, event]));
+    const decode = (row: Row): WeeklyReviewEvent => boundaryMetadata.has(row.id)
+      ? { ...boundaryMetadata.get(row.id)!, sessionId, ordinal: row.ordinal, turnId: row.turn_id, recordLine: row.record_line,
+        final: row.final ?? undefined, callId: row.call_id ?? undefined }
+      : ({ id: row.id, sessionId, ordinal: row.ordinal, turnId: row.turn_id, recordLine: row.record_line,
       kind: row.kind, final: row.final ?? undefined, callId: row.call_id ?? undefined, occurredAt: row.occurred_at ?? undefined,
       tool: row.tool ?? undefined, status: row.status ?? undefined, contextSource: row.context_source ?? undefined,
       ...(row.resource ? { resource: JSON.parse(row.resource) } : {}),
       ...(row.prompt_characters === null ? {} : { promptCharacters: row.prompt_characters }),
       ...(row.prompt_preview === null ? {} : { promptPreview: row.prompt_preview }) });
     const prefix = scope ? [scope.fromMs, scope.toMs] : [];
-    const boundaryRows = (this.overviewStatement(`SELECT ${columns} FROM session_messages WHERE revision=? AND copied IS NOT 1
+    const cachedBoundaries = scope?.boundaryEvents !== undefined;
+    const boundarySource = cachedBoundaries ? "(SELECT value AS boundary FROM json_each(?)) selected CROSS JOIN session_messages INDEXED BY session_message_order" : "session_messages";
+    const boundaryRows = cachedBoundaries && scope!.includeRounds === false ? scope!.boundaryEvents!
+      : (this.overviewStatement(`SELECT ${cachedBoundaries ? identityColumns : columns} FROM ${boundarySource} WHERE revision=? AND copied IS NOT 1
+      ${cachedBoundaries ? "AND ordinal=json_extract(selected.boundary,'$[1]') AND id=json_extract(selected.boundary,'$[0]')" : ""}
       AND ${scope ? "(kind='user' OR kind='assistant' AND final IS NOT NULL)" : "(kind IN ('user','tool_call','tool_result','compression') OR kind='assistant' AND final IS NOT NULL)"}
-      ORDER BY ordinal,id`).all(...prefix, revision) as Row[]).map(decode);
+      ORDER BY ordinal,id`).all(...(cachedBoundaries ? [JSON.stringify(scope!.boundaryEvents!.map(event => [event.id, event.ordinal]))] : prefix), revision) as Row[]).map(decode);
     if (!scope) return { events: boundaryRows, requests: this.overviewRevisionRequests(revision, sessionId) };
     const inRange = (value?: string) => { const time = Date.parse(value ?? ""); return Number.isFinite(time) && time >= scope.fromMs && time < scope.toMs; };
     const selectedTurns = new Set(boundaryRows.filter(event => inRange(event.occurredAt) && !event.contextSource
@@ -935,12 +947,12 @@ export class SessionStore {
     const fullIds = JSON.stringify([...fullTurns.values()].filter(event => inRange(event.occurredAt)).map(event => event.turnId));
     let boundaries = boundaryRows.filter(event => selectedTurns.has(event.turnId));
     const cachedProcess = scope.processFacts?.(JSON.parse(fullIds) as string[]);
-    const process = cachedProcess?.events ?? (this.overviewStatement(`SELECT ${columns} FROM session_messages WHERE revision=? AND copied IS NOT 1
+    const process = scope.includeRounds === false ? [] : cachedProcess?.events ?? (this.overviewStatement(`SELECT ${columns} FROM session_messages WHERE revision=? AND copied IS NOT 1
       AND kind IN ('tool_call','compression')
       AND (usage_time_ms(json_extract(json,'$.occurredAt'))>=? AND usage_time_ms(json_extract(json,'$.occurredAt'))<?
         OR turn_id IN (SELECT value FROM json_each(?))) ORDER BY ordinal,id`)
       .all(...prefix, revision, scope.fromMs, scope.toMs, fullIds) as Row[]).map(decode);
-    if (!cachedProcess) {
+    if (!cachedProcess && scope.includeRounds !== false) {
       const callIds = JSON.stringify([...new Set(process.filter(event => event.kind === "tool_call" && event.callId).map(event => event.callId))]);
       const paired = new Map(pairToolCalls((this.overviewStatement(`SELECT ${columns} FROM session_messages WHERE revision=?
         AND copied IS NOT 1 AND kind IN ('tool_call','tool_result') AND call_id IN (SELECT value FROM json_each(?)) ORDER BY ordinal,id`)
@@ -951,12 +963,18 @@ export class SessionStore {
       }
     }
     // 周复盘只读原请求，不在索引库回填用量事实，避免与后台刷新争用写锁。
-    const copied = Boolean(this.overviewStatement("SELECT 1 FROM session_messages WHERE revision=? AND copied=1 LIMIT 1").get(revision));
-    const resolvedTurn = `COALESCE(u.turn_id,(SELECT CASE WHEN COUNT(DISTINCT m.turn_id)=1 THEN MIN(m.turn_id) END
-      FROM session_messages m WHERE m.revision=u.revision AND (m.id=u.message_id
-        OR m.id IN (SELECT value FROM json_each(u.json,'$.requestMessageIds')))))`;
+    const cachedRequests = scope.requestFacts?.(JSON.parse(fullIds) as string[]);
     const preparedUsage = usageFactsReady(this.database, revision);
-    const rows = preparedUsage ? this.overviewStatement(`SELECT u.json,${resolvedTurn} AS resolved_turn
+    const copied = !preparedUsage && Boolean(this.overviewStatement("SELECT 1 FROM session_messages WHERE revision=? AND copied=1 LIMIT 1").get(revision));
+    const resolvedTurn = `COALESCE(u.turn_id,(SELECT CASE WHEN COUNT(DISTINCT turn_id)=1 THEN MIN(turn_id) END FROM (
+      SELECT m.turn_id FROM session_messages m WHERE m.revision=u.revision AND m.id=u.message_id
+      UNION ALL SELECT m.turn_id FROM json_each(u.json,'$.requestMessageIds') member
+        CROSS JOIN session_messages m ON m.revision=u.revision AND m.id=member.value)))`;
+    const missingTurns = cachedRequests?.filter(request => request.usage.turnId == null).map(request => request.usage.id) ?? [];
+    const rows = cachedRequests !== undefined ? missingTurns.length ? this.overviewStatement(`SELECT u.json,${resolvedTurn} AS resolved_turn
+      FROM session_usage u WHERE u.revision=? AND u.id IN (SELECT value FROM json_each(?)) ORDER BY u.rowid`)
+      .all(revision, JSON.stringify(missingTurns)) as { json: string; resolved_turn: string | null }[] : []
+      : preparedUsage ? this.overviewStatement(`SELECT u.json,${resolvedTurn} AS resolved_turn
       FROM session_usage_facts f JOIN session_usage u ON u.revision=f.revision AND u.id=f.id
       WHERE f.revision=? AND f.eligible=1 AND (f.time_ms>=? AND f.time_ms<?
         OR ${resolvedTurn} IN (SELECT value FROM json_each(?))) ORDER BY f.ordinal`)
@@ -966,23 +984,38 @@ export class SessionStore {
         AND (usage_time_ms(json_extract(u.json,'$.occurredAt'))>=? AND usage_time_ms(json_extract(u.json,'$.occurredAt'))<?
           OR ${resolvedTurn} IN (SELECT value FROM json_each(?))) ORDER BY u.rowid`)
       .all(revision, scope.fromMs, scope.toMs, fullIds) as { json: string; resolved_turn: string | null }[];
-    const requests = rows.map((row, ordinal) => {
+    const resolvedRequests: OverviewSource["requests"] = rows.map((row, ordinal) => {
       const raw = JSON.parse(row.json) as SessionUsage;
       const { requestMessageIds: _members, timing: _timing, ...usage } = raw;
       return { sessionId, ordinal, usage: { ...usage, ...(row.resolved_turn === null ? {} : { turnId: row.resolved_turn }) } };
     });
+    const resolvedById = new Map(resolvedRequests.map(request => [request.usage.id, request]));
+    const endedTurns = new Set(JSON.parse(fullIds) as string[]);
+    const requests = cachedRequests === undefined ? resolvedRequests : cachedRequests.map(request => resolvedById.get(request.usage.id) ?? request)
+      .filter(request => {
+        const time = instant(request.usage.occurredAt ?? "");
+        return time !== undefined && time >= scope.fromMs && time < scope.toMs || endedTurns.has(request.usage.turnId ?? "");
+      }).map((request, ordinal) => {
+        const { requestMessageIds: _members, timing: _timing, ...usage } = request.usage;
+        return { sessionId, ordinal, usage };
+      });
     for (const request of requests) if (request.usage.turnId) selectedTurns.add(request.usage.turnId);
     boundaries = boundaryRows.filter(event => selectedTurns.has(event.turnId));
-    if (scope.client === "codex") {
+    if (scope.includeRounds !== false) {
       const ids = boundaries.filter(event => event.kind === "user" && !event.contextSource && event.resource?.kind !== "skill_read").map(event => event.id);
-      const titles = new Map((this.overviewStatement(`SELECT id,session_user_title(text) AS title FROM session_messages
-        WHERE revision=? AND id IN (SELECT value FROM json_each(?))`).all(revision, JSON.stringify(ids)) as { id: string; title: string }[])
-        .map(row => [row.id, row.title]));
-      boundaries = boundaries.map(event => titles.has(event.id) ? { ...event, promptPreview: titles.get(event.id)! } : event);
+      // 只在轮次与请求筛选完成后读取必要的需求预览，旧轮次正文不参与七天首算。
+      const titles = new Map((this.overviewStatement(`SELECT id,${scope.client === "codex" ? "session_user_title(text)" : "substr(text,1,120)"} AS title,
+        ${cachedBoundaries ? "CASE WHEN usage_time_ms(json_extract(json,'$.occurredAt'))>=? AND usage_time_ms(json_extract(json,'$.occurredAt'))<? THEN session_prompt_characters(text) END" : "NULL"} AS characters
+        FROM (SELECT value AS selected_id FROM json_each(?)) selected CROSS JOIN session_messages
+        WHERE revision=? AND id=selected.selected_id`)
+        .all(...(cachedBoundaries ? prefix : []), JSON.stringify(ids), revision) as { id: string; title: string; characters: number | null }[])
+        .map(row => [row.id, row]));
+      boundaries = boundaries.map(event => titles.has(event.id) ? { ...event, promptPreview: titles.get(event.id)!.title,
+        ...(titles.get(event.id)!.characters === null ? {} : { promptCharacters: titles.get(event.id)!.characters! }) } : event);
     }
     const activityDays = cachedProcess?.activityDays ?? (this.overviewStatement(`SELECT DISTINCT
       session_local_day(json_extract(json,'$.occurredAt'),?) AS day FROM session_messages WHERE revision=? AND copied IS NOT 1
-        AND kind IN ('assistant','thinking','tool_result') AND json_extract(json,'$.contextSource') IS NULL
+        AND ${scope.includeRounds === false ? "kind IN ('user','assistant','thinking','tool_call','tool_result','compression') AND NOT(kind='user' AND COALESCE(json_extract(json,'$.resource.kind'),'')='skill_read')" : "kind IN ('assistant','thinking','tool_result')"} AND json_extract(json,'$.contextSource') IS NULL
         AND usage_time_ms(json_extract(json,'$.occurredAt'))>=? AND usage_time_ms(json_extract(json,'$.occurredAt'))<?`)
       .all(scope.timezone ?? "UTC", revision, scope.fromMs, scope.toMs) as { day: string | null }[]).flatMap(row => row.day === null ? [] : [row.day]);
     const metadata = cachedProcess ? { compressions: cachedProcess.retainedCompressions, missing_events: cachedProcess.missingTimeEvents, missing_requests: cachedProcess.missingTimeRequests } : this.overviewStatement(`SELECT
@@ -990,8 +1023,9 @@ export class SessionStore {
         AND json_extract(json,'$.contextSource') IS NULL) AS compressions,
       (SELECT COUNT(*) FROM session_messages WHERE revision=? AND copied IS NOT 1 AND kind IN ('user','assistant','thinking','tool_call','tool_result','compression')
         AND json_extract(json,'$.contextSource') IS NULL AND NOT(kind='user' AND COALESCE(json_extract(json,'$.resource.kind'),'')='skill_read') AND usage_time_ms(json_extract(json,'$.occurredAt')) IS NULL) AS missing_events,
-      (SELECT COUNT(*) FROM session_usage u WHERE revision=? AND ${copied ? this.eligibleUsageWhere() : "1"}
-        AND usage_time_ms(json_extract(u.json,'$.occurredAt')) IS NULL) AS missing_requests`)
+      (${preparedUsage ? "SELECT COUNT(*) FROM session_usage_facts WHERE revision=? AND eligible=1 AND time_ms IS NULL"
+        : `SELECT COUNT(*) FROM session_usage u WHERE revision=? AND ${copied ? this.eligibleUsageWhere() : "1"}
+          AND usage_time_ms(json_extract(u.json,'$.occurredAt')) IS NULL`}) AS missing_requests`)
       .get(revision, revision, revision) as { compressions: number; missing_events: number; missing_requests: number };
     return { events: [...boundaries, ...process].sort((a, b) => a.ordinal - b.ordinal), requests,
       activityDays, retainedCompressions: metadata.compressions, missingTimeEvents: metadata.missing_events, missingTimeRequests: metadata.missing_requests };

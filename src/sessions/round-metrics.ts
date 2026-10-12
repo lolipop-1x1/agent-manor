@@ -4,7 +4,10 @@ type RoundMessage = Omit<SessionMessage, "text" | "sessionId"> & { text?: string
 
 export function promptCharacterCount(text: string): number {
   let count = 0;
-  for (const character of text) if (!/\s/u.test(character)) count += 1;
+  for (const character of text) {
+    const code = character.charCodeAt(0);
+    if (code < 128 ? code !== 32 && (code < 9 || code > 13) : !/\s/u.test(character)) count += 1;
+  }
   return count;
 }
 

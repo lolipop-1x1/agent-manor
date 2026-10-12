@@ -35,6 +35,8 @@ export interface WeeklySessionFacts {
   missingTimeRequests: number;
   unassignedRequests: number;
 }
+interface DayProjection { sql: string; values: (string | number)[] }
+interface ProcessMetadata { events: number; requests: number; compressions: number; missing_events: number; missing_requests: number }
 
 const valid = (value: number | undefined): value is number => value !== undefined && Number.isSafeInteger(value) && value >= 0;
 const riskyGaps = new Set(["source_missing", "source_unavailable", "unsupported_format", "parse_error", "incomplete_record", "budget_exceeded"]);
@@ -126,31 +128,73 @@ export class WeeklyReviewFactStore {
       try { this.overview = new OverviewFactStore(sessions, { readonly: true }); } catch { /* 可选缓存不阻断复盘。 */ }
     }
   }
-  private processFacts(revision: string, sessionId: string, bounds: { fromMs: number; toMs: number }, turns: string[], timezone: string) {
+  private processMetadata(revisions: string[]): Map<string, ProcessMetadata> {
+    const result = new Map<string, ProcessMetadata>();
+    if (!this.overview) return result;
+    try {
+      const selected = JSON.stringify(revisions);
+      const events = new Map(this.overview.readRows<{ revision: string; events: number; compressions: number; missing: number }>(`SELECT revision,COUNT(*) AS events,
+        COALESCE(SUM(active=1 AND kind='compression'),0) AS compressions,COALESCE(SUM(active=1 AND time_ms IS NULL),0) AS missing
+        FROM overview_fact_events WHERE revision IN (SELECT value FROM json_each(?)) GROUP BY revision`, [selected]).map(row => [row.revision, row]));
+      const requests = new Map(this.overview.readRows<{ revision: string; requests: number; missing: number }>(`SELECT revision,COUNT(*) AS requests,
+        COALESCE(SUM(time_ms IS NULL),0) AS missing FROM overview_fact_requests WHERE revision IN (SELECT value FROM json_each(?)) GROUP BY revision`,
+        [selected]).map(row => [row.revision, row]));
+      for (const expected of this.overview.readRows<{ revision: string; events: number; requests: number }>(
+        "SELECT revision,events,requests FROM overview_fact_revisions WHERE revision IN (SELECT value FROM json_each(?)) AND format=2", [selected])) {
+        const event = events.get(expected.revision), request = requests.get(expected.revision);
+        if (expected.events !== (event?.events ?? 0) || expected.requests !== (request?.requests ?? 0)) continue;
+        result.set(expected.revision, { events: expected.events, requests: expected.requests, compressions: event?.compressions ?? 0,
+          missing_events: event?.missing ?? 0, missing_requests: request?.missing ?? 0 });
+      }
+    } catch { /* 可选窄缓存不完整时使用原始索引投影。 */ }
+    return result;
+  }
+  private processSource(revision: string, sessionId: string, bounds: { fromMs: number; toMs: number }, includeRounds: boolean, days: DayProjection,
+    metadata: Map<string, ProcessMetadata>) {
     if (!this.overview) return;
     try {
-      const valid = this.overview.readRows<{ events: number; requests: number; actual_events: number; actual_requests: number }>(`SELECT events,requests,
-        (SELECT COUNT(*) FROM overview_fact_events WHERE revision=r.revision) AS actual_events,
-        (SELECT COUNT(*) FROM overview_fact_requests WHERE revision=r.revision) AS actual_requests
-        FROM overview_fact_revisions r WHERE revision=? AND format=2`, [revision])[0];
-      if (!valid || valid.events !== valid.actual_events || valid.requests !== valid.actual_requests) return;
-      const rows = this.overview.readRows<{ id: string; ordinal: number; kind: WeeklyReviewEvent["kind"]; turn_id: string; tool: string | null; status: WeeklyReviewEvent["status"] | null; json: string }>(`
-        SELECT id,ordinal,kind,turn_id,tool,status,json FROM overview_fact_events WHERE revision=? AND active=1
-          AND kind IN ('tool_call','compression') AND (time_ms>=? AND time_ms<? OR turn_id IN (SELECT value FROM json_each(?)))
-        ORDER BY ordinal`, [revision, bounds.fromMs, bounds.toMs, JSON.stringify(turns)]);
-      const events = rows.map((row): WeeklyReviewEvent => ({ ...JSON.parse(row.json), id: row.id, ordinal: row.ordinal, kind: row.kind,
-        turnId: row.turn_id, sessionId, tool: row.tool ?? undefined, status: row.status ?? undefined, recordLine: 0 }));
-      const counts = this.overview.readRows<{ compressions: number; missing_events: number; missing_requests: number }>(`SELECT
-        (SELECT COUNT(*) FROM overview_fact_events WHERE revision=? AND active=1 AND kind='compression') AS compressions,
-        (SELECT COUNT(*) FROM overview_fact_events WHERE revision=? AND active=1 AND time_ms IS NULL) AS missing_events,
-        (SELECT COUNT(*) FROM overview_fact_requests WHERE revision=? AND time_ms IS NULL) AS missing_requests`, [revision, revision, revision])[0]!;
-      const activityDays = this.overview.readRows<{ day: string | null }>(`SELECT DISTINCT overview_local_day(time_ms,?) AS day
-        FROM overview_fact_events WHERE revision=? AND active=1 AND kind IN ('assistant','thinking','tool_result') AND time_ms>=? AND time_ms<?`,
-        [timezone, revision, bounds.fromMs, bounds.toMs]).flatMap(row => row.day === null ? [] : [row.day]);
-      return { events, activityDays, retainedCompressions: counts.compressions, missingTimeEvents: counts.missing_events, missingTimeRequests: counts.missing_requests };
+      const counts = metadata.get(revision);
+      if (!counts || !this.overview.readRows("SELECT 1 FROM overview_fact_revisions WHERE revision=? AND format=2 AND events=? AND requests=?",
+        [revision, counts.events, counts.requests]).length) return;
+      // 依照原始顺序访问消息身份，避免哈希顺序的随机正文页读取。
+      const boundaryEvents = this.overview.readRows<{ id: string; ordinal: number; kind: WeeklyReviewEvent["kind"]; turn_id: string; json: string }>(`
+        SELECT id,ordinal,kind,turn_id,json FROM overview_fact_events WHERE revision=?
+          AND ${includeRounds ? "kind IN ('user','assistant')" : "kind='user' AND active=1 AND time_ms>=? AND time_ms<?"} ORDER BY ordinal`,
+        [revision, ...(includeRounds ? [] : [bounds.fromMs, bounds.toMs])]).map((row): WeeklyReviewEvent => ({ ...JSON.parse(row.json), id: row.id, sessionId, ordinal: row.ordinal,
+          kind: row.kind, turnId: row.turn_id, recordLine: 0 }));
+      const processFacts = (turns: string[]) => {
+        try {
+          const rows = includeRounds ? this.overview!.readRows<{ id: string; ordinal: number; kind: WeeklyReviewEvent["kind"]; turn_id: string; tool: string | null; status: WeeklyReviewEvent["status"] | null; json: string }>(`
+            SELECT id,ordinal,kind,turn_id,tool,status,json FROM overview_fact_events WHERE revision=? AND active=1
+              AND kind IN ('tool_call','compression') AND (time_ms>=? AND time_ms<? OR turn_id IN (SELECT value FROM json_each(?)))
+            ORDER BY ordinal`, [revision, bounds.fromMs, bounds.toMs, JSON.stringify(turns)]) : [];
+          const events = rows.map((row): WeeklyReviewEvent => ({ ...JSON.parse(row.json), id: row.id, ordinal: row.ordinal, kind: row.kind,
+            turnId: row.turn_id, sessionId, tool: row.tool ?? undefined, status: row.status ?? undefined, recordLine: 0 }));
+          const activityDays = this.overview!.readRows<{ day: string | null }>(`SELECT DISTINCT ${days.sql} AS day
+            FROM overview_fact_events WHERE revision=? AND active=1 ${includeRounds ? "AND kind IN ('assistant','thinking','tool_result')" : ""} AND time_ms>=? AND time_ms<?`,
+            [...days.values, revision, bounds.fromMs, bounds.toMs]).flatMap(row => row.day === null ? [] : [row.day]);
+          return { events, activityDays, retainedCompressions: counts.compressions, missingTimeEvents: counts.missing_events, missingTimeRequests: counts.missing_requests };
+        } catch { return; }
+      };
+      const requestFacts = (turns: string[]) => {
+        try {
+          const selected = JSON.stringify(turns);
+          return this.overview!.readRows<{ id: string; ordinal: number; occurred_at: string | null; model: string | null;
+            input_tokens: number | null; output_tokens: number | null; message_id: string | null; json: string }>(`
+            SELECT id,ordinal,occurred_at,model,input_tokens,output_tokens,message_id,json FROM overview_fact_requests WHERE revision=?
+              AND (time_ms>=? AND time_ms<? OR json_extract(json,'$.usage.turnId') IN (SELECT value FROM json_each(?))
+                OR (?<>'[]' AND json_extract(json,'$.usage.turnId') IS NULL)) ORDER BY ordinal`,
+            [revision, bounds.fromMs, bounds.toMs, selected, selected]).map((row): OverviewRequest => ({ sessionId, ordinal: row.ordinal,
+              usage: { ...JSON.parse(row.json).usage, id: row.id, ...(row.occurred_at === null ? {} : { occurredAt: row.occurred_at }),
+                ...(row.model === null ? {} : { model: row.model }), ...(row.input_tokens === null ? {} : { inputTokens: row.input_tokens }),
+                ...(row.output_tokens === null ? {} : { outputTokens: row.output_tokens }), ...(row.message_id === null ? {} : { messageId: row.message_id }) } }));
+        } catch { return; }
+      };
+      return { boundaryEvents, processFacts, requestFacts };
     } catch { return; }
   }
-  private prepare(revision: string, sourceRevision: string, session: SessionSummary, bounds: { fromMs: number; toMs: number }, timezone: string): void {
+  private prepare(revision: string, sourceRevision: string, session: SessionSummary, bounds: { fromMs: number; toMs: number }, timezone: string, days: DayProjection,
+    processMetadata: () => Map<string, ProcessMetadata>): void {
     const retained = this.database.prepare("SELECT format,json FROM weekly_revisions WHERE revision=? AND format IN (5,6)").get(revision) as { format: number; json: string } | undefined;
     if (retained?.format === 6) return;
     if (retained?.format === 5) {
@@ -171,14 +215,16 @@ export class WeeklyReviewFactStore {
       this.database.prepare("UPDATE weekly_revisions SET format=6,json=? WHERE revision=? AND format=5").run(JSON.stringify(metadata), revision);
       return;
     }
+    const includeRounds = session.relationship !== "child";
+    const cached = this.processSource(sourceRevision, session.id, bounds, includeRounds, days, processMetadata());
     const source = this.sessions.weeklyReviewRevisionFacts(sourceRevision, session.id,
-      { ...bounds, client: session.client, timezone, processFacts: turns => this.processFacts(sourceRevision, session.id, bounds, turns, timezone) });
+      { ...bounds, client: session.client, timezone, includeRounds, ...cached });
     const calls = new Map(pairToolCalls(source.events).map(event => [event.id, event]));
     const events = source.events.filter(event => isActivityEvent(event) && event.kind !== "tool_result")
       .map(event => ({ ...event, ...(calls.get(event.id) ?? {}) }));
     const complete = !session.gaps.some(gap => riskyGaps.has(gap.kind) && !bodyOnlyGaps.has(gap.messageDescriptor?.key ?? "")
       || requestIdentityGaps.has(gap.messageDescriptor?.key ?? ""));
-    const { rounds, unassigned } = weeklyRoundFacts(events, source.requests, complete);
+    const { rounds, unassigned } = includeRounds ? weeklyRoundFacts(events, source.requests, complete) : { rounds: [], unassigned: 0 };
     const metadata = { activityDays: source.activityDays ?? [], retainedCompressions: source.retainedCompressions ?? events.filter(event => event.kind === "compression").length,
       compressionSupported: compressionClients.has(session.client), compressionComplete: complete,
       missingTimeEvents: source.missingTimeEvents ?? events.filter(event => instant(event.occurredAt ?? "") === undefined).length,
@@ -196,8 +242,8 @@ export class WeeklyReviewFactStore {
     }).immediate();
   }
   async source(query: OverviewQuery, now: Date): Promise<{ version: string; facts: WeeklySessionFacts[] }> {
-    const { version, sessions } = this.sessions.usageFactSessions(query.version), range = weeklyReviewRange(query, now);
-    const timezone = resolveTimezone(query.timezone);
+    const range = weeklyReviewRange(query, now), timezone = resolveTimezone(query.timezone), bounds = weeklyReviewBounds(range, timezone);
+    const { version, sessions } = this.sessions.usageFactSessions(query.version);
     const candidates = sessions.filter(({ session }) => {
       if (!matchesGlobalSession(session, query)) return false;
       const started = localDay(session.startedAt, timezone), updated = localDay(session.updatedAt, timezone);
@@ -205,26 +251,40 @@ export class WeeklyReviewFactStore {
     });
     const facts: WeeklySessionFacts[] = [];
     const used: string[] = [];
-    const bounds = weeklyReviewBounds(range, timezone), low = bounds.fromMs, high = bounds.toMs;
-    const inRange = (value?: string) => { const day = localDay(value, timezone); return day !== null && day >= range.from && day <= range.to; };
+    const low = bounds.fromMs, high = bounds.toMs;
+    const dayEnds = Array.from({ length: 7 }, (_, index) => {
+      const day = addDays(range.from, index);
+      return { day, end: weeklyReviewBounds({ ...range, from: day, to: day }, timezone).toMs };
+    });
+    const days = { sql: `CASE ${dayEnds.map(() => "WHEN time_ms<? THEN ?").join(" ")} END`, values: dayEnds.flatMap(value => [value.end, value.day]) };
+    const inRange = (value?: string) => { const time = instant(value ?? ""); return time !== undefined && time >= low && time < high; };
     const eventsQuery = this.database.prepare("SELECT json FROM weekly_events WHERE revision=? AND time_ms>=? AND time_ms<?");
     const requestsQuery = this.database.prepare("SELECT json FROM weekly_requests WHERE revision=? AND time_ms>=? AND time_ms<?");
     const roundsQuery = this.database.prepare("SELECT json FROM weekly_rounds WHERE revision=? AND (end_ms>=? AND end_ms<? OR start_ms>=? AND start_ms<?)");
-    for (const { revision: sourceRevision, session } of candidates) {
-      // 未变化且活动已结束的来源可复用覆盖窗口；跨日只丢弃窗口外事件，不重新扫描原历史。
-      const updated = localDay(session.updatedAt, timezone);
-      const reusable = updated ? this.database.prepare(`SELECT revision FROM weekly_revisions WHERE source_revision=? AND format IN (5,6)
-        AND json_extract(revision,'$[3]')=? AND json_extract(revision,'$[1]')<=? AND json_extract(revision,'$[2]')>=?
-        ORDER BY json_extract(revision,'$[2]') DESC LIMIT 1`).get(sourceRevision, timezone, range.from, updated < range.to ? updated : range.to) as { revision: string } | undefined : undefined;
-      const revision = reusable?.revision ?? JSON.stringify([sourceRevision, range.from, range.to, timezone]);
-      used.push(revision);
-      this.prepare(revision, sourceRevision, session, bounds, timezone);
-      const metadata = JSON.parse((this.database.prepare("SELECT json FROM weekly_revisions WHERE revision=?").get(revision) as { json: string }).json) as Omit<WeeklySessionFacts, "session" | "events" | "requests" | "rounds">;
-      const events = (eventsQuery.all(revision, low, high) as { json: string }[]).map(row => JSON.parse(row.json) as WeeklyReviewEvent).filter(event => inRange(event.occurredAt));
-      const requests = (requestsQuery.all(revision, low, high) as { json: string }[]).map(row => JSON.parse(row.json) as OverviewRequest).filter(request => inRange(request.usage.occurredAt));
-      const rounds = (roundsQuery.all(revision, low, high, low, high) as { json: string }[]).map(row => JSON.parse(row.json) as WeeklyRoundFact)
-        .filter(round => inRange(round.endedAt) || inRange(round.startedAt));
-      facts.push({ session, events, requests, rounds, ...metadata });
+    for (let offset = 0; offset < candidates.length; offset += 32) {
+      const batch = candidates.slice(offset, offset + 32);
+      let metadata: Map<string, ProcessMetadata> | undefined;
+      const processMetadata = () => metadata ??= this.processMetadata(batch.map(row => row.revision));
+      this.database.transaction(() => {
+        for (const { revision: sourceRevision, session } of batch) {
+          // 未变化且活动已结束的来源可复用覆盖窗口；跨日只丢弃窗口外事件，不重新扫描原历史。
+          const updated = localDay(session.updatedAt, timezone);
+          const reusable = updated ? this.database.prepare(`SELECT revision FROM weekly_revisions WHERE source_revision=? AND format IN (5,6)
+            AND json_extract(revision,'$[3]')=? AND json_extract(revision,'$[1]')<=? AND json_extract(revision,'$[2]')>=?
+            AND COALESCE(json_extract(revision,'$[4]'),'user')=?
+            ORDER BY json_extract(revision,'$[2]') DESC LIMIT 1`).get(sourceRevision, timezone, range.from, updated < range.to ? updated : range.to,
+              session.relationship === "child" ? "child" : "user") as { revision: string } | undefined : undefined;
+          const revision = reusable?.revision ?? JSON.stringify([sourceRevision, range.from, range.to, timezone, session.relationship === "child" ? "child" : "user"]);
+          used.push(revision);
+          this.prepare(revision, sourceRevision, session, bounds, timezone, days, processMetadata);
+          const metadata = JSON.parse((this.database.prepare("SELECT json FROM weekly_revisions WHERE revision=?").get(revision) as { json: string }).json) as Omit<WeeklySessionFacts, "session" | "events" | "requests" | "rounds">;
+          const events = (eventsQuery.all(revision, low, high) as { json: string }[]).map(row => JSON.parse(row.json) as WeeklyReviewEvent).filter(event => inRange(event.occurredAt));
+          const requests = (requestsQuery.all(revision, low, high) as { json: string }[]).map(row => JSON.parse(row.json) as OverviewRequest).filter(request => inRange(request.usage.occurredAt));
+          const rounds = (roundsQuery.all(revision, low, high, low, high) as { json: string }[]).map(row => JSON.parse(row.json) as WeeklyRoundFact)
+            .filter(round => inRange(round.endedAt) || inRange(round.startedAt));
+          facts.push({ session, events, requests, rounds, ...metadata });
+        }
+      }).immediate();
       await nextTurn();
     }
     // 只保留仍能绑定到某个索引版本的修订，不让追加历史造成派生缓存无限增长。
