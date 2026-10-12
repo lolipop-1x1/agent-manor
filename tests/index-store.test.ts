@@ -66,6 +66,22 @@ test("SQLite新结构与WAL；登记、完整版本和手动关联重开后保�
   } finally { second.close(); }
 }));
 
+test("总览覆盖快照在 SQL 中移除正文，计数与映射覆盖保持一致", async () => fixture(async ({ repositoryPath, sourcePath, store, repositoryId, refresh }) => {
+  await writeFile(sourcePath, encode([meta(repositoryPath), call(repositoryPath, "read"), output("read")]));
+  const version = await refresh();
+  const full = store.getSnapshot(repositoryId, version);
+  const narrow = store.getCoverageSnapshot(repositoryId, version);
+  assert.deepEqual(buildCoverage(narrow), buildCoverage(full));
+  assert.deepEqual(narrow.mappings, full.mappings);
+  assert.deepEqual(narrow.sources, full.sources);
+  assert.equal(narrow.baseline.files[0]!.content, "");
+  assert.ok(narrow.events.every(event => event.input === undefined && event.output === undefined
+    && event.fragments.every(fragment => fragment.content === "")));
+  assert.ok(JSON.stringify(narrow).length < JSON.stringify(full).length);
+  assert.deepEqual(store.getSnapshot(repositoryId, version), full);
+  assert.throws(() => store.getCoverageSnapshot(repositoryId, "missing"), error => error instanceof StoreError && error.code === "VERSION_NOT_FOUND");
+}));
+
 test("无变化快检复用正文和旧版，当前单文件变化只使对应失效", async () => fixture(async ({ repositoryPath, sourcePath, store, repositoryId, refresh }) => {
   const content = "const alpha = 1;\nconst beta = 2;\n";
   await writeFile(join(repositoryPath, "a.ts"), content);

@@ -119,9 +119,16 @@ export class AnalysisStore {
     return JSON.stringify({ partsFormat: 4, value: header });
   }
 
-  private readPayload<T>(json: string, repositoryId: string, kind: PayloadKind, owner: string): T {
+  private readPayload<T>(json: string, repositoryId: string, kind: PayloadKind, owner: string, coverageOnly = false): T {
     const decoded = JSON.parse(json) as { value: Record<string, unknown> };
-    const rows = this.database.prepare("SELECT field,json FROM payload_parts WHERE repository_id=? AND kind=? AND owner=? ORDER BY field,part")
+    // 覆盖计算只用路径、身份与已算好的映射；在 SQLite 内移除正文，避免读回整仓库及工具输出。
+    const projection = coverageOnly ? `CASE field
+      WHEN 'baseline.files' THEN (SELECT json_group_array(json_set(value,'$.content','')) FROM json_each(p.json))
+      WHEN 'events' THEN (SELECT json_group_array(json_set(json_remove(value,'$.input','$.output','$.reason'),
+        '$.fragments',json(COALESCE((SELECT json_group_array(json_set(f.value,'$.content','')) FROM json_each(e.value,'$.fragments') f),'[]')))) FROM json_each(p.json) e)
+      WHEN 'sources' THEN (SELECT json_group_array(json_remove(value,'$.events','$.cursor','$.gaps')) FROM json_each(p.json))
+      ELSE json END` : "json";
+    const rows = this.database.prepare(`SELECT field,${projection} AS json FROM payload_parts p WHERE repository_id=? AND kind=? AND owner=? ORDER BY field,part`)
       .iterate(repositoryId, kind, owner) as Iterable<{ field: string; json: string }>;
     for (const row of rows) {
       const path = row.field.split(".");
@@ -182,13 +189,22 @@ export class AnalysisStore {
   }
 
   getSnapshot(repositoryId: string, version?: string): AnalysisSnapshot {
+    return this.readSnapshot(repositoryId, version, false);
+  }
+
+  /** 总览覆盖摘要省略基线正文、事件正文与工具参数，原证据仍由完整快照接口读取。 */
+  getCoverageSnapshot(repositoryId: string, version?: string): AnalysisSnapshot {
+    return this.readSnapshot(repositoryId, version, true);
+  }
+
+  private readSnapshot(repositoryId: string, version: string | undefined, coverageOnly: boolean): AnalysisSnapshot {
     const repository = this.getRepository(repositoryId);
     const selected = version ?? repository.version;
     if (!selected) throw new StoreError("ANALYSIS_NOT_READY", "仓库尚无完整分析结果", { key: "diagnostics.index.store.m003" });
     const row = this.database.prepare("SELECT snapshot AS json FROM versions WHERE repository_id=? AND version=?")
       .get(repositoryId, selected) as JsonRow | undefined;
     if (!row) throw new StoreError("VERSION_NOT_FOUND", "分析结果版本不可用：不存在或已被淘汰", { key: "diagnostics.index.store.m004" });
-    const snapshot = this.readPayload<AnalysisSnapshot>(row.json, repositoryId, "snapshot", selected);
+    const snapshot = this.readPayload<AnalysisSnapshot>(row.json, repositoryId, "snapshot", selected, coverageOnly);
     snapshot.sources = snapshot.sources.map((source) => this.sourceMetadata(source));
     snapshot.repository.stale = repository.stale || selected !== repository.version;
     snapshot.baseline.repository = { ...snapshot.repository };

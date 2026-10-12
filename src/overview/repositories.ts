@@ -32,7 +32,7 @@ export function buildOverviewRepositories(store: AnalysisStore, repositories: Re
       continue;
     }
     let snapshot: AnalysisSnapshot;
-    try { snapshot = store.getSnapshot(repository.id, repository.version); }
+    try { snapshot = store.getCoverageSnapshot(repository.id, repository.version); }
     catch (error) {
       if (!(error instanceof StoreError)) throw error;
       if (!projects || projects.has(repository.path)) result.push({ repository, version: repository.version,

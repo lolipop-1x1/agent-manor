@@ -25,7 +25,7 @@ const range: OverviewRange = { from: "2026-10-11", to: "2026-10-12", all: false,
 
 test("仓库仅计算所选范围，不返回两期比较，模型局部条件不筛代码", () => {
   const calls: string[] = [];
-  const store = { getSnapshot: (_id: string, version: string) => { calls.push(version); return snapshot; } } as unknown as AnalysisStore;
+  const store = { getCoverageSnapshot: (_id: string, version: string) => { calls.push(version); return snapshot; } } as unknown as AnalysisStore;
   const [row] = buildOverviewRepositories(store, [repository], source, { projects: [repository.path], clients: ["codex"], models: ["unknown-model"] }, range, "Asia/Shanghai");
   assert.deepEqual(calls, ["synthetic-version"]);
   assert.equal(row!.baselineHash, "synthetic-baseline");
@@ -38,7 +38,7 @@ test("仓库仅计算所选范围，不返回两期比较，模型局部条件�
 });
 
 test("未就绪、失效和过期仓库独立呈现，不自动分析或换成新版本", () => {
-  const store = { getSnapshot: () => { throw new StoreError("VERSION_NOT_FOUND", "Synthetic unavailable"); } } as unknown as AnalysisStore;
+  const store = { getCoverageSnapshot: () => { throw new StoreError("VERSION_NOT_FOUND", "Synthetic unavailable"); } } as unknown as AnalysisStore;
   const rows = buildOverviewRepositories(store, [{ ...repository, version: undefined }, { ...repository, stale: true }], source, {}, range, "UTC");
   assert.deepEqual(rows.map(row => row.state), ["unready", "unavailable"]);
   assert.equal(rows[1]!.version, "synthetic-version");
@@ -50,7 +50,7 @@ test("未就绪、失效和过期仓库独立呈现，不自动分析或换成�
 test("同一文件兼有精确和近似范围时，读取覆盖文件数只计一次", () => {
   const mixed = { ...snapshot, mappings: [{ eventId: "current", filePath: "src/a.ts", kind: "read" as const,
     exactRanges: [{ start: 1, end: 1 }], nearRanges: [{ start: 2, end: 2 }], ruleVersion: "synthetic-rule" }] };
-  const store = { getSnapshot: () => mixed } as unknown as AnalysisStore;
+  const store = { getCoverageSnapshot: () => mixed } as unknown as AnalysisStore;
   const [row] = buildOverviewRepositories(store, [repository], source, {}, range, "Asia/Shanghai");
   assert.equal(row!.summary!.readExact.files, 1); assert.equal(row!.summary!.readNear.files, 1);
   assert.equal(row!.readCoveredFiles, 1); assert.equal(row!.editCoveredFiles, 0);
