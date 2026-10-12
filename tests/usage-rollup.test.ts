@@ -180,6 +180,22 @@ test("按修订组合复用统计而更新当前会话身份，支持空索引�
   assert.throws(() => combineUsageRollups([current, { ...current, timezone: "Asia/Shanghai" }], "index-1", mixed.sessions));
 });
 
+test("持久化分片字节数加会话头部可保守估算组合 rollup 大小", () => {
+  const parts = mixed.sessions.map(current => {
+    const part = buildUsageRollup({ ...mixed, sessions: [current],
+      requests: mixed.requests.filter(item => item.sessionId === current.id) }, "UTC", estimate);
+    part.sessions = [];
+    return part;
+  });
+  const partsBytes = parts.reduce((total, part) => total + Buffer.byteLength(JSON.stringify(part)), 0);
+  const headerBytes = Buffer.byteLength(JSON.stringify({ version: mixed.version, timezone: "UTC", sessions: mixed.sessions,
+    cells: [], sessionIdsWithUsage: [], models: [] }));
+  const combined = combineUsageRollups(parts, mixed.version, mixed.sessions, "UTC");
+  const serializedBytes = Buffer.byteLength(JSON.stringify(combined));
+  assert.ok(serializedBytes <= partsBytes + headerBytes + 1024,
+    `${serializedBytes} combined bytes should fit in the ${partsBytes + headerBytes + 1024} byte upper bound`);
+});
+
 test("每小时证据紧凑有界，同时间按身份排序，跨cell合并后可恢复完整原始请求", () => {
   const count = 1000;
   const input = source([session("large")], Array.from({ length: count }, (_, index) => ["large", usage(`request-${String(count - index).padStart(4, "0")}`, {

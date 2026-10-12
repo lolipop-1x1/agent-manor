@@ -9,6 +9,8 @@ const format = ROLLUP_FORMAT_VERSION * 1000 + USAGE_FACT_FORMAT_VERSION;
 const maxDiskBytes = 256 * 1024 * 1024;
 const totalDefaults = accumulator().totals;
 
+interface StoredRollup { rollup: UsageRollup; bytes: number }
+
 function validRollup(value: unknown, timezone: string): value is UsageRollup {
   if (!value || typeof value !== "object") return false;
   const item = value as UsageRollup;
@@ -61,11 +63,18 @@ export class UsageRollupStore {
   }
 
   get(revision: string, client: string, priceVersion: string, timezone: string): UsageRollup | undefined {
-    const row = this.database.prepare(`SELECT json FROM usage_rollup_cache
+    return this.getWithBytes(revision, client, priceVersion, timezone)?.rollup;
+  }
+
+  getWithBytes(revision: string, client: string, priceVersion: string, timezone: string): StoredRollup | undefined {
+    const row = this.database.prepare(`SELECT json,bytes FROM usage_rollup_cache
       WHERE revision=? AND client=? AND price_version=? AND timezone=? AND format=?`)
-      .get(revision, client, priceVersion, timezone, format) as { json: string } | undefined;
+      .get(revision, client, priceVersion, timezone, format) as { json: string; bytes: number } | undefined;
     if (!row) return;
-    try { const parsed: unknown = JSON.parse(row.json); if (validRollup(parsed, timezone)) return parsed; }
+    try {
+      const parsed: unknown = JSON.parse(row.json);
+      if (validRollup(parsed, timezone)) return { rollup: parsed, bytes: Math.max(row.bytes, Buffer.byteLength(row.json)) };
+    }
     catch { /* 派生缓存损坏时丢弃该项，从结构化事实重新准备。 */ }
     const removed = this.database.prepare("DELETE FROM usage_rollup_cache WHERE revision=? AND client=? AND price_version=? AND timezone=? RETURNING bytes")
       .get(revision, client, priceVersion, timezone) as { bytes: number } | undefined;
@@ -73,7 +82,7 @@ export class UsageRollupStore {
     return undefined;
   }
 
-  put(revision: string, client: string, priceVersion: string, timezone: string, rollup: UsageRollup): void {
+  put(revision: string, client: string, priceVersion: string, timezone: string, rollup: UsageRollup): number {
     const json = JSON.stringify(rollup), bytes = Buffer.byteLength(json);
     this.database.transaction(() => {
       const previous = this.database.prepare("SELECT bytes FROM usage_rollup_cache WHERE revision=? AND client=? AND price_version=? AND timezone=?")
@@ -84,6 +93,7 @@ export class UsageRollupStore {
       this.bytes += bytes - (previous?.bytes ?? 0);
       this.trim();
     })();
+    return bytes;
   }
 
   touch(priceVersion: string, timezone: string): void {

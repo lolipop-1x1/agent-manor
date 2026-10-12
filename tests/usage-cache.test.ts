@@ -19,12 +19,28 @@ test("结果缓存同时限制体积和条目，使用 LRU 且不驻留过大项
   cache.set("d", "ok"); cache.clear(); assert.equal(cache.get("d"), undefined);
 });
 
+test("结果缓存接受保守字节上界，避免序列化并正确维护替换顺序", () => {
+  let serialized = 0;
+  const value = { toJSON: () => { serialized += 1; throw new Error("不应序列化带估算值的缓存项"); } };
+  const cache = new UsageResultCache<typeof value>(8, 2);
+  cache.set("a", value, 4); cache.set("b", value, 4);
+  assert.equal(cache.get("a"), value);
+  cache.set("a", value, 5);
+  assert.equal(cache.get("a"), value);
+  assert.equal(cache.get("b"), undefined, "替换项更新估算后按 LRU 淘汰最旧项");
+  cache.set("oversized", value, 9);
+  assert.equal(cache.get("oversized"), undefined, "超过缓存预算的估算项不驻留");
+  assert.equal(serialized, 0);
+});
+
 test("持久化汇总保留旧修订版本，淘汰旧价格/时区并可重建损坏缓存", t => {
   const home = mkdtempSync(join(tmpdir(), "usage-cache-test-")), path = join(home, "rollups.sqlite");
   t.after(() => rmSync(home, { recursive: true, force: true }));
   let store = new UsageRollupStore(path);
   const rollup: UsageRollup = { version: "index-a", timezone: "UTC", sessions: [], cells: [], sessionIdsWithUsage: [], models: [] };
-  store.put("revision-old", "codex", "price-a", "UTC", rollup);
+  const bytes = Buffer.byteLength(JSON.stringify(rollup));
+  assert.equal(store.put("revision-old", "codex", "price-a", "UTC", rollup), bytes);
+  assert.deepEqual(store.getWithBytes("revision-old", "codex", "price-a", "UTC"), { rollup, bytes });
   store.put("revision-new", "codex", "price-a", "UTC", rollup);
   store.put("removed", "codex", "price-a", "UTC", rollup);
   store.close(); store = new UsageRollupStore(path);

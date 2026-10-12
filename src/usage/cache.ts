@@ -12,10 +12,14 @@ export class UsageResultCache<T> {
     return entry.value;
   }
 
-  set(key: string, value: T): void {
+  /** 传入保守字节上界可避免序列化；未传时按 JSON 字节数精确计费。 */
+  set(key: string, value: T, estimatedBytes?: number): void {
     const previous = this.entries.get(key);
     if (previous) { this.entries.delete(key); this.bytes -= previous.bytes; }
-    const bytes = Buffer.byteLength(JSON.stringify(value));
+    if (estimatedBytes !== undefined && (!Number.isSafeInteger(estimatedBytes) || estimatedBytes < 0)) {
+      throw new RangeError("缓存字节估算必须是非负安全整数");
+    }
+    const bytes = estimatedBytes ?? Buffer.byteLength(JSON.stringify(value));
     if (bytes > this.maxBytes) return;
     this.entries.set(key, { value, bytes }); this.bytes += bytes;
     while (this.entries.size > this.maxEntries || this.bytes > this.maxBytes) {

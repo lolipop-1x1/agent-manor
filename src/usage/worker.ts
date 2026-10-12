@@ -25,9 +25,10 @@ interface RollupSource { version: string; sessions: ReturnType<SessionStore["usa
 interface Waiter { query: UsageQuery; required?: Set<string>; resolve(rollup: UsageRollup): void; reject(error: unknown): void }
 interface PreparationJob {
   query: UsageQuery; progress: UsagePreparationStatus; source?: RollupSource; metadata?: Map<string, UsageFactMetadata>;
-  parts: Map<string, UsageRollup>; waiters: Waiter[]; completion?: Promise<UsageRollup>;
+  parts: Map<string, UsageRollup>; partBytes: number; waiters: Waiter[]; completion?: Promise<UsageRollup>;
 }
 const preparing = new Map<string, PreparationJob>(), reading = new Map<string, Promise<UsageSource>>();
+const combinedRollupSafetyBytes = 1024;
 
 const send = (message: UsageWorkerResponse) => port.postMessage(message);
 const update = (status: UsagePreparationStatus) => send({ type: "status", status });
@@ -95,7 +96,7 @@ function preparationJob(query: UsageQuery, pricing: PricingStatus): PreparationJ
   const key = preparationKey(query), current = preparing.get(key);
   if (current) return current;
   const job: PreparationJob = { query, progress: { state: "preparing", version: query.version, priceVersion: pricing.version,
-    timezone: query.timezone, preparedSessions: 0, totalSessions: 0 }, parts: new Map(), waiters: [] };
+    timezone: query.timezone, preparedSessions: 0, totalSessions: 0 }, parts: new Map(), partBytes: 0, waiters: [] };
   update(job.progress);
   const completion = Promise.resolve().then(async () => {
     const source = sessions.usageFactSessions(query.version), estimate = createPricingEstimator(pricing);
@@ -105,9 +106,10 @@ function preparationJob(query: UsageQuery, pricing: PricingStatus): PreparationJ
     job.source = source;
     job.metadata = new Map(sessions.usageFactMetadata(source.sessions.map(item => item.revision)).map(value => [value.revision, value]));
     const remaining = source.sessions.filter(({ revision, session }) => {
-      const part = persisted.get(revision, session.client, pricing.version, query.timezone!);
+      const cached = persisted.getWithBytes(revision, session.client, pricing.version, query.timezone!);
+      const part = cached?.rollup;
       if (!part) return true;
-      job.parts.set(revision, part); job.progress.preparedSessions += 1; return false;
+      job.parts.set(revision, part); job.partBytes += cached.bytes; job.progress.preparedSessions += 1; return false;
     });
     const recent = Date.now() - 30 * 86_400_000;
     remaining.sort((left, right) => {
@@ -127,12 +129,15 @@ function preparationJob(query: UsageQuery, pricing: PricingStatus): PreparationJ
       const priority = needed ? remaining.findIndex(item => needed.includes(item.revision)) : -1;
       const { revision, session } = remaining.splice(priority < 0 ? 0 : priority, 1)[0]!;
       // 新旧分析版本可交错准备相同修订，重新检查其他 family 在上一分片完成的持久结果。
-      let part = persisted.get(revision, session.client, pricing.version, query.timezone!);
-      if (!part) {
+      const cached = persisted.getWithBytes(revision, session.client, pricing.version, query.timezone!);
+      let part: UsageRollup;
+      if (cached) {
+        part = cached.rollup; job.partBytes += cached.bytes;
+      } else {
         part = buildUsageRollup({ version: source.version, sessions: [session],
           requests: sessions.usageFacts(revision).map(usage => ({ sessionId: session.id, usage })) }, query.timezone!, estimate);
         // 当前版本摘要在组合时提供，持久化项只存不可变修订的用量和预览。
-        part.sessions = []; persisted.put(revision, session.client, pricing.version, query.timezone!, part);
+        part.sessions = []; job.partBytes += persisted.put(revision, session.client, pricing.version, query.timezone!, part);
       }
       job.parts.set(revision, part); job.progress.preparedSessions += 1;
       releaseReady(job);
@@ -142,7 +147,10 @@ function preparationJob(query: UsageQuery, pricing: PricingStatus): PreparationJ
       await nextTurn();
     }
     const rollup = assembled(job);
-    combined.set(key, rollup);
+    // 分片字节覆盖 cells 和 facets；只补当前会话摘要及外层结构，避免序列化全量组合结果。
+    const headerBytes = Buffer.byteLength(JSON.stringify({ version: source.version, timezone: query.timezone!, sessions: source.sessions,
+      cells: [], sessionIdsWithUsage: [], models: [] }));
+    combined.set(key, rollup, job.partBytes + headerBytes + combinedRollupSafetyBytes);
     persisted.touch(pricing.version, query.timezone!);
     persisted.prune((revisions.prepare("SELECT id FROM session_revisions").all() as { id: string }[]).map(row => row.id));
     update({ ...job.progress, state: "ready" });
