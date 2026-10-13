@@ -165,6 +165,12 @@ export async function parseSessionSource(source: SourceLocation, sink: SessionSi
     candidate = undefined;
     interrupted = false;
   };
+  const interruptCandidate = (messages: readonly string[] | undefined, force = false) => {
+    if (!candidate || (!force && !messages?.includes(candidate.id))) return;
+    candidate = { ...candidate, interrupted: true, final: undefined, finalEvidence: undefined, finalAt: undefined };
+    interrupted = true;
+    sink.message(candidate);
+  };
   const message = (key: string, kind: MessageKind, body: string, row: number, extra: Partial<SessionMessage> = {}, newTurn = false, modelRequest = true): SessionMessage => {
     let identity = seen.get(key);
     if (!identity) {
@@ -174,6 +180,9 @@ export async function parseSessionSource(source: SourceLocation, sink: SessionSi
     }
     const value: SessionMessage = { id: `${id}:message:${digest(key)}`, sessionId: id, ordinal: identity.ordinal,
       recordLine: row, turnId: identity.turnId, kind, text: body, ...extra };
+    if (timing?.interruptedMessage(value.id)) {
+      value.interrupted = true; value.final = undefined; value.finalEvidence = undefined; value.finalAt = undefined;
+    }
     if (value.model) models.add(value.model);
     if (kind === "user" && !value.copied && !firstUserTitle) {
       firstUserTitle = (source.client === "codex" ? userTitle(body) : body.replace(/\s+/g, " ").trim().slice(0, 120)) || undefined;
@@ -182,7 +191,14 @@ export async function parseSessionSource(source: SourceLocation, sink: SessionSi
     sink.message(value);
     if (modelRequest) timing?.message(value);
     if (kind === "compression" && !value.copied) usage.compression();
-    if (kind === "assistant") candidate = value;
+    if (kind === "assistant") {
+      // 同轮继续响应时只保留当前候选，避免后续取消仍留下早先片段的终答标记。
+      if (candidate?.final && candidate.id !== value.id && candidate.turnId === value.turnId && !value.copied) {
+        sink.message({ ...candidate, final: undefined, finalEvidence: undefined, finalAt: undefined });
+      }
+      candidate = value;
+      interrupted = value.interrupted === true;
+    }
     if (kind === "tool_call") candidate = undefined;
     return value;
   };
@@ -261,8 +277,11 @@ export async function parseSessionSource(source: SourceLocation, sink: SessionSi
     const copied = copyBeforeOrdinal !== undefined && ordinal !== undefined && ordinal < copyBeforeOrdinal ? true : undefined;
     const extra: Partial<SessionMessage> = { occurredAt, copied,
       ...(ideSnapshot && record.textDescriptor ? { textDescriptor: record.textDescriptor as MessageDescriptor } : {}) };
-    if (!copied && source.client !== "codex" && (record.interruptedMessageId || record.isApiErrorMessage === true)) {
-      timing?.interrupt(string(record.interruptedMessageId));
+    const nativeInterrupted = record.isApiErrorMessage === true || record.isInterrupted === true || record.interrupted === true
+      || Boolean(record.interruptedMessageId);
+    const nativeRole = string(object(record.message).role) ?? string(record.role) ?? string(record.type);
+    if (!copied && source.client !== "codex" && nativeRole !== "assistant" && nativeInterrupted) {
+      interruptCandidate(timing?.interrupt(string(record.interruptedMessageId)));
     }
     const title = string(record.aiTitle) ?? string(record.title) ?? (record.type === "session_meta" ? string(payload.title) : undefined);
     if (title && !inheritedHeader) { meta.title = title; meta.titleOrigin = "recorded"; }
@@ -279,18 +298,19 @@ export async function parseSessionSource(source: SourceLocation, sink: SessionSi
       }
       extra.model = model;
       extra.reasoningEffort = reasoningEffort;
+      if (nativeInterrupted || native?.timing?.completion === "partial") extra.interrupted = true;
       // duration 是桌面累计运行时长，不能当作单次工具耗时。
       if (record.op === "turn_terminal") {
         const last = desktopIdentity(record.lastMessageId);
         const matches = (!last || candidate?.id === `${id}:message:${digest(`desktop:${last}`)}`)
           && (!desktopTurn || record.turnId === desktopTurn);
-        if (record.outcome === "completed" && candidate && !pending.size && matches) {
-          candidate = { ...candidate, final: "explicit" };
+        if (record.outcome === "completed" && !nativeInterrupted && candidate && !candidate.interrupted && !pending.size && matches) {
+          candidate = { ...candidate, final: "explicit", finalEvidence: "turn_terminal", finalAt: occurredAt };
           sink.message(candidate);
         }
+        else if (matches && (record.outcome === "interrupted" || nativeInterrupted)) interruptCandidate(undefined, true);
         else interrupted = true;
         if (!matches) gap("ambiguous", "桌面终态引用与当前助手消息不符，未认定最终回答", { key: "diagnostics.sessions.parser.m007" });
-        finishTurn();
         continue;
       }
       if (record.kind !== "message" && !record.role) { gap("unsupported_format", "桌面历史存在尚未适配的记录类型", { key: "diagnostics.sessions.parser.m008" }); continue; }
@@ -298,7 +318,7 @@ export async function parseSessionSource(source: SourceLocation, sink: SessionSi
       const nativeTurn = string(record.turnId) ?? string(object(record.extra).turnId);
       let emitted: SessionMessage | undefined;
       if (role === "user") {
-        const newTurn = nativeTurn === undefined || nativeTurn !== desktopTurn;
+        const newTurn = record.isSilence !== true && (nativeTurn === undefined || nativeTurn !== desktopTurn);
         if (newTurn) desktopTurn = nativeTurn;
         emitted = message(key, record.isSilence === true ? "system" : "user", text(record.content), line, extra, newTurn);
       } else if (role === "assistant") {
@@ -400,8 +420,9 @@ export async function parseSessionSource(source: SourceLocation, sink: SessionSi
           message(`event:${string(payload.id) ?? line}`, kind, body, line, { ...extra, ...context, model: kind === "user" ? undefined : currentModel,
             reasoningEffort: kind === "assistant" ? currentReasoningEffort : undefined }, kind === "user");
         } else if (["task_aborted", "turn_aborted", "error"].includes(string(payload.type) ?? "")) {
-          if (!copied) timing?.interrupt();
-          interrupted = true; message(`event:${line}`, "system", display(payload), line, extra);
+          const aborted = payload.type !== "error";
+          if (!copied) interruptCandidate(timing?.interrupt(undefined, aborted && Boolean(candidate)), aborted);
+          message(`event:${line}`, "system", display(payload), line, extra);
         } else if (payload.type === "item_completed") {
           const item = object(payload.item);
           if (["CommandExecution", "FileChange"].includes(string(item.type) ?? "")) {
@@ -429,8 +450,12 @@ export async function parseSessionSource(source: SourceLocation, sink: SessionSi
         const context = role === "user" ? codexContext(body, passthrough.content_item_kinds) : undefined;
         const kind: MessageKind = role === "user" ? context ? "context" : "user" : role === "assistant" ? "assistant" : "system";
         const phase = string(payload.phase) ?? string(payload.channel) ?? string(passthrough.channel);
+        const partial = nativeInterrupted || payload.isInterrupted === true || payload.interrupted === true;
+        const final = kind === "assistant" && !partial && ["final", "final_answer"].includes(phase ?? "");
         message(key, kind, body, line, { ...extra, ...context, reasoningEffort: kind === "assistant" ? currentReasoningEffort : undefined,
-          final: kind === "assistant" && ["final", "final_answer"].includes(phase ?? "") ? "explicit" : undefined }, kind === "user");
+          interrupted: kind === "assistant" && partial ? true : undefined,
+          final: final ? "explicit" : undefined, finalEvidence: final ? "response_completed" : undefined }, kind === "user");
+        if (!copied && kind === "assistant" && partial) interruptCandidate(timing?.interrupt(undefined, true), true);
       } else if (type === "reasoning") {
         const body = text(payload.summary) || text(payload.content);
         if (!body && payload.encrypted_content && projectedReasoning?.turnId !== turnId) gap("unsupported_format", "思考正文仅有加密内容，未解密或补造", { key: "diagnostics.sessions.parser.m012" });
@@ -489,15 +514,29 @@ export async function parseSessionSource(source: SourceLocation, sink: SessionSi
       continue;
     }
     const blocks = Array.isArray(content) ? content : typeof content === "string" ? [{ type: "text", text: content }] : [];
+    // 取消记录是客户端保存的单文本块控制事件，普通正文中的同名字符串仍是用户需求。
+    if (source.client === "codeflicker" && role === "user" && Array.isArray(content) && blocks.length === 1
+      && object(blocks[0]).type === "text" && object(blocks[0]).text === "[Request interrupted by user]") {
+      if (!copied) interruptCandidate(timing?.interrupt(undefined, Boolean(candidate)), true);
+      message(`native:${nativeId}:cancel`, "system", text(content), line, { ...extra, interrupted: true });
+      continue;
+    }
     let firstMessage: SessionMessage | undefined;
     const hasResult = blocks.some(value => ["tool_result", "tool-result"].includes(string(object(value).type) ?? ""));
-    const injected = source.client === "codeflicker" && role === "user" && (record.hidden === true || record.isMeta === true);
+    const metadata = object(record.metadata);
+    const origin = string(object(metadata.origin).kind);
+    const userOrigin = ["user", "command-input"].includes(origin ?? "");
+    const injected = source.client === "codeflicker" && role === "user" && (record.hidden === true || record.isMeta === true
+      || (metadata.injected === true && !userOrigin)
+      || ["task-notification", "workflow-notification", "workflow-running-reminder", "post-compact-recent-user-context", "fork-launch", "fork-context"].includes(origin ?? ""));
     const human = role === "user" && !hasResult && record.isMeta !== true && !injected;
     const requestId = source.client === "codeflicker" ? string(object(object(record.metadata).requestTokenBaseline).requestId) ?? nativeId : string(native.id) ?? nativeId;
     const identified = Boolean(recordedModel) && (source.client === "claude" ? Boolean(string(native.id))
       : Boolean(string(object(object(record.metadata).requestTokenBaseline).requestId)));
     if (role === "assistant" && native.model === "<synthetic>") timing?.ignoreNative();
     if (role === "assistant" && !copied && native.model !== "<synthetic>") timing?.nativeRequest(requestId, nativeId, identified);
+    if (role === "assistant" && nativeInterrupted) extra.interrupted = true;
+    const normalStop = !nativeInterrupted && ["end_turn", "stop_sequence"].includes(string(native.stop_reason) ?? "");
     for (const [index, value] of blocks.entries()) {
       const block = object(value);
       const key = `native:${nativeId}:${index}`;
@@ -505,7 +544,10 @@ export async function parseSessionSource(source: SourceLocation, sink: SessionSi
       let emitted: SessionMessage | undefined;
       if (type === "text") {
         const kind: MessageKind = human ? "user" : injected ? "context" : role === "assistant" ? "assistant" : "system";
-        emitted = message(key, kind, text(block.text), line, { ...extra, ...(injected ? { contextSource: "client" as const, contextEvidence: "client_metadata" as const } : {}), final: kind === "assistant" && ["end_turn", "stop_sequence"].includes(string(native.stop_reason) ?? "") ? "explicit" : undefined }, human && !firstMessage);
+        emitted = message(key, kind, text(block.text), line, { ...extra,
+          ...(injected ? { contextSource: "client" as const, contextEvidence: "client_metadata" as const } : {}),
+          final: kind === "assistant" && normalStop ? "explicit" : undefined,
+          finalEvidence: kind === "assistant" && normalStop ? "normal_stop" : undefined }, human && !firstMessage);
       } else if (["thinking", "reasoning", "redacted_thinking"].includes(type ?? "")) {
         emitted = message(key, "thinking", text(block.text ?? block.thinking), line, extra);
         if (type === "redacted_thinking") gap("unsupported_format", "思考正文已由客户端隐藏，未补造内容", { key: "diagnostics.sessions.parser.m015" });
@@ -528,10 +570,13 @@ export async function parseSessionSource(source: SourceLocation, sink: SessionSi
       else if (type) gap("unsupported_format", "历史存在尚未适配的消息内容块，未补造正文", { key: "diagnostics.sessions.parser.m016" });
       firstMessage ??= emitted;
     }
-    if (!blocks.length && typeof record.text === "string") firstMessage = message(`native:${nativeId}:text`, role === "assistant" ? "assistant" : human ? "user" : "system", record.text, line, extra, human);
+    if (!blocks.length && typeof record.text === "string") firstMessage = message(`native:${nativeId}:text`, role === "assistant" ? "assistant" : human ? "user" : injected ? "context" : "system", record.text, line,
+      { ...extra, ...(injected ? { contextSource: "client" as const, contextEvidence: "client_metadata" as const } : {}),
+        final: role === "assistant" && normalStop ? "explicit" : undefined,
+        finalEvidence: role === "assistant" && normalStop ? "normal_stop" : undefined }, human);
     if (role === "assistant") {
       if (!copied) {
-        const partial = record.isApiErrorMessage === true || record.isInterrupted === true || Boolean(record.interruptedMessageId);
+        const partial = nativeInterrupted;
         const persisted = source.client === "codeflicker" && record.type === "message" && Boolean(string(record.uuid)) && identified
           && Object.keys(object(native.usage)).length > 0 && !partial;
         const usageId = usage.native(source.client === "claude" ? "claude" : "codeflicker", native.usage, requestId,
@@ -539,7 +584,6 @@ export async function parseSessionSource(source: SourceLocation, sink: SessionSi
         timing?.nativeUsage(usageId, string(native.stop_reason), persisted, partial, { occurredAt, recordLine: line, messageId: firstMessage?.id });
       }
     }
-    if (record.interruptedMessageId || record.isApiErrorMessage === true) interrupted = true;
   }
   timing?.finish();
   for (const request of desktopRequests.values()) {

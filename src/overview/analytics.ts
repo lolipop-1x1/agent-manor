@@ -14,10 +14,9 @@ import { usageDimensionKey, usageDimensionValue } from "../usage/dimensions.js";
 import { activityTime, addDays, daysBetween, localDay, resolveOverviewRange, resolveTimezone } from "./dates.js";
 
 const nonnegative = (value: number | undefined): value is number => value !== undefined && Number.isFinite(value) && value >= 0;
-export function isActivityEvent(event: OverviewEvent): boolean {
-  return !event.copied && !event.contextSource && event.kind !== "system" && event.kind !== "context"
-    && !(event.kind === "user" && event.resource?.kind === "skill_read");
-}
+export { isRoundActivityEvent as isActivityEvent } from "../sessions/round-metrics.js";
+import { isRoundActivityEvent as isActivityEvent } from "../sessions/round-metrics.js";
+
 export function matchesGlobalSession(session: SessionSummary, query: OverviewQuery): boolean {
   return (!query.clients?.length || query.clients.includes(session.client))
     && (!query.projects?.length || query.projects.includes(usageDimensionKey(session.project))

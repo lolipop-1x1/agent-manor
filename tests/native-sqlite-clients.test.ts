@@ -351,6 +351,9 @@ test("OpenCode 顶层模型字段与合成压缩过程不会制造用户轮次�
   assert.equal([...messages.values()].find(message => message.text === "failed answer")?.final, undefined);
   assert.equal([...messages.values()].find(message => message.text === "unfinished answer")?.final, undefined);
   assert.equal([...messages.values()].find(message => message.text === "complete answer")?.final, "inferred");
+  assert.equal([...messages.values()].find(message => message.text === "complete answer")?.finalEvidence, "response_completed");
+  assert.equal([...messages.values()].find(message => message.text === "complete answer")?.occurredAt, new Date(6).toISOString());
+  assert.equal([...messages.values()].find(message => message.text === "complete answer")?.finalAt, new Date(7).toISOString());
   assert.equal([...messages.values()].find(message => message.text === "complete answer")?.model, "provider-y/model-y");
   assert.ok([...messages.values()].some(message => message.kind === "compression" && message.text === "compressed context"));
   assert.ok(summary.gaps.some(gap => gap.kind === "unsupported_format" && gap.message.includes("future-part")));
@@ -400,6 +403,32 @@ test("OpenCode 混合 user 正文与 synthetic text part 保留真实用户轮�
   assert.equal(snapshot.records.find(row => row.record.normalizedEvent?.key === "message:synthetic-only-user")?.record.normalizedEvent?.kind, "context");
   database.close();
 })));
+
+test("OpenCode 正常 stop 提供结束依据，工具 stop 和未知 finish 只有请求完成", async () => temporary(async directory => {
+  const path = join(directory, "opencode-finish.db");
+  const database = new Database(path);
+  createOpenCodeSchema(database);
+  insertOpenCodeSession(database, { id: "finish", directory: "/synthetic/repo" });
+  for (const [index, finish] of ["stop", "tool-calls", "future-finish"].entries()) {
+    const offset = index * 10;
+    insertOpenCodeMessage(database, "finish", `user-${index}`, "user", offset);
+    insertOpenCodePart(database, "finish", `user-${index}`, `user-text-${index}`, offset, { type: "text", text: "prompt" });
+    insertOpenCodeMessage(database, "finish", `assistant-${index}`, "assistant", offset + 1,
+      { parentID: `user-${index}`, finish, time: { created: offset + 1, completed: offset + 2 } });
+    insertOpenCodePart(database, "finish", `assistant-${index}`, `answer-text-${index}`, offset + 1, { type: "text", text: finish });
+  }
+  database.close();
+  const messages = new Map<string, SessionMessage>();
+  parseNormalizedSession(await opencodeAdapter.readRecords!({ path, client: "opencode", format: OPENCODE_FORMAT, selector: "finish", sessionId: "finish" }),
+    { message: value => messages.set(value.id, value), usage: () => {} });
+  const values = [...messages.values()];
+  assert.equal(values.find(message => message.text === "stop")?.final, "inferred");
+  assert.equal(values.find(message => message.text === "stop")?.finalEvidence, "normal_stop");
+  for (const text of ["tool-calls", "future-finish"]) {
+    assert.equal(values.find(message => message.text === text)?.final, undefined);
+    assert.equal(values.find(message => message.text === text)?.finalEvidence, undefined);
+  }
+}));
 
 test("SQLite JSON 损坏、未知 schema 与迭代预算均显式保留缺口", async () => temporary(directory => registerAdapters(async () => {
   const gaps: { kind: string; message: string }[] = [];
@@ -524,6 +553,10 @@ test("ZCode 任务索引按 session.id 关联；model_usage 按尝试计数，�
   assert.equal(assistants.find(item => item.text === "synthetic response")?.recordLine, 2);
   assert.equal(assistants.find(item => item.text === "synthetic response")?.final, undefined);
   assert.equal(assistants.find(item => item.text === "synthetic final answer")?.final, "inferred");
+  assert.equal(assistants.find(item => item.text === "synthetic final answer")?.finalEvidence, "normal_stop");
+  assert.equal(assistants.find(item => item.text === "synthetic final answer")?.occurredAt, new Date(4).toISOString());
+  assert.equal(assistants.find(item => item.text === "synthetic final answer")?.finalAt, new Date(5).toISOString());
+  assert.ok(assistants.filter(item => item.final === undefined).every(item => item.finalEvidence === undefined));
   assert.equal(assistants.find(item => item.text === "truncated response")?.final, undefined);
   assert.equal(assistants.find(item => item.text === "interrupted response")?.final, undefined);
   assert.equal(assistants.find(item => item.text === "failed response")?.final, undefined);

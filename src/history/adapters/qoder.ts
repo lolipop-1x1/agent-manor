@@ -102,6 +102,9 @@ function normalizeQoderRows(rows: readonly RawHistoryRecord[], gaps: Gap[]): { r
     const requestKey = type === "assistant" ? nativeRequest ?? `record:${recordId}` : undefined;
     if (requestKey && !requestEfforts.has(requestKey)) requestEfforts.set(requestKey, activeReasoningEffort);
     const reasoningEffort = requestKey ? requestEfforts.get(requestKey) : undefined;
+    const interrupted = record.interrupted === true || record.error !== undefined && record.error !== null
+      || ["incomplete", "cancelled", "canceled", "interrupted", "error", "failed"].includes(string(record.status) ?? string(message.status) ?? "");
+    const final = message.stop_reason === "end_turn" && !interrupted && !blocks.some(block => block.type === "tool_use") ? "explicit" : undefined;
     let usageAttached = false;
     const attachUsage = (event: NormalizedEvent) => {
       if (!usage || usageAttached) return;
@@ -121,8 +124,8 @@ function normalizeQoderRows(rows: readonly RawHistoryRecord[], gaps: Gap[]): { r
       normalized.push(normalizedRecord(event, row.raw, row.line));
     }
     if (type === "assistant" && !content.length) {
-      const event: NormalizedEvent = { key: `${recordId}:assistant`, kind: "assistant", text: "", occurredAt, model, reasoningEffort, requestKey, allowInferredFinal: false };
-      if (message.stop_reason === "end_turn") event.final = "explicit";
+      const event: NormalizedEvent = { key: `${recordId}:assistant`, kind: "assistant", text: "", occurredAt, model, reasoningEffort, requestKey,
+        final, finalEvidence: final ? "normal_stop" : undefined, finalAt: final ? occurredAt : undefined, interrupted, allowInferredFinal: false };
       attachUsage(event);
       normalized.push(normalizedRecord(event, row.raw, row.line));
     }
@@ -130,7 +133,7 @@ function normalizeQoderRows(rows: readonly RawHistoryRecord[], gaps: Gap[]): { r
       const key = `${recordId}:${index}`;
       if (type === "assistant" && block.type === "text") {
         const event: NormalizedEvent = { key, kind: "assistant", text: string(block.text) ?? "", occurredAt, model, reasoningEffort, requestKey,
-          final: message.stop_reason === "end_turn" ? "explicit" : undefined, allowInferredFinal: false };
+          final, finalEvidence: final ? "normal_stop" : undefined, finalAt: final ? occurredAt : undefined, interrupted, allowInferredFinal: false };
         attachUsage(event);
         normalized.push(normalizedRecord(event, row.raw, row.line));
       } else if (type === "assistant" && block.type === "thinking") {
@@ -213,6 +216,8 @@ function attachRequestTiming(rows: readonly RawHistoryRecord[], records: ReturnT
       || ["incomplete", "cancelled", "canceled", "interrupted", "error", "failed"].includes(status ?? "");
     if (partial) {
       group.timing.completion = "partial"; group.timing.completionEvidence = "request_interrupted";
+    } else if (event.finalEvidence === "normal_stop" && group.timing.completion === "partial") {
+      group.timing.completion = "explicit"; group.timing.completionEvidence = "stop_reason";
     } else if (group.identified && group.timing.completion !== "partial"
       && ["end_turn", "stop_sequence", "tool_use", "max_tokens", "pause_turn", "refusal"].includes(string(message.stop_reason) ?? "")) {
       group.timing.completion = "explicit"; group.timing.completionEvidence = "stop_reason";

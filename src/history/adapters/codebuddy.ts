@@ -101,12 +101,19 @@ async function readCodebuddySnapshot(location: SourceLocation): Promise<Normaliz
         text: textOf(record.content), occurredAt };
       if (event.kind === "user") round = { events: [], hasTool: false, metrics: 0, user: row };
     } else if (type === "message" && role === "assistant" || type === "reasoning" || type === "function_call") {
-      const interrupted = ["incomplete", "interrupted", "cancelled", "canceled", "error", "failed"].includes(string(record.status) ?? "")
+      const finish = (string(record.finishReason) ?? string(record.finish_reason) ?? string(record.stopReason) ?? string(message.stop_reason) ?? "")
+        .toLowerCase().replaceAll("-", "_");
+      const failureStates = ["incomplete", "interrupted", "cancelled", "canceled", "error", "failed", "aborted", "max_tokens", "length"];
+      const interrupted = failureStates.includes(string(record.status) ?? "") || failureStates.includes(finish)
         || record.interrupted === true || record.error !== undefined && record.error !== null || Boolean(provider.error);
+      const completed = type === "message" && record.status === "completed" && !interrupted
+        && !["tool_use", "tool_calls", "tooluse", "pause_turn"].includes(finish);
       event = { key, kind: type === "reasoning" ? "thinking" : type === "function_call" ? "tool_call" : "assistant",
         text: textOf(record.content) || textOf(record.rawContent), occurredAt, model,
         requestKey: requestKey ?? `record:${key}`, interrupted,
-        allowInferredFinal: type === "message" && record.status === "completed" && !interrupted,
+        allowInferredFinal: completed,
+        finalEvidence: completed ? "response_completed" : undefined,
+        finalAt: completed ? occurredAt : undefined,
         requestTiming: { basis: "estimated", method: "codebuddy_single_request_turn", completion: interrupted ? "partial" : "unknown",
           completionEvidence: interrupted ? "request_interrupted" : undefined } };
       if (type === "function_call") {
@@ -152,8 +159,10 @@ async function readCodebuddySnapshot(location: SourceLocation): Promise<Normaliz
     values.push(event); groups.set(event.requestKey, values);
   }
   for (const events of groups.values()) {
-    const timing = events.find(event => event.interrupted)?.requestTiming
-      ?? events.find(event => event.requestTiming?.durationMs !== undefined)?.requestTiming ?? events[0]?.requestTiming;
+    const lastInterrupted = events.findLastIndex(event => event.interrupted);
+    const lastCompleted = events.findLastIndex(event => event.kind === "assistant" && event.finalEvidence);
+    const timing = lastInterrupted >= lastCompleted && lastInterrupted >= 0 ? events[lastInterrupted]?.requestTiming
+      : events.find(event => event.requestTiming?.durationMs !== undefined)?.requestTiming ?? events.at(-1)?.requestTiming;
     for (const event of events) event.requestTiming = timing;
   }
   return normalizedSnapshot(source, records, { gaps }, JSON.stringify([bodyIds, cwdValues, selected.filter(row => row.record.type === "turn-metrics").map(row => row.raw)]));

@@ -525,6 +525,99 @@ test("CodeFlicker 原生隐藏注入保留为上下文，不产生用户轮次",
   assert.equal(injected?.kind, "context"); assert.equal(injected?.contextEvidence, "client_metadata");
 });
 
+test("CodeFlicker 后台注入保留原始依据，明确用户来源的排队注入仍创建需求", async () => {
+  const native = (uuid: string, content: unknown, metadata = {}, extra = {}) => ({ type: "message", sessionId: "injected-demo", uuid,
+    role: "user", content, timestamp, metadata, ...extra });
+  const sample = await parsed("codeflicker", [native("first", "真实问题"),
+    native("background", "后台通知", { injected: true }),
+    native("task", "任务通知", { origin: { kind: "task-notification" } }),
+    native("recent", "压缩后的历史上下文", { origin: { kind: "post-compact-recent-user-context" } }),
+    native("queued", "排队的真实需求", { injected: true, origin: { kind: "user" } }),
+    native("command", "命令输入", { injected: true, origin: { kind: "command-input" } }),
+    native("unknown", "未知来源仍保留需求", { origin: { kind: "future-origin" } }),
+    native("hidden-user", "明确隐藏的上下文", { injected: true, origin: { kind: "user" } }, { hidden: true })]);
+  assert.equal(sample.summary.turnCount, 4);
+  assert.deepEqual(sample.messages.filter(message => message.kind === "user").map(message => message.text),
+    ["真实问题", "排队的真实需求", "命令输入", "未知来源仍保留需求"]);
+  assert.ok(sample.messages.filter(message => message.kind === "context").every(message => message.contextEvidence === "client_metadata"));
+  assert.equal(sample.messages.find(message => message.text === "后台通知")?.turnId, sample.messages[0]?.turnId);
+});
+
+test("CodeFlicker 严格原生取消控制记录不造需求，并撤销已有终答", async () => {
+  const native = (uuid: string, role: string, content: unknown, extra = {}) => ({ type: "message", sessionId: "cancel-demo", uuid,
+    role, content, timestamp, ...extra });
+  const control = [{ type: "text", text: "[Request interrupted by user]" }];
+  const cancelled = await parsed("codeflicker", [native("user", "user", "真实需求"),
+    native("answer", "assistant", "已保存的响应", { stop_reason: "end_turn", model: "fixture-model", usage: { input_tokens: 20, output_tokens: 10 } }),
+    native("cancel", "user", control)]);
+  assert.equal(cancelled.summary.turnCount, 1);
+  assert.equal(cancelled.messages.at(-1)?.kind, "system");
+  assert.equal(cancelled.messages.at(-1)?.text, "[Request interrupted by user]");
+  assert.equal(cancelled.messages.at(-1)?.interrupted, true);
+  assert.equal(cancelled.messages.find(message => message.kind === "assistant")?.interrupted, true);
+  assert.ok(cancelled.messages.every(message => !message.final && !message.finalEvidence));
+  assert.equal(cancelled.usages[0]?.timing?.completion, "partial");
+  const ordinary = await parsed("codeflicker", [native("string", "user", "[Request interrupted by user]"),
+    native("quoted", "user", [{ type: "text", text: "请解释 [Request interrupted by user]" }]),
+    native("multiple", "user", [...control, { type: "text", text: "另一条用户内容" }])]);
+  assert.equal(ordinary.summary.turnCount, 3, "普通正文或多个内容块不能被识别成客户端取消事件");
+});
+
+test("Codex 已标 final 的响应遇到取消时撤销终答，失败后恢复的响应可以结束", async () => {
+  const aborted = { type: "event_msg", timestamp, payload: { type: "task_aborted" } };
+  const cancelled = await parsed("codex", [meta(), user(), assistant("answer", "已保存的响应", { channel: "final" }), requestUsage("answer"), aborted]);
+  assert.ok(cancelled.messages.every(message => !message.final && !message.finalEvidence));
+  assert.equal(cancelled.messages.find(message => message.kind === "assistant")?.interrupted, true);
+  assert.equal(cancelled.usages[0]?.timing?.completion, "partial");
+  const repeated = await parsed("codex", [meta(), user(), assistant("answer", "已保存的响应", { channel: "final" }), requestUsage("answer"), aborted,
+    assistant("answer", "已保存的响应", { channel: "final" })]);
+  assert.ok(repeated.messages.every(message => !message.final && !message.finalEvidence), "重放已取消的原生快照不能恢复终答");
+  const recovered = await parsed("codex", [meta(), user(), assistant("partial", "失败的响应"), aborted,
+    assistant("recovered", "恢复后结束", { channel: "final" })]);
+  assert.equal(recovered.messages.find(message => message.text === "恢复后结束")?.final, "explicit");
+  assert.equal(recovered.messages.find(message => message.text === "恢复后结束")?.finalEvidence, "response_completed");
+});
+
+test("Claude 原生响应中断标志覆盖结束原因，后续正常响应保留结束依据", async () => {
+  const native = (uuid: string, request: string, extra = {}) => ({ type: "assistant", sessionId: "claude-cancel", uuid, timestamp, ...extra,
+    message: { id: request, role: "assistant", model: "fixture-model", content: [{ type: "text", text: uuid }],
+      stop_reason: "end_turn", usage: { input_tokens: 20, cache_read_input_tokens: 0, cache_creation_input_tokens: 0, output_tokens: 10 } } });
+  for (const flags of [{ isInterrupted: true }, { isApiErrorMessage: true }, { interrupted: true }]) {
+    const cancelled = await parsed("claude", [native("partial", "partial", flags)]);
+    assert.ok(cancelled.messages.every(message => !message.final && !message.finalEvidence));
+    assert.equal(cancelled.messages[0]?.interrupted, true);
+    assert.equal(cancelled.usages[0]?.timing?.completion, "partial");
+    const recovered = await parsed("claude", [native("partial", "partial", flags), native("recovered", "recovered")]);
+    assert.equal(recovered.messages.at(-1)?.final, "explicit");
+    assert.equal(recovered.messages.at(-1)?.finalEvidence, "normal_stop");
+  }
+  const earlyTarget = await parsed("claude", [native("earlier", "earlier"), native("answer", "answer"),
+    { type: "system", uuid: "cancel", interruptedMessageId: "earlier", timestamp }]);
+  assert.equal(earlyTarget.messages.find(message => message.text === "answer")?.final, "explicit");
+  assert.equal(earlyTarget.messages.find(message => message.text === "earlier")?.final, undefined);
+  const finalTarget = await parsed("claude", [native("answer", "answer"),
+    { type: "system", uuid: "cancel", interruptedMessageId: "answer", timestamp }]);
+  assert.ok(finalTarget.messages.every(message => !message.final && !message.finalEvidence));
+  const repeated = await parsed("claude", [native("answer", "answer"),
+    { type: "system", uuid: "cancel", interruptedMessageId: "answer", timestamp }, native("answer", "answer")]);
+  assert.ok(repeated.messages.every(message => !message.final && !message.finalEvidence), "重复快照不能清除已确认的请求中断");
+  const untargeted = await parsed("claude", [native("answer", "answer"),
+    { type: "system", uuid: "error", isApiErrorMessage: true, timestamp }]);
+  assert.equal(untargeted.messages.find(message => message.text === "answer")?.final, "explicit", "无法关联到已完成请求的后续错误不撤销确定证据");
+});
+
+test("原生正常终态提供结束依据，CodeFlicker 缺结束原因的持久化用量不提供强证据", async () => {
+  const native = (uuid: string, extra = {}) => ({ type: "message", sessionId: "terminal-demo", uuid, role: "assistant", timestamp,
+    model: "fixture-model", content: "合成响应", usage: { input_tokens: 20, output_tokens: 10 },
+    metadata: { requestTokenBaseline: { requestId: uuid } }, ...extra });
+  const completed = await parsed("codeflicker", [native("normal", { stop_reason: "end_turn" })]);
+  assert.equal(completed.messages[0]?.finalEvidence, "normal_stop");
+  const saved = await parsed("codeflicker", [native("saved")]);
+  assert.equal(saved.messages[0]?.final, "inferred");
+  assert.equal(saved.messages[0]?.finalEvidence, undefined);
+  assert.equal(saved.usages[0]?.timing?.completionEvidence, "persisted_stream_result");
+});
+
 test("旧 Codex token_count 只用当次 total_tokens 补上下文，不读取累计总量", async () => {
   const result = await parsed("codex", [meta(), user(), assistant("a", "已保存回复"),
     counted({ ...usageValue(500), total_tokens: 9000 }, { ...usageValue(100), total_tokens: 123 }),

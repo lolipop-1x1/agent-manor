@@ -91,16 +91,23 @@ function parseArguments(value: unknown, gaps: Gap[]): unknown {
   }
 }
 
+function isInterrupted(record: Record<string, unknown>): boolean {
+  const status = (string(record.status) ?? "").toLowerCase().replaceAll("-", "_");
+  const finish = (string(record.finishReason) ?? string(record.finish_reason) ?? string(record.stopReason) ?? string(object(record.message).stop_reason) ?? "")
+    .toLowerCase().replaceAll("-", "_");
+  const failureStates = ["error", "failed", "failure", "incomplete", "interrupted", "cancelled", "canceled", "max_tokens", "length"];
+  return record.error !== undefined && record.error !== null || record.interrupted === true
+    || Boolean(object(record.providerData).error)
+    || failureStates.includes(status) || failureStates.includes(finish);
+}
+
 function canInferAssistantFinal(record: Record<string, unknown>): boolean {
   const status = (string(record.status) ?? "").toLowerCase().replaceAll("-", "_");
-  const finish = (string(record.finishReason) ?? string(record.finish_reason) ?? string(record.stopReason) ?? "")
+  const finish = (string(record.finishReason) ?? string(record.finish_reason) ?? string(record.stopReason) ?? string(object(record.message).stop_reason) ?? "")
     .toLowerCase().replaceAll("-", "_");
-  const failureStates = ["error", "failed", "failure", "interrupted", "cancelled", "canceled", "max_tokens", "length"];
-  const failed = record.error !== undefined && record.error !== null || record.interrupted === true
-    || failureStates.includes(status) || failureStates.includes(finish);
   const completed = ["completed", "complete", "success", "succeeded"].includes(status)
-    || ["stop", "end_turn", "completed", "complete"].includes(finish);
-  return completed && !failed;
+    || ["stop", "end_turn", "stop_sequence", "completed", "complete"].includes(finish);
+  return completed && !isInterrupted(record) && !["tool_use", "tool_calls", "tooluse", "pause_turn"].includes(finish);
 }
 
 function eventFor(record: Record<string, unknown>, row: RawHistoryRecord, metaGaps: Gap[], usageSeen: Map<string, { event: NormalizedEvent; fingerprint: string }>, reasoningRequests: Map<string, string>): NormalizedEvent[] {
@@ -143,8 +150,11 @@ function eventFor(record: Record<string, unknown>, row: RawHistoryRecord, metaGa
     const contextual = provider.isMeta === true || string(record.role) === "user" && provider.startsNewUserRequest === false;
     const kind = compacted ? "compression" : contextual ? "context"
       : record.role === "user" ? "user" : record.role === "assistant" ? "assistant" : "system";
+    const canInferFinal = kind === "assistant" && canInferAssistantFinal(record);
     const event = make("message", kind, { text: content,
-      ...(record.role === "assistant" ? { allowInferredFinal: !compacted && canInferAssistantFinal(record) } : {}) });
+      ...(record.role === "assistant" ? { allowInferredFinal: canInferFinal, interrupted: isInterrupted(record) || undefined,
+        finalEvidence: canInferFinal ? "response_completed" : undefined,
+        finalAt: canInferFinal ? occurredAt : undefined } : {}) });
     if (kind === "assistant") event.requestKey = requestKey;
     useUsage(event);
     events.push(event);
@@ -232,10 +242,11 @@ function attachRequestTiming(events: { row: RawHistoryRecord; event: NormalizedE
     const record = row.record;
     const provider = object(record.providerData);
     const message = object(record.message);
-    const status = (string(record.status) ?? "").toLowerCase();
     const finish = string(record.finishReason) ?? string(record.finish_reason) ?? string(record.stopReason) ?? string(message.stop_reason);
-    const partial = ["error", "failed", "failure", "incomplete", "interrupted", "cancelled", "canceled"].includes(status)
-      || record.interrupted === true || record.error !== undefined && record.error !== null || Boolean(provider.error);
+    const partial = isInterrupted(record);
+    if (!partial && event.kind === "assistant" && canInferAssistantFinal(record) && group.timing.completion === "partial") {
+      group.timing.completion = "unknown"; group.timing.completionEvidence = undefined;
+    }
     const fingerprint = JSON.stringify([record.type, record.role, record.content, record.rawContent, record.callId,
       record.arguments, record.status, record.finishReason, record.finish_reason, record.stopReason, message, provider.usage, partial]);
     if (!group.seen.has(fingerprint)) {

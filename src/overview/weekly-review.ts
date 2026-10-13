@@ -29,6 +29,7 @@ function roundRecord(session: SessionSummary, round: WeeklyRoundFact): WeeklyRev
   return record(session, { id: JSON.stringify([session.id, round.turnId]), title: round.title || session.title,
     ...(round.title ? { titleOrigin: "first_user" } : {}), turnId: round.turnId, messageId: round.messageId,
     startedAt: round.startedAt, endedAt: round.endedAt, occurredAt: round.endedAt ?? round.startedAt, completion: round.completion,
+    eligible: round.eligible ?? round.completion === "explicit", finalEvidence: round.finalEvidence,
     steps: round.steps ?? undefined, toolCalls: round.toolCalls, tokens: round.tokens, durationMs: round.durationMs });
 }
 type RequestRecord = WeeklyReviewRecord & { state: "zero" | "partial" | "full" | "unknown" };
@@ -99,7 +100,13 @@ export function buildWeeklyReview(facts: WeeklySessionFacts[], query: OverviewQu
   const activeFacts = userFacts.filter(hasActivity);
   const startedRounds = userFacts.flatMap(fact => fact.rounds.filter(round => inPeriod(round.startedAt, range, timezone)).map(round => roundRecord(fact.session, round)));
   const allRounds = userFacts.flatMap(fact => fact.rounds.map(round => roundRecord(fact.session, round)));
-  const endedRounds = allRounds.filter(round => round.completion === "explicit" && inPeriod(round.endedAt, range, timezone));
+  const endedRounds = allRounds.filter(round => round.eligible && inPeriod(round.endedAt, range, timezone));
+  const inferredIncluded = endedRounds.filter(round => round.completion === "inferred").length;
+  const distribution = (key: "steps" | "toolCalls" | "tokens" | "durationMs") => {
+    const result = weeklyDistribution(endedRounds.map(row => row[key]));
+    const inferredSamples = endedRounds.filter(row => row.completion === "inferred" && row[key] != null).length;
+    return { ...result, ...(inferredSamples ? { inferredSamples } : {}) };
+  };
   const inferredRounds = allRounds.filter(round => round.completion === "inferred" && inPeriod(round.endedAt, range, timezone));
   const missingEndTime = startedRounds.filter(round => round.completion !== "unconfirmed" && !round.endedAt);
   const unconfirmedRounds = startedRounds.filter(round => round.completion === "unconfirmed");
@@ -192,9 +199,9 @@ export function buildWeeklyReview(facts: WeeklySessionFacts[], query: OverviewQu
       compressionSessions: compressionLeaders.length, compressions: compressionEvents.length, compressionObservableSessions: observable.length,
       compressionRate: observable.length ? observable.filter(fact => fact.events.some(event => event.kind === "compression")).length / observable.length : null,
       uncompressedPeakInput: weeklyDistribution(uncompressed.map(row => row.inputTokens), activeFacts.length - uncompressed.length) },
-    rounds: { started: startedRounds.length, completed, inferred: inferredRounds.length, unconfirmed: unconfirmedRounds.length, missingEndTime: missingEndTime.length,
-      steps: weeklyDistribution(endedRounds.map(row => row.steps)), toolCalls: weeklyDistribution(endedRounds.map(row => row.toolCalls)),
-      tokens: weeklyDistribution(endedRounds.map(row => row.tokens)), durationMs: weeklyDistribution(endedRounds.map(row => row.durationMs)),
+    rounds: { started: startedRounds.length, completed, ...(inferredIncluded ? { inferredIncluded } : {}), inferred: inferredRounds.length, unconfirmed: unconfirmedRounds.length, missingEndTime: missingEndTime.length,
+      steps: distribution("steps"), toolCalls: distribution("toolCalls"),
+      tokens: distribution("tokens"), durationMs: distribution("durationMs"),
       topFiveTokenShare: tokenTotal ? tokenValues.slice(0, 5).reduce((sum, tokens) => sum + tokens, 0) / tokenTotal : null,
       longest: top(endedRounds, "durationMs"), highestTokens: top(endedRounds, "tokens") },
     cache: { requests: requestRows.length, zero: requestRows.filter(row => row.state === "zero").length,
@@ -224,7 +231,7 @@ export function buildWeeklyReview(facts: WeeklySessionFacts[], query: OverviewQu
       triggerIdentity: "unclassified", automaticSessions: null, unknownTriggerSessions: activeFacts.length,
       unsupportedCompressionSessions: activeFacts.filter(fact => !fact.compressionSupported || !fact.compressionComplete).length,
       unknownForkSessions: unknownForks.filter(hasActivity).length } };
-  return { review, rows: { sessions: sessionsRows, rounds: [...endedRounds, ...inferredRounds, ...unconfirmedRounds, ...missingEndTime], cache: requestRows,
+  return { review, rows: { sessions: sessionsRows, rounds: [...endedRounds, ...inferredRounds.filter(row => !row.eligible), ...unconfirmedRounds, ...missingEndTime], cache: requestRows,
     compressions: compressionEvents, projects: endedRounds, delegation: childRows, tools: toolRows, agents: startedRounds,
     models: requestRows, reasoning: requestRows, prompts, activity: prompts, uncompressed },
     ranks: { agents, models, reasoning, projects, tools: groupedRank(toolRows,
@@ -242,7 +249,7 @@ export function weeklyReviewDetail(data: WeeklyReviewData, detail: WeeklyReviewD
   if (detail.key !== undefined) rows = rows.filter(row => (detail.kind === "agents" ? row.client : detail.kind === "models" ? row.model
     : detail.kind === "reasoning" ? row.reasoningEffort : detail.kind === "projects" ? row.project : detail.kind === "compressions" ? row.sessionId : JSON.stringify([row.tool ?? "unknown", row.server ?? null]))
     === (detail.key === "unknown" ? undefined : detail.key));
-  if (detail.filter) rows = rows.filter(row => detail.kind === "cache" ? (row as RequestRecord).state === detail.filter : row.completion === detail.filter);
+  if (detail.filter) rows = rows.filter(row => detail.kind === "cache" ? (row as RequestRecord).state === detail.filter : detail.filter === "ended" ? row.eligible : row.completion === detail.filter);
   const sort = detail.sort ?? (detail.kind === "cache" ? "fresh" : "recent");
   rows = [...rows].sort((a, b) => sort === "recent" ? (b.occurredAt ?? "").localeCompare(a.occurredAt ?? "") || a.id.localeCompare(b.id)
     : (b[sort === "duration" ? "durationMs" : sort === "fresh" ? "freshInputTokens" : sort] ?? -1)

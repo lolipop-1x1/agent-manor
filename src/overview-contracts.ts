@@ -11,6 +11,7 @@ export interface WeeklyReviewDistribution {
   maximum: number | null;
   samples: number;
   missing: number;
+  inferredSamples?: number;
 }
 export interface WeeklyReviewRank {
   key: string;
@@ -59,6 +60,8 @@ export interface WeeklyReviewRecord {
   failures?: number;
   subsequentCalls?: number;
   completion?: "explicit" | "inferred" | "unconfirmed";
+  eligible?: boolean;
+  finalEvidence?: SessionMessage["finalEvidence"];
 }
 export interface WeeklyReview {
   version: string;
@@ -68,7 +71,7 @@ export interface WeeklyReview {
   range: OverviewRange;
   sessions: { active: number; started: number; compressionSessions: number; compressions: number; compressionObservableSessions: number;
     compressionRate: number | null; uncompressedPeakInput: WeeklyReviewDistribution };
-  rounds: { started: number; completed: number; inferred: number; unconfirmed: number; missingEndTime: number;
+  rounds: { started: number; completed: number; inferredIncluded?: number; inferred: number; unconfirmed: number; missingEndTime: number;
     steps: WeeklyReviewDistribution; toolCalls: WeeklyReviewDistribution; tokens: WeeklyReviewDistribution; durationMs: WeeklyReviewDistribution;
     topFiveTokenShare: number | null; longest: WeeklyReviewRecord[]; highestTokens: WeeklyReviewRecord[] };
   cache: { requests: number; zero: number; partial: number; full: number; unknown: number; inputTokens: number | null;
@@ -92,13 +95,13 @@ export type WeeklyReviewDetailKind = "sessions" | "rounds" | "cache" | "compress
 export interface WeeklyReviewDetailQuery {
   kind: WeeklyReviewDetailKind;
   key?: string;
-  filter?: "zero" | "partial" | "full" | "unknown" | "explicit" | "inferred" | "unconfirmed";
+  filter?: "zero" | "partial" | "full" | "unknown" | "ended" | "explicit" | "inferred" | "unconfirmed";
   sort?: "recent" | "duration" | "tokens" | "steps" | "fresh";
   page?: number;
   pageSize?: number;
 }
 /** 复盘派生事实只保留输入长度及短定位片段，不复制工具参数或完整正文。 */
-export type WeeklyReviewEvent = OverviewEvent & { final?: SessionMessage["final"]; recordLine: number;
+export type WeeklyReviewEvent = OverviewEvent & Pick<SessionMessage, "final" | "finalEvidence" | "finalAt" | "interrupted"> & { recordLine: number;
   promptCharacters?: number; promptPreview?: string };
 export interface WeeklyReviewDetailPage {
   version: string;

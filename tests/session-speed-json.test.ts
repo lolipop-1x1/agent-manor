@@ -155,7 +155,39 @@ test("Qoder 完成与短请求门槛分别保留，缺结束或取消不计算",
   ] as const) {
     const sample = await parsed("qoder", [qUser(), answer]);
     assert.equal(requestSpeed(sample.usages[0]!).reason, reason);
+    if (reason === "partial_response") assert.ok(sample.messages.every(message => message.final === undefined && message.finalEvidence === undefined));
   }
+});
+
+test("Qoder end_turn 的后续工具撤销终答，失败后新请求完整结束恢复", async () => {
+  const continued = await parsed("qoder", [qUser(), qAssistant("one", 3, 400, "end_turn", [
+    { type: "text", text: "early answer" }, { type: "tool_use", id: "tool", name: "fixture_tool", input: {} },
+  ]), qResult("tool", 4)]);
+  assert.ok(continued.messages.every(message => message.final === undefined && message.finalEvidence === undefined));
+  const retried = await parsed("qoder", [qUser(), qAssistant("failed", 1, 400, "end_turn", undefined, { interrupted: true }),
+    qAssistant("complete", 2)]);
+  const replies = retried.messages.filter(message => message.kind === "assistant");
+  assert.equal(replies[0]?.final, undefined);
+  assert.equal(replies[1]?.final, "explicit");
+  assert.equal(replies[1]?.finalEvidence, "normal_stop");
+  const truncated = await parsed("qoder", [qUser(), qAssistant("complete", 1), qAssistant("truncated", 2, 400, "max_tokens")]);
+  assert.ok(truncated.messages.every(message => message.final === undefined && message.finalEvidence === undefined));
+});
+
+test("原生请求更新由失败恢复为完整响应时，终答依据跟随后续完整快照", async () => {
+  for (const client of ["workbuddy", "codebuddy"] as const) {
+    const sample = await parsed(client, [user(), buddy("failed", "same-request", 1, 400, { interrupted: true }),
+      buddy("completed", "same-request", 2, 400)]);
+    const replies = sample.messages.filter(message => message.kind === "assistant");
+    assert.equal(replies[0]?.final, undefined);
+    assert.equal(replies[1]?.final, "inferred");
+    assert.equal(replies[1]?.finalEvidence, "response_completed");
+  }
+  const qoder = await parsed("qoder", [qUser(), qAssistant("same-request", 1, 400, "end_turn", undefined, { interrupted: true }),
+    qAssistant("same-request", 2)]);
+  const answer = qoder.messages.find(message => message.kind === "assistant");
+  assert.equal(answer?.final, "explicit");
+  assert.equal(answer?.finalEvidence, "normal_stop");
 });
 
 test("Qoder 冲突用量不任选快照，未返回的并行工具不推请求结束", async () => {

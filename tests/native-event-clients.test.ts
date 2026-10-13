@@ -10,7 +10,7 @@ import type { HistoryAdapter } from "../src/history/adapters/types.js";
 import { dshAdapter } from "../src/history/adapters/dsh.js";
 import { piAdapter } from "../src/history/adapters/pi.js";
 import { normalizedRecord, normalizedSnapshot, parseNormalizedSession } from "../src/history/adapters/normalized.js";
-import type { NormalizedSnapshot } from "../src/history/adapters/normalized.js";
+import type { NormalizedEvent, NormalizedSnapshot } from "../src/history/adapters/normalized.js";
 import type { SessionMessage, SessionUsage } from "../src/session-contracts.js";
 
 const DSH_FORMAT = "dsh-jsonl";
@@ -107,7 +107,7 @@ test("DSH 解码压缩代际副本、继承边界、失败尝试、工具证据�
   const inherited = session.messages.find(message => message.text === "inherited prompt");
   assert.equal(inherited?.copied, true);
   assert.ok(session.messages.some(message => message.kind === "thinking" && message.text === "considering"));
-  assert.equal(session.messages.find(message => message.text === "finished")?.final, "inferred");
+  assert.equal(session.messages.find(message => message.text === "finished")?.final, undefined, "终答后的工具活动撤销早期完成依据");
   assert.equal(session.messages.find(message => message.text === "retrying")?.final, undefined);
   assert.equal(session.usage.length, 4, "两个原生用量加上两个已识别但缺失用量的请求");
   assert.equal(new Set(session.usage.map(value => value.id)).size, 4, "每个请求只发布一次最终用量");
@@ -371,11 +371,69 @@ test("共享 final 推断在工具请求或结果后使更早 assistant 候选�
   const retrySnapshot = normalizedSnapshot(source, [
     normalizedRecord({ key: "retry-user", kind: "user", text: "retry this" }, "user", 1),
     normalizedRecord({ key: "failed-attempt", kind: "assistant", text: "failed attempt", interrupted: true }, "failed", 2),
-    normalizedRecord({ key: "successful-retry", kind: "assistant", text: "successful retry" }, "success", 3),
+    normalizedRecord({ key: "successful-retry", kind: "assistant", text: "successful retry", finalEvidence: "normal_stop" }, "success", 3),
   ]);
   const retry = sink(retrySnapshot);
   assert.equal(retry.messages.filter(message => message.text === "successful retry").at(-1)?.final, "inferred");
+  assert.equal(retry.messages.filter(message => message.text === "successful retry").at(-1)?.finalEvidence, "normal_stop");
 });
+
+test("共享管道撤销中断、后续工具及未完成工具冲突的已有终答", () => {
+  const source = { path: "/synthetic/final-conflict.jsonl", client: "pi" as const, format: "fixture", sessionId: "final-conflict" };
+  const cases: NormalizedEvent[][] = [
+    [{ key: "answer", kind: "assistant", text: "answer", final: "explicit", finalEvidence: "normal_stop", interrupted: true }],
+    [{ key: "answer", kind: "assistant", text: "answer", final: "explicit", finalEvidence: "normal_stop" },
+      { key: "abort", kind: "context", interrupted: true }],
+    [{ key: "answer", kind: "assistant", text: "answer", final: "inferred", finalEvidence: "response_completed" },
+      { key: "call", kind: "tool_call", callId: "call", tool: "Read", input: {} },
+      { key: "result", kind: "tool_result", callId: "call", status: "success" }],
+    [{ key: "call", kind: "tool_call", callId: "call", tool: "Read", input: {} },
+      { key: "answer", kind: "assistant", text: "answer", final: "explicit", finalEvidence: "normal_stop" }],
+    [{ key: "answer", kind: "assistant", text: "answer", final: "explicit", finalEvidence: "normal_stop",
+      requestTiming: { basis: "recorded", method: "fixture", completion: "partial" } }],
+    [{ key: "answer", kind: "assistant", text: "answer", final: "explicit", finalEvidence: "normal_stop" },
+      { key: "continued", kind: "assistant", text: "unfinished continuation", allowInferredFinal: false }],
+  ];
+  for (const events of cases) {
+    const messages = new Map<string, SessionMessage>();
+    const rows = [{ key: "user", kind: "user" as const, text: "prompt" }, ...events];
+    parseNormalizedSession(normalizedSnapshot(source, rows.map((event, index) => normalizedRecord(event, JSON.stringify(event), index + 1))),
+      { message: value => messages.set(value.id, value), usage: () => {} });
+    const answer = [...messages.values()].find(message => message.text === "answer");
+    assert.equal(answer?.final, undefined);
+    assert.equal(answer?.finalEvidence, undefined);
+  }
+});
+
+test("共享末条回复兜底保留推断状态，用量持久化不提供强终答依据", () => {
+  const source = { path: "/synthetic/weak-final.jsonl", client: "pi" as const, format: "fixture", sessionId: "weak-final" };
+  const session = sink(normalizedSnapshot(source, [
+    normalizedRecord({ key: "user", kind: "user", text: "prompt" }, "user", 1),
+    normalizedRecord({ key: "answer", kind: "assistant", text: "persisted answer", usage: { inputTokens: 10, outputTokens: 4 },
+      requestKey: "request", requestTiming: { basis: "recorded", method: "fixture", completion: "explicit", completionEvidence: "request_completed" } }, "answer", 2),
+  ]));
+  const answer = session.messages.filter(message => message.text === "persisted answer").at(-1);
+  assert.equal(answer?.final, "inferred");
+  assert.equal(answer?.finalEvidence, undefined);
+  assert.equal(answer?.finalAt, undefined);
+});
+
+test("DSH completed 轮次提供终态依据，失败后完整响应可以恢复", async () => temporary(async directory => {
+  const path = join(directory, "complete.v4.jsonl");
+  await writeFile(path, encode([
+    dshHeader(4, "synthetic-completed"),
+    dshEvent("user/message", 0, { turn: 0, message: { source: { kind: "user" }, content: "prompt" } }),
+    dshEvent("assistant/message", 1, { turn: 0, interrupted: true, message: { content: [{ type: "text", text: "failed" }] } }),
+    dshEvent("turn/end", 2, { turn: 0, reason: { kind: "error" } }),
+    dshEvent("assistant/message", 3, { turn: 0, message: { content: [{ type: "text", text: "complete answer" }] } }),
+    dshEvent("turn/end", 4, { turn: 0, reason: { kind: "completed" } }, 1_800_000_004_000),
+  ]));
+  const session = sink(await dshAdapter.readRecords!({ client: "dsh", format: DSH_FORMAT, path }) as NormalizedSnapshot);
+  assert.equal(session.messages.find(message => message.text === "failed")?.final, undefined);
+  assert.equal(session.messages.find(message => message.text === "complete answer")?.final, "inferred");
+  assert.equal(session.messages.find(message => message.text === "complete answer")?.finalEvidence, "turn_terminal");
+  assert.equal(session.messages.find(message => message.text === "complete answer")?.finalAt, new Date(1_800_000_004_000).toISOString());
+}));
 
 function piEntry(type: string, id: string, parentId: string | null, body: Record<string, unknown> = {}) {
   return { type, id, parentId, timestamp: "2026-10-06T01:00:00.000Z", ...body };
@@ -430,6 +488,7 @@ test("Pi 分支各自保留 final、当前叶定位、复制继承、注入与�
   assert.ok(session.messages.some(message => message.kind === "compression" && message.text === "compact summary"));
   const finals = session.messages.filter(message => message.final === "inferred");
   assert.deepEqual(finals.map(message => message.text).sort(), ["branch A final", "branch B final"]);
+  assert.ok(finals.every(message => message.finalEvidence === "normal_stop"));
   assert.equal(finals.find(message => message.text === "branch A final")?.currentBranch, false);
   assert.equal(finals.find(message => message.text === "branch B final")?.currentBranch, true);
   assert.deepEqual(finals.find(message => message.text === "branch A final")?.branchIds, ["compaction"]);

@@ -1,4 +1,4 @@
-import type { OverviewQuery, WeeklyReview, WeeklyReviewDetailPage, WeeklyReviewDetailQuery, WeeklyReviewRecord } from "../../../src/overview-contracts";
+import type { OverviewQuery, WeeklyReview, WeeklyReviewDetailKind, WeeklyReviewDetailPage, WeeklyReviewDetailQuery, WeeklyReviewRecord } from "../../../src/overview-contracts";
 import type { Language } from "../../../src/i18n/types";
 import type { Client } from "../../../src/clients";
 import { sessionDisplayTitle } from "../sessions/session-model";
@@ -24,6 +24,14 @@ export async function loadWeeklyReviewDetail(review: WeeklyReview, detail: Weekl
 }
 
 export const weeklyReviewViews = ["sessions", "rounds", "cache", "compressions", "agents", "models", "reasoning", "prompts", "activity", "uncompressed", "projects", "delegation", "tools"] as const;
+
+export function weeklyReviewDefaultFilter(kind: WeeklyReviewDetailKind): WeeklyReviewDetailQuery["filter"] {
+  return kind === "rounds" ? "ended" : undefined;
+}
+
+export function weeklyReviewApproximation(value: number | null | undefined, inferredSamples?: number): string {
+  return value != null && (inferredSamples ?? 0) > 0 ? "≈ " : "";
+}
 
 export function weeklyReviewDuration(ms: number | null | undefined): { key: string; value: number } | null {
   return ms == null ? null : ms < 60_000 ? { key: "overview.review.timeSeconds", value: ms / 1000 }

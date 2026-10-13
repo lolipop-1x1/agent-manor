@@ -19,7 +19,7 @@ try {
   const started = performance.now(), response = await fetch(`${fixture.base}/api/v1/overview/review`), review = await response.json();
   assert.equal(response.status, 200, JSON.stringify(review));
   assert.equal(review.sessions.active, 4); assert.equal(review.sessions.compressions, 1);
-  assert.equal(review.rounds.completed, 161); assert.equal(review.cache.requests, 336);
+  assert.equal(review.rounds.completed, 162); assert.equal(review.rounds.inferredIncluded, 1); assert.equal(review.cache.requests, 336);
   assert.equal(review.extensions.children.sessions, 1); assert.ok(review.rounds.steps.average > 0);
   assert.ok(review.rounds.durationMs.average > 0); assert.ok(review.preferences.promptCharacters.average > 0);
   assert.equal(review.preferences.agents.length, 2); assert.equal(review.preferences.reasoning.length, 2);
@@ -45,7 +45,7 @@ try {
     await page.keyboard.press("Escape"); releaseSnapshot(); await ready(); await page.unroute("**/api/v1/overview/snapshot?**");
     ensure(await page.locator(".weekly-review-group").count() === 4 && await page.locator(".weekly-review-metric").count() === 18, "四组18项核心数值齐全");
     ensure((await metric("活跃用户会话").innerText()).endsWith("4"), "活跃会话排除子Agent");
-    ensure((await metric("已结束轮次").innerText()).endsWith("161"), "明确结束轮次与API一致");
+    ensure((await metric("已结束轮次").innerText()).endsWith("162"), "明确与可靠推断结束轮次合计与API一致");
     ensure((await metric("平均提示词字数").innerText()).includes("23"), "提示词均值显示真实合成字符数");
     ensure(await page.getByText("重点洞察", { exact: true }).count() === 0, "旧重点洞察已替换");
     const heldRange = await page.locator(".weekly-review-range").innerText();
@@ -59,6 +59,7 @@ try {
     ensure(await page.locator(".weekly-review-records tbody tr").count() === 20, "日期面板更新期间固定七天详情可立即打开");
     await page.keyboard.press("Escape"); releasePanels(); await ready(); await page.unroute("**/api/v1/overview/panel?**");
     ensure(await page.locator(".weekly-review-range").innerText() === heldRange && reviewReads === 0, "顶部日期不改变或重读固定七天");
+    ensure((await metric("平均模型步骤").innerText()).includes("≈"), "可靠推断样本参与时平均步骤显示约数");
     await metric("平均模型步骤").click(); await detailReady();
     ensure(await page.locator(".weekly-review-records tbody tr").count() === 20 && await page.locator(".weekly-review-distribution").count() === 0, "轮次默认紧凑摘要和记录，不混排完整统计");
     ensure(await page.locator(".weekly-review-dialog .resource-pager").getByRole("combobox").innerText() === "20 条／页", "分页首开与20选项匹配");
@@ -70,6 +71,7 @@ try {
     await button("完整统计").click();
     ensure(await page.locator(".weekly-review-distribution tbody tr").count() === 4 && await page.locator(".weekly-review-records").count() === 0, "完整统计独立显示步骤工具Token耗时分位数");
     await button("记录").click();
+    ensure((await page.getByRole("combobox", { name: "记录筛选", exact: true }).innerText()).includes("可统计结束"), "轮次默认明细只展示可统计结束样本");
     await choose("排序", "耗时最长"); await detailReady();
     ensure((await page.locator(".weekly-review-records tbody tr").first().innerText()).includes("秒"), "最长轮次详情存在真实耗时");
     await page.locator(".weekly-review-dialog .overview-investigation-body").evaluate(el => { el.scrollTop = 400; });

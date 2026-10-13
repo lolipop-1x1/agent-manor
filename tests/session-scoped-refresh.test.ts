@@ -97,6 +97,30 @@ test("快速刷新跳过正文读取，完整校验读取正文并复用相同�
   } finally { fs.createReadStream = original; syncBuiltinESMExports(); }
 }));
 
+test("统一轮次规则升级一次覆盖全部旧客户端，后续恢复局部快速刷新", async () => fixture(async (store, directory) => {
+  const codex = join(directory, "codex"); const claude = join(directory, "claude");
+  await mkdir(codex); await mkdir(claude);
+  await writeFile(join(codex, "sample.jsonl"), codexSource("upgrade-codex", "合成请求"));
+  await writeFile(join(claude, "sample.jsonl"), encode({ type: "user", sessionId: "upgrade-claude", uuid: "request", message: { role: "user", content: "合成请求" } }));
+  const roots = isolatedHistoryRoots({ codex, claude });
+  await refresh(store, roots);
+  const before = store.cachedRevisions();
+  const db = new Database(store.dbPath);
+  try {
+    db.exec("UPDATE session_revisions SET fingerprint=replace(fingerprint,':round-rules-v1',''),metadata_fingerprint=NULL");
+  } finally { db.close(); }
+  const upgraded = await refresh(store, roots, { client: "codex" });
+  assert.equal(upgraded.client, undefined, "规则升级的发布范围必须覆盖全部来源");
+  assert.equal(upgraded.counts!.parsed, 2);
+  assert.ok(store.cachedRevisions().every(item => item.fingerprint.includes(":round-rules-v1") && !before.some(old => old.revision === item.revision)));
+  const claudeRevision = store.cachedRevisions().find(item => item.client === "claude")!.revision;
+  const quick = await refresh(store, { ...roots, claude: store.dbPath }, { client: "codex" });
+  assert.equal(quick.client, "codex");
+  assert.equal(quick.counts!.quickReused, 1);
+  assert.equal(quick.counts!.parsed, 0);
+  assert.equal(store.cachedRevisions().find(item => item.client === "claude")!.revision, claudeRevision);
+}));
+
 test("旧快检记录缺失时退回内容检查，旧成功时间不由版本时间推造", async () => fixture(async (store, directory) => {
   const root = join(directory, "sessions"); await mkdir(root);
   await writeFile(join(root, "sample.jsonl"), codexSource("legacy-demo", "旧缓存验证"));

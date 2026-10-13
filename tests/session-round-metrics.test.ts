@@ -99,3 +99,28 @@ test("结束边界取最后明确终答，早于用户请求的结束记录不�
   assert.equal(result.completedTurns, 1);
   assert.equal(result.averageDurationMs, 120_000);
 });
+
+
+test("可靠推断正常结束与唯一消息关联共同纳入，末条兜底及部分响应排除", () => {
+  const end = message(2, "a", { kind: "assistant", final: "inferred", finalEvidence: "normal_stop",
+    occurredAt: "2026-10-05T09:00:10Z", finalAt: "2026-10-05T09:01:00Z" });
+  const request = { id: "r", messageId: end.id, inputTokens: 100, outputTokens: 20 };
+  const rows = [message(0, "a", { occurredAt: "2026-10-05T09:00:00Z" }), end];
+  const result = summarizeRoundMetrics(rows, [request]);
+  assert.equal(result.completedTurns, 1);
+  assert.equal(result.inferredTurns, 1);
+  assert.equal(result.averageSteps, 1);
+  assert.equal(result.averageDurationMs, 60_000);
+  assert.equal(summarizeRoundMetrics([rows[0]!, { ...end, finalEvidence: undefined }], [request]).completedTurns, 0);
+  assert.equal(summarizeRoundMetrics(rows, [{ ...request, timing: { basis: "estimated", method: "qoder_message_boundary", completion: "partial" } }]).completedTurns, 0);
+});
+
+test("后续取消及未完成工具不让先前终答进入均值，成功恢复可纳入", () => {
+  const start = message(0, "a", { occurredAt: "2026-10-05T09:00:00Z" });
+  const answer = final(1, "a", "2026-10-05T09:01:00Z");
+  const cancel = message(2, "a", { kind: "context", contextSource: "client", interrupted: true });
+  assert.equal(summarizeRoundMetrics([start, answer, cancel], [{ id: "r", turnId: "a" }]).completedTurns, 0);
+  assert.equal(summarizeRoundMetrics([start, answer, message(2, "a", { kind: "tool_call", callId: "pending" })], [{ id: "r", turnId: "a" }]).completedTurns, 0);
+  const recovered = final(3, "a", "2026-10-05T09:02:00Z");
+  assert.equal(summarizeRoundMetrics([start, answer, cancel, recovered], [{ id: "r", turnId: "a" }]).completedTurns, 1);
+});

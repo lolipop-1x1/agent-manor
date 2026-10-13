@@ -113,7 +113,9 @@ function buildRecords(messages: Record<string, unknown>[], parts: Record<string,
         && (normalFinish || Boolean(completedAt) && !finishReason);
       staged.push({ event: { key: `message:${id}`, kind: role, text, occurredAt: created, model, turnKey,
         ...(role === "assistant" ? { requestKey: messageRequestKey } : {}),
-        ...(role === "assistant" ? { allowInferredFinal } : {}) }, raw, order: messageIndex * 1_000 });
+        ...(role === "assistant" ? { allowInferredFinal, interrupted: failed || undefined,
+          finalEvidence: allowInferredFinal ? normalFinish ? "normal_stop" : "response_completed" : undefined,
+          finalAt: allowInferredFinal ? completedAt : undefined } : {}) }, raw, order: messageIndex * 1_000 });
     } else {
       staged.push({ event: { key: `message:${id}`, kind: "context", text, occurredAt: created, model, turnKey,
         allowInferredFinal: false }, raw, order: messageIndex * 1_000 });

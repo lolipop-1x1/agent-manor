@@ -249,7 +249,7 @@ test("请求缺轮次时按消息身份定位并保留歧义，旧需求正文�
       return [...String(value)].slice(Number(start) - 1, Number(start) - 1 + Number(length)).join("");
     });
     const statement = prepare.call(this, sql);
-    if (sql.includes("prompt_preview FROM session_messages") || sql.includes("AS resolved_turn")) {
+    if (sql.includes("prompt_preview FROM session_messages") || sql.includes("AS resolved_turn") || sql.includes("AND (kind='user' OR kind='assistant' AND final IS NOT NULL)") || sql.includes("INDEXED BY session_message_overview_projection")) {
       const database = this, all = statement.all.bind(statement);
       statement.all = (...args: unknown[]) => {
         plans.push((prepare.call(database, `EXPLAIN QUERY PLAN ${sql}`).all(...args) as { detail: string }[]).map(row => row.detail));
@@ -268,6 +268,8 @@ test("请求缺轮次时按消息身份定位并保留歧义，旧需求正文�
     assert.equal(previews, 3, "只恢复跨周轮次及周内相关需求预览");
     assert(plans.some(plan => plan.some(row => row.includes("SEARCH m") && row.includes("revision=? AND id=?"))), "缺轮次请求按复合消息身份定位");
     assert(!plans.some(plan => plan.some(row => row.startsWith("SEARCH m") && row.endsWith("(revision=?)"))), "请求关联不逐条扫描全部会话消息");
+    assert(plans.some(plan => plan.some(row => row.includes("session_message_round_boundary"))), "轮次边界通过稀疏索引读取，不扫描旧工具消息");
+    assert(plans.some(plan => plan.some(row => row.includes("session_message_overview_projection"))), "活动和工具投影从覆盖索引读取元信息");
     const overview = new OverviewFactStore(store);
     try { await overview.prepare(query, now); } finally { overview.close(); }
     const cached = new WeeklyReviewFactStore(store, join(directory, "indexed-cached.sqlite"));
@@ -278,6 +280,20 @@ test("请求缺轮次时按消息身份定位并保留歧义，旧需求正文�
     } finally { cached.close(); }
 
   } finally { facts.close(); Database.prototype.prepare = prepare; }
+}));
+
+test("缺投影索引的只读旧库回退读取，统计与新索引一致", async () => fixture(async (store, directory) => {
+  const version = history(store), query = { version, timezone: "Asia/Shanghai", anchorDay: "2026-10-12" };
+  const first = new WeeklyReviewFactStore(store, join(directory, "projection-first.sqlite"));
+  let expected;
+  try { expected = buildWeeklyReview((await first.source(query, now)).facts, query, pricing, now).review; }
+  finally { first.close(); }
+  const database = new Database(store.dbPath);
+  try { database.exec("DROP INDEX session_message_overview_projection_v2; DROP INDEX session_message_round_boundary"); }
+  finally { database.close(); }
+  const readonly = new SessionStore(store.dbPath, { readonly: true }), fallback = new WeeklyReviewFactStore(readonly, join(directory, "projection-fallback.sqlite"));
+  try { assert.deepEqual(buildWeeklyReview((await fallback.source(query, now)).facts, query, pricing, now).review, expected); }
+  finally { fallback.close(); readonly.close(); }
 }));
 
 test("既有总览窄缓存与源读取口径相同，跨窗口配对和纯结果活动不丢失", async () => fixture(async (store, directory) => {
@@ -435,7 +451,7 @@ test("子Agent与排行完整Token小计占比保留双方请求样本，缺输�
   } finally { factsStore.close(); }
 }));
 
-test("无请求用量的助手与思考新增执行仍算活跃，原始与窄缓存等价，活动日升级不重读正文", async () => fixture(async (store, directory) => {
+test("无请求用量的执行仍算活跃，规则升级重算一次后复用，原始与窄缓存等价", async () => fixture(async (store, directory) => {
   const own = revision(store, "assistant-only", [
     message("assistant-only", "old-user", 1, "2026-10-04T01:00:00Z"),
     message("assistant-only", "assistant", 2, "2026-10-07T01:00:00Z", { kind: "assistant" }),
@@ -461,9 +477,16 @@ test("无请求用量的助手与思考新增执行仍算活跃，原始与窄�
     }
   } finally { database.close(); }
   const read = store.weeklyReviewRevisionFacts;
-  store.weeklyReviewRevisionFacts = () => { throw new Error("活动日升级不得重读请求和用户正文"); };
+  let upgradedReads = 0;
+  store.weeklyReviewRevisionFacts = (...args) => { upgradedReads += 1; return read.apply(store, args); };
   const upgraded = new WeeklyReviewFactStore(store, path);
-  try { assert.deepEqual(buildWeeklyReview((await upgraded.source(query, now)).facts, query, pricing, now).review, expected); }
+  try {
+    assert.deepEqual(buildWeeklyReview((await upgraded.source(query, now)).facts, query, pricing, now).review, expected);
+    assert(upgradedReads > 0, "旧结束规则须从不可变索引补齐依据");
+    const reads = upgradedReads;
+    await upgraded.source(query, now);
+    assert.equal(upgradedReads, reads, "同规则暖缓存不重复读取");
+  }
   finally { upgraded.close(); store.weeklyReviewRevisionFacts = read; }
   const overview = new OverviewFactStore(store);
   try { await overview.prepare(query, now); } finally { overview.close(); }
@@ -503,4 +526,137 @@ test("千个旧会话与五千请求首算只扫描近期候选，工具后续�
     assert.equal(scanned.length, 1);
     context.diagnostic(`合成冷算 ${cold.toFixed(1)} ms，持久窄事实重读 ${(performance.now() - repeat).toFixed(1)} ms；1001会话只扫描1个候选。`);
   } finally { factsStore.close(); }
+}));
+
+test("画像和七天复盘共用可靠终答与消息关联，跨周按原生完成时间取整轮", async () => fixture(async (store, directory) => {
+  const source = revision(store, "unified", [
+    message("unified", "cross-user", 1, "2026-10-04T12:00:00Z", { turnId: "cross" }),
+    message("unified", "cross-end", 2, "2026-10-04T14:00:00Z", { turnId: "cross", kind: "assistant", final: "inferred", finalEvidence: "normal_stop", finalAt: "2026-10-05T02:00:00Z" }),
+    message("unified", "user", 3, "2026-10-07T01:00:00Z", { turnId: "normal" }),
+    message("unified", "end", 4, "2026-10-07T01:01:00Z", { turnId: "normal", kind: "assistant", final: "explicit" }),
+    message("unified", "weak-user", 5, "2026-10-07T02:00:00Z", { turnId: "weak" }),
+    message("unified", "weak-end", 6, "2026-10-07T02:01:00Z", { turnId: "weak", kind: "assistant", final: "inferred" }),
+  ], [
+    usage("cross-before", "2026-10-04T13:00:00Z", { turnId: undefined, messageId: "cross-end" }),
+    usage("cross-last", "2026-10-05T01:59:00Z", { turnId: "cross", messageId: "cross-end" }),
+    usage("normal", "2026-10-07T01:00:30Z", { turnId: "normal", messageId: "end" }),
+    usage("weak", "2026-10-07T02:00:30Z", { turnId: "weak", messageId: "weak-end" }),
+  ]);
+  const version = store.publish(store.createJob().id, [source], []), query = { version, timezone: "Asia/Shanghai", anchorDay: "2026-10-12" };
+  const profile = store.profile("unified", {}), factsStore = new WeeklyReviewFactStore(store);
+  try {
+    const { facts } = await factsStore.source(query, now), data = buildWeeklyReview(facts, query, pricing, now);
+    assert.equal(profile.roundMetrics!.completedTurns, 2);
+    assert.equal(profile.roundMetrics!.averageSteps, 1.5);
+    assert.equal(profile.roundMetrics!.averageDurationMs, (14 * 3600000 + 60000) / 2);
+    assert.equal(data.review.rounds.completed, profile.roundMetrics!.completedTurns);
+    assert.equal(data.review.rounds.steps.average, profile.roundMetrics!.averageSteps);
+    assert.equal(data.review.rounds.durationMs.average, profile.roundMetrics!.averageDurationMs);
+    assert.equal(data.review.rounds.inferredIncluded, 1);
+    assert.equal(data.review.rounds.steps.inferredSamples, 1);
+    const detail = weeklyReviewDetail(data, { kind: "rounds", filter: "ended" });
+    assert.equal(detail.total, 2);
+    assert.equal(detail.rows.find(row => row.turnId === "cross")!.tokens, 220);
+    const warm = await factsStore.source(query, now);
+    assert.deepEqual(buildWeeklyReview(warm.facts, query, pricing, now).review, data.review);
+  } finally { factsStore.close(); }
+}));
+
+test("原生终答缺完成字段时保留请求成员和结束计时，冷暖跨午夜范围一致", async () => fixture(async (store, directory) => {
+  const records = [
+    message("timed", "u", 1, "2026-10-04T15:58:00Z"),
+    message("timed", "thinking", 2, "2026-10-04T15:58:10Z", { kind: "thinking" }),
+    message("timed", "end", 3, "2026-10-04T15:59:00Z", { kind: "assistant", final: "explicit" }),
+  ];
+  const requests = [usage("before", "2026-10-04T15:58:20Z"), usage("last", "2026-10-04T16:01:00Z", {
+    messageId: "thinking", requestMessageIds: ["thinking"], timing: { basis: "estimated", method: "codex_event_boundary", completion: "explicit",
+      end: { messageId: "end", recordLine: 3, occurredAt: "2026-10-04T16:01:00Z" } },
+  })];
+  const source = revision(store, "timed", records, requests), version = store.publish(store.createJob().id, [source], []);
+  const query = { version, timezone: "Asia/Shanghai", anchorDay: "2026-10-12" }, expected = store.profile("timed", {}).roundMetrics!;
+  assert.equal(expected.averageDurationMs, 180000);
+  const check = async (name: string) => {
+    const facts = new WeeklyReviewFactStore(store, join(directory, name));
+    try {
+      const report = buildWeeklyReview((await facts.source(query, now)).facts, query, pricing, now).review;
+      assert.equal(report.rounds.steps.average, expected.averageSteps);
+      assert.equal(report.rounds.durationMs.average, expected.averageDurationMs);
+      assert.equal(report.rounds.completed, 1);
+    } finally { facts.close(); }
+  };
+  await check("raw-timing.sqlite");
+  const overview = new OverviewFactStore(store);
+  try { await overview.prepare(query, now); } finally { overview.close(); }
+  await check("cached-timing.sqlite");
+}));
+
+test("请求身份缺口不将已知步骤小计当完整均值，画像与周复盘均保持未知", async () => fixture(async store => {
+  const source = revision(store, "incomplete", [message("incomplete", "u", 1, "2026-10-07T01:00:00Z"),
+    message("incomplete", "a", 2, "2026-10-07T01:01:00Z", { kind: "assistant", final: "explicit" })], [usage("known", "2026-10-07T01:00:30Z")],
+  { gaps: [{ kind: "ambiguous", message: "合成请求身份缺口", messageDescriptor: { key: "diagnostics.sessions.parserUsage.m003" } }] });
+  const version = store.publish(store.createJob().id, [source], []), profile = store.profile("incomplete", {}).roundMetrics!, facts = new WeeklyReviewFactStore(store);
+  try {
+    const query = { version, timezone: "Asia/Shanghai", anchorDay: "2026-10-12" }, report = buildWeeklyReview((await facts.source(query, now)).facts, query, pricing, now).review;
+    assert.equal(profile.averageSteps, null);
+    assert.equal(report.rounds.steps.average, null);
+    assert.equal(report.rounds.steps.samples, 0);
+    assert.equal(report.rounds.durationMs.average, profile.averageDurationMs);
+  } finally { facts.close(); }
+}));
+
+test("辅助事件、附件和用量分项缺口不抹掉完整请求步骤，未知事件仍保持保守", async () => fixture(async store => {
+  const gaps = [
+    { key: "diagnostics.history.adapters.qoder.m004" }, { key: "diagnostics.history.adapters.codebuddy.resourceCoverage" },
+    { key: "diagnostics.history.adapters.codebuddy.m006", params: { p0: "summary" } },
+    { key: "diagnostics.history.adapters.opencode.m006", params: { p0: "step-start" } },
+    { key: "diagnostics.history.adapters.zcode.m004", params: { p0: "step-finish" } },
+    { key: "diagnostics.history.adapters.dsh.m016", params: { p0: "permission/preset" } },
+    { key: "diagnostics.history.adapters.opencode.m002" },
+  ].map(messageDescriptor => ({ kind: "unsupported_format" as const, message: "合成辅助字段缺口", messageDescriptor }));
+  const records = [message("auxiliary", "u", 1, "2026-10-07T01:00:00Z"),
+    message("auxiliary", "a", 2, "2026-10-07T01:01:00Z", { kind: "assistant", final: "explicit" })];
+  const source = revision(store, "auxiliary", records, [usage("known", "2026-10-07T01:00:30Z", { inputTokens: undefined })], { gaps });
+  const unknown = revision(store, "unknown-event", records.map(row => ({ ...row, sessionId: "unknown-event" })), [usage("known", "2026-10-07T01:00:30Z")],
+    { gaps: [{ kind: "unsupported_format", message: "未知来源事件", messageDescriptor: { key: "diagnostics.history.adapters.dsh.m016", params: { p0: "unknown-event" } } }] });
+  const version = store.publish(store.createJob().id, [source, unknown], []), facts = new WeeklyReviewFactStore(store);
+  try {
+    const query = { version, timezone: "UTC", anchorDay: "2026-10-12" };
+    const report = buildWeeklyReview((await facts.source(query, now)).facts, query, pricing, now).review;
+    assert.equal(store.profile("auxiliary").roundMetrics!.averageSteps, 1);
+    assert.equal(report.rounds.steps.average, 1);
+    assert.equal(report.rounds.steps.samples, 1);
+    assert.equal(report.rounds.tokens.samples, 0);
+    assert.equal(store.profile("unknown-event").roundMetrics!.averageSteps, null);
+  } finally { facts.close(); }
+}));
+
+test("长会话结束时间补查只物化窗口后的结束元信息，不搬运历史请求JSON", async () => fixture(async (store, directory) => {
+  const rows = [message("long", "old-u", 1, "2026-09-01T01:00:00Z", { turnId: "old" }),
+    message("long", "old-a", 2, "2026-09-01T02:00:00Z", { turnId: "old", kind: "assistant", final: "explicit" }),
+    message("long", "new-u", 3, "2026-10-07T01:00:00Z"),
+    message("long", "new-a", 4, "2026-10-07T01:01:00Z", { kind: "assistant", final: "explicit" })];
+  const requests = [...Array.from({ length: 2000 }, (_, index) => usage(`old-${index}`, "2026-09-01T01:30:00Z", {
+    turnId: "old", messageId: "old-a", timing: { basis: "estimated", method: "codex_event_boundary", completion: "explicit",
+      end: { messageId: "old-a", occurredAt: "2026-09-01T02:00:00Z", recordLine: 2 } },
+  })), usage("new", "2026-10-07T01:02:00Z", { messageId: "new-a", timing: { basis: "estimated", method: "codex_event_boundary", completion: "explicit",
+    end: { messageId: "new-a", occurredAt: "2026-10-07T01:02:00Z", recordLine: 4 } } })];
+  const source = revision(store, "long", rows, requests), version = store.publish(store.createJob().id, [source], []);
+  const prepare = Database.prototype.prepare; let materialized = 0;
+  Database.prototype.prepare = function (sql: string) {
+    const statement = prepare.call(this, sql);
+    if (sql.includes("FROM session_usage WHERE revision=?") && sql.includes("ORDER BY rowid")) {
+      const iterate = statement.iterate.bind(statement);
+      statement.iterate = function* (...args: unknown[]) { for (const row of iterate(...args)) { materialized += 1; yield row; } };
+    }
+    return statement;
+  };
+  const facts = new WeeklyReviewFactStore(store, join(directory, "long-facts.sqlite"));
+  try {
+    const query = { version, timezone: "UTC", anchorDay: "2026-10-12" };
+    const report = buildWeeklyReview((await facts.source(query, now)).facts, query, pricing, now).review;
+    assert.equal(report.rounds.completed, 1);
+    assert.equal(report.rounds.steps.average, 1);
+    assert.equal(report.rounds.durationMs.average, 120000);
+    assert.equal(materialized, 1, "旧请求在SQLite中筛掉，只读取必要的结束关联元信息");
+  } finally { facts.close(); Database.prototype.prepare = prepare; }
 }));

@@ -28,10 +28,10 @@ async function parsed(cache: unknown[], mirror: unknown[]) {
     await mkdir(dirname(path), { recursive: true }); await mkdir(dirname(nativePath), { recursive: true });
     for (const [file, rows] of [[path, cache], [nativePath, mirror]] as const) await writeFile(file, rows.map(value => JSON.stringify(value)).join("\n") + "\n");
     const models = await desktopModels(path);
-    await parseSessionSource({ client: "codeflicker-desktop", sessionId: "synthetic-desktop", format: DESKTOP_FORMAT, path }, {
+    const summary = await parseSessionSource({ client: "codeflicker-desktop", sessionId: "synthetic-desktop", format: DESKTOP_FORMAT, path }, {
       message: value => { messages.set(value.id, value); }, usage: value => { usages.set(value.id, value); },
     }, { desktopModels: models.entries });
-    return { messages: [...messages.values()], usages: [...usages.values()] };
+    return { summary, messages: [...messages.values()], usages: [...usages.values()] };
   } finally { await rm(directory, { recursive: true, force: true }); }
 }
 
@@ -61,8 +61,12 @@ test("桌面镜像缺失或父记录存在多个后继时不猜测请求，也�
 test("桌面用量不一致、原生部分响应和短输出均不进入平均", async () => {
   const mismatch = await parsed([cacheAssistant("mismatch", "a1", 5, 900)], [nativeUser("u0", 0), nativeAssistant("a1", "u0", "one", 4)]);
   assert.equal(requestSpeed(mismatch.usages[0]!).reason, "end_unconfirmed");
-  const partial = await parsed([cacheAssistant("partial", "a1", 5)], [nativeUser("u0", 0), nativeAssistant("a1", "u0", "one", 4, 400, { interrupted: true })]);
-  assert.equal(requestSpeed(partial.usages[0]!).reason, "partial_response");
+  for (const flags of [{ interrupted: true }, { isInterrupted: true }, { isApiErrorMessage: true }]) {
+    const partial = await parsed([cacheAssistant("partial", "a1", 5)], [nativeUser("u0", 0), nativeAssistant("a1", "u0", "one", 4, 400, flags)]);
+    assert.equal(requestSpeed(partial.usages[0]!).reason, "partial_response");
+    assert.equal(partial.messages[0]?.interrupted, true);
+    assert.equal(partial.messages[0]?.final, undefined);
+  }
   const short = await parsed([cacheAssistant("short", "a1", 5, 199)], [nativeUser("u0", 0), nativeAssistant("a1", "u0", "one", 4, 199)]);
   assert.equal(requestSpeed(short.usages[0]!).reason, "output_below_threshold");
 });
@@ -85,4 +89,24 @@ test("桌面请求的用量冲突不会被后续思考或匹配快照清除", as
     assert.equal(summarizeRequestSpeed(sample.usages).eligibleRequests, 0);
     assert.equal(sample.usages[0]?.requestMessageIds?.length, 2);
   }
+});
+
+test("桌面静默用户记录不切换真实轮次，终态保留结束时间并允许取消撤销", async () => {
+  const user = { id: "user", kind: "message", role: "user", turnId: "real-turn", timestamp: at(0), content: "真实需求" };
+  const answer = { id: "answer", kind: "message", role: "assistant", timestamp: at(2), content: "合成回答" };
+  const silence = { id: "silent", kind: "message", role: "user", isSilence: true, turnId: "silent-turn", timestamp: at(3), content: "后台内容" };
+  const terminal = { op: "turn_terminal", outcome: "completed", turnId: "real-turn", lastMessageId: "answer", timestamp: at(5) };
+  const sample = await parsed([user, answer, silence, terminal], []);
+  assert.equal(sample.summary.turnCount, 1);
+  assert.ok(sample.messages.every(message => message.turnId === sample.messages[0]?.turnId));
+  assert.equal(sample.messages.find(message => message.text === "后台内容")?.kind, "system");
+  const final = sample.messages.find(message => message.kind === "assistant");
+  assert.equal(final?.final, "explicit");
+  assert.equal(final?.finalEvidence, "turn_terminal");
+  assert.equal(final?.finalAt, at(5));
+  assert.equal(final?.occurredAt, at(2));
+  const cancelled = await parsed([user, answer, terminal,
+    { op: "turn_terminal", outcome: "interrupted", turnId: "real-turn", lastMessageId: "answer", timestamp: at(6) }], []);
+  assert.equal(cancelled.messages.find(message => message.kind === "assistant")?.interrupted, true);
+  assert.ok(cancelled.messages.every(message => !message.final && !message.finalEvidence && !message.finalAt));
 });

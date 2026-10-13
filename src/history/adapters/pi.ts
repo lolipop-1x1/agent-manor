@@ -306,7 +306,8 @@ async function snapshot(location: SourceLocation): Promise<NormalizedSnapshot> {
         const request = piRequest(message, entry, row.line, id);
         const model = string(message.model);
         const final = finalIds.has(id) ? "inferred" : undefined;
-        add({ key: "", kind: "assistant", ...(visible ? { text: visible } : {}), model, reasoningEffort, final, allowInferredFinal: false,
+        add({ key: "", kind: "assistant", ...(visible ? { text: visible } : {}), model, reasoningEffort, final,
+          finalEvidence: final ? "normal_stop" : undefined, finalAt: final ? request.requestTiming.end?.occurredAt : undefined, allowInferredFinal: false,
           interrupted: interruptedIds.has(id) || undefined, status: ["error"].includes(string(message.stopReason) ?? "") ? "failure" : undefined,
           ...request, usageKey: usage ? `${request.requestKey}:usage` : undefined, usage }, ":assistant");
         if (thinking) add({ key: "", kind: "thinking", text: thinking, model, reasoningEffort, requestKey: request.requestKey }, ":thinking");

@@ -23,6 +23,7 @@ import { sourceQuickStamp } from "./quick-check.js";
 
 // 会话规范化规则升级时使来源缓存失效，独立于地图索引迁移。
 const SESSION_INDEX_RULE_VERSION = "6";
+const ROUND_RULES_FINGERPRINT = ":round-rules-v1";
 
 async function fingerprint(path: string, byteLimit?: number): Promise<{ hash: string; bytes: number }> {
   const before = await lstat(path);
@@ -46,7 +47,10 @@ async function confirmedMissing(path: string, error?: unknown): Promise<boolean>
 /** 来源解析逐记录落库；完整发布前不改变任何正在查询的版本。 */
 export async function refreshSessions(store: SessionStore, jobId: string, roots?: DiscoverRoots, clearCache = false): Promise<void> {
   const job = store.getJob(jobId);
-  const client = clearCache ? undefined : job.client;
+  // 执行时读取基础版本；统一轮次规则升级整体发布，避免范围外客户端沿用旧分类。
+  const cached = new Map(store.cachedRevisions().map(item => [item.path, item]));
+  const upgradeRounds = [...cached.values()].some(item => !item.fingerprint.endsWith(ROUND_RULES_FINGERPRINT));
+  const client = clearCache || upgradeRounds ? undefined : job.client;
   const mode = clearCache ? "full" : job.mode ?? "quick";
   const counts: SessionRefreshCounts = { discovered: 0, quickReused: 0, verifiedReused: 0, parsed: 0, missing: 0, fallbacks: [] };
   const missing = new Set<string>();
@@ -59,8 +63,6 @@ export async function refreshSessions(store: SessionStore, jobId: string, roots?
   try {
     await store.prepareSearchIndex(progress => store.updateJob(jobId, { phase: "建立搜索索引", phaseDescriptor: { key: "diagnostics.sessions.refresh.m005" }, progress }));
     store.updateJob(jobId, { phase: "discover", phaseDescriptor: { key: "diagnostics.sessions.refresh.m004" }, progress: 0 });
-    // 基础版本在执行时读取，连续范围任务保留前一任务刚发布的结果。
-    const cached = new Map(store.cachedRevisions().map(item => [item.path, item]));
     const selected = [...cached.values()].filter(item => !client || item.client === client);
     const cachedSources = selected.flatMap(item => item.location && item.quickFingerprint ? [{ location: item.location, stamp: item.quickFingerprint }] : []);
     const sources = await discoverSources(roots, { clients: client ? [client] : undefined, cachedSources: mode === "quick" ? cachedSources : undefined });
@@ -116,7 +118,8 @@ export async function refreshSessions(store: SessionStore, jobId: string, roots?
       const requestTimingFingerprint = source.client === "codeflicker-desktop" ? ":request-timing-v3" : ":request-timing-v2";
       const reasoningEffortFingerprint = ["codex", "claude", "codeflicker", "codeflicker-desktop"].includes(source.client) ? ":reasoning-effort-v2"
         : ["pi", "qoder"].includes(source.client) ? ":reasoning-effort-v1" : "";
-      const metadataSuffix = `${requestTimingFingerprint}${contextUsageFingerprint}${requestUsageFingerprint}${pricingProviderFingerprint}${zcodeInputFingerprint}${reasoningEffortFingerprint}${opencodeOutputFingerprint}${titleFingerprint}${childTitleFingerprint}${projectFingerprint}${desktopFingerprint}${desktopResourceFingerprint}`;
+      // 原生与规范化来源均升级轮次依据，固定版本只在规则变更后使旧会话缓存失效一次。
+      const metadataSuffix = `${requestTimingFingerprint}${contextUsageFingerprint}${requestUsageFingerprint}${pricingProviderFingerprint}${zcodeInputFingerprint}${reasoningEffortFingerprint}${opencodeOutputFingerprint}${titleFingerprint}${childTitleFingerprint}${projectFingerprint}${desktopFingerprint}${desktopResourceFingerprint}${ROUND_RULES_FINGERPRINT}`;
       const metadataFingerprint = createHash("sha256").update(JSON.stringify({ rule: SESSION_INDEX_RULE_VERSION, source: location, metadataSuffix })).digest("hex");
       let stamp: string | undefined;
       try { stamp = await sourceQuickStamp(source); }

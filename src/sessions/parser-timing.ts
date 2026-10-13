@@ -76,6 +76,8 @@ export class RequestTimingParser {
 
   ignoreNative(): void { this.nativeKey = undefined; }
 
+  interruptedMessage(id: string): boolean { return this.byMessage.get(id)?.timing.completion === "partial"; }
+
   message(message: SessionMessage): void {
     if (message.copied) return;
     if (["assistant", "thinking", "tool_call"].includes(message.kind)) {
@@ -159,14 +161,15 @@ export class RequestTimingParser {
     return group ? { reasoningEffort: group.first.reasoningEffort } : undefined;
   }
 
-  interrupt(alias?: string): void {
+  interrupt(alias?: string, force = false): string[] | undefined {
     const key = alias ? this.nativeAliases.get(alias) : undefined;
     const group = alias ? key ? this.groups.get(key) : undefined : this.active ?? this.latestGroup;
-    if (!group || (!alias && complete(group))) return;
+    if (!group || (!alias && !force && complete(group))) return;
     group.timing.completion = "partial"; group.timing.completionEvidence = "request_interrupted";
     this.close(group);
     this.nativeKey = undefined;
     this.latestBoundary = undefined;
+    return [...group.messages];
   }
 
   finish(): void {

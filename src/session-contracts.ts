@@ -25,6 +25,11 @@ export interface SessionMessage {
   tool?: string;
   status?: "success" | "failure" | "unknown";
   final?: "explicit" | "inferred";
+  /** 整轮响应正常结束的来源依据；末条留存回复本身不是依据。 */
+  finalEvidence?: "turn_terminal" | "normal_stop" | "response_completed";
+  /** 来源记录的响应结束时间，区别于消息创建时间。 */
+  finalAt?: string;
+  interrupted?: boolean;
   durationMs?: number;
   /** 仅用于对话展示兜底，不代表来源确认了结束。 */
   unconfirmed?: boolean;
@@ -258,6 +263,9 @@ export interface SessionProfileQuery extends SessionQuery {
 export interface SessionRoundMetrics {
   userTurns: number;
   completedTurns: number;
+  inferredTurns?: number;
+  inferredStepTurns?: number;
+  inferredTimedTurns?: number;
   stepTurns: number;
   timedTurns: number;
   promptInputs: number;

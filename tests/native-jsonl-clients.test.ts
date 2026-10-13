@@ -233,8 +233,50 @@ test("WorkBuddy completed 只结束消息；工具活动取消早期候选，截
   assert.equal(meta.turnCount, 3);
   assert.equal(collected.messages.find(message => message.text === "checking first")?.final, undefined);
   assert.ok(collected.messages.some(message => message.text === "completed answer" && message.final === "inferred"));
+  assert.ok(collected.messages.some(message => message.text === "completed answer" && message.finalEvidence === "response_completed"));
   assert.equal(collected.messages.find(message => message.text === "truncated answer")?.final, undefined);
   assert.ok(collected.messages.some(message => message.kind === "tool_result" && message.status === "failure"));
+}));
+
+test("WorkBuddy 和 CodeBuddy 原生完成依据排除错误，重试完成恢复且指标不单独结束轮次", async () => temporary(async directory => {
+  for (const [client, adapter] of [["workbuddy", workbuddyAdapter], ["codebuddy", codebuddyAdapter]] as const) {
+    const path = join(directory, `${client}-completion.jsonl`);
+    await writeFile(path, serialized([
+      { type: "message", id: "user", sessionId: "buddy-completion", role: "user", content: "prompt" },
+      { type: "message", id: "failed", sessionId: "buddy-completion", role: "assistant", status: "completed", content: "failed answer", providerData: { error: "native failure" } },
+      { type: "message", id: "complete", sessionId: "buddy-completion", role: "assistant", status: "completed", content: "complete answer" },
+      { type: "message", id: "user-two", sessionId: "buddy-completion", role: "user", content: "second prompt" },
+      { type: "message", id: "unknown", sessionId: "buddy-completion", role: "assistant", content: "unknown answer" },
+      { type: "turn-metrics", sessionId: "buddy-completion", durationMs: 1000 },
+    ]));
+    const messages = new Map<string, SessionMessage>();
+    parseNormalizedSession(await adapter.readRecords!({ path, client, format: `${client}-jsonl` }),
+      { message: value => messages.set(value.id, value), usage: () => {} });
+    const values = [...messages.values()];
+    assert.equal(values.find(message => message.text === "failed answer")?.final, undefined);
+    assert.equal(values.find(message => message.text === "failed answer")?.finalEvidence, undefined);
+    assert.equal(values.find(message => message.text === "complete answer")?.final, "inferred");
+    assert.equal(values.find(message => message.text === "complete answer")?.finalEvidence, "response_completed");
+    assert.equal(values.find(message => message.text === "unknown answer")?.final, undefined);
+  }
+}));
+
+test("Buddy completed 与错误、截断或工具 stop 冲突时没有强终答", async () => temporary(async directory => {
+  for (const [client, adapter] of [["workbuddy", workbuddyAdapter], ["codebuddy", codebuddyAdapter]] as const) {
+    for (const [index, extra] of [
+      { providerData: { error: "native failure" } }, { status: "incomplete", stopReason: "stop" },
+      { finishReason: "length" }, { finishReason: "tool_use" },
+    ].entries()) {
+      const path = join(directory, `${client}-conflict-${index}.jsonl`);
+      await writeFile(path, serialized([
+        { type: "message", id: "user", sessionId: "buddy-conflict", role: "user", content: "prompt" },
+        { type: "message", id: "answer", sessionId: "buddy-conflict", role: "assistant", status: "completed", content: "answer", ...extra },
+      ]));
+      const collected = sink();
+      parseNormalizedSession(await adapter.readRecords!({ path, client, format: `${client}-jsonl` }), collected.value);
+      assert.ok(collected.messages.every(message => message.final === undefined && message.finalEvidence === undefined));
+    }
+  }
 }));
 
 test("Qoder userType 缺失仍按原生 user 计轮次；max_tokens 不推终答并保留未知事件", async () => temporary(async directory => {

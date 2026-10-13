@@ -16,7 +16,7 @@ export function* ideSessionRecords(snapshot: IdeSnapshot): Generator<{ line: num
       }
       continue;
     }
-    const base: Record<string, unknown> = { id: `ide:${line}`, timestamp: record.ts, model: record.chatModel };
+    const base: Record<string, unknown> = { id: `ide:${line}`, timestamp: record.ts, model: record.chatModel, isSilence: record.isSilence };
     const type = string(record.say ?? record.ask);
     const tool = ideTool(record);
     if (tool) {
@@ -38,7 +38,8 @@ export function* ideSessionRecords(snapshot: IdeSnapshot): Generator<{ line: num
     else if (["command_output", "use_mcp_tool_result", "tool_error"].includes(type ?? "")) yield { line,
       record: { ...base, role: "tool", toolCallId: record.toolCallId, content: record.text, isError: type === "tool_error" ? true : undefined } };
     else if (type === "completion_result") yield { line, record: { ...base, op: "turn_terminal",
-      outcome: record.partial === true || /error|abort|cancel/i.test(string(record.stopReason) ?? "") ? "interrupted" : "completed" } };
+      outcome: record.partial === true || record.isInterrupted === true || record.interrupted === true
+        || /error|abort|cancel/i.test(string(record.stopReason) ?? "") ? "interrupted" : "completed" } };
     else yield { line, record: { ...base, role: "system", content: record.text || type || "未记录内容",
       ...(!record.text && !type ? { textDescriptor: { key: "sessions.body.unrecorded" } } : {}) } };
   }

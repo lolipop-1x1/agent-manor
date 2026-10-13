@@ -3,7 +3,7 @@ import test from "node:test";
 import { readFileSync } from "node:fs";
 import type { WeeklyReview, WeeklyReviewDetailPage, WeeklyReviewRecord, WeeklyReviewRank } from "../src/overview-contracts.ts";
 import { translate, translateMessageOrOriginal } from "../src/i18n/index.ts";
-import { weeklyReviewDuration, weeklyReviewParameters, weeklyReviewDetailParameters, loadWeeklyReviewDetail, weeklyReviewViews, weeklyReviewRecordTitle, weeklyReviewFreshLabel, weeklyReviewCacheShareLabel } from "../web/features/overview/review-model.ts";
+import { weeklyReviewApproximation, weeklyReviewDefaultFilter, weeklyReviewDuration, weeklyReviewParameters, weeklyReviewDetailParameters, loadWeeklyReviewDetail, weeklyReviewViews, weeklyReviewRecordTitle, weeklyReviewFreshLabel, weeklyReviewCacheShareLabel } from "../web/features/overview/review-model.ts";
 import { requiredOverviewPanels, OverviewSnapshotMismatch } from "../web/features/overview/loading.ts";
 
 const review = { version: "index-a", priceVersion: "price-a", timezone: "UTC", query: { window: "custom", from: "2026-01-01", to: "2026-01-07", anchorDay: "2026-01-08", clients: ["codex"], projects: ["/example/project"] }, range: { from: "2026-01-01", to: "2026-01-07", today: "2026-01-08", all: false, includesToday: false, comparison: null, recent: null } } as WeeklyReview;
@@ -43,6 +43,32 @@ test("轮次耗时保留零值，并按秒、分钟、小时显示", () => {
   assert.deepEqual(weeklyReviewDuration(7_200_000), { key: "overview.review.timeHours", value: 2 });
   assert.equal(translate("zh-CN", "overview.review.timeMinutes", { value: "1.1" }), "1.1 分钟");
   assert.equal(translate("en", "overview.review.timeMinutes", { value: "1.1" }), "1.1 min");
+});
+
+test("可靠推断样本标约数，未知值不补约数或零，明确样本保持原格式", () => {
+  assert.equal(weeklyReviewApproximation(12, 1), "≈ ");
+  assert.equal(weeklyReviewApproximation(0, 1), "≈ ");
+  assert.equal(weeklyReviewApproximation(null, 1), "");
+  assert.equal(weeklyReviewApproximation(undefined, 1), "");
+  assert.equal(weeklyReviewApproximation(12, 0), "");
+  assert.equal(weeklyReviewApproximation(12), "");
+});
+
+test("轮次默认明细选择可统计结束，状态筛选与原生依据文案完整", () => {
+  const selection = { ...detail, filter: weeklyReviewDefaultFilter("rounds") };
+  const params = new URLSearchParams(weeklyReviewDetailParameters(review, selection));
+  assert.equal(JSON.parse(params.get("detail")!).filter, "ended");
+  for (const kind of weeklyReviewViews.filter(kind => kind !== "rounds")) assert.equal(weeklyReviewDefaultFilter(kind), undefined);
+  for (const language of ["en", "zh-CN"] as const) {
+    for (const suffix of ["filter.ended", "filter.explicit", "filter.inferred", "filter.unconfirmed", "inferredIncluded", "eligibility", "eligible", "excluded", "finalEvidence", "finalEvidence.turn_terminal", "finalEvidence.normal_stop", "finalEvidence.response_completed"]) {
+      const key = `overview.review.${suffix}`;
+      const label = translate(language, key);
+      assert.notEqual(label, key);
+      assert.ok(!label.includes("Translation unavailable") && !label.includes("翻译不可用"), key);
+    }
+    assert.match(translate(language, "overview.review.help.inferred", { count: 0 }), /0/);
+    assert.match(translate(language, "sessions.profile.roundInferredHelp", { count: 1 }), /1/);
+  }
 });
 
 test("四组原始指标及扩展视图的动态文案完整", () => {

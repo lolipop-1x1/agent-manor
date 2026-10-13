@@ -113,7 +113,7 @@ export async function desktopModels(path: string): Promise<{ entries: Map<string
       group.reasoningEffort ??= reasoningEffort;
       group.output = tokens(object(message.usage).output_tokens) ?? group.output;
       group.stop = string(message.stop_reason) ?? group.stop;
-      group.partial ||= record.isApiErrorMessage === true || record.interrupted === true;
+      group.partial ||= record.isApiErrorMessage === true || record.isInterrupted === true || record.interrupted === true;
       groups.set(request, group);
     }
     const children = new Map<string, Set<string>>();

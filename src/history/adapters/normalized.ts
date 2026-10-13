@@ -27,6 +27,8 @@ export interface NormalizedEvent {
   result?: unknown;
   status?: HistoryEvent["status"];
   final?: "explicit" | "inferred";
+  finalEvidence?: SessionMessage["finalEvidence"];
+  finalAt?: string;
   /** 原生状态不足以确认终答时，禁止共享管道从最后一条 assistant 消息推断 final。 */
   allowInferredFinal?: boolean;
   interrupted?: boolean;
@@ -165,11 +167,24 @@ export function parseNormalizedSession(snapshot: NormalizedSnapshot, sink: Sessi
     relationship: native.relationship, branches: native.branches, childSessionIds: native.childSessionIds?.map(child => normalizedSessionKey(source.client, child)),
     messageCount: 0, turnCount: 0, models: [], gaps: [...(native.gaps ?? [])] };
   const messages = new Map<string, number>(); const pending = new Map<string, SessionMessage[]>(); const inputs = new Map<string, unknown>();
-  const candidates = new Map<string, { message: SessionMessage; allowInferredFinal: boolean }>(); const interrupted = new Set<string>();
+  const candidates = new Map<string, { message: SessionMessage; allowInferredFinal: boolean; finalEvidence?: SessionMessage["finalEvidence"]; finalAt?: string; requestKey?: string }>();
+  const finals = new Map<string, Set<SessionMessage>>(); const interrupted = new Map<string, NormalizedEvent[]>();
   const turns = new Map<string, string>(); const models = new Set<string>(); let turn = `${id}:turn:0`;
   const messageIds = new Map<string, string>();
   const boundaryMessages = new Map<string, string[]>();
   const requestGroups = new Map<string, { first: SessionMessage; messages: Set<string>; timing?: SessionUsage["timing"]; usage?: SessionUsage }>();
+  const sameBranch = (left: { branchIds?: string[] }, right: { branchIds?: string[] }) => !left.branchIds?.length || !right.branchIds?.length
+    || left.branchIds.some(branch => right.branchIds!.includes(branch));
+  const invalidateFinal = (key: string, event: NormalizedEvent) => {
+    const candidate = candidates.get(key);
+    if (candidate && sameBranch(candidate.message, event)) candidates.delete(key);
+    const values = finals.get(key);
+    for (const message of values ?? []) if (message.final && sameBranch(message, event)) {
+      message.final = undefined; message.finalEvidence = undefined; message.finalAt = undefined; sink.message(message);
+      values!.delete(message);
+    }
+    if (!values?.size) finals.delete(key);
+  };
   for (const row of snapshot.records) {
     const event = row.record.normalizedEvent as NormalizedEvent | undefined;
     if (!event) continue;
@@ -179,12 +194,16 @@ export function parseNormalizedSession(snapshot: NormalizedSnapshot, sink: Sessi
       turn = turns.get(key)!;
     } else if (event.turnKey && turns.has(event.turnKey)) turn = turns.get(event.turnKey)!;
     const previous = messages.get(event.key);
+    const partial = event.interrupted === true || event.requestTiming?.completion === "partial"
+      || ["assistant", "thinking"].includes(event.kind) && event.status === "failure";
     const paths = event.filePaths ?? [object(event.input).file_path, object(event.input).filePath, object(event.input).path].filter((item): item is string => typeof item === "string");
     const value: SessionMessage = { id: `${id}:message:${normalizedHash(event.key).slice(0, 24)}`, sessionId: id,
       ordinal: previous ?? ++meta.messageCount, recordLine: row.line, turnId: turn, kind: event.kind,
       text: event.text ?? (event.input === undefined ? "" : JSON.stringify(event.input, null, 2)), textDescriptor: event.textDescriptor, occurredAt: event.occurredAt, model: event.model,
       reasoningEffort: event.reasoningEffort,
-      callId: event.callId, tool: event.tool, status: event.status, final: event.final, durationMs: event.durationMs,
+      callId: event.callId, tool: event.tool, status: event.status, final: partial ? undefined : event.final,
+      finalEvidence: !partial && event.final ? event.finalEvidence : undefined,
+      finalAt: !partial && event.final ? event.finalAt : undefined, durationMs: event.durationMs,
       copied: event.copied, branchIds: event.branchIds, currentBranch: event.currentBranch,
       filePaths: paths.length ? paths : undefined, resource: event.kind === "tool_call" ? event.resource ?? callResource(event.tool ?? "", event.input, meta.project ?? source.cwd)
         : event.kind === "user" ? event.resource : undefined };
@@ -198,13 +217,28 @@ export function parseNormalizedSession(snapshot: NormalizedSnapshot, sink: Sessi
     if (event.model) models.add(event.model);
     if (event.occurredAt) { meta.startedAt = !meta.startedAt || event.occurredAt < meta.startedAt ? event.occurredAt : meta.startedAt; meta.updatedAt = !meta.updatedAt || event.occurredAt > meta.updatedAt ? event.occurredAt : meta.updatedAt; }
     if (event.kind === "user" && !event.copied && meta.titleOrigin === "fallback" && event.text?.trim()) { meta.title = event.text.trim().replace(/\s+/g, " ").slice(0, 120); meta.titleOrigin = "first_user"; }
-    if (event.interrupted) interrupted.add(turn);
+    const candidateOrdinal = candidates.get(turn)?.message.ordinal;
+    const relatedOrdinal = event.usageMessageKey ? messages.get(event.usageMessageKey) : undefined;
+    // 补发的用量状态只否定其所属响应，不将旧失败投影到更晚终答。
+    const supersededUsage = event.kind === "context" && event.usage !== undefined
+      && (relatedOrdinal === undefined || candidateOrdinal !== undefined && relatedOrdinal < candidateOrdinal);
+    if (partial && !supersededUsage) {
+      interrupted.set(turn, [...(interrupted.get(turn) ?? []), event]);
+      invalidateFinal(turn, event);
+    }
     if (event.kind === "assistant") {
-      if (!event.interrupted) interrupted.delete(turn);
-      candidates.set(turn, { message: value, allowInferredFinal: event.allowInferredFinal !== false });
+      invalidateFinal(turn, event);
+      if (!partial && (event.final || event.finalEvidence)) {
+        interrupted.set(turn, (interrupted.get(turn) ?? []).filter(previous => !sameBranch(previous, event)));
+      }
+      candidates.set(turn, { message: value, allowInferredFinal: event.allowInferredFinal !== false && !partial,
+        finalEvidence: !partial ? event.finalEvidence : undefined, finalAt: event.finalAt, requestKey: event.requestKey });
+      if (value.final) {
+        const values = finals.get(turn) ?? new Set<SessionMessage>(); values.add(value); finals.set(turn, values);
+      }
     }
     if (event.kind === "tool_call") {
-      candidates.delete(turn);
+      invalidateFinal(turn, event);
       const key = event.callId ?? event.key;
       const calls = pending.get(key) ?? [];
       const existing = calls.findIndex(call => call.id === value.id);
@@ -212,7 +246,7 @@ export function parseNormalizedSession(snapshot: NormalizedSnapshot, sink: Sessi
       pending.set(key, calls); inputs.set(value.id, event.input);
     }
     if (event.kind === "tool_result") {
-      candidates.delete(turn);
+      invalidateFinal(turn, event);
       const calls = pending.get(event.callId ?? "") ?? [];
       const call = calls.length === 1 ? calls[0] : undefined;
       value.tool ??= call?.tool;
@@ -256,9 +290,21 @@ export function parseNormalizedSession(snapshot: NormalizedSnapshot, sink: Sessi
     sink.usage({ ...usageValue, timing, requestMessageIds: [...group.messages] });
   }
   const pendingCalls = [...pending.values()].flat();
-  const pendingTurns = new Set(pendingCalls.map(value => value.turnId));
-  for (const [key, candidate] of candidates) if (candidate.allowInferredFinal && !candidate.message.final
-    && !pendingTurns.has(key) && !interrupted.has(key)) sink.message({ ...candidate.message, final: "inferred" });
+  const pendingByTurn = new Map<string, SessionMessage[]>();
+  for (const call of pendingCalls) pendingByTurn.set(call.turnId, [...(pendingByTurn.get(call.turnId) ?? []), call]);
+  const isBlocked = (key: string, message: SessionMessage) => (pendingByTurn.get(key) ?? []).some(call => sameBranch(call, message))
+    || (interrupted.get(key) ?? []).some(event => sameBranch(event, message));
+  for (const [key, values] of finals) for (const message of values) if (message.final && isBlocked(key, message)) {
+    message.final = undefined; message.finalEvidence = undefined; message.finalAt = undefined; sink.message(message);
+  }
+  for (const [key, candidate] of candidates) if (candidate.allowInferredFinal && !candidate.message.final && !isBlocked(key, candidate.message)) {
+    const timing = candidate.requestKey ? requestGroups.get(candidate.requestKey)?.timing : undefined;
+    const end = candidate.finalAt ?? (timing?.completion !== "partial" ? timing?.end?.occurredAt : undefined);
+    const validEnd = end && Number.isFinite(Date.parse(end))
+      && (!candidate.message.occurredAt || Date.parse(end) >= Date.parse(candidate.message.occurredAt));
+    sink.message({ ...candidate.message, final: "inferred", finalEvidence: candidate.finalEvidence,
+      finalAt: candidate.finalEvidence && validEnd ? end : undefined });
+  }
   if (pendingCalls.length) meta.gaps.push({ kind: "unpaired_call", message: "部分原生工具请求尚未记录结果", messageDescriptor: { key: "diagnostics.history.adapters.normalized.m007" }, count: pendingCalls.length, sourceId: meta.sourceId });
   meta.models = [...models];
   return meta;

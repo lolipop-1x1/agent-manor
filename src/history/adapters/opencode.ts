@@ -131,7 +131,8 @@ function buildRecords(sessionId: string, messages: Record<string, unknown>[], pa
     const hasToolPart = grouped.some(part => part.data.type === "tool");
     const hasCompressionPart = compactionContinue || summarized
       || grouped.some(part => part.data.type === "compaction" || part.data.type === "summary");
-    const allowInferredFinal = role === "assistant" && Boolean(finishedAt) && !terminalFailure
+    const normalFinish = ["stop", "end_turn", "stop_sequence"].includes(finishReason);
+    const allowInferredFinal = role === "assistant" && Boolean(finishedAt) && (normalFinish || !finishReason) && !terminalFailure
       && !hasToolPart && !hasCompressionPart && !synthetic && !compactionContinue && !summarized;
 
     const knownRole = role === "user" || role === "assistant" || role === "system";
@@ -155,7 +156,9 @@ function buildRecords(sessionId: string, messages: Record<string, unknown>[], pa
       durationMs: elapsed !== undefined && Number.isFinite(elapsed) ? elapsed : undefined };
     const event: NormalizedEvent = { key: `message:${id}`, kind, text, model, occurredAt: created, turnKey,
       requestKey, ...(requestKey ? { requestTiming: timing } : {}),
-      ...(role === "assistant" ? { allowInferredFinal } : {}) };
+      ...(role === "assistant" ? { allowInferredFinal, interrupted: terminalFailure || undefined,
+        finalEvidence: allowInferredFinal ? normalFinish ? "normal_stop" : "response_completed" : undefined,
+        finalAt: allowInferredFinal ? finishedAt : undefined } : {}) };
     staged.push({ event, raw: messageRaw, order: messageIndex * 1_000 });
 
     for (const [partIndex, part] of grouped.entries()) {

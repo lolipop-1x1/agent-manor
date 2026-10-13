@@ -28,24 +28,25 @@ export async function weeklyReviewFixture() {
         const start = new Date(today); start.setDate(start.getDate() - day); start.setHours(9 + round, 5 * sessionIndex, 0, 0);
         const turn = `${day}-${round}`;
         message(turn, "user", `请检查合成项目 ${sessionIndex + 1} 的第 ${round + 1} 项功能，并修复查询结果。`, start);
-        const requestCount = 1 + round % 3;
-        for (let step = 0; step < requestCount; step++) {
-          const at = new Date(start.getTime() + (step + 1) * 12_000);
-          const final = step === requestCount - 1;
-          const messageId = message(turn, "assistant", final ? "合成检查完成。" : "检查合成数据。", at,
-            final ? { final: sessionIndex === 3 && round === 5 ? "inferred" : "explicit" } : {});
-          const input = 1000 + sessionIndex * 500 + round * 300 + step * 100;
-          pending.sink.usage({ id: `${id}:usage:${turn}:${step}`, messageId, turnId: turn, occurredAt: at.toISOString(),
-            model: round % 2 ? "review-large" : "review-fast", reasoningEffort: round % 3 ? "high" : "medium",
-            inputTokens: input, outputTokens: 100 + step * 20,
-            ...(round === 4 ? {} : { cachedInputTokens: round === 0 ? 0 : round === 1 ? input : Math.round(input * .7) }), cacheWriteTokens: 0 });
-        }
         if (round === 2) {
           const at = new Date(start.getTime() + 5_000);
           message(turn, "tool_call", "合成读取", at, { callId: `call-${turn}`, tool: "synthetic_read" });
           message(turn, "tool_result", "合成失败", at, { callId: `call-${turn}`, tool: "synthetic_read", status: "failure" });
           message(turn, "tool_call", "合成后续读取", at, { callId: `retry-${turn}`, tool: "synthetic_read" });
           message(turn, "tool_result", "合成结果", at, { callId: `retry-${turn}`, tool: "synthetic_read", status: "success" });
+        }
+        const requestCount = 1 + round % 3;
+        for (let step = 0; step < requestCount; step++) {
+          const at = new Date(start.getTime() + (step + 1) * 12_000);
+          const final = step === requestCount - 1;
+          const messageId = message(turn, "assistant", final ? "合成检查完成。" : "检查合成数据。", at,
+            final ? { final: sessionIndex === 3 && round === 5 ? "inferred" : "explicit",
+              ...(sessionIndex === 3 && round === 5 && day === 1 ? { finalEvidence: "normal_stop", finalAt: at.toISOString() } : {}) } : {});
+          const input = 1000 + sessionIndex * 500 + round * 300 + step * 100;
+          pending.sink.usage({ id: `${id}:usage:${turn}:${step}`, messageId, turnId: turn, occurredAt: at.toISOString(),
+            model: round % 2 ? "review-large" : "review-fast", reasoningEffort: round % 3 ? "high" : "medium",
+            inputTokens: input, outputTokens: 100 + step * 20,
+            ...(round === 4 ? {} : { cachedInputTokens: round === 0 ? 0 : round === 1 ? input : Math.round(input * .7) }), cacheWriteTokens: 0 });
         }
         if (sessionIndex === 1 && day === 4 && round === 3) message(turn, "compression", "合成压缩事件", new Date(start.getTime() + 8_000));
       }

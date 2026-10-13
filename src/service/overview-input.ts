@@ -112,7 +112,7 @@ export function weeklyReviewDetailQuery(raw: unknown): WeeklyReviewDetailQuery {
     textValue(record.key, "detail.key", true);
   }
   if (record.filter !== undefined && !(record.kind === "cache" ? ["zero", "partial", "full", "unknown"]
-    : record.kind === "rounds" ? ["explicit", "inferred", "unconfirmed"] : []).includes(record.filter as string)) invalid("detail.filter");
+    : record.kind === "rounds" ? ["ended", "explicit", "inferred", "unconfirmed"] : []).includes(record.filter as string)) invalid("detail.filter");
   for (const [field, maximum] of [["page", 1_000_000], ["pageSize", 100]] as const) {
     if (record[field] !== undefined && (!Number.isSafeInteger(record[field]) || Number(record[field]) < 1 || Number(record[field]) > maximum)) invalid(`detail.${field}`);
   }

@@ -304,8 +304,9 @@ async function snapshot(location: SourceLocation): Promise<NormalizedSnapshot> {
   const knownCallIds = new Set(eventRows.filter(row => row.record.type === "tool/call").map(row => string(object(row.record.data).callId)).filter((value): value is string => Boolean(value)));
   const records = [] as ReturnType<typeof normalizedRecord>[];
   const toolNames = new Map<string, string | undefined>();
-  const completedTurns = new Set(eventRows.filter(row => row.record.type === "turn/end" && object(object(row.record.data).reason).kind === "completed")
-    .map(row => object(row.record.data).turn).filter(value => typeof value === "number").map(String));
+  const completedTurns = new Map(eventRows.filter(row => row.record.type === "turn/end" && object(object(row.record.data).reason).kind === "completed")
+    .filter(row => typeof object(row.record.data).turn === "number")
+    .map(row => [String(object(row.record.data).turn), { seq: tokenCount(row.record.seq) ?? row.line, time: nativeTime(row.record.time) }]));
   const lastAssistant = new Map<string, { seq: number; interrupted: boolean; hasToolCall: boolean }>();
   const requestByCall = new Map<string, string | undefined>();
   for (const row of eventRows) {
@@ -356,10 +357,12 @@ async function snapshot(location: SourceLocation): Promise<NormalizedSnapshot> {
       const model = string(object(message.source).model) ?? string(object(data.usage).model);
       const turn = data.turn === undefined ? undefined : String(data.turn);
       const candidate = turn === undefined ? undefined : lastAssistant.get(turn);
-      const final = turn && completedTurns.has(turn) && candidate?.seq === seq && !candidate.hasToolCall && !candidate.interrupted ? "inferred" : undefined;
+      const completed = turn === undefined ? undefined : completedTurns.get(turn);
+      const final = completed && completed.seq > seq && candidate?.seq === seq && !candidate.hasToolCall && !candidate.interrupted ? "inferred" : undefined;
       const interrupted = data.interrupted === true && candidate?.seq === seq;
       records.push(normalizedRecord({ key: `${key}:assistant`, kind: "assistant", ...(text ? { text } : {}), occurredAt, model, turnKey,
-        ...request, requestTiming, usageKey: usage ? `${request.requestKey}:usage` : undefined, usage, final, allowInferredFinal: false,
+        ...request, requestTiming, usageKey: usage ? `${request.requestKey}:usage` : undefined, usage, final,
+        finalEvidence: final ? "turn_terminal" : undefined, finalAt: final ? completed?.time : undefined, allowInferredFinal: false,
         interrupted: interrupted || undefined, copied }, row.raw, row.line, seq));
       if (reasoning) records.push(normalizedRecord({ key: `${key}:reasoning`, kind: "thinking", text: reasoning, occurredAt, model, turnKey, requestKey: request.requestKey, copied }, row.raw, row.line, seq));
       for (const block of content.filter(block => block.type === "tool-call")) {
@@ -433,7 +436,8 @@ async function snapshot(location: SourceLocation): Promise<NormalizedSnapshot> {
     }
     if (type === "turn/end" || type === "session/end-seed") {
       const reason = string(object(data.reason).kind);
-      records.push(normalizedRecord({ key, kind: "context", ...(reason ? { text: reason } : { text: type }), occurredAt, turnKey, copied }, row.raw, row.line, seq));
+      records.push(normalizedRecord({ key, kind: "context", ...(reason ? { text: reason } : { text: type }), occurredAt, turnKey,
+        interrupted: type === "turn/end" && reason !== "completed" || undefined, copied }, row.raw, row.line, seq));
       continue;
     }
     records.push(normalizedRecord({ key, kind: "context", text: `未适配事件 ${type}`, textDescriptor: { key: "sessions.body.unsupportedEvent", params: { type } }, occurredAt, turnKey, copied }, row.raw, row.line, seq));
