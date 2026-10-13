@@ -1,15 +1,15 @@
 import type { MessageCatalog } from "../../types.js";
 
 export default {
-  "usage.speed.seriesTitle": "{{group}} · {{method}}",
+  "usage.speed.seriesTitle": "{{group}} · {{window}} · {{basis}} · {{method}}",
   "usage.speed.compare": "Compare models",
   "usage.speed.seriesValue": "{{group}}: {{value}}",
   "usage.speed.emptySelection": "Select one or more models to view speed trends.",
 
   "usage.metric.speed": "Output speed",
   "usage.speed.group": "Timing group",
-  "usage.speed.search": "Search model, client, or timing method",
-  "usage.speed.groupLabel": "{{model}} · {{client}} · {{window}} · {{basis}}",
+  "usage.speed.search": "Search model or client",
+  "usage.speed.groupLabel": "{{model}} · {{client}}",
   "usage.speed.window.response": "Response interval",
   "usage.speed.window.generation": "Output phase",
   "usage.speed.basis.recorded": "Client timing",
@@ -27,9 +27,6 @@ export default {
   "usage.speed.selectInterval": "Select speed interval",
   "usage.speed.selected": "{{time}} · {{value}}",
   "usage.speed.intervalDetails": "Speed interval details",
-  "usage.speed.eligible": "Eligible / group requests",
-  "usage.speed.output": "Eligible output tokens",
-  "usage.speed.duration": "Eligible measured duration",
   "usage.speed.noData": "No eligible output speed samples in this range.",
 
   "usage.tokens.exact": "{{count, number}} tokens",

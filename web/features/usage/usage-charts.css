@@ -93,7 +93,6 @@
 .usage-charts .usage-speed-actions { min-width: 0; max-width: 100%; }
 .usage-charts .usage-speed-actions .filter-trigger { min-width: 0; max-width: min(650px, calc(100vw - 108px)); }
 .usage-speed-header { margin-bottom: 14px; }
-.usage-speed-popover dt { white-space: normal; }
 @media (max-width: 767px) {
   .usage-charts .usage-speed-actions { width: 100%; flex-wrap: nowrap; }
   .usage-charts .usage-speed-actions .filter-trigger { flex: 1; max-width: none; }
@@ -103,9 +102,10 @@
 .usage-speed-legend-item { display: inline-flex; align-items: center; gap: 7px; min-width: 0; max-width: 460px; font-size: 12px; color: var(--text); }
 .usage-speed-legend-item > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .usage-speed-marker { flex-shrink: 0; width: 26px; height: 10px; }
-.usage-speed-popover { width: min(460px, calc(100vw - 24px)); }
-.usage-speed-detail-group { padding-top: 14px; }
-.usage-speed-detail-group + .usage-speed-detail-group { margin-top: 16px; border-top: 1px solid var(--border); }
-.usage-speed-detail-group h3 { display: flex; align-items: center; gap: 8px; margin: 0; font-size: 12px; font-weight: 500; line-height: 1.6; }
-.usage-speed-detail-group h3 > span { min-width: 0; overflow-wrap: anywhere; }
-.usage-speed-detail-group .usage-time-total { margin-block: 8px 12px; }
+.usage-speed-popover { display: flex; flex-direction: column; width: min(520px, calc(100vw - 24px)); max-height: min(480px, var(--radix-popover-content-available-height)); overflow: hidden; }
+.usage-speed-popover header { flex-shrink: 0; }
+.usage-speed-detail-list { min-height: 0; margin-top: 8px; overflow-y: auto; overscroll-behavior: contain; scrollbar-width: thin; }
+.usage-speed-detail-group { display: grid; grid-template-columns: minmax(0, 1fr) max-content; align-items: center; gap: 12px; padding: 6px 0; }
+.usage-speed-detail-group h3 { display: flex; align-items: center; gap: 8px; min-width: 0; margin: 0; font-size: 12px; font-weight: 500; line-height: 20px; }
+.usage-speed-detail-group h3 > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.usage-speed-detail-value { font-size: 13px; font-weight: 600; white-space: nowrap; font-variant-numeric: tabular-nums; }

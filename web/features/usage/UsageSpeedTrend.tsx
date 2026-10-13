@@ -48,25 +48,25 @@ export function UsageSpeedTrend({ report, interactive, onGroups }: {
   const bucketLabel = (key: string) => hourly ? dateTime(key, { timeZone: report.timezone, year: "numeric", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }) : bucketDate(key);
   const groupLabel = (item: UsageSpeedGroup) => {
     const client = CLIENTS.find(client => client.id === item.client);
-    return t("usage.speed.groupLabel", { model: item.model, client: client ? clientLabel(client.id) : item.client, window: t(`usage.speed.window.${item.window}`), basis: t(`usage.speed.basis.${item.basis}`) });
+    return t("usage.speed.groupLabel", { model: item.model, client: client ? clientLabel(client.id) : item.client });
   };
   const tickCount = Math.min(dates.length, Math.max(2, Math.floor(plotWidth / 170)));
   const tickX = (index: number) => tickCount > 1 && index === 0 ? left : tickCount > 1 && index === dates.length - 1 ? width - right : x(index);
   const ticks = Array.from({ length: tickCount }, (_, index) => tickCount === 1 ? 0 : Math.round(index * (dates.length - 1) / (tickCount - 1)));
   const selectBucket = (index: number) => { const key = dates[index]!; setSelected(key); return key; };
   const marker = (item: typeof series[number]) => <svg className="usage-speed-marker" viewBox="0 0 26 10" aria-hidden="true"><line x1="1" x2="25" y1="5" y2="5" stroke={item.color} strokeWidth="2.5" strokeDasharray={item.dash} /></svg>;
-  const seriesTitle = (group: UsageSpeedGroup) => t("usage.speed.seriesTitle", { group: groupLabel(group), method: t(`sessions.speed.method.${group.method}`) });
+  const seriesTitle = (group: UsageSpeedGroup) => t("usage.speed.seriesTitle", { group: groupLabel(group), window: t(`usage.speed.window.${group.window}`), basis: t(`usage.speed.basis.${group.basis}`), method: t(`sessions.speed.method.${group.method}`) });
   const selectedValues = active ? formatList(series.map(item => t("usage.speed.seriesValue", { group: groupLabel(item.group), value: speedValue(item.buckets.get(active)?.tokensPerSecond, item.group) }))) : "";
   return <section className="usage-chart-section usage-time-analysis usage-speed-analysis" aria-labelledby="usage-time-title">
     <div className="usage-section-title"><h2 id="usage-time-title">{t("usage.chart.timeAnalysis")}</h2><div className="usage-speed-actions" ref={groupControls}>
-      <ProjectPicker multiple label={t("usage.speed.compare")} placeholder={t("usage.speed.search")} value={speed?.selectedGroups ?? []} options={(speed?.groups ?? []).map(item => ({ value: item.key, label: groupLabel(item), description: t(`sessions.speed.method.${item.method}`) }))} onChange={applyGroups} />
+      <ProjectPicker multiple label={t("usage.speed.compare")} placeholder={t("usage.speed.search")} value={speed?.selectedGroups ?? []} options={(speed?.groups ?? []).map(item => ({ value: item.key, label: groupLabel(item) }))} onChange={applyGroups} />
       <HelpPopover label={t("usage.speed.help")} iconOnly><p>{t("usage.speed.formula")}</p><p>{t("usage.speed.eligibility")}</p><p>{t("usage.speed.comparability")}</p>
-        {series.map(({ group }) => <div key={group.key}><p><strong>{groupLabel(group)}</strong></p><p>{t(`sessions.speed.method.${group.method}`)}</p><p>{t(group.window === "generation" ? "sessions.speed.windowGeneration" : "sessions.speed.windowResponse")}</p><p>{t("usage.speed.groupCoverage", { eligible: group.eligibleRequests, total: group.requests })}</p></div>)}
+        {series.map(({ group }) => <div key={group.key}><p><strong>{seriesTitle(group)}</strong></p><p>{t(group.window === "generation" ? "sessions.speed.windowGeneration" : "sessions.speed.windowResponse")}</p><p>{t("usage.speed.groupCoverage", { eligible: group.eligibleRequests, total: group.requests })}</p></div>)}
         {speed && <><p>{t("usage.speed.coverage", { eligible: speed.eligibleRequests, total: speed.requests })}</p><p>{t("usage.speed.undated", { count: speed.missingTimeRequests })}</p></>}
         <p>{t("usage.chart.timeHelpText")}</p>
       </HelpPopover>
     </div></div>
-    {!!series.length && <div className="usage-speed-legend" aria-label={t("usage.chart.legend")}>{series.map(item => <span key={item.group.key} className="usage-speed-legend-item" data-group={item.group.key} title={seriesTitle(item.group)}>{marker(item)}<span>{groupLabel(item.group)}</span></span>)}</div>}
+    {!!series.length && <div className="usage-speed-legend" aria-label={t("usage.chart.legend")}>{series.map(item => <span key={item.group.key} className="usage-speed-legend-item" data-group={item.group.key} title={groupLabel(item.group)}>{marker(item)}<span>{groupLabel(item.group)}</span></span>)}</div>}
     {hasPoints ? <><div className="usage-speed-header"><span className="usage-chart-unit">tok/s</span></div>
       <div className="usage-trend-scroll"><div className="usage-trend-plot" ref={plot}>
         <svg viewBox={`0 0 ${width} ${height}`} preserveAspectRatio="none" role="img" aria-label={t("usage.speed.trend")}>
@@ -87,14 +87,10 @@ export function UsageSpeedTrend({ report, interactive, onGroups }: {
       <Popover.Anchor virtualRef={interaction.anchor} />
       <Popover.Portal><Popover.Content className="usage-time-popover usage-speed-popover" side="top" align="center" sideOffset={14} collisionPadding={12} aria-label={t("usage.speed.intervalDetails")} {...interaction.contentProps}>
         {detail && <><header><strong>{bucketLabel(detail)}</strong><Popover.Close className="icon-button" aria-label={t("common.closeNamed", { label: t("usage.speed.intervalDetails") })}><X size={16} /></Popover.Close></header>
-          {series.map(item => { const bucket = item.buckets.get(detail); return <section className="usage-speed-detail-group" data-group={item.group.key} key={item.group.key}>
-            <h3 title={seriesTitle(item.group)}>{marker(item)}<span>{groupLabel(item.group)}</span></h3>
-            <div className="usage-time-total">{speedValue(bucket?.tokensPerSecond, item.group)}</div><dl>
-              <div><dt>{t("usage.speed.eligible")}</dt><dd>{bucket ? `${number(bucket.eligibleRequests)} / ${number(bucket.requests)}` : "—"}</dd></div>
-              <div><dt>{t("usage.speed.output")}</dt><dd>{bucket?.outputTokens == null ? "—" : number(bucket.outputTokens)}</dd></div>
-              <div><dt>{t("usage.speed.duration")}</dt><dd>{bucket?.durationMs == null ? "—" : t("sessions.speed.seconds", { value: number(bucket.durationMs / 1000, { maximumFractionDigits: 3 }) })}</dd></div>
-            </dl>
-          </section>; })}
+          <div className="usage-speed-detail-list">{series.map(item => <div className="usage-speed-detail-group" data-group={item.group.key} key={item.group.key}>
+            <h3 title={groupLabel(item.group)}>{marker(item)}<span>{item.group.model}</span></h3>
+            <strong className="usage-speed-detail-value">{speedValue(item.buckets.get(detail)?.tokensPerSecond, item.group)}</strong>
+          </div>)}</div>
         </>}
       </Popover.Content></Popover.Portal>
     </Popover.Root>

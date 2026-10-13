@@ -1,15 +1,15 @@
 import type { MessageCatalog } from "../../types.js";
 
 export default {
-  "usage.speed.seriesTitle": "{{group}} · {{method}}",
+  "usage.speed.seriesTitle": "{{group}} · {{window}} · {{basis}} · {{method}}",
   "usage.speed.compare": "对比模型",
   "usage.speed.seriesValue": "{{group}}：{{value}}",
   "usage.speed.emptySelection": "选择一个或多个模型查看速度趋势。",
 
   "usage.metric.speed": "吐字速度",
   "usage.speed.group": "计时分组",
-  "usage.speed.search": "搜索模型、客户端或计时方法",
-  "usage.speed.groupLabel": "{{model}} · {{client}} · {{window}} · {{basis}}",
+  "usage.speed.search": "搜索模型或客户端",
+  "usage.speed.groupLabel": "{{model}} · {{client}}",
   "usage.speed.window.response": "响应区间",
   "usage.speed.window.generation": "输出阶段",
   "usage.speed.basis.recorded": "原生计时",
@@ -26,9 +26,6 @@ export default {
   "usage.speed.selectInterval": "选择速度时间区间",
   "usage.speed.selected": "{{time}} · {{value}}",
   "usage.speed.intervalDetails": "速度区间明细",
-  "usage.speed.eligible": "可计算 / 分组请求数",
-  "usage.speed.output": "合格输出 Token",
-  "usage.speed.duration": "合格请求耗时",
   "usage.speed.noData": "当前范围没有可计算吐字速度的合格样本。",
 
   "usage.tokens.exact": "{{count, number}} Token",

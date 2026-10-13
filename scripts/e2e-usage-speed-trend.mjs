@@ -63,7 +63,8 @@ try {
     ensure(JSON.stringify(report.speed.selectedGroups) === JSON.stringify(allGroups) && report.speed.series.length === report.speed.groups.length, "默认没有选择全部可选分组");
     ensure(report.speed.selectedGroup === allGroups[0] && JSON.stringify(report.speed.buckets) === JSON.stringify(report.speed.series[0].buckets), "旧单组响应不是首条序列的兼容视图");
     ensure(await page.locator(".usage-speed-legend-item").count() === allGroups.length, "默认比较图例未显示全部分组");
-    await page.setViewportSize({ width: 900, height: 1080 });
+    ensure(!/响应区间|输出阶段|历史估算|原生计时/.test(await page.locator(".usage-speed-legend").innerText()), "图例仍显示冗余计时标签");
+    await page.setViewportSize({ width: 390, height: 844 });
     ensure(await page.locator(".usage-speed-legend").evaluate(element => element.scrollHeight > element.clientHeight), "默认全部模型的长图例没有独立滚动");
     await page.locator(".usage-speed-legend").evaluate(element => { element.scrollTop = element.scrollHeight; });
     ensure(await page.locator(".usage-speed-legend").evaluate(element => element.scrollTop) > 0, "全部模型图例不能滚动至末尾");
@@ -129,6 +130,26 @@ try {
     await slider.press("End"); ensure(await slider.getAttribute("aria-valuenow") === await slider.getAttribute("aria-valuemax"), "速度键盘End未选末区间");
     ensure((await popup.innerText()).includes("≈"), "估算速度缺少近似标记");
     ensure(await popup.locator(".usage-speed-detail-group").count() === allGroups.length, "同日期浮层没有展示全部比较分组");
+    ensure(await popup.locator("dl").count() === 0 && !/请求数|输出 Token|请求耗时|响应区间|历史估算/.test(await popup.innerText()), "速度浮层仍展示冗余指标或计时说明");
+    ensure(await popup.locator(".usage-speed-detail-group").evaluateAll(rows => rows.every(row => {
+      const name = row.querySelector("h3").getBoundingClientRect(), value = row.querySelector(".usage-speed-detail-value").getBoundingClientRect();
+      return row.getBoundingClientRect().height <= 34 && name.right <= value.left && Math.abs(name.y - value.y) < 5;
+    })), "模型和速度没有紧凑同排对齐");
+    await popup.screenshot({ path: `${options.artifacts}/zh-compact-speed-popup.png` });
+    const detailList = popup.locator(".usage-speed-detail-list"), headerTop = (await popup.locator("header").boundingBox()).y;
+    await detailList.evaluate(element => { element.scrollTop = element.scrollHeight; });
+    ensure(await detailList.evaluate(element => element.scrollTop) > 0 && Math.abs((await popup.locator("header").boundingBox()).y - headerTop) < 1, "滚动全部模型时日期和关闭入口未保持固定");
+    await page.keyboard.press("Escape");
+    await page.waitForFunction(() => document.activeElement?.getAttribute("aria-label") === "选择速度时间区间");
+    await page.setViewportSize({ width: 390, height: 844 }); await slider.scrollIntoViewIfNeeded(); await slider.press("Home"); await popup.waitFor();
+    const compactMobileBounds = await popup.boundingBox();
+    ensure(compactMobileBounds.x >= 0 && compactMobileBounds.x + compactMobileBounds.width <= 390 && compactMobileBounds.y >= 0 && compactMobileBounds.y + compactMobileBounds.height <= 844, `全部模型的紧凑浮层在窄屏越界：${JSON.stringify(compactMobileBounds)}`);
+    ensure(await popup.locator(".usage-speed-detail-group").evaluateAll(rows => rows.every(row => row.querySelector("h3").getBoundingClientRect().right <= row.querySelector(".usage-speed-detail-value").getBoundingClientRect().left)), "窄屏长模型名挤压速度列");
+    await detailList.evaluate(element => { element.scrollTop = 0; });
+    await popup.screenshot({ path: `${options.artifacts}/zh-compact-speed-popup-mobile.png` });
+    await page.keyboard.press("Escape");
+    await page.waitForFunction(() => document.activeElement?.getAttribute("aria-label") === "选择速度时间区间");
+    await page.setViewportSize({ width: 1440, height: 1080 }); await slider.scrollIntoViewIfNeeded(); await slider.press("End"); await popup.waitFor();
     await button("关闭速度区间明细").click();
     await page.waitForFunction(() => document.activeElement?.getAttribute("aria-label") === "选择速度时间区间");
     ensure(await popup.count() === 0, "关闭速度浮层时因焦点恢复重新打开");
@@ -140,6 +161,8 @@ try {
     const search = page.getByRole("combobox", { name: "对比模型搜索", exact: true });
     await search.fill("no-such-synthetic-model"); ensure(await page.getByRole("option").count() === 0, "分组搜索空结果仍显示选项");
     await search.fill("");
+    ensure(await page.locator(".project-picker-option small").count() === 0
+      && !/响应区间|输出阶段|历史估算|保存边界/.test((await page.getByRole("option").allTextContents()).join(" ")), "模型选项仍显示计时标签或方法副标题");
     const list = page.getByRole("listbox", { name: "对比模型选项", exact: true });
     const scrollable = await list.evaluate(element => element.scrollHeight > element.clientHeight);
     ensure(scrollable, "分组长列表未形成独立滚动");
@@ -186,19 +209,20 @@ try {
       return { group, lineColor, legendColor: legendMark && getComputedStyle(legendMark).stroke,
         detailColor: detailMark && getComputedStyle(detailMark).stroke, lineDash: mark && getComputedStyle(mark).strokeDasharray,
         legendDash: legendMark && getComputedStyle(legendMark).strokeDasharray, detailDash: detailMark && getComputedStyle(detailMark).strokeDasharray,
-        detail: detail?.textContent ?? "", values: [...(detail?.querySelectorAll("dd") ?? [])].map(item => item.textContent) };
+        detail: detail?.textContent ?? "", name: detail?.querySelector("h3 span")?.textContent, value: detail?.querySelector(".usage-speed-detail-value")?.textContent };
     }));
     ensure(visualSeries.length === 4 && visualSeries.every(item => item.lineColor && item.lineColor === item.legendColor && item.lineColor === item.detailColor
-      && item.lineDash === item.legendDash && item.lineDash === item.detailDash), `曲线、图例与浮层颜色或线型不一致：${JSON.stringify(visualSeries.map(({ detail, values, ...style }) => style))}`);
+      && item.lineDash === item.legendDash && item.lineDash === item.detailDash), `曲线、图例与浮层颜色或线型不一致：${JSON.stringify(visualSeries.map(({ detail, name, value, ...style }) => style))}`);
     ensure(new Set(visualSeries.map(item => `${item.lineColor}/${item.lineDash}`)).size === 4, "当前比较曲线无法按颜色与线型区分");
     ensure(visualSeries.every(item => initialColors[item.group] === item.lineColor), "增减比较模型改变已有模型颜色");
     ensure(visualSeries.every(item => item.detail.includes("≈") === (report.speed.groups.find(group => group.key === item.group).basis === "estimated")), "浮层未按每组计时依据保留近似标记");
     const comparedReport = await api({ timezone: "Asia/Shanghai", includeSpeed: "true", speedGroups: JSON.stringify(compared) });
     for (const series of comparedReport.speed.series) {
       const bucket = series.buckets.at(-1), detail = visualSeries.find(item => item.group === series.group);
-      const formatted = value => new Intl.NumberFormat("zh-CN", { maximumFractionDigits: 3 }).format(value);
-      ensure(detail.values[0] === `${formatted(bucket.eligibleRequests)} / ${formatted(bucket.requests)}`
-        && detail.values[1] === formatted(bucket.outputTokens) && detail.values[2].startsWith(formatted(bucket.durationMs / 1000)), "同日浮层混合了其他组的覆盖、输出或耗时");
+      const group = comparedReport.speed.groups.find(group => group.key === series.group);
+      const formatted = value => new Intl.NumberFormat("zh-CN", { maximumFractionDigits: 1 }).format(value);
+      const expected = bucket.tokensPerSecond === null ? "—" : `${group.basis === "estimated" ? "≈ " : ""}${formatted(bucket.tokensPerSecond)} tok/s`;
+      ensure(detail.name === group.model && detail.value === expected, "同日浮层模型或速度与该组数据不一致");
     }
     await page.keyboard.press("Escape"); await page.mouse.move(0, 0);
     await page.locator(".usage-speed-analysis").screenshot({ path: `${options.artifacts}/zh-desktop-multi-speed-region.png` });
@@ -225,7 +249,7 @@ try {
     await change(() => button("应用").click());
     ensure(JSON.stringify(await selectedGroups()) === JSON.stringify([native.key]), "键盘选择未切换到单条原生组");
     ensure(await page.locator(".usage-speed-point").count() >= expectedNative.length, "孤立速度点不可见");
-    await slider.press("End"); await popup.waitFor(); ensure(!(await popup.locator(".usage-time-total").innerText()).includes("≈"), "原生速度被标记为估算");
+    await slider.press("End"); await popup.waitFor(); ensure(!(await popup.locator(".usage-speed-detail-value").innerText()).includes("≈"), "原生速度被标记为估算");
     await page.keyboard.press("Escape");
     await change(() => button("已记录 Token").click());
     ensure(await button("折线").getAttribute("aria-pressed") === "true" && await button("日历热力图").getAttribute("aria-pressed") === "true", "普通图表偏好没有恢复");
@@ -305,7 +329,9 @@ try {
     ensure(await page.getByRole("option").count() > 0, "英文分组选择器无法搜索"); await page.keyboard.press("Escape");
     await page.waitForFunction(() => document.activeElement?.getAttribute("aria-label") === "Compare models", undefined, { timeout: 3000 });
     await page.getByRole("slider", { name: "Select speed interval", exact: true }).press("Home");
-    await page.getByRole("dialog", { name: "Speed interval details", exact: true }).waitFor(); await page.keyboard.press("Escape");
+    const englishPopup = page.getByRole("dialog", { name: "Speed interval details", exact: true }); await englishPopup.waitFor();
+    ensure(!/Response interval|Output phase|Historical estimate|Eligible/.test(await englishPopup.innerText()) && await englishPopup.locator(".usage-speed-detail-value").count() === 3, "英文速度浮层未精简");
+    await page.keyboard.press("Escape");
     await page.screenshot({ path: `${options.artifacts}/en-mobile-dark.png`, fullPage: true });
     await page.setViewportSize({ width: 1440, height: 1080 });
     await page.locator(".usage-speed-analysis").screenshot({ path: `${options.artifacts}/en-desktop-speed-region.png` });
