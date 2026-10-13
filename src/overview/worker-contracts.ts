@@ -18,7 +18,6 @@ export interface OverviewWorkerRequest {
   evidence?: OverviewEvidenceQuery;
   usage?: UsageStatistics;
   globalUsage?: UsageStatistics;
-  globalProcess?: { process: NonNullable<OverviewPanelResult["data"]["process"]>; counts?: Record<string, number> };
   insightUsage?: OverviewInsightContext;
 }
 export type OverviewWorkerResult = OverviewReport | OverviewEvidencePage | OverviewSnapshot | OverviewPanelResult | OverviewDetailPage | WeeklyReview | WeeklyReviewDetailPage;

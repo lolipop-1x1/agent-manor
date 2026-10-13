@@ -46,13 +46,11 @@ test("当前证据页与原统计在范围、排序、模型身份和请求上�
     { kind: "requests", sort: "tokens" }, { kind: "requests", sort: "ordinal" },
     { kind: "requests", scope: "usage", model: "literal:unknown" }, { kind: "requests", period: "previous" },
     { kind: "requests", project: "literal:literal:project-a" }, { kind: "requests", client: "claude" },
-    { kind: "resources" }, { kind: "tools" }, { kind: "failures", tool: "read_file" },
-    { kind: "compressions" }, { kind: "timing", sort: "duration" }];
+    { kind: "resources" }, { kind: "tools" }, { kind: "tools", sort: "duration" }, { kind: "failures", tool: "read_file" }];
   facts.source = async () => { throw new Error("证据页不能恢复完整来源"); };
   for (const query of queries) {
     const report = buildOverviewReport(source, query, pricing, now); await facts.prepare(report.query, now);
-    const timingCase: OverviewEvidenceQuery[] = report.process.timing.slice(0, 1).map(group => ({ kind: "timing", timingGroup: group.id }));
-    for (const item of [...cases, ...timingCase]) for (const page of [1, 2]) {
+    for (const item of [...cases]) for (const page of [1, 2]) {
       const evidence = { ...item, page, pageSize: 3 };
       const actual = await factEvidence(facts, report, evidence, pricing, now), expected = buildOverviewEvidence(source, report.query, evidence, pricing, now);
       assert.deepEqual(normalized(actual), normalized(expected), JSON.stringify({ query, evidence }));

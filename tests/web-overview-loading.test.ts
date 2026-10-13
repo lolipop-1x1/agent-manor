@@ -5,7 +5,7 @@ import { buildUsageReport } from "../src/usage/analytics.ts";
 import { usageDimensionKey } from "../src/usage/dimensions.ts";
 import type { PricingStatus, UsageSource } from "../src/usage-contracts.ts";
 import { overviewModelOptions } from "../web/features/overview/model.ts";
-import { overviewPanels, type OverviewPanel, type OverviewPanelResult, type OverviewResourceRow, type OverviewTimingGroup, type OverviewSnapshot } from "../src/overview-contracts.ts";
+import { overviewPanels, type OverviewPanel, type OverviewPanelResult, type OverviewResourceRow, type OverviewSnapshot } from "../src/overview-contracts.ts";
 import { investigationDetail, visibleInvestigation, type InvestigationResult } from "../web/features/overview/investigation-model.ts";
 import { loadOverviewPanels, loadOverviewPanel, loadOverviewInvestigation, requiredOverviewPanels, selectOverviewDimension, visibleOverviewDistribution, sameOverviewSnapshot, visibleOverviewBatch, replaceOverviewPanel, OverviewSnapshotMismatch, type OverviewPanelBatch } from "../web/features/overview/loading.ts";
 
@@ -83,10 +83,7 @@ test("调查每个视图传递服务端分页、资源分布与完整排序，�
   assert.deepEqual(investigationDetail({ view: "combinations", title: "", unit: "turn" }, controls), { view: "combinations", unit: "turn", page: 3, pageSize: 50 });
   const resource: OverviewResourceRow = { id: "resource-a", kind: "mcp", name: "example-server", uses: 20, sessions: 4, explicitCalls: 0, successfulReads: 0, activeWeeks: 3, firstDay: null, lastDay: null, averagePerSession: 5, clients: [], projects: [], tools: [], days: [], results: { calls: 20, success: 18, failure: 1, unknown: 1, known: 19, failureRate: 1 / 19, coverage: 19 / 20 } };
   assert.deepEqual(investigationDetail({ view: "resource", title: "", resource }, controls), { view: "resource", resourceId: "resource-a", dimension: "tool", page: 3, pageSize: 50 });
-  const timing: OverviewTimingGroup = { id: "timing-a", client: "codex", model: "example-model", window: "response", basis: "recorded", method: "example", samples: 4, duration: { medianMs: 100, p90Ms: 200, maxMs: 300, averageMs: 150 }, speed: { samples: 0, median: null, p90: null, average: null }, longest: [] };
-  assert.deepEqual(investigationDetail({ view: "timing", title: "", timing }, controls), { view: "timing", timingGroup: "timing-a", page: 3, pageSize: 50 });
   assert.deepEqual(investigationDetail({ view: "observations", title: "" }, controls), { view: "observations", page: 3, pageSize: 50 });
-  assert.deepEqual(investigationDetail({ view: "timings", title: "" }, controls), { view: "timings", page: 3, pageSize: 50 });
 });
 
 test("核心变化洞察的新文案在中英文使用同一参数和保留原始对象名称", async () => {

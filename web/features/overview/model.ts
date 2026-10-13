@@ -7,11 +7,10 @@ export interface OverviewRoute {
   activity: "sessions" | "requests" | "tokens" | "tools";
   metric: "tokens" | "cost" | "requests"; interval: "day" | "week" | "month";
   distribution: "project" | "client" | "model" | "tool";
-  process: "failures" | "compressions" | "timing";
   combinationUnit: "session" | "turn";
 }
 const windows: OverviewWindow[] = ["365", "7", "30", "90", "year", "all", "custom"];
-export const defaultOverviewRoute = (): OverviewRoute => ({ window: "365", activity: "sessions", metric: "tokens", interval: "week", distribution: "project", process: "failures", combinationUnit: "session" });
+export const defaultOverviewRoute = (): OverviewRoute => ({ window: "365", activity: "sessions", metric: "tokens", interval: "week", distribution: "project", combinationUnit: "session" });
 export function readOverviewRoute(hash: string): OverviewRoute {
   const params = new URLSearchParams(hash.startsWith("#overview") ? hash.split("?")[1] : "");
   const route = defaultOverviewRoute();
@@ -20,7 +19,7 @@ export function readOverviewRoute(hash: string): OverviewRoute {
   for (const key of ["clients", "projects", "models"] as const) {
     try { const values: unknown = JSON.parse(params.get(key) ?? "[]"); if (Array.isArray(values) && values.every(value => typeof value === "string")) route[key] = [...new Set(values)]; } catch { /* 无效地址字段不改变筛选。 */ }
   }
-  const choices = { activity: ["sessions", "requests", "tokens", "tools"], metric: ["tokens", "cost", "requests"], interval: ["day", "week", "month"], distribution: ["project", "client", "model", "tool"], process: ["failures", "compressions", "timing"], combinationUnit: ["session", "turn"] };
+  const choices = { activity: ["sessions", "requests", "tokens", "tools"], metric: ["tokens", "cost", "requests"], interval: ["day", "week", "month"], distribution: ["project", "client", "model", "tool"], combinationUnit: ["session", "turn"] };
   for (const [key, values] of Object.entries(choices)) if (values.includes(params.get(key) ?? "")) Object.assign(route, { [key]: params.get(key) });
   return route;
 }

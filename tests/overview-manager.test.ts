@@ -72,8 +72,8 @@ test("核心分区重启复用持久结果，模型身份重绑定且已淘汰�
     assert.equal(dispatchedTypes.filter(type => type === "prepare").length, 1);
     const globalProcess = await first.panel(query, "process"), localProcess = await first.panel({ ...query, models: ["synthetic-other"] }, "process");
     assert.deepEqual(localProcess.data.process!.tools, globalProcess.data.process!.tools);
-    assert.equal(globalProcess.data.process!.missingTimingRequests, 1); assert.equal(localProcess.data.process!.missingTimingRequests, 0);
-    assert.deepEqual(processCalls, [false, true], "局部计时计数复用已缓存全局过程，不重扫工具排行");
+    assert.deepEqual(localProcess.data.process, globalProcess.data.process);
+    assert.deepEqual(processCalls, [false], "模型筛选复用工具失败概况，不触发额外请求查询");
     await first.panel({ ...query, window: "30", models: ["synthetic-other"] }, "core");
     assert.equal(dispatchedTypes.filter(type => type === "prepare").length, 1);
     await first.panel({ ...query, timezone: "America/New_York" }, "core");

@@ -205,7 +205,7 @@ test("失败后续仅同真实轮次，同轮多个失败共同后续身份去�
   const sequences = buildOverviewReport(input, query, pricing, now).process.failureSequences;
   assert.equal(sequences.length, 1); assert.equal(sequences[0]!.failures.length, 2); assert.equal(sequences[0]!.calls.length, 3);
 });
-test("计时按客户端模型区间依据和方法分组，短输出仅影响速度样本", () => {
+test("过程调查不再生成请求计时字段", () => {
   const timings = [
     { basis: "recorded" as const, window: "response" as const, method: "zcode_request_span" as const },
     { basis: "recorded" as const, window: "generation" as const, method: "zcode_request_span" as const },
@@ -214,7 +214,7 @@ test("计时按客户端模型区间依据和方法分组，短输出仅影响�
   const input = source({ sessions: [session("a")], requests: timings.map((timing, index) => request("a", `timing-${index}`, undefined, {
     outputTokens: 50, timing: { ...timing, completion: "explicit", durationMs: 2000 } })) });
   const report = buildOverviewReport(input, query, pricing, now);
-  assert.equal(report.process.timing.length, 3); assert(report.process.timing.every(row => row.samples === 1 && row.speed.samples === 0));
+  assert.deepEqual(Object.keys(report.process).sort(), ["tools", "categories", "results", "failures", "failureSequences"].sort());
 });
 test("部分Token不与完整请求竞争峰值，零分项保留零", () => {
   const input = source({ sessions: [session("a")], requests: [request("a", "complete"),

@@ -88,7 +88,8 @@ test("总览后台 HTTP 保持全局与模型局部范围，证据分页不泄�
     assert.equal(resources!.counts!.mcp, 1); assert.equal(resources!.data.resources!.mcp[0]!.uses, 2);
     assert.deepEqual(resources!.data.resources!.mcp[0]!.days, first.resources.mcp[0]!.days);
     assert.deepEqual(resources!.data.resources!.mcp[0]!.tools, []);
-    assert.equal(process!.data.process!.failures, 1); assert.deepEqual(process!.data.process!.timing, []);
+    assert.equal(process!.data.process!.failures, 1); assert.equal("timing" in process!.data.process!, false);
+    assert.equal("compressions" in process!.data.process!, false);
     assert.deepEqual(repositories!.data.repositories, []); assert.ok(insights!.data.insights!.length <= 5);
     const resourceId = resources!.data.resources!.mcp[0]!.id;
     const detail = await read<OverviewDetailPage>(`/overview/detail?${fixed}&detail=${encodeURIComponent(JSON.stringify({ view: "resource", resourceId, dimension: "tool", pageSize: 1 }))}`);
@@ -120,6 +121,7 @@ test("总览后台 HTTP 保持全局与模型局部范围，证据分页不泄�
     assert.equal((await fetch(`${base}/overview/panel?panel=distribution&dimension=tool`)).status, 400);
     assert.equal((await fetch(`${base}/overview/panel?panel=usage&dimension=model`)).status, 400);
     assert.equal((await fetch(`${base}/overview/detail?detail=${encodeURIComponent('{"view":"resource"}')}`)).status, 400);
-    assert.equal((await fetch(`${base}/overview/detail?detail=${encodeURIComponent('{"view":"timings","pageSize":101}')}`)).status, 400);
+    for (const view of ["timings", "timing"]) assert.equal((await fetch(`${base}/overview/detail?detail=${encodeURIComponent(JSON.stringify({ view }))}`)).status, 400);
+    for (const kind of ["timing", "compressions"]) assert.equal((await fetch(`${base}/overview/evidence?evidence=${encodeURIComponent(JSON.stringify({ kind }))}`)).status, 400);
   } finally { await service.close(); await rm(directory, { recursive: true, force: true }); }
 });

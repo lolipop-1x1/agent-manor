@@ -7,7 +7,8 @@ import type { ResourceUsageEvent } from "../resource-contracts.js";
 import type { UsageStatistics } from "../usage-contracts.js";
 import type { SessionStore } from "../sessions/store.js";
 import { StoreError } from "../index/store.js";
-import { buildDelegationSummary, isActivityEvent, knownResourceIdentity, matchesGlobalSession, pairToolCalls, resourceIdentity, toolCategory, validDuration, validResource } from "./analytics.js";
+import { buildDelegationSummary, isActivityEvent, knownResourceIdentity, matchesGlobalSession, pairToolCalls, resourceIdentity, toolCategory, validResource } from "./analytics.js";
+import { removeStoredRequestTiming, requestMembersWithEnd, withoutRequestTiming } from "./request-projection.js";
 import { addDays, localDay, prepareOverviewDateCache, resolveOverviewRange, resolveTimezone } from "./dates.js";
 
 const format = 2;
@@ -74,10 +75,6 @@ export class OverviewFactStore {
     this.database.pragma("temp_store=FILE");
     this.database.function("overview_local_day", { deterministic: true }, (milliseconds, timezone) =>
       typeof milliseconds === "number" && typeof timezone === "string" ? localDay(milliseconds, timezone) : null);
-    this.database.function("overview_valid_timing", { deterministic: true }, timing => {
-      if (typeof timing !== "string") return 0;
-      try { return Number(validDuration({ id: "", timing: JSON.parse(timing) })); } catch { return 0; }
-    });
     this.database.function("overview_tool_category", { deterministic: true }, (tool, resourceKind) =>
       toolCategory(typeof tool === "string" ? tool : undefined, resourceKind === "mcp" ? { kind: "mcp", name: "" } : undefined));
     if (this.readonly) {
@@ -114,6 +111,7 @@ export class OverviewFactStore {
         timezone TEXT NOT NULL, request_id TEXT NOT NULL, day TEXT NOT NULL, hour INTEGER NOT NULL, linked_day TEXT NOT NULL,
         PRIMARY KEY(revision,timezone,request_id,linked_day)) WITHOUT ROWID;
     `);
+    removeStoredRequestTiming(this.database, "overview_fact_requests");
     const pageSize = this.database.pragma("page_size", { simple: true }) as number;
     this.database.pragma(`max_page_count=${Math.max(1, Math.floor(this.maxBytes / pageSize))}`);
   }
@@ -207,7 +205,7 @@ export class OverviewFactStore {
       }
       const requestWrite = this.statement("INSERT INTO overview_fact_requests VALUES(?,?,?,?,?,?,?,?,?,?)");
       for (const request of facts.requests) {
-        const { requestMessageIds: _members, id: _id, occurredAt, model, inputTokens, outputTokens, messageId, ...usage } = request.usage;
+        const { id: _id, occurredAt, model, inputTokens, outputTokens, messageId, ...usage } = withoutRequestTiming({ ...request.usage, requestMessageIds: undefined });
         requestWrite.run(revision, request.usage.id, request.ordinal!, time(occurredAt), occurredAt ?? null,
           model ?? null, finite(inputTokens), finite(outputTokens), messageId ?? null, JSON.stringify({ usage }));
       }
@@ -360,7 +358,10 @@ export class OverviewFactStore {
     const byRevision = new Map<string, string[]>(), members = new Map<string, Map<string, string[]>>();
     for (const row of rows) { const ids = byRevision.get(row.revision) ?? []; ids.push(row.id); byRevision.set(row.revision, ids); }
     for (const [revision, ids] of byRevision) members.set(revision, new Map(
-      [...this.sessions.overviewRequestMembers(revision, ids)].flatMap(row => row.requestMessageIds === undefined ? [] : [[row.id, row.requestMessageIds]])));
+      [...this.sessions.overviewRequestMembers(revision, ids)].flatMap(row => {
+        const ids = requestMembersWithEnd(row.requestMessageIds, row.endMessageId);
+        return ids === undefined ? [] : [[row.id, ids]];
+      })));
     return rows.map(row => {
       const request = this.decodeRequest(row), ids = members.get(row.revision)?.get(row.id);
       if (ids !== undefined) request.usage.requestMessageIds = ids;
@@ -520,7 +521,7 @@ export class OverviewFactStore {
     };
     try {
       if (purpose !== "requests" || options.eventKinds) {
-        const kinds = options.eventKinds ?? (purpose === "resources" ? ["user"] : purpose === "process" ? ["user", "tool_call", "tool_result", "compression"] : undefined);
+        const kinds = options.eventKinds ?? (purpose === "resources" ? ["user"] : purpose === "process" ? ["user", "tool_call", "tool_result"] : undefined);
         let suffix = kinds ? " AND f.kind IN (SELECT value FROM json_each(?))" : "";
         const values: (string | number)[] = kinds ? [JSON.stringify(kinds)] : [];
         const fullUsers = purpose === "process" && bounded && !range.all;
@@ -529,10 +530,10 @@ export class OverviewFactStore {
           decodingRevision = row.revision; events.push(this.decodeEvent(row as EventRow));
         }
       }
-      if (purpose !== "resources") {
+      if (purpose !== "resources" && purpose !== "process") {
         const members = new Map<string, Map<string, string[]>>();
         if (purpose === "evidence") for (const revision of revisions) members.set(revision, new Map(
-          [...this.sessions.overviewRequestMembers(revision)].flatMap(row => row.requestMessageIds === undefined ? [] : [[row.id, row.requestMessageIds]])));
+          [...this.sessions.overviewRequestMembers(revision)].flatMap(row => row.requestMessageIds === undefined && !row.endMessageId ? [] : [[row.id, requestMembersWithEnd(row.requestMessageIds, row.endMessageId)!]])));
         for (const row of read("request")) {
           decodingRevision = row.revision;
           const request = this.decodeRequest(row as RequestRow), ids = members.get(row.revision)?.get(row.id);

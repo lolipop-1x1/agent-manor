@@ -28,7 +28,7 @@ export function overviewQuery(raw: Record<string, unknown>, allowEvidence = fals
 }
 
 const enums = {
-  kind: ["activity", "sessions", "requests", "resources", "tools", "failures", "compressions", "timing", "combinations", "observations", "sequence", "delegation"],
+  kind: ["activity", "sessions", "requests", "resources", "tools", "failures", "combinations", "observations", "sequence", "delegation"],
   scope: ["global", "usage"], period: ["selected", "current", "previous", "recent", "recent_previous"],
   relationship: ["main", "child", "fork"], resourceKind: ["skill", "mcp"], resourceEvidenceKind: ["skill_call", "skill_read", "mcp"],
   category: ["read", "search", "edit", "command", "delegate", "external", "other"], status: ["success", "failure", "unknown"],
@@ -36,7 +36,7 @@ const enums = {
   sort: ["recent", "tokens", "duration", "ordinal"],
   transition: ["switch", "delegation"],
 } as const;
-const textFields = ["from", "to", "day", "client", "project", "model", "modelFrom", "modelTo", "sessionId", "requestId", "turnId", "resourceId", "resourceId2", "tool", "toolId", "toolKey", "server", "timingGroup", "rule"] as const;
+const textFields = ["from", "to", "day", "client", "project", "model", "modelFrom", "modelTo", "sessionId", "requestId", "turnId", "resourceId", "resourceId2", "tool", "toolId", "toolKey", "server", "rule"] as const;
 
 export function overviewEvidenceQuery(raw: unknown): OverviewEvidenceQuery {
   const encoded = textValue(raw, "evidence", true)!;
@@ -51,6 +51,7 @@ export function overviewEvidenceQuery(raw: unknown): OverviewEvidenceQuery {
   for (const [field, choices] of Object.entries(enums)) {
     if (record[field] !== undefined && !(choices as readonly unknown[]).includes(record[field])) invalid(`evidence.${field}`);
   }
+  if (record.sort === "duration" && (record.kind === "requests" || record.kind === "sequence" && record.scope === "usage")) invalid("evidence.sort");
   for (const field of textFields) if (record[field] !== undefined) textValue(record[field], `evidence.${field}`);
   for (const field of ["from", "to", "day"] as const) if (record[field] !== undefined && !validDay(record[field])) invalid(`evidence.${field}`);
   if (record.from && record.to && String(record.from) > String(record.to)) invalid("evidence.from/to");
@@ -79,20 +80,19 @@ export function overviewDetailQuery(raw: unknown): OverviewDetailQuery {
   try { value = JSON.parse(encoded); } catch { invalid("detail"); }
   if (!value || typeof value !== "object" || Array.isArray(value)) invalid("detail");
   const record = value as Record<string, unknown>;
-  const choices = { view: ["resources", "resource", "ranking", "months", "transitions", "timings", "timing", "observations", "combinations"],
+  const choices = { view: ["resources", "resource", "ranking", "months", "transitions", "observations", "combinations"],
     kind: ["skill", "mcp"], dimension: ["client", "project", "model", "tool"], unit: ["session", "turn"],
     transition: ["all", "switch", "delegation"], sort: ["uses", "sessions", "count", "tokens", "cost"] };
-  const allowed = new Set([...Object.keys(choices), "resourceId", "timingGroup", "page", "pageSize"]);
+  const allowed = new Set([...Object.keys(choices), "resourceId", "page", "pageSize"]);
   for (const field of Object.keys(record)) if (!allowed.has(field)) invalid(`detail.${field}`);
   if (!choices.view.includes(record.view as string)) invalid("detail.view");
   for (const [field, values] of Object.entries(choices)) if (record[field] !== undefined && !values.includes(record[field] as string)) invalid(`detail.${field}`);
-  for (const field of ["resourceId", "timingGroup"]) if (record[field] !== undefined) textValue(record[field], `detail.${field}`);
+  if (record.resourceId !== undefined) textValue(record.resourceId, "detail.resourceId");
   for (const [field, maximum] of [["page", 1_000_000], ["pageSize", 100]] as const) {
     if (record[field] !== undefined && (!Number.isSafeInteger(record[field]) || Number(record[field]) < 1 || Number(record[field]) > maximum)) invalid(`detail.${field}`);
   }
   if (record.view === "resource" && !record.resourceId) invalid("detail.resourceId");
   if (record.view === "resource" && record.dimension === "model") invalid("detail.dimension");
-  if (record.view === "timing" && !record.timingGroup) invalid("detail.timingGroup");
   return record as unknown as OverviewDetailQuery;
 }
 

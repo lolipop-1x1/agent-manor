@@ -51,21 +51,7 @@ test("对象分布在服务端分页，元数据和日期趋势不重复嵌入�
     assert.equal(first.counts!.projects, 6); assert.deepEqual(first.object!.projects, []); assert.deepEqual(first.object!.days, [{ day: "2026-01-01", uses: 6, sessions: 6 }]);
   });
 });
-test("计时列表先按组分页，单对象只返回同客户端模型依据组", async () => {
-  const input = source({ sessions: [session("a")], requests: Array.from({ length: 4 }, (_, index) => request("a", `request-${index}`, "2026-01-01", {
-    model: `model-${index}`, outputTokens: 20, timing: { basis: "recorded", method: "zcode_request_span", completion: "explicit", durationMs: (index + 1) * 1000 } })) });
-  await withFacts(input, async (facts, original) => {
-    const report = buildOverviewReport(original, { window: "all", timezone: "UTC" }, pricing, now); await facts.prepare(report.query, now);
-    let decoded = 0; const decode = facts.decodeRequest.bind(facts); facts.decodeRequest = row => { decoded++; return decode(row); };
-    const page = factDetail(facts, report, { view: "timings", page: 2, pageSize: 1 }, now);
-    assert.equal(decoded, 1);
-    assert.equal(page.total, 4); assert.equal(page.rows.length, 1);
-    const group = page.rows[0] as typeof report.process.timing[number]; assert.equal(group.model, "model-1"); assert.equal(group.duration.medianMs, 2000);
-    const single = factDetail(facts, report, { view: "timing", timingGroup: group.id }, now);
-    assert.equal(single.total, 1); assert.deepEqual(single.rows, page.rows);
-  });
-});
-test("计时和月度分组物化会话元数据，用索引关联请求而非逐请求扫描会话列表", async () => {
+test("月度分组物化会话元数据，用索引关联请求而非逐请求扫描会话列表", async () => {
   const sessions = Array.from({ length: 30 }, (_, index) => session(`session-${index}`, { client: index % 2 ? "pi" : "codex" }));
   const input = source({ sessions, requests: sessions.flatMap(item => Array.from({ length: 4 }, (_, index) => request(item.id,
     `request-${item.id}-${index}`, "2026-01-01", { model: `model-${index}`, outputTokens: 20,
@@ -77,14 +63,6 @@ test("计时和月度分组物化会话元数据，用索引关联请求而非�
       if (sql.includes("session_meta")) plans.push(read<{ detail: string }>(`EXPLAIN QUERY PLAN ${sql}`, values).map(row => row.detail));
       return read<T>(sql, values);
     };
-    const page = factDetail(facts, report, { view: "timings", pageSize: 100 }, now);
-    assert.deepEqual(normalized(page.rows), normalized(report.process.timing));
-    assert.equal(plans.length, 3);
-    for (const plan of plans) {
-      assert.ok(plan.some(detail => detail === "MATERIALIZE session_meta"), JSON.stringify(plan));
-      assert.ok(plan.some(detail => /SEARCH s USING AUTOMATIC.*INDEX \(id=\?\)/.test(detail)), JSON.stringify(plan));
-    }
-    plans.length = 0;
     const months = factDetail(facts, report, { view: "months", pageSize: 100 }, now);
     assert.deepEqual(normalized(months.rows), normalized(projectMonths(original, report)));
     assert.equal(plans.length, 2);
@@ -121,8 +99,15 @@ test("窄SQL分页与完整统计在时区、模型、父子、未知及配对�
       assert.deepEqual(normalized(resources.resources.mcp), normalized(narrow(report.resources.mcp)));
       assert.equal(resources.resources.missingTimeEvents, report.resources.missingTimeEvents);
       assert.equal(resources.resources.missingTurnEvents, report.resources.missingTurnEvents);
+      const queries: string[] = [], read = facts.readRows.bind(facts);
+      facts.readRows = <T>(sql: string, values: (string | number | null)[] = []) => { queries.push(sql); return read<T>(sql, values); };
       const { process } = factProcess(facts, report, now);
-      for (const field of ["categories", "results", "failures", "compressions", "compressionSessions", "missingTimingRequests"] as const) {
+      facts.readRows = read;
+      assert.ok(queries.every(sql => !sql.includes("overview_fact_requests")), "过程调查只查询工具事实");
+      const failures = report.process.tools.filter(row => row.results.failure > 0)
+        .sort((a, b) => b.results.failure - a.results.failure || b.count - a.count || a.key.localeCompare(b.key)).slice(0, 5);
+      assert.deepEqual(normalized(process.tools), normalized(failures.map(row => ({ ...row, clients: [], projects: [] }))));
+      for (const field of ["categories", "results", "failures"] as const) {
         assert.deepEqual(normalized(process[field]), normalized(report.process[field]), field);
       }
       assert.deepEqual(normalized(factDelegation(facts, report, now)), normalized(report.delegation));
@@ -165,6 +150,8 @@ test("工具排行批量恢复页内首记录，查询次数不随工具数增�
     const page = factDetail(facts, report, { view: "ranking", dimension: "tool", pageSize: 100 }, now);
     assert.equal(page.total, 150); assert.equal(page.rows.length, 100); assert.equal(decoded, 100);
     assert.ok(queries <= 5, "页内首记录通过一次批量查询读取，不能为每个工具重扫历史");
+    const outside = factDetail(facts, report, { view: "ranking", dimension: "tool", page: 3, pageSize: 100 }, now);
+    assert.equal(outside.total, 150); assert.deepEqual(outside.rows, []);
     const expected = report.process.tools.slice(0, 100);
     assert.deepEqual(page.rows, expected.map(row => ({ ...row, clients: [], projects: [] })));
   });

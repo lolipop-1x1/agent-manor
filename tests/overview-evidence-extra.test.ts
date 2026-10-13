@@ -126,6 +126,7 @@ test("复杂证据按页身份与完整 oracle 等价：活动、会话、关系
   ];
   for (const filters of [query, { ...query, models: ["model-a"] }, { ...query, window: "all" as const, from: undefined, to: undefined }]) {
     for (const evidence of cases) for (const sort of ["recent", "tokens", "ordinal", "duration"] as const) {
+      if (sort === "duration" && (evidence.kind === "requests" || evidence.kind === "sequence" && evidence.scope === "usage")) continue;
       for (const page of [1, 2, 3]) await comparePage(facts, source, filters, { ...evidence, sort, page, pageSize: 2 });
     }
   }

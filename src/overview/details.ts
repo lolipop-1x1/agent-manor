@@ -1,6 +1,6 @@
 import type { OverviewCountRow, OverviewDelegation, OverviewDetailPage, OverviewDetailQuery, OverviewDetailRow, OverviewModelTransition, OverviewProcess, OverviewProjectMonth,
   OverviewResourceRow, OverviewResources, OverviewResultCounts, OverviewSnapshot, OverviewSource, OverviewToolRow } from "../overview-contracts.js";
-import { buildDelegation, buildProcess, buildResources, resourceNameDescriptor, selectedSource, toolCategory } from "./analytics.js";
+import { buildDelegation, buildResources, resourceNameDescriptor, selectedSource, toolCategory } from "./analytics.js";
 import { addDays, inPeriod, localDay } from "./dates.js";
 import { nonnegative } from "./insight-math.js";
 import { usageDimensionKey, usageDimensionValue } from "../usage/dimensions.js";
@@ -243,25 +243,6 @@ export function factDetail(store: OverviewFactStore, snapshot: OverviewSnapshot,
     rows = read<Omit<OverviewModelTransition, "evidence">>(`${sql} SELECT * FROM grouped ORDER BY kind,count DESC,fromModel,toModel LIMIT ? OFFSET ?`, [...values, pageSize, offset])
       .map(row => ({ ...row, evidence: { kind: row.kind === "switch" ? "requests" : "delegation", scope: "usage", transition: row.kind,
         modelFrom: row.fromModel, modelTo: row.toModel, sort: "ordinal" } }));
-  } else if (query.view === "timings" || query.view === "timing") {
-    const sessions = JSON.stringify(scope.source.sessions.map(session => ({ id: session.id, client: session.client })));
-    const models = snapshot.query.models?.length ? ` AND ${dimensionSql("f.model")} IN (SELECT value FROM json_each(?))` : "";
-    const sql = `WITH session_meta AS MATERIALIZED (SELECT CAST(value->>'$.id' AS TEXT) AS id,value->>'$.client' AS client FROM json_each(?)),
-      eligible AS (SELECT f.revision,f.id,json_array(s.client,f.model,COALESCE(json_extract(f.json,'$.usage.timing.window'),'response'),
-        json_extract(f.json,'$.usage.timing.basis'),json_extract(f.json,'$.usage.timing.method')) AS group_id FROM overview_fact_requests f
-        JOIN overview_fact_revisions r ON r.revision=f.revision JOIN session_meta s ON s.id=r.session_id
-        WHERE f.revision IN (SELECT value FROM json_each(?)) AND ${rangeWhere}${models} AND overview_valid_timing(json_extract(f.json,'$.usage.timing'))=1),
-      grouped AS (SELECT group_id,COUNT(*) AS samples FROM eligible ${query.view === "timing" ? "WHERE group_id=?" : ""} GROUP BY group_id)`;
-    const values = [sessions, ...selectedValues, ...(models ? [JSON.stringify(snapshot.query.models)] : []), ...(query.view === "timing" ? [query.timingGroup!] : [])];
-    total = totalRows(sql, values);
-    const ids = read<{ group_id: string }>(`${sql} SELECT group_id FROM grouped ORDER BY samples DESC,group_id LIMIT ? OFFSET ?`, [...values, pageSize, offset]).map(row => row.group_id);
-    if (ids.length) {
-      const requests = read<RequestRecord>(`${sql} SELECT f.*,r.session_id FROM eligible e
-        JOIN overview_fact_requests f ON f.revision=e.revision AND f.id=e.id JOIN overview_fact_revisions r ON r.revision=f.revision
-        WHERE e.group_id IN (SELECT value FROM json_each(?)) ORDER BY r.session_id,f.ordinal,f.id`, [...values, JSON.stringify(ids)]).map(row => store.decodeRequest(row));
-      const source = { ...scope.source, events: [], requests, resources: [] };
-      const groups = new Map(buildProcess(source, source, source, snapshot.timezone).timing.map(row => [row.id, row])); rows = ids.map(id => groups.get(id)!);
-    }
   } else if (query.view === "ranking" && query.dimension === "tool") {
     const sql = `WITH selected AS (SELECT f.revision,f.id,f.ordinal,f.time_ms,f.tool,f.status,json_extract(f.json,'$.resource.server') AS server,r.session_id,
         json_array(f.tool,json_extract(f.json,'$.resource.server')) AS key FROM overview_fact_events f JOIN overview_fact_revisions r ON r.revision=f.revision
@@ -269,9 +250,10 @@ export function factDetail(store: OverviewFactStore, snapshot: OverviewSnapshot,
       grouped AS (SELECT key,COUNT(*) AS count,COUNT(DISTINCT session_id) AS sessions,
         SUM(CASE WHEN status='success' THEN 1 ELSE 0 END) AS success,SUM(CASE WHEN status='failure' THEN 1 ELSE 0 END) AS failure FROM selected GROUP BY key)`;
     const candidate = options.toolCandidates ? " WHERE failure>=3 AND success+failure>=20 AND (success+failure)*1.0/count>=0.8 AND failure*1.0/(success+failure)>=0.05" : "";
-    total = read<{ total: number }>(`${sql} SELECT COUNT(*) AS total FROM grouped${candidate}`, selectedValues)[0]!.total;
-    const groups = read<{ key: string; count: number; sessions: number; success: number; failure: number }>(`${sql}
-      SELECT * FROM grouped${candidate} ORDER BY ${options.toolFailures || options.toolCandidates ? "failure DESC,count DESC" : query.sort === "sessions" ? "sessions DESC,count DESC" : "count DESC"},key LIMIT ? OFFSET ?`, [...selectedValues, pageSize, offset]);
+    const groups = read<{ key: string; count: number; sessions: number; success: number; failure: number; total: number }>(`${sql}
+      SELECT *,COUNT(*) OVER() AS total FROM grouped${candidate} ORDER BY ${options.toolFailures || options.toolCandidates ? "failure DESC,count DESC" : query.sort === "sessions" ? "sessions DESC,count DESC" : "count DESC"},key LIMIT ? OFFSET ?`, [...selectedValues, pageSize, offset]);
+    total = groups[0]?.total ?? (offset ? read<{ total: number }>(`${sql} SELECT COUNT(*) AS total FROM grouped${candidate}`, selectedValues)[0]!.total : 0);
+    if (!groups.length) return { snapshot, query, rows, total, page, pageSize };
     const dayRows = read<{ key: string; day: string; calls: number; failures: number }>(`${sql}
       SELECT key,overview_local_day(time_ms,?) AS day,COUNT(*) AS calls,SUM(CASE WHEN status='failure' THEN 1 ELSE 0 END) AS failures FROM selected
       WHERE key IN (SELECT value FROM json_each(?)) AND time_ms IS NOT NULL GROUP BY key,day ORDER BY day`, [...selectedValues, snapshot.timezone, JSON.stringify(groups.map(row => row.key))]);
@@ -341,55 +323,39 @@ export function factResourceCandidates(store: OverviewFactStore, snapshot: Overv
   return { resources: resources(snapshot, featureId), currentResources, previousResources };
 }
 
-/** 过程概况直接求和窄事实，计时分布和原调用继续走按需调查。 */
+/** 工具失败概况只读取工具事实，原调用继续走按需调查。 */
 export function factProcess(store: OverviewFactStore, snapshot: OverviewSnapshot, now: Date, candidates = false) {
   const scope = store.sqlScope(snapshot.query, now), bounds = scope.bounds ? [scope.bounds.fromMs, scope.bounds.toMs] : [];
   const values: SqlValue[] = [JSON.stringify(scope.revisions), ...bounds], where = scope.bounds ? "f.time_ms>=? AND f.time_ms<?" : "1";
-  const leading = factDetail(store, snapshot, { view: "ranking", dimension: "tool", pageSize: candidates ? 1 : 8 }, now, { toolCandidates: candidates });
-  const tools = new Map((leading.rows as OverviewToolRow[]).map(row => [row.key, row]));
+  const leading = factDetail(store, snapshot, { view: "ranking", dimension: "tool", pageSize: candidates ? 1 : 5 }, now, { toolCandidates: candidates, toolFailures: !candidates });
+  const tools = new Map((leading.rows as OverviewToolRow[]).filter(row => row.results.failure > 0).map(row => [row.key, row]));
   if (candidates) return { process: { tools: [...tools.values()], categories: [], results: counts(0, 0, 0), failures: 0,
-    failureSequences: [], compressions: 0, compressionSessions: 0, timing: [], missingTimingRequests: 0 } satisfies OverviewProcess, counts: { tools: leading.total } };
-  const summary = store.readRows<{ calls: number; success: number; failure: number; compressions: number; compressionSessions: number }>(`SELECT
+    failureSequences: [] } satisfies OverviewProcess, counts: { tools: leading.total } };
+  const summary = store.readRows<{ calls: number; success: number; failure: number }>(`SELECT
     SUM(CASE WHEN f.kind='tool_call' THEN 1 ELSE 0 END) AS calls,SUM(CASE WHEN f.kind='tool_call' AND f.status='success' THEN 1 ELSE 0 END) AS success,
-    SUM(CASE WHEN f.kind='tool_call' AND f.status='failure' THEN 1 ELSE 0 END) AS failure,SUM(CASE WHEN f.kind='compression' THEN 1 ELSE 0 END) AS compressions,
-    COUNT(DISTINCT CASE WHEN f.kind='compression' THEN f.revision END) AS compressionSessions FROM overview_fact_events f
-    WHERE f.revision IN (SELECT value FROM json_each(?)) AND f.active=1 AND ${where}`, values)[0]!;
-  if (!candidates) for (const row of factDetail(store, snapshot, { view: "ranking", dimension: "tool", pageSize: 5 }, now, { toolFailures: true }).rows as OverviewToolRow[]) {
-    if (row.results.failure) tools.set(row.key, row);
-  }
-  const categoryRows = store.readRows<{ tool: string | null; resource: string | null; calls: number; success: number; failure: number }>(`SELECT f.tool,
-    json_extract(f.json,'$.resource') AS resource,COUNT(*) AS calls,SUM(CASE WHEN f.status='success' THEN 1 ELSE 0 END) AS success,
+    SUM(CASE WHEN f.kind='tool_call' AND f.status='failure' THEN 1 ELSE 0 END) AS failure FROM overview_fact_events f
+    WHERE f.revision IN (SELECT value FROM json_each(?)) AND f.active=1 AND f.kind='tool_call' AND ${where}`, values)[0]!;
+  const categoryRows = store.readRows<{ tool: string | null; resourceKind: string | null; calls: number; success: number; failure: number }>(`SELECT f.tool,
+    json_extract(f.json,'$.resource.kind') AS resourceKind,COUNT(*) AS calls,SUM(CASE WHEN f.status='success' THEN 1 ELSE 0 END) AS success,
     SUM(CASE WHEN f.status='failure' THEN 1 ELSE 0 END) AS failure FROM overview_fact_events f WHERE f.revision IN (SELECT value FROM json_each(?))
-    AND f.active=1 AND f.kind='tool_call' AND ${where} GROUP BY f.tool,json_extract(f.json,'$.resource')`, values);
+    AND f.active=1 AND f.kind='tool_call' AND ${where} GROUP BY f.tool,json_extract(f.json,'$.resource.kind')`, values);
   const categories = new Map<string, OverviewCountRow>();
   for (const row of categoryRows) {
-    const key = toolCategory(row.tool ?? undefined, row.resource ? JSON.parse(row.resource) : undefined);
+    const key = toolCategory(row.tool ?? undefined, row.resourceKind === "mcp" ? { kind: "mcp", name: "" } : undefined);
     const category = categories.get(key) ?? { key, name: key, count: 0, sessions: 0, results: counts(0, 0, 0) };
     category.count += row.calls; category.results = counts(category.count, category.results!.success + row.success, category.results!.failure + row.failure); categories.set(key, category);
   }
   // 分类会话身份去重只扫描标量，不构造调用对象。
   const categorySessions = new Map<string, Set<string>>();
-  for (const row of store.iterateRows<{ session_id: string; tool: string | null; resource: string | null }>(`SELECT DISTINCT r.session_id,f.tool,
-    json_extract(f.json,'$.resource') AS resource FROM overview_fact_events f JOIN overview_fact_revisions r ON r.revision=f.revision
+  for (const row of store.iterateRows<{ session_id: string; tool: string | null; resourceKind: string | null }>(`SELECT DISTINCT r.session_id,f.tool,
+    json_extract(f.json,'$.resource.kind') AS resourceKind FROM overview_fact_events f JOIN overview_fact_revisions r ON r.revision=f.revision
     WHERE f.revision IN (SELECT value FROM json_each(?)) AND f.active=1 AND f.kind='tool_call' AND ${where}`, values)) {
-    const key = toolCategory(row.tool ?? undefined, row.resource ? JSON.parse(row.resource) : undefined), ids = categorySessions.get(key) ?? new Set<string>(); ids.add(row.session_id); categorySessions.set(key, ids);
+    const key = toolCategory(row.tool ?? undefined, row.resourceKind === "mcp" ? { kind: "mcp", name: "" } : undefined), ids = categorySessions.get(key) ?? new Set<string>(); ids.add(row.session_id); categorySessions.set(key, ids);
   }
   for (const row of categories.values()) row.sessions = categorySessions.get(row.key)?.size ?? 0;
-  const missingTimingRequests = factMissingTimingRequests(store, snapshot, now);
   const process: OverviewProcess = { tools: [...tools.values()], categories: [...categories.values()].sort((a, b) => b.count - a.count || a.key.localeCompare(b.key)),
-    results: counts(summary.calls ?? 0, summary.success ?? 0, summary.failure ?? 0), failures: summary.failure ?? 0, failureSequences: [], compressions: summary.compressions ?? 0,
-    compressionSessions: summary.compressionSessions, timing: [], missingTimingRequests };
+    results: counts(summary.calls ?? 0, summary.success ?? 0, summary.failure ?? 0), failures: summary.failure ?? 0, failureSequences: [] };
   return { process, counts: { tools: leading.total } };
-}
-
-/** 模型只影响请求计时覆盖，不重复计算全局工具与压缩统计。 */
-export function factMissingTimingRequests(store: OverviewFactStore, snapshot: OverviewSnapshot, now: Date): number {
-  const scope = store.sqlScope(snapshot.query, now), bounds = scope.bounds ? [scope.bounds.fromMs, scope.bounds.toMs] : [];
-  const where = scope.bounds ? "f.time_ms>=? AND f.time_ms<?" : "1";
-  const models = snapshot.query.models?.length ? ` AND ${dimensionSql("f.model")} IN (SELECT value FROM json_each(?))` : "";
-  return store.readRows<{ count: number }>(`SELECT COUNT(*) AS count FROM overview_fact_requests f
-    WHERE f.revision IN (SELECT value FROM json_each(?)) AND ${where}${models} AND overview_valid_timing(json_extract(f.json,'$.usage.timing'))=0`,
-  [JSON.stringify(scope.revisions), ...bounds, ...(models ? [JSON.stringify(snapshot.query.models)] : [])])[0]!.count;
 }
 
 /** 委派用量仅汇总已归属会话的必要数值，不恢复请求计时及成员JSON。 */

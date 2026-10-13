@@ -5,7 +5,7 @@ import { mkdirSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import type { AnalysisSnapshot, ApiErrorCode, HistorySource, Job, Mapping, ParsedSource, Repository, SourcesResponse } from "../contracts.js";
 import { getRepository } from "../analysis/index.js";
-import { initializeIndexSchema } from "./schema.js";
+import { INDEX_SCHEMA_VERSION, initializeIndexSchema } from "./schema.js";
 import { PARSER_RULE_VERSION } from "../version.js";
 import type { DiscoverOptions } from "../history/types.js";
 
@@ -55,14 +55,20 @@ export class AnalysisStore {
   readonly dbPath: string;
   private readonly database: Database.Database;
 
-  constructor(dbPath: string) {
+  constructor(dbPath: string, options: { readonly?: boolean } = {}) {
     this.dbPath = resolve(dbPath);
-    mkdirSync(dirname(this.dbPath), { recursive: true });
-    this.database = new Database(this.dbPath);
-    this.database.pragma("journal_mode = WAL");
+    if (!options.readonly) mkdirSync(dirname(this.dbPath), { recursive: true });
+    this.database = new Database(this.dbPath, options.readonly ? { readonly: true, fileMustExist: true } : {});
+    if (!options.readonly) this.database.pragma("journal_mode = WAL");
     this.database.pragma("foreign_keys = ON");
     this.database.pragma("busy_timeout = 5000");
-    try { this.initialize(); } catch (error) { this.database.close(); throw error; }
+    try {
+      if (options.readonly) {
+        const version = this.database.pragma("user_version", { simple: true }) as number;
+        if (version !== INDEX_SCHEMA_VERSION) throw new StoreError("ANALYSIS_NOT_READY", `不支持的索引版本 ${version}`,
+          { key: "diagnostics.index.store.m001", params: { p0: version } });
+      } else this.initialize();
+    } catch (error) { this.database.close(); throw error; }
   }
 
   private initialize(): void {

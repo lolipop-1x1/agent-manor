@@ -1,3 +1,4 @@
+import { withoutRequestTiming } from "./request-projection.js";
 import type { OverviewEvent, OverviewEvidencePage, OverviewEvidenceQuery, OverviewEvidenceRow, OverviewRequest, OverviewSnapshot } from "../overview-contracts.js";
 import type { SessionSummary } from "../session-contracts.js";
 import type { PricingView } from "../usage/pricing.js";
@@ -35,7 +36,7 @@ export async function factExtraEvidence(store: OverviewFactStore, snapshot: Over
   if (evidence.kind === "activity") return activityEvidence(store, snapshot, evidence, pricing, scope);
   if (evidence.kind === "observations") return observationEvidence(store, evidence, scope);
   if (evidence.kind === "combinations") return combinationEvidence(store, evidence, scope);
-  if (evidence.kind === "requests" || evidence.kind === "timing" || evidence.kind === "sequence" && evidence.scope === "usage") {
+  if (evidence.kind === "requests" || evidence.kind === "sequence" && evidence.scope === "usage") {
     return requestEvidence(store, snapshot, evidence, pricing, scope);
   }
   return eventEvidence(store, evidence, scope);
@@ -52,7 +53,7 @@ function pageResult(scope: FactEvidenceScope, rows: OverviewEvidenceRow[], total
 function requestConditions(snapshot: OverviewSnapshot, evidence: OverviewEvidenceQuery, scope: FactEvidenceScope, filters: boolean) {
   const where = [revisionWhere, scope.time], values = [...scope.values];
   const add = (condition: string, value?: Value) => { where.push(condition); if (value !== undefined) values.push(value); };
-  if (evidence.scope === "usage" || evidence.kind === "timing") {
+  if (evidence.scope === "usage") {
     if (scope.query.models?.length) add(`${modelKey} IN (SELECT value FROM json_each(?))`, JSON.stringify(scope.query.models));
     if (snapshot.query.models?.length) add(`${modelKey} IN (SELECT value FROM json_each(?))`, JSON.stringify(snapshot.query.models));
   }
@@ -62,14 +63,6 @@ function requestConditions(snapshot: OverviewSnapshot, evidence: OverviewEvidenc
     if (evidence.requestId) add("f.id=?", evidence.requestId);
     if (evidence.ordinalFrom !== undefined) add("f.ordinal>=?", evidence.ordinalFrom);
     if (evidence.ordinalTo !== undefined) add("f.ordinal<=?", evidence.ordinalTo);
-    if (evidence.kind === "timing") add("overview_valid_timing(json_extract(f.json,'$.usage.timing'))=1");
-    if (evidence.timingGroup) {
-      const clients = JSON.stringify(scope.metadata.sessions.map(session => ({ id: session.id, client: session.client })));
-      add(`json_array((SELECT json_extract(value,'$.client') FROM json_each(?) WHERE json_extract(value,'$.id')=r.session_id),
-        f.model,COALESCE(json_extract(f.json,'$.usage.timing.window'),'response'),
-        json_extract(f.json,'$.usage.timing.basis'),json_extract(f.json,'$.usage.timing.method'))=?`, clients);
-      values.push(evidence.timingGroup);
-    }
   }
   return { where: where.join(" AND "), values };
 }
@@ -130,7 +123,7 @@ class PageSelection<T extends Candidate> {
 function candidateColumns(type: "event" | "request") {
   return `r.session_id||':'||f.id AS id,f.id AS raw_id,f.revision,r.session_id,f.time_ms,f.ordinal,
     ${type === "request" ? tokensSql : "NULL"} AS tokens,
-    json_extract(f.json,'${type === "request" ? "$.usage.timing.durationMs" : "$.durationMs"}') AS duration_ms`;
+    ${type === "request" ? "NULL" : "json_extract(f.json,'$.durationMs')"} AS duration_ms`;
 }
 function readIdentities<T>(store: OverviewFactStore, table: "events" | "requests", page: Pick<Candidate, "revision" | "raw_id">[]): T[] {
   if (!page.length) return [];
@@ -217,7 +210,7 @@ export function hydrateFactRequestEvidence(store: OverviewFactStore, _snapshot: 
       tokens: raw.input_tokens !== null && raw.input_tokens >= 0 || raw.output_tokens !== null && raw.output_tokens >= 0
         ? Math.max(raw.input_tokens ?? 0, 0) + Math.max(raw.output_tokens ?? 0, 0) : null,
       inputTokens: usage.inputTokens, cachedInputTokens: usage.cachedInputTokens, cacheWriteTokens: usage.cacheWriteTokens,
-      durationMs: usage.timing?.durationMs, model: usage.model, usage, cost: pricing.estimate(usage, base(scope, raw.session_id).client),
+      model: usage.model, usage: withoutRequestTiming(usage), cost: pricing.estimate(usage, base(scope, raw.session_id).client),
       values: { segmentId: `${raw.session_id}:${context.segment}`, previousModel: context.reliable_previous_model ?? null,
         nextModel: context.reliable_next_model ?? null, previousRequestId: context.reliable_previous_id ?? null,
         nextRequestId: context.reliable_next_id ?? null,
@@ -350,7 +343,7 @@ function activityEvidence(store: OverviewFactStore, snapshot: OverviewSnapshot, 
       if (ids.some(id => id && included.has(`${raw.revision}\u0000${id}`))) continue;
       const input = raw.input_tokens, output = raw.output_tokens;
       selection.add({ id: `${raw.session_id}:${raw.id}`, raw_id: raw.id, revision: raw.revision, session_id: raw.session_id,
-        time_ms: raw.time_ms, ordinal: raw.ordinal, duration_ms: request.usage.timing?.durationMs ?? null, type: "request",
+        time_ms: raw.time_ms, ordinal: raw.ordinal, duration_ms: null, type: "request",
         tokens: input !== null && input >= 0 || output !== null && output >= 0 ? Math.max(input ?? 0, 0) + Math.max(output ?? 0, 0) : null });
     }
     batch = [];
@@ -385,7 +378,7 @@ function eventEvidence(store: OverviewFactStore, evidence: OverviewEvidenceQuery
       SELECT ${candidateColumns("event")} FROM failures f ${joinRevision} WHERE f.ordinal>=f.failure_ordinal`;
   } else {
     query = `SELECT ${candidateColumns("event")},f.tool,json_extract(f.json,'$.resource.kind')='mcp' AS external FROM overview_fact_events f ${joinRevision}
-      WHERE ${selected.where} AND ${evidence.kind === "compressions" ? "f.kind='compression'" : "f.kind='tool_call'"}
+      WHERE ${selected.where} AND f.kind='tool_call'
       ${evidence.kind === "failures" ? "AND f.status='failure'" : ""}`;
     values = selected.values;
   }

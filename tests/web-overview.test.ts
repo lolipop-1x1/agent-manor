@@ -34,7 +34,7 @@ test("局部显示选项不改变后端统计范围，模型只作为独立用�
   const route = { ...defaultOverviewRoute(), models: ["example-model"] };
   const now = new Date(2025, 0, 7);
   const first = overviewQuery(route, "index-a", "prices-a", now);
-  assert.deepEqual(overviewQuery({ ...route, activity: "tools", metric: "requests", interval: "month", distribution: "tool", process: "timing", combinationUnit: "turn" }, "index-a", "prices-a", now), first);
+  assert.deepEqual(overviewQuery({ ...route, activity: "tools", metric: "requests", interval: "month", distribution: "tool", combinationUnit: "turn" }, "index-a", "prices-a", now), first);
   assert.deepEqual(first.models, ["example-model"]);
 });
 
@@ -53,8 +53,8 @@ test("用量下钻保留总览的索引和价格版本", () => {
 });
 
 test("总览动态文案使用真实参数并支持中英文", () => {
-  assert.equal(translate("zh-CN", "overview.timing.durationValue", { value: "3.2" }), "3.2 秒");
-  assert.equal(translate("en", "overview.timing.durationValue", { value: "3.2" }), "3.2 s");
+  assert.equal(translate("zh-CN", "overview.evidence.durationValue", { value: "3.2" }), "3.2 秒");
+  assert.equal(translate("en", "overview.evidence.durationValue", { value: "3.2" }), "3.2 s");
   assert.ok(translate("en", "overview.help.versions", { version: "index-a", priceVersion: "price-b", timezone: "UTC" }).includes("index-a"));
 });
 

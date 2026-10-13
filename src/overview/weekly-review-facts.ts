@@ -5,6 +5,7 @@ import { setImmediate as nextTurn } from "node:timers/promises";
 import type { OverviewQuery, OverviewRequest, OverviewRange, WeeklyReviewEvent } from "../overview-contracts.js";
 import type { SessionSummary } from "../session-contracts.js";
 import type { SessionStore } from "../sessions/store.js";
+import { removeStoredRequestTiming, requestMembersWithEnd, withoutRequestTiming } from "./request-projection.js";
 import { instant } from "../usage/analytics.js";
 import { isActivityEvent, matchesGlobalSession, pairToolCalls } from "./analytics.js";
 import { addDays, localDay, resolveTimezone } from "./dates.js";
@@ -92,6 +93,7 @@ export class WeeklyReviewFactStore {
         id TEXT NOT NULL,start_ms REAL,end_ms REAL,json TEXT NOT NULL,PRIMARY KEY(revision,id)) WITHOUT ROWID;
       CREATE INDEX IF NOT EXISTS weekly_round_end ON weekly_rounds(revision,end_ms);
     `);
+    removeStoredRequestTiming(this.database, "weekly_requests");
     // 已发布总览窄事实可直接复用；缺失或坏缓存退回源的只读窗口投影。
     if (existsSync(join(dirname(sessions.dbPath), "overview-facts-v2.sqlite"))) {
       try { this.overview = new OverviewFactStore(sessions, { readonly: true }); } catch { /* 可选缓存不阻断复盘。 */ }
@@ -160,7 +162,7 @@ export class WeeklyReviewFactStore {
                 ...(row.model === null ? {} : { model: row.model }), ...(row.input_tokens === null ? {} : { inputTokens: row.input_tokens }),
                 ...(row.output_tokens === null ? {} : { outputTokens: row.output_tokens }), ...(row.message_id === null ? {} : { messageId: row.message_id }) } }));
           const members = new Map([...this.sessions.overviewRequestMembers(revision, requests.map(request => request.usage.id))]
-            .map(row => [row.id, row.requestMessageIds]));
+            .map(row => [row.id, requestMembersWithEnd(row.requestMessageIds, row.endMessageId)]));
           for (const request of requests) if (members.get(request.usage.id)) request.usage.requestMessageIds = members.get(request.usage.id);
           return requests;
         } catch { return; }
@@ -190,7 +192,7 @@ export class WeeklyReviewFactStore {
       const eventInsert = this.database.prepare("INSERT INTO weekly_events VALUES(?,?,?,?)");
       for (const event of events) eventInsert.run(revision, event.id, instant(event.occurredAt ?? "") ?? null, JSON.stringify(event));
       const requestInsert = this.database.prepare("INSERT INTO weekly_requests VALUES(?,?,?,?)");
-      for (const request of source.requests) requestInsert.run(revision, request.usage.id, instant(request.usage.occurredAt ?? "") ?? null, JSON.stringify(request));
+      for (const request of source.requests) requestInsert.run(revision, request.usage.id, instant(request.usage.occurredAt ?? "") ?? null, JSON.stringify({ ...request, usage: withoutRequestTiming(request.usage) }));
       const roundInsert = this.database.prepare("INSERT INTO weekly_rounds VALUES(?,?,?,?,?)");
       for (const round of rounds) roundInsert.run(revision, round.turnId, instant(round.startedAt ?? "") ?? null,
         instant(round.endedAt ?? "") ?? null, JSON.stringify(round));

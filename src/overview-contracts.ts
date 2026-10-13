@@ -268,19 +268,6 @@ export interface OverviewFailureSequence {
   calls: { messageId: string; resultMessageId?: string; ordinal: number; status: "success" | "failure" | "unknown" }[];
   truncated: boolean;
 }
-export interface OverviewTimingGroup {
-  id: string;
-  client: string;
-  model: string | null;
-  window: "response" | "generation";
-  basis: "recorded" | "estimated";
-  method: string;
-  samples: number;
-  duration: { medianMs: number | null; p90Ms: number | null; maxMs: number | null; averageMs: number | null;
-    histogram?: { fromMs: number; toMs: number; count: number }[] };
-  speed: { samples: number; median: number | null; p90: number | null; average: number | null };
-  longest: { sessionId: string; requestId: string; messageId?: string; durationMs: number }[];
-}
 export interface OverviewProcess {
   tools: OverviewToolRow[];
   categories: OverviewCountRow[];
@@ -288,10 +275,6 @@ export interface OverviewProcess {
   failures: number;
   /** 聚合内部使用；HTTP 报告返回空数组，完整过程通过分页证据查询。 */
   failureSequences: OverviewFailureSequence[];
-  compressions: number;
-  compressionSessions: number;
-  timing: OverviewTimingGroup[];
-  missingTimingRequests: number;
 }
 export interface OverviewDelegation {
   eligibleMainSessions: number;
@@ -342,7 +325,7 @@ export interface OverviewRepository {
   gapCount: number;
 }
 export type OverviewEvidenceKind = "activity" | "sessions" | "requests" | "resources" | "tools"
-  | "failures" | "compressions" | "timing" | "combinations" | "observations" | "sequence" | "delegation";
+  | "failures" | "combinations" | "observations" | "sequence" | "delegation";
 export interface OverviewEvidenceQuery {
   kind: OverviewEvidenceKind;
   scope?: "global" | "usage";
@@ -374,7 +357,6 @@ export interface OverviewEvidenceQuery {
   server?: string;
   category?: OverviewToolCategory;
   status?: "success" | "failure" | "unknown";
-  timingGroup?: string;
   unit?: "session" | "turn";
   observationState?: OverviewResourceObservation["state"];
   rule?: string;
@@ -506,9 +488,9 @@ export interface OverviewPanelResult {
   data: OverviewPanelData;
   dimension?: OverviewDistributionDimension;
   /** 首页截取行数不影响完整调查数量。 */
-  counts?: Partial<Record<"skills" | "mcp" | "clients" | "projects" | "models" | "tools" | "timing" | "observations" | "sessionCombinations" | "turnCombinations", number>>;
+  counts?: Partial<Record<"skills" | "mcp" | "clients" | "projects" | "models" | "tools" | "observations" | "sessionCombinations" | "turnCombinations", number>>;
 }
-export type OverviewDetailView = "resources" | "resource" | "ranking" | "months" | "transitions" | "timings" | "timing" | "observations" | "combinations";
+export type OverviewDetailView = "resources" | "resource" | "ranking" | "months" | "transitions" | "observations" | "combinations";
 export interface OverviewDetailQuery {
   view: OverviewDetailView;
   kind?: "skill" | "mcp";
@@ -516,13 +498,12 @@ export interface OverviewDetailQuery {
   dimension?: "client" | "project" | "model" | "tool";
   unit?: "session" | "turn";
   transition?: "all" | "switch" | "delegation";
-  timingGroup?: string;
   sort?: "uses" | "sessions" | "count" | "tokens" | "cost";
   page?: number;
   pageSize?: number;
 }
 export type OverviewDetailRow = OverviewResourceRow | OverviewCountRow | OverviewResourceObservation | OverviewResourceCombination
-  | OverviewTimingGroup | OverviewProjectMonth | OverviewModelTransition;
+  | OverviewProjectMonth | OverviewModelTransition;
 export interface OverviewDetailPage {
   snapshot: OverviewSnapshot;
   query: OverviewDetailQuery;

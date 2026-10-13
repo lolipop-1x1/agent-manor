@@ -3,10 +3,9 @@ import type { ResourceUsageEvent } from "../resource-contracts.js";
 import type { OverviewActivity, OverviewActivityDay, OverviewCountRow, OverviewDelegation, OverviewDelegationSummary, OverviewEvent,
   OverviewFailureSequence, OverviewProcess, OverviewQuery, OverviewRange, OverviewReport, OverviewResourceCombination,
   OverviewResourceObservation, OverviewResourceRow, OverviewResources, OverviewResultCounts, OverviewSource,
-  OverviewTimingGroup, OverviewToolCategory, OverviewToolRow } from "../overview-contracts.js";
+  OverviewToolCategory, OverviewToolRow } from "../overview-contracts.js";
 import type { PricingView } from "../usage/pricing.js";
 import { StoreError } from "../index/store.js";
-import { requestSpeed, speedOutputTokens } from "../session-speed.js";
 import { resourceGapRelevant } from "../resources/coverage.js";
 import { resourceHistoryIdentity, resourceOverviewIdentity } from "../resources/usage.js";
 import { buildUsageReport, instant, intervalKey } from "../usage/analytics.js";
@@ -255,23 +254,7 @@ export function failureSequences(source: OverviewSource, selectedCalls: Overview
   }
   return result;
 }
-export function timingGroupId(session: SessionSummary, usage: SessionUsage): string {
-  return JSON.stringify([session.client, usage.model ?? null, usage.timing?.window ?? "response", usage.timing?.basis, usage.timing?.method]);
-}
-export function validDuration(usage: SessionUsage): boolean {
-  const timing = usage.timing;
-  if (!timing || timing.completion !== "explicit" && timing.completion !== "inferred"
-    || !nonnegative(timing.durationMs) || timing.durationMs <= 0) return false;
-  if ([timing.start?.occurredAt, timing.end?.occurredAt].some(value => value !== undefined && instant(value) === undefined)) return false;
-  return !(timing.start?.occurredAt && timing.end?.occurredAt
-    && Math.abs(instant(timing.end.occurredAt)! - instant(timing.start.occurredAt)! - timing.durationMs) > 1);
-}
-export function quantile(values: readonly number[], q: number): number | null {
-  if (!values.length) return null;
-  const sorted = [...values].sort((a, b) => a - b), index = (sorted.length - 1) * q, low = Math.floor(index), fraction = index - low;
-  return sorted[low]! + (sorted[Math.min(low + 1, sorted.length - 1)]! - sorted[low]!) * fraction;
-}
-export function buildProcess(source: OverviewSource, selected: OverviewSource, usageSelected: OverviewSource, timezone: string, global?: OverviewProcess, detail = true): OverviewProcess {
+export function buildProcess(source: OverviewSource, selected: OverviewSource, timezone: string, global?: OverviewProcess, detail = true): OverviewProcess {
   const sessionById = new Map(source.sessions.map(session => [session.id, session]));
   const selectedIds = new Set(selected.events.filter(event => event.kind === "tool_call").map(event => `${event.sessionId}\u0000${event.id}`));
   // 结果可以稍晚于调用落在范围外，唯一配对仍属于同一个范围内调用。
@@ -293,32 +276,10 @@ export function buildProcess(source: OverviewSource, selected: OverviewSource, u
       projects: detail ? aggregateCount(values, event => usageDimensionKey(sessionById.get(event.sessionId)!.project), sessionId, status, true) : [],
       days: dates.map(day => ({ day, ...dayCounts.get(day)! })) };
   }).sort((a, b) => b.count - a.count || a.key.localeCompare(b.key));
-  const timingGroups = new Map<string, OverviewSource["requests"]>();
-  let missingTimingRequests = 0;
-  for (const request of detail ? usageSelected.requests : []) {
-    if (!validDuration(request.usage)) { missingTimingRequests += 1; continue; }
-    const session = sessionById.get(request.sessionId)!, id = timingGroupId(session, request.usage), values = timingGroups.get(id) ?? [];
-    values.push(request); timingGroups.set(id, values);
-  }
-  const timing: OverviewTimingGroup[] = [...timingGroups].map(([id, requests]) => {
-    const first = requests[0]!, session = sessionById.get(first.sessionId)!, times = requests.map(request => request.usage.timing!.durationMs!);
-    const speeds = requests.flatMap(request => { const speed = requestSpeed(request.usage); return speed.tokensPerSecond !== undefined ? [speed.tokensPerSecond] : []; });
-    const eligible = requests.filter(request => requestSpeed(request.usage).tokensPerSecond !== undefined);
-    return { id, client: session.client, model: first.usage.model ?? null, window: first.usage.timing?.window ?? "response",
-      basis: first.usage.timing!.basis, method: first.usage.timing!.method, samples: requests.length,
-      duration: { medianMs: quantile(times, .5), p90Ms: quantile(times, .9), maxMs: times.reduce((max, time) => Math.max(max, time), 0), averageMs: times.reduce((sum, time) => sum + time, 0) / times.length,
-        histogram: durationHistogram(times) },
-      speed: { samples: speeds.length, median: quantile(speeds, .5), p90: quantile(speeds, .9), average: eligible.length
-        ? eligible.reduce((sum, request) => sum + speedOutputTokens(request.usage)!, 0) * 1000 / eligible.reduce((sum, request) => sum + request.usage.timing!.durationMs!, 0) : null },
-      longest: [...requests].sort((a, b) => b.usage.timing!.durationMs! - a.usage.timing!.durationMs! || a.usage.id.localeCompare(b.usage.id)).slice(0, 5)
-        .map(request => ({ sessionId: request.sessionId, requestId: request.usage.id, messageId: request.usage.messageId, durationMs: request.usage.timing!.durationMs! })) };
-  }).sort((a, b) => b.samples - a.samples || a.id.localeCompare(b.id));
-  if (global) return { ...global, timing, missingTimingRequests };
-  const compressions = selected.events.filter(event => event.kind === "compression");
+  if (global) return global;
   return { tools, categories: aggregateCount(calls, event => toolCategory(event.tool, event.resource), event => event.sessionId, event => event.status),
     results: resultCounts(calls.map(event => event.status)), failures: calls.filter(event => event.status === "failure").length,
-    failureSequences: detail ? failureSequences(source, calls) : [], compressions: compressions.length,
-    compressionSessions: new Set(compressions.map(event => event.sessionId)).size, timing, missingTimingRequests };
+    failureSequences: detail ? failureSequences(source, calls) : [] };
 }
 const relationUnknown = (session: SessionSummary, byId: Map<string, SessionSummary>) => session.relationship === "child" && (!session.parentSessionId || !byId.has(session.parentSessionId))
   || session.gaps.some(gap => ["diagnostics.sessions.store.m004", "diagnostics.sessions.store.m005", "diagnostics.sessions.store.m006", "diagnostics.sessions.store.m017"].includes(gap.messageDescriptor?.key ?? ""));
@@ -397,7 +358,7 @@ export function buildOverviewReport(source: OverviewSource, input: OverviewQuery
     .sort((a, b) => b.usage.inputTokens! + b.usage.outputTokens! - a.usage.inputTokens! - a.usage.outputTokens!
       || (a.usage.occurredAt ?? "").localeCompare(b.usage.occurredAt ?? "") || `${a.sessionId}:${a.usage.id}`.localeCompare(`${b.sessionId}:${b.usage.id}`));
   const peak = complete[0], totals = global.totals;
-  const process = buildProcess(source, selected, usageSelected, timezone, shared?.process), sessionById = new Map(source.sessions.map(session => [session.id, session]));
+  const process = buildProcess(source, selected, timezone, shared?.process), sessionById = new Map(source.sessions.map(session => [session.id, session]));
   const requestDistribution = (dimension: "client" | "project" | "model") => {
     const requests = usageSelected.requests;
     const identity = (request: OverviewSource["requests"][number]) => dimension === "model" ? usageDimensionKey(request.usage.model)
@@ -436,11 +397,4 @@ export function buildOverviewReport(source: OverviewSource, input: OverviewQuery
     coverage: shared?.coverage ?? { gaps: source.gaps.slice(0, 100), gapCount: source.gaps.length, missingTimeEvents: activity.missingTimeEvents,
       missingTimeRequests: source.requests.filter(request => scopedIds.has(request.sessionId) && localDay(request.usage.occurredAt, timezone) === null).length,
       missingTimeResources: resources.missingTimeEvents } };
-}
-
-function durationHistogram(values: number[]): { fromMs: number; toMs: number; count: number }[] {
-  const maximum = values.reduce((max, value) => Math.max(max, value), 0), width = Math.max(maximum / 8, 1);
-  const bins = Array.from({ length: 8 }, (_, index) => ({ fromMs: index * width, toMs: (index + 1) * width, count: 0 }));
-  for (const value of values) bins[Math.min(Math.floor(value / width), 7)]!.count += 1;
-  return bins;
 }

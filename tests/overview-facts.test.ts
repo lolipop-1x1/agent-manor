@@ -9,6 +9,7 @@ import { Worker } from "node:worker_threads";
 import type { OverviewQuery, OverviewSource } from "../src/overview-contracts.js";
 import type { SessionMessage, SessionSourceMeta, SessionUsage } from "../src/session-contracts.js";
 import { SessionStore } from "../src/sessions/store.js";
+import { withoutRequestTiming } from "../src/overview/request-projection.js";
 import { OverviewFactStore } from "../src/overview/facts.js";
 import { buildOverviewReport, pairToolCalls, isActivityEvent } from "../src/overview/analytics.js";
 import { resolveOverviewRange } from "../src/overview/dates.js";
@@ -106,7 +107,8 @@ test("分区窄事实保留调用跨日配对、调查成员原顺序及范围�
     const selected = await facts.source(query, "process", now);
     assert.equal(selected.events.find(event => event.id === "call")!.status, "failure");
     assert.equal(selected.events.find(event => event.id === "call")!.resultMessageId, "result");
-    assert(!selected.requests.some(request => request.usage.id === "cross-day"));
+    assert.equal(selected.requests.length, 0);
+    assert(!selected.events.some(event => event.kind === "compression"));
     const full = await facts.source(query, "requests", now, { fullSessions: true, sessionIds: ["main"] });
     assert(full.requests.some(request => request.usage.id === "cross-day"));
     assert(full.requests.some(request => request.usage.id === "missing-request"));
@@ -122,7 +124,7 @@ test("分区窄事实保留调用跨日配对、调查成员原顺序及范围�
     assert.equal(evidence.requests.find(request => request.usage.id === "standalone")!.usage.requestMessageIds, undefined);
     assert(evidence.events.some(event => event.id === "result"));
     const original = store.overviewSource();
-    assert.deepEqual(value(evidence.requests), value(original.requests));
+    assert.deepEqual(value(evidence.requests), value(original.requests.map(request => ({ ...request, usage: withoutRequestTiming(request.usage) }))));
     const expectedCalls = pairToolCalls(original.events.filter(isActivityEvent));
     assert.deepEqual(value(evidence.events.find(event => event.id === "call")), value(expectedCalls.find(event => event.id === "call")));
     assert(!JSON.stringify(evidence).includes("synthetic-private-body"));

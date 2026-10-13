@@ -42,24 +42,21 @@ export async function factEvidence(store: OverviewFactStore, snapshot: OverviewS
   const evidenceScope = { metadata, revisions, globalRevisions: scope.revisions, time, values: baseValues, initial, range: { ...scope.range, all },
     query: { ...extra, ...(evidence.model ? { models: [evidence.model] } : {}) } };
   const where = [`f.revision IN (SELECT value FROM json_each(?))`, time];
-  const event = evidence.kind === "tools" || evidence.kind === "failures" || evidence.kind === "compressions";
-  const request = evidence.kind === "requests" || evidence.kind === "timing";
+  const event = evidence.kind === "tools" || evidence.kind === "failures";
+  const request = evidence.kind === "requests";
   const resource = evidence.kind === "resources";
   const keyedModel = `CASE WHEN f.model IS NULL THEN 'unknown' WHEN f.model='unknown' OR substr(f.model,1,8)='literal:' THEN 'literal:'||f.model ELSE f.model END`;
   const add = (condition: string, value?: Value) => { where.push(condition); if (value !== undefined) values.push(value); };
   if (request) {
-    if ((evidence.scope === "usage" || evidence.kind === "timing") && snapshot.query.models?.length) add(`${keyedModel} IN (SELECT value FROM json_each(?))`, JSON.stringify(snapshot.query.models));
+    if ((evidence.scope === "usage") && snapshot.query.models?.length) add(`${keyedModel} IN (SELECT value FROM json_each(?))`, JSON.stringify(snapshot.query.models));
     if (evidence.model) add(`${keyedModel}=?`, evidence.model);
     if (evidence.turnId) add("json_extract(f.json,'$.usage.turnId')=?", evidence.turnId);
     if (evidence.requestId) add("f.id=?", evidence.requestId);
     if (evidence.ordinalFrom !== undefined) add("f.ordinal>=?", evidence.ordinalFrom);
     if (evidence.ordinalTo !== undefined) add("f.ordinal<=?", evidence.ordinalTo);
-    if (evidence.kind === "timing") add("overview_valid_timing(json_extract(f.json,'$.usage.timing'))=1");
-    if (evidence.timingGroup) add(`json_array(json_extract(s.value,'$.client'),f.model,COALESCE(json_extract(f.json,'$.usage.timing.window'),'response'),
-      json_extract(f.json,'$.usage.timing.basis'),json_extract(f.json,'$.usage.timing.method'))=?`, evidence.timingGroup);
   } else if (event || resource) {
     add(event ? "f.active=1" : "f.valid=1");
-    if (event) add(evidence.kind === "compressions" ? "f.kind='compression'" : "f.kind='tool_call'");
+    if (event) add("f.kind='tool_call'");
     if (evidence.kind === "failures") add("f.status='failure'");
     if (evidence.turnId) add("f.turn_id=?", evidence.turnId);
     if (evidence.tool) add("f.tool=?", evidence.tool);
@@ -78,13 +75,12 @@ export async function factEvidence(store: OverviewFactStore, snapshot: OverviewS
   const join = "JOIN overview_fact_revisions r ON r.revision=f.revision";
   if (request && !evidence.transition || resource || event) {
     const table = request ? "requests" : resource ? "resources" : "events";
-    const meta = request && evidence.timingGroup ? ` JOIN json_each(?) s ON json_extract(s.value,'$.id')=r.session_id` : "";
-    const parameters = meta ? [JSON.stringify(metadata.sessions.map(row => ({ id: row.id, client: row.client }))), ...values] : values;
-    const candidate = `SELECT f.*,r.session_id,r.resource_source_json FROM overview_fact_${table} f ${join}${meta} WHERE ${where.join(" AND ")}`;
+    const parameters = values;
+    const candidate = `SELECT f.*,r.session_id,r.resource_source_json FROM overview_fact_${table} f ${join} WHERE ${where.join(" AND ")}`;
     const total = store.readRows<{ total: number }>(`SELECT COUNT(*) AS total FROM (${candidate})`, parameters)[0]!.total;
     const tokenOrder = "CASE WHEN input_tokens>=0 OR output_tokens>=0 THEN CASE WHEN input_tokens>=0 THEN input_tokens ELSE 0 END+CASE WHEN output_tokens>=0 THEN output_tokens ELSE 0 END ELSE -1 END";
     const order = evidence.sort === "tokens" && request ? `${tokenOrder} DESC,session_id||':'||id`
-      : evidence.sort === "duration" ? `COALESCE(json_extract(json,'${request ? "$.usage.timing.durationMs" : "$.durationMs"}'),-1) DESC,session_id||':'||id`
+      : evidence.sort === "duration" && !request ? `COALESCE(json_extract(json,'$.durationMs'),-1) DESC,session_id||':'||id`
       : evidence.sort === "ordinal" ? "session_id,ordinal,session_id||':'||id" : "time_ms DESC,session_id||':'||id";
     const page = store.readRows<EventRecord | RequestRecord | ResourceRecord>(`SELECT * FROM (${candidate}) ORDER BY ${order} LIMIT ? OFFSET ?`,
       [...parameters, initial.pageSize, (initial.page - 1) * initial.pageSize]);

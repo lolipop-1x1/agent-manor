@@ -1,3 +1,4 @@
+import { withoutRequestTiming } from "./request-projection.js";
 import type { OverviewEvidencePage, OverviewEvidenceQuery, OverviewEvidenceRow, OverviewEvent, OverviewPeriod,
   OverviewQuery, OverviewRange, OverviewRequest, OverviewSource } from "../overview-contracts.js";
 import type { SessionSummary } from "../session-contracts.js";
@@ -6,7 +7,7 @@ import { StoreError } from "../index/store.js";
 import { instant } from "../usage/analytics.js";
 import { usageDimensionKey } from "../usage/dimensions.js";
 import { failureSequences, isActivityEvent, matchesGlobalSession, pairToolCalls, resourceIdentity, resourceNameDescriptor, resourceObservations,
-  selectedSource, timingGroupId, toolCategory, trueTurnIds, validDuration } from "./analytics.js";
+  selectedSource, toolCategory, trueTurnIds } from "./analytics.js";
 import { daysBetween, localDay, resolveOverviewRange, resolveTimezone } from "./dates.js";
 
 export function buildOverviewEvidence(source: OverviewSource, input: OverviewQuery, evidence: OverviewEvidenceQuery,
@@ -17,7 +18,8 @@ export function buildOverviewEvidence(source: OverviewSource, input: OverviewQue
   const timezone = resolveTimezone(input.timezone), query = { ...input, timezone };
   const range = prepared?.range ?? resolveOverviewRange(source, query, now), page = evidence.page ?? 1, pageSize = evidence.pageSize ?? 25;
   if (!Number.isInteger(page) || page < 1 || !Number.isInteger(pageSize) || pageSize < 1 || pageSize > 200) invalid("page");
-  if (!["activity", "sessions", "requests", "resources", "tools", "failures", "compressions", "timing", "combinations", "observations", "sequence", "delegation"].includes(evidence.kind)) invalid("kind");
+  if (!["activity", "sessions", "requests", "resources", "tools", "failures", "combinations", "observations", "sequence", "delegation"].includes(evidence.kind)) invalid("kind");
+  if (evidence.sort === "duration" && (evidence.kind === "requests" || evidence.kind === "sequence" && evidence.scope === "usage")) invalid("sort");
   let period: OverviewPeriod = range;
   if (evidence.period === "current") period = range.comparison?.current ?? range;
   if (evidence.period === "previous") { if (!range.comparison) return empty(); period = range.comparison.previous; }
@@ -38,13 +40,13 @@ export function buildOverviewEvidence(source: OverviewSource, input: OverviewQue
   const ids = new Set(sessions.map(session => session.id)), byId = new Map(source.sessions.map(session => [session.id, session]));
   const scopedSource: OverviewSource = { ...source, sessions, events: source.events.filter(event => ids.has(event.sessionId)),
     requests: source.requests.filter(request => ids.has(request.sessionId)), resources: source.resources.filter(event => ids.has(event.sessionId)) };
-  const selected = selectedSource(scopedSource, scopedQuery, evidenceRange, evidence.scope === "usage" || evidence.kind === "timing");
+  const selected = selectedSource(scopedSource, scopedQuery, evidenceRange, evidence.scope === "usage");
   if (evidence.undated) {
     selected.events = selected.events.filter(event => localDay(event.occurredAt, timezone) === null);
     selected.requests = selected.requests.filter(request => localDay(request.usage.occurredAt, timezone) === null);
     selected.resources = selected.resources.filter(event => localDay(event.occurredAt, timezone) === null);
   }
-  if ((evidence.scope === "usage" || evidence.kind === "timing") && query.models?.length) {
+  if ((evidence.scope === "usage") && query.models?.length) {
     selected.requests = selected.requests.filter(request => query.models!.includes(usageDimensionKey(request.usage.model)));
   }
   const eventsBySession = new Map<string, OverviewEvent[]>(), requestsBySession = new Map<string, OverviewRequest[]>();
@@ -65,7 +67,7 @@ export function buildOverviewEvidence(source: OverviewSource, input: OverviewQue
     const contextEvents = scopedSource.events.filter(event => contextSessionIds.has(event.sessionId));
     const compressionEvents = contextEvents.filter(event => event.kind === "compression");
     const eventById = new Map(contextEvents.map(event => [`${event.sessionId}\u0000${event.id}`, event]));
-    const eventOrdinal = (request: OverviewRequest | undefined) => request ? [request.usage.messageId, ...(request.usage.requestMessageIds ?? [])]
+    const eventOrdinal = (request: OverviewRequest | undefined) => request ? [request.usage.messageId, ...(withoutRequestTiming(request.usage).requestMessageIds ?? [])]
       .flatMap(id => id !== undefined && eventById.has(`${request.sessionId}\u0000${id}`) ? [eventById.get(`${request.sessionId}\u0000${id}`)!.ordinal] : [])
       .sort((a, b) => a - b)[0] : undefined;
     for (const [sessionId, requests] of orderedRequests) {
@@ -106,31 +108,30 @@ export function buildOverviewEvidence(source: OverviewSource, input: OverviewQue
     ordinal: event.ordinal, occurredAt: event.occurredAt, day: localDay(event.occurredAt, timezone) ?? undefined,
     tool: event.tool, status: event.status, durationMs: event.durationMs, model: event.model,
     values: { eventKind: event.kind, pairing: event.pairing ?? null, server: event.resource?.server ?? null } });
-  const requestRow = (request: OverviewRequest): OverviewEvidenceRow => ({ ...base(request.sessionId),
+  const requestRow = (request: OverviewRequest): OverviewEvidenceRow => {
+    const usage = withoutRequestTiming(request.usage);
+    return { ...base(request.sessionId),
     id: `${request.sessionId}:${request.usage.id}`, kind: evidence.kind, requestId: request.usage.id,
-    messageId: request.usage.messageId ?? request.usage.requestMessageIds?.[0], ordinal: request.ordinal, turnId: request.usage.turnId,
+    messageId: usage.messageId ?? usage.requestMessageIds?.[0], ordinal: request.ordinal, turnId: request.usage.turnId,
     occurredAt: request.usage.occurredAt, day: localDay(request.usage.occurredAt, timezone) ?? undefined,
     tokens: tokens(request), inputTokens: request.usage.inputTokens, cachedInputTokens: request.usage.cachedInputTokens,
-    cacheWriteTokens: request.usage.cacheWriteTokens, durationMs: request.usage.timing?.durationMs, model: request.usage.model,
-    usage: request.usage });
+    cacheWriteTokens: request.usage.cacheWriteTokens, model: request.usage.model,
+    usage };
+  };
   let rows: OverviewEvidenceRow[] = [];
   const includedRow = (sessionId: string, id: string) => !prepared || prepared.rowIds.has(`${sessionId}:${id}`);
-  if (evidence.kind === "activity" || evidence.kind === "compressions") {
-    rows = selected.events.filter(event => includedRow(event.sessionId, event.id) && eventMatch(event) && (evidence.kind !== "compressions" || event.kind === "compression")).map(eventRow);
-    if (evidence.kind === "activity") {
-      const included = new Set(rows.map(row => `${row.sessionId}\u0000${row.messageId}`));
-      rows.push(...selected.requests.filter(request => includedRow(request.sessionId, request.usage.id) && ![request.usage.messageId, ...(request.usage.requestMessageIds ?? []),
+  if (evidence.kind === "activity") {
+    rows = selected.events.filter(event => includedRow(event.sessionId, event.id) && eventMatch(event)).map(eventRow);
+    const included = new Set(rows.map(row => `${row.sessionId}\u0000${row.messageId}`));
+    rows.push(...selected.requests.filter(request => includedRow(request.sessionId, request.usage.id) && ![request.usage.messageId, ...(request.usage.requestMessageIds ?? []),
         request.usage.timing?.end?.source !== "mirror" ? request.usage.timing?.end?.messageId : undefined]
-        .some(id => id && included.has(`${request.sessionId}\u0000${id}`))).map(requestRow));
-    }
-  } else if (evidence.kind === "requests" || evidence.kind === "timing" || evidence.kind === "sequence" && evidence.scope === "usage") {
+      .some(id => id && included.has(`${request.sessionId}\u0000${id}`))).map(requestRow));
+  } else if (evidence.kind === "requests" || evidence.kind === "sequence" && evidence.scope === "usage") {
     rows = selected.requests.filter(request => includedRow(request.sessionId, request.usage.id) && (!evidence.turnId || request.usage.turnId === evidence.turnId)
       && (!evidence.requestId || request.usage.id === evidence.requestId)
       && (evidence.ordinalFrom === undefined || request.ordinal !== undefined && request.ordinal >= evidence.ordinalFrom)
       && (evidence.ordinalTo === undefined || request.ordinal !== undefined && request.ordinal <= evidence.ordinalTo)
-      && (!evidence.model || usageDimensionKey(request.usage.model) === evidence.model)
-      && (evidence.kind !== "timing" || validDuration(request.usage))
-      && (!evidence.timingGroup || timingGroupId(byId.get(request.sessionId)!, request.usage) === evidence.timingGroup)).map(requestRow);
+      && (!evidence.model || usageDimensionKey(request.usage.model) === evidence.model)).map(requestRow);
   } else if (evidence.kind === "resources") {
     rows = selected.resources.filter(event => (!prepared || prepared.rowIds.has(event.id)) && (!evidence.resourceId || resourceIdentity(event) === evidence.resourceId)
       && (!evidence.resourceKind || (event.kind === "mcp" ? "mcp" : "skill") === evidence.resourceKind)

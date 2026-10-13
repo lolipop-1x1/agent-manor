@@ -12,6 +12,13 @@ export class OverviewResultStore {
       this.database.exec(`CREATE TABLE IF NOT EXISTS overview_results (
         key TEXT PRIMARY KEY,format INTEGER NOT NULL,json TEXT NOT NULL,bytes INTEGER NOT NULL,accessed INTEGER NOT NULL);
         CREATE INDEX IF NOT EXISTS overview_results_access ON overview_results(accessed)`);
+      if (Number(this.database.pragma("user_version", { simple: true })) < 1) {
+        // 七天洞察继续保留，旧总览结果可能包含已删除的过程视图和请求计时。
+        this.database.transaction(() => {
+          this.database!.exec("DELETE FROM overview_results WHERE NOT json_valid(key) OR json_extract(key,'$[1]') NOT IN ('review','review_detail')");
+          this.database!.pragma("user_version=1");
+        })();
+      }
       this.trim();
     } catch { this.database?.close(); this.database = undefined; }
   }
