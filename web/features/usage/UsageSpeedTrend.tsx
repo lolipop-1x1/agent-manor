@@ -1,13 +1,14 @@
-import { useEffect, useRef, useState } from "react";
+import { useRef, useState } from "react";
 import * as Popover from "@radix-ui/react-popover";
 import { X } from "@phosphor-icons/react";
 import { CLIENTS } from "../../../src/clients";
-import type { UsageReport, UsageSpeedGroup } from "../../../src/usage-contracts";
+import type { UsageReport, UsageSpeedBucket, UsageSpeedGroup } from "../../../src/usage-contracts";
 import { clientLabel, useI18n } from "../../shared/i18n";
 import { useChartWidth } from "../../shared/charts/useChartWidth";
 import { HelpPopover } from "../../shared/ui/HelpPopover";
 import { ProjectPicker } from "../../shared/ui/ProjectPicker";
 import { speedLineModel } from "./speed-model";
+import { useUsageTimeInteraction } from "./useUsageTimeInteraction";
 
 export function UsageSpeedTrend({ report, interactive, onGroup }: {
   report: UsageReport; interactive: boolean; onGroup: (key: string) => void;
@@ -18,16 +19,10 @@ export function UsageSpeedTrend({ report, interactive, onGroup }: {
   const buckets = speed?.buckets ?? [];
   const model = speedLineModel(buckets);
   const plot = useRef<HTMLDivElement>(null);
-  const selector = useRef<HTMLDivElement>(null);
-  const popover = useRef<HTMLDivElement>(null);
   const width = useChartWidth(plot, model.points.length > 0);
   const [selected, setSelected] = useState("");
-  const [detailKey, setDetailKey] = useState<string | null>(null);
-  const pinned = useRef(false);
-  const restoreFocus = useRef(false);
-  const suppressFocus = useRef(false);
-  const anchor = useRef({ getBoundingClientRect: () => new DOMRect() });
-  useEffect(() => { pinned.current = false; restoreFocus.current = false; setDetailKey(null); }, [report, interactive]);
+  const interaction = useUsageTimeInteraction<UsageSpeedBucket>(report, interactive);
+  const { detail } = interaction;
   const height = 320, left = 76, right = 18, top = 18;
   const hourly = report.query.interval === "hour", bottom = hourly ? 62 : 44;
   const plotWidth = Math.max(1, width - left - right), plotHeight = height - top - bottom;
@@ -36,7 +31,6 @@ export function UsageSpeedTrend({ report, interactive, onGroup }: {
   const selectedIndex = buckets.findIndex(bucket => bucket.key === selected);
   const activeIndex = selectedIndex >= 0 ? selectedIndex : model.lastEligibleIndex;
   const active = buckets[activeIndex];
-  const detail = buckets.find(bucket => bucket.key === detailKey);
   const approximate = group?.basis === "estimated";
   const speedValue = (value: number | null) => value === null ? "—" : t("usage.speed.value", { approx: approximate ? "≈ " : "", value: number(value, { maximumFractionDigits: 1 }) });
   const bucketDate = (key: string) => date(hourly ? key : `${key}T00:00:00`, { ...(hourly ? { timeZone: report.timezone } : {}), year: "numeric", month: "short", day: "numeric" });
@@ -48,18 +42,7 @@ export function UsageSpeedTrend({ report, interactive, onGroup }: {
   const tickCount = Math.min(buckets.length, Math.max(2, Math.floor(plotWidth / 170)));
   const tickX = (index: number) => tickCount > 1 && index === 0 ? left : tickCount > 1 && index === buckets.length - 1 ? width - right : x(index);
   const ticks = Array.from({ length: tickCount }, (_, index) => tickCount === 1 ? 0 : Math.round(index * (buckets.length - 1) / (tickCount - 1)));
-  const showDetail = (index: number, rect: DOMRect) => {
-    if (!interactive || !buckets[index]) return;
-    setSelected(buckets[index].key); anchor.current = { getBoundingClientRect: () => rect }; setDetailKey(buckets[index].key);
-  };
-  const closeDetail = () => {
-    restoreFocus.current = pinned.current || document.activeElement === selector.current || !!popover.current?.contains(document.activeElement);
-    pinned.current = false; setDetailKey(null);
-  };
-  const indexAt = (clientX: number, target: HTMLDivElement) => {
-    const bounds = target.getBoundingClientRect();
-    return Math.max(0, Math.min(buckets.length - 1, Math.floor((clientX - bounds.left) / bounds.width * buckets.length)));
-  };
+  const selectBucket = (index: number) => { const bucket = buckets[index]!; setSelected(bucket.key); return bucket; };
   return <section className="usage-chart-section usage-time-analysis usage-speed-analysis" aria-labelledby="usage-time-title">
     <div className="usage-section-title"><h2 id="usage-time-title">{t("usage.chart.timeAnalysis")}</h2><div className="usage-speed-actions">
       {!!speed?.groups.length && <ProjectPicker label={t("usage.speed.group")} placeholder={t("usage.speed.search")} value={speed.selectedGroup ?? ""} options={speed.groups.map(item => ({ value: item.key, label: groupLabel(item), description: t(`sessions.speed.method.${item.method}`) }))} onChange={onGroup} />}
@@ -78,28 +61,14 @@ export function UsageSpeedTrend({ report, interactive, onGroup }: {
           {active && <line x1={x(activeIndex)} x2={x(activeIndex)} y1={top} y2={height - bottom} className="usage-chart-reference" />}
           {ticks.map(index => <text key={buckets[index]!.key} x={tickX(index)} y={height - (hourly ? 30 : 12)} textAnchor={ticks.length === 1 ? "middle" : index === 0 ? "start" : index === buckets.length - 1 ? "end" : "middle"}>{bucketDate(buckets[index]!.key)}{hourly && <tspan x={tickX(index)} dy="17">{dateTime(buckets[index]!.key, { timeZone: report.timezone, hour: "numeric", minute: "2-digit" })}</tspan>}</text>)}
         </svg>
-        {active && <div ref={selector} className="usage-bucket-selector usage-speed-selector" role="slider" tabIndex={0} aria-label={t("usage.speed.selectInterval")} aria-orientation="horizontal" aria-valuemin={1} aria-valuemax={buckets.length} aria-valuenow={activeIndex + 1} aria-valuetext={t("usage.speed.selected", { time: bucketLabel(active.key), value: speedValue(active.tokensPerSecond) })}
+        {active && <div className="usage-bucket-selector usage-speed-selector" role="slider" tabIndex={0} aria-label={t("usage.speed.selectInterval")} aria-orientation="horizontal" aria-valuemin={1} aria-valuemax={buckets.length} aria-valuenow={activeIndex + 1} aria-valuetext={t("usage.speed.selected", { time: bucketLabel(active.key), value: speedValue(active.tokensPerSecond) })}
           style={{ left: `${left / width * 100}%`, right: `${right / width * 100}%`, bottom: `${bottom / height * 100}%`, top: `${top / height * 100}%` }}
-          onPointerMove={event => { if (!pinned.current && (event.pointerType === "mouse" || event.buttons)) showDetail(indexAt(event.clientX, event.currentTarget), new DOMRect(event.clientX, event.clientY, 0, 0)); }}
-          onPointerLeave={event => { if (!pinned.current && !(event.relatedTarget instanceof Node && popover.current?.contains(event.relatedTarget))) setDetailKey(null); }}
-          onFocus={event => { if (suppressFocus.current) { suppressFocus.current = false; return; } showDetail(activeIndex, event.currentTarget.getBoundingClientRect()); }}
-          onPointerDown={event => { event.currentTarget.focus({ preventScroll: true }); pinned.current = true; showDetail(indexAt(event.clientX, event.currentTarget), new DOMRect(event.clientX, event.clientY, 0, 0)); }}
-          onKeyDown={event => {
-            if (["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Home", "End"].includes(event.key)) {
-              event.preventDefault();
-              const direction = event.key === "ArrowRight" || event.key === "ArrowUp" ? 1 : -1;
-              const index = event.key === "Home" ? 0 : event.key === "End" ? buckets.length - 1 : Math.max(0, Math.min(buckets.length - 1, activeIndex + direction));
-              showDetail(index, event.currentTarget.getBoundingClientRect());
-            } else if (["Enter", " "].includes(event.key)) { event.preventDefault(); pinned.current = true; showDetail(activeIndex, event.currentTarget.getBoundingClientRect()); }
-          }} />}
+          {...interaction.sliderProps(buckets.length, activeIndex, selectBucket)} />}
       </div></div>
     </> : <div className="usage-empty">{t("usage.speed.noData")}</div>}
-    <Popover.Root open={interactive && detail !== undefined} onOpenChange={open => { if (!open) closeDetail(); }}>
-      <Popover.Anchor virtualRef={anchor} />
-      <Popover.Portal><Popover.Content ref={popover} className="usage-time-popover usage-speed-popover" side="top" align="center" sideOffset={14} collisionPadding={12} aria-label={t("usage.speed.intervalDetails")}
-        onOpenAutoFocus={event => event.preventDefault()} onCloseAutoFocus={event => { event.preventDefault(); if (restoreFocus.current && selector.current?.isConnected && document.activeElement !== selector.current) { suppressFocus.current = true; selector.current.focus({ preventScroll: true }); } }}
-        onInteractOutside={event => { if ((event.target as HTMLElement).closest(".usage-speed-selector")) event.preventDefault(); }}
-        onPointerLeave={() => { if (!pinned.current && !popover.current?.contains(document.activeElement)) setDetailKey(null); }}>
+    <Popover.Root {...interaction.rootProps}>
+      <Popover.Anchor virtualRef={interaction.anchor} />
+      <Popover.Portal><Popover.Content className="usage-time-popover usage-speed-popover" side="top" align="center" sideOffset={14} collisionPadding={12} aria-label={t("usage.speed.intervalDetails")} {...interaction.contentProps}>
         {detail && <><header><strong>{bucketLabel(detail.key)}</strong><Popover.Close className="icon-button" aria-label={t("common.closeNamed", { label: t("usage.speed.intervalDetails") })}><X size={16} /></Popover.Close></header>
           <div className="usage-time-total">{speedValue(detail.tokensPerSecond)}</div><dl>
             <div><dt>{t("usage.speed.eligible")}</dt><dd>{number(detail.eligibleRequests)} / {number(detail.requests)}</dd></div>

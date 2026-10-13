@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import type { CSSProperties } from "react";
 import * as Popover from "@radix-ui/react-popover";
 import { CalendarBlank, ChartLineUp, SquaresFour, ChartBarHorizontal, X } from "@phosphor-icons/react";
@@ -13,6 +13,7 @@ import { formatTokenMillions } from "./format";
 import { TokenAmount } from "./TokenAmount";
 import { UsageAttribution } from "./UsageAttribution";
 import { UsageSpeedTrend } from "./UsageSpeedTrend";
+import { useUsageTimeInteraction } from "./useUsageTimeInteraction";
 import "./usage-charts.css";
 
 export function groupLabel(value: string, group: UsageGroup, unknown: string): string {
@@ -33,19 +34,8 @@ export function UsageCharts({ report, metric, group, chart, attribution, speed, 
   const [selected, setSelected] = useState("");
   const [daySelected, setDaySelected] = useState("");
   const [hidden, setHidden] = useState<string[]>([]);
-  const [detail, setDetail] = useState<{ bucket: UsageTimeBucket; day: boolean } | null>(null);
-  const pinned = useRef(false);
-  const detailTrigger = useRef<HTMLElement | null>(null);
-  const restoreDetailFocus = useRef(false);
-  const suppressDetailFocus = useRef(false);
-  const anchor = useRef({ getBoundingClientRect: () => new DOMRect() });
-  const showDetail = (bucket: UsageTimeBucket, rect: DOMRect, day = false) => {
-    detailTrigger.current = day ? dayButtons.current.get(bucket.key) ?? null : plot.current?.querySelector<HTMLElement>(".usage-bucket-selector") ?? null;
-    anchor.current = { getBoundingClientRect: () => rect };
-    setDetail({ bucket, day });
-  };
-  const closeDetail = () => { restoreDetailFocus.current = pinned.current || document.activeElement === detailTrigger.current; pinned.current = false; setDetail(null); };
-  useEffect(() => { pinned.current = false; restoreDetailFocus.current = false; setDetail(null); }, [report, timeView, speed, interactive]);
+  const interaction = useUsageTimeInteraction<{ bucket: UsageTimeBucket; day: boolean }>(report, interactive && !speed, timeView);
+  const { detail } = interaction;
   const hasBuckets = report.buckets.length > 0;
   const canvasWidth = useChartWidth(plot, hasBuckets && timeView === "trend" && !speed);
   const formatValue = (value: number | null) => value === null ? "—" : metric === "tokens" ? formatTokenMillions(language, value) : number(value, metric === "cost" ? { style: "currency", currency: "USD", currencyDisplay: "narrowSymbol", minimumFractionDigits: 2, maximumFractionDigits: 2 } : {});
@@ -80,10 +70,7 @@ export function UsageCharts({ report, metric, group, chart, attribution, speed, 
   const selectedIndex = report.buckets.findIndex(bucket => bucket.key === selected);
   const activeIndex = selectedIndex < 0 ? report.buckets.length - 1 : selectedIndex;
   const active = report.buckets[activeIndex];
-  const bucketAt = (clientX: number, target: HTMLDivElement) => {
-    const bounds = target.getBoundingClientRect();
-    return Math.max(0, Math.min(report.buckets.length - 1, Math.floor((clientX - bounds.left) / bounds.width * report.buckets.length)));
-  };
+  const selectBucket = (index: number) => { const bucket = report.buckets[index]!; setSelected(bucket.key); return { bucket, day: false }; };
   const ranked = allGroups.slice(0, 8); const remainder = allGroups.slice(8);
   const totalsValue = metricValue(report.totals, metric);
   const remainingValue = remainder.reduce<number | null>((sum, item) => { const value = metricValue(item.totals, metric); return value === null ? sum : (sum ?? 0) + value; }, null);
@@ -130,18 +117,7 @@ export function UsageCharts({ report, metric, group, chart, attribution, speed, 
           </svg>
           {active && <div className="usage-bucket-selector" role="slider" tabIndex={0} aria-label={t("usage.chart.selectInterval")} aria-orientation="horizontal" aria-valuemin={1} aria-valuemax={report.buckets.length} aria-valuenow={activeIndex + 1} aria-valuetext={selectedLabel(active)}
             style={{ left: `${left / width * 100}%`, right: `${right / width * 100}%`, bottom: `${bottom / height * 100}%`, top: `${top / height * 100}%` }}
-            onPointerMove={event => { if (event.pointerType === "mouse" || event.buttons) { const bucket = report.buckets[bucketAt(event.clientX, event.currentTarget)]!; setSelected(bucket.key); showDetail(bucket, new DOMRect(event.clientX, event.clientY, 0, 0)); } }}
-            onPointerLeave={() => { if (!pinned.current) setDetail(null); }}
-            onFocus={event => { if (suppressDetailFocus.current) { suppressDetailFocus.current = false; return; } if (!detail) showDetail(active, event.currentTarget.getBoundingClientRect()); }}
-            onPointerDown={event => { event.currentTarget.focus({ preventScroll: true }); const bucket = report.buckets[bucketAt(event.clientX, event.currentTarget)]!; setSelected(bucket.key); pinned.current = true; showDetail(bucket, new DOMRect(event.clientX, event.clientY, 0, 0)); }}
-            onKeyDown={event => {
-              if (["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Home", "End"].includes(event.key)) {
-                event.preventDefault();
-                const direction = event.key === "ArrowRight" || event.key === "ArrowUp" ? 1 : -1;
-                const index = event.key === "Home" ? 0 : event.key === "End" ? report.buckets.length - 1 : Math.max(0, Math.min(report.buckets.length - 1, activeIndex + direction));
-                setSelected(report.buckets[index]!.key); showDetail(report.buckets[index]!, event.currentTarget.getBoundingClientRect());
-              } else if (["Enter", " "].includes(event.key)) { event.preventDefault(); pinned.current = true; showDetail(active, event.currentTarget.getBoundingClientRect()); }
-            }} />}
+            {...interaction.sliderProps(report.buckets.length, activeIndex, selectBucket)} />}
         </div></div>
       </> : <div className="usage-empty">{t("usage.chart.noData")}</div> : <>
         <div className="usage-heatmap-scale"><span>{t("usage.chart.low")}</span>{[0, 1, 2, 3, 4].map(level => <i key={level} className={`usage-level-${level}`} />)}<span>{t("usage.chart.high")}</span><span>{formatValue(0)} – {formatValue(maximumDay)} {unit}</span>{report.days.some(item => metricValue(item.totals, metric) === null) && <span className="usage-calendar-missing-key"><i className="usage-level-missing" />{t("usage.chart.missing")}</span>}</div>
@@ -151,7 +127,9 @@ export function UsageCharts({ report, metric, group, chart, attribution, speed, 
             if (!item.bucket) return <i key={item.key} />;
             const bucket = item.bucket; const value = metricValue(bucket.totals, metric); const level = value === null ? "missing" : value === 0 ? 0 : Math.min(4, Math.max(1, Math.ceil(value / maximumDay * 4)));
             return <button key={item.key} ref={node => { if (node) dayButtons.current.set(item.key, node); else dayButtons.current.delete(item.key); }} className={`usage-level-${level}`} aria-label={selectedLabel(bucket, true)} aria-pressed={day?.key === item.key} tabIndex={day?.key === item.key ? 0 : -1}
-              onFocus={event => { if (suppressDetailFocus.current) { suppressDetailFocus.current = false; return; } setDaySelected(item.key); showDetail(bucket, event.currentTarget.getBoundingClientRect(), true); }} onMouseEnter={event => { setDaySelected(item.key); showDetail(bucket, event.currentTarget.getBoundingClientRect(), true); }} onMouseLeave={() => { if (!pinned.current) setDetail(null); }} onClick={event => { setDaySelected(item.key); pinned.current = true; showDetail(bucket, event.currentTarget.getBoundingClientRect(), true); }}
+              onFocus={event => { setDaySelected(item.key); interaction.focus({ bucket, day: true }, event.currentTarget); }}
+              onMouseEnter={event => { if (interaction.hover({ bucket, day: true }, event.currentTarget)) setDaySelected(item.key); }}
+              onMouseLeave={interaction.leave} onClick={event => { setDaySelected(item.key); interaction.pin({ bucket, day: true }, event.currentTarget); }}
               onKeyDown={event => {
                 if (!["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Home", "End"].includes(event.key)) return;
                 event.preventDefault();
@@ -171,11 +149,9 @@ export function UsageCharts({ report, metric, group, chart, attribution, speed, 
     </section><section className="usage-chart-section" aria-labelledby="usage-ranking-title"><div className="usage-section-title"><h2 id="usage-ranking-title">{t("usage.chart.ranking")}</h2><div><div className="usage-segmented usage-attribution-switch" role="group" aria-label={t("usage.chart.attributionView")}><button type="button" aria-pressed={attribution === "treemap"} onClick={() => onAttribution("treemap")} aria-label={t("usage.chart.treemap")} title={t("usage.chart.treemap")}><SquaresFour size={17} /></button><button type="button" aria-pressed={attribution === "bar"} onClick={() => onAttribution("bar")} aria-label={t("usage.chart.rankingBar")} title={t("usage.chart.rankingBar")}><ChartBarHorizontal size={17} /></button></div><span className="usage-ranking-unit">{t(`usage.group.${group}`)}{unit && ` · ${unit}`}</span><HelpPopover label={t("usage.chart.rankingHelp")} iconOnly><p>{t("usage.chart.rankingHelpText")}</p><dl className="usage-chart-coverage-list">{allGroups.filter(item => coverageText(item.totals)).map(item => <div key={item.key}><dt>{label(item.key)}</dt><dd>{coverageText(item.totals)}</dd></div>)}</dl></HelpPopover></div></div>
       {attribution === "treemap" ? <UsageAttribution items={attributionItems} total={totalsValue} onGroup={onGroup} formatValue={formatValue} /> : <div className="usage-ranking">{rankingItems.map(renderRanking)}{!ranked.length && <div className="usage-empty">{t("usage.chart.noData")}</div>}</div>}
     </section></div>
-    <Popover.Root open={!speed && interactive && detail !== null} onOpenChange={open => { if (!open) closeDetail(); }}>
-      <Popover.Anchor virtualRef={anchor} />
-      <Popover.Portal><Popover.Content className="usage-time-popover" side="top" align="center" sideOffset={14} collisionPadding={12} aria-label={t("usage.chart.intervalDetails")}
-        onOpenAutoFocus={event => event.preventDefault()} onCloseAutoFocus={event => { event.preventDefault(); if (restoreDetailFocus.current && detailTrigger.current?.isConnected && document.activeElement !== detailTrigger.current) { suppressDetailFocus.current = true; detailTrigger.current.focus({ preventScroll: true }); } }}
-        onInteractOutside={event => { if ((event.target as HTMLElement).closest(".usage-bucket-selector, .usage-heatmap")) event.preventDefault(); }}>
+    <Popover.Root {...interaction.rootProps}>
+      <Popover.Anchor virtualRef={interaction.anchor} />
+      <Popover.Portal><Popover.Content className="usage-time-popover" side="top" align="center" sideOffset={14} collisionPadding={12} aria-label={t("usage.chart.intervalDetails")} {...interaction.contentProps}>
         {detail && <><header><strong>{detail.day ? dayLabel(detail.bucket.key) : bucketLabel(detail.bucket)}</strong><Popover.Close className="icon-button" aria-label={t("common.closeNamed", { label: t("usage.chart.intervalDetails") })}><X size={16} /></Popover.Close></header>
           <div className="usage-time-total" title={metric === "tokens" && detail.bucket.totals.tokens !== null ? t("usage.tokens.exact", { count: detail.bucket.totals.tokens }) : undefined}>{formatValue(metricValue(detail.bucket.totals, metric))}</div>
           <dl>{detail.bucket.groups.map(item => <div key={item.key}><dt title={fullLabel(item.key)}>{label(item.key)}</dt><dd title={metric === "tokens" && item.totals.tokens !== null ? t("usage.tokens.exact", { count: item.totals.tokens }) : undefined}>{formatValue(metricValue(item.totals, metric))}</dd></div>)}</dl>
