@@ -146,7 +146,11 @@ test("指标、分组和时间粒度均复用小时汇总，空桶与未定时�
   const finite = compare(mixed, { from: "2026-01-02", to: "2026-01-02" }, rollup);
   assert.equal(finite.sessions.find(row => row.session.id === "undated")?.requestsTotal, 2);
   assert.equal(finite.sessions.find(row => row.session.id === "undated")?.totals.tokens, null);
-  assert.equal(finite.missingUsageSessions, 1);
+  assert.equal(finite.missingUsageSessions, 0);
+  assert.ok(!finite.sessions.some(row => row.session.id === "empty"));
+  const overflow = compare(mixed, { from: "2026-01-02", to: "2026-01-02", page: 62, pageSize: 20 }, rollup);
+  assert.equal(overflow.page, 1);
+  assert.ok(overflow.sessions.length > 0);
   assert.deepEqual(finite.facets, compare(mixed, {}, rollup).facets);
 });
 

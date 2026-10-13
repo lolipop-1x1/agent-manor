@@ -60,6 +60,7 @@ export interface ResourceOverviewQuery extends Omit<ResourceLocalQuery, "candida
 }
 export interface ResourceOverviewRow extends ResourceFavoriteProjection {
   identity: ResourceUsageIdentity;
+  description?: string;
   stats: ResourceUsageStats | null;
   clients: Client[];
   favorite: boolean;

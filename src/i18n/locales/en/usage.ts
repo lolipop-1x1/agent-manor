@@ -212,6 +212,7 @@ export default {
   "usage.sessions.title": "Session details",
   "usage.sessions.name": "Session",
   "usage.sessions.project": "Project / client",
+  "usage.sessions.noUsage": "No recorded request usage",
   "usage.sessions.time": "Last request time",
   "usage.sessions.open": "Open session",
   "usage.sessions.inspect": "Inspect requests",

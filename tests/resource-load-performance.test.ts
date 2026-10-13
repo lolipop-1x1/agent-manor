@@ -112,8 +112,9 @@ test("收藏、索引发布、资源刷新和统计范围变化不会返回旧�
   await service.overview({ kind: "skill", client: "claude" });
   const dated = await service.overview({ kind: "skill", from: "2090-01-01T00:00:00Z" });
   assert.equal(dated.stats?.successfulReads, 0);
-  await service.overview({ kind: "skill", lowSessions: 9 });
-  assert.equal(reads, 6);
+  const reclassified = await service.overview({ kind: "skill", lowSessions: 9 });
+  assert.deepEqual(reclassified.stats, published.stats);
+  assert.equal(reads, 5, "阈值只重新分类，不重读相同范围历史");
 }));
 
 test("收藏变化复用历史并同步别名、本地保护、地图与筛选计数", async () => fixture(async (service, library) => {
@@ -158,7 +159,7 @@ test("相同范围并发共享聚合，失败后可重试且范围缓存数量�
   const results = await Promise.all([service.overview({ kind: "mcp" }), service.overview({ kind: "mcp" })]);
   assert.deepEqual(results[0], results[1]);
   assert.equal(reads, 2);
-  for (let index = 1; index <= 12; index++) await service.overview({ kind: "mcp", lowSessions: index });
+  for (let index = 1; index <= 12; index++) await service.overview({ kind: "mcp", from: `2026-01-${String(index).padStart(2, "0")}T00:00:00Z` });
   const before = reads;
   await service.overview({ kind: "mcp" });
   assert.equal(reads, before + 1, "被淘汰的范围重新查询，不无限保留历史范围");

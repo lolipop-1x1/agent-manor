@@ -327,3 +327,32 @@ test("真正来源读取失败保留未知且只影响所属客户端，旧 revi
   assert.ok(result.resources.find(row => row.identity.name === "recorded")!.candidates.includes("low"));
   assert.equal(result.resources.find(row => row.identity.name === "recorded")!.partial, true);
 });
+
+test("Skill 描述复用本地来源，同名描述冲突时不择一，历史独有与 MCP 不补造描述", () => {
+  const withDescription = (body: string, description: string) => local("guide", body, { entries: [entry(body, "codex", { name: "guide", description })] });
+  const first = withDescription("body-a", "  An original skill description.  ");
+  const same = withDescription("body-b", "An original skill description.");
+  assert.equal(overview([historyRow("guide")], [first, same]).resources[0]!.description, "An original skill description.");
+  const conflict = withDescription("body-c", "A different skill description.");
+  assert.equal(overview([historyRow("guide")], [first, conflict]).resources[0]!.description, undefined);
+  assert.equal(overview([historyRow("history-only")]).resources[0]!.description, undefined);
+  const mcp = local("server", "mcp", { body: { ...first.body, id: "mcp", name: "server", kind: "mcp" },
+    entries: [entry("mcp", "codex", { name: "server", kind: "mcp", description: "This is not Skill metadata." })] });
+  assert.equal(buildResourceOverview(null, [mcp], { kind: "mcp" }, options).resources[0]!.description, undefined);
+});
+
+
+test("已有路径关联为历史别名补描述与本地详情，不改身份或重复使用统计", () => {
+  const recorded = historyRow("plugin:guide", { favoriteIds: ["origin:guide"], association: { state: "partial", entryIds: [], reason: "partial_link" } });
+  const body = local("guide", "body-guide", { historyIds: ["origin:guide"], entries: [entry("body-guide", "codex", { name: "guide", description: "Original guide description." })] });
+  const result = overview([recorded], [body]);
+  const alias = result.resources.find(row => row.identity.name === "plugin:guide")!;
+  assert.equal(alias.identity.id, recorded.identity.id);
+  assert.equal(alias.description, "Original guide description.");
+  assert.deepEqual(alias.localBodyIds, ["body-guide"]);
+  assert.strictEqual(alias.stats, recorded.stats);
+  assert.equal(result.stats!.events, 37);
+  const unlinked = overview([recorded], [{ ...body, historyIds: [] }]).resources.find(row => row.identity.name === "plugin:guide")!;
+  assert.equal(unlinked.description, undefined);
+  assert.deepEqual(unlinked.localBodyIds, []);
+});

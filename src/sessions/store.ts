@@ -72,6 +72,7 @@ export class SessionStore {
   private readonly profileSummaries = new Map<string, SessionProfile>();
   private readonly revisionUsageCounts = new Map<string, number>();
   private readonly overviewStatements = new Map<string, Database.Statement>();
+  private resourceGapSourceClients?: Map<string, Set<Client>>;
   private readonly overviewMessageTable: string;
   private readonly replyMessageTable: string;
   private statusMetadata?: Pick<SessionIndexStatus, "version" | "sessionCount" | "sourceCount" | "projects">;
@@ -311,6 +312,7 @@ export class SessionStore {
   }
 
   finishRevision(id: string, meta: SessionSourceMeta): void {
+    this.resourceGapSourceClients = undefined;
     this.database.transaction(() => {
       const counts = this.database.prepare("SELECT COUNT(*) AS messages,COUNT(DISTINCT CASE WHEN kind='user' THEN turn_id END) AS turns FROM session_messages WHERE revision=?").get(id) as { messages: number; turns: number };
       const summary = sessionTitle({ ...meta, messageCount: counts.messages, turnCount: counts.turns });
@@ -320,9 +322,10 @@ export class SessionStore {
     }).immediate();
   }
 
-  removeRevision(id: string): void { this.database.prepare("DELETE FROM session_revisions WHERE id=?").run(id); }
+  removeRevision(id: string): void { this.resourceGapSourceClients = undefined; this.database.prepare("DELETE FROM session_revisions WHERE id=?").run(id); }
 
   private removeUnpublishedRevisions(): void {
+    this.resourceGapSourceClients = undefined;
     this.database.prepare("DELETE FROM session_revisions WHERE id NOT IN (SELECT revision FROM session_version_sources)").run();
   }
 
@@ -574,14 +577,17 @@ export class SessionStore {
     })();
     const allGaps = revision === undefined ? JSON.parse((this.overviewStatement("SELECT gaps FROM session_versions WHERE id=?").get(version) as { gaps: string }).gaps) as Gap[] : [];
     const sourceIds = [...new Set(allGaps.flatMap(gap => gap.sourceId ?? []))];
-    const sourceClients = new Map<string, Set<Client>>();
+    const sourceClients = this.resourceGapSourceClients ?? new Map<string, Set<Client>>();
     if (sourceIds.length) {
-      const wanted = new Set(sourceIds);
-      const records = this.overviewStatement("SELECT DISTINCT json_extract(json,'$.sourceId') AS source_id,client FROM session_revisions").all() as { source_id: string; client: Client }[];
-      for (const record of records) if (wanted.has(record.source_id)) {
-        let related = sourceClients.get(record.source_id);
-        if (!related) { related = new Set(); sourceClients.set(record.source_id, related); }
-        related.add(record.client);
+      // 来源归属只随修订元数据变化，不在每个详情请求中重复解析全部修订 JSON。
+      if (!this.resourceGapSourceClients) {
+        const records = this.overviewStatement("SELECT DISTINCT json_extract(json,'$.sourceId') AS source_id,client FROM session_revisions").all() as { source_id: string; client: Client }[];
+        for (const record of records) if (record.source_id) {
+          let related = sourceClients.get(record.source_id);
+          if (!related) { related = new Set(); sourceClients.set(record.source_id, related); }
+          related.add(record.client);
+        }
+        this.resourceGapSourceClients = sourceClients;
       }
       // 首次发现即失败的来源没有修订；公开原生身份的客户端前缀仍可确认归属。
       for (const sourceId of sourceIds) if (!sourceClients.has(sourceId)) {

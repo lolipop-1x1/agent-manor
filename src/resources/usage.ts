@@ -371,9 +371,9 @@ function trends(map: Map<string, Accumulator>): ResourceUsageDetail["trend"] {
 }
 
 /** 日期趋势沿用本机时区；无有效事件时间的记录只进入缺失数量。 */
-export function resourceUsageDetail(store: SessionStore, id: string, query: ResourceUsageQuery = {}, entries: readonly ResourceAssociationEntry[] = [], favorites: ReadonlySet<string> = new Set()): ResourceUsageDetail {
+export function resourceUsageDetail(store: SessionStore, id: string, query: ResourceUsageQuery = {}, entries: readonly ResourceAssociationEntry[] = [], favorites: ReadonlySet<string> = new Set(), knownIdentity?: ResourceUsageIdentity): ResourceUsageDetail {
   const range = bounds(query);
-  const identity = findIdentity(store, id, query);
+  const identity = knownIdentity?.id === id ? knownIdentity : findIdentity(store, id, query);
   const stream = store.resourceEvents(query, identity);
   const resource = bucket(identity);
   const tools = new Map<string, Accumulator>();
@@ -391,9 +391,9 @@ export function resourceUsageDetail(store: SessionStore, id: string, query: Reso
 }
 
 /** 证据分页只缓存当前页；总数与排行共享筛选和事件口径。 */
-export function resourceUsageEvidence(store: SessionStore, id: string, query: ResourceUsageEvidenceQuery = {}): ResourceUsageEvidenceResult {
+export function resourceUsageEvidence(store: SessionStore, id: string, query: ResourceUsageEvidenceQuery = {}, knownIdentity?: ResourceUsageIdentity): ResourceUsageEvidenceResult {
   const range = bounds(query);
-  const identity = findIdentity(store, id, query);
+  const identity = knownIdentity?.id === id ? knownIdentity : findIdentity(store, id, query);
   const stream = store.resourceEvents(query, identity);
   const { page, pageSize } = paging(query);
   const events: ResourceUsageEvent[] = [];

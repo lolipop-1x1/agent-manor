@@ -153,6 +153,8 @@ function select(rollup: UsageRollup, requested: UsageQuery, pricing: PricingStat
   let missingUsageSessions = 0;
   for (const [id, target] of targets) {
     const session = sessions.get(id)!, missing = !hasUsage.has(id);
+    // 无请求事实的会话无法归属有限日期范围，仍可在全部历史查看。
+    if (missing && (query.from || query.to)) continue;
     if (missing && (!includes("unknown", query.models, query.excludeModels) || !matchesCoverage("missing", "missing", query))) continue;
     if (!missing && !target.dated.length && !target.undated.length) continue;
     const included = !query.from && !query.to ? [...target.dated, ...target.undated] : target.dated;
@@ -200,7 +202,7 @@ export function buildUsageRollupReport(rollup: UsageRollup, requested: UsageQuer
   }
   buckets.sort((left, right) => query.interval === "hour" ? Date.parse(left.key) - Date.parse(right.key) : left.key.localeCompare(right.key));
   const { configuration: _configuration, prices: _prices, historicalPrices: _historicalPrices, ...status } = pricing;
-  const page = query.page!, pageSize = query.pageSize!;
+  const pageSize = query.pageSize!, page = Math.min(query.page!, Math.max(1, Math.ceil(rows.length / pageSize)));
   const selectedProjects = new Set<string>(), selectedModels = new Set<string>();
   for (const cell of cells) {
     const project = sessions.get(cell.sessionId)!.project;

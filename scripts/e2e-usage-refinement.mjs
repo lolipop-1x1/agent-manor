@@ -49,7 +49,7 @@ try {
     const tinyIndex = await tiles.evaluateAll(elements => elements.findIndex(element => element.getBoundingClientRect().width < 38 || element.getBoundingClientRect().height < 28));
     ensure(tinyIndex >= 0, "合成样本缺少微小方块");
     const tiny = tiles.nth(tinyIndex), fullLabel = await tiny.getAttribute("aria-label");
-    await tiny.hover(); const tooltip = page.locator(".usage-attribution-tooltip"); await page.waitForTimeout(150); ensure(await tooltip.count() === 1, `悬浮未打开：${JSON.stringify(await tiny.boundingBox())} ${fullLabel}`);
+    await tiny.hover(); const tooltip = page.locator(".usage-attribution-tooltip"); await tooltip.waitFor({ timeout: 3000 }); ensure(await tooltip.count() === 1, `悬浮未打开：${JSON.stringify(await tiny.boundingBox())} ${fullLabel}`);
     ensure((await tooltip.innerText()).startsWith(fullLabel), "小方块悬浮信息不完整");
     ensure(fullLabel.includes("$") && fullLabel.includes("%"), "悬浮缺少金额与占比");
     await page.mouse.move(0, 0); await tiny.press("Shift+Tab"); await page.keyboard.press("Tab"); await page.locator(".usage-attribution-tooltip").waitFor({ timeout: 3000 });
@@ -81,11 +81,21 @@ try {
       await dialog.getByRole("button", { name: header, exact: true }).click(); ensure(await dialog.locator("th[aria-sort='ascending']").innerText() === header, `表头不可排序：${header}`);
     }
     await dialog.getByRole("button", { name: "缓存写入单价", exact: true }).press("Enter"); ensure((await names())[0] === "rate-24", "键盘未切换排序");
+    const priceRow = dialog.locator("tbody tr").first();
+    ensure(await priceRow.locator("td:nth-child(2) .usage-price-target .help-trigger").count() === 1, "价格图标没有跟随定价依据");
+    ensure(await priceRow.locator("td").evaluateAll(cells => cells.every(cell => getComputedStyle(cell).display === "table-cell" && getComputedStyle(cell).verticalAlign === "middle")), "价格表单元格对齐不一致");
+    await priceRow.getByRole("button", { name: "查看价格规则", exact: true }).click();
+    const info = dialog.locator(".help-popover"); await info.waitFor();
+    const inside = await info.evaluate(el => { const a = el.getBoundingClientRect(), b = el.closest(".pricing-workspace").getBoundingClientRect(); return a.left >= b.left && a.right <= b.right && a.top >= b.top && a.bottom <= b.bottom; });
+    ensure(inside, "价格帮助弹层被对话框裁剪");
+    await page.keyboard.press("Escape");
+    ensure(await priceRow.getByRole("button", { name: "查看价格规则", exact: true }).evaluate(el => el === document.activeElement), "关闭价格规则没有恢复焦点");
     await page.screenshot({ path: `${options.artifacts}/zh-price-filter-sort.png` });
     await button("关闭模型价格").click(); await button("外观").click(); await page.getByRole("combobox", { name: "显示模式", exact: true }).click(); await page.getByRole("option", { name: "深色", exact: true }).click(); await page.keyboard.press("Escape");
     await button("显示语言").click(); await page.getByRole("menuitemradio", { name: "English", exact: true }).click();
     await page.getByRole("heading", { name: "Usage", exact: true }).waitFor(); await page.setViewportSize({ width: 390, height: 844 });
-    await tiles.nth(0).press("Shift+Tab"); await page.keyboard.press("Tab"); await page.locator(".usage-attribution-tooltip").waitFor({ timeout: 3000 });
+    await page.locator(".usage-attribution-map").scrollIntoViewIfNeeded(); await page.mouse.move(0, 0);
+    await tiles.nth(0).focus(); await page.locator(".usage-attribution-tooltip").waitFor({ timeout: 3000 });
     const bounds = await page.locator(".usage-attribution-tooltip").boundingBox(); ensure(bounds.x >= 0 && bounds.x + bounds.width <= 390, "窄屏归因浮层越界");
     await page.keyboard.press("Escape"); await button("Manage model prices").click();
     await page.getByRole("combobox", { name: "Pricing status", exact: true }).click(); await page.getByRole("option", { name: "Unmatched", exact: true }).click();

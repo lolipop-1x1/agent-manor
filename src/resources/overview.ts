@@ -3,6 +3,7 @@ import type { ResourceUsageIdentity, ResourceUsageResult, ResourceUsageRow, Reso
 import type { ResourceLocalRow, ResourceOverviewCandidate, ResourceOverviewQuery, ResourceOverviewResult, ResourceOverviewRow } from "../resource-service-contracts.js";
 import { emptyResourceUsageStats, resourceOverviewIdentity } from "./usage.js";
 import { resourceGapRelevant } from "./coverage.js";
+import { skillDescription } from "./descriptions.js";
 import { resourceUsageThresholdMatches } from "./classification.js";
 
 interface OverviewBucket {
@@ -30,7 +31,7 @@ export function resourceOverviewIncomplete(history: ResourceUsageResult | null, 
 }
 
 function rowOf(bucket: OverviewBucket, history: ResourceUsageResult | null, query: ResourceOverviewQuery,
-  favorites: ReadonlySet<string>, now: number): ResourceOverviewRow {
+  favorites: ReadonlySet<string>, now: number, linked: readonly ResourceLocalRow[]): ResourceOverviewRow {
   const { identity, local } = bucket;
   const clients = [...new Set([...(bucket.history?.clients ?? []), ...local.flatMap(row => row.entries.map(entry => entry.client))])].sort();
   const favorite = Boolean(bucket.history?.favorite) || favorites.has(identity.id)
@@ -61,9 +62,12 @@ function rowOf(bucket: OverviewBucket, history: ResourceUsageResult | null, quer
   const thresholdMatches = resourceUsageThresholdMatches(stats, query, now);
   if (observation === "used" && thresholdMatches.low) rowCandidates.push("low");
   if (observation === "used" && thresholdMatches.old) rowCandidates.push("old");
-  return { identity, stats, clients, favorite, favoriteIds, localFavoriteIds, protectedByConfiguration, protected: protectedResource, observation, candidates: rowCandidates,
+  // 已有路径关联只补本地展示元数据，不改变历史身份或累加投入。
+  const metadataLocal = [...new Map([...local, ...linked].map(row => [row.body.id, row])).values()];
+  const description = skillDescription(metadataLocal.flatMap(row => row.entries));
+  return { identity, ...(description ? { description } : {}), stats, clients, favorite, favoriteIds, localFavoriteIds, protectedByConfiguration, protected: protectedResource, observation, candidates: rowCandidates,
     partial: incomplete || local.some(row => row.partial), usageUnassociated, missingTimeEvents,
-    localBodyIds: [...new Set(local.map(row => row.body.id))].sort(), hasHistory: Boolean(bucket.history) };
+    localBodyIds: metadataLocal.map(row => row.body.id).sort(), hasHistory: Boolean(bucket.history) };
 }
 
 function matches(bucket: OverviewBucket, q: string): boolean {
@@ -117,9 +121,13 @@ export function buildResourceOverview(history: ResourceUsageResult | null, local
   const now = options.now ?? Date.now();
   const counts: ResourceOverviewResult["counts"] = { all: 0, used: 0, unused: 0, low: 0, old: 0, review: 0, favorite: 0 };
   const rows: ResourceOverviewRow[] = [];
+  const byHistoryId = new Map<string, ResourceLocalRow[]>();
+  for (const row of localRows) for (const id of row.historyIds) {
+    const linked = byHistoryId.get(id) ?? []; linked.push(row); byHistoryId.set(id, linked);
+  }
   for (const bucket of buckets.values()) {
     if (q && !matches(bucket, q)) continue;
-    const row = rowOf(bucket, history, query, favorites, now);
+    const row = rowOf(bucket, history, query, favorites, now, (bucket.history?.favoriteIds ?? []).flatMap(id => byHistoryId.get(id) ?? []));
     for (const candidate of candidates) if (candidate === "all" || row.candidates.includes(candidate)) counts[candidate] += 1;
     if (query.candidate && query.candidate !== "all" && query.candidate !== "review" && !row.candidates.includes(query.candidate)
       || query.favorite && !row.candidates.includes("favorite")) continue;

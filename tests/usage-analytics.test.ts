@@ -92,16 +92,18 @@ test("缺时间保留独立用量，无用量会话可检查且不补造请求�
   assert.equal(finite.undated.requests, 2);
   assert.equal(finite.undated.tokens, 240);
   assert.equal(finite.undated.missingTimeRequests, 2);
-  assert.equal(finite.totalSessions, 3);
-  assert.equal(finite.missingUsageSessions, 1);
+  assert.equal(finite.totalSessions, 2);
+  assert.equal(finite.missingUsageSessions, 0);
+  assert.ok(!finite.sessions.some(row => row.session.id === "empty"));
   const undated = finite.sessions.find(row => row.session.id === "undated")!;
   assert.equal(undated.totals.tokens, null);
   assert.equal(undated.undated?.tokens, 240);
-  const empty = finite.sessions.find(row => row.session.id === "empty")!;
+  const all = report(input);
+  assert.equal(all.missingUsageSessions, 1);
+  const empty = all.sessions.find(row => row.session.id === "empty")!;
   assert.equal(empty.totals.tokens, null);
   assert.equal(empty.totals.estimatedCost, null);
   assert.equal(empty.requestsTotal, 0);
-  const all = report(input);
   assert.equal(all.totals.requests, 3);
   assert.equal(all.totals.tokens, 360);
   assert.equal(all.buckets.reduce((sum, bucket) => sum + bucket.totals.requests, 0), 1);
@@ -326,4 +328,15 @@ test("全局索引只读取有效发布副本、批量父子关系与非复制�
     assert.equal(store.usageSource(first).requests.length, 2);
     assert.throws(() => store.usageSource("missing-version"), /不存在/);
   } finally { store.close(); await rm(directory, { recursive: true, force: true }); }
+});
+
+
+test("有限范围排除无用量会话后，旧链接超出页数时回到末页且指标不变", () => {
+  const input = source([session("known"), session("empty")], [["known", usage("known")]]);
+  const query = { from: "2026-01-01", to: "2026-01-01", pageSize: 20 };
+  const first = report(input, query), overflow = report(input, { ...query, page: 62 });
+  assert.equal(overflow.page, 1);
+  assert.deepEqual(overflow.sessions, first.sessions);
+  assert.deepEqual(overflow.totals, first.totals);
+  assert.equal(report(source([], []), { ...query, page: 62 }).page, 1);
 });

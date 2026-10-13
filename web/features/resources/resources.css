@@ -83,7 +83,7 @@
 .resource-overview-table th:nth-child(2), .resource-overview-table td:nth-child(2), .resource-overview-table th:last-child, .resource-overview-table td:last-child { text-align: left; }
 .resource-overview-table thead button { display: inline-flex; align-items: center; gap: 5px; padding: 4px 0; border: 0; background: transparent; color: inherit; font: inherit; }
 .resource-overview-table thead [aria-sort="ascending"], .resource-overview-table thead [aria-sort="descending"] { color: var(--accent); }
-.resource-overview-table tbody th { background: transparent; }
+.resource-overview-table tbody th { background: transparent; position: static; }
 .resource-overview-row { cursor: pointer; }
 .resource-overview-row:hover { background: var(--surface-alt); }
 .resource-overview-row.is-selected { background: var(--accent-soft); }
@@ -257,3 +257,9 @@
   .resource-list-toolbar { flex-wrap: wrap; }
   .resource-list-toolbar .resource-search { min-width: 150px; }
 }
+
+.resource-overview-table:has(.resource-description-preview) th:first-child { width: 32%; min-width: 260px; }
+.resource-description-preview { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; margin: 5px 0 0; color: var(--muted); font-size: 12px; font-weight: 400; line-height: 1.6; overflow-wrap: anywhere; }
+.resource-description-preview:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; border-radius: 3px; }
+.resource-description-tooltip { max-width: min(480px, calc(100vw - 24px)); max-height: min(360px, var(--radix-tooltip-content-available-height)); overflow: auto; white-space: pre-wrap; font-size: 12px; }
+.resource-description-full { margin: 12px 0 18px; font-size: 13px; font-weight: 400; line-height: 1.7; white-space: pre-wrap; overflow-wrap: anywhere; }

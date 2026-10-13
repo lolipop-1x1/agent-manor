@@ -220,6 +220,8 @@ function select(source: UsageSource, requested: UsageQuery, pricing: PricingStat
   for (const [id, target] of bySession) {
     const session = sessions.get(id)!;
     const missing = !hasUsage.has(id);
+    // 无请求事实的会话无法归属有限日期范围，仍可在全部历史查看。
+    if (missing && (query.from || query.to)) continue;
     if (missing && (!includes(UNKNOWN, query.models, query.excludeModels) || !matchesCoverage("missing", "missing", query))) continue;
     if (!missing && !target.dated.length && !target.undated.length) continue;
     const included = !query.from && !query.to ? [...target.dated, ...target.undated] : target.dated;
@@ -335,7 +337,7 @@ export function buildUsageReport(source: UsageSource, query: UsageQuery, pricing
   }
   buckets.sort((left, right) => selected.query.interval === "hour" ? Date.parse(left.key) - Date.parse(right.key) : left.key.localeCompare(right.key));
   const { configuration: _configuration, prices: _prices, historicalPrices: _historicalPrices, ...status } = pricing;
-  const pageSize = selected.query.pageSize!, page = selected.query.page!;
+  const pageSize = selected.query.pageSize!, page = Math.min(selected.query.page!, Math.max(1, Math.ceil(selected.rows.length / pageSize)));
   const projects = new Set<string>(), models = new Set<string>();
   for (const request of selected.requests) {
     if (request.session.project !== undefined) projects.add(request.session.project);

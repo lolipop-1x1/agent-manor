@@ -63,7 +63,7 @@ export class ResourceService {
     const generation = JSON.stringify([scope.version, inventory.observedAt]);
     if (this.overviewGeneration !== generation) { this.overviewCache.clear(); this.overviewGeneration = generation; }
     // 状态、排序和分页只改变视野；同一索引与盘点范围复用全量聚合。
-    const key = JSON.stringify([scope, query.lowSessions, query.inactiveDays]);
+    const key = JSON.stringify(scope);
     const localQuery = { ...scope, lowSessions: query.lowSessions, inactiveDays: query.inactiveDays };
     const cached = this.overviewCache.get(key);
     const value = cached ?? Promise.resolve().then(() => overviewResourceUsage(this.library, scope, inventory.entries, new Set()));
@@ -97,7 +97,7 @@ export class ResourceService {
       observedAt: local.inventory.observedAt, partial: local.partial, favorites: new Set(this.manager.favorites()), unpaginated: true });
     const target = all.resources.find(row => row.identity.id === id);
     if (target) return { resource: target, history: target.hasHistory ? resourceUsageDetail(this.library, id, { ...query, kind, project: undefined },
-      local.inventory.entries, new Set(this.manager.favorites())) : null, local: local.rows.filter(row => target.localBodyIds.includes(row.body.id)) };
+      local.inventory.entries, new Set(this.manager.favorites()), target.identity) : null, local: local.rows.filter(row => target.localBodyIds.includes(row.body.id)) };
     const legacy = resourceUsageDetail(this.library, id, { ...query, kind, project: undefined }, local.inventory.entries, new Set(this.manager.favorites()));
     const bodyIds = new Set(local.inventory.entries.filter(entry => legacy.resource.association.entryIds.includes(entry.id)).map(entry => entry.bodyId));
     return { resource: { identity: legacy.resource.identity, stats: legacy.resource.stats.events ? legacy.resource.stats : null, clients: legacy.resource.clients,
@@ -110,7 +110,14 @@ export class ResourceService {
   async usageDetail(id: string, query: ResourceUsageQuery) {
     return { ...resourceUsageDetail(this.library, id, query, (await this.inventory()).entries, new Set(this.manager.favorites())), favoriteIds: this.manager.favorites() };
   }
-  evidence(id: string, query: Parameters<typeof resourceUsageEvidence>[2]) { return resourceUsageEvidence(this.library, id, query); }
+  async evidence(id: string, query: Parameters<typeof resourceUsageEvidence>[2] = {}) {
+    // 只复用已经取得的同版身份；单独查证据不触发全量总览聚合。
+    const scope = { kind: query.kind ?? "skill", client: query.client, from: query.from, to: query.to,
+      version: query.version ?? this.library.currentVersion() };
+    const cached = this.overviewCache.get(JSON.stringify(scope));
+    const identity = (await cached)?.history?.resources.find(row => row.identity.id === id)?.identity;
+    return resourceUsageEvidence(this.library, id, query, identity);
+  }
 
   setFavorite(id: string, value: boolean) {
     // 名称汇总继承旧历史来源收藏；取消时同步取消这些历史别名，保留本地本体收藏。

@@ -278,7 +278,7 @@ test("近30天查询只等必要修订，旧会话近期请求和缺时间证据
     assert.equal(report.undated.requests, 1);
     assert.ok(report.facets.models.includes("historical-model-9"));
     assert.ok(report.facets.models.includes("literal:unknown") && report.facets.models.includes("literal:literal:unknown"));
-    assert.equal(report.missingUsageSessions, 1);
+    assert.equal(report.missingUsageSessions, 0);
     // 后台尚未齐时订阅历史范围，不能把近期部分组合当成全量 family 缓存。
     const historicalQuery = { ...query, from: "2020-06-01", to: "2020-06-01", timezone: query.timezone };
     const historicalResult = manager.report(historicalQuery);

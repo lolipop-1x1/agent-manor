@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type MouseEvent, type ReactNode, type RefObject } from "react";
 import * as Dialog from "@radix-ui/react-dialog";
+import * as Tooltip from "@radix-ui/react-tooltip";
 import { ArrowClockwise, ArrowSquareOut, CaretLeft, CaretRight, ClockCounterClockwise, Funnel, List, MagnifyingGlass, MapTrifold, Plus, Prohibit, Star, Trash, X } from "@phosphor-icons/react";
 import { CLIENTS, type Client } from "../../../src/clients";
 import type { ResourceKind, ResourceUsageDetail, ResourceUsageDistribution, ResourceUsageEvidenceResult, ResourceUsageStats, ResourceUsageTrend } from "../../../src/resource-contracts";
@@ -14,6 +15,7 @@ import { ProjectPicker } from "../../shared/ui/ProjectPicker";
 import { ResourcePagination } from "../../shared/ui/ResourcePagination";
 import { ResourceMap } from "./ResourceMap";
 import { normalizeResourceRouteParams } from "./resource-usage-state";
+import { skillDescription, skillDescriptions } from "../../../src/resources/descriptions";
 import { applyResourceFavorites } from "../../../src/resources/favorites";
 import { localFavoriteRow, mapFavorites, overviewFavorites, pendingFavoriteIds, type PendingFavorite } from "./resource-favorites";
 import { ResizableWorkspace } from "../../shared/layout/ResizableWorkspace";
@@ -184,7 +186,7 @@ function OverviewTable({ rows, route, onSort, onSelect, onFavorite, onManage, fa
   return <div className="resource-overview-scroll"><table className="resource-overview-table" aria-label={t("resources.overview", { kind: route.kind === "skill" ? t("resources.kind.skill") : t("resources.kind.mcp") })}>
     <thead><tr>{heading(columns[0]!)}<th scope="col">{t("resources.agent.involved")}</th>{columns.slice(1).map(heading)}<th scope="col">{t("resources.column.management")}</th></tr></thead>
     <tbody>{rows.map(row => <tr className={`resource-overview-row${route.id === row.identity.id ? " is-selected" : ""}`} key={row.identity.id} onClick={event => selectResourceRow(event, row.identity.id, onSelect)}>
-      <th scope="row"><div className="resource-overview-name"><button aria-label={t("resources.viewUsage", { name: messageText(row.identity.nameDescriptor, row.identity.name) })} onClick={() => onSelect(row.identity.id)}>{messageText(row.identity.nameDescriptor, row.identity.name)}</button><FavoriteButton name={messageText(row.identity.nameDescriptor, row.identity.name)} favorite={row.favorite} disabled={favoritePending.has(row.identity.id)} onClick={() => onFavorite(row.identity.id, row.favorite)} /></div></th>
+      <th scope="row"><div className="resource-overview-name"><button aria-label={t("resources.viewUsage", { name: messageText(row.identity.nameDescriptor, row.identity.name) })} onClick={() => onSelect(row.identity.id)}>{messageText(row.identity.nameDescriptor, row.identity.name)}</button><FavoriteButton name={messageText(row.identity.nameDescriptor, row.identity.name)} favorite={row.favorite} disabled={favoritePending.has(row.identity.id)} onClick={() => onFavorite(row.identity.id, row.favorite)} /></div><SkillDescription description={row.description} /></th>
       <td className="resource-overview-agents" title={formatList(row.clients.map(clientLabel))}>{usageAgentLabel(row)}</td>
       <td>{row.stats ? fmt(row.stats.events) : "—"}</td>
       <td>{row.stats ? fmt(row.stats.sessions) : "—"}</td>
@@ -192,6 +194,13 @@ function OverviewTable({ rows, route, onSort, onSelect, onFavorite, onManage, fa
       <td><button className="button resource-manage" aria-label={t("resources.management.resource", { name: messageText(row.identity.nameDescriptor, row.identity.name) })} data-manage-resource={row.identity.id} onClick={() => onManage(row)}>{t("resources.management.manage")}</button></td>
     </tr>)}</tbody>
   </table></div>;
+}
+function SkillDescription({ description }: { description?: string }) {
+  if (!description) return null;
+  return <Tooltip.Root><Tooltip.Trigger asChild><p tabIndex={0} className="resource-description-preview">{description}</p></Tooltip.Trigger><Tooltip.Portal><Tooltip.Content className="tooltip resource-description-tooltip" side="bottom" align="start" sideOffset={6} collisionPadding={12}>{description}</Tooltip.Content></Tooltip.Portal></Tooltip.Root>;
+}
+function SkillDescriptions({ entries }: { entries: ResourceInventoryEntry[] }) {
+  return <>{skillDescriptions(entries).map(description => <p className="resource-description-full" key={description}>{description}</p>)}</>;
 }
 function Stats({ stats, kind }: { stats: ResourceUsageStats | null; kind: ResourceKind }) {
   const { percent } = useI18n();
@@ -624,6 +633,7 @@ export default function Resources({ active, onSession }: { active: boolean; onSe
   const overviewLocal = overviewDetail && <section className="resource-detail-section resource-local-entries"><header><h3>{t("resources.detail.bodies")}</h3><span>{t("resources.bodyCount", { count: overviewDetail.local.length })}</span></header>
     {overviewDetail.local.length ? overviewDetail.local.map((row, index) => <div className="resource-entry" key={row.body.id}>
       <header><strong>{row.body.name}</strong><FavoriteButton name={t("resources.bodyName", { name: row.body.name, index: index + 1 })} favorite={!!status?.favoriteIds.includes(row.body.id)} disabled={favoritePending.has(row.body.id) || !status} onClick={() => void favorite(row.body.id)} /></header>
+      <SkillDescriptions entries={row.entries} />
       {row.entries.map(entry => <Entry key={entry.id} entry={entry} onManage={input => void showManagement(input)} />)}
       <p className="resource-path">{t("resources.detail.realTarget")}: {row.body.targetPath ?? row.entries[0]?.entryPath ?? t("resources.detail.bodyUnknown")}</p>
       <div className="resource-tags"><span>{formatList([...new Set(row.entries.map(entry => clientLabel(entry.client)))]) || t("resources.client.notRecorded")}</span><span>{t("resources.entryCount", { count: row.entries.length })}</span><span className={row.observation === "recorded" ? "" : "is-warning"}>{observationLabel(row)}</span></div>
@@ -665,6 +675,7 @@ export default function Resources({ active, onSession }: { active: boolean; onSe
       <details className="resource-usage-summary"><summary>{t("resources.detail.usageSummary")}</summary><Stats stats={overviewDetail.resource.stats} kind={route.kind} /></details>
     </> : localDetail ? <>
       <div className="resource-detail-heading"><div><span>{route.kind === "skill" ? t("resources.detail.localSkill") : t("resources.detail.localMcp")}</span><h2>{localDetail.row.body.name}</h2></div><FavoriteButton name={localDetail.row.body.name} favorite={!!status?.favoriteIds.includes(route.id)} disabled={favoritePending.has(route.id) || !status} onClick={() => void favorite(route.id)} /></div>
+      <SkillDescriptions entries={localDetail.row.entries} />
       {detailManagement}
       <div className="resource-tags"><span className={localDetail.row.observation !== "recorded" ? "is-warning" : ""}>{observationLabel(localDetail.row)}</span></div>
       <section className="resource-detail-section"><header><h3>{t("resources.detail.clientEntries")}</h3><span>{t("resources.entryCount", { count: localDetail.row.entries.length })}</span></header>{localDetail.row.entries.map(entry => <Entry key={entry.id} entry={entry} onManage={input => void showManagement(input)} />)}</section>
@@ -735,7 +746,7 @@ export default function Resources({ active, onSession }: { active: boolean; onSe
           {listLoading && !hasListData ? <div role="status" className="resource-loading">{t("resources.loading.resources")}</div> : invalidTime ? null : mapView ? map && <ResourceMap data={map} selected={route.id} onSelect={select} zeroPage={route.zeroPage} zeroSize={route.zeroSize} onZeroPage={zeroPage => update({ zeroPage })} onZeroSize={zeroSize => update({ zeroSize, zeroPage: 1 })} /> : overviewRanking ? overview?.resources.length ? <OverviewTable rows={overview.resources} route={route} onSort={sort} onSelect={select} onManage={row => void openEntries(row.identity.id, messageText(row.identity.nameDescriptor, row.identity.name))} onFavorite={(id, current) => void favorite(id, current)} favoritePending={favoritePending} /> : <ResourceEmpty>{t("resources.empty.kind", { kind: route.kind === "skill" ? t("resources.kind.skill") : t("resources.kind.mcp") })}</ResourceEmpty> : route.tab === "local" ? local?.rows.length ? <div className="resource-overview-scroll"><table className="resource-overview-table resource-local-table" aria-label={t("resources.tab.local")}>
             <thead><tr><th scope="col">{t("resources.sort.name")}</th><th scope="col">{t("resources.client.label")}</th><th scope="col">{t("resources.facts.scope")}</th><th scope="col">{t("resources.detail.clientEntries")}</th><th scope="col">{t("resources.detail.observation")}</th></tr></thead>
             <tbody>{local.rows.map(row => <tr className={`resource-overview-row${route.id === row.body.id ? " is-selected" : ""}`} key={row.body.id} onClick={event => selectResourceRow(event, row.body.id, select)}>
-              <th scope="row"><div className="resource-overview-name"><button onClick={() => select(row.body.id)} aria-label={t("resources.viewLocal", { name: row.body.name })}>{row.body.name}</button><FavoriteButton name={row.body.name} favorite={!!status?.favoriteIds.includes(row.body.id)} disabled={favoritePending.has(row.body.id) || !status} onClick={() => void favorite(row.body.id)} /></div><div className="resource-row-subtitle" title={row.body.targetPath ?? row.entries[0]?.entryPath}>{row.body.targetPath ?? row.entries[0]?.entryPath}</div></th>
+              <th scope="row"><div className="resource-overview-name"><button onClick={() => select(row.body.id)} aria-label={t("resources.viewLocal", { name: row.body.name })}>{row.body.name}</button><FavoriteButton name={row.body.name} favorite={!!status?.favoriteIds.includes(row.body.id)} disabled={favoritePending.has(row.body.id) || !status} onClick={() => void favorite(row.body.id)} /></div><SkillDescription description={skillDescription(row.entries)} /><div className="resource-row-subtitle" title={row.body.targetPath ?? row.entries[0]?.entryPath}>{row.body.targetPath ?? row.entries[0]?.entryPath}</div></th>
               <td>{formatList([...new Set(row.entries.map(entry => clientLabel(entry.client)))])}</td>
               <td>{formatList([...new Set(row.entries.map(entry => t(entry.scope === "user" ? "resources.scope.user" : "resources.scope.project")))])}</td>
               <td>{t("resources.entryCount", { count: row.entries.length })}</td>

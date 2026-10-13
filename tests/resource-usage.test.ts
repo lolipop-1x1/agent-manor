@@ -609,3 +609,35 @@ test("首次发现即读取失败的原生来源按客户端前缀归属，不�
   assert.equal(readable.coverage.partial, false);
   assert.equal(readable.coverage.gaps.length, 0);
 }));
+
+test("同版已知资源身份直接读取目标详情与证据，避免重新遍历全库查身份", async () => fixture(store => {
+  const summary = meta("known-identity", { messageCount: 2, turnCount: 1 });
+  const messages = [message(summary.id, 0, { status: "success", resource: { kind: "skill_read", name: "guide", path: "/synthetic/skills/guide/SKILL.md" } }),
+    message(summary.id, 1, { status: "success", resource: { kind: "skill_read", name: "other", path: "/synthetic/skills/other/SKILL.md" } })];
+  store.publish(store.createJob().id, [source(store, summary, messages)], []);
+  const row = aggregateResourceUsage(store).resources.find(row => row.identity.name === "guide")!;
+  const expectedDetail = resourceUsageDetail(store, row.identity.id), expectedEvidence = resourceUsageEvidence(store, row.identity.id);
+  const read = store.resourceEvents.bind(store);
+  let targetedReads = 0;
+  store.resourceEvents = (query, identity, revision) => {
+    assert.ok(identity, "已核实身份后不应重新读取全库资源流");
+    targetedReads += 1;
+    return read(query, identity, revision);
+  };
+  assert.deepEqual(resourceUsageDetail(store, row.identity.id, {}, [], new Set(), row.identity), expectedDetail);
+  assert.deepEqual(resourceUsageEvidence(store, row.identity.id, {}, row.identity), expectedEvidence);
+  assert.equal(targetedReads, 2);
+}));
+
+
+test("资源缺口归属缓存随修订元数据写入与移除失效，保持未知来源语义", async () => fixture(store => {
+  const read = (query = {}) => { const stream = store.resourceEvents(query); Array.from(stream.events); return stream; };
+  const current = source(store, meta("gap-cache"), []);
+  store.publish(store.createJob().id, [current], [{ kind: "parse_error", sourceId: "external-source", message: "合成未知来源缺口" }]);
+  assert.equal(read().unscopedGaps, true);
+  const added = source(store, meta("new-origin", { client: "claude", sourceId: "external-source" }), []);
+  assert.deepEqual(read().uncertainClients, ["claude"]);
+  assert.equal(read({ client: "codex" }).gaps.length, 0);
+  store.removeRevision(added.revision);
+  assert.equal(read().unscopedGaps, true);
+}));

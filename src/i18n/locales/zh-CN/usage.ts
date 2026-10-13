@@ -206,6 +206,7 @@ export default {
   "usage.sessions.title": "会话明细",
   "usage.sessions.name": "会话",
   "usage.sessions.project": "项目 / 客户端",
+  "usage.sessions.noUsage": "未记录请求用量",
   "usage.sessions.time": "最后请求时间",
   "usage.sessions.open": "进入会话",
   "usage.sessions.inspect": "查看请求明细",
