@@ -13,7 +13,7 @@ import { HelpPopover } from "../../shared/ui/HelpPopover";
 import { MultiFilterPicker } from "../../shared/ui/MultiFilterPicker";
 import { ResourcePagination } from "../../shared/ui/ResourcePagination";
 import { sessionDisplayTitle } from "../sessions/session-model";
-import { activeFilterCount, defaultRoute, incomingUsageRoute, readUsageRoute, usageAddress, usageParameters, usageQuery, type DateWindow, type UsageRoute } from "./model";
+import { activeFilterCount, defaultRoute, incomingUsageRoute, readUsageRoute, speedSelectionToSync, usageAddress, usageParameters, usageQuery, type DateWindow, type UsageRoute } from "./model";
 import { UsageMetrics } from "./UsageMetrics";
 import { TokenAmount } from "./TokenAmount";
 import { PricingManager } from "./PricingManager";
@@ -104,12 +104,12 @@ export default function Usage({ active, onSession }: { active: boolean; onSessio
       if (controller.signal.aborted) return;
       stopPreparation(); setPreparation(null);
       loadedQuery.current = queryKey;
-      if (query?.includeSpeed && result.speed && query.speedGroup !== (result.speed.selectedGroup ?? undefined)) {
-        const speedGroup = result.speed.selectedGroup ?? undefined;
+      const speedGroups = query?.includeSpeed && result.speed ? speedSelectionToSync(query.speedGroups, result.speed.selectedGroups) : undefined;
+      if (query && speedGroups) {
         // 服务端回退的分组与完整报告一起采纳，地址同步不再重复查询。
-        loadedQuery.current = usageParameters({ ...query, speedGroup });
+        loadedQuery.current = usageParameters({ ...query, speedGroups });
         synchronizedQuery.current = loadedQuery.current;
-        setRoute(current => versions && usageParameters(usageQuery(current, versions.index, versions.price)) === queryKey ? { ...current, speedGroup } : current);
+        setRoute(current => versions && usageParameters(usageQuery(current, versions.index, versions.price)) === queryKey ? { ...current, speedGroups, speedGroup: undefined } : current);
       }
       setReport(result); setFacets(result.facets); setLoading(false);
     }).catch(fail);
@@ -192,7 +192,7 @@ export default function Usage({ active, onSession }: { active: boolean; onSessio
       <div className="usage-range"><span>{t("usage.chart.range", { from: rangeLabel(rangeFrom), to: rangeLabel(rangeTo), timezone: report.timezone })}</span><span className="usage-query-feedback" role="status" aria-label={pending && !error && !invalid ? t("usage.updating") : undefined}>{pending && !error && !invalid && <ArrowClockwise size={16} className="is-spinning" aria-hidden="true" />}</span></div>
       <UsageMetrics report={report} />
       <div className="usage-chart-controls" aria-busy={pending}><div className="usage-metric-switch"><div role="group" aria-label={t("usage.chart.metric")} className="usage-segmented">{(["tokens", "cost", "requests", "speed"] as const).map(item => <button key={item} aria-pressed={speed ? item === "speed" : metric === item} onClick={() => patch(item === "speed" ? { trendMetric: "speed" } : { metric: item, trendMetric: undefined }, false)}>{t(`usage.metric.${item}`)}</button>)}</div><span className="usage-query-feedback" aria-hidden="true">{pending && !error && !invalid && <ArrowClockwise size={16} className="is-spinning" />}</span></div><div><div className="usage-group-switch"><FilterSelect label={t("usage.group.label")} value={group} options={["model", "project", "client"].map(item => ({ value: item, label: t(`usage.group.${item}`) }))} onChange={groupBy => patch({ groupBy: groupBy as UsageGroup }, false)} /><span className="usage-query-feedback" aria-hidden="true">{pending && !error && !invalid && <ArrowClockwise size={16} className="is-spinning" />}</span></div><FilterSelect label={t("usage.interval.label")} value={report.query.interval ?? "day"} options={["hour", "day", "week", "month"].map(item => ({ value: item, label: t(`usage.interval.${item}`) }))} onChange={interval => patch({ interval: interval as UsageInterval }, false)} />{!speed && <div className="usage-segmented" role="group" aria-label={t("usage.chart.type")}><button aria-pressed={route.chart === "bar"} onClick={() => patch({ chart: "bar" }, false)}>{t("usage.chart.bar")}</button><button aria-pressed={route.chart === "line"} onClick={() => patch({ chart: "line" }, false)}>{t("usage.chart.line")}</button></div>}</div></div>
-      <div className="usage-report-body" inert={pending}><UsageCharts report={report} metric={report.query.metric ?? "tokens"} group={report.query.groupBy ?? "model"} chart={route.chart} attribution={route.attribution} speed={speed} interactive={!pending && active} onSpeedGroup={speedGroup => patch({ speedGroup }, false)} onAttribution={attribution => patch({ attribution }, false)} onGroup={filterGroup} />
+      <div className="usage-report-body" inert={pending}><UsageCharts report={report} metric={report.query.metric ?? "tokens"} group={report.query.groupBy ?? "model"} chart={route.chart} attribution={route.attribution} speed={speed} interactive={!pending && active} onSpeedGroups={speedGroups => patch({ speedGroups, speedGroup: undefined }, false)} onAttribution={attribution => patch({ attribution }, false)} onGroup={filterGroup} />
       <section className="usage-session-section" aria-labelledby="usage-session-title"><div className="usage-section-title"><h2 id="usage-session-title">{t("usage.sessions.title")}</h2><div><FilterSelect label={t("usage.sessions.sort")} value={route.sort ?? "tokens"} options={["tokens", "cost", "requests", "recent"].map(item => ({ value: item, label: t(item === "recent" ? "usage.sessions.recent" : `usage.metric.${item}`) }))} onChange={sort => patch({ sort: sort as UsageQuery["sort"] })} /><FilterSelect label={t("usage.sessions.direction")} value={route.direction ?? "desc"} options={["desc", "asc"].map(item => ({ value: item, label: t(`usage.sessions.${item}`) }))} onChange={direction => patch({ direction: direction as "asc" | "desc" })} /></div></div>
         <div className="usage-table-scroll"><table className="usage-table usage-session-table"><thead><tr><th>{t("usage.sessions.name")}</th><th>{t("usage.sessions.project")}</th><th>{t("usage.metric.tokens")}</th><th>{t("usage.metric.cost")}</th><th>{t("usage.metric.requests")}</th><th>{t("usage.sessions.time")}</th><th aria-label={t("usage.sessions.actions")} /></tr></thead><tbody>{report.sessions.map(row => <tr key={row.session.id} data-selected={route.selectedSession === row.session.id}
           onClick={event => { if (!(event.target as HTMLElement).closest("button, a, input, summary")) { const trigger = event.currentTarget.querySelector<HTMLButtonElement>(".usage-session-name"); if (trigger) inspectSession(row.session.id, trigger); } }}>

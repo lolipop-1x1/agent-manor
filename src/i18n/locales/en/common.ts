@@ -1,6 +1,11 @@
 import type { MessageCatalog } from "../../types.js";
 
 export default {
+  "common.picker.selected_one": "{{label}} · {{count, number}} selected",
+  "common.picker.selected_other": "{{label}} · {{count, number}} selected",
+  "common.picker.clear": "Clear selection",
+  "common.picker.apply": "Apply",
+
   "common.optionHelp": "{{filter}} · {{option}}",
   "common.appearance.menu": "Appearance",
   "common.appearance.mode": "Display mode",

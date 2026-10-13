@@ -46,3 +46,19 @@ test("速度是可选附加查询，分组仅允许与速度开关一起使用",
     assert.throws(() => usageQuery(raw), (error: unknown) => error instanceof ServiceError && error.code === "INVALID_INPUT");
   }
 });
+
+test("速度多选 HTTP 使用有界 JSON 数组并保留空选与顺序", () => {
+  const parsed = usageQuery({ includeSpeed: "true", speedGroups: '["b","a","b"]', speedGroup: "legacy" });
+  assert.deepEqual(parsed.speedGroups, ["b", "a"]); assert.equal(parsed.speedGroup, "legacy");
+  assert.deepEqual(usageQuery({ includeSpeed: "true", speedGroups: "[]" }).speedGroups, []);
+  assert.equal(usageQuery({ includeSpeed: "true", speedGroups: JSON.stringify(["x".repeat(8192)]) }).speedGroups![0]!.length, 8192);
+  assert.equal(usageQuery({ includeSpeed: "true", speedGroups: JSON.stringify(Array.from({ length: 500 }, (_, i) => `group-${i}`)) }).speedGroups!.length, 500);
+  for (const raw of [{ speedGroups: "[]" }, { includeSpeed: "false", speedGroups: "[]" }, { includeSpeed: "true", speedGroups: [] },
+    { includeSpeed: "true", speedGroups: "not-json" }, { includeSpeed: "true", speedGroups: '"group"' },
+    { includeSpeed: "true", speedGroups: "[null]" }, { includeSpeed: "true", speedGroups: '[""]' },
+    { includeSpeed: "true", speedGroups: '[" "]' }, { includeSpeed: "true", speedGroups: "[12]" },
+    { includeSpeed: "true", speedGroups: JSON.stringify(["x".repeat(8193)]) },
+    { includeSpeed: "true", speedGroups: JSON.stringify(Array.from({ length: 501 }, () => "same")) }]) {
+    assert.throws(() => usageQuery(raw), (error: unknown) => error instanceof ServiceError && error.code === "INVALID_INPUT");
+  }
+});

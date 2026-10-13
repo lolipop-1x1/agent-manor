@@ -1,6 +1,10 @@
 import type { MessageCatalog } from "../../types.js";
 
 export default {
+  "usage.speed.compare": "Compare models",
+  "usage.speed.seriesValue": "{{group}}: {{value}}",
+  "usage.speed.emptySelection": "Select one or more models to view speed trends.",
+
   "usage.metric.speed": "Output speed",
   "usage.speed.group": "Timing group",
   "usage.speed.search": "Search model, client, or timing method",

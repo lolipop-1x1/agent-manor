@@ -1,6 +1,10 @@
 import type { MessageCatalog } from "../../types.js";
 
 export default {
+  "usage.speed.compare": "对比模型",
+  "usage.speed.seriesValue": "{{group}}：{{value}}",
+  "usage.speed.emptySelection": "选择一个或多个模型查看速度趋势。",
+
   "usage.metric.speed": "吐字速度",
   "usage.speed.group": "计时分组",
   "usage.speed.search": "搜索模型、客户端或计时方法",

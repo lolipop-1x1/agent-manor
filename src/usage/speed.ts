@@ -42,7 +42,7 @@ export function mergeSpeedProfiles(target: UsageSpeedProfile[], profiles: UsageS
 
 /** 普通报告不调用此聚合；日期桶沿用同一报告已补齐的边界，空桶保留未知。 */
 export function buildUsageSpeedReport(slices: SpeedSlice[], bucketKeys: string[], missingTimeRequests: number,
-  requestedGroup?: string): UsageSpeedReport {
+  requestedGroup?: string, requestedGroups?: string[]): UsageSpeedReport {
   const profiles = new Map<string, UsageSpeedProfile>();
   let requests = 0, eligibleRequests = 0;
   for (const slice of slices) {
@@ -55,12 +55,18 @@ export function buildUsageSpeedReport(slices: SpeedSlice[], bucketKeys: string[]
   }
   const groups = [...profiles.values()].map(profile => ({ ...profile, ...summary(profile) }))
     .sort((left, right) => right.eligibleRequests - left.eligibleRequests || left.key.localeCompare(right.key));
-  const selectedGroup = requestedGroup && profiles.has(requestedGroup) ? requestedGroup : groups[0]?.key ?? null;
-  const buckets = new Map(bucketKeys.map(key => [key, empty()]));
+  const requested = requestedGroups ?? (requestedGroup === undefined ? undefined : [requestedGroup]);
+  const retained = [...new Set(requested)].filter(key => profiles.has(key));
+  const selectedGroups = requested?.length === 0 ? [] : retained.length ? retained : groups.slice(0, 3).map(group => group.key);
+  const selected = new Map(selectedGroups.map(group => [group, new Map(bucketKeys.map(key => [key, empty()]))]));
   for (const slice of slices) {
-    const profile = slice.profiles.find(value => value.key === selectedGroup);
-    if (profile) merge(buckets.get(slice.bucket)!, profile);
+    for (const profile of slice.profiles) {
+      const buckets = selected.get(profile.key);
+      if (buckets) merge(buckets.get(slice.bucket)!, profile);
+    }
   }
-  return { groups, selectedGroup, requests, eligibleRequests, missingTimeRequests,
-    buckets: [...buckets].map(([key, value]) => ({ key, ...summary(value) })) };
+  const series = [...selected].map(([group, buckets]) => ({ group,
+    buckets: [...buckets].map(([key, value]) => ({ key, ...summary(value) })) }));
+  return { groups, selectedGroups, series, selectedGroup: selectedGroups[0] ?? null, requests, eligibleRequests, missingTimeRequests,
+    buckets: series[0]?.buckets ?? bucketKeys.map(key => ({ key, ...summary(empty()) })) };
 }

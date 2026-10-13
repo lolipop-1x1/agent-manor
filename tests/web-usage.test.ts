@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { UsageTimeBucket, UsageTotals } from "../src/usage-contracts.ts";
-import { composition, compositionIsPartial, defaultRoute, incomingUsageRoute, metricValue, readUsageRoute, usageAddress, usageParameters, usageQuery, usageDailyMetrics } from "../web/features/usage/model.ts";
+import { composition, compositionIsPartial, defaultRoute, incomingUsageRoute, metricValue, readUsageRoute, speedSelectionToSync, usageAddress, usageParameters, usageQuery, usageDailyMetrics } from "../web/features/usage/model.ts";
 import { translate } from "../src/i18n/index.ts";
-import { speedLineModel } from "../web/features/usage/speed-model.ts";
-import type { UsageSpeedBucket } from "../src/usage-contracts.ts";
+import { speedComparisonModel, speedLineModel, speedSeriesStyles } from "../web/features/usage/speed-model.ts";
+import type { UsageSpeedBucket, UsageSpeedGroup, UsageSpeedReport } from "../src/usage-contracts.ts";
 
 const totals = (): UsageTotals => ({ requests: 1, sessions: 1, tokens: 250, inputTokens: 200, outputTokens: 50, freshInputTokens: 100, cacheReadTokens: 80, cacheWriteTokens: 20, reasoningTokens: 30, estimatedCost: .0003, cacheReadRatio: .4, cacheReadRatioRequests: 1, completeTokenRequests: 1, partialTokenRequests: 0, missingTokenRequests: 0, pricedRequests: 1, partiallyPricedRequests: 0, unpricedRequests: 0, missingTimeRequests: 0 });
 
@@ -116,16 +116,47 @@ test("速度是独立的时间图地址状态，不改变全局指标、柱线�
   const route = { ...defaultRoute(), metric: "cost" as const, chart: "bar" as const, trendMetric: "speed" as const,
     speedGroup: 'synthetic/model+group?窗口=output', page: 3, sort: "requests" as const, attribution: "bar" as const };
   const restored = readUsageRoute(usageAddress(route));
-  assert.equal(restored.trendMetric, "speed"); assert.equal(restored.speedGroup, route.speedGroup);
+  assert.equal(restored.trendMetric, "speed"); assert.deepEqual(restored.speedGroups, [route.speedGroup]);
+  assert.equal(restored.speedGroup, undefined);
   assert.equal(restored.metric, "cost"); assert.equal(restored.chart, "bar");
   assert.equal(restored.page, 3); assert.equal(restored.sort, "requests"); assert.equal(restored.attribution, "bar");
   const query = usageQuery(restored, "i", "p");
-  assert.equal(query.includeSpeed, true); assert.equal(query.speedGroup, route.speedGroup);
+  assert.equal(query.includeSpeed, true); assert.deepEqual(query.speedGroups, [route.speedGroup]);
+  assert.equal("speedGroup" in query, false);
   assert.equal(query.metric, "cost"); assert.equal("trendMetric" in query, false);
   const ordinary = usageQuery({ ...restored, trendMetric: undefined }, "i", "p");
-  assert.equal("includeSpeed" in ordinary, false); assert.equal("speedGroup" in ordinary, false);
+  assert.equal("includeSpeed" in ordinary, false); assert.equal("speedGroup" in ordinary, false); assert.equal("speedGroups" in ordinary, false);
   assert.equal(ordinary.metric, "cost"); assert.equal(ordinary.page, 3);
   assert.equal(readUsageRoute("#usage?trendMetric=unknown&includeSpeed=true").trendMetric, undefined);
+});
+
+test("速度多选地址保留空选、去重与特殊字符，新数组优先于旧单选", () => {
+  const route = { ...defaultRoute(), trendMetric: "speed" as const, speedGroups: ["model-a/+", "模型,b"] };
+  assert.deepEqual(readUsageRoute(usageAddress(route)).speedGroups, route.speedGroups);
+  const emptyAddress = usageAddress({ ...route, speedGroups: [] });
+  assert.equal(new URLSearchParams(emptyAddress.split("?")[1]).get("speedGroups"), "[]");
+  assert.deepEqual(readUsageRoute(emptyAddress).speedGroups, []);
+  const query = usageQuery({ ...route, speedGroups: [], speedGroup: "legacy" }, "i", "p");
+  assert.deepEqual(query.speedGroups, []); assert.equal(query.speedGroup, undefined);
+  assert.equal(new URLSearchParams(usageParameters(query)).get("speedGroups"), "[]");
+  assert.deepEqual(readUsageRoute('#usage?speedGroups=["a","a","b"]&speedGroup=legacy').speedGroups, ["a", "b"]);
+  assert.deepEqual(readUsageRoute("#usage?speedGroups=[]&speedGroup=legacy").speedGroups, []);
+  assert.deepEqual(readUsageRoute("#usage?speedGroups=bad&speedGroup=legacy").speedGroups, ["legacy"]);
+  assert.equal(readUsageRoute("#usage?speedGroups=[2]").speedGroups, undefined);
+  assert.equal(readUsageRoute("#usage").speedGroups, undefined);
+  const ordinary = usageQuery({ ...route, trendMetric: undefined }, "i", "p");
+  assert.equal("speedGroups" in ordinary, false);
+});
+
+test("空数据范围不把默认或原非空选择误存为显式清空，返回有数据范围仍可恢复", () => {
+  assert.equal(speedSelectionToSync(undefined, []), undefined);
+  assert.equal(speedSelectionToSync(["a"], []), undefined);
+  assert.equal(speedSelectionToSync([], []), undefined);
+  assert.equal(speedSelectionToSync([], ["a"]), undefined);
+  assert.equal(speedSelectionToSync(["a"], ["a"]), undefined);
+  assert.deepEqual(speedSelectionToSync(undefined, ["a", "b", "c"]), ["a", "b", "c"]);
+  assert.deepEqual(speedSelectionToSync(["old", "a"], ["a"]), ["a"]);
+  assert.deepEqual(speedSelectionToSync(["old"], ["a", "b", "c"]), ["a", "b", "c"]);
 });
 
 test("速度图保留缺样本日期的位置并断线，孤立点可见且不把未知补为零", () => {
@@ -143,7 +174,7 @@ test("速度图保留缺样本日期的位置并断线，孤立点可见且不�
 });
 
 test("速度分组、窗口和计时方法具备中英文说明，估算与原生格式保留不同依据", () => {
-  const keys = ["metric.speed", "speed.group", "speed.selectInterval", "speed.intervalDetails", "speed.noData",
+  const keys = ["metric.speed", "speed.group", "speed.compare", "speed.emptySelection", "speed.selectInterval", "speed.intervalDetails", "speed.noData",
     ...["response", "generation"].map(window => `speed.window.${window}`),
     ...["recorded", "estimated"].map(basis => `speed.basis.${basis}`)];
   const methods = ["codex_event_boundary", "claude_message_boundary", "codeflicker_message_boundary", "codeflicker_desktop_mirror", "dsh_stream_window", "pi_message_boundary", "zcode_request_span", "opencode_message_span", "codebuddy_single_request_turn", "workbuddy_message_boundary", "qoder_message_boundary"];
@@ -155,4 +186,38 @@ test("速度分组、窗口和计时方法具备中英文说明，估算与原�
   }
   assert.equal(translate("en", "usage.speed.undated", { count: 1 }), "1 request has no reliable date and is excluded from the curve.");
   assert.equal(translate("en", "usage.speed.undated", { count: 2 }), "2 requests have no reliable date and are excluded from the curve.");
+  assert.equal(translate("en", "common.picker.selected", { label: "Compare models", count: 1 }), "Compare models · 1 selected");
+  assert.equal(translate("zh-CN", "common.picker.selected", { label: "对比模型", count: 3 }), "对比模型 · 已选 3 项");
+});
+
+test("速度多曲线共用日期轴与最大值，每组缺口及孤立点独立保留", () => {
+  const group = (key: string): UsageSpeedGroup => ({ key, client: "synthetic", model: key, window: "response", basis: "estimated", method: "codex_event_boundary",
+    requests: 3, eligibleRequests: 2, outputTokens: 800, durationMs: 4000, tokensPerSecond: 200 });
+  const bucket = (key: string, value: number | null): UsageSpeedBucket => ({ key, requests: 1, eligibleRequests: value === null ? 0 : 1,
+    outputTokens: value === null ? null : 400, durationMs: value === null ? null : 2000, tokensPerSecond: value });
+  const speed: UsageSpeedReport = { groups: [group("b"), group("a"), group("c")], selectedGroups: ["a", "b"], selectedGroup: "a", buckets: [],
+    requests: 4, eligibleRequests: 3, missingTimeRequests: 0, series: [
+      { group: "a", buckets: [bucket("2026-10-01", 20), bucket("2026-10-03", 40)] },
+      { group: "b", buckets: [bucket("2026-10-02", 80), bucket("2026-10-04", null)] },
+    ] };
+  const result = speedComparisonModel(speed);
+  assert.deepEqual(result.dates, ["2026-10-01", "2026-10-02", "2026-10-03", "2026-10-04"]);
+  assert.deepEqual(result.series[0]!.model.segments, [[{ index: 0, value: 20 }], [{ index: 2, value: 40 }]]);
+  assert.deepEqual(result.series[1]!.model.points, [{ index: 1, value: 80 }]);
+  assert.equal(result.maximum, 80); assert.equal(result.lastEligibleIndex, 2);
+  assert.equal(result.series[0]!.buckets.get("2026-10-02"), undefined);
+  const single = speedComparisonModel({ ...speed, selectedGroups: ["b"], series: [speed.series[1]!] });
+  assert.equal(single.series[0]!.color, result.series[1]!.color);
+  assert.equal(single.series[0]!.dash, result.series[1]!.dash);
+  const empty = speedComparisonModel({ ...speed, selectedGroups: [], series: [] });
+  assert.deepEqual(empty.series, []); assert.deepEqual(empty.dates, []); assert.equal(empty.lastEligibleIndex, -1);
+});
+
+test("速度曲线色阶不随选择顺序变化，超过六组通过线型区分", () => {
+  const keys = ["g", "f", "e", "d", "c", "b", "a"];
+  const first = speedSeriesStyles(keys), reordered = speedSeriesStyles([...keys].reverse());
+  assert.deepEqual([...first], [...reordered]);
+  assert.equal(new Set([...first.values()].slice(0, 6).map(style => style.color)).size, 6);
+  assert.equal(first.get("a")!.color, first.get("g")!.color);
+  assert.notEqual(first.get("a")!.dash, first.get("g")!.dash);
 });

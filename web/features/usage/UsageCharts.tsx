@@ -22,9 +22,9 @@ export function groupLabel(value: string, group: UsageGroup, unknown: string): s
   if (group === "client") { const client = CLIENTS.find(client => client.id === value); if (client) return clientLabel(client.id); }
   return original;
 }
-export function UsageCharts({ report, metric, group, chart, attribution, speed, interactive, onSpeedGroup, onAttribution, onGroup }: {
+export function UsageCharts({ report, metric, group, chart, attribution, speed, interactive, onSpeedGroups, onAttribution, onGroup }: {
   report: UsageReport; metric: UsageMetric; group: UsageGroup; chart: "bar" | "line";
-  speed: boolean; interactive: boolean; onSpeedGroup: (key: string) => void;
+  speed: boolean; interactive: boolean; onSpeedGroups: (keys: string[]) => void;
   attribution: "treemap" | "bar"; onAttribution: (view: "treemap" | "bar") => void; onGroup: (key: string) => void;
 }) {
   const { t, number, date, dateTime, percent, language } = useI18n();
@@ -99,7 +99,7 @@ export function UsageCharts({ report, metric, group, chart, attribution, speed, 
     <span className="usage-number" title={metric === "tokens" && item.value !== null ? t("usage.tokens.exact", { count: item.value }) : undefined}>{formatValue(item.value)}</span><small>{item.value !== null && totalsValue ? percent(item.value / totalsValue, { maximumFractionDigits: 1 }) : "—"}</small>
   </button>;
   return <div className="usage-charts">
-    {speed ? <UsageSpeedTrend report={report} interactive={interactive} onGroup={onSpeedGroup} /> : <section className="usage-chart-section usage-time-analysis" aria-labelledby="usage-time-title">
+    {speed ? <UsageSpeedTrend report={report} interactive={interactive} onGroups={onSpeedGroups} /> : <section className="usage-chart-section usage-time-analysis" aria-labelledby="usage-time-title">
       <div className="usage-section-title"><h2 id="usage-time-title">{t("usage.chart.timeAnalysis")}</h2>
         <div className="usage-time-actions"><div className="usage-segmented usage-time-switch" role="group" aria-label={t("usage.chart.view")}>
           <button type="button" aria-pressed={timeView === "trend"} onClick={() => setTimeView("trend")}><ChartLineUp size={17} aria-hidden="true" />{t("usage.chart.trend")}</button>

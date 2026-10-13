@@ -31,7 +31,11 @@ export function readUsageRoute(hash: string): UsageRoute {
   route.version = params.get("version") || undefined; route.priceVersion = params.get("priceVersion") || undefined;
   route.selectedSession = params.get("selectedSession") || undefined;
   if (params.get("trendMetric") === "speed") route.trendMetric = "speed";
-  route.speedGroup = params.get("speedGroup") || undefined;
+  try {
+    const values: unknown = params.has("speedGroups") ? JSON.parse(params.get("speedGroups")!) : undefined;
+    if (Array.isArray(values) && values.every(value => typeof value === "string")) route.speedGroups = [...new Set(values)];
+  } catch { /* 无效多选地址不覆盖可识别的旧单选。 */ }
+  if (route.speedGroups === undefined && params.get("speedGroup")) route.speedGroups = [params.get("speedGroup")!];
   if (params.get("chart") === "line") route.chart = "line";
   if (params.get("attribution") === "bar") route.attribution = "bar";
   // 排除优先，防止手工地址把同一项同时放入两个集合。
@@ -47,11 +51,16 @@ export function incomingUsageRoute(address: string, previous: string, route: Usa
 }
 export function usageParameters(value: object): string {
   const params = new URLSearchParams();
-  for (const [key, entry] of Object.entries(value)) if (entry !== undefined && entry !== "" && (!Array.isArray(entry) || entry.length)) params.set(key, Array.isArray(entry) ? JSON.stringify(entry) : String(entry));
+  for (const [key, entry] of Object.entries(value)) if (entry !== undefined && entry !== "" && (!Array.isArray(entry) || entry.length || key === "speedGroups")) params.set(key, Array.isArray(entry) ? JSON.stringify(entry) : String(entry));
   return params.toString();
 }
+/** 空数据范围不等于用户清空；仅采纳服务器返回的非空默认或回退选择。 */
+export function speedSelectionToSync(requested: string[] | undefined, selected: string[]): string[] | undefined {
+  if (!selected.length || requested?.length === 0 || JSON.stringify(requested) === JSON.stringify(selected)) return undefined;
+  return selected;
+}
 export function usageQuery(route: UsageRoute, version: string, priceVersion: string, now = new Date()): UsageQuery {
-  const { window, selectedSession: _selectedSession, requestPage: _requestPage, chart: _chart, attribution: _attribution, trendMetric, includeSpeed: _includeSpeed, speedGroup, timeFrom, timeTo, ...query } = route;
+  const { window, selectedSession: _selectedSession, requestPage: _requestPage, chart: _chart, attribution: _attribution, trendMetric, includeSpeed: _includeSpeed, speedGroup, speedGroups, timeFrom, timeTo, ...query } = route;
   delete query.from; delete query.to;
   if (window === "custom") { query.from = timeFrom ?? route.from; query.to = timeTo ?? route.to; }
   else if (window !== "all") {
@@ -59,7 +68,7 @@ export function usageQuery(route: UsageRoute, version: string, priceVersion: str
     const start = new Date(end); if (window !== "today" && window !== "yesterday") start.setDate(start.getDate() - Number(window) + 1);
     query.from = localDay(start); query.to = localDay(end);
   }
-  return { ...query, ...(trendMetric === "speed" ? { includeSpeed: true, speedGroup } : {}), version: route.version ?? version, priceVersion: route.priceVersion ?? priceVersion, timezone: Intl.DateTimeFormat().resolvedOptions().timeZone };
+  return { ...query, ...(trendMetric === "speed" ? { includeSpeed: true, speedGroups: speedGroups ?? (speedGroup ? [speedGroup] : undefined) } : {}), version: route.version ?? version, priceVersion: route.priceVersion ?? priceVersion, timezone: Intl.DateTimeFormat().resolvedOptions().timeZone };
 }
 export function metricValue(totals: UsageTotals, metric: UsageMetric): number | null { return metric === "cost" ? totals.estimatedCost : metric === "requests" ? totals.requests : totals.tokens; }
 export function activeFilterCount(route: UsageRoute): number {

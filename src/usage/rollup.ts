@@ -215,7 +215,7 @@ export function buildUsageRollupReport(rollup: UsageRollup, requested: UsageQuer
     ...(query.includeSpeed ? { speed: buildUsageSpeedReport(cells.filter(cell => cell.day !== undefined).map(cell => ({
       bucket: query.interval === "hour" ? cell.hour! : intervalKey(cell.day!, query.interval!),
       requests: cell.totals.requests, eligibleRequests: cell.speedEligibleRequests, profiles: cell.speedProfiles,
-    })), buckets.map(bucket => bucket.key), undated.reduce((sum, cell) => sum + cell.totals.requests, 0), query.speedGroup) } : {}) };
+    })), buckets.map(bucket => bucket.key), undated.reduce((sum, cell) => sum + cell.totals.requests, 0), query.speedGroup, query.speedGroups) } : {}) };
 }
 
 /** 按视图合并已准备的汇总，不读取预览，也不构建会话明细或其他维度。 */

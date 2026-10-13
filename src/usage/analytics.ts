@@ -106,6 +106,11 @@ function queryOf(query: UsageQuery, source: UsageSource, pricing: PricingStatus)
   if (result.includeSpeed !== undefined && typeof result.includeSpeed !== "boolean") invalid("includeSpeed");
   if (result.speedGroup !== undefined && (!result.includeSpeed || typeof result.speedGroup !== "string"
     || !result.speedGroup.trim() || result.speedGroup.length > 8192)) invalid("speedGroup");
+  if (result.speedGroups !== undefined) {
+    if (!result.includeSpeed || !Array.isArray(result.speedGroups) || result.speedGroups.length > 500
+      || result.speedGroups.some(value => typeof value !== "string" || !value.trim() || value.length > 8192)) invalid("speedGroups");
+    result.speedGroups = [...new Set(result.speedGroups)];
+  }
   for (const key of ["clients", "excludeClients", "projects", "excludeProjects", "models", "excludeModels"] as const) {
     if (result[key] !== undefined && (!Array.isArray(result[key]) || result[key]!.some(value => typeof value !== "string" || !value))) invalid(key);
   }
@@ -343,7 +348,7 @@ export function buildUsageReport(source: UsageSource, query: UsageQuery, pricing
     totalSessions: selected.rows.length, page, pageSize, missingUsageSessions: selected.missingUsageSessions, facets: selected.facets, pricing: status,
     ...(selected.query.includeSpeed ? { speed: buildUsageSpeedReport(selected.requests.filter(request => request.time !== undefined)
       .map(request => ({ bucket: request.bucket!, requests: 1, ...speedProfile(request.session.client, request.usage) })),
-    buckets.map(bucket => bucket.key), selected.undated.length, selected.query.speedGroup) } : {}) };
+    buckets.map(bucket => bucket.key), selected.undated.length, selected.query.speedGroup, selected.query.speedGroups) } : {}) };
 }
 
 /** 精确统计复用报告筛选，但不创建会话行、请求预览及未显示的分组。 */

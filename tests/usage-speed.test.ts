@@ -141,3 +141,58 @@ test("速度时间粒度沿用时区与夏令时重复小时边界", () => {
     }
   }
 });
+
+test("多组选中顺序、去重、空选、默认前三组和失效回退保持明确语义", () => {
+  const input = source([
+    usage("a-fast", { outputTokens: 200, timing: timing({ durationMs: 1000 }) }),
+    usage("a-slow", { outputTokens: 400, timing: timing({ durationMs: 10000 }) }),
+    usage("b-first", { model: "model-b", outputTokens: 600, timing: timing({ durationMs: 3000 }) }),
+    usage("b-last", { model: "model-b", outputTokens: 200, occurredAt: "2026-01-03T12:00:00Z" }),
+    usage("c", { model: "model-c", occurredAt: "2026-01-02T12:00:00Z" }),
+    usage("a-estimated-generation", { outputTokens: 300, occurredAt: "2026-01-03T12:00:00Z",
+      timing: timing({ window: "generation", basis: "estimated", durationMs: 3000 }) }),
+    usage("d-small", { model: "model-d", outputTokens: 10, occurredAt: "2026-01-02T12:00:00Z" }),
+  ]);
+  const range = { from: "2026-01-01", to: "2026-01-04" };
+  const defaults = compare(input, range).speed!;
+  assert.deepEqual(defaults.selectedGroups, defaults.groups.slice(0, 3).map(group => group.key));
+  assert.equal(defaults.series.length, 3);
+  const a = defaults.groups.find(group => group.model === "model-a" && group.window === "response")!.key;
+  const b = defaults.groups.find(group => group.model === "model-b")!.key;
+  const generation = defaults.groups.find(group => group.window === "generation")!.key;
+  const selected = compare(input, { ...range, speedGroups: [b, a, b, generation] }).speed!;
+  assert.deepEqual(selected.selectedGroups, [b, a, generation]);
+  assert.deepEqual(selected.series.map(series => series.group), selected.selectedGroups);
+  assert.deepEqual(selected.series.map(series => series.buckets.map(bucket => bucket.tokensPerSecond)), [
+    [200, null, 100, null], [600 * 1000 / 11000, null, null, null], [null, null, 100, null],
+  ]);
+  assert.equal(selected.groups.find(group => group.key === b)!.tokensPerSecond, 160);
+  assert.deepEqual(selected.buckets, selected.series[0]!.buckets); assert.equal(selected.selectedGroup, b);
+  assert.equal(selected.requests, defaults.requests); assert.equal(selected.eligibleRequests, defaults.eligibleRequests);
+  assert.deepEqual(compare(input, { ...range, speedGroups: [b, "missing", a] }).speed!.selectedGroups, [b, a]);
+  assert.deepEqual(compare(input, { ...range, speedGroups: [a, b], models: ["model-b"] }).speed!.selectedGroups, [b]);
+  assert.deepEqual(compare(input, { ...range, speedGroups: ["missing"] }).speed!.selectedGroups, defaults.selectedGroups);
+  assert.deepEqual(compare(input, { ...range, speedGroup: b }).speed!.selectedGroups, [b]);
+  assert.deepEqual(compare(input, { ...range, speedGroup: a, speedGroups: [b] }).speed!.selectedGroups, [b]);
+  const cleared = compare(input, { ...range, speedGroup: a, speedGroups: [] }).speed!;
+  assert.deepEqual(cleared.selectedGroups, []); assert.deepEqual(cleared.series, []); assert.equal(cleared.selectedGroup, null);
+  assert.equal(cleared.buckets.length, 4); assert.ok(cleared.buckets.every(bucket => bucket.tokensPerSecond === null));
+  assert.deepEqual(cleared.groups, defaults.groups);
+  assert.deepEqual(compare(input, { ...range, speedGroups: [b, a], page: 2, pageSize: 1 }).speed,
+    compare(input, { ...range, speedGroups: [b, a] }).speed);
+  for (const interval of ["hour", "day", "week", "month"] as const) compare(input, { ...range, interval, speedGroups: [b, a] });
+  const exact = compare(input, { from: "2026-01-01T12:00:00Z", to: "2026-01-03T12:00:00Z", speedGroups: [b, a] }).speed!;
+  assert.deepEqual(exact.selectedGroups, [b, a]);
+  assert.deepEqual(exact.series.map(series => series.buckets.map(bucket => bucket.tokensPerSecond)), [
+    [200, null, null], [600 * 1000 / 11000, null, null],
+  ]);
+});
+
+test("速度多选在直接分析入口也校验数组上限、成员和速度开关", () => {
+  const input = source([usage("one")]);
+  for (const query of [{ speedGroups: ["valid"], includeSpeed: false }, { speedGroups: "invalid" },
+    { speedGroups: [null] }, { speedGroups: [""] }, { speedGroups: [" "] }, { speedGroups: ["x".repeat(8193)] },
+    { speedGroups: Array.from({ length: 501 }, () => "same") }]) {
+    assert.throws(() => report(input, query as UsageQuery));
+  }
+});

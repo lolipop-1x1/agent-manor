@@ -5,7 +5,7 @@ import { ServiceError, integer, textValue } from "./input.js";
 const invalid = (field: string): never => {
   throw new ServiceError("INVALID_INPUT", `无效用量参数：${field}`, { key: "diagnostics.usage.input.invalid", params: { field } });
 };
-const arrays = ["clients", "excludeClients", "projects", "excludeProjects", "models", "excludeModels"] as const;
+const arrays = ["clients", "excludeClients", "projects", "excludeProjects", "models", "excludeModels", "speedGroups"] as const;
 const enums = {
   relationship: ["all", "main", "child"], sessionType: ["all", "interactive", "automation", "fork"],
   coverage: ["all", "complete", "partial", "missing"], pricing: ["all", "complete", "partial", "missing"],
@@ -27,8 +27,8 @@ export function usageQuery(raw: Record<string, unknown>): UsageQuery {
     query.includeSpeed = raw.includeSpeed === "true";
   }
   if (raw.speedGroup !== undefined) {
-    const group = textValue(raw.speedGroup, "speedGroup", true)!;
-    if (!query.includeSpeed || !group.trim() || group.length > 8192) invalid("speedGroup");
+    const group = raw.speedGroup;
+    if (!query.includeSpeed || typeof group !== "string" || !group.trim() || group.length > 8192) return invalid("speedGroup");
     query.speedGroup = group;
   }
   if (query.timezone) {
@@ -50,8 +50,14 @@ export function usageQuery(raw: Record<string, unknown>): UsageQuery {
   for (const field of arrays) {
     if (raw[field] === undefined) continue;
     let value: unknown;
-    try { value = JSON.parse(textValue(raw[field], field, true)!); } catch { invalid(field); }
-    if (!Array.isArray(value) || value.length > 500 || value.some(item => typeof item !== "string" || !item.trim() || item.length > 4096)) invalid(field);
+    try {
+      const text = field === "speedGroups" ? raw[field] : textValue(raw[field], field, true);
+      if (typeof text !== "string") return invalid(field);
+      value = JSON.parse(text);
+    } catch { invalid(field); }
+    const maxLength = field === "speedGroups" ? 8192 : 4096;
+    if (!Array.isArray(value) || value.length > 500 || value.some(item => typeof item !== "string" || !item.trim() || item.length > maxLength)) invalid(field);
+    if (field === "speedGroups" && !query.includeSpeed) invalid(field);
     const values = [...new Set(value as string[])];
     if ((field === "clients" || field === "excludeClients") && values.some(client => !clientIds.includes(client as typeof clientIds[number]))) invalid(field);
     query[field] = values;

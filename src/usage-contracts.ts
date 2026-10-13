@@ -14,7 +14,7 @@ export interface UsageQuery {
   pricing?: "all" | "complete" | "partial" | "missing";
   minTokens?: number; maxTokens?: number; minCost?: number; maxCost?: number;
   metric?: UsageMetric; groupBy?: UsageGroup; interval?: UsageInterval;
-  includeSpeed?: boolean; speedGroup?: string;
+  includeSpeed?: boolean; speedGroup?: string; speedGroups?: string[];
   page?: number; pageSize?: number; sort?: "tokens" | "cost" | "requests" | "recent"; direction?: "asc" | "desc";
 }
 export interface UsageSource {
@@ -88,7 +88,10 @@ export interface UsageSpeedGroup extends UsageSpeedSummary {
   basis: SessionRequestTiming["basis"]; method: SessionRequestTiming["method"];
 }
 export interface UsageSpeedBucket extends UsageSpeedSummary { key: string }
+export interface UsageSpeedSeries { group: string; buckets: UsageSpeedBucket[] }
 export interface UsageSpeedReport {
+  selectedGroups: string[]; series: UsageSpeedSeries[];
+  /** 单组字段保留为首条曲线的兼容视图。 */
   groups: UsageSpeedGroup[]; selectedGroup: string | null; buckets: UsageSpeedBucket[];
   /** 当前日期范围的已识别请求与可计算请求；无日期请求独立保留。 */
   requests: number; eligibleRequests: number; missingTimeRequests: number;

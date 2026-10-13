@@ -1,6 +1,10 @@
 import type { MessageCatalog } from "../../types.js";
 
 export default {
+  "common.picker.selected_other": "{{label}} · 已选 {{count, number}} 项",
+  "common.picker.clear": "清空选择",
+  "common.picker.apply": "应用",
+
   "common.optionHelp": "{{filter}} · {{option}}",
   "common.appearance.menu": "外观",
   "common.appearance.mode": "显示模式",

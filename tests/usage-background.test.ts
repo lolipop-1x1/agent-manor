@@ -365,6 +365,12 @@ test("速度 Worker 按需查询、精确事实缓存隔离、重启和旧格式
       const actual = await manager.report(speedQuery);
       assert.deepEqual(actual.speed, buildUsageReport(source, speedQuery, view.status, view.estimate).speed);
     }
+    for (const speedGroups of [first.speed!.groups.map(group => group.key).reverse(), []]) {
+      const multiQuery = { ...query, includeSpeed: true, speedGroups };
+      assert.deepEqual((await manager.report(multiQuery)).speed, buildUsageReport(source, multiQuery, view.status, view.estimate).speed);
+      const exactQuery = { ...multiQuery, minCost: 0.001 };
+      assert.deepEqual((await manager.report(exactQuery)).speed, buildUsageReport(source, exactQuery, view.status, view.estimate).speed);
+    }
     await manager.close(); manager = new UsageManager(store, prices, cachePath);
     assert.deepEqual((await manager.report({ ...query, includeSpeed: true })).speed, first.speed);
     await manager.close();

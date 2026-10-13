@@ -22,7 +22,9 @@ test("用量 HTTP 固定索引与价格版本，覆盖多页请求、手动价�
   const revision = store.createRevision(summary.path, "synthetic");
   for (let index = 0; index < 31; index++) {
     const usage: SessionUsage = { id: `synthetic-request-${String(index).padStart(2, "0")}`, model: "synthetic-model", occurredAt: "2026-10-11T01:00:00Z",
-      inputTokens: 100, outputTokens: 20, cachedInputTokens: 40, cacheWriteTokens: 0 };
+      inputTokens: 100, outputTokens: 20, cachedInputTokens: 40, cacheWriteTokens: 0,
+      timing: { basis: "recorded", window: index % 2 ? "generation" : "response", method: "codex_event_boundary",
+        completion: "explicit", durationMs: 2000 } };
     revision.sink.usage(usage);
   }
   revision.flush(); store.finishRevision(revision.revision, summary);
@@ -52,7 +54,22 @@ test("用量 HTTP 固定索引与价格版本，覆盖多页请求、手动价�
     assert.equal(report.speed, undefined);
     const speed = await api<UsageReport>(`/usage?${params}&includeSpeed=true`);
     assert.equal(speed.speed!.requests, 31); assert.equal(speed.speed!.eligibleRequests, 0);
-    assert.equal(speed.speed!.selectedGroup, null);
+    assert.equal(speed.speed!.groups.length, 2);
+    assert.deepEqual(speed.speed!.selectedGroups, speed.speed!.groups.map(group => group.key));
+    const selectedGroups = speed.speed!.groups.map(group => group.key).reverse();
+    const multiParams = new URLSearchParams(params);
+    multiParams.set("includeSpeed", "true"); multiParams.set("speedGroup", selectedGroups[1]!);
+    multiParams.set("speedGroups", JSON.stringify([...selectedGroups, selectedGroups[0]]));
+    const multi = await api<UsageReport>(`/usage?${multiParams}`);
+    assert.deepEqual(multi.speed!.selectedGroups, selectedGroups);
+    assert.deepEqual(multi.speed!.series.map(series => series.group), selectedGroups);
+    assert.equal(multi.speed!.selectedGroup, selectedGroups[0]);
+    multiParams.set("speedGroups", "[]");
+    const cleared = await api<UsageReport>(`/usage?${multiParams}`);
+    assert.deepEqual(cleared.speed!.selectedGroups, []); assert.deepEqual(cleared.speed!.series, []);
+    assert.equal(cleared.speed!.selectedGroup, null); assert.equal(cleared.totals.requests, 31);
+    multiParams.set("speedGroups", "[null]");
+    assert.equal((await fetch(`${base}/usage?${multiParams}`)).status, 400);
     const badSpeed = await fetch(`${base}/usage?${params}&speedGroup=missing`);
     assert.equal(badSpeed.status, 400);
     assert.equal(report.totals.tokens, 31 * 120);
