@@ -125,15 +125,37 @@ export async function parseSessionSource(source: SourceLocation, sink: SessionSi
   let candidate: SessionMessage | undefined;
   let interrupted = false;
   let desktopTurn: string | undefined;
+  const desktopTurnIds = new Map<string, string>();
   let copyBeforeOrdinal: number | undefined;
+  let ownExecutionStartOrdinal: number | undefined;
   let hasResponseTranscript = false;
   let projectedReasoning: { key: string; text: string; turnId: string } | undefined;
   let firstUserTitle: string | undefined;
+  let nativeCodexTurn: string | undefined;
+  const codexTurnIds = new Map<string, string>();
+  const codexUsageSnapshots = new Map<string, { value: Record<string, unknown>; line: number }>();
   // Codex 同时保存响应项与 UI 事件投影；存在响应正文时采用响应项，避免把同一消息计两遍。
   if (source.client === "codex") {
+    let hasCopiedOrdinalBoundary = false;
+    const turnStartOrdinals = new Map<string, number>();
     for await (const { record } of inputRecords(() => {})) {
       const payload = object(record.payload);
-      if (record.type === "response_item" && ["message", "agent_message"].includes(string(payload.type) ?? "")) { hasResponseTranscript = true; break; }
+      const ordinal = tokens(record.ordinal);
+      if (record.type === "session_meta" && (string(payload.id) ?? string(payload.session_id)) === rawId) {
+        const boundary = historyRelationships(record)[0]?.endOrdinalExclusive ?? tokens(payload.subagent_history_start_ordinal);
+        hasCopiedOrdinalBoundary = boundary !== undefined && boundary > 0;
+      }
+      const nativeTurn = string(payload.turn_id);
+      if (nativeTurn && ordinal !== undefined && (record.type === "turn_context" || record.type === "event_msg" && payload.type === "task_started")) {
+        if (!turnStartOrdinals.has(nativeTurn)) turnStartOrdinals.set(nativeTurn, ordinal);
+      }
+      // 分页子历史的 ordinal 可能重新编号；自身线程事件确认的执行起点不能作为父历史排除。
+      if (hasCopiedOrdinalBoundary && ["event_msg", "token_usage_record"].includes(string(record.type) ?? "") && payload.thread_id === rawId && nativeTurn) {
+        const startOrdinal = turnStartOrdinals.get(nativeTurn);
+        if (startOrdinal !== undefined) ownExecutionStartOrdinal = Math.min(ownExecutionStartOrdinal ?? startOrdinal, startOrdinal);
+      }
+      if (record.type === "response_item" && ["message", "agent_message"].includes(string(payload.type) ?? "")) hasResponseTranscript = true;
+      if (hasResponseTranscript && (!hasCopiedOrdinalBoundary || ownExecutionStartOrdinal !== undefined)) break;
     }
   }
   let currentRecordLine = 0;
@@ -180,6 +202,7 @@ export async function parseSessionSource(source: SourceLocation, sink: SessionSi
     }
     const value: SessionMessage = { id: `${id}:message:${digest(key)}`, sessionId: id, ordinal: identity.ordinal,
       recordLine: row, turnId: identity.turnId, kind, text: body, ...extra };
+    if (source.client === "codex" && kind === "user" && !value.copied && nativeCodexTurn) codexTurnIds.set(nativeCodexTurn, value.turnId);
     if (timing?.interruptedMessage(value.id)) {
       value.interrupted = true; value.final = undefined; value.finalEvidence = undefined; value.finalAt = undefined;
     }
@@ -269,6 +292,9 @@ export async function parseSessionSource(source: SourceLocation, sink: SessionSi
       meta.parentSessionId = sessionKey(source.client, relationship.parentSessionId);
       meta.relationship = relationship.kind === "fork" ? "fork" : "child";
       copyBeforeOrdinal = relationship.endOrdinalExclusive ?? tokens(payload.subagent_history_start_ordinal);
+      if (copyBeforeOrdinal !== undefined && ownExecutionStartOrdinal !== undefined) {
+        copyBeforeOrdinal = Math.min(copyBeforeOrdinal, ownExecutionStartOrdinal);
+      }
     }
     if (string(record.agentId) && string(record.sessionId) && !meta.parentSessionId) {
       meta.parentSessionId = sessionKey(source.client, string(record.sessionId)!); meta.relationship = "child";
@@ -287,6 +313,14 @@ export async function parseSessionSource(source: SourceLocation, sink: SessionSi
     if (title && !inheritedHeader) { meta.title = title; meta.titleOrigin = "recorded"; }
     if (source.format === DESKTOP_FORMAT || ideSnapshot) {
       const key = `desktop:${desktopIdentity(record.id) ?? line}`;
+      if (ideSnapshot && record.op === "request_usage") {
+        const usageTurn = desktopTurnIds.get(string(record.turnId) ?? "") ?? `${id}:turn:0`;
+        const marker = Object.keys(object(record.usage)).length ? message(key, "system", display(record.usage), line, { ...extra,
+          turnId: usageTurn, model: string(record.model), textDescriptor: { key: "sessions.body.usage" } }, false, false) : undefined;
+        usage.native("codeflicker", record.usage, string(record.id) ?? key, { messageId: marker?.id,
+          turnId: usageTurn, model: string(record.model), occurredAt }, true);
+        continue;
+      }
       const native = options.desktopModels?.get(string(object(object(record.extra)["claude-code"]).lastEntryUuid) ?? "");
       const model = string(record.model) ?? native?.model;
       const reasoningEffort = string(record.reasoningEffort) ?? string(record.effort) ?? native?.reasoningEffort;
@@ -321,6 +355,7 @@ export async function parseSessionSource(source: SourceLocation, sink: SessionSi
         const newTurn = record.isSilence !== true && (nativeTurn === undefined || nativeTurn !== desktopTurn);
         if (newTurn) desktopTurn = nativeTurn;
         emitted = message(key, record.isSilence === true ? "system" : "user", text(record.content), line, extra, newTurn);
+        if (ideSnapshot && nativeTurn && emitted.kind === "user") desktopTurnIds.set(nativeTurn, emitted.turnId);
       } else if (role === "assistant") {
         if (text(record.content)) emitted = message(key, "assistant", text(record.content), line, extra);
         if (emitted) desktopRequest?.messages.add(emitted.id);
@@ -367,6 +402,9 @@ export async function parseSessionSource(source: SourceLocation, sink: SessionSi
       continue;
     }
     if (source.client === "codex") {
+      if (record.type === "turn_context" || record.type === "event_msg" && payload.type === "task_started") {
+        nativeCodexTurn = string(payload.turn_id);
+      }
       const passthrough = object(payload.internal_chat_message_metadata_passthrough);
       if (record.type === "session_meta") {
         const spawn = object(object(object(payload.source).subagent).thread_spawn);
@@ -396,6 +434,14 @@ export async function parseSessionSource(source: SourceLocation, sink: SessionSi
         continue;
       }
       if (["compacted", "compaction"].includes(string(record.type) ?? "")) {
+        const snapshot = object(payload.latest_token_usage_record);
+        const responseId = string(snapshot.response_id);
+        const rawUsage = object(snapshot.usage);
+        const recorded = ["input_tokens", "output_tokens", "cached_input_tokens", "cache_write_input_tokens", "reasoning_output_tokens", "context_tokens"]
+          .some(key => tokens(rawUsage[key]) !== undefined);
+        if (snapshot.thread_id === rawId && responseId && recorded && !codexUsageSnapshots.has(responseId)) {
+          codexUsageSnapshots.set(responseId, { value: snapshot, line });
+        }
         message(`compression:${line}`, "compression", text(payload.message ?? payload.summary), line, extra); continue;
       }
       if (record.type === "event_msg") {
@@ -483,7 +529,11 @@ export async function parseSessionSource(source: SourceLocation, sink: SessionSi
       }
       continue;
     }
-    const native = source.client === "claude" ? object(record.message) : record;
+    const nested = object(record.message);
+    const legacyCodeflicker = source.client === "codeflicker" && ["user", "assistant"].includes(string(record.type) ?? "")
+      && nested.role === record.type && (typeof nested.content === "string" || Array.isArray(nested.content));
+    const claudeEnvelope = source.client === "claude" || legacyCodeflicker;
+    const native = claudeEnvelope ? nested : record;
     const role = string(native.role) ?? string(record.role) ?? string(record.type);
     const nativeId = string(record.uuid) ?? string(native.id) ?? `row:${line}`;
     const model = string(native.model);
@@ -499,7 +549,7 @@ export async function parseSessionSource(source: SourceLocation, sink: SessionSi
     if (source.client === "codeflicker" && record.type === "message" && record.isCompactSummary === true) {
       message(`native:${nativeId}`, "compression", text(native.content), line, extra); continue;
     }
-    if (source.client === "codeflicker" && record.type !== "message") continue;
+    if (source.client === "codeflicker" && record.type !== "message" && !legacyCodeflicker) continue;
     const content = native.content;
     if (source.client === "codeflicker" && role === "attachment") {
       const attachment = object(content);
@@ -530,8 +580,8 @@ export async function parseSessionSource(source: SourceLocation, sink: SessionSi
       || (metadata.injected === true && !userOrigin)
       || ["task-notification", "workflow-notification", "workflow-running-reminder", "post-compact-recent-user-context", "fork-launch", "fork-context"].includes(origin ?? ""));
     const human = role === "user" && !hasResult && record.isMeta !== true && !injected;
-    const requestId = source.client === "codeflicker" ? string(object(object(record.metadata).requestTokenBaseline).requestId) ?? nativeId : string(native.id) ?? nativeId;
-    const identified = Boolean(recordedModel) && (source.client === "claude" ? Boolean(string(native.id))
+    const requestId = claudeEnvelope ? string(native.id) ?? nativeId : string(object(object(record.metadata).requestTokenBaseline).requestId) ?? nativeId;
+    const identified = Boolean(recordedModel) && (claudeEnvelope ? Boolean(string(native.id))
       : Boolean(string(object(object(record.metadata).requestTokenBaseline).requestId)));
     if (role === "assistant" && native.model === "<synthetic>") timing?.ignoreNative();
     if (role === "assistant" && !copied && native.model !== "<synthetic>") timing?.nativeRequest(requestId, nativeId, identified);
@@ -587,18 +637,28 @@ export async function parseSessionSource(source: SourceLocation, sink: SessionSi
           ...(omittedCacheIsZero && !Object.hasOwn(nativeUsage, "cache_creation_input_tokens") ? { cache_creation_input_tokens: 0 } : {}) };
         const persisted = source.client === "codeflicker" && record.type === "message" && Boolean(string(record.uuid)) && identified
           && Object.keys(object(native.usage)).length > 0 && !partial;
-        const usageId = usage.native(source.client === "claude" ? "claude" : "codeflicker", normalizedUsage, requestId,
+        const usageId = usage.native(claudeEnvelope ? "claude" : "codeflicker", normalizedUsage, requestId,
           { messageId: firstMessage?.id, turnId, model: recordedModel, reasoningEffort: extra.reasoningEffort, occurredAt }, identified);
         timing?.nativeUsage(usageId, string(native.stop_reason), persisted, partial, { occurredAt, recordLine: line, messageId: firstMessage?.id });
       }
     }
   }
   timing?.finish();
+  for (const [responseId, snapshot] of codexUsageSnapshots) {
+    if (usage.hasCodexResponse(responseId, snapshot.value.usage, snapshot.value.thread_token_usage)) continue;
+    currentRecordLine = snapshot.line;
+    // 压缩只保存最近请求的快照时恢复明确响应身份；不借用压缩时间或当前模型补齐请求。
+    usage.codex(snapshot.value.usage, undefined, responseId, {
+      turnId: codexTurnIds.get(string(snapshot.value.turn_id) ?? ""), model: string(snapshot.value.model),
+      provider: string(snapshot.value.model_provider), reasoningEffort: string(snapshot.value.reasoning_effort),
+      occurredAt: string(snapshot.value.timestamp),
+    });
+  }
   for (const request of desktopRequests.values()) {
     if (request.usageId && request.timing) usage.timing(request.usageId, request.timing, [...request.messages]);
   }
   finishTurn();
-  if (ideSnapshot) gap("unsupported_format", "IDE 主历史未保存逐请求 Token 用量，累计缓存不能重建请求趋势；未补造记录值", { key: "diagnostics.sessions.parser.m017" });
+  if (ideSnapshot?.usageIncomplete) gap("unsupported_format", "IDE 部分请求未保存用量或旁路记录无法唯一关联，累计缓存未转换成请求用量", { key: "diagnostics.sessions.parser.m017" });
   if (pending.size) gap("unpaired_call", "历史结束时仍有工具调用未记录完成结果", { key: "diagnostics.sessions.parser.m018" });
   if (meta.relationship === "fork" && copyBeforeOrdinal === undefined) gap("ambiguous", "分叉来源缺少共享历史边界，未猜测或排除复制消息", { key: "diagnostics.sessions.parser.m019" });
   if (source.client === "codeflicker" && basename(source.path).startsWith("agent-") && !meta.parentSessionId) gap("ambiguous", "子会话来源缺少明确父关系，作为独立会话保留", { key: "diagnostics.sessions.parser.m020" });

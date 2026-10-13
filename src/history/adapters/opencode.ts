@@ -124,6 +124,9 @@ function buildRecords(sessionId: string, messages: Record<string, unknown>[], pa
     const summarized = data.summary === true || messageMetadata.summary === true
       || grouped.some(part => part.data.summary === true || object(part.data.metadata).summary === true);
     const finishedAt = timestamp(object(data.time).completed ?? row.time_completed);
+    const textEnd = ordinaryTextParts.map(part => timestamp(object(part.data.time).end))
+      .filter((value): value is string => value !== undefined).sort().at(-1);
+    const replyAt = role === "assistant" && text ? finishedAt ?? textEnd ?? created : created;
     const finishReason = (string(data.finish) ?? string(data.stopReason) ?? string(data.finishReason) ?? "").toLowerCase();
     const terminalFailure = (data.error !== undefined && data.error !== null)
       || data.interrupted === true
@@ -154,7 +157,7 @@ function buildRecords(sessionId: string, messages: Record<string, unknown>[], pa
       start: created ? { occurredAt: created, recordLine: 0 } : undefined,
       end: finishedAt ? { occurredAt: finishedAt, recordLine: 0 } : undefined,
       durationMs: elapsed !== undefined && Number.isFinite(elapsed) ? elapsed : undefined };
-    const event: NormalizedEvent = { key: `message:${id}`, kind, text, model, occurredAt: created, turnKey,
+    const event: NormalizedEvent = { key: `message:${id}`, kind, text, model, occurredAt: replyAt, turnKey,
       requestKey, ...(requestKey ? { requestTiming: timing } : {}),
       ...(role === "assistant" ? { allowInferredFinal, interrupted: terminalFailure || undefined,
         finalEvidence: allowInferredFinal ? normalFinish ? "normal_stop" : "response_completed" : undefined,

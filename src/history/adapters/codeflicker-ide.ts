@@ -8,6 +8,7 @@ import type { SourceLocation } from "../types.js";
 import { object, physicalLines, returnedText, string, toolEvidence, changedFragments } from "../extraction.js";
 import { normalizeHistoryPath, registerRequest } from "./common.js";
 import type { HistoryAdapter, HistoryRecordSnapshot } from "./types.js";
+import { ideUsageRecords, type IdeUsageSidecar } from "./codeflicker-ide-usage.js";
 
 export const IDE_FORMAT = "codeflicker-ide-sqlite";
 const hash = (value: string) => createHash("sha256").update(value).digest("hex");
@@ -58,7 +59,28 @@ async function indexMetadata(path: string, id: string): Promise<Record<string, u
   } finally { db.close(); }
 }
 
-export interface IdeSnapshot extends HistoryRecordSnapshot { title?: string; legacy?: boolean }
+export interface IdeSnapshot extends HistoryRecordSnapshot { title?: string; legacy?: boolean; usageIncomplete?: boolean }
+
+function usageRows(db: Database.Database, path: string, id: string): IdeUsageSidecar[] {
+  if (!db.prepare("SELECT 1 FROM sqlite_master WHERE name='KwaipilotKV' AND type='table'").get()) return [];
+  return (db.prepare("SELECT key,value FROM KwaipilotKV WHERE key IN (?,?)")
+    .all(`token_usage_history_${id}`, `apiConversationHistory:${id}`) as { key: string; value: unknown }[])
+    .map(row => ({ path, key: row.key, value: decode(row.value) }));
+}
+
+async function usageSidecars(path: string, id: string): Promise<IdeUsageSidecar[]> {
+  const rows: IdeUsageSidecar[] = [];
+  for (const name of ["index.sqlite", "api_history.sqlite"]) {
+    const location = join(dirname(path), name);
+    if (location === path) continue;
+    let db;
+    try { db = await openDatabase(location); }
+    catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") continue; throw error; }
+    try { rows.push(...usageRows(db, location, id)); }
+    finally { db.close(); }
+  }
+  return rows;
+}
 
 /** 读事务包含 WAL 中已提交的内容；按会话正文和旁路元数据计算逻辑指纹。 */
 export async function readIdeSnapshot(location: SourceLocation): Promise<IdeSnapshot> {
@@ -67,6 +89,7 @@ export async function readIdeSnapshot(location: SourceLocation): Promise<IdeSnap
   let data: Record<string, unknown>;
   let records: IdeSnapshot["records"];
   let legacyMetadata: Record<string, unknown> = {};
+  let usageSources: IdeUsageSidecar[] = [];
   const legacy = location.selector.startsWith("legacy:");
   db.exec("BEGIN");
   try {
@@ -84,6 +107,7 @@ export async function readIdeSnapshot(location: SourceLocation): Promise<IdeSnap
       data = object(decode(row.value));
       if (!Array.isArray(data.localMessages)) throw new DiagnosticError("SQLite 会话缺少 localMessages 数组", { key: "diagnostics.history.adapters.codeflickerIde.m004" });
       records = data.localMessages.map((value, index) => ({ record: object(value), raw: JSON.stringify(value), line: index + 1 }));
+      usageSources = usageRows(db, location.path, string(data.sessionId) ?? location.sessionId ?? "");
       const history = db.prepare("SELECT value FROM KwaipilotKV WHERE key='composerHistory'").get() as { value: unknown } | undefined;
       const entries = history ? decode(history.value) : undefined;
       if (Array.isArray(entries)) legacyMetadata = object(entries.find(item => object(item).sessionId === data.sessionId));
@@ -95,11 +119,14 @@ export async function readIdeSnapshot(location: SourceLocation): Promise<IdeSnap
   if (meta.sessionId && meta.sessionId !== id) throw new DiagnosticError("SQLite 标题元数据与会话身份不符", { key: "diagnostics.history.adapters.codeflickerIde.m006" });
   const cwd = await workspace(string(data.workspaceUri) || string(meta.workspaceUri));
   const title = string(meta.name) ?? string(data.session_name);
+  if (!legacy) usageSources.push(...await usageSidecars(location.path, id));
+  const restored = ideUsageRecords(id, records, usageSources);
   const results = new Map<string, number>();
   for (const [index, item] of records.entries()) if (["command_output", "use_mcp_tool_result", "tool_error"].includes(string(item.record.say) ?? "") && string(item.record.toolCallId)) results.set(String(item.record.toolCallId), index);
   for (const [index, item] of records.entries()) if ((results.get(String(item.record.toolCallId)) ?? -1) > index) item.record = { ...item.record, __separateResult: true };
   return { source: { ...location, format: IDE_FORMAT, sessionId: id, cwd, sourceId: `${location.client}:${hash(id).slice(0, 24)}` },
-    hash: hash(JSON.stringify(legacy ? [data, meta, cwd ?? null, records.map(item => item.raw)] : [data, meta, cwd ?? null])), records, title, legacy };
+    hash: hash(JSON.stringify(legacy ? [data, meta, cwd ?? null, records.map(item => item.raw)] : [data, meta, cwd ?? null, usageSources])),
+    records: [...records, ...restored.records], title, legacy, usageIncomplete: restored.incomplete };
 }
 
 export async function discoverIdeFile(location: SourceLocation): Promise<SourceLocation[]> {
@@ -181,6 +208,7 @@ export const codeflickerIdeAdapter: HistoryAdapter = {
           .get(`$.localMessages[${source.recordLine - 1}]`, source.selector) as { value: string | null } | undefined;
         if (row?.value) raw = JSON.stringify(decode(row.value));
       }
+      if (!raw) raw = (await readIdeSnapshot({ ...source, client: "codeflicker-desktop", format: IDE_FORMAT })).records.find(row => row.line === source.recordLine)?.raw;
       return raw && hash(raw) === source.hash ? { source, raw } : undefined;
     } catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined; throw error; }
     finally { db?.close(); }

@@ -12,6 +12,7 @@ import { parseNormalizedSession } from "../src/history/adapters/normalized.js";
 import { zcodeAdapter, ZCODE_FORMAT } from "../src/history/adapters/zcode.js";
 import { createSqliteReadBudget, readSqliteRows, sqliteJson } from "../src/history/adapters/sqlite-readonly.js";
 import type { SessionMessage, SessionUsage } from "../src/session-contracts.js";
+import { summarizeRoundMetrics } from "../src/sessions/round-metrics.js";
 
 const registry = HISTORY_ADAPTERS as unknown as HistoryAdapter[];
 
@@ -352,7 +353,7 @@ test("OpenCode 顶层模型字段与合成压缩过程不会制造用户轮次�
   assert.equal([...messages.values()].find(message => message.text === "unfinished answer")?.final, undefined);
   assert.equal([...messages.values()].find(message => message.text === "complete answer")?.final, "inferred");
   assert.equal([...messages.values()].find(message => message.text === "complete answer")?.finalEvidence, "response_completed");
-  assert.equal([...messages.values()].find(message => message.text === "complete answer")?.occurredAt, new Date(6).toISOString());
+  assert.equal([...messages.values()].find(message => message.text === "complete answer")?.occurredAt, new Date(7).toISOString());
   assert.equal([...messages.values()].find(message => message.text === "complete answer")?.finalAt, new Date(7).toISOString());
   assert.equal([...messages.values()].find(message => message.text === "complete answer")?.model, "provider-y/model-y");
   assert.ok([...messages.values()].some(message => message.kind === "compression" && message.text === "compressed context"));
@@ -554,7 +555,7 @@ test("ZCode 任务索引按 session.id 关联；model_usage 按尝试计数，�
   assert.equal(assistants.find(item => item.text === "synthetic response")?.final, undefined);
   assert.equal(assistants.find(item => item.text === "synthetic final answer")?.final, "inferred");
   assert.equal(assistants.find(item => item.text === "synthetic final answer")?.finalEvidence, "normal_stop");
-  assert.equal(assistants.find(item => item.text === "synthetic final answer")?.occurredAt, new Date(4).toISOString());
+  assert.equal(assistants.find(item => item.text === "synthetic final answer")?.occurredAt, new Date(5).toISOString());
   assert.equal(assistants.find(item => item.text === "synthetic final answer")?.finalAt, new Date(5).toISOString());
   assert.ok(assistants.filter(item => item.final === undefined).every(item => item.finalEvidence === undefined));
   assert.equal(assistants.find(item => item.text === "truncated response")?.final, undefined);
@@ -569,6 +570,80 @@ test("ZCode 任务索引按 session.id 关联；model_usage 按尝试计数，�
   paths.db.close();
   paths.index.close();
 })));
+
+test("ZCode 无请求表用量时读取步骤结束用量，消息快照不重复累计", async () => temporary(async directory => {
+  const paths = await createZCodeSchema(directory);
+  paths.db.prepare("INSERT INTO session VALUES(?,?,?,?)").run("legacy", "/synthetic/repo", "Legacy usage", null);
+  const insertMessage = paths.db.prepare("INSERT INTO message VALUES(?,?,?,?,?)");
+  insertMessage.run("user", "legacy", 1000, 1000, JSON.stringify({ role: "user", content: "request", turnId: "turn" }));
+  insertMessage.run("assistant", "legacy", 2000, 5000, JSON.stringify({ role: "assistant", content: "answer", turnId: "turn",
+    model: { modelID: "fixture-model" }, finish: "stop", time: { created: 2000, completed: 5000 },
+    tokens: { total: 260, input: 230, output: 30, reasoning: 0, cache: { read: 170, write: 0 } } }));
+  const insertPart = paths.db.prepare("INSERT INTO part VALUES(?,?,?,?,?,?)");
+  for (const [id, input, output, read, end] of [["step-one", 100, 10, 60, 3000], ["step-two", 130, 20, 110, 5000]] as const) {
+    insertPart.run(id, "assistant", "legacy", end, end, JSON.stringify({ id, type: "step-finish", reason: "stop",
+      tokens: { total: input + output, input, output, reasoning: 0, cache: { read, write: 0 } } }));
+  }
+  const source = { path: paths.dbPath, client: "zcode" as const, format: ZCODE_FORMAT, selector: "legacy" };
+  const snapshot = await zcodeAdapter.readRecords!(source);
+  const usage = new Map<string, SessionUsage>();
+  parseNormalizedSession(snapshot, { message: () => undefined, usage: value => usage.set(value.id, value) });
+  assert.equal(usage.size, 2);
+  assert.deepEqual([...usage.values()].map(value => [value.inputTokens, value.outputTokens, value.cachedInputTokens]), [[100, 10, 60], [130, 20, 110]]);
+  assert.ok([...usage.values()].every(value => value.turnId.endsWith(":turn:1") && value.model === "fixture-model"));
+  assert.equal([...usage.values()][0]?.occurredAt, new Date(3000).toISOString());
+  assert.ok(!snapshot.meta.gaps?.some(gap => gap.message.includes("step-finish")));
+  const previousHash = snapshot.hash;
+  paths.db.prepare("UPDATE part SET data=? WHERE id=?").run(JSON.stringify({ id: "step-two", type: "step-finish", reason: "stop",
+    tokens: { total: 151, input: 130, output: 21, reasoning: 0, cache: { read: 110, write: 0 } } }), "step-two");
+  assert.notEqual((await zcodeAdapter.readRecords!(source)).hash, previousHash);
+  paths.db.close(); paths.index.close();
+}));
+
+test("ZCode 仅有消息用量时核验总量，空响应占位不生成零请求", async () => temporary(async directory => {
+  const paths = await createZCodeSchema(directory);
+  paths.db.prepare("INSERT INTO session VALUES(?,?,?,?)").run("legacy", "/synthetic/repo", "Legacy usage", null);
+  const insert = paths.db.prepare("INSERT INTO message VALUES(?,?,?,?,?)");
+  insert.run("user", "legacy", 1000, 1000, JSON.stringify({ role: "user", content: "request", time: { created: 1000 } }));
+  insert.run("answer", "legacy", 2000, 3000, JSON.stringify({ role: "assistant", content: "answer", finish: "stop",
+    time: { created: 2000, completed: 3000 }, tokens: { total: 110, input: 100, output: 10, reasoning: 0, cache: { read: 80, write: 0 } } }));
+  insert.run("placeholder", "legacy", 4000, 4000, JSON.stringify({ role: "assistant",
+    tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } } }));
+  const snapshot = await zcodeAdapter.readRecords!({ path: paths.dbPath, client: "zcode", format: ZCODE_FORMAT, selector: "legacy" });
+  const usages = new Map<string, SessionUsage>();
+  const messages = new Map<string, SessionMessage>();
+  parseNormalizedSession(snapshot, { message: value => messages.set(value.id, value), usage: value => usages.set(value.id, value) });
+  assert.equal(usages.size, 1);
+  assert.equal([...usages.values()][0]?.inputTokens, 100);
+  assert.equal([...usages.values()][0]?.cachedInputTokens, 80);
+  assert.equal(summarizeRoundMetrics([...messages.values()], [...usages.values()]).averageDurationMs, 2000);
+  insert.run("conflict", "legacy", 5000, 6000, JSON.stringify({ role: "assistant", content: "partial usage", finish: "stop",
+    tokens: { total: 999, input: 100, output: 10, reasoning: 0, cache: { read: 80, write: 0 } } }));
+  const changed = await zcodeAdapter.readRecords!({ path: paths.dbPath, client: "zcode", format: ZCODE_FORMAT, selector: "legacy" });
+  const partial = new Map<string, SessionUsage>();
+  parseNormalizedSession(changed, { message: () => undefined, usage: value => partial.set(value.id, value) });
+  assert.equal(partial.size, 2);
+  assert.equal([...partial.values()].filter(value => value.inputTokens === undefined && value.outputTokens === 10).length, 1);
+  assert.ok(changed.meta.gaps?.some(gap => gap.messageDescriptor?.key === "diagnostics.history.adapters.zcode.legacyUsage"));
+  paths.db.close(); paths.index.close();
+}));
+
+test("ZCode 混合代际按助手身份选择请求表或旧式用量，零值空占位不算请求", async () => temporary(async directory => {
+  const paths = await createZCodeSchema(directory);
+  insertZCodeConversation(paths.db);
+  paths.db.prepare("INSERT INTO message VALUES(?,?,?,?,?)").run("legacy-extra", "session-one", 20, 30,
+    JSON.stringify({ role: "assistant", content: "独立旧式响应", finish: "stop", time: { created: 20, completed: 30 },
+      tokens: { total: 110, input: 100, output: 10, reasoning: 0, cache: { read: 80, write: 0 } } }));
+  paths.db.prepare("INSERT INTO message VALUES(?,?,?,?,?)").run("placeholder", "session-one", 40, 40,
+    JSON.stringify({ role: "assistant", tokens: { total: 0, input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } } }));
+  const snapshot = await zcodeAdapter.readRecords!({ path: paths.dbPath, client: "zcode", format: ZCODE_FORMAT, selector: "session-one" });
+  const usage = new Map<string, SessionUsage>();
+  parseNormalizedSession(snapshot, { message: () => undefined, usage: value => usage.set(value.id, value) });
+  assert.equal(usage.size, 4);
+  assert.equal([...usage.values()].filter(value => value.inputTokens === 100 && value.outputTokens === 10).length, 1);
+  assert.ok([...usage.values()].every(value => value.inputTokens !== 0 || value.outputTokens !== 0));
+  paths.db.close(); paths.index.close();
+}));
 
 test("OpenCode 与 ZCode 未知 message role 保留 context、缺口与原始行", async () => temporary(async directory => registerAdapters(async () => {
   const openCodePath = join(directory, "opencode-unknown-role.db");

@@ -4,7 +4,12 @@ import type { IdeSnapshot } from "../history/adapters/codeflicker-ide.js";
 
 /** 内存中规范化主 UI 记录；API 上下文副本不重复作为用户消息或工具调用导入。 */
 export function* ideSessionRecords(snapshot: IdeSnapshot): Generator<{ line: number; record: Record<string, unknown> }> {
+  const usages = snapshot.records.filter(row => row.record.op === "request_usage");
+  let previousLine: number | undefined;
   for (const { record, line } of snapshot.records) {
+    if (record.op === "request_usage") continue;
+    for (const usage of usages) if (usage.record.__ideUsageAfterLine === previousLine) yield usage;
+    previousLine = line;
     if (snapshot.legacy) {
       const question = object(record.Q);
       yield { line, record: { id: `legacy:${line}:user`, role: "user", content: question.plainText ?? question.question,
@@ -16,7 +21,8 @@ export function* ideSessionRecords(snapshot: IdeSnapshot): Generator<{ line: num
       }
       continue;
     }
-    const base: Record<string, unknown> = { id: `ide:${line}`, timestamp: record.ts, model: record.chatModel, isSilence: record.isSilence };
+    const base: Record<string, unknown> = { id: `ide:${line}`, timestamp: record.ts, model: record.chatModel,
+      turnId: record.chatId, isSilence: record.isSilence };
     const type = string(record.say ?? record.ask);
     const tool = ideTool(record);
     if (tool) {
@@ -43,4 +49,5 @@ export function* ideSessionRecords(snapshot: IdeSnapshot): Generator<{ line: num
     else yield { line, record: { ...base, role: "system", content: record.text || type || "未记录内容",
       ...(!record.text && !type ? { textDescriptor: { key: "sessions.body.unrecorded" } } : {}) } };
   }
+  for (const usage of usages) if (usage.record.__ideUsageAfterLine === previousLine) yield usage;
 }

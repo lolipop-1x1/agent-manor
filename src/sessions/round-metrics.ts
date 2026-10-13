@@ -27,12 +27,13 @@ export const isRoundActivityEvent = (message: Pick<SessionMessage, "kind" | "cop
   && !["system", "context"].includes(message.kind) && !(message.kind === "user" && message.resource?.kind === "skill_read");
 const incompleteSource = new Set(["source_missing", "source_unavailable", "unsupported_format", "parse_error", "incomplete_record", "budget_exceeded"]);
 const nonBoundaryGaps = new Set(["diagnostics.sessions.parser.m012", "diagnostics.sessions.parser.m013", "diagnostics.sessions.parser.m014", "diagnostics.sessions.parser.m015",
+  "diagnostics.sessions.parserUsage.m001", "diagnostics.sessions.parser.m017", "diagnostics.history.adapters.zcode.legacyUsage",
   "diagnostics.history.adapters.qoder.m004", "diagnostics.history.adapters.codebuddy.resourceCoverage",
   "diagnostics.history.adapters.opencode.m002", "diagnostics.history.adapters.opencode.m003", "diagnostics.history.adapters.zcode.m007"]);
 const auxiliaryEvents = new Map([
   ["diagnostics.history.adapters.dsh.m016", new Set(["permission/preset", "sandbox/mode", "approval/policy", "agent/inbox/spliced", "session/title", "session/title-llm-request", "todo/write", "subagent/catalog", "goal/change"])],
   ["diagnostics.history.adapters.opencode.m006", new Set(["step-start", "patch"])],
-  ["diagnostics.history.adapters.zcode.m004", new Set(["step-start", "step-finish", "patch"])],
+  ["diagnostics.history.adapters.zcode.m004", new Set(["step-start", "step-finish", "patch", "file"])],
   ["diagnostics.history.adapters.codebuddy.m006", new Set(["summary"])],
 ]);
 export function completeRoundSource(gaps: Gap[]): boolean {

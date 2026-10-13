@@ -31,6 +31,33 @@ const refresh = async (store: SessionStore, roots: ReturnType<typeof isolatedHis
   return store.getJob(job.id);
 };
 
+test("原始用量规则升级使未变来源重新解析，范围外客户端修订保持不变", async () => fixture(async (store, directory) => {
+  const codex = join(directory, "codex");
+  const claude = join(directory, "claude");
+  await mkdir(codex); await mkdir(claude);
+  await writeFile(join(codex, "source.jsonl"), codexSource("source-demo", "合成需求"));
+  await writeFile(join(claude, "source.jsonl"), encode({ type: "user", uuid: "user", sessionId: "other-demo",
+    message: { role: "user", content: "其他客户端" } }));
+  const roots = isolatedHistoryRoots({ codex, claude });
+  await refresh(store, roots);
+  const before = store.cachedRevisions();
+  const original = before.find(item => item.client === "codex")!;
+  const untouched = before.find(item => item.client === "claude")!;
+  assert.ok(original.fingerprint.includes(":usage-source-v1"));
+  assert.ok(!untouched.fingerprint.includes(":usage-source-v1"));
+  const db = new Database(store.dbPath);
+  db.prepare("UPDATE session_revisions SET fingerprint=replace(fingerprint,':usage-source-v1',''),metadata_fingerprint='old-usage-rule' WHERE id=?").run(original.revision);
+  db.close();
+  const job = await refresh(store, roots, { client: "codex", mode: "quick" });
+  assert.equal(job.counts?.parsed, 1);
+  const current = store.cachedRevisions();
+  assert.notEqual(current.find(item => item.client === "codex")?.revision, original.revision);
+  assert.equal(current.find(item => item.client === "claude")?.revision, untouched.revision);
+  const reused = await refresh(store, roots, { client: "codex", mode: "quick" });
+  assert.equal(reused.counts?.parsed, 0);
+  assert.equal(reused.counts?.quickReused, 1);
+}));
+
 test("局部刷新只访问所选 Agent，连续发布保留其他来源与检查时间", async () => fixture(async (store, directory) => {
   const codex = join(directory, "codex", "sessions");
   const claude = join(directory, "claude");

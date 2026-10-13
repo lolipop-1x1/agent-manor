@@ -111,6 +111,7 @@ test("过程分析通道被占用时，轻量用量、当前维度和候选通�
   const manager = new OverviewManager(store, new PricingService(directory), () => [], () => new Date("2026-03-01T12:00:00Z"));
   const internal = manager as unknown as { dispatch(type: string, ...parameters: unknown[]): Promise<unknown>; workers: Map<string, import("node:worker_threads").Worker> };
   const dispatch = internal.dispatch.bind(manager), calls: { type: string; lane: string; panel?: string }[] = [];
+  const workerSamples = new Map<string, { threadId: number; memoryLimit?: number }>();
   let release!: () => void, started!: () => void, analysisBlocked = false, processComplete = false;
   const held = new Promise<void>(resolve => { release = resolve; }), entered = new Promise<void>(resolve => { started = resolve; });
   internal.dispatch = (type, ...parameters) => {
@@ -118,7 +119,14 @@ test("过程分析通道被占用时，轻量用量、当前维度和候选通�
     calls.push({ type, lane, panel });
     if (lane === "analysis" && panel === "process") { analysisBlocked = true; started(); }
     // 模拟过程 Worker 的同步查询占用整个 analysis 通道，其他通道使用真实 Worker。
-    return lane === "analysis" && analysisBlocked ? held.then(() => dispatch(type, ...parameters)) : dispatch(type, ...parameters);
+    const run = () => {
+      const result = dispatch(type, ...parameters);
+      const worker = internal.workers.get(lane);
+      // 在请求运行时取证；完成后的空闲回收不应让通道独立性测试依赖调度速度。
+      if (worker) workerSamples.set(lane, { threadId: worker.threadId, memoryLimit: worker.resourceLimits.maxOldGenerationSizeMb });
+      return result;
+    };
+    return lane === "analysis" && analysisBlocked ? held.then(run) : run();
   };
   const query = { version, window: "365" as const, timezone: "UTC" }, deadline = new AbortController();
   let process: ReturnType<OverviewManager["panel"]> | undefined, light: Promise<unknown> | undefined;
@@ -135,8 +143,8 @@ test("过程分析通道被占用时，轻量用量、当前维度和候选通�
     assert.deepEqual(calls.filter(call => call.type === "prepare").map(call => call.lane), ["core"], "事实仍只通过核心通道准备一次");
     assert.equal(calls.find(call => call.panel === "resources")!.lane, "analysis");
     assert.equal(calls.find(call => call.panel === "process")!.lane, "analysis");
-    const usageWorker = internal.workers.get("usage")!, analysisWorker = internal.workers.get("analysis")!;
-    assert.notEqual(usageWorker.threadId, analysisWorker.threadId); assert.equal(usageWorker.resourceLimits.maxOldGenerationSizeMb, 512);
+    const usageWorker = workerSamples.get("usage")!, analysisWorker = workerSamples.get("analysis")!;
+    assert.notEqual(usageWorker.threadId, analysisWorker.threadId); assert.equal(usageWorker.memoryLimit, 512);
     release(); assert.equal((await process).data.process!.tools.length, 0);
   } finally {
     deadline.abort(); release(); await process?.catch(() => undefined); await light?.catch(() => undefined);

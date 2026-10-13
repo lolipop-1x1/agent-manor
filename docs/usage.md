@@ -169,7 +169,7 @@ CodeFlicker CLI 使用 `--client codeflicker`，Web 中选择 CodeFlicker CLI，
 
 CodeFlicker 桌面版接入新版 MyFlicker 桌面端，使用 `--client codeflicker-desktop` 或 API `client=codeflicker-desktop`。默认发现 `~/.myflicker/sessions/<会话ID>/message/cache.jsonl`；`MYFLICKER_HOME` 可替换客户端目录，AgentManor 的显式来源配置优先。代码地图与会话库共用这份主来源，不重复索引同会话的底层执行轨迹。`checkpoints/registry.json` 提供正式 cwd；本机 `MyFlicker/app.db` 的会话标题缓存只补充已发现会话的标题，不把未下载的服务端历史当成本机完整记录。模型只按明确消息 UUID 关联底层日志，未记录时保持缺失。刷新会检查标题、cwd 和模型旁路的变化，原始来源始终只读。
 
-同一桌面版入口也默认发现 `~/.codeflicker/data/codeflicker/` 的旧桌面／IDE SQLite 历史：读取 `session_data.sqlite`、`composer_data.sqlite` 中已保存的会话，用同目录的 `index.sqlite` 补充标题。一个数据库里的多个会话独立索引，新库的同身份迁移副本优先。工作区缓存地址通过正式 `workspace.json` 关联项目，配置缺失时不将缓存目录当成仓库。读取返回支持 Tab／竖线编号，编辑仅按已接受的前后快照计算覆盖；只有参数、提案或没有确认终态时保留未知。主 UI 历史与 API 请求上下文副本不重复导入。旧格式缺少逐请求用量时显示未记录及内容估算，不把累计缓存转换成请求趋势。
+同一桌面版入口也默认发现 `~/.codeflicker/data/codeflicker/` 的旧桌面／IDE SQLite 历史：读取 `session_data.sqlite`、`composer_data.sqlite` 中已保存的会话，用同目录的 `index.sqlite` 补充标题。一个数据库里的多个会话独立索引，新库的同身份迁移副本优先。工作区缓存地址通过正式 `workspace.json` 关联项目，配置缺失时不将缓存目录当成仓库。读取返回支持 Tab／竖线编号，编辑仅按已接受的前后快照计算覆盖；只有参数、提案或没有确认终态时保留未知。主 UI 历史与 API 请求上下文副本不重复导入；逐请求 Token 历史及能够完整、唯一匹配原生请求的 API 用量按同一请求合并，来源冲突或无法唯一关联时保留缺口。缺失的用量仍显示未记录及内容估算，不把累计缓存转换成请求趋势。
 
 活动与证据查询保留已删除文件的历史，按路径分类，覆盖分母仍只包含当前文件。目录搜索按当前或历史后代文件与所选类别的交集筛选，不把整个目录算作读取。没有具体文件路径的活动类别为 `unknown`，用 `--categories unknown` 或全部类别查看；目录筛选依据已核验的 cwd，不推断搜索命中或覆盖行。
 

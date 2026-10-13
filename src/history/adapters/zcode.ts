@@ -61,6 +61,26 @@ function requestTiming(row: Record<string, unknown>): SessionRequestTiming {
     outputTokens: number(row.output_tokens) };
 }
 
+function legacyUsage(value: unknown, meta: NormalizedSessionMetadata): NormalizedEvent["usage"] {
+  const tokens = object(value);
+  const cache = object(tokens.cache);
+  const count = (value: unknown) => Number.isSafeInteger(value) && Number(value) >= 0 ? Number(value) : undefined;
+  const input = count(tokens.input), output = count(tokens.output), reasoning = count(tokens.reasoning);
+  const read = count(cache.read), write = count(cache.write), total = count(tokens.total);
+  if (![input, output, reasoning, read, write, total].some(value => value !== undefined)) return undefined;
+  // 旧格式输入已包含缓存，以原生总量恒等式验证，不能再加缓存桶。
+  const knownInput = input !== undefined && output !== undefined && total === input + output
+    && (reasoning === undefined || reasoning <= output) && (read === undefined || read <= input)
+    && (write === undefined || write <= input) && (read === undefined || write === undefined || read + write <= input);
+  if (!knownInput) {
+    meta.gaps ??= [];
+    meta.gaps.push({ kind: "ambiguous", message: "ZCode 旧式用量总量或缓存分项无法核验，未计算总输入",
+      messageDescriptor: { key: "diagnostics.history.adapters.zcode.legacyUsage" } });
+  }
+  return { inputTokens: knownInput ? input : undefined, outputTokens: output, cachedInputTokens: read,
+    cacheWriteTokens: write, reasoningOutputTokens: reasoning };
+}
+
 function buildRecords(messages: Record<string, unknown>[], parts: Record<string, unknown>[], modelUsage: Record<string, unknown>[], meta: NormalizedSessionMetadata) {
   const gaps = meta.gaps ?? (meta.gaps = []);
   const byMessage = new Map<string, { row: Record<string, unknown>; data: Record<string, unknown>; raw: string }[]>();
@@ -90,10 +110,18 @@ function buildRecords(messages: Record<string, unknown>[], parts: Record<string,
     const grouped = byMessage.get(id) ?? [];
     const partTexts = grouped.filter(part => part.data.type === "text").map(part => string(part.data.text) ?? "").filter(Boolean);
     const text = [textContent(data.content), ...partTexts].filter(Boolean).join("\n");
+    const semantics = object(data.semantics);
+    const injected = role === "user" && semantics.origin !== "real_user"
+      && (data.synthetic === true
+        || semantics.origin === "agent_runtime" && ["todo_reminder", "background_notification"].includes(string(semantics.kind) ?? "")
+        || !textContent(data.content).trim() && grouped.length > 0 && grouped.every(part => part.data.synthetic === true));
     const created = timestamp(object(data.time).created ?? row.time_created);
     const model = string(object(data.model).modelID) ?? string(object(data.model).model) ?? string(data.model);
     const turnKey = string(data.turnId) ?? id;
     const requests = requestsByMessage.get(id);
+    const canUseLegacy = role === "assistant" && !requests?.size
+      && modelUsage.every(request => messagesById.has(String(request.assistant_message_id)));
+    const stepUsage = canUseLegacy ? grouped.filter(part => part.data.type === "step-finish" && Object.keys(object(part.data.tokens)).length) : [];
     const messageRequestKey = requests?.size === 1 ? [...requests][0] : undefined;
     turnByMessage.set(id, turnKey);
     const raw = JSON.stringify({ message: row, textParts: grouped.filter(part => part.data.type === "text").map(part => part.row) });
@@ -105,17 +133,29 @@ function buildRecords(messages: Record<string, unknown>[], parts: Record<string,
       const finishReason = (string(data.finish) ?? string(data.stopReason) ?? string(data.finishReason) ?? "")
         .toLowerCase().replaceAll("-", "_");
       const completedAt = timestamp(object(data.time).completed);
+      const textEnd = grouped.filter(part => part.data.type === "text").map(part => timestamp(object(part.data.time).end))
+        .filter((value): value is string => value !== undefined).sort().at(-1);
+      const replyAt = role === "assistant" && text ? completedAt ?? textEnd ?? created : created;
       const normalFinish = ["stop", "end_turn", "complete", "completed", "success"].includes(finishReason);
       const failed = data.error !== undefined && data.error !== null || data.interrupted === true
         || ["error", "failed", "failure", "interrupted", "cancelled", "canceled", "max_tokens", "length"].includes(finishReason);
       const hasToolPart = grouped.some(part => part.data.type === "tool");
       const allowInferredFinal = role === "assistant" && !failed && !hasToolPart
         && (normalFinish || Boolean(completedAt) && !finishReason);
-      staged.push({ event: { key: `message:${id}`, kind: role, text, occurredAt: created, model, turnKey,
+      staged.push({ event: { key: `message:${id}`, kind: injected ? "context" : role, text, occurredAt: replyAt, model, turnKey,
         ...(role === "assistant" ? { requestKey: messageRequestKey } : {}),
         ...(role === "assistant" ? { allowInferredFinal, interrupted: failed || undefined,
           finalEvidence: allowInferredFinal ? normalFinish ? "normal_stop" : "response_completed" : undefined,
           finalAt: allowInferredFinal ? completedAt : undefined } : {}) }, raw, order: messageIndex * 1_000 });
+      // 同一助手的请求表优先；未覆盖的旧代际采用步骤，无步骤时采用非占位的消息用量。
+      const messageTokens = object(data.tokens);
+      if (canUseLegacy && !stepUsage.length && (text || completedAt || normalFinish)
+        && (number(messageTokens.total) !== undefined || (number(messageTokens.output) ?? 0) > 0)) {
+        const usage = legacyUsage(messageTokens, meta);
+        if (usage) staged.push({ event: { key: `legacy-usage:message:${id}`, kind: "context", usage,
+          usageKey: `legacy:message:${id}`, requestKey: `legacy:message:${id}`, usageMessageKey: `message:${id}`,
+          model, turnKey, occurredAt: completedAt ?? created }, raw, order: messageIndex * 1_000 + 0.5 });
+      }
     } else {
       staged.push({ event: { key: `message:${id}`, kind: "context", text, occurredAt: created, model, turnKey,
         allowInferredFinal: false }, raw, order: messageIndex * 1_000 });
@@ -127,6 +167,21 @@ function buildRecords(messages: Record<string, unknown>[], parts: Record<string,
       const partTime = timestamp(object(part.data.time).start ?? object(part.data.time).created ?? part.row.time_created) ?? created;
       const partOrder = messageIndex * 1_000 + partIndex + 1;
       if (type === "text") continue;
+      if (type === "step-finish") {
+        if (stepUsage.includes(part)) {
+          const usage = legacyUsage(part.data.tokens, meta);
+          if (usage) staged.push({ event: { key: `legacy-usage:step:${partId}`, kind: "context", usage,
+            usageKey: `legacy:step:${partId}`, requestKey: `legacy:step:${partId}`, usageMessageKey: `message:${id}`,
+            model, turnKey, occurredAt: timestamp(object(part.data.time).end ?? part.row.time_created) ?? created },
+          raw: part.raw, order: partOrder });
+        }
+        continue;
+      }
+      if (type === "timeline" && part.data.timelineType === "model_change" && part.data.status === "completed"
+        && (string(part.data.toModel) || string(object(part.data.toModel).modelID))) {
+        staged.push({ event: { key: `model-change:${partId}`, kind: "context", occurredAt: partTime, turnKey }, raw: part.raw, order: partOrder });
+        continue;
+      }
       if (type === "reasoning") {
         const value = string(part.data.text);
         if (value) staged.push({ event: { key: `reasoning:${partId}`, kind: "thinking", text: value, occurredAt: partTime, model, turnKey,

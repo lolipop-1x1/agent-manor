@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { SessionMessage } from "../src/session-contracts.js";
-import { deriveRoundFacts, promptCharacterCount, summarizeRoundMetrics } from "../src/sessions/round-metrics.js";
+import { completeRoundSource, deriveRoundFacts, promptCharacterCount, summarizeRoundMetrics } from "../src/sessions/round-metrics.js";
 
 const message = (ordinal: number, turnId: string, extra: Partial<SessionMessage> = {}): SessionMessage => ({
   id: `message-${ordinal}`, sessionId: "synthetic-session", ordinal, recordLine: ordinal + 1, turnId, kind: "user", text: "合成需求", ...extra,
@@ -25,6 +25,36 @@ test("没有终态也按同轮最后非空 AI 回复统计，使用回复记录�
 
 test("提示词字符统一排除 Unicode 空白并按码点计算", () => {
   assert.equal(promptCharacterCount("你\u3000好\u00a0🙂\nA\tB\r\f"), 5);
+});
+
+test("明确请求的用量分项缺口不阻断步骤和耗时，未知 Token 仍保留为空", () => {
+  for (const key of ["diagnostics.sessions.parserUsage.m001", "diagnostics.history.adapters.zcode.legacyUsage"]) {
+    const complete = completeRoundSource([{ kind: "unsupported_format", message: "合成分项缺口", messageDescriptor: { key } }]);
+    assert.equal(complete, true);
+    const rows = [message(0, "partial", { occurredAt: "2026-10-05T09:00:00Z" }), final(1, "partial", "2026-10-05T09:01:00Z")];
+    const requests = [{ id: "known-request", turnId: "partial", outputTokens: 20 }];
+    const metrics = summarizeRoundMetrics(rows, requests, complete);
+    assert.equal(metrics.averageSteps, 1);
+    assert.equal(metrics.averageDurationMs, 60_000);
+    assert.equal(deriveRoundFacts(rows, requests, complete).rounds[0]?.tokens, null);
+  }
+  assert.equal(completeRoundSource([{ kind: "parse_error", message: "合成解析错误" }]), false);
+});
+
+test("ZCode 文件附件不阻断已保存请求边界，未知过程类型仍保持缺口", () => {
+  const gap = (type: string) => ({ kind: "unsupported_format" as const, message: "合成过程类型",
+    messageDescriptor: { key: "diagnostics.history.adapters.zcode.m004", params: { p0: type } } });
+  const complete = completeRoundSource([gap("file"), gap("step-start")]);
+  assert.equal(complete, true);
+  const rows = [message(0, "attached", { occurredAt: "2026-10-05T09:00:00Z" }),
+    message(1, "attached", { kind: "context" }), final(2, "attached", "2026-10-05T09:01:00Z")];
+  const requests = [{ id: "first-request", turnId: "attached", inputTokens: 100, outputTokens: 20 },
+    { id: "last-request", turnId: "attached", inputTokens: 120, outputTokens: 30 }];
+  const metrics = summarizeRoundMetrics(rows, requests, complete);
+  assert.equal(metrics.averageSteps, 2);
+  assert.equal(metrics.averageDurationMs, 60_000);
+  assert.equal(completeRoundSource([gap("unknown-event")]), false);
+  assert.equal(completeRoundSource([gap("timeline")]), false);
 });
 
 test("平均步骤按有回复的用户轮次计请求，提示词合并同一来源输入的多个文本块", () => {

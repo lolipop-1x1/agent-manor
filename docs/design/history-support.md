@@ -98,7 +98,9 @@ Claude SDK 部分完整 Read 用 `content.split("\n")` 计数，尾换行会生�
 
 `codeflicker-ide-sqlite` 与新版 JSONL 同属 CodeFlicker 桌面版。默认目录为 `~/.codeflicker/data/codeflicker/`；`session_data.sqlite`、`composer_data.sqlite` 的 `KwaipilotKV` 中，`composerData:<会话ID>` 的 `localMessages` 为主记录。同目录 `index.sqlite` 的 `composerMeta:<会话ID>` 提供正式标题；新库的同身份迁移副本优先，API 上下文副本不重复作为用户或工具消息导入。早期 `session`／`message` 表的问答也保留。
 
-容器适配器注册原生发现、记录快照和来源选择规则；查询管道不按文件后缀猜测客户端。实际文件路径不改变，`selector` 保留原生会话键，`recordLine` 是键内数组的一基序号。证据直接查询 SQLite 对应记录并验哈希，不创建临时 JSONL。来源缓存按路径与选择器区分，读事务可见已提交 WAL，指纹由当前会话及正式元数据计算；其他会话更新不使所有缓存失效。单个会话键删除时从新版排除。
+容器适配器注册原生发现、记录快照和来源选择规则；查询管道不按文件后缀猜测客户端。实际文件路径不改变，`selector` 保留原生会话键，主记录的 `recordLine` 是键内数组的一基序号；恢复的用量来源追加独立序号，原始数据库路径、键、数组位置及记录一并保留。证据回读 SQLite 对应记录并验哈希，不创建临时 JSONL。来源缓存按路径与选择器区分，读事务可见已提交 WAL，指纹由当前会话、正式元数据及用量旁路共同计算；其他会话更新不使所有缓存失效。未声明完整快检依赖时继续核对内容。单个会话键删除时从新版排除。
+
+有效 `api_req_started` 请求组始终保留原生身份和开始时间；有真实用户轮次关联时可计模型步骤，即使用量缺失或冲突，Token 也保持未知。`token_usage_history_<会话ID>` 中的记录按原生 `sessionId`、`chatId` 和时间关联该请求组。`apiConversationHistory:<会话ID>` 只在同一 `chatId` 的完整、有序文本与思考序列唯一匹配一个原生请求组时补充用量，不重复导入正文；子集、重复块、顺序不符或多个候选均不猜测关联。两种来源归同一请求去重，已知分项冲突保留缺口。`prompt_tokens`／`promptTokens` 是含缓存的总输入；缺失缓存分项保持未知，`totalTokens` 与输入加输出的差额不补成推理输出。`token_usage_session_*` 末次或累计缓存不转换为逐请求用量；没有原生请求身份的早期历史仍不能按回复片段补造步骤。
 
 IDE 的 `workspaceUri` 可能指向工作区缓存；仅正式 `workspace.json` 的单一目录可直接认定项目，缺失或多目录不强行选择。`readFile` 只提取连续 Tab／竖线编号的实际返回前缀，包装说明不计入源码，编号与请求不符不计覆盖。`editFile` 需已接受且路径一致的前后快照，提案或拒绝没有覆盖。工具错误单独返回时优先使用实际结果；MCP 与 Skill 按结构化名称识别，名称提及不算调用。
 

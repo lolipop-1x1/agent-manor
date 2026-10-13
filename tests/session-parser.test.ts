@@ -8,6 +8,7 @@ import { promisify } from "node:util";
 import type { Client } from "../src/contracts.js";
 import type { SessionMessage, SessionUsage } from "../src/session-contracts.js";
 import { parseSessionSource, sessionKey } from "../src/sessions/parser.js";
+import { completeRoundSource, summarizeRoundMetrics } from "../src/sessions/round-metrics.js";
 
 const timestamp = "2026-01-01T00:00:00Z";
 const encode = (records: unknown[]) => records.map(record => `${JSON.stringify(record)}\n`).join("");
@@ -368,6 +369,48 @@ test("Claude 同一模型请求流式片段保留过程但用量只计最新，�
   assert.equal(sample.usages[0]?.cacheWriteTokens, 20);
   assert.equal(sample.usages[0]?.contextTokens, undefined);
   assert.equal(sample.usages[0]?.outputTokens, 10);
+});
+
+test("CodeFlicker 旧版嵌套消息保留客户端，按原生请求去重并统一工具及轮次", async () => {
+  const native = (type: string, uuid: string, message: object, at: string) => ({ type, uuid,
+    sessionId: "legacy-cli", timestamp: at, message });
+  const first = native("assistant", "first", { id: "request-one", role: "assistant", model: "fixture-model",
+    content: [{ type: "thinking", thinking: "合成思考" }, { type: "tool_use", id: "read-one", name: "Read", input: {} }],
+    usage: { input_tokens: 20, cache_read_input_tokens: 60, cache_creation_input_tokens: 20, output_tokens: 4 },
+    stop_reason: "tool_use" }, "2026-01-01T00:00:20Z");
+  const sample = await parsed("codeflicker", [
+    native("user", "user", { role: "user", content: "合成需求" }, timestamp), first, first,
+    native("user", "result", { role: "user", content: [{ type: "tool_result", tool_use_id: "read-one",
+      content: "合成结果", is_error: false }] }, "2026-01-01T00:00:30Z"),
+    native("assistant", "answer", { id: "request-two", role: "assistant", model: "fixture-model",
+      content: [{ type: "text", text: "合成回复" }], usage: { input_tokens: 40, output_tokens: 8 }, stop_reason: "end_turn" },
+    "2026-01-01T00:01:00Z"),
+  ]);
+  assert.equal(sample.summary.client, "codeflicker");
+  assert.equal(sample.summary.turnCount, 1);
+  assert.equal(sample.messages.length, 5);
+  assert.equal(sample.messages.find(value => value.kind === "tool_call")?.status, "success");
+  assert.equal(sample.messages.at(-1)?.final, "explicit");
+  assert.equal(sample.usages.length, 2);
+  assert.ok(sample.usages.every(value => value.id.startsWith("codeflicker:")));
+  assert.equal(sample.usages[0]?.inputTokens, 100);
+  assert.equal(sample.usages[0]?.cachedInputTokens, 60);
+  assert.equal(sample.usages[1]?.inputTokens, undefined);
+  assert.equal(sample.usages[1]?.cachedInputTokens, undefined);
+  assert.equal(sample.usages[1]?.cacheWriteTokens, undefined);
+  assert.equal(sample.usages[1]?.outputTokens, 8);
+  assert.ok(sample.summary.gaps.some(value => value.messageDescriptor?.key === "diagnostics.sessions.parserUsage.m001"));
+  const metrics = summarizeRoundMetrics(sample.messages, sample.usages, completeRoundSource(sample.summary.gaps));
+  assert.equal(metrics.completedTurns, 1);
+  assert.equal(metrics.averageSteps, 2);
+  assert.equal(metrics.averageDurationMs, 60_000);
+});
+
+test("CodeFlicker 旧版包装只接受对应角色，不从任意嵌套字段提取请求", async () => {
+  const sample = await parsed("codeflicker", [{ type: "assistant", sessionId: "legacy-mismatch", uuid: "unknown", timestamp,
+    message: { role: "user", content: "合成上下文", usage: { input_tokens: 100, output_tokens: 10 } } }]);
+  assert.equal(sample.messages.length, 0);
+  assert.equal(sample.usages.length, 0);
 });
 
 test("CLI 完整持久化格式省略缓存零值，缺依据与显式无效字段仍未知", async () => {
