@@ -102,11 +102,13 @@ export function weeklyReviewDetailQuery(raw: unknown): WeeklyReviewDetailQuery {
   try { value = JSON.parse(encoded); } catch { invalid("detail"); }
   if (!value || typeof value !== "object" || Array.isArray(value)) invalid("detail");
   const record = value as Record<string, unknown>;
-  const kinds = ["sessions", "rounds", "cache", "compressions", "projects", "delegation", "tools", "agents", "models", "reasoning", "prompts", "activity", "uncompressed"];
+  const kinds = ["sessions", "sessionRounds", "rounds", "cache", "compressions", "projects", "delegation", "tools", "agents", "models", "reasoning", "prompts", "activity", "uncompressed"];
   const allowed = new Set(["kind", "sort", "key", "filter", "page", "pageSize"]);
   for (const field of Object.keys(record)) if (!allowed.has(field)) invalid(`detail.${field}`);
   if (!kinds.includes(record.kind as string)) invalid("detail.kind");
-  if (record.sort !== undefined && !["recent", "duration", "tokens", "steps", "fresh"].includes(record.sort as string)) invalid("detail.sort");
+  if (record.sort !== undefined && !["recent", "duration", "tokens", "steps", "fresh", "rounds"].includes(record.sort as string)) invalid("detail.sort");
+  if (record.sort === "rounds" && record.kind !== "sessionRounds"
+    || record.kind === "sessionRounds" && record.sort !== undefined && !["rounds", "recent"].includes(record.sort as string)) invalid("detail.sort");
   if (record.key !== undefined) {
     if (!["agents", "models", "reasoning", "projects", "tools", "compressions"].includes(record.kind as string)) invalid("detail.key");
     textValue(record.key, "detail.key", true);

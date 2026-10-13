@@ -82,7 +82,7 @@ export class OverviewManager {
   private key(type: OverviewWorkerRequest["type"], query: OverviewQuery, extra: object): string {
     const panel = (extra as { panel?: OverviewPanel }).panel;
     const semantic = type === "panel" && ["core", "resources", "repositories", "facets", "process"].includes(panel ?? "") ? { ...query, models: undefined } : query;
-    return JSON.stringify([type === "review" || type === "review_detail" ? "weekly-review-v12" : 7, type, this.canonicalQuery(semantic), extra,
+    return JSON.stringify([type === "review" || type === "review_detail" ? "weekly-review-v13" : 7, type, this.canonicalQuery(semantic), extra,
       type === "report" || panel === "repositories" ? this.repositories().map(row => [row.id, row.version, row.stale]) : undefined]);
   }
   private canonicalQuery(query: OverviewQuery): object {
@@ -101,6 +101,8 @@ export class OverviewManager {
       || snapshot.timezone !== query.timezone || !snapshot.range || snapshot.range.today !== query.anchorDay) return false;
     if (type === "review" || type === "review_detail") {
       if (JSON.stringify(snapshot.range) !== JSON.stringify(weeklyReviewRange(query, this.now()))) return false;
+      const sessions = "sessions" in result ? result.sessions : "review" in result ? result.review.sessions : undefined;
+      if (!sessions?.roundsPerSession || !Number.isSafeInteger(sessions.roundsPerSession.samples)) return false;
       return type === "review" ? "rounds" in result && !!result.rounds.steps && "preferences" in result
         : "rows" in result && Array.isArray(result.rows) && Number.isSafeInteger(result.total);
     }

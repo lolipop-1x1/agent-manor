@@ -99,6 +99,17 @@ export function buildWeeklyReview(facts: WeeklySessionFacts[], query: OverviewQu
     || fact.activityDays?.some(day => day >= range.from && day <= range.to));
   const activeFacts = userFacts.filter(hasActivity);
   const startedRounds = userFacts.flatMap(fact => fact.rounds.filter(round => inPeriod(round.startedAt, range, timezone)).map(round => roundRecord(fact.session, round)));
+  const sessionRoundGroups = new Map<string, { count: number; latest: WeeklyReviewRecord }>();
+  for (const round of startedRounds) {
+    const group = sessionRoundGroups.get(round.sessionId);
+    sessionRoundGroups.set(round.sessionId, { count: (group?.count ?? 0) + 1,
+      latest: !group || Date.parse(round.startedAt!) > Date.parse(group.latest.startedAt!) ? round : group.latest });
+  }
+  const sessionRounds = userFacts.flatMap(fact => {
+    const group = sessionRoundGroups.get(fact.session.id);
+    return group ? [record(fact.session, { roundCount: group.count, occurredAt: group.latest.startedAt,
+      messageId: group.latest.messageId, turnId: group.latest.turnId })] : [];
+  });
   const allRounds = userFacts.flatMap(fact => fact.rounds.map(round => roundRecord(fact.session, round)));
   const endedRounds = allRounds.filter(round => round.eligible && inPeriod(round.endedAt, range, timezone));
   const inferredIncluded = endedRounds.filter(round => round.completion === "inferred").length;
@@ -198,6 +209,7 @@ export function buildWeeklyReview(facts: WeeklySessionFacts[], query: OverviewQu
     sessions: { active: activeFacts.length, started: activeFacts.filter(fact => inPeriod(fact.session.startedAt, range, timezone)).length,
       compressionSessions: compressionLeaders.length, compressions: compressionEvents.length, compressionObservableSessions: observable.length,
       compressionRate: observable.length ? observable.filter(fact => fact.events.some(event => event.kind === "compression")).length / observable.length : null,
+      roundsPerSession: weeklyDistribution(sessionRounds.map(row => row.roundCount)),
       uncompressedPeakInput: weeklyDistribution(uncompressed.map(row => row.inputTokens), activeFacts.length - uncompressed.length) },
     rounds: { started: startedRounds.length, completed, ...(inferredIncluded ? { inferredIncluded } : {}), inferred: inferredRounds.length, unconfirmed: unconfirmedRounds.length, missingEndTime: missingEndTime.length,
       steps: distribution("steps"), toolCalls: distribution("toolCalls"),
@@ -231,7 +243,7 @@ export function buildWeeklyReview(facts: WeeklySessionFacts[], query: OverviewQu
       triggerIdentity: "unclassified", automaticSessions: null, unknownTriggerSessions: activeFacts.length,
       unsupportedCompressionSessions: activeFacts.filter(fact => !fact.compressionSupported || !fact.compressionComplete).length,
       unknownForkSessions: unknownForks.filter(hasActivity).length } };
-  return { review, rows: { sessions: sessionsRows, rounds: [...endedRounds, ...inferredRounds.filter(row => !row.eligible), ...unconfirmedRounds, ...missingEndTime], cache: requestRows,
+  return { review, rows: { sessions: sessionsRows, sessionRounds, rounds: [...endedRounds, ...inferredRounds.filter(row => !row.eligible), ...unconfirmedRounds, ...missingEndTime], cache: requestRows,
     compressions: compressionEvents, projects: endedRounds, delegation: childRows, tools: toolRows, agents: startedRounds,
     models: requestRows, reasoning: requestRows, prompts, activity: prompts, uncompressed },
     ranks: { agents, models, reasoning, projects, tools: groupedRank(toolRows,
@@ -250,10 +262,10 @@ export function weeklyReviewDetail(data: WeeklyReviewData, detail: WeeklyReviewD
     : detail.kind === "reasoning" ? row.reasoningEffort : detail.kind === "projects" ? row.project : detail.kind === "compressions" ? row.sessionId : JSON.stringify([row.tool ?? "unknown", row.server ?? null]))
     === (detail.key === "unknown" ? undefined : detail.key));
   if (detail.filter) rows = rows.filter(row => detail.kind === "cache" ? (row as RequestRecord).state === detail.filter : detail.filter === "ended" ? row.eligible : row.completion === detail.filter);
-  const sort = detail.sort ?? (detail.kind === "cache" ? "fresh" : "recent");
+  const sort = detail.sort ?? (detail.kind === "cache" ? "fresh" : detail.kind === "sessionRounds" ? "rounds" : "recent");
   rows = [...rows].sort((a, b) => sort === "recent" ? (b.occurredAt ?? "").localeCompare(a.occurredAt ?? "") || a.id.localeCompare(b.id)
-    : (b[sort === "duration" ? "durationMs" : sort === "fresh" ? "freshInputTokens" : sort] ?? -1)
-      - (a[sort === "duration" ? "durationMs" : sort === "fresh" ? "freshInputTokens" : sort] ?? -1) || a.id.localeCompare(b.id));
+    : (b[sort === "duration" ? "durationMs" : sort === "fresh" ? "freshInputTokens" : sort === "rounds" ? "roundCount" : sort] ?? -1)
+      - (a[sort === "duration" ? "durationMs" : sort === "fresh" ? "freshInputTokens" : sort === "rounds" ? "roundCount" : sort] ?? -1) || a.id.localeCompare(b.id));
   const pageSize = Math.min(100, Math.max(1, detail.pageSize ?? 25)), page = Math.min(Math.max(1, detail.page ?? 1), Math.max(1, Math.ceil(rows.length / pageSize)));
   const { rounds: _rounds, cache: _cache, preferences: _preferences, extensions: _extensions, ...review } = data.review;
   return { version: review.version, priceVersion: review.priceVersion, timezone: review.timezone, query: review.query, range: review.range,

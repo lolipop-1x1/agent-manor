@@ -41,6 +41,7 @@ export interface WeeklyReviewRecord {
   occurredAt?: string;
   startedAt?: string;
   endedAt?: string;
+  roundCount?: number;
   steps?: number;
   toolCalls?: number;
   tokens?: number | null;
@@ -70,7 +71,7 @@ export interface WeeklyReview {
   query: OverviewQuery;
   range: OverviewRange;
   sessions: { active: number; started: number; compressionSessions: number; compressions: number; compressionObservableSessions: number;
-    compressionRate: number | null; uncompressedPeakInput: WeeklyReviewDistribution };
+    compressionRate: number | null; roundsPerSession: WeeklyReviewDistribution; uncompressedPeakInput: WeeklyReviewDistribution };
   rounds: { started: number; completed: number; inferredIncluded?: number; inferred: number; unconfirmed: number; missingEndTime: number;
     steps: WeeklyReviewDistribution; toolCalls: WeeklyReviewDistribution; tokens: WeeklyReviewDistribution; durationMs: WeeklyReviewDistribution;
     topFiveTokenShare: number | null; longest: WeeklyReviewRecord[]; highestTokens: WeeklyReviewRecord[] };
@@ -90,13 +91,13 @@ export interface WeeklyReview {
     unassignedRequests: number; excludedChildUserInputs: number; triggerIdentity: "unclassified";
     automaticSessions: number | null; unknownTriggerSessions: number; unsupportedCompressionSessions: number; unknownForkSessions: number };
 }
-export type WeeklyReviewDetailKind = "sessions" | "rounds" | "cache" | "compressions" | "projects" | "delegation" | "tools"
+export type WeeklyReviewDetailKind = "sessions" | "sessionRounds" | "rounds" | "cache" | "compressions" | "projects" | "delegation" | "tools"
   | "agents" | "models" | "reasoning" | "prompts" | "activity" | "uncompressed";
 export interface WeeklyReviewDetailQuery {
   kind: WeeklyReviewDetailKind;
   key?: string;
   filter?: "zero" | "partial" | "full" | "unknown" | "ended" | "explicit" | "inferred" | "unconfirmed";
-  sort?: "recent" | "duration" | "tokens" | "steps" | "fresh";
+  sort?: "recent" | "duration" | "tokens" | "steps" | "fresh" | "rounds";
   page?: number;
   pageSize?: number;
 }

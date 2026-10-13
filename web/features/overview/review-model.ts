@@ -23,7 +23,7 @@ export async function loadWeeklyReviewDetail(review: WeeklyReview, detail: Weekl
   return result;
 }
 
-export const weeklyReviewViews = ["sessions", "rounds", "cache", "compressions", "agents", "models", "reasoning", "prompts", "activity", "uncompressed", "projects", "delegation", "tools"] as const;
+export const weeklyReviewViews = ["sessions", "sessionRounds", "rounds", "cache", "compressions", "agents", "models", "reasoning", "prompts", "activity", "uncompressed", "projects", "delegation", "tools"] as const;
 
 export function weeklyReviewDefaultFilter(kind: WeeklyReviewDetailKind): WeeklyReviewDetailQuery["filter"] {
   return kind === "rounds" ? "ended" : undefined;

@@ -215,9 +215,68 @@ test("复盘范围固定完整本地日期，跨DST不取过去168小时，详�
   assert.deepEqual([weeklyReviewRange({ timezone: "America/New_York" }, new Date("2026-03-09T03:30:00Z")).from,
     weeklyReviewRange({ timezone: "America/New_York" }, new Date("2026-03-09T03:30:00Z")).to], ["2026-03-01", "2026-03-07"]);
   assert.equal(weeklyReviewDetailQuery(JSON.stringify({ kind: "cache", filter: "unknown", pageSize: 10 })).filter, "unknown");
-  for (const value of [{ kind: "nope" }, { kind: "rounds", filter: "zero" }, { kind: "cache", pageSize: 101 }, { kind: "prompts", key: "x" }])
+  assert.equal(weeklyReviewDetailQuery(JSON.stringify({ kind: "sessionRounds", sort: "rounds" })).sort, "rounds");
+  assert.equal(weeklyReviewDetailQuery(JSON.stringify({ kind: "sessionRounds", sort: "recent" })).sort, "recent");
+  for (const value of [{ kind: "nope" }, { kind: "rounds", filter: "zero" }, { kind: "cache", pageSize: 101 }, { kind: "prompts", key: "x" },
+    { kind: "sessionRounds", filter: "ended" }, { kind: "sessionRounds", key: "x" }, { kind: "sessionRounds", sort: "tokens" }, { kind: "rounds", sort: "rounds" }])
     assert.throws(() => weeklyReviewDetailQuery(JSON.stringify(value)));
 });
+
+test("平均每会话轮次按窗口内真实发起统计，回复跨周、通知、子会话和无新需求活动不混入", async () => fixture(async store => {
+  const a = revision(store, "a", [
+    message("a", "cross-user", 1, "2026-10-04T10:00:00Z", { turnId: "cross" }),
+    message("a", "cross-end", 2, "2026-10-06T01:00:00Z", { turnId: "cross", kind: "assistant" }),
+    message("a", "a-user", 3, "2026-10-07T01:00:00Z", { turnId: "first" }),
+    message("a", "a-block", 4, "2026-10-07T01:00:00Z", { turnId: "first", recordLine: 3 }),
+    message("a", "a-end", 5, "2026-10-07T01:01:00Z", { turnId: "first", kind: "assistant" }),
+    message("a", "notification", 6, "2026-10-08T01:00:00Z", { turnId: "notification", contextSource: "agents_md" }),
+    message("a", "copied", 7, "2026-10-08T01:00:00Z", { turnId: "copied", copied: true }),
+    message("a", "pending", 8, "2026-10-09T01:00:00Z", { turnId: "pending" }),
+    message("a", "today", 9, "2026-10-12T01:00:00Z", { turnId: "today" }),
+  ], [], { updatedAt: "2026-10-12T01:00:00Z" });
+  const b = revision(store, "b", [message("b", "b-user", 1, "2026-10-11T01:00:00Z")], [], { client: "claude", project: "/workspace/other" });
+  const continuing = revision(store, "continuing", [message("continuing", "old", 1, "2026-10-01T01:00:00Z"),
+    message("continuing", "reply", 2, "2026-10-10T01:00:00Z", { kind: "assistant" })], []);
+  const boundary = revision(store, "boundary", [message("boundary", "boundary-user", 1, "2026-10-04T17:00:00Z")], []);
+  const child = revision(store, "child", [message("child", "child-user", 1, "2026-10-11T01:00:00Z")], [], { relationship: "child", parentSessionId: "a" });
+  const fork = revision(store, "unknown-fork", [message("unknown-fork", "fork-user", 1, "2026-10-11T01:00:00Z")], [],
+    { relationship: "fork", gaps: [{ kind: "incomplete_record", message: "合成继承边界未知", messageDescriptor: { key: "diagnostics.sessions.parser.m019" } }] });
+  const version = store.publish(store.createJob().id, [a, b, continuing, boundary, child, fork], []), factsStore = new WeeklyReviewFactStore(store);
+  try {
+    const query = { version, timezone: "UTC", anchorDay: "2026-10-12" }, source = await factsStore.source(query, now);
+    const data = buildWeeklyReview(source.facts, query, pricing, now), metric = data.review.sessions.roundsPerSession;
+    assert.equal(data.review.sessions.active, 3);
+    assert.equal(data.review.rounds.started, 3);
+    assert.equal(data.review.rounds.completed, 3, "跨周回复与本周发起是不同的范围");
+    assert.deepEqual(metric, { average: 1.5, median: 1.5, p90: 1.9, maximum: 2, samples: 2, missing: 0 });
+    const detail = weeklyReviewDetail(data, { kind: "sessionRounds" });
+    assert.equal(detail.total, metric.samples);
+    assert.equal(detail.rows.reduce((sum, row) => sum + row.roundCount!, 0), data.review.rounds.started);
+    assert.deepEqual(detail.rows.map(row => [row.sessionId, row.roundCount]), [["a", 2], ["b", 1]]);
+    assert.equal(detail.rows[0]!.messageId, "pending");
+    assert.equal(detail.rows[0]!.occurredAt, "2026-10-09T01:00:00Z");
+    assert.equal(weeklyReviewDetail(data, { kind: "sessionRounds", sort: "recent" }).rows[0]!.sessionId, "b");
+    const paged = weeklyReviewDetail(data, { kind: "sessionRounds", pageSize: 1, page: 2 });
+    assert.equal(paged.total, 2); assert.equal(paged.rows[0]!.sessionId, "b");
+    assert.deepEqual(paged.review.sessions.roundsPerSession, metric);
+    for (const [scope, average, samples, started] of [
+      [{ clients: ["codex"] }, 2, 1, 2], [{ projects: ["/workspace/other"] }, 1, 1, 1],
+      [{ clients: ["dsh"] }, null, 0, 0],
+    ] as const) {
+      const scoped = { ...query, ...scope, clients: scope.clients ? [...scope.clients] : undefined, projects: scope.projects ? [...scope.projects] : undefined };
+      const report = buildWeeklyReview((await factsStore.source(scoped, now)).facts, scoped, pricing, now).review;
+      assert.equal(report.sessions.roundsPerSession.average, average);
+      assert.equal(report.sessions.roundsPerSession.samples, samples); assert.equal(report.rounds.started, started);
+    }
+    const local = { ...query, timezone: "Asia/Shanghai" };
+    const localData = buildWeeklyReview((await factsStore.source(local, now)).facts, local, pricing, now);
+    assert.equal(localData.review.sessions.roundsPerSession.average, 4 / 3);
+    assert.equal(localData.review.sessions.roundsPerSession.samples, 3);
+    const continuedOnly = buildWeeklyReview(source.facts.filter(fact => fact.session.id === "continuing"), query, pricing, now).review;
+    assert.equal(continuedOnly.sessions.active, 1); assert.equal(continuedOnly.rounds.completed, 1);
+    assert.equal(continuedOnly.sessions.roundsPerSession.average, null, "没有新发起轮次的活跃会话不进入分母，也不补零");
+  } finally { factsStore.close(); }
+}));
 
 test("正文隐藏不否定用量与压缩支持，留存缺口和未知fork边界保持独立排除", async () => fixture(async store => {
   const pair = (id: string) => [message(id, `${id}-user`, 1, "2026-10-07T01:00:00Z"),
@@ -263,6 +322,17 @@ test("后台复盘跳过年范围准备，重复和重启缓存复用，价格�
     await manager.close(); restart = new OverviewManager(store, prices, () => [], () => now);
     assert.deepEqual(await restart.review(query), first); assert.equal((restart as unknown as { nextId: number }).nextId, 0);
     await assert.rejects(restart.review({ ...query, version: "deleted-synthetic-version" }));
+    await restart.close();
+    const persisted = new Database(join(directory, "overview-results.sqlite"));
+    try {
+      const cached = persisted.prepare("SELECT key,json FROM overview_results WHERE json_extract(key,'$[1]')='review'").get() as { key: string; json: string };
+      assert.equal(JSON.parse(cached.key)[0], "weekly-review-v13");
+      const incomplete = JSON.parse(cached.json); delete incomplete.sessions.roundsPerSession;
+      persisted.prepare("UPDATE overview_results SET json=? WHERE key=?").run(JSON.stringify(incomplete), cached.key);
+    } finally { persisted.close(); }
+    restart = new OverviewManager(store, prices, () => [], () => now);
+    assert.deepEqual(await restart.review(query), first);
+    assert.equal((restart as unknown as { nextId: number }).nextId, 1, "缺新增指标的持久结果必须重算，不能进入界面");
   } finally { await manager.close(); await restart?.close(); }
 }));
 

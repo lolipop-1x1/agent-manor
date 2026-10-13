@@ -19,6 +19,7 @@ try {
   const started = performance.now(), response = await fetch(`${fixture.base}/api/v1/overview/review`), review = await response.json();
   assert.equal(response.status, 200, JSON.stringify(review));
   assert.equal(review.sessions.active, 4); assert.equal(review.sessions.compressions, 1);
+  assert.equal(review.sessions.roundsPerSession.average, 42); assert.equal(review.sessions.roundsPerSession.samples, 4);
   assert.equal(review.rounds.completed, 168); assert.equal(review.rounds.inferredIncluded, 7); assert.equal(review.cache.requests, 336);
   assert.equal(review.extensions.children.sessions, 1); assert.ok(review.rounds.steps.average > 0);
   assert.ok(review.rounds.durationMs.average > 0); assert.ok(review.preferences.promptCharacters.average > 0);
@@ -44,9 +45,17 @@ try {
     ensure(await page.locator(".weekly-review-dialog .overview-record-details").count() === 0, "洞察记录不再展开逐行详情");
     ensure(await page.locator(".weekly-review-records tbody tr").count() === 20, "年度快照等待期间复盘详情独立可用，默认20条");
     await page.keyboard.press("Escape"); releaseSnapshot(); await ready(); await page.unroute("**/api/v1/overview/snapshot?**");
-    ensure(await page.locator(".weekly-review-group").count() === 4 && await page.locator(".weekly-review-metric").count() === 18, "四组18项核心数值齐全");
+    ensure(await page.locator(".weekly-review-group").count() === 4 && await page.locator(".weekly-review-metric").count() === 19, "四组19项核心数值齐全");
     ensure((await metric("活跃用户会话").innerText()).endsWith("4"), "活跃会话排除子Agent");
     ensure((await metric("有回复轮次").innerText()).endsWith("168"), "有回复轮次合计与API一致");
+    ensure((await metric("平均每会话轮次").innerText()).includes("42.0 轮"), "会话平均轮次保留一位小数及单位");
+    await metric("平均每会话轮次").click(); await detailReady();
+    ensure(await page.locator(".weekly-review-records tbody tr").count() === 4, "会话轮次详情按会话展示，排除子Agent");
+    ensure((await page.locator(".weekly-review-summary").innerText()).includes("168"), "平均轮次摘要保留发起轮次分子");
+    ensure((await page.locator(".weekly-review-records thead").innerText()).includes("最近提问"), "会话轮次记录使用提问时间");
+    await choose("排序", "最近发生"); await detailReady();
+    await choose("排序", "轮次最多"); await detailReady();
+    await page.keyboard.press("Escape");
     ensure((await metric("平均提示词字数").innerText()).includes("23"), "提示词均值显示真实合成字符数");
     ensure(await page.getByText("重点洞察", { exact: true }).count() === 0, "旧重点洞察已替换");
     const heldRange = await page.locator(".weekly-review-range").innerText();
@@ -187,7 +196,7 @@ try {
     await page.setViewportSize({ width: 1280, height: 720 });
     await page.locator(".overview-page-heading").scrollIntoViewIfNeeded();
     ensure(await page.locator(".weekly-review").evaluate(el => el.getBoundingClientRect().top) < await page.locator(".overview-results").evaluate(el => el.getBoundingClientRect().top), "七天复盘位于长期概况之前");
-    ensure(await page.locator(".weekly-review-metric.is-primary").count() === 4 && await page.locator(".weekly-review-metric > svg").count() === 18, "每组一个重点且十八个指标都有常驻箭头入口");
+    ensure(await page.locator(".weekly-review-metric.is-primary").count() === 4 && await page.locator(".weekly-review-metric > svg").count() === 19, "每组一个重点且十九个指标都有常驻箭头入口");
     await page.screenshot({ path: `${options.artifacts}/first-screen-zh.png` });
     await page.locator(".weekly-review").scrollIntoViewIfNeeded(); await page.screenshot({ path: `${options.artifacts}/desktop-zh.png`, fullPage: true });
     await page.setViewportSize({ width: 390, height: 844 });
@@ -198,6 +207,10 @@ try {
     await page.keyboard.press("Escape");
     await button("显示语言").click(); await page.getByRole("menuitemradio", { name: "English", exact: true }).click();
     await page.getByRole("heading", { name: "Last 7 days insights", exact: true }).waitFor();
+    ensure((await metric("Average turns per session").innerText()).includes("42.0 turns"), "英文会话平均轮次单位完整");
+    await metric("Average turns per session").click(); await detailReady();
+    ensure(await page.locator(".weekly-review-records tbody tr").count() === 4, "窄屏英文会话轮次详情可用");
+    await page.keyboard.press("Escape");
     await button("Appearance").click(); await choose("Display mode", "Dark"); await page.keyboard.press("Escape");
     await metric("Average model steps").click(); await detailReady();
     ensure((await page.locator(".weekly-review-summary").innerText()).includes("Eligible samples"), "英文详情样本和分位数翻译完整");

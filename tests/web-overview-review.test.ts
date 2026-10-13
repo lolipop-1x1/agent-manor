@@ -73,7 +73,7 @@ test("轮次默认明细选择有回复，状态筛选与原生依据文案完�
 
 test("四组原始指标及扩展视图的动态文案完整", () => {
   const groups = ["sessions", "rounds", "cache", "preferences"];
-  const metrics = ["active", "completed", "compressionSessions", "compressions", "steps", "toolCalls", "tokens", "duration", "zero", "readShare", "fresh", "premium", "premiumSubtotal", "uncompressed", "agents", "models", "reasoning", "promptCharacters", "activity", "longest", "highestTokens", "largeInputs"];
+  const metrics = ["active", "completed", "averageRounds", "compressionSessions", "compressions", "steps", "toolCalls", "tokens", "duration", "zero", "readShare", "fresh", "premium", "premiumSubtotal", "uncompressed", "agents", "models", "reasoning", "promptCharacters", "activity", "longest", "highestTokens", "largeInputs"];
   for (const language of ["en", "zh-CN"] as const) for (const suffix of [...groups.map(group => `group.${group}`), ...metrics, ...weeklyReviewViews]) {
     const key = `overview.review.${suffix}`;
     const message = translate(language, key); assert.notEqual(message, key); assert.ok(!message.includes("Translation unavailable") && !message.includes("翻译不可用"), key);
@@ -81,6 +81,19 @@ test("四组原始指标及扩展视图的动态文案完整", () => {
   const source = readFileSync(new URL("../web/features/overview/WeeklyReview.tsx", import.meta.url), "utf8");
   assert.match(source, /\[active, key\]/); assert.doesNotMatch(source, /route\.window|route\.from|route\.models/);
   assert.match(source, /<div inert=\{pending\}>/);
+});
+
+test("会话平均轮次单位支持中英文及复数，详情排序沿用固定快照", () => {
+  assert.equal(translate("zh-CN", "overview.review.roundsValue", { count: 1, value: "1.0" }), "1.0 轮");
+  assert.equal(translate("en", "overview.review.roundsValue", { count: 1, value: "1.0" }), "1.0 turn");
+  assert.equal(translate("en", "overview.review.roundsValue", { count: 1.5, value: "1.5" }), "1.5 turns");
+  const selection = { kind: "sessionRounds" as const, sort: "rounds" as const, page: 2, pageSize: 20 };
+  const params = new URLSearchParams(weeklyReviewDetailParameters(review, selection));
+  assert.deepEqual(JSON.parse(params.get("detail")!), selection);
+  assert.equal(params.get("version"), review.version);
+  const source = readFileSync(new URL("../web/features/overview/WeeklyReview.tsx", import.meta.url), "utf8");
+  assert.ok(source.indexOf('metric("completed"') < source.indexOf('metric("averageRounds"'));
+  assert.ok(source.indexOf('metric("averageRounds"') < source.indexOf('metric("compressionSessions"'));
 });
 
 
