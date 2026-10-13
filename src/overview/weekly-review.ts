@@ -43,7 +43,7 @@ function requestRecord(session: SessionSummary, request: OverviewRequest, pricin
   }
   const input = numeric(usage.inputTokens) ? usage.inputTokens : undefined;
   const cached = numeric(usage.cachedInputTokens) ? usage.cachedInputTokens : undefined;
-  const consistent = input !== undefined && cached !== undefined && cached <= input;
+  const consistent = input !== undefined && input > 0 && cached !== undefined && cached <= input;
   const state = !consistent ? "unknown" : input > 0 && cached === 0 ? "zero" : cached < input ? "partial" : "full";
   const ordinary = cost.freshInputTokens;
   // estimate附带适用上下文档位，差额只基于普通未缓存输入，不把缓存写入混入。

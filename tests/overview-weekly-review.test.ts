@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import Database from "better-sqlite3";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { statSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -16,6 +16,7 @@ import { buildWeeklyReview, weeklyReviewDetail } from "../src/overview/weekly-re
 import { weeklyReviewDetailQuery } from "../src/service/overview-input.js";
 import { promptCharacterCount, summarizeRoundMetrics } from "../src/sessions/round-metrics.js";
 import { clientIds } from "../src/clients.js";
+import { parseSessionSource } from "../src/sessions/parser.js";
 
 const now = new Date("2026-10-12T04:00:00Z");
 const priceStatus: PricingStatus = { version: "synthetic-price", currency: "USD", source: "bundled", sourceUrl: "https://example.invalid/prices",
@@ -44,6 +45,33 @@ async function fixture(run: (store: SessionStore, directory: string) => Promise<
   try { await run(store, directory); }
   finally { store.close(); await rm(directory, { recursive: true, force: true }); }
 }
+
+test("CLI 原始省略零缓存经解析和周复盘计算零命中、普通输入和价差，零输入不算满命中", async () => fixture(async (store, directory) => {
+  const path = join(directory, "serialized-cache.jsonl"), at = "2026-10-07T01:00:00Z";
+  const assistant = (uuid: string, usage: object) => ({ type: "message", sessionId: "cache-fixture", uuid, role: "assistant", timestamp: at,
+    model: "synthetic-model", content: "合成回复", usage,
+    metadata: { requestTokenBaseline: { requestId: uuid, requestContextKey: "synthetic-context", historyRevision: 0 } } });
+  await writeFile(path, [{ type: "message", sessionId: "cache-fixture", uuid: "u", role: "user", timestamp: at, content: "合成需求" },
+    assistant("zero", { input_tokens: 100, output_tokens: 10 }),
+    assistant("partial", { input_tokens: 200, output_tokens: 20, cache_read_input_tokens: 50 }),
+    assistant("empty", { input_tokens: 0, output_tokens: 0 }),
+  ].map(record => JSON.stringify(record)).join("\n") + "\n");
+  const pending = store.createRevision(path, "synthetic-cache");
+  const summary = await parseSessionSource({ client: "codeflicker", path }, pending.sink);
+  pending.flush(); store.finishRevision(pending.revision, summary);
+  const version = store.publish(store.createJob().id, [{ path, revision: pending.revision, fingerprint: "synthetic-cache" }], []);
+  const facts = new WeeklyReviewFactStore(store);
+  try {
+    const query = { version, timezone: "UTC", anchorDay: "2026-10-12" }, data = buildWeeklyReview((await facts.source(query, now)).facts, query, pricing, now);
+    assert.deepEqual([data.review.cache.zero, data.review.cache.partial, data.review.cache.full, data.review.cache.unknown], [1, 1, 0, 1]);
+    assert.equal(data.review.cache.freshInputTokens, 250);
+    assert(Math.abs(data.review.cache.hypotheticalPremium! - 0.0032) < 1e-12);
+    assert.equal(data.review.cache.readShare, 50 / 300);
+    assert.equal(store.profile(summary.id).usage.cachedInputTokens, 50);
+    assert.equal(store.profile(summary.id).usage.cacheWriteTokens, 0);
+    assert.equal(weeklyReviewDetail(data, { kind: "cache", filter: "zero" }).total, 1);
+  } finally { facts.close(); }
+}));
 
 test("所有客户端共用末条回复：无终态、空消息、取消和跨周整轮冷暖结果一致", async () => fixture(async (store, directory) => {
   const sources = clientIds.map(client => revision(store, client, [

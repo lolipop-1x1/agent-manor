@@ -577,9 +577,17 @@ export async function parseSessionSource(source: SourceLocation, sink: SessionSi
     if (role === "assistant") {
       if (!copied) {
         const partial = nativeInterrupted;
+        const nativeUsage = object(native.usage), baseline = object(metadata.requestTokenBaseline);
+        // CLI 的这一持久化格式仅保存正缓存桶；其他格式或显式无效字段仍保留未知。
+        const omittedCacheIsZero = source.client === "codeflicker" && record.type === "message" && Boolean(string(record.uuid))
+          && Boolean(string(baseline.requestId)) && Boolean(string(baseline.requestContextKey)) && tokens(baseline.historyRevision) !== undefined
+          && tokens(nativeUsage.input_tokens) !== undefined && tokens(nativeUsage.output_tokens) !== undefined;
+        const normalizedUsage = { ...nativeUsage,
+          ...(omittedCacheIsZero && !Object.hasOwn(nativeUsage, "cache_read_input_tokens") ? { cache_read_input_tokens: 0 } : {}),
+          ...(omittedCacheIsZero && !Object.hasOwn(nativeUsage, "cache_creation_input_tokens") ? { cache_creation_input_tokens: 0 } : {}) };
         const persisted = source.client === "codeflicker" && record.type === "message" && Boolean(string(record.uuid)) && identified
           && Object.keys(object(native.usage)).length > 0 && !partial;
-        const usageId = usage.native(source.client === "claude" ? "claude" : "codeflicker", native.usage, requestId,
+        const usageId = usage.native(source.client === "claude" ? "claude" : "codeflicker", normalizedUsage, requestId,
           { messageId: firstMessage?.id, turnId, model: recordedModel, reasoningEffort: extra.reasoningEffort, occurredAt }, identified);
         timing?.nativeUsage(usageId, string(native.stop_reason), persisted, partial, { occurredAt, recordLine: line, messageId: firstMessage?.id });
       }

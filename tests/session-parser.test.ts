@@ -370,6 +370,31 @@ test("Claude 同一模型请求流式片段保留过程但用量只计最新，�
   assert.equal(sample.usages[0]?.outputTokens, 10);
 });
 
+test("CLI 完整持久化格式省略缓存零值，缺依据与显式无效字段仍未知", async () => {
+  const native = (id: string, usage: object, baseline: object = { requestId: id, requestContextKey: "synthetic-context", historyRevision: 0 }) => ({
+    type: "message", sessionId: "cache-zero", uuid: id, role: "assistant", timestamp, model: "synthetic-model",
+    content: [{ type: "text", text: "合成回复" }], usage, metadata: { requestTokenBaseline: baseline },
+  });
+  const sample = await parsed("codeflicker", [
+    native("zero", { input_tokens: 100, output_tokens: 10 }),
+    native("positive", { input_tokens: 120, output_tokens: 10, cache_read_input_tokens: 80, cache_creation_input_tokens: 20 }),
+    native("unmarked", { input_tokens: 100, output_tokens: 10 }, { requestId: "unmarked" }),
+    native("invalid", { input_tokens: 100, output_tokens: 10, cache_read_input_tokens: null }),
+  ]);
+  assert.equal(sample.usages[0]!.cachedInputTokens, 0);
+  assert.equal(sample.usages[0]!.cacheWriteTokens, 0);
+  assert.equal(sample.usages[0]!.inputTokens, 100);
+  assert.equal(sample.usages[1]!.cachedInputTokens, 80);
+  assert.equal(sample.usages[1]!.cacheWriteTokens, 20);
+  assert.equal(sample.usages[2]!.cachedInputTokens, undefined);
+  assert.equal(sample.usages[2]!.cacheWriteTokens, undefined);
+  assert.equal(sample.usages[3]!.cachedInputTokens, undefined);
+  const claude = await parsed("claude", [{ type: "assistant", timestamp, message: { id: "claude-unknown", role: "assistant", model: "synthetic-model",
+    content: [{ type: "text", text: "合成回复" }], usage: { input_tokens: 100, output_tokens: 10 } } }]);
+  assert.equal(claude.usages[0]!.cachedInputTokens, undefined);
+  assert.equal(claude.usages[0]!.cacheWriteTokens, undefined);
+});
+
 test("CodeFlicker 原生消息与 requestTokenBaseline 用量身份保留，总输入不再叠加缓存", async () => {
   const native = (uuid: string, role: string, content: unknown, extra = {}) => ({ type: "message", sessionId: "sample-flicker", uuid, role, content, timestamp, ...extra });
   const first = native("assistant", "assistant", [{ type: "reasoning", text: "核对结构" }, { type: "tool_use", id: "read-one", name: "read", input: { file_path: "/synthetic/repo/entry.ts" } }],

@@ -114,12 +114,13 @@ export async function refreshSessions(store: SessionStore, jobId: string, roots?
       const pricingProviderFingerprint = ["codex", "pi", "zcode", "dsh"].includes(source.client) ? ":usage-provider-v1" : "";
       const zcodeInputFingerprint = source.client === "zcode" ? ":input-buckets-v3" : "";
       const opencodeOutputFingerprint = source.client === "opencode" ? ":output-buckets-v2" : "";
+      const cliCacheFingerprint = source.client === "codeflicker" ? ":cli-cache-zero-v1" : "";
       // 请求计时按来源升级；桌面冲突校验单独失效，不重建其他来源。
       const requestTimingFingerprint = source.client === "codeflicker-desktop" ? ":request-timing-v3" : ":request-timing-v2";
       const reasoningEffortFingerprint = ["codex", "claude", "codeflicker", "codeflicker-desktop"].includes(source.client) ? ":reasoning-effort-v2"
         : ["pi", "qoder"].includes(source.client) ? ":reasoning-effort-v1" : "";
       // 原生与规范化来源均升级轮次依据，固定版本只在规则变更后使旧会话缓存失效一次。
-      const metadataSuffix = `${requestTimingFingerprint}${contextUsageFingerprint}${requestUsageFingerprint}${pricingProviderFingerprint}${zcodeInputFingerprint}${reasoningEffortFingerprint}${opencodeOutputFingerprint}${titleFingerprint}${childTitleFingerprint}${projectFingerprint}${desktopFingerprint}${desktopResourceFingerprint}${ROUND_RULES_FINGERPRINT}`;
+      const metadataSuffix = `${requestTimingFingerprint}${contextUsageFingerprint}${requestUsageFingerprint}${pricingProviderFingerprint}${zcodeInputFingerprint}${reasoningEffortFingerprint}${opencodeOutputFingerprint}${cliCacheFingerprint}${titleFingerprint}${childTitleFingerprint}${projectFingerprint}${desktopFingerprint}${desktopResourceFingerprint}${ROUND_RULES_FINGERPRINT}`;
       const metadataFingerprint = createHash("sha256").update(JSON.stringify({ rule: SESSION_INDEX_RULE_VERSION, source: location, metadataSuffix })).digest("hex");
       let stamp: string | undefined;
       try { stamp = await sourceQuickStamp(source); }

@@ -173,6 +173,30 @@ test("CLI 压缩规则升级重解析旧分类，之后恢复快检且保留其�
   assert.equal((await refresh(store, roots, { client: "codeflicker" })).counts!.quickReused, 1);
 }));
 
+test("CLI 缓存零值规则只升级 CLI 修订，旧未知用量重算后恢复快检", async () => fixture(async (store, directory) => {
+  const cli = join(directory, "cli"), codex = join(directory, "codex"); await mkdir(cli); await mkdir(codex);
+  await writeFile(join(cli, "cache.jsonl"), encode({ type: "message", sessionId: "cache-demo", uuid: "u", role: "user", content: "合成请求" })
+    + encode({ type: "message", sessionId: "cache-demo", uuid: "a", role: "assistant", content: "合成回复", model: "synthetic-model",
+      usage: { input_tokens: 100, output_tokens: 10 }, metadata: { requestTokenBaseline: { requestId: "r", requestContextKey: "synthetic", historyRevision: 0 } } }));
+  await writeFile(join(codex, "sample.jsonl"), codexSource("other-cache", "其他客户端"));
+  const roots = isolatedHistoryRoots({ codeflicker: cli, codex }); await refresh(store, roots);
+  const before = store.cachedRevisions().find(item => item.client === "codeflicker")!, other = store.cachedRevisions().find(item => item.client === "codex")!;
+  const session = store.list({ client: "codeflicker" }).sessions[0]!;
+  const db = new Database(store.dbPath);
+  try {
+    db.prepare("UPDATE session_revisions SET fingerprint=replace(fingerprint,':cli-cache-zero-v1','') WHERE id=?").run(before.revision);
+    db.prepare("UPDATE session_usage SET json=json_remove(json,'$.cachedInputTokens','$.cacheWriteTokens') WHERE revision=?").run(before.revision);
+  } finally { db.close(); }
+  const upgraded = await refresh(store, roots, { client: "codeflicker" });
+  assert.equal(upgraded.status, "complete");
+  assert.equal(upgraded.counts!.parsed, 1);
+  assert.notEqual(store.cachedRevisions().find(item => item.client === "codeflicker")!.revision, before.revision);
+  assert.equal(store.cachedRevisions().find(item => item.client === "codex")!.revision, other.revision);
+  assert.equal(store.profile(session.id).usage.cachedInputTokens, 0);
+  assert.equal(store.profile(session.id).usage.cacheWriteTokens, 0);
+  assert.equal((await refresh(store, roots, { client: "codeflicker" })).counts!.quickReused, 1);
+}));
+
 test("服务商规则升级重解析原始来源并保留用量事实，之后恢复快速复用", async () => fixture(async (store, directory) => {
   const root = join(directory, "sessions"); await mkdir(root);
   await writeFile(join(root, "provider.jsonl"), encode({ type: "session_meta", payload: {
