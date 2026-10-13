@@ -290,7 +290,7 @@ test("分支阅读不改变全活动统计，简易保留当前分支的真实�
   assert.deepEqual(store.messages(id, { mode: "brief", branch: "old", pageUnit: "turn", messageId: rows[1]!.id }).messages.map(row => row.text), ["共同请求", "旧回答"]);
   assert.equal(store.messages(id, { mode: "full" }).total, 4);
   assert.equal(store.messages(id, { mode: "trace", branch: "current", pageSize: 1, page: 3 }).messages[0]?.text, "新回答");
-  assert.equal(store.messages(id, { mode: "brief", branch: "all" }).total, 3);
+  assert.equal(store.messages(id, { mode: "brief", branch: "all" }).total, 2);
   assert.equal(store.search({ q: "旧回答" }).total, 1);
   assert.throws(() => store.messages(id, { branch: "unknown" }), /分支不存在/);
   assert.deepEqual(store.profile(id), profile, "阅读切换不得改变请求和 Token 统计");
@@ -590,7 +590,7 @@ test("明确子工具目标关联完整identity，前版关系不漂移，多父
   assert.ok(store.status().gaps.some(gap => gap.message.includes("循环")));
 }));
 
-test("消息upsert支持流式更新；简易模式只含用户及有依据最终回答", async () => fixture(store => {
+test("消息upsert支持流式更新；对话取同轮末条非空回复", async () => fixture(store => {
   const pending = store.createRevision("/workspace/history/upsert.jsonl", "synthetic");
   pending.sink.message(message("upsert", 0));
   pending.sink.message(message("upsert", 1, { kind: "assistant", text: "部分" }));
@@ -602,7 +602,7 @@ test("消息upsert支持流式更新；简易模式只含用户及有依据最�
   assert.equal(store.list().sessions[0]?.messageCount, 4);
   const brief = store.messages("upsert", { mode: "brief" });
   assert.equal(brief.total, 2);
-  assert.equal(brief.messages[1]?.text, "完整回答");
+  assert.equal(brief.messages[1]?.text, "过程回复");
 }));
 
 test("完整轮次分页保留初始、未知及超大单轮，首末和消息定位不截断过程", async () => fixture(store => {
@@ -1027,7 +1027,7 @@ test("对话兜底仅选本分支末条非空正文，不改写终态，分页�
   assert.equal(store.messages(id, { mode: "brief", pageUnit: "turn", messageId: "message-3" }).focusMessageId, "message-3");
   assert.throws(() => store.messages(id, { mode: "brief", messageId: "message-2" }), { code: "INVALID_INPUT" });
   assert.equal(store.messages(id, { mode: "full" }).messages[2]?.unconfirmed, undefined);
-  assert.equal(store.messages(id, { mode: "brief", pageUnit: "turn", page: 2, pageSize: 1 }).messages.at(-1)?.ordinal, 7);
+  assert.equal(store.messages(id, { mode: "brief", pageUnit: "turn", page: 2, pageSize: 1 }).messages.at(-1)?.ordinal, 8);
   const directory = store.turnDirectory(id, { pageSize: 1 });
   assert.deepEqual(directory.turns, [{ id: "first", position: 1, question: "问题一" }]);
   assert.equal(store.turnDirectory(id, { pageSize: 1, page: 2 }).turns[0]?.question, "问题二");

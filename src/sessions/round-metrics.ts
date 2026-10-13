@@ -1,7 +1,7 @@
 import type { Gap } from "../contracts.js";
 import type { SessionMessage, SessionRoundMetrics, SessionUsage } from "../session-contracts.js";
 
-type RoundMessage = Omit<SessionMessage, "text" | "sessionId"> & { text?: string };
+export type RoundMessage = Omit<SessionMessage, "text" | "sessionId"> & { text?: string; hasReply?: boolean };
 type RoundRequest = Pick<SessionUsage, "id"> & Partial<Omit<SessionUsage, "id">>;
 export interface RoundFact {
   turnId: string;
@@ -46,21 +46,18 @@ export function completeRoundSource(gaps: Gap[]): boolean {
 }
 const token = (value: number | undefined): value is number => value !== undefined && Number.isSafeInteger(value) && value >= 0;
 
-/** 画像与周复盘共用需求、请求关联及结束资格，未知状态不能替代完成证据。 */
+/** 画像与周复盘共用真实需求及最后非空回复；回复边界不表示任务成功。 */
 export function deriveRoundFacts(messages: Iterable<RoundMessage>, requests: Iterable<RoundRequest>, complete = true): { rounds: RoundFact[]; unassigned: number } {
   const starts = new Map<string, RoundMessage>(), ends = new Map<string, RoundMessage>();
-  const identities = new Map<string, string>(), interruptions = new Map<string, number>(), tools = new Map<string, { count: number; last: number }>();
+  const identities = new Map<string, string>(), tools = new Map<string, number>();
   for (const message of messages) {
     if (message.copied || !message.turnId) continue;
     identities.set(message.id, message.turnId);
-    if (message.interrupted) interruptions.set(message.turnId, Math.max(interruptions.get(message.turnId) ?? -1, message.ordinal));
     if (!isRoundActivityEvent(message)) continue;
     if (message.kind === "user" && (!starts.has(message.turnId) || message.ordinal < starts.get(message.turnId)!.ordinal)) starts.set(message.turnId, message);
-    if (message.kind === "assistant" && message.final && (!ends.has(message.turnId) || message.ordinal > ends.get(message.turnId)!.ordinal)) ends.set(message.turnId, message);
-    if (message.kind === "tool_call") {
-      const value = tools.get(message.turnId) ?? { count: 0, last: -1 };
-      value.count += 1; value.last = Math.max(value.last, message.ordinal); tools.set(message.turnId, value);
-    }
+    const hasReply = message.hasReply ?? (message.text?.trim().length ?? 0) > 0;
+    if (message.kind === "assistant" && hasReply && (!ends.has(message.turnId) || message.ordinal > ends.get(message.turnId)!.ordinal)) ends.set(message.turnId, message);
+    if (message.kind === "tool_call") tools.set(message.turnId, (tools.get(message.turnId) ?? 0) + 1);
   }
   const grouped = new Map<string, RoundRequest[]>(), seen = new Set<string>();
   let unassigned = 0;
@@ -74,20 +71,11 @@ export function deriveRoundFacts(messages: Iterable<RoundMessage>, requests: Ite
     const values = grouped.get(turnId) ?? []; values.push(request); grouped.set(turnId, values);
   }
   const rounds = [...starts].map(([turnId, start]): RoundFact => {
-    const candidate = ends.get(turnId), values = grouped.get(turnId) ?? [], calls = tools.get(turnId);
+    const candidate = ends.get(turnId), values = grouped.get(turnId) ?? [];
     const end = candidate && candidate.ordinal >= start.ordinal ? candidate : undefined;
-    const matching = end ? values.filter(request => request.messageId === end.id || request.requestMessageIds?.includes(end.id)
-      || request.timing?.end?.source !== "mirror" && request.timing?.end?.messageId === end.id) : [];
-    const partial = matching.some(request => request.timing?.completion === "partial");
-    const invalidated = Boolean(end && ((interruptions.get(turnId) ?? -1) >= end.ordinal || (calls?.last ?? -1) > end.ordinal || partial));
-    const completion = end && !invalidated ? end.final! : "unconfirmed";
-    const eligible = completion === "explicit" || completion === "inferred" && end?.finalEvidence !== undefined;
-    // 原生完成时间优先；消息创建时间不应截短流式响应耗时。
-    const completionTimes = [end?.finalAt, end?.occurredAt, ...matching.map(request => request.timing?.end?.occurredAt)].filter((value): value is string => value !== undefined && Number.isFinite(Date.parse(value)));
-    const endedAt = end?.finalAt ?? completionTimes.sort((a, b) => Date.parse(b) - Date.parse(a))[0] ?? end?.occurredAt;
-    const resolvedEnd = end ? { ...end, occurredAt: endedAt } : undefined;
-    const startTime = Date.parse(start.occurredAt ?? ""), endTime = Date.parse(endedAt ?? "");
-    return { turnId, start, end: resolvedEnd, completion, eligible, steps: complete && values.length ? values.length : null, toolCalls: calls?.count ?? 0,
+    const completion = end ? end.final ?? "inferred" : "unconfirmed", eligible = end !== undefined;
+    const startTime = Date.parse(start.occurredAt ?? ""), endTime = Date.parse(end?.occurredAt ?? "");
+    return { turnId, start, end, completion, eligible, steps: complete && values.length ? values.length : null, toolCalls: tools.get(turnId) ?? 0,
       tokens: complete && values.length && values.every(request => token(request.inputTokens) && token(request.outputTokens))
         ? values.reduce((sum, request) => sum + request.inputTokens! + request.outputTokens!, 0) : null,
       durationMs: Number.isFinite(startTime) && Number.isFinite(endTime) && endTime >= startTime ? endTime - startTime : null };

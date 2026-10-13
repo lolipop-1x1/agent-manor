@@ -82,7 +82,7 @@ export class OverviewManager {
   private key(type: OverviewWorkerRequest["type"], query: OverviewQuery, extra: object): string {
     const panel = (extra as { panel?: OverviewPanel }).panel;
     const semantic = type === "panel" && ["core", "resources", "repositories", "facets"].includes(panel ?? "") ? { ...query, models: undefined } : query;
-    return JSON.stringify([type === "review" || type === "review_detail" ? "weekly-review-v11" : 6, type, this.canonicalQuery(semantic), extra,
+    return JSON.stringify([type === "review" || type === "review_detail" ? "weekly-review-v12" : 6, type, this.canonicalQuery(semantic), extra,
       type === "report" || panel === "repositories" ? this.repositories().map(row => [row.id, row.version, row.stale]) : undefined]);
   }
   private canonicalQuery(query: OverviewQuery): object {

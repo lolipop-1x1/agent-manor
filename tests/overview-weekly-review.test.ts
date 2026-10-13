@@ -15,6 +15,7 @@ import { WeeklyReviewFactStore, weeklyReviewRange } from "../src/overview/weekly
 import { buildWeeklyReview, weeklyReviewDetail } from "../src/overview/weekly-review.js";
 import { weeklyReviewDetailQuery } from "../src/service/overview-input.js";
 import { promptCharacterCount, summarizeRoundMetrics } from "../src/sessions/round-metrics.js";
+import { clientIds } from "../src/clients.js";
 
 const now = new Date("2026-10-12T04:00:00Z");
 const priceStatus: PricingStatus = { version: "synthetic-price", currency: "USD", source: "bundled", sourceUrl: "https://example.invalid/prices",
@@ -43,6 +44,43 @@ async function fixture(run: (store: SessionStore, directory: string) => Promise<
   try { await run(store, directory); }
   finally { store.close(); await rm(directory, { recursive: true, force: true }); }
 }
+
+test("所有客户端共用末条回复：无终态、空消息、取消和跨周整轮冷暖结果一致", async () => fixture(async (store, directory) => {
+  const sources = clientIds.map(client => revision(store, client, [
+    message(client, "u", 0, "2026-10-04T23:59:00Z"),
+    message(client, "early", 1, "2026-10-05T00:00:00Z", { kind: "assistant", final: "explicit" }),
+    message(client, "last", 2, "2026-10-05T00:01:00Z", { kind: "assistant", finalAt: "2026-10-05T00:10:00Z" }),
+    message(client, "blank", 3, "2026-10-05T00:02:00Z", { kind: "assistant", text: "\u3000\u00a0\n\t", final: "explicit" }),
+    message(client, "cancel", 4, "2026-10-05T00:03:00Z", { kind: "context", interrupted: true, contextSource: "client" }),
+    message(client, "pending", 5, "2026-10-06T00:00:00Z", { turnId: "pending" }),
+    message(client, "thinking", 6, "2026-10-06T00:01:00Z", { turnId: "pending", kind: "thinking" }),
+  ], [usage("before", "2026-10-04T23:59:30Z"), usage("last", "2026-10-05T00:00:30Z", { messageId: "last",
+    timing: { basis: "estimated", method: "qoder_message_boundary", completion: "partial" } })], { client }));
+  const version = store.publish(store.createJob().id, sources, []), query = { version, timezone: "UTC", anchorDay: "2026-10-12" };
+  const check = async (name: string) => {
+    const factsStore = new WeeklyReviewFactStore(store, join(directory, name));
+    try {
+      for (const client of clientIds) {
+        const profile = store.profile(client).roundMetrics!;
+        const scoped = { ...query, clients: [client] }, data = buildWeeklyReview((await factsStore.source(scoped, now)).facts, scoped, pricing, now);
+        assert.equal(profile.userTurns, 2);
+        assert.equal(profile.completedTurns, 1);
+        assert.equal(profile.averageSteps, 2);
+        assert.equal(profile.averageDurationMs, 120000);
+        assert.equal(data.review.rounds.steps.average, profile.averageSteps);
+        assert.equal(data.review.rounds.durationMs.average, profile.averageDurationMs);
+        assert.equal(data.review.rounds.tokens.average, 220, "跨周整轮使用两个请求，不只取周内请求");
+        assert.equal(data.review.cache.requests, 1, "缓存事件窗口仍只取周内请求");
+        assert.equal(store.messages(client, { mode: "brief", branch: "all" }).messages.find(row => row.kind === "assistant")!.id, "last");
+        assert.deepEqual(buildWeeklyReview((await factsStore.source(scoped, now)).facts, scoped, pricing, now).review, data.review);
+      }
+    } finally { factsStore.close(); }
+  };
+  await check("raw-replies.sqlite");
+  const overview = new OverviewFactStore(store);
+  try { await overview.prepare(query, now); } finally { overview.close(); }
+  await check("cached-replies.sqlite");
+}));
 function history(store: SessionStore) {
   const main = revision(store, "main", [
     message("main", "old-compression", 1, "2026-10-01T01:00:00Z", { kind: "compression", turnId: "old" }),
@@ -96,11 +134,11 @@ test("七天复盘口径：完整跨周轮次、缓存档位、压缩支持、�
     assert.equal(report.sessions.compressions, 1);
     assert.equal(report.sessions.compressionSessions, 1);
     assert.equal(report.sessions.uncompressedPeakInput.average, 123, "旧压缩与不支持压缩观测的来源排除");
-    assert.equal(report.rounds.completed, 3);
+    assert.equal(report.rounds.completed, 4);
     assert.equal(report.rounds.inferred, 1);
     assert.equal(report.rounds.missingEndTime, 1);
-    assert.equal(report.rounds.steps.average, 2);
-    assert.equal(report.rounds.toolCalls.average, 2 / 3);
+    assert.equal(report.rounds.steps.average, 7 / 4);
+    assert.equal(report.rounds.toolCalls.average, 2 / 4);
     assert.equal(report.rounds.tokens.average, (530 + 460 + 133) / 3);
     assert.equal(report.rounds.durationMs.maximum, 7200000);
     assert.equal(report.rounds.longest[0]!.title, "合成跨周需求");
@@ -208,7 +246,7 @@ test("源索引被后台刷新持有写锁时复盘仍可只读统计，不回�
     const before = (writer.prepare("SELECT COUNT(*) AS count FROM session_usage_fact_revisions").get() as { count: number }).count;
     const query = { version, timezone: "Asia/Shanghai" };
     const source = await factsStore.source(query, now), report = buildWeeklyReview(source.facts, query, pricing, now).review;
-    assert.equal(report.rounds.completed, 3);
+    assert.equal(report.rounds.completed, 4);
     assert.equal(report.cache.requests, 7);
     assert.equal((writer.prepare("SELECT COUNT(*) AS count FROM session_usage_fact_revisions").get() as { count: number }).count, before,
       "周复盘不得通过ensureUsageFacts争用源索引写锁");
@@ -222,7 +260,7 @@ test("复盘Worker首次启动也不请求源库写锁，源索引持续刷新�
   try {
     const before = (writer.prepare("SELECT COUNT(*) AS count FROM session_usage_fact_revisions").get() as { count: number }).count;
     const result = await manager.review({ version, timezone: "Asia/Shanghai", anchorDay: "2026-10-12" });
-    assert.equal(result.rounds.completed, 3);
+    assert.equal(result.rounds.completed, 4);
     assert.equal(result.cache.requests, 7);
     assert.equal((writer.prepare("SELECT COUNT(*) AS count FROM session_usage_fact_revisions").get() as { count: number }).count, before);
   } finally { writer.exec("ROLLBACK"); writer.close(); await manager.close(); }
@@ -249,7 +287,7 @@ test("请求缺轮次时按消息身份定位并保留歧义，旧需求正文�
       return [...String(value)].slice(Number(start) - 1, Number(start) - 1 + Number(length)).join("");
     });
     const statement = prepare.call(this, sql);
-    if (sql.includes("prompt_preview FROM session_messages") || sql.includes("AS resolved_turn") || sql.includes("AND (kind='user' OR kind='assistant' AND final IS NOT NULL)") || sql.includes("INDEXED BY session_message_overview_projection")) {
+    if (sql.includes("prompt_preview FROM session_messages") || sql.includes("AS resolved_turn") || sql.includes("AND (kind='user' OR kind='assistant' AND final IS NOT NULL)") || sql.includes("INDEXED BY session_message_overview_projection") || sql.includes("INDEXED BY session_message_reply_boundary")) {
       const database = this, all = statement.all.bind(statement);
       statement.all = (...args: unknown[]) => {
         plans.push((prepare.call(database, `EXPLAIN QUERY PLAN ${sql}`).all(...args) as { detail: string }[]).map(row => row.detail));
@@ -268,7 +306,7 @@ test("请求缺轮次时按消息身份定位并保留歧义，旧需求正文�
     assert.equal(previews, 3, "只恢复跨周轮次及周内相关需求预览");
     assert(plans.some(plan => plan.some(row => row.includes("SEARCH m") && row.includes("revision=? AND id=?"))), "缺轮次请求按复合消息身份定位");
     assert(!plans.some(plan => plan.some(row => row.startsWith("SEARCH m") && row.endsWith("(revision=?)"))), "请求关联不逐条扫描全部会话消息");
-    assert(plans.some(plan => plan.some(row => row.includes("session_message_round_boundary"))), "轮次边界通过稀疏索引读取，不扫描旧工具消息");
+    assert(plans.some(plan => plan.some(row => row.includes("session_message_reply_boundary"))), "回复边界通过稀疏索引读取，不扫描旧工具正文");
     assert(plans.some(plan => plan.some(row => row.includes("session_message_overview_projection"))), "活动和工具投影从覆盖索引读取元信息");
     const overview = new OverviewFactStore(store);
     try { await overview.prepare(query, now); } finally { overview.close(); }
@@ -289,7 +327,7 @@ test("缺投影索引的只读旧库回退读取，统计与新索引一致", as
   try { expected = buildWeeklyReview((await first.source(query, now)).facts, query, pricing, now).review; }
   finally { first.close(); }
   const database = new Database(store.dbPath);
-  try { database.exec("DROP INDEX session_message_overview_projection_v2; DROP INDEX session_message_round_boundary"); }
+  try { database.exec("DROP INDEX session_message_overview_projection_v2; DROP INDEX session_message_round_boundary; DROP INDEX session_message_reply_boundary"); }
   finally { database.close(); }
   const readonly = new SessionStore(store.dbPath, { readonly: true }), fallback = new WeeklyReviewFactStore(readonly, join(directory, "projection-fallback.sqlite"));
   try { assert.deepEqual(buildWeeklyReview((await fallback.source(query, now)).facts, query, pricing, now).review, expected); }
@@ -397,7 +435,7 @@ test("范围移动复用不可变修订覆盖，跨时区缓存至多四份且�
     await factsStore.source(query, now); const first = scans.length;
     const shifted = buildWeeklyReview((await factsStore.source({ ...query, anchorDay: "2026-10-13" }, now)).facts, { ...query, anchorDay: "2026-10-13" }, pricing, now).review;
     assert.deepEqual(scans.slice(first), ["main"], "跨日只重读含新末日活动的来源，其余不可变来源复用覆盖");
-    assert.equal(shifted.rounds.completed, 2);
+    assert.equal(shifted.rounds.completed, 3);
     assert.equal(shifted.cache.requests, 7, "新窗口末日的请求仍被纳入");
     for (const timezone of ["Asia/Shanghai", "Europe/London", "America/New_York", "Pacific/Kiritimati", "Asia/Tokyo"])
       await factsStore.source({ ...query, timezone }, now);
@@ -405,7 +443,7 @@ test("范围移动复用不可变修订覆盖，跨时区缓存至多四份且�
     try { assert.equal((database.prepare("SELECT MAX(count) AS maximum FROM (SELECT COUNT(*) AS count FROM weekly_revisions GROUP BY source_revision)").get() as { maximum: number }).maximum, 4); }
     finally { database.close(); }
     await factsStore.source(query, now);
-    assert.equal(buildWeeklyReview((await factsStore.source(query, now)).facts, query, pricing, now).review.rounds.completed, 2);
+    assert.equal(buildWeeklyReview((await factsStore.source(query, now)).facts, query, pricing, now).review.rounds.completed, 3);
   } finally { factsStore.close(); }
 }));
 
@@ -528,10 +566,10 @@ test("千个旧会话与五千请求首算只扫描近期候选，工具后续�
   } finally { factsStore.close(); }
 }));
 
-test("画像和七天复盘共用可靠终答与消息关联，跨周按原生完成时间取整轮", async () => fixture(async (store, directory) => {
+test("画像和七天复盘共用末条回复与消息关联，跨周按回复记录时间取整轮", async () => fixture(async (store, directory) => {
   const source = revision(store, "unified", [
     message("unified", "cross-user", 1, "2026-10-04T12:00:00Z", { turnId: "cross" }),
-    message("unified", "cross-end", 2, "2026-10-04T14:00:00Z", { turnId: "cross", kind: "assistant", final: "inferred", finalEvidence: "normal_stop", finalAt: "2026-10-05T02:00:00Z" }),
+    message("unified", "cross-end", 2, "2026-10-05T02:00:00Z", { turnId: "cross", kind: "assistant", final: "inferred", finalEvidence: "normal_stop", finalAt: "2026-10-05T02:00:00Z" }),
     message("unified", "user", 3, "2026-10-07T01:00:00Z", { turnId: "normal" }),
     message("unified", "end", 4, "2026-10-07T01:01:00Z", { turnId: "normal", kind: "assistant", final: "explicit" }),
     message("unified", "weak-user", 5, "2026-10-07T02:00:00Z", { turnId: "weak" }),
@@ -546,23 +584,23 @@ test("画像和七天复盘共用可靠终答与消息关联，跨周按原生�
   const profile = store.profile("unified", {}), factsStore = new WeeklyReviewFactStore(store);
   try {
     const { facts } = await factsStore.source(query, now), data = buildWeeklyReview(facts, query, pricing, now);
-    assert.equal(profile.roundMetrics!.completedTurns, 2);
-    assert.equal(profile.roundMetrics!.averageSteps, 1.5);
-    assert.equal(profile.roundMetrics!.averageDurationMs, (14 * 3600000 + 60000) / 2);
+    assert.equal(profile.roundMetrics!.completedTurns, 3);
+    assert.equal(profile.roundMetrics!.averageSteps, 4 / 3);
+    assert.equal(profile.roundMetrics!.averageDurationMs, (14 * 3600000 + 60000 + 60000) / 3);
     assert.equal(data.review.rounds.completed, profile.roundMetrics!.completedTurns);
     assert.equal(data.review.rounds.steps.average, profile.roundMetrics!.averageSteps);
     assert.equal(data.review.rounds.durationMs.average, profile.roundMetrics!.averageDurationMs);
-    assert.equal(data.review.rounds.inferredIncluded, 1);
-    assert.equal(data.review.rounds.steps.inferredSamples, 1);
+    assert.equal(data.review.rounds.inferredIncluded, 2);
+    assert.equal(data.review.rounds.steps.inferredSamples, 2);
     const detail = weeklyReviewDetail(data, { kind: "rounds", filter: "ended" });
-    assert.equal(detail.total, 2);
+    assert.equal(detail.total, 3);
     assert.equal(detail.rows.find(row => row.turnId === "cross")!.tokens, 220);
     const warm = await factsStore.source(query, now);
     assert.deepEqual(buildWeeklyReview(warm.facts, query, pricing, now).review, data.review);
   } finally { factsStore.close(); }
 }));
 
-test("原生终答缺完成字段时保留请求成员和结束计时，冷暖跨午夜范围一致", async () => fixture(async (store, directory) => {
+test("请求计时跨午夜不改变回复日期归属，冷暖投影一致", async () => fixture(async (store, directory) => {
   const records = [
     message("timed", "u", 1, "2026-10-04T15:58:00Z"),
     message("timed", "thinking", 2, "2026-10-04T15:58:10Z", { kind: "thinking" }),
@@ -574,14 +612,14 @@ test("原生终答缺完成字段时保留请求成员和结束计时，冷暖�
   })];
   const source = revision(store, "timed", records, requests), version = store.publish(store.createJob().id, [source], []);
   const query = { version, timezone: "Asia/Shanghai", anchorDay: "2026-10-12" }, expected = store.profile("timed", {}).roundMetrics!;
-  assert.equal(expected.averageDurationMs, 180000);
+  assert.equal(expected.averageDurationMs, 60000);
   const check = async (name: string) => {
     const facts = new WeeklyReviewFactStore(store, join(directory, name));
     try {
       const report = buildWeeklyReview((await facts.source(query, now)).facts, query, pricing, now).review;
-      assert.equal(report.rounds.steps.average, expected.averageSteps);
-      assert.equal(report.rounds.durationMs.average, expected.averageDurationMs);
-      assert.equal(report.rounds.completed, 1);
+      assert.equal(report.rounds.steps.average, null);
+      assert.equal(report.rounds.durationMs.average, null);
+      assert.equal(report.rounds.completed, 0);
     } finally { facts.close(); }
   };
   await check("raw-timing.sqlite");
@@ -630,7 +668,7 @@ test("辅助事件、附件和用量分项缺口不抹掉完整请求步骤，�
   } finally { facts.close(); }
 }));
 
-test("长会话结束时间补查只物化窗口后的结束元信息，不搬运历史请求JSON", async () => fixture(async (store, directory) => {
+test("按回复时间无需补查请求结束记录，旧请求不搬运", async () => fixture(async (store, directory) => {
   const rows = [message("long", "old-u", 1, "2026-09-01T01:00:00Z", { turnId: "old" }),
     message("long", "old-a", 2, "2026-09-01T02:00:00Z", { turnId: "old", kind: "assistant", final: "explicit" }),
     message("long", "new-u", 3, "2026-10-07T01:00:00Z"),
@@ -656,7 +694,7 @@ test("长会话结束时间补查只物化窗口后的结束元信息，不搬�
     const report = buildWeeklyReview((await facts.source(query, now)).facts, query, pricing, now).review;
     assert.equal(report.rounds.completed, 1);
     assert.equal(report.rounds.steps.average, 1);
-    assert.equal(report.rounds.durationMs.average, 120000);
-    assert.equal(materialized, 1, "旧请求在SQLite中筛掉，只读取必要的结束关联元信息");
+    assert.equal(report.rounds.durationMs.average, 60000);
+    assert.equal(materialized, 0, "不为回复边界读取额外请求结束元信息");
   } finally { facts.close(); Database.prototype.prepare = prepare; }
 }));

@@ -45,7 +45,7 @@ test("轮次耗时保留零值，并按秒、分钟、小时显示", () => {
   assert.equal(translate("en", "overview.review.timeMinutes", { value: "1.1" }), "1.1 min");
 });
 
-test("可靠推断样本标约数，未知值不补约数或零，明确样本保持原格式", () => {
+test("末条回复样本标约数，未知值不补约数或零，明确样本保持原格式", () => {
   assert.equal(weeklyReviewApproximation(12, 1), "≈ ");
   assert.equal(weeklyReviewApproximation(0, 1), "≈ ");
   assert.equal(weeklyReviewApproximation(null, 1), "");
@@ -54,7 +54,7 @@ test("可靠推断样本标约数，未知值不补约数或零，明确样本�
   assert.equal(weeklyReviewApproximation(12), "");
 });
 
-test("轮次默认明细选择可统计结束，状态筛选与原生依据文案完整", () => {
+test("轮次默认明细选择有回复，状态筛选与原生依据文案完整", () => {
   const selection = { ...detail, filter: weeklyReviewDefaultFilter("rounds") };
   const params = new URLSearchParams(weeklyReviewDetailParameters(review, selection));
   assert.equal(JSON.parse(params.get("detail")!).filter, "ended");

@@ -19,7 +19,7 @@ import { sessionTitle, userTitle } from "./title.js";
 import { localDay } from "../overview/dates.js";
 import { instant } from "../usage/analytics.js";
 import { pairToolCalls } from "../overview/analytics.js";
-import { promptCharacterCount, summarizeRoundMetrics, completeRoundSource } from "./round-metrics.js";
+import { promptCharacterCount, summarizeRoundMetrics, completeRoundSource, type RoundMessage } from "./round-metrics.js";
 import { initializeSearchIndex, prepareSearchIndex, searchMatch } from "./search-index.js";
 import { initializeUsageFacts, prepareUsageFacts, readUsageFactMetadata, readUsageFacts, usageFactsReady, USAGE_FACT_FORMAT_VERSION } from "./usage-facts.js";
 import type { UsageFactMetadata } from "./usage-facts.js";
@@ -62,6 +62,8 @@ const literal = (value: string) => `%${value.replace(/[\\%_]/g, "\\$&")}%`;
 const paging = (query: SessionQuery) => ({ page: Math.max(1, Math.floor(query.page ?? 1)), pageSize: Math.min(200, Math.max(1, Math.floor(query.pageSize ?? 50))) });
 const kindsOf = (query: SessionQuery) => (query.kinds?.length ? query.kinds : ["user", "assistant"])
   .filter(kind => ["user", "assistant", "tool_call", "tool_result", "thinking", "system", "context", "compression"].includes(kind));
+const replyBodySql = `length(trim(text,${[9, 10, 11, 12, 13, 32, 160, 5760, ...Array.from({ length: 11 }, (_, i) => 8192 + i), 8232, 8233, 8239, 8287, 12288, 65279].map(code => `char(${code})`).join("||")}))>0`;
+const replyWhere = `kind='assistant' AND copied IS NOT 1 AND json_extract(json,'$.contextSource') IS NULL AND ${replyBodySql}`;
 
 /** 全局正文按来源修订保存，读者只访问最后完整发布的版本。 */
 export class SessionStore {
@@ -71,6 +73,7 @@ export class SessionStore {
   private readonly revisionUsageCounts = new Map<string, number>();
   private readonly overviewStatements = new Map<string, Database.Statement>();
   private readonly overviewMessageTable: string;
+  private readonly replyMessageTable: string;
   private statusMetadata?: Pick<SessionIndexStatus, "version" | "sessionCount" | "sourceCount" | "projects">;
 
   constructor(dbPath: string, options: { readonly?: boolean } = {}) {
@@ -115,6 +118,8 @@ export class SessionStore {
       CREATE INDEX IF NOT EXISTS session_message_turn ON session_messages(revision,turn_id,ordinal,id);
       CREATE INDEX IF NOT EXISTS session_message_round_boundary ON session_messages(revision,ordinal,id)
         WHERE copied IS NOT 1 AND (kind='user' OR kind='assistant' AND final IS NOT NULL);
+      CREATE INDEX IF NOT EXISTS session_message_reply_boundary ON session_messages(revision,turn_id,ordinal DESC,id DESC)
+        WHERE ${replyWhere};
       CREATE INDEX IF NOT EXISTS session_message_overview_projection_v2 ON session_messages(revision,ordinal,id,turn_id,record_line,kind,final,call_id,copied,
         json_extract(json,'$.occurredAt'),json_extract(json,'$.tool'),json_extract(json,'$.status'),json_extract(json,'$.contextSource'),
         json_extract(json,'$.resource'),json_extract(json,'$.resource.kind'),json_extract(json,'$.finalEvidence'),json_extract(json,'$.finalAt'),json_extract(json,'$.interrupted'));
@@ -143,10 +148,19 @@ export class SessionStore {
       });
       this.overviewMessageTable = this.database.prepare("SELECT 1 FROM sqlite_master WHERE type='index' AND name='session_message_overview_projection_v2'").get()
         ? "session_messages INDEXED BY session_message_overview_projection_v2" : "session_messages";
+      this.replyMessageTable = this.database.prepare("SELECT 1 FROM sqlite_master WHERE type='index' AND name='session_message_reply_boundary'").get()
+        ? "session_messages INDEXED BY session_message_reply_boundary" : "session_messages";
     } catch (error) { this.database.close(); throw error; }
   }
 
   close(): void { this.overviewStatements.clear(); this.database.close(); }
+
+  /** 小型回复索引只选同轮末条正文，不读取全部 AI 正文；旧只读库可直接回退。 */
+  private lastReplyIds(revision: string): Set<string> {
+    const rows = this.overviewStatement(`SELECT id FROM (SELECT id,ROW_NUMBER() OVER (PARTITION BY turn_id ORDER BY ordinal DESC,id DESC) AS reply_rank
+      FROM ${this.replyMessageTable} WHERE revision=? AND ${replyWhere}) WHERE reply_rank=1`).all(revision) as { id: string }[];
+    return new Set(rows.map(row => row.id));
+  }
 
   /** 总览逐修订复用固定 SQL，原生语句数量不随历史修订数增长。 */
   private overviewStatement(sql: string): Database.Statement {
@@ -650,16 +664,15 @@ export class SessionStore {
     if (query.mode !== "brief") return { values, cte: `WITH scoped AS MATERIALIZED (
       SELECT id,ordinal,CASE WHEN turn_id='' THEN 'unknown' ELSE turn_id END AS turn_id,kind,final FROM session_messages WHERE revision=?${branch}
     ), visible AS (SELECT * FROM scoped)` };
-    // 只计算元信息和正文是否为空；跨轮分页后才取正文。兜底不会写回 final。
+    // 阅读和投入统计都取末条非空回复；选择结果不改写来源 final。
     const cte = `WITH scoped AS MATERIALIZED (
       SELECT id,ordinal,CASE WHEN turn_id='' THEN 'unknown' ELSE turn_id END AS turn_id,kind,final,
-        CASE WHEN kind='assistant' AND length(trim(text,char(9)||char(10)||char(13)||' '))>0 THEN 1 ELSE 0 END AS has_body
+        CASE WHEN kind='assistant' AND ${replyBodySql} THEN 1 ELSE 0 END AS has_body
       FROM session_messages WHERE revision=?${branch}
     ), ranked AS (
-      SELECT *,SUM(CASE WHEN kind='assistant' AND final IS NOT NULL THEN 1 ELSE 0 END) OVER (PARTITION BY turn_id) AS finals,
-        ROW_NUMBER() OVER (PARTITION BY turn_id,kind ORDER BY has_body DESC,ordinal DESC,id DESC) AS answer_rank FROM scoped
+      SELECT *,ROW_NUMBER() OVER (PARTITION BY turn_id,kind ORDER BY has_body DESC,ordinal DESC,id DESC) AS answer_rank FROM scoped
     ), visible AS (
-      SELECT * FROM ranked ${query.mode === "brief" ? "WHERE kind='user' OR (kind='assistant' AND (final IS NOT NULL OR (finals=0 AND has_body=1 AND answer_rank=1)))" : ""}
+      SELECT * FROM ranked WHERE kind='user' OR (kind='assistant' AND has_body=1 AND answer_rank=1)
     )`;
     return { cte, values };
   }
@@ -930,49 +943,35 @@ export class SessionStore {
       final: WeeklyReviewEvent["final"] | null; final_evidence: WeeklyReviewEvent["finalEvidence"] | null; final_at: string | null; interrupted: number | null; call_id: string | null; occurred_at: string | null; tool: string | null;
       status: WeeklyReviewEvent["status"] | null; context_source: WeeklyReviewEvent["contextSource"] | null;
       resource: string | null; prompt_characters: number | null; prompt_preview: string | null };
+    const replies = scope?.includeRounds === false ? new Set<string>() : this.lastReplyIds(revision);
     const boundaryMetadata = new Map(scope?.boundaryEvents?.map(event => [event.id, event]));
     const decode = (row: Row): WeeklyReviewEvent => boundaryMetadata.has(row.id)
       ? { ...boundaryMetadata.get(row.id)!, sessionId, ordinal: row.ordinal, turnId: row.turn_id, recordLine: row.record_line,
-        final: row.final ?? undefined, finalEvidence: row.final_evidence ?? undefined, finalAt: row.final_at ?? undefined, interrupted: row.interrupted === 1 || undefined, callId: row.call_id ?? undefined }
+        hasReply: replies.has(row.id), final: row.final ?? undefined, finalEvidence: row.final_evidence ?? undefined, finalAt: row.final_at ?? undefined, interrupted: row.interrupted === 1 || undefined, callId: row.call_id ?? undefined }
       : ({ id: row.id, sessionId, ordinal: row.ordinal, turnId: row.turn_id, recordLine: row.record_line,
-      kind: row.kind, final: row.final ?? undefined, finalEvidence: row.final_evidence ?? undefined, finalAt: row.final_at ?? undefined, interrupted: row.interrupted === 1 || undefined, callId: row.call_id ?? undefined, occurredAt: row.occurred_at ?? undefined,
+      kind: row.kind, hasReply: replies.has(row.id), final: row.final ?? undefined, finalEvidence: row.final_evidence ?? undefined, finalAt: row.final_at ?? undefined, interrupted: row.interrupted === 1 || undefined, callId: row.call_id ?? undefined, occurredAt: row.occurred_at ?? undefined,
       tool: row.tool ?? undefined, status: row.status ?? undefined, contextSource: row.context_source ?? undefined,
       ...(row.resource ? { resource: JSON.parse(row.resource) } : {}),
       ...(row.prompt_characters === null ? {} : { promptCharacters: row.prompt_characters }),
       ...(row.prompt_preview === null ? {} : { promptPreview: row.prompt_preview }) });
     const prefix = scope ? [scope.fromMs, scope.toMs] : [];
     const cachedBoundaries = scope?.boundaryEvents !== undefined;
-    const boundarySource = cachedBoundaries ? `(SELECT value AS boundary FROM json_each(?)) selected CROSS JOIN ${this.overviewMessageTable === "session_messages" ? "session_messages INDEXED BY session_message_order" : this.overviewMessageTable}` : "session_messages";
+    const cachedRows = scope?.boundaryEvents?.filter(event => event.kind === "user" || replies.has(event.id));
+    const boundarySource = cachedBoundaries ? `(SELECT value AS boundary FROM json_each(?)) selected CROSS JOIN ${this.overviewMessageTable === "session_messages" ? "session_messages INDEXED BY session_message_order" : this.overviewMessageTable}` : this.overviewMessageTable;
     const boundaryRows = cachedBoundaries && scope!.includeRounds === false ? scope!.boundaryEvents!
       : (this.overviewStatement(`SELECT ${cachedBoundaries ? `${identityColumns},${endColumns}` : columns} FROM ${boundarySource} WHERE revision=? AND copied IS NOT 1
       ${cachedBoundaries ? "AND ordinal=json_extract(selected.boundary,'$[1]') AND id=json_extract(selected.boundary,'$[0]')" : ""}
-      AND ${scope ? "(kind='user' OR kind='assistant' AND final IS NOT NULL)" : "(kind IN ('user','tool_call','tool_result','compression') OR kind='assistant' AND final IS NOT NULL)"}
+      AND ${scope ? "(kind='user' OR id IN (SELECT value FROM json_each(?)))" : "(kind IN ('user','tool_call','tool_result','compression') OR id IN (SELECT value FROM json_each(?)))"}
       ${scope?.includeRounds === false ? "AND kind='user' AND usage_time_ms(json_extract(json,'$.occurredAt'))>=? AND usage_time_ms(json_extract(json,'$.occurredAt'))<?" : ""}
-      ORDER BY ordinal,id`).all(...(cachedBoundaries ? [JSON.stringify(scope!.boundaryEvents!.map(event => [event.id, event.ordinal]))] : prefix), revision,
+      ORDER BY ordinal,id`).all(...(cachedBoundaries ? [JSON.stringify(cachedRows!.map(event => [event.id, event.ordinal]))] : prefix), revision, JSON.stringify([...replies]),
         ...(scope?.includeRounds === false ? [scope.fromMs, scope.toMs] : [])) as Row[]).map(decode);
     if (!scope) return { events: boundaryRows, requests: this.overviewRevisionRequests(revision, sessionId) };
     const inRange = (value?: string) => { const time = Date.parse(value ?? ""); return Number.isFinite(time) && time >= scope.fromMs && time < scope.toMs; };
-    const unresolvedEnds = new Map(boundaryRows.filter(event => event.final === "explicit" && !event.finalAt).map(event => [event.id, event]));
-    if (unresolvedEnds.size) {
-      // 消息创建在窗口前、响应结束在窗口内时仍要纳入；只物化可能改变归属的结束元信息。
-      const endings = this.overviewStatement(`SELECT message_id,json_extract(json,'$.requestMessageIds') AS members,
-        CASE WHEN COALESCE(json_extract(json,'$.timing.end.source'),'')<>'mirror' THEN json_extract(json,'$.timing.end.messageId') END AS end_id,
-        json_extract(json,'$.timing.end.occurredAt') AS ended_at FROM session_usage WHERE revision=?
-        AND usage_time_ms(json_extract(json,'$.timing.end.occurredAt'))>=? ORDER BY rowid`).iterate(revision, scope.fromMs) as Iterable<{
-          message_id: string | null; members: string | null; end_id: string | null; ended_at: string }>;
-      for (const request of endings) {
-        const endedAt = request.ended_at;
-        for (const id of [request.message_id, ...(request.members ? JSON.parse(request.members) as string[] : []), request.end_id]) {
-          const end = id ? unresolvedEnds.get(id) : undefined;
-          if (end && Date.parse(endedAt) > Date.parse(end.finalAt ?? end.occurredAt ?? "")) end.finalAt = endedAt;
-        }
-      }
-    }
-    const selectedTurns = new Set(boundaryRows.filter(event => inRange(event.finalAt ?? event.occurredAt) && !event.contextSource
+    const selectedTurns = new Set(boundaryRows.filter(event => inRange(event.occurredAt) && !event.contextSource
       && !(event.kind === "user" && event.resource?.kind === "skill_read")).map(event => event.turnId));
     const fullTurns = new Map<string, WeeklyReviewEvent>();
-    for (const event of boundaryRows) if (event.kind === "assistant" && (event.final === "explicit" || event.final === "inferred" && event.finalEvidence)) fullTurns.set(event.turnId, event);
-    const fullIds = JSON.stringify([...fullTurns.values()].filter(event => inRange(event.finalAt ?? event.occurredAt)).map(event => event.turnId));
+    for (const event of boundaryRows) if (event.kind === "assistant" && event.hasReply) fullTurns.set(event.turnId, event);
+    const fullIds = JSON.stringify([...fullTurns.values()].filter(event => inRange(event.occurredAt)).map(event => event.turnId));
     let boundaries = boundaryRows.filter(event => selectedTurns.has(event.turnId));
     const cachedProcess = scope.processFacts?.(JSON.parse(fullIds) as string[]);
     const process = scope.includeRounds === false ? [] : cachedProcess?.events ?? (this.overviewStatement(`SELECT ${columns} FROM ${this.overviewMessageTable} WHERE revision=? AND copied IS NOT 1
@@ -1549,7 +1548,7 @@ export class SessionStore {
     const tools = new Map<string, SessionProfile["tools"][number]>();
     const resources = new Map<string, SessionProfile["resources"][number]>();
     const turns = new Set<string>();
-    const roundMessages: (Omit<SessionMessage, "text"> & { text?: string })[] = [];
+    const roundMessages: RoundMessage[] = [];
     let pairedInput = 0;
     let pairedCache = 0;
     const sum = (key: "inputTokens" | "outputTokens" | "cachedInputTokens" | "cacheWriteTokens" | "reasoningOutputTokens", value: number | undefined) => {
@@ -1573,12 +1572,13 @@ export class SessionStore {
         estimates.set(item.kind, (estimates.get(item.kind) ?? 0) + item.tokens);
         profile.estimate.total += item.tokens;
       }
+      const replies = sessionId === id ? this.lastReplyIds(revision) : new Set<string>();
       const requestBranches = new Map<string, Pick<SessionMessage, "branchIds" | "currentBranch">>();
       for (const row of this.database.prepare(`SELECT ${MESSAGE_COLUMNS},${sessionId === id ? "CASE WHEN kind='user' THEN text ELSE NULL END" : "NULL"} AS prompt_text
         FROM session_messages WHERE revision=? AND copied IS NOT 1 ORDER BY ordinal,id`).iterate(revision) as Iterable<MessageMetadataRow & { prompt_text: string | null }>) {
         const message = decodeMessageMetadata(row);
         if (sessionId === id && (["user", "assistant", "tool_call", "thinking"].includes(message.kind) || message.interrupted)) {
-          roundMessages.push({ ...message, ...(row.prompt_text !== null ? { text: row.prompt_text } : {}) });
+          roundMessages.push({ ...message, hasReply: replies.has(message.id), ...(row.prompt_text !== null ? { text: row.prompt_text } : {}) });
         }
         if (message.branchIds || message.currentBranch !== undefined) requestBranches.set(message.id, message);
         profile.messageCount += 1;
