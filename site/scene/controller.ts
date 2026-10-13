@@ -104,7 +104,8 @@ export function createManorController(canvas: HTMLCanvasElement, host: HTMLEleme
     if (disposed || !visible || document.hidden) return;
     const delta = Math.min((now - lastTime) / 1000, .05);
     lastTime = now;
-    if (!options.paused && !reduced.matches) elapsed += delta;
+    // 自动暂停由页面偏好处理；用户明确播放时允许恢复角色动画。
+    if (!options.paused) elapsed += delta;
     if (transition) {
       const t = Math.min(1, (now - transition.started) / 850);
       const eased = 1 - (1 - t) ** 4;
@@ -120,7 +121,7 @@ export function createManorController(canvas: HTMLCanvasElement, host: HTMLEleme
     host.dataset.camera = [...camera.position.toArray(), ...controls.target.toArray(), camera.zoom].map(n => n.toFixed(3)).join(",");
     host.dataset.drawCalls = String(renderer.info.render.calls);
     host.dataset.triangles = String(renderer.info.render.triangles);
-    if (transition || (!options.paused && !reduced.matches)) requestFrame();
+    if (transition || !options.paused) requestFrame();
   }
   function requestFrame() { if (!frame && !disposed && visible && !document.hidden) frame = requestAnimationFrame(render); }
   function wake() { lastTime = performance.now(); requestFrame(); }
@@ -204,7 +205,7 @@ export function createManorController(canvas: HTMLCanvasElement, host: HTMLEleme
       controls.enabled = !next.installationOpen;
       options = next;
       host.dataset.view = next.installationOpen ? "installation" : next.view;
-      host.dataset.paused = String(next.paused || reduced.matches);
+      host.dataset.paused = String(next.paused);
       wake();
     },
     dispose() {

@@ -286,6 +286,19 @@ async function verify(page, fixture) {
     await button("茶庭近景").click();
     teaCamera = await settledCamera();
     ensure(await host.getAttribute("data-view") === "tea" && teaCamera !== initialCamera, "茶庭近景没有切换。");
+    ensure(await page.locator(".hero-copy").isHidden(), "茶庭近景仍被首屏文案覆盖。");
+    ensure(await page.getByRole("heading", { level: 1 }).count() === 0
+      && await page.locator(".hero-actions").getByRole("button").count() === 0, "近景隐藏文案仍出现在可访问树中。");
+    const headerStart = page.locator(".site-header").getByRole("button", { name: "开始使用", exact: true });
+    await headerStart.focus();
+    await page.keyboard.press("Enter");
+    await page.getByRole("dialog", { name: "欢迎来到庄园" }).waitFor({ state: "visible" });
+    await settledCamera();
+    await page.keyboard.press("Escape");
+    await page.getByRole("dialog").waitFor({ state: "hidden" });
+    await restoredCamera(teaCamera);
+    await page.waitForFunction(() => document.activeElement === document.querySelector(".site-header .button"));
+    ensure(await page.locator(".hero-copy").isHidden(), "关闭近景安装面板后错误展开了首屏文案。");
     await screenshot("03-tea-garden");
     await canvas.focus();
     await page.keyboard.press("ArrowLeft");
@@ -295,6 +308,8 @@ async function verify(page, fixture) {
     await button("庄园全景").click();
     await restoredCamera(initialCamera);
     ensure(await host.getAttribute("data-view") === "estate", "返回全景没有更新状态。");
+    ensure(await page.locator(".hero-copy").isVisible()
+      && await page.locator(".hero-actions").getByRole("button", { name: "开始使用", exact: true }).isVisible(), "回到全景后没有恢复首屏文案和操作。");
   });
 
   await step("30帧桌面rAF采样", async () => {
@@ -375,13 +390,23 @@ async function verify(page, fixture) {
     await page.waitForFunction(before => Number(document.querySelector(".manor-renderer")?.getAttribute("data-scene-time")) > before, hiddenTime);
   });
 
-  await step("减少动态效果自动暂停且镜头直接切换", async () => {
+  await step("减少动态效果自动暂停、允许显式播放且镜头直接切换", async () => {
     await page.emulateMedia({ reducedMotion: "reduce" });
     await page.waitForFunction(() => document.querySelector(".manor-renderer")?.getAttribute("data-paused") === "true");
     await nextFrames();
     const pausedTime = await sceneTime();
     await page.waitForTimeout(350);
     ensure(await sceneTime() === pausedTime, "减少动态效果后场景仍在运行。");
+    await button("播放动效").click();
+    await page.waitForFunction(before => document.querySelector(".manor-renderer")?.getAttribute("data-paused") === "false"
+      && Number(document.querySelector(".manor-renderer")?.getAttribute("data-scene-time")) > before + .05, pausedTime);
+    ensure(await button("暂停动效").isVisible(), "减少动态效果下显式播放后没有提供暂停操作。");
+    await button("暂停动效").click();
+    await page.waitForFunction(() => document.querySelector(".manor-renderer")?.getAttribute("data-paused") === "true");
+    await nextFrames();
+    const pausedAgain = await sceneTime();
+    await page.waitForTimeout(350);
+    ensure(await sceneTime() === pausedAgain, "减少动态效果下再次暂停后动画仍在推进。");
     await button("茶庭近景").click();
     await nextFrames();
     ensure(await camera() === teaCamera, "减少动态效果仍执行了缓动镜头过渡。");
@@ -405,6 +430,14 @@ async function verify(page, fixture) {
       observe(fallback, true);
       fallback.setDefaultTimeout(20_000);
       await fallback.setViewportSize({ width: 1440, height: 1000 });
+      await fallback.goto(fixture.address, { waitUntil: "networkidle" });
+      await fallback.getByRole("button", { name: "茶庭近景", exact: true }).click();
+      ensure(await fallback.locator(".hero-copy").isHidden(), "上下文丢失验证前没有进入茶庭视角。");
+      // 模拟运行中的上下文丢失，验证近景隐藏规则不会遮住降级说明与入口。
+      await fallback.locator(".manor-renderer canvas").evaluate(element => element.dispatchEvent(new Event("webglcontextlost", { cancelable: true })));
+      await fallback.getByRole("heading", { name: "庄园暂时无法展示", exact: true }).waitFor({ state: "visible" });
+      ensure(await fallback.locator(".hero-copy").isVisible()
+        && await fallback.locator(".hero-actions").getByRole("button", { name: "开始使用", exact: true }).isVisible(), "茶庭运行中降级后没有恢复产品文案和使用入口。");
       // 只在这个独立标签页模拟浏览器能力缺失，不修改生产代码。
       await fallback.addInitScript(() => {
         localStorage.setItem("agent-manor-site-language", "zh-CN");
@@ -417,6 +450,7 @@ async function verify(page, fixture) {
       await fallback.goto(fixture.address, { waitUntil: "networkidle" });
       await fallback.getByRole("heading", { name: "庄园暂时无法展示", exact: true }).waitFor({ state: "visible" });
       ensure(await fallback.locator(".manor-renderer canvas").count() === 0, "WebGL失败后仍留下无效画布。");
+      ensure(await fallback.locator(".hero-copy").isVisible(), "WebGL降级时丢失首屏产品文案。");
       await fallback.locator(".hero-actions").getByRole("button", { name: "开始使用", exact: true }).click();
       const dialog = fallback.getByRole("dialog", { name: "欢迎来到庄园" });
       await dialog.waitFor({ state: "visible" });

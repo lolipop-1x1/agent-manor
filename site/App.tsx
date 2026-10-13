@@ -122,7 +122,7 @@ export function App() {
             <a className="text-link" href="#product">{t("site.scene.continue")}<ArrowDown size={16} aria-hidden="true" /></a>
           </div>}
         </div>
-        <div className="hero-copy">
+        <div className="hero-copy" hidden={view === "tea" && !sceneFailed}>
           <h1><span>{t("site.hero.titleFirst")}</span><span>{t("site.hero.titleSecond")}</span></h1>
           <p>{t("site.hero.description")}</p>
           <div className="hero-actions">

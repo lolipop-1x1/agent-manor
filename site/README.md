@@ -14,11 +14,14 @@ npm run dev:site
 ```sh
 npm run check:site
 npm run check:i18n
+npm run test:site
 npm run build:site
 npm run preview:site
 ```
 
 输出为 site/dist，独立于产品 dist/web。通过 SITE_BASE_PATH 指定项目站点前缀，例如 SITE_BASE_PATH=/agent-manor/ npm run build:site。普通滚轮继续阅读页面；拖动庄园旋转，Control/Command 加滚轮缩放；聚焦画布后可用方向键和加减键。
+
+桌面端到端验收运行 `npm run test:site:e2e`，需要本地 playwright-cli 和 Chrome；它以 /agent-manor/ 项目路径构建并验证镜头、键盘、语言、暂停、降级和八张产品预览，诊断写入已忽略的 .local/manor-site-e2e/。
 
 ## 产品截图
 
