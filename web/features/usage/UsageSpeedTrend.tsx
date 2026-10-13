@@ -55,7 +55,7 @@ export function UsageSpeedTrend({ report, interactive, onGroups }: {
   const ticks = Array.from({ length: tickCount }, (_, index) => tickCount === 1 ? 0 : Math.round(index * (dates.length - 1) / (tickCount - 1)));
   const selectBucket = (index: number) => { const key = dates[index]!; setSelected(key); return key; };
   const marker = (item: typeof series[number]) => <svg className="usage-speed-marker" viewBox="0 0 26 10" aria-hidden="true"><line x1="1" x2="25" y1="5" y2="5" stroke={item.color} strokeWidth="2.5" strokeDasharray={item.dash} /></svg>;
-  const seriesTitle = (group: UsageSpeedGroup) => `${groupLabel(group)} · ${t(`sessions.speed.method.${group.method}`)}`;
+  const seriesTitle = (group: UsageSpeedGroup) => t("usage.speed.seriesTitle", { group: groupLabel(group), method: t(`sessions.speed.method.${group.method}`) });
   const selectedValues = active ? formatList(series.map(item => t("usage.speed.seriesValue", { group: groupLabel(item.group), value: speedValue(item.buckets.get(active)?.tokensPerSecond, item.group) }))) : "";
   return <section className="usage-chart-section usage-time-analysis usage-speed-analysis" aria-labelledby="usage-time-title">
     <div className="usage-section-title"><h2 id="usage-time-title">{t("usage.chart.timeAnalysis")}</h2><div className="usage-speed-actions" ref={groupControls}>

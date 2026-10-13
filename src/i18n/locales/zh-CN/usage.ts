@@ -1,6 +1,7 @@
 import type { MessageCatalog } from "../../types.js";
 
 export default {
+  "usage.speed.seriesTitle": "{{group}} · {{method}}",
   "usage.speed.compare": "对比模型",
   "usage.speed.seriesValue": "{{group}}：{{value}}",
   "usage.speed.emptySelection": "选择一个或多个模型查看速度趋势。",

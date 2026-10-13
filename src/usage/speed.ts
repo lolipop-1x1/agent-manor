@@ -57,7 +57,7 @@ export function buildUsageSpeedReport(slices: SpeedSlice[], bucketKeys: string[]
     .sort((left, right) => right.eligibleRequests - left.eligibleRequests || left.key.localeCompare(right.key));
   const requested = requestedGroups ?? (requestedGroup === undefined ? undefined : [requestedGroup]);
   const retained = [...new Set(requested)].filter(key => profiles.has(key));
-  const selectedGroups = requested?.length === 0 ? [] : retained.length ? retained : groups.slice(0, 3).map(group => group.key);
+  const selectedGroups = requested?.length === 0 ? [] : retained.length ? retained : groups.map(group => group.key);
   const selected = new Map(selectedGroups.map(group => [group, new Map(bucketKeys.map(key => [key, empty()]))]));
   for (const slice of slices) {
     for (const profile of slice.profiles) {

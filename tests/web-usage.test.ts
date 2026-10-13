@@ -221,3 +221,43 @@ test("速度曲线色阶不随选择顺序变化，超过六组通过线型区�
   assert.equal(first.get("a")!.color, first.get("g")!.color);
   assert.notEqual(first.get("a")!.dash, first.get("g")!.dash);
 });
+
+test("稀疏选择第1与25组不会同色同型，默认全选几十组仍可区分且颜色不重排", () => {
+  const keys = Array.from({ length: 72 }, (_, index) => `group-${String(index).padStart(2, "0")}`);
+  const sparse = speedSeriesStyles(keys, [keys[0]!, keys[24]!]);
+  assert.equal(sparse.get(keys[0]!)!.color, sparse.get(keys[24]!)!.color);
+  assert.notEqual(sparse.get(keys[0]!)!.dash, sparse.get(keys[24]!)!.dash);
+  const all = speedSeriesStyles(keys);
+  assert.equal(new Set([...all.values()].map(style => `${style.color}/${style.dash ?? "solid"}`)).size, keys.length);
+  for (const key of keys) assert.equal(all.get(key)!.color, sparse.get(key)!.color);
+  const reordered = speedSeriesStyles(keys, [keys[24]!, keys[0]!]);
+  assert.deepEqual(reordered.get(keys[0]!), sparse.get(keys[0]!));
+  assert.deepEqual(reordered.get(keys[24]!), sparse.get(keys[24]!));
+});
+
+test("157与500组全选不会循环重复色型，线段及间隔保持短长度", () => {
+  for (const count of [157, 500]) {
+    const keys = Array.from({ length: count }, (_, index) => `group-${String(index).padStart(3, "0")}`);
+    const styles = speedSeriesStyles(keys);
+    assert.equal(new Set([...styles.values()].map(style => `${style.color}/${style.dash ?? "solid"}`)).size, count);
+    assert.equal(styles.get("group-006")!.color, styles.get("group-156")!.color);
+    assert.notEqual(styles.get("group-006")!.dash, styles.get("group-156")!.dash);
+    const lengths = [...styles.values()].flatMap(style => style.dash?.split(" ").map(Number) ?? []);
+    assert.ok(lengths.every(value => value > 0 && value <= 11));
+  }
+});
+
+test("正偏移时区夏令时回拨按真实时刻排列小时桶，不颠倒两个当地02点", () => {
+  const ordered = ["2026-10-25T01:00:00+02:00", "2026-10-25T02:00:00+02:00", "2026-10-25T02:00:00+01:00", "2026-10-25T03:00:00+01:00"];
+  const buckets: UsageSpeedBucket[] = ordered.map((key, index) => ({ key, requests: 1, eligibleRequests: 1, outputTokens: 400, durationMs: 2000, tokensPerSecond: 20 + index }));
+  const group: UsageSpeedGroup = { key: "synthetic", client: "synthetic", model: "model-a", window: "response", basis: "estimated", method: "codex_event_boundary", requests: 4, eligibleRequests: 4, outputTokens: 1600, durationMs: 8000, tokensPerSecond: 200 };
+  const speed: UsageSpeedReport = { groups: [group], selectedGroups: [group.key], selectedGroup: group.key, buckets,
+    requests: 4, eligibleRequests: 4, missingTimeRequests: 0, series: [{ group: group.key, buckets: [...buckets].reverse() }] };
+  const result = speedComparisonModel(speed);
+  assert.deepEqual(result.dates, ordered);
+  assert.deepEqual(result.series[0]!.model.points.map(point => point.value), [20, 21, 22, 23]);
+  assert.equal(Date.parse(result.dates[2]!) - Date.parse(result.dates[1]!), 3600000);
+  const dates = ["2026-11-01", "2026-10-01", "2026-10-26"];
+  const calendar = speedComparisonModel({ ...speed, series: [{ group: group.key, buckets: dates.map((key, index) => ({ ...buckets[index]!, key })) }] });
+  assert.deepEqual(calendar.dates, ["2026-10-01", "2026-10-26", "2026-11-01"]);
+});

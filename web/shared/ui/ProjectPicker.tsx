@@ -43,6 +43,7 @@ export function ProjectPicker(props: ProjectPickerProps) {
         </Command.List>
       </Command>
       {props.multiple && <div className="date-picker-actions" style={{ margin: "0 8px", padding: "8px 0" }}>
+        <button type="button" disabled={draft.length === options.length} onClick={() => setDraft(options.map(option => option.value))}>{t("common.picker.all")}</button>
         <button type="button" disabled={!draft.length} onClick={() => setDraft([])}>{t("common.picker.clear")}</button>
         <button type="button" onClick={() => { props.onChange(draft); setOpen(false); }}>{t("common.picker.apply")}</button>
       </div>}

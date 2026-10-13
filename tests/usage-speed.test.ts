@@ -142,7 +142,7 @@ test("速度时间粒度沿用时区与夏令时重复小时边界", () => {
   }
 });
 
-test("多组选中顺序、去重、空选、默认前三组和失效回退保持明确语义", () => {
+test("多组选中顺序、去重、空选、默认全选和失效回退保持明确语义", () => {
   const input = source([
     usage("a-fast", { outputTokens: 200, timing: timing({ durationMs: 1000 }) }),
     usage("a-slow", { outputTokens: 400, timing: timing({ durationMs: 10000 }) }),
@@ -155,8 +155,8 @@ test("多组选中顺序、去重、空选、默认前三组和失效回退保�
   ]);
   const range = { from: "2026-01-01", to: "2026-01-04" };
   const defaults = compare(input, range).speed!;
-  assert.deepEqual(defaults.selectedGroups, defaults.groups.slice(0, 3).map(group => group.key));
-  assert.equal(defaults.series.length, 3);
+  assert.deepEqual(defaults.selectedGroups, defaults.groups.map(group => group.key));
+  assert.equal(defaults.series.length, 5);
   const a = defaults.groups.find(group => group.model === "model-a" && group.window === "response")!.key;
   const b = defaults.groups.find(group => group.model === "model-b")!.key;
   const generation = defaults.groups.find(group => group.window === "generation")!.key;

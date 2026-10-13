@@ -1,4 +1,5 @@
-.usage-page { --usage-series-0: var(--accent); --usage-series-1: #b77926; --usage-series-2: #5a9290; --usage-series-3: #957bad; --usage-series-4: #8e98a5; --usage-series-5: #bc7771; width: min(1440px, 100%); margin: 0 auto; padding: 24px 28px 40px; color: var(--text); }
+.usage-page, .usage-speed-popover { --usage-series-0: var(--accent); --usage-series-1: #b77926; --usage-series-2: #5a9290; --usage-series-3: #957bad; --usage-series-4: #8e98a5; --usage-series-5: #bc7771; }
+.usage-page { width: min(1440px, 100%); margin: 0 auto; padding: 24px 28px 40px; color: var(--text); }
 .usage-page *, .usage-request-dialog *, .usage-more-menu * { box-sizing: border-box; }
 .usage-page h1 { margin: 0; font-size: 22px; letter-spacing: -.5px; font-weight: 650; }
 .usage-page h2, .usage-page h3 { margin: 0; font-size: 15px; font-weight: 650; }
