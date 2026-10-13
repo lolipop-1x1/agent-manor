@@ -9,6 +9,7 @@ import { ApiError, errorMessage, isAborted, request } from "../../shared/api";
 import { clientLabel, useI18n } from "../../shared/i18n";
 import { DatePicker } from "../../shared/ui/DatePicker";
 import { FilterSelect } from "../../shared/ui/FilterSelect";
+import { availableClientOptions } from "../../shared/ui/client-options";
 import { HelpPopover } from "../../shared/ui/HelpPopover";
 import { MultiFilterPicker } from "../../shared/ui/MultiFilterPicker";
 import { ResourcePagination } from "../../shared/ui/ResourcePagination";
@@ -136,8 +137,13 @@ export default function Usage({ active, onSession }: { active: boolean; onSessio
   const group = report?.query.groupBy ?? route.groupBy ?? "model";
   const speed = report?.query.includeSpeed === true;
   const labels = (values: string[], kind: UsageGroup) => values.map(item => { const original = usageDimensionValue(item); return { value: item, label: kind === "project" && original !== undefined ? original.split(/[\\/]/).filter(Boolean).at(-1) ?? original : groupLabel(item, kind, t("usage.unknown")), ...(kind === "project" && original !== undefined ? { description: original } : {}) }; });
+  useEffect(() => {
+    if (!active || !report || loading || loadedQuery.current !== queryKey) return;
+    const clients = route.clients?.filter(value => facets.clients.includes(value)), excludeClients = route.excludeClients?.filter(value => facets.clients.includes(value));
+    if (clients?.length !== route.clients?.length || excludeClients?.length !== route.excludeClients?.length) patch({ clients: clients?.length ? clients : undefined, excludeClients: excludeClients?.length ? excludeClients : undefined });
+  }, [active, report, queryKey, loading, facets.clients, route.clients, route.excludeClients]);
   const filterDefinitions = [
-    { include: "clients", exclude: "excludeClients", kind: "client", label: "usage.filter.clients", options: labels([...new Set([...facets.clients, ...(route.clients ?? []), ...(route.excludeClients ?? [])])], "client") },
+    { include: "clients", exclude: "excludeClients", kind: "client", label: "usage.filter.clients", options: availableClientOptions(facets.clients) },
     { include: "projects", exclude: "excludeProjects", kind: "project", label: "usage.filter.projects", options: labels([...new Set([...facets.projects, ...(route.projects ?? []), ...(route.excludeProjects ?? [])])], "project") },
     { include: "models", exclude: "excludeModels", kind: "model", label: "usage.filter.models", options: labels([...new Set([...facets.models, ...(route.models ?? []), ...(route.excludeModels ?? [])])], "model") },
   ] as const;

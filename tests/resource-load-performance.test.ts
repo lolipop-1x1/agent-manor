@@ -56,7 +56,16 @@ test("连续状态读取共享盘点，收藏和主动刷新仍更新管理状�
   manager.decorateInventory = (...args) => { decorations++; return decorate(...args); };
   const statuses = await Promise.all([service.status(), service.status(), service.status()]);
   assert.deepEqual(statuses[0], statuses[1]);
+  const candidates = statuses[0]!.clientOptions;
+  assert.ok(candidates.skill.usage.includes("codex"));
+  assert.ok(candidates.mcp.usage.includes("codex"));
+  assert.deepEqual(candidates.skill.disabled, []);
+  assert.deepEqual(candidates.skill.trash, []);
+  assert.deepEqual(candidates.skill.operations, []);
+  const events = _library.resourceEvents;
+  _library.resourceEvents = () => { throw new Error("客户端候选不能读取完整历史事件流"); };
   await service.status();
+  _library.resourceEvents = events;
   assert.equal(decorations, 1, "读取缓存状态不能重复计算管理能力");
   const row = (await service.local({ kind: "skill" })).rows[0]!;
   service.setFavorite(row.body.id, true);

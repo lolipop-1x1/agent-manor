@@ -123,11 +123,17 @@ test("同一物理文件被不同客户端发现时支持文件回收，即使�
   assert.equal(preview.target, "file"); assert.equal(preview.affectedEntries.length, 2);
   assert.equal(await readFile(path, "utf8"), "# 合成独立文件\n");
   assert.equal((await manager.apply(preview.id, true, initial)).status, "success");
+  assert.deepEqual(manager.clientOptions().filter(row => row.view === "trash").map(row => row.client).sort(), ["claude", "codex"]);
+  assert.deepEqual(manager.clientOptions().filter(row => row.view === "operations").map(row => row.client).sort(), ["claude", "codex"]);
+  assert.equal(manager.operations(1, 1).operations.length, 1);
+  assert.equal(manager.clientOptions().filter(row => row.view === "operations").length, 2, "共享入口候选不能受单页操作记录限制");
   await assert.rejects(readFile(path)); assert.equal(manager.archives("trash").length, 1);
   const archive = manager.archives("trash")[0]!;
   const restore = await manager.preview({ operationId: archive.operationId, action: "restore" }, snapshot([]));
   assert.equal(restore.affectedEntries.length, 2);
   assert.equal((await manager.apply(restore.id, true, snapshot([]))).status, "success");
+  assert.equal(manager.clientOptions().filter(row => row.view === "trash").length, 0);
+  assert.equal(manager.clientOptions().filter(row => row.view === "operations").length, 2, "恢复后历史操作仍有数据");
   assert.equal(await readFile(path, "utf8"), "# 合成独立文件\n");
 }));
 

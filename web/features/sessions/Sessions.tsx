@@ -10,7 +10,6 @@ import { CaretDown, CaretLeft, CaretRight, ChatCircle, DownloadSimple, Magnifyin
 import * as Tooltip from "@radix-ui/react-tooltip";
 import * as Popover from "@radix-ui/react-popover";
 import type { Client } from "../../../src/clients";
-import { CLIENTS } from "../../../src/clients";
 import type { SessionGroupedSearchResult, SessionIndexStatus, SessionIndexSummary, SessionJob, SessionListResult, SessionMessage, SessionMessageResult, SessionProfile, SessionQuery, SessionRefreshOptions, SessionSearchHit, SessionSearchResult, SessionSummary, SessionTimelineResult } from "../../../src/session-contracts";
 import { ApiError, isAborted, request } from "../../shared/api";
 import { ResizableWorkspace } from "../../shared/layout/ResizableWorkspace";
@@ -23,6 +22,7 @@ import { HelpPopover } from "../../shared/ui/HelpPopover";
 import { AverageSpeedBadge } from "./SessionSpeed";
 import { messageSpeedRequest, requestLocation, sessionSpeedMap, type SessionSpeedMap } from "./session-speed-model";
 import { FilterSelect } from "../../shared/ui/FilterSelect";
+import { availableClientOptions } from "../../shared/ui/client-options";
 import { ProjectPicker } from "../../shared/ui/ProjectPicker";
 import { DatePicker } from "../../shared/ui/DatePicker";
 import { SessionRefreshActions, SessionRefreshStatus } from "./SessionRefresh";
@@ -244,13 +244,17 @@ export default function Sessions({ active, target, onMap, autoRefreshError }: { 
   useEffect(() => { setListPage(1); setGlobalSearchPage(1); }, [client, project, from, to, debouncedGlobalQuery, includeProcess, includeSubagents, executionMode]);
   useEffect(() => { setLocalSearchPage(1); }, [selectedSessionId, debouncedLocalQuery, includeProcess]);
 
+  const clientCandidatesPending = useRef(false);
   useEffect(() => {
     if (!active) return;
     const controller = new AbortController();
+    clientCandidatesPending.current = true;
     setStatusLoading(true);
     setStatusError(null);
     void request<SessionIndexSummary>("/sessions/status?summary=true", { signal: controller.signal })
       .then(result => {
+        if (controller.signal.aborted) return;
+        clientCandidatesPending.current = false;
         setStatus(result);
         setStatusReload(reload);
         setSessionJob(current => activeJob(current) ? current : result.job);
@@ -259,6 +263,9 @@ export default function Sessions({ active, target, onMap, autoRefreshError }: { 
       .finally(() => { if (!controller.signal.aborted) setStatusLoading(false); });
     return () => controller.abort();
   }, [active, reload]);
+  useEffect(() => {
+    if (active && !clientCandidatesPending.current && status?.clients && client !== "all" && !status.clients.includes(client)) setClient("all");
+  }, [active, status?.version, status?.clients, client]);
   useVisiblePolling(active && refreshIntervals.sessions > 0, 5000, async signal => {
     const result = await request<SessionIndexSummary>("/sessions/status?summary=true", { signal });
     if (signal.aborted) return;
@@ -695,7 +702,7 @@ export default function Sessions({ active, target, onMap, autoRefreshError }: { 
         <div id="session-list-content" className="sidebar-content" hidden={leftCollapsed}>
           <label className="session-search-field"><MagnifyingGlass size={16} aria-hidden="true" /><span className="sr-only">{t("sessions.search.globalLabel")}</span><input aria-label={t("sessions.search.globalLabel")} value={globalQuery} onChange={event => setGlobalQuery(event.target.value)} placeholder={t("sessions.search.globalPlaceholder")} />{globalQuery && <button type="button" aria-label={t("sessions.search.clear")} onClick={() => setGlobalQuery("")}>×</button>}</label>
           <div className="session-filters">
-            <FilterSelect label={t("sessions.filter.client")} value={client} options={[{ value: "all", label: t("sessions.allClients") }, ...CLIENTS.map(item => ({ value: item.id, label: item.name }))]} onChange={value => setClient(value as Client | "all")} />
+            <FilterSelect label={t("sessions.filter.client")} value={client} options={[{ value: "all", label: t("sessions.allClients") }, ...availableClientOptions(status?.clients)]} onChange={value => setClient(value as Client | "all")} />
             <ProjectPicker value={project} options={[{ value: "all", label: t("sessions.filter.allProjects") }, { value: "none", label: t("sessions.noProject") },
               ...(status?.projects.map(path => ({ value: path, label: shortProject(path), description: path })) ?? [])]} onChange={setProject} />
           </div>

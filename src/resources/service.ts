@@ -1,6 +1,6 @@
 import type { SessionStore } from "../sessions/store.js";
 import type { ResourceInventoryOptions, ResourceInventorySnapshot, ResourceManualSource } from "../resource-inventory-contracts.js";
-import type { ResourceLocalDetail, ResourceLocalQuery, ResourceLocalResult, ResourceLocalRow, ResourceStatus, ResourceStatusSummary, ResourceOverviewResult, ResourceOverviewQuery, ResourceOverviewDetail, ResourceMapQuery, ResourceMapResult } from "../resource-service-contracts.js";
+import type { ResourceLocalDetail, ResourceLocalQuery, ResourceLocalResult, ResourceLocalRow, ResourceStatus, ResourceStatusSummary, ResourceClientOptions, ResourceOverviewResult, ResourceOverviewQuery, ResourceOverviewDetail, ResourceMapQuery, ResourceMapResult } from "../resource-service-contracts.js";
 import type { ResourceUsageQuery } from "../resource-contracts.js";
 import { ServiceError } from "../service/input.js";
 import { StoreError } from "../index/store.js";
@@ -14,7 +14,7 @@ import { applyResourceFavorites } from "./favorites.js";
 
 export function summarizeResourceStatus(status: ResourceStatus): ResourceStatusSummary {
   const sources = new Map(status.sources.map(source => [source.id, source]));
-  return { observedAt: status.observedAt, projects: status.projects, favoriteIds: status.favoriteIds, manualSources: status.manualSources,
+  return { observedAt: status.observedAt, clientOptions: status.clientOptions, projects: status.projects, favoriteIds: status.favoriteIds, manualSources: status.manualSources,
     sourceIssues: status.gaps.flatMap(gap => {
       const source = sources.get(gap.sourceId);
       return source ? [{ client: source.client, kind: source.kind, scope: source.scope, project: source.project, reason: gap.reason }] : [];
@@ -49,7 +49,18 @@ export class ResourceService {
   }
   async status(): Promise<ResourceStatus> {
     const inventory = await this.inventory();
-    return { observedAt: inventory.observedAt, sources: inventory.sources, gaps: inventory.gaps, diagnostics: inventory.diagnostics,
+    const history = this.library.resourceClients();
+    const clientOptions: ResourceClientOptions = {
+      skill: { usage: [], local: [], disabled: [], trash: [], operations: [] },
+      mcp: { usage: [], local: [], disabled: [], trash: [], operations: [] },
+    };
+    for (const kind of ["skill", "mcp"] as const) {
+      const local = [...new Set(inventory.entries.filter(entry => entry.kind === kind).map(entry => entry.client))].sort();
+      clientOptions[kind].local = local;
+      clientOptions[kind].usage = [...new Set([...local, ...history[kind]])].sort();
+    }
+    for (const row of this.manager.clientOptions()) if (!clientOptions[row.kind][row.view].includes(row.client)) clientOptions[row.kind][row.view].push(row.client);
+    return { observedAt: inventory.observedAt, clientOptions, sources: inventory.sources, gaps: inventory.gaps, diagnostics: inventory.diagnostics,
       projects: this.projects(), favoriteIds: this.manager.favorites(), manualSources: this.manager.manualSources() };
   }
   async refresh(): Promise<ResourceStatus> { await this.scan(); return this.status(); }

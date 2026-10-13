@@ -1,3 +1,5 @@
+import type { Client } from "../clients.js";
+import type { ResourceKind } from "../resource-contracts.js";
 import type { MessageDescriptor } from "../i18n/types.js";
 import Database from "better-sqlite3";
 import { createHash, randomUUID } from "node:crypto";
@@ -211,6 +213,20 @@ export class ResourceManager {
     const rows = this.database.prepare(`SELECT json FROM resource_archives WHERE phase<>'prepared'${filter} ORDER BY rowid DESC`)
       .all(...(state && state !== "trash" ? [state] : [])) as JsonRow[];
     return rows.map(row => decode<PrivateArchive>(row).public);
+  }
+  /** 管理候选覆盖完整记录和共享本体关联入口，不受列表分页影响。 */
+  clientOptions(): { kind: ResourceKind; client: Client; view: "disabled" | "trash" | "operations" }[] {
+    return this.database.prepare(`
+      SELECT DISTINCT json_extract(json,'$.resource.kind') AS kind,json_extract(json,'$.resource.client') AS client,'operations' AS view
+      FROM resource_operations
+      UNION SELECT json_extract(o.json,'$.resource.kind'),json_extract(ref.value,'$.client'),'operations'
+      FROM resource_operations o,json_each(o.json,'$.affectedEntries') ref WHERE json_extract(o.json,'$.target')='file'
+      UNION SELECT json_extract(json,'$.public.entry.kind'),json_extract(json,'$.public.entry.client'),CASE WHEN state='disabled' THEN 'disabled' ELSE 'trash' END
+      FROM resource_archives WHERE phase<>'prepared' AND state IN ('disabled','standby','trash')
+      UNION SELECT json_extract(a.json,'$.public.entry.kind'),json_extract(ref.value,'$.client'),CASE WHEN a.state='disabled' THEN 'disabled' ELSE 'trash' END
+      FROM resource_archives a,json_each(a.json,'$.public.affectedEntries') ref
+      WHERE a.phase<>'prepared' AND a.state IN ('disabled','standby','trash') AND json_extract(a.json,'$.public.target')='file'
+    `).all() as { kind: ResourceKind; client: Client; view: "disabled" | "trash" | "operations" }[];
   }
   operations(page = 1, pageSize = 50, query: ResourceManagementOperationQuery = {}): ResourceManagementOperations {
     page = Math.max(1, Math.floor(page)); pageSize = Math.min(200, Math.max(1, Math.floor(pageSize)));

@@ -40,8 +40,11 @@ export interface ResourceLocalDetail {
   clients: ResourceUsageDistribution[];
   projects: ResourceUsageDistribution[];
 }
+export type ResourceClientOptions = Record<ResourceKind, Record<"usage" | "local" | "disabled" | "trash" | "operations", Client[]>>;
+
 export interface ResourceStatus {
   observedAt: string | null;
+  clientOptions: ResourceClientOptions;
   sources: ResourceInventorySnapshot["sources"];
   gaps: ResourceInventorySnapshot["gaps"];
   diagnostics?: ResourceInventorySnapshot["diagnostics"];
@@ -50,7 +53,7 @@ export interface ResourceStatus {
   manualSources: ResourceManualSource[];
 }
 /** 首屏保留筛选和异常提示所需信息，来源与诊断正文按需读取。 */
-export interface ResourceStatusSummary extends Pick<ResourceStatus, "observedAt" | "projects" | "favoriteIds" | "manualSources"> {
+export interface ResourceStatusSummary extends Pick<ResourceStatus, "observedAt" | "projects" | "favoriteIds" | "manualSources" | "clientOptions"> {
   sourceIssues: (Pick<ResourceInventorySnapshot["sources"][number], "client" | "kind" | "scope" | "project"> & { reason: ResourceInventorySnapshot["gaps"][number]["reason"] })[];
 }
 

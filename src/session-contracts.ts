@@ -183,6 +183,7 @@ export interface SessionIndexStatus {
   stale: boolean;
   sessionCount: number;
   sourceCount: number;
+  clients: Client[];
   gaps: Gap[];
   projects: string[];
   clientChecks?: SessionClientCheck[];

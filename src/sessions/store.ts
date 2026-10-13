@@ -7,7 +7,7 @@ import type { Gap, HistoryEvent } from "../contracts.js";
 import { clientIds } from "../clients.js";
 import type { Client } from "../clients.js";
 import type { SourceLocation } from "../history/types.js";
-import type { ResourceEventStream, ResourceHistoryIdentity, ResourceUsageIdentity, ResourceUsageEvent, ResourceUsageQuery } from "../resource-contracts.js";
+import type { ResourceEventStream, ResourceHistoryIdentity, ResourceUsageIdentity, ResourceUsageEvent, ResourceUsageQuery, ResourceKind } from "../resource-contracts.js";
 import type { UsageSource } from "../usage-contracts.js";
 import type { OverviewEvent, OverviewSource, WeeklyReviewEvent } from "../overview-contracts.js";
 import type { SessionGroupedSearchResult, SessionTurnDirectory, SessionIndexStatus, SessionJob, SessionListResult, SessionMessage, SessionMessageQuery, SessionMessageResult, SessionProfile, SessionProfileQuery, SessionQuery, SessionRefreshOptions, SessionSearchResult, SessionSink, SessionSourceMeta, SessionSummary, SessionTimelineEvent, SessionTimelineQuery, SessionTimelineResult, SessionUsage } from "../session-contracts.js";
@@ -75,7 +75,8 @@ export class SessionStore {
   private resourceGapSourceClients?: Map<string, Set<Client>>;
   private readonly overviewMessageTable: string;
   private readonly replyMessageTable: string;
-  private statusMetadata?: Pick<SessionIndexStatus, "version" | "sessionCount" | "sourceCount" | "projects">;
+  private statusMetadata?: Pick<SessionIndexStatus, "version" | "sessionCount" | "sourceCount" | "projects" | "clients">;
+  private resourceClientMetadata?: { version: string; clients: Record<ResourceKind, Client[]> };
 
   constructor(dbPath: string, options: { readonly?: boolean } = {}) {
     this.dbPath = resolve(dbPath);
@@ -203,18 +204,21 @@ export class SessionStore {
 
   private indexStatus(state: Partial<SessionIndexStatus>): SessionIndexStatus {
     const latestJob = this.database.prepare("SELECT json FROM session_jobs ORDER BY created_at DESC,rowid DESC LIMIT 1").get() as JsonRow | undefined;
-    const result: SessionIndexStatus = { ...state, stale: state.stale ?? false, sessionCount: 0, sourceCount: 0, gaps: state.gaps ?? [], projects: [] };
+    const result: SessionIndexStatus = { ...state, stale: state.stale ?? false, sessionCount: 0, sourceCount: 0, gaps: state.gaps ?? [], projects: [], clients: [] };
     if (state.version && this.statusMetadata?.version === state.version) {
       result.sessionCount = this.statusMetadata.sessionCount;
       result.sourceCount = this.statusMetadata.sourceCount;
       result.projects = [...this.statusMetadata.projects];
+      result.clients = [...this.statusMetadata.clients];
     } else if (state.version) {
       result.sessionCount = (this.database.prepare("SELECT COUNT(*) AS count FROM session_version_sessions WHERE version=?").get(state.version) as { count: number }).count;
       result.sourceCount = (this.database.prepare("SELECT COUNT(*) AS count FROM session_version_sources WHERE version=?").get(state.version) as { count: number }).count;
       result.projects = (this.database.prepare(`SELECT r.project FROM session_version_sessions v JOIN session_revisions r ON r.id=v.revision
         WHERE v.version=? AND r.project IS NOT NULL GROUP BY r.project
         ORDER BY MAX(COALESCE(session_time_ms(r.updated_at),session_time_ms(r.started_at))) DESC,r.project`).all(state.version) as { project: string }[]).map(row => row.project);
-      this.statusMetadata = { version: state.version, sessionCount: result.sessionCount, sourceCount: result.sourceCount, projects: [...result.projects] };
+      result.clients = (this.database.prepare(`SELECT DISTINCT r.client FROM session_version_sessions v JOIN session_revisions r ON r.id=v.revision
+        WHERE v.version=? ORDER BY r.client`).all(state.version) as { client: Client }[]).map(row => row.client);
+      this.statusMetadata = { version: state.version, sessionCount: result.sessionCount, sourceCount: result.sourceCount, projects: [...result.projects], clients: [...result.clients] };
     }
     if (latestJob) result.job = decode(latestJob);
     return result;
@@ -501,6 +505,36 @@ export class SessionStore {
     if (query.executionMode === "quiet") parts.push("json_extract(r.json,'$.executionMode')='quiet'");
     if (query.executionMode === "regular") parts.push("COALESCE(json_extract(r.json,'$.executionMode'),'')<>'quiet'");
     return { sql: parts.length ? " AND " + parts.join(" AND ") : "", values };
+  }
+
+  /** 客户端候选读取资源事件及状态索引，不解码正文或重新解析历史。 */
+  resourceClients(): Record<ResourceKind, Client[]> {
+    const version = this.currentVersion();
+    if (!version) return { skill: [], mcp: [] };
+    if (this.resourceClientMetadata?.version !== version) {
+      const scope = `FROM session_version_sessions v JOIN session_revisions r ON r.id=v.revision
+        JOIN session_messages m INDEXED BY session_message_resource_event_v2 ON m.revision=v.revision
+        WHERE v.version=? AND m.kind IN ('tool_call','user') AND m.copied IS NOT 1
+        AND json_extract(m.json,'$.resource.kind') IN ('mcp','skill_call','skill_read')`;
+      const rows = this.overviewStatement(`SELECT DISTINCT r.client,json_extract(m.json,'$.resource.kind') AS kind ${scope}
+        AND json_extract(m.json,'$.resource.kind')<>'skill_read' ORDER BY r.client`)
+        .all(version) as { client: Client; kind: string }[];
+      const skill = rows.filter(row => row.kind === "skill_call").map(row => row.client);
+      // Skill 读取仅成功时生成资源记录；尚无显式调用的客户端再检查唯一结果配对。
+      const reads = this.overviewStatement(`SELECT DISTINCT r.client ${scope} AND json_extract(m.json,'$.resource.kind')='skill_read'
+        AND r.client NOT IN (SELECT value FROM json_each(?))
+        AND COALESCE(CASE WHEN json_extract(m.json,'$.status') IN ('success','failure') THEN json_extract(m.json,'$.status') END,
+          CASE WHEN (SELECT COUNT(*) FROM session_messages c WHERE c.revision=m.revision AND c.call_id=m.call_id
+            AND c.kind='tool_call' AND c.copied IS NOT 1)=1 THEN
+            (SELECT MAX(json_extract(z.json,'$.status')) FROM session_messages z WHERE z.revision=m.revision AND z.call_id=m.call_id
+              AND z.kind='tool_result' AND z.copied IS NOT 1 HAVING COUNT(*)=1) END,'unknown')='success' ORDER BY r.client`)
+        .all(version, JSON.stringify(skill)) as { client: Client }[];
+      this.resourceClientMetadata = { version, clients: {
+        skill: [...new Set([...skill, ...reads.map(row => row.client)])].sort(),
+        mcp: rows.filter(row => row.kind === "mcp").map(row => row.client),
+      } };
+    }
+    return { skill: [...this.resourceClientMetadata.clients.skill], mcp: [...this.resourceClientMetadata.clients.mcp] };
   }
 
   /** 资源查询只读取已发布调用的元信息；配对命中调用索引，不读取消息正文。 */

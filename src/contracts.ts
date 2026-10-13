@@ -177,6 +177,7 @@ export interface MapSession {
 
 export interface MapSessionsResponse {
   version: string;
+  clients: Client[];
   sessions: MapSession[];
 }
 

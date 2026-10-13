@@ -83,6 +83,34 @@ function source(store: SessionStore, summary: SessionSourceMeta, messages: Sessi
   return { path: summary.path, revision: pending.revision, fingerprint: "synthetic-fingerprint" };
 }
 
+test("客户端候选基于完整发布版本，资源候选区分类型并排除复制，暖缓存随发布更新", async () => fixture(store => {
+  assert.deepEqual(store.statusSummary().clients, []);
+  assert.deepEqual(store.resourceClients(), { skill: [], mcp: [] });
+  const first = source(store, meta("first"), [message("first", 1, { kind: "tool_call", resource: { kind: "skill_call", name: "synthetic" } })]);
+  const second = source(store, meta("second", { client: "claude" }), [message("second", 1, { kind: "tool_call", resource: { kind: "mcp", server: "synthetic" } })]);
+  const copied = source(store, meta("copied", { client: "pi" }), [message("copied", 1, { copied: true, kind: "tool_call", resource: { kind: "skill_call", name: "copied" } })]);
+  const failed = source(store, meta("failed-read", { client: "codebuddy" }), [message("failed-read", 1, { kind: "tool_call", status: "failure", resource: { kind: "skill_read", name: "failed" } })]);
+  const paired = source(store, meta("paired-read", { client: "dsh" }), [
+    message("paired-read", 1, { kind: "tool_call", callId: "paired", resource: { kind: "skill_read", name: "paired" } }),
+    message("paired-read", 2, { kind: "tool_result", callId: "paired", status: "success" }),
+  ]);
+  const ambiguous = source(store, meta("ambiguous-read", { client: "zcode" }), [
+    message("ambiguous-read", 1, { kind: "tool_call", callId: "ambiguous", resource: { kind: "skill_read", name: "ambiguous" } }),
+    message("ambiguous-read", 2, { kind: "tool_result", callId: "ambiguous", status: "success" }),
+    message("ambiguous-read", 3, { kind: "tool_result", callId: "ambiguous", status: "success" }),
+  ]);
+  store.publish(store.createJob().id, [first, second, copied, failed, paired, ambiguous], []);
+  assert.deepEqual(store.statusSummary().clients, ["claude", "codebuddy", "codex", "dsh", "pi", "zcode"]);
+  assert.equal(store.list({ client: "codex", pageSize: 1 }).sessions.length, 1);
+  assert.deepEqual(store.statusSummary().clients, ["claude", "codebuddy", "codex", "dsh", "pi", "zcode"], "选择与分页不缩小完整候选");
+  assert.deepEqual(store.resourceClients(), { skill: ["codex", "dsh"], mcp: ["claude"] }, "失败及歧义读取不能生成有资源数据的候选");
+  const returned = store.resourceClients(); returned.skill.length = 0;
+  assert.deepEqual(store.resourceClients(), { skill: ["codex", "dsh"], mcp: ["claude"] }, "调用方不能修改缓存");
+  store.publish(store.createJob().id, [copied], []);
+  assert.deepEqual(store.statusSummary().clients, ["pi"]);
+  assert.deepEqual(store.resourceClients(), { skill: [], mcp: [] });
+}));
+
 test("全局项目按最新会话活动排序，跨客户端聚合、时间回退与发布缓存保持一致", async () => fixture(store => {
   const summaries = [
     meta("recent-old", { project: "/workspace/z-recent", updatedAt: "2026-01-01T00:00:00Z" }),

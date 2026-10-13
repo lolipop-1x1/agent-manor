@@ -6,7 +6,7 @@ import {
   MATCHING_RULE_VERSION, mergeRanges, subtractRanges,
 } from "../src/analysis/index.js";
 import { filterHistoricalEvents } from "../src/analysis/coverage.js";
-import { mapSessions } from "../src/analysis/sessions.js";
+import { mapClientOptions, mapSessions } from "../src/analysis/sessions.js";
 
 function fixture(): AnalysisSnapshot {
   const files: BaselineFile[] = [
@@ -174,4 +174,27 @@ test("历史查询保留已删文件和目录／无路径搜索，类别与目�
   assert.equal(coverage.summary.readExact.lines, 0);
   assert.equal(coverage.summary.editExact.lines, 0);
   assert.ok(coverage.files.every(file => file.activityCount === 0));
+});
+
+
+test("地图客户端候选覆盖所有文件类别，失败及映射活动保留，纯来源与无文件活动排除", () => {
+  const original = fixture(), event = original.events[0]!;
+  const snapshot: AnalysisSnapshot = { ...original,
+    sources: original.sources.map(source => ({ ...source, client: "opencode" })),
+    baseline: { ...original.baseline, files: [...original.baseline.files,
+      { path: "data.bin", category: "unknown", content: "", lineCount: 0, hash: "synthetic-binary" }] },
+    events: [
+      { ...event, id: "config", client: "codex", path: "config.json" },
+      { ...event, id: "docs-failure", client: "claude", path: "README.md", status: "failure" },
+      { ...event, id: "mapped", client: "codeflicker", path: undefined },
+      { ...event, id: "unknown-file", client: "pi", path: "data.bin", status: "unknown" },
+      { ...event, id: "cwd-only", client: "zcode", path: undefined, cwd: original.repository.path },
+      { ...event, id: "external", client: "dsh", path: "/synthetic/external/file.ts" },
+      { ...event, id: "missing-file", client: "workbuddy", path: "missing.ts" },
+    ],
+    mappings: [{ ...original.mappings[0]!, eventId: "mapped", filePath: "src/main.ts" }],
+  };
+  assert.deepEqual(mapClientOptions(snapshot), ["claude", "codeflicker", "codex", "pi"]);
+  assert.ok(mapSessions(snapshot, []).some(session => session.client === "zcode" && session.eventCount > 0), "会话活动数不能代替地图文件活动");
+  assert.deepEqual(mapClientOptions({ ...snapshot, events: [] }), []);
 });

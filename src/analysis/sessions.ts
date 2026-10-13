@@ -1,5 +1,11 @@
 import type { AnalysisSnapshot, MapSession } from "../contracts.js";
 import type { SessionSummary } from "../session-contracts.js";
+import { filterEvents } from "./coverage.js";
+
+/** 完整仓库中确有文件活动的客户端，来源配置与纯工作目录事件不构成地图数据。 */
+export function mapClientOptions(snapshot: AnalysisSnapshot) {
+  return [...new Set(filterEvents(snapshot, { categories: ["source", "config", "docs", "unknown"] }).map(event => event.client))].sort();
+}
 
 /** 只按规范会话身份归属活动，来源中的分叉副本不改变原事件归属。 */
 export function mapSessions(snapshot: AnalysisSnapshot, summaries: SessionSummary[]): MapSession[] {

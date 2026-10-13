@@ -10,6 +10,7 @@ import type { ResourceCandidate, ResourceLocalDetail, ResourceLocalQuery, Resour
 import { ApiError, errorMessage, isAborted } from "../../shared/api";
 import { DatePicker } from "../../shared/ui/DatePicker";
 import { FilterSelect } from "../../shared/ui/FilterSelect";
+import { availableClientOptions } from "../../shared/ui/client-options";
 import { HelpPopover } from "../../shared/ui/HelpPopover";
 import { ProjectPicker } from "../../shared/ui/ProjectPicker";
 import { ResourcePagination } from "../../shared/ui/ResourcePagination";
@@ -377,12 +378,14 @@ export default function Resources({ active, onSession }: { active: boolean; onSe
     globalThis.addEventListener("resize", resize); return () => globalThis.removeEventListener("resize", resize);
   }, []);
   useEffect(() => { const timer = globalThis.setTimeout(() => setQueryText(route.q), 250); return () => clearTimeout(timer); }, [route.q]);
+  const clientCandidatesPending = useRef(false);
   useEffect(() => {
-    if (!active || status && !reload) return;
+    if (!active) return;
     const controller = new AbortController();
     const revision = favoriteRevision.current;
+    clientCandidatesPending.current = true;
     void resourceApi.status(controller.signal).then(result => {
-      if (!controller.signal.aborted) { setStatus({ ...result, favoriteIds: [...acceptFavoriteIds(result.favoriteIds, revision)] }); syncFavorites(); }
+      if (!controller.signal.aborted) { clientCandidatesPending.current = false; setStatus({ ...result, favoriteIds: [...acceptFavoriteIds(result.favoriteIds, revision)] }); syncFavorites(); }
     }).catch(failure => { if (!isAborted(failure)) setError(failure instanceof Error ? failure : new Error(errorMessage(failure))); });
     return () => controller.abort();
   }, [active, reload]);
@@ -594,6 +597,10 @@ export default function Resources({ active, onSession }: { active: boolean; onSe
     const defaults = { ...readRoute(), client: "all", project: "all", window: "all", from: "", to: "", q: "", sort: "uses", metric: "uses" as const, order: "desc" as const, candidate: "all" as const, low: 2, inactive: 90, favorite: false, page: 1, pageSize: 20, maxValue: "", zeroPage: 1 };
     setQueryText(""); update(defaults);
   };
+  const clientOptions = status?.clientOptions?.[route.kind][route.tab];
+  useEffect(() => {
+    if (active && !clientCandidatesPending.current && clientOptions && route.client !== "all" && !clientOptions.includes(route.client as Client)) filter({ client: "all" });
+  }, [active, clientOptions, route.kind, route.tab, route.client]);
   const projectOptions = [{ value: "all", label: t("resources.project.all") }, { value: "none", label: t("resources.project.none") }, ...(status?.projects ?? []).map(path => ({ value: path, label: shortPath(path), description: path }))];
   const sourceInScope = (item: { client: Client; kind: ResourceKind; scope: "user" | "project"; project?: string }) => item.kind === route.kind && (route.client === "all" || item.client === route.client)
     && (overviewRanking || route.project === "all" || item.scope === "user" || item.project === route.project);
@@ -606,7 +613,7 @@ export default function Resources({ active, onSession }: { active: boolean; onSe
     : localIssues.some(issue => issue.reason === "unsupported") ? "resources.empty.localUnsupported" : "resources.empty.local";
   const historyView = route.tab === "usage" || route.tab === "local";
   const filters = <div className="resource-filter-content" id={compact ? undefined : "resource-filter-content"}>
-    <div className="resource-field"><span>{overviewRanking ? t("resources.agent.label") : t("resources.client.label")}</span><FilterSelect label={overviewRanking ? t("resources.client.resourceAgent") : t("resources.client.resourceClient")} value={route.client} options={[{ value: "all", label: overviewRanking ? t("resources.client.allAgents") : t("resources.client.all") }, ...CLIENTS.map(client => ({ value: client.id, label: clientLabel(client.id) }))]} onChange={value => filter({ client: value })} /></div>
+    <div className="resource-field"><span>{overviewRanking ? t("resources.agent.label") : t("resources.client.label")}</span><FilterSelect label={overviewRanking ? t("resources.client.resourceAgent") : t("resources.client.resourceClient")} value={route.client} options={[{ value: "all", label: overviewRanking ? t("resources.client.allAgents") : t("resources.client.all") }, ...availableClientOptions(status?.clientOptions?.[route.kind][route.tab])]} onChange={value => filter({ client: value })} /></div>
     {!overviewRanking && <div className="resource-field"><span>{t("resources.project.label")}</span><ProjectPicker value={route.project} options={projectOptions} onChange={value => filter({ project: value })} /></div>}
     {historyView && <><div className="resource-field"><span>{t("resources.time.label")}</span><FilterSelect label={t("resources.time.filter")} value={route.window} options={[{ value: "all", label: t("resources.time.all") }, { value: "7", label: t("resources.time.seven") }, { value: "30", label: t("resources.time.thirty") }, { value: "90", label: t("resources.time.ninety") }, { value: "custom", label: t("resources.time.custom") }]} onChange={value => { setTimeAnchor(Date.now()); filter({ window: value }); }} /></div>
       {route.window === "custom" && <div className="resource-date-fields"><div className="resource-field"><span>{t("resources.time.from")}</span><DatePicker label={t("resources.time.startDate")} value={route.from} onChange={value => filter({ from: value })} /></div><div className="resource-field"><span>{t("resources.time.to")}</span><DatePicker label={t("resources.time.endDate")} value={route.to} onChange={value => filter({ to: value })} /></div></div>}

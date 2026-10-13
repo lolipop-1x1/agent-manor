@@ -7,7 +7,7 @@ import { join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { AnalysisSnapshot, ApiErrorCode, CoverageQuery, DeleteRepositoryResponse, FileDetail, Filters, RegisterRepositoryResponse, ServiceInstance } from "./contracts.js";
 import { buildCoverage, eventFilePaths, filterEvents, filterHistoricalEvents, getHotspots, getUnreadFiles, selectedSource } from "./analysis/coverage.js";
-import { mapSessions } from "./analysis/sessions.js";
+import { mapClientOptions, mapSessions } from "./analysis/sessions.js";
 import type { DiscoverRoots } from "./history/index.js";
 import { AnalysisStore, StoreError, WorkerManager } from "./index/index.js";
 import { VERSION } from "./version.js";
@@ -195,7 +195,7 @@ export async function startService(options: ServiceOptions = {}) {
     const snapshotFor = (id: string, query: CoverageQuery) => index.getSnapshot(id, query.version);
     app.get<{ Params: RepositoryParams; Querystring: Query }>(`${base}/sessions`, async request => {
       const snapshot = snapshotFor(request.params.id, coverageQuery(request.query));
-      return { version: snapshot.version, sessions: mapSessions(snapshot, library.summariesByIdentity([...snapshot.sources, ...snapshot.events])) };
+      return { version: snapshot.version, clients: mapClientOptions(snapshot), sessions: mapSessions(snapshot, library.summariesByIdentity([...snapshot.sources, ...snapshot.events])) };
     });
     app.get<{ Params: RepositoryParams; Querystring: Query }>(`${base}/coverage`, async (request) => {
       const query = coverageQuery(request.query);

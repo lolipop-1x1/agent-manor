@@ -12,6 +12,7 @@ import { Hint } from "../../shared/ui/Hint";
 import { DirectoryTree } from "./DirectoryTree";
 import { ResizableWorkspace } from "../../shared/layout/ResizableWorkspace";
 import { FilterSelect } from "../../shared/ui/FilterSelect";
+import { availableClientOptions } from "../../shared/ui/client-options";
 import { ProjectPicker } from "../../shared/ui/ProjectPicker";
 import { DatePicker } from "../../shared/ui/DatePicker";
 import { HelpPopover } from "../../shared/ui/HelpPopover";
@@ -400,7 +401,7 @@ export function useCodeMapPage({ active, theme, onSession }: {
     if (!active || !coverage || coverage.repository.id !== repoId) return;
     const controller = new AbortController();
     const epoch = pageEpoch.current;
-    setMapSessionsLoading(true); setMapSessionsError(null); setMapSessionList(undefined);
+    setMapSessionsLoading(true); setMapSessionsError(null);
     void request<MapSessionsResponse>(`${repositoryPath(repoId)}/sessions${queryString({ version: coverage.version })}`, { signal: controller.signal })
       .then(result => {
         if (controller.signal.aborted || epoch !== pageEpoch.current) return;
@@ -410,6 +411,10 @@ export function useCodeMapPage({ active, theme, onSession }: {
       .finally(() => { if (!controller.signal.aborted && epoch === pageEpoch.current) setMapSessionsLoading(false); });
     return () => controller.abort();
   }, [active, repoId, coverage?.version, mapSessionsRetry]);
+  useEffect(() => {
+    if (active && coverage?.repository.id === repoId && mapSessionList?.version === coverage.version
+      && mapSessionList.clients && client !== "all" && !mapSessionList.clients.includes(client)) setClient("all");
+  }, [active, repoId, coverage?.version, mapSessionList, client]);
   useEffect(() => {
     if (!active) return;
     if (!repoId || !selected || !coverage || !query || coverageLoading || invalidTime) { setDetail(null); setDetailLoading(false); setDetailError(null); return; }
@@ -571,7 +576,7 @@ export function useCodeMapPage({ active, theme, onSession }: {
         <div><dt>{t("codeMap.help.filtersTitle")}</dt><dd>{t("codeMap.help.filters")}</dd></div>
         <div><dt>{t("codeMap.session.helpTitle")}</dt><dd>{t("codeMap.session.help")}</dd></div>
         <div><dt>{t("codeMap.help.baselineTitle")}</dt><dd>{t("codeMap.help.baseline")}</dd></div></dl></HelpPopover></div></div>
-        <div className="filters"><div className="select-field"><span>{t("codeMap.filter.client")}</span><FilterSelect label={t("codeMap.filter.clientLabel")} value={client} options={[{ value: "all", label: t("codeMap.filter.allClients") }, ...CLIENTS.map(client => ({ value: client.id, label: clientLabel(client.id) }))]} onChange={value => { setClient(value as Client | "all"); if (value !== "all" && value !== mapSession?.client) setMapSession(undefined); }} /></div>
+        <div className="filters"><div className="select-field"><span>{t("codeMap.filter.client")}</span><FilterSelect label={t("codeMap.filter.clientLabel")} value={client} options={[{ value: "all", label: t("codeMap.filter.allClients") }, ...availableClientOptions(mapSessionList?.clients)]} onChange={value => { setClient(value as Client | "all"); if (value !== "all" && value !== mapSession?.client) setMapSession(undefined); }} /></div>
           <div className="select-field map-session-filter"><span>{t("codeMap.session.label")}</span><ProjectPicker label={t("codeMap.session.filter")} placeholder={t("codeMap.session.search")} value={mapSession ? mapSessionKey(mapSession) : "all"} options={[{ value: "all", label: t("codeMap.session.all") }, ...mapSessionOptions]} onChange={value => setMapSession(value === "all" ? undefined : availableMapSessions.find(session => mapSessionKey(session) === value) ?? mapSession)} />
             {mapSession && <Hint label={t("codeMap.session.clear")}><button className="icon-button" aria-label={t("codeMap.session.clear")} onClick={() => setMapSession(undefined)}><X size={14} /></button></Hint>}
           </div>

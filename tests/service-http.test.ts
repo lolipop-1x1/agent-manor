@@ -340,6 +340,7 @@ test("会话筛选贯通地图、文件、活动、证据、热点与来源，�
   assert.equal(sources.unassociated.length, 0);
   const list = await apiRequest<MapSessionsResponse>(service.instance, `${base}/sessions?version=${all.version}`);
   assert.equal(list.version, all.version);
+  assert.deepEqual(list.clients, ["codex"]);
   assert.deepEqual(list.sessions.map(session => session.clientSessionId).sort(), ["second-session", "service-fixture"]);
   assert.ok(list.sessions.every(session => session.eventCount === 1));
   const missing = await apiRequest<CoverageResult>(service.instance, `${base}/coverage?version=${all.version}&sessionClient=codex&clientSessionId=not-indexed`);

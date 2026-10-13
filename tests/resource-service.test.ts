@@ -96,6 +96,7 @@ test("页面摘要省略诊断正文，完整接口和按版本缺口仍可读�
   const full = await apiRequest<ResourceStatus>(service.instance, "/resources/status");
   const summary = await apiRequest<ResourceStatusSummary>(service.instance, "/resources/status?summary=true");
   assert.deepEqual(summary.projects, full.projects);
+  assert.deepEqual(summary.clientOptions, full.clientOptions);
   assert.deepEqual(summary.favoriteIds, full.favoriteIds);
   assert.equal(summary.observedAt, full.observedAt);
   assert.equal("sources" in summary, false);
