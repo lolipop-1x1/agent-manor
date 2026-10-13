@@ -1,4 +1,4 @@
-import type { SessionSummary, SessionUsage } from "./session-contracts.js";
+import type { SessionRequestTiming, SessionSummary, SessionUsage } from "./session-contracts.js";
 import type { MessageDescriptor } from "./i18n/types.js";
 
 export type UsageMetric = "tokens" | "cost" | "requests";
@@ -14,6 +14,7 @@ export interface UsageQuery {
   pricing?: "all" | "complete" | "partial" | "missing";
   minTokens?: number; maxTokens?: number; minCost?: number; maxCost?: number;
   metric?: UsageMetric; groupBy?: UsageGroup; interval?: UsageInterval;
+  includeSpeed?: boolean; speedGroup?: string;
   page?: number; pageSize?: number; sort?: "tokens" | "cost" | "requests" | "recent"; direction?: "asc" | "desc";
 }
 export interface UsageSource {
@@ -78,6 +79,20 @@ export interface UsageSeries {
   key: string; label: string; totals: UsageTotals;
 }
 export interface UsageTimeBucket { key: string; totals: UsageTotals; groups: UsageSeries[] }
+export interface UsageSpeedSummary {
+  requests: number; eligibleRequests: number; outputTokens: number | null;
+  durationMs: number | null; tokensPerSecond: number | null;
+}
+export interface UsageSpeedGroup extends UsageSpeedSummary {
+  key: string; client: string; model: string; window: "response" | "generation";
+  basis: SessionRequestTiming["basis"]; method: SessionRequestTiming["method"];
+}
+export interface UsageSpeedBucket extends UsageSpeedSummary { key: string }
+export interface UsageSpeedReport {
+  groups: UsageSpeedGroup[]; selectedGroup: string | null; buckets: UsageSpeedBucket[];
+  /** 当前日期范围的已识别请求与可计算请求；无日期请求独立保留。 */
+  requests: number; eligibleRequests: number; missingTimeRequests: number;
+}
 export interface UsageSessionRow {
   session: SessionSummary; totals: UsageTotals; lastOccurredAt?: string;
   undated?: UsageTotals; requestsTotal: number; requestsLimited: boolean;
@@ -94,6 +109,7 @@ export interface UsageReport {
   missingUsageSessions: number; projectCount: number; modelCount: number;
   facets: { clients: string[]; projects: string[]; models: string[] };
   pricing: PricingSummary;
+  speed?: UsageSpeedReport;
 }
 export type UsageStatistics = Pick<UsageReport,
   "version" | "priceVersion" | "timezone" | "query" | "totals" | "undated" | "days" | "groups" | "facets">;
