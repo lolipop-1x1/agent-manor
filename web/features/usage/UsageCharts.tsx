@@ -12,6 +12,7 @@ import { composition, compositionIsPartial, metricValue } from "./model";
 import { formatTokenMillions } from "./format";
 import { TokenAmount } from "./TokenAmount";
 import { UsageAttribution } from "./UsageAttribution";
+import { UsageSpeedTrend } from "./UsageSpeedTrend";
 import "./usage-charts.css";
 
 export function groupLabel(value: string, group: UsageGroup, unknown: string): string {
@@ -20,8 +21,9 @@ export function groupLabel(value: string, group: UsageGroup, unknown: string): s
   if (group === "client") { const client = CLIENTS.find(client => client.id === value); if (client) return clientLabel(client.id); }
   return original;
 }
-export function UsageCharts({ report, metric, group, chart, attribution, onAttribution, onGroup }: {
+export function UsageCharts({ report, metric, group, chart, attribution, speed, interactive, onSpeedGroup, onAttribution, onGroup }: {
   report: UsageReport; metric: UsageMetric; group: UsageGroup; chart: "bar" | "line";
+  speed: boolean; interactive: boolean; onSpeedGroup: (key: string) => void;
   attribution: "treemap" | "bar"; onAttribution: (view: "treemap" | "bar") => void; onGroup: (key: string) => void;
 }) {
   const { t, number, date, dateTime, percent, language } = useI18n();
@@ -43,9 +45,9 @@ export function UsageCharts({ report, metric, group, chart, attribution, onAttri
     setDetail({ bucket, day });
   };
   const closeDetail = () => { restoreDetailFocus.current = pinned.current || document.activeElement === detailTrigger.current; pinned.current = false; setDetail(null); };
-  useEffect(() => { pinned.current = false; restoreDetailFocus.current = false; setDetail(null); }, [report, timeView]);
+  useEffect(() => { pinned.current = false; restoreDetailFocus.current = false; setDetail(null); }, [report, timeView, speed, interactive]);
   const hasBuckets = report.buckets.length > 0;
-  const canvasWidth = useChartWidth(plot, hasBuckets && timeView === "trend");
+  const canvasWidth = useChartWidth(plot, hasBuckets && timeView === "trend" && !speed);
   const formatValue = (value: number | null) => value === null ? "—" : metric === "tokens" ? formatTokenMillions(language, value) : number(value, metric === "cost" ? { style: "currency", currency: "USD", currencyDisplay: "narrowSymbol", minimumFractionDigits: 2, maximumFractionDigits: 2 } : {});
   const compactValue = (value: number) => metric === "tokens" ? formatTokenMillions(language, value) : number(value, { notation: "compact", ...(metric === "cost" ? { style: "currency", currency: "USD", currencyDisplay: "narrowSymbol", minimumFractionDigits: 2, maximumFractionDigits: 2 } : { maximumFractionDigits: 1 }) });
   const unit = metric === "tokens" ? t("usage.unit.millions") : metric === "cost" ? "" : t("usage.unit.requests");
@@ -110,7 +112,7 @@ export function UsageCharts({ report, metric, group, chart, attribution, onAttri
     <span className="usage-number" title={metric === "tokens" && item.value !== null ? t("usage.tokens.exact", { count: item.value }) : undefined}>{formatValue(item.value)}</span><small>{item.value !== null && totalsValue ? percent(item.value / totalsValue, { maximumFractionDigits: 1 }) : "—"}</small>
   </button>;
   return <div className="usage-charts">
-    <section className="usage-chart-section usage-time-analysis" aria-labelledby="usage-time-title">
+    {speed ? <UsageSpeedTrend report={report} interactive={interactive} onGroup={onSpeedGroup} /> : <section className="usage-chart-section usage-time-analysis" aria-labelledby="usage-time-title">
       <div className="usage-section-title"><h2 id="usage-time-title">{t("usage.chart.timeAnalysis")}</h2>
         <div className="usage-time-actions"><div className="usage-segmented usage-time-switch" role="group" aria-label={t("usage.chart.view")}>
           <button type="button" aria-pressed={timeView === "trend"} onClick={() => setTimeView("trend")}><ChartLineUp size={17} aria-hidden="true" />{t("usage.chart.trend")}</button>
@@ -162,14 +164,14 @@ export function UsageCharts({ report, metric, group, chart, attribution, onAttri
         </div></div></div>
         {!calendar.length && <div className="usage-empty">{t("usage.chart.noData")}</div>}
       </>}
-    </section>
+    </section>}
     <div className="usage-analysis-row"><section className="usage-chart-section" aria-labelledby="usage-composition-title"><div className="usage-section-title"><h2 id="usage-composition-title">{t("usage.chart.composition")}</h2><div><HelpPopover label={t("usage.chart.compositionHelp")} iconOnly><p>{t("usage.chart.compositionHelpText")}</p>{partialComposition && <p>{t("usage.composition.partial")}</p>}<p>{t("usage.coverage.tokens", { complete: report.totals.completeTokenRequests, partial: report.totals.partialTokenRequests, missing: report.totals.missingTokenRequests })}</p></HelpPopover></div></div>
       <div className="usage-composition-strip" aria-hidden="true">{compositionItems.map((item, index) => <span key={item.key} style={{ width: `${compositionTotal ? (item.value ?? 0) / compositionTotal * 100 : 0}%`, background: `var(--usage-series-${index})` }} />)}</div>
       <dl className="usage-composition-values">{compositionItems.map((item, index) => <div key={item.key}><dt><i style={{ background: `var(--usage-series-${index})` }} />{t(`usage.composition.${item.key}`)}</dt><dd><TokenAmount value={item.value} /></dd></div>)}</dl>
     </section><section className="usage-chart-section" aria-labelledby="usage-ranking-title"><div className="usage-section-title"><h2 id="usage-ranking-title">{t("usage.chart.ranking")}</h2><div><div className="usage-segmented usage-attribution-switch" role="group" aria-label={t("usage.chart.attributionView")}><button type="button" aria-pressed={attribution === "treemap"} onClick={() => onAttribution("treemap")} aria-label={t("usage.chart.treemap")} title={t("usage.chart.treemap")}><SquaresFour size={17} /></button><button type="button" aria-pressed={attribution === "bar"} onClick={() => onAttribution("bar")} aria-label={t("usage.chart.rankingBar")} title={t("usage.chart.rankingBar")}><ChartBarHorizontal size={17} /></button></div><span className="usage-ranking-unit">{t(`usage.group.${group}`)}{unit && ` · ${unit}`}</span><HelpPopover label={t("usage.chart.rankingHelp")} iconOnly><p>{t("usage.chart.rankingHelpText")}</p><dl className="usage-chart-coverage-list">{allGroups.filter(item => coverageText(item.totals)).map(item => <div key={item.key}><dt>{label(item.key)}</dt><dd>{coverageText(item.totals)}</dd></div>)}</dl></HelpPopover></div></div>
       {attribution === "treemap" ? <UsageAttribution items={attributionItems} total={totalsValue} onGroup={onGroup} formatValue={formatValue} /> : <div className="usage-ranking">{rankingItems.map(renderRanking)}{!ranked.length && <div className="usage-empty">{t("usage.chart.noData")}</div>}</div>}
     </section></div>
-    <Popover.Root open={detail !== null} onOpenChange={open => { if (!open) closeDetail(); }}>
+    <Popover.Root open={!speed && interactive && detail !== null} onOpenChange={open => { if (!open) closeDetail(); }}>
       <Popover.Anchor virtualRef={anchor} />
       <Popover.Portal><Popover.Content className="usage-time-popover" side="top" align="center" sideOffset={14} collisionPadding={12} aria-label={t("usage.chart.intervalDetails")}
         onOpenAutoFocus={event => event.preventDefault()} onCloseAutoFocus={event => { event.preventDefault(); if (restoreDetailFocus.current && detailTrigger.current?.isConnected && document.activeElement !== detailTrigger.current) { suppressDetailFocus.current = true; detailTrigger.current.focus({ preventScroll: true }); } }}

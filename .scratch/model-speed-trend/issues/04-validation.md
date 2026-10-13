@@ -1,7 +1,7 @@
 # 集成与浏览器验收
 
 Type: task
-Status: ready-for-agent
+Status: resolved
 Blocked by: 02, 03
 
 ## 范围
@@ -14,4 +14,4 @@ Blocked by: 02, 03
 
 ## Comments
 
-- 等待实现集成。
+- 实现已在 main 集成。类型、国际化、完整 992 项自动测试、构建、速度专项 79 项和既有用量看板 40 项浏览器验证通过，主 Agent 已完成桌面及窄屏截图回读。详见[验收记录](../validation.md)。

@@ -3,6 +3,7 @@ import type { PricingStatus, RequestCost, UsageGroup, UsageInterval, UsageQuery,
   UsageSessionRow, UsageSource, UsageStatistics, UsageStatisticsView, UsageTimeBucket, UsageTotals } from "../usage-contracts.js";
 import { StoreError } from "../index/store.js";
 import { usageDimensionKey, usageDimensionValue } from "./dimensions.js";
+import { buildUsageSpeedReport, speedProfile } from "./speed.js";
 
 const UNKNOWN = "unknown";
 type Estimate = (usage: SessionUsage, client?: string) => RequestCost;
@@ -102,6 +103,9 @@ function queryOf(query: UsageQuery, source: UsageSource, pricing: PricingStatus)
     const value = result[key as keyof UsageQuery];
     if (value !== undefined && !choices.includes(value as string)) invalid(key);
   }
+  if (result.includeSpeed !== undefined && typeof result.includeSpeed !== "boolean") invalid("includeSpeed");
+  if (result.speedGroup !== undefined && (!result.includeSpeed || typeof result.speedGroup !== "string"
+    || !result.speedGroup.trim() || result.speedGroup.length > 8192)) invalid("speedGroup");
   for (const key of ["clients", "excludeClients", "projects", "excludeProjects", "models", "excludeModels"] as const) {
     if (result[key] !== undefined && (!Array.isArray(result[key]) || result[key]!.some(value => typeof value !== "string" || !value))) invalid(key);
   }
@@ -336,7 +340,10 @@ export function buildUsageReport(source: UsageSource, query: UsageQuery, pricing
     totals: summarize(selected.requests), undated: summarize(selected.undated), buckets, days,
     projectCount: projects.size, modelCount: models.size,
     groups: grouped(selected.requests, selected.query), sessions: selected.rows.slice((page - 1) * pageSize, page * pageSize),
-    totalSessions: selected.rows.length, page, pageSize, missingUsageSessions: selected.missingUsageSessions, facets: selected.facets, pricing: status };
+    totalSessions: selected.rows.length, page, pageSize, missingUsageSessions: selected.missingUsageSessions, facets: selected.facets, pricing: status,
+    ...(selected.query.includeSpeed ? { speed: buildUsageSpeedReport(selected.requests.filter(request => request.time !== undefined)
+      .map(request => ({ bucket: request.bucket!, requests: 1, ...speedProfile(request.session.client, request.usage) })),
+    buckets.map(bucket => bucket.key), selected.undated.length, selected.query.speedGroup) } : {}) };
 }
 
 /** 精确统计复用报告筛选，但不创建会话行、请求预览及未显示的分组。 */

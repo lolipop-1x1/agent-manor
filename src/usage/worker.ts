@@ -135,7 +135,7 @@ function preparationJob(query: UsageQuery, pricing: PricingStatus): PreparationJ
         part = cached.rollup; job.partBytes += cached.bytes;
       } else {
         part = buildUsageRollup({ version: source.version, sessions: [session],
-          requests: sessions.usageFacts(revision).map(usage => ({ sessionId: session.id, usage })) }, query.timezone!, estimate);
+          requests: sessions.usageFacts(revision, true).map(usage => ({ sessionId: session.id, usage })) }, query.timezone!, estimate);
         // 当前版本摘要在组合时提供，持久化项只存不可变修订的用量和预览。
         part.sessions = []; job.partBytes += persisted.put(revision, session.client, pricing.version, query.timezone!, part);
       }
@@ -180,23 +180,24 @@ function queryRollup(query: UsageQuery, pricing: PricingStatus): Promise<UsageRo
 }
 
 /** 精确边界和费用比较只加载结构化事实，顺序与旧实时分析保持一致。 */
-function compactSource(version: string): Promise<UsageSource> {
-  const cached = compactSources.get(version);
+function compactSource(version: string, includeSpeed = false): Promise<UsageSource> {
+  const key = JSON.stringify([version, includeSpeed]);
+  const cached = compactSources.get(key);
   if (cached) return Promise.resolve(cached);
-  const pending = reading.get(version);
+  const pending = reading.get(key);
   if (pending) return pending;
   const result = (async () => {
     const metadata = sessions.usageFactSessions(version);
     const source: UsageSource = { version, sessions: metadata.sessions.map(item => item.session), requests: [] };
     await ensureFacts(metadata);
     for (const { revision, session } of metadata.sessions) {
-      for (const usage of sessions.usageFacts(revision)) source.requests.push({ sessionId: session.id, usage });
+      for (const usage of sessions.usageFacts(revision, includeSpeed)) source.requests.push({ sessionId: session.id, usage });
       await nextTurn();
     }
-    compactSources.set(version, source);
+    compactSources.set(key, source);
     return source;
-  })().finally(() => reading.delete(version));
-  reading.set(version, result);
+  })().finally(() => reading.delete(key));
+  reading.set(key, result);
   return result;
 }
 
@@ -237,7 +238,7 @@ async function handle(message: UsageWorkerRequest): Promise<void> {
       const standalone = () => !preparing.has(preparationKey(query));
       if (standalone()) update({ ...progress, state: "preparing" });
       try {
-        const source = await compactSource(query.version!);
+        const source = await compactSource(query.version!, Boolean(query.includeSpeed));
         result = message.type === "statistics" ? buildUsageStatistics(source, query, message.pricing, estimate, message.view!)
           : buildUsageReport(source, query, message.pricing, estimate);
         if (standalone()) update({ ...progress, state: "ready", preparedSessions: source.sessions.length, totalSessions: source.sessions.length });

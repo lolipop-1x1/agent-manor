@@ -1,10 +1,10 @@
 import type Database from "better-sqlite3";
-import type { SessionUsage } from "../session-contracts.js";
+import type { SessionRequestTiming, SessionUsage } from "../session-contracts.js";
 import { StoreError } from "../index/store.js";
 import { instant } from "../usage/analytics.js";
 import { usageDimensionKey } from "../usage/dimensions.js";
 
-export const USAGE_FACT_FORMAT_VERSION = 3;
+export const USAGE_FACT_FORMAT_VERSION = 4;
 
 export interface UsageFactMetadata {
   revision: string; minTime?: number; maxTime?: number; undatedCount: number; hasUsage: boolean; models: string[];
@@ -21,6 +21,16 @@ interface UsageFactRow {
   cache_write_tokens: number | null;
   reasoning_tokens: number | null;
   context_tokens: number | null;
+  timing_basis?: SessionRequestTiming["basis"] | null;
+  timing_window?: SessionRequestTiming["window"] | null;
+  timing_method?: SessionRequestTiming["method"] | null;
+  timing_completion?: SessionRequestTiming["completion"] | null;
+  timing_output_tokens?: number | null;
+  timing_duration_ms?: number | null;
+  timing_start?: string | null;
+  timing_end?: string | null;
+  timing_start_line?: number | null;
+  timing_end_line?: number | null;
 }
 
 /** 派生事实独立标记格式，不改变原始历史索引版本，也不在启动时补齐历史。 */
@@ -38,7 +48,12 @@ export function initializeUsageFacts(database: Database.Database): void {
     CREATE INDEX IF NOT EXISTS session_usage_fact_order ON session_usage_facts(revision,eligible,ordinal);
   `);
   const columns = database.pragma("table_info(session_usage_facts)") as { name: string }[];
-  if (!columns.some(column => column.name === "provider")) database.exec("ALTER TABLE session_usage_facts ADD COLUMN provider TEXT");
+  for (const [name, type] of [["provider", "TEXT"], ["timing_basis", "TEXT"], ["timing_window", "TEXT"],
+    ["timing_method", "TEXT"], ["timing_completion", "TEXT"], ["timing_output_tokens", "REAL"],
+    ["timing_duration_ms", "REAL"], ["timing_start", "TEXT"], ["timing_end", "TEXT"],
+    ["timing_start_line", "INTEGER"], ["timing_end_line", "INTEGER"]]) {
+    if (!columns.some(column => column.name === name)) database.exec(`ALTER TABLE session_usage_facts ADD COLUMN ${name} ${type}`);
+  }
 }
 
 const ready = (database: Database.Database, revision: string): boolean => Boolean(database.prepare(
@@ -58,12 +73,17 @@ export function prepareUsageFacts(database: Database.Database, revision: string,
     const copied = Boolean(database.prepare("SELECT 1 FROM session_messages WHERE revision=? AND copied=1 LIMIT 1").get(revision));
     database.prepare("DELETE FROM session_usage_facts WHERE revision=?").run(revision);
     database.prepare(`INSERT INTO session_usage_facts
-      (revision,id,ordinal,time_ms,occurred_at,model,provider,input_tokens,output_tokens,cache_read_tokens,cache_write_tokens,reasoning_tokens,context_tokens,eligible)
+      (revision,id,ordinal,time_ms,occurred_at,model,provider,input_tokens,output_tokens,cache_read_tokens,cache_write_tokens,reasoning_tokens,context_tokens,eligible,
+        timing_basis,timing_window,timing_method,timing_completion,timing_output_tokens,timing_duration_ms,timing_start,timing_end,timing_start_line,timing_end_line)
       SELECT u.revision,u.id,u.rowid,usage_time_ms(json_extract(u.json,'$.occurredAt')),json_extract(u.json,'$.occurredAt'),
         json_extract(u.json,'$.model'),json_extract(u.json,'$.provider'),json_extract(u.json,'$.inputTokens'),json_extract(u.json,'$.outputTokens'),
         json_extract(u.json,'$.cachedInputTokens'),json_extract(u.json,'$.cacheWriteTokens'),
         json_extract(u.json,'$.reasoningOutputTokens'),json_extract(u.json,'$.contextTokens'),
-        ${copied ? `CASE WHEN ${eligibleWhere} THEN 1 ELSE 0 END` : "1"}
+        ${copied ? `CASE WHEN ${eligibleWhere} THEN 1 ELSE 0 END` : "1"},
+        json_extract(u.json,'$.timing.basis'),json_extract(u.json,'$.timing.window'),json_extract(u.json,'$.timing.method'),
+        json_extract(u.json,'$.timing.completion'),json_extract(u.json,'$.timing.outputTokens'),json_extract(u.json,'$.timing.durationMs'),
+        json_extract(u.json,'$.timing.start.occurredAt'),json_extract(u.json,'$.timing.end.occurredAt'),
+        json_extract(u.json,'$.timing.start.recordLine'),json_extract(u.json,'$.timing.end.recordLine')
       FROM session_usage u WHERE u.revision=? ORDER BY u.rowid`).run(revision);
     database.prepare(`INSERT INTO session_usage_fact_revisions(revision,format_version) VALUES(?,?)
       ON CONFLICT(revision) DO UPDATE SET format_version=excluded.format_version`).run(revision, USAGE_FACT_FORMAT_VERSION);
@@ -91,10 +111,12 @@ export function readUsageFactMetadata(database: Database.Database, revisions: st
   return ids.map(id => values.get(id)!);
 }
 
-/** 缺失字段不转换成零，证据身份与计时信息留在原请求表按需读取。 */
-export function readUsageFacts(database: Database.Database, revision: string): SessionUsage[] {
+/** 缺失字段不转换成零；速度按需读取精简计时，原始证据仍留在请求表。 */
+export function readUsageFacts(database: Database.Database, revision: string, includeSpeed = false): SessionUsage[] {
   const rows = database.prepare(`SELECT id,model,provider,occurred_at,input_tokens,output_tokens,cache_read_tokens,
-    cache_write_tokens,reasoning_tokens,context_tokens FROM session_usage_facts WHERE revision=? AND eligible=1 ORDER BY ordinal`)
+    cache_write_tokens,reasoning_tokens,context_tokens${includeSpeed
+      ? ",timing_basis,timing_window,timing_method,timing_completion,timing_output_tokens,timing_duration_ms,timing_start,timing_end,timing_start_line,timing_end_line" : ""}
+    FROM session_usage_facts WHERE revision=? AND eligible=1 ORDER BY ordinal`)
     .all(revision) as UsageFactRow[];
   return rows.map(row => ({ id: row.id,
     ...(row.model !== null ? { model: row.model } : {}),
@@ -106,5 +128,17 @@ export function readUsageFacts(database: Database.Database, revision: string): S
     ...(row.cache_write_tokens !== null ? { cacheWriteTokens: row.cache_write_tokens } : {}),
     ...(row.reasoning_tokens !== null ? { reasoningOutputTokens: row.reasoning_tokens } : {}),
     ...(row.context_tokens !== null ? { contextTokens: row.context_tokens } : {}),
+    // 旧计时可能缺少分组依据，仍保留资格证据；分组聚合会排除缺失身份。
+    ...([row.timing_basis, row.timing_method, row.timing_completion, row.timing_window, row.timing_output_tokens,
+      row.timing_duration_ms, row.timing_start, row.timing_end].some(value => value != null) ? { timing: {
+      ...(row.timing_basis != null ? { basis: row.timing_basis } : {}),
+      ...(row.timing_method != null ? { method: row.timing_method } : {}),
+      ...(row.timing_completion != null ? { completion: row.timing_completion } : {}),
+      ...(row.timing_window != null ? { window: row.timing_window } : {}),
+      ...(row.timing_output_tokens != null ? { outputTokens: row.timing_output_tokens } : {}),
+      ...(row.timing_duration_ms != null ? { durationMs: row.timing_duration_ms } : {}),
+      ...(row.timing_start != null ? { start: { recordLine: row.timing_start_line!, occurredAt: row.timing_start } } : {}),
+      ...(row.timing_end != null ? { end: { recordLine: row.timing_end_line!, occurredAt: row.timing_end } } : {}),
+    } as SessionRequestTiming } : {}),
   }));
 }

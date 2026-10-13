@@ -1,7 +1,7 @@
 import type { UsageMetric, UsageQuery, UsageTimeBucket, UsageTotals } from "../../../src/usage-contracts";
 
 export type DateWindow = "today" | "yesterday" | "7" | "14" | "30" | "90" | "all" | "custom";
-export interface UsageRoute extends UsageQuery { window: DateWindow; selectedSession?: string; requestPage?: number; chart: "bar" | "line"; attribution: "treemap" | "bar"; timeFrom?: string; timeTo?: string }
+export interface UsageRoute extends UsageQuery { window: DateWindow; selectedSession?: string; requestPage?: number; chart: "bar" | "line"; attribution: "treemap" | "bar"; timeFrom?: string; timeTo?: string; trendMetric?: "speed" }
 const arrayKeys = ["clients", "excludeClients", "projects", "excludeProjects", "models", "excludeModels"] as const;
 const numericKeys = ["minTokens", "maxTokens", "minCost", "maxCost"] as const;
 const enums = { relationship: ["all", "main", "child"], sessionType: ["all", "interactive", "automation", "fork"], coverage: ["all", "complete", "partial", "missing"], pricing: ["all", "complete", "partial", "missing"], metric: ["tokens", "cost", "requests"], groupBy: ["project", "model", "client"], interval: ["hour", "day", "week", "month"], sort: ["tokens", "cost", "requests", "recent"], direction: ["asc", "desc"] } as const;
@@ -30,6 +30,8 @@ export function readUsageRoute(hash: string): UsageRoute {
   if ([20, 50, 100].includes(Number(params.get("pageSize")))) route.pageSize = Number(params.get("pageSize"));
   route.version = params.get("version") || undefined; route.priceVersion = params.get("priceVersion") || undefined;
   route.selectedSession = params.get("selectedSession") || undefined;
+  if (params.get("trendMetric") === "speed") route.trendMetric = "speed";
+  route.speedGroup = params.get("speedGroup") || undefined;
   if (params.get("chart") === "line") route.chart = "line";
   if (params.get("attribution") === "bar") route.attribution = "bar";
   // 排除优先，防止手工地址把同一项同时放入两个集合。
@@ -49,7 +51,7 @@ export function usageParameters(value: object): string {
   return params.toString();
 }
 export function usageQuery(route: UsageRoute, version: string, priceVersion: string, now = new Date()): UsageQuery {
-  const { window, selectedSession: _selectedSession, requestPage: _requestPage, chart: _chart, attribution: _attribution, timeFrom, timeTo, ...query } = route;
+  const { window, selectedSession: _selectedSession, requestPage: _requestPage, chart: _chart, attribution: _attribution, trendMetric, includeSpeed: _includeSpeed, speedGroup, timeFrom, timeTo, ...query } = route;
   delete query.from; delete query.to;
   if (window === "custom") { query.from = timeFrom ?? route.from; query.to = timeTo ?? route.to; }
   else if (window !== "all") {
@@ -57,7 +59,7 @@ export function usageQuery(route: UsageRoute, version: string, priceVersion: str
     const start = new Date(end); if (window !== "today" && window !== "yesterday") start.setDate(start.getDate() - Number(window) + 1);
     query.from = localDay(start); query.to = localDay(end);
   }
-  return { ...query, version: route.version ?? version, priceVersion: route.priceVersion ?? priceVersion, timezone: Intl.DateTimeFormat().resolvedOptions().timeZone };
+  return { ...query, ...(trendMetric === "speed" ? { includeSpeed: true, speedGroup } : {}), version: route.version ?? version, priceVersion: route.priceVersion ?? priceVersion, timezone: Intl.DateTimeFormat().resolvedOptions().timeZone };
 }
 export function metricValue(totals: UsageTotals, metric: UsageMetric): number | null { return metric === "cost" ? totals.estimatedCost : metric === "requests" ? totals.requests : totals.tokens; }
 export function activeFilterCount(route: UsageRoute): number {

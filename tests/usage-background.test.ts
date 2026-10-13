@@ -338,3 +338,47 @@ for (const change of ["timezone", "price", "version"] as const) {
     } finally { await manager.close(); await background.catch(() => undefined); }
   }));
 }
+
+test("速度 Worker 按需查询、精确事实缓存隔离、重启和旧格式回填均与原请求分析一致", async () => fixture(async (store, prices, cachePath) => {
+  const speedValue = (id: string, extra: Partial<SessionUsage> = {}): SessionUsage => value(id, { outputTokens: 400,
+    timing: { basis: "recorded", method: "codex_event_boundary", completion: "explicit", durationMs: 2000 }, ...extra });
+  const main = add(store, "speed-main", [speedValue("first"), speedValue("slow", { timing: {
+    basis: "recorded", method: "codex_event_boundary", completion: "inferred", durationMs: 10000, outputTokens: 200 } }),
+    speedValue("undated", { occurredAt: undefined }), speedValue("missing-model", { model: undefined }),
+    speedValue("partial", { timing: { basis: "estimated", method: "codex_event_boundary", completion: "partial", durationMs: 3000 } })]);
+  const child = add(store, "speed-child", [speedValue("first", { timing: { basis: "recorded", window: "generation",
+    method: "claude_message_boundary", completion: "explicit", durationMs: 1000 } })], { client: "claude", relationship: "child", parentSessionId: "speed-main" });
+  const version = store.publish(store.createJob().id, [main, child], []);
+  const query: UsageQuery = { version, priceVersion: prices.version(), timezone: "UTC", from: "2026-01-01", to: "2026-01-04" };
+  const source = store.usageSource(version), view = prices.view(query.priceVersion);
+  let manager = new UsageManager(store, prices, cachePath);
+  try {
+    assert.equal((await manager.report(query)).speed, undefined);
+    const first = await manager.report({ ...query, includeSpeed: true });
+    assert.deepEqual(first.speed, buildUsageReport(source, { ...query, includeSpeed: true }, view.status, view.estimate).speed);
+    assert.equal(first.speed!.requests, 5); assert.equal(first.speed!.eligibleRequests, 4); assert.equal(first.speed!.missingTimeRequests, 1);
+    for (const patch of [{ from: "2026-01-02T00:00:00Z", to: "2026-01-03T00:00:00Z" }, { minCost: 0.001 }, { maxCost: 0.002 },
+      { metric: "cost" as const }, { relationship: "child" as const }, { page: 2, pageSize: 1 }]) {
+      const selected = { ...query, ...patch };
+      assert.equal((await manager.report(selected)).speed, undefined);
+      const speedQuery = { ...selected, includeSpeed: true };
+      const actual = await manager.report(speedQuery);
+      assert.deepEqual(actual.speed, buildUsageReport(source, speedQuery, view.status, view.estimate).speed);
+    }
+    await manager.close(); manager = new UsageManager(store, prices, cachePath);
+    assert.deepEqual((await manager.report({ ...query, includeSpeed: true })).speed, first.speed);
+    await manager.close();
+    const facts = new Database(store.dbPath), cache = new Database(cachePath);
+    try {
+      facts.prepare("UPDATE session_usage_fact_revisions SET format_version=0").run();
+      facts.prepare("UPDATE session_usage_facts SET timing_duration_ms=1").run();
+      cache.prepare("UPDATE usage_rollup_cache SET format=0").run();
+    } finally { facts.close(); cache.close(); }
+    manager = new UsageManager(store, prices, cachePath);
+    assert.deepEqual((await manager.report({ ...query, includeSpeed: true })).speed, first.speed);
+    assert.deepEqual(store.usageSource(version), source, "派生格式升级不修改原始请求");
+    prices.configure({ overrides: [{ model: "synthetic-model", input: 4, output: 10 }], mappings: [] });
+    const repriced = await manager.report({ ...query, priceVersion: prices.version(), includeSpeed: true });
+    assert.deepEqual(repriced.speed, first.speed, "无费用筛选时价格变化不改变速度事实");
+  } finally { await manager.close(); }
+}));

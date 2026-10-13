@@ -7,6 +7,7 @@ import Database from "better-sqlite3";
 import type { SessionMessage, SessionSourceMeta, SessionUsage } from "../src/session-contracts.js";
 import { SessionStore, type SessionRevision } from "../src/sessions/store.js";
 import { USAGE_FACT_FORMAT_VERSION } from "../src/sessions/usage-facts.js";
+import { requestSpeed } from "../src/session-speed.js";
 
 async function fixture(run: (store: SessionStore, path: string) => void | Promise<void>): Promise<void> {
   const directory = await mkdtemp(join(tmpdir(), "manor-usage-facts-"));
@@ -236,5 +237,45 @@ test("事实补齐批次只提交一次，任一修订失败回滚整批且原�
     assert.equal((database.prepare("SELECT COUNT(*) AS count FROM session_usage_fact_revisions").get() as { count: number }).count, 2);
     assert.deepEqual(database.prepare("SELECT id,json FROM session_usage ORDER BY id").all(), raw);
     store.ensureUsageFactsBatch([]);
+  } finally { database.close(); }
+}));
+
+test("速度事实按需保留判定所需计时，格式回填不触碰原始证据与复制排除", async () => fixture((store, path) => {
+  const values: SessionUsage[] = [
+    { id: "eligible", messageId: "message-0", model: "model-a", outputTokens: 900, timing: {
+      basis: "recorded", window: "generation", method: "opencode_message_span", completion: "explicit", durationMs: 2000,
+      outputTokens: 400, start: { recordLine: 1, occurredAt: "2026-01-01T00:00:00Z", messageId: "message-0" },
+      end: { recordLine: 2, occurredAt: "2026-01-01T00:00:02Z", messageId: "message-0" },
+      firstToken: { recordLine: 1, occurredAt: "2026-01-01T00:00:00Z" }, completionEvidence: "stream_finish",
+    } },
+    { id: "invalid-boundary", outputTokens: 400, timing: { basis: "estimated", method: "codex_event_boundary",
+      completion: "inferred", durationMs: 2000, start: { recordLine: 3, occurredAt: "invalid" } } },
+    { id: "copied", messageId: "message-1", outputTokens: 400, timing: { basis: "recorded", method: "claude_message_boundary",
+      completion: "explicit", durationMs: 1000 } },
+    { id: "missing-group", outputTokens: 400, timing: { completion: "explicit", durationMs: 1000 } as SessionUsage["timing"] },
+    { id: "zero-output", outputTokens: 400, timing: { basis: "recorded", method: "claude_message_boundary",
+      completion: "explicit", durationMs: 1000, outputTokens: 0 } },
+  ];
+  const revision = add(store, meta("timing-projection"), values, [{}, { copied: true }]);
+  store.publish(store.createJob().id, [revision], []);
+  const plain = store.usageFacts(revision.revision);
+  assert.ok(plain.every(value => value.timing === undefined));
+  const projected = store.usageFacts(revision.revision, true);
+  assert.deepEqual(projected.map(value => value.id), ["eligible", "invalid-boundary", "missing-group", "zero-output"]);
+  assert.deepEqual(projected[0]!.timing, { basis: "recorded", window: "generation", method: "opencode_message_span",
+    completion: "explicit", durationMs: 2000, outputTokens: 400,
+    start: { recordLine: 1, occurredAt: "2026-01-01T00:00:00Z" }, end: { recordLine: 2, occurredAt: "2026-01-01T00:00:02Z" } });
+  assert.equal(projected[1]!.timing!.start!.occurredAt, "invalid");
+  assert.deepEqual(projected.map(value => requestSpeed(value)), values.filter(value => value.id !== "copied").map(value => requestSpeed(value)));
+  assert.equal(projected[3]!.timing!.outputTokens, 0, "计时输出为零不能回退为用量输出");
+  const database = new Database(path);
+  try {
+    const original = database.prepare("SELECT json FROM session_usage ORDER BY rowid").all();
+    database.prepare("UPDATE session_usage_fact_revisions SET format_version=?").run(USAGE_FACT_FORMAT_VERSION - 1);
+    database.prepare("UPDATE session_usage_facts SET timing_duration_ms=NULL,timing_basis=NULL").run();
+    assert.throws(() => store.usageFacts(revision.revision, true), /尚未完成/);
+    store.ensureUsageFacts(revision.revision);
+    assert.deepEqual(store.usageFacts(revision.revision, true), projected);
+    assert.deepEqual(database.prepare("SELECT json FROM session_usage ORDER BY rowid").all(), original);
   } finally { database.close(); }
 }));

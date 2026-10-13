@@ -30,6 +30,7 @@ export default function Usage({ active, onSession }: { active: boolean; onSessio
   const [pricing, setPricing] = useState<PricingStatus | null>(null);
   const [report, setReport] = useState<UsageReport | null>(null);
   const loadedQuery = useRef("");
+  const synchronizedQuery = useRef("");
   const [facets, setFacets] = useState<UsageReport["facets"]>({ clients: [], projects: [], models: [] });
   const [error, setError] = useState<Error | null>(null); const [loading, setLoading] = useState(false);
   const [preparation, setPreparation] = useState<{ queryKey: string; status: UsagePreparationStatus } | null>(null);
@@ -71,6 +72,7 @@ export default function Usage({ active, onSession }: { active: boolean; onSessio
     setPreparation(null);
     if (invalid) { setLoading(false); return; }
     if (!active || !queryKey || adoptingAddress.current) return;
+    if (synchronizedQuery.current === queryKey) { synchronizedQuery.current = ""; return; }
     const controller = new AbortController(); setLoading(true); setError(null);
     const statusController = new AbortController();
     const parameters = new URLSearchParams(queryKey);
@@ -101,7 +103,15 @@ export default function Usage({ active, onSession }: { active: boolean; onSessio
     void request<UsageReport>(`/usage?${queryKey}`, { signal: controller.signal }).then(result => {
       if (controller.signal.aborted) return;
       stopPreparation(); setPreparation(null);
-      loadedQuery.current = queryKey; setReport(result); setFacets(result.facets); setLoading(false);
+      loadedQuery.current = queryKey;
+      if (query?.includeSpeed && result.speed && query.speedGroup !== (result.speed.selectedGroup ?? undefined)) {
+        const speedGroup = result.speed.selectedGroup ?? undefined;
+        // 服务端回退的分组与完整报告一起采纳，地址同步不再重复查询。
+        loadedQuery.current = usageParameters({ ...query, speedGroup });
+        synchronizedQuery.current = loadedQuery.current;
+        setRoute(current => versions && usageParameters(usageQuery(current, versions.index, versions.price)) === queryKey ? { ...current, speedGroup } : current);
+      }
+      setReport(result); setFacets(result.facets); setLoading(false);
     }).catch(fail);
     return () => { controller.abort(); stopPreparation(); };
   }, [active, queryKey, invalid, revision]);
@@ -122,7 +132,9 @@ export default function Usage({ active, onSession }: { active: boolean; onSessio
   }, [active, requestQueryKey, requestRevision]);
   const updatePrice = useCallback((value: PricingStatus) => { setPricing(value); setVersions(current => current ? { ...current, price: value.version } : current); }, []);
   const value = (amount: number | null | undefined, cost = false) => amount == null ? "—" : number(amount, cost ? { style: "currency", currency: "USD", currencyDisplay: "narrowSymbol", minimumFractionDigits: 2, maximumFractionDigits: 2 } : {});
-  const metric = route.metric ?? "tokens"; const group = route.groupBy ?? "model";
+  const metric = report?.query.metric ?? route.metric ?? "tokens";
+  const group = report?.query.groupBy ?? route.groupBy ?? "model";
+  const speed = report?.query.includeSpeed === true;
   const labels = (values: string[], kind: UsageGroup) => values.map(item => { const original = usageDimensionValue(item); return { value: item, label: kind === "project" && original !== undefined ? original.split(/[\\/]/).filter(Boolean).at(-1) ?? original : groupLabel(item, kind, t("usage.unknown")), ...(kind === "project" && original !== undefined ? { description: original } : {}) }; });
   const filterDefinitions = [
     { include: "clients", exclude: "excludeClients", kind: "client", label: "usage.filter.clients", options: labels([...new Set([...facets.clients, ...(route.clients ?? []), ...(route.excludeClients ?? [])])], "client") },
@@ -179,8 +191,8 @@ export default function Usage({ active, onSession }: { active: boolean; onSessio
     {report && <div className="usage-results" aria-busy={pending} data-updating={pending && !error && !invalid}>
       <div className="usage-range"><span>{t("usage.chart.range", { from: rangeLabel(rangeFrom), to: rangeLabel(rangeTo), timezone: report.timezone })}</span><span className="usage-query-feedback" role="status" aria-label={pending && !error && !invalid ? t("usage.updating") : undefined}>{pending && !error && !invalid && <ArrowClockwise size={16} className="is-spinning" aria-hidden="true" />}</span></div>
       <UsageMetrics report={report} />
-      <div className="usage-chart-controls" aria-busy={pending}><div className="usage-metric-switch"><div role="group" aria-label={t("usage.chart.metric")} className="usage-segmented">{(["tokens", "cost", "requests"] as const).map(item => <button key={item} aria-pressed={metric === item} onClick={() => patch({ metric: item }, false)}>{t(`usage.metric.${item}`)}</button>)}</div><span className="usage-query-feedback" aria-hidden="true">{pending && !error && !invalid && <ArrowClockwise size={16} className="is-spinning" />}</span></div><div><div className="usage-group-switch"><FilterSelect label={t("usage.group.label")} value={group} options={["model", "project", "client"].map(item => ({ value: item, label: t(`usage.group.${item}`) }))} onChange={groupBy => patch({ groupBy: groupBy as UsageGroup }, false)} /><span className="usage-query-feedback" aria-hidden="true">{pending && !error && !invalid && <ArrowClockwise size={16} className="is-spinning" />}</span></div><FilterSelect label={t("usage.interval.label")} value={route.interval ?? "day"} options={["hour", "day", "week", "month"].map(item => ({ value: item, label: t(`usage.interval.${item}`) }))} onChange={interval => patch({ interval: interval as UsageInterval }, false)} /><div className="usage-segmented" role="group" aria-label={t("usage.chart.type")}><button aria-pressed={route.chart === "bar"} onClick={() => patch({ chart: "bar" }, false)}>{t("usage.chart.bar")}</button><button aria-pressed={route.chart === "line"} onClick={() => patch({ chart: "line" }, false)}>{t("usage.chart.line")}</button></div></div></div>
-      <div className="usage-report-body" inert={pending}><UsageCharts report={report} metric={report.query.metric ?? "tokens"} group={report.query.groupBy ?? "model"} chart={route.chart} attribution={route.attribution} onAttribution={attribution => patch({ attribution }, false)} onGroup={filterGroup} />
+      <div className="usage-chart-controls" aria-busy={pending}><div className="usage-metric-switch"><div role="group" aria-label={t("usage.chart.metric")} className="usage-segmented">{(["tokens", "cost", "requests", "speed"] as const).map(item => <button key={item} aria-pressed={speed ? item === "speed" : metric === item} onClick={() => patch(item === "speed" ? { trendMetric: "speed" } : { metric: item, trendMetric: undefined }, false)}>{t(`usage.metric.${item}`)}</button>)}</div><span className="usage-query-feedback" aria-hidden="true">{pending && !error && !invalid && <ArrowClockwise size={16} className="is-spinning" />}</span></div><div><div className="usage-group-switch"><FilterSelect label={t("usage.group.label")} value={group} options={["model", "project", "client"].map(item => ({ value: item, label: t(`usage.group.${item}`) }))} onChange={groupBy => patch({ groupBy: groupBy as UsageGroup }, false)} /><span className="usage-query-feedback" aria-hidden="true">{pending && !error && !invalid && <ArrowClockwise size={16} className="is-spinning" />}</span></div><FilterSelect label={t("usage.interval.label")} value={report.query.interval ?? "day"} options={["hour", "day", "week", "month"].map(item => ({ value: item, label: t(`usage.interval.${item}`) }))} onChange={interval => patch({ interval: interval as UsageInterval }, false)} />{!speed && <div className="usage-segmented" role="group" aria-label={t("usage.chart.type")}><button aria-pressed={route.chart === "bar"} onClick={() => patch({ chart: "bar" }, false)}>{t("usage.chart.bar")}</button><button aria-pressed={route.chart === "line"} onClick={() => patch({ chart: "line" }, false)}>{t("usage.chart.line")}</button></div>}</div></div>
+      <div className="usage-report-body" inert={pending}><UsageCharts report={report} metric={report.query.metric ?? "tokens"} group={report.query.groupBy ?? "model"} chart={route.chart} attribution={route.attribution} speed={speed} interactive={!pending && active} onSpeedGroup={speedGroup => patch({ speedGroup }, false)} onAttribution={attribution => patch({ attribution }, false)} onGroup={filterGroup} />
       <section className="usage-session-section" aria-labelledby="usage-session-title"><div className="usage-section-title"><h2 id="usage-session-title">{t("usage.sessions.title")}</h2><div><FilterSelect label={t("usage.sessions.sort")} value={route.sort ?? "tokens"} options={["tokens", "cost", "requests", "recent"].map(item => ({ value: item, label: t(item === "recent" ? "usage.sessions.recent" : `usage.metric.${item}`) }))} onChange={sort => patch({ sort: sort as UsageQuery["sort"] })} /><FilterSelect label={t("usage.sessions.direction")} value={route.direction ?? "desc"} options={["desc", "asc"].map(item => ({ value: item, label: t(`usage.sessions.${item}`) }))} onChange={direction => patch({ direction: direction as "asc" | "desc" })} /></div></div>
         <div className="usage-table-scroll"><table className="usage-table usage-session-table"><thead><tr><th>{t("usage.sessions.name")}</th><th>{t("usage.sessions.project")}</th><th>{t("usage.metric.tokens")}</th><th>{t("usage.metric.cost")}</th><th>{t("usage.metric.requests")}</th><th>{t("usage.sessions.time")}</th><th aria-label={t("usage.sessions.actions")} /></tr></thead><tbody>{report.sessions.map(row => <tr key={row.session.id} data-selected={route.selectedSession === row.session.id}
           onClick={event => { if (!(event.target as HTMLElement).closest("button, a, input, summary")) { const trigger = event.currentTarget.querySelector<HTMLButtonElement>(".usage-session-name"); if (trigger) inspectSession(row.session.id, trigger); } }}>

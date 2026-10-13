@@ -1153,7 +1153,7 @@ export class SessionStore {
     return this.database.transaction(() => readUsageFactMetadata(this.database, revisions))();
   }
 
-  usageFacts(revision: string): SessionUsage[] {
+  usageFacts(revision: string, includeSpeed = false): SessionUsage[] {
     return this.database.transaction(() => {
       if (!this.database.prepare("SELECT 1 FROM session_revisions WHERE id=?").get(revision)) {
         throw new StoreError("SOURCE_NOT_FOUND", "会话不存在于当前索引版本", { key: "diagnostics.sessions.store.m011" });
@@ -1161,7 +1161,7 @@ export class SessionStore {
       if (!usageFactsReady(this.database, revision)) {
         throw new StoreError("ANALYSIS_NOT_READY", "会话索引尚未完成", { key: "diagnostics.sessions.store.m009" });
       }
-      return readUsageFacts(this.database, revision);
+      return readUsageFacts(this.database, revision, includeSpeed);
     })();
   }
 

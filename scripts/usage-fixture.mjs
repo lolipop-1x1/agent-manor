@@ -10,7 +10,7 @@ import { historicalPriceSourceUrl } from "../dist/usage/historical-prices.js";
 import { priceSourceUrl } from "../dist/usage/price-catalog.js";
 
 // 全部为隔离合成数据，价格写入只影响临时数据目录。
-export async function usageFixture({ failHistoricalPrices = false, matchingCandidates = false, days = 28, now = new Date() } = {}) {
+export async function usageFixture({ failHistoricalPrices = false, matchingCandidates = false, speedTiming = false, days = 28, now = new Date() } = {}) {
   const directory = await realpath(await mkdtemp(join(tmpdir(), "manor-usage-e2e-")));
   const home = join(directory, "data"); await mkdir(home);
   const path = join(home, "index.sqlite"); new AnalysisStore(path).close();
@@ -28,7 +28,7 @@ export async function usageFixture({ failHistoricalPrices = false, matchingCandi
   for (let sessionIndex = 0; sessionIndex < 36; sessionIndex++) {
     const id = `fixture-session-${String(sessionIndex).padStart(2, "0")}`;
     const child = sessionIndex > 0 && sessionIndex % 6 === 0;
-    const summary = { id, client: sessionIndex % 2 ? "claude" : "codex", clientSessionId: id,
+    const summary = { id, client: speedTiming && sessionIndex === 2 ? "dsh" : sessionIndex % 2 ? "claude" : "codex", clientSessionId: id,
       sourceId: `synthetic:${id}`, path: `/synthetic/history/${id}.jsonl`, title: `合成项目任务 ${String(sessionIndex + 1).padStart(2, "0")}`,
       titleOrigin: "recorded", project: sessionIndex === 35 ? undefined : `/synthetic/projects/${["atlas", "workbench", "index", "atlas-copy"][sessionIndex % 4]}`,
       models: sessionIndex === 34 ? ["fixture-unpriced"] : sessionIndex === 0 ? [...models, "gpt-fixture", "deepseek-chat", "gpt-codex-fixture", "gateway/claude-77.6-sonnet", "alternate/deepseek-fixture-v77-flash-0731", "gateway/gpt-plan-fixture:free"] : models, messageCount: 0, turnCount: 0, gaps: [],
@@ -42,10 +42,21 @@ export async function usageFixture({ failHistoricalPrices = false, matchingCandi
       pending.sink.message({ id: messageId, sessionId: id, ordinal: ordinal++, recordLine: day + 1, turnId: `turn-${day}`,
         kind: "assistant", final: "explicit", occurredAt: time.toISOString(), text: `合成请求记录 ${day + 1}：用量定位验证。` });
       const input = Math.round((12000 + sessionIndex * 1100) * (1 + 0.45 * Math.sin(day * 0.7 + sessionIndex)));
+      const output = speedTiming && day === 5 ? 199 : 500 + day * 30 + sessionIndex * 20;
+      // 同一模型跨客户端及计时区间分别成组；第九天缺计时，第五天不满足输出门槛。
+      const durationMs = Math.round(output * 1000 / (20 + day + sessionIndex));
+      const timing = speedTiming && day !== 9 ? {
+        basis: sessionIndex === 2 ? "recorded" : "estimated", window: sessionIndex === 2 ? "generation" : "response",
+        method: sessionIndex === 2 ? "dsh_stream_window" : sessionIndex % 2 ? "claude_message_boundary" : "codex_event_boundary",
+        completion: "explicit", durationMs,
+        start: { occurredAt: new Date(time.getTime() - durationMs).toISOString(), recordLine: day + 1 },
+        end: { occurredAt: time.toISOString(), recordLine: day + 1 },
+      } : undefined;
       pending.sink.usage({ id: `${id}:usage:${day}`, messageId, turnId: `turn-${day}`, occurredAt: time.toISOString(),
         model: sessionIndex === 34 ? "fixture-unpriced" : sessionIndex === 0 && day < 6 ? ["gpt-fixture", "deepseek-chat", "gpt-codex-fixture", "gateway/claude-77.6-sonnet", "alternate/deepseek-fixture-v77-flash-0731", "gateway/gpt-plan-fixture:free"][day] : models[(day + sessionIndex) % 3],
         ...(sessionIndex === 0 && day === 1 ? { provider: "deepseek-official" } : sessionIndex === 0 && day === 2 ? { provider: "openai-codex" } : sessionIndex === 0 && day === 5 ? { provider: "token-plan" } : {}),
-        inputTokens: input, outputTokens: 500 + day * 30 + sessionIndex * 20, cachedInputTokens: Math.round(input * 0.6), cacheWriteTokens: 0 });
+        inputTokens: input, outputTokens: output, cachedInputTokens: Math.round(input * 0.6), cacheWriteTokens: 0,
+        ...(timing ? { timing } : {}) });
     }
     if (sessionIndex === 35) {
       pending.sink.usage({ id: `${id}:undated`, model: "fixture-unpriced", inputTokens: 500, outputTokens: 50 });

@@ -15,12 +15,21 @@ const enums = {
 
 export function usageQuery(raw: Record<string, unknown>): UsageQuery {
   const allowed = new Set([...arrays, ...Object.keys(enums), "version", "priceVersion", "timezone", "from", "to",
-    "page", "pageSize", "minTokens", "maxTokens", "minCost", "maxCost", "sessionId", "requestPage", "requestPageSize"]);
+    "includeSpeed", "speedGroup", "page", "pageSize", "minTokens", "maxTokens", "minCost", "maxCost", "sessionId", "requestPage", "requestPageSize"]);
   for (const field of Object.keys(raw)) if (!allowed.has(field)) invalid(field);
   const query: UsageQuery = { page: integer(raw.page, "page", 1, 1_000_000), pageSize: integer(raw.pageSize, "pageSize", 25, 200) };
   for (const field of ["version", "priceVersion", "timezone", "from", "to"] as const) {
     const value = textValue(raw[field], field);
     if (value) query[field] = value;
+  }
+  if (raw.includeSpeed !== undefined) {
+    if (raw.includeSpeed !== "true" && raw.includeSpeed !== "false") invalid("includeSpeed");
+    query.includeSpeed = raw.includeSpeed === "true";
+  }
+  if (raw.speedGroup !== undefined) {
+    const group = textValue(raw.speedGroup, "speedGroup", true)!;
+    if (!query.includeSpeed || !group.trim() || group.length > 8192) invalid("speedGroup");
+    query.speedGroup = group;
   }
   if (query.timezone) {
     try { new Intl.DateTimeFormat("en", { timeZone: query.timezone }).format(); } catch { invalid("timezone"); }

@@ -1,7 +1,7 @@
 # 速度事实与日期聚合
 
 Type: task
-Status: ready-for-agent
+Status: resolved
 Blocked by: 01
 
 ## 范围
@@ -18,4 +18,7 @@ Blocked by: 01
 
 ## Comments
 
-- 等待共享契约完成。
+- 已接通速度事实投影、格式回填、小时汇总与精确路径、HTTP 输入和同筛选日期分组。
+- 速度总体覆盖包含日期有效且计时合格的缺模型请求，分组覆盖仅包括身份明确请求；无日期独立计数。
+- 验证：`npm run check:server`、46 项后端定向测试、补充旧计时缺分组依据的 15 项回归、`npm run check:public`、`git diff --check` 均通过。
+- 已在共享 main 工作区完成，交由集成任务统一审查和提交。

@@ -3,6 +3,8 @@ import { test } from "node:test";
 import type { UsageTimeBucket, UsageTotals } from "../src/usage-contracts.ts";
 import { composition, compositionIsPartial, defaultRoute, incomingUsageRoute, metricValue, readUsageRoute, usageAddress, usageParameters, usageQuery, usageDailyMetrics } from "../web/features/usage/model.ts";
 import { translate } from "../src/i18n/index.ts";
+import { speedLineModel } from "../web/features/usage/speed-model.ts";
+import type { UsageSpeedBucket } from "../src/usage-contracts.ts";
 
 const totals = (): UsageTotals => ({ requests: 1, sessions: 1, tokens: 250, inputTokens: 200, outputTokens: 50, freshInputTokens: 100, cacheReadTokens: 80, cacheWriteTokens: 20, reasoningTokens: 30, estimatedCost: .0003, cacheReadRatio: .4, cacheReadRatioRequests: 1, completeTokenRequests: 1, partialTokenRequests: 0, missingTokenRequests: 0, pricedRequests: 1, partiallyPricedRequests: 0, unpricedRequests: 0, missingTimeRequests: 0 });
 
@@ -108,4 +110,49 @@ test("隐藏用量页激活先采纳总览传入地址，内部筛选修改才�
   assert.equal(query.version, "synthetic-index"); assert.equal(query.priceVersion, "synthetic-prices");
   assert.equal(incomingUsageRoute(target, target, { ...adopted, metric: "cost" }), null);
   assert.equal(incomingUsageRoute(target, oldAddress, adopted), null);
+});
+
+test("速度是独立的时间图地址状态，不改变全局指标、柱线偏好与会话分页", () => {
+  const route = { ...defaultRoute(), metric: "cost" as const, chart: "bar" as const, trendMetric: "speed" as const,
+    speedGroup: 'synthetic/model+group?窗口=output', page: 3, sort: "requests" as const, attribution: "bar" as const };
+  const restored = readUsageRoute(usageAddress(route));
+  assert.equal(restored.trendMetric, "speed"); assert.equal(restored.speedGroup, route.speedGroup);
+  assert.equal(restored.metric, "cost"); assert.equal(restored.chart, "bar");
+  assert.equal(restored.page, 3); assert.equal(restored.sort, "requests"); assert.equal(restored.attribution, "bar");
+  const query = usageQuery(restored, "i", "p");
+  assert.equal(query.includeSpeed, true); assert.equal(query.speedGroup, route.speedGroup);
+  assert.equal(query.metric, "cost"); assert.equal("trendMetric" in query, false);
+  const ordinary = usageQuery({ ...restored, trendMetric: undefined }, "i", "p");
+  assert.equal("includeSpeed" in ordinary, false); assert.equal("speedGroup" in ordinary, false);
+  assert.equal(ordinary.metric, "cost"); assert.equal(ordinary.page, 3);
+  assert.equal(readUsageRoute("#usage?trendMetric=unknown&includeSpeed=true").trendMetric, undefined);
+});
+
+test("速度图保留缺样本日期的位置并断线，孤立点可见且不把未知补为零", () => {
+  const points = (values: (number | null)[]): UsageSpeedBucket[] => values.map((tokensPerSecond, index) => ({
+    key: `2026-10-${String(index + 1).padStart(2, "0")}`, tokensPerSecond, requests: 1,
+    eligibleRequests: tokensPerSecond === null ? 0 : 1, outputTokens: tokensPerSecond === null ? null : 400,
+    durationMs: tokensPerSecond === null ? null : 2000,
+  }));
+  const result = speedLineModel(points([null, 20, 40, null, 50, null]));
+  assert.deepEqual(result.segments, [[{ index: 1, value: 20 }, { index: 2, value: 40 }], [{ index: 4, value: 50 }]]);
+  assert.equal(result.points.length, 3); assert.equal(result.lastEligibleIndex, 4); assert.equal(result.maximum, 50);
+  assert.deepEqual(speedLineModel(points([null, null])), { segments: [], points: [], maximum: 1, lastEligibleIndex: -1 });
+  assert.deepEqual(speedLineModel(points([0])).points, [{ index: 0, value: 0 }]);
+  assert.equal(speedLineModel(points([null, 12, null])).segments[0]!.length, 1);
+});
+
+test("速度分组、窗口和计时方法具备中英文说明，估算与原生格式保留不同依据", () => {
+  const keys = ["metric.speed", "speed.group", "speed.selectInterval", "speed.intervalDetails", "speed.noData",
+    ...["response", "generation"].map(window => `speed.window.${window}`),
+    ...["recorded", "estimated"].map(basis => `speed.basis.${basis}`)];
+  const methods = ["codex_event_boundary", "claude_message_boundary", "codeflicker_message_boundary", "codeflicker_desktop_mirror", "dsh_stream_window", "pi_message_boundary", "zcode_request_span", "opencode_message_span", "codebuddy_single_request_turn", "workbuddy_message_boundary", "qoder_message_boundary"];
+  for (const language of ["zh-CN", "en"] as const) {
+    for (const key of keys) assert.notEqual(translate(language, `usage.${key}`), translate(language, "common.translationUnavailable"));
+    for (const method of methods) assert.notEqual(translate(language, `sessions.speed.method.${method}`), translate(language, "common.translationUnavailable"));
+    assert.equal(translate(language, "usage.speed.value", { approx: "≈ ", value: "24.5" }), "≈ 24.5 tok/s");
+    assert.equal(translate(language, "usage.speed.value", { approx: "", value: "24.5" }), "24.5 tok/s");
+  }
+  assert.equal(translate("en", "usage.speed.undated", { count: 1 }), "1 request has no reliable date and is excluded from the curve.");
+  assert.equal(translate("en", "usage.speed.undated", { count: 2 }), "2 requests have no reliable date and are excluded from the curve.");
 });

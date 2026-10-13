@@ -89,3 +89,12 @@
 .usage-time-popover dt { min-width: 0; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .usage-time-popover dd { margin: 0; flex-shrink: 0; font-variant-numeric: tabular-nums; }
 @media (max-width: 479px) { .usage-charts .usage-chart-legend button { max-width: 160px; } }
+
+.usage-charts .usage-speed-actions { min-width: 0; max-width: 100%; }
+.usage-charts .usage-speed-actions .filter-trigger { min-width: 0; max-width: min(650px, calc(100vw - 108px)); }
+.usage-speed-header { margin-bottom: 14px; }
+.usage-speed-popover dt { white-space: normal; }
+@media (max-width: 767px) {
+  .usage-charts .usage-speed-actions { width: 100%; flex-wrap: nowrap; }
+  .usage-charts .usage-speed-actions .filter-trigger { flex: 1; max-width: none; }
+}

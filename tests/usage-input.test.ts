@@ -35,3 +35,14 @@ test("价格请求只接受显式价格与映射容器", () => {
     assert.throws(() => pricingConfiguration(body), (error: unknown) => error instanceof ServiceError && error.code === "INVALID_INPUT");
   }
 });
+
+test("速度是可选附加查询，分组仅允许与速度开关一起使用", () => {
+  assert.equal(usageQuery({ includeSpeed: "true", speedGroup: '["codex","model-a"]' }).includeSpeed, true);
+  assert.equal(usageQuery({ includeSpeed: "false" }).includeSpeed, false);
+  assert.equal(usageQuery({}).includeSpeed, undefined);
+  for (const raw of [{ includeSpeed: "1" }, { includeSpeed: true }, { speedGroup: "group" },
+    { includeSpeed: "false", speedGroup: "group" }, { includeSpeed: "true", speedGroup: " " },
+    { includeSpeed: "true", speedGroup: "x".repeat(8193) }]) {
+    assert.throws(() => usageQuery(raw), (error: unknown) => error instanceof ServiceError && error.code === "INVALID_INPUT");
+  }
+});

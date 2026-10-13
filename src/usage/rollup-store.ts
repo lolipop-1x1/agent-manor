@@ -4,7 +4,7 @@ import type { UsageRollup } from "./rollup-contracts.js";
 import { USAGE_FACT_FORMAT_VERSION } from "../sessions/usage-facts.js";
 import { accumulator } from "./analytics.js";
 
-const ROLLUP_FORMAT_VERSION = 2;
+const ROLLUP_FORMAT_VERSION = 3;
 const format = ROLLUP_FORMAT_VERSION * 1000 + USAGE_FACT_FORMAT_VERSION;
 const maxDiskBytes = 256 * 1024 * 1024;
 const totalDefaults = accumulator().totals;
@@ -23,6 +23,16 @@ function validRollup(value: unknown, timezone: string): value is UsageRollup {
         const value = cell.totals[key as keyof typeof totalDefaults];
         return initial === null && value === null || typeof value === "number" && Number.isFinite(value) && value >= 0;
       })
+      && Number.isSafeInteger(cell.speedEligibleRequests) && cell.speedEligibleRequests >= 0
+      && Array.isArray(cell.speedProfiles) && cell.speedProfiles.every(profile => profile && typeof profile.key === "string"
+        && typeof profile.client === "string" && typeof profile.model === "string" && profile.model.trim().length > 0
+        && ["response", "generation"].includes(profile.window) && ["recorded", "estimated"].includes(profile.basis)
+        && typeof profile.method === "string" && profile.method.length > 0
+        && Number.isSafeInteger(profile.requests) && profile.requests > 0
+        && Number.isSafeInteger(profile.eligibleRequests) && profile.eligibleRequests >= 0 && profile.eligibleRequests <= profile.requests
+        && (profile.eligibleRequests === 0 ? profile.outputTokens === null && profile.durationMs === null
+          : typeof profile.outputTokens === "number" && Number.isFinite(profile.outputTokens) && profile.outputTokens > 0
+            && typeof profile.durationMs === "number" && Number.isFinite(profile.durationMs) && profile.durationMs > 0))
       && Number.isFinite(cell.pairedInput) && Number.isFinite(cell.pairedCache)
       && (cell.day === undefined && cell.hour === undefined || typeof cell.day === "string" && typeof cell.hour === "string")
       && Array.isArray(cell.previews) && cell.previews.length <= 12

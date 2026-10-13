@@ -49,6 +49,12 @@ test("用量 HTTP 固定索引与价格版本，覆盖多页请求、手动价�
     const params = new URLSearchParams({ version, priceVersion: custom.version, timezone: "Asia/Shanghai", from: "2026-10-11", to: "2026-10-11" });
     const report = await api<UsageReport>(`/usage?${params}`);
     assert.equal(report.totals.requests, 31);
+    assert.equal(report.speed, undefined);
+    const speed = await api<UsageReport>(`/usage?${params}&includeSpeed=true`);
+    assert.equal(speed.speed!.requests, 31); assert.equal(speed.speed!.eligibleRequests, 0);
+    assert.equal(speed.speed!.selectedGroup, null);
+    const badSpeed = await fetch(`${base}/usage?${params}&speedGroup=missing`);
+    assert.equal(badSpeed.status, 400);
     assert.equal(report.totals.tokens, 31 * 120);
     assert.equal(report.totals.pricedRequests, 31);
     assert.ok(Math.abs(report.totals.estimatedCost! - 31 * (60 * 4 + 40 * 0.4 + 20 * 20) / 1_000_000) < 1e-10);

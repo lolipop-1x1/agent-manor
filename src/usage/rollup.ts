@@ -7,6 +7,7 @@ import { accumulator, add, calendarDay, compareValues, coverageOf, fillDays, fil
 import type { Accumulator, Estimate } from "./analytics.js";
 import { usageDimensionKey, usageDimensionValue } from "./dimensions.js";
 import type { CompactUsage, UsageRollup, UsageRollupCell, UsageRollupPreview } from "./rollup-contracts.js";
+import { buildUsageSpeedReport, mergeSpeedProfiles, speedProfile } from "./speed.js";
 
 const PREVIEW_LIMIT = 12;
 const nullableTotals = ["tokens", "inputTokens", "outputTokens", "freshInputTokens", "cacheReadTokens", "cacheWriteTokens",
@@ -52,11 +53,15 @@ export function buildUsageRollup(source: UsageSource, timezone: string, estimate
     if (!target) {
       const result = accumulator();
       const cell: UsageRollupCell = { sessionId: session.id, coverage, costCoverage: cost.coverage, totals: result.totals,
-        pairedInput: 0, pairedCache: 0, previews: [], ...(item.usage.model === undefined ? {} : { model: item.usage.model }),
+        pairedInput: 0, pairedCache: 0, previews: [], speedEligibleRequests: 0, speedProfiles: [],
+        ...(item.usage.model === undefined ? {} : { model: item.usage.model }),
         ...(local ? { day: local.day, hour: local.bucket } : {}) };
       target = { cell, result }; cells.set(key, target);
     }
     add(target.result, { session, usage: item.usage, cost, coverage, ...(time === undefined ? {} : { time }) });
+    const speed = speedProfile(session.client, item.usage);
+    target.cell.speedEligibleRequests += speed.eligibleRequests;
+    mergeSpeedProfiles(target.cell.speedProfiles, speed.profiles);
     target.cell.pairedInput = target.result.pairedInput; target.cell.pairedCache = target.result.pairedCache;
     if (time !== undefined && (target.cell.latestTime === undefined || time > target.cell.latestTime)) target.cell.latestTime = time;
     const { price: _price, ...compactCost } = cost;
@@ -206,7 +211,11 @@ export function buildUsageRollupReport(rollup: UsageRollup, requested: UsageQuer
     totals: summarize(cells), undated: summarize(undated), buckets, days, groups: grouped(cells, query, sessions),
     projectCount: selectedProjects.size, modelCount: selectedModels.size,
     sessions: rows.slice((page - 1) * pageSize, page * pageSize), totalSessions: rows.length, page, pageSize, missingUsageSessions,
-    facets, pricing: status };
+    facets, pricing: status,
+    ...(query.includeSpeed ? { speed: buildUsageSpeedReport(cells.filter(cell => cell.day !== undefined).map(cell => ({
+      bucket: query.interval === "hour" ? cell.hour! : intervalKey(cell.day!, query.interval!),
+      requests: cell.totals.requests, eligibleRequests: cell.speedEligibleRequests, profiles: cell.speedProfiles,
+    })), buckets.map(bucket => bucket.key), undated.reduce((sum, cell) => sum + cell.totals.requests, 0), query.speedGroup) } : {}) };
 }
 
 /** 按视图合并已准备的汇总，不读取预览，也不构建会话明细或其他维度。 */
