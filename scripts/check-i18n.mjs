@@ -13,7 +13,7 @@ async function checkReferences(directory) {
     if (entry.isDirectory()) { if (entry.name !== "locales") await checkReferences(file); continue; }
     if (!/\.tsx?$/.test(entry.name)) continue;
     const source = await readFile(file, "utf8");
-    for (const match of source.matchAll(/(["'`])((?:common|codeMap|sessions|resources|usage|overview|diagnostics|cli)\.[\w.-]+)\1/g)) {
+    for (const match of source.matchAll(/(["'`])((?:common|codeMap|sessions|resources|usage|overview|diagnostics|cli|site)\.[\w.-]+)\1/g)) {
       // 数据库文件名与翻译标识使用相同模块前缀，文件名不属于文案。
       if (match[2].endsWith(".sqlite")) continue;
       if (!keys.has(logicalKey(match[2]))) errors.push(`${file.pathname}: 未定义文案 ${match[2]}`);
@@ -22,6 +22,7 @@ async function checkReferences(directory) {
 }
 await checkReferences(new URL("../src/", import.meta.url));
 await checkReferences(new URL("../web/", import.meta.url));
+await checkReferences(new URL("../site/", import.meta.url));
 if (errors.length) {
   console.error(errors.join("\n"));
   process.exitCode = 1;

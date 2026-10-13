@@ -1,0 +1,55 @@
+name: Manor website
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'site/**'
+      - 'src/i18n/locales/*/site.ts'
+      - 'package.json'
+      - 'package-lock.json'
+      - 'tsconfig*.json'
+      - '.github/workflows/pages.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: manor-pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - run: npm run check:site && npm run check:i18n && npm run check:public
+        env:
+          AGENT_MANOR_PUBLIC_DENYLIST: ${{ secrets.PUBLIC_CONTENT_DENYLIST }}
+      - run: npm run build:site
+        env:
+          SITE_BASE_PATH: /${{ github.event.repository.name }}/
+      - uses: actions/upload-pages-artifact@7b1f4a764d45c48632c6b24a0339c27f5614fb0b
+        with:
+          path: site/dist
+  deploy:
+    needs: build
+    # 首次手动发布后，可设置仓库变量 PAGES_ENABLED=true 启用 main 自动发布。
+    if: github.ref == 'refs/heads/main' && (github.event_name == 'workflow_dispatch' || vars.PAGES_ENABLED == 'true')
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deploy website
+        id: deployment
+        uses: actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e
