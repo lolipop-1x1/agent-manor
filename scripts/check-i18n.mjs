@@ -14,8 +14,8 @@ async function checkReferences(directory) {
     if (!/\.tsx?$/.test(entry.name)) continue;
     const source = await readFile(file, "utf8");
     for (const match of source.matchAll(/(["'`])((?:common|codeMap|sessions|resources|usage|overview|diagnostics|cli|site)\.[\w.-]+)\1/g)) {
-      // 数据库文件名与翻译标识使用相同模块前缀，文件名不属于文案。
-      if (match[2].endsWith(".sqlite")) continue;
+      // 数据库／原生文件名和 wire 类型可能使用相同前缀，不属于文案。
+      if (match[2].endsWith(".sqlite") || ["usage.json", "usage.record"].includes(match[2])) continue;
       if (!keys.has(logicalKey(match[2]))) errors.push(`${file.pathname}: 未定义文案 ${match[2]}`);
     }
   }

@@ -10,6 +10,8 @@ export interface HistoryClient {
   defaultRoots: readonly string[];
   /** 客户端自身的 home 覆盖，优先级低于 AgentManor 的显式 roots。 */
   homeEnvironmentVariable?: string;
+  /** 原生 runtime、profile 和 state 覆盖在适配边界解析。 */
+  resolveNativeRoots?: (home: string, environment: Readonly<Record<string, string | undefined>>) => string[];
   acceptsFile?: (path: string) => boolean;
   containerFormat?: string;
   acceptsContainer?: (path: string) => boolean;

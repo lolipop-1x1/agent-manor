@@ -208,6 +208,13 @@ Web 代码地图提供可搜索的会话筛选，支持按标题或原生会话 
 | `AGENT_MANOR_ZCODE_DIR` | ZCode，默认 `~/.zcode/cli/db`，读取 `db.sqlite` 并关联桌面任务索引 |
 | `AGENT_MANOR_CODEBUDDY_DIR` | CodeBuddy，默认 `~/.codebuddy/projects` |
 | `AGENT_MANOR_QODER_DIR` | Qoder，默认 `~/.qoder/projects` |
+| `AGENT_MANOR_GEMINI_DIR` | Gemini CLI，默认 `~/.gemini/tmp` 中 chats；保留项目映射与 patch／rewind |
+| `AGENT_MANOR_QWEN_DIR` | Qwen Code，默认 `~/.qwen/projects` 中 chats；保留归档及 sidechain |
+| `AGENT_MANOR_KIMI_DIR` | Kimi Code CLI，默认 `~/.kimi-code/sessions` 中 Agent wire |
+| `AGENT_MANOR_OMP_DIR` | Oh My Pi，默认 `~/.omp/agent/sessions`；原生 profile／XDG 规则另行解析 |
+| `AGENT_MANOR_GROK_DIR` | Grok Build，默认 `~/.grok/sessions`，读取 updates 及必要旁路 |
+| `AGENT_MANOR_REASONIX_DIR` | Reasonix，默认 state 中 sessions／projects／archive，保留事件旁路 |
+| `AGENT_MANOR_CODEWHALE_DIR` | Codewhale，默认 `~/.codewhale/sessions`，读取 canonical JSON journal |
 | `AGENT_MANOR_PORT` 或 `serve --port N` | 默认随机空闲端口；仅绑定 `127.0.0.1` |
 
 历史目录环境变量须在后台启动前设置；已有后台使用它启动时的环境。需要切换时先显式 `stop`，再以新环境启动。隔离测试应使用独立 `AGENT_MANOR_HOME`，并把所有客户端的历史目录环境变量指向测试目录或空目录，防止连接日常后台或读取本机历史。

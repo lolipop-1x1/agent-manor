@@ -40,13 +40,25 @@ export interface ResourceInventoryLocator {
   type: "skill" | "mcp";
   /** MCP 定位只公开文件路径及目标 key，不包含注册值。 */
   configPath?: string;
-  format?: "json" | "jsonc" | "toml";
+  format?: "json" | "jsonc" | "toml" | "yaml";
   keyPath?: string[];
   skillFile?: string;
-  nativeControl?: "codex-skill" | "codex-mcp" | "claude-skill" | "claude-mcp-project" | "codeflicker-skill" | "codeflicker-mcp" | "codeflicker-desktop-skill";
+  nativeControl?: "codex-skill" | "codex-mcp" | "claude-skill" | "claude-mcp-project" | "codeflicker-skill" | "codeflicker-mcp" | "codeflicker-desktop-skill" | "native-rule";
+  nativeRule?: NativeResourceRule;
+  /** 本客户端拥有且已核验的注册删除入口。 */
+  registrationWritable?: boolean;
   controlPath?: string;
   /** 原生设置与发现规则的持久依赖；仅路径，不包含配置值。 */
   dependencyPaths?: string[];
+}
+/** 已核验的原生控制位置；不包含 MCP 命令、环境值或凭证。 */
+export interface NativeResourceRule {
+  format: "json" | "jsonc" | "toml" | "yaml";
+  type: "name-list" | "boolean" | "activation";
+  keyPath: string[];
+  member?: string;
+  disabledValue?: boolean;
+  identity?: { kind: "skill" | "mcp"; scope: "global" | "project"; key?: string; source?: string; owner?: string; name: string };
 }
 export interface ResourceInventoryCapabilities {
   inventory: boolean;

@@ -11,6 +11,13 @@ import { opencodeAdapter } from "./opencode.js";
 import { zcodeAdapter } from "./zcode.js";
 import { codebuddyAdapter } from "./codebuddy.js";
 import { qoderAdapter } from "./qoder.js";
+import { geminiAdapter, geminiHistoryRoots, acceptsGeminiHistoryFile } from "./gemini.js";
+import { qwenAdapter, qwenHistoryRoots, acceptsQwenHistoryFile } from "./qwen.js";
+import { kimiAdapter, kimiHistoryRoots } from "./kimi.js";
+import { ompAdapter, ompHistoryRoots } from "./omp.js";
+import { grokAdapter, grokHistoryRoots } from "./grok.js";
+import { reasonixAdapter, reasonixHistoryRoots } from "./reasonix.js";
+import { codewhaleAdapter, codewhaleHistoryRoots } from "./codewhale.js";
 import type { HistoryAdapter, HistoryClient } from "./types.js";
 
 export type { HistoryAdapter, HistoryAdapterContext, HistoryClient } from "./types.js";
@@ -28,11 +35,21 @@ export const HISTORY_CLIENTS: readonly HistoryClient[] = [
   { client: "zcode", format: zcodeAdapter.id, environmentVariable: "AGENT_MANOR_ZCODE_DIR", defaultRoots: [".zcode/cli/db"], containerFormat: zcodeAdapter.id, acceptsContainer: path => /[/\\]db\.sqlite$/.test(path), acceptsFile: () => false },
   { client: "codebuddy", format: codebuddyAdapter.id, environmentVariable: "AGENT_MANOR_CODEBUDDY_DIR", defaultRoots: [".codebuddy/projects"] },
   { client: "qoder", format: qoderAdapter.id, environmentVariable: "AGENT_MANOR_QODER_DIR", defaultRoots: [".qoder/projects"] },
+  { client: "gemini", format: geminiAdapter.id, environmentVariable: "AGENT_MANOR_GEMINI_DIR", defaultRoots: [".gemini/tmp"], resolveNativeRoots: geminiHistoryRoots, acceptsFile: acceptsGeminiHistoryFile },
+  { client: "qwen", format: qwenAdapter.id, environmentVariable: "AGENT_MANOR_QWEN_DIR", defaultRoots: [".qwen/projects"], resolveNativeRoots: qwenHistoryRoots, acceptsFile: acceptsQwenHistoryFile },
+  { client: "kimi", format: kimiAdapter.id, environmentVariable: "AGENT_MANOR_KIMI_DIR", defaultRoots: [".kimi-code/sessions"], resolveNativeRoots: kimiHistoryRoots, acceptsFile: path => /[/\\]wire\.jsonl$/.test(path) },
+  { client: "omp", format: ompAdapter.id, environmentVariable: "AGENT_MANOR_OMP_DIR", defaultRoots: [".omp/agent/sessions"], resolveNativeRoots: ompHistoryRoots, acceptsFile: path => path.endsWith(".jsonl") && !/[/\\]__advisor/.test(path) },
+  { client: "grok", format: grokAdapter.id, environmentVariable: "AGENT_MANOR_GROK_DIR", defaultRoots: [".grok/sessions"], resolveNativeRoots: grokHistoryRoots, acceptsFile: path => /[/\\]updates\.jsonl$/.test(path) },
+  { client: "reasonix", format: reasonixAdapter.id, environmentVariable: "AGENT_MANOR_REASONIX_DIR", defaultRoots: [".reasonix/sessions", ".reasonix/projects", ".reasonix/archive"], resolveNativeRoots: reasonixHistoryRoots,
+    acceptsFile: path => path.endsWith(".jsonl") && !/\.(?:events|conflicts|guardian|wire|adjudication|execution|turns)\.jsonl$/.test(path) },
+  { client: "codewhale", format: codewhaleAdapter.id, environmentVariable: "AGENT_MANOR_CODEWHALE_DIR", defaultRoots: [".codewhale/sessions"], resolveNativeRoots: codewhaleHistoryRoots,
+    acceptsFile: path => path.endsWith(".json") && !/[/\\](?:checkpoints|\.goals|\.late-usage|\.journal-archive)[/\\]/.test(path) },
 ];
 
 /** 仅注册随安装包提供的适配器，本轮不提供动态插件加载。 */
 export const HISTORY_ADAPTERS: readonly HistoryAdapter[] = [codexAdapter, claudeAdapter, codeflickerAdapter, codeflickerDesktopAdapter, codeflickerIdeAdapter,
-  dshAdapter, piAdapter, workbuddyAdapter, opencodeAdapter, zcodeAdapter, codebuddyAdapter, qoderAdapter];
+  dshAdapter, piAdapter, workbuddyAdapter, opencodeAdapter, zcodeAdapter, codebuddyAdapter, qoderAdapter,
+  geminiAdapter, qwenAdapter, kimiAdapter, ompAdapter, grokAdapter, reasonixAdapter, codewhaleAdapter];
 export const historyClient = (client: Client): HistoryClient => HISTORY_CLIENTS.find(item => item.client === client)!;
 export const historyAdapter = (format: string): HistoryAdapter | undefined => HISTORY_ADAPTERS.find(item => item.id === format);
 

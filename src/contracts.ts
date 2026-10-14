@@ -22,12 +22,13 @@ export interface Repository {
 }
 
 export interface SourceReference {
-  /** SQLite 原生会话键；recordLine 为键内消息数组的一基序号。 */
+  /** 容器或同文件内的原生会话选择键，由具体格式解释。 */
   selector?: string;
   sourceId: string;
   /** 原始记录的历史格式，与客户端身份分别保存。 */
   format?: string;
   path: string;
+  /** 普通 JSONL 为物理行；容器／多文件快照为可校验的记录序号。 */
   recordLine: number;
   /** 原生事件序号或事件身份摘要，仅用于验证原生 fork 复制边界。 */
   recordOrdinal?: number;

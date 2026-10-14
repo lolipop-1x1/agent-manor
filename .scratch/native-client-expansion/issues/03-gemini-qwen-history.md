@@ -1,7 +1,7 @@
 # Gemini 与 Qwen 原生历史
 
 Type: task
-Status: ready-for-agent
+Status: resolved
 Blocked by: 02
 
 ## 目标
@@ -15,3 +15,7 @@ Blocked by: 02
 - 多文件快检依赖未核验时继续读取内容。
 
 ## Comments
+
+## Answer
+
+Gemini 与 Qwen 原生会话适配、来源根、同文件子会话、副本去重、工具证据、用量口径和旁路刷新已接通。历史与资源共 24 项本组合成测试通过；原生运行仍未验证。

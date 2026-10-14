@@ -1,7 +1,7 @@
 # 产品集成与完整验收
 
 Type: task
-Status: ready-for-agent
+Status: claimed
 Blocked by: 03, 04, 05, 06
 
 ## 目标

@@ -18,6 +18,13 @@
 | CodeFlicker CLI | 用户／已知项目 `.codeflicker/skills`、配置引用目录、兼容导入、远端已安装材料及插件登记 | 用户／项目 `config.json`、项目 `config.local.json` 的 `mcpServers`，静态插件声明 | 按持久配置层计算选择，动态 hook／虚拟内置来源保留缺口；插件及托管来源受保护 |
 | CodeFlicker 桌面版 | `.myflicker/skills`、`user-skills`、`internal/skills`、市场材料、共享 `.agents/skills`、已知项目与自定义目录 | `.myflicker/config/mcp.json` 的 `mcpServers` | 普通独立 Skill 可核验操作；桌面 MCP 只读，未确认的设置字段保持状态未知 |
 | WorkBuddy、ZCode | 标准自动来源待适配；可手动登记通用 Skill 目录 | 标准自动来源待适配；可手动登记 JSON／JSONC／TOML 注册文件 | 供应商或第三方目录线索不证明当前客户端 loader；不从历史目录猜配置目录 |
+| Gemini CLI | 原生／`.agents` 用户与可信项目 Skill、静态扩展与系统来源 | 分层 settings 与独立 MCP enablement 文件 | 原生控制按规范化名字作用；远端管理策略及安装内置资源没有定位时保留缺口 |
+| Qwen Code | 原生／`.agents`／custom、可信项目、扩展及插件 v1 | 用户、项目与扩展注册，配置摘要审批及原生排除名单 | 硬禁用、defaultDisabled、级别禁用与用户触发分开；审批与连接状态不混同 |
+| Kimi Code CLI | 用户、generic、项目、配置 roots、条件递归 bundle 与插件 | 用户 `mcp.json`、项目 `.mcp.json`、cwd 原生 MCP 文件 | 普通 Skill 无逐项停用开关；插件受保护，普通入口可回收恢复 |
+| Oh My Pi | native、opt-in foreign、项目、custom、插件和 skillshare | native 及兼容 provider，名字 deny／allow 与 enabled | YAML 原生名字控制；未启用 provider 不计有效入口；不同正文保留原生别名 |
+| Grok Build | 用户、可信项目、兼容与已安装插件 | 用户／项目 TOML、插件及兼容来源 | 名字列表和服务开关保留原生范围；managed／插件保护 |
+| Reasonix | 用户、项目、配置 roots 与插件包 | 用户／项目 plugins 与 `.mcp.json`，durable activation | 项目覆盖使用工作区身份，简单声明核验 digest；复杂变量／脚本展开不能确认时保持未知和只读 |
+| Codewhale | 原生、配置根、项目、兼容与插件 | global、可信 project 与插件 | 当前格式 home 回退；普通 Skill 无逐项停用，插件受保护 |
 
 用户目录由操作系统 home 决定。可明确传入 `CODEX_HOME`、`DSH_HOME`、`DSH_AGENTS_HOME`、`PI_CODING_AGENT_DIR`、`XDG_CONFIG_HOME`、`MYFLICKER_HOME` 的已核验覆盖值；测试传入人工 home，不修改进程 `HOME`。项目扫描只限已登记、历史中确认或手动声明的项目根，不遍历仓库寻找任意配置。当前盘点不额外推导 nested 项目或祖先加载层。
 
@@ -46,6 +53,8 @@ CodeFlicker CLI／桌面版的版本、资源根、配置字段与迁移边界�
 CodeFlicker CLI Skill 使用 `skills.disabled`／`userOnly`／`enabled` 名单；仅用户触发与停用分开。配置型 MCP 使用单数 `disable`，停用与恢复只编辑所选规则。桌面普通 Skill 使用 `.disable` 标记；共享目标无法独立修改时保持只读。桌面 MCP 的 Daemon 写协议留待单独适配，不直接修改配置或 SQLite 模拟客户端管理。
 
 上述状态表示配置中的设置，不能代替客户端生效反馈。只读发现不改变文件；管理操作完成后若没有独立运行信号，显示待重新加载。
+
+新增七个客户端的固定版本、原生控制及未验证范围见 [七个原生客户端来源](native-client-sources.md)。名字列表、布尔开关及 activation 通过具体目标编辑，恢复保留其他名称和后续配置变化。JSON、TOML、YAML 的复杂未核验写法保持只读；外部兼容本体不直接修改。原生禁用影响已知多层入口时，预览保留名字和控制文件的真实范围。
 
 ## 恢复材料与管理入口
 

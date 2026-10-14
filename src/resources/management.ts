@@ -66,7 +66,8 @@ function sharedPhysical(entry: ResourceInventoryEntry, refs: readonly ResourceIn
 }
 function nameReferences(snapshot: ResourceInventorySnapshot, entry: ResourceInventoryEntry): ResourceInventoryEntry[] {
   const path = entry.locator.controlPath;
-  return snapshot.entries.filter(value => value.client === "codeflicker" && value.kind === "skill" && value.name === entry.name
+  return snapshot.entries.filter(value => value.client === entry.client && value.kind === entry.kind && (value.name === entry.name
+    || entry.locator.nativeRule && JSON.stringify(value.locator.nativeRule) === JSON.stringify(entry.locator.nativeRule))
     && (value.locator.controlPath === path || path !== undefined && value.locator.dependencyPaths?.includes(path)))
     .sort((left, right) => left.id.localeCompare(right.id));
 }
@@ -89,6 +90,7 @@ function nameScopesKnown(entry: ResourceInventoryEntry, snapshot: ResourceInvent
 function nativeDisable(entry: ResourceInventoryEntry, snapshot: ResourceInventorySnapshot): boolean {
   if (entry.nativeState === "disabled") return false;
   const control = entry.locator.nativeControl;
+  if (control === "native-rule") return entry.nativeState === "enabled" && !!entry.locator.nativeRule && !!entry.locator.controlPath;
   if (entry.client === "codex") return entry.scope === "user" && (entry.kind === "skill" ? control === "codex-skill" && !!entry.locator.controlPath
     : control === "codex-mcp" && entry.locator.format === "toml");
   if (entry.client === "codeflicker") return entry.nativeState === "enabled" && (entry.kind === "skill" ? control === "codeflicker-skill" && !!entry.locator.controlPath
@@ -102,7 +104,7 @@ const signature = (snapshot: ResourceInventorySnapshot, entry: ResourceInventory
   .map(value => [value.id, value.entryPath, value.targetPath, value.client, value.project, value.sourceId, value.protected,
     value.owner, value.contentFingerprint, value.locator, value.selectionScopes, snapshot.sources.find(source => source.id === value.sourceId)?.verified]),
   diagnostics: entry.client === "codeflicker" ? snapshot.diagnostics?.filter(value => value.name === entry.name && value.client === entry.client && value.kind === entry.kind) : undefined,
-  nameReferences: entry.client === "codeflicker" ? nameReferences(snapshot, entry).map(value => [value.id, value.sourceId, value.locator, value.selectionScopes]) : undefined }));
+  nameReferences: entry.client === "codeflicker" || entry.locator.nativeRule ? nameReferences(snapshot, entry).map(value => [value.id, value.sourceId, value.locator, value.selectionScopes]) : undefined }));
 
 /** 管理状态与受限恢复材料独立保存，不因历史索引清理而丢失或重放操作。 */
 export class ResourceManager {
@@ -163,10 +165,11 @@ export class ResourceManager {
   }
   private writable(entry: ResourceInventoryEntry, snapshot: ResourceInventorySnapshot): boolean {
     const source = snapshot.sources.find(value => value.id === entry.sourceId);
-    return !entry.protected && !entry.owner && source?.verified === true && source.client === entry.client && source.kind === entry.kind
+    return !entry.protected && !entry.owner && (source?.verified === true || entry.locator.nativeRule !== undefined) && source?.client === entry.client && source.kind === entry.kind
       && !["plugin", "system", "managed"].includes(source.origin)
       && (["codex", "claude"].includes(entry.client) || entry.client === "codeflicker" && ["codeflicker-skill", "codeflicker-mcp"].includes(entry.locator.nativeControl ?? "")
-        || entry.client === "codeflicker-desktop" && entry.kind === "skill" && entry.locator.nativeControl === "codeflicker-desktop-skill")
+        || entry.client === "codeflicker-desktop" && entry.kind === "skill" && entry.locator.nativeControl === "codeflicker-desktop-skill"
+        || !!entry.locator.nativeRule || entry.locator.registrationWritable === true)
       && entry.readState !== "unreadable";
   }
   private fileWritable(entry: ResourceInventoryEntry, snapshot: ResourceInventorySnapshot): boolean {
@@ -191,7 +194,7 @@ export class ResourceManager {
       let disable = writable && nativeDisable(entry, snapshot);
       const path = entry.locator.controlPath ?? entry.locator.configPath;
       if (writable && path && !texts.has(path)) {
-        try { texts.set(path, existsSync(path) ? readFileSync(path, "utf8") : entry.kind === "skill" ? "" : undefined); }
+        try { texts.set(path, existsSync(path) ? readFileSync(path, "utf8") : entry.kind === "skill" || entry.locator.nativeRule ? "" : undefined); }
         catch { texts.set(path, undefined); }
       }
       const editKey = JSON.stringify([writable, entry.kind, entry.locator.nativeControl, path, entry.locator.keyPath]);
@@ -199,7 +202,14 @@ export class ResourceManager {
       const configWritable = editability.get(editKey)!;
       disable = disable && configWritable;
       const refs = references(snapshot, entry);
-      const isolation = writable && (entry.kind === "skill" || configWritable) && !sharedPhysical(entry, refs);
+      const source = snapshot.sources.find(value => value.id === entry.sourceId);
+      let registrationEditable = configWritable;
+      if (entry.kind === "mcp" && entry.locator.nativeRule) {
+        const configPath = entry.locator.configPath;
+        try { registrationEditable = !!configPath && editableConfig(readFileSync(configPath, "utf8"), { ...entry, locator: { ...entry.locator, nativeRule: undefined } }); }
+        catch { registrationEditable = false; }
+      }
+      const isolation = writable && source?.verified === true && (entry.kind === "skill" || registrationEditable && (!entry.locator.nativeRule || entry.locator.registrationWritable === true)) && !sharedPhysical(entry, refs);
       const trash = entry.kind === "skill" ? this.fileWritable(entry, snapshot) : isolation;
       const archive = archives.find(value => (value.entry.id === entry.id || value.target === "file"
         && (value.entry.bodyId === entry.bodyId || value.affectedEntries?.some(affected => affected.id === entry.id)))
@@ -319,7 +329,7 @@ export class ResourceManager {
       destinationPath = resourceMaterialPath(this.vaultPath, input.action, entry, id);
     }
     const favorite = this.favorite(entry, snapshot);
-    const affected = input.action === "disable" && entry.locator.nativeControl === "codeflicker-skill" ? nameReferences(snapshot, entry)
+    const affected = input.action === "disable" && (entry.locator.nativeControl === "codeflicker-skill" || entry.locator.nativeRule) ? nameReferences(snapshot, entry)
       : entry.entryType === "symlink" && (input.action === "trash" || archive && !archive.change)
         ? [entry, ...refs.filter(value => value.entryPath === entry.entryPath && value.id !== entry.id)] : refs;
     const revealedEntries = input.action === "standby" || input.action === "trash" ? revealed(snapshot, entry) : undefined;

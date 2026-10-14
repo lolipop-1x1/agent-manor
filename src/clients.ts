@@ -11,6 +11,13 @@ export const CLIENTS = [
   { id: "zcode", name: "ZCode", abbreviation: "ZC" },
   { id: "codebuddy", name: "CodeBuddy", abbreviation: "CB" },
   { id: "qoder", name: "Qoder", abbreviation: "QD" },
+  { id: "gemini", name: "Gemini CLI", abbreviation: "GM" },
+  { id: "qwen", name: "Qwen Code", abbreviation: "QW" },
+  { id: "kimi", name: "Kimi Code CLI", abbreviation: "KM" },
+  { id: "omp", name: "Oh My Pi", abbreviation: "OM" },
+  { id: "grok", name: "Grok Build", abbreviation: "GK" },
+  { id: "reasonix", name: "Reasonix", abbreviation: "RX" },
+  { id: "codewhale", name: "Codewhale", abbreviation: "CW" },
 ] as const;
 
 export type Client = typeof CLIENTS[number]["id"];

@@ -13,6 +13,7 @@ import { summarizeRequestSpeed } from "../../../src/session-speed";
 import { AverageSpeedMetric, RequestSpeedBadge, SpeedAlgorithmHelp, SpeedColumnHeader } from "./SessionSpeed";
 import { usageCoverage } from "./session-usage-coverage";
 import { requestLocation } from "./session-speed-model";
+import { NativeUsageReports } from "./NativeUsageReports";
 import { isAborted, request } from "../../shared/api";
 
 const formatCount = (value: number) => formatNumber(getLanguage(), value);
@@ -130,7 +131,8 @@ export function SessionProfilePane({ active, profile, loading, error, includeChi
   const [costRetry, setCostRetry] = useState(0);
   const hasCalls = !!profile && (profile.tools.length > 0 || profile.resources.length > 0);
   const visibleMetrics = profile ? metrics.filter(([key]) => profile.usage[key] !== null) : [];
-  const hasUsage = visibleMetrics.length > 0 || !!profile?.usage.requests;
+  const hasUsage = visibleMetrics.length > 0 || !!profile?.usage.requests || !!profile?.usageReports?.length;
+  const hasNativeCost = (usageDetails ?? profile)?.steps.some(step => step.nativeReportedCostUsd !== undefined);
   const speedSummary = useMemo(() => profile?.outputSpeed ?? (profile ? summarizeRequestSpeed(profile.steps) : undefined), [profile]);
   const hasSpeed = !!speedSummary?.requests;
   const visibleTab = tab === "calls" && !hasCalls || tab === "usage" && !hasUsage ? "overview" : tab;
@@ -229,7 +231,8 @@ export function SessionProfilePane({ active, profile, loading, error, includeChi
             {coverage.map(group => <p key={group.count}>{t("sessions.profile.fieldCoverage", { fields: group.labels.map(label => t(label)).join(" · "), count: group.count, total: group.total })}</p>)}
             <p>{t("sessions.profile.costHelp")}</p><p>{t("usage.help.cost")}</p>
             {visibleCost && <><p>{t("usage.coverage.cost", { complete: visibleCost.totals.pricedRequests, partial: visibleCost.totals.partiallyPricedRequests, missing: visibleCost.totals.unpricedRequests })}</p><p>{t("usage.coverage.priceBasis", { historical: visibleCost.totals.historicalPricedRequests, snapshot: visibleCost.totals.currentSnapshotPricedRequests, manual: visibleCost.totals.manualPricedRequests })}</p></>}
-            <p>{isMessageDescriptorKnown(profile.estimate.methodDescriptor) ? messageText(profile.estimate.methodDescriptor, profile.estimate.method) : profile.estimate.method}</p><SpeedAlgorithmHelp />
+            <p>{isMessageDescriptorKnown(profile.estimate.methodDescriptor) ? messageText(profile.estimate.methodDescriptor, profile.estimate.method) : profile.estimate.method}</p>
+            {hasNativeCost && <p>{t("sessions.nativeUsage.costHelp")}</p>}<SpeedAlgorithmHelp />
           </HelpPopover></div></div>
             <div className="session-usage-grid">{primaryMetrics.map(metric)}<AverageSpeedMetric summary={speedSummary} />
               {profile.usage.peakInputTokens !== null && metric(["peakInputTokens", "sessions.profile.maxInput"])}{extraMetrics.map(metric)}</div>
@@ -247,12 +250,13 @@ export function SessionProfilePane({ active, profile, loading, error, includeChi
           {usageError && <Notice danger action={<button className="text-button" onClick={() => setUsageRetry(value => value + 1)}>{t("common.retry")}</button>}><SessionError error={usageError} /></Notice>}
           {visibleUsage && <>
           {visibleUsage.steps.filter(step => usageSeries.some(([key]) => step[key] !== undefined)).length > 1 && <UsageChart profile={visibleUsage} onFocusStep={onFocusStep} />}
-            <div className="session-step-table"><table><thead><tr><th>{t("sessions.profile.request")}</th>{usageSeries.filter(([key]) => profile.usage.recordedRequests?.[key] || profile.steps.some(step => step[key] !== undefined)).map(([key, label]) => <th key={key}>{t(label)}</th>)}{hasSpeed && <th aria-label={t("sessions.speed.label")}><SpeedColumnHeader /></th>}</tr></thead><tbody>
+            <div className="session-step-table"><table><thead><tr><th>{t("sessions.profile.request")}</th>{usageSeries.filter(([key]) => profile.usage.recordedRequests?.[key] || profile.steps.some(step => step[key] !== undefined)).map(([key, label]) => <th key={key}>{t(label)}</th>)}{hasNativeCost && <th>{t("sessions.nativeUsage.reportedCost")}</th>}{hasSpeed && <th aria-label={t("sessions.speed.label")}><SpeedColumnHeader /></th>}</tr></thead><tbody>
               {visibleSteps.map((step, index) => <tr key={`${step.sessionId}:${step.id}`}><td>{requestLocation(step) ? <button aria-label={t("sessions.profile.requestNumber", { number: formatCount(stepOffset + index + 1) })} onClick={() => onFocusStep(step)}>#{formatCount(stepOffset + index + 1)}</button> : <span>#{formatCount(stepOffset + index + 1)}</span>}</td>
-                {usageSeries.filter(([key]) => profile.usage.recordedRequests?.[key] || profile.steps.some(item => item[key] !== undefined)).map(([key]) => <td key={key}>{step[key] === undefined ? "—" : displayRecorded(step[key])}</td>)}{hasSpeed && <td><RequestSpeedBadge usage={step} compact onLocate={messageId => onFocusStep({ ...step, messageId })} /></td>}</tr>)}
+                {usageSeries.filter(([key]) => profile.usage.recordedRequests?.[key] || profile.steps.some(item => item[key] !== undefined)).map(([key]) => <td key={key}>{step[key] === undefined ? "—" : displayRecorded(step[key])}</td>)}{hasNativeCost && <td>{step.nativeReportedCostUsd === undefined ? "—" : number(step.nativeReportedCostUsd, { style: "currency", currency: "USD", currencyDisplay: "narrowSymbol", maximumFractionDigits: 4 })}</td>}{hasSpeed && <td><RequestSpeedBadge usage={step} compact onLocate={messageId => onFocusStep({ ...step, messageId })} /></td>}</tr>)}
             </tbody></table></div>
             {(visibleUsage.stepsTotal ?? profile.usage.requests) > 12 && <Pager page={stepPage} pageSize={12} total={visibleUsage.stepsTotal ?? profile.usage.requests} onChange={setStepPage} label={t("sessions.profile.requestPagination")} showEnds />}</>}
         </section>}
+        {(visibleTab === "usage" || visibleTab === "overview" && !profile.usage.requests) && !!profile.usageReports?.length && <NativeUsageReports reports={profile.usageReports} />}
         {visibleTab === "calls" && <>
           {profile.tools.length > 0 && <section className="session-profile-section"><div className="session-section-heading"><h3>{t("sessions.profile.tools")}</h3><span>{t("sessions.profile.callCount", { count: profile.tools.reduce((total, item) => total + item.calls, 0) })}</span></div>
             {profile.tools.map(item => <div className="session-tool-stat" key={item.name}><div className="session-tool-title"><button className="session-stat-link" title={t("sessions.profile.locateCall")} onClick={() => onFind({ toolName: item.name })}>{item.name}</button><span>{t("sessions.profile.callCount", { count: item.calls })}</span></div>

@@ -3,6 +3,7 @@ import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { parseDocument } from "yaml";
 import type { ResourceInventoryDiagnostic, ResourceInventoryEntry, ResourceInventoryGap, ResourceInventorySource, ResourceSourceFormat } from "../resource-inventory-contracts.js";
 import type { ResourceKind } from "../resource-contracts.js";
+import type { NativeInventoryMetadata } from "./native-inventory.js";
 
 type ObjectValue = Record<string, unknown>;
 export interface CodeFlickerMetadata {
@@ -21,7 +22,7 @@ export interface CodeFlickerMetadata {
 export type InventorySourcePlan = ResourceInventorySource & {
   keyPath?: string[]; flat?: boolean;
   nativeControl?: ResourceInventoryEntry["locator"]["nativeControl"];
-  controlPath?: string; codeflicker?: CodeFlickerMetadata; metadataOnly?: boolean;
+  controlPath?: string; codeflicker?: CodeFlickerMetadata; native?: NativeInventoryMetadata; metadataOnly?: boolean;
 };
 const object = (value: unknown): ObjectValue | undefined => value !== null && typeof value === "object" && !Array.isArray(value) ? value as ObjectValue : undefined;
 const missing = (error: unknown): boolean => object(error)?.code === "ENOENT" || object(error)?.code === "ENOTDIR";
@@ -31,8 +32,9 @@ const defaultUserOnlySkills = new Set(["docs-shuttle"]);
 
 /** 插件引用的真实目标须位于登记根内，返回核验后的读路径以避免再次跟随引用链接。 */
 export async function codeflickerReferencePath(source: InventorySourcePlan): Promise<string | undefined> {
-  if (!source.codeflicker?.containmentRoot) return source.path;
-  const [root, path] = await Promise.all([realpath(source.codeflicker.containmentRoot), realpath(source.path)]);
+  const containmentRoot = source.native?.containmentRoot ?? source.codeflicker?.containmentRoot;
+  if (!containmentRoot) return source.path;
+  const [root, path] = await Promise.all([realpath(containmentRoot), realpath(source.path)]);
   return contained(root, path) ? path : undefined;
 }
 /** 配置数组按原生优先级累计，MCP 注册的整体替换由来源投影处理。 */

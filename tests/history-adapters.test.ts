@@ -17,7 +17,8 @@ async function temporary(run: (directory: string) => Promise<void>) {
 }
 
 test("客户端身份与 Node 来源声明分别注册，查询入口共享稳定名称与缩写", () => {
-  assert.deepEqual(clientIds, ["codex", "claude", "codeflicker", "codeflicker-desktop", "dsh", "pi", "workbuddy", "opencode", "zcode", "codebuddy", "qoder"]);
+  assert.deepEqual(clientIds, ["codex", "claude", "codeflicker", "codeflicker-desktop", "dsh", "pi", "workbuddy", "opencode", "zcode", "codebuddy", "qoder",
+    "gemini", "qwen", "kimi", "omp", "grok", "reasonix", "codewhale"]);
   assert.deepEqual(HISTORY_CLIENTS.map(item => item.client), clientIds);
   assert.equal(clientName("codeflicker"), "CodeFlicker CLI");
   assert.equal(CLIENTS.find(item => item.id === "codeflicker")!.abbreviation, "CF");

@@ -13,6 +13,10 @@ import type { ResourceInventoryBody, ResourceInventoryEntry, ResourceInventoryGa
   ResourceInventorySnapshot, ResourceInventorySource, ResourceSourceFormat, ResourceInventoryDiagnostic } from "../resource-inventory-contracts.js";
 import { codeflickerReferencePath, codeflickerSkillState, compactCodeFlickerInventory, planCodeFlickerInventory, projectCodeFlickerEntries } from "./codeflicker-inventory.js";
 import type { InventorySourcePlan } from "./codeflicker-inventory.js";
+import { projectNativeEntries } from "./native-inventory.js";
+import { planGeminiQwenInventory } from "./native-gemini-qwen.js";
+import { planKimiOmpInventory } from "./native-kimi-omp.js";
+import { planGrokReasonixCodewhaleInventory } from "./native-grok-reasonix-codewhale.js";
 
 type ObjectValue = Record<string, unknown>;
 type SourcePlan = InventorySourcePlan;
@@ -38,8 +42,9 @@ export async function scanResourceInventory(options: ResourceInventoryOptions = 
     if (extra.codeflicker) parts.push(extra.origin, extra.codeflicker.direct, extra.codeflicker.namespace, extra.codeflicker.depth);
     if (extra.origin === "manual") parts.push("manual", extra.manualSourceId);
     const id = identity("source", parts);
+    if (sourceKeys.has(id)) return sources.find(source => source.id === id)!;
     const plan: SourcePlan = { id, client, kind, path: resolve(path), scope, format, origin: "standard", readState: "missing", observedAt, verified: true, ...extra };
-    if (!sourceKeys.has(id)) { sourceKeys.add(id); sources.push(plan); }
+    sourceKeys.add(id); sources.push(plan);
     return plan;
   };
   const skills = (client: Client, path: string, extra: Partial<SourcePlan> = {}) => add(client, "skill", path, "skill-directory", extra);
@@ -63,6 +68,12 @@ export async function scanResourceInventory(options: ResourceInventoryOptions = 
         if (stat.size > 16 * 1024 * 1024) throw new Error("configuration_limit");
         const text = await readFile(path, "utf8");
         if (format === "toml") return object(parseToml(text));
+        if (format === "yaml") {
+          const document = parseDocument(text, { uniqueKeys: true });
+          if (document.errors.length) throw new Error("configuration_invalid");
+          const value = object(document.toJS({ maxAliasCount: 20 }));
+          if (!value) throw new Error("configuration_invalid"); return value;
+        }
         if (format === "jsonc") {
           const errors: ParseError[] = [];
           const value: unknown = parseJsonc(text, errors, { allowTrailingComma: true });
@@ -130,6 +141,9 @@ export async function scanResourceInventory(options: ResourceInventoryOptions = 
   const existingProjects = [];
   for (const project of projects) { try { if ((await cachedLstat(project)).isDirectory()) existingProjects.push(project); } catch { /* 缺失项目已在通用来源层记录。 */ } }
   await planCodeFlickerInventory({ userHome, projects: existingProjects, environment, add, parseConfig, gaps, diagnostics });
+  await planGeminiQwenInventory({ userHome, projects: existingProjects, environment, add, parseConfig, gaps, diagnostics });
+  await planKimiOmpInventory({ userHome, projects: existingProjects, environment, add, parseConfig, gaps, diagnostics });
+  await planGrokReasonixCodewhaleInventory({ userHome, projects: existingProjects, environment, add, parseConfig, gaps, diagnostics });
   for (const manual of options.manualSources ?? []) {
     const extra = { project: manual.project, origin: "manual" as const, verified: false, keyPath: manual.keyPath, manualSourceId: manual.id };
     const format = manual.format ?? (manual.kind === "skill" ? "skill-directory" : manual.path.endsWith(".toml") ? "toml" : manual.path.endsWith(".jsonc") ? "jsonc" : "json");
@@ -166,7 +180,8 @@ export async function scanResourceInventory(options: ResourceInventoryOptions = 
     const entryType: ResourceInventoryEntry["entryType"] = info.isSymbolicLink() ? "symlink" : info.isDirectory() ? "directory" : "file";
     if (info.isSymbolicLink()) linkTarget = await readlink(path);
     try { targetPath = await cachedRealpath(path); } catch (error) { if (!missing(error) && object(error)?.code !== "ELOOP") throw error; }
-    if (targetPath && source.codeflicker?.containmentRoot && !contained(await cachedRealpath(source.codeflicker.containmentRoot), targetPath)) {
+    const containmentRoot = source.native?.containmentRoot ?? source.codeflicker?.containmentRoot;
+    if (targetPath && containmentRoot && !contained(await cachedRealpath(containmentRoot), targetPath)) {
       diagnostics.push({ sourceId: source.id, client: source.client, kind: "skill", scope: source.scope, project: source.project, reason: "invalid_reference", path });
       gaps.push({ sourceId: source.id, client: source.client, reason: "invalid" }); return;
     }
@@ -174,7 +189,7 @@ export async function scanResourceInventory(options: ResourceInventoryOptions = 
       sourceId: source.id, entryPath: path, targetPath, entryType, linkTarget, observedAt, sourceFormat: source.format,
       owner: source.owner, protected: Boolean(source.owner) || protectedSystem || source.origin === "managed", protectionReason: source.owner ? "plugin" as const : protectedSystem ? "system" as const : source.origin === "managed" ? "managed" as const : undefined,
       locator: { type: "skill" as const, skillFile, nativeControl: source.owner || protectedSystem || source.origin === "managed" ? undefined : source.nativeControl, controlPath: source.controlPath,
-        dependencyPaths: source.codeflicker?.dependencyPaths }, capabilities: { ...writeDisabled } };
+        dependencyPaths: source.native?.dependencyPaths ?? source.codeflicker?.dependencyPaths }, capabilities: { ...writeDisabled } };
     if (!targetPath) {
       entries.push({ ...base, bodyId: identity("body", ["broken", source.id, path]), name: basename(path), readState: "broken", nativeState: "unknown" });
       return;
@@ -182,6 +197,10 @@ export async function scanResourceInventory(options: ResourceInventoryOptions = 
     let text: string;
     try {
       const canonicalFile = await cachedRealpath(skillFile);
+      if (containmentRoot && !contained(await cachedRealpath(containmentRoot), canonicalFile)) {
+        diagnostics.push({ sourceId: source.id, client: source.client, kind: "skill", scope: source.scope, project: source.project, reason: "invalid_reference", path: skillFile });
+        gaps.push({ sourceId: source.id, client: source.client, reason: "invalid" }); return;
+      }
       let pending = skillTextCache.get(canonicalFile);
       if (!pending) {
         pending = (async () => { const file = await open(canonicalFile, "r"); try { const info = await file.stat(); if (info.size > 1024 * 1024) throw new Error("skill_limit"); return await file.readFile("utf8"); } finally { await file.close(); } })();
@@ -202,8 +221,18 @@ export async function scanResourceInventory(options: ResourceInventoryOptions = 
       if (!metadata) gaps.push({ sourceId: source.id, client: source.client, reason: "invalid" });
     }
     const field = (key: string): string | undefined => typeof metadata?.[key] === "string" ? metadata[key] as string : undefined;
-    const documentName = field("name") ?? basename(entryType === "file" ? path.replace(/\.md$/i, "") : path);
-    const name = source.codeflicker?.namespace ? `${source.codeflicker.namespace}:${documentName}` : documentName;
+    if (source.native?.acceptsSkill && !source.native.acceptsSkill(metadata, path)) {
+      diagnostics.push({ sourceId: source.id, client: source.client, kind: "skill", scope: source.scope, project: source.project, reason: "invalid_reference", path });
+      gaps.push({ sourceId: source.id, client: source.client, reason: "invalid" }); return;
+    }
+    const documentName = source.native?.skillNameFor ? source.native.skillNameFor(metadata, path, text)
+      : field("name") ?? basename(entryType === "file" ? path.replace(/\.md$/i, "") : path);
+    if (!documentName) {
+      diagnostics.push({ sourceId: source.id, client: source.client, kind: "skill", scope: source.scope, project: source.project, reason: "invalid_reference", path }); return;
+    }
+    const namespace = source.native?.namespace ?? source.codeflicker?.namespace;
+    const qualifiedName = source.native?.nameFor?.(documentName) ?? documentName;
+    const name = namespace ? `${namespace}:${qualifiedName}` : qualifiedName;
     if (source.client === "codeflicker" && (!field("name") || !field("description"))) {
       gaps.push({ sourceId: source.id, client: source.client, reason: "invalid" });
       diagnostics.push({ sourceId: source.id, client: source.client, kind: "skill", scope: source.scope, project: source.project, reason: "invalid_reference", path });
@@ -212,6 +241,13 @@ export async function scanResourceInventory(options: ResourceInventoryOptions = 
     const fingerprint = hash(text);
     let nativeState = await skillState(source, skillFile, name);
     let invocationMode: ResourceInventoryEntry["invocationMode"];
+    if (source.native) {
+      if (metadata) (source.native.frontmatterByName ??= new Map()).set(name, metadata);
+      const state = source.native.stateFor(name, source.project, metadata);
+      nativeState = state.nativeState; invocationMode = state.invocationMode;
+      base.locator.controlPath = state.controlPath;
+      Object.assign(base.locator, { nativeRule: !base.protected ? state.rule : undefined, nativeControl: !base.protected && state.rule ? "native-rule" : undefined });
+    }
     if (source.client === "codeflicker" && source.codeflicker) ({ nativeState, invocationMode } = codeflickerSkillState(source, name));
     if (source.client === "codeflicker-desktop" && source.codeflicker) {
       try { await cachedLstat(join(path, ".disable")); nativeState = "disabled"; }
@@ -229,19 +265,20 @@ export async function scanResourceInventory(options: ResourceInventoryOptions = 
       }
     }
     entries.push({ ...base, bodyId: identity("body", ["skill", targetPath]), name, description: field("description"), readState: "present",
-      nativeState, invocationMode, nativeNames: source.codeflicker ? [...new Set([name, documentName, basename(entryType === "file" ? path.replace(/\.md$/i, "") : path), basename(targetPath)])] : undefined,
+      nativeState, invocationMode, nativeNames: source.codeflicker || source.native ? [...new Set([name, documentName, basename(entryType === "file" ? path.replace(/\.md$/i, "") : path), basename(targetPath)])] : undefined,
       selectionScopes: source.codeflicker ? [{ scope: source.scope, project: source.project, nativeState, invocationMode, controlPath: base.locator.controlPath }] : undefined,
       modifiedAt: info.mtime.toISOString(), contentFingerprint: fingerprint, fingerprintScope: "skill-document" });
   };
   const scanSkills = async (source: SourcePlan): Promise<void> => {
     const root = source.path;
     const rootInfo = await cachedLstat(root);
-    if (rootInfo.isFile() && (source.origin === "manual" || source.codeflicker?.direct)) { await appendSkill(source, root, root, false); source.readState = "ok"; return; }
-    if (source.codeflicker?.direct) { await appendSkill(source, root, join(root, "SKILL.md"), source.origin === "system"); source.readState = "ok"; return; }
+    if (rootInfo.isFile() && (source.origin === "manual" || source.codeflicker?.direct || source.native?.direct)) { await appendSkill(source, root, root, false); source.readState = "ok"; return; }
+    if (source.codeflicker?.direct || source.native?.direct) { await appendSkill(source, root, join(root, "SKILL.md"), source.origin === "system"); source.readState = "ok"; return; }
     const seen = new Set<string>();
     let visited = 0;
     const visit = async (path: string, depth: number, system: boolean): Promise<void> => {
       if (source.codeflicker?.depth !== undefined && depth > source.codeflicker.depth) return;
+      if (source.native?.depth !== undefined && depth > source.native.depth) return;
       if (++visited > 10000 || depth > 16) { if (!gaps.some(gap => gap.sourceId === source.id && gap.reason === "limit")) gaps.push({ sourceId: source.id, client: source.client, reason: "limit" }); return; }
       let info;
       try { info = await cachedLstat(path); } catch (error) { if (depth === 0) throw error; gaps.push({ sourceId: source.id, client: source.client, reason: "unreadable" }); return; }
@@ -250,7 +287,10 @@ export async function scanResourceInventory(options: ResourceInventoryOptions = 
       }
       if (info.isFile()) { if (source.flat && depth === 1 && path.endsWith(".md")) await appendSkill(source, path, path, system); return; }
       const skillFile = join(path, "SKILL.md");
-      if (!(source.client === "codeflicker" && source.codeflicker && depth === 0) && await exists(skillFile)) { await appendSkill(source, path, skillFile, system); return; }
+      if (!(source.client === "codeflicker" && source.codeflicker && depth === 0 || source.native?.skipRootSkill && depth === 0) && await exists(skillFile)) {
+        await appendSkill(source, path, skillFile, system);
+        if (!(source.native?.scanRootAndChildren && depth === 0)) return;
+      }
       const canonical = await cachedRealpath(path);
       if (seen.has(canonical)) return;
       seen.add(canonical);
@@ -278,8 +318,9 @@ export async function scanResourceInventory(options: ResourceInventoryOptions = 
     }
     if (source.readState !== "invalid" && source.readState !== "unreadable") source.readState = "ok";
     if (!config) return;
-    for (const [server, raw] of Object.entries(config)) {
-      const value = object(raw); if (!value) { gaps.push({ sourceId: source.id, client: source.client, reason: "invalid" }); continue; }
+    const rows = source.native?.rows ?? Object.entries(config).map(([name, raw]) => ({ name, value: object(raw), keyPath: [...keyPath, name] }));
+    for (const { name: server, value, keyPath: entryKeys } of rows) {
+      if (!value) { gaps.push({ sourceId: source.id, client: source.client, reason: "invalid" }); continue; }
       const transport = value.type === "sse" ? "sse" : typeof value.url === "string" || value.type === "http" || value.type === "remote" ? "http"
         : typeof value.command === "string" || Array.isArray(value.command) || value.type === "local" ? "stdio" : "unknown";
       const hasEnabledField = ["codex", "pi", "opencode"].includes(source.client);
@@ -298,12 +339,17 @@ export async function scanResourceInventory(options: ResourceInventoryOptions = 
         } catch { /* 缺少可确认的项目选择时保留未知。 */ }
       }
       const id = identity("entry", [source.id, server]);
+      const state = source.native?.stateFor(server, source.project);
+      if (state) nativeState = state.nativeState;
+      const protectedEntry = Boolean(source.owner) || source.origin === "system" || source.origin === "managed";
       entries.push({ id, kind: "mcp", name: server, server, client: source.client, project: source.project, scope: source.scope,
         sourceId: source.id, bodyId: identity("body", ["mcp", source.client, source.path, keyPath, server]), entryPath: source.path,
         entryType: "registration", readState: "present", nativeState, sourceFormat: source.format, observedAt, owner: source.owner,
-        protected: Boolean(source.owner) || source.origin === "system", protectionReason: source.owner ? "plugin" : source.origin === "system" ? "system" : undefined,
+        protected: protectedEntry, protectionReason: source.owner ? "plugin" : source.origin === "system" ? "system" : source.origin === "managed" ? "managed" : undefined,
         transport, locator: { type: "mcp", configPath: source.path, format: source.format === "toml" ? "toml" : source.format === "jsonc" ? "jsonc" : "json",
-          keyPath: [...keyPath, server], nativeControl: source.nativeControl, controlPath: source.controlPath, dependencyPaths: source.codeflicker?.dependencyPaths }, capabilities: { ...writeDisabled } });
+          keyPath: entryKeys, nativeControl: !protectedEntry && state?.rule ? "native-rule" : source.nativeControl, nativeRule: !protectedEntry ? state?.rule : undefined,
+          registrationWritable: source.native?.registrationWritable, controlPath: state?.controlPath ?? source.controlPath,
+          dependencyPaths: source.native?.dependencyPaths ?? source.codeflicker?.dependencyPaths }, capabilities: { ...writeDisabled } });
     }
   };
 
@@ -381,7 +427,7 @@ export async function scanResourceInventory(options: ResourceInventoryOptions = 
   // 被覆盖引用仍能证明真实本体受托管，先保留保护证据再投影有效入口。
   const managedBodies = new Map<string, ResourceInventoryEntry>();
   for (const entry of originalEntries) if (entry.protected && (!managedBodies.has(entry.bodyId) || entry.protectionReason === "system")) managedBodies.set(entry.bodyId, entry);
-  const compact = compactCodeFlickerInventory(projectCodeFlickerEntries(entries, sources, diagnostics), originalEntries, sources, identity);
+  const compact = compactCodeFlickerInventory(projectNativeEntries(projectCodeFlickerEntries(entries, sources, diagnostics), sources, projects, diagnostics), originalEntries, sources, identity);
   entries.splice(0, entries.length, ...compact.entries); sources.splice(0, sources.length, ...compact.sources);
   for (const gap of gaps) gap.sourceId = compact.sourceIds.get(gap.sourceId) ?? gap.sourceId;
   const distinctGaps = new Map(gaps.map(gap => [JSON.stringify([gap.sourceId, gap.client, gap.reason]), gap]));
@@ -407,6 +453,6 @@ export async function scanResourceInventory(options: ResourceInventoryOptions = 
     if (!body) { body = { id: entry.bodyId, kind: entry.kind, name: entry.name, targetPath: entry.targetPath, entryIds: [], contentFingerprint: entry.contentFingerprint, fingerprintScope: entry.fingerprintScope }; bodies.set(body.id, body); }
     body.entryIds.push(entry.id);
   }
-  const publicSources = sources.map(({ keyPath: _keyPath, flat: _flat, nativeControl: _nativeControl, controlPath: _controlPath, codeflicker: _codeflicker, metadataOnly: _metadataOnly, ...source }) => source);
+  const publicSources = sources.map(({ keyPath: _keyPath, flat: _flat, nativeControl: _nativeControl, controlPath: _controlPath, codeflicker: _codeflicker, native: _native, metadataOnly: _metadataOnly, ...source }) => source);
   return { observedAt, sources: publicSources, entries, bodies: [...bodies.values()], gaps, diagnostics };
 }

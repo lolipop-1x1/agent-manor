@@ -1,7 +1,7 @@
 # 两轴审查与修复
 
 Type: task
-Status: ready-for-agent
+Status: claimed
 Blocked by: 07
 
 ## 目标
@@ -15,3 +15,7 @@ Blocked by: 07
 - 修复后必要回归和交付检查通过。
 
 ## Comments
+
+## 审查基线
+
+对已推送规格提交 `844d8c902e1fc371890b1ec613d540f033205b6e` 之后的实现执行规范与规格双轴审查。继续在 main 完成修复，验证后推送。

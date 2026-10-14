@@ -1,7 +1,7 @@
 # 原生资源盘点与可恢复管理
 
 Type: task
-Status: ready-for-agent
+Status: resolved
 Blocked by: 02
 
 ## 目标
@@ -16,3 +16,7 @@ Blocked by: 02
 - 配置内容不泄露到 API，管理修改与实际客户端生效分开记录。
 
 ## Comments
+
+## Answer
+
+三组原生资源 planner 已接通共同盘点与作用范围投影；JSON／TOML／YAML 名字及开关、Reasonix activation、普通文件回收与恢复完成。共享编辑恢复 7 项、七个客户端浏览器预览与恢复回读通过，插件及托管来源保持保护。

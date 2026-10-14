@@ -1599,6 +1599,7 @@ export class SessionStore {
     };
     for (const sessionId of included) {
       const { revision, summary } = this.session(sessionId, version);
+      if (summary.usageReports?.length) (profile.usageReports ??= []).push(...summary.usageReports.map(report => ({ ...report, sessionId })));
       if (sessionId !== id) profile.gaps.push(...summary.gaps);
       const confirmedChildren = new Set(getChildren(sessionId).map(child => child.id));
       const missing = new Set(summary.childSessionIds?.filter(child => !confirmedChildren.has(child)) ?? []);

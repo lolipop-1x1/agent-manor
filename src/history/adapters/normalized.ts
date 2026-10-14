@@ -59,6 +59,7 @@ export interface NormalizedSessionMetadata {
   relationships?: HistoryRelationship[];
   branches?: SessionSourceMeta["branches"];
   gaps?: Gap[];
+  usageReports?: SessionSourceMeta["usageReports"];
 }
 export interface NormalizedSnapshot extends HistoryRecordSnapshot { meta: NormalizedSessionMetadata }
 export type RawHistoryRecord = { record: Record<string, unknown>; raw: string; line: number };
@@ -97,7 +98,12 @@ export function normalizedRecord(event: NormalizedEvent, raw: string, line: numb
 
 export function normalizedSnapshot(source: SourceLocation, records: RawHistoryRecord[], meta: NormalizedSessionMetadata = {}, fingerprint?: string): NormalizedSnapshot {
   const digest = createHash("sha256").update(JSON.stringify([fingerprint, source.sessionId, source.cwd, meta]));
-  for (const row of records) digest.update(JSON.stringify([row.line, row.raw, row.record]));
+  const rawHashes = new Map<string, string>();
+  for (const row of records) {
+    let rawHash = rawHashes.get(row.raw);
+    if (!rawHash) { rawHash = normalizedHash(row.raw); rawHashes.set(row.raw, rawHash); }
+    digest.update(JSON.stringify([row.line, rawHash, row.record]));
+  }
   const hash = digest.digest("hex");
   return { source, hash, meta, records: [{ record: { normalizedMeta: meta }, raw: "", line: 0 }, ...records] };
 }
@@ -164,7 +170,7 @@ export function parseNormalizedSession(snapshot: NormalizedSnapshot, sink: Sessi
     title: native.title ?? "未命名会话", titleOrigin: native.title ? native.titleOrigin ?? "recorded" : "fallback",
     project: source.cwd && isAbsolute(source.cwd) ? source.cwd : undefined, projectOrigin: source.cwd && isAbsolute(source.cwd) ? "client_metadata" : undefined,
     parentSessionId: native.parentSessionId ? normalizedSessionKey(source.client, native.parentSessionId) : undefined,
-    relationship: native.relationship, branches: native.branches, childSessionIds: native.childSessionIds?.map(child => normalizedSessionKey(source.client, child)),
+    relationship: native.relationship, branches: native.branches, childSessionIds: native.childSessionIds?.map(child => normalizedSessionKey(source.client, child)), usageReports: native.usageReports,
     messageCount: 0, turnCount: 0, models: [], gaps: [...(native.gaps ?? [])] };
   const messages = new Map<string, number>(); const pending = new Map<string, SessionMessage[]>(); const inputs = new Map<string, unknown>();
   const candidates = new Map<string, { message: SessionMessage; allowInferredFinal: boolean; finalEvidence?: SessionMessage["finalEvidence"]; finalAt?: string; requestKey?: string }>();
@@ -204,7 +210,7 @@ export function parseNormalizedSession(snapshot: NormalizedSnapshot, sink: Sessi
       callId: event.callId, tool: event.tool, status: event.status, final: partial ? undefined : event.final,
       finalEvidence: !partial && event.final ? event.finalEvidence : undefined,
       finalAt: !partial && event.final ? event.finalAt : undefined, durationMs: event.durationMs,
-      copied: event.copied, branchIds: event.branchIds, currentBranch: event.currentBranch,
+      interrupted: event.interrupted, copied: event.copied, branchIds: event.branchIds, currentBranch: event.currentBranch,
       filePaths: paths.length ? paths : undefined, resource: event.kind === "tool_call" ? event.resource ?? callResource(event.tool ?? "", event.input, meta.project ?? source.cwd)
         : event.kind === "user" ? event.resource : undefined };
     if (event.kind === "tool_call" && value.resource?.kind === "skill_read") value.resource = undefined;

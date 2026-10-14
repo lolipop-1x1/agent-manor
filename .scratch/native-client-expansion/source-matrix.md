@@ -1,6 +1,6 @@
 # 原生来源支持矩阵
 
-核对日期：2026-10-14。本文记录固定上游版本的生产源码事实及本产品计划采用的边界；尚未实施适配，也未完成原生客户端运行验收。
+核对日期：2026-10-14。本文记录固定上游版本的生产源码事实及本产品计划采用的边界；原生适配已实施，使用合成测试和隔离浏览器核验；原生客户端运行仍未验证。
 
 ## 固定版本
 
@@ -60,10 +60,10 @@ Qwen 的 SDK 发布不作为 CLI 基线。Reasonix 的 TUI、HTTP/SSE 与桌面�
 - [Qwen 转录写入](https://github.com/QwenLM/qwen-code/blob/c1a8218f38203e272e6e965778ed6a2795cfeed7/packages/core/src/services/chatRecordingService.ts)、[Skill 规则](https://github.com/QwenLM/qwen-code/blob/c1a8218f38203e272e6e965778ed6a2795cfeed7/packages/cli/src/config/skill-settings.ts)、[MCP 类型](https://github.com/QwenLM/qwen-code/blob/c1a8218f38203e272e6e965778ed6a2795cfeed7/packages/core/src/config/mcp-server-config.ts)。
 - [Kimi wire 读取](https://github.com/MoonshotAI/kimi-code/blob/f67e6398fb3210ad8ace970e2dfd5bcc984ed61f/packages/agent-core-v2/src/human/persist/v2/wire.ts)、[Skill roots](https://github.com/MoonshotAI/kimi-code/blob/f67e6398fb3210ad8ace970e2dfd5bcc984ed61f/packages/agent-core-v2/src/features/skill/catalog/skillRoots.ts)、[MCP schema](https://github.com/MoonshotAI/kimi-code/blob/f67e6398fb3210ad8ace970e2dfd5bcc984ed61f/packages/agent-core-v2/src/mcpCore/config-schema.ts)。
 - [Oh My Pi entry 类型](https://github.com/can1357/oh-my-pi/blob/687892d1046ecaf18829b45f5b86928a308258f4/packages/coding-agent/src/session/session-entries.ts)、[能力发现](https://github.com/can1357/oh-my-pi/blob/687892d1046ecaf18829b45f5b86928a308258f4/packages/coding-agent/src/capability/index.ts)、[MCP writer](https://github.com/can1357/oh-my-pi/blob/687892d1046ecaf18829b45f5b86928a308258f4/packages/coding-agent/src/mcp/config-writer.ts)。
-- [Grok 会话持久化](https://github.com/xai-org/grok-build/blob/2bdd1d6a6369de0e8c68132ea4539e9abd9e14a8/xai-grok-shell/src/session/persistence.rs)、[Skill 控制](https://github.com/xai-org/grok-build/blob/2bdd1d6a6369de0e8c68132ea4539e9abd9e14a8/xai-grok-shell/src/extensions/skills.rs)、[MCP 控制](https://github.com/xai-org/grok-build/blob/2bdd1d6a6369de0e8c68132ea4539e9abd9e14a8/xai-grok-shell/src/extensions/mcp.rs)。
+- [Grok 会话持久化](https://github.com/xai-org/grok-build/blob/2bdd1d6a6369de0e8c68132ea4539e9abd9e14a8/crates/codegen/xai-grok-shell/src/session/persistence.rs)、[Skill 控制](https://github.com/xai-org/grok-build/blob/2bdd1d6a6369de0e8c68132ea4539e9abd9e14a8/crates/codegen/xai-grok-shell/src/extensions/skills.rs)、[MCP 控制](https://github.com/xai-org/grok-build/blob/2bdd1d6a6369de0e8c68132ea4539e9abd9e14a8/crates/codegen/xai-grok-shell/src/extensions/mcp.rs)。
 - [Reasonix 会话保存](https://github.com/esengine/DeepSeek-Reasonix/blob/f289e3903f41d3a2bb4373fc182c837738b945d9/internal/state/sessionstore/save.go)、[Skill activation](https://github.com/esengine/DeepSeek-Reasonix/blob/f289e3903f41d3a2bb4373fc182c837738b945d9/internal/contract/config/activation_skill.go)、[MCP activation](https://github.com/esengine/DeepSeek-Reasonix/blob/f289e3903f41d3a2bb4373fc182c837738b945d9/internal/contract/config/activation_mcp.go)。
 - [Codewhale 会话存储](https://github.com/codewhale-hq/Codewhale/blob/fead51eeea0fb6038ea3e30923751b1a1c765b25/crates/tui/src/session_manager.rs)、[Skill 操作](https://github.com/codewhale-hq/Codewhale/blob/fead51eeea0fb6038ea3e30923751b1a1c765b25/crates/tui/src/skills/mutation.rs)、[MCP](https://github.com/codewhale-hq/Codewhale/blob/fead51eeea0fb6038ea3e30923751b1a1c765b25/crates/tui/src/mcp.rs)。
 
 ## 验证层次
 
-已完成固定版本源码及关键加载/写入链路的静态核对。尚未实施适配、生成验收样本或运行测试。后续按完整规格执行合成、浏览器、公开内容与打包验收；原生安装、运行及配置生效保持独立未验证项。
+已完成固定版本源码及关键加载/写入链路的静态核对。已完成适配、匿名合成来源与逐客户端测试，统一 API／CLI／代码地图／统计／资源及中英文浏览器验收继续按完整规格核验；原生安装、运行及配置生效保持独立未验证项。

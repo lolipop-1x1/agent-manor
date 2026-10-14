@@ -2,15 +2,16 @@ import { readFile } from "node:fs/promises";
 import { parse as parseToml } from "smol-toml";
 import { applyEdits, modify, parse as parseJson } from "jsonc-parser";
 import type { ParseError } from "jsonc-parser";
-import type { ResourceInventoryEntry } from "../resource-inventory-contracts.js";
+import { isAlias, isMap, parseDocument, visit } from "yaml";
+import type { NativeResourceRule, ResourceInventoryEntry } from "../resource-inventory-contracts.js";
 import { ServiceError } from "../service/input.js";
 
 /** 此契约只保存在受限管理库与恢复材料中，不投影到 API。 */
 export interface ConfigChange {
   path: string;
-  format: "json" | "jsonc" | "toml";
+  format: "json" | "jsonc" | "toml" | "yaml";
   keyPath: string[];
-  type: "json-key" | "json-skill" | "skill-marker" | "toml-mcp" | "toml-skill";
+  type: "json-key" | "json-skill" | "skill-marker" | "toml-mcp" | "toml-skill" | "native-rule";
   beforeText: string;
   afterText: string;
   before: string;
@@ -23,6 +24,9 @@ export interface ConfigChange {
   fileExistedBefore?: boolean;
   hadDisabled?: boolean;
   hadSkills?: boolean;
+  nativeRule?: NativeResourceRule;
+  hadKey?: boolean;
+  existingParents?: string[][];
 }
 const readonly = (): never => { throw new ServiceError("FORBIDDEN", "当前配置写法未完成保留编辑适配，只读", { key: "diagnostics.resources.configEditor.m001" }); };
 const object = (value: unknown): Record<string, unknown> => value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
@@ -46,6 +50,75 @@ function editJson(text: string, keys: string[], value: unknown, format: "json" |
 function toml(text: string): Record<string, unknown> {
   try { return parseToml(text, { integersAsBigInt: "asNeeded", unsafeKeyBehaviour: "throw" }) as Record<string, unknown>; }
   catch { return readonly(); }
+}
+function yaml(text: string) {
+  const document = parseDocument(text || "{}", { uniqueKeys: true });
+  if (document.errors.length || !isMap(document.contents)) return readonly();
+  visit(document, (_key, node) => { if (isAlias(node)) return readonly(); });
+  return document;
+}
+function nativeValue(text: string, format: ConfigChange["format"]): unknown {
+  return format === "yaml" ? yaml(text).toJS({ maxAliasCount: 0 }) : format === "toml" ? toml(text) : json(text || "{}", format);
+}
+function activationMatches(row: Record<string, unknown>, rule: NativeResourceRule): boolean {
+  const identity = rule.identity;
+  return !!identity && ["kind", "scope", "key", "source", "owner", "name"].every(key => (row[key] ?? "") === (object(identity)[key] ?? ""));
+}
+function nativeSelection(value: unknown, rule: NativeResourceRule): string {
+  const selected = get(value, rule.keyPath);
+  if (rule.type === "boolean") {
+    if (selected !== undefined && typeof selected !== "boolean") return readonly();
+    return stable(selected);
+  }
+  if (selected !== undefined && !Array.isArray(selected)) return readonly();
+  const values = selected as unknown[] | undefined ?? [];
+  if (rule.type === "name-list") {
+    if (!rule.member || values.some(value => typeof value !== "string")) return readonly();
+    return stable(values.filter(value => value === rule.member).length);
+  }
+  if (!rule.identity || values.some(value => !value || typeof value !== "object" || Array.isArray(value))) return readonly();
+  return stable(values.filter(value => activationMatches(object(value), rule)));
+}
+function tomlSuffix(value: string): string {
+  let quote: string | undefined; let escaped = false;
+  for (let index = 0; index < value.length; index++) {
+    const char = value[index];
+    if (quote) {
+      if (quote === '"' && char === "\\" && !escaped) { escaped = true; continue; }
+      if (char === quote && !escaped) quote = undefined;
+      escaped = false;
+    } else if (char === '"' || char === "'") quote = char;
+    else if (char === "#") return value.slice(0, index).match(/\s*$/)![0] + value.slice(index);
+  }
+  return value.match(/\s*$/)![0];
+}
+/** 只接受可逐行核验的 TOML 字段；复杂值仍保持只读。 */
+function nativeTomlEdit(text: string, keys: string[], value: unknown): string {
+  const blocks = validateEditableToml(text); const parent = keys.slice(0, -1); const key = keys.at(-1)!;
+  const block = parent.length ? blocks.find(item => !item.array && sameKeys(item.keys, parent)) : undefined;
+  if (parent.length && !block) {
+    if (value === undefined) return text;
+    const result = `${text}${text && !text.endsWith("\n") ? "\n" : ""}\n[${parent.map(key => JSON.stringify(key)).join(".")}]\n${JSON.stringify(key)} = ${JSON.stringify(value)}\n`;
+    toml(result); return result;
+  }
+  const start = block?.headerEnd ?? 0; const end = block?.end ?? blocks[0]?.start ?? text.length;
+  let found = false;
+  let body = text.slice(start, end).split(/(?<=\n)/).map(line => {
+    if (!line.trim() || line.trimStart().startsWith("#") || !Object.hasOwn(toml(line), key)) return line;
+    const match = /^(\s*(?:"(?:[^"\\]|\\.)*"|'[^']*'|[A-Za-z0-9_-]+)\s*=\s*)(.*?)(\r?\n?)$/.exec(line);
+    if (!match || Object.keys(toml(line)).length !== 1) return readonly();
+    found = true;
+    return value === undefined ? "" : `${match[1]}${JSON.stringify(value)}${tomlSuffix(match[2]!)}${match[3]}`;
+  }).join("");
+  if (!found && value !== undefined) body += `${body && !body.endsWith("\n") ? "\n" : ""}${JSON.stringify(key)} = ${JSON.stringify(value)}\n`;
+  const result = text.slice(0, start) + body + text.slice(end); toml(result); return result;
+}
+function nativeEdit(text: string, format: ConfigChange["format"], keys: string[], value: unknown): string {
+  if (format === "toml") return nativeTomlEdit(text, keys, value);
+  if (format !== "yaml") return editJson(text || "{}", keys, value, format);
+  const document = yaml(text);
+  if (value === undefined) document.deleteIn(keys); else document.setIn(keys, value);
+  const result = document.toString(); yaml(result); return result;
 }
 interface Block { start: number; end: number; headerEnd: number; keys: string[]; array: boolean }
 function header(line: string): { keys: string[]; array: boolean } | undefined {
@@ -80,6 +153,10 @@ export function validateEditableToml(text: string): Block[] {
 }
 export function editableConfig(text: string, entry: ResourceInventoryEntry): boolean {
   try {
+    if (entry.locator.nativeRule) {
+      if (entry.locator.nativeRule.format === "toml") validateEditableToml(text);
+      nativeSelection(nativeValue(text, entry.locator.nativeRule.format), entry.locator.nativeRule); return true;
+    }
     if (entry.kind === "skill") {
       if (entry.locator.nativeControl === "codeflicker-desktop-skill") return text === "";
       if (entry.locator.nativeControl === "codeflicker-skill") {
@@ -92,6 +169,7 @@ export function editableConfig(text: string, entry: ResourceInventoryEntry): boo
     }
     const keys = entry.locator.keyPath;
     if (!keys?.length || !entry.locator.format) return false;
+    if (entry.locator.format === "yaml") return false;
     if (entry.locator.format !== "toml") return !!get(json(text, entry.locator.format), keys);
     return validateEditableToml(text).some(block => !block.array && sameKeys(block.keys, keys));
   } catch { return false; }
@@ -140,17 +218,39 @@ function nameRules(value: unknown, name: string): Record<string, number> {
 }
 function selected(change: ConfigChange, text: string): string {
   if (change.type === "skill-marker") return stable(text);
+  if (change.type === "native-rule") return nativeSelection(nativeValue(text, change.format), change.nativeRule!);
+  if (change.format === "yaml") return readonly();
   const parsed = change.format === "toml" ? toml(text) : json(text, change.format);
   return stable(change.type === "toml-skill" ? skillRules(parsed, change.skillPath!)
     : change.type === "json-skill" ? nameRules(parsed, change.skillName!) : get(parsed, change.keyPath));
 }
 
 export async function prepareConfig(entry: ResourceInventoryEntry, action: "disable" | "standby" | "trash", skillPath?: string): Promise<ConfigChange> {
-  const path = entry.kind === "skill" ? entry.locator.controlPath : entry.locator.configPath;
+  const rule = action === "disable" ? entry.locator.nativeRule : undefined;
+  const path = rule || entry.kind === "skill" ? entry.locator.controlPath : entry.locator.configPath;
   if (!path) return readonly();
   let text: string; let fileExistedBefore = true;
   try { text = await readFile(path, "utf8"); }
-  catch (error) { if (entry.kind === "skill" && (error as NodeJS.ErrnoException).code === "ENOENT") { text = ""; fileExistedBefore = false; } else throw error; }
+  catch (error) { if ((entry.kind === "skill" || rule) && (error as NodeJS.ErrnoException).code === "ENOENT") { text = ""; fileExistedBefore = false; } else throw error; }
+  if (rule) {
+    const value = nativeValue(text, rule.format); const before = nativeSelection(value, rule);
+    const previous = get(value, rule.keyPath);
+    let next: unknown;
+    if (rule.type === "name-list") {
+      const members = previous === undefined ? [] : previous as string[];
+      if (members.includes(rule.member!)) throw new ServiceError("INVALID_INPUT", "资源已停用，没有新的本地修改", { key: "diagnostics.resources.configEditor.m002" });
+      next = [...members, rule.member!];
+    } else if (rule.type === "boolean") next = rule.disabledValue ?? false;
+    else {
+      const rows = previous === undefined ? [] : previous as Record<string, unknown>[];
+      next = [...rows.filter(row => !activationMatches(row, rule)), { ...rule.identity, enabled: false }];
+    }
+    let afterText = nativeEdit(text, rule.format, rule.keyPath, next);
+    if (rule.type === "activation") afterText = nativeEdit(afterText, rule.format, ["version"], 2);
+    const existingParents = rule.keyPath.slice(0, -1).map((_key, index) => rule.keyPath.slice(0, index + 1)).filter(keys => get(value, keys) !== undefined);
+    return { path, format: rule.format, keyPath: rule.keyPath, type: "native-rule", nativeRule: rule, fileExistedBefore, hadKey: previous !== undefined, existingParents,
+      beforeText: text, afterText, before, after: nativeSelection(nativeValue(afterText, rule.format), rule) };
+  }
   if (entry.kind === "skill") {
     if (action !== "disable") return readonly();
     if (entry.locator.nativeControl === "codeflicker-desktop-skill") {
@@ -178,7 +278,7 @@ export async function prepareConfig(entry: ResourceInventoryEntry, action: "disa
   }
   const format = entry.locator.format;
   const keyPath = entry.locator.keyPath;
-  if (!format || !keyPath?.length) return readonly();
+  if (!format || format === "yaml" || !keyPath?.length) return readonly();
   const parsed = format === "toml" ? toml(text) : json(text, format);
   const beforeValue = get(parsed, keyPath);
   if (!beforeValue || typeof beforeValue !== "object" || Array.isArray(beforeValue)) return readonly();
@@ -216,7 +316,25 @@ export function restoreConfig(change: ConfigChange, current: string): string {
   if (selected(change, current) !== change.after) throw new ServiceError("CONTENT_STALE", "所选配置项已变化，恢复不会覆盖当前值", { key: "diagnostics.resources.configEditor.m003" });
   if (current === change.afterText) return change.beforeText;
   let result: string;
-  if (change.type === "json-key") result = editJson(current, change.keyPath, change.before === "missing" ? undefined : JSON.parse(change.before), change.format as "json" | "jsonc");
+  if (change.type === "native-rule") {
+    const rule = change.nativeRule!; const value = nativeValue(current, change.format);
+    let previous: unknown;
+    if (rule.type === "name-list") {
+      const remaining = (get(value, rule.keyPath) as string[]).filter(name => name !== rule.member);
+      previous = remaining.length || change.hadKey ? remaining : undefined;
+    } else if (rule.type === "activation") {
+      const rows = (get(value, rule.keyPath) as Record<string, unknown>[]).filter(row => !activationMatches(row, rule));
+      previous = [...rows, ...JSON.parse(change.before) as Record<string, unknown>[]];
+      if (!(previous as unknown[]).length && !change.hadKey) previous = undefined;
+    } else previous = change.before === "missing" ? undefined : JSON.parse(change.before);
+    result = nativeEdit(current, change.format, rule.keyPath, previous);
+    if (change.format !== "toml") for (let depth = rule.keyPath.length - 1; depth > 0; depth--) {
+      const keys = rule.keyPath.slice(0, depth);
+      if (!change.existingParents?.some(parent => sameKeys(parent, keys)) && Object.keys(object(get(nativeValue(result, change.format), keys))).length === 0) result = nativeEdit(result, change.format, keys, undefined);
+    }
+    if (change.fileExistedBefore === false && Object.keys(object(nativeValue(result, change.format))).filter(key => rule.type !== "activation" || key !== "version").length === 0) return "";
+  }
+  else if (change.type === "json-key") result = editJson(current, change.keyPath, change.before === "missing" ? undefined : JSON.parse(change.before), change.format as "json" | "jsonc");
   else if (change.type === "json-skill") {
     const names = get(json(current, "json"), change.keyPath) as string[];
     const remaining = names.filter(name => name !== change.skillName);

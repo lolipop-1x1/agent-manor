@@ -100,7 +100,8 @@ export async function discoverSources(roots: DiscoverRoots = {}, options: Discov
     if (selected && !selected.has(declaration.client)) continue;
     const environment = process.env[declaration.environmentVariable];
     const clientHome = declaration.homeEnvironmentVariable ? process.env[declaration.homeEnvironmentVariable] : undefined;
-    const configured = roots[declaration.client] ?? (environment ? [environment] : clientHome ? [join(clientHome, "sessions"), ...declaration.defaultRoots.slice(1).map(path => join(homedir(), path))] : declaration.defaultRoots.map(path => join(homedir(), path)));
+    const configured = roots[declaration.client] ?? (environment ? [environment] : declaration.resolveNativeRoots ? declaration.resolveNativeRoots(homedir(), process.env)
+      : clientHome ? [join(clientHome, "sessions"), ...declaration.defaultRoots.slice(1).map(path => join(homedir(), path))] : declaration.defaultRoots.map(path => join(homedir(), path)));
     for (const root of typeof configured === "string" ? [configured] : configured) await walk(resolve(root), declaration);
   }
   return HISTORY_ADAPTERS.reduce((sources, adapter) => adapter.selectSources?.(sources) ?? sources, found);

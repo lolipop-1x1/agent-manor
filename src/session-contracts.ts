@@ -68,7 +68,7 @@ export interface SessionRequestTiming {
   window?: "response" | "generation";
   method: "codex_event_boundary" | "claude_message_boundary" | "codeflicker_message_boundary"
     | "codeflicker_desktop_mirror" | "dsh_stream_window" | "pi_message_boundary" | "zcode_request_span"
-    | "opencode_message_span" | "codebuddy_single_request_turn" | "workbuddy_message_boundary" | "qoder_message_boundary";
+    | "opencode_message_span" | "codebuddy_single_request_turn" | "workbuddy_message_boundary" | "qoder_message_boundary" | "kimi_wire_request" | "omp_message_boundary";
   completion: "explicit" | "inferred" | "partial" | "unknown";
   completionEvidence?: "stop_reason" | "tool_result" | "tool_response_snapshot" | "final_response_snapshot" | "persisted_stream_result" | "request_interrupted"
     | "request_completed" | "stream_finish" | "turn_metrics";
@@ -88,6 +88,8 @@ export interface SessionUsage {
   reasoningEffort?: string;
   /** 来源明确记录的计价服务商，不根据客户端名称推断。 */
   provider?: string;
+  /** 原生逐响应报告的费用，独立于本产品估算与实际账单。 */
+  nativeReportedCostUsd?: number;
   inputTokens?: number;
   outputTokens?: number;
   cachedInputTokens?: number;
@@ -100,6 +102,15 @@ export interface SessionUsage {
   timing?: SessionRequestTiming;
 }
 export type SessionProfileStep = SessionUsage & { sessionId: string; branchIds?: string[]; currentBranch?: boolean };
+/** 原生轮次或会话累计报告独立保存，不混入逐请求统计。 */
+export interface NativeUsageReport extends Partial<Pick<SessionUsage, "model" | "inputTokens" | "outputTokens" | "cachedInputTokens" | "cacheWriteTokens" | "reasoningOutputTokens" | "contextTokens" | "occurredAt">> {
+  scope: "turn" | "session";
+  nativeId?: string;
+  turnKey?: string;
+  reportedCostUsd?: number;
+  nativeModelCalls?: number;
+  totalTokens?: number;
+}
 export interface SessionSummary {
   id: string;
   client: Client;
@@ -125,6 +136,7 @@ export interface SessionSummary {
   messageCount: number;
   turnCount: number;
   models: string[];
+  usageReports?: NativeUsageReport[];
   gaps: Gap[];
 }
 export interface SessionSourceMeta extends SessionSummary {
@@ -294,6 +306,7 @@ export interface SessionProfile {
   resources: (NonNullable<SessionMessage["resource"]> & { count: number })[];
   compressions: number;
   children: SessionSummary[];
+  usageReports?: (NativeUsageReport & { sessionId: string })[];
   outputSpeed?: RequestSpeedSummary;
   steps: SessionProfileStep[];
   stepsTotal?: number;

@@ -1,7 +1,7 @@
 # Grok、Reasonix 与 Codewhale 原生历史
 
 Type: task
-Status: ready-for-agent
+Status: resolved
 Blocked by: 02
 
 ## 目标
@@ -15,3 +15,7 @@ Blocked by: 02
 - 多文件变化、确认删除、未完成记录和证据回读通过合成回归。
 
 ## Comments
+
+## Answer
+
+Grok、Reasonix、Codewhale 原生会话与资源适配完成。累计报告和逐请求用量分离，Codewhale 晚到 ledger 参与内容指纹。历史 14 项、资源 13 项测试通过；复杂声明展开、动态批准链和原生运行保留未知。

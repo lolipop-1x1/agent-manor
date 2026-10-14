@@ -1,7 +1,7 @@
 # 客户端声明与共享适配边界
 
 Type: task
-Status: ready-for-agent
+Status: resolved
 Blocked by: 01
 
 ## 目标
@@ -15,3 +15,7 @@ Blocked by: 01
 - 现有客户端行为与原始证据契约保持兼容。
 
 ## Comments
+
+## Answer
+
+七个稳定客户端身份已登记。历史继续使用既有 HistoryAdapter、NormalizedSnapshot 与规范化事件；入口及恢复定位的必要扩展由资源任务集中实现。来源注册在各格式模块可用后接通，测试通过共享客户端列表隔离根目录。

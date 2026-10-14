@@ -51,7 +51,8 @@ test("npm tarball真实包外安装，原生SQLite与CLI/Worker/Web/Skill无需�
     const [pack] = JSON.parse(packed.stdout.slice(metadataStart)) as { filename: string; files: { path: string }[]; integrity: string; size: number }[];
     assert.ok(pack);
     const paths = new Set(pack.files.map((file) => file.path));
-    for (const file of ["dist/cli.js", "dist/server.js", "dist/worker.js", "dist/clients.js", "dist/history/adapters/codeflicker.js", "dist/web/index.html", "skills/agent-manor/SKILL.md", "docs/usage.md"]) assert.ok(paths.has(file), file);
+    for (const file of ["dist/cli.js", "dist/server.js", "dist/worker.js", "dist/clients.js", "dist/history/adapters/codeflicker.js", "dist/web/index.html", "skills/agent-manor/SKILL.md", "docs/usage.md",
+      "docs/design/native-client-sources.md", ...["gemini", "qwen", "kimi", "omp", "grok", "reasonix", "codewhale"].map(client => `dist/history/adapters/${client}.js`)]) assert.ok(paths.has(file), file);
     assert.ok([...paths].some((path) => path.startsWith("dist/web/assets/") && path.endsWith(".js")));
     assert.ok(![...paths].some((path) => path.startsWith("src/") || path.startsWith("tests/") || path.startsWith(".scratch/")));
     const tarball = join(directory, pack.filename);

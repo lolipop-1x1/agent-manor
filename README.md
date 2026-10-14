@@ -2,7 +2,7 @@
 
 在本机浏览和搜索 Code Agent 历史，查看它们在当前 Git 仓库中的读取与修改活动。
 
-支持 Codex、Claude Code、CodeFlicker CLI／桌面版、DeepSeek Harness、Pi、WorkBuddy、OpenCode、ZCode、CodeBuddy、Qoder。各来源按实际留存记录展示消息、工具与用量；缺失数据明确标注，格式边界见 [历史支持矩阵](docs/design/history-support.md)。
+支持 Codex、Claude Code、CodeFlicker CLI／桌面版、DeepSeek Harness、Pi、WorkBuddy、OpenCode、ZCode、CodeBuddy、Qoder，以及 Gemini CLI、Qwen Code、新版 Kimi Code CLI、Oh My Pi、Grok Build、Reasonix、Codewhale。各来源按实际留存记录展示消息、工具与用量；缺失数据明确标注，格式边界见 [历史支持矩阵](docs/design/history-support.md)。新增七个客户端按固定源码版本及合成来源验收，原生客户端运行仍待验证。
 
 首版提供目录代码地图、文件与行覆盖率、活动和原始证据回查，以及共用一个本地后台的 Web、CLI 和 Agent Skill。精确对应与近似对应分别展示；不能确定的范围保留采集缺口。
 

@@ -1,6 +1,8 @@
 # 历史解析支持与证据边界
 
-规则版本：`PARSER_RULE_VERSION = "8"`，定义在 `src/version.ts`；旧规则游标重建。仓库中的测试样本全部匿名合成；格式结构参考本机只读取证笔记，本文不复制个人来源路径、日志或代码。格式兼容采用结构判断，不宣称整个客户端版本已验证。真实 CodeFlicker 仓库端到端验收见源码仓库的 `docs/validation/codeflicker.md`。
+规则版本：`PARSER_RULE_VERSION = "10"`，定义在 `src/version.ts`；旧规则游标重建。仓库中的测试样本全部匿名合成；格式结构参考本机只读取证笔记，本文不复制个人来源路径、日志或代码。格式兼容采用结构判断，不宣称整个客户端版本已验证。真实 CodeFlicker 仓库端到端验收见源码仓库的 `docs/validation/codeflicker.md`。
+
+Gemini CLI、Qwen Code、新版 Kimi Code CLI、Oh My Pi、Grok Build、Reasonix 和 Codewhale 的固定版本、原生根、分支、用量和合成验收边界见 [七个原生客户端来源](native-client-sources.md)。
 
 ## 来源、身份与续读
 
