@@ -1,7 +1,7 @@
 # 原生客户端扩展
 
 Type: task
-Status: claimed
+Status: resolved
 
 ## 已确定范围
 
@@ -29,13 +29,19 @@ Status: claimed
 ## 任务
 
 - [01 支持范围与验收边界](issues/01-support-scope.md)：resolved。
-- [02 客户端声明与共享适配边界](issues/02-client-contracts.md)：main 集成基础。
-- [03 Gemini 与 Qwen 原生历史](issues/03-gemini-qwen-history.md)：依赖 02。
-- [04 Kimi 与 Oh My Pi 原生历史](issues/04-kimi-omp-history.md)：依赖 02。
-- [05 Grok、Reasonix 与 Codewhale 原生历史](issues/05-grok-reasonix-codewhale-history.md)：依赖 02。
-- [06 原生资源盘点与可恢复管理](issues/06-resource-management.md)：依赖 02。
-- [07 产品集成与完整验收](issues/07-product-validation.md)：依赖 03、04、05、06。
-- [08 两轴审查与修复](issues/08-review.md)：依赖 07。
-- [09 交付与远端回读](issues/09-delivery.md)：依赖 08。
+- [02 客户端声明与共享适配边界](issues/02-client-contracts.md)：resolved。
+- [03 Gemini 与 Qwen 原生历史](issues/03-gemini-qwen-history.md)：resolved。
+- [04 Kimi 与 Oh My Pi 原生历史](issues/04-kimi-omp-history.md)：resolved。
+- [05 Grok、Reasonix 与 Codewhale 原生历史](issues/05-grok-reasonix-codewhale-history.md)：resolved。
+- [06 原生资源盘点与可恢复管理](issues/06-resource-management.md)：resolved。
+- [07 产品集成与完整验收](issues/07-product-validation.md)：resolved。
+- [08 两轴审查与修复](issues/08-review.md)：resolved。
+- [09 交付与远端回读](issues/09-delivery.md)：resolved。
 - [完整规格](spec.md)：现有能力接入与验收要求。
 - [来源支持矩阵](source-matrix.md)：固定版本、原生存储、资源控制和已知缺口。
+
+## 已作决策与交付
+
+七客户端共用既有历史、资源和统计边界，原生累计报告保持独立身份，未核验字段不补造。原生管理保留真实作用范围与保护；普通 Skill 无停用开关时回收／恢复。
+
+源码核对、隔离合成测试和最终构建浏览器验收已完成。完整回归 1197／1197、浏览器与接口 79／79、538 文件交付包检查通过；规范轴 5 项与规格轴 5 项及直接残留全部修复并独立复核。实现与修复已交付 main，远端回读一致；[验收记录](../../docs/validation/native-clients.md) 保留时序测试波动、复跑方式及原生运行未验证边界。
