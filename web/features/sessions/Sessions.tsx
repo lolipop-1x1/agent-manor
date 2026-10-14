@@ -10,7 +10,7 @@ import { CaretDown, CaretLeft, CaretRight, ChatCircle, DownloadSimple, Magnifyin
 import * as Tooltip from "@radix-ui/react-tooltip";
 import * as Popover from "@radix-ui/react-popover";
 import type { Client } from "../../../src/clients";
-import type { SessionGroupedSearchResult, SessionIndexStatus, SessionIndexSummary, SessionJob, SessionListResult, SessionMessage, SessionMessageResult, SessionProfile, SessionQuery, SessionRefreshOptions, SessionSearchHit, SessionSearchResult, SessionSummary, SessionTimelineResult } from "../../../src/session-contracts";
+import type { SessionGroupedSearchResult, SessionIndexStatus, SessionIndexSummary, SessionListResult, SessionMessage, SessionMessageResult, SessionProfile, SessionQuery, SessionRefreshOptions, SessionSearchHit, SessionSearchResult, SessionSummary, SessionTimelineResult } from "../../../src/session-contracts";
 import { ApiError, isAborted, request } from "../../shared/api";
 import { ResizableWorkspace } from "../../shared/layout/ResizableWorkspace";
 import { sessionDisplayTitle, sessionParentTitle, sessionMessageText, executionEntryLabel, groupedTurns, localDateBoundary, PAGE_SIZE, TURN_PAGE_SIZE, type EvidenceTarget, searchHitMode, searchKinds, sessionParams, turnTitle, workspaceSessionSemantics } from "./session-model";
@@ -25,7 +25,8 @@ import { FilterSelect } from "../../shared/ui/FilterSelect";
 import { availableClientOptions } from "../../shared/ui/client-options";
 import { ProjectPicker } from "../../shared/ui/ProjectPicker";
 import { DatePicker } from "../../shared/ui/DatePicker";
-import { SessionRefreshActions, SessionRefreshStatus } from "./SessionRefresh";
+import { AutoRefreshControl } from "../../shared/ui/AutoRefreshControl";
+import { useHistoryRevision } from "../../shared/refresh/useHistoryRefresh";
 import { useVisiblePolling } from "../../shared/refresh/useVisiblePolling";
 import { completeTurnMarkdown } from "./session-message-content";
 import { useContinuousReading } from "./useContinuousReading";
@@ -38,7 +39,6 @@ type ReadingPosition = { branch?: string; mode: Mode; page: number; focus?: stri
 type RefreshAnchor = { sessionId: string; messageId?: string; offset: number; scroll: number; atEnd: boolean };
 
 const modeLabels: Record<Mode, string> = { brief: "sessions.mode.brief", full: "sessions.mode.full", trace: "sessions.mode.trace" };
-const activeJob = (job?: SessionJob) => job?.status === "queued" || job?.status === "running";
 const formatCount = (value: number) => formatNumber(getLanguage(), value);
 const dateLabel = (value?: string) => value ? formatDateTime(getLanguage(), value) : t("sessions.message.timeMissing");
 const shortProject = (value?: string) => value ? value.split(/[\\/]/).filter(Boolean).at(-1) ?? value : t("sessions.noProject");
@@ -114,16 +114,17 @@ function SessionIndexGaps({ active, version }: { active: boolean; version?: stri
   </details>;
 }
 
-export default function Sessions({ active, target, onMap, autoRefreshError }: { active: boolean; target?: Target; onMap: (path?: string, project?: string, session?: SessionSummary) => void; autoRefreshError?: Error | null }) {
+export default function Sessions({ active, target, onMap, autoRefreshError, historyRevision = 0, historyUpdating = false, onHistoryRefresh, onHistoryStatus, onClientFilterChange }: {
+  active: boolean; target?: Target; onMap: (path?: string, project?: string, session?: SessionSummary) => void; autoRefreshError?: Error | null;
+  historyRevision?: number; historyUpdating?: boolean; onHistoryRefresh?: (options?: SessionRefreshOptions) => void;
+  onHistoryStatus?: (status: SessionIndexSummary) => void; onClientFilterChange?: (client?: Client) => void;
+}) {
   const { refreshIntervals } = useI18n();
   const initialFilters = useRef(readSessionFilters(location.hash)).current;
   const [status, setStatus] = useState<SessionIndexSummary | null>(null);
   const [statusReload, setStatusReload] = useState(-1);
   const [statusLoading, setStatusLoading] = useState(false);
   const [statusError, setStatusError] = useState<Error | null>(null);
-  const [sessionJob, setSessionJob] = useState<SessionJob | undefined>();
-  const [jobError, setJobError] = useState<Error | null>(null);
-  const [refreshing, setRefreshing] = useState(false);
   const [reload, setReload] = useState(0);
   const [client, setClient] = useState<Client | "all">(initialFilters.client);
   const [project, setProject] = useState(initialFilters.project);
@@ -229,7 +230,9 @@ export default function Sessions({ active, target, onMap, autoRefreshError }: { 
   const pendingHit = useRef<"first" | "last" | undefined>(undefined);
   const pageScroll = useRef(true);
   const evidenceRequest = useRef<AbortController | undefined>(undefined);
-  const previousJob = useRef<SessionJob | undefined>(undefined);
+  const releasedTarget = useRef<Target | undefined>(undefined);
+  useHistoryRevision(active, historyRevision, () => { releasedTarget.current = target; setReload(value => value + 1); });
+  useEffect(() => { if (active) onClientFilterChange?.(client === "all" ? undefined : client); }, [active, client, onClientFilterChange]);
   useEffect(() => () => evidenceRequest.current?.abort(), []);
   useEffect(() => { setTraceSelection(focusMessageId); }, [focusMessageId, selectedSessionId, messagePage]);
 
@@ -257,7 +260,7 @@ export default function Sessions({ active, target, onMap, autoRefreshError }: { 
         clientCandidatesPending.current = false;
         setStatus(result);
         setStatusReload(reload);
-        setSessionJob(current => activeJob(current) ? current : result.job);
+        onHistoryStatus?.(result);
       })
       .catch(error => { if (!isAborted(error)) { setStatusError(error instanceof Error ? error : new Error(String(error))); setStatusReload(reload); } })
       .finally(() => { if (!controller.signal.aborted) setStatusLoading(false); });
@@ -270,7 +273,7 @@ export default function Sessions({ active, target, onMap, autoRefreshError }: { 
     const result = await request<SessionIndexSummary>("/sessions/status?summary=true", { signal });
     if (signal.aborted) return;
     setStatus(current => current && current.version === result.version && current.stale === result.stale && current.job?.id === result.job?.id && current.job?.status === result.job?.status ? current : result);
-    setSessionJob(current => activeJob(current) ? current : result.job);
+    onHistoryStatus?.(result);
   });
 
   const invalidDates = !!from && !!to && from > to;
@@ -339,7 +342,7 @@ export default function Sessions({ active, target, onMap, autoRefreshError }: { 
     return () => controller.abort();
   }, [active, indexReady, selectedSessionId, listQuery, globalSearchQuery, invalidDates]);
 
-  const readingVersion = target?.sessionId === selectedSessionId && target?.version ? target.version : status?.version;
+  const readingVersion = target !== releasedTarget.current && target?.sessionId === selectedSessionId && target?.version ? target.version : status?.version;
   const messageQuery = useMemo(() => sessionParams({
     version: readingVersion,
     page: focusMessageId ? undefined : messagePage,
@@ -459,28 +462,6 @@ export default function Sessions({ active, target, onMap, autoRefreshError }: { 
       .finally(() => { if (!controller.signal.aborted) setLocalSearchLoading(false); });
     return () => controller.abort();
   }, [active, indexReady, selectedSessionId, debouncedLocalQuery, localSearchQuery, reload]);
-
-  useEffect(() => {
-    const job = sessionJob;
-    if (!active || !job || !activeJob(job)) return;
-    const controller = new AbortController();
-    let timer: ReturnType<typeof setTimeout>;
-    const poll = async () => {
-      try {
-        const result = await request<{ job: SessionJob }>(`/jobs/${encodeURIComponent(job.id)}`, { signal: controller.signal });
-        if (!controller.signal.aborted) { setSessionJob(result.job); setJobError(null); }
-      } catch (error) { if (!isAborted(error) && !controller.signal.aborted) setJobError(error instanceof Error ? error : new Error(String(error))); }
-      if (!controller.signal.aborted) timer = setTimeout(() => void poll(), 1100);
-    };
-    timer = setTimeout(() => void poll(), 300);
-    return () => { controller.abort(); clearTimeout(timer); };
-  }, [active, sessionJob?.id, sessionJob?.status]);
-
-  useEffect(() => {
-    // 已完成的旧任务只是状态，只有本次观察到的刷新完成才重新读取索引。
-    if (sessionJob?.status === "complete" && previousJob.current?.id === sessionJob.id && activeJob(previousJob.current) && sessionJob.version !== status?.version) setReload(value => value + 1);
-    previousJob.current = sessionJob;
-  }, [sessionJob?.id, sessionJob?.status]);
 
   useEffect(() => {
     if (!target?.sessionId) return;
@@ -676,15 +657,6 @@ export default function Sessions({ active, target, onMap, autoRefreshError }: { 
     if (current.has(id) === open) return current;
     const next = new Set(current); if (open) next.add(id); else next.delete(id); return next;
   });
-  const refresh = async (options: SessionRefreshOptions = { client: client === "all" ? undefined : client, mode: "quick" }) => {
-    setRefreshing(true);
-    setJobError(null);
-    try {
-      const result = await request<{ job: SessionJob }>("/sessions/refresh", { method: "POST", body: { ...options } });
-      setSessionJob(result.job);
-    } catch (error) { setJobError(error instanceof Error ? error : new Error(String(error))); }
-    finally { setRefreshing(false); }
-  };
 
   useEffect(() => {
     if (active && selectedSessionId && !new URLSearchParams(location.hash.split("?")[1]).get("id")) updateAddress(selectedSessionId, { mode }, true);
@@ -696,6 +668,7 @@ export default function Sessions({ active, target, onMap, autoRefreshError }: { 
   }, [active]);
   return <div className="sessions-shell" data-compact-panel={compactPanel ?? ""} hidden={!active}>
     {compactPanel && <button className="session-mobile-backdrop" aria-label={t("sessions.reading.return")} onClick={() => setCompactPanel(null)} /> }
+    <div className="session-page-actions"><AutoRefreshControl scope="sessions" /></div>
     <ResizableWorkspace variant="sessions" sidebarCollapsed={leftCollapsed} detailsCollapsed={rightCollapsed} semantics={workspaceSessionSemantics()}>
       <aside className={`sidebar session-sidebar${leftCollapsed ? " panel-collapsed" : ""}`} aria-label={t("sessions.list.title")}>
         <div className="pane-heading"><span>{t("sessions.list.library")}</span><div className="section-actions"><button className="icon-button panel-toggle" aria-label={leftCollapsed ? t("sessions.list.expand") : t("sessions.list.collapse")} aria-expanded={!leftCollapsed} aria-controls="session-list-content" onClick={() => { setLeftCollapsed(value => !value); setCompactPanel(null); }}>{leftCollapsed ? <CaretRight size={16} /> : <CaretLeft size={16} />}</button></div></div>
@@ -717,14 +690,11 @@ export default function Sessions({ active, target, onMap, autoRefreshError }: { 
           </Popover.Content></Popover.Portal></Popover.Root>
           {invalidDates && <p className="session-filter-error" role="alert">{t("sessions.filter.invalidDates")}</p>}
           <div className="session-list-meta"><span>{debouncedGlobalQuery ? visibleGlobalSearch ? t("sessions.list.count", { count: visibleGlobalSearch.total }) : t("sessions.search.history") : sessionList ? t("sessions.list.count", { count: sessionList.total }) : t("sessions.list.title")}</span>
-            <SessionRefreshActions client={client === "all" ? undefined : client} disabled={refreshing || activeJob(sessionJob)} onRefresh={options => void refresh(options)} />
           </div>
 
           {status?.stale && <Notice>{t("sessions.status.stale")}</Notice>}
-          {(statusError || jobError || autoRefreshError) && <Notice danger action={statusError ? <button className="text-button" onClick={() => setReload(value => value + 1)}>{t("common.retry")}</button> : undefined}><SessionError error={statusError ?? jobError ?? autoRefreshError!} /></Notice>}
+          {(statusError || autoRefreshError) && <Notice danger action={statusError ? <button className="text-button" onClick={() => setReload(value => value + 1)}>{t("common.retry")}</button> : undefined}><SessionError error={statusError ?? autoRefreshError!} /></Notice>}
           {statusLoading && !status && <p className="muted" role="status">{t("sessions.status.loading")}</p>}
-          <SessionRefreshStatus job={sessionJob} />
-          {sessionJob?.status === "failed" && <Notice danger>{isMessageDescriptorKnown(sessionJob.errorDescriptor) ? messageText(sessionJob.errorDescriptor, sessionJob.error) : sessionJob.error ? <SessionError error={sessionJob.error} /> : t("sessions.refresh.failedRetained")}</Notice>}
           {listLoading && <p className="session-list-loading" role="status">{t("sessions.list.loading")}</p>}
           {listError && <Notice danger action={<button className="text-button" onClick={() => setReload(value => value + 1)}>{t("common.retry")}</button>}><SessionError error={listError} /></Notice>}
           <div className="session-list" aria-label={t("sessions.list.results")}>
@@ -735,7 +705,7 @@ export default function Sessions({ active, target, onMap, autoRefreshError }: { 
               <ChatCircle size={17} aria-hidden="true" /><span className="session-list-copy"><strong title={sessionDisplayTitle(session)}>{sessionDisplayTitle(session)}</strong><SessionRelationship session={session} /><QuietTag session={session} /><small>{clientLabel(session.client)} · {shortProject(session.project)}{session.updatedAt && <> · {dateLabel(session.updatedAt)}</>}</small></span><CaretRight size={15} aria-hidden="true" />
             </button>)}
             {!debouncedGlobalQuery && !listLoading && !listError && sessionList?.sessions.length === 0 && <div className="session-empty-list"><ChatCircle size={26} aria-hidden="true" /><strong>{status?.sessionCount || debouncedGlobalQuery || client !== "all" || project !== "all" || from || to ? t("sessions.list.emptyFiltered") : t("sessions.list.empty")}</strong>
-              <p>{status?.sessionCount ? t("sessions.list.adjust") : t("sessions.list.indexPrompt")}</p>{!status?.sessionCount && <button className="button primary" disabled={refreshing || activeJob(sessionJob)} onClick={() => void refresh()}>{t("sessions.refresh.history")}</button>}
+              <p>{status?.sessionCount ? t("sessions.list.adjust") : t("sessions.list.indexPrompt")}</p>{!status?.sessionCount && <button className="button primary" disabled={historyUpdating} onClick={() => onHistoryRefresh?.()}>{t("sessions.refresh.history")}</button>}
             </div>}
           </div>
           {!debouncedGlobalQuery && sessionList && sessionList.total > PAGE_SIZE && <Pager page={sessionList.page} pageSize={sessionList.pageSize} total={sessionList.total} onChange={setListPage} label={t("sessions.list.pagination")} />}

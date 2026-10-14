@@ -1,10 +1,11 @@
 import { clientLabel, getLanguage, messageText, t, useI18n } from "../../shared/i18n";
 import { formatDateTime, formatNumber, formatPercent } from "../../../src/i18n";
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
-import { ArrowClockwise, CaretDown } from "@phosphor-icons/react";
+import { CaretDown } from "@phosphor-icons/react";
 import { CLIENTS, type Client } from "../../../src/clients";
 import type { SessionCheckMode, SessionClientCheck, SessionJob, SessionRefreshOptions } from "../../../src/session-contracts";
 import "../../shared/ui/filter-controls.css";
+import { RefreshControl } from "../../shared/ui/RefreshControl";
 
 const scopeLabel = (client?: Client) => client ? clientLabel(client) : t("sessions.allClients");
 const modeLabel = (mode?: SessionCheckMode) => mode === "full" ? t("sessions.refresh.full") : mode === "quick" ? t("sessions.refresh.quick") : t("sessions.refresh.modeMissing");
@@ -16,29 +17,29 @@ const fallbackLabels: Record<string, string> = {
   metadata_changed: "sessions.refresh.fallback.metadata", source_changed: "sessions.refresh.fallback.source",
 };
 
-export function SessionRefreshActions({ client, disabled, onRefresh }: {
+export function HistoryRefreshControl({ client, disabled, onRefresh, job, error, status }: {
   client?: Client; disabled: boolean; onRefresh: (options: SessionRefreshOptions) => void;
+  job?: SessionJob; error?: Error | null; status?: { clientChecks?: SessionClientCheck[] };
 }) {
   useI18n();
   const scope = scopeLabel(client);
-  return <div className="session-refresh-actions">
-    <button className="icon-button" aria-label={t("sessions.refresh.action")} title={t("sessions.refresh.quickTitle", { scope })} disabled={disabled} onClick={() => onRefresh({ client, mode: "quick" })}>
-      <ArrowClockwise size={16} className={disabled ? "is-spinning" : ""} aria-hidden="true" />
-    </button>
-    <DropdownMenu.Root>
-      <DropdownMenu.Trigger className="icon-button session-refresh-menu-trigger" aria-label={t("sessions.refresh.options")} title={t("sessions.refresh.choose")} disabled={disabled}>
+  const completedAt = job?.status === "complete" ? job.finishedAt : undefined;
+  return <RefreshControl label={t("common.history.update")} busy={disabled} error={!!error || job?.status === "failed"}
+    statusLabel={t("common.history.status")} completedAt={completedAt} onRefresh={() => onRefresh({ mode: "quick" })}
+    details={<><p>{t("common.history.scope")}</p><SessionRefreshStatus job={job} /><SessionClientChecks checks={status?.clientChecks} /></>}
+    menu={<DropdownMenu.Root>
+      <DropdownMenu.Trigger className="icon-button history-refresh-menu-trigger" aria-label={t("common.history.options")} disabled={disabled}>
         <CaretDown size={12} aria-hidden="true" />
       </DropdownMenu.Trigger>
-      <DropdownMenu.Portal><DropdownMenu.Content className="filter-menu session-refresh-menu" align="end" sideOffset={6} collisionPadding={12}>
-        <DropdownMenu.Label className="session-refresh-menu-label">{t("sessions.refresh.scopeAndMode")}</DropdownMenu.Label>
-        <DropdownMenu.Item className="filter-option" onSelect={() => onRefresh({ mode: "quick" })}>{t("sessions.refresh.allQuick")}</DropdownMenu.Item>
-        <DropdownMenu.Separator className="session-refresh-menu-separator" />
-        <DropdownMenu.Item className="filter-option" onSelect={() => onRefresh({ client, mode: "full" })}>{t("sessions.refresh.fullScope", { scope })}</DropdownMenu.Item>
-        {client && <DropdownMenu.Item className="filter-option" onSelect={() => onRefresh({ mode: "full" })}>{t("sessions.refresh.allFull")}</DropdownMenu.Item>}
-        <p className="session-refresh-menu-note">{t("sessions.refresh.fullNote")}</p>
+      <DropdownMenu.Portal><DropdownMenu.Content className="filter-menu history-refresh-menu" align="end" sideOffset={6} collisionPadding={12}>
+        <DropdownMenu.Label className="history-refresh-menu-label">{t("sessions.refresh.scopeAndMode")}</DropdownMenu.Label>
+        {client && <DropdownMenu.Item className="filter-option" onSelect={() => onRefresh({ client, mode: "quick" })}>{t("common.history.clientQuick", { client: scope })}</DropdownMenu.Item>}
+        {client && <DropdownMenu.Item className="filter-option" onSelect={() => onRefresh({ client, mode: "full" })}>{t("sessions.refresh.fullScope", { scope })}</DropdownMenu.Item>}
+        {client && <DropdownMenu.Separator className="history-refresh-menu-separator" />}
+        <DropdownMenu.Item className="filter-option" onSelect={() => onRefresh({ mode: "full" })}>{t("sessions.refresh.allFull")}</DropdownMenu.Item>
+        <p className="history-refresh-menu-note">{t("sessions.refresh.fullNote")}</p>
       </DropdownMenu.Content></DropdownMenu.Portal>
-    </DropdownMenu.Root>
-  </div>;
+    </DropdownMenu.Root>} />;
 }
 
 export function SessionRefreshStatus({ job }: { job?: SessionJob }) {

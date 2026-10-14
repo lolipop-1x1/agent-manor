@@ -20,8 +20,10 @@ import { loadOverviewPanels, loadOverviewPanel, visibleOverviewBatch, replaceOve
 import { CostAmount } from "./CostAmount";
 import { WeeklyReview } from "./WeeklyReview";
 import "./overview.css";
+import { RefreshControl } from "../../shared/ui/RefreshControl";
+import { useHistoryRevision } from "../../shared/refresh/useHistoryRefresh";
 
-export default function Overview({ active, onSession, onUsage, onMap }: { active: boolean; onSession: (target: OverviewSessionTarget) => void; onUsage: (hash: string) => void; onMap: (target: OverviewMapTarget) => void }) {
+export default function Overview({ active, onSession, onUsage, onMap, historyRevision = 0 }: { historyRevision?: number; active: boolean; onSession: (target: OverviewSessionTarget) => void; onUsage: (hash: string) => void; onMap: (target: OverviewMapTarget) => void }) {
   const { t, number, percent, message, date } = useI18n();
   const [route, setRoute] = useState(() => readOverviewRoute(location.hash));
   const lastAddress = useRef(location.hash), adoptingAddress = useRef(false);
@@ -50,6 +52,8 @@ export default function Overview({ active, onSession, onUsage, onMap }: { active
   const [queryDate, setQueryDate] = useState(() => new Date());
   const reportScope = useRef(""); const newSnapshot = useRef(true);
   const [loading, setLoading] = useState(false); const [error, setError] = useState<Error | null>(null); const [revision, setRevision] = useState(0);
+  const [completedAt, setCompletedAt] = useState<string>();
+  useHistoryRevision(active, historyRevision, () => { newSnapshot.current = true; setQueryDate(new Date()); setRevision(value => value + 1); });
   const [selection, setSelection] = useState<InvestigationSelection | null>(null);
   const trigger = useRef<HTMLElement | null>(null);
 
@@ -82,7 +86,7 @@ export default function Overview({ active, onSession, onUsage, onMap }: { active
       (panel, value) => { if (!controller.signal.aborted) { if (panel === "distribution") distributionFailureDimension.current = distributionRoute.current; setPanelErrors(current => ({ ...current, [panel]: failure(value) })); } },
       () => distributionRoute.current,
       listener => { distributionListeners.current.add(listener); return () => { distributionListeners.current.delete(listener); }; },
-    ).then(result => { if (!controller.signal.aborted) { setBatch(result); reportScope.current = scopeKey; newSnapshot.current = false; } }).catch(value => { if (!controller.signal.aborted && !isAborted(value)) setError(failure(value)); }).finally(() => { if (!controller.signal.aborted) { globalRequest.current = null; setLoading(false); } });
+    ).then(result => { if (!controller.signal.aborted) { setBatch(result); setCompletedAt(new Date().toISOString()); reportScope.current = scopeKey; newSnapshot.current = false; } }).catch(value => { if (!controller.signal.aborted && !isAborted(value)) setError(failure(value)); }).finally(() => { if (!controller.signal.aborted) { globalRequest.current = null; setLoading(false); } });
     return () => { controller.abort(); if (globalRequest.current === controller) globalRequest.current = null; };
   }, [active, key, revision, invalid]);
   const inspect = useCallback((next: InvestigationSelection, origin?: HTMLElement) => { trigger.current = origin ?? (document.activeElement instanceof HTMLElement ? document.activeElement : null); setSelection(next); }, []);
@@ -133,7 +137,7 @@ export default function Overview({ active, onSession, onUsage, onMap }: { active
   const rankMax = Math.max(1, ...ranking.map(row => distributionValue(row) ?? 0));
   const openUsage = () => { if (!report) return; onUsage(`#usage?${overviewParameters({ window: "custom", from: report.range.from, to: report.range.to, clients: report.query.clients, projects: report.query.projects, models: report.query.models, metric: route.metric, groupBy: route.distribution === "tool" ? "model" : route.distribution, version: report.version, priceVersion: report.priceVersion })}`); };
   return <main className="overview-page">
-    <div className="overview-page-heading"><h1>{t("overview.title")}</h1><div><HelpPopover label={t("overview.help")}><p>{t("overview.help.global")}</p>{report && <><p>{t("overview.help.versions", { version: report.version, priceVersion: report.priceVersion, timezone: report.timezone })}</p>{report.totals && <p>{t("overview.help.coverage", { complete: report.totals.completeTokenRequests, partial: report.totals.partialTokenRequests, missing: report.totals.missingTokenRequests, priced: report.totals.pricedRequests, partiallyPriced: report.totals.partiallyPricedRequests, unpriced: report.totals.unpricedRequests })}</p>}</>}</HelpPopover><button className="overview-refresh" onClick={refresh} disabled={busy} aria-label={t("overview.refresh")}><ArrowClockwise size={17} className={busy ? "is-spinning" : undefined} /><span>{t("overview.refresh")}</span></button></div></div>
+    <div className="overview-page-heading"><h1>{t("overview.title")}</h1><div><HelpPopover label={t("overview.help")}><p>{t("overview.help.global")}</p>{report && <><p>{t("overview.help.versions", { version: report.version, priceVersion: report.priceVersion, timezone: report.timezone })}</p>{report.totals && <p>{t("overview.help.coverage", { complete: report.totals.completeTokenRequests, partial: report.totals.partialTokenRequests, missing: report.totals.missingTokenRequests, priced: report.totals.pricedRequests, partiallyPriced: report.totals.partiallyPricedRequests, unpriced: report.totals.unpricedRequests })}</p>}</>}</HelpPopover><RefreshControl label={t("overview.refresh")} onRefresh={refresh} busy={busy} error={!!error} completedAt={completedAt} details={<p>{t("common.refresh.pageScope")}</p>} /></div></div>
     <div className="overview-filters"><FilterSelect label={t("overview.filter.client")} value={route.clients?.[0] ?? "__all__"} options={[{ value: "__all__", label: t("overview.filter.allClients") }, ...availableClientOptions(report?.facets?.clients)]} onChange={value => patch({ clients: value === "__all__" ? undefined : [value] })} /><ProjectPicker label={t("overview.filter.project")} value={route.projects?.[0] ?? "__all__"} options={[{ value: "__all__", label: t("common.project.all") }, ...(report?.facets?.projects ?? []).map(value => ({ value: usageDimensionKey(value), label: shortName(value), description: value }))]} onChange={value => patch({ projects: value === "__all__" ? undefined : [value] })} />{(route.clients?.length || route.projects?.length) ? <button className="text-button" onClick={() => patch({ clients: undefined, projects: undefined })}>{t("overview.clear")}</button> : null}</div>
     <WeeklyReview active={active} clients={route.clients} projects={route.projects} revision={revision} onSession={onSession} />
     <div className="overview-range-heading"><h2>{t("overview.rangeOverview")}</h2><div className="overview-date-controls"><FilterSelect label={t("overview.filter.date")} value={route.window} options={["365", "7", "30", "90", "year", "all", "custom"].map(value => ({ value, label: t(`overview.window.${value}`) }))} onChange={value => patch({ window: value as OverviewWindow })} />{route.window === "custom" && <><DatePicker label={t("overview.filter.from")} value={route.from ?? ""} onChange={from => patch({ from: from || undefined })} /><span>–</span><DatePicker label={t("overview.filter.to")} value={route.to ?? ""} onChange={to => patch({ to: to || undefined })} /></>}</div></div>

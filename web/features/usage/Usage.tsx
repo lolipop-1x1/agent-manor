@@ -21,12 +21,15 @@ import { PricingManager } from "./PricingManager";
 import { UsageRequestDialog } from "./UsageRequestDialog";
 import { groupLabel, UsageCharts } from "./UsageCharts";
 import "./usage.css";
+import { RefreshControl } from "../../shared/ui/RefreshControl";
+import { useHistoryRevision } from "../../shared/refresh/useHistoryRefresh";
 
-export default function Usage({ active, onSession }: { active: boolean; onSession: (target: { sessionId: string; messageId?: string }) => void }) {
+export default function Usage({ active, onSession, historyRevision = 0 }: { historyRevision?: number; active: boolean; onSession: (target: { sessionId: string; messageId?: string }) => void }) {
   const { t, number, date, dateTime, message, language } = useI18n();
   const [route, setRoute] = useState(() => readUsageRoute(location.hash));
   const lastAddress = useRef(location.hash), adoptingAddress = useRef(false);
   const [revision, setRevision] = useState(0);
+  const [completedAt, setCompletedAt] = useState<string>();
   const [versions, setVersions] = useState<{ index: string; price: string } | null>(null);
   const [pricing, setPricing] = useState<PricingStatus | null>(null);
   const [report, setReport] = useState<UsageReport | null>(null);
@@ -40,6 +43,8 @@ export default function Usage({ active, onSession }: { active: boolean; onSessio
   const [requestRevision, setRequestRevision] = useState(0);
   const requestTrigger = useRef<HTMLElement | null>(null);
   const patch = (value: Partial<UsageRoute>, reset = true) => setRoute(current => ({ ...current, ...(reset ? { page: 1, selectedSession: undefined, requestPage: 1 } : {}), ...value }));
+  const refresh = () => { patch({ version: undefined, priceVersion: undefined }, false); setRevision(current => current + 1); };
+  useHistoryRevision(active, historyRevision, refresh);
   useEffect(() => {
     const navigate = () => { if (location.hash.startsWith("#usage")) setRoute(readUsageRoute(location.hash)); };
     globalThis.addEventListener("hashchange", navigate); return () => globalThis.removeEventListener("hashchange", navigate);
@@ -112,7 +117,7 @@ export default function Usage({ active, onSession }: { active: boolean; onSessio
         synchronizedQuery.current = loadedQuery.current;
         setRoute(current => versions && usageParameters(usageQuery(current, versions.index, versions.price)) === queryKey ? { ...current, speedGroups, speedGroup: undefined } : current);
       }
-      setReport(result); setFacets(result.facets); setLoading(false);
+      setReport(result); setCompletedAt(new Date().toISOString()); setFacets(result.facets); setLoading(false);
     }).catch(fail);
     return () => { controller.abort(); stopPreparation(); };
   }, [active, queryKey, invalid, revision]);
@@ -176,7 +181,7 @@ export default function Usage({ active, onSession }: { active: boolean; onSessio
         {pricing && <><h3>{t("usage.pricing.help")}</h3><p>{t("usage.pricing.automaticBasis")}</p><p>{t(`usage.pricing.${pricing.source}`)}{pricing.fetchedAt && <> · {t("usage.pricing.updated", { time: dateTime(pricing.fetchedAt) })}</>}</p>{pricing.error && <p className="usage-warning">{message(pricing.errorDescriptor, pricing.error)}</p>}</>}
         {priceHistory && <p>{t("usage.pricing.history")}{priceHistory.fetchedAt && <> · {t("usage.pricing.updated", { time: dateTime(priceHistory.fetchedAt) })}</>}{priceHistory.error && <> · {message(priceHistory.errorDescriptor, priceHistory.error)}</>}</p>}
         {report && <details><summary>{t("usage.help.diagnostics")}</summary><p>{t("usage.help.version", { version: report.version, priceVersion: report.priceVersion })}</p></details>}
-      </HelpPopover><button onClick={() => setPricesOpen(true)} disabled={!pricing}>{t("usage.pricing.open")}</button><button className="icon-button" onClick={() => { patch({ version: undefined, priceVersion: undefined }, false); setRevision(current => current + 1); }} aria-label={t("usage.refresh")} disabled={loading}><ArrowClockwise size={18} className={loading ? "is-spinning" : undefined} aria-hidden="true" /></button>
+      </HelpPopover><button onClick={() => setPricesOpen(true)} disabled={!pricing}>{t("usage.pricing.open")}</button><RefreshControl label={t("usage.refresh")} onRefresh={refresh} busy={loading} error={!!error} completedAt={completedAt} details={<p>{t("common.refresh.pageScope")}</p>} />
     </div></div>
     <div className="usage-filters"><div className="usage-date-controls"><FilterSelect label={t("usage.filter.date")} value={route.window} options={["today", "yesterday", "7", "14", "30", "90", "all", "custom"].map(item => ({ value: item, label: t(`usage.window.${item}`) }))} onChange={window => patch({ window: window as DateWindow, timeFrom: undefined, timeTo: undefined })} />{route.window === "custom" && <><DatePicker label={t("usage.filter.from")} value={route.from ?? ""} onChange={from => patch({ from: from || undefined, timeFrom: undefined, timeTo: undefined })} /><span>–</span><DatePicker label={t("usage.filter.to")} value={route.to ?? ""} onChange={to => patch({ to: to || undefined, timeFrom: undefined, timeTo: undefined })} /></>}</div>
       {filterDefinitions.map(filter => <MultiFilterPicker key={filter.include} label={t(filter.label)} options={filter.options} included={route[filter.include] ?? []} excluded={route[filter.exclude] ?? []} onChange={(included, excluded) => patch({ [filter.include]: included, [filter.exclude]: excluded })} />)}

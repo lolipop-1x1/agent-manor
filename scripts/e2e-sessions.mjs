@@ -497,7 +497,7 @@ try {
   console.log((await browser(["run-code", `async page => {
     await page.goto(${JSON.stringify(`http://127.0.0.1:${status.instance.port}/#sessions?id=${encodeURIComponent(codex.id)}`)});
     await page.locator(".sessions-main h1").filter({ hasText: "实现状态检查" }).waitFor();
-    await page.getByRole("button", { name: "刷新会话索引", exact: true }).click();
+    await page.getByRole("button", { name: "更新历史", exact: true }).click();
     await page.locator(".sessions-main h1").filter({ hasText: "状态检查改名验收" }).waitFor();
     await page.locator(".session-list-item").filter({ hasText: "状态检查改名验收" }).waitFor();
     return { titleRenamePassed: true };

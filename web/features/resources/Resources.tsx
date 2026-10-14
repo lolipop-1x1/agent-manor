@@ -26,6 +26,8 @@ import { resourceApi, resourceQuery, type FavoriteResult, type ResourceArchiveRe
 import { clientLabel, formatList, isMessageDescriptorKnown, messageText, t, useI18n } from "../../shared/i18n";
 import { type MessageDescriptor } from "../../../src/i18n";
 import "./resources.css";
+import { RefreshControl } from "../../shared/ui/RefreshControl";
+import { useHistoryRevision } from "../../shared/refresh/useHistoryRefresh";
 
 type ResourceTab = "usage" | "local" | "disabled" | "trash" | "operations";
 interface ResourceRoute {
@@ -256,7 +258,7 @@ function UsageHelp({ kind }: { kind: ResourceKind }) {
   </dl></HelpPopover>;
 }
 
-export default function Resources({ active, onSession }: { active: boolean; onSession: (target: { sessionId: string; messageId: string }) => void }) {
+export default function Resources({ active, onSession, historyRevision = 0 }: { historyRevision?: number; active: boolean; onSession: (target: { sessionId: string; messageId: string }) => void }) {
   useI18n();
   const [route, setRoute] = useState<ResourceRoute>(readRoute);
   const [status, setStatus] = useState<ResourceStatusSummary | null>(null);
@@ -283,8 +285,10 @@ export default function Resources({ active, onSession }: { active: boolean; onSe
   const [evidenceError, setEvidenceError] = useState<Error | null>(null);
   const [feedback, setFeedback] = useState<MessageDescriptor | null>(null);
   const [reload, setReload] = useState(0);
+  useHistoryRevision(active, historyRevision, () => setReload(value => value + 1));
   const [favoriteReload, setFavoriteReload] = useState(0);
   const [refreshing, setRefreshing] = useState(false);
+  const [inventoryError, setInventoryError] = useState<Error | null>(null);
   const [favoritePending, setFavoritePending] = useState<ReadonlySet<string>>(new Set());
   const favoriteBase = useRef<string[] | null>(null);
   const favoriteActions = useRef(new Map<string, PendingFavorite>());
@@ -523,9 +527,9 @@ export default function Resources({ active, onSession }: { active: boolean; onSe
     favoriteQueue.current = task; await task;
   };
   const refresh = async () => {
-    setRefreshing(true); setError(null);
+    setRefreshing(true); setError(null); setInventoryError(null);
     try { setStatus(await resourceApi.refresh()); setReload(value => value + 1); setFeedback({ key: "resources.feedback.inventoryUpdated" }); }
-    catch (failure) { setError(failure instanceof Error ? failure : new Error(errorMessage(failure))); }
+    catch (failure) { setInventoryError(failure instanceof Error ? failure : new Error(errorMessage(failure))); }
     finally { setRefreshing(false); }
   };
   const addSource = async (event: FormEvent) => {
@@ -717,7 +721,7 @@ export default function Resources({ active, onSession }: { active: boolean; onSe
         <div className="pane-heading"><span>{t("resources.filters.label")}</span><button className="icon-button panel-toggle" aria-label={sidebarCollapsed ? t("resources.filters.expand") : t("resources.filters.collapse")} aria-expanded={!sidebarCollapsed} aria-controls="resource-filter-content" onClick={() => setSidebarCollapsed(value => !value)}>{sidebarCollapsed ? <CaretRight size={17} /> : <CaretLeft size={17} />}</button></div>{!sidebarCollapsed && !compact && filters}
       </aside>
       <main className="resources-main">
-        <header className="resources-heading"><h1>{t("resources.title")}</h1><div className="resource-kind-tabs" role="group" aria-label={t("resources.kind.label")}>{(["skill", "mcp"] as const).map(kind => <button key={kind} aria-pressed={route.kind === kind} className={route.kind === kind ? "is-selected" : ""} onClick={() => update({ kind, id: "", page: 1, tool: "", zeroPage: 1, metric: kind === route.kind ? route.metric : "uses", maxValue: kind === route.kind ? route.maxValue : "", candidate: kind === "mcp" && route.candidate === "duplicate" ? "all" : route.candidate, sort: kind === route.kind ? route.sort : "uses", order: kind === route.kind ? route.order : "desc" })}>{kind === "skill" ? t("resources.kind.skill") : t("resources.kind.mcp")}</button>)}<UsageHelp kind={route.kind} /></div><div className="resources-heading-actions"><button className="icon-button resource-mobile-filter" aria-label={t("resources.filters.open")} onClick={() => setFiltersOpen(true)}><Funnel size={18} /></button><button className="button" disabled={refreshing} onClick={() => void refresh()}><ArrowClockwise size={15} className={refreshing ? "spinning" : ""} />{refreshing ? t("resources.refresh.loading") : t("resources.refresh.label")}</button></div></header>
+        <header className="resources-heading"><h1>{t("resources.title")}</h1><div className="resource-kind-tabs" role="group" aria-label={t("resources.kind.label")}>{(["skill", "mcp"] as const).map(kind => <button key={kind} aria-pressed={route.kind === kind} className={route.kind === kind ? "is-selected" : ""} onClick={() => update({ kind, id: "", page: 1, tool: "", zeroPage: 1, metric: kind === route.kind ? route.metric : "uses", maxValue: kind === route.kind ? route.maxValue : "", candidate: kind === "mcp" && route.candidate === "duplicate" ? "all" : route.candidate, sort: kind === route.kind ? route.sort : "uses", order: kind === route.kind ? route.order : "desc" })}>{kind === "skill" ? t("resources.kind.skill") : t("resources.kind.mcp")}</button>)}<UsageHelp kind={route.kind} /></div><div className="resources-heading-actions"><button className="icon-button resource-mobile-filter" aria-label={t("resources.filters.open")} onClick={() => setFiltersOpen(true)}><Funnel size={18} /></button><RefreshControl label={t("resources.refresh.label")} busy={refreshing} onRefresh={() => void refresh()} error={!!inventoryError} completedAt={status?.observedAt ?? undefined} details={<p>{t("common.refresh.resourceScope")}</p>} /></div></header>
 
         <div className="resource-list-toolbar">
           <nav className="resource-view-tabs" aria-label={t("resources.view.label")}>
@@ -736,6 +740,7 @@ export default function Resources({ active, onSession }: { active: boolean; onSe
           {mapView && <><FilterSelect label={t("resources.map.metricFilter")} value={route.metric} options={[{ value: "uses", label: t("resources.sort.calls") }, { value: "sessions", label: t("resources.sort.sessions") }]} onChange={value => filter({ metric: value as ResourceRoute["metric"], maxValue: "" })} /><label className="resource-map-limit">{t(route.metric === "sessions" ? "resources.sort.sessions" : "resources.sort.calls")} ≤<input type="number" min="0" step="1" aria-label={t("resources.map.limit", { metric: t(route.metric === "sessions" ? "resources.sort.sessions" : "resources.sort.calls") })} value={route.maxValue} placeholder={t("resources.map.unlimited")} onChange={event => { const value = event.target.value; if (value === "" || /^\d+$/.test(value) && Number.isSafeInteger(Number(value))) filter({ maxValue: value }); }} /></label></>}
         </div>}
         {invalidTime && <div className="resource-alert" role="alert">{t("resources.time.invalidRange")}</div>}
+        {inventoryError && <div className="resource-alert" role="alert"><ResourceErrorText error={inventoryError} /><button className="text-button" disabled={refreshing} onClick={() => void refresh()}>{t("common.retry")}</button></div>}
         {error && <div className="resource-alert" role="alert"><ResourceErrorText error={error} /><button className="text-button" onClick={() => setReload(value => value + 1)}>{t("common.retry")}</button></div>}
         {feedback && <div className={`resource-feedback${mapView ? " resource-map-feedback" : ""}`} role="status">{t(feedback.key, feedback.params)}<button className="icon-button" aria-label={t("resources.feedback.close")} onClick={() => setFeedback(null)}><X size={14} /></button></div>}
         {overviewRanking && overviewData && <>

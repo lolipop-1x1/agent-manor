@@ -22,13 +22,16 @@ const source = join(roots.codex, "bulk.jsonl");
 const repository = join(directory, "repo");
 const fixture = sessionSpeedFixture().files.find(item => item.id === "speed-bulk");
 const rows = fixture.records;
+rows.find(row => row.type === "session_meta").payload.cwd = repository;
 const at = seconds => new Date(Date.UTC(2026, 0, 1) + seconds * 1000).toISOString();
 const text = "长正文起点\n" + "完整内容需要保留。".repeat(1500) + "\n长正文末尾完整标记";
 const finalIndex = rows.findIndex(row => row.payload?.id === "bulk-comment-bulk-1-6");
 rows[finalIndex].payload.content[0].text = text;
 rows.splice(finalIndex, 0, ...Array.from({ length: 700 }, (_, index) => ({ type: "response_item", timestamp: at(2020), payload: {
   type: index % 2 ? "function_call_output" : "function_call", call_id: `large-${Math.floor(index / 2)}`,
-  ...(index % 2 ? { output: `合成结果 ${index}` } : { name: "fixture_tool", arguments: JSON.stringify({ index }) }),
+  ...(index % 2 ? { output: index === 1 ? "export const alpha = 1;\n".repeat(100) : `合成结果 ${index}` }
+    : index === 0 ? { name: "Read", arguments: JSON.stringify({ file_path: join(repository, "src/a.ts"), offset: 1, limit: 100 }) }
+      : { name: "fixture_tool", arguments: JSON.stringify({ index }) }),
 } })));
 let service;
 const checks = [];
@@ -202,7 +205,8 @@ try {
     expect(await page.locator('.session-step-table tbody tr').count()===12,'请求明细未分页');
     await page.getByRole('button',{name:'请求明细分页下一页',exact:true}).click();
     await page.getByRole('button',{name:'请求 13',exact:true}).waitFor();
-    expect((await page.locator('.session-request-range').innerText()).includes('13'),'分页趋势没有标明实际范围');
+    expect(Number(await page.locator('.session-chart-hit').getAttribute('aria-valuemin'))===1,'分页改变了趋势起始请求');
+    expect(Number(await page.locator('.session-chart-hit').getAttribute('aria-valuemax'))===${JSON.stringify(updatedProfile.usage.requests)},'分页限制了完整请求趋势');
     expect((await page.locator('.session-usage-grid').innerText()).includes(${JSON.stringify(Math.round(updatedProfile.outputSpeed.tokensPerSecond) + ' tok/s')}),'摘要速度与完整请求不一致');
     await page.getByRole('button',{name:'执行轨迹',exact:true}).click();
     await page.locator('.trace-timeline-viewport svg').waitFor();
@@ -307,10 +311,10 @@ try {
   await step("关闭状态下手动刷新会话与地图仍能看到进度并完成", `
     await page.setViewportSize({width:1440,height:1000});
     let response=page.waitForResponse(response=>response.url().endsWith('/sessions/refresh')&&response.request().method()==='POST');
-    await page.getByRole('button',{name:'Refresh session index',exact:true}).click();
+    await page.getByRole('button',{name:'Update history',exact:true}).click();
     const sessionJob=(await (await response).json()).job;
-    for(let attempt=0;attempt<60;attempt++){await page.clock.runFor(2010);await page.waitForTimeout(50);if(await page.getByRole('button',{name:'Refresh session index',exact:true}).isEnabled())break;}
-    expect(await page.getByRole('button',{name:'Refresh session index',exact:true}).isEnabled(),'关闭后会话进度未完成');
+    for(let attempt=0;attempt<60;attempt++){await page.clock.runFor(2010);await page.waitForTimeout(50);if(await page.getByRole('button',{name:'Update history',exact:true}).isEnabled())break;}
+    expect(await page.getByRole('button',{name:'Update history',exact:true}).isEnabled(),'关闭后会话进度未完成');
     expect((await page.evaluate(()=>globalThis.__refreshRequests??[])).some(item=>item.url.includes('/jobs/'+sessionJob.id)),'关闭后不再查询手动任务进度');
     await page.getByRole('button',{name:'Code map',exact:true}).click();await page.locator('.code-map').waitFor();
     response=page.waitForResponse(response=>response.url().includes('/repositories/')&&response.url().endsWith('/refresh')&&response.request().method()==='POST');

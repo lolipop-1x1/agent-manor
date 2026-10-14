@@ -154,7 +154,7 @@ export default {
   "sessions.filter.searchChildren": "搜索与子 Agent",
   "sessions.filter.searchHelp": "默认搜索标题、用户与 AI 正文；勾选过程记录后包含思考、工具、系统和压缩。显示子 Agent 的开关只影响列表，搜索始终包含子会话。",
   "sessions.filter.dateRefresh": "日期与刷新",
-  "sessions.filter.dateHelp": "日期使用本机时区。刷新主按钮对当前客户端做快速检查，选择全部客户端则刷新全部；项目、日期与搜索不影响刷新范围。菜单可选择刷新全部或完整校验。",
+  "sessions.filter.dateHelp": "日期使用本机时区。顶部“更新历史”主按钮始终检查全部客户端，页面筛选只影响展示；选中具体客户端后，可从菜单快速检查或完整校验该客户端，也可完整校验全部客户端。",
   "sessions.search.globalLabel": "搜索会话标题和消息",
   "sessions.search.globalPlaceholder": "搜索标题或消息",
   "sessions.search.clear": "清除搜索",

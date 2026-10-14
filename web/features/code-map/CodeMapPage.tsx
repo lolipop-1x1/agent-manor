@@ -17,6 +17,8 @@ import { ProjectPicker } from "../../shared/ui/ProjectPicker";
 import { DatePicker } from "../../shared/ui/DatePicker";
 import { HelpPopover } from "../../shared/ui/HelpPopover";
 import { useVisiblePolling } from "../../shared/refresh/useVisiblePolling";
+import { RefreshControl } from "../../shared/ui/RefreshControl";
+import { AutoRefreshControl } from "../../shared/ui/AutoRefreshControl";
 import { clientLabel, isMessageDescriptorKnown, messageText, t, useI18n } from "../../shared/i18n";
 import { boundQuery, categoryNames, fileHighlights, filename, gapNames, metricNames, metricValue, rangesLabel, refreshFailureReason, type Metric } from "./model";
 import { dateLabel, fmt, percent } from "../../shared/format";
@@ -362,7 +364,7 @@ export function useCodeMapPage({ active, theme, onSession }: {
       if (!signal.aborted && epoch === pageEpoch.current && result.job) recordJob(result.job);
     } catch (failure) { if (!signal.aborted && epoch === pageEpoch.current && !recoverMissingRepository(failure)) setActionError(failure); }
   });
-  useVisiblePolling(active && !!repoId, 5000, async signal => {
+  useVisiblePolling(mapAutoRefreshInterval > 0 && active && !!repoId, 5000, async signal => {
     const epoch = pageEpoch.current;
     const result = await request<StatusResponse>("/status?summary=true", { signal });
     if (signal.aborted || pageEpoch.current !== epoch) return;
@@ -544,8 +546,6 @@ export function useCodeMapPage({ active, theme, onSession }: {
   const mapLegend = <div className="map-legend"><span>{metric === "activity" ? t("codeMap.metric.activity") : t("codeMap.exactCoverage")}</span><span className="legend-scale">{[0, 1, 2, 3, 4].map(tone => <i key={tone} className={`tone-${tone}`} />)}</span><span>{metric === "activity" ? t("codeMap.activity.range", { count: visible.reduce((max, file) => Math.max(max, metricValue(file, metric)), 0) }) : "0 → 100%"}</span><span className="near-key legend-near" /><span>{t("codeMap.near")}</span><small>{t("codeMap.area")}</small></div>;
   return {
     openMap,
-    sourceAction: active && repository && <SourcesDialog key={`${repoId}:${renderEpoch}`} repo={repository} query={query} gapCount={coverage?.gapCount ?? coverage?.gaps.length ?? 0} onJob={next => { if (renderEpoch === pageEpoch.current) recordJob(next); }} />,
-    refreshAction: <button hidden={!active} className="button primary refresh-button" onClick={() => void runRefresh()} disabled={!repository || actionPending || jobActive(job)} title={coverage ? t("codeMap.analysis.info", { date: dateLabel(coverage.createdAt) }) : undefined} aria-label={jobActive(job) ? t("codeMap.refresh.running") : t("codeMap.refresh.action")}><ArrowClockwise size={16} className={jobActive(job) ? "spinning" : ""} /><span className="refresh-label">{jobActive(job) ? t("codeMap.refresh.running") : t("codeMap.refresh.action")}</span></button>,
     maintenanceNotice: indexMaintenance && <Notice danger={indexMaintenance.status === "failed"} action={<button className="button subtle" onClick={() => setIndexMaintenance(null)}>{t("common.close")}</button>}>
       {messageText(indexMaintenance.messageDescriptor, t("diagnostics.index.maintenance.error"))}
       {indexMaintenance.details && <details><summary>{t("common.originalDetails")}</summary><pre tabIndex={0}>{indexMaintenance.details}</pre></details>}
@@ -569,8 +569,13 @@ export function useCodeMapPage({ active, theme, onSession }: {
         <p className="repo-path" title={repository.path}>{repository.path}</p><div className="sidebar-label">{t("codeMap.repository.directories")}</div><DirectoryTree key={repoId} files={rootCoverage?.files ?? []} selected={directory} browse={browse} />
         <div className="sidebar-bottom"><button className="text-button" onClick={() => { setRegisterError(null); setRegisterOpen(true); }}><Plus size={14} />{t("codeMap.repository.other")}</button></div></div>
       </aside>
-      <main className="map-main"><div className="page-heading"><h1>{t("codeMap.title")}</h1><div className="map-heading-tools">
+      <main className="map-main"><div className="page-heading"><h1>{t("codeMap.title")}</h1><div className="map-heading-tools map-page-actions">
         <span className="map-query-progress">{(mapSessionsLoading || retainedCoverageLoading) && <span className="map-query-loading" role="status" aria-label={t(retainedCoverageLoading ? "codeMap.coverage.loading" : "codeMap.session.loading")} title={t(retainedCoverageLoading ? "codeMap.coverage.loading" : "codeMap.session.loading")}><CircleNotch size={17} aria-hidden="true" /></span>}</span>
+        {repository && <SourcesDialog key={`${repoId}:${renderEpoch}`} repo={repository} query={query} gapCount={coverage?.gapCount ?? coverage?.gaps.length ?? 0} onJob={next => { if (renderEpoch === pageEpoch.current) recordJob(next); }} />}
+        <AutoRefreshControl scope="map" />
+        <RefreshControl label={t("codeMap.refresh.action")} onRefresh={() => void runRefresh()} busy={actionPending || jobActive(job)} disabled={!repository}
+          error={!!actionError || job?.status === "failed"} completedAt={job?.status === "completed" ? job.finishedAt : coverage?.createdAt}
+          details={<><p>{t("common.refresh.mapScope")}</p>{jobActive(job) && <p>{messageText(job?.phaseDescriptor, job?.phase ?? "")}</p>}</>} />
         <HelpPopover label={t("codeMap.help.title")}><dl>
         <div><dt>{t("codeMap.help.coverageTitle")}</dt><dd>{t("codeMap.help.coverage")}</dd></div>
         <div><dt>{t("codeMap.help.filtersTitle")}</dt><dd>{t("codeMap.help.filters")}</dd></div>

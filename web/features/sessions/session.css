@@ -1,5 +1,6 @@
-.sessions-shell { min-width: 0; height: calc(100dvh - var(--app-header-height, 58px)); overflow: hidden; }
-.sessions-shell .workspace { height: 100%; min-height: 0; grid-template-rows: minmax(0, 1fr); }
+.sessions-shell { display: flex; flex-direction: column; min-width: 0; height: calc(100dvh - var(--app-header-height, 58px)); overflow: hidden; }
+.sessions-shell .workspace { flex: 1; height: auto; min-height: 0; grid-template-rows: minmax(0, 1fr); }
+.session-page-actions { display: flex; justify-content: flex-end; padding: 7px 14px; border-bottom: 1px solid var(--border); }
 .session-sidebar { min-height: 0; overflow: hidden; padding-top: 16px; padding-bottom: 8px; }
 .session-sidebar .pane-heading { margin-bottom: 12px; }
 .session-sidebar .sidebar-content { min-height: 0; overflow: hidden; padding-top: 0; }
@@ -15,14 +16,6 @@
 .session-filter-error { margin: 7px 0 0; color: var(--danger); font-size: 10px; }
 .session-list-meta { display: flex; align-items: center; justify-content: space-between; padding: 12px 3px 5px; color: var(--muted); font-size: 10px; }
 .session-list-meta .icon-button { width: 28px; height: 28px; min-height: 28px; }
-.session-refresh-actions { display: flex; align-items: center; gap: 1px; }
-.session-list-meta .session-refresh-menu-trigger { width: 20px; padding: 3px; }
-.session-refresh-menu { max-height: min(320px, var(--radix-dropdown-menu-content-available-height)); overflow: auto; }
-.session-refresh-menu-label { padding: 6px 10px; color: var(--muted); font-size: 10px; }
-.session-refresh-menu-separator { height: 1px; margin: 4px; background: var(--border); }
-.session-refresh-menu-note { max-width: 250px; padding: 6px 10px; color: var(--muted); font-size: 10px; line-height: 1.6; }
-.session-refresh-actions button:focus:not(:focus-visible) { outline: none; }
-.session-refresh-actions button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .session-refresh-status { flex-shrink: 0; padding: 8px 5px; margin-bottom: 5px; border-radius: 5px; background: var(--surface-alt); color: var(--muted); font-size: 10px; }
 .session-refresh-status-heading { display: flex; flex-wrap: wrap; align-items: center; gap: 3px 7px; }
 .session-refresh-status-heading strong { color: var(--text); font-size: 10px; font-weight: 500; }
