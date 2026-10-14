@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { appendFile, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, mkdtemp, readFile, rm, symlink, truncate, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
@@ -11,7 +11,9 @@ import { reasonixAdapter, reasonixHistoryRoots } from "../src/history/adapters/r
 import { codewhaleAdapter, codewhaleHistoryRoots } from "../src/history/adapters/codewhale.js";
 import { normalizedHash, parseNormalizedSession } from "../src/history/adapters/normalized.js";
 import type { NormalizedSnapshot } from "../src/history/adapters/normalized.js";
-import { discoverSources, parseSource } from "../src/history/index.js";
+import { errorDescriptor } from "../src/i18n/diagnostics.js";
+import { translateMessage } from "../src/i18n/index.js";
+import { discoverSources, parseSource, resolveSharedHistory } from "../src/history/index.js";
 
 const jsonl = (rows: unknown[]) => rows.map(row => JSON.stringify(row)).join("\n") + "\n";
 const time = "2026-09-01T01:00:00.000Z";
@@ -259,3 +261,76 @@ test("Codewhale 迁移来源选择不丢其它客户端的同身份入口", () =
   assert.deepEqual(selected.filter(source => source.client !== "codewhale"), foreign);
   assert.deepEqual(selected.filter(source => source.client === "codewhale"), [native[1]]);
 });
+
+
+test("Grok 连续 rewind 的下标基于当前 prompt 列表，旧分支仍保留", async () => temporary(async root => {
+  const user = (prompt: string) => grok({ sessionUpdate: "user_message_chunk", content: { type: "text", text: prompt } }, `user-${prompt}`, prompt);
+  const path = await grokFiles(root, [user("p1"), user("p2"), user("p3"), grok({ sessionUpdate: "rewind_marker", target_prompt_index: 1 }, "rewind-one", "p3"),
+    user("p4"), user("p5"), grok({ sessionUpdate: "rewind_marker", target_prompt_index: 2 }, "rewind-two", "p5")]);
+  const result = await session(grokAdapter, { path, client: "grok" });
+  assert.deepEqual(result.messages.filter(message => message.kind === "user" && message.currentBranch).map(message => message.text), ["p1", "p4"]);
+  assert.deepEqual(result.messages.filter(message => message.kind === "user" && !message.currentBranch).map(message => message.text), ["p2", "p3", "p5"]);
+}));
+
+test("Reasonix superseded 版本核验共同转录前缀，旧分支独有工具与用户活动保持可读", async () => temporary(async root => {
+  const parent = join(root, "sessions", "parent.jsonl"); const version = join(root, "sessions", "version.jsonl");
+  const prefix = [{ role: "user", content: "共同需求" }, { role: "assistant", content: "读取", tool_calls: [{ id: "common-call", name: "read_file", arguments: '{"path":"src/common.ts"}' }] },
+    { role: "tool", tool_call_id: "common-call", name: "read_file", content: "1→common" }];
+  const tail = [{ role: "user", content: "退出当前分支的需求" }, { role: "assistant", content: "读取旧分支", tool_calls: [{ id: "old-call", name: "read_file", arguments: '{"path":"src/old.ts"}' }] },
+    { role: "tool", tool_call_id: "old-call", name: "read_file", content: "1→old" }];
+  await save(parent, [{ role: "user", content: "过期检查点" }], true);
+  await save(parent.replace(".jsonl", ".events.jsonl"), [{ schema_version: 3, type: "replace", revision: 1, messages: prefix, created_at: time }], true);
+  await save(version, [...prefix, ...tail], true); await save(`${version}.meta`, { id: "version", parent_id: "parent", superseded: true, workspace_root: "/workspace/app" });
+  let result = await session(reasonixAdapter, { path: version, client: "reasonix" });
+  assert.equal(result.messages.filter(message => message.copied).length, 4); assert.equal(result.messages.filter(message => message.kind === "user" && !message.copied).length, 1);
+  assert.ok(result.messages.filter(message => message.kind !== "context").every(message => message.currentBranch === false && message.branchIds?.includes("superseded")));
+  assert.equal(result.meta.branches?.[0]?.id, "superseded");
+  assert.equal(result.snapshot.meta.relationships?.[0]?.copiedRecordIdentityHashes?.length, 3);
+  const parsed = await parseSource(version, "reasonix", undefined, reasonixAdapter.id); assert.deepEqual(parsed.events.map(event => event.path), ["src/old.ts"]);
+  const parsedParent = await parseSource(parent, "reasonix", undefined, reasonixAdapter.id);
+  const shared = resolveSharedHistory([parsedParent, parsed]);
+  assert.equal(shared.relationships.find(item => item.sourceId === parsed.sourceId)?.resolved, true);
+  assert.ok(!shared.gaps.some(gap => gap.sourceId === parsed.sourceId && gap.kind === "ambiguous"));
+  assert.deepEqual(shared.events.map(event => event.path), ["src/common.ts", "src/old.ts"]);
+  const unverified = structuredClone(parsed); unverified.relationships[0]!.copiedRecordIdentityProof = undefined;
+  const unresolved = resolveSharedHistory([parsedParent, unverified]);
+  assert.equal(unresolved.relationships.find(item => item.sourceId === parsed.sourceId)?.resolved, false);
+  assert.ok(unresolved.gaps.some(gap => gap.sourceId === parsed.sourceId && gap.kind === "ambiguous"));
+  assert.equal((await reasonixAdapter.readEvidence(parsed.events[0]!.sources.at(-1)!))?.raw, JSON.stringify(tail[2]));
+  await save(`${version}.meta`, { id: "version", parent_id: "parent", workspace_root: "/workspace/app" });
+  result = await session(reasonixAdapter, { path: version, client: "reasonix" }); assert.ok(result.messages.every(message => !message.copied));
+  const ordinary = await parseSource(version, "reasonix", undefined, reasonixAdapter.id);
+  assert.equal(resolveSharedHistory([parsedParent, ordinary]).relationships.find(item => item.sourceId === ordinary.sourceId)?.resolved, false);
+  await save(`${version}.meta`, { id: "version", parent_id: "parent", superseded: true, workspace_root: "/workspace/app" });
+  await rm(parent); await rm(parent.replace(".jsonl", ".events.jsonl"));
+  result = await session(reasonixAdapter, { path: version, client: "reasonix" }); assert.ok(result.messages.every(message => !message.copied)); assert.ok(result.meta.gaps.some(gap => gap.kind === "source_missing"));
+  const missingParent = await parseSource(version, "reasonix", undefined, reasonixAdapter.id);
+  const missing = resolveSharedHistory([missingParent]); assert.equal(missing.relationships[0]?.resolved, false); assert.ok(missing.gaps.some(gap => gap.kind === "source_missing"));
+}));
+
+test("Reasonix 父版本不完整时不按相似正文去重，父变化会使已有证据重建", async () => temporary(async root => {
+  const parent = join(root, "sessions", "parent.jsonl"); const version = join(root, "sessions", "version.jsonl"); const prefix = { role: "user", content: "共同文本" };
+  await save(parent, [prefix], true); await save(version, [prefix], true); await save(`${version}.meta`, { id: "version", parent_id: "parent", superseded: true });
+  const before = await parseSource(version, "reasonix", undefined, reasonixAdapter.id);
+  await appendFile(parent, '{"role":');
+  const after = await parseSource(version, "reasonix", before, reasonixAdapter.id); assert.notEqual(after.hash, before.hash);
+  const result = await session(reasonixAdapter, { path: version, client: "reasonix" }); assert.ok(result.messages.every(message => !message.copied)); assert.ok(result.meta.gaps.some(gap => gap.kind === "ambiguous"));
+}));
+
+test("Grok 项目标记和 Reasonix 根配置超预算保留可翻译诊断", async () => temporary(async root => {
+  const path = await grokFiles(root, [grok({ sessionUpdate: "user_message_chunk", content: { type: "text", text: "检查" } }, "u")]);
+  await save(join(dirname(path), "summary.json"), { info: { id: "grok-session" } }); const marker = join(dirname(dirname(path)), ".cwd");
+  await writeFile(marker, "/workspace/example"); await truncate(marker, 64 * 1024 + 1);
+  const result = await session(grokAdapter, { path, client: "grok" }); assert.equal(result.meta.project, undefined);
+  const gap = result.meta.gaps.find(gap => gap.kind === "budget_exceeded")!; assert.match(translateMessage("en", gap.messageDescriptor!), /bounded read/);
+  const config = join(root, ".reasonix", "config.toml"); await mkdir(dirname(config)); await writeFile(config, "[storage]\nstate = '/workspace/example'\n"); await truncate(config, 16 * 1024 * 1024 + 1);
+  assert.throws(() => reasonixHistoryRoots(root, {}), error => { const descriptor = errorDescriptor(error); assert.ok(descriptor); assert.match(translateMessage("en", descriptor), /bounded read/); return true; });
+}));
+
+test("Codewhale oversized 原生来源失败带中英文产品描述", async () => temporary(async root => {
+  const path = await whaleFile(root, [], null); await truncate(path, 128 * 1024 * 1024 + 1);
+  await assert.rejects(codewhaleAdapter.readRecords!({ path, client: "codewhale" }), error => {
+    const descriptor = errorDescriptor(error); assert.equal(descriptor?.key, "diagnostics.history.adapters.codewhale.m018");
+    assert.match(translateMessage("en", descriptor!), /^Codewhale source exceeds/); assert.match(translateMessage("zh-CN", descriptor!), /超过有界读取上限/); return true;
+  });
+}));

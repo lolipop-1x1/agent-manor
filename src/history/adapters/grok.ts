@@ -1,5 +1,5 @@
-import { readFile, stat } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join } from "node:path";
+import { readBoundedText } from "../../bounded-file.js";
 import type { Gap } from "../../contracts.js";
 import type { SourceLocation } from "../types.js";
 import { changedFragments, number, object, physicalLines, returnedText, shellEvidence, string, toolEvidence, unifiedFragments } from "../extraction.js";
@@ -15,11 +15,14 @@ const date = (value: unknown, seconds = false): string | undefined => {
 };
 async function sidecar(path: string, gaps: Gap[]): Promise<{ record: Record<string, unknown>; raw: string }> {
   try {
-    if ((await stat(path)).size > 128 * 1024 * 1024) { gap(gaps, "budget_exceeded", "Grok 旁路文件超过有界读取上限", "m001"); return { record: {}, raw: "" }; }
-    const raw = await readFile(path, "utf8");
+    const raw = await readBoundedText(path, 128 * 1024 * 1024);
     try { return { record: object(JSON.parse(raw)), raw }; }
     catch { gap(gaps, "parse_error", "Grok 旁路文件尚未形成有效 JSON", "m002"); return { record: {}, raw }; }
-  } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; return { record: {}, raw: "" }; }
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "EFBIG") gap(gaps, "budget_exceeded", "Grok 旁路文件超过有界读取上限", "m001");
+    else if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    return { record: {}, raw: "" };
+  }
 }
 function content(value: unknown): string {
   if (value === null || value === undefined) return "";
@@ -81,8 +84,9 @@ async function snapshot(location: SourceLocation) {
   const sessionId = string(info.id) ?? string(object(rows[0]?.record.params).sessionId) ?? location.sessionId ?? basename(dir);
   let cwd = normalizeHistoryPath(string(info.cwd));
   let marker = "";
-  if (!cwd) try { marker = await readFile(join(dirname(dir), ".cwd"), "utf8"); cwd = normalizeHistoryPath(marker.trim()); }
-  catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+  if (!cwd) try { marker = await readBoundedText(join(dirname(dir), ".cwd"), 64 * 1024); cwd = normalizeHistoryPath(marker.trim()); }
+  catch (error) { if ((error as NodeJS.ErrnoException).code === "EFBIG") gap(gaps, "budget_exceeded", "Grok 项目标记超过有界读取上限", "m011");
+    else if ((error as NodeJS.ErrnoException).code !== "ENOENT") gap(gaps, "source_unavailable", "Grok 项目标记不是可读取的普通文件", "m012"); }
   const parent = string(summary.record.parent_session_id);
   const relationship = string(summary.record.session_kind)?.startsWith("subagent") ? "child" : "fork";
   const inherited = new Set<string>(); let parentFingerprint = "";
@@ -188,7 +192,10 @@ async function snapshot(location: SourceLocation) {
     }
     if (type === "rewind_marker") {
       const target = number(update.target_prompt_index);
-      if (target !== undefined) for (const turn of promptTurns.slice(target)) removed.add(turn);
+      if (Number.isSafeInteger(target) && target! >= 0 && target! <= promptTurns.length) {
+        for (const turn of promptTurns.splice(target!)) removed.add(turn);
+        prompt = promptTurns.at(-1) ?? ""; activeResponse = undefined;
+      } else gap(gaps, "ambiguous", "Grok 回退下标超出当前时间线，未猜测范围", "m013");
       emit({ ...base, key: `grok:${key}`, kind: "context", text: type }, row); continue;
     }
     if (type?.startsWith("auto_compact")) {

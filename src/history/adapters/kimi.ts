@@ -1,6 +1,6 @@
 import { createReadStream } from "node:fs";
-import { readFile } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
+import { readBoundedText } from "../../bounded-file.js";
 import type { Gap } from "../../contracts.js";
 import type { SessionRequestTiming } from "../../session-contracts.js";
 import { changedFragments, number, object, shellEvidence, string, textContent, toolEvidence, unifiedFragments } from "../extraction.js";
@@ -40,9 +40,10 @@ export function kimiHistoryRoots(home: string, environment: NodeJS.ProcessEnv): 
   return [join(environment.KIMI_CODE_HOME ?? join(home, ".kimi-code"), "sessions")];
 }
 async function optionalJson(path: string, gaps: Gap[]): Promise<{ value: Record<string, unknown>; raw: string }> {
-  try { const raw = await readFile(path, "utf8"); return { value: object(JSON.parse(raw)), raw }; }
+  try { const raw = await readBoundedText(path, 16 * 1024 * 1024); return { value: object(JSON.parse(raw)), raw }; }
   catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "ENOENT") gap(gaps, "parse_error", 1, "Kimi 会话元信息无法解析");
+    if ((error as NodeJS.ErrnoException).code === "EFBIG") gap(gaps, "budget_exceeded", 20, "Kimi 会话元信息超过有界读取上限");
+    else if ((error as NodeJS.ErrnoException).code !== "ENOENT") gap(gaps, "parse_error", 1, "Kimi 会话元信息无法解析");
     return { value: {}, raw: "" };
   }
 }
@@ -173,7 +174,7 @@ async function snapshot(location: SourceLocation): Promise<NormalizedSnapshot> {
     }
   }
   const events: { event: NormalizedEvent; row: Row }[] = []; const byKey = new Map<string, { event: NormalizedEvent; row: Row }>();
-  let turnKey: string | undefined; let stepKey: string | undefined; let requestKey: string | undefined; let requestStart: Row | undefined;
+  let turnKey: string | undefined; let stepKey: string | undefined; let requestKey: string | undefined;
   let model: string | undefined; let provider: string | undefined; let reasoningEffort: string | undefined;
   const assistantByTurn = new Map<string, { event: NormalizedEvent; row: Row }>(); const callTurns = new Map<string, string | undefined>();
   const turnByNumber = new Map<string, string>(); const promptIds = new Map<string, string>();
@@ -223,7 +224,7 @@ async function snapshot(location: SourceLocation): Promise<NormalizedSnapshot> {
     }
     if (kind === "llm.request") {
       model = string(record.model); provider = string(record.provider); reasoningEffort = string(record.thinkingEffort);
-      requestKey = `kimi:request:${row.line}`; requestStart = row;
+      requestKey = `kimi:request:${row.line}`;
       add(row, { key: rowKey, kind: "context", text: string(record.kind), requestKey }); continue;
     }
     if (kind === "usage.record") {
@@ -238,7 +239,7 @@ async function snapshot(location: SourceLocation): Promise<NormalizedSnapshot> {
       const event = object(record.event); const eventKind = string(event.type); const eventId = string(event.uuid);
       const numberTurn = string(event.turnId); if (numberTurn && turnByNumber.has(numberTurn)) turnKey = turnByNumber.get(numberTurn);
       if (eventKind === "step.begin") {
-        stepKey = eventId; requestKey = undefined; requestStart = undefined;
+        stepKey = eventId; requestKey = undefined;
         add(row, { key: rowKey, kind: "context", text: "step.begin" }); continue;
       }
       if (eventKind === "content.part" || eventKind === "tool.call") {
@@ -266,11 +267,12 @@ async function snapshot(location: SourceLocation): Promise<NormalizedSnapshot> {
         requestKey ??= `kimi:step:${stepKey}`;
         const reason = string(event.finishReason); const partial = ["error", "interrupted", "length", "max_tokens", "filtered", "paused"].includes(reason ?? "");
         const completed = ["end_turn", "stop", "tool_calls", "tool_use"].includes(reason ?? "");
-        const end = time(record.time); const start = time(requestStart?.record.time);
-        const timing: SessionRequestTiming = { basis: "recorded", method: "kimi_wire_request", window: "response", completion: partial ? "partial" : completed ? "explicit" : "unknown",
+        // step.end 在工具完成后才保存；模型速度只使用原生 LLM 分项，不借用这条记录的时间。
+        const latency = count(event.llmFirstTokenLatencyMs); const stream = count(event.llmStreamDurationMs);
+        const timing: SessionRequestTiming = { basis: "recorded", method: "kimi_llm_metrics", window: latency !== undefined ? "response" : "generation",
+          completion: partial ? "partial" : completed ? "explicit" : "unknown",
           ...(completed ? { completionEvidence: "stop_reason" as const } : partial ? { completionEvidence: "request_interrupted" as const } : {}),
-          ...(start && requestStart ? { start: { occurredAt: start, recordLine: requestStart.line } } : {}),
-          ...(end ? { end: { occurredAt: end, recordLine: row.line } } : {}), ...(start && end && end >= start ? { durationMs: Date.parse(end) - Date.parse(start) } : {}) };
+          ...(stream !== undefined ? { durationMs: stream + (latency ?? 0) } : {}) };
         const last = turnKey ? assistantByTurn.get(turnKey) : undefined;
         const nativeUsage = usage(event.usage);
         add(row, { key: rowKey, kind: "context", text: reason, requestKey, requestTiming: timing, interrupted: partial || undefined,

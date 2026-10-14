@@ -68,7 +68,7 @@ export interface SessionRequestTiming {
   window?: "response" | "generation";
   method: "codex_event_boundary" | "claude_message_boundary" | "codeflicker_message_boundary"
     | "codeflicker_desktop_mirror" | "dsh_stream_window" | "pi_message_boundary" | "zcode_request_span"
-    | "opencode_message_span" | "codebuddy_single_request_turn" | "workbuddy_message_boundary" | "qoder_message_boundary" | "kimi_wire_request" | "omp_message_boundary";
+    | "opencode_message_span" | "codebuddy_single_request_turn" | "workbuddy_message_boundary" | "qoder_message_boundary" | "kimi_wire_request" | "kimi_llm_metrics" | "omp_message_boundary";
   completion: "explicit" | "inferred" | "partial" | "unknown";
   completionEvidence?: "stop_reason" | "tool_result" | "tool_response_snapshot" | "final_response_snapshot" | "persisted_stream_result" | "request_interrupted"
     | "request_completed" | "stream_finish" | "turn_metrics";

@@ -1,7 +1,7 @@
-import { readFileSync } from "node:fs";
-import { readFile, stat } from "node:fs/promises";
+import { stat } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join } from "node:path";
 import { parse as parseToml } from "smol-toml";
+import { readBoundedText, readBoundedTextSync } from "../../bounded-file.js";
 import type { Gap } from "../../contracts.js";
 import type { SourceLocation } from "../types.js";
 import { number, object, physicalLines, returnedText, shellEvidence, string, toolEvidence, unifiedFragments } from "../extraction.js";
@@ -17,11 +17,14 @@ const date = (value: unknown): string | undefined => {
 };
 async function optionalJson(path: string, gaps: Gap[]): Promise<{ value: Record<string, unknown>; raw: string }> {
   try {
-    if ((await stat(path)).size > 128 * 1024 * 1024) { gap(gaps, "budget_exceeded", "Reasonix 旁路文件超过有界读取上限", "m001"); return { value: {}, raw: "" }; }
-    const raw = await readFile(path, "utf8");
+    const raw = await readBoundedText(path, 128 * 1024 * 1024);
     try { return { value: object(JSON.parse(raw)), raw }; }
     catch { gap(gaps, "parse_error", "Reasonix 旁路文件尚未形成有效 JSON", "m002"); return { value: {}, raw }; }
-  } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; return { value: {}, raw: "" }; }
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "EFBIG") gap(gaps, "budget_exceeded", "Reasonix 旁路文件超过有界读取上限", "m001");
+    else if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    return { value: {}, raw: "" };
+  }
 }
 async function optionalRows(path: string, gaps: Gap[]): Promise<RawHistoryRecord[] | undefined> {
   try { return await readBoundedJsonl(path, gaps); }
@@ -49,41 +52,22 @@ function extract(tool: string, inputValue: unknown, resultValue: unknown, visibl
   return defaultToolEvidence(tool, inputValue, resultValue, visible);
 }
 
-async function snapshot(location: SourceLocation) {
-  const gaps: Gap[] = []; const stem = location.path.replace(/\.jsonl$/, "");
-  const metaFile = await optionalJson(`${location.path}.meta`, gaps);
-  const subagent = await optionalJson(`${stem}.meta.json`, gaps);
-  const contextFile = await optionalJson(`${stem}.context.json`, gaps);
-  const wireMeta = await optionalJson(`${stem}.wire.meta.json`, gaps);
-  const checkpoint = await optionalRows(location.path, []);
+/** 事件日志和检查点共用恢复规则，版本比较不能读取过期投影。 */
+async function transcript(path: string, gaps: Gap[]) {
+  const stem = path.replace(/\.jsonl$/, "");
+  const checkpoint = await optionalRows(path, []);
   // 检查点只参与依赖；有可识别的原生日志时，转录由日志恢复。
   const eventGaps: Gap[] = []; const events = await optionalRows(`${stem}.events.jsonl`, eventGaps);
   let damagedLine: number | undefined;
   if (eventGaps.some(value => value.kind === "parse_error")) {
     // 原生解码器在首个坏记录处停止，不能把其后仍可解析的行接到可信前缀上。
-    const path = `${stem}.events.jsonl`;
-    if ((await stat(path)).size <= 128 * 1024 * 1024) {
-      const lines = (await readFile(path, "utf8")).split("\n");
+    const eventPath = `${stem}.events.jsonl`;
+    if ((await stat(eventPath)).size <= 128 * 1024 * 1024) {
+      const lines = (await readBoundedText(eventPath, 128 * 1024 * 1024)).split("\n");
       for (const [index, raw] of lines.entries()) {
         if (!raw.trim()) continue;
         try { JSON.parse(raw); } catch { damagedLine = index + 1; break; }
       }
-    }
-  }
-  const meta: NormalizedSessionMetadata = { gaps };
-  const stateMeta = metaFile.value; const childMeta = subagent.value;
-  const sessionId = string(stateMeta.id) ?? string(childMeta.ref) ?? location.sessionId ?? basename(stem);
-  const cwd = normalizeHistoryPath(string(stateMeta.workspace_root) ?? string(childMeta.workspaceRoot));
-  const parent = string(childMeta.parentSession) ?? string(stateMeta.parent_id);
-  const relationship = childMeta.parentSession ? "child" : "fork";
-  meta.title = string(stateMeta.custom_title) ?? string(stateMeta.name) ?? string(stateMeta.topic_title) ?? string(childMeta.name);
-  if (parent) {
-    meta.parentSessionId = parent; meta.relationship = relationship;
-    meta.relationships = [{ kind: relationship === "child" ? "subagent" : "fork", parentSessionId: parent, agentId: string(childMeta.ref) }];
-    const parentPath = childMeta.parentSession ? join(dirname(dirname(location.path)), `${parent}.jsonl`) : join(dirname(location.path), `${parent}.jsonl`);
-    if (!parent.includes("/") && !parent.includes("\\")) {
-      try { await stat(parentPath); }
-      catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; gap(gaps, "source_missing", "Reasonix 父会话来源缺失", "m006"); }
     }
   }
   let messages: { message: Record<string, unknown>; row: RawHistoryRecord; occurredAt?: string }[] = [];
@@ -108,9 +92,58 @@ async function snapshot(location: SourceLocation) {
     gaps.push(...eventGaps); gap(gaps, "unsupported_format", "Reasonix 事件 schema 尚未适配，未使用旧检查点覆盖", "m007");
   } else {
     if (!checkpoint) throw Object.assign(new Error("Reasonix 会话来源已不存在"), { code: "ENOENT" });
-    const checkpointGaps: Gap[] = []; const rows = await readBoundedJsonl(location.path, checkpointGaps); gaps.push(...checkpointGaps);
+    const checkpointGaps: Gap[] = []; const rows = await readBoundedJsonl(path, checkpointGaps); gaps.push(...checkpointGaps);
     messages = rows.map(row => ({ message: row.record, row, occurredAt: date(row.record.createdAt) }));
     if (eventGaps.length) gaps.push(...eventGaps);
+  }
+  return { messages, checkpoint, events };
+}
+
+async function snapshot(location: SourceLocation) {
+  const gaps: Gap[] = []; const stem = location.path.replace(/\.jsonl$/, "");
+  const metaFile = await optionalJson(`${location.path}.meta`, gaps);
+  const subagent = await optionalJson(`${stem}.meta.json`, gaps);
+  const contextFile = await optionalJson(`${stem}.context.json`, gaps);
+  const wireMeta = await optionalJson(`${stem}.wire.meta.json`, gaps);
+  const meta: NormalizedSessionMetadata = { gaps };
+  const stateMeta = metaFile.value; const childMeta = subagent.value;
+  if (stateMeta.superseded === true) meta.branches = [{ id: "superseded", current: false, label: "已被回退替代",
+    labelDescriptor: { key: "diagnostics.history.adapters.reasonix.m015" } }];
+  const sessionId = string(stateMeta.id) ?? string(childMeta.ref) ?? location.sessionId ?? basename(stem);
+  const cwd = normalizeHistoryPath(string(stateMeta.workspace_root) ?? string(childMeta.workspaceRoot));
+  const parent = string(childMeta.parentSession) ?? string(stateMeta.parent_id);
+  const relationship = childMeta.parentSession ? "child" : "fork";
+  meta.title = string(stateMeta.custom_title) ?? string(stateMeta.name) ?? string(stateMeta.topic_title) ?? string(childMeta.name);
+  if (parent) {
+    meta.parentSessionId = parent; meta.relationship = relationship;
+    meta.relationships = [{ kind: relationship === "child" ? "subagent" : "fork", parentSessionId: parent, agentId: string(childMeta.ref) }];
+    const parentPath = childMeta.parentSession ? join(dirname(dirname(location.path)), `${parent}.jsonl`) : join(dirname(location.path), `${parent}.jsonl`);
+    if (!parent.includes("/") && !parent.includes("\\")) {
+      try { await stat(parentPath); }
+      catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; gap(gaps, "source_missing", "Reasonix 父会话来源缺失", "m006"); }
+    }
+  }
+  const { messages, checkpoint, events } = await transcript(location.path, gaps);
+  const copiedIndices = new Set<number>(); let parentFingerprint = "";
+  // 只有明确 superseded 版本才核验完整消息共同前缀；普通 parent_id 不构成复制证明。
+  if (stateMeta.superseded === true && parent && parent !== sessionId && !parent.includes("/") && !parent.includes("\\")) {
+    const parentGaps: Gap[] = [];
+    try {
+      const original = await transcript(join(dirname(location.path), `${parent}.jsonl`), parentGaps);
+      parentFingerprint = [...(original.checkpoint ?? []), ...(original.events ?? [])].map(row => row.raw).join("\n");
+      if (!parentGaps.length) for (let index = 0; index < Math.min(messages.length, original.messages.length); index++) {
+        if (JSON.stringify(messages[index]!.message) !== JSON.stringify(original.messages[index]!.message)) break;
+        copiedIndices.add(index);
+      }
+      else gap(gaps, "ambiguous", "Reasonix 父版本转录不完整，复制边界未核验", "m016");
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      if (!gaps.some(value => value.kind === "source_missing")) gap(gaps, "source_missing", "Reasonix 父会话来源缺失", "m006");
+    }
+    if (meta.relationships?.[0] && copiedIndices.size) {
+      meta.relationships[0].copiedRecordIdentityHashes = [...copiedIndices].map(index => normalizedHash(`${index}:${JSON.stringify(messages[index]!.message)}`));
+      meta.relationships[0].copiedRecordIdentityProof = "reasonix-superseded-prefix";
+    }
   }
   const records: RawHistoryRecord[] = []; const callDiffs = new Map<string, string>();
   const assistantByIndex = new Map<number, NormalizedEvent>(); let turnKey: string | undefined; let lastUserIndex = -1;
@@ -122,7 +155,7 @@ async function snapshot(location: SourceLocation) {
     const occurredAt = value.occurredAt; const model = string(message.modelRef) ?? string(childMeta.model) ?? string(stateMeta.model);
     const text = string(message.raw_content) ?? string(message.content) ?? "";
     const interrupted = message.local_only === true && role === "assistant" || message.interrupted_turn !== undefined;
-    const base = { occurredAt, model, turnKey, currentBranch: true, nativeIdentityHash: normalizedHash(`${index}:${JSON.stringify(message)}`) };
+    const base = { occurredAt, model, turnKey, currentBranch: stateMeta.superseded !== true, branchIds: stateMeta.superseded === true ? ["superseded"] : undefined, copied: copiedIndices.has(index) || undefined, nativeIdentityHash: normalizedHash(`${index}:${JSON.stringify(message)}`) };
     if (role === "user" && message.host_authored !== true) { turnKey = key; lastUserIndex = index; emit({ ...base, key, kind: "user", text, turnKey }, row, index); }
     else if (role === "user" || role === "system") emit({ ...base, key, kind: role === "system" ? "system" : "context", text }, row, index);
     else if (role === "assistant") {
@@ -193,14 +226,14 @@ async function snapshot(location: SourceLocation) {
     turnKey: lastUserIndex >= 0 ? `reasonix:message:${lastUserIndex}` : undefined, interrupted: ["failed", "cancelled", "interrupted"].includes(string(childMeta.status) ?? "") || undefined },
   { record: childMeta, raw: subagent.raw, line: messages.length + (wire?.length ?? 0) + 3 });
   return normalizedSnapshot({ ...location, format: FORMAT, sessionId, cwd, parentSessionId: parent }, records, meta,
-    [metaFile.raw, subagent.raw, contextFile.raw, wireMeta.raw, ...(checkpoint ?? []).map(row => row.raw), ...(events ?? []).map(row => row.raw), ...(wire ?? []).map(row => row.raw)].join("\u0000"));
+    [metaFile.raw, subagent.raw, contextFile.raw, wireMeta.raw, parentFingerprint, ...(checkpoint ?? []).map(row => row.raw), ...(events ?? []).map(row => row.raw), ...(wire ?? []).map(row => row.raw)].join("\u0000"));
 }
 
 export function reasonixHistoryRoots(home: string, environment: NodeJS.ProcessEnv): string[] {
   const expand = (value: string) => value.startsWith("~/") ? join(home, value.slice(2)) : value;
   const root = expand(environment.REASONIX_HOME?.trim() || join(home, ".reasonix"));
   let state = environment.REASONIX_STATE_HOME?.trim();
-  if (!state) try { state = string(object(parseToml(readFileSync(join(root, "config.toml"), "utf8")).storage).state); } catch { /* 原生加载端同样对无效 storage 配置使用默认根。 */ }
+  if (!state) try { state = string(object(parseToml(readBoundedTextSync(join(root, "config.toml"), 16 * 1024 * 1024)).storage).state); } catch (error) { if ((error as NodeJS.ErrnoException).code === "EFBIG") throw error; /* 原生加载端同样对无效 storage 配置使用默认根。 */ }
   const resolved = state ? expand(state) : root;
   return isAbsolute(resolved) ? [join(resolved, "sessions"), join(resolved, "projects"), join(resolved, "archive")] : [];
 }

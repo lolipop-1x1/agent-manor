@@ -1,7 +1,7 @@
 # 两轴审查与修复
 
 Type: task
-Status: claimed
+Status: resolved
 Blocked by: 07
 
 ## 目标
@@ -15,6 +15,12 @@ Blocked by: 07
 - 修复后必要回归和交付检查通过。
 
 ## Comments
+
+## Answer
+
+规范轴与规格轴分别确认 5 个不同根因，全部经同一个修复任务处理。规范轴覆盖 OMP 停用与损坏配置、插件真实路径、有界读取和国际化；规格轴覆盖 Grok MCP 层级与个人停用、Reasonix 版本复制、Kimi 模型时长和连续 rewind。
+
+独立复核又确认 OMP legacy 控制依赖及 Reasonix 共享关系诊断的直接残留，同一任务补齐精准回归和负例。最终两轴限定复核均无未解决发现。相关修复回归首轮 167／167、残留后 105／105，类型、国际化和公开内容检查通过；完整交付结果见 [验收记录](../../../docs/validation/native-clients.md)。
 
 ## 审查基线
 

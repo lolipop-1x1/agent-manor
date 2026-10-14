@@ -210,7 +210,7 @@ export async function scanResourceInventory(options: ResourceInventoryOptions = 
     }
     catch (error) {
       entries.push({ ...base, bodyId: identity("body", ["skill", targetPath]), name: basename(path), readState: "unreadable", nativeState: "unknown" });
-      if (!missing(error)) gaps.push({ sourceId: source.id, client: source.client, reason: "unreadable" });
+      if (!missing(error)) gaps.push({ sourceId: source.id, client: source.client, reason: error instanceof Error && error.message === "skill_limit" ? "limit" : "unreadable" });
       return;
     }
     const frontmatter = /^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/.exec(text)?.[1];

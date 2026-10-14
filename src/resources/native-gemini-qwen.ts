@@ -253,10 +253,10 @@ export async function planGeminiQwenInventory(options: NativePlannerOptions): Pr
           : listRule(["mcp", "excluded"], name);
       return { nativeState: disabled ? "disabled" : "enabled", controlPath: client === "qwen" && owner ? preferencePath : enablementPath, rule };
     };
-    const mcp = (path: string, value: Value, priority: number, extra: Partial<InventorySourcePlan> = {}, owner?: string, active?: (project?: string) => { enabled: boolean; unknown?: boolean }) => {
+    const mcp = (path: string, value: Value, priority: number, extra: Partial<InventorySourcePlan> = {}, owner?: string, active?: (project?: string) => { enabled: boolean; unknown?: boolean }, containmentRoot?: string) => {
       const rows = Object.entries(object(value.mcpServers)).filter(([, server]) => Object.keys(object(server)).length).map(([name, server]) => ({ name,
         value: client === "qwen" && extra.origin === "compatibility" ? normalizedQwenServer(object(server)) : object(server), keyPath: ["mcpServers", name] }));
-      const native: NativeInventoryMetadata = { priority, rows, dependencyPaths: [...dependencies, enablementPath, ...(client === "qwen" ? [approvalsPath, preferencePath, storePath] : [])], registrationWritable: !owner && extra.origin !== "system",
+      const native: NativeInventoryMetadata = { priority, rows, containmentRoot, dependencyPaths: [...dependencies, enablementPath, ...(client === "qwen" ? [approvalsPath, preferencePath, storePath] : [])], registrationWritable: !owner && extra.origin !== "system",
         stateFor: (name, project) => mcpState(extra.project, rows.find(row => row.name === name)?.value, owner, active)(name, project),
         eligibleFor: project => extra.project && context(project).trusted === false ? false : undefined };
       const source = sources.get(sourceKey(client, path, extra)) ?? add(client, "mcp", path, "jsonc", { keyPath: ["mcpServers"], native, ...extra });
@@ -281,11 +281,18 @@ export async function planGeminiQwenInventory(options: NativePlannerOptions): Pr
       const extensionRoot = join(extensionsRoot, directory);
       try { if (!contained(await realpath(extensionsRoot), await realpath(extensionRoot))) { diagnostics.push({ sourceId: extensionEnablement.source.id, client, kind: "skill", scope: "user", reason: "invalid_reference", path: extensionRoot }); continue; } }
       catch { continue; }
+      const referenceAllowed = async (path: string, kind: "skill" | "mcp") => {
+        try { if (contained(await realpath(extensionRoot), await realpath(path))) return true; }
+        catch (error) { if (["ENOENT", "ENOTDIR"].includes(String(object(error).code))) return true; }
+        diagnostics.push({ sourceId: extensionEnablement.source.id, client, kind, scope: "user", reason: "invalid_reference", path }); return false;
+      };
       let manifestPath = join(extensionRoot, client === "gemini" ? "gemini-extension.json" : "qwen-extension.json");
+      if (!await referenceAllowed(manifestPath, "skill")) continue;
       let manifest = await sourceRead(client, manifestPath, { owner: directory, origin: "plugin" });
       let agentPlugin = false;
       if (client === "qwen" && !manifest.value.name && !manifest.unknown) {
         const candidatePath = join(extensionRoot, "plugin.json");
+        if (!await referenceAllowed(candidatePath, "skill")) continue;
         const candidate = await sourceRead(client, candidatePath, { owner: directory, origin: "plugin" });
         if (candidate.value.$schema === "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json") { manifestPath = candidatePath; manifest = candidate; agentPlugin = true; }
       }
@@ -304,15 +311,17 @@ export async function planGeminiQwenInventory(options: NativePlannerOptions): Pr
           : policy ? overridesEnabled({ [owner]: { overrides: policy.legacyPathRules } }, owner, project, baseEnabled) : overridesEnabled(extensionEnablement.value, owner, project);
         return { enabled, policy, unknown: extensionEnablement.unknown || store?.unknown || manifest.unknown };
       };
-      skill(join(extensionRoot, "skills"), "extension", 20, { owner, origin: "plugin", native: { priority: 20, depth: 1, skipRootSkill: client === "qwen", scanRootAndChildren: client === "gemini", namespace: client === "qwen" ? owner : undefined,
+      skill(join(extensionRoot, "skills"), "extension", 20, { owner, origin: "plugin", native: { priority: 20, depth: 1, containmentRoot: extensionRoot, skipRootSkill: client === "qwen", scanRootAndChildren: client === "gemini", namespace: client === "qwen" ? owner : undefined,
         skillNameFor: client === "gemini" ? geminiSkillName : undefined,
         acceptsSkill: client === "gemini" ? undefined : (frontmatter, path) => acceptsSkill(frontmatter, client, path, agentPlugin),
         dependencyPaths: [...dependencies, manifestPath, extensionEnablementPath, ...(client === "qwen" ? [storePath] : [])], stateFor: skillState("extension", client === "qwen" ? owner : undefined, active, manifest.value),
         eligibleFor: project => active(project).enabled === false || contains(at(context(project).settings, ["skills", "disabledLevels"]), ["extension"]) ? false : undefined } }, skillState("extension", client === "qwen" ? owner : undefined, active, manifest.value));
       if (agentPlugin) {
-        const path = join(extensionRoot, "mcp.json"); const loaded = await sourceRead(client, path, { owner, origin: "plugin" });
-        mcp(path, loaded.value, 20, { owner, origin: "plugin" }, owner, active);
-      } else mcp(manifestPath, manifest.value, 20, { owner, origin: "plugin" }, owner, active);
+        const path = join(extensionRoot, "mcp.json");
+        if (!await referenceAllowed(path, "mcp")) continue;
+        const loaded = await sourceRead(client, path, { owner, origin: "plugin" });
+        mcp(path, loaded.value, 20, { owner, origin: "plugin" }, owner, active, extensionRoot);
+      } else mcp(manifestPath, manifest.value, 20, { owner, origin: "plugin" }, owner, active, extensionRoot);
     }
     // 安装包内置资源与远端管理策略没有本地安装定位，不把空目录当作完整盘点。
     for (const owner of client === "gemini" ? ["builtin", "remote-policy"] : ["bundled"]) {

@@ -22,11 +22,11 @@
 | Qwen Code | 原生／`.agents`／custom、可信项目、扩展及插件 v1 | 用户、项目与扩展注册，配置摘要审批及原生排除名单 | 硬禁用、defaultDisabled、级别禁用与用户触发分开；审批与连接状态不混同 |
 | Kimi Code CLI | 用户、generic、项目、配置 roots、条件递归 bundle 与插件 | 用户 `mcp.json`、项目 `.mcp.json`、cwd 原生 MCP 文件 | 普通 Skill 无逐项停用开关；插件受保护，普通入口可回收恢复 |
 | Oh My Pi | native、opt-in foreign、项目、custom、插件和 skillshare | native 及兼容 provider，名字 deny／allow 与 enabled | YAML 原生名字控制；未启用 provider 不计有效入口；不同正文保留原生别名 |
-| Grok Build | 用户、可信项目、兼容与已安装插件 | 用户／项目 TOML、插件及兼容来源 | 名字列表和服务开关保留原生范围；managed／插件保护 |
+| Grok Build | 用户、可信项目、兼容与已安装插件 | 用户／项目 TOML、插件及兼容来源 | MCP 项目从仓库根到 cwd 覆盖用户；个人停用写用户 disabled_mcp_servers 名单，注册回收独立；managed／插件保护 |
 | Reasonix | 用户、项目、配置 roots 与插件包 | 用户／项目 plugins 与 `.mcp.json`，durable activation | 项目覆盖使用工作区身份，简单声明核验 digest；复杂变量／脚本展开不能确认时保持未知和只读 |
 | Codewhale | 原生、配置根、项目、兼容与插件 | global、可信 project 与插件 | 当前格式 home 回退；普通 Skill 无逐项停用，插件受保护 |
 
-用户目录由操作系统 home 决定。可明确传入 `CODEX_HOME`、`DSH_HOME`、`DSH_AGENTS_HOME`、`PI_CODING_AGENT_DIR`、`XDG_CONFIG_HOME`、`MYFLICKER_HOME` 的已核验覆盖值；测试传入人工 home，不修改进程 `HOME`。项目扫描只限已登记、历史中确认或手动声明的项目根，不遍历仓库寻找任意配置。当前盘点不额外推导 nested 项目或祖先加载层。
+用户目录由操作系统 home 决定。可明确传入 `CODEX_HOME`、`DSH_HOME`、`DSH_AGENTS_HOME`、`PI_CODING_AGENT_DIR`、`XDG_CONFIG_HOME`、`MYFLICKER_HOME` 的已核验覆盖值；测试传入人工 home，不修改进程 `HOME`。项目扫描只限已登记、历史中确认或手动声明的项目根，不遍历仓库寻找任意配置。不从目录编码或相近路径推导新项目；对已有项目 cwd，Grok MCP 与 Oh My Pi Skill 按已核验的原生规则纳入仓库祖先入口。
 
 CodeFlicker CLI／桌面版的版本、资源根、配置字段与迁移边界见 [来源矩阵](codeflicker-resource-sources.md)。CLI 同名入口按加载顺序计算覆盖，用户默认及各已知项目的选择分别保留；全局实际入口合并展示，项目差异放在作用范围记录中。桌面可按精确目录选择的同名入口保持独立。未登记缓存和被覆盖来源进入诊断，不混入有效入口。来源格式核验不代表运行客户端已经加载或管理修改已生效。
 

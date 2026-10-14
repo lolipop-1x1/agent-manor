@@ -567,4 +567,12 @@ export default {
   "diagnostics.history.adapters.codewhale.m015": "Codewhale 晚到用量旁路尚未形成有效 JSON",
   "diagnostics.history.adapters.codewhale.m016": "晚到用量部分报告",
   "diagnostics.history.adapters.codewhale.m017": "Codewhale 晚到用量仅覆盖部分来源，未并入会话总量或逐请求统计",
+  "diagnostics.files.boundedLimit": "文件超过有界读取上限",
+  "diagnostics.files.regularRequired": "来源必须为普通文件",
+  "diagnostics.history.adapters.kimi.m020": "Kimi 会话元信息超过有界读取上限",
+  "diagnostics.history.adapters.grok.m011": "Grok 项目标记超过有界读取上限",
+  "diagnostics.history.adapters.grok.m012": "Grok 项目标记不是可读取的普通文件",
+  "diagnostics.history.adapters.grok.m013": "Grok 回退下标超出当前时间线，未猜测范围",
+  "diagnostics.history.adapters.codewhale.m018": "Codewhale 来源超过有界读取上限",
+  "diagnostics.history.adapters.reasonix.m016": "Reasonix 父版本转录不完整，复制边界未核验",
 } satisfies MessageCatalog;

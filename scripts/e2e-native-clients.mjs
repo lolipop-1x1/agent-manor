@@ -19,7 +19,7 @@ const artifacts = fileURLToPath(new URL("../.local/native-client-expansion/e2e/"
 const clients = ["gemini", "qwen", "kimi", "omp", "grok", "reasonix", "codewhale"];
 const browserSession = `native${process.pid}`;
 const checks = [];
-const localSkills = new Map();
+const localResources = new Map();
 let service;
 let base;
 const browser = async args => {
@@ -76,7 +76,7 @@ try {
     for (const kind of ["skill", "mcp"]) {
       const local = await api(`/resources/local?kind=${kind}&client=${client}&pageSize=200`);
       assert.ok(local.total > 0, `${client}/${kind} 原生资源清单`);
-      if (kind === "skill") localSkills.set(client, local.rows.find(row => row.entries.some(entry => entry.client === client && !entry.protected && (entry.capabilities.disable || entry.capabilities.trash))));
+      localResources.set(`${client}/${kind}`, local.rows.find(row => row.entries.some(entry => entry.client === client && !entry.protected && (entry.capabilities.disable || entry.capabilities.trash))));
       assert.ok(!JSON.stringify(local).includes("fixture-secret"), `${client} MCP 敏感投影`);
     }
     pass(`${client} API／CLI／代码地图／统计／资源`);
@@ -110,16 +110,16 @@ try {
         ensure((await page.locator('.resources-shell').innerText()).includes(${JSON.stringify(label)}),'资源客户端名称错误');
       `);
     }
-    if (language === "zh-CN") for (const client of clients) {
-      const row = localSkills.get(client); assert.ok(row, `${client} 普通 Skill 管理入口`);
+    if (language === "zh-CN") for (const client of clients) for (const kind of ["skill", "mcp"]) {
+      const row = localResources.get(`${client}/${kind}`); assert.ok(row, `${client}/${kind} 普通资源管理入口`);
       const entry = row.entries.find(value => value.client === client && !value.protected && (value.capabilities.disable || value.capabilities.trash));
       const action = entry.capabilities.disable ? "disable" : "trash";
       const actionName = translate(language, `resources.action.${action}`);
       const label = CLIENTS.find(value => value.id === client).name;
       const previewLabel = action === "disable" ? translate(language, "resources.management.previewEntry", { action: actionName, name: entry.name, client: label })
         : translate(language, "resources.management.trashFile", { path: entry.entryPath });
-      await ui(`${client} 原生管理预览与本地执行`, `
-        await page.goto(${JSON.stringify(`${base}/#resources?client=${client}&kind=skill&tab=local`)});
+      await ui(`${client}/${kind} 原生管理预览与本地执行`, `
+        await page.goto(${JSON.stringify(`${base}/#resources?client=${client}&kind=${kind}&tab=local`)});
         await page.getByRole('button',{name:${JSON.stringify(translate(language, "resources.viewLocal", { name: row.body.name }))},exact:true}).click();
         await page.getByRole('button',{name:${JSON.stringify(translate(language, "resources.management.resource", { name: row.body.name }))},exact:true}).click();
         await page.getByRole('dialog',{name:${JSON.stringify(translate(language, "resources.detail.manageEntries"))},exact:true}).getByRole('button',{name:${JSON.stringify(previewLabel)},exact:true}).click();
@@ -131,12 +131,17 @@ try {
       `);
       const archives = await api(`/resources/archives?client=${client}`);
       const archive = archives.archives.find(value => value.entry.id === entry.id && value.state !== "restored"); assert.ok(archive, `${client} 恢复材料`);
+      await api("/resources/refresh", "POST", {});
+      const modified = await api(`/resources/local?kind=${kind}&client=${client}&pageSize=200`);
+      const modifiedEntry = modified.rows.flatMap(value => value.entries).find(value => value.id === entry.id);
+      if (action === "disable") assert.equal(modifiedEntry?.nativeState, "disabled", `${client}/${kind} 停用后原生状态`);
+      else assert.equal(modifiedEntry, undefined, `${client}/${kind} 回收后入口应消失`);
       const restore = await api("/resources/preview", "POST", { operationId: archive.operationId, action: "restore" });
       const restored = await api("/resources/apply", "POST", { previewId: restore.id, confirmed: true }); assert.equal(restored.status, "success");
       await api("/resources/refresh", "POST", {});
-      const current = await api(`/resources/local?kind=skill&client=${client}&pageSize=200`);
-      assert.ok(current.rows.some(value => value.entries.some(item => item.id === entry.id && item.nativeState === "enabled")), `${client} 恢复后原生状态`);
-      pass(`${client} 原生状态与恢复回读`);
+      const current = await api(`/resources/local?kind=${kind}&client=${client}&pageSize=200`);
+      assert.ok(current.rows.some(value => value.entries.some(item => item.id === entry.id && item.nativeState === "enabled")), `${client}/${kind} 恢复后原生状态`);
+      pass(`${client}/${kind} 原生状态与恢复回读`);
     }
   }
   await ui("窄屏与英文累计报告", `

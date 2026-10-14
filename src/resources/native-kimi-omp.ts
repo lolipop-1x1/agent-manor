@@ -1,5 +1,6 @@
-import { lstat, readFile, readdir, realpath } from "node:fs/promises";
+import { lstat, readdir, realpath } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, matchesGlob, relative, resolve, sep } from "node:path";
+import { readBoundedText } from "../bounded-file.js";
 import { parseDocument } from "yaml";
 import { object, string } from "../history/extraction.js";
 import type { InventorySourcePlan } from "./codeflicker-inventory.js";
@@ -117,16 +118,24 @@ export async function planKimiOmpInventory(options: NativePlannerOptions): Promi
     const walk = async (path: string, depth: number, parentName?: string): Promise<void> => {
       if (depth > 8 || ++total > 10000) return;
       let canonical: string; try { canonical = await realpath(path); } catch { return; }
-      if (visited.has(canonical)) return; visited.add(canonical);
+      if (visited.has(canonical) || source.native?.containmentRoot && !await containedPath(source.native.containmentRoot, canonical)) return; visited.add(canonical);
       let entries; try { entries = await readdir(path, { withFileTypes: true }); } catch { return; }
       for (const entry of entries.sort((left, right) => left.name.localeCompare(right.name))) {
         if (entry.name === "node_modules" || entry.name.startsWith(".") || !entry.isDirectory() && !entry.isSymbolicLink()) continue;
         const child = join(path, entry.name); const document = join(child, "SKILL.md"); const hasSkill = await exists(document);
         let metadata: Record<string, unknown> = {}; let name = entry.name;
         if (hasSkill) {
-          try { const text = await readFile(document, "utf8"); const frontmatter = /^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/.exec(text)?.[1];
+          try {
+            const target = await realpath(document);
+            if (source.native?.containmentRoot && !await containedPath(source.native.containmentRoot, target)) {
+              diagnostics.push({ sourceId: source.id, client: "kimi", kind: "skill", scope: source.scope, project: source.project, reason: "invalid_reference", path: document }); continue;
+            }
+            const text = await readBoundedText(target, 1024 * 1024); const frontmatter = /^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/.exec(text)?.[1];
             if (frontmatter) { const parsed = parseDocument(frontmatter, { uniqueKeys: true }); if (!parsed.errors.length) metadata = object(parsed.toJS({ maxAliasCount: 20 })); }
-          } catch { return; }
+          } catch (error) {
+            if (String(object(error).code) === "EFBIG") gaps.push({ sourceId: source.id, client: "kimi", reason: "limit" });
+            continue;
+          }
           if (!kimiAcceptsSkill(metadata)) continue;
           name = string(metadata.name) ?? name;
           const registered = parentName && name !== parentName && !name.startsWith(`${parentName}.`) ? `${parentName}.${name}` : name;
@@ -167,12 +176,14 @@ export async function planKimiOmpInventory(options: NativePlannerOptions): Promi
   if (ompConfigSource.readState === "missing") ompConfig = await parsed(ompLegacyConfigPath, "json", ompLegacyConfigSource);
   const ompUserMcpPath = join(ompAgent, "mcp.json"); const ompUserMcpSource = add("omp", "mcp", ompUserMcpPath, "json", { keyPath: ["mcpServers"] });
   const ompMcpConfig = await parsed(ompUserMcpPath, "json", ompUserMcpSource);
+  const globalSource = ompConfigSource.readState === "missing" ? ompLegacyConfigSource : ompConfigSource;
+  const globalUnknown = !["ok", "missing"].includes(globalSource.readState);
   const globalControl = ompConfigSource.readState === "missing" && ompLegacyConfigSource.readState === "ok" ? ompLegacyConfigPath : ompConfigPath;
-  const projectSettings = new Map<string, { config: Record<string, unknown>; paths: string[]; control: string }>();
+  const projectSettings = new Map<string, { config: Record<string, unknown>; paths: string[]; control: string; unknown: boolean }>();
   for (const project of projects) {
     const legacyPath = join(project, ".omp", "settings.json"); const legacySource = metadata("omp", legacyPath, "json", project); const legacy = await parsed(legacyPath, "json", legacySource);
     const path = join(project, ".omp", "config.yml"); const source = metadata("omp", path, "yaml", project); const native = await parsed(path, "yaml", source);
-    projectSettings.set(project, { config: merge(merge(ompConfig, legacy), native), paths: [legacyPath, path], control: setting(native, "disabledExtensions") !== undefined ? path
+    projectSettings.set(project, { config: merge(merge(ompConfig, legacy), native), paths: [legacyPath, path], unknown: globalUnknown || [legacySource, source].some(layer => !["ok", "missing"].includes(layer.readState)), control: setting(native, "disabledExtensions") !== undefined ? path
       : setting(legacy, "disabledExtensions") !== undefined ? legacyPath : globalControl });
   }
   const effective = (project?: string) => project && projectSettings.has(project) ? projectSettings.get(project)!.config : ompConfig;
@@ -196,7 +207,7 @@ export async function planKimiOmpInventory(options: NativePlannerOptions): Promi
   };
   const skillState = (provider: string, project?: string, foreignUser = false) => (name: string, context?: string, frontmatter?: Record<string, unknown>): NativeResourceState => {
     const selectedProject = context ?? project; const config = effective(selectedProject); const rawName = string(frontmatter?.name) ?? name;
-    if (ompConfigSource.readState === "invalid" || ompConfigSource.readState === "unreadable") return { nativeState: "unknown" };
+    if (globalUnknown || selectedProject && projectSettings.get(selectedProject)?.unknown) return { nativeState: "unknown" };
     const disabled = strings(config.disabledExtensions); const included = strings(setting(config, "skills.includeSkills")); const ignored = strings(setting(config, "skills.ignoredSkills"));
     const scope = project ? "Project" : "User"; const sourceToggle = provider === "native" ? `skills.enablePi${scope}` : provider === "agents" ? `skills.enableAgents${scope}` : provider === "claude" ? `skills.enableClaude${scope}` : provider === "codex" && !project ? "skills.enableCodexUser" : undefined;
     const allowForeign = foreignUser && (["claude", "codex"].includes(provider) && setting(config, sourceToggle ?? "") === true || optedIn(provider, selectedProject));
@@ -217,7 +228,7 @@ export async function planKimiOmpInventory(options: NativePlannerOptions): Promi
       native: { priority, depth: 1, skipRootSkill: true, collisionPolicy: "omp-skill", collisionNamespace,
         acceptsSkill: metadata => metadata?.enabled !== false && !/[\\/]/.test(string(metadata?.name) ?? "")
           && (!["native", "omp-managed", "custom", "github", "omp-plugins"].includes(provider) || !!metadata?.description),
-        dependencyPaths: [ompConfigPath, ...(project ? projectSettings.get(project)?.paths ?? [] : [])],
+        dependencyPaths: [ompConfigPath, ompLegacyConfigPath, ...(project ? projectSettings.get(project)?.paths ?? [] : [])],
         eligibleFor: context => skillProviderEligible(provider, project, context, !project && foreignProviders.has(provider)),
         stateFor: skillState(provider, project, !project && foreignProviders.has(provider)), ...extra.native },
     });
@@ -246,15 +257,16 @@ export async function planKimiOmpInventory(options: NativePlannerOptions): Promi
     for (const [index, path] of strings(setting(config, "skills.customDirectories")).entries()) ompSkill(expand(path, userHome, project ?? userHome), "custom", 20000 - index, project);
   }
   const configureOmpMcp = (source: InventorySourcePlan, config: Record<string, unknown>, provider: string, priority: number, writable: boolean) => {
-    source.native = { priority, dependencyPaths: [source.path, ompUserMcpPath, ompConfigPath], registrationWritable: writable,
+    source.native = { priority, dependencyPaths: [source.path, ompUserMcpPath, ompConfigPath, ompLegacyConfigPath, ...(source.project ? projectSettings.get(source.project)?.paths ?? [] : [])], registrationWritable: writable,
       eligibleFor: project => providerEnabled(provider, project, source.scope === "user" && foreignProviders.has(provider)),
       stateFor: (name, project) => {
+        if (globalUnknown || project && projectSettings.get(project)?.unknown || !["ok", "missing"].includes(ompUserMcpSource.readState)) return { nativeState: "unknown" };
         const declared = source.keyPath?.reduce<unknown>((value, key) => object(value)[key], config);
         const server = object(object(declared ?? config.mcpServers ?? config.mcp_servers ?? config.mcp ?? config.servers ?? config)[name]);
         const denied = strings(ompMcpConfig.disabledServers).includes(name); const forced = strings(ompMcpConfig.enabledServers).includes(name);
         const disabled = !providerEnabled(provider, project, source.scope === "user" && foreignProviders.has(provider)) || denied || !forced && (server.enabled === false || server.disabled === true || server.active === false);
-        return { nativeState: disabled ? "disabled" : "enabled", controlPath: writable ? source.path : ompUserMcpPath,
-          rule: writable ? { format: "json", type: "boolean", keyPath: ["mcpServers", name, "enabled"], disabledValue: false }
+        return { nativeState: disabled ? "disabled" : "enabled", controlPath: writable && !forced ? source.path : ompUserMcpPath,
+          rule: writable && !forced ? { format: "json", type: "boolean", keyPath: ["mcpServers", name, "enabled"], disabledValue: false }
             : { format: "json", type: "name-list", keyPath: ["disabledServers"], member: name } };
       } };
   };
@@ -461,7 +473,8 @@ export async function planKimiOmpInventory(options: NativePlannerOptions): Promi
         const match = /^@([a-z0-9][a-z0-9_]{2,31})\/([a-z0-9]+(?:-[a-z0-9]+)*)$/.exec(id); const entry = object(value); const version = string(entry.version); const integrity = string(entry.integrity);
         if (!match || !version || !/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/.test(version) || version.includes("..") || !integrity || typeof entry.resolved !== "string") continue;
         const store = join(dirname(ompAgent), "skillshare", `@${match[1]}`, match[2]!, version); const marker = join(store, ".skillshare-integrity");
-        let actual: string | undefined; try { actual = (await readFile(marker, "utf8")).trim(); } catch { /* 尚未解包完成的包不能作为已加载资源。 */ }
+        let actual: string | undefined; try { actual = (await readBoundedText(marker, 64 * 1024)).trim(); }
+        catch (error) { if (String(object(error).code) === "EFBIG") gaps.push({ sourceId: lockSource.id, client: "omp", reason: "limit" }); /* 尚未解包完成的包不能作为已加载资源。 */ }
         if (actual !== integrity) continue;
         const priority = 9500 + (project ? 50 - lockIndex : 0);
         ompSkill(store, "skillshare", priority, project, { origin: "managed", owner: id, native: { priority, direct: true, dependencyPaths: [lockPath, marker],

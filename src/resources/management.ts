@@ -82,15 +82,15 @@ function markerShared(entry: ResourceInventoryEntry, refs: readonly ResourceInve
 }
 function nameScopesKnown(entry: ResourceInventoryEntry, snapshot: ResourceInventorySnapshot): boolean {
   const refs = nameReferences(snapshot, entry);
-  if (refs.some(value => value.selectionScopes?.some(scope => (entry.scope === "user" || scope.project === entry.project) && scope.nativeState === "unknown"))) return false;
+  if (refs.some(value => value.selectionScopes?.some(scope => (entry.locator.nativeRule || entry.scope === "user" || scope.project === entry.project) && scope.nativeState === "unknown"))) return false;
   const dependencies = new Set(entry.locator.dependencyPaths);
-  return !snapshot.sources.some(source => source.client === "codeflicker" && dependencies.has(source.path)
+  return !snapshot.sources.some(source => (source.client === "codeflicker" || entry.locator.nativeRule && source.client === entry.client) && dependencies.has(source.path)
     && !["ok", "missing"].includes(source.readState));
 }
 function nativeDisable(entry: ResourceInventoryEntry, snapshot: ResourceInventorySnapshot): boolean {
   if (entry.nativeState === "disabled") return false;
   const control = entry.locator.nativeControl;
-  if (control === "native-rule") return entry.nativeState === "enabled" && !!entry.locator.nativeRule && !!entry.locator.controlPath;
+  if (control === "native-rule") return entry.nativeState === "enabled" && !!entry.locator.nativeRule && !!entry.locator.controlPath && nameScopesKnown(entry, snapshot);
   if (entry.client === "codex") return entry.scope === "user" && (entry.kind === "skill" ? control === "codex-skill" && !!entry.locator.controlPath
     : control === "codex-mcp" && entry.locator.format === "toml");
   if (entry.client === "codeflicker") return entry.nativeState === "enabled" && (entry.kind === "skill" ? control === "codeflicker-skill" && !!entry.locator.controlPath

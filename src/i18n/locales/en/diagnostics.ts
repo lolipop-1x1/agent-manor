@@ -567,4 +567,12 @@ export default {
   "diagnostics.history.adapters.codewhale.m015": "Codewhale late usage sidecar is not yet valid JSON",
   "diagnostics.history.adapters.codewhale.m016": "Partial late usage report",
   "diagnostics.history.adapters.codewhale.m017": "Codewhale late usage covers only some sources; it is excluded from session totals and request statistics",
+  "diagnostics.files.boundedLimit": "File exceeds the bounded read limit",
+  "diagnostics.files.regularRequired": "Source must be a regular file",
+  "diagnostics.history.adapters.kimi.m020": "Kimi session metadata exceeds the bounded read limit",
+  "diagnostics.history.adapters.grok.m011": "Grok project marker exceeds the bounded read limit",
+  "diagnostics.history.adapters.grok.m012": "Grok project marker is not a readable regular file",
+  "diagnostics.history.adapters.grok.m013": "Grok rewind index is outside the current timeline; no boundary was inferred",
+  "diagnostics.history.adapters.codewhale.m018": "Codewhale source exceeds the bounded read limit",
+  "diagnostics.history.adapters.reasonix.m016": "Reasonix parent transcript is incomplete; copied boundaries were not verified",
 } satisfies MessageCatalog;

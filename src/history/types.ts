@@ -42,6 +42,8 @@ export interface HistoryRelationship {
   endByteOffset?: number;
   endOrdinalExclusive?: number;
   copiedRecordIdentityHashes?: string[];
+  /** 适配器核验明确版本身份及完整消息前缀后提供，普通父关系没有此证明。 */
+  copiedRecordIdentityProof?: "reasonix-superseded-prefix";
   agentId?: string;
   /** 证明跨来源关系的原始执行记录，不表示历史调用重放。 */
   sources?: SourceReference[];

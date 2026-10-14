@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import Database from "better-sqlite3";
-import { appendFile, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, mkdtemp, rm, symlink, truncate, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import test from "node:test";
 import type { SessionMessage, SessionUsage } from "../src/session-contracts.js";
 import { kimiAdapter, kimiHistoryRoots } from "../src/history/adapters/kimi.js";
@@ -13,6 +13,7 @@ import type { SourceLocation } from "../src/history/types.js";
 import { discoverSources, parseSource } from "../src/history/index.js";
 import { refreshSessions } from "../src/sessions/refresh.js";
 import { SessionStore } from "../src/sessions/store.js";
+import { requestSpeed } from "../src/session-speed.js";
 import { isolatedHistoryRoots } from "./helpers/history-roots.js";
 
 const epoch = Date.UTC(2026, 9, 1);
@@ -57,7 +58,7 @@ test("Kimi v2 wire 配对工具、请求、压缩、显式终答及包含缓存�
     loop("tool.call", 2.1, { uuid: "call-event", stepUuid: "step", toolCallId: "call", name: "Read", args: { path: "src/example.ts", line_offset: 3, n_lines: 2 } }),
     loop("tool.result", 2.2, { toolCallId: "call", result: { output: "3\talpha\n4\tbeta", note: "<system>2 lines read from file starting from line 3. Total lines in file: 4. Requested range complete.</system>" } }),
     loop("content.part", 3, { uuid: "text", stepUuid: "step", part: { type: "text", text: "已完成" } }),
-    loop("step.end", 4, { uuid: "step", finishReason: "end_turn", usage: { inputOther: 10, inputCacheRead: 3, inputCacheCreation: 2, output: 5 } }),
+    loop("step.end", 4, { uuid: "step", finishReason: "end_turn", llmFirstTokenLatencyMs: 900, llmStreamDurationMs: 2000, usage: { inputOther: 10, inputCacheRead: 3, inputCacheCreation: 2, output: 5 } }),
     wire("turn.ended", 4.1, { turnId: 0, reason: "completed" }),
     wire("context.apply_compaction", 5, { summary: "合成摘要", compactedCount: 4, keptUserMessageCount: 1 }),
   ];
@@ -283,4 +284,49 @@ test("Kimi 与 Oh My Pi 共用发现、地图、会话索引和证据回读，�
     const second = store.createJob(); await refreshSessions(store, second.id, roots); assert.equal(store.getJob(second.id).status, "complete");
     assert.equal(store.getJob(second.id).counts?.parsed, 1);
   } finally { store.close(); }
+}));
+
+
+test("Kimi 长工具步骤只使用原生 LLM 时长，无指标不以工具完成时间推算速度", async () => temporary(async directory => {
+  const path = await kimiPath(directory); const usage = { inputOther: 10, inputCacheRead: 0, inputCacheCreation: 0, output: 400 };
+  const rows = (metrics: Record<string, number>) => [kimiHeader,
+    wire("context.append_message", 0, { message: { id: "user", role: "user", content: "检查" } }),
+    loop("step.begin", 0, { uuid: "step" }), wire("llm.request", 0.1, { model: "synthetic-model" }),
+    loop("content.part", 2, { stepUuid: "step", part: { type: "text", text: "调用工具" } }),
+    loop("tool.call", 2, { stepUuid: "step", toolCallId: "read", name: "Read", args: { path: "src/example.ts" } }),
+    loop("tool.result", 62, { toolCallId: "read", result: { output: "1\talpha", note: "1 line read from file starting from line 1." } }),
+    loop("step.end", 62, { uuid: "step", finishReason: "tool_calls", usage, ...metrics }),
+  ];
+  await writeFile(path, encode(rows({ llmFirstTokenLatencyMs: 900, llmStreamDurationMs: 2000 })));
+  let result = await parsed(kimiAdapter, { path, client: "kimi" });
+  assert.equal(result.usages[0]?.timing?.method, "kimi_llm_metrics"); assert.equal(result.usages[0]?.timing?.window, "response"); assert.equal(result.usages[0]?.timing?.durationMs, 2900);
+  assert.equal(result.usages[0]?.timing?.end, undefined); assert.equal(requestSpeed(result.usages[0]!).tokensPerSecond, 400000 / 2900);
+  await writeFile(path, encode(rows({ llmStreamDurationMs: 2000 })));
+  result = await parsed(kimiAdapter, { path, client: "kimi" }); assert.equal(result.usages[0]?.timing?.window, "generation"); assert.equal(result.usages[0]?.timing?.durationMs, 2000);
+  await writeFile(path, encode(rows({})));
+  result = await parsed(kimiAdapter, { path, client: "kimi" }); assert.equal(result.usages[0]?.timing?.durationMs, undefined); assert.equal(requestSpeed(result.usages[0]!).reason, "timing_missing");
+}));
+
+test("Kimi 无工具结束、失败与重试保留分别记录的模型时间，失败不进入速度", async () => temporary(async directory => {
+  const path = await kimiPath(directory); const usage = { inputOther: 10, inputCacheRead: 0, inputCacheCreation: 0, output: 400 };
+  await writeFile(path, encode([kimiHeader,
+    wire("context.append_message", 0, { message: { id: "user", role: "user", content: "检查" } }),
+    loop("step.begin", 1, { uuid: "failed" }), wire("llm.request", 1.1, { model: "synthetic-model" }),
+    loop("content.part", 2, { stepUuid: "failed", part: { type: "text", text: "部分" } }),
+    loop("step.end", 8, { uuid: "failed", finishReason: "error", usage, llmFirstTokenLatencyMs: 200, llmStreamDurationMs: 1300 }),
+    loop("step.begin", 10, { uuid: "retried" }), wire("llm.request", 10.1, { model: "synthetic-model" }),
+    loop("content.part", 12, { stepUuid: "retried", part: { type: "text", text: "完成" } }),
+    loop("step.end", 14, { uuid: "retried", finishReason: "end_turn", usage, llmFirstTokenLatencyMs: 300, llmStreamDurationMs: 1700 }),
+  ]));
+  const result = await parsed(kimiAdapter, { path, client: "kimi" }); assert.equal(result.usages.length, 2);
+  assert.equal(result.usages[0]?.timing?.durationMs, 1500); assert.equal(requestSpeed(result.usages[0]!).reason, "partial_response");
+  assert.equal(result.usages[1]?.timing?.durationMs, 2000); assert.equal(requestSpeed(result.usages[1]!).tokensPerSecond, 200);
+}));
+
+test("Kimi state 元信息超过预算或链接到其他文件时不读取，保留缺口与目录身份", async () => temporary(async directory => {
+  const path = await kimiPath(directory); await writeFile(path, encode([kimiHeader, wire("context.append_message", 1, { message: { id: "u", role: "user", content: "检查" } })]));
+  const state = join(dirname(dirname(dirname(path))), "state.json"); await truncate(state, 16 * 1024 * 1024 + 1);
+  let result = await parsed(kimiAdapter, { path, client: "kimi" }); assert.equal(result.meta.clientSessionId, "synthetic-kimi"); assert.ok(result.meta.gaps.some(gap => gap.kind === "budget_exceeded"));
+  await rm(state); const external = join(directory, "external.json"); await writeFile(external, JSON.stringify({ id: "external-session", cwd: "/workspace/external" })); await symlink(external, state);
+  result = await parsed(kimiAdapter, { path, client: "kimi" }); assert.equal(result.meta.clientSessionId, "synthetic-kimi"); assert.equal(result.meta.project, undefined); assert.ok(result.meta.gaps.some(gap => gap.kind === "parse_error"));
 }));

@@ -504,6 +504,7 @@ export default {
   "sessions.speed.method.dsh_stream_window": "首个流输出片段至流式结束事件",
   "sessions.speed.method.pi_message_boundary": "调用初始化至助手历史写入",
   "sessions.speed.method.kimi_wire_request": "原生模型请求至步骤完成",
+  "sessions.speed.method.kimi_llm_metrics": "Kimi 原生模型时长",
   "sessions.speed.method.omp_message_boundary": "原生模型调用至助手消息写入",
   "sessions.speed.method.zcode_request_span": "原生模型请求开始与完成计时",
   "sessions.speed.method.opencode_message_span": "助手消息创建与完成时间",

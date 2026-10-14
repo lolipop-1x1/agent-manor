@@ -32,16 +32,17 @@ test("Grok 普通 Skill 按名字控制，兼容 body 保持只读且共享原�
   assert.equal(foreign.verified, false); assert.equal(foreign.native!.stateFor("off").controlPath, join(home, ".grok", "config.toml"));
 }));
 
-test("Grok MCP 用户 TOML 优先项目，同名 disabled 不让较低来源替代", async () => fixture(async home => {
+test("Grok MCP 项目 TOML 完整覆盖用户，同名 disabled 沿实际注册保留", async () => fixture(async home => {
   const project = join(home, "workspace"); await mkdir(project, { recursive: true });
   await file(join(home, ".grok", "config.toml"), '[mcp_servers.same]\ncommand = "example-server"\nenabled = false\n');
   await file(join(project, ".grok", "config.toml"), '[mcp_servers.same]\ncommand = "other-server"\n');
   await file(join(home, ".grok", "trusted_folders.toml"), `[folders."${project}"]\ntrusted = true\n`);
   const source = await plans(home, [project]); const user = source.find(source => source.client === "grok" && source.kind === "mcp" && source.path === join(home, ".grok", "config.toml"))!;
   const local = source.find(source => source.client === "grok" && source.kind === "mcp" && source.project === project && source.format === "toml")!;
-  assert.ok(user.native!.priority > local.native!.priority); assert.equal(user.native!.stateFor("same").nativeState, "disabled");
+  assert.ok(local.native!.priority > user.native!.priority); assert.equal(user.native!.stateFor("same").nativeState, "disabled");
   assert.equal(local.native!.eligibleFor?.(project), true);
-  assert.deepEqual(user.native!.stateFor("same").rule?.keyPath, ["mcp_servers", "same", "enabled"]);
+  assert.equal(local.native!.stateFor("same").nativeState, "enabled");
+  assert.deepEqual(user.native!.stateFor("same").rule?.keyPath, ["disabled_mcp_servers"]);
 }));
 
 test("Reasonix 原生工作区身份将 linked worktree 合并到共享 Git 目录", async () => fixture(async home => {

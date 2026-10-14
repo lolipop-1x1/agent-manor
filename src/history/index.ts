@@ -450,7 +450,7 @@ export async function associateSource(source: ParsedSource, baseline: Baseline, 
   return { associated, source: parsed, events, gaps, reason: events.length ? "逐事件路径或 Git commonDir 确认" : belongsByCwd ? "来源 cwd 属于仓库，外部路径活动已排除" : "归属未知", reasonDescriptor: events.length ? { key: "diagnostics.history.index.m010" } : belongsByCwd ? { key: "diagnostics.history.index.m011" } : { key: "diagnostics.history.index.m012" } };
 }
 
-/** 只有明确 fork 来源与完整父字节边界能证明共享历史；文本相同不去重。 */
+/** 共享历史须有明确父来源与完整边界或已核验的原生复制身份；文本相同不去重。 */
 export function resolveSharedHistory(sources: ParsedSource[]): SharedHistoryResult {
   const bySession = new Map<string, ParsedSource[]>();
   for (const source of sources) bySession.set(source.sessionId, [...(bySession.get(source.sessionId) ?? []), source]);
@@ -480,10 +480,11 @@ export function resolveSharedHistory(sources: ParsedSource[]): SharedHistoryResu
       const hasDshOrdinalProof = source.format === "dsh-jsonl" && relationship.endOrdinalExclusive !== undefined
         && Number.isSafeInteger(relationship.endOrdinalExclusive) && relationship.endOrdinalExclusive >= 0;
       const copiedIdentities = new Set(relationship.copiedRecordIdentityHashes ?? []);
-      const hasPiCopyProof = source.format === "pi-jsonl" && copiedIdentities.size > 0;
+      const hasNativeCopyProof = copiedIdentities.size > 0 && (source.format === "pi-jsonl"
+        || source.client === "reasonix" && source.format === "reasonix-events" && relationship.copiedRecordIdentityProof === "reasonix-superseded-prefix");
       const parent = parents.length === 1 && (relationship.endByteOffset !== undefined
         && cursorOf(parents[0])?.recordEnds.includes(relationship.endByteOffset)
-        || hasDshOrdinalProof || hasPiCopyProof) ? parents[0] : undefined;
+        || hasDshOrdinalProof || hasNativeCopyProof) ? parents[0] : undefined;
       const resolved = relationship.kind === "subagent" ? parents.length > 0 : Boolean(parent);
       relationships.push({ sourceId: source.sourceId, relationship, resolved });
       if (resolved) {
@@ -499,7 +500,7 @@ export function resolveSharedHistory(sources: ParsedSource[]): SharedHistoryResu
             && parentRefs.every(reference => reference.recordLine <= cursorOf(parent)!.recordEnds.indexOf(relationship.endByteOffset!) + 1);
           const withinOrdinalCut = hasDshOrdinalProof
             && parentRefs.every(reference => reference.recordOrdinal !== undefined && reference.recordOrdinal < relationship.endOrdinalExclusive!);
-          const copiedByIdentity = hasPiCopyProof
+          const copiedByIdentity = hasNativeCopyProof
             && parentRefs.every(reference => reference.recordIdentityHash !== undefined && copiedIdentities.has(reference.recordIdentityHash));
           if (parentRefs.length && (withinByteCut || withinOrdinalCut || copiedByIdentity)) {
             const proof = [...new Set(parentRefs.map((reference) => reference.hash))].sort().join(":");

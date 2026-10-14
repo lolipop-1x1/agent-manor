@@ -154,16 +154,23 @@ export async function planGrokReasonixCodewhaleInventory(options: NativePlannerO
     for (const [index, path] of strings(skills.paths).entries()) skill("grok", expand(userHome, path), 600 - index, skillState, { origin: "manual", verified: false }, [configPath]);
     for (const path of strings(skills.server_skill_dirs)) skill("grok", expand(userHome, path), 200, () => constant("enabled"), { origin: "managed", owner: "grok-managed", verified: false }, [configPath]);
     for (const path of strings(skills.bundled_skill_dirs)) skill("grok", expand(userHome, path), 100, () => constant("enabled"), { origin: "system", verified: false }, [configPath]);
-    const grokMcpState = (source: Record<string, unknown>, sourcePath: string, keyPath: string[], native = true) => (name: string): NativeResourceState => {
+    const grokMcpState = (source: Record<string, unknown>) => (name: string): NativeResourceState => {
       const row = object(source[name]); const disabledNames = strings(config?.disabled_mcp_servers);
-      return { nativeState: config === undefined ? "unknown" : row.enabled === false || row.disabled === true || disabledNames.includes(name) ? "disabled" : "enabled", controlPath: native ? sourcePath : configPath,
-        rule: native ? { type: "boolean", format: "toml", keyPath: [...keyPath, name, "enabled"], disabledValue: false }
-          : { type: "name-list", format: "toml", keyPath: ["disabled_mcp_servers"], member: name } };
+      return { nativeState: config === undefined ? "unknown" : row.enabled === false || row.disabled === true || disabledNames.includes(name) ? "disabled" : "enabled", controlPath: configPath,
+        ...(config !== undefined ? { rule: { type: "name-list" as const, format: "toml" as const, keyPath: ["disabled_mcp_servers"], member: name } } : {}) };
     };
-    await map("grok", configPath, "toml", ["mcp_servers"], 1000, grokMcpState(object(config?.mcp_servers), configPath, ["mcp_servers"]));
+    await map("grok", configPath, "toml", ["mcp_servers"], 1000, grokMcpState(object(config?.mcp_servers)));
     const folders = object(trust?.folders);
     for (const project of projects) {
-      const projectConfigPath = join(project, ".grok", "config.toml"); const projectConfig = await parseConfig(projectConfigPath, "toml");
+      const directories = [project]; let current = project; let repository = false;
+      while (current !== userHome) {
+        try { const marker = await lstat(join(current, ".git")); if (marker.isDirectory() || marker.isFile()) { repository = true; break; } }
+        catch (error) { if (!["ENOENT", "ENOTDIR"].includes(String(object(error).code))) throw error; }
+        const parent = dirname(current); if (parent === current || parent === userHome) break;
+        directories.push(parent); current = parent;
+      }
+      const projectConfigPaths = (repository ? directories.reverse() : [project]).map(dir => join(dir, ".grok", "config.toml"));
+      const projectConfigPath = join(project, ".grok", "config.toml");
       let trusted = false;
       const actual = canonicalProjects.get(project)!;
       const candidates: { path: string; trusted: boolean }[] = [];
@@ -178,11 +185,16 @@ export async function planGrokReasonixCodewhaleInventory(options: NativePlannerO
         skill("grok", join(project, dir, "skills"), 900 - index, skillState, { project, origin: dir === ".grok" ? "standard" : "compatibility", verified: dir === ".grok",
           native: { priority: 900 - index, dependencyPaths: [configPath, projectConfigPath, trustedPath], stateFor: skillState, eligibleFor: () => trusted } }, [configPath, trustedPath]);
       }
-      await map("grok", projectConfigPath, "toml", ["mcp_servers"], 900, grokMcpState(object(projectConfig?.mcp_servers), projectConfigPath, ["mcp_servers"]),
-        { project, native: { priority: 900, dependencyPaths: [configPath, projectConfigPath, trustedPath], stateFor: grokMcpState(object(projectConfig?.mcp_servers), projectConfigPath, ["mcp_servers"]), eligibleFor: () => trusted } });
+      // 项目注册从仓库根到 cwd 完整覆盖；个人名字停用始终写用户配置。
+      for (const [index, path] of projectConfigPaths.entries()) {
+        if (await canonical(path) === await canonical(configPath)) continue;
+        const value = await parseConfig(path, "toml"); const priority = 1100 + index;
+        await map("grok", path, "toml", ["mcp_servers"], priority, grokMcpState(object(value?.mcp_servers)),
+          { project, native: { priority, dependencyPaths: [configPath, ...projectConfigPaths, trustedPath], stateFor: grokMcpState(object(value?.mcp_servers)), eligibleFor: () => trusted } });
+      }
       const compatPath = join(project, ".mcp.json"); const compatConfig = await parseConfig(compatPath, "json");
-      await map("grok", compatPath, "json", ["mcpServers"], 100, grokMcpState(object(compatConfig?.mcpServers), compatPath, ["mcpServers"], false), { project, origin: "compatibility", verified: false,
-        native: { priority: 100, dependencyPaths: [configPath, compatPath, trustedPath], stateFor: grokMcpState(object(compatConfig?.mcpServers), compatPath, ["mcpServers"], false), eligibleFor: () => trusted, registrationWritable: false } });
+      await map("grok", compatPath, "json", ["mcpServers"], 100, grokMcpState(object(compatConfig?.mcpServers)), { project, origin: "compatibility", verified: false,
+        native: { priority: 100, dependencyPaths: [configPath, compatPath, trustedPath], stateFor: grokMcpState(object(compatConfig?.mcpServers)), eligibleFor: () => trusted, registrationWritable: false } });
     }
     for (const path of strings(object(config?.plugins).paths)) await bundle("grok", expand(userHome, path));
     await bundles("grok", join(grokHome, "plugins")); await bundles("grok", join(grokHome, "installed-plugins"));

@@ -1,7 +1,7 @@
 # 交付与远端回读
 
 Type: task
-Status: ready-for-agent
+Status: claimed
 Blocked by: 08
 
 ## 目标

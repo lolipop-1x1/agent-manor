@@ -1,5 +1,7 @@
-import { lstat, readFile, stat } from "node:fs/promises";
+import { lstat } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join } from "node:path";
+import { readBoundedText } from "../../bounded-file.js";
+import { DiagnosticError } from "../../i18n/diagnostics.js";
 import type { Gap } from "../../contracts.js";
 import type { SourceLocation } from "../types.js";
 import { number, object, physicalLines, returnedText, shellEvidence, string, toolEvidence, unifiedFragments } from "../extraction.js";
@@ -14,8 +16,11 @@ const date = (value: unknown): string | undefined => {
   return Number.isFinite(time) && time > 0 ? new Date(time).toISOString() : undefined;
 };
 async function document(path: string): Promise<{ value: Record<string, unknown>; raw: string }> {
-  if ((await stat(path)).size > 128 * 1024 * 1024) throw new Error("Codewhale 来源超过有界读取上限");
-  const raw = await readFile(path, "utf8"); return { value: object(JSON.parse(raw)), raw };
+  try { const raw = await readBoundedText(path, 128 * 1024 * 1024); return { value: object(JSON.parse(raw)), raw }; }
+  catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "EFBIG") throw new DiagnosticError("Codewhale 来源超过有界读取上限", { key: "diagnostics.history.adapters.codewhale.m018" });
+    throw error;
+  }
 }
 async function archive(path: string, gaps: Gap[]): Promise<RawHistoryRecord[]> {
   try { return await readBoundedJsonl(path, gaps); }
@@ -27,7 +32,7 @@ async function lateUsage(path: string, gaps: Gap[]): Promise<{ value: Record<str
     if (!info.isFile() || info.isSymbolicLink() || info.size > 1024 * 1024) {
       gap(gaps, "source_unavailable", "Codewhale 晚到用量旁路不可用，累计覆盖保持未知", "m013"); return { value: {}, raw: "" };
     }
-    const raw = await readFile(path, "utf8");
+    const raw = await readBoundedText(path, 1024 * 1024);
     if (raw === "codewhale-session-deleted-v1\n") return { value: {}, raw, retired: true };
     try {
       const value = object(JSON.parse(raw));

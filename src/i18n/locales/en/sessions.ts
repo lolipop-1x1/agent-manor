@@ -541,6 +541,7 @@ export default {
   "sessions.speed.method.dsh_stream_window": "First observed stream fragment to terminal stream event",
   "sessions.speed.method.pi_message_boundary": "Call initialization to persisted assistant history",
   "sessions.speed.method.kimi_wire_request": "Recorded LLM request to step completion",
+  "sessions.speed.method.kimi_llm_metrics": "Kimi native LLM metrics",
   "sessions.speed.method.omp_message_boundary": "Recorded model call to assistant persistence",
   "sessions.speed.method.zcode_request_span": "Native model request start and completion",
   "sessions.speed.method.opencode_message_span": "Assistant message creation and completion",
