@@ -4,6 +4,7 @@
 .product-nav button[aria-current="page"] { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
 .product-view[hidden], .refresh-button[hidden] { display: none; }
 .header-github { color: var(--text); }
+.header-display-actions { display: flex; align-items: center; gap: inherit; flex-shrink: 0; }
 @media (max-width: 767px) {
   .app-header { flex-wrap: wrap; gap: 10px; }
   .product-nav button { padding: 8px 10px; }

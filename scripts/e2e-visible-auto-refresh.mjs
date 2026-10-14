@@ -42,10 +42,7 @@ const browser = async args => {
 };
 const step = async (name, code) => {
   const action = `async page => { const expect=(value,message)=>{if(!value)throw new Error(message);};
-    const sessionControl=async(language='zh')=>{
-      if(!await page.locator('.history-refresh-menu').isVisible())await page.getByRole('button',{name:language==='zh'?'历史更新选项':'History update options',exact:true}).click();
-      return page.getByRole('menuitem',{name:language==='zh'?'会话库自动刷新':'Session auto refresh',exact:true});
-    };
+    const sessionControl=async(language='zh')=>page.getByRole('combobox',{name:language==='zh'?'会话库自动同步':'Session auto sync',exact:true});
     ${code} return {passed:${JSON.stringify(name)}}; }`;
   await writeFile(join(artifacts, "current-check.mjs"), `export default ${action};`);
   await browser(["run-code", action]);
@@ -117,7 +114,7 @@ try {
     await (await sessionControl()).click();await page.clock.runFor(150);
     await page.screenshot({path:${JSON.stringify(join(artifacts, "auto-refresh-menu-zh.png"))},clip:{x:0,y:0,width:1440,height:380}});
     const saved=page.waitForResponse(response=>response.url().endsWith('/preferences')&&response.request().method()==='PUT');
-    await page.getByRole('menuitemradio',{name:'1 分钟',exact:true}).click();await saved;
+    await page.getByRole('option',{name:'1 分钟',exact:true}).click();await saved;
     await page.clock.runFor(60010); await page.waitForTimeout(300);
     let requests=await page.evaluate(()=>globalThis.__refreshRequests);
     expect(requests.some(item=>item.url.includes('/sessions/auto-refresh')&&!String(item.body).includes('client')),'自动刷新未覆盖全部客户端');
@@ -134,14 +131,14 @@ try {
     await page.reload();await page.locator('.session-message-scroll').waitFor();
     let control=await sessionControl();
     expect((await control.innerText()).includes('1 分钟'),'重载未保留间隔');
-    await control.focus();await page.keyboard.press('ArrowRight');await page.clock.runFor(20);await page.keyboard.press('Escape');await page.clock.runFor(20);
-    expect(await page.getByRole('button',{name:'历史更新选项',exact:true}).evaluate(node=>node===document.activeElement),'Escape 没有恢复全局菜单焦点');
+    await control.focus();await page.keyboard.press('Enter');await page.clock.runFor(20);await page.keyboard.press('Escape');await page.clock.runFor(20);
+    expect(await control.evaluate(node=>node===document.activeElement),'Escape 没有恢复自动刷新控件焦点');
     control=await sessionControl();await control.click();await page.clock.runFor(150);const shortSaved=page.waitForResponse(response=>response.url().endsWith('/preferences')&&response.request().method()==='PUT');
-    await page.getByRole('menuitemradio',{name:'5 秒',exact:true}).click();await shortSaved;
+    await page.getByRole('option',{name:'5 秒',exact:true}).click();await shortSaved;
     await page.clock.runFor(20);await page.waitForTimeout(100);await page.evaluate(()=>globalThis.__refreshRequests=[]);
     await page.clock.runFor(10010);await page.waitForTimeout(200);
     expect((await page.evaluate(()=>globalThis.__refreshRequests)).filter(item=>item.url.includes('/sessions/auto-refresh')).length>=2,'5 秒间隔未生效');
-    control=await sessionControl();await control.focus();await page.keyboard.press('ArrowRight');await page.clock.runFor(20);await page.keyboard.press('End');await page.clock.runFor(20);
+    control=await sessionControl();await control.focus();await page.keyboard.press('Enter');await page.clock.runFor(20);await page.keyboard.press('End');await page.clock.runFor(20);
     const longSaved=page.waitForResponse(response=>response.url().endsWith('/preferences')&&response.request().method()==='PUT');
     await page.keyboard.press('Enter');await longSaved;
     control=await sessionControl();expect((await control.innerText()).includes('10 分钟'),'键盘未选择长间隔');await page.keyboard.press('Escape');
@@ -151,7 +148,7 @@ try {
     await page.clock.runFor(10020);await page.waitForTimeout(100);
     expect((await page.evaluate(()=>globalThis.__refreshRequests)).some(item=>item.url.includes('/sessions/auto-refresh')),'10 分钟计时器未触发');
     await (await sessionControl()).click();await page.clock.runFor(150);const saved=page.waitForResponse(response=>response.url().endsWith('/preferences')&&response.request().method()==='PUT');
-    await page.getByRole('menuitemradio',{name:'1 分钟',exact:true}).click();await saved;await page.clock.runFor(20);
+    await page.getByRole('option',{name:'1 分钟',exact:true}).click();await saved;await page.clock.runFor(20);
     await page.evaluate(()=>{const pane=document.querySelector('.session-message-scroll');pane.scrollTop=700;const bounds=pane.getBoundingClientRect();const node=[...pane.querySelectorAll('.session-message')].find(node=>node.getBoundingClientRect().bottom>bounds.top+8);globalThis.__readingAnchor={id:node.id,offset:node.getBoundingClientRect().top-bounds.top};});
   `);
   const appendTurn = async turn => {
@@ -303,23 +300,22 @@ try {
     await page.reload();await page.locator('.code-map').waitFor();
     expect((await page.getByRole('combobox',{name:'Code map auto refresh',exact:true}).innerText()).includes('Off'),'关闭未持久化');
     await page.getByRole('button',{name:'Sessions',exact:true}).click();await page.locator('.session-message-scroll').waitFor();
-    await page.getByRole('button',{name:'History update options',exact:true}).click();
-    expect(await page.getByRole('group',{name:'Session auto refresh',exact:true}).getByRole('menuitemradio',{name:'1 minute',exact:true}).getAttribute('aria-checked')==='true','关闭地图意外关闭会话库刷新');await page.keyboard.press('Escape');
+    expect((await page.getByRole('combobox',{name:'Session auto sync',exact:true}).innerText()).includes('1 minute'),'关闭地图意外关闭会话库刷新');
     await page.evaluate(()=>globalThis.__refreshRequests=[]);await page.clock.runFor(60010);await page.waitForTimeout(100);
     expect((await page.evaluate(()=>globalThis.__refreshRequests)).some(item=>item.url.includes('/sessions/auto-refresh')),'地图关闭后会话库间隔失效');
     expect(!(await page.evaluate(()=>globalThis.__refreshRequests)).some(item=>item.url.includes('/repositories/')&&item.url.includes('/auto-refresh')),'隐藏地图仍自动刷新');
-    await page.getByRole('button',{name:'History update options',exact:true}).click();const sessionSaved=page.waitForResponse(response=>response.url().endsWith('/preferences')&&response.request().method()==='PUT');
-    await page.getByRole('menuitemradio',{name:'Off',exact:true}).click();await sessionSaved;await page.clock.runFor(20);
+    await page.getByRole('combobox',{name:'Session auto sync',exact:true}).click();const sessionSaved=page.waitForResponse(response=>response.url().endsWith('/preferences')&&response.request().method()==='PUT');
+    await page.getByRole('option',{name:'Off',exact:true}).click();await sessionSaved;await page.clock.runFor(20);
     await page.evaluate(()=>globalThis.__refreshRequests=[]);await page.clock.runFor(600010);await page.waitForTimeout(100);
     expect(!(await page.evaluate(()=>globalThis.__refreshRequests)).some(item=>item.url.includes('/auto-refresh')||item.url.includes('/sessions/status')),'关闭后会话仍进行周期检查');
   `);
   await step("关闭状态下手动刷新会话与地图仍能看到进度并完成", `
     await page.setViewportSize({width:1440,height:1000});
     let response=page.waitForResponse(response=>response.url().endsWith('/sessions/refresh')&&response.request().method()==='POST');
-    await page.getByRole('button',{name:'Update history',exact:true}).click();
+    await page.getByRole('button',{name:'Sync history',exact:true}).click();
     const sessionJob=(await (await response).json()).job;
-    for(let attempt=0;attempt<60;attempt++){await page.clock.runFor(2010);await page.waitForTimeout(50);if(await page.getByRole('button',{name:'Update history',exact:true}).isEnabled())break;}
-    expect(await page.getByRole('button',{name:'Update history',exact:true}).isEnabled(),'关闭后会话进度未完成');
+    for(let attempt=0;attempt<60;attempt++){await page.clock.runFor(2010);await page.waitForTimeout(50);if(await page.getByRole('button',{name:'Sync history',exact:true}).isEnabled())break;}
+    expect(await page.getByRole('button',{name:'Sync history',exact:true}).isEnabled(),'关闭后会话进度未完成');
     expect((await page.evaluate(()=>globalThis.__refreshRequests??[])).some(item=>item.url.includes('/jobs/'+sessionJob.id)),'关闭后不再查询手动任务进度');
     await page.getByRole('button',{name:'Code map',exact:true}).click();await page.locator('.code-map').waitFor();
     response=page.waitForResponse(response=>response.url().includes('/repositories/')&&response.url().endsWith('/refresh')&&response.request().method()==='POST');

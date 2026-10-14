@@ -4,18 +4,22 @@ import { HelpPopover } from "./HelpPopover";
 import { useI18n } from "../i18n";
 import "./refresh-controls.css";
 
-export function RefreshControl({ label, busy = false, disabled = false, onRefresh, completedAt, error, details, menu, statusLabel, showStatus = true }: {
+export function RefreshControl({ label, busy = false, busyLabel, progress, disabled = false, onRefresh, completedAt, error, details, menu, statusLabel, showStatus = true }: {
   label: string; busy?: boolean; disabled?: boolean; onRefresh: () => void; completedAt?: string;
   error?: boolean; details?: ReactNode; menu?: ReactNode; statusLabel?: string; showStatus?: boolean;
+  busyLabel?: string; progress?: number | null;
 }) {
   const { t, dateTime } = useI18n();
-  const stateLabel = busy ? t("common.refresh.running") : error ? t("common.refresh.failed")
+  const stateLabel = busy ? busyLabel ?? t("common.refresh.running") : error ? t("common.refresh.failed")
     : completedAt ? t("common.refresh.completed", { time: dateTime(completedAt) }) : t("common.refresh.notChecked");
   return <div className="refresh-control">
-    <button className="button refresh-button" aria-label={label} aria-busy={busy} title={stateLabel}
-      disabled={disabled || busy} onClick={onRefresh}>
-      {error && !busy ? <WarningCircle size={16} className="refresh-error-icon" aria-hidden="true" /> : <ArrowClockwise size={16} className={busy ? "is-spinning" : undefined} aria-hidden="true" />}<span className="refresh-label">{label}</span>
-    </button>
+    <div className="refresh-action">
+      <button className="button refresh-button" aria-label={label} aria-busy={busy} title={stateLabel}
+        disabled={disabled || busy} onClick={onRefresh}>
+        {error && !busy ? <WarningCircle size={16} className="refresh-error-icon" aria-hidden="true" /> : <ArrowClockwise size={16} className={busy ? "is-spinning" : undefined} aria-hidden="true" />}<span className="refresh-label">{busy ? busyLabel ?? label : label}</span>
+      </button>
+      {busy && progress !== undefined && <progress className="refresh-button-progress" max="1" value={progress ?? undefined} aria-label={statusLabel ?? t("common.refresh.status", { action: label })} aria-valuetext={busyLabel} />}
+    </div>
     {menu}
     {showStatus && <HelpPopover label={statusLabel ?? t("common.refresh.status", { action: label })}
       trigger={<button className={`icon-button refresh-state${error ? " failed" : ""}`} aria-label={statusLabel ?? t("common.refresh.status", { action: label })} title={stateLabel}>

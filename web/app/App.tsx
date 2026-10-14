@@ -5,7 +5,6 @@ import type { SessionJob, SessionSummary } from "../../src/session-contracts";
 import { errorMessage, request } from "../shared/api";
 import { useCodeMapPage } from "../features/code-map/CodeMapPage";
 import { useVisiblePolling } from "../shared/refresh/useVisiblePolling";
-import type { Client } from "../../src/clients";
 import { useHistoryRefresh } from "../shared/refresh/useHistoryRefresh";
 import { HistoryRefreshControl } from "../features/sessions/SessionRefresh";
 import Sessions from "../features/sessions/Sessions";
@@ -16,6 +15,7 @@ import Usage from "../features/usage/Usage";
 import { LanguageMenu, LanguageNotice, messageText, t, useI18n } from "../shared/i18n";
 import { useTheme } from "../shared/theme";
 import { AppearanceMenu } from "../shared/ui/AppearanceMenu";
+import { AutoRefreshControl } from "../shared/ui/AutoRefreshControl";
 import { Hint } from "../shared/ui/Hint";
 import "./navigation.css";
 
@@ -88,7 +88,6 @@ export function App() {
   const openOverviewUsage = (hash: string) => { overviewAddress.current = location.hash; activateView("usage"); location.hash = hash; };
   const theme = useTheme(appearance);
   const history = useHistoryRefresh();
-  const [sessionClient, setSessionClient] = useState<Client>();
   const [autoRefreshError, setAutoRefreshError] = useState<Error | null>(null);
   useEffect(() => { if (!sessionsAutoRefreshInterval) setAutoRefreshError(null); }, [sessionsAutoRefreshInterval]);
   useVisiblePolling(view === "sessions" && sessionsAutoRefreshInterval > 0, sessionsAutoRefreshInterval, async signal => {
@@ -118,11 +117,14 @@ export function App() {
     <div ref={headerFrame}>
     <header className="app-header"><a className="brand" href="/" aria-label={t("codeMap.navigation.home")}><svg width="30" height="20" viewBox="8 16 48 32" fill="currentColor" aria-hidden="true" focusable="false"><path d="M14 18a3 3 0 0 0-4 2.8v22.4a3 3 0 0 0 4 2.8l10-6a2 2 0 0 0 1-1.8V25.8a2 2 0 0 0-1-1.8z" /><rect x="28" y="27" width="8" height="10" rx="2" /><path d="M14 18a3 3 0 0 0-4 2.8v22.4a3 3 0 0 0 4 2.8l10-6a2 2 0 0 0 1-1.8V25.8a2 2 0 0 0-1-1.8z" transform="translate(64 0) scale(-1 1)" /></svg><span>Agent<strong>Manor</strong></span></a><span className="header-divider" /><nav className="product-nav" aria-label={t("codeMap.navigation.title")}><button aria-current={view === "overview" ? "page" : undefined} onClick={() => switchView("overview")}>{t("overview.title")}</button><button aria-current={view === "sessions" ? "page" : undefined} onClick={() => switchView("sessions")}>{t("codeMap.navigation.sessions")}</button><button aria-current={view === "map" ? "page" : undefined} onClick={() => switchView("map")}>{t("codeMap.navigation.map")}</button><button aria-current={view === "usage" ? "page" : undefined} onClick={() => switchView("usage")}>{t("usage.title")}</button><button aria-current={view === "resources" ? "page" : undefined} onClick={() => switchView("resources")}>{t("codeMap.navigation.resources")}</button></nav>
       <div className="header-actions">
-        <HistoryRefreshControl client={view === "sessions" ? sessionClient : undefined} disabled={history.updating}
+        {view === "sessions" && <AutoRefreshControl scope="sessions" />}
+        <HistoryRefreshControl busy={history.updating} starting={history.starting} onRetry={history.retry}
           job={history.job} error={history.error} onRefresh={options => void history.refresh(options)} />
-        <LanguageMenu />
-        <AppearanceMenu />
-        <Hint label={t("common.github.project")}><a className="icon-button header-github" href="https://github.com/lolipop-1x1/agent-manor" target="_blank" rel="noreferrer" aria-label={t("common.github.project")}><GithubLogo size={19} aria-hidden="true" /></a></Hint>
+        <div className="header-display-actions">
+          <LanguageMenu />
+          <AppearanceMenu />
+          <Hint label={t("common.github.project")}><a className="icon-button header-github" href="https://github.com/lolipop-1x1/agent-manor" target="_blank" rel="noreferrer" aria-label={t("common.github.project")}><GithubLogo size={19} aria-hidden="true" /></a></Hint>
+        </div>
       </div>
     </header>
     <LanguageNotice />
@@ -131,7 +133,7 @@ export function App() {
     </div>
     <section className="product-view" hidden={view !== "overview"} aria-label={t("overview.title")}><Overview historyRevision={history.revision} active={view === "overview"} onSession={openOverviewSession} onUsage={openOverviewUsage} onMap={openOverviewMap} /></section>
     {map.page}
-    <section className="product-view" hidden={view !== "sessions"} aria-label={t("codeMap.view.sessions")}><Sessions historyRevision={history.revision} historyUpdating={history.updating} onHistoryRefresh={options => void history.refresh(options)} onHistoryStatus={history.observeStatus} onClientFilterChange={setSessionClient} active={view === "sessions"} target={sessionTarget} onMap={openMap} autoRefreshError={autoRefreshError} /></section>
+    <section className="product-view" hidden={view !== "sessions"} aria-label={t("codeMap.view.sessions")}><Sessions historyRevision={history.revision} historyUpdating={history.updating} onHistoryRefresh={options => void history.refresh(options)} onHistoryStatus={history.observeStatus} active={view === "sessions"} target={sessionTarget} onMap={openMap} autoRefreshError={autoRefreshError} /></section>
     <section className="product-view" hidden={view !== "resources"} aria-label={t("codeMap.view.resources")}><Resources historyRevision={history.revision} active={view === "resources"} onSession={openResourceSession} /></section>
     <section className="product-view" hidden={view !== "usage"} aria-label={t("usage.title")}><Usage historyRevision={history.revision} active={view === "usage"} onSession={openMapSession} /></section>
   </Tooltip.Provider>;

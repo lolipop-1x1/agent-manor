@@ -113,10 +113,10 @@ function SessionIndexGaps({ active, version }: { active: boolean; version?: stri
   </details>;
 }
 
-export default function Sessions({ active, target, onMap, autoRefreshError, historyRevision = 0, historyUpdating = false, onHistoryRefresh, onHistoryStatus, onClientFilterChange }: {
+export default function Sessions({ active, target, onMap, autoRefreshError, historyRevision = 0, historyUpdating = false, onHistoryRefresh, onHistoryStatus }: {
   active: boolean; target?: Target; onMap: (path?: string, project?: string, session?: SessionSummary) => void; autoRefreshError?: Error | null;
   historyRevision?: number; historyUpdating?: boolean; onHistoryRefresh?: (options?: SessionRefreshOptions) => void;
-  onHistoryStatus?: (status: SessionIndexSummary) => void; onClientFilterChange?: (client?: Client) => void;
+  onHistoryStatus?: (status: SessionIndexSummary) => void;
 }) {
   const { refreshIntervals } = useI18n();
   const initialFilters = useRef(readSessionFilters(location.hash)).current;
@@ -231,7 +231,6 @@ export default function Sessions({ active, target, onMap, autoRefreshError, hist
   const evidenceRequest = useRef<AbortController | undefined>(undefined);
   const releasedTarget = useRef<Target | undefined>(undefined);
   useHistoryRevision(active, historyRevision, () => { releasedTarget.current = target; setReload(value => value + 1); });
-  useEffect(() => { if (active) onClientFilterChange?.(client === "all" ? undefined : client); }, [active, client, onClientFilterChange]);
   useEffect(() => () => evidenceRequest.current?.abort(), []);
   useEffect(() => { setTraceSelection(focusMessageId); }, [focusMessageId, selectedSessionId, messagePage]);
 

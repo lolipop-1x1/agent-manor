@@ -161,7 +161,7 @@ export default {
   "sessions.filter.searchChildren": "Search and child agents",
   "sessions.filter.searchHelp": "Search covers titles and user and AI bodies by default. Process search adds thinking, tools, system and compression records. The child-agent toggle affects the list; search always includes child sessions.",
   "sessions.filter.dateRefresh": "Dates and refresh",
-  "sessions.filter.dateHelp": "Dates use the local time zone. Update history in the header always checks all clients; page filters only affect the display. Select a client to access its quick check or full verification in the menu, or verify all clients.",
+  "sessions.filter.dateHelp": "Dates use the local time zone. Sync history in the header always checks all clients; page filters only affect the display.",
   "sessions.search.globalLabel": "Search session titles and messages",
   "sessions.search.globalPlaceholder": "Search titles or messages",
   "sessions.search.clear": "Clear search",
