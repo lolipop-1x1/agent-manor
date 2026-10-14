@@ -1,6 +1,7 @@
 import type { MessageCatalog } from "../../types.js";
 
 export default {
+  "common.github.project": "项目 GitHub",
   "common.history.errorDetail": "无法{{operation}}：{{detail}}",
   "common.history.operation.status": "读取历史检查状态",
   "common.history.operation.start": "发起历史检查",
@@ -41,6 +42,7 @@ export default {
   "common.appearance.apply": "应用",
 
   "common.autoRefresh.sessions": "会话库自动刷新",
+  "common.autoRefresh.sessionsVisible": "仅在会话库页面可见时自动检查历史。",
   "common.autoRefresh.map": "代码地图自动刷新",
   "common.autoRefresh.off": "关闭",
   "common.autoRefresh.seconds_other": "{{count, number}} 秒",

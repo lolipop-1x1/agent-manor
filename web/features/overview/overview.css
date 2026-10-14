@@ -8,9 +8,12 @@
 .overview-page ::selection, .overview-investigation ::selection { color: var(--text); background: var(--accent-soft); }
 .overview-page .filter-trigger { font-size: 12px; width: auto; min-width: 116px; max-width: 245px; }
 .overview-page-heading, .overview-page-heading > div, .overview-section-heading, .overview-section-heading > div, .overview-section-actions { display: flex; align-items: center; gap: 12px; }
-.overview-page-heading { justify-content: space-between; margin-bottom: 20px; }
+.overview-page-heading { justify-content: space-between; flex-wrap: wrap; padding-bottom: 14px; border-bottom: 1px solid var(--border); }
+.overview-heading-main { flex: 1; min-width: 0; flex-wrap: wrap; }
+.overview-heading-main h1 { flex-shrink: 0; }
+.overview-heading-actions { margin-left: auto; flex-shrink: 0; }
 .overview-filters, .overview-date-controls { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
-.overview-filters { padding-bottom: 14px; border-bottom: 1px solid var(--border); }
+.overview-filters { min-width: 0; flex: 1 1 240px; }
 .overview-date-controls > span { color: var(--muted); }
 .overview-range { display: flex; justify-content: space-between; align-items: center; margin: 18px 0 12px; color: var(--muted); font-size: 13px; }
 .overview-progress { display: inline-flex; justify-content: center; width: 20px; height: 20px; color: var(--accent); flex-shrink: 0; }

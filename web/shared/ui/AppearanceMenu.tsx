@@ -21,7 +21,7 @@ export function AppearanceMenu() {
       </div>
       <form onSubmit={event => { event.preventDefault(); void setAppearance({ preset: "custom", customColor: color.toLowerCase() }); }}>
         <label htmlFor={colorId}>{t("common.appearance.custom")}</label>
-        <div className="appearance-custom"><input id={colorId} type="color" value={color} disabled={saving} onChange={event => setColor(event.target.value)} /><button type="submit" disabled={saving} aria-pressed={appearance.preset === "custom"}>{t("common.appearance.apply")}</button></div>
+        <div className="appearance-custom"><input id={colorId} type="color" value={color} disabled={saving} onChange={event => setColor(event.target.value)} /><button className="button primary" type="submit" disabled={saving} aria-pressed={appearance.preset === "custom"}>{t("common.appearance.apply")}</button></div>
       </form>
     </Popover.Content></Popover.Portal>
   </Popover.Root>;

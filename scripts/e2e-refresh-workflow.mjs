@@ -74,29 +74,48 @@ try {
   const registration = await api("/repositories", { path: fixture.project });
   await waitJob(registration.job.id, "completed");
   await browser(["open", `${base}/#overview`, "--headed", "--browser=chrome"]);
-  await step("五页全局入口与语言主题位置一致，地图操作属于页面", `
+  await step("五页全局入口与页头图标位置一致，地图操作属于页面", `
     page.setDefaultTimeout(15000); await page.setViewportSize({width:1440,height:1000});
     for(const name of ['总览','会话库','代码地图','用量统计','资源管理']){
       await page.getByRole('button',{name,exact:true}).click();
       await page.locator('.app-header').getByRole('button',{name:'更新历史',exact:true}).waitFor();
-      const names=await page.locator('.header-actions > button').evaluateAll(items=>items.map(item=>item.getAttribute('aria-label')));
-      expect(names.at(-2)==='显示语言'&&names.at(-1)==='外观','语言和主题没有保持最右侧');
+      const names=await page.locator('.header-actions > button, .header-actions > a').evaluateAll(items=>items.map(item=>item.getAttribute('aria-label')));
+      expect(names.at(-3)==='显示语言'&&names.at(-2)==='外观'&&names.at(-1)==='项目 GitHub','页头图标顺序不一致');
+      expect(await page.locator('.header-actions .refresh-state').count()===0,'页头仍有独立状态图标');
       expect(await page.locator('.app-header').getByRole('combobox').count()===0,'页面自动刷新仍位于全局页头');
     }
+    await page.getByRole('button',{name:'外观',exact:true}).click();
+    await page.screenshot({path:${JSON.stringify(join(artifacts, "compact-appearance-zh.png"))}});await page.keyboard.press('Escape');
     await page.getByRole('button',{name:'代码地图',exact:true}).click();
     expect(await page.locator('.map-page-actions').getByRole('button',{name:'刷新分析',exact:true}).count()===1,'地图分析入口不在页面操作区');
     expect(await page.locator('.map-page-actions').getByRole('combobox',{name:'代码地图自动刷新',exact:true}).count()===1,'地图自动刷新入口缺失');
     await page.locator('.code-map').waitFor();
     await page.screenshot({path:${JSON.stringify(join(artifacts, "desktop-light.png"))}});
   `);
+  await step("更新中可打开菜单查看状态，手动检查禁用且不重复发起", `
+    let release;const held=new Promise(resolve=>release=resolve);
+    await page.route('**/api/v1/sessions/refresh',async route=>{await held;await route.continue();},{times:1});
+    const response=page.waitForResponse(response=>response.url().endsWith('/sessions/refresh')&&response.request().method()==='POST');
+    await page.getByRole('button',{name:'更新历史',exact:true}).click();
+    const menu=page.getByRole('button',{name:'历史更新选项',exact:true});expect(await menu.isEnabled(),'运行中菜单不可打开');await menu.click();
+    expect((await page.locator('.history-refresh-menu-status').innerText()).includes('正在更新'),'菜单没有运行状态');
+    expect(await page.getByRole('menuitem',{name:'全部客户端 · 完整校验',exact:true}).getAttribute('aria-disabled')==='true','运行中仍可重复发起手动检查');
+    await page.keyboard.press('Escape');release();await response;
+    await page.waitForFunction(()=>!document.querySelector('.header-actions .refresh-button')?.disabled);
+  `);
   await step("客户端局部检查和完整校验合并进菜单，键盘关闭恢复焦点", `
     await page.getByRole('button',{name:'会话库',exact:true}).click();
+    expect(await page.locator('.session-page-actions').count()===0,'会话库仍保留独立空白动作行');
+    const workspace=await page.locator('.sessions-shell .workspace').boundingBox();
+    const header=await page.locator('.app-header').boundingBox();expect(Math.abs(workspace.y-header.y-header.height)<2,'会话工作区没有接在全局页头下');
     const clients=page.getByRole('combobox',{name:'筛选客户端',exact:true});await clients.click();
     await page.getByRole('option',{name:'Codex',exact:true}).click();
     const menu=page.getByRole('button',{name:'历史更新选项',exact:true});await menu.click();
+    expect(await page.getByRole('menuitem',{name:'会话库自动刷新',exact:true}).count()===1,'会话库自动刷新没有进入历史菜单');
+    expect((await page.locator('.history-refresh-menu-status').innerText()).includes('上次成功更新'),'菜单缺少最近更新时间');
     expect(await page.getByRole('menuitem',{name:'更新Codex · 快速检查',exact:true}).count()===1,'当前客户端快速检查缺失');
     expect(await page.getByRole('menuitem',{name:'Codex · 完整校验',exact:true}).count()===1,'当前客户端完整校验缺失');
-    await page.keyboard.press('Escape');expect(await menu.evaluate(node=>node===document.activeElement),'关闭菜单未恢复焦点');
+    await page.keyboard.press('Escape');await page.waitForFunction(()=>document.activeElement?.getAttribute('aria-label')==='历史更新选项');expect(await menu.evaluate(node=>node===document.activeElement),'关闭菜单未恢复焦点');
     expect(await page.getByRole('button',{name:'刷新会话索引',exact:true}).count()===0,'会话库仍有重复入口');
     let response=page.waitForResponse(response=>response.url().endsWith('/sessions/refresh')&&response.request().method()==='POST');
     await menu.click();await page.getByRole('menuitem',{name:'更新Codex · 快速检查',exact:true}).click();
@@ -186,12 +205,19 @@ try {
       await page.getByRole('button',{name,exact:true}).click();
       const button=page.getByRole('button',{name:'Update history',exact:true});await button.waitFor();
       const rect=await button.boundingBox();expect(rect.x>=0&&rect.x+rect.width<=391,'全局入口超出窄屏');
+      const github=await page.getByRole('link',{name:'Project GitHub',exact:true}).boundingBox();
+      const appearance=await page.getByRole('button',{name:'Appearance',exact:true}).boundingBox();
+      expect(github.x>=appearance.x+appearance.width&&github.x+github.width<=391&&github.y===appearance.y,'GitHub 图标未保持在主题右侧或超出窄屏');
       await page.getByRole('button',{name:'History update options',exact:true}).click();
       const menu=await page.getByRole('menu').boundingBox();expect(menu.x>=0&&menu.x+menu.width<=391,'历史更新菜单超出窄屏');await page.keyboard.press('Escape');
     }
     await page.getByRole('button',{name:'Sessions',exact:true}).click();
     const scope=page.getByRole('combobox',{name:'Filter clients',exact:true});if(await scope.isVisible())expect((await scope.innerText()).includes('Codex'),'显示切换重置了筛选');
     await page.screenshot({path:${JSON.stringify(join(artifacts, "mobile-dark-en.png"))}});
+    await page.getByRole('button',{name:'History update options',exact:true}).click();
+    expect(await page.getByRole('group',{name:'Session auto refresh',exact:true}).count()===1,'窄屏自动刷新选项没有直接展开');
+    const autoMenu=await page.locator('.history-refresh-menu').boundingBox();expect(autoMenu.x>=0&&autoMenu.x+autoMenu.width<=390&&autoMenu.y+autoMenu.height<=844,'自动刷新菜单超出窄屏');
+    await page.screenshot({path:${JSON.stringify(join(artifacts, "compact-refresh-menu-mobile-en.png"))}});await page.keyboard.press('Escape');
   `);
   await writeFile(join(artifacts, "report.json"), JSON.stringify({ checks, initialVersion: initial.version, latestVersion: latest.version }, null, 2));
   console.log(JSON.stringify({ passed: checks.length, artifacts }));

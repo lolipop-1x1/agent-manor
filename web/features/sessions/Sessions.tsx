@@ -25,7 +25,6 @@ import { FilterSelect } from "../../shared/ui/FilterSelect";
 import { availableClientOptions } from "../../shared/ui/client-options";
 import { ProjectPicker } from "../../shared/ui/ProjectPicker";
 import { DatePicker } from "../../shared/ui/DatePicker";
-import { AutoRefreshControl } from "../../shared/ui/AutoRefreshControl";
 import { useHistoryRevision } from "../../shared/refresh/useHistoryRefresh";
 import { useVisiblePolling } from "../../shared/refresh/useVisiblePolling";
 import { completeTurnMarkdown } from "./session-message-content";
@@ -668,7 +667,6 @@ export default function Sessions({ active, target, onMap, autoRefreshError, hist
   }, [active]);
   return <div className="sessions-shell" data-compact-panel={compactPanel ?? ""} hidden={!active}>
     {compactPanel && <button className="session-mobile-backdrop" aria-label={t("sessions.reading.return")} onClick={() => setCompactPanel(null)} /> }
-    <div className="session-page-actions"><AutoRefreshControl scope="sessions" /></div>
     <ResizableWorkspace variant="sessions" sidebarCollapsed={leftCollapsed} detailsCollapsed={rightCollapsed} semantics={workspaceSessionSemantics()}>
       <aside className={`sidebar session-sidebar${leftCollapsed ? " panel-collapsed" : ""}`} aria-label={t("sessions.list.title")}>
         <div className="pane-heading"><span>{t("sessions.list.library")}</span><div className="section-actions"><button className="icon-button panel-toggle" aria-label={leftCollapsed ? t("sessions.list.expand") : t("sessions.list.collapse")} aria-expanded={!leftCollapsed} aria-controls="session-list-content" onClick={() => { setLeftCollapsed(value => !value); setCompactPanel(null); }}>{leftCollapsed ? <CaretRight size={16} /> : <CaretLeft size={16} />}</button></div></div>

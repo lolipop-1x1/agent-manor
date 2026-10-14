@@ -1,6 +1,7 @@
 import type { MessageCatalog } from "../../types.js";
 
 export default {
+  "common.github.project": "Project GitHub",
   "common.history.errorDetail": "Unable to {{operation}}: {{detail}}",
   "common.history.operation.status": "read history status",
   "common.history.operation.start": "start the history check",
@@ -42,6 +43,7 @@ export default {
   "common.appearance.apply": "Apply",
 
   "common.autoRefresh.sessions": "Session auto refresh",
+  "common.autoRefresh.sessionsVisible": "Check history automatically while the Sessions page is visible.",
   "common.autoRefresh.map": "Code map auto refresh",
   "common.autoRefresh.off": "Off",
   "common.autoRefresh.seconds_one": "{{count, number}} second",

@@ -77,6 +77,9 @@ try {
     await page.keyboard.press("Escape");
     ensure(await button("Appearance").evaluate(element => element === document.activeElement), "Escape关闭外观弹层并恢复触发器焦点");
     await button("Appearance").click();
+    ensure(await page.locator('.appearance-menu > strong').evaluate(element=>getComputedStyle(element).fontSize==='14px'), "外观标题使用14px字号");
+    ensure(await button('Apply').evaluate(element=>getComputedStyle(element).fontSize==='12px'&&element.getBoundingClientRect().height===34), "应用按钮使用12px字号和34px控件高度");
+    ensure(await page.getByLabel('Custom color',{exact:true}).evaluate(element=>element.getBoundingClientRect().height===34), "自定义色盘与应用按钮等高");
     const verifyFavicon = async () => page.evaluate(async () => {
       const link = document.querySelector('link[rel="icon"]');
       const icon = new Image(); icon.src = link.href; await icon.decode();
@@ -134,6 +137,7 @@ try {
     ensure(JSON.stringify((await read()).appearance) === JSON.stringify(savedBefore), "保存失败有明确反馈且不覆盖原主题");
     await page.unroute("**/api/v1/preferences"); await page.keyboard.press("Escape");
     await shared({ mode: "light", preset: "blue" });
+    await button("Code map").click(); await page.locator('.code-map').waitFor();
     await button("Select directory src").click();
     await page.locator(".map-file").first().click(); await page.locator(".file-path").waitFor(); await button("Zoom in").click(); await page.waitForLoadState("networkidle"); await settled();
     const state = async () => ({ file: await page.locator(".file-path").innerText(), scale: await page.locator(".code-map").getAttribute("data-scale"), directory: await page.locator('.directory-select[aria-current="location"]').getAttribute("aria-label") });

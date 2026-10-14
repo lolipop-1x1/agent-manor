@@ -1,14 +1,15 @@
-.appearance-menu { z-index: 35; display: grid; gap: 12px; width: 296px; max-width: calc(100vw - 24px); max-height: var(--radix-popover-content-available-height); overflow-y: auto; padding: 18px; background: var(--surface); color: var(--text); border: 1px solid var(--border); border-radius: 12px; box-shadow: 0 12px 36px #0002; }
+.appearance-menu { z-index: 35; display: grid; gap: 12px; width: 296px; max-width: calc(100vw - 24px); max-height: var(--radix-popover-content-available-height); overflow-y: auto; padding: 18px; background: var(--surface); color: var(--text); border: 1px solid var(--border); border-radius: 12px; box-shadow: 0 12px 36px #0002; font-size: 12px; }
+.appearance-menu > strong { font-size: 14px; font-weight: 600; }
 .appearance-menu label { font-size: 12px; font-weight: 550; }
-.appearance-menu .filter-trigger { width: 100%; }
+.appearance-menu .filter-trigger { width: 100%; font-size: 12px; }
 .appearance-presets { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; }
-.appearance-preset { display: grid; justify-items: center; gap: 7px; padding: 10px 5px; background: var(--surface); color: var(--text); font-size: 11px; border: 1px solid var(--border); border-radius: 7px; cursor: pointer; }
+.appearance-preset { display: grid; justify-items: center; gap: 7px; padding: 10px 5px; background: var(--surface); color: var(--text); font-size: 12px; border: 1px solid var(--border); border-radius: 7px; cursor: pointer; }
 .appearance-preset span { width: 23px; height: 23px; border-radius: 50%; }
 .appearance-preset[aria-pressed="true"] { border-color: var(--accent); background: var(--accent-soft); }
 .appearance-menu form { display: grid; gap: 8px; }
 .appearance-custom { display: flex; gap: 8px; }
-.appearance-custom input[type="color"] { width: 0; height: 42px; flex: 1; padding: 4px; cursor: pointer; background: var(--surface); border: 1px solid var(--border); border-radius: 6px; }
+.appearance-custom input[type="color"] { width: 0; height: 34px; flex: 1; padding: 4px; cursor: pointer; background: var(--surface); border: 1px solid var(--border); border-radius: 6px; }
 .appearance-custom input[type="color"]::-webkit-color-swatch-wrapper { padding: 0; }
 .appearance-custom input[type="color"]::-webkit-color-swatch { border: 0; border-radius: 3px; }
 .appearance-custom input[type="color"]::-moz-color-swatch { border: 0; border-radius: 3px; }
-.appearance-custom button { padding: 0 12px; border: 1px solid transparent; border-radius: 6px; background: var(--accent); color: var(--on-accent); cursor: pointer; }
+.appearance-custom .button { height: 34px; padding: 0 12px; }

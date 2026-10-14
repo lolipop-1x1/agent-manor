@@ -195,6 +195,8 @@ try {
     await button("项目").click(); await page.getByRole("option", { name: "全部项目", exact: true }).click(); await ready();
     await page.setViewportSize({ width: 1280, height: 720 });
     await page.locator(".overview-page-heading").scrollIntoViewIfNeeded();
+    const heading=await page.locator('.overview-heading-main h1').boundingBox(), filters=await page.locator('.overview-filters').boundingBox(), actions=await page.locator('.overview-heading-actions').boundingBox();
+    ensure(Math.abs(heading.y+heading.height/2-filters.y-filters.height/2)<2&&Math.abs(actions.y+actions.height/2-filters.y-filters.height/2)<2, "桌面总览标题筛选与操作同排");
     ensure(await page.locator(".weekly-review").evaluate(el => el.getBoundingClientRect().top) < await page.locator(".overview-results").evaluate(el => el.getBoundingClientRect().top), "七天复盘位于长期概况之前");
     ensure(await page.locator(".weekly-review-metric.is-primary").count() === 4 && await page.locator(".weekly-review-metric > svg").count() === 19, "每组一个重点且十九个指标都有常驻箭头入口");
     await page.screenshot({ path: `${options.artifacts}/first-screen-zh.png` });

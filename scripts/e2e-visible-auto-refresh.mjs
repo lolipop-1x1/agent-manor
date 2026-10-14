@@ -41,7 +41,12 @@ const browser = async args => {
   return stdout;
 };
 const step = async (name, code) => {
-  const action = `async page => { const expect=(value,message)=>{if(!value)throw new Error(message);}; ${code} return {passed:${JSON.stringify(name)}}; }`;
+  const action = `async page => { const expect=(value,message)=>{if(!value)throw new Error(message);};
+    const sessionControl=async(language='zh')=>{
+      if(!await page.locator('.history-refresh-menu').isVisible())await page.getByRole('button',{name:language==='zh'?'历史更新选项':'History update options',exact:true}).click();
+      return page.getByRole('menuitem',{name:language==='zh'?'会话库自动刷新':'Session auto refresh',exact:true});
+    };
+    ${code} return {passed:${JSON.stringify(name)}}; }`;
   await writeFile(join(artifacts, "current-check.mjs"), `export default ${action};`);
   await browser(["run-code", action]);
   checks.push(name); console.log(`PASS ${name}`);
@@ -106,13 +111,13 @@ try {
     await page.evaluate(()=>{globalThis.__refreshRequests=[]; globalThis.__readingErrors=[];});
     page.on('request',request=>{if(request.url().includes('/api/v1/')) page.evaluate(value=>globalThis.__refreshRequests.push(value),{url:request.url(),body:request.postData()}).catch(()=>{});});
     page.on('pageerror',error=>page.evaluate(value=>globalThis.__readingErrors.push(value),String(error)).catch(()=>{}));
-    expect((await page.getByRole('combobox',{name:'会话库自动刷新',exact:true}).innerText()).includes('关闭'),'未默认关闭');
+    expect((await (await sessionControl()).innerText()).includes('关闭'),'未默认关闭');await page.keyboard.press('Escape');
     await page.clock.runFor(120010);await page.waitForTimeout(200);
     expect(!(await page.evaluate(()=>globalThis.__refreshRequests)).some(item=>item.url.includes('/auto-refresh')||item.url.includes('/status')),'关闭时仍周期检查');
-    await page.getByRole('combobox',{name:'会话库自动刷新',exact:true}).click();
+    await (await sessionControl()).click();await page.clock.runFor(150);
     await page.screenshot({path:${JSON.stringify(join(artifacts, "auto-refresh-menu-zh.png"))},clip:{x:0,y:0,width:1440,height:380}});
     const saved=page.waitForResponse(response=>response.url().endsWith('/preferences')&&response.request().method()==='PUT');
-    await page.getByRole('option',{name:'1 分钟',exact:true}).click();await saved;
+    await page.getByRole('menuitemradio',{name:'1 分钟',exact:true}).click();await saved;
     await page.clock.runFor(60010); await page.waitForTimeout(300);
     let requests=await page.evaluate(()=>globalThis.__refreshRequests);
     expect(requests.some(item=>item.url.includes('/sessions/auto-refresh')&&!String(item.body).includes('client')),'自动刷新未覆盖全部客户端');
@@ -127,26 +132,26 @@ try {
   `);
   await step("间隔重载保留，短长间隔替换旧计时器，键盘选择与 Escape 恢复焦点", `
     await page.reload();await page.locator('.session-message-scroll').waitFor();
-    let control=page.getByRole('combobox',{name:'会话库自动刷新',exact:true});
+    let control=await sessionControl();
     expect((await control.innerText()).includes('1 分钟'),'重载未保留间隔');
-    await control.focus();await page.keyboard.press('Enter');await page.keyboard.press('Escape');
-    expect(await control.evaluate(node=>node===document.activeElement),'Escape 没有恢复焦点');
-    await control.click();const shortSaved=page.waitForResponse(response=>response.url().endsWith('/preferences')&&response.request().method()==='PUT');
-    await page.getByRole('option',{name:'5 秒',exact:true}).click();await shortSaved;
+    await control.focus();await page.keyboard.press('ArrowRight');await page.clock.runFor(20);await page.keyboard.press('Escape');await page.clock.runFor(20);
+    expect(await page.getByRole('button',{name:'历史更新选项',exact:true}).evaluate(node=>node===document.activeElement),'Escape 没有恢复全局菜单焦点');
+    control=await sessionControl();await control.click();await page.clock.runFor(150);const shortSaved=page.waitForResponse(response=>response.url().endsWith('/preferences')&&response.request().method()==='PUT');
+    await page.getByRole('menuitemradio',{name:'5 秒',exact:true}).click();await shortSaved;
     await page.clock.runFor(20);await page.waitForTimeout(100);await page.evaluate(()=>globalThis.__refreshRequests=[]);
     await page.clock.runFor(10010);await page.waitForTimeout(200);
     expect((await page.evaluate(()=>globalThis.__refreshRequests)).filter(item=>item.url.includes('/sessions/auto-refresh')).length>=2,'5 秒间隔未生效');
-    await control.focus();await page.keyboard.press('Enter');await page.clock.runFor(20);await page.keyboard.press('End');await page.clock.runFor(20);
+    control=await sessionControl();await control.focus();await page.keyboard.press('ArrowRight');await page.clock.runFor(20);await page.keyboard.press('End');await page.clock.runFor(20);
     const longSaved=page.waitForResponse(response=>response.url().endsWith('/preferences')&&response.request().method()==='PUT');
     await page.keyboard.press('Enter');await longSaved;
-    expect((await control.innerText()).includes('10 分钟'),'键盘未选择长间隔');
+    control=await sessionControl();expect((await control.innerText()).includes('10 分钟'),'键盘未选择长间隔');await page.keyboard.press('Escape');
     await page.clock.runFor(20);await page.waitForTimeout(100);await page.evaluate(()=>globalThis.__refreshRequests=[]);
     await page.clock.runFor(590000);await page.waitForTimeout(100);
     expect(!(await page.evaluate(()=>globalThis.__refreshRequests)).some(item=>item.url.includes('/sessions/auto-refresh')),'改成长间隔后旧计时器仍触发');
     await page.clock.runFor(10020);await page.waitForTimeout(100);
     expect((await page.evaluate(()=>globalThis.__refreshRequests)).some(item=>item.url.includes('/sessions/auto-refresh')),'10 分钟计时器未触发');
-    await control.click();const saved=page.waitForResponse(response=>response.url().endsWith('/preferences')&&response.request().method()==='PUT');
-    await page.getByRole('option',{name:'1 分钟',exact:true}).click();await saved;await page.clock.runFor(20);
+    await (await sessionControl()).click();await page.clock.runFor(150);const saved=page.waitForResponse(response=>response.url().endsWith('/preferences')&&response.request().method()==='PUT');
+    await page.getByRole('menuitemradio',{name:'1 分钟',exact:true}).click();await saved;await page.clock.runFor(20);
     await page.evaluate(()=>{const pane=document.querySelector('.session-message-scroll');pane.scrollTop=700;const bounds=pane.getBoundingClientRect();const node=[...pane.querySelectorAll('.session-message')].find(node=>node.getBoundingClientRect().bottom>bounds.top+8);globalThis.__readingAnchor={id:node.id,offset:node.getBoundingClientRect().top-bounds.top};});
   `);
   const appendTurn = async turn => {
@@ -298,13 +303,13 @@ try {
     await page.reload();await page.locator('.code-map').waitFor();
     expect((await page.getByRole('combobox',{name:'Code map auto refresh',exact:true}).innerText()).includes('Off'),'关闭未持久化');
     await page.getByRole('button',{name:'Sessions',exact:true}).click();await page.locator('.session-message-scroll').waitFor();
-    const sessionRefresh=page.getByRole('combobox',{name:'Session auto refresh',exact:true});
-    expect((await sessionRefresh.innerText()).includes('1 minute'),'关闭地图意外关闭会话库刷新');
+    await page.getByRole('button',{name:'History update options',exact:true}).click();
+    expect(await page.getByRole('group',{name:'Session auto refresh',exact:true}).getByRole('menuitemradio',{name:'1 minute',exact:true}).getAttribute('aria-checked')==='true','关闭地图意外关闭会话库刷新');await page.keyboard.press('Escape');
     await page.evaluate(()=>globalThis.__refreshRequests=[]);await page.clock.runFor(60010);await page.waitForTimeout(100);
     expect((await page.evaluate(()=>globalThis.__refreshRequests)).some(item=>item.url.includes('/sessions/auto-refresh')),'地图关闭后会话库间隔失效');
     expect(!(await page.evaluate(()=>globalThis.__refreshRequests)).some(item=>item.url.includes('/repositories/')&&item.url.includes('/auto-refresh')),'隐藏地图仍自动刷新');
-    await sessionRefresh.click();const sessionSaved=page.waitForResponse(response=>response.url().endsWith('/preferences')&&response.request().method()==='PUT');
-    await page.getByRole('option',{name:'Off',exact:true}).click();await sessionSaved;await page.clock.runFor(20);
+    await page.getByRole('button',{name:'History update options',exact:true}).click();const sessionSaved=page.waitForResponse(response=>response.url().endsWith('/preferences')&&response.request().method()==='PUT');
+    await page.getByRole('menuitemradio',{name:'Off',exact:true}).click();await sessionSaved;await page.clock.runFor(20);
     await page.evaluate(()=>globalThis.__refreshRequests=[]);await page.clock.runFor(600010);await page.waitForTimeout(100);
     expect(!(await page.evaluate(()=>globalThis.__refreshRequests)).some(item=>item.url.includes('/auto-refresh')||item.url.includes('/sessions/status')),'关闭后会话仍进行周期检查');
   `);

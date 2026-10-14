@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import * as Tooltip from "@radix-ui/react-tooltip";
+import { GithubLogo } from "@phosphor-icons/react";
 import type { SessionJob, SessionSummary } from "../../src/session-contracts";
 import { errorMessage, request } from "../shared/api";
 import { useCodeMapPage } from "../features/code-map/CodeMapPage";
@@ -15,6 +16,7 @@ import Usage from "../features/usage/Usage";
 import { LanguageMenu, LanguageNotice, messageText, t, useI18n } from "../shared/i18n";
 import { useTheme } from "../shared/theme";
 import { AppearanceMenu } from "../shared/ui/AppearanceMenu";
+import { Hint } from "../shared/ui/Hint";
 import "./navigation.css";
 
 export function App() {
@@ -117,9 +119,10 @@ export function App() {
     <header className="app-header"><a className="brand" href="/" aria-label={t("codeMap.navigation.home")}><svg width="30" height="20" viewBox="8 16 48 32" fill="currentColor" aria-hidden="true" focusable="false"><path d="M14 18a3 3 0 0 0-4 2.8v22.4a3 3 0 0 0 4 2.8l10-6a2 2 0 0 0 1-1.8V25.8a2 2 0 0 0-1-1.8z" /><rect x="28" y="27" width="8" height="10" rx="2" /><path d="M14 18a3 3 0 0 0-4 2.8v22.4a3 3 0 0 0 4 2.8l10-6a2 2 0 0 0 1-1.8V25.8a2 2 0 0 0-1-1.8z" transform="translate(64 0) scale(-1 1)" /></svg><span>Agent<strong>Manor</strong></span></a><span className="header-divider" /><nav className="product-nav" aria-label={t("codeMap.navigation.title")}><button aria-current={view === "overview" ? "page" : undefined} onClick={() => switchView("overview")}>{t("overview.title")}</button><button aria-current={view === "sessions" ? "page" : undefined} onClick={() => switchView("sessions")}>{t("codeMap.navigation.sessions")}</button><button aria-current={view === "map" ? "page" : undefined} onClick={() => switchView("map")}>{t("codeMap.navigation.map")}</button><button aria-current={view === "usage" ? "page" : undefined} onClick={() => switchView("usage")}>{t("usage.title")}</button><button aria-current={view === "resources" ? "page" : undefined} onClick={() => switchView("resources")}>{t("codeMap.navigation.resources")}</button></nav>
       <div className="header-actions">
         <HistoryRefreshControl client={view === "sessions" ? sessionClient : undefined} disabled={history.updating}
-          job={history.job} error={history.error} status={history.status} onRefresh={options => void history.refresh(options)} />
+          job={history.job} error={history.error} onRefresh={options => void history.refresh(options)} />
         <LanguageMenu />
         <AppearanceMenu />
+        <Hint label={t("common.github.project")}><a className="icon-button header-github" href="https://github.com/lolipop-1x1/agent-manor" target="_blank" rel="noreferrer" aria-label={t("common.github.project")}><GithubLogo size={19} aria-hidden="true" /></a></Hint>
       </div>
     </header>
     <LanguageNotice />
