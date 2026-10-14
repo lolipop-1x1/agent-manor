@@ -1,10 +1,9 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import * as Tooltip from "@radix-ui/react-tooltip";
 import { GithubLogo } from "@phosphor-icons/react";
-import type { SessionJob, SessionSummary } from "../../src/session-contracts";
-import { errorMessage, request } from "../shared/api";
+import type { SessionSummary } from "../../src/session-contracts";
+import { errorMessage } from "../shared/api";
 import { useCodeMapPage } from "../features/code-map/CodeMapPage";
-import { useVisiblePolling } from "../shared/refresh/useVisiblePolling";
 import { useHistoryRefresh } from "../shared/refresh/useHistoryRefresh";
 import { HistoryRefreshControl } from "../features/sessions/SessionRefresh";
 import Sessions from "../features/sessions/Sessions";
@@ -87,14 +86,10 @@ export function App() {
   };
   const openOverviewUsage = (hash: string) => { overviewAddress.current = location.hash; activateView("usage"); location.hash = hash; };
   const theme = useTheme(appearance);
-  const history = useHistoryRefresh();
-  const [autoRefreshError, setAutoRefreshError] = useState<Error | null>(null);
-  useEffect(() => { if (!sessionsAutoRefreshInterval) setAutoRefreshError(null); }, [sessionsAutoRefreshInterval]);
-  useVisiblePolling(view === "sessions" && sessionsAutoRefreshInterval > 0, sessionsAutoRefreshInterval, async signal => {
-    const result = await request<{ job?: SessionJob }>("/sessions/auto-refresh", { method: "POST", body: {}, signal });
-    if (!signal.aborted && result.job) history.observeJob(result.job);
-    if (!signal.aborted) setAutoRefreshError(null);
-  }, error => setAutoRefreshError(error instanceof Error ? error : new Error(String(error))));
+  const historyReading = useRef(false);
+  const onHistoryReading = useCallback((reading: boolean) => { historyReading.current = reading; }, []);
+  const canCheckHistory = useCallback(() => !historyReading.current, []);
+  const history = useHistoryRefresh(sessionsAutoRefreshInterval, canCheckHistory);
   const openMapSession = (target: { sessionId: string; messageId?: string }) => {
     if (location.hash.startsWith("#usage")) usageAddress.current = location.hash;
     setSessionTarget(target); activateView("sessions");
@@ -117,7 +112,7 @@ export function App() {
     <div ref={headerFrame}>
     <header className="app-header"><a className="brand" href="/" aria-label={t("codeMap.navigation.home")}><svg width="30" height="20" viewBox="8 16 48 32" fill="currentColor" aria-hidden="true" focusable="false"><path d="M14 18a3 3 0 0 0-4 2.8v22.4a3 3 0 0 0 4 2.8l10-6a2 2 0 0 0 1-1.8V25.8a2 2 0 0 0-1-1.8z" /><rect x="28" y="27" width="8" height="10" rx="2" /><path d="M14 18a3 3 0 0 0-4 2.8v22.4a3 3 0 0 0 4 2.8l10-6a2 2 0 0 0 1-1.8V25.8a2 2 0 0 0-1-1.8z" transform="translate(64 0) scale(-1 1)" /></svg><span>Agent<strong>Manor</strong></span></a><span className="header-divider" /><nav className="product-nav" aria-label={t("codeMap.navigation.title")}><button aria-current={view === "overview" ? "page" : undefined} onClick={() => switchView("overview")}>{t("overview.title")}</button><button aria-current={view === "sessions" ? "page" : undefined} onClick={() => switchView("sessions")}>{t("codeMap.navigation.sessions")}</button><button aria-current={view === "map" ? "page" : undefined} onClick={() => switchView("map")}>{t("codeMap.navigation.map")}</button><button aria-current={view === "usage" ? "page" : undefined} onClick={() => switchView("usage")}>{t("usage.title")}</button><button aria-current={view === "resources" ? "page" : undefined} onClick={() => switchView("resources")}>{t("codeMap.navigation.resources")}</button></nav>
       <div className="header-actions">
-        {view === "sessions" && <AutoRefreshControl scope="sessions" />}
+        <AutoRefreshControl scope="sessions" />
         <HistoryRefreshControl busy={history.updating} starting={history.starting} onRetry={history.retry}
           job={history.job} error={history.error} onRefresh={options => void history.refresh(options)} />
         <div className="header-display-actions">
@@ -131,10 +126,10 @@ export function App() {
     {(history.error || !history.starting && history.job?.status === "failed") && <div className="history-error" role="alert"><span>{history.error ? t("common.history.errorDetail", { operation: t(`common.history.operation.${history.errorOperation}`), detail: errorMessage(history.error) }) : messageText(history.job?.errorDescriptor, history.job?.error ?? t("common.history.failed"))}</span><button className="text-button" onClick={history.retry}>{t("common.retry")}</button></div>}
     {map.maintenanceNotice}
     </div>
-    <section className="product-view" hidden={view !== "overview"} aria-label={t("overview.title")}><Overview historyRevision={history.revision} active={view === "overview"} onSession={openOverviewSession} onUsage={openOverviewUsage} onMap={openOverviewMap} /></section>
+    <section className="product-view" hidden={view !== "overview"} aria-label={t("overview.title")}><Overview historyRevision={history.revision} onHistoryReading={onHistoryReading} active={view === "overview"} onSession={openOverviewSession} onUsage={openOverviewUsage} onMap={openOverviewMap} /></section>
     {map.page}
-    <section className="product-view" hidden={view !== "sessions"} aria-label={t("codeMap.view.sessions")}><Sessions historyRevision={history.revision} historyUpdating={history.updating} onHistoryRefresh={options => void history.refresh(options)} onHistoryStatus={history.observeStatus} active={view === "sessions"} target={sessionTarget} onMap={openMap} autoRefreshError={autoRefreshError} /></section>
-    <section className="product-view" hidden={view !== "resources"} aria-label={t("codeMap.view.resources")}><Resources historyRevision={history.revision} active={view === "resources"} onSession={openResourceSession} /></section>
-    <section className="product-view" hidden={view !== "usage"} aria-label={t("usage.title")}><Usage historyRevision={history.revision} active={view === "usage"} onSession={openMapSession} /></section>
+    <section className="product-view" hidden={view !== "sessions"} aria-label={t("codeMap.view.sessions")}><Sessions historyRevision={history.revision} onHistoryReading={onHistoryReading} historyUpdating={history.updating} onHistoryRefresh={options => void history.refresh(options)} onHistoryStatus={history.observeStatus} active={view === "sessions"} target={sessionTarget} onMap={openMap} /></section>
+    <section className="product-view" hidden={view !== "resources"} aria-label={t("codeMap.view.resources")}><Resources historyRevision={history.revision} onHistoryReading={onHistoryReading} active={view === "resources"} onSession={openResourceSession} /></section>
+    <section className="product-view" hidden={view !== "usage"} aria-label={t("usage.title")}><Usage historyRevision={history.revision} onHistoryReading={onHistoryReading} active={view === "usage"} onSession={openMapSession} /></section>
   </Tooltip.Provider>;
 }

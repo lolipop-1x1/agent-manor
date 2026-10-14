@@ -23,7 +23,7 @@ import "./overview.css";
 import { RefreshControl } from "../../shared/ui/RefreshControl";
 import { useHistoryRevision } from "../../shared/refresh/useHistoryRefresh";
 
-export default function Overview({ active, onSession, onUsage, onMap, historyRevision = 0 }: { historyRevision?: number; active: boolean; onSession: (target: OverviewSessionTarget) => void; onUsage: (hash: string) => void; onMap: (target: OverviewMapTarget) => void }) {
+export default function Overview({ active, onSession, onUsage, onMap, onHistoryReading, historyRevision = 0 }: { historyRevision?: number; onHistoryReading?: (reading: boolean) => void; active: boolean; onSession: (target: OverviewSessionTarget) => void; onUsage: (hash: string) => void; onMap: (target: OverviewMapTarget) => void }) {
   const { t, number, percent, message, date } = useI18n();
   const [route, setRoute] = useState(() => readOverviewRoute(location.hash));
   const lastAddress = useRef(location.hash), adoptingAddress = useRef(false);
@@ -53,13 +53,13 @@ export default function Overview({ active, onSession, onUsage, onMap, historyRev
   const reportScope = useRef(""); const newSnapshot = useRef(true);
   const [loading, setLoading] = useState(false); const [error, setError] = useState<Error | null>(null); const [revision, setRevision] = useState(0);
   const [completedAt, setCompletedAt] = useState<string>();
-  useHistoryRevision(active, historyRevision, () => { newSnapshot.current = true; setQueryDate(new Date()); setRevision(value => value + 1); });
   const [selection, setSelection] = useState<InvestigationSelection | null>(null);
   const trigger = useRef<HTMLElement | null>(null);
 
   const query = overviewQuery(route, undefined, undefined, queryDate);
   const scopeKey = overviewParameters({ ...query, models: undefined });
   const key = overviewParameters(query); const invalid = !validOverviewRange(route); const busy = loading || Object.values(retrying).some(Boolean); const pending = invalid || Boolean(batch && (batch.key !== key || batch.complete && busy));
+  useHistoryRevision(active, historyRevision, () => { newSnapshot.current = true; setQueryDate(new Date()); setRevision(value => value + 1); }, busy, onHistoryReading);
   useEffect(() => { setSelection(null); }, [key]);
   useEffect(() => { setRetrying({}); return () => { for (const controller of panelRetries.current.values()) controller.abort(); panelRetries.current.clear(); }; }, [key, revision, active]);
   useEffect(() => { if (batch?.complete && batch.key === key) { reportScope.current = scopeKey; newSnapshot.current = false; setError(null); } }, [batch]);

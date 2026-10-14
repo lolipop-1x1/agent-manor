@@ -16,6 +16,8 @@
 .session-list-meta { display: flex; align-items: center; justify-content: space-between; padding: 12px 3px 5px; color: var(--muted); font-size: 10px; }
 .session-list-meta .icon-button { width: 28px; height: 28px; min-height: 28px; }
 .session-list { min-height: 0; flex: 1; overflow: auto; overscroll-behavior: contain; scrollbar-width: thin; }
+.session-pane-label { display: inline-flex; align-items: center; gap: 8px; }
+.session-pane-progress { display: inline-flex; flex-shrink: 0; width: 14px; height: 14px; }
 .session-list-item { display: flex; align-items: flex-start; gap: 9px; width: 100%; border: 0; border-bottom: 1px solid var(--border); border-radius: 0; padding: 13px 8px; background: transparent; color: var(--text); text-align: left; }
 .session-list-item:hover { background: var(--surface-alt); }
 .session-list-item.is-selected { background: var(--accent-soft); color: var(--accent); box-shadow: inset 3px 0 var(--accent); }

@@ -82,7 +82,7 @@ try {
       const names=await page.locator('.header-display-actions > button, .header-display-actions > a').evaluateAll(items=>items.map(item=>item.getAttribute('aria-label')));
       expect(names.at(-3)==='显示语言'&&names.at(-2)==='外观'&&names.at(-1)==='项目 GitHub','页头图标顺序不一致');
       expect(await page.locator('.header-actions .refresh-state').count()===0,'页头仍有独立状态图标');
-      expect(await page.locator('.app-header').getByRole('combobox',{name:'会话库自动同步',exact:true}).count()===(name==='会话库'?1:0),'会话库自动同步没有按当前页面在顶栏显示');
+      expect(await page.locator('.app-header').getByRole('combobox',{name:'历史自动同步',exact:true}).count()===1,'历史自动同步没有按当前页面在顶栏显示');
     }
     await page.getByRole('button',{name:'外观',exact:true}).click();
     await page.screenshot({path:${JSON.stringify(join(artifacts, "compact-appearance-zh.png"))}});await page.keyboard.press('Escape');
@@ -113,7 +113,7 @@ try {
     const clients=page.getByRole('combobox',{name:'筛选客户端',exact:true});await clients.click();
     await page.getByRole('option',{name:'Codex',exact:true}).click();
     const menu=page.getByRole('button',{name:'历史同步状态',exact:true});await menu.click();
-    expect(await page.locator('.app-header').getByRole('combobox',{name:'会话库自动同步',exact:true}).count()===1,'自动刷新没有在顶栏直接显示');
+    expect(await page.locator('.app-header').getByRole('combobox',{name:'历史自动同步',exact:true}).count()===1,'自动刷新没有在顶栏直接显示');
     expect((await page.locator('.header-actions .auto-refresh-label').innerText())==='自动同步','桌面标签仍重复显示会话库范围');
     expect((await page.locator('.history-refresh-panel').innerText()).includes('最近同步'),'状态缺少最近同步时间');
     expect(await page.locator('.history-refresh-panel').getByRole('combobox').count()===0,'状态仍提供范围选择');
@@ -203,6 +203,24 @@ try {
     await page.getByRole('button',{name:'会话库',exact:true}).click();
     expect((await page.getByRole('combobox',{name:'筛选客户端',exact:true}).innerText()).includes('Codex'),'历史更新重置了客户端筛选');
   `);
+  await step("慢报告读取不被连续同步取消，期间多个版本合并为一次后续读取", `
+    await page.getByRole('button',{name:'总览',exact:true}).click();await page.waitForLoadState('networkidle');
+    let release;let reads=0;const gate=new Promise(resolve=>release=resolve);
+    await page.route('**/api/v1/overview/snapshot?*',async route=>{reads++;if(reads===1)await gate;await route.continue();});
+    const body=await page.locator('.overview-report-body').first().elementHandle();
+    const sync=async()=>{await page.getByRole('button',{name:'同步历史',exact:true}).click();await page.waitForFunction(()=>!document.querySelector('.header-actions .refresh-button')?.disabled);};
+    await sync();for(let i=0;i<100&&reads===0;i++)await page.waitForTimeout(50);expect(reads===1,'第一次报告没有开始');
+    await sync();await sync();await page.waitForTimeout(150);
+    expect(reads===1,'连续同步取消或重复启动正在读取的报告');expect(await body.evaluate(node=>node.isConnected),'慢读取移除了旧报告');
+    let automatic=0;const listener=request=>{if(request.url().endsWith('/sessions/auto-refresh'))automatic++;};page.on('request',listener);
+    await page.getByRole('combobox',{name:'历史自动同步',exact:true}).click();
+    await page.getByRole('option',{name:'5 秒',exact:true}).click();await page.waitForTimeout(6100);
+    expect(automatic===0,'慢报告未读完就启动新的自动检查');
+    await page.getByRole('combobox',{name:'历史自动同步',exact:true}).click();await page.getByRole('option',{name:'关闭',exact:true}).click();page.off('request',listener);
+    release();for(let i=0;i<100&&reads<2;i++)await page.waitForTimeout(50);
+    await page.waitForLoadState('networkidle');expect(reads===2,'没有合并读取最新通知');
+    await page.unroute('**/api/v1/overview/snapshot?*');
+  `);
   await step("历史检查失败保留报告，重试重新发起检查", `
     await page.getByRole('button',{name:'用量统计',exact:true}).click();await page.locator('.usage-session-name').filter({hasText:${JSON.stringify(newTitle)}}).waitFor();
     let attempts=0;await page.route('**/api/v1/sessions/refresh',route=>{attempts++;return attempts===1?route.fulfill({status:503,contentType:'application/json',body:JSON.stringify({error:{code:'INTERNAL_ERROR',message:'合成历史检查失败'}})}):route.continue();});
@@ -253,6 +271,69 @@ try {
     expect(result.resources.find(row=>row.identity.name==='guide').stats.sessions===${resourceBefore + 1},'资源使用统计没有跟进新增历史');
     expect(scans===0,'历史更新额外触发了资源盘点');await page.getByRole('row').filter({hasText:'guide'}).waitFor();
   `);
+  await step("资源详情等待同版证据期间保留 DOM 与滚动，失败可重试", `
+    await page.getByRole('button',{name:'查看guide的使用详情',exact:true}).click();
+    const body=page.locator('#resource-detail-content .resource-detail-body');
+    await body.locator('.resource-evidence').waitFor();await page.waitForFunction(()=>document.querySelector('.resource-detail-body')?.getAttribute('aria-busy')==='false');
+    const heading=await body.locator('.resource-detail-heading').elementHandle(),evidence=await body.locator('.resource-evidence').elementHandle();
+    const scroll=page.locator('#resource-detail-content');await scroll.evaluate(node=>node.scrollTop=80);const top=await scroll.evaluate(node=>node.scrollTop);
+    let release;let held=false;const gate=new Promise(resolve=>release=resolve);
+    await page.route('**/api/v1/resources/usage/*/evidence?*',async route=>{held=true;await gate;await route.continue();},{times:1});
+    await page.getByRole('button',{name:'同步历史',exact:true}).click();
+    for(let i=0;i<100&&!held;i++)await page.waitForTimeout(50);expect(held,'没有请求新版证据');
+    expect(await heading.evaluate(node=>node.isConnected)&&await evidence.evaluate(node=>node.isConnected),'等待证据清空了旧详情');
+    expect(await body.getAttribute('aria-busy')==='true'&&await body.getAttribute('inert')!==null,'旧详情没有暂停下钻');
+    expect(await body.locator('.resource-loading').count()===0,'有旧详情仍出现占位文字');
+    expect(await scroll.evaluate(node=>node.scrollTop)===top,'等待证据改变了滚动');
+    release();await page.waitForFunction(()=>document.querySelector('.resource-detail-body')?.getAttribute('aria-busy')==='false');
+    expect(await heading.evaluate(node=>node.isConnected)&&await evidence.evaluate(node=>node.isConnected),'替换新版重建了详情或证据容器');
+    await page.route('**/api/v1/resources/usage/*/evidence?*',route=>route.fulfill({status:503,contentType:'application/json',body:JSON.stringify({error:{code:'INTERNAL_ERROR',message:'合成新版证据失败'}})}),{times:1});
+    await page.getByRole('button',{name:'同步历史',exact:true}).click();
+    const error=page.locator('#resource-detail-content').getByRole('alert').filter({hasText:'合成新版证据失败'});await error.waitFor();
+    expect(await evidence.evaluate(node=>node.isConnected),'失败清空旧证据');
+    await error.getByRole('button',{name:'重试',exact:true}).click();await error.waitFor({state:'hidden'});
+    await page.waitForFunction(()=>document.querySelector('.resource-detail-body')?.getAttribute('aria-busy')==='false');
+    expect(await body.getAttribute('inert')===null,'重试成功后旧下钻没有恢复');
+  `);
+  await step("五页共享自动间隔，无变化完成后不重读报告或资源管理记录", `
+    await page.clock.install();
+    const finish=async()=>{for(let i=0;i<40;i++){await page.clock.runFor(1200);await page.waitForTimeout(40);if(await page.locator('.header-actions .refresh-button').isEnabled())return;}throw new Error('自动同步未完成');};
+    await page.getByRole('combobox',{name:'历史自动同步',exact:true}).click();
+    const saved=page.waitForResponse(response=>response.url().endsWith('/preferences')&&response.request().method()==='PUT');
+    await page.getByRole('option',{name:'5 秒',exact:true}).click();await saved;await page.clock.runFor(20);await page.waitForTimeout(100);await finish();
+    let calls=[];const listener=request=>{if(request.url().includes('/api/v1/'))calls.push(request.url());};page.on('request',listener);
+    const ready={总览:'.overview-metrics',会话库:'.session-list-item',代码地图:'.code-map',用量统计:'.usage-session-table',资源管理:'.resource-overview-table'};
+    for(const name of Object.keys(ready)){
+      await page.getByRole('button',{name,exact:true}).click();await page.locator(ready[name]).first().waitFor();await page.waitForTimeout(200);
+      expect((await page.getByRole('combobox',{name:'历史自动同步',exact:true}).innerText()).includes('5 秒'),'跨页没有共享设置');
+      calls=[];await page.clock.runFor(5010);await page.waitForTimeout(200);await finish();
+      expect(calls.some(url=>url.includes('/sessions/auto-refresh')),'切页停止了全局自动同步 '+name);
+      expect(!calls.some(url=>['/overview/','/usage/report','/messages?','/profile?','/timeline?','/resources/overview?','/resources/operations?','/resources/archives?','/coverage?'].some(path=>url.includes(path))),'无变化重读页面 '+name+' '+JSON.stringify(calls));
+    }
+    page.off('request',listener);
+  `);
+  await step("自动检查失败直接可见，重试同一操作，关闭保留已提交任务的进度", `
+    await page.route('**/api/v1/sessions/auto-refresh',route=>route.fulfill({status:503,contentType:'application/json',body:JSON.stringify({error:{code:'INTERNAL_ERROR',message:'合成自动同步失败'}})}),{times:1});
+    await page.clock.runFor(5010);await page.waitForTimeout(100);
+    const error=page.locator('.history-error').filter({hasText:'合成自动同步失败'});await error.waitFor();
+    let attempts=0;const listener=request=>{if(request.url().endsWith('/sessions/auto-refresh'))attempts++;};page.on('request',listener);
+    await error.getByRole('button',{name:'重试',exact:true}).click();await error.waitFor({state:'hidden'});
+    for(let i=0;i<40;i++){await page.clock.runFor(1200);await page.waitForTimeout(40);if(await page.locator('.header-actions .refresh-button').isEnabled())break;}
+    expect(attempts===1,'自动失败重试没有执行一次原操作');page.off('request',listener);
+    let release;let held=false;const gate=new Promise(resolve=>release=resolve);
+    const job={id:'synthetic-auto-inflight',status:'running',phase:'index',progress:0.5,createdAt:new Date().toISOString()};
+    await page.route('**/api/v1/sessions/auto-refresh',async route=>{held=true;await gate;await route.fulfill({status:200,contentType:'application/json',body:JSON.stringify({job})});},{times:1});
+    await page.route('**/api/v1/jobs/synthetic-auto-inflight',route=>route.fulfill({status:200,contentType:'application/json',body:JSON.stringify({job})}));
+    await page.clock.runFor(5010);await page.waitForTimeout(100);expect(held,'自动请求未提交');
+    await page.getByRole('combobox',{name:'历史自动同步',exact:true}).click();const saved=page.waitForResponse(response=>response.url().endsWith('/preferences')&&response.request().method()==='PUT');
+    await page.getByRole('option',{name:'关闭',exact:true}).click();await saved;
+    release();await page.waitForTimeout(100);await page.clock.runFor(1200);await page.waitForTimeout(100);
+    expect(await page.getByRole('progressbar',{name:'历史同步进度',exact:true}).isVisible(),'关闭后丢失在途任务进度');
+    job.status='complete';job.phase='complete';job.finishedAt=new Date().toISOString();
+    await page.clock.runFor(1200);await page.waitForTimeout(100);
+    expect(await page.getByRole('button',{name:'同步历史',exact:true}).isEnabled(),'关闭后在途任务没有完成');await page.unroute('**/api/v1/jobs/synthetic-auto-inflight');
+    await page.clock.resume();await page.goto(${JSON.stringify(`${base}/#resources`)});await page.locator('.resource-overview-table').waitFor();
+  `);
   await step("英文深色窄屏五页入口和菜单位于视口内，显示切换保留筛选", `
     await page.getByRole('button',{name:'会话库',exact:true}).click();
     await page.getByRole('button',{name:'显示语言',exact:true}).click();await page.getByRole('menuitemradio',{name:'English',exact:true}).click();
@@ -272,12 +353,16 @@ try {
     const scope=page.getByRole('combobox',{name:'Filter clients',exact:true});if(await scope.isVisible())expect((await scope.innerText()).includes('Codex'),'显示切换重置了筛选');
     await page.screenshot({path:${JSON.stringify(join(artifacts, "mobile-dark-en.png"))}});
     await page.getByRole('button',{name:'History sync status',exact:true}).click();
-    expect(await page.locator('.app-header').getByRole('combobox',{name:'Session auto sync',exact:true}).count()===1,'窄屏自动刷新没有在顶栏显示');
+    expect(await page.locator('.app-header').getByRole('combobox',{name:'History auto sync',exact:true}).count()===1,'窄屏自动刷新没有在顶栏显示');
     const autoMenu=await page.locator('.history-refresh-panel').boundingBox();expect(autoMenu.x>=0&&autoMenu.x+autoMenu.width<=390&&autoMenu.y+autoMenu.height<=844,'自动刷新菜单超出窄屏');
     await page.screenshot({path:${JSON.stringify(join(artifacts, "history-status-mobile-en.png"))}});await page.keyboard.press('Escape');
   `);
   await writeFile(join(artifacts, "report.json"), JSON.stringify({ checks, initialVersion: initial.version, latestVersion: latest.version }, null, 2));
   console.log(JSON.stringify({ passed: checks.length, artifacts }));
+} catch (failure) {
+  await browser(["screenshot", `--filename=${join(artifacts, "failure.png")}`]).catch(() => {});
+  await writeFile(join(artifacts, "failure-state.txt"), await browser(["snapshot"]).catch(() => ""));
+  throw failure;
 } finally {
   await browser(["close"]).catch(() => {});
   if (service) await service.close();

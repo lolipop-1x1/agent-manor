@@ -1,4 +1,4 @@
-import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode, type RefObject } from "react";
+import { lazy, memo, Suspense, useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode, type RefObject } from "react";
 import * as Dialog from "@radix-ui/react-dialog";
 import * as Dropdown from "@radix-ui/react-dropdown-menu";
 import { ArrowClockwise, ArrowSquareOut, CaretDown, CaretLeft, CaretRight, CaretUp, Check, CircleNotch, Code, FileCode, Folder, MagnifyingGlass, MapTrifold, Plus, Stack, Trash, WarningCircle, X } from "@phosphor-icons/react";
@@ -32,6 +32,13 @@ const jobActive = (job: Job | null) => job?.status === "queued" || job?.status =
 const mapSessionKey = (session: Pick<MapSession, "client" | "clientSessionId">) => JSON.stringify([session.client, session.clientSessionId]);
 const mapSessionTitle = (session: MapSession) => messageText(session.titleDescriptor, session.title ?? session.clientSessionId);
 const CodeViewer = lazy(() => import("./CodeViewer").then(module => ({ default: module.CodeViewer })));
+
+// 语言是显式输入；历史进度轮询不重复构建闭合文件表的全部行。
+const MapFileTable = memo(function MapFileTable({ files, selected, metric, search, select }: {
+  files: CoverageResult["files"]; selected: string | null; metric: Metric; search: string; select: (path: string) => void; language: string;
+}) {
+  return <details className="file-table" open={!!search || files.some(file => !file.lineCount)}><summary>{t("codeMap.table.title", { count: files.length })}</summary><div className="file-table-scroll"><table><thead><tr><th>{t("codeMap.filter.file")}</th><th>{t("codeMap.table.lines")}</th><th>{t("codeMap.table.exact")}</th><th>{t("codeMap.table.nearLines")}</th><th>{t("codeMap.table.count")}</th></tr></thead><tbody>{files.map(file => <tr key={file.path} className={selected === file.path ? "selected" : ""}><td><button onClick={() => select(file.path)}>{file.path}</button></td><td>{fmt(file.lineCount)}</td><td>{percent(metric === "edit" ? file.editExactLines : file.readExactLines, file.lineCount)}</td><td>{fmt(metric === "edit" ? file.editNearLines : file.readNearLines)}</td><td>{fmt(metricValue(file, "activity"))}</td></tr>)}</tbody></table></div></details>;
+});
 
 function Notice({ children, action, danger = false }: { children: ReactNode; action?: ReactNode; danger?: boolean }) {
   return <div className={`notice${danger ? " danger" : ""}`} role={danger ? "alert" : "status"}><WarningCircle size={17} /><div>{children}</div>{action}</div>;
@@ -482,18 +489,21 @@ export function useCodeMapPage({ active, theme, onSession }: {
     } else pinnedVersion.current = undefined;
     setSelected(local ?? null); setDetailsCollapsed(false);
   };
-  const browse = (path: string) => { setDirectory(path); setSelected(null); };
-  const selectFile = (path: string) => { setSelected(path); setDetailsCollapsed(false); };
+  const browse = useCallback((path: string) => { setDirectory(path); setSelected(null); }, []);
+  const selectFile = useCallback((path: string) => { setSelected(path); setDetailsCollapsed(false); }, []);
   const clearFilters = () => { setClient("all"); setMapSession(undefined); setWindow("all"); setCategory("source"); setDirectory(""); setSearch(""); setSelected(null); };
   const availableMapSessions = mapSessionList?.version === coverage?.version ? mapSessionList?.sessions ?? [] : [];
-  const mapSessionOptions = availableMapSessions.filter(session => client === "all" || session.client === client).map(session => ({
-    value: mapSessionKey(session), label: mapSessionTitle(session),
-    description: t("codeMap.session.option", { client: clientLabel(session.client), date: dateLabel(session.updatedAt ?? session.startedAt), count: session.eventCount, id: session.clientSessionId }),
-  }));
-  if (mapSession && !mapSessionOptions.some(option => option.value === mapSessionKey(mapSession))) mapSessionOptions.unshift({
-    value: mapSessionKey(mapSession), label: mapSessionTitle(mapSession),
-    description: t("codeMap.session.selectedOption", { client: clientLabel(mapSession.client), id: mapSession.clientSessionId }),
-  });
+  const mapSessionOptions = useMemo(() => {
+    const options = availableMapSessions.filter(session => client === "all" || session.client === client).map(session => ({
+      value: mapSessionKey(session), label: mapSessionTitle(session),
+      description: t("codeMap.session.option", { client: clientLabel(session.client), date: dateLabel(session.updatedAt ?? session.startedAt), count: session.eventCount, id: session.clientSessionId }),
+    }));
+    if (mapSession && !options.some(option => option.value === mapSessionKey(mapSession))) options.unshift({
+      value: mapSessionKey(mapSession), label: mapSessionTitle(mapSession),
+      description: t("codeMap.session.selectedOption", { client: clientLabel(mapSession.client), id: mapSession.clientSessionId }),
+    });
+    return options;
+  }, [mapSessionList, coverage?.version, client, mapSession, language]);
   const runRefresh = async () => {
     pinnedVersion.current = undefined;
     if (!repoId) return;
@@ -542,8 +552,8 @@ export function useCodeMapPage({ active, theme, onSession }: {
   const editing = metric === "edit";
   const exact = s ? editing ? s.editExact : s.readExact : null;
   const near = s ? editing ? s.editNear : s.readNear : null;
-  const mapHeading = repository ? <div className="map-heading"><div className="breadcrumbs"><button onClick={() => browse("")}><Folder size={16} />{repository.name}</button>{directory.split("/").filter(Boolean).map((part, i, parts) => <span key={i}><CaretRight size={12} /><button onClick={() => browse(parts.slice(0, i + 1).join("/"))}>{part}</button></span>)}<small>{t("codeMap.file.count", { count: visible.length })}</small></div><div className="metric-picker" role="group" aria-label={t("codeMap.colorMetric")}>{(["read", "edit", "activity"] as const).map(value => <button key={value} aria-pressed={metric === value} className={metric === value ? "active" : ""} onClick={() => setMetric(value)}>{metricNames[value]}</button>)}</div></div> : null;
-  const mapLegend = <div className="map-legend"><span>{metric === "activity" ? t("codeMap.metric.activity") : t("codeMap.exactCoverage")}</span><span className="legend-scale">{[0, 1, 2, 3, 4].map(tone => <i key={tone} className={`tone-${tone}`} />)}</span><span>{metric === "activity" ? t("codeMap.activity.range", { count: visible.reduce((max, file) => Math.max(max, metricValue(file, metric)), 0) }) : "0 → 100%"}</span><span className="near-key legend-near" /><span>{t("codeMap.near")}</span><small>{t("codeMap.area")}</small></div>;
+  const mapHeading = useMemo(() => repository ? <div className="map-heading"><div className="breadcrumbs"><button onClick={() => browse("")}><Folder size={16} />{repository.name}</button>{directory.split("/").filter(Boolean).map((part, i, parts) => <span key={i}><CaretRight size={12} /><button onClick={() => browse(parts.slice(0, i + 1).join("/"))}>{part}</button></span>)}<small>{t("codeMap.file.count", { count: visible.length })}</small></div><div className="metric-picker" role="group" aria-label={t("codeMap.colorMetric")}>{(["read", "edit", "activity"] as const).map(value => <button key={value} aria-pressed={metric === value} className={metric === value ? "active" : ""} onClick={() => setMetric(value)}>{metricNames[value]}</button>)}</div></div> : null, [repository, directory, visible.length, metric, browse, language]);
+  const mapLegend = useMemo(() => <div className="map-legend"><span>{metric === "activity" ? t("codeMap.metric.activity") : t("codeMap.exactCoverage")}</span><span className="legend-scale">{[0, 1, 2, 3, 4].map(tone => <i key={tone} className={`tone-${tone}`} />)}</span><span>{metric === "activity" ? t("codeMap.activity.range", { count: visible.reduce((max, file) => Math.max(max, metricValue(file, metric)), 0) }) : "0 → 100%"}</span><span className="near-key legend-near" /><span>{t("codeMap.near")}</span><small>{t("codeMap.area")}</small></div>, [metric, visible, language]);
   return {
     openMap,
     maintenanceNotice: indexMaintenance && <Notice danger={indexMaintenance.status === "failed"} action={<button className="button subtle" onClick={() => setIndexMaintenance(null)}>{t("common.close")}</button>}>
@@ -598,7 +608,7 @@ export function useCodeMapPage({ active, theme, onSession }: {
           <div className="metrics"><div className="metric-primary"><span>{editing ? t("codeMap.coverage.editLines") : t("codeMap.coverage.readLines")}</span><strong>{percent(exact.lines, s.lineCount)}</strong><small>{t("codeMap.coverage.lineFraction", { covered: fmt(exact.lines), count: s.lineCount })}</small></div><div><span>{editing ? t("codeMap.coverage.editFiles") : t("codeMap.coverage.readFiles")}</span><strong>{percent(exact.files, s.fileCount)}</strong><small>{t("codeMap.coverage.fileFraction", { covered: fmt(exact.files), count: s.fileCount })}</small></div><div className="metric-context"><span>{t("codeMap.coverage.moreNear")}</span><strong>{t("codeMap.line.count", { count: near.lines })}</strong><small>{t("codeMap.coverage.nearFiles", { count: near.files })}</small></div></div>
           {visible.some(file => file.lineCount > 0) ? <CodeMap files={visible} directory={directory} metric={metric} selected={selected} browse={browse} select={selectFile} heading={mapHeading} legend={mapLegend} scopeKey={`${repoId}:${filterKey}:${search}`} /> : <>{mapHeading}<Empty title={visible.length ? t("codeMap.empty.emptyFiles") : t("codeMap.empty.noFiles")} action={<button className="button subtle" onClick={clearFilters}>{t("codeMap.filter.reset")}</button>}>{visible.length ? t("codeMap.empty.emptyFilesDescription") : t("codeMap.empty.noFilesDescription")}</Empty>{mapLegend}</>}
           {search && <p className="muted small">{t("codeMap.filter.searchScope")}</p>}
-          <details className="file-table" open={!!search || visible.some(file => !file.lineCount)}><summary>{t("codeMap.table.title", { count: visible.length })}</summary><div className="file-table-scroll"><table><thead><tr><th>{t("codeMap.filter.file")}</th><th>{t("codeMap.table.lines")}</th><th>{t("codeMap.table.exact")}</th><th>{t("codeMap.table.nearLines")}</th><th>{t("codeMap.table.count")}</th></tr></thead><tbody>{visible.map(file => <tr key={file.path} className={selected === file.path ? "selected" : ""}><td><button onClick={() => selectFile(file.path)}>{file.path}</button></td><td>{fmt(file.lineCount)}</td><td>{percent(metric === "edit" ? file.editExactLines : file.readExactLines, file.lineCount)}</td><td>{fmt(metric === "edit" ? file.editNearLines : file.readNearLines)}</td><td>{fmt(metricValue(file, "activity"))}</td></tr>)}</tbody></table></div></details>
+          <MapFileTable files={visible} selected={selected} metric={metric} search={search} select={selectFile} language={language} />
           {(coverage!.gapCount ?? coverage!.gaps.length) > 0 && query && <CoverageGaps repoId={repoId} query={query} count={coverage!.gapCount ?? coverage!.gaps.length} />}
           <details className="baseline-note"><summary>{t("codeMap.analysis.info", { date: dateLabel(coverage!.createdAt) })}</summary><p>{t("codeMap.analysis.version", { version: coverage!.version })}<br />{t("codeMap.analysis.baseline", { hash: coverage!.baselineHash })}{coverage!.previousVersion && <>{t("codeMap.analysis.previous", { version: coverage!.previousVersion })}</>}</p></details>
         </>}

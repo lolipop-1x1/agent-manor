@@ -24,7 +24,7 @@ import "./usage.css";
 import { RefreshControl } from "../../shared/ui/RefreshControl";
 import { useHistoryRevision } from "../../shared/refresh/useHistoryRefresh";
 
-export default function Usage({ active, onSession, historyRevision = 0 }: { historyRevision?: number; active: boolean; onSession: (target: { sessionId: string; messageId?: string }) => void }) {
+export default function Usage({ active, onSession, onHistoryReading, historyRevision = 0 }: { historyRevision?: number; onHistoryReading?: (reading: boolean) => void; active: boolean; onSession: (target: { sessionId: string; messageId?: string }) => void }) {
   const { t, number, date, dateTime, message, language } = useI18n();
   const [route, setRoute] = useState(() => readUsageRoute(location.hash));
   const lastAddress = useRef(location.hash), adoptingAddress = useRef(false);
@@ -44,7 +44,7 @@ export default function Usage({ active, onSession, historyRevision = 0 }: { hist
   const requestTrigger = useRef<HTMLElement | null>(null);
   const patch = (value: Partial<UsageRoute>, reset = true) => setRoute(current => ({ ...current, ...(reset ? { page: 1, selectedSession: undefined, requestPage: 1 } : {}), ...value }));
   const refresh = () => { patch({ version: undefined, priceVersion: undefined }, false); setRevision(current => current + 1); };
-  useHistoryRevision(active, historyRevision, refresh);
+  useHistoryRevision(active, historyRevision, refresh, loading, onHistoryReading);
   useEffect(() => {
     const navigate = () => { if (location.hash.startsWith("#usage")) setRoute(readUsageRoute(location.hash)); };
     globalThis.addEventListener("hashchange", navigate); return () => globalThis.removeEventListener("hashchange", navigate);

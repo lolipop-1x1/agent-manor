@@ -258,7 +258,7 @@ function UsageHelp({ kind }: { kind: ResourceKind }) {
   </dl></HelpPopover>;
 }
 
-export default function Resources({ active, onSession, historyRevision = 0 }: { historyRevision?: number; active: boolean; onSession: (target: { sessionId: string; messageId: string }) => void }) {
+export default function Resources({ active, onSession, onHistoryReading, historyRevision = 0 }: { historyRevision?: number; onHistoryReading?: (reading: boolean) => void; active: boolean; onSession: (target: { sessionId: string; messageId: string }) => void }) {
   useI18n();
   const [route, setRoute] = useState<ResourceRoute>(readRoute);
   const [status, setStatus] = useState<ResourceStatusSummary | null>(null);
@@ -285,7 +285,11 @@ export default function Resources({ active, onSession, historyRevision = 0 }: { 
   const [evidenceError, setEvidenceError] = useState<Error | null>(null);
   const [feedback, setFeedback] = useState<MessageDescriptor | null>(null);
   const [reload, setReload] = useState(0);
-  useHistoryRevision(active, historyRevision, () => setReload(value => value + 1));
+  const [historyReload, setHistoryReload] = useState(0);
+  useHistoryRevision(active, historyRevision, () => setHistoryReload(value => value + 1), listLoading || detailLoading || evidenceLoading, onHistoryReading);
+  const detailTarget = useRef("");
+  const detailPending = useRef(false);
+  const evidenceLoaded = useRef<{ id: string; key: string } | undefined>(undefined);
   const [favoriteReload, setFavoriteReload] = useState(0);
   const [refreshing, setRefreshing] = useState(false);
   const [inventoryError, setInventoryError] = useState<Error | null>(null);
@@ -392,7 +396,7 @@ export default function Resources({ active, onSession, historyRevision = 0 }: { 
       if (!controller.signal.aborted) { clientCandidatesPending.current = false; setStatus({ ...result, favoriteIds: [...acceptFavoriteIds(result.favoriteIds, revision)] }); syncFavorites(); }
     }).catch(failure => { if (!isAborted(failure)) setError(failure instanceof Error ? failure : new Error(errorMessage(failure))); });
     return () => controller.abort();
-  }, [active, reload]);
+  }, [active, reload, historyReload]);
   useEffect(() => {
     if (!active || !sourcesOpen) return;
     const controller = new AbortController();
@@ -423,7 +427,8 @@ export default function Resources({ active, onSession, historyRevision = 0 }: { 
     metric: route.metric, maxValue: route.maxValue === "" ? undefined : Number(route.maxValue),
   }), [scopeQuery, queryText, route.candidate, route.favorite, route.low, route.inactive, route.metric, route.maxValue]);
   const listRequestQuery = mapView ? mapQuery : overviewRanking ? overviewQuery : localQuery;
-  const mapRequestKey = JSON.stringify([mapQuery, reload, favoriteReload]);
+  const mapRequestKey = JSON.stringify([mapQuery, reload, historyReload, favoriteReload]);
+  const evidenceRequestKey = JSON.stringify([scopeQuery, route.evidencePage, route.tool, reload, historyReload]);
   const hasListData = mapView ? !!map : overviewRanking ? !!overview : route.tab === "local" ? !!local : route.tab === "operations" ? !!operations : !!archives;
   const listProgress = <span className="resource-list-progress" role={listLoading && hasListData ? "status" : undefined} aria-label={listLoading && hasListData ? t("resources.loading.resources") : undefined}>{listLoading && hasListData && <ArrowClockwise size={14} className="spinning" aria-hidden="true" />}</span>;
   useEffect(() => { try { localStorage.setItem("agent-manor:resource-view", route.view); } catch { /* 存储不可用时视图仍可切换。 */ } }, [route.view]);
@@ -451,7 +456,7 @@ export default function Resources({ active, onSession, historyRevision = 0 }: { 
       if (result.page !== routeRef.current.page) update({ page: result.page });
     }).catch(failure => { if (!isAborted(failure)) setError(failure instanceof Error ? failure : new Error(errorMessage(failure))); }).finally(done);
     return () => controller.abort();
-  }, [active, mapView, listRequestQuery, mapRequestKey, overviewRanking, route.tab, reload, favoriteReload, invalidTime]);
+  }, [active, mapView, listRequestQuery, mapRequestKey, overviewRanking, route.tab, reload, historyReload, favoriteReload, invalidTime]);
   useEffect(() => {
     if (!active || route.tab === "usage" || route.tab === "local") return;
     const controller = new AbortController(); setListLoading(true); setError(null);
@@ -462,27 +467,37 @@ export default function Resources({ active, onSession, historyRevision = 0 }: { 
   }, [active, route.tab, managementQuery, reload]);
   useEffect(() => {
     if (!active) return;
-    if (!route.id || invalidTime || route.tab !== "usage" && route.tab !== "local") { setUsageDetail(null); setOverviewDetail(null); setLocalDetail(null); setDetailLoading(false); return; }
-    const controller = new AbortController(); setDetailLoading(true); setDetailError(null); setUsageDetail(null); setOverviewDetail(null); setLocalDetail(null);
+    if (!route.id || invalidTime || route.tab !== "usage" && route.tab !== "local") { setUsageDetail(null); setOverviewDetail(null); setLocalDetail(null); setDetailLoading(false); setDetailError(null); setEvidenceError(null); detailTarget.current = ""; return; }
+    const target = JSON.stringify([route.tab, route.kind, route.id]);
+    if (detailTarget.current !== target) { setUsageDetail(null); setOverviewDetail(null); setLocalDetail(null); setEvidence(null); }
+    detailTarget.current = target;
+    const controller = new AbortController(); setDetailLoading(true); setDetailError(null); setEvidenceError(null);
+    detailPending.current = true;
     const revision = favoriteRevision.current;
-    const task = overviewRanking ? resourceApi.overviewDetail(route.id, { ...scopeQuery, lowSessions: route.low, inactiveDays: route.inactive }, controller.signal).then(result => {
+    const task = overviewRanking ? resourceApi.overviewDetail(route.id, { ...scopeQuery, lowSessions: route.low, inactiveDays: route.inactive }, controller.signal).then(async result => {
+      // 详情与证据同版准备成功后一起替换，更新期间保留完整旧内容。
+      const nextEvidence = result.history ? await resourceApi.evidence(result.history.resource.identity.id,
+        { ...scopeQuery, version: result.history.version, page: route.evidencePage, pageSize: 10, tool: route.tool || undefined }, controller.signal) : null;
       if (controller.signal.aborted) return;
       if (result.favoriteIds) acceptFavoriteIds(result.favoriteIds, revision);
-      setOverviewDetail(result); setUsageDetail(result.history); syncFavorites();
+      if (result.history) evidenceLoaded.current = { id: result.history.resource.identity.id, key: evidenceRequestKey };
+      setEvidence(nextEvidence); setEvidenceLoading(false); setOverviewDetail(result); setUsageDetail(result.history); syncFavorites();
     }) : resourceApi.localDetail(route.id, { ...scopeQuery, lowSessions: route.low, inactiveDays: route.inactive }, controller.signal).then(result => {
       if (!controller.signal.aborted) setLocalDetail(favoriteBase.current ? { ...result, row: localFavoriteRow(result.row, currentFavorites()) } : result);
     });
-    void task.catch(failure => { if (!isAborted(failure)) setDetailError(failure instanceof Error ? failure : new Error(errorMessage(failure))); }).finally(() => { if (!controller.signal.aborted) setDetailLoading(false); });
-    return () => controller.abort();
-  }, [active, route.id, route.tab, scopeQuery, overviewRanking, route.low, route.inactive, reload, invalidTime]);
+    void task.catch(failure => { if (!isAborted(failure)) setDetailError(failure instanceof Error ? failure : new Error(errorMessage(failure))); }).finally(() => { if (!controller.signal.aborted) { detailPending.current = false; setDetailLoading(false); } });
+    return () => { controller.abort(); detailPending.current = false; };
+  }, [active, route.id, route.tab, scopeQuery, overviewRanking, route.low, route.inactive, reload, historyReload, invalidTime]);
   const evidenceId = overviewRanking ? usageDetail?.resource.identity.id : route.id;
   useEffect(() => {
+    if (detailPending.current || detailError) return;
     if (!active || !evidenceId || route.tab !== "usage" || invalidTime) { setEvidence(null); setEvidenceLoading(false); return; }
+    if (evidenceLoaded.current?.id === evidenceId && evidenceLoaded.current.key === evidenceRequestKey) return;
     const controller = new AbortController(); setEvidenceLoading(true); setEvidenceError(null);
-    void resourceApi.evidence(evidenceId, { ...scopeQuery, page: route.evidencePage, pageSize: 10, tool: route.tool || undefined }, controller.signal)
-      .then(setEvidence).catch(failure => { if (!isAborted(failure)) setEvidenceError(failure instanceof Error ? failure : new Error(errorMessage(failure))); }).finally(() => { if (!controller.signal.aborted) setEvidenceLoading(false); });
+    void resourceApi.evidence(evidenceId, { ...scopeQuery, version: usageDetail?.version, page: route.evidencePage, pageSize: 10, tool: route.tool || undefined }, controller.signal)
+      .then(result => { if (!controller.signal.aborted) { evidenceLoaded.current = { id: evidenceId, key: evidenceRequestKey }; setEvidence(result); } }).catch(failure => { if (!isAborted(failure)) setEvidenceError(failure instanceof Error ? failure : new Error(errorMessage(failure))); }).finally(() => { if (!controller.signal.aborted) setEvidenceLoading(false); });
     return () => controller.abort();
-  }, [active, evidenceId, route.tab, route.evidencePage, route.tool, scopeQuery, reload, invalidTime]);
+  }, [active, evidenceId, evidenceRequestKey, route.tab, route.evidencePage, route.tool, scopeQuery, usageDetail?.version, reload, historyReload, detailLoading, detailError, invalidTime]);
   useEffect(() => {
     if (!active || listLoading || !restoreScroll.current) return;
     const frame = requestAnimationFrame(() => {
@@ -655,8 +670,11 @@ export default function Resources({ active, onSession, historyRevision = 0 }: { 
   const detailManagement = overviewDetail
     ? <button className="button resource-manage" data-manage-resource={overviewDetail.resource.identity.id} aria-label={t("resources.management.resource", { name: messageText(overviewDetail.resource.identity.nameDescriptor, overviewDetail.resource.identity.name) })} onClick={() => void openEntries(overviewDetail.resource.identity.id, messageText(overviewDetail.resource.identity.nameDescriptor, overviewDetail.resource.identity.name), overviewDetail.local)}>{t("resources.management.manage")}</button>
     : localDetail ? <button className="button resource-manage" data-manage-resource={localDetail.row.body.id} aria-label={t("resources.management.resource", { name: localDetail.row.body.name })} onClick={() => void openEntries(localDetail.row.body.id, localDetail.row.body.name, [localDetail.row])}>{t("resources.management.manage")}</button> : null;
+  const hasDetailData = !!(usageDetail || overviewDetail || localDetail);
   const detail = <>
-    {detailLoading ? <div role="status" className="resource-loading">{t("resources.loading.detail")}</div> : detailError ? <div className="resource-alert" role="alert"><ResourceErrorText error={detailError} /><button className="text-button" onClick={() => setReload(value => value + 1)}>{t("common.retry")}</button></div> : usageDetail ? <>
+    {(detailError || evidenceError) && <div className="resource-alert" role="alert"><ResourceErrorText error={detailError ?? evidenceError!} /><button className="text-button" onClick={() => setReload(value => value + 1)}>{t("common.retry")}</button></div>}
+    <div className="resource-detail-body" aria-busy={detailLoading || evidenceLoading} inert={detailLoading || evidenceLoading || !!detailError || !!evidenceError}>
+    {detailError && !hasDetailData ? null : detailLoading && !hasDetailData ? <div role="status" className="resource-loading">{t("resources.loading.detail")}</div> : usageDetail ? <>
       <div className="resource-detail-heading"><div><span>{usageAgentLabel(overviewDetail?.resource ?? usageDetail.resource)}</span><h2>{messageText(usageDetail.resource.identity.nameDescriptor, usageDetail.resource.identity.name)}</h2></div><FavoriteButton name={messageText(usageDetail.resource.identity.nameDescriptor, usageDetail.resource.identity.name)} favorite={overviewDetail?.resource.favorite ?? usageDetail.resource.favorite} disabled={favoritePending.has(route.id)} onClick={() => void favorite(overviewDetail?.resource.identity.id ?? route.id, overviewDetail?.resource.favorite ?? usageDetail.resource.favorite)} /></div>
       {detailManagement}
       {overviewDetail && <div className="resource-tags"><span className={overviewDetail.resource.observation === "unknown" || overviewDetail.resource.observation === "insufficient" ? "is-warning" : ""}>{t(overviewObservationNames[overviewDetail.resource.observation])}</span></div>}
@@ -672,7 +690,7 @@ export default function Resources({ active, onSession, historyRevision = 0 }: { 
       <HistoryGaps gaps={usageDetail.coverage.gaps} />
       {route.kind === "mcp" && <section className="resource-detail-section"><header><h3>{t("resources.stat.toolCalls")}</h3><span>{t("resources.toolCount", { count: usageDetail.tools.length })}</span></header><div className="resource-tool-list">{usageDetail.tools.map(tool => <button key={tool.name} className={route.tool === tool.name ? "is-selected" : ""} aria-pressed={route.tool === tool.name} onClick={() => update({ tool: route.tool === tool.name ? "" : tool.name, evidencePage: 1 })}><strong>{tool.name}</strong><span>{t("resources.callCount", { count: tool.stats.mcpCalls })}</span><small>{t("resources.toolResults", { failure: tool.stats.results.failure, unknown: tool.stats.results.unknown, duration: tool.stats.duration.samples ? t("resources.durationSamples", { duration: Math.round(tool.stats.duration.averageMs!), count: tool.stats.duration.samples }) : t("resources.evidence.durationMissing") })}</small></button>)}</div></section>}
       <section className="resource-detail-section"><header><h3>{route.tool ? t("resources.toolEvidence", { name: route.tool }) : t("resources.evidence.title")}</h3>{route.tool && <button className="text-button" onClick={() => update({ tool: "", evidencePage: 1 })}>{t("resources.evidence.allTools")}</button>}</header>
-        {evidenceLoading ? <div role="status" className="resource-loading">{t("resources.loading.evidence")}</div> : evidenceError ? <div role="alert" className="resource-alert"><ResourceErrorText error={evidenceError} /></div> : evidence?.events.length ? <>
+        {evidenceLoading && !evidence ? <div role="status" className="resource-loading">{t("resources.loading.evidence")}</div> : evidence?.events.length ? <>
           <div className="resource-evidence">{evidence.events.map(event => <a key={event.id} href={`#sessions?${new URLSearchParams({ id: event.sessionId, mode: "trace", message: event.messageId, branch: "all" })}`} onClick={click => { if (!click.metaKey && !click.ctrlKey && !click.shiftKey && click.button === 0) { click.preventDefault(); savedScroll.current = listScroll.current?.scrollTop ?? 0; savedDetailScroll.current = (compact ? detailDialogScroll.current : detailScroll.current)?.scrollTop ?? 0; returnFromEvidence.current = true; onSession({ sessionId: event.sessionId, messageId: event.messageId }); } }}>
             <div><strong>{event.tool ?? t(evidenceNames[event.kind])}</strong><span className={`resource-result is-${event.status}`}>{t(resultNames[event.status])}</span><ArrowSquareOut size={14} /></div><span>{t(evidenceNames[event.kind])} · {dateLabel(event.occurredAt)}</span>{event.pairing === "ambiguous" && <span className="resource-result is-unknown">{t("resources.evidence.pairingAmbiguous")}</span>}
           </a>)}</div><ResourcePagination page={evidence.page} total={evidence.total} pageSize={evidence.pageSize} label={t("resources.evidence.title")} onChange={page => update({ evidencePage: page })} />
@@ -713,6 +731,7 @@ export default function Resources({ active, onSession, historyRevision = 0 }: { 
       <dl className="resource-facts"><dt>{t("resources.facts.executionTime")}</dt><dd>{dateLabel(selectedOperation.createdAt)}</dd><dt>{t("resources.facts.scope")}</dt><dd>{selectedOperation.resource.scope === "user" ? t("resources.scope.user") : selectedOperation.resource.project ?? t("resources.project.unknown")}</dd><dt>{t("resources.facts.localState")}</dt><dd>{selectedOperation.localState === "changed" ? t("resources.localState.changed") : selectedOperation.localState === "partial" ? t("resources.localState.partial") : t("resources.localState.unchanged")}</dd></dl>
       {selectedOperation.archiveId && ["disable", "standby", "trash"].includes(selectedOperation.action) && <button className="button" onClick={() => update({ tab: selectedOperation.action === "disable" ? "disabled" : "trash", q: selectedOperation.name, id: "", page: 1 }, true)}>{t("resources.archive.viewRecovery")}</button>}
     </> : <ResourceEmpty>{t("resources.detail.empty")}</ResourceEmpty>}
+    </div>
   </>;
 
   return <div className="resources-shell" aria-label={t("resources.title")} data-compact={compact}>
@@ -771,7 +790,7 @@ export default function Resources({ active, onSession, historyRevision = 0 }: { 
         {!historyView && route.tab !== "operations" && archives && <ResourcePagination page={archives.page} total={archives.total} pageSize={archives.pageSize} label={t("resources.archive.records")} onPageSizeChange={pageSize => filter({ pageSize })} onChange={pageChange} />}
       </main>
       <aside className={`resource-details${detailsCollapsed ? " panel-collapsed" : ""}`} aria-label={t("resources.detail.title")}>
-        <div className="pane-heading"><span>{t("resources.detail.title")}</span><button className="icon-button panel-toggle" aria-label={detailsCollapsed ? t("resources.detail.expand") : t("resources.detail.collapse")} aria-expanded={!detailsCollapsed} aria-controls="resource-detail-content" onClick={() => setDetailsCollapsed(value => !value)}>{detailsCollapsed ? <CaretLeft size={17} /> : <CaretRight size={17} />}</button></div>
+        <div className="pane-heading"><span className="resource-detail-label">{t("resources.detail.title")}<span className="resource-detail-progress" role={detailLoading && hasDetailData ? "status" : undefined} aria-label={detailLoading && hasDetailData ? t("resources.loading.detail") : undefined}>{detailLoading && hasDetailData && <ArrowClockwise size={14} className="spinning" aria-hidden="true" />}</span></span><button className="icon-button panel-toggle" aria-label={detailsCollapsed ? t("resources.detail.expand") : t("resources.detail.collapse")} aria-expanded={!detailsCollapsed} aria-controls="resource-detail-content" onClick={() => setDetailsCollapsed(value => !value)}>{detailsCollapsed ? <CaretLeft size={17} /> : <CaretRight size={17} />}</button></div>
         <div className="resource-detail-scroll" ref={detailScroll} id="resource-detail-content" hidden={detailsCollapsed}>{!compact && detail}</div>
       </aside>
     </ResizableWorkspace>

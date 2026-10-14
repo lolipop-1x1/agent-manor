@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent, type PointerEvent, type ReactNode } from "react";
+import { memo, useEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent, type PointerEvent, type ReactNode } from "react";
 import { ArrowsIn, ArrowsOut, CaretRight, Crosshair, Folder, Minus, Plus, Resize } from "@phosphor-icons/react";
 import { t, useI18n } from "../../shared/i18n";
 import { HelpPopover } from "../../shared/ui/HelpPopover";
@@ -13,11 +13,16 @@ const position = (rect: MapRect): CSSProperties => ({ left: rect.x, top: rect.y,
 const valueLabel = (file: FileCoverage, metric: Metric) => metric === "activity" ? t("codeMap.activity.calls", { count: file.activityCount }) : percent(metricValue(file, metric), file.lineCount);
 const fileLabel = (file: FileCoverage, metric: Metric) => t("codeMap.map.fileLabel", { path: file.path, metric: metricNames[metric], value: valueLabel(file, metric), lines: fmt(file.lineCount) });
 
-export function CodeMap({ files, directory, metric, selected, browse, select, heading, legend, scopeKey = directory }: {
+interface CodeMapProps {
   files: FileCoverage[]; directory: string; metric: Metric; selected: string | null;
   browse: (directory: string) => void; select: (path: string) => void; heading: ReactNode; legend: ReactNode; scopeKey?: string;
-}) {
+}
+export function CodeMap(props: CodeMapProps) {
   const { language } = useI18n();
+  // 仅传递绘制所需的语言，其他偏好更新不重绘大型结果。
+  return <MapCanvas {...props} language={language} />;
+}
+const MapCanvas = memo(function MapCanvas({ files, directory, metric, selected, browse, select, heading, legend, scopeKey = directory, language }: CodeMapProps & { language: string }) {
   const explorer = useRef<HTMLElement>(null);
   const host = useRef<HTMLDivElement>(null);
   const layout = useMemo(() => layoutMap(files, directory), [files, directory]);
@@ -103,6 +108,7 @@ export function CodeMap({ files, directory, metric, selected, browse, select, he
     return rect && rect.width >= 80 && rect.height >= 35
       ? [{ node, rect: { x: rect.x + 5, y: rect.y + 3, width: rect.width - 10, height: 22 } }] : [];
   }), [layout, camera, size]);
+  const headingRects = useMemo(() => headings.map(heading => heading.rect), [headings]);
   const localPoint = (event: { clientX: number; clientY: number }) => {
     const bounds = host.current!.getBoundingClientRect();
     return { x: event.clientX - bounds.left, y: event.clientY - bounds.top };
@@ -200,7 +206,7 @@ export function CodeMap({ files, directory, metric, selected, browse, select, he
       {readable.map(({ tile, visible: rect }) => {
         const file = tile.file;
         const near = metric === "edit" ? file.editNearLines : file.readNearLines;
-        const labels = fileLabelRect(rect, headings.map(heading => heading.rect));
+        const labels = fileLabelRect(rect, headingRects);
         const nameVisible = labels.width >= 37 && labels.height >= 18;
         const metricVisible = labels.width >= 67 && labels.height >= 54;
         const roomy = labels.width >= 102 && labels.height >= 78;
@@ -216,4 +222,4 @@ export function CodeMap({ files, directory, metric, selected, browse, select, he
     </div>
     {legend}
   </section>;
-}
+});

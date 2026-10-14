@@ -6,7 +6,7 @@ import { SessionTurnNavigation } from "./SessionTurnNavigation";
 import { CopyButton } from "./SessionCopy";
 import { collectDialogue, dialogueMarkdown } from "./session-export";
 import { readSessionFilters, writeSessionFilters } from "./session-address";
-import { CaretDown, CaretLeft, CaretRight, ChatCircle, DownloadSimple, MagnifyingGlass, MapTrifold, X } from "@phosphor-icons/react";
+import { ArrowClockwise, CaretDown, CaretLeft, CaretRight, ChatCircle, DownloadSimple, MagnifyingGlass, MapTrifold, X } from "@phosphor-icons/react";
 import * as Tooltip from "@radix-ui/react-tooltip";
 import * as Popover from "@radix-ui/react-popover";
 import type { Client } from "../../../src/clients";
@@ -26,7 +26,6 @@ import { availableClientOptions } from "../../shared/ui/client-options";
 import { ProjectPicker } from "../../shared/ui/ProjectPicker";
 import { DatePicker } from "../../shared/ui/DatePicker";
 import { useHistoryRevision } from "../../shared/refresh/useHistoryRefresh";
-import { useVisiblePolling } from "../../shared/refresh/useVisiblePolling";
 import { completeTurnMarkdown } from "./session-message-content";
 import { useContinuousReading } from "./useContinuousReading";
 import "./session.css";
@@ -113,12 +112,12 @@ function SessionIndexGaps({ active, version }: { active: boolean; version?: stri
   </details>;
 }
 
-export default function Sessions({ active, target, onMap, autoRefreshError, historyRevision = 0, historyUpdating = false, onHistoryRefresh, onHistoryStatus }: {
-  active: boolean; target?: Target; onMap: (path?: string, project?: string, session?: SessionSummary) => void; autoRefreshError?: Error | null;
-  historyRevision?: number; historyUpdating?: boolean; onHistoryRefresh?: (options?: SessionRefreshOptions) => void;
+export default function Sessions({ active, target, onMap, onHistoryReading, historyRevision = 0, historyUpdating = false, onHistoryRefresh, onHistoryStatus }: {
+  active: boolean; target?: Target; onMap: (path?: string, project?: string, session?: SessionSummary) => void;
+  historyRevision?: number; onHistoryReading?: (reading: boolean) => void; historyUpdating?: boolean; onHistoryRefresh?: (options?: SessionRefreshOptions) => void;
   onHistoryStatus?: (status: SessionIndexSummary) => void;
 }) {
-  const { refreshIntervals } = useI18n();
+  useI18n();
   const initialFilters = useRef(readSessionFilters(location.hash)).current;
   const [status, setStatus] = useState<SessionIndexSummary | null>(null);
   const [statusReload, setStatusReload] = useState(-1);
@@ -230,7 +229,7 @@ export default function Sessions({ active, target, onMap, autoRefreshError, hist
   const pageScroll = useRef(true);
   const evidenceRequest = useRef<AbortController | undefined>(undefined);
   const releasedTarget = useRef<Target | undefined>(undefined);
-  useHistoryRevision(active, historyRevision, () => { releasedTarget.current = target; setReload(value => value + 1); });
+  useHistoryRevision(active, historyRevision, () => { releasedTarget.current = target; setReload(value => value + 1); }, statusLoading || listLoading || globalSearchLoading || messageLoading || profileLoading || timelineLoading, onHistoryReading);
   useEffect(() => () => evidenceRequest.current?.abort(), []);
   useEffect(() => { setTraceSelection(focusMessageId); }, [focusMessageId, selectedSessionId, messagePage]);
 
@@ -267,12 +266,6 @@ export default function Sessions({ active, target, onMap, autoRefreshError, hist
   useEffect(() => {
     if (active && !clientCandidatesPending.current && status?.clients && client !== "all" && !status.clients.includes(client)) setClient("all");
   }, [active, status?.version, status?.clients, client]);
-  useVisiblePolling(active && refreshIntervals.sessions > 0, 5000, async signal => {
-    const result = await request<SessionIndexSummary>("/sessions/status?summary=true", { signal });
-    if (signal.aborted) return;
-    setStatus(current => current && current.version === result.version && current.stale === result.stale && current.job?.id === result.job?.id && current.job?.status === result.job?.status ? current : result);
-    onHistoryStatus?.(result);
-  });
 
   const invalidDates = !!from && !!to && from > to;
   // 先确认本次加载的结果版本，避免无版本请求被随后到达的状态响应取消并重复计算。
@@ -668,7 +661,7 @@ export default function Sessions({ active, target, onMap, autoRefreshError, hist
     {compactPanel && <button className="session-mobile-backdrop" aria-label={t("sessions.reading.return")} onClick={() => setCompactPanel(null)} /> }
     <ResizableWorkspace variant="sessions" sidebarCollapsed={leftCollapsed} detailsCollapsed={rightCollapsed} semantics={workspaceSessionSemantics()}>
       <aside className={`sidebar session-sidebar${leftCollapsed ? " panel-collapsed" : ""}`} aria-label={t("sessions.list.title")}>
-        <div className="pane-heading"><span>{t("sessions.list.library")}</span><div className="section-actions"><button className="icon-button panel-toggle" aria-label={leftCollapsed ? t("sessions.list.expand") : t("sessions.list.collapse")} aria-expanded={!leftCollapsed} aria-controls="session-list-content" onClick={() => { setLeftCollapsed(value => !value); setCompactPanel(null); }}>{leftCollapsed ? <CaretRight size={16} /> : <CaretLeft size={16} />}</button></div></div>
+        <div className="pane-heading"><span className="session-pane-label">{t("sessions.list.library")}<span className="session-pane-progress" role={listLoading && sessionList ? "status" : undefined} aria-label={listLoading && sessionList ? t("sessions.list.loading") : undefined}>{listLoading && sessionList && <ArrowClockwise size={14} className="is-spinning" aria-hidden="true" />}</span></span><div className="section-actions"><button className="icon-button panel-toggle" aria-label={leftCollapsed ? t("sessions.list.expand") : t("sessions.list.collapse")} aria-expanded={!leftCollapsed} aria-controls="session-list-content" onClick={() => { setLeftCollapsed(value => !value); setCompactPanel(null); }}>{leftCollapsed ? <CaretRight size={16} /> : <CaretLeft size={16} />}</button></div></div>
         <div id="session-list-content" className="sidebar-content" hidden={leftCollapsed}>
           <label className="session-search-field"><MagnifyingGlass size={16} aria-hidden="true" /><span className="sr-only">{t("sessions.search.globalLabel")}</span><input aria-label={t("sessions.search.globalLabel")} value={globalQuery} onChange={event => setGlobalQuery(event.target.value)} placeholder={t("sessions.search.globalPlaceholder")} />{globalQuery && <button type="button" aria-label={t("sessions.search.clear")} onClick={() => setGlobalQuery("")}>×</button>}</label>
           <div className="session-filters">
@@ -690,9 +683,9 @@ export default function Sessions({ active, target, onMap, autoRefreshError, hist
           </div>
 
           {status?.stale && <Notice>{t("sessions.status.stale")}</Notice>}
-          {(statusError || autoRefreshError) && <Notice danger action={statusError ? <button className="text-button" onClick={() => setReload(value => value + 1)}>{t("common.retry")}</button> : undefined}><SessionError error={statusError ?? autoRefreshError!} /></Notice>}
+          {statusError && <Notice danger action={<button className="text-button" onClick={() => setReload(value => value + 1)}>{t("common.retry")}</button>}><SessionError error={statusError} /></Notice>}
           {statusLoading && !status && <p className="muted" role="status">{t("sessions.status.loading")}</p>}
-          {listLoading && <p className="session-list-loading" role="status">{t("sessions.list.loading")}</p>}
+          {listLoading && !sessionList && <p className="session-list-loading" role="status">{t("sessions.list.loading")}</p>}
           {listError && <Notice danger action={<button className="text-button" onClick={() => setReload(value => value + 1)}>{t("common.retry")}</button>}><SessionError error={listError} /></Notice>}
           <div className="session-list" aria-label={t("sessions.list.results")}>
             {globalSearchError && <Notice danger><SessionError error={globalSearchError} /></Notice>}
@@ -729,6 +722,7 @@ export default function Sessions({ active, target, onMap, autoRefreshError, hist
                 </div>
               </div>
               <div className="session-heading-actions">
+                <span className="session-pane-progress" role={messageLoading && selectedMessageData ? "status" : undefined} aria-label={messageLoading && selectedMessageData ? t("sessions.reading.loadingMessages", { mode: t(modeLabels[mode]) }) : undefined}>{messageLoading && selectedMessageData && <ArrowClockwise size={14} className="is-spinning" aria-hidden="true" />}</span>
                 <button className="button subtle session-map-button" onClick={() => mapForSession(undefined, selectedSession?.project)} disabled={!selectedSession?.project}><MapTrifold size={16} />{t("sessions.reading.map")}</button>
                 <Tooltip.Root><Tooltip.Trigger asChild>
                   <button className="button session-export-button" aria-label={t(exporting ? "sessions.export.loading" : "sessions.export.branch")} disabled={!selectedSession || exporting} onClick={() => void exportDialogue()}><DownloadSimple size={15} aria-hidden="true" /><span className="session-export-label">{t(exporting ? "sessions.export.loading" : "sessions.export.short")}</span></button>
@@ -790,7 +784,7 @@ export default function Sessions({ active, target, onMap, autoRefreshError, hist
           {anchorMissing && <Notice>{t("sessions.reading.anchorMissing")}</Notice>}
           {selectedSessionId ? <>
             {messageError && <Notice danger action={<button className="text-button" onClick={() => setMessageRetry(value => value + 1)}>{t("common.retry")}</button>}><SessionError error={messageError} /></Notice>}
-            {messageLoading && <p className="session-message-loading" role="status">{t("sessions.reading.loadingMessages", { mode: t(modeLabels[mode]) })}</p>}
+            {messageLoading && !selectedMessageData && <p className="session-message-loading" role="status">{t("sessions.reading.loadingMessages", { mode: t(modeLabels[mode]) })}</p>}
             {mode !== "trace" && continuous.earlier && <div className="session-reading-boundary" data-direction="earlier">
               {continuous.error && continuous.errorDirection === "earlier" && <span role="alert"><SessionError error={continuous.error} /></span>}
               <button className="text-button" disabled={!!continuous.loading || messageLoading} onClick={() => void continuous.load("earlier")}>{t(continuous.error && continuous.errorDirection === "earlier" ? "common.retry" : "sessions.reading.loadEarlier")}</button>

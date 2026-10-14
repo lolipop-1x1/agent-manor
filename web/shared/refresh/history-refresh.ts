@@ -13,8 +13,9 @@ export function historyJobCanUpdate(previous: SessionJob | undefined, next: Sess
   return !historyJobActive(previous);
 }
 
-/** 仅本次发起或实际观察到运行的任务完成时通知页面，旧完成记录不会重复触发。 */
-export function historyJobCompleted(previous: SessionJob | undefined, next: SessionJob, notifiedId?: string, initiated = false): boolean {
+/** 自动检查仅联动新版本；手动同步允许主动重读，旧完成记录不会重复通知。 */
+export function historyJobShouldReload(version: string | undefined, next: SessionJob, notifiedId?: string, manual = false, previous?: SessionJob): boolean {
+  const firstPublication = version === undefined && previous?.id === next.id && historyJobActive(previous);
   return next.status === "complete" && next.id !== notifiedId
-    && (initiated || previous?.id === next.id && historyJobActive(previous));
+    && (manual || firstPublication || version !== undefined && next.version !== undefined && version !== next.version);
 }

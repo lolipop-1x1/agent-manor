@@ -102,6 +102,8 @@
 .resource-details.panel-collapsed { padding: 18px 5px 0; }
 .resource-details.panel-collapsed .pane-heading > span { display: none; }
 .resource-details .pane-heading { flex-shrink: 0; margin-bottom: 15px; }
+.resource-detail-label { display: inline-flex; align-items: center; gap: 8px; }
+.resource-detail-progress { display: inline-flex; width: 14px; height: 14px; }
 .resource-detail-scroll { min-height: 0; flex: 1; overflow: auto; overscroll-behavior: contain; scrollbar-width: thin; padding-bottom: 20px; }
 .resource-detail-scroll[hidden] { display: none; }
 .resource-detail-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; margin-bottom: 13px; }

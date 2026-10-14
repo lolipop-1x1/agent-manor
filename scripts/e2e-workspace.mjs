@@ -39,7 +39,7 @@ try {
   }
   const status = await command(["status"]);
   await writePreferences(env.AGENT_MANOR_HOME, "zh-CN");
-  await browser(["open", `http://127.0.0.1:${status.instance.port}`, "--headed", "--browser=chrome"]);
+  await browser(["open", `http://127.0.0.1:${status.instance.port}/#map`, "--headed", "--browser=chrome"]);
   const code = async page => {
     page.setDefaultTimeout(30_000);
     const errors = [];
@@ -141,7 +141,12 @@ try {
     await page.keyboard.press("Enter");
     for (const viewport of [{ width: 1920, height: 1080 }, { width: 900, height: 900 }, { width: 390, height: 844 }]) {
       await page.setViewportSize(viewport);
-      if (viewport.width === 1920) ensure(await page.getByRole("region", { name: "代码地图视图", exact: true }).locator(".workspace").evaluate(element => element.getBoundingClientRect().width) === 1920, "大屏地图仍被最大宽度限制");
+      await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+      if (viewport.width === 1920) {
+        const width = await page.getByRole("region", { name: "代码地图视图", exact: true }).locator(".workspace").evaluate(element => element.getBoundingClientRect().width);
+        const available = await page.evaluate(() => document.documentElement.clientWidth);
+        ensure(Math.abs(width - available) < 1, `大屏地图仍被最大宽度限制：${width} / ${available}`);
+      }
       await toggleTheme();
       const collapseNavigation = page.getByRole("button", { name: /^收起仓库导航/ });
       if (!await collapseNavigation.isVisible()) await page.getByRole("button", { name: /^展开仓库导航/ }).click();

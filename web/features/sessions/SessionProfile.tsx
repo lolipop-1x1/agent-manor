@@ -1,7 +1,7 @@
 import { clientLabel, getLanguage, isMessageDescriptorKnown, messageText, t, useI18n } from "../../shared/i18n";
 import { formatDateTime, formatNumber, formatPercent } from "../../../src/i18n";
 import { useEffect, useId, useMemo, useRef, useState } from "react";
-import { CaretLeft, CaretRight, Crosshair } from "@phosphor-icons/react";
+import { ArrowClockwise, CaretLeft, CaretRight, Crosshair } from "@phosphor-icons/react";
 import type { SessionProfile, SessionSummary, SessionTimelineEvent } from "../../../src/session-contracts";
 import type { SessionCostSummary } from "../../../src/usage-contracts";
 import { sessionDisplayTitle, displayRecorded, sessionResourceName, sessionParams, usageAxis, usageIndexAt, usageSegments, type EvidenceTarget } from "./session-model";
@@ -184,7 +184,7 @@ export function SessionProfilePane({ active, profile, loading, error, includeChi
       </div>;
   };
   return <aside className={`evidence-pane session-profile${collapsed ? " panel-collapsed" : ""}`} aria-label={t("sessions.profile.title")}>
-    <div className="pane-heading"><span>{t("sessions.profile.title")}</span><div className="session-profile-heading-actions">
+    <div className="pane-heading"><span className="session-pane-label">{t("sessions.profile.title")}<span className="session-pane-progress" role={(loading || usageLoading) && profile ? "status" : undefined} aria-label={(loading || usageLoading) && profile ? t("sessions.profile.loading") : undefined}>{(loading || usageLoading) && profile && <ArrowClockwise size={14} className="is-spinning" aria-hidden="true" />}</span></span><div className="session-profile-heading-actions">
       <div className="session-profile-scope" role="group" aria-label={t("sessions.profile.scope")} hidden={collapsed}>
         <button aria-pressed={!includeChildren} className={!includeChildren ? "is-selected" : ""} onClick={() => setIncludeChildren(false)}>{t("sessions.profile.self")}</button>
         <button aria-pressed={includeChildren} className={includeChildren ? "is-selected" : ""} onClick={() => setIncludeChildren(true)}>{t("sessions.profile.withChildren")}</button>
@@ -195,7 +195,7 @@ export function SessionProfilePane({ active, profile, loading, error, includeChi
       {([["overview", "sessions.profile.overview"], ...(hasCalls ? [["calls", "sessions.profile.calls"]] : []), ...(hasUsage ? [["usage", "sessions.profile.usage"]] : [])] as ["overview" | "calls" | "usage", string][]).map(([value, label]) => <button key={value} role="tab" aria-selected={visibleTab === value} aria-controls="session-profile-content" onClick={() => setTab(value)}>{t(label)}</button>)}
     </div>
     <div id="session-profile-content" className="session-profile-content" data-version={profile?.version} hidden={collapsed}>
-      {loading && <p className="muted" role="status">{t("sessions.profile.loading")}</p>}
+      {loading && !profile && <p className="muted" role="status">{t("sessions.profile.loading")}</p>}
       {error && <Notice danger action={<button className="text-button" onClick={onRetry}>{t("common.retry")}</button>}><SessionError error={error} /></Notice>}
       {!loading && !error && !profile && <div className="session-profile-empty"><h3>{t("sessions.profile.select")}</h3></div>}
       {profile && <>
@@ -246,7 +246,7 @@ export function SessionProfilePane({ active, profile, loading, error, includeChi
         {visibleTab === "usage" && profile.usage.requests > 0 && <section className="session-profile-section"><div className="session-section-heading"><h3>{t("sessions.profile.trend")}</h3><HelpPopover label={t("sessions.profile.chartHelp")}>
           <p>{t("sessions.profile.chartCoordinatesHelp")}</p><p>{t("sessions.profile.chartLocateHelp")}</p>
         </HelpPopover></div>
-          {usageLoading && <p role="status">{t("sessions.profile.loading")}</p>}
+          {usageLoading && !visibleUsage && <p role="status">{t("sessions.profile.loading")}</p>}
           {usageError && <Notice danger action={<button className="text-button" onClick={() => setUsageRetry(value => value + 1)}>{t("common.retry")}</button>}><SessionError error={usageError} /></Notice>}
           {visibleUsage && <>
           {visibleUsage.steps.filter(step => usageSeries.some(([key]) => step[key] !== undefined)).length > 1 && <UsageChart profile={visibleUsage} onFocusStep={onFocusStep} />}

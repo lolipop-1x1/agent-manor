@@ -216,7 +216,7 @@ try {
     await page.locator(".resource-detail-heading .resource-favorite").click();
     await (await updated).finished();
     await page.waitForFunction(()=>!document.querySelector('.resource-list-scroll[aria-busy="true"]'));
-    expect(await page.locator('.resource-attention-filters button strong').innerText()==="1","其他分页的详情收藏计数没有更新");
+    await page.waitForFunction(()=>document.querySelector('.resource-attention-filters button strong')?.textContent==='1');
     expect(requests.length===2&&requests.filter(request=>request.method==="POST").length===1,"其他分页收藏重取了详情或证据");
     expect(await detail.evaluate(element=>element.isConnected)&&await evidence.evaluate(element=>element.isConnected),"其他分页收藏卸载了详情或证据");
     page.off("request",listener);
@@ -322,7 +322,7 @@ try {
     await page.getByRole("option",{name:"Codex",exact:true}).focus(); await page.keyboard.press("Enter");
     expect((await picker.innerText()).includes("Codex"),"键盘选择未生效");
     await picker.click(); await page.keyboard.press("Escape");
-    expect(await picker.evaluate(element=>element===document.activeElement),"Escape未恢复焦点");
+    await page.waitForFunction(()=>document.activeElement?.getAttribute("aria-label")==="资源Agent");
   `);
   await step("日期选择与清空、项目搜索", `
     ${select("资源使用时间", "自定义日期")}
@@ -371,7 +371,7 @@ try {
     expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1&&document.documentElement.scrollHeight<=innerHeight+1),"资源页面溢出视口");
     ${screenshot("local-list-light.png")}
     await page.getByRole('button',{name:'外观',exact:true}).click(); await page.getByRole('combobox',{name:'显示模式',exact:true}).click(); await page.getByRole('option',{name:'深色',exact:true}).click(); await page.keyboard.press('Escape');
-    expect(await page.evaluate(()=>document.documentElement.dataset.theme)==="dark","深色主题未生效");
+    await page.waitForFunction(()=>document.documentElement.dataset.theme==="dark");
     ${screenshot("local-list-dark.png")}
     await page.getByRole('button',{name:'外观',exact:true}).click(); await page.getByRole('combobox',{name:'显示模式',exact:true}).click(); await page.getByRole('option',{name:'明亮',exact:true}).click(); await page.keyboard.press('Escape');
   `);
@@ -953,7 +953,7 @@ try {
     const hash=await page.evaluate(()=>location.hash);
     const trigger=row.getByRole("button",{name:"管理guide",exact:true}); await trigger.click();
     const manage=page.getByRole("dialog",{name:"管理具体入口",exact:true}); await manage.waitFor();
-    expect(await manage.locator('.resource-management-body').count()>1,"总览管理未列具体本体");
+    await page.waitForFunction(()=>document.querySelectorAll('[role="dialog"] .resource-management-body').length>1);
     expect((await manage.innerText()).includes('Codex')&&(await manage.innerText()).includes(${JSON.stringify(fixture.guide)}),"总览未显示实际路径与Agent");
     expect(await manage.getByRole("button",{name:"预览停用guide的Codex入口",exact:true}).count()>0,"总览管理缺少具体入口动作");
     expect(await manage.getByRole("button",{name:/备用/}).count()===0,"仍提供备用操作");
