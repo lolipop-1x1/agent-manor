@@ -37,7 +37,7 @@
     "preview:site": "vite preview --config site/vite.config.ts",
     "check:site": "tsc -p tsconfig.site.json",
     "capture:site": "npm run build && node scripts/capture-site-previews.mjs",
-    "test:site": "node --import tsx --test tests/site-tea.test.ts",
+    "test:site": "node --import tsx --test tests/site-*.test.ts",
     "test:site:e2e": "node scripts/e2e-site.mjs",
     "check": "npm run check:i18n && npm run check:server && npm run check:web",
     "check:server": "tsc -p tsconfig.server.json --noEmit",

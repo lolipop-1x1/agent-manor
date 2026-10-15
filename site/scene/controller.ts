@@ -1,6 +1,7 @@
 import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { createEstate } from "./estate";
+import { createLandscape } from "./landscape";
 import { createTeaScene } from "./tea";
 
 export type SceneFeature = "overview" | "sessions" | "code-map" | "resources";
@@ -20,7 +21,7 @@ export interface ManorController {
   dispose(): void;
 }
 interface CameraPose { position: THREE.Vector3; target: THREE.Vector3; zoom: number; offset: number }
-const estatePose = (): CameraPose => ({ position: new THREE.Vector3(32, 28, 40), target: new THREE.Vector3(0, 2, 1), zoom: 1, offset: .14 });
+const estatePose = (): CameraPose => ({ position: new THREE.Vector3(32, 28, 40), target: new THREE.Vector3(0, 2, 1), zoom: .92, offset: .14 });
 const teaPose = (): CameraPose => ({ position: new THREE.Vector3(17, 11.5, 20), target: new THREE.Vector3(5.6, 1.35, 5.7), zoom: 2.7, offset: .14 });
 
 export function createManorController(canvas: HTMLCanvasElement, host: HTMLElement, callbacks: Callbacks): ManorController {
@@ -32,6 +33,8 @@ export function createManorController(canvas: HTMLCanvasElement, host: HTMLEleme
   renderer.toneMappingExposure = 1.18;
   renderer.setClearColor(0xf6f4ed, 0);
   const scene = new THREE.Scene();
+  scene.fog = new THREE.Fog(0xf0f1e7, 68, 112);
+  scene.add(createLandscape());
   scene.add(new THREE.HemisphereLight(0xfffbed, 0x869881, 2.3));
   const sun = new THREE.DirectionalLight(0xffedcd, 3.1);
   sun.position.set(-22, 35, 23);
@@ -45,11 +48,6 @@ export function createManorController(canvas: HTMLCanvasElement, host: HTMLEleme
   const fill = new THREE.DirectionalLight(0xc5def7, .65);
   fill.position.set(20, 14, -20);
   scene.add(fill);
-  const ground = new THREE.Mesh(new THREE.PlaneGeometry(200, 200), new THREE.ShadowMaterial({ color: 0x546343, opacity: .16 }));
-  ground.rotation.x = -Math.PI / 2;
-  ground.position.y = -.48;
-  ground.receiveShadow = true;
-  scene.add(ground);
   const estate = createEstate();
   const tea = createTeaScene();
   tea.group.position.set(5.8, .35, 5.7);
@@ -58,6 +56,7 @@ export function createManorController(canvas: HTMLCanvasElement, host: HTMLEleme
   const camera = new THREE.OrthographicCamera(-30, 30, 16.5, -16.5, .1, 180);
   const initial = estatePose();
   camera.position.copy(initial.position);
+  camera.zoom = initial.zoom;
   const controls = new OrbitControls(camera, canvas);
   controls.target.copy(initial.target);
   controls.enablePan = false;

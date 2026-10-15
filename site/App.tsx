@@ -111,7 +111,7 @@ export function App() {
     </header>
 
     <main>
-      <section id="manor" className={`hero${sceneFailed ? " scene-unavailable" : ""}`} ref={heroRef}>
+      <section id="manor" className={`hero${sceneFailed ? " scene-unavailable" : ""}`} ref={heroRef} data-view={installationOpen ? "installation" : view}>
         <div className="scene-stage" aria-label={t("site.scene.label")}>
           {!sceneFailed && <ManorScene installationOpen={installationOpen} paused={paused} view={view} resetKey={resetKey}
             language={language} onFeature={showFeature} onReady={onSceneReady} onError={onSceneError} />}

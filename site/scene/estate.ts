@@ -219,7 +219,7 @@ export function createEstate(): {
       for (let iz = 0; iz < nz; iz += 1) {
         box(x + (ix + 0.5) * width / nx - width / 2, 0.4 + height + random() * 0.08,
           z + (iz + 0.5) * depth / nz - depth / 2,
-          width / nx + 0.02, 0.2, depth / nz + 0.02,
+          width / nx - 0.018, 0.2, depth / nz - 0.018,
           random() > 0.6 ? palette.leafLight : palette.leaf, 'foliage');
       }
     }
@@ -235,11 +235,12 @@ export function createEstate(): {
 
   function parterre(x: number, z: number, width: number, depth: number) {
     box(x, 0.39, z, width + 0.2, 0.08, depth + 0.2, palette.stoneShade);
-    box(x, 0.44, z, width, 0.11, depth, palette.grass, 'earth');
+    // 土层收进树篱内部，避免外侧同向表面争用深度。
+    box(x, 0.44, z, width - 0.12, 0.11, depth - 0.12, palette.grass, 'earth');
     hedge(x, z - depth / 2 + 0.22, width, 0.44);
     hedge(x, z + depth / 2 - 0.22, width, 0.44);
-    hedge(x - width / 2 + 0.22, z, 0.44, depth - 0.6);
-    hedge(x + width / 2 - 0.22, z, 0.44, depth - 0.6);
+    hedge(x - width / 2 + 0.22, z, 0.44, depth - 0.88);
+    hedge(x + width / 2 - 0.22, z, 0.44, depth - 0.88);
     for (let i = 0; i < Math.floor(width * depth * 2.7); i += 1) {
       flower(x + (random() - 0.5) * Math.max(0.1, width - 1.2), z + (random() - 0.5) * Math.max(0.1, depth - 1.2));
     }
@@ -261,7 +262,7 @@ export function createEstate(): {
     box(x - 0.22 * scale, 1.7 * scale, z, 0.18 * scale, 0.9 * scale, 0.18 * scale, palette.wood, 'wood', 0, -0.55);
     const blocks = [
       [0, 2.85, 0, 1.5, 1.35, 1.3],
-      [-0.65, 2.4, 0.14, 0.96, 0.95, 1.02],
+      [-0.65, 2.4, 0.17, 0.96, 0.95, 1.02],
       [0.64, 2.65, -0.15, 0.96, 0.94, 1.02],
       [-0.15, 3.6, 0, 0.9, 0.7, 0.95],
       [0.2, 2.57, 0.63, 0.95, 0.94, 0.82],
@@ -282,7 +283,8 @@ export function createEstate(): {
   box(0, -0.12, 0.5, 28, 0.62, 25.5, 0xb79d73, 'earth');
   box(0, 0.17, 0.5, 28.18, 0.14, 25.68, palette.stoneShade);
   box(0, 0.29, 0.5, 27.9, 0.12, 25.4, palette.grass, 'earth');
-  box(0, 0.32, 0.5, 25.7, 0.06, 23.3, palette.paving);
+  // 铺装高于草坪，砖缝中的底板不与草坪顶面重合。
+  box(0, 0.326, 0.5, 25.7, 0.06, 23.3, palette.paving);
   const tileSize = 0.84;
   for (let iz = 0; iz < 27; iz += 1) {
     for (let ix = 0; ix < 30; ix += 1) {
@@ -380,7 +382,8 @@ export function createEstate(): {
       window(x + side * 3.03, 2.05, z, 0.7, 1.3, side * Math.PI / 2);
       window(x + side * 3.03, 4.08, z, 0.7, 1.3, side * Math.PI / 2);
     }
-    roof(x, 5.4, -5.5, 6.61, 6.05, 7);
+    // 瓦片下缘高于檐口顶面，保留真实的几何间隔。
+    roof(x, 5.44, -5.5, 6.61, 6.05, 7);
     for (const dx of [-1.65, 1.65]) dormer(x + dx, 5.99, -2.91);
     chimney(x + side * 1.85, 6.95, -6.6);
 

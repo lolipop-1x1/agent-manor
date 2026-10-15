@@ -15,3 +15,4 @@
 - [01 建筑](issues/01-estate.md)、[02 茶会](issues/02-tea.md)、[03 界面](issues/03-interface.md)、[04 集成](issues/04-integration.md)、[05 验收](issues/05-validation.md) 均已解决。
 - 双轴审查以 c3b1d77143bb5f08a7956d62dfeee3452108b9c8 为基线，初次实现终点 e56610f；审查后的两项问题已修复并通过 11 组完整浏览器回归。
 - 用户追加授权完成后直接推送 main。仓库公开、npm 发布和 Pages 首次上线仍按已确认范围另行处理。
+- [06 领地环境与旋转稳定性](issues/06-landscape-stability.md) 已解决：修复共面表面闪点，扩展围墙外草坪、车道、树林和远景；9 项场景测试及 11 组浏览器回归通过。
