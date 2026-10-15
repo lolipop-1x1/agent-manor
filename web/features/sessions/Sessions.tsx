@@ -1,6 +1,6 @@
 import { clientLabel, getLanguage, isMessageDescriptorKnown, messageText, t, useI18n } from "../../shared/i18n";
 import { formatDateTime, formatNumber } from "../../../src/i18n";
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { SessionSearchGroups, Highlight } from "./SessionSearchGroups";
 import { SessionTurnNavigation } from "./SessionTurnNavigation";
 import { CopyButton } from "./SessionCopy";
@@ -88,6 +88,17 @@ function TurnTimeline({ turn, position, mode, focusMessageId, project, onMap, ex
   </details>;
 }
 
+/** 条件变化时本次渲染直接取第一页，避免 effect 复位前发出旧页查询。 */
+function useScopedPage(scope: string) {
+  const [state, setState] = useState({ scope, page: 1 });
+  if (state.scope !== scope) setState({ scope, page: 1 });
+  const page = state.scope === scope ? state.page : 1;
+  const setPage = useCallback((value: number | ((previous: number) => number)) => {
+    setState(current => ({ scope, page: typeof value === "function" ? value(current.scope === scope ? current.page : 1) : value }));
+  }, [scope]);
+  return [page, setPage] as const;
+}
+
 export default function Sessions({ active, target, onMap, onHistoryReading, historyRevision = 0, historyUpdating = false, onHistoryRefresh, onHistoryStatus }: {
   active: boolean; target?: Target; onMap: (path?: string, project?: string, session?: SessionSummary) => void;
   historyRevision?: number; onHistoryReading?: (reading: boolean) => void; historyUpdating?: boolean; onHistoryRefresh?: (options?: SessionRefreshOptions) => void;
@@ -107,7 +118,6 @@ export default function Sessions({ active, target, onMap, onHistoryReading, hist
   const [globalQuery, setGlobalQuery] = useState(initialFilters.q);
   const [debouncedGlobalQuery, setDebouncedGlobalQuery] = useState(initialFilters.q);
   const [includeProcess, setIncludeProcess] = useState(initialFilters.process);
-  const [listPage, setListPage] = useState(1);
   const [sessionList, setSessionList] = useState<SessionListResult | null>(null);
   const [listLoading, setListLoading] = useState(false);
   const [listError, setListError] = useState<Error | null>(null);
@@ -128,7 +138,6 @@ export default function Sessions({ active, target, onMap, onHistoryReading, hist
   const [messageDataKey, setMessageDataKey] = useState("");
   const [messageLoading, setMessageLoading] = useState(false);
   const [messageError, setMessageError] = useState<Error | null>(null);
-  const [globalSearchPage, setGlobalSearchPage] = useState(1);
   const [globalSearch, setGlobalSearch] = useState<SessionGroupedSearchResult | null>(null);
   const [globalSearchKey, setGlobalSearchKey] = useState("");
   const [globalSearchLoading, setGlobalSearchLoading] = useState(false);
@@ -139,13 +148,16 @@ export default function Sessions({ active, target, onMap, onHistoryReading, hist
   const [localSearchKey, setLocalSearchKey] = useState("");
   const [localSearchLoading, setLocalSearchLoading] = useState(false);
   const [localSearchError, setLocalSearchError] = useState<Error | null>(null);
-  const [localSearchPage, setLocalSearchPage] = useState(1);
   const [profile, setProfile] = useState<SessionProfile | null>(null);
   const [profileLoading, setProfileLoading] = useState(false);
   const [profileError, setProfileError] = useState<Error | null>(null);
   const [includeChildren, setIncludeChildren] = useState(false);
   const [includeSubagents, setIncludeSubagents] = useState(initialFilters.subagents);
   const [executionMode, setExecutionMode] = useState<NonNullable<SessionQuery["executionMode"]>>(initialFilters.execution);
+  const filterScope = JSON.stringify([client, project, from, to, debouncedGlobalQuery, includeProcess, executionMode]);
+  const [listPage, setListPage] = useScopedPage(JSON.stringify([filterScope, includeSubagents]));
+  const [globalSearchPage, setGlobalSearchPage] = useScopedPage(filterScope);
+  const [localSearchPage, setLocalSearchPage] = useScopedPage(JSON.stringify([selectedSessionId, debouncedLocalQuery, includeProcess]));
   const [profileRetry, setProfileRetry] = useState(0);
   const [leftCollapsed, setLeftCollapsed] = useState(false);
   const [rightCollapsed, setRightCollapsed] = useState(false);
@@ -217,8 +229,6 @@ export default function Sessions({ active, target, onMap, onHistoryReading, hist
     const timer = setTimeout(() => setDebouncedLocalQuery(localQuery.trim()), 200);
     return () => clearTimeout(timer);
   }, [localQuery]);
-  useEffect(() => { setListPage(1); setGlobalSearchPage(1); }, [client, project, from, to, debouncedGlobalQuery, includeProcess, includeSubagents, executionMode]);
-  useEffect(() => { setLocalSearchPage(1); }, [selectedSessionId, debouncedLocalQuery, includeProcess]);
 
   const clientCandidatesPending = useRef(false);
   useEffect(() => {
@@ -261,10 +271,10 @@ export default function Sessions({ active, target, onMap, onHistoryReading, hist
     executionMode,
   }), [client, project, from, to, debouncedGlobalQuery, queryKinds, listPage, status?.version, includeSubagents, executionMode]);
 
-  const searchOnly = !!debouncedGlobalQuery && !!selectedSessionId;
+  const searchOnly = !!debouncedGlobalQuery;
   useEffect(() => {
     if (searchOnly) { setListLoading(false); setListError(null); return; }
-    if (!active || !indexReady || invalidDates) return;
+    if (!active || !indexReady || invalidDates || globalQuery.trim() !== debouncedGlobalQuery) return;
     const controller = new AbortController();
     setListLoading(true);
     setListError(null);
@@ -273,7 +283,7 @@ export default function Sessions({ active, target, onMap, onHistoryReading, hist
       .catch(error => { if (!isAborted(error)) setListError(error instanceof Error ? error : new Error(String(error))); })
       .finally(() => { if (!controller.signal.aborted) setListLoading(false); });
     return () => controller.abort();
-  }, [active, indexReady, invalidDates, listQuery, reload, searchOnly]);
+  }, [active, indexReady, invalidDates, listQuery, reload, searchOnly, globalQuery, debouncedGlobalQuery]);
 
   const globalSearchQuery = useMemo(() => sessionParams({
     client: client === "all" ? undefined : client,
@@ -289,25 +299,30 @@ export default function Sessions({ active, target, onMap, onHistoryReading, hist
   }), [client, project, from, to, debouncedGlobalQuery, includeProcess, globalSearchPage, status?.version, executionMode]);
 
   useEffect(() => {
-    if (!active || !indexReady || !debouncedGlobalQuery || invalidDates) { setGlobalSearch(null); setGlobalSearchError(null); return; }
+    if (!active || !indexReady || !debouncedGlobalQuery || invalidDates) { setGlobalSearch(null); setGlobalSearchError(null); setGlobalSearchLoading(false); return; }
+    if (globalQuery.trim() !== debouncedGlobalQuery) return;
     const controller = new AbortController();
     setGlobalSearchLoading(true);
     setGlobalSearchError(null);
     void request<SessionGroupedSearchResult>(`/sessions/search/groups${globalSearchQuery}`, { signal: controller.signal })
-      .then(result => { setGlobalSearch(result); setGlobalSearchKey(globalSearchQuery); })
+      .then(result => { if (controller.signal.aborted) return; setGlobalSearch(result); setGlobalSearchKey(globalSearchQuery); })
       .catch(error => { if (!isAborted(error)) setGlobalSearchError(error instanceof Error ? error : new Error(String(error))); })
       .finally(() => { if (!controller.signal.aborted) setGlobalSearchLoading(false); });
     return () => controller.abort();
-  }, [active, indexReady, debouncedGlobalQuery, globalSearchQuery, invalidDates, reload]);
+  }, [active, indexReady, globalQuery, debouncedGlobalQuery, globalSearchQuery, invalidDates, reload]);
 
+  const matchQuery = useMemo(() => {
+    const params = new URLSearchParams(debouncedGlobalQuery ? globalSearchQuery : listQuery);
+    params.delete("page"); params.delete("pageSize");
+    return `?${params}`;
+  }, [debouncedGlobalQuery, globalSearchQuery, listQuery]);
   useEffect(() => {
-    if (!active || !indexReady || !selectedSessionId || invalidDates) return;
+    if (!active || !indexReady || !selectedSessionId || invalidDates || globalQuery.trim() !== debouncedGlobalQuery) return;
     const controller = new AbortController();
-    const params = debouncedGlobalQuery ? globalSearchQuery : listQuery;
-    void request<{ matches: boolean }>(`/sessions/${encodeURIComponent(selectedSessionId)}/matches${params}`, { signal: controller.signal })
-      .then(result => setInScope(result.matches)).catch(failure => { if (!isAborted(failure)) setInScope(true); });
+    void request<{ matches: boolean }>(`/sessions/${encodeURIComponent(selectedSessionId)}/matches${matchQuery}`, { signal: controller.signal })
+      .then(result => { if (!controller.signal.aborted) setInScope(result.matches); }).catch(failure => { if (!isAborted(failure)) setInScope(true); });
     return () => controller.abort();
-  }, [active, indexReady, selectedSessionId, listQuery, globalSearchQuery, invalidDates]);
+  }, [active, indexReady, selectedSessionId, matchQuery, invalidDates, globalQuery, debouncedGlobalQuery]);
 
   const readingVersion = target !== releasedTarget.current && target?.sessionId === selectedSessionId && target?.version ? target.version : status?.version;
   const messageQuery = useMemo(() => sessionParams({
@@ -419,16 +434,17 @@ export default function Sessions({ active, target, onMap, onHistoryReading, hist
   const localSearchQuery = useMemo(() => sessionParams({ q: debouncedLocalQuery || undefined, kinds: searchKinds(includeProcess),
     sessionId: selectedSessionId, page: localSearchPage, pageSize: 12, version: readingVersion }), [debouncedLocalQuery, includeProcess, selectedSessionId, localSearchPage, readingVersion]);
   useEffect(() => {
-    if (!active || !indexReady || !selectedSessionId || !debouncedLocalQuery) { setLocalSearch(null); setLocalSearchError(null); return; }
+    if (!active || !indexReady || !selectedSessionId || !debouncedLocalQuery) { setLocalSearch(null); setLocalSearchError(null); setLocalSearchLoading(false); return; }
+    if (localQuery.trim() !== debouncedLocalQuery) return;
     const controller = new AbortController();
     setLocalSearchLoading(true);
     setLocalSearchError(null);
     void request<SessionSearchResult>(`/sessions/search${localSearchQuery}`, { signal: controller.signal })
-      .then(result => { setLocalSearch(result); setLocalSearchKey(localSearchQuery); })
+      .then(result => { if (controller.signal.aborted) return; setLocalSearch(result); setLocalSearchKey(localSearchQuery); })
       .catch(error => { if (!isAborted(error)) setLocalSearchError(error instanceof Error ? error : new Error(String(error))); })
       .finally(() => { if (!controller.signal.aborted) setLocalSearchLoading(false); });
     return () => controller.abort();
-  }, [active, indexReady, selectedSessionId, debouncedLocalQuery, localSearchQuery, reload]);
+  }, [active, indexReady, selectedSessionId, localQuery, debouncedLocalQuery, localSearchQuery, reload]);
 
   useEffect(() => {
     if (!target?.sessionId) return;

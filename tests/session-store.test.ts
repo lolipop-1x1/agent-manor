@@ -10,6 +10,7 @@ import Database from "better-sqlite3";
 import type { SessionMessage, SessionSourceMeta, SessionUsage } from "../src/session-contracts.js";
 import { AnalysisStore, StoreError } from "../src/index/store.js";
 import { SessionStore } from "../src/sessions/store.js";
+import { registerSearchFunctions, searchCandidateIndex } from "../src/sessions/search-index.js";
 import { refreshSessions } from "../src/sessions/refresh.js";
 import { isolatedHistoryRoots } from "./helpers/history-roots.js";
 
@@ -175,6 +176,7 @@ test("紧凑消息从 SQL 完整读回，复制缺省、false 与 true 保持各
   assert.equal(store.timeline(id).events[3]?.callId, "call-a");
   assert.equal(store.search({ q: "工具结果正文", kinds: ["tool_result"] }).hits[0]?.messageId, records[4]?.id);
   const database = new Database(path);
+  registerSearchFunctions(database);
   try {
     const rows = database.prepare("SELECT json,copied FROM session_messages ORDER BY ordinal").all() as { json: string; copied: number | null }[];
     for (const row of rows) {
@@ -192,6 +194,7 @@ test("显式消息键在更新、删除空洞、重新插入和 VACUUM 后保持
   pending.sink.message(message(id, 2, { text: "保留搜索词" }));
   pending.flush();
   const database = new Database(path);
+  registerSearchFunctions(database);
   try {
     const key = () => (database.prepare("SELECT message_key AS key FROM session_messages WHERE id='message-2'").get() as { key: number }).key;
     const original = key();
@@ -359,6 +362,7 @@ test("搜索索引保留字面匹配、筛选、分页和短词语义，不保�
   const second = source(store, meta("search-b", { client: "claude", updatedAt: "2026-01-03T00:00:00Z" }), [message("search-b", 0, { text: "防小偷另一个场景" })]);
   store.publish(store.createJob().id, [first, second], []);
   const database = new Database(path);
+  registerSearchFunctions(database);
   try {
     assert.equal(database.prepare("SELECT text FROM session_message_search LIMIT 1").get()?.text, null);
     for (const q of ["防小偷", "甲乙丙丁", "50%_", "\\path", '"Quoted"', "alpha", "😄中文", "防小", "防", "中文隐藏过程", "不存在的关键词"]) {
@@ -422,6 +426,7 @@ test("当前结构后台补索引可中断续建，修改删除及历史版本�
   const first = source(store, meta("migration"), Array.from({ length: 450 }, (_, index) => message("migration", index, { text: `防小偷合成内容 ${index}` })));
   const version = store.publish(store.createJob().id, [first], []);
   const database = new Database(path);
+  registerSearchFunctions(database);
   database.exec(`DROP TRIGGER session_search_insert; DROP TRIGGER session_search_update; DROP TRIGGER session_search_delete;
     DROP TABLE session_message_search; DROP TABLE session_search_state;`);
   const migrated = new SessionStore(path);
@@ -450,6 +455,7 @@ test("后台补搜索索引与主连接登记任务并发时不会发生读事�
     message("concurrent-search", index, { text: "合成并发索引内容".repeat(20) })));
   store.publish(store.createJob().id, [current], []);
   const database = new Database(path);
+  registerSearchFunctions(database);
   database.exec(`DROP TRIGGER session_search_insert; DROP TRIGGER session_search_update; DROP TRIGGER session_search_delete;
     DROP TABLE session_message_search; DROP TABLE session_search_state;`);
   const worker = new Worker(`
@@ -563,6 +569,7 @@ test("长会话画像按消息身份排除复制用量，查询不随请求数�
 
 test("独立表共用新索引版本，首次未就绪、发布及失败只读上一完整版本", async () => fixture((store, path) => {
   const database = new Database(path);
+  registerSearchFunctions(database);
   assert.equal(database.pragma("user_version", { simple: true }), 4);
   assert.equal(database.pragma("journal_mode", { simple: true }), "wal");
   database.close();
@@ -859,6 +866,7 @@ test("来源缺失排除新版，前版可比较，GC只留两版，活动与归
   assert.throws(() => store.list({ version: firstVersion }), (error: unknown) => error instanceof StoreError && error.code === "VERSION_NOT_FOUND");
   assert.equal(store.list({ version: secondVersion }).total, 0);
   const database = new Database(path);
+  registerSearchFunctions(database);
   assert.equal((database.prepare("SELECT COUNT(*) AS count FROM session_revisions").get() as { count: number }).count, 0);
   database.close();
 }));
@@ -1301,4 +1309,66 @@ test("问题目录读取有界前缀，保留长技能链接后的问题和技�
   assert.equal(directory.turns[1]?.question, skill.slice(0, 4096));
   assert.deepEqual(directory.turns.map(turn => turn.position), [1, 2]);
   assert.equal(store.messages(id, { mode: "full", maxTextChars: 10000 }).messages[1]?.text, skill);
+}));
+
+
+test("单字双字候选与扫描保持完整结果，计数、分页、存在性及旧版本一致", async () => fixture(store => {
+  const texts = ["事务与锁", "事与务分开", "你好 hello GO go", "的的 aA aa é É", "🔒🔑 😀", "50%_ \\ /", "ab\0事务", "é", "重复重复", "İ I ı i"];
+  const first = source(store, meta("characters", { title: "事务标题" }), texts.map((text, ordinal) => message("characters", ordinal, { text, kind: ordinal % 2 ? "assistant" : "user" })));
+  const other = source(store, meta("characters-other", { client: "claude" }), [message("characters-other", 0, { text: "事务", kind: "tool_result" })]);
+  const version = store.publish(store.createJob().id, [first, other], []);
+  const database = new Database(store.dbPath);
+  try {
+    for (const q of ["锁", "事务", "的", "a", "AA", "go", "你好", "🔒", "🔒🔑", "%", "%_", "\\", "/", "é", "É", "é", "重复", "i", "ı", "İ", "不在", "ab\0"])
+      for (const scope of [{}, { kinds: ["tool_result"] as SessionMessage["kind"][] }, { sessionId: "characters", page: 2, pageSize: 1 }, { client: "claude" as const }, { page: 99, pageSize: 1 }]) {
+        const query = { ...scope, q };
+        database.exec("UPDATE session_search_state SET complete=0; UPDATE session_character_search_state SET complete=0");
+        const expected = { records: store.search(query), groups: store.groupedSearch(query), list: store.list(query), matches: store.matches("characters", query) };
+        database.exec("UPDATE session_search_state SET complete=1; UPDATE session_character_search_state SET complete=1");
+        assert.deepEqual({ records: store.search(query), groups: store.groupedSearch(query), list: store.list(query), matches: store.matches("characters", query) }, expected, q);
+      }
+    assert.equal(searchCandidateIndex(database, "锁")?.table, "session_character_search");
+    assert.equal(searchCandidateIndex(database, "事务")?.match, "b4e8bx52a1");
+    assert.equal(store.search({ q: "事务" }).total, 2, "分开的字符和 NUL 后正文不算字面命中");
+    const replacement = source(store, meta("characters"), [message("characters", 0, { text: "新版" })]);
+    store.publish(store.createJob().id, [replacement], []);
+    assert.equal(store.search({ q: "锁" }).total, 0);
+    assert.equal(store.search({ q: "锁", version }).total, 1);
+    assert.deepEqual(store.matches("characters", { q: "新版", page: 99 }), { version: store.currentVersion(), matches: true });
+    assert.equal(store.matches("characters", { client: "claude" }).matches, false);
+  } finally { database.close(); }
+}));
+
+test("字符索引补建可续传，写连接维护增删改，旧只读库回退扫描", async () => fixture(async (store, path) => {
+  const first = source(store, meta("character-migration"), Array.from({ length: 450 }, (_, ordinal) => message("character-migration", ordinal, { text: "事务与锁" })));
+  store.publish(store.createJob().id, [first], []);
+  const expected = store.groupedSearch({ q: "事务" });
+  const database = new Database(path);
+  registerSearchFunctions(database);
+  database.exec("DROP TRIGGER session_character_insert; DROP TRIGGER session_character_update; DROP TRIGGER session_character_delete; DROP TABLE session_character_search; DROP TABLE session_character_search_state");
+  const reader = new SessionStore(path, { readonly: true });
+  const writer = new SessionStore(path);
+  try {
+    assert.deepEqual(reader.groupedSearch({ q: "事务" }), expected);
+    await assert.rejects(writer.prepareSearchIndex(() => { throw new Error("合成中断"); }), /合成中断/);
+    const cursor = (database.prepare("SELECT cursor FROM session_character_search_state").get() as { cursor: number }).cursor;
+    assert.ok(cursor > 0 && cursor < 450);
+    assert.deepEqual(reader.groupedSearch({ q: "事务" }), expected);
+    await writer.prepareSearchIndex();
+    database.prepare("UPDATE session_messages SET text=? WHERE message_key=(SELECT MIN(message_key) FROM session_messages)").run("更新");
+    assert.equal(reader.search({ q: "事务" }).total, 449);
+    assert.equal(reader.search({ q: "更新" }).total, 1);
+    database.prepare("UPDATE session_messages SET kind='tool_result' WHERE message_key=(SELECT MIN(message_key)+1 FROM session_messages)").run();
+    assert.equal(reader.search({ q: "事务" }).total, 448);
+    assert.equal(reader.search({ q: "事务", kinds: ["tool_result"] }).total, 1);
+    const plan = database.prepare("EXPLAIN QUERY PLAN SELECT message_key FROM session_messages WHERE kind IN ('user','assistant')").all() as { detail: string }[];
+    assert.ok(plan.some(row => row.detail.includes("session_message_search_kind")), "类型候选读取紧凑索引");
+    database.prepare("DELETE FROM session_messages WHERE message_key=(SELECT MIN(message_key) FROM session_messages)").run();
+    assert.equal(reader.search({ q: "更新" }).total, 0);
+    const next = source(writer, meta("character-new"), [message("character-new", 0, { text: "新锁" })]);
+    writer.publish(writer.createJob().id, [next], []);
+    writer.publish(writer.createJob().id, [], []);
+    assert.equal(database.prepare("SELECT COUNT(*) AS count FROM session_character_search").get()?.count, database.prepare("SELECT COUNT(*) AS count FROM session_messages").get()?.count, "级联回收不能遗留文档键");
+    assert.equal(database.prepare("SELECT COUNT(*) AS count FROM session_character_search WHERE session_character_search MATCH ?").get("b4e8bx52a1")?.count, 0);
+  } finally { writer.close(); reader.close(); database.close(); }
 }));

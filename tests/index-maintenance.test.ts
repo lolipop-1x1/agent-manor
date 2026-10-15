@@ -223,3 +223,18 @@ test("VACUUM 中断后 SQLite 保留有效正文和搜索，不记录成功", as
   await assert.rejects(readFile(join(home, "index-maintenance.json")), { code: "ENOENT" });
   assert.equal(await activeIndexMaintenance(home), false);
 }));
+
+
+test("字符索引未完成时整理补齐，声称完整但缺文档时阻止整理", async () => fixture(async (home, path) => {
+  const database = new Database(path);
+  try { database.exec("DELETE FROM session_character_search WHERE rowid=6; UPDATE session_character_search_state SET cursor=0,complete=0"); }
+  finally { database.close(); }
+  assert.equal((await compactIndexAtStartup(home, { decision: () => "compact" })).status, "completed");
+  const check = new Database(path);
+  try {
+    assert.equal(check.prepare("SELECT COUNT(*) count FROM session_character_search WHERE session_character_search MATCH ?").get("u4e2d")?.count, 6);
+    check.exec("DELETE FROM session_character_search WHERE rowid=6");
+  } finally { check.close(); }
+  await assert.rejects(compactIndexAtStartup(home, { decision: () => "compact" }), error =>
+    error instanceof DiagnosticError && error.message.includes("FTS document keys"));
+}));

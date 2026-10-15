@@ -1,6 +1,8 @@
 import type { MessageCatalog } from "../../types.js";
 
 export default {
+  "diagnostics.sessions.search.stopped": "The search worker has stopped.",
+  "diagnostics.sessions.search.busy": "The search queue is full. Try again shortly.",
   "diagnostics.history.extraction.sedOrder": "The sed ranges overlap or are not in ascending order",
   "diagnostics.history.extraction.compoundOutput": "Combined command output does not identify reliable file boundaries",
   "diagnostics.history.extraction.compoundStatus": "The execution status of each combined command cannot be confirmed",

@@ -20,7 +20,7 @@ import { localDay } from "../overview/dates.js";
 import { instant } from "../usage/analytics.js";
 import { pairToolCalls } from "../overview/analytics.js";
 import { promptCharacterCount, summarizeRoundMetrics, completeRoundSource, type RoundMessage } from "./round-metrics.js";
-import { initializeSearchIndex, prepareSearchIndex, searchMatch } from "./search-index.js";
+import { initializeSearchIndex, prepareSearchIndex, registerSearchFunctions, searchCandidateIndex } from "./search-index.js";
 import { initializeUsageFacts, prepareUsageFacts, readUsageFactMetadata, readUsageFacts, usageFactsReady, USAGE_FACT_FORMAT_VERSION } from "./usage-facts.js";
 import type { UsageFactMetadata } from "./usage-facts.js";
 
@@ -68,6 +68,7 @@ const replyWhere = `kind='assistant' AND copied IS NOT 1 AND json_extract(json,'
 /** 全局正文按来源修订保存，读者只访问最后完整发布的版本。 */
 export class SessionStore {
   readonly dbPath: string;
+  private searchCancellation?: Int32Array;
   private readonly database: Database.Database;
   private readonly profileSummaries = new Map<string, SessionProfile>();
   private readonly revisionUsageCounts = new Map<string, number>();
@@ -85,6 +86,11 @@ export class SessionStore {
     if (!options.readonly) this.database.pragma("journal_mode = WAL");
     this.database.pragma("foreign_keys = ON");
     this.database.pragma("busy_timeout = 5000");
+    registerSearchFunctions(this.database);
+    this.database.function("session_search_active", () => {
+      if (this.searchCancellation && Atomics.load(this.searchCancellation, 0)) throw new Error("Search cancelled");
+      return 1;
+    });
     // SQLite 的文本 length 遇到 NUL 会提前结束，预览仍须明确保留完整正文的长度和截断状态。
     this.database.function("session_text_length", { deterministic: true }, value => {
       let count = 0;
@@ -156,6 +162,12 @@ export class SessionStore {
   }
 
   close(): void { this.overviewStatements.clear(); this.database.close(); }
+
+  searchSnapshot<T>(read: () => T): T { return this.database.transaction(read).deferred(); }
+
+  setSearchCancellation(signal?: Int32Array): void { this.searchCancellation = signal; }
+
+  private get searchGuard(): string { return this.searchCancellation ? " AND session_search_active()=1" : ""; }
 
   /** 小型回复索引只选同轮末条正文，不读取全部 AI 正文；旧只读库可直接回退。 */
   private lastReplyIds(revision: string): Set<string> {
@@ -639,9 +651,7 @@ export class SessionStore {
       unavailableClients: affectedClients(unavailable), unscopedUnavailableGaps: unscoped(unavailable) };
   }
 
-  list(query: SessionQuery = {}, sessionId?: string): SessionListResult {
-    const version = this.version(query.version);
-    const { page, pageSize } = paging(query);
+  private listCandidates(query: SessionQuery, version: string, sessionId?: string) {
     const filter = this.filters({ ...query, executionMode: query.executionMode ?? "regular" });
     if (sessionId) { filter.sql += " AND v.session_id=?"; filter.values.push(sessionId); }
     // 仅有本地 Hook 的来源保留回查，但默认列表不当作对话展示。
@@ -653,20 +663,32 @@ export class SessionStore {
       AND NOT EXISTS (SELECT 1 FROM session_version_relations relation WHERE relation.version=v.version AND relation.child=v.session_id)`;
     if (query.q?.trim()) {
       const kinds = kindsOf(query);
-      const match = searchMatch(this.database, (query.q ?? "").trim());
-      const candidates = match ? "m.rowid IN (SELECT rowid FROM session_message_search WHERE session_message_search MATCH ?) AND " : "";
-      const body = `m.kind IN (${kinds.map(() => "?").join(",") || "NULL"}) AND m.text LIKE ? ESCAPE '\\'`;
+      const candidate = searchCandidateIndex(this.database, (query.q ?? "").trim());
+      const match = candidate?.match;
+      const filterKinds = candidate?.table === "session_character_search";
+      const candidates = match ? `m.rowid IN (SELECT rowid FROM ${candidate!.table} WHERE ${candidate!.table} MATCH ?${this.searchGuard}${filterKinds ? `
+        INTERSECT SELECT message_key FROM session_messages WHERE kind IN (${kinds.map(() => "?").join(",") || "NULL"})${this.searchGuard}` : ""}) AND ` : "";
+      const body = `m.kind IN (${kinds.map(() => "?").join(",") || "NULL"})${candidate?.exact ? "" : " AND m.text LIKE ? ESCAPE '\\'"}`;
       const matched = match ? `r.id IN (SELECT m.revision FROM session_messages m WHERE ${candidates}${body})`
         : `EXISTS(SELECT 1 FROM session_messages m WHERE m.revision=r.id AND ${body})`;
       filter.sql += ` AND (r.title LIKE ? ESCAPE '\\' OR ${matched})`;
-      filter.values.push(literal((query.q ?? "").trim()), ...(match ? [match] : []), ...kinds, literal((query.q ?? "").trim()));
+      filter.values.push(literal((query.q ?? "").trim()), ...(match ? [match, ...(filterKinds ? kinds : [])] : []), ...kinds, ...(candidate?.exact ? [] : [literal((query.q ?? "").trim())]));
     }
     const from = `FROM session_version_sessions v JOIN session_revisions r ON r.id=v.revision WHERE v.version=?${filter.sql}`;
-    const total = (this.database.prepare(`SELECT COUNT(*) AS count ${from}`).get(version, ...filter.values) as { count: number }).count;
-    const rows = this.database.prepare(`SELECT r.json ${from} ORDER BY COALESCE(r.updated_at,r.started_at,'') DESC,v.session_id ASC LIMIT ? OFFSET ?`)
-      .all(version, ...filter.values, pageSize, (page - 1) * pageSize) as JsonRow[];
-    const sessions = rows.map(row => this.summary(row, version));
-    return { version, sessions, total, page, pageSize };
+    return { from: from + this.searchGuard, values: [version, ...filter.values] };
+  }
+
+  list(query: SessionQuery = {}, sessionId?: string): SessionListResult {
+    const version = this.version(query.version);
+    const { page, pageSize } = paging(query);
+    const { from, values } = this.listCandidates(query, version, sessionId);
+    const rows = this.database.prepare(`WITH matches AS MATERIALIZED (SELECT v.session_id,r.id,COALESCE(r.updated_at,r.started_at,'') AS updated_at ${from}),
+      totals AS (SELECT COUNT(*) AS total FROM matches), page AS (
+        SELECT * FROM matches ORDER BY updated_at DESC,session_id LIMIT ? OFFSET ?
+      ) SELECT totals.total,r.json FROM totals LEFT JOIN page ON 1 LEFT JOIN session_revisions r ON r.id=page.id
+        ORDER BY page.updated_at DESC,page.session_id`).all(...values, pageSize, (page - 1) * pageSize) as { total: number; json: string | null }[];
+    const sessions = rows.flatMap(row => row.json === null ? [] : [this.summary({ json: row.json }, version)]);
+    return { version, sessions, total: rows[0]!.total, page, pageSize };
   }
 
   /** 地图只取已发布会话的标题元信息，不读取正文，也不依赖项目路径推断身份。 */
@@ -695,7 +717,7 @@ export class SessionStore {
 
   private readingScope(revision: string, session: SessionSummary, query: SessionMessageQuery, turnIds?: string[]) {
     const scope = this.readingBranch(session, query);
-    let branch = scope.branch;
+    let branch = scope.branch + this.searchGuard;
     const values: SqlValue[] = [revision, ...scope.values];
     if (turnIds) {
       branch += " AND turn_id IN (SELECT value FROM json_each(?))";
@@ -738,8 +760,13 @@ export class SessionStore {
   }
 
   matches(id: string, query: SessionQuery = {}): { version: string; matches: boolean } {
-    const result = query.q?.trim() ? this.search({ ...query, sessionId: id, pageSize: 1 }) : this.list({ ...query, pageSize: 1 }, id);
-    return { version: result.version, matches: result.total > 0 };
+    const version = this.version(query.version);
+    if (query.q?.trim()) {
+      const { union, values } = this.searchCandidates({ ...query, sessionId: id }, version, true);
+      return { version, matches: Boolean(this.database.prepare(`SELECT 1 FROM (${union}) LIMIT 1`).get(...values)) };
+    }
+    const { from, values } = this.listCandidates(query, version, id);
+    return { version, matches: Boolean(this.database.prepare(`SELECT 1 ${from} LIMIT 1`).get(...values)) };
   }
 
   turnDirectory(id: string, query: SessionMessageQuery = {}): SessionTurnDirectory {
@@ -1365,16 +1392,19 @@ export class SessionStore {
     }) };
   }
 
-  private searchCandidates(query: SessionQuery & { sessionId?: string }, version: string) {
+  private searchCandidates(query: SessionQuery & { sessionId?: string }, version: string, existence = false) {
     const filter = this.filters(query);
     if (query.sessionId) { filter.sql += " AND v.session_id=?"; filter.values.push(query.sessionId); }
     const selectedKinds = kindsOf(query);
-    const common = `FROM session_version_sessions v JOIN session_revisions r ON r.id=v.revision WHERE v.version=?${filter.sql}`;
+    const common = `FROM session_version_sessions v JOIN session_revisions r ON r.id=v.revision WHERE v.version=?${filter.sql}${this.searchGuard}`;
     const pattern = literal((query.q ?? "").trim());
-    const match = searchMatch(this.database, (query.q ?? "").trim());
-    const candidates = match ? " AND m.rowid IN (SELECT rowid FROM session_message_search WHERE session_message_search MATCH ?)" : "";
+    const candidate = existence ? undefined : searchCandidateIndex(this.database, (query.q ?? "").trim());
+    const match = candidate?.match;
+    const filterKinds = candidate?.table === "session_character_search";
+    const candidates = match ? ` AND m.rowid IN (SELECT rowid FROM ${candidate!.table} WHERE ${candidate!.table} MATCH ?${this.searchGuard}${filterKinds ? `
+      INTERSECT SELECT message_key FROM session_messages WHERE kind IN (${selectedKinds.map(() => "?").join(",") || "NULL"})${this.searchGuard}` : ""})` : "";
     const title = `SELECT v.session_id,NULL AS message_id,NULL AS turn_id,'title' AS kind,r.id AS revision,
-      r.json,COALESCE(r.updated_at,r.started_at,'') AS updated_at,0 AS ordinal ${common} AND r.title LIKE ? ESCAPE '\\'`;
+      COALESCE(r.updated_at,r.started_at,'') AS updated_at,0 AS ordinal ${common} AND r.title LIKE ? ESCAPE '\\'`;
     let scopedFts = false;
     if (match && (query.client || query.project !== undefined || query.sessionId)) {
       const counts = this.database.prepare(`WITH scoped AS (
@@ -1396,11 +1426,11 @@ export class SessionStore {
         JOIN session_revisions r ON r.id=v.revision` : `FROM session_version_sessions v
         JOIN session_revisions r ON r.id=v.revision JOIN session_messages m ON m.revision=r.id`;
     const messages = `SELECT v.session_id,m.id AS message_id,m.turn_id,m.kind,r.id AS revision,
-      r.json,COALESCE(r.updated_at,r.started_at,'') AS updated_at,m.ordinal ${messageFrom}
-      WHERE v.version=?${filter.sql}${candidates} AND m.kind IN (${selectedKinds.map(() => "?").join(",") || "NULL"}) AND m.text LIKE ? ESCAPE '\\'`;
+      COALESCE(r.updated_at,r.started_at,'') AS updated_at,m.ordinal ${messageFrom}
+      WHERE v.version=?${filter.sql}${this.searchGuard}${candidates} AND m.kind IN (${selectedKinds.map(() => "?").join(",") || "NULL"})${candidate?.exact ? "" : " AND m.text LIKE ? ESCAPE '\\'"}`;
     const union = `${title} UNION ALL ${messages}`;
     const needle = (query.q ?? "").trim();
-    const values = [version, ...filter.values, pattern, version, ...filter.values, ...(match ? [match] : []), ...selectedKinds, pattern];
+    const values = [version, ...filter.values, pattern, version, ...filter.values, ...(match ? [match, ...(filterKinds ? selectedKinds : [])] : []), ...selectedKinds, ...(candidate?.exact ? [] : [pattern])];
     return { union, values, needle };
   }
 
@@ -1409,21 +1439,25 @@ export class SessionStore {
     const { page, pageSize } = paging(query);
     if (!query.q?.trim()) return { version, groups: [], total: 0, hitCount: 0, page, pageSize };
     const { union, values, needle } = this.searchCandidates(query, version);
-    const counts = this.database.prepare(`SELECT COUNT(DISTINCT session_id) AS total,COUNT(*) AS hitCount FROM (${union})`)
-      .get(...values) as { total: number; hitCount: number };
-    // 以会话分页，代表片段只取当前页的前三条，展开时复用记录级查询。
-    const rows = this.database.prepare(`WITH matches AS MATERIALIZED (${union}), selected AS (
-      SELECT session_id,COUNT(*) AS match_count FROM matches GROUP BY session_id ORDER BY MAX(updated_at) DESC,session_id LIMIT ? OFFSET ?
+    // 精简候选只匹配一次；总数、分页与页内代表命中共享同一快照。
+    const result = this.database.prepare(`WITH matches AS MATERIALIZED (${union}), grouped AS MATERIALIZED (
+      SELECT session_id,COUNT(*) AS match_count,MAX(updated_at) AS updated_at FROM matches GROUP BY session_id
+    ), totals AS (SELECT COUNT(*) AS total,COALESCE(SUM(match_count),0) AS hitCount FROM grouped), selected AS (
+      SELECT * FROM grouped ORDER BY updated_at DESC,session_id LIMIT ? OFFSET ?
     ), ranked AS (
       SELECT matches.*,selected.match_count,ROW_NUMBER() OVER (PARTITION BY matches.session_id ORDER BY ordinal,message_id) AS rank
       FROM matches JOIN selected ON selected.session_id=matches.session_id
-    ), bodies AS (
-      SELECT ranked.*,CASE WHEN message_id IS NULL THEN r.title ELSE m.text END AS body FROM ranked
+    ), bodies AS MATERIALIZED (
+      SELECT ranked.*,r.json,CASE WHEN message_id IS NULL THEN r.title ELSE m.text END AS body FROM ranked
         JOIN session_revisions r ON r.id=ranked.revision LEFT JOIN session_messages m ON m.revision=ranked.revision AND m.id=ranked.message_id WHERE rank<=3
-    ) SELECT *,substr(body,MAX(1,instr(lower(body),lower(?))-70),240) AS text,
-      length(body) AS text_length,MAX(1,instr(lower(body),lower(?))-70) AS text_start FROM bodies ORDER BY updated_at DESC,session_id,rank`)
-      .all(...values, pageSize, (page - 1) * pageSize, needle, needle) as (SearchMessageRow & { session_id: string;
-        match_count: number; text: string; text_start: number; text_length: number })[];
+    ) SELECT totals.total,totals.hitCount,bodies.session_id,message_id,turn_id,kind,revision,json,match_count,
+      substr(body,MAX(1,instr(lower(body),lower(?))-70),240) AS text,
+      length(body) AS text_length,MAX(1,instr(lower(body),lower(?))-70) AS text_start
+      FROM totals LEFT JOIN bodies ON 1 ORDER BY updated_at DESC,session_id,rank`)
+      .all(...values, pageSize, (page - 1) * pageSize, needle, needle) as (SearchMessageRow & { session_id: string | null;
+        total: number; hitCount: number; match_count: number; text: string; text_start: number; text_length: number })[];
+    const counts = { total: result[0]!.total, hitCount: result[0]!.hitCount };
+    const rows = result.filter((row): row is typeof row & { session_id: string } => row.session_id !== null);
     const briefVisible = this.searchBriefVisible(rows, version);
     const groups: SessionGroupedSearchResult["groups"] = [];
     for (const row of rows) {
@@ -1441,16 +1475,18 @@ export class SessionStore {
     const { page, pageSize } = paging(query);
     if (!query.q?.trim()) return { version, hits: [], total: 0, page, pageSize };
     const { union, values, needle } = this.searchCandidates(query, version);
-    const total = (this.database.prepare(`SELECT COUNT(*) AS count FROM (${union})`).get(...values) as { count: number }).count;
-    // 先选出当前页，避免为全部命中正文计算摘要和大小写转换。
-    const rows = this.database.prepare(`WITH page AS MATERIALIZED (
-      SELECT * FROM (${union}) ORDER BY updated_at DESC,session_id,ordinal,message_id LIMIT ? OFFSET ?
+    const result = this.database.prepare(`WITH matches AS MATERIALIZED (${union}), totals AS (SELECT COUNT(*) AS total FROM matches), page AS (
+      SELECT * FROM matches ORDER BY updated_at DESC,session_id,ordinal,message_id LIMIT ? OFFSET ?
     ), bodies AS MATERIALIZED (
-      SELECT page.*,CASE WHEN page.message_id IS NULL THEN r.title ELSE m.text END AS body FROM page
+      SELECT page.*,r.json,CASE WHEN page.message_id IS NULL THEN r.title ELSE m.text END AS body FROM page
         JOIN session_revisions r ON r.id=page.revision LEFT JOIN session_messages m ON m.revision=page.revision AND m.id=page.message_id
-    ) SELECT session_id,message_id,turn_id,kind,revision,json,substr(body,MAX(1,instr(lower(body),lower(?))-70),240) AS text,length(body) AS text_length,
-      MAX(1,instr(lower(body),lower(?))-70) AS text_start FROM bodies ORDER BY updated_at DESC,session_id,ordinal,message_id`)
-      .all(...values, pageSize, (page - 1) * pageSize, needle, needle) as (SearchMessageRow & { text: string; text_start: number; text_length: number })[];
+    ) SELECT totals.total,bodies.session_id,message_id,turn_id,kind,revision,json,
+      substr(body,MAX(1,instr(lower(body),lower(?))-70),240) AS text,length(body) AS text_length,
+      MAX(1,instr(lower(body),lower(?))-70) AS text_start FROM totals LEFT JOIN bodies ON 1 ORDER BY updated_at DESC,session_id,ordinal,message_id`)
+      .all(...values, pageSize, (page - 1) * pageSize, needle, needle) as (SearchMessageRow & { session_id: string | null;
+        total: number; text: string; text_start: number; text_length: number })[];
+    const total = result[0]!.total;
+    const rows = result.filter(row => row.session_id !== null);
     const briefVisible = this.searchBriefVisible(rows, version);
     const hits = rows.map(row => {
       const session = this.summary(row, version);

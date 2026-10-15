@@ -1,5 +1,9 @@
 import { DiagnosticError } from "./i18n/diagnostics.js";
 import Fastify from "fastify";
+import type { FastifyRequest, FastifyReply } from "fastify";
+import { SessionSearchManager } from "./sessions/search-manager.js";
+import type { SearchOperation } from "./sessions/search-manager.js";
+import type { SessionQuery } from "./session-contracts.js";
 import fastifyStatic from "@fastify/static";
 import { randomUUID } from "node:crypto";
 import { existsSync, lstatSync, realpathSync } from "node:fs";
@@ -68,6 +72,7 @@ export async function startService(options: ServiceOptions = {}) {
   let pricing: PricingService | undefined;
   let usageManager: UsageManager | undefined;
   let overviewManager: OverviewManager | undefined;
+  let searchManager: SessionSearchManager | undefined;
   const app = Fastify({ logger: false, bodyLimit: 65_536, forceCloseConnections: true });
   const instance: ServiceInstance = { id: randomUUID(), pid: process.pid, host: "127.0.0.1", port: requestedPort, startedAt: new Date().toISOString() };
   try {
@@ -77,6 +82,16 @@ export async function startService(options: ServiceOptions = {}) {
     manager = new WorkerManager(store, { roots: options.roots }, sessions);
     const index = store;
     const library = sessions;
+    searchManager = new SessionSearchManager(library);
+    const searches = searchManager;
+    const search = async (request: FastifyRequest, reply: FastifyReply, type: SearchOperation, query: SessionQuery & { sessionId?: string }) => {
+      const controller = new AbortController();
+      const cancel = () => { if (!reply.raw.writableFinished) controller.abort(); };
+      request.raw.once("aborted", cancel); reply.raw.once("close", cancel);
+      if (request.raw.aborted || reply.raw.destroyed) controller.abort();
+      try { return await searches.execute(type, query, controller.signal); }
+      finally { request.raw.removeListener("aborted", cancel); reply.raw.removeListener("close", cancel); }
+    };
     const worker = manager;
     resourceManager = new ResourceManager(home);
     pricing = new PricingService(home, options.usagePricing);
@@ -86,6 +101,7 @@ export async function startService(options: ServiceOptions = {}) {
     const resources = new ResourceService(library, management, options.resourceInventory ?? { environment: process.env }, () =>
       [...new Set([...index.listRepositories().map(repository => repository.path), ...library.status().projects])]);
     app.addHook("onClose", async () => {
+      await searchManager?.close();
       await overviewManager?.close();
       await usageManager?.close();
       await worker.close();
@@ -163,14 +179,17 @@ export async function startService(options: ServiceOptions = {}) {
     });
     app.get<{ Querystring: Query }>("/api/v1/sessions/status", async request => queryBoolean(request.query.summary, "summary") ? library.statusSummary() : library.status());
     app.get<{ Querystring: Query }>("/api/v1/sessions/gaps", async request => library.indexGaps(textValue(request.query.version, "version")));
-    app.get<{ Querystring: Query }>("/api/v1/sessions", async request => library.list(sessionQuery(request.query)));
-    app.get<{ Querystring: Query }>("/api/v1/sessions/search/groups", async request => library.groupedSearch(sessionQuery(request.query)));
+    app.get<{ Querystring: Query }>("/api/v1/sessions", async (request, reply) => {
+      const query = sessionQuery(request.query);
+      return query.q?.trim() ? search(request, reply, "list", query) : library.list(query);
+    });
+    app.get<{ Querystring: Query }>("/api/v1/sessions/search/groups", async (request, reply) => search(request, reply, "groups", sessionQuery(request.query)));
     app.get<{ Params: { id: string }; Querystring: Query }>("/api/v1/sessions/:id/turns", async request => library.turnDirectory(request.params.id, sessionMessageQuery(request.query)));
-    app.get<{ Params: { id: string }; Querystring: Query }>("/api/v1/sessions/:id/matches", async request => library.matches(request.params.id, sessionQuery(request.query)));
-    app.get<{ Querystring: Query }>("/api/v1/sessions/search", async request => {
+    app.get<{ Params: { id: string }; Querystring: Query }>("/api/v1/sessions/:id/matches", async (request, reply) => search(request, reply, "matches", { ...sessionQuery(request.query), sessionId: request.params.id }));
+    app.get<{ Querystring: Query }>("/api/v1/sessions/search", async (request, reply) => {
       const query = sessionQuery(request.query);
       if (!query.q) throw new ServiceError("INVALID_INPUT", "搜索需要 q", { key: "diagnostics.server.m014" });
-      return library.search({ ...query, sessionId: textValue(request.query.sessionId, "sessionId") });
+      return search(request, reply, "records", { ...query, sessionId: textValue(request.query.sessionId, "sessionId") });
     });
     app.get<{ Querystring: Query }>("/api/v1/sessions/locate", async request => {
       const client = textValue(request.query.client, "client", true)!;
@@ -327,6 +346,7 @@ export async function startService(options: ServiceOptions = {}) {
   } catch (error) {
     await app.close().catch(() => undefined);
     await manager?.close().catch(() => undefined);
+    await searchManager?.close().catch(() => undefined);
     await usageManager?.close().catch(() => undefined);
     await overviewManager?.close().catch(() => undefined);
     try { store?.close(); } catch { /* 初始化失败时可能已关闭。 */ }

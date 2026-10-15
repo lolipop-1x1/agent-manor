@@ -36,11 +36,14 @@ function logicalFingerprint(database: Database.Database): string {
   if (tables.some(table => table.name === "session_messages")) {
     const columns = database.pragma("table_info(session_messages)") as { name: string; type: string; pk: number }[];
     if (!columns.some(column => column.name === "message_key" && column.type === "INTEGER" && column.pk === 1)) throw new Error("Stable message keys are required");
-    database.prepare("INSERT INTO session_message_search(session_message_search) VALUES('integrity-check')").run();
-    const complete = (database.prepare("SELECT complete FROM session_search_state WHERE id=1").get() as { complete: number } | undefined)?.complete;
-    const orphan = database.prepare("SELECT rowid FROM session_message_search EXCEPT SELECT message_key FROM session_messages LIMIT 1").get();
-    const missing = complete && database.prepare("SELECT message_key FROM session_messages EXCEPT SELECT rowid FROM session_message_search LIMIT 1").get();
-    if (orphan || missing) throw new Error("FTS document keys do not match message keys");
+    for (const [table, state] of [["session_message_search", "session_search_state"], ["session_character_search", "session_character_search_state"]]) {
+      if (!tables.some(item => item.name === table)) continue;
+      database.prepare(`INSERT INTO ${table}(${table}) VALUES('integrity-check')`).run();
+      const complete = (database.prepare(`SELECT complete FROM ${state} WHERE id=1`).get() as { complete: number } | undefined)?.complete;
+      const orphan = database.prepare(`SELECT rowid FROM ${table} EXCEPT SELECT message_key FROM session_messages LIMIT 1`).get();
+      const missing = complete && database.prepare(`SELECT message_key FROM session_messages EXCEPT SELECT rowid FROM ${table} LIMIT 1`).get();
+      if (orphan || missing) throw new Error("FTS document keys do not match message keys");
+    }
   }
   const hash = createHash("sha256");
   for (const table of tables) {

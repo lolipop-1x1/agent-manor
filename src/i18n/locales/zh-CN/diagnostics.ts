@@ -1,6 +1,8 @@
 import type { MessageCatalog } from "../../types.js";
 
 export default {
+  "diagnostics.sessions.search.stopped": "搜索后台已停止。",
+  "diagnostics.sessions.search.busy": "搜索队列已满，请稍后重试。",
   "diagnostics.history.extraction.sedOrder": "多段 sed 范围重叠或顺序不明确",
   "diagnostics.history.extraction.compoundOutput": "组合命令输出无法可靠区分文件边界",
   "diagnostics.history.extraction.compoundStatus": "组合命令无法确认各子命令的执行状态",
