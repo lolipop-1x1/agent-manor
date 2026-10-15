@@ -23,3 +23,4 @@
 | [03 分区服务](issues/03-service.md) | resolved | 核心洞察、持久结果、SQL 分页与有界调度 |
 | [04 页面](issues/04-web.md) | resolved | 分区首读、完整报告更新、按需调查和恢复地址 |
 | [05 整合验收](issues/05-validation.md) | resolved | 独立复核、900 项测试、真实差分、浏览器与性能记录 |
+| [06 缓存库命名](issues/06-cache-database-names.md) | resolved | 事实缓存使用固定名称，清理停用旧库；49 项回归与本机接口验证通过 |

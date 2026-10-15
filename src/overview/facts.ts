@@ -43,7 +43,7 @@ export class OverviewFactStore {
   private pruneVersion?: string;
 
   constructor(private readonly sessions: SessionStore, options: { path?: string; maxBytes?: number; repairCorruption?: boolean; readonly?: boolean } = {}) {
-    this.path = options.path ?? join(dirname(sessions.dbPath), "overview-facts-v2.sqlite");
+    this.path = options.path ?? join(dirname(sessions.dbPath), "overview-facts.sqlite");
     this.maxBytes = options.maxBytes ?? maximumBytes;
     this.readonly = options.readonly ?? false;
     try {

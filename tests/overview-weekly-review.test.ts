@@ -203,7 +203,7 @@ test("七天复盘口径：完整跨周轮次、缓存档位、压缩支持、�
     const before = scanned.length;
     await factsStore.source(query, now);
     assert.equal(scanned.length, before, "派生事实复用同修订，无正文或消息重新扫描");
-    const cachePath = join(directory, "weekly-review-facts-v2.sqlite");
+    const cachePath = join(directory, "weekly-review-facts.sqlite");
     assert.equal(statSync(cachePath).mode & 0o777, 0o600);
     const cache = new Database(cachePath, { readonly: true });
     try { assert.equal((cache.prepare("SELECT COUNT(*) AS count FROM weekly_events WHERE json LIKE '%应排除注入%'").get() as { count: number }).count, 0); }
@@ -467,7 +467,7 @@ test("可选窄缓存的工具JSON损坏时退回源事实，不改变失败与�
   finally { raw.close(); }
   const overview = new OverviewFactStore(store);
   try { await overview.prepare(query, now); } finally { overview.close(); }
-  const database = new Database(join(directory, "overview-facts-v2.sqlite"));
+  const database = new Database(join(directory, "overview-facts.sqlite"));
   try { database.prepare("UPDATE overview_fact_events SET json='{' WHERE id='failed-call'").run(); }
   finally { database.close(); }
   const cached = new WeeklyReviewFactStore(store, join(directory, "corrupt-cached.sqlite"));
@@ -537,7 +537,7 @@ test("范围移动复用不可变修订覆盖，跨时区缓存至多四份且�
     assert.equal(shifted.cache.requests, 7, "新窗口末日的请求仍被纳入");
     for (const timezone of ["Asia/Shanghai", "Europe/London", "America/New_York", "Pacific/Kiritimati", "Asia/Tokyo"])
       await factsStore.source({ ...query, timezone }, now);
-    const database = new Database(join(directory, "weekly-review-facts-v2.sqlite"), { readonly: true });
+    const database = new Database(join(directory, "weekly-review-facts.sqlite"), { readonly: true });
     try { assert.equal((database.prepare("SELECT MAX(count) AS maximum FROM (SELECT COUNT(*) AS count FROM weekly_revisions GROUP BY source_revision)").get() as { maximum: number }).maximum, 4); }
     finally { database.close(); }
     await factsStore.source(query, now);

@@ -77,7 +77,7 @@ export function weeklyRoundFacts(events: WeeklyReviewEvent[], requests: Overview
 export class WeeklyReviewFactStore {
   private readonly database: Database.Database;
   private readonly overview?: OverviewFactStore;
-  constructor(private readonly sessions: SessionStore, path = join(dirname(sessions.dbPath), "weekly-review-facts-v2.sqlite")) {
+  constructor(private readonly sessions: SessionStore, path = join(dirname(sessions.dbPath), "weekly-review-facts.sqlite")) {
     this.database = new Database(path); chmodSync(path, 0o600);
     this.database.pragma("journal_mode=WAL"); this.database.pragma("foreign_keys=ON"); this.database.pragma("busy_timeout=5000");
     this.database.exec(`
@@ -95,7 +95,7 @@ export class WeeklyReviewFactStore {
     `);
     removeStoredRequestTiming(this.database, "weekly_requests");
     // 已发布总览窄事实可直接复用；缺失或坏缓存退回源的只读窗口投影。
-    if (existsSync(join(dirname(sessions.dbPath), "overview-facts-v2.sqlite"))) {
+    if (existsSync(join(dirname(sessions.dbPath), "overview-facts.sqlite"))) {
       try { this.overview = new OverviewFactStore(sessions, { readonly: true }); } catch { /* 可选缓存不阻断复盘。 */ }
     }
   }
