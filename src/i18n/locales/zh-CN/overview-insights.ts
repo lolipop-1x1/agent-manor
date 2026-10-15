@@ -24,7 +24,6 @@ export default {
   "overview.insight.combination.turn": "{{first}} 与 {{second}} 在 {{turns, number}} 个用户轮次中共同使用，涉及 {{sessions, number}} 个会话。",
   "overview.insight.failure": "{{tool}} 有 {{failures, number}} 次已确认失败，涉及 {{days, number}} 个日期；结果已知 {{known, number}} 次、未知 {{unknown, number}} 次。",
   "overview.insight.singleFailure": "{{tool}} 有一条已确认失败，可查看对应结果。",
-  "overview.insight.followupCalls": "{{tool}}：{{failures, number}} 次失败之后，同一用户轮次内出现 {{calls, number}} 个独立后续调用。",
   "overview.insight.crossDay": "{{sessions, number}} 个有日期活动的会话中，{{crossDay, number}} 个在多个日期续用。",
   "overview.insight.input": "{{model}}：同一片段的 {{requests, number}} 个请求中，输入从 {{first, number}} 变为 {{last, number}} Token，片段内有 {{compressions, number}} 次压缩记录。",
   "overview.insight.inputUnmapped": "{{model}}：同一片段的 {{requests, number}} 个请求中，输入从 {{first, number}} 变为 {{last, number}} Token，压缩位置未确认。",

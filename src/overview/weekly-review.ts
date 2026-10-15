@@ -177,25 +177,9 @@ export function buildWeeklyReview(facts: WeeklySessionFacts[], query: OverviewQu
   }
   const projects = rank(projectGroups), calls = userFacts.flatMap(fact => fact.events.filter(event => event.kind === "tool_call")
     .map(event => ({ fact, event })));
-  const toolGroups = new Map<string, typeof calls>();
-  for (const call of calls) {
-    const key = JSON.stringify([call.fact.session.id, call.event.turnId, call.event.tool, call.event.resource?.server]), group = toolGroups.get(key) ?? [];
-    group.push(call); toolGroups.set(key, group);
-  }
-  const toolRows: WeeklyReviewRecord[] = [];
-  const subsequent = new Set<string>();
-  for (const group of toolGroups.values()) {
-    group.sort((a, b) => a.event.ordinal - b.event.ordinal);
-    let failed = false;
-    for (let index = 0; index < group.length; index += 1) {
-      const { fact, event } = group[index]!;
-      if (failed) subsequent.add(JSON.stringify([fact.session.id, event.id]));
-      if (event.status !== "failure") continue;
-      failed = true;
-      toolRows.push(record(fact.session, { id: JSON.stringify([fact.session.id, event.id]), messageId: event.id, turnId: event.turnId,
-        occurredAt: event.occurredAt, tool: event.tool, server: event.resource?.server, failures: 1, subsequentCalls: group.length - index - 1 }));
-    }
-  }
+  const toolRows = calls.filter(({ event }) => event.status === "failure").map(({ fact, event }) => record(fact.session,
+    { id: JSON.stringify([fact.session.id, event.id]), messageId: event.id, turnId: event.turnId,
+      occurredAt: event.occurredAt, tool: event.tool, server: event.resource?.server, failures: 1 }));
   const pairedInputs = requestRows.filter(row => row.inputTokens !== undefined && row.cachedInputTokens !== undefined && row.cachedInputTokens <= row.inputTokens);
   const pairInput = sumKnown(pairedInputs.map(row => row.inputTokens)), pairRead = sumKnown(pairedInputs.map(row => row.cachedInputTokens));
   const premiumValues = requestRows.flatMap(row => row.hypotheticalPremium === null || row.hypotheticalPremium === undefined ? [] : [row.hypotheticalPremium]);
@@ -236,7 +220,7 @@ export function buildWeeklyReview(facts: WeeklySessionFacts[], query: OverviewQu
       tokenSamples: childRows.filter(row => row.tokens != null).length, tokenMissing: childRows.filter(row => row.tokens == null).length,
       userTokenSamples: requestRows.filter(row => row.tokens != null).length, userTokenMissing: requestRows.filter(row => row.tokens == null).length },
       tools: { calls: calls.length, failures: toolRows.length, failedRounds: new Set(toolRows.map(row => JSON.stringify([row.sessionId, row.turnId]))).size,
-        subsequentCalls: subsequent.size, unknownResults: calls.filter(({ event }) => event.status !== "success" && event.status !== "failure").length } },
+        unknownResults: calls.filter(({ event }) => event.status !== "success" && event.status !== "failure").length } },
     coverage: { gaps: gaps.slice(0, 100), gapCount: gaps.length, missingTimeEvents: userFacts.reduce((sum, fact) => sum + fact.missingTimeEvents, 0),
       missingTimeRequests: userFacts.reduce((sum, fact) => sum + fact.missingTimeRequests, 0), unassignedRequests: userFacts.reduce((sum, fact) => sum + fact.unassignedRequests, 0),
       excludedChildUserInputs: childFacts.reduce((sum, fact) => sum + fact.events.filter(event => event.kind === "user").length, 0),

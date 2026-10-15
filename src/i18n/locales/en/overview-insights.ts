@@ -24,7 +24,6 @@ export default {
   "overview.insight.combination.turn": "{{first}} and {{second}} appear together in {{turns, number}} user turns across {{sessions, number}} sessions.",
   "overview.insight.failure": "{{tool}} has {{failures, number}} confirmed failures across {{days, number}} dates; {{known, number}} results are known and {{unknown, number}} unknown.",
   "overview.insight.singleFailure": "A confirmed failure for {{tool}} has a recorded result to inspect.",
-  "overview.insight.followupCalls": "{{tool}}: {{calls, number}} distinct later calls follow {{failures, number}} failures within the same user turns.",
   "overview.insight.crossDay": "{{crossDay, number}} of {{sessions, number}} sessions with dated activity span multiple active dates.",
   "overview.insight.input": "{{model}}: a sequence of {{requests, number}} requests records input tokens from {{first, number}} to {{last, number}}, with {{compressions, number}} compression events in the same segment.",
   "overview.insight.inputUnmapped": "{{model}}: a sequence of {{requests, number}} requests records input tokens from {{first, number}} to {{last, number}}. Compression positions are unconfirmed.",

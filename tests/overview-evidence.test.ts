@@ -72,7 +72,7 @@ test("组合证据主子会话独立，轮次缺真实用户开头不能虚构",
   assert.equal(buildOverviewEvidence(input, query, { kind: "combinations", resourceId: resourceIdentity(a), resourceId2: resourceIdentity(b) }, pricing, now).total, 2);
   assert.equal(buildOverviewEvidence(input, query, { kind: "combinations", unit: "turn", resourceId: resourceIdentity(a), resourceId2: resourceIdentity(b) }, pricing, now).total, 1);
 });
-test("工具失败证据按同版唯一结果配对，后续过程不跨轮次", () => {
+test("工具失败证据按同版唯一结果配对，不包含其他成功调用", () => {
   const input = source({ sessions: [session("a")], events: [event("a", "user"),
     event("a", "call", undefined, { ordinal: 2, kind: "tool_call", tool: "read_file", callId: "call" }),
     event("a", "result", undefined, { ordinal: 3, kind: "tool_result", callId: "call", status: "failure" }),
@@ -80,7 +80,7 @@ test("工具失败证据按同版唯一结果配对，后续过程不跨轮次",
     event("a", "next", undefined, { ordinal: 5, kind: "tool_call", tool: "read_file", turnId: "turn-2", status: "success" })] });
   const failures = buildOverviewEvidence(input, query, { kind: "failures" }, pricing, now);
   assert.equal(failures.total, 1); assert.equal(failures.rows[0]!.resultMessageId, "result");
-  assert.equal(buildOverviewEvidence(input, query, { kind: "sequence", tool: "read_file" }, pricing, now).total, 2);
+  assert.deepEqual(failures.rows.map(row => row.messageId), ["call"]);
 });
 test("追加条件不能越过报告客户端项目模型，失效版本及非法分页明确失败", () => {
   const input = source({ sessions: [session("a", { project: "/workspace/a" }), session("b", { client: "claude", project: "/workspace/b" })],
@@ -98,15 +98,15 @@ test("主子模型组合回查子会话自身记录和父自身模型，不按�
   assert.equal(evidence.rows[0]!.values!.parentModels, '["model-a"]'); assert.equal(evidence.rows[0]!.values!.childModels, '["model-b"]');
   assert.equal(evidence.rows[0]!.values!.requests, 1);
 });
-test("工具同名不同服务器用opaque identity精确调查，不串失败后续", () => {
+test("工具同名不同服务器用opaque identity精确调查失败记录", () => {
   const input = source({ sessions: [session("a")], events: [event("a", "user"),
     event("a", "failed-a", undefined, { ordinal: 2, kind: "tool_call", tool: "search", status: "failure", resource: { kind: "mcp", name: "search", server: "server-a" } }),
     event("a", "success-b", undefined, { ordinal: 3, kind: "tool_call", tool: "search", status: "success", resource: { kind: "mcp", name: "search", server: "server-b" } })] });
   const calls = buildOverviewEvidence(input, query, { kind: "tools", toolId: JSON.stringify(["search", "server-a"]) }, pricing, now);
   assert.equal(calls.total, 1); assert.equal(calls.rows[0]!.messageId, "failed-a");
   assert.equal(calls.rows[0]!.values!.server, "server-a");
-  const sequence = buildOverviewEvidence(input, query, { kind: "sequence", server: "server-a", tool: "search" }, pricing, now);
-  assert.deepEqual(sequence.rows.map(row => row.messageId), ["failed-a"]);
+  const failures = buildOverviewEvidence(input, query, { kind: "failures", server: "server-a", tool: "search" }, pricing, now);
+  assert.deepEqual(failures.rows.map(row => row.messageId), ["failed-a"]);
 });
 test("资源工具维度身份区分缺失、原名unknown和literal前缀", () => {
   const input = source({ sessions: [session("a")], resources: [resource("a", "missing", "server-a", undefined, { kind: "mcp", server: "server-a" }),

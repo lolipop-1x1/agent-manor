@@ -29,14 +29,14 @@ test("新增按需分区明确指定分布维度，其他分区拒绝维度参�
 test("调查查询与总览边界分别编码，拒绝失效枚举、未知参数和越界分页", () => {
   const evidence = { kind: "resources", from: "2026-09-01", to: "2026-09-30", resourceKind: "mcp", tool: "synthetic-tool", page: 2, pageSize: 50 };
   assert.deepEqual(overviewEvidenceQuery(JSON.stringify(evidence)), evidence);
-  assert.deepEqual(overviewEvidenceQuery(JSON.stringify({ kind: "sequence", ordinalFrom: 0, ordinalTo: 12,
+  assert.deepEqual(overviewEvidenceQuery(JSON.stringify({ kind: "requests", ordinalFrom: 0, ordinalTo: 12,
     requestId: "synthetic-request", modelFrom: "synthetic-a", modelTo: "synthetic-b", transition: "switch" })), {
-    kind: "sequence", ordinalFrom: 0, ordinalTo: 12, requestId: "synthetic-request", modelFrom: "synthetic-a", modelTo: "synthetic-b", transition: "switch",
+    kind: "requests", ordinalFrom: 0, ordinalTo: 12, requestId: "synthetic-request", modelFrom: "synthetic-a", modelTo: "synthetic-b", transition: "switch",
   });
   assert.equal(overviewQuery({ evidence: JSON.stringify(evidence) }, true).window, "365");
   for (const invalid of [null, [], {}, { kind: "unknown" }, { kind: "tools", status: "maybe" },
     { kind: "tools", pageSize: 201 }, { kind: "tools", page: 0 }, { kind: "tools", page: "2" },
-    { kind: "sequence", ordinalFrom: -1 }, { kind: "sequence", ordinalFrom: 4, ordinalTo: 2 }, { kind: "requests", undated: "true" },
+    { kind: "requests", ordinalFrom: -1 }, { kind: "requests", ordinalFrom: 4, ordinalTo: 2 }, { kind: "requests", undated: "true" },
     { kind: "activity", day: "2026-02-31" }, { kind: "tools", sql: "synthetic" }, { kind: "activity", from: "2026-10-12", to: "2026-10-01" }]) {
     assert.throws(() => overviewEvidenceQuery(JSON.stringify(invalid)), { code: "INVALID_INPUT" });
   }

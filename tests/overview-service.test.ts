@@ -60,7 +60,7 @@ test("总览后台 HTTP 保持全局与模型局部范围，证据分页不泄�
     assert.equal(first.summary.sessions, 1); assert.equal(first.summary.requests, 31); assert.equal(first.summary.tokens, 31 * 120);
     assert.equal(first.summary.activeDays, 1); assert.equal(first.process.failures, 1);
     assert.equal(first.resources.mcp[0]!.uses, 2); assert.equal(first.resources.mcp[0]!.results.failure, 1);
-    assert.deepEqual(first.process.failureSequences, []);
+    assert.equal("failureSequences" in first.process, false);
     assert.ok(first.insights.length <= 5);
     assert.ok(first.insights.every(insight => !["10", "12", "14", "15"].includes(insight.rule)));
     const fixed = new URLSearchParams(params); fixed.set("priceVersion", first.priceVersion);
@@ -100,8 +100,11 @@ test("总览后台 HTTP 保持全局与模型局部范围，证据分页不泄�
     fixed.set("evidence", JSON.stringify({ kind: "requests", from: "2026-10-01", to: "2026-10-31" }));
     assert.equal((await read<OverviewEvidencePage>(`/overview/evidence?${fixed}`)).total, 31);
     fixed.set("evidence", JSON.stringify({ kind: "sequence", tool: "mcp__synthetic__query", sort: "ordinal", pageSize: 1 }));
-    const sequence = await read<OverviewEvidencePage>(`/overview/evidence?${fixed}`);
-    assert.equal(sequence.total, 2); assert.equal(sequence.rows.length, 1); assert.equal(sequence.rows[0]!.messageId, "synthetic-call");
+    const removed = await fetch(`${base}/overview/evidence?${fixed}`);
+    assert.equal(removed.status, 400); assert.equal((await removed.json()).error.code, "INVALID_INPUT");
+    fixed.set("evidence", JSON.stringify({ kind: "failures", tool: "mcp__synthetic__query", sort: "ordinal", pageSize: 1 }));
+    const failures = await read<OverviewEvidencePage>(`/overview/evidence?${fixed}`);
+    assert.equal(failures.total, 1); assert.equal(failures.rows[0]!.messageId, "synthetic-call");
     const evidence = { kind: "requests", page: 2, pageSize: 12 };
     fixed.set("evidence", JSON.stringify(evidence));
     const page = await read<OverviewEvidencePage>(`/overview/evidence?${fixed}`);

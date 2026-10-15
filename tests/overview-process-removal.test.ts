@@ -17,9 +17,10 @@ import { weeklyRoundFacts } from "../src/overview/weekly-review-facts.ts";
 import type { SessionUsage } from "../src/session-contracts.ts";
 
 
-test("总览不再接受请求计时或过程压缩记录接口", () => {
+test("总览不再接受请求计时、过程压缩或后续调用接口", () => {
   for (const view of ["timing", "timings"]) assert.throws(() => overviewDetailQuery(JSON.stringify({ view, timingGroup: "old-group" })));
-  for (const kind of ["timing", "compressions"]) assert.throws(() => overviewEvidenceQuery(JSON.stringify({ kind })));
+  for (const kind of ["timing", "compressions", "sequence"]) assert.throws(() => overviewEvidenceQuery(JSON.stringify({ kind })));
+  assert.throws(() => overviewEvidenceQuery(JSON.stringify({ kind: "sequence", scope: "usage" })), { code: "INVALID_INPUT" });
   assert.throws(() => overviewEvidenceQuery(JSON.stringify({ kind: "requests", timingGroup: "old-group" })));
   assert.throws(() => overviewEvidenceQuery(JSON.stringify({ kind: "requests", sort: "duration" })));
   assert.equal(overviewEvidenceQuery(JSON.stringify({ kind: "failures", sort: "duration" })).kind, "failures");

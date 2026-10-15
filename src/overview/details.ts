@@ -329,8 +329,7 @@ export function factProcess(store: OverviewFactStore, snapshot: OverviewSnapshot
   const values: SqlValue[] = [JSON.stringify(scope.revisions), ...bounds], where = scope.bounds ? "f.time_ms>=? AND f.time_ms<?" : "1";
   const leading = factDetail(store, snapshot, { view: "ranking", dimension: "tool", pageSize: candidates ? 1 : 5 }, now, { toolCandidates: candidates, toolFailures: !candidates });
   const tools = new Map((leading.rows as OverviewToolRow[]).filter(row => row.results.failure > 0).map(row => [row.key, row]));
-  if (candidates) return { process: { tools: [...tools.values()], categories: [], results: counts(0, 0, 0), failures: 0,
-    failureSequences: [] } satisfies OverviewProcess, counts: { tools: leading.total } };
+  if (candidates) return { process: { tools: [...tools.values()], categories: [], results: counts(0, 0, 0), failures: 0 } satisfies OverviewProcess, counts: { tools: leading.total } };
   const summary = store.readRows<{ calls: number; success: number; failure: number }>(`SELECT
     SUM(CASE WHEN f.kind='tool_call' THEN 1 ELSE 0 END) AS calls,SUM(CASE WHEN f.kind='tool_call' AND f.status='success' THEN 1 ELSE 0 END) AS success,
     SUM(CASE WHEN f.kind='tool_call' AND f.status='failure' THEN 1 ELSE 0 END) AS failure FROM overview_fact_events f
@@ -354,7 +353,7 @@ export function factProcess(store: OverviewFactStore, snapshot: OverviewSnapshot
   }
   for (const row of categories.values()) row.sessions = categorySessions.get(row.key)?.size ?? 0;
   const process: OverviewProcess = { tools: [...tools.values()], categories: [...categories.values()].sort((a, b) => b.count - a.count || a.key.localeCompare(b.key)),
-    results: counts(summary.calls ?? 0, summary.success ?? 0, summary.failure ?? 0), failures: summary.failure ?? 0, failureSequences: [] };
+    results: counts(summary.calls ?? 0, summary.success ?? 0, summary.failure ?? 0), failures: summary.failure ?? 0 };
   return { process, counts: { tools: leading.total } };
 }
 

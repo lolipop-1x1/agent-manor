@@ -36,7 +36,7 @@ export async function factExtraEvidence(store: OverviewFactStore, snapshot: Over
   if (evidence.kind === "activity") return activityEvidence(store, snapshot, evidence, pricing, scope);
   if (evidence.kind === "observations") return observationEvidence(store, evidence, scope);
   if (evidence.kind === "combinations") return combinationEvidence(store, evidence, scope);
-  if (evidence.kind === "requests" || evidence.kind === "sequence" && evidence.scope === "usage") {
+  if (evidence.kind === "requests") {
     return requestEvidence(store, snapshot, evidence, pricing, scope);
   }
   return eventEvidence(store, evidence, scope);
@@ -364,26 +364,11 @@ function activityEvidence(store: OverviewFactStore, snapshot: OverviewSnapshot, 
 
 function eventEvidence(store: OverviewFactStore, evidence: OverviewEvidenceQuery, scope: FactEvidenceScope): OverviewEvidencePage {
   const selection = new PageSelection<Candidate>(evidence, scope), selected = eventConditions(evidence, scope);
-  let query: string, values: Value[];
-  if (evidence.kind === "sequence") {
-    const where = [revisionWhere, scope.time, "f.active=1", "f.kind='tool_call'", "f.tool IS NOT NULL AND f.tool<>''",
-      "EXISTS (SELECT 1 FROM overview_fact_events u WHERE u.revision=f.revision AND u.kind='user' AND u.active=1 AND u.turn_id=f.turn_id)"];
-    values = [...scope.values];
-    for (const [condition, value] of [["f.turn_id=?", evidence.turnId], ["f.tool=?", evidence.tool],
-      ["json_extract(f.json,'$.resource.server')=?", evidence.server], ["json_array(f.tool,json_extract(f.json,'$.resource.server'))=?", evidence.toolId]] as const) {
-      if (value) { where.push(condition); values.push(value); }
-    }
-    query = `WITH calls AS (SELECT f.*,json_extract(f.json,'$.resource.server') AS server FROM overview_fact_events f WHERE ${where.join(" AND ")}),
-      failures AS (SELECT *,MIN(CASE WHEN status='failure' THEN ordinal END) OVER (PARTITION BY revision,turn_id,tool,server) AS failure_ordinal FROM calls)
-      SELECT ${candidateColumns("event")} FROM failures f ${joinRevision} WHERE f.ordinal>=f.failure_ordinal`;
-  } else {
-    query = `SELECT ${candidateColumns("event")},f.tool,json_extract(f.json,'$.resource.kind')='mcp' AS external FROM overview_fact_events f ${joinRevision}
-      WHERE ${selected.where} AND f.kind='tool_call'
-      ${evidence.kind === "failures" ? "AND f.status='failure'" : ""}`;
-    values = selected.values;
-  }
-  for (const row of store.iterateRows<Candidate & { tool?: string; external?: number }>(query, values)) {
-    if (evidence.kind !== "sequence" && evidence.category
+  const query = `SELECT ${candidateColumns("event")},f.tool,json_extract(f.json,'$.resource.kind')='mcp' AS external FROM overview_fact_events f ${joinRevision}
+    WHERE ${selected.where} AND f.kind='tool_call'
+    ${evidence.kind === "failures" ? "AND f.status='failure'" : ""}`;
+  for (const row of store.iterateRows<Candidate & { tool?: string; external?: number }>(query, selected.values)) {
+    if (evidence.category
       && toolCategory(row.tool, row.external ? { kind: "mcp", name: "" } : undefined) !== evidence.category) continue;
     selection.add(row);
   }

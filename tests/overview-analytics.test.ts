@@ -197,14 +197,6 @@ test("工具唯一配对补结果、歧义不推测，成功八失败二未知�
     event("a", "second-result", undefined, { kind: "tool_result", callId: "id", status: "success" })]);
   assert.equal(ambiguous[0]!.pairing, "ambiguous"); assert.equal(ambiguous[0]!.status, "unknown");
 });
-test("失败后续仅同真实轮次，同轮多个失败共同后续身份去重", () => {
-  const input = source({ sessions: [session("a")], events: [event("a", "user"),
-    ...["failure", "failure", "success"].map((status, index) => event("a", `call-${index}`, undefined,
-      { kind: "tool_call", ordinal: index + 2, tool: "read_file", status: status as "failure" | "success" })),
-    event("a", "next-turn", undefined, { kind: "tool_call", ordinal: 5, turnId: "turn-2", tool: "read_file", status: "success" })] });
-  const sequences = buildOverviewReport(input, query, pricing, now).process.failureSequences;
-  assert.equal(sequences.length, 1); assert.equal(sequences[0]!.failures.length, 2); assert.equal(sequences[0]!.calls.length, 3);
-});
 test("过程调查不再生成请求计时字段", () => {
   const timings = [
     { basis: "recorded" as const, window: "response" as const, method: "zcode_request_span" as const },
@@ -214,7 +206,7 @@ test("过程调查不再生成请求计时字段", () => {
   const input = source({ sessions: [session("a")], requests: timings.map((timing, index) => request("a", `timing-${index}`, undefined, {
     outputTokens: 50, timing: { ...timing, completion: "explicit", durationMs: 2000 } })) });
   const report = buildOverviewReport(input, query, pricing, now);
-  assert.deepEqual(Object.keys(report.process).sort(), ["tools", "categories", "results", "failures", "failureSequences"].sort());
+  assert.deepEqual(Object.keys(report.process).sort(), ["tools", "categories", "results", "failures"].sort());
 });
 test("部分Token不与完整请求竞争峰值，零分项保留零", () => {
   const input = source({ sessions: [session("a")], requests: [request("a", "complete"),

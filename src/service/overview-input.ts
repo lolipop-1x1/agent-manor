@@ -28,7 +28,7 @@ export function overviewQuery(raw: Record<string, unknown>, allowEvidence = fals
 }
 
 const enums = {
-  kind: ["activity", "sessions", "requests", "resources", "tools", "failures", "combinations", "observations", "sequence", "delegation"],
+  kind: ["activity", "sessions", "requests", "resources", "tools", "failures", "combinations", "observations", "delegation"],
   scope: ["global", "usage"], period: ["selected", "current", "previous", "recent", "recent_previous"],
   relationship: ["main", "child", "fork"], resourceKind: ["skill", "mcp"], resourceEvidenceKind: ["skill_call", "skill_read", "mcp"],
   category: ["read", "search", "edit", "command", "delegate", "external", "other"], status: ["success", "failure", "unknown"],
@@ -51,7 +51,7 @@ export function overviewEvidenceQuery(raw: unknown): OverviewEvidenceQuery {
   for (const [field, choices] of Object.entries(enums)) {
     if (record[field] !== undefined && !(choices as readonly unknown[]).includes(record[field])) invalid(`evidence.${field}`);
   }
-  if (record.sort === "duration" && (record.kind === "requests" || record.kind === "sequence" && record.scope === "usage")) invalid("evidence.sort");
+  if (record.sort === "duration" && record.kind === "requests") invalid("evidence.sort");
   for (const field of textFields) if (record[field] !== undefined) textValue(record[field], `evidence.${field}`);
   for (const field of ["from", "to", "day"] as const) if (record[field] !== undefined && !validDay(record[field])) invalid(`evidence.${field}`);
   if (record.from && record.to && String(record.from) > String(record.to)) invalid("evidence.from/to");

@@ -59,7 +59,6 @@ export interface WeeklyReviewRecord {
   tool?: string;
   server?: string;
   failures?: number;
-  subsequentCalls?: number;
   completion?: "explicit" | "inferred" | "unconfirmed";
   eligible?: boolean;
   finalEvidence?: SessionMessage["finalEvidence"];
@@ -86,7 +85,7 @@ export interface WeeklyReview {
     children: { sessions: number; requests: number; tokens: number | null; estimatedCost: number | null;
       requestShare: number | null; tokenShare: number | null; costShare: number | null; costCoverage: RequestCost["coverage"];
       tokenSamples: number; tokenMissing: number; userTokenSamples: number; userTokenMissing: number };
-    tools: { calls: number; failures: number; failedRounds: number; subsequentCalls: number; unknownResults: number } };
+    tools: { calls: number; failures: number; failedRounds: number; unknownResults: number } };
   coverage: { gaps: Gap[]; gapCount: number; missingTimeEvents: number; missingTimeRequests: number;
     unassignedRequests: number; excludedChildUserInputs: number; triggerIdentity: "unclassified";
     automaticSessions: number | null; unknownTriggerSessions: number; unsupportedCompressionSessions: number; unknownForkSessions: number };
@@ -259,23 +258,11 @@ export interface OverviewToolRow extends OverviewCountRow {
   projects: OverviewCountRow[];
   days: { day: string; calls: number; failures: number }[];
 }
-export interface OverviewFailureSequence {
-  sessionId: string;
-  turnId: string;
-  tool: string;
-  server?: string;
-  failures: string[];
-  /** 多次失败的共同后续调用按身份只存一份。 */
-  calls: { messageId: string; resultMessageId?: string; ordinal: number; status: "success" | "failure" | "unknown" }[];
-  truncated: boolean;
-}
 export interface OverviewProcess {
   tools: OverviewToolRow[];
   categories: OverviewCountRow[];
   results: OverviewResultCounts;
   failures: number;
-  /** 聚合内部使用；HTTP 报告返回空数组，完整过程通过分页证据查询。 */
-  failureSequences: OverviewFailureSequence[];
 }
 export interface OverviewDelegation {
   eligibleMainSessions: number;
@@ -326,7 +313,7 @@ export interface OverviewRepository {
   gapCount: number;
 }
 export type OverviewEvidenceKind = "activity" | "sessions" | "requests" | "resources" | "tools"
-  | "failures" | "combinations" | "observations" | "sequence" | "delegation";
+  | "failures" | "combinations" | "observations" | "delegation";
 export interface OverviewEvidenceQuery {
   kind: OverviewEvidenceKind;
   scope?: "global" | "usage";

@@ -1,7 +1,7 @@
 import type { SessionSummary, SessionUsage } from "../session-contracts.js";
 import type { ResourceUsageEvent } from "../resource-contracts.js";
 import type { OverviewActivity, OverviewActivityDay, OverviewCountRow, OverviewDelegation, OverviewDelegationSummary, OverviewEvent,
-  OverviewFailureSequence, OverviewProcess, OverviewQuery, OverviewRange, OverviewReport, OverviewResourceCombination,
+  OverviewProcess, OverviewQuery, OverviewRange, OverviewReport, OverviewResourceCombination,
   OverviewResourceObservation, OverviewResourceRow, OverviewResources, OverviewResultCounts, OverviewSource,
   OverviewToolCategory, OverviewToolRow } from "../overview-contracts.js";
 import type { PricingView } from "../usage/pricing.js";
@@ -229,31 +229,6 @@ export function buildResources(source: OverviewSource, selected: OverviewSource,
     missingTimeEvents: source.resources.filter(event => sessionIds.has(event.sessionId) && validResource(event) && localDay(event.occurredAt, timezone) === null).length,
     missingTurnEvents: selected.resources.filter(event => !turns.has(`${event.sessionId}\u0000${event.turnId}`)).length };
 }
-export function failureSequences(source: OverviewSource, selectedCalls: OverviewEvent[]): OverviewFailureSequence[] {
-  const turns = trueTurnIds(source), groups = new Map<string, OverviewEvent[]>();
-  const allCalls = new Map<string, OverviewEvent[]>();
-  for (const event of source.events) {
-    if (event.kind !== "tool_call" || !event.tool || !isActivityEvent(event)) continue;
-    const key = JSON.stringify([event.sessionId, event.turnId, event.tool, event.resource?.server ?? null]), group = allCalls.get(key) ?? [];
-    group.push(event); allCalls.set(key, group);
-  }
-  for (const event of selectedCalls) {
-    if (!event.tool || !turns.has(`${event.sessionId}\u0000${event.turnId}`)) continue;
-    const key = JSON.stringify([event.sessionId, event.turnId, event.tool, event.resource?.server ?? null]), group = groups.get(key) ?? []; group.push(event); groups.set(key, group);
-  }
-  const result: OverviewFailureSequence[] = [];
-  for (const calls of groups.values()) {
-    calls.sort((a, b) => a.ordinal - b.ordinal || a.id.localeCompare(b.id));
-    const firstFailure = calls.findIndex(call => call.status === "failure"); if (firstFailure < 0) continue;
-    const first = calls[firstFailure]!, retained = calls.slice(firstFailure);
-    const completeCalls = allCalls.get(JSON.stringify([first.sessionId, first.turnId, first.tool, first.resource?.server ?? null])) ?? [], retainedIds = new Set(retained.map(call => call.id));
-    result.push({ sessionId: first.sessionId, turnId: first.turnId, tool: first.tool!, server: first.resource?.server,
-      failures: retained.filter(call => call.status === "failure").map(call => call.id),
-      calls: retained.map(call => ({ messageId: call.id, resultMessageId: call.resultMessageId, ordinal: call.ordinal, status: call.status ?? "unknown" })),
-      truncated: completeCalls.some(call => call.ordinal > first.ordinal && !retainedIds.has(call.id)) });
-  }
-  return result;
-}
 export function buildProcess(source: OverviewSource, selected: OverviewSource, timezone: string, global?: OverviewProcess, detail = true): OverviewProcess {
   const sessionById = new Map(source.sessions.map(session => [session.id, session]));
   const selectedIds = new Set(selected.events.filter(event => event.kind === "tool_call").map(event => `${event.sessionId}\u0000${event.id}`));
@@ -278,8 +253,7 @@ export function buildProcess(source: OverviewSource, selected: OverviewSource, t
   }).sort((a, b) => b.count - a.count || a.key.localeCompare(b.key));
   if (global) return global;
   return { tools, categories: aggregateCount(calls, event => toolCategory(event.tool, event.resource), event => event.sessionId, event => event.status),
-    results: resultCounts(calls.map(event => event.status)), failures: calls.filter(event => event.status === "failure").length,
-    failureSequences: detail ? failureSequences(source, calls) : [] };
+    results: resultCounts(calls.map(event => event.status)), failures: calls.filter(event => event.status === "failure").length };
 }
 const relationUnknown = (session: SessionSummary, byId: Map<string, SessionSummary>) => session.relationship === "child" && (!session.parentSessionId || !byId.has(session.parentSessionId))
   || session.gaps.some(gap => ["diagnostics.sessions.store.m004", "diagnostics.sessions.store.m005", "diagnostics.sessions.store.m006", "diagnostics.sessions.store.m017"].includes(gap.messageDescriptor?.key ?? ""));

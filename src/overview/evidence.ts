@@ -6,7 +6,7 @@ import type { PricingView } from "../usage/pricing.js";
 import { StoreError } from "../index/store.js";
 import { instant } from "../usage/analytics.js";
 import { usageDimensionKey } from "../usage/dimensions.js";
-import { failureSequences, isActivityEvent, matchesGlobalSession, pairToolCalls, resourceIdentity, resourceNameDescriptor, resourceObservations,
+import { isActivityEvent, matchesGlobalSession, pairToolCalls, resourceIdentity, resourceNameDescriptor, resourceObservations,
   selectedSource, toolCategory, trueTurnIds } from "./analytics.js";
 import { daysBetween, localDay, resolveOverviewRange, resolveTimezone } from "./dates.js";
 
@@ -18,8 +18,8 @@ export function buildOverviewEvidence(source: OverviewSource, input: OverviewQue
   const timezone = resolveTimezone(input.timezone), query = { ...input, timezone };
   const range = prepared?.range ?? resolveOverviewRange(source, query, now), page = evidence.page ?? 1, pageSize = evidence.pageSize ?? 25;
   if (!Number.isInteger(page) || page < 1 || !Number.isInteger(pageSize) || pageSize < 1 || pageSize > 200) invalid("page");
-  if (!["activity", "sessions", "requests", "resources", "tools", "failures", "combinations", "observations", "sequence", "delegation"].includes(evidence.kind)) invalid("kind");
-  if (evidence.sort === "duration" && (evidence.kind === "requests" || evidence.kind === "sequence" && evidence.scope === "usage")) invalid("sort");
+  if (!["activity", "sessions", "requests", "resources", "tools", "failures", "combinations", "observations", "delegation"].includes(evidence.kind)) invalid("kind");
+  if (evidence.sort === "duration" && evidence.kind === "requests") invalid("sort");
   let period: OverviewPeriod = range;
   if (evidence.period === "current") period = range.comparison?.current ?? range;
   if (evidence.period === "previous") { if (!range.comparison) return empty(); period = range.comparison.previous; }
@@ -126,7 +126,7 @@ export function buildOverviewEvidence(source: OverviewSource, input: OverviewQue
     rows.push(...selected.requests.filter(request => includedRow(request.sessionId, request.usage.id) && ![request.usage.messageId, ...(request.usage.requestMessageIds ?? []),
         request.usage.timing?.end?.source !== "mirror" ? request.usage.timing?.end?.messageId : undefined]
       .some(id => id && included.has(`${request.sessionId}\u0000${id}`))).map(requestRow));
-  } else if (evidence.kind === "requests" || evidence.kind === "sequence" && evidence.scope === "usage") {
+  } else if (evidence.kind === "requests") {
     rows = selected.requests.filter(request => includedRow(request.sessionId, request.usage.id) && (!evidence.turnId || request.usage.turnId === evidence.turnId)
       && (!evidence.requestId || request.usage.id === evidence.requestId)
       && (evidence.ordinalFrom === undefined || request.ordinal !== undefined && request.ordinal >= evidence.ordinalFrom)
@@ -146,16 +146,10 @@ export function buildOverviewEvidence(source: OverviewSource, input: OverviewQue
       resourceNameDescriptor: resourceNameDescriptor(event),
       resourceKind: event.kind === "mcp" ? "mcp" : "skill", resourceEvidenceKind: event.kind,
       tool: event.tool, status: event.status, durationMs: event.durationMs, values: { pairing: event.pairing, server: event.server ?? null } }));
-  } else if (evidence.kind === "tools" || evidence.kind === "failures" || evidence.kind === "sequence") {
+  } else if (evidence.kind === "tools" || evidence.kind === "failures") {
     const selectedIds = new Set(selected.events.filter(event => event.kind === "tool_call").map(event => `${event.sessionId}\u0000${event.id}`));
     const calls = pairToolCalls(source.events.filter(isActivityEvent)).filter(event => selectedIds.has(`${event.sessionId}\u0000${event.id}`));
-    if (evidence.kind === "sequence") {
-      const sequences = failureSequences(source, calls).filter(sequence => (!evidence.turnId || sequence.turnId === evidence.turnId)
-        && (!evidence.tool || sequence.tool === evidence.tool) && (!evidence.server || sequence.server === evidence.server)
-        && (!evidence.toolId || JSON.stringify([sequence.tool, sequence.server ?? null]) === evidence.toolId));
-      const included = new Set(sequences.flatMap(sequence => sequence.calls.map(call => `${sequence.sessionId}\u0000${call.messageId}`)));
-      rows = calls.filter(event => included.has(`${event.sessionId}\u0000${event.id}`)).map(eventRow);
-    } else rows = calls.filter(event => includedRow(event.sessionId, event.id) && eventMatch(event) && (evidence.kind !== "failures" || event.status === "failure")).map(eventRow);
+    rows = calls.filter(event => includedRow(event.sessionId, event.id) && eventMatch(event) && (evidence.kind !== "failures" || event.status === "failure")).map(eventRow);
   } else if (evidence.kind === "combinations") {
     const turns = trueTurnIds(source), units = new Map<string, typeof selected.resources>();
     for (const event of selected.resources) {

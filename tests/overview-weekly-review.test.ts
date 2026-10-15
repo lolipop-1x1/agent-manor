@@ -185,7 +185,7 @@ test("七天复盘口径：完整跨周轮次、缓存档位、压缩支持、�
     assert.equal(report.extensions.children.requests, 1);
     assert.equal(report.extensions.children.tokens, 55);
     assert.equal(report.extensions.tools.failures, 1);
-    assert.equal(report.extensions.tools.subsequentCalls, 1);
+    assert.equal("subsequentCalls" in report.extensions.tools, false);
     assert.equal(report.extensions.tools.failedRounds, 1);
     const prompt = weeklyReviewDetail(data, { kind: "prompts" }).rows.find(row => row.messageId === "user")!;
     assert.equal(prompt.promptCharacters, 4);
@@ -326,7 +326,7 @@ test("后台复盘跳过年范围准备，重复和重启缓存复用，价格�
     const persisted = new Database(join(directory, "overview-results.sqlite"));
     try {
       const cached = persisted.prepare("SELECT key,json FROM overview_results WHERE json_extract(key,'$[1]')='review'").get() as { key: string; json: string };
-      assert.equal(JSON.parse(cached.key)[0], "weekly-review-v13");
+      assert.equal(JSON.parse(cached.key)[0], "weekly-review-v14");
       const incomplete = JSON.parse(cached.json); delete incomplete.sessions.roundsPerSession;
       persisted.prepare("UPDATE overview_results SET json=? WHERE key=?").run(JSON.stringify(incomplete), cached.key);
     } finally { persisted.close(); }
@@ -545,7 +545,7 @@ test("范围移动复用不可变修订覆盖，跨时区缓存至多四份且�
   } finally { factsStore.close(); }
 }));
 
-test("后续工具调用保留MCP服务器身份，Codex短标题复用既有请求提取并保持长度原值", async () => fixture(async store => {
+test("工具失败保留MCP服务器身份，Codex短标题复用既有请求提取并保持长度原值", async () => fixture(async store => {
   const prompt = "<in-app-browser-context>\n合成注入\n</in-app-browser-context>\n## My request:\n请修复合成页面";
   const r = revision(store, "server", [
     message("server", "user", 1, "2026-10-07T01:00:00Z", { text: prompt }),
@@ -556,12 +556,11 @@ test("后续工具调用保留MCP服务器身份，Codex短标题复用既有请
   const version = store.publish(store.createJob().id, [r], []), factsStore = new WeeklyReviewFactStore(store);
   try {
     const query = { version, timezone: "UTC" }, data = buildWeeklyReview((await factsStore.source(query, now)).facts, query, pricing, now);
-    assert.equal(data.review.extensions.tools.subsequentCalls, 0);
     assert.equal(data.review.rounds.longest[0]!.title, "请修复合成页面");
     assert.equal(data.review.preferences.promptCharacters.average, promptCharacterCount(prompt));
     const row = weeklyReviewDetail(data, { kind: "tools", key: data.ranks.tools![0]!.key }).rows[0]!;
     assert.equal(row.server, "server-a");
-    assert.equal(row.subsequentCalls, 0);
+    assert.equal("subsequentCalls" in row, false);
   } finally { factsStore.close(); }
 }));
 
@@ -631,7 +630,7 @@ test("无请求用量的执行仍算活跃，规则升级重算一次后复用�
   finally { cached.close(); }
 }));
 
-test("千个旧会话与五千请求首算只扫描近期候选，工具后续聚合及重读保持有界", async context => fixture(async store => {
+test("千个旧会话与五千请求首算只扫描近期候选，工具失败聚合及重读保持有界", async context => fixture(async store => {
   const old = Array.from({ length: 1000 }, (_, index) => revision(store, `old-${index}`, [], [],
     { startedAt: "2026-09-01T00:00:00Z", updatedAt: "2026-09-02T00:00:00Z" }));
   const longPrompt = "😀 \u3000\n".repeat(1000);
@@ -653,7 +652,6 @@ test("千个旧会话与五千请求首算只扫描近期候选，工具后续�
     assert.equal(data.review.rounds.steps.average, 5000);
     assert.equal(data.review.preferences.promptCharacters.average, 1000);
     assert.equal(data.review.extensions.tools.failures, 500);
-    assert.equal(data.review.extensions.tools.subsequentCalls, 499);
     assert.equal(data.review.cache.requests, 5000);
     const prompt = weeklyReviewDetail(data, { kind: "prompts" }).rows[0]!;
     assert(prompt.title.length <= 240, "定位只保留120个Unicode字符的短片段");

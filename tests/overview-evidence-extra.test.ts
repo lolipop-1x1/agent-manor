@@ -109,15 +109,15 @@ async function comparePage(facts: OverviewFactStore, source: OverviewSource, inp
   assert.deepEqual(plain(actual), plain(expected), `${JSON.stringify({ input, evidence })}`);
 }
 
-test("复杂证据按页身份与完整 oracle 等价：活动、会话、关系、序列和范围", async () => fixture(async (_store, facts, source) => {
+test("复杂证据按页身份与完整 oracle 等价：活动、会话、关系、失败和范围", async () => fixture(async (_store, facts, source) => {
   const cases: OverviewEvidenceQuery[] = [
     { kind: "sessions" }, { kind: "sessions", rule: "13" },
     { kind: "sessions", scope: "usage", model: "model-a" }, { kind: "sessions", undated: true },
     { kind: "sessions", period: "previous" }, { kind: "sessions", project: "/workspace/project-b" },
     { kind: "delegation" }, { kind: "delegation", transition: "delegation", modelFrom: "model-a", modelTo: "model-c", sessionId: "child" },
-    { kind: "delegation", relationship: "child" }, { kind: "sequence", tool: "read_file" },
-    { kind: "sequence", server: "server-a" }, { kind: "sequence", day: "2026-02-01" },
-    { kind: "sequence", scope: "usage", model: "model-a" },
+    { kind: "delegation", relationship: "child" }, { kind: "failures", tool: "read_file" },
+    { kind: "failures", server: "server-a" }, { kind: "failures", day: "2026-02-01" },
+    { kind: "requests", scope: "usage", model: "model-a" },
     { kind: "requests", transition: "switch" }, { kind: "requests", transition: "switch", modelFrom: "model-a", modelTo: "model-b" },
     { kind: "tools", category: "read" }, { kind: "failures", category: "external" },
     { kind: "activity" }, { kind: "activity", scope: "usage" }, { kind: "activity", day: "2026-02-01" },
@@ -126,7 +126,7 @@ test("复杂证据按页身份与完整 oracle 等价：活动、会话、关系
   ];
   for (const filters of [query, { ...query, models: ["model-a"] }, { ...query, window: "all" as const, from: undefined, to: undefined }]) {
     for (const evidence of cases) for (const sort of ["recent", "tokens", "ordinal", "duration"] as const) {
-      if (sort === "duration" && (evidence.kind === "requests" || evidence.kind === "sequence" && evidence.scope === "usage")) continue;
+      if (sort === "duration" && evidence.kind === "requests") continue;
       for (const page of [1, 2, 3]) await comparePage(facts, source, filters, { ...evidence, sort, page, pageSize: 2 });
     }
   }

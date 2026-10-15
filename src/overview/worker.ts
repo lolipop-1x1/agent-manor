@@ -114,7 +114,7 @@ async function handle(request: OverviewWorkerRequest): Promise<void> {
       const report = buildOverviewReport(narrow, query, pricing, now);
       report.repositories = buildOverviewRepositories(repositories!, request.repositories, facts().snapshot(query), query, report.range, report.timezone);
       Object.assign(report, generateOverviewInsights(narrow, query, pricing, report));
-      report.process.failureSequences = []; result = report;
+      result = report;
     }
     parentPort!.postMessage({ id: request.id, type: "result", result } satisfies OverviewWorkerResponse);
   } catch (error) {
