@@ -4,6 +4,7 @@ import { applyEdits, modify, parse as parseJson } from "jsonc-parser";
 import type { ParseError } from "jsonc-parser";
 import { isAlias, isMap, parseDocument, visit } from "yaml";
 import type { NativeResourceRule, ResourceInventoryEntry } from "../resource-inventory-contracts.js";
+import type { ResourceConfigurationPreview } from "../resource-management-contracts.js";
 import { ServiceError } from "../service/input.js";
 
 /** 此契约只保存在受限管理库与恢复材料中，不投影到 API。 */
@@ -29,6 +30,32 @@ export interface ConfigChange {
   existingParents?: string[][];
 }
 const readonly = (): never => { throw new ServiceError("FORBIDDEN", "当前配置写法未完成保留编辑适配，只读", { key: "diagnostics.resources.configEditor.m001" }); };
+
+/** 从受限变更材料中投影控制字段，注册内容只表达存在性。 */
+export function configurationPreview(change: ConfigChange, restore = false): ResourceConfigurationPreview {
+  let before: ResourceConfigurationPreview["before"] = "missing", after: ResourceConfigurationPreview["after"] = "present";
+  let kind: ResourceConfigurationPreview["kind"] = "boolean";
+  let keyPath = change.keyPath;
+  let selector: ResourceConfigurationPreview["selector"];
+  const parse = (value: string): unknown => value === "missing" ? undefined : JSON.parse(value);
+  const boolean = (value: unknown): boolean | "missing" => typeof value === "boolean" ? value : "missing";
+  if (change.after === "missing") { kind = "registration"; before = "present"; after = "missing"; }
+  else if (change.type === "skill-marker") { kind = "marker"; }
+  else if (change.type === "toml-mcp") {
+    before = change.hadEnabled ? change.enabledBefore! : "missing"; after = false; keyPath = [...keyPath, "enabled"];
+  } else if (change.type === "toml-skill" || change.nativeRule?.type === "activation") {
+    const oldRules = parse(change.before) as { enabled?: boolean }[], newRules = parse(change.after) as { enabled?: boolean }[];
+    before = boolean(oldRules.at(-1)?.enabled); after = boolean(newRules.at(-1)?.enabled);
+    keyPath = [...keyPath, "[]", "enabled"];
+    selector = change.skillPath ? { key: "path", value: change.skillPath } : { key: "name", value: change.nativeRule!.identity!.name };
+  } else if (change.type === "json-skill" || change.nativeRule?.type === "name-list") {
+    kind = "membership";
+    const count = (value: string) => change.type === "json-skill" ? (parse(value) as { disabled: number }).disabled : Number(parse(value));
+    before = count(change.before) > 0; after = count(change.after) > 0;
+    selector = { key: "name", value: change.skillName ?? change.nativeRule!.member! };
+  } else { before = boolean(parse(change.before)); after = boolean(parse(change.after)); }
+  return { path: change.path, keyPath, kind, selector, before: restore ? after : before, after: restore ? before : after };
+}
 const object = (value: unknown): Record<string, unknown> => value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
 const get = (value: unknown, keys: readonly string[]): unknown => keys.reduce((current: unknown, key) => Object.hasOwn(object(current), key) ? object(current)[key] : undefined, value);
 const stable = (value: unknown): string => value === undefined ? "missing" : JSON.stringify(value, (_key, item: unknown) => {

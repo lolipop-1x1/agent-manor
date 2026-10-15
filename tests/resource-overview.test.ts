@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import type { Client } from "../src/clients.js";
 import type { ResourceHistoryIdentity, ResourceUsageCoverage, ResourceUsageResult, ResourceUsageRow, ResourceUsageStats } from "../src/resource-contracts.js";
-import type { ResourceInventoryEntry } from "../src/resource-inventory-contracts.js";
+import type { ResourceInventoryEntry, ResourceInventorySnapshot } from "../src/resource-inventory-contracts.js";
 import type { ResourceLocalRow, ResourceOverviewQuery } from "../src/resource-service-contracts.js";
 import { buildResourceOverview, buildSkillOverview } from "../src/resources/overview.js";
 import { emptyResourceUsageStats, resourceOverviewIdentity, resourceUsageIdentity } from "../src/resources/usage.js";
@@ -46,6 +46,40 @@ function local(name: string, id = name, extra: Partial<ResourceLocalRow> = {}): 
 function overview(resources: ResourceUsageRow[], localRows: ResourceLocalRow[] = [], query: ResourceOverviewQuery = {}) {
   return buildSkillOverview(history(resources), localRows, query, options);
 }
+
+test("本地位置独立表达存在、未发现及不可读，不改写名称级历史统计", () => {
+  const present = local("guide");
+  const inventory: ResourceInventorySnapshot = { observedAt: options.observedAt, entries: present.entries, bodies: [present.body], gaps: [], sources: [{
+    id: "source:codex", client: "codex", kind: "skill", scope: "user", path: "/synthetic/skills", format: "skill-directory", origin: "standard", readState: "ok", observedAt: options.observedAt, verified: true,
+  }] };
+  const recorded = history([historyRow("guide"), historyRow("retired")]);
+  const result = buildResourceOverview(recorded, [present], {}, { ...options, inventory });
+  assert.equal(result.resources.find(row => row.identity.name === "guide")!.localSummary?.presence, "present");
+  assert.equal(result.resources.find(row => row.identity.name === "retired")!.localSummary?.presence, "missing");
+  assert.strictEqual(result.resources.find(row => row.identity.name === "retired")!.stats, recorded.resources[1]!.stats);
+  inventory.sources[0]!.readState = "unreadable";
+  const unknown = buildResourceOverview(recorded, [present], { presence: "unknown" }, { ...options, inventory });
+  assert.deepEqual(unknown.resources.map(row => row.identity.name), ["retired"]);
+  assert.equal(unknown.resources[0]!.stats?.events, 3);
+  assert.equal(unknown.counts.all, 1);
+});
+
+test("位置项目按文件归属筛选，不将用户文件的项目生效范围算作项目位置", () => {
+  const scopes = [{ scope: "user" as const }, { scope: "project" as const, project: "/synthetic/project" }];
+  const shared = local("guide", "shared", { entries: [entry("shared", "codex", { selectionScopes: scopes }), entry("shared", "pi", { entryPath: "/synthetic/codex/skills/shared", selectionScopes: scopes })] });
+  const project = local("guide", "project", { entries: [entry("project", "codex", { scope: "project", project: "/synthetic/project" })] });
+  const other = local("other");
+  const recorded = history([historyRow("guide", { stats: stats({ events: 11, sessions: 7 }) }), historyRow("retired")]);
+  const global = buildResourceOverview(recorded, [shared, other], { scope: "user" }, options).resources.find(row => row.identity.name === "guide")!;
+  assert.deepEqual(global.localSummary, { presence: "present", locations: 1, scopes: ["user"] });
+  assert.equal(buildResourceOverview(recorded, [shared], { scope: "project" }, options).total, 0);
+  const result = buildResourceOverview(recorded, [shared, project, other], { scope: "project", locationProject: "/synthetic/project" }, options);
+  assert.equal(result.total, 1);
+  assert.equal(result.resources[0]!.identity.name, "guide");
+  assert.deepEqual(result.resources[0]!.localSummary, { presence: "present", locations: 1, scopes: ["project"] });
+  assert.equal(result.resources[0]!.stats?.events, 11);
+  assert.equal(result.resources[0]!.stats?.sessions, 7);
+});
 
 test("同名跨 Agent 多本体与共享入口合并一行，历史事件和会话不累加本地统计", () => {
   const recorded = historyRow("guide", { clients: ["codex", "claude"], stats: stats({ events: 9, sessions: 3,

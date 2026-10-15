@@ -22,7 +22,7 @@ const clamp = (value: number, min: number, max: number) => Math.max(min, Math.mi
 
 export function workspaceWidths(viewport: number, preferred: Partial<PanelWidths>, collapsed: CollapsedPanels, variant: WorkspaceVariant = "map"): PanelWidths {
   const defaults = variant === "sessions" ? { sidebar: viewport > 1250 ? 300 : 280, details: 260 }
-    : variant === "resources" ? { sidebar: 180, details: 340 }
+    : variant === "resources" ? { sidebar: 220, details: viewport > 1600 ? 440 : viewport > 1250 ? 400 : 360 }
     : { sidebar: viewport > 1250 ? 200 : viewport >= 1024 ? 175 : 170, details: viewport > 1250 ? 320 : 285 };
   const widths = {
     sidebar: collapsed.sidebar ? railWidth : clamp(preferred.sidebar ?? defaults.sidebar, limits.sidebar.min, limits.sidebar.max),

@@ -60,6 +60,16 @@ export interface ResourceStatusSummary extends Pick<ResourceStatus, "observedAt"
 export type ResourceOverviewCandidate = "all" | "used" | "unused" | "low" | "old" | "review" | "favorite";
 export interface ResourceOverviewQuery extends Omit<ResourceLocalQuery, "candidate"> {
   candidate?: ResourceOverviewCandidate;
+  /** 本地位置筛选不改变历史事件的统计范围。 */
+  presence?: "present" | "missing" | "unknown";
+  scope?: "user" | "project";
+  locationProject?: string;
+  historyProject?: string;
+}
+export interface ResourceLocalSummary {
+  presence: "present" | "missing" | "unknown";
+  locations: number;
+  scopes: ("user" | "project")[];
 }
 export interface ResourceOverviewRow extends ResourceFavoriteProjection {
   identity: ResourceUsageIdentity;
@@ -75,6 +85,7 @@ export interface ResourceOverviewRow extends ResourceFavoriteProjection {
   candidates: Exclude<ResourceOverviewCandidate, "all">[];
   localBodyIds: string[];
   hasHistory: boolean;
+  localSummary?: ResourceLocalSummary;
 }
 export interface ResourceOverviewResult {
   resources: ResourceOverviewRow[];
@@ -120,6 +131,7 @@ export interface ResourceMapNode extends ResourceFavoriteProjection {
   hasHistory: boolean;
   partial: boolean;
   usageUnassociated: boolean;
+  localSummary?: ResourceLocalSummary;
 }
 export interface ResourceMapResult {
   kind: ResourceKind;

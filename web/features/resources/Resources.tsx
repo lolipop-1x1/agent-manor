@@ -1,12 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type MouseEvent, type ReactNode, type RefObject } from "react";
 import * as Dialog from "@radix-ui/react-dialog";
 import * as Tooltip from "@radix-ui/react-tooltip";
-import { ArrowClockwise, ArrowSquareOut, CaretLeft, CaretRight, ClockCounterClockwise, Funnel, List, MagnifyingGlass, MapTrifold, Plus, Prohibit, Star, Trash, X } from "@phosphor-icons/react";
+import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
+import { ArrowClockwise, ArrowSquareOut, CaretDown, CaretLeft, CaretRight, CaretUp, CaretUpDown, DotsThree, Funnel, List, MagnifyingGlass, MapTrifold, Plus, Star, X } from "@phosphor-icons/react";
 import { CLIENTS, type Client } from "../../../src/clients";
 import type { ResourceKind, ResourceUsageDetail, ResourceUsageDistribution, ResourceUsageEvidenceResult, ResourceUsageStats, ResourceUsageTrend } from "../../../src/resource-contracts";
 import type { ResourceInventoryDiagnostic, ResourceInventoryEntry, ResourceManualSource } from "../../../src/resource-inventory-contracts";
 import type { ResourceManagementAction, ResourceManagementInput, ResourceManagementOperation, ResourceManagementOperations, ResourceManagementPreview } from "../../../src/resource-management-contracts";
-import type { ResourceCandidate, ResourceLocalDetail, ResourceLocalQuery, ResourceLocalResult, ResourceLocalRow, ResourceMapQuery, ResourceMapSummary, ResourceOverviewCandidate, ResourceOverviewDetail, ResourceOverviewQuery, ResourceOverviewSummary, ResourceOverviewRow, ResourceStatus, ResourceStatusSummary } from "../../../src/resource-service-contracts";
+import type { ResourceCandidate, ResourceMapQuery, ResourceMapSummary, ResourceOverviewCandidate, ResourceOverviewDetail, ResourceOverviewQuery, ResourceOverviewSummary, ResourceOverviewRow, ResourceStatus, ResourceStatusSummary } from "../../../src/resource-service-contracts";
 import { ApiError, errorMessage, isAborted } from "../../shared/api";
 import { DatePicker } from "../../shared/ui/DatePicker";
 import { FilterSelect } from "../../shared/ui/FilterSelect";
@@ -15,8 +16,9 @@ import { HelpPopover } from "../../shared/ui/HelpPopover";
 import { ProjectPicker } from "../../shared/ui/ProjectPicker";
 import { ResourcePagination } from "../../shared/ui/ResourcePagination";
 import { ResourceMap } from "./ResourceMap";
+import { ResourceChange } from "./ResourceChange";
+import { physicalLocationEntry, resourceLocationGroups, type ResourceLocationGroup } from "./resource-location-groups";
 import { normalizeResourceRouteParams } from "./resource-usage-state";
-import { skillDescription, skillDescriptions } from "../../../src/resources/descriptions";
 import { applyResourceFavorites } from "../../../src/resources/favorites";
 import { localFavoriteRow, mapFavorites, overviewFavorites, pendingFavoriteIds, type PendingFavorite } from "./resource-favorites";
 import { ResizableWorkspace } from "../../shared/layout/ResizableWorkspace";
@@ -29,30 +31,25 @@ import "./resources.css";
 import { RefreshControl } from "../../shared/ui/RefreshControl";
 import { useHistoryRevision } from "../../shared/refresh/useHistoryRefresh";
 
-type ResourceTab = "usage" | "local" | "disabled" | "trash" | "operations";
+type ResourceTab = "usage" | "disabled" | "trash" | "operations";
 interface ResourceRoute {
   kind: ResourceKind; tab: ResourceTab; client: string; project: string; window: string;
   from: string; to: string; q: string; sort: string; order: "asc" | "desc"; candidate: Exclude<ResourceCandidate | ResourceOverviewCandidate, "review">;
   low: number; inactive: number; favorite: boolean; page: number; pageSize: number; id: string; evidencePage: number; tool: string;
   view: "list" | "map"; metric: "uses" | "sessions"; maxValue: string;
   zeroPage: number; zeroSize: number;
+  presence: "all" | "present" | "missing" | "unknown"; scope: "all" | "user" | "project"; locationProject: string;
+  detail: "overview" | "locations" | "history";
 }
 const tabs: { value: ResourceTab; labelKey: string }[] = [
-  { value: "usage", labelKey: "resources.tab.usage" }, { value: "local", labelKey: "resources.tab.local" },
+  { value: "usage", labelKey: "resources.workspace.resourceList" },
   { value: "disabled", labelKey: "resources.tab.disabled" },
   { value: "trash", labelKey: "resources.tab.trash" }, { value: "operations", labelKey: "resources.tab.operations" },
-];
-const candidates = [
-  { value: "all", labelKey: "resources.candidate.allResources" }, { value: "favorite", labelKey: "resources.candidate.favorite" },
-  { value: "unused", labelKey: "resources.candidate.unused" }, { value: "low", labelKey: "resources.candidate.lowUsage" },
-  { value: "old", labelKey: "resources.candidate.old" }, { value: "broken", labelKey: "resources.candidate.broken" },
-  { value: "duplicate", labelKey: "resources.candidate.duplicate" },
 ];
 const overviewCandidates: { value: Exclude<ResourceOverviewCandidate, "review">; labelKey: string }[] = [
   { value: "all", labelKey: "resources.candidate.all" }, { value: "used", labelKey: "resources.candidate.used" }, { value: "unused", labelKey: "resources.candidate.unused" },
   { value: "low", labelKey: "resources.candidate.low" }, { value: "old", labelKey: "resources.candidate.old" }, { value: "favorite", labelKey: "resources.candidate.favorite" },
 ];
-const overviewObservationNames = { used: "resources.candidate.used", unused: "resources.candidate.unused", unknown: "resources.observation.unknown", insufficient: "resources.observation.insufficient" };
 const positive = (value: string | null, fallback = 1) => {
   const number = Number(value);
   return Number.isSafeInteger(number) && number > 0 ? number : fallback;
@@ -72,21 +69,25 @@ const readRoute = (): ResourceRoute => {
   const maximum = ["uses", "sessions"].includes(params.get("metric") ?? "") ? params.get("maxValue") : null;
   return {
     kind,
-    tab: params.get("tab") === "standby" ? "trash" : tabs.some(tab => tab.value === params.get("tab")) ? params.get("tab") as ResourceTab : "usage",
+    tab: params.get("tab") === "local" ? "usage" : params.get("tab") === "standby" ? "trash" : tabs.some(tab => tab.value === params.get("tab")) ? params.get("tab") as ResourceTab : "usage",
     client: CLIENTS.some(client => client.id === params.get("client")) ? params.get("client")! : "all",
-    project: params.get("project") ?? "all", window: ["7", "30", "90", "custom"].includes(params.get("window") ?? "") ? params.get("window")! : "all",
+    project: params.get("tab") === "local" ? "all" : params.get("project") ?? "all", window: ["7", "30", "90", "custom"].includes(params.get("window") ?? "") ? params.get("window")! : "all",
     from: validDate(params.get("from")), to: validDate(params.get("to")),
     q: params.get("q") ?? "", sort: ["uses", "sessions", "recent", "name"].includes(params.get("sort") ?? "") ? params.get("sort")! : "uses",
     order: params.get("order") === "asc" ? "asc" : params.get("order") === "desc" ? "desc" : params.get("sort") === "name" ? "asc" : "desc",
-    candidate: [...candidates, ...overviewCandidates].some(item => item.value === params.get("candidate")) ? params.get("candidate") as ResourceRoute["candidate"] : "all",
+    candidate: overviewCandidates.some(item => item.value === params.get("candidate")) ? params.get("candidate") as ResourceRoute["candidate"] : "all",
     low: Math.min(10000, positive(params.get("low"), 2)), inactive: Math.min(3650, positive(params.get("inactive"), 90)),
-    favorite: params.get("favorite") === "true", page: positive(params.get("page")), pageSize: [20, 50, 100].includes(Number(params.get("pageSize"))) ? Number(params.get("pageSize")) : 20, id: params.get("id") ?? "",
+    favorite: params.get("favorite") === "true", page: positive(params.get("page")), pageSize: [20, 50, 100].includes(Number(params.get("pageSize"))) ? Number(params.get("pageSize")) : 20, id: params.get("id") ?? (params.get("tab") === "local" ? params.get("bodyId") : null) ?? "",
     evidencePage: positive(params.get("evidencePage")), tool: params.get("tool") ?? "",
     view: (params.get("view") ?? preferredView) === "map" ? "map" : "list",
     metric: params.get("metric") === "sessions" ? "sessions" : "uses",
     maxValue: maximum !== null && /^\d+$/.test(maximum) && Number.isSafeInteger(Number(maximum)) ? String(Number(maximum)) : "",
     zeroPage: positive(params.get("zeroPage")),
     zeroSize: [20, 50, 100].includes(Number(params.get("zeroSize"))) ? Number(params.get("zeroSize")) : 20,
+    presence: ["present", "missing", "unknown"].includes(params.get("presence") ?? "") ? params.get("presence") as ResourceRoute["presence"] : "all",
+    scope: ["user", "project"].includes(params.get("scope") ?? "") ? params.get("scope") as ResourceRoute["scope"] : "all",
+    locationProject: params.get("locationProject") ?? (params.get("tab") === "local" && params.get("project") !== "none" ? params.get("project") : null) ?? "all",
+    detail: params.get("tab") === "local" ? "locations" : ["locations", "history"].includes(params.get("detail") ?? "") ? params.get("detail") as ResourceRoute["detail"] : "overview",
   };
 };
 function address(route: ResourceRoute) {
@@ -95,9 +96,6 @@ function address(route: ResourceRoute) {
     evidencePage: route.evidencePage === 1 ? undefined : route.evidencePage })}`;
 }
 const shortPath = (path: string) => path.split(/[\\/]/).filter(Boolean).at(-1) ?? path;
-const usageAgentLabel = (row: { clients: Client[] }) => row.clients.length ? t("resources.agentCount", { count: row.clients.length }) : t("resources.client.notRecorded");
-const observationNames = { recorded: "resources.observation.recorded", unknown: "resources.observation.unknown", insufficient: "resources.observation.insufficient" };
-const observationLabel = (row: ResourceLocalRow) => row.observation === "recorded" && row.usage?.events === 0 ? t("resources.candidate.unused") : t(observationNames[row.observation]);
 const sourceStateNames = { ok: "resources.source.ok", missing: "resources.source.missing", unreadable: "resources.source.unreadable", invalid: "resources.source.invalid", unsupported: "resources.source.unsupported" };
 const methodNames = { directory: "resources.entry.directory", symlink: "resources.entry.symlink", file: "resources.entry.file", registration: "resources.entry.registration" };
 const resultNames = { success: "resources.result.success", failure: "resources.result.failure", unknown: "resources.result.unknown" };
@@ -175,35 +173,34 @@ function selectResourceRow(event: MouseEvent<HTMLTableRowElement>, id: string, o
   const selection = globalThis.getSelection();
   if (event.defaultPrevented || event.target instanceof Element && event.target.closest("button, a, input, select, textarea, summary, [role=button], [role=combobox]")
     || selection && !selection.isCollapsed && event.currentTarget.contains(selection.anchorNode)) return;
+  event.currentTarget.focus();
   onSelect(id);
 }
-function OverviewTable({ rows, route, onSort, onSelect, onFavorite, onManage, favoritePending }: {
+function OverviewTable({ rows, route, onSort, onSelect, onFavorite, favoritePending }: {
   rows: ResourceOverviewRow[]; route: ResourceRoute; onSort: (sort: string) => void; onSelect: (id: string) => void;
-  onFavorite: (id: string, favorite: boolean) => void; onManage: (row: ResourceOverviewRow) => void; favoritePending: ReadonlySet<string>;
+  onFavorite: (id: string, favorite: boolean) => void; favoritePending: ReadonlySet<string>;
 }) {
-  useI18n();
+  const { dateTime } = useI18n();
   const columns = [{ value: "name", label: route.kind === "skill" ? t("resources.kind.skill") : t("resources.column.server") }, { value: "uses", label: t("resources.column.calls") }, { value: "sessions", label: t("resources.column.sessions") }, { value: "recent", label: t("resources.column.recent") }];
   const heading = (column: { value: string; label: string }) => <th key={column.value} scope="col" aria-sort={route.sort === column.value ? route.order === "asc" ? "ascending" : "descending" : "none"}>
-    <button aria-label={t("resources.sortColumn", { column: column.label })} onClick={() => onSort(column.value)}>{column.label}<span aria-hidden="true">{route.sort === column.value ? route.order === "asc" ? "↑" : "↓" : "↕"}</span></button>
+    <button aria-label={t("resources.sortColumn", { column: column.label })} onClick={() => onSort(column.value)}>{column.label}{route.sort === column.value ? route.order === "asc" ? <CaretUp size={12} aria-hidden="true" /> : <CaretDown size={12} aria-hidden="true" /> : <CaretUpDown size={12} aria-hidden="true" />}</button>
   </th>;
   return <div className="resource-overview-scroll"><table className="resource-overview-table" aria-label={t("resources.overview", { kind: route.kind === "skill" ? t("resources.kind.skill") : t("resources.kind.mcp") })}>
-    <thead><tr>{heading(columns[0]!)}<th scope="col">{t("resources.agent.involved")}</th>{columns.slice(1).map(heading)}<th scope="col">{t("resources.column.management")}</th></tr></thead>
-    <tbody>{rows.map(row => <tr className={`resource-overview-row${route.id === row.identity.id ? " is-selected" : ""}`} key={row.identity.id} onClick={event => selectResourceRow(event, row.identity.id, onSelect)}>
-      <th scope="row"><div className="resource-overview-name"><button aria-label={t("resources.viewUsage", { name: messageText(row.identity.nameDescriptor, row.identity.name) })} onClick={() => onSelect(row.identity.id)}>{messageText(row.identity.nameDescriptor, row.identity.name)}</button><FavoriteButton name={messageText(row.identity.nameDescriptor, row.identity.name)} favorite={row.favorite} disabled={favoritePending.has(row.identity.id)} onClick={() => onFavorite(row.identity.id, row.favorite)} /></div><SkillDescription description={row.description} /></th>
-      <td className="resource-overview-agents" title={formatList(row.clients.map(clientLabel))}>{usageAgentLabel(row)}</td>
+    <colgroup><col className="resource-name-column" /><col className="resource-location-column" /><col className="resource-number-column" /><col className="resource-number-column resource-session-column" /><col className="resource-recent-column" /><col className="resource-favorite-column" /></colgroup>
+    <thead><tr>{heading(columns[0]!)}<th scope="col">{t("resources.workspace.localLocation")}</th>{columns.slice(1).map(heading)}<th scope="col"><span className="sr-only">{t("resources.candidate.favorite")}</span></th></tr></thead>
+    <tbody>{rows.map(row => <tr tabIndex={0} aria-label={t("resources.viewUsage", { name: messageText(row.identity.nameDescriptor, row.identity.name) })} aria-selected={route.id === row.identity.id} data-resource-row={row.identity.id} className={`resource-overview-row${route.id === row.identity.id ? " is-selected" : ""}`} key={row.identity.id} onClick={event => selectResourceRow(event, row.identity.id, onSelect)} onKeyDown={event => { if (event.target === event.currentTarget && ["Enter", " "].includes(event.key)) { event.preventDefault(); onSelect(row.identity.id); } }}>
+      <th scope="row"><div className="resource-overview-name"><button tabIndex={-1} aria-label={t("resources.viewUsage", { name: messageText(row.identity.nameDescriptor, row.identity.name) })} onClick={() => onSelect(row.identity.id)}>{messageText(row.identity.nameDescriptor, row.identity.name)}</button></div><SkillDescription description={row.description} /></th>
+      <td className="resource-local-summary"><span className={`resource-presence is-${row.localSummary?.presence ?? "unknown"}`}>{t(`resources.workspace.presence.${row.localSummary?.presence ?? "unknown"}`)}</span>{!!row.localSummary?.locations && <small>{row.localSummary.scopes.length === 2 ? t("resources.workspace.globalAndProject") : t(row.localSummary.scopes[0] === "user" ? "resources.scope.user" : "resources.scope.project")} · {t("resources.workspace.locationCount", { count: row.localSummary.locations })}</small>}</td>
       <td>{row.stats ? fmt(row.stats.events) : "—"}</td>
       <td>{row.stats ? fmt(row.stats.sessions) : "—"}</td>
-      <td className="resource-overview-time">{row.stats?.lastUsedAt ? dateLabel(row.stats.lastUsedAt) : "—"}</td>
-      <td><button className="button resource-manage" aria-label={t("resources.management.resource", { name: messageText(row.identity.nameDescriptor, row.identity.name) })} data-manage-resource={row.identity.id} onClick={() => onManage(row)}>{t("resources.management.manage")}</button></td>
+      <td className="resource-overview-time">{row.stats?.lastUsedAt ? <Tooltip.Root><Tooltip.Trigger asChild><time dateTime={row.stats.lastUsedAt} tabIndex={0}>{dateTime(row.stats.lastUsedAt, { year: "2-digit", month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit", hour12: false })}</time></Tooltip.Trigger><Tooltip.Portal><Tooltip.Content className="tooltip" sideOffset={6}>{dateLabel(row.stats.lastUsedAt)}</Tooltip.Content></Tooltip.Portal></Tooltip.Root> : "—"}</td>
+      <td><FavoriteButton name={messageText(row.identity.nameDescriptor, row.identity.name)} favorite={row.favorite} disabled={favoritePending.has(row.identity.id)} onClick={() => onFavorite(row.identity.id, row.favorite)} /></td>
     </tr>)}</tbody>
   </table></div>;
 }
 function SkillDescription({ description }: { description?: string }) {
   if (!description) return null;
   return <Tooltip.Root><Tooltip.Trigger asChild><p tabIndex={0} className="resource-description-preview">{description}</p></Tooltip.Trigger><Tooltip.Portal><Tooltip.Content className="tooltip resource-description-tooltip" side="bottom" align="start" sideOffset={6} collisionPadding={12}>{description}</Tooltip.Content></Tooltip.Portal></Tooltip.Root>;
-}
-function SkillDescriptions({ entries }: { entries: ResourceInventoryEntry[] }) {
-  return <>{skillDescriptions(entries).map(description => <p className="resource-description-full" key={description}>{description}</p>)}</>;
 }
 function Stats({ stats, kind }: { stats: ResourceUsageStats | null; kind: ResourceKind }) {
   const { percent } = useI18n();
@@ -271,9 +268,7 @@ export default function Resources({ active, onSession, onHistoryReading, history
   const [map, setMap] = useState<ResourceMapSummary | null>(null);
   const mapLoadedQuery = useRef("");
   const [overviewDetail, setOverviewDetail] = useState<FavoriteResult<ResourceOverviewDetail> | null>(null);
-  const [local, setLocal] = useState<ResourceLocalResult | null>(null);
   const [usageDetail, setUsageDetail] = useState<ResourceUsageDetail | null>(null);
-  const [localDetail, setLocalDetail] = useState<ResourceLocalDetail | null>(null);
   const [evidence, setEvidence] = useState<ResourceUsageEvidenceResult | null>(null);
   const [archives, setArchives] = useState<ResourceArchiveResult | null>(null);
   const [operations, setOperations] = useState<ResourceManagementOperations | null>(null);
@@ -304,18 +299,19 @@ export default function Resources({ active, onSession, onHistoryReading, history
   const [compact, setCompact] = useState(() => globalThis.innerWidth < 1024);
   const [filtersOpen, setFiltersOpen] = useState(false);
   const [sourcesOpen, setSourcesOpen] = useState(false);
+  const [sourceLocationsOpen, setSourceLocationsOpen] = useState(false);
+  const [sourceGapsOpen, setSourceGapsOpen] = useState(false);
+  const [sourcePage, setSourcePage] = useState(1);
+  useEffect(() => { if (!sourcesOpen) { setSourceLocationsOpen(false); setSourceGapsOpen(false); setSourcePage(1); } }, [sourcesOpen]);
   const [sourceAdding, setSourceAdding] = useState(false);
   const [sourcePending, setSourcePending] = useState(false);
   const [sourceError, setSourceError] = useState<Error | null>(null);
   const [source, setSource] = useState<ResourceManualSource>({ client: "codex", kind: "skill", path: "", format: "skill-directory" });
   const [sourceKeys, setSourceKeys] = useState("mcpServers");
-  const [entriesOpen, setEntriesOpen] = useState(false);
-  const [entriesTarget, setEntriesTarget] = useState<{ id: string; name: string; rows: ResourceLocalRow[] | null } | null>(null);
-  const [entriesError, setEntriesError] = useState<Error | null>(null);
-  const entriesRequest = useRef(0);
   const managementFocus = useRef<HTMLElement | null>(null);
   const managementFocusAction = useRef<string | null>(null);
-  const pendingManagement = useRef<ResourceManagementInput | null>(null);
+  const managementReturnPending = useRef(false);
+  const managementHeading = useRef<HTMLHeadingElement>(null);
   const [managementOpen, setManagementOpen] = useState(false);
   const [managementInput, setManagementInput] = useState<ResourceManagementInput | null>(null);
   const [preview, setPreview] = useState<ResourceManagementPreview | null>(null);
@@ -335,6 +331,7 @@ export default function Resources({ active, onSession, onHistoryReading, history
   const restoreScroll = useRef(false);
   const busy = useRef({ list: listLoading, detail: detailLoading || evidenceLoading });
   busy.current = { list: listLoading, detail: detailLoading || evidenceLoading };
+  const resourceBrowseRoute = useRef<ResourceRoute | null>(null);
   const routeRef = useRef(route);
   const managementRequest = useRef(0);
   routeRef.current = route;
@@ -346,14 +343,23 @@ export default function Resources({ active, onSession, onHistoryReading, history
   useEffect(() => {
     if (!active || !location.hash.startsWith("#resources")) return;
     const params = new URLSearchParams(location.hash.split("?")[1]);
-    if (!["uses", "sessions"].includes(params.get("metric") ?? "") || ["calls", "reads"].includes(params.get("sort") ?? "") || params.get("tab") === "standby" || params.get("candidate") === "review" || params.has("reviewPage") || params.has("reviewSize")) history.replaceState({}, "", address(route));
+    if (!["uses", "sessions"].includes(params.get("metric") ?? "") || ["calls", "reads"].includes(params.get("sort") ?? "") || ["standby", "local"].includes(params.get("tab") ?? "") || params.get("candidate") === "review" || params.has("reviewPage") || params.has("reviewSize")) history.replaceState({}, "", address(route));
   }, [active, route]);
   const filter = (patch: Partial<ResourceRoute>) => { if (listScroll.current) listScroll.current.scrollTop = 0; update({ ...patch, page: 1, evidencePage: 1, zeroPage: 1 }); };
   const sort = (value: string) => filter({ sort: value, order: route.sort === value ? route.order === "asc" ? "desc" : "asc" : value === "name" ? "asc" : "desc" });
   const pageChange = (page: number) => { if (listScroll.current) listScroll.current.scrollTop = 0; update({ page }); };
-  const showLocal = (id: string) => { savedScroll.current = 0; update({ tab: "local", id, project: "all", page: 1, q: "", candidate: "all", favorite: false, evidencePage: 1, tool: "" }, true); };
-  const select = (id: string) => { savedScroll.current = listScroll.current?.scrollTop ?? 0; setDetailsCollapsed(false); update({ id, evidencePage: 1, tool: "" }, true); };
-  const showHistory = (id: string) => { savedScroll.current = 0; update({ tab: "usage", id, page: 1, q: "", candidate: "all", favorite: false, evidencePage: 1, tool: "" }, true); };
+  const select = (id: string) => {
+    if (busy.current.list || refreshing || applying) return;
+    managementRequest.current++; setManagementOpen(false); managementReturnPending.current = false;
+    savedScroll.current = listScroll.current?.scrollTop ?? 0; setDetailsCollapsed(false); update({ id, evidencePage: 1, tool: "" }, true);
+  };
+  const closeDetails = () => {
+    if (applying) return;
+    const id = routeRef.current.id;
+    managementRequest.current++; setManagementOpen(false); setDetailsCollapsed(true);
+    if (compact) update({ id: "" });
+    requestAnimationFrame(() => document.querySelector<HTMLElement>(`[data-resource-row="${CSS.escape(id)}"]`)?.focus());
+  };
   const currentFavorites = () => pendingFavoriteIds(favoriteBase.current ?? [], favoriteActions.current);
   const acceptFavoriteIds = (ids: string[], revision: number) => {
     if (revision === favoriteRevision.current) favoriteBase.current = ids;
@@ -365,13 +371,10 @@ export default function Resources({ active, onSession, onHistoryReading, history
     setSourceStatus(current => current ? { ...current, favoriteIds } : current);
     setOverview(current => current ? { ...overviewFavorites(current, favorites), favoriteIds } : current);
     setMap(current => current ? mapFavorites(current, favorites) : current);
-    setLocal(current => current ? { ...current, rows: current.rows.map(row => localFavoriteRow(row, favorites)) } : current);
     setUsageDetail(current => current ? { ...current, resource: applyResourceFavorites(current.resource, favorites) } : current);
     setOverviewDetail(current => current ? { ...current, favoriteIds, resource: applyResourceFavorites(current.resource, favorites),
       history: current.history ? { ...current.history, resource: applyResourceFavorites(current.history.resource, favorites) } : null,
       local: current.local.map(row => localFavoriteRow(row, favorites)) } : current);
-    setLocalDetail(current => current ? { ...current, row: localFavoriteRow(current.row, favorites) } : current);
-    setEntriesTarget(current => current?.rows ? { ...current, rows: current.rows.map(row => localFavoriteRow(row, favorites)) } : current);
   };
   useEffect(() => {
     const navigate = () => {
@@ -406,35 +409,36 @@ export default function Resources({ active, onSession, onHistoryReading, history
       .finally(() => { if (!controller.signal.aborted) setSourcesLoading(false); });
     return () => controller.abort();
   }, [active, sourcesOpen, reload, sourcesRetry]);
-  const invalidTime = (route.tab === "usage" || route.tab === "local") && route.window === "custom" && !!route.from && !!route.to && route.from > route.to;
+  const invalidTime = (route.tab === "usage") && route.window === "custom" && !!route.from && !!route.to && route.from > route.to;
   const overviewRanking = route.tab === "usage";
   const mapView = overviewRanking && route.view === "map";
   const overviewData = mapView ? map : overview;
   const overviewLabel = t("resources.overview", { kind: route.kind === "skill" ? t("resources.kind.skill") : t("resources.kind.mcp") });
   const scopeQuery = useMemo<ResourceUsageFilters>(() => ({ kind: route.kind,
     client: route.client === "all" ? undefined : route.client as Client,
-    project: overviewRanking || route.project === "all" ? undefined : route.project,
+    project: route.project === "all" ? undefined : route.project,
     ...timeFilters(route.window, route.from, route.to, timeAnchor),
   }), [route.kind, route.client, route.project, route.window, route.from, route.to, timeAnchor, overviewRanking]);
   const query = useMemo<ResourceUsageFilters>(() => ({ ...scopeQuery, q: queryText, sort: route.sort as ResourceUsageFilters["sort"],
     order: route.order, page: route.page, pageSize: route.pageSize, favorite: route.favorite || undefined,
   }), [scopeQuery, queryText, route.sort, route.order, route.page, route.pageSize, route.favorite]);
-  const localQuery = useMemo<ResourceLocalQuery>(() => ({ ...query, favorite: undefined, candidate: route.candidate === "used" ? "all" : route.candidate, lowSessions: route.low, inactiveDays: route.inactive }), [query, route.candidate, route.low, route.inactive]);
-  const overviewQuery = useMemo<ResourceOverviewQuery>(() => ({ ...query, candidate: overviewCandidates.some(candidate => candidate.value === route.candidate) ? route.candidate as ResourceOverviewCandidate : "all", lowSessions: route.low, inactiveDays: route.inactive }), [query, route.candidate, route.low, route.inactive]);
-  const mapQuery = useMemo<ResourceMapQuery>(() => ({ ...scopeQuery, q: queryText,
+  const positionQuery = useMemo(() => ({ presence: route.presence === "all" ? undefined : route.presence, scope: route.scope === "all" ? undefined : route.scope,
+    locationProject: route.locationProject === "all" ? undefined : route.locationProject, historyProject: scopeQuery.project }), [route.presence, route.scope, route.locationProject, scopeQuery.project]);
+  const overviewQuery = useMemo<ResourceOverviewQuery>(() => ({ ...query, ...positionQuery, candidate: overviewCandidates.some(candidate => candidate.value === route.candidate) ? route.candidate as ResourceOverviewCandidate : "all", lowSessions: route.low, inactiveDays: route.inactive }), [query, positionQuery, route.candidate, route.low, route.inactive]);
+  const mapQuery = useMemo<ResourceMapQuery>(() => ({ ...scopeQuery, ...positionQuery, q: queryText,
     candidate: overviewCandidates.some(candidate => candidate.value === route.candidate) ? route.candidate as ResourceOverviewCandidate : "all",
     favorite: route.favorite || undefined, lowSessions: route.low, inactiveDays: route.inactive,
     metric: route.metric, maxValue: route.maxValue === "" ? undefined : Number(route.maxValue),
-  }), [scopeQuery, queryText, route.candidate, route.favorite, route.low, route.inactive, route.metric, route.maxValue]);
-  const listRequestQuery = mapView ? mapQuery : overviewRanking ? overviewQuery : localQuery;
+  }), [scopeQuery, positionQuery, queryText, route.candidate, route.favorite, route.low, route.inactive, route.metric, route.maxValue]);
+  const listRequestQuery = mapView ? mapQuery : overviewQuery;
   const mapRequestKey = JSON.stringify([mapQuery, reload, historyReload, favoriteReload]);
   const evidenceRequestKey = JSON.stringify([scopeQuery, route.evidencePage, route.tool, reload, historyReload]);
-  const hasListData = mapView ? !!map : overviewRanking ? !!overview : route.tab === "local" ? !!local : route.tab === "operations" ? !!operations : !!archives;
+  const hasListData = mapView ? !!map : overviewRanking ? !!overview : route.tab === "operations" ? !!operations : !!archives;
   const listProgress = <span className="resource-list-progress" role={listLoading && hasListData ? "status" : undefined} aria-label={listLoading && hasListData ? t("resources.loading.resources") : undefined}>{listLoading && hasListData && <ArrowClockwise size={14} className="spinning" aria-hidden="true" />}</span>;
   useEffect(() => { try { localStorage.setItem("agent-manor:resource-view", route.view); } catch { /* 存储不可用时视图仍可切换。 */ } }, [route.view]);
   const managementQuery = useMemo(() => ({ kind: route.kind, client: route.client === "all" ? undefined : route.client, project: route.project === "all" ? undefined : route.project, q: queryText, page: route.page, pageSize: route.pageSize }), [route.kind, route.client, route.project, queryText, route.page, route.pageSize]);
   useEffect(() => {
-    if (!active || invalidTime || route.tab !== "usage" && route.tab !== "local") return;
+    if (!active || invalidTime || route.tab !== "usage") return;
     // 证据页返回时复用同范围的完整地图，保持已挂载相机的缩放与位置。
     if (mapView && map && mapLoadedQuery.current === mapRequestKey) { setListLoading(false); setError(null); return; }
     const controller = new AbortController(); setListLoading(true); setError(null);
@@ -444,21 +448,16 @@ export default function Resources({ active, onSession, onHistoryReading, history
       if (controller.signal.aborted) return;
       mapLoadedQuery.current = mapRequestKey; setMap(favoriteBase.current ? mapFavorites(result, currentFavorites()) : result);
     }).catch(failure => { if (!isAborted(failure)) setError(failure instanceof Error ? failure : new Error(errorMessage(failure))); }).finally(done); }
-    else if (overviewRanking) void resourceApi.overview(overviewQuery, controller.signal).then(result => {
+    else void resourceApi.overview(overviewQuery, controller.signal).then(result => {
       if (controller.signal.aborted) return;
       const favorites = result.favoriteIds ? acceptFavoriteIds(result.favoriteIds, revision) : currentFavorites();
       setOverview(overviewFavorites(result, favorites)); setStatus(current => current ? { ...current, favoriteIds: [...favorites] } : current);
       if (result.page !== routeRef.current.page) update({ page: result.page });
     }).catch(failure => { if (!isAborted(failure)) setError(failure instanceof Error ? failure : new Error(errorMessage(failure))); }).finally(done);
-    else void resourceApi.local(localQuery, controller.signal).then(result => {
-      if (controller.signal.aborted) return;
-      setLocal(favoriteBase.current ? { ...result, rows: result.rows.map(row => localFavoriteRow(row, currentFavorites())) } : result);
-      if (result.page !== routeRef.current.page) update({ page: result.page });
-    }).catch(failure => { if (!isAborted(failure)) setError(failure instanceof Error ? failure : new Error(errorMessage(failure))); }).finally(done);
     return () => controller.abort();
   }, [active, mapView, listRequestQuery, mapRequestKey, overviewRanking, route.tab, reload, historyReload, favoriteReload, invalidTime]);
   useEffect(() => {
-    if (!active || route.tab === "usage" || route.tab === "local") return;
+    if (!active || route.tab === "usage") return;
     const controller = new AbortController(); setListLoading(true); setError(null);
     const task = route.tab === "operations" ? resourceApi.operations(managementQuery, controller.signal).then(setOperations)
       : resourceApi.archives(route.tab, managementQuery, controller.signal).then(setArchives);
@@ -467,14 +466,14 @@ export default function Resources({ active, onSession, onHistoryReading, history
   }, [active, route.tab, managementQuery, reload]);
   useEffect(() => {
     if (!active) return;
-    if (!route.id || invalidTime || route.tab !== "usage" && route.tab !== "local") { setUsageDetail(null); setOverviewDetail(null); setLocalDetail(null); setDetailLoading(false); setDetailError(null); setEvidenceError(null); detailTarget.current = ""; return; }
+    if (!route.id || invalidTime || route.tab !== "usage") { setUsageDetail(null); setOverviewDetail(null); setDetailLoading(false); setDetailError(null); setEvidenceError(null); detailTarget.current = ""; return; }
     const target = JSON.stringify([route.tab, route.kind, route.id]);
-    if (detailTarget.current !== target) { setUsageDetail(null); setOverviewDetail(null); setLocalDetail(null); setEvidence(null); }
+    if (detailTarget.current !== target) { setUsageDetail(null); setOverviewDetail(null); setEvidence(null); }
     detailTarget.current = target;
     const controller = new AbortController(); setDetailLoading(true); setDetailError(null); setEvidenceError(null);
     detailPending.current = true;
     const revision = favoriteRevision.current;
-    const task = overviewRanking ? resourceApi.overviewDetail(route.id, { ...scopeQuery, lowSessions: route.low, inactiveDays: route.inactive }, controller.signal).then(async result => {
+    const task = resourceApi.overviewDetail(route.id, { ...scopeQuery, ...positionQuery, lowSessions: route.low, inactiveDays: route.inactive }, controller.signal).then(async result => {
       // 详情与证据同版准备成功后一起替换，更新期间保留完整旧内容。
       const nextEvidence = result.history ? await resourceApi.evidence(result.history.resource.identity.id,
         { ...scopeQuery, version: result.history.version, page: route.evidencePage, pageSize: 10, tool: route.tool || undefined }, controller.signal) : null;
@@ -482,12 +481,10 @@ export default function Resources({ active, onSession, onHistoryReading, history
       if (result.favoriteIds) acceptFavoriteIds(result.favoriteIds, revision);
       if (result.history) evidenceLoaded.current = { id: result.history.resource.identity.id, key: evidenceRequestKey };
       setEvidence(nextEvidence); setEvidenceLoading(false); setOverviewDetail(result); setUsageDetail(result.history); syncFavorites();
-    }) : resourceApi.localDetail(route.id, { ...scopeQuery, lowSessions: route.low, inactiveDays: route.inactive }, controller.signal).then(result => {
-      if (!controller.signal.aborted) setLocalDetail(favoriteBase.current ? { ...result, row: localFavoriteRow(result.row, currentFavorites()) } : result);
     });
     void task.catch(failure => { if (!isAborted(failure)) setDetailError(failure instanceof Error ? failure : new Error(errorMessage(failure))); }).finally(() => { if (!controller.signal.aborted) { detailPending.current = false; setDetailLoading(false); } });
     return () => { controller.abort(); detailPending.current = false; };
-  }, [active, route.id, route.tab, scopeQuery, overviewRanking, route.low, route.inactive, reload, historyReload, invalidTime]);
+  }, [active, route.id, route.tab, scopeQuery, positionQuery, overviewRanking, route.low, route.inactive, reload, historyReload, invalidTime]);
   const evidenceId = overviewRanking ? usageDetail?.resource.identity.id : route.id;
   useEffect(() => {
     if (detailPending.current || detailError) return;
@@ -561,36 +558,18 @@ export default function Resources({ active, onSession, onHistoryReading, history
     catch (failure) { setSourceError(failure instanceof Error ? failure : new Error(errorMessage(failure))); }
     finally { setSourcePending(false); }
   };
-  const openEntries = async (id: string, name: string, rows?: ResourceLocalRow[]) => {
-    managementFocus.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
-    managementFocusAction.current = null;
-    const sequence = ++entriesRequest.current;
-    setEntriesTarget({ id, name, rows: rows ?? null }); setEntriesError(null); setEntriesOpen(true);
-    if (rows) return;
-    try {
-      const result = await resourceApi.overviewDetail(id, { ...scopeQuery, lowSessions: route.low, inactiveDays: route.inactive });
-      if (sequence === entriesRequest.current) setEntriesTarget({ id, name, rows: result.local });
-    } catch (failure) { if (sequence === entriesRequest.current) setEntriesError(failure instanceof Error ? failure : new Error(errorMessage(failure))); }
-  };
-  const closeEntries = (open: boolean) => { if (!open) entriesRequest.current++; setEntriesOpen(open); };
   const managementFocusTarget = () => {
     if (managementFocus.current?.isConnected) return managementFocus.current;
-    const selector = managementFocusAction.current ? `[data-resource-action="${CSS.escape(managementFocusAction.current)}"]`
-      : entriesTarget ? `[data-manage-resource="${CSS.escape(entriesTarget.id)}"]` : null;
+    const selector = managementFocusAction.current ? `[data-resource-action="${CSS.escape(managementFocusAction.current)}"]` : null;
     return selector ? document.querySelector<HTMLElement>(`.resource-detail-dialog ${selector}`) ?? document.querySelector<HTMLElement>(selector) : null;
   };
-  const chooseEntryAction = (input: ResourceManagementInput) => { pendingManagement.current = input; closeEntries(false); };
-  const afterEntriesClose = () => {
-    const input = pendingManagement.current; pendingManagement.current = null;
-    if (input) requestAnimationFrame(() => void showManagement(input, true));
-  };
-  const showManagement = async (input: ResourceManagementInput, fromEntries = false) => {
-    if (!fromEntries) {
+  const showManagement = async (input: ResourceManagementInput) => {
+    {
       managementFocus.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
       managementFocusAction.current = managementFocus.current?.dataset.resourceAction ?? null;
     }
     const sequence = ++managementRequest.current;
-    setManagementInput(input); setManagementOpen(true); setPreview(null); setManagementError(null); setManagementResult(null); setPurgeConfirmed(false); setPreviewLoading(true);
+    setManagementInput(input); setManagementOpen(true); setDetailsCollapsed(false); setPreview(null); setManagementError(null); setManagementResult(null); setPurgeConfirmed(false); setPreviewLoading(true);
     try {
       const result = await resourceApi.preview(input);
       if (sequence === managementRequest.current) setPreview(result);
@@ -601,19 +580,33 @@ export default function Resources({ active, onSession, onHistoryReading, history
     if (applying) return;
     if (!open) { managementRequest.current++; setPreview(null); }
     setManagementOpen(open);
+    if (!open) { managementReturnPending.current = true; update({ detail: "locations" }); }
   };
+  useEffect(() => {
+    if (!managementOpen) return;
+    const frame = requestAnimationFrame(() => managementHeading.current?.focus());
+    return () => cancelAnimationFrame(frame);
+  }, [managementOpen]);
+  useEffect(() => {
+    if (managementOpen || detailLoading || !managementReturnPending.current) return;
+    const frame = requestAnimationFrame(() => {
+      (managementFocusTarget() ?? document.querySelector<HTMLElement>(".resource-detail-tabs [aria-current=page]"))?.focus();
+      managementReturnPending.current = false;
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [managementOpen, detailLoading, compact]);
   const applyManagement = async () => {
     if (!preview || applying || preview.action === "purge" && !purgeConfirmed) return;
     setApplying(true); setManagementError(null);
     try {
       const result = await resourceApi.apply(preview.id);
       setManagementResult(result); setPreview(null); setReload(value => value + 1);
-      if (result.status === "success") { if (!overviewRanking) update({ id: "" }); setFeedback({ key: result.clientEffect === "pending_reload" ? "resources.feedback.completePending" : "resources.feedback.completeUnknown" }); }
+      if (result.status === "success") setFeedback({ key: result.clientEffect === "pending_reload" ? "resources.feedback.completePending" : "resources.feedback.completeUnknown" });
     } catch (failure) { setManagementError(failure instanceof Error ? failure : new Error(errorMessage(failure))); setPreview(null); }
     finally { setApplying(false); }
   };
   const reset = () => {
-    const defaults = { ...readRoute(), client: "all", project: "all", window: "all", from: "", to: "", q: "", sort: "uses", metric: "uses" as const, order: "desc" as const, candidate: "all" as const, low: 2, inactive: 90, favorite: false, page: 1, pageSize: 20, maxValue: "", zeroPage: 1 };
+    const defaults = { ...readRoute(), client: "all", project: "all", window: "all", from: "", to: "", q: "", sort: "uses", metric: "uses" as const, order: "desc" as const, candidate: "all" as const, low: 2, inactive: 90, favorite: false, page: 1, pageSize: 20, maxValue: "", zeroPage: 1, presence: "all" as const, scope: "all" as const, locationProject: "all" };
     setQueryText(""); update(defaults);
   };
   const clientOptions = status?.clientOptions?.[route.kind][route.tab];
@@ -623,102 +616,97 @@ export default function Resources({ active, onSession, onHistoryReading, history
   const projectOptions = [{ value: "all", label: t("resources.project.all") }, { value: "none", label: t("resources.project.none") }, ...(status?.projects ?? []).map(path => ({ value: path, label: shortPath(path), description: path }))];
   const sourceInScope = (item: { client: Client; kind: ResourceKind; scope: "user" | "project"; project?: string }) => item.kind === route.kind && (route.client === "all" || item.client === route.client)
     && (overviewRanking || route.project === "all" || item.scope === "user" || item.project === route.project);
-  const visibleSources = sourcesOpen && active ? sourceStatus?.sources.filter(sourceInScope) ?? [] : [];
-  const visibleSourceIds = new Set(visibleSources.map(item => item.id));
-  const visibleGaps = sourcesOpen && active ? sourceStatus?.gaps.filter(gap => visibleSourceIds.has(gap.sourceId)) ?? [] : [];
-  const visibleDiagnostics = sourcesOpen && active ? sourceStatus?.diagnostics?.filter(item => sourceInScope(item) && (overviewRanking || route.project === "all" || (route.project === "none" ? !item.project : item.project === route.project))) ?? [] : [];
-  const localIssues = route.tab === "local" && !local?.rows.length && !route.q.trim() ? status?.sourceIssues.filter(sourceInScope) ?? [] : [];
-  const emptyLocalKey = localIssues.some(issue => issue.reason === "unreadable" || issue.reason === "invalid") ? "resources.empty.localUnreadable"
-    : localIssues.some(issue => issue.reason === "unsupported") ? "resources.empty.localUnsupported" : "resources.empty.local";
-  const historyView = route.tab === "usage" || route.tab === "local";
+  const visibleSources = sourcesOpen && active ? [...new Map(sourceStatus?.sources.filter(sourceInScope).map(source => [JSON.stringify([source.path, source.scope, source.project]), source]) ?? []).values()] : [];
+  const sourceCurrentPage = Math.min(sourcePage, Math.max(1, Math.ceil(visibleSources.length / 50)));
+  const visibleSourcePaths = new Map(sourceStatus?.sources.filter(sourceInScope).map(item => [item.id, item.path]));
+  const visibleGaps = sourcesOpen && active ? [...new Map(sourceStatus?.gaps.filter(gap => visibleSourcePaths.has(gap.sourceId) && ["unreadable", "invalid", "limit"].includes(gap.reason)).map(gap => [JSON.stringify([visibleSourcePaths.get(gap.sourceId), gap.reason]), gap]) ?? []).values()] : [];
+  const visibleDiagnostics = sourcesOpen && active ? [...new Map(sourceStatus?.diagnostics?.filter(item => sourceInScope(item) && ["conflict", "invalid_reference"].includes(item.reason)).map(item => [JSON.stringify([item.path, item.reason]), item]) ?? []).values()] : [];
+  const historyView = route.tab === "usage";
   const filters = <div className="resource-filter-content" id={compact ? undefined : "resource-filter-content"}>
-    <div className="resource-field"><span>{overviewRanking ? t("resources.agent.label") : t("resources.client.label")}</span><FilterSelect label={overviewRanking ? t("resources.client.resourceAgent") : t("resources.client.resourceClient")} value={route.client} options={[{ value: "all", label: overviewRanking ? t("resources.client.allAgents") : t("resources.client.all") }, ...availableClientOptions(status?.clientOptions?.[route.kind][route.tab])]} onChange={value => filter({ client: value })} /></div>
-    {!overviewRanking && <div className="resource-field"><span>{t("resources.project.label")}</span><ProjectPicker value={route.project} options={projectOptions} onChange={value => filter({ project: value })} /></div>}
-    {historyView && <><div className="resource-field"><span>{t("resources.time.label")}</span><FilterSelect label={t("resources.time.filter")} value={route.window} options={[{ value: "all", label: t("resources.time.all") }, { value: "7", label: t("resources.time.seven") }, { value: "30", label: t("resources.time.thirty") }, { value: "90", label: t("resources.time.ninety") }, { value: "custom", label: t("resources.time.custom") }]} onChange={value => { setTimeAnchor(Date.now()); filter({ window: value }); }} /></div>
+    {historyView && <>
+      <div className="resource-field"><span>{t("resources.workspace.localState")}</span><FilterSelect label={t("resources.workspace.localState")} value={route.presence} options={["all", "present", "missing", "unknown"].map(value => ({ value, label: t(`resources.workspace.presence.${value}`) }))} onChange={value => filter({ presence: value as ResourceRoute["presence"] })} /></div>
+      <div className="resource-field"><span>{t("resources.workspace.locationScope")}</span><FilterSelect label={t("resources.workspace.locationScope")} value={route.scope} options={[{ value: "all", label: t("resources.workspace.allScopes") }, { value: "user", label: t("resources.scope.user") }, { value: "project", label: t("resources.scope.project") }]} onChange={value => filter({ scope: value as ResourceRoute["scope"], locationProject: "all" })} /></div>
+      {route.scope === "project" && <div className="resource-field"><span>{t("resources.workspace.locationProject")}</span><ProjectPicker label={t("resources.workspace.locationProject")} value={route.locationProject} options={projectOptions.filter(option => option.value !== "none")} onChange={value => filter({ locationProject: value })} /></div>}
+      <div className="resource-field"><span>{t("resources.time.label")}</span><FilterSelect label={t("resources.time.filter")} value={route.window} options={[{ value: "all", label: t("resources.time.all") }, { value: "7", label: t("resources.time.seven") }, { value: "30", label: t("resources.time.thirty") }, { value: "90", label: t("resources.time.ninety") }, { value: "custom", label: t("resources.time.custom") }]} onChange={value => { setTimeAnchor(Date.now()); filter({ window: value }); }} /></div>
       {route.window === "custom" && <div className="resource-date-fields"><div className="resource-field"><span>{t("resources.time.from")}</span><DatePicker label={t("resources.time.startDate")} value={route.from} onChange={value => filter({ from: value })} /></div><div className="resource-field"><span>{t("resources.time.to")}</span><DatePicker label={t("resources.time.endDate")} value={route.to} onChange={value => filter({ to: value })} /></div></div>}
-      {!mapView && <><div className="resource-field"><span>{t("resources.sort.label")}</span><FilterSelect label={t("resources.sort.filter")} value={route.sort} options={[{ value: "uses", label: t("resources.sort.calls") }, { value: "sessions", label: t("resources.sort.sessions") }, { value: "recent", label: t("resources.column.recent") }, { value: "name", label: t("resources.sort.name") }]} onChange={value => filter({ sort: value, order: value === "name" ? "asc" : "desc" })} /></div>
-      <div className="resource-field"><span>{t("resources.sort.direction")}</span><FilterSelect label={t("resources.sort.directionFilter")} value={route.order} options={[{ value: "desc", label: t("resources.sort.desc") }, { value: "asc", label: t("resources.sort.asc") }]} onChange={value => filter({ order: value as ResourceRoute["order"] })} /></div></>}
     </>}
-    {route.tab === "local" && <><div className="resource-field"><span>{t("resources.candidate.label")}</span><FilterSelect label={t("resources.candidate.filter")} value={route.candidate === "used" ? "all" : route.candidate} options={(route.kind === "mcp" ? candidates.filter(candidate => candidate.value !== "duplicate") : candidates).map(item => ({ value: item.value, label: t(item.labelKey) }))} onChange={value => filter({ candidate: value as ResourceRoute["candidate"] })} /></div>
-    </>}
-    {(route.tab === "local" || overviewRanking) && <>
+    <details className="resource-more-filters"><summary>{t("resources.workspace.moreFilters")}</summary>
+      <div className="resource-field"><span>{t("resources.workspace.usageClient")}</span><FilterSelect label={t("resources.workspace.usageClient")} value={route.client} options={[{ value: "all", label: t("resources.client.all") }, ...availableClientOptions(status?.clientOptions?.[route.kind][route.tab])]} onChange={value => filter({ client: value })} /></div>
+      <div className="resource-field"><span>{t("resources.workspace.usageProject")}</span><ProjectPicker label={t("resources.workspace.usageProject")} value={route.project} options={projectOptions} onChange={value => filter({ project: value })} /></div>
+      {historyView && <div className="resource-field"><span>{t("resources.attention.filter")}</span><FilterSelect label={t("resources.attention.filter")} value={["low", "old"].includes(route.candidate) ? route.candidate : "all"} options={[{ value: "all", label: t("resources.attention.any") }, ...overviewCandidates.filter(candidate => ["low", "old"].includes(candidate.value)).map(candidate => ({ value: candidate.value, label: t(candidate.labelKey) }))]} onChange={value => filter({ candidate: value as ResourceRoute["candidate"] })} /></div>}
       {route.candidate === "low" && <label className="resource-field">{t("resources.candidate.lowThreshold")}<input type="number" min="1" max="10000" aria-label={t("resources.candidate.lowThresholdAria")} value={route.low} onChange={event => { const value = Number(event.target.value); if (Number.isSafeInteger(value) && value > 0 && value <= 10000) filter({ low: value }); }} /></label>}
       {route.candidate === "old" && <label className="resource-field">{t("resources.candidate.oldThreshold")}<input type="number" min="1" max="3650" aria-label={t("resources.candidate.oldThresholdAria")} value={route.inactive} onChange={event => { const value = Number(event.target.value); if (Number.isSafeInteger(value) && value > 0 && value <= 3650) filter({ inactive: value }); }} /></label>}
-    </>}
+    </details>
     <button className="button subtle resource-reset" onClick={reset}>{t("resources.filters.reset")}</button>
-    <nav className="resource-management-nav" aria-label={t("resources.management.views")}>
-      {tabs.slice(2).map(tab => <button key={tab.value} aria-current={route.tab === tab.value ? "page" : undefined} onClick={() => { update({ tab: tab.value, id: "", page: 1, tool: "" }, true); setFiltersOpen(false); }}>
-        {tab.value === "disabled" ? <Prohibit size={17} aria-hidden="true" /> : tab.value === "trash" ? <Trash size={17} aria-hidden="true" /> : <ClockCounterClockwise size={17} aria-hidden="true" />}{t(tab.labelKey)}
-      </button>)}
-    </nav>
-    <div className="resource-filter-footer"><button className="text-button" onClick={() => setSourcesOpen(true)}>{t("resources.source.title")}</button><button className="text-button" onClick={() => { const client = route.client === "all" ? "codex" : route.client as Client; setSource({ client, kind: route.kind, path: "", format: route.kind === "skill" ? "skill-directory" : client === "codex" ? "toml" : "json" }); setSourceKeys(registrationKeys(client)); setSourceError(null); setSourceAdding(true); }}><Plus size={14} />{t("resources.source.add")}</button></div>
   </div>;
 
   const selectedArchive = archives?.archives.find(item => item.id === route.id);
   const selectedOperation = operations?.operations.find(item => item.id === route.id);
-  const overviewLocal = overviewDetail && <section className="resource-detail-section resource-local-entries"><header><h3>{t("resources.detail.bodies")}</h3><span>{t("resources.bodyCount", { count: overviewDetail.local.length })}</span></header>
-    {overviewDetail.local.length ? overviewDetail.local.map((row, index) => <div className="resource-entry" key={row.body.id}>
-      <header><strong>{row.body.name}</strong><FavoriteButton name={t("resources.bodyName", { name: row.body.name, index: index + 1 })} favorite={!!status?.favoriteIds.includes(row.body.id)} disabled={favoritePending.has(row.body.id) || !status} onClick={() => void favorite(row.body.id)} /></header>
-      <SkillDescriptions entries={row.entries} />
-      {row.entries.map(entry => <Entry key={entry.id} entry={entry} onManage={input => void showManagement(input)} />)}
-      <p className="resource-path">{t("resources.detail.realTarget")}: {row.body.targetPath ?? row.entries[0]?.entryPath ?? t("resources.detail.bodyUnknown")}</p>
-      <div className="resource-tags"><span>{formatList([...new Set(row.entries.map(entry => clientLabel(entry.client)))]) || t("resources.client.notRecorded")}</span><span>{t("resources.entryCount", { count: row.entries.length })}</span><span className={row.observation === "recorded" ? "" : "is-warning"}>{observationLabel(row)}</span></div>
-      <div className="resource-entry-actions"><button className="button" aria-label={t("resources.viewBody", { name: row.body.name, index: index + 1 })} onClick={() => showLocal(row.body.id)}>{t("resources.detail.localEntries")}<CaretRight size={14} /></button></div>
+  const selectedResource = overviewDetail?.resource;
+  const locations = useMemo(() => resourceLocationGroups(overviewDetail?.local ?? [], route.kind), [overviewDetail?.local, route.kind]);
+  const hasDetailData = !!overviewDetail;
+  const evidenceLinks = (limit?: number) => evidence?.events.length ? <>
+    <div className="resource-evidence">{evidence.events.slice(0, limit).map(event => <a key={event.id} href={`#sessions?${new URLSearchParams({ id: event.sessionId, mode: "trace", message: event.messageId, branch: "all" })}`} onClick={click => { if (!click.metaKey && !click.ctrlKey && !click.shiftKey && click.button === 0) { click.preventDefault(); savedScroll.current = listScroll.current?.scrollTop ?? 0; savedDetailScroll.current = (compact ? detailDialogScroll.current : detailScroll.current)?.scrollTop ?? 0; returnFromEvidence.current = true; onSession({ sessionId: event.sessionId, messageId: event.messageId }); } }}>
+      <div><strong>{event.tool ?? t(evidenceNames[event.kind])}</strong><span className={`resource-result is-${event.status}`}>{t(resultNames[event.status])}</span><ArrowSquareOut size={14} /></div><span>{t(evidenceNames[event.kind])} · {dateLabel(event.occurredAt)}</span>{event.pairing === "ambiguous" && <span className="resource-result is-unknown">{t("resources.evidence.pairingAmbiguous")}</span>}
+    </a>)}</div>{!limit && <ResourcePagination page={evidence.page} total={evidence.total} pageSize={evidence.pageSize} label={t("resources.evidence.title")} onChange={page => update({ evidencePage: page })} />}
+  </> : <ResourceEmpty>{t("resources.evidence.empty")}</ResourceEmpty>;
+  const knownAffected = [...new Map((preview?.affectedEntries ?? []).map(entry => [JSON.stringify([entry.entryPath, entry.scope, entry.project]), entry])).values()];
+  const knownRevealed = [...new Map((preview?.revealedEntries ?? []).map(entry => [JSON.stringify([entry.entryPath, entry.scope, entry.project]), entry])).values()];
+  const management = <section className="resource-preview-panel" aria-label={t("resources.workspace.changePreview")}>
+    <button className="text-button resource-preview-back" disabled={applying} onClick={() => closeManagement(false)}><CaretLeft size={14} />{t("resources.workspace.backToLocations")}</button>
+    <h2 tabIndex={-1} ref={managementHeading}>{managementInput ? t("resources.management.actionPreview", { action: t(actionNames[managementInput.action]) }) : t("resources.management.preview")}</h2>
 
-    </div>) : <ResourceEmpty>{route.kind === "skill" ? t("resources.detail.skillMissing") : t("resources.detail.mcpMissing")}</ResourceEmpty>}
+      {previewLoading ? <div className="resource-loading" role="status">{t("resources.management.loading")}</div> : preview ? <>
+        <div className="resource-preview-heading"><strong>{preview.resource.name}</strong><div className="resource-tags"><span>{clientLabel(preview.resource.client)}</span><span>{preview.resource.scope === "user" ? t("resources.scope.user") : t("resources.scope.project")}</span></div></div>
+        {preview.action === "trash" && preview.resource.kind === "skill" && <p className="resource-management-note">{t(preview.target === "file" ? "resources.management.fileEffect" : "resources.management.linkEffect")}</p>}
+        <p className="resource-management-note">{t("resources.management.referencesUnknown")}</p>
+        <ResourceChange preview={preview} />
+        <h3 className="resource-impact-heading">{t("resources.workspace.impactRecovery")}</h3>
+        <p className="resource-management-note">{t(preview.clientEffect === "pending_reload" ? "resources.clientEffect.pending" : "resources.clientEffect.unknown")}</p>
+        <details className="resource-data-details"><summary>{t("resources.facts.restoration")}</summary><ResourceMessage descriptor={preview.restorationDescriptor} original={preview.restoration} />{preview.destinationPath && <p className="resource-path">{preview.destinationPath}</p>}<p>{t("resources.workspace.previewExpires", { date: dateLabel(preview.expiresAt) })}</p></details>
+
+        {preview.protected && <div className="resource-alert" role="alert">{preview.protectionReasons.length ? formatList(preview.protectionReasons.map(reason => protectionNames[reason] ? t(protectionNames[reason]!) : t("common.originalDetail", { detail: reason }))) : t("resources.management.protected")}</div>}
+        <section className="resource-detail-section"><header><h3>{t("resources.management.affectedEntries")}</h3><span>{t("resources.entryCount", { count: knownAffected.length })}</span></header><div className="resource-preview-entries">{knownAffected.map(entry => <div key={`${entry.id}:${entry.scope}:${entry.project ?? ""}:${entry.entryPath}`}><strong>{clientLabel(entry.client)} · {entry.name}</strong><span>{entry.scope === "user" ? t("resources.scope.user") : entry.project ?? t("resources.project.unknown")}</span><p>{entry.entryPath}</p></div>)}</div></section>
+        {!!knownRevealed.length && <section className="resource-detail-section"><header><h3>{t("resources.management.revealedEntries")}</h3><span className="resource-state is-warning">{t("resources.entryCount", { count: knownRevealed.length })}</span></header><div className="resource-preview-entries">{knownRevealed.map((entry, index) => <div key={`${entry.client}:${entry.scope}:${entry.project ?? ""}:${entry.entryPath}:${index}`}><strong>{clientLabel(entry.client)} · {entry.name}</strong><span>{entry.scope === "user" ? t("resources.scope.userDefault") : entry.project ?? t("resources.project.unknown")}</span><p>{entry.entryPath}</p></div>)}</div></section>}
+        {preview.action === "purge" && <label className="resource-checkbox resource-purge-confirm"><input type="checkbox" checked={purgeConfirmed} onChange={event => setPurgeConfirmed(event.target.checked)} />{t("resources.management.confirmPurge")}</label>}
+        <div className="dialog-end"><button className="button subtle" disabled={applying} onClick={() => closeManagement(false)}>{t("common.cancel")}</button><button className={`button ${preview.action === "trash" || preview.action === "purge" ? "resource-danger-button" : "primary"}`} disabled={applying || preview.action === "purge" && !purgeConfirmed} onClick={() => void applyManagement()}>{applying ? t("resources.management.applying") : t(preview.configuration?.kind === "registration" ? preview.action === "restore" ? "resources.workspace.restoreRegistration" : "resources.workspace.removeRegistration" : preview.action === "disable" ? "resources.workspace.disableConfig" : preview.action === "restore" ? "resources.workspace.restoreLocation" : preview.action === "trash" ? "resources.workspace.trashLocation" : "resources.management.confirm", { action: t(actionNames[preview.action]) })}</button></div>
+      </> : managementResult ? <>
+        <div className={`resource-${managementResult.status === "success" ? "feedback" : "alert"}`} role={managementResult.status === "success" ? "status" : "alert"}>{t(operationStatusNames[managementResult.status])}</div><ResourceMessage descriptor={managementResult.messageDescriptor} original={managementResult.message} details={managementResult.details} />
+        <div className="resource-tags"><span>{managementResult.localState === "changed" ? t("resources.management.changed") : managementResult.localState === "partial" ? t("resources.management.partial") : t("resources.management.unchanged")}</span><span>{managementResult.clientEffect === "pending_reload" ? t("resources.clientEffect.pending") : t("resources.clientEffect.unknown")}</span></div>
+        <div className="dialog-end">{managementResult.archiveId && ["disable", "trash", "standby"].includes(managementResult.action) && <button className="button" onClick={() => void showManagement({ action: "restore", operationId: managementResult.id })}>{t("resources.archive.previewRestore")}</button>}{managementResult.status !== "success" && managementInput && <button className="button" onClick={() => void showManagement(managementInput)}>{t("resources.management.previewAgain")}</button>}<button className="button primary" onClick={() => closeManagement(false)}>{t("resources.done")}</button></div>
+      </> : null}
+      {managementError && <div className="resource-alert" role="alert"><ResourceErrorText error={managementError} /></div>}
+      {managementError && !preview && managementInput && <div className="dialog-end"><button className="button subtle" onClick={() => closeManagement(false)}>{t("common.cancel")}</button><button className="button" onClick={() => void showManagement(managementInput)}>{t("resources.management.previewAgain")}</button></div>}
   </section>;
-  const detailManagement = overviewDetail
-    ? <button className="button resource-manage" data-manage-resource={overviewDetail.resource.identity.id} aria-label={t("resources.management.resource", { name: messageText(overviewDetail.resource.identity.nameDescriptor, overviewDetail.resource.identity.name) })} onClick={() => void openEntries(overviewDetail.resource.identity.id, messageText(overviewDetail.resource.identity.nameDescriptor, overviewDetail.resource.identity.name), overviewDetail.local)}>{t("resources.management.manage")}</button>
-    : localDetail ? <button className="button resource-manage" data-manage-resource={localDetail.row.body.id} aria-label={t("resources.management.resource", { name: localDetail.row.body.name })} onClick={() => void openEntries(localDetail.row.body.id, localDetail.row.body.name, [localDetail.row])}>{t("resources.management.manage")}</button> : null;
-  const hasDetailData = !!(usageDetail || overviewDetail || localDetail);
-  const detail = <>
+  const detail = managementOpen ? management : <>
     {(detailError || evidenceError) && <div className="resource-alert" role="alert"><ResourceErrorText error={detailError ?? evidenceError!} /><button className="text-button" onClick={() => setReload(value => value + 1)}>{t("common.retry")}</button></div>}
-    <div className="resource-detail-body" aria-busy={detailLoading || evidenceLoading} inert={detailLoading || evidenceLoading || !!detailError || !!evidenceError}>
-    {detailError && !hasDetailData ? null : detailLoading && !hasDetailData ? <div role="status" className="resource-loading">{t("resources.loading.detail")}</div> : usageDetail ? <>
-      <div className="resource-detail-heading"><div><span>{usageAgentLabel(overviewDetail?.resource ?? usageDetail.resource)}</span><h2>{messageText(usageDetail.resource.identity.nameDescriptor, usageDetail.resource.identity.name)}</h2></div><FavoriteButton name={messageText(usageDetail.resource.identity.nameDescriptor, usageDetail.resource.identity.name)} favorite={overviewDetail?.resource.favorite ?? usageDetail.resource.favorite} disabled={favoritePending.has(route.id)} onClick={() => void favorite(overviewDetail?.resource.identity.id ?? route.id, overviewDetail?.resource.favorite ?? usageDetail.resource.favorite)} /></div>
-      {detailManagement}
-      {overviewDetail && <div className="resource-tags"><span className={overviewDetail.resource.observation === "unknown" || overviewDetail.resource.observation === "insufficient" ? "is-warning" : ""}>{t(overviewObservationNames[overviewDetail.resource.observation])}</span></div>}
-      {overviewLocal}
-      {usageDetail.resource.identity.path && <p className="resource-path">{usageDetail.resource.identity.path}</p>}
-      <details className="resource-usage-summary"><summary>{t("resources.detail.usageSummary")}</summary>
-      <Stats stats={overviewDetail ? overviewDetail.resource.stats : usageDetail.resource.stats} kind={route.kind} /><p className="resource-last-used">{t("resources.lastUsed", { date: dateLabel((overviewDetail ? overviewDetail.resource.stats : usageDetail.resource.stats)?.lastUsedAt ?? undefined) })}</p>
-      <Trend rows={usageDetail.trend} timeZone={usageDetail.timeZone} />
-      <Distribution rows={usageDetail.clients} title={t("resources.distribution.agents")} label={value => value ? clientLabel(value as Client) : t("resources.client.notRecorded")} />
-      <Distribution rows={usageDetail.projects} title={t("resources.distribution.projects")} label={value => value ? shortPath(value) : t("resources.project.none")} />
-      </details>
-      <details className="resource-data-details"><summary>{t("resources.originCount", { count: usageDetail.origins.length })}</summary><div className="resource-origin-list">{usageDetail.origins.map(origin => <div key={origin.id}><strong>{clientLabel(origin.client)}</strong><span title={origin.project}>{origin.project ? shortPath(origin.project) : t("resources.project.none")}</span><p className="resource-path">{origin.path ?? t("resources.path.notRecorded")}</p></div>)}</div></details>
-      <HistoryGaps gaps={usageDetail.coverage.gaps} />
-      {route.kind === "mcp" && <section className="resource-detail-section"><header><h3>{t("resources.stat.toolCalls")}</h3><span>{t("resources.toolCount", { count: usageDetail.tools.length })}</span></header><div className="resource-tool-list">{usageDetail.tools.map(tool => <button key={tool.name} className={route.tool === tool.name ? "is-selected" : ""} aria-pressed={route.tool === tool.name} onClick={() => update({ tool: route.tool === tool.name ? "" : tool.name, evidencePage: 1 })}><strong>{tool.name}</strong><span>{t("resources.callCount", { count: tool.stats.mcpCalls })}</span><small>{t("resources.toolResults", { failure: tool.stats.results.failure, unknown: tool.stats.results.unknown, duration: tool.stats.duration.samples ? t("resources.durationSamples", { duration: Math.round(tool.stats.duration.averageMs!), count: tool.stats.duration.samples }) : t("resources.evidence.durationMissing") })}</small></button>)}</div></section>}
-      <section className="resource-detail-section"><header><h3>{route.tool ? t("resources.toolEvidence", { name: route.tool }) : t("resources.evidence.title")}</h3>{route.tool && <button className="text-button" onClick={() => update({ tool: "", evidencePage: 1 })}>{t("resources.evidence.allTools")}</button>}</header>
-        {evidenceLoading && !evidence ? <div role="status" className="resource-loading">{t("resources.loading.evidence")}</div> : evidence?.events.length ? <>
-          <div className="resource-evidence">{evidence.events.map(event => <a key={event.id} href={`#sessions?${new URLSearchParams({ id: event.sessionId, mode: "trace", message: event.messageId, branch: "all" })}`} onClick={click => { if (!click.metaKey && !click.ctrlKey && !click.shiftKey && click.button === 0) { click.preventDefault(); savedScroll.current = listScroll.current?.scrollTop ?? 0; savedDetailScroll.current = (compact ? detailDialogScroll.current : detailScroll.current)?.scrollTop ?? 0; returnFromEvidence.current = true; onSession({ sessionId: event.sessionId, messageId: event.messageId }); } }}>
-            <div><strong>{event.tool ?? t(evidenceNames[event.kind])}</strong><span className={`resource-result is-${event.status}`}>{t(resultNames[event.status])}</span><ArrowSquareOut size={14} /></div><span>{t(evidenceNames[event.kind])} · {dateLabel(event.occurredAt)}</span>{event.pairing === "ambiguous" && <span className="resource-result is-unknown">{t("resources.evidence.pairingAmbiguous")}</span>}
-          </a>)}</div><ResourcePagination page={evidence.page} total={evidence.total} pageSize={evidence.pageSize} label={t("resources.evidence.title")} onChange={page => update({ evidencePage: page })} />
-        </> : <ResourceEmpty>{t("resources.evidence.empty")}</ResourceEmpty>}
-      </section>
-    </> : overviewDetail ? <>
-      <div className="resource-detail-heading"><div><span>{usageAgentLabel(overviewDetail.resource)}</span><h2>{messageText(overviewDetail.resource.identity.nameDescriptor, overviewDetail.resource.identity.name)}</h2></div><FavoriteButton name={messageText(overviewDetail.resource.identity.nameDescriptor, overviewDetail.resource.identity.name)} favorite={overviewDetail.resource.favorite} disabled={favoritePending.has(route.id)} onClick={() => void favorite(overviewDetail.resource.identity.id, overviewDetail.resource.favorite)} /></div>
-      {detailManagement}
-      <div className="resource-tags"><span className={overviewDetail.resource.observation === "unknown" || overviewDetail.resource.observation === "insufficient" ? "is-warning" : ""}>{t(overviewObservationNames[overviewDetail.resource.observation])}</span></div>
-      {overviewLocal}
-      <details className="resource-usage-summary"><summary>{t("resources.detail.usageSummary")}</summary><Stats stats={overviewDetail.resource.stats} kind={route.kind} /></details>
-    </> : localDetail ? <>
-      <div className="resource-detail-heading"><div><span>{route.kind === "skill" ? t("resources.detail.localSkill") : t("resources.detail.localMcp")}</span><h2>{localDetail.row.body.name}</h2></div><FavoriteButton name={localDetail.row.body.name} favorite={!!status?.favoriteIds.includes(route.id)} disabled={favoritePending.has(route.id) || !status} onClick={() => void favorite(route.id)} /></div>
-      <SkillDescriptions entries={localDetail.row.entries} />
-      {detailManagement}
-      <div className="resource-tags"><span className={localDetail.row.observation !== "recorded" ? "is-warning" : ""}>{observationLabel(localDetail.row)}</span></div>
-      <section className="resource-detail-section"><header><h3>{t("resources.detail.clientEntries")}</h3><span>{t("resources.entryCount", { count: localDetail.row.entries.length })}</span></header>{localDetail.row.entries.map(entry => <Entry key={entry.id} entry={entry} onManage={input => void showManagement(input)} />)}</section>
-      <SourceDiagnostics diagnostics={localDetail.inventory.diagnostics} />
-      <details className="resource-data-details"><summary>{t("resources.detail.realTarget")}</summary><p className="resource-path">{localDetail.row.body.targetPath ?? localDetail.row.entries[0]?.entryPath}</p></details>
-      <details className="resource-usage-summary"><summary>{t("resources.detail.usageSummary")}</summary>
-      <Stats stats={localDetail.row.usage} kind={route.kind} />
-      <Trend rows={localDetail.trend} timeZone={localDetail.timeZone} />
-      <Distribution rows={localDetail.clients} title={t("resources.distribution.clients")} label={value => value ? clientLabel(value as Client) : t("resources.client.unknown")} />
-      <Distribution rows={localDetail.projects} title={t("resources.distribution.projects")} label={value => value ? shortPath(value) : t("resources.project.none")} />
-
-      </details>
-      <section className="resource-detail-section"><header><h3>{t("resources.detail.history")}</h3></header>{localDetail.row.historyIds.length ? <div className="resource-history-links">{localDetail.row.historyIds.map((id, index) => <button key={id} className="button subtle" onClick={() => showHistory(id)}>{localDetail.row.historyIds.length > 1 ? t("resources.viewHistoryNumber", { index: index + 1 }) : t("resources.viewHistory")}<CaretRight size={14} /></button>)}</div> : <ResourceEmpty>{t("resources.detail.historyEmpty")}</ResourceEmpty>}</section>
-      <details className="resource-data-details"><summary>{t("resources.detail.discovery")}</summary><dl className="resource-facts"><dt>{t("resources.detail.firstSeen")}</dt><dd>{dateLabel(localDetail.row.firstSeenAt)}</dd><dt>{t("resources.detail.inventoryTime")}</dt><dd>{dateLabel(localDetail.inventory.observedAt)}</dd>{localDetail.row.body.targetPath && <><dt>{t("resources.detail.realTarget")}</dt><dd>{localDetail.row.body.targetPath}</dd></>}</dl></details>
+    <div className="resource-detail-body" aria-busy={detailLoading || evidenceLoading} inert={detailLoading || evidenceLoading || refreshing || !!detailError || !!evidenceError}>
+    {detailError && !hasDetailData ? null : detailLoading && !hasDetailData ? <div role="status" className="resource-loading">{t("resources.loading.detail")}</div> : overviewDetail && selectedResource ? <>
+      <div className="resource-detail-heading"><h2>{messageText(selectedResource.identity.nameDescriptor, selectedResource.identity.name)}</h2><FavoriteButton name={messageText(selectedResource.identity.nameDescriptor, selectedResource.identity.name)} favorite={selectedResource.favorite} disabled={favoritePending.has(selectedResource.identity.id)} onClick={() => void favorite(selectedResource.identity.id, selectedResource.favorite)} /></div>
+      <SkillDescription description={selectedResource.description} />
+      <nav className="resource-detail-tabs" aria-label={t("resources.workspace.detailSections")}>{["overview", "locations", "history"].map(value => <button key={value} aria-current={route.detail === value ? "page" : undefined} onClick={() => update({ detail: value as ResourceRoute["detail"] })}>{t(value === "locations" ? route.kind === "skill" ? "resources.workspace.fileLocations" : "resources.workspace.configLocations" : `resources.workspace.${value}`)}</button>)}</nav>
+      {route.detail === "locations" ? <div className="resource-location-list">
+        {locations.length ? locations.map((row, index) => {
+          const legacyIds = [...new Set(row.entries.flatMap(entry => [entry.bodyId, entry.id]))].filter(id => status?.favoriteIds.includes(id));
+          return <ManagementBody key={row.key ?? row.body.id} row={row} index={index} onManage={input => void showManagement(input)} legacyFavorite={!!legacyIds.length} onClearFavorite={() => { for (const id of legacyIds) void favorite(id, true); }} />;
+        }) : <ResourceEmpty>{t("resources.management.historyOnly")}</ResourceEmpty>}
+      </div> : route.detail === "history" ? <>
+        <Stats stats={selectedResource.stats} kind={route.kind} />
+        {usageDetail ? <>
+        <Trend rows={usageDetail.trend} timeZone={usageDetail.timeZone} />
+        <Distribution rows={usageDetail.clients} title={t("resources.distribution.clients")} label={value => value ? clientLabel(value as Client) : t("resources.client.notRecorded")} />
+        <Distribution rows={usageDetail.projects} title={t("resources.distribution.projects")} label={value => value ? shortPath(value) : t("resources.project.none")} />
+        <HistoryGaps gaps={usageDetail.coverage.gaps} />
+        {route.kind === "mcp" && <section className="resource-detail-section"><header><h3>{t("resources.stat.toolCalls")}</h3></header><div className="resource-tool-list">{usageDetail.tools.map(tool => <button key={tool.name} className={route.tool === tool.name ? "is-selected" : ""} aria-pressed={route.tool === tool.name} onClick={() => update({ tool: route.tool === tool.name ? "" : tool.name, evidencePage: 1 })}><strong>{tool.name}</strong><span>{t("resources.callCount", { count: tool.stats.mcpCalls })}</span><small>{t("resources.toolResults", { failure: tool.stats.results.failure, unknown: tool.stats.results.unknown, duration: tool.stats.duration.samples ? t("resources.durationSamples", { duration: Math.round(tool.stats.duration.averageMs!), count: tool.stats.duration.samples }) : t("resources.evidence.durationMissing") })}</small></button>)}</div></section>}
+        <section className="resource-detail-section"><header><h3>{route.tool ? t("resources.toolEvidence", { name: route.tool }) : t("resources.evidence.title")}</h3>{route.tool && <button className="text-button" onClick={() => update({ tool: "", evidencePage: 1 })}>{t("resources.evidence.allTools")}</button>}</header>{evidenceLinks()}</section>
+      </> : <ResourceEmpty>{t("resources.evidence.empty")}</ResourceEmpty>}</> : <>
+        <p className="resource-history-scope">{t("resources.workspace.historyScope", { client: route.client === "all" ? t("resources.client.all") : clientLabel(route.client as Client), project: route.project === "all" ? t("resources.project.all") : shortPath(route.project) })}</p>
+        <div className="resource-overview-stats"><div><span>{t("resources.column.calls")}</span><strong>{selectedResource.stats ? fmt(selectedResource.stats.events) : "—"}</strong></div><div><span>{t("resources.column.sessions")}</span><strong>{selectedResource.stats ? fmt(selectedResource.stats.sessions) : "—"}</strong></div><div><span>{t("resources.column.recent")}</span><strong className="resource-overview-date">{selectedResource.stats?.lastUsedAt ? dateLabel(selectedResource.stats.lastUsedAt) : "—"}</strong></div></div>
+        <section className="resource-detail-section"><header><h3>{t(route.kind === "skill" ? "resources.workspace.fileLocations" : "resources.workspace.configLocations")}</h3><button className="text-button" onClick={() => update({ detail: "locations" })}>{t("resources.workspace.viewLocations")}<CaretRight size={14} /></button></header>
+          {locations.length ? locations.map(row => <button className="resource-location-link" key={row.key ?? row.body.id} onClick={() => update({ detail: "locations" })}><span>{formatList([...new Set(row.entries.map(entry => t(entry.scope === "user" ? "resources.scope.user" : "resources.scope.project")))])}</span><code>{row.body.targetPath ?? row.entries[0]?.entryPath}</code></button>) : <p className="resource-management-note">{t(selectedResource.localSummary?.presence === "unknown" ? "resources.workspace.presenceUnknown" : "resources.management.historyOnly")}</p>}
+        </section>
+        {usageDetail && <section className="resource-detail-section"><header><h3>{t("resources.workspace.recentUsage")}</h3><button className="text-button" onClick={() => update({ detail: "history" })}>{t("resources.workspace.allRecords")}<CaretRight size={14} /></button></header>{evidenceLinks(3)}</section>}
+      </>}
     </> : selectedArchive && !historyView && route.tab !== "operations" ? <>
       <div className="resource-detail-heading"><div><span>{clientLabel(selectedArchive.entry.client)}</span><h2>{selectedArchive.entry.name}</h2></div></div>
       <div className="resource-tags"><span>{t(archiveNames[selectedArchive.state])}</span><span>{selectedArchive.restorable ? t("resources.archive.restorable") : t("resources.archive.unavailable")}</span>{selectedArchive.operationStatus === "partial" && <span className="is-warning">{t("resources.operation.partial")}</span>}</div>
@@ -734,25 +722,29 @@ export default function Resources({ active, onSession, onHistoryReading, history
     </div>
   </>;
 
-  return <div className="resources-shell" aria-label={t("resources.title")} data-compact={compact}>
+  const tools = <DropdownMenu.Root><DropdownMenu.Trigger className="icon-button" aria-label={t("resources.workspace.tools")}><DotsThree size={22} /></DropdownMenu.Trigger><DropdownMenu.Portal><DropdownMenu.Content className="resource-tools-menu" align="end" sideOffset={7} collisionPadding={12}>
+    {[{ value: "usage" as const, labelKey: "resources.workspace.resourceList" }, ...tabs.filter(tab => !["usage", "local"].includes(tab.value))].map(tab => <DropdownMenu.Item key={tab.value} className="resource-tools-item" onSelect={() => {
+      if (tab.value === "usage" && resourceBrowseRoute.current) { const saved = resourceBrowseRoute.current; update(saved, true); setQueryText(saved.q); resourceBrowseRoute.current = null; }
+      else { if (route.tab === "usage") resourceBrowseRoute.current = route; update({ tab: tab.value, id: "", page: 1, tool: "", q: "", candidate: "all" }, true); setQueryText(""); }
+    }}>{t(tab.labelKey)}</DropdownMenu.Item>)}
+    <DropdownMenu.Separator className="resource-tools-separator" /><DropdownMenu.Item className="resource-tools-item" onSelect={() => setSourcesOpen(true)}>{t("resources.workspace.scanSettings")}</DropdownMenu.Item>
+  </DropdownMenu.Content></DropdownMenu.Portal></DropdownMenu.Root>;
+
+  return <div className="resources-shell" aria-label={t("resources.title")} data-compact={compact} data-resource-view={mapView ? "map" : "list"} onKeyDown={event => { if (event.key === "Escape" && !compact && !document.fullscreenElement && !event.defaultPrevented && !(event.target instanceof Element && event.target.closest("input, [role=combobox], [role=dialog], [role=menu]"))) { event.preventDefault(); if (managementOpen) closeManagement(false); else closeDetails(); } }}>
     <ResizableWorkspace variant="resources" sidebarCollapsed={sidebarCollapsed} detailsCollapsed={detailsCollapsed} semantics={{ sidebar: { label: t("resources.layout.sidebarWidth"), controls: "resource-filter-content" }, details: { label: t("resources.layout.detailsWidth"), controls: "resource-detail-content" } }}>
       <aside className={`sidebar resource-sidebar${sidebarCollapsed ? " panel-collapsed" : ""}`} aria-label={t("resources.filters.title")}>
         <div className="pane-heading"><span>{t("resources.filters.label")}</span><button className="icon-button panel-toggle" aria-label={sidebarCollapsed ? t("resources.filters.expand") : t("resources.filters.collapse")} aria-expanded={!sidebarCollapsed} aria-controls="resource-filter-content" onClick={() => setSidebarCollapsed(value => !value)}>{sidebarCollapsed ? <CaretRight size={17} /> : <CaretLeft size={17} />}</button></div>{!sidebarCollapsed && !compact && filters}
       </aside>
       <main className="resources-main">
-        <header className="resources-heading"><h1>{t("resources.title")}</h1><div className="resource-kind-tabs" role="group" aria-label={t("resources.kind.label")}>{(["skill", "mcp"] as const).map(kind => <button key={kind} aria-pressed={route.kind === kind} className={route.kind === kind ? "is-selected" : ""} onClick={() => update({ kind, id: "", page: 1, tool: "", zeroPage: 1, metric: kind === route.kind ? route.metric : "uses", maxValue: kind === route.kind ? route.maxValue : "", candidate: kind === "mcp" && route.candidate === "duplicate" ? "all" : route.candidate, sort: kind === route.kind ? route.sort : "uses", order: kind === route.kind ? route.order : "desc" })}>{kind === "skill" ? t("resources.kind.skill") : t("resources.kind.mcp")}</button>)}<UsageHelp kind={route.kind} /></div><div className="resources-heading-actions"><button className="icon-button resource-mobile-filter" aria-label={t("resources.filters.open")} onClick={() => setFiltersOpen(true)}><Funnel size={18} /></button><RefreshControl label={t("resources.refresh.label")} busy={refreshing} onRefresh={() => void refresh()} error={!!inventoryError} completedAt={status?.observedAt ?? undefined} details={<p>{t("common.refresh.resourceScope")}</p>} /></div></header>
+        <header className="resources-heading"><h1>{t("resources.title")}</h1><div className="resource-kind-tabs" role="group" aria-label={t("resources.kind.label")}>{(["skill", "mcp"] as const).map(kind => <button key={kind} aria-pressed={route.kind === kind} className={route.kind === kind ? "is-selected" : ""} onClick={() => update({ kind, id: "", page: 1, tool: "", zeroPage: 1, metric: kind === route.kind ? route.metric : "uses", maxValue: kind === route.kind ? route.maxValue : "", candidate: kind === "mcp" && route.candidate === "duplicate" ? "all" : route.candidate, sort: kind === route.kind ? route.sort : "uses", order: kind === route.kind ? route.order : "desc" })}>{kind === "skill" ? t("resources.kind.skill") : t("resources.kind.mcp")}</button>)}<UsageHelp kind={route.kind} /></div><div className="resources-heading-actions"><button className="icon-button resource-mobile-filter" aria-label={t("resources.filters.open")} onClick={() => setFiltersOpen(true)}><Funnel size={18} /></button><RefreshControl label={t("resources.refresh.label")} busy={refreshing} onRefresh={() => void refresh()} error={!!inventoryError} completedAt={status?.observedAt ?? undefined} details={<p>{t("common.refresh.resourceScope")}</p>} />{tools}</div></header>
 
         <div className="resource-list-toolbar">
-          <nav className="resource-view-tabs" aria-label={t("resources.view.label")}>
-            {tabs.slice(0, 2).map(tab => <button key={tab.value} aria-current={route.tab === tab.value ? "page" : undefined} onClick={() => update({ tab: tab.value, id: "", page: 1, tool: "" }, true)}>{t(tab.labelKey)}</button>)}
-          </nav>
           <label className="resource-search"><MagnifyingGlass size={16} aria-hidden="true" /><input aria-label={t("resources.search.label")} value={route.q} placeholder={t("resources.search.label")} onChange={event => filter({ q: event.target.value })} />{route.q && <button className="icon-button" aria-label={t("resources.search.clear")} onClick={() => filter({ q: "" })}><X size={14} /></button>}</label>
           {overviewRanking && <div className="resource-display-switch" role="group" aria-label={t("resources.view.display")}>{(["list", "map"] as const).map(view => <button key={view} aria-pressed={route.view === view} onClick={() => update({ view })}>{view === "list" ? <List size={15} aria-hidden="true" /> : <MapTrifold size={15} aria-hidden="true" />}{view === "list" ? t("resources.view.list") : t("resources.view.map")}</button>)}</div>}
         </div>
         {!overviewRanking && <div className="resource-list-summary">
           {listProgress}
           {!historyView && <strong>{t(tabs.find(tab => tab.value === route.tab)!.labelKey)}</strong>}
-          {route.tab === "local" && local && <span>{t("resources.localCount", { count: local.total })}</span>}
           {route.tab === "operations" && operations && <span>{t("resources.operationCount", { count: operations.total })}</span>}{!historyView && route.tab !== "operations" && archives && <span>{t("resources.resourceCount", { count: archives.total })}</span>}
         </div>}
         {mapView && <div className="resource-map-settings">
@@ -761,47 +753,41 @@ export default function Resources({ active, onSession, onHistoryReading, history
         {invalidTime && <div className="resource-alert" role="alert">{t("resources.time.invalidRange")}</div>}
         {inventoryError && <div className="resource-alert" role="alert"><ResourceErrorText error={inventoryError} /><button className="text-button" disabled={refreshing} onClick={() => void refresh()}>{t("common.retry")}</button></div>}
         {error && <div className="resource-alert" role="alert"><ResourceErrorText error={error} /><button className="text-button" onClick={() => setReload(value => value + 1)}>{t("common.retry")}</button></div>}
-        {feedback && <div className={`resource-feedback${mapView ? " resource-map-feedback" : ""}`} role="status">{t(feedback.key, feedback.params)}<button className="icon-button" aria-label={t("resources.feedback.close")} onClick={() => setFeedback(null)}><X size={14} /></button></div>}
+        {feedback && <div className="resource-feedback resource-map-feedback" role="status">{t(feedback.key, feedback.params)}<button className="icon-button" aria-label={t("resources.feedback.close")} onClick={() => setFeedback(null)}><X size={14} /></button></div>}
         {overviewRanking && overviewData && <>
           <div className="resource-quick-filters" role="group" aria-label={t("resources.quickFilters", { kind: route.kind === "skill" ? t("resources.kind.skill") : t("resources.kind.mcp") })}>
             <div className="resource-usage-filters" role="group" aria-label={t("resources.usageStates")}>{overviewCandidates.slice(0, 3).map(candidate => <button key={candidate.value} aria-pressed={route.candidate === candidate.value || candidate.value === "all" && !overviewCandidates.some(item => item.value === route.candidate)} onClick={() => filter({ candidate: candidate.value, favorite: false })}>{t(candidate.labelKey)}<strong>{fmt(overviewData.counts[candidate.value])}</strong></button>)}</div>
             <div className="resource-attention-filters" data-active={["low", "old"].includes(route.candidate)} role="group" aria-label={t("resources.attention.filter")}>
               {listProgress}
-              <FilterSelect label={t("resources.attention.filter")} value={["low", "old"].includes(route.candidate) ? route.candidate : "all"} options={[{ value: "all", label: t("resources.attention.any") }, ...overviewCandidates.filter(candidate => ["low", "old"].includes(candidate.value)).map(candidate => ({ value: candidate.value, label: t("resources.candidate.withCount", { label: t(candidate.labelKey), count: overviewData.counts[candidate.value] }) }))]} onChange={value => filter({ candidate: value as ResourceRoute["candidate"], favorite: false })} />
+
               <button aria-pressed={route.candidate === "favorite"} onClick={() => filter({ candidate: route.candidate === "favorite" ? "all" : "favorite", favorite: false })}><Star size={14} weight={route.candidate === "favorite" ? "fill" : "regular"} aria-hidden="true" />{t("resources.candidate.favorite")}<strong>{fmt(overviewData.counts.favorite)}</strong></button>
             </div>
           </div>
-          {!!overviewData.coverage?.missingTimeEvents && <div className="resource-range-summary"><span className="resource-state is-warning">{t("resources.missingTimeCount", { count: overviewData.coverage.missingTimeEvents })}</span></div>}
+
         </>}
-        <div className={`resource-list-scroll${mapView ? " resource-map-scroll" : ""}`} ref={listScroll} aria-busy={listLoading}>
-          {listLoading && !hasListData ? <div role="status" className="resource-loading">{t("resources.loading.resources")}</div> : invalidTime ? null : mapView ? map && <ResourceMap data={map} selected={route.id} onSelect={select} zeroPage={route.zeroPage} zeroSize={route.zeroSize} onZeroPage={zeroPage => update({ zeroPage })} onZeroSize={zeroSize => update({ zeroSize, zeroPage: 1 })} /> : overviewRanking ? overview?.resources.length ? <OverviewTable rows={overview.resources} route={route} onSort={sort} onSelect={select} onManage={row => void openEntries(row.identity.id, messageText(row.identity.nameDescriptor, row.identity.name))} onFavorite={(id, current) => void favorite(id, current)} favoritePending={favoritePending} /> : <ResourceEmpty>{t("resources.empty.kind", { kind: route.kind === "skill" ? t("resources.kind.skill") : t("resources.kind.mcp") })}</ResourceEmpty> : route.tab === "local" ? local?.rows.length ? <div className="resource-overview-scroll"><table className="resource-overview-table resource-local-table" aria-label={t("resources.tab.local")}>
-            <thead><tr><th scope="col">{t("resources.sort.name")}</th><th scope="col">{t("resources.client.label")}</th><th scope="col">{t("resources.facts.scope")}</th><th scope="col">{t("resources.detail.clientEntries")}</th><th scope="col">{t("resources.detail.observation")}</th></tr></thead>
-            <tbody>{local.rows.map(row => <tr className={`resource-overview-row${route.id === row.body.id ? " is-selected" : ""}`} key={row.body.id} onClick={event => selectResourceRow(event, row.body.id, select)}>
-              <th scope="row"><div className="resource-overview-name"><button onClick={() => select(row.body.id)} aria-label={t("resources.viewLocal", { name: row.body.name })}>{row.body.name}</button><FavoriteButton name={row.body.name} favorite={!!status?.favoriteIds.includes(row.body.id)} disabled={favoritePending.has(row.body.id) || !status} onClick={() => void favorite(row.body.id)} /></div><SkillDescription description={skillDescription(row.entries)} /><div className="resource-row-subtitle" title={row.body.targetPath ?? row.entries[0]?.entryPath}>{row.body.targetPath ?? row.entries[0]?.entryPath}</div></th>
-              <td>{formatList([...new Set(row.entries.map(entry => clientLabel(entry.client)))])}</td>
-              <td>{formatList([...new Set(row.entries.map(entry => t(entry.scope === "user" ? "resources.scope.user" : "resources.scope.project")))])}</td>
-              <td>{t("resources.entryCount", { count: row.entries.length })}</td>
-              <td><div className="resource-tags"><span className={row.observation === "recorded" ? "" : "is-warning"}>{observationLabel(row)}</span>{row.candidates.includes("broken") && <span className="is-warning">{t("resources.candidate.broken")}</span>}</div>{row.usage && <span className="resource-row-subtitle">{t("resources.map.callValue", { count: row.usage.events })} · {t("resources.sessionCount", { count: row.usage.sessions })}</span>}</td>
-            </tr>)}</tbody></table></div> : <ResourceEmpty>{t(emptyLocalKey)}{emptyLocalKey !== "resources.empty.local" && <button className="text-button" onClick={() => setSourcesOpen(true)}>{t("resources.source.title")}</button>}</ResourceEmpty> : route.tab === "operations" ? operations?.operations.length ? <div className="resource-rows">{operations.operations.map(operation => <div className={`resource-row${route.id === operation.id ? " is-selected" : ""}`} key={operation.id}><button className="resource-row-main" aria-label={t("resources.viewOperation", { name: operation.name, action: t(actionNames[operation.action]) })} onClick={() => select(operation.id)}><div className="resource-row-heading"><strong>{operation.name}</strong><span>{t(actionNames[operation.action])}</span></div><div className="resource-row-metrics"><span>{clientLabel(operation.resource.client)}</span><span>{dateLabel(operation.createdAt)}</span></div><div className="resource-tags"><span className={operation.status === "success" ? "" : "is-warning"}>{t(operationStatusNames[operation.status])}</span><span>{operation.clientEffect === "pending_reload" ? t("resources.clientEffect.pending") : t("resources.clientEffect.unknown")}</span></div></button></div>)}</div> : <ResourceEmpty>{t("resources.empty.operations")}</ResourceEmpty> : archives?.archives.length ? <div className="resource-rows">{archives.archives.map(archive => <div className={`resource-row${route.id === archive.id ? " is-selected" : ""}`} key={archive.id}><button className="resource-row-main" aria-label={t("resources.viewRecovery", { name: archive.entry.name })} onClick={() => select(archive.id)}><div className="resource-row-heading"><strong>{archive.entry.name}</strong><span>{clientLabel(archive.entry.client)}</span></div><div className="resource-row-subtitle" title={archive.originalPath}>{archive.originalPath}</div><div className="resource-row-metrics"><span>{dateLabel(archive.createdAt)}</span></div><div className="resource-tags"><span>{t(archiveNames[archive.state])}</span><span className={!archive.restorable ? "is-warning" : ""}>{archive.restorable ? t("resources.archive.restorable") : t("resources.archive.unavailable")}</span>{archive.operationStatus === "partial" && <span className="is-warning">{t("resources.operation.partial")}</span>}</div></button></div>)}</div> : <ResourceEmpty>{t("resources.empty.archive", { state: t(tabs.find(tab => tab.value === route.tab)!.labelKey) })}</ResourceEmpty>}
+        <div className={`resource-list-scroll${mapView ? " resource-map-scroll" : ""}`} ref={listScroll} aria-busy={listLoading} inert={listLoading || refreshing || !!error}>
+          {listLoading && !hasListData ? <div role="status" className="resource-loading">{t("resources.loading.resources")}</div> : invalidTime ? null : mapView ? map && <ResourceMap data={map} selected={route.id} onSelect={select} zeroPage={route.zeroPage} zeroSize={route.zeroSize} onZeroPage={zeroPage => update({ zeroPage })} onZeroSize={zeroSize => update({ zeroSize, zeroPage: 1 })} /> : overviewRanking ? overview?.resources.length ? <OverviewTable rows={overview.resources} route={route} onSort={sort} onSelect={select} onFavorite={(id, current) => void favorite(id, current)} favoritePending={favoritePending} /> : <ResourceEmpty>{t("resources.empty.kind", { kind: route.kind === "skill" ? t("resources.kind.skill") : t("resources.kind.mcp") })}</ResourceEmpty> : route.tab === "operations" ? operations?.operations.length ? <div className="resource-rows">{operations.operations.map(operation => <div className={`resource-row${route.id === operation.id ? " is-selected" : ""}`} key={operation.id}><button className="resource-row-main" aria-label={t("resources.viewOperation", { name: operation.name, action: t(actionNames[operation.action]) })} onClick={() => select(operation.id)}><div className="resource-row-heading"><strong>{operation.name}</strong><span>{t(actionNames[operation.action])}</span></div><div className="resource-row-metrics"><span>{clientLabel(operation.resource.client)}</span><span>{dateLabel(operation.createdAt)}</span></div><div className="resource-tags"><span className={operation.status === "success" ? "" : "is-warning"}>{t(operationStatusNames[operation.status])}</span><span>{operation.clientEffect === "pending_reload" ? t("resources.clientEffect.pending") : t("resources.clientEffect.unknown")}</span></div></button></div>)}</div> : <ResourceEmpty>{t("resources.empty.operations")}</ResourceEmpty> : archives?.archives.length ? <div className="resource-rows">{archives.archives.map(archive => <div className={`resource-row${route.id === archive.id ? " is-selected" : ""}`} key={archive.id}><button className="resource-row-main" aria-label={t("resources.viewRecovery", { name: archive.entry.name })} onClick={() => select(archive.id)}><div className="resource-row-heading"><strong>{archive.entry.name}</strong><span>{clientLabel(archive.entry.client)}</span></div><div className="resource-row-subtitle" title={archive.originalPath}>{archive.originalPath}</div><div className="resource-row-metrics"><span>{dateLabel(archive.createdAt)}</span></div><div className="resource-tags"><span>{t(archiveNames[archive.state])}</span><span className={!archive.restorable ? "is-warning" : ""}>{archive.restorable ? t("resources.archive.restorable") : t("resources.archive.unavailable")}</span>{archive.operationStatus === "partial" && <span className="is-warning">{t("resources.operation.partial")}</span>}</div></button></div>)}</div> : <ResourceEmpty>{t("resources.empty.archive", { state: t(tabs.find(tab => tab.value === route.tab)!.labelKey) })}</ResourceEmpty>}
         </div>
         {overviewRanking && !mapView && overview && <ResourcePagination page={overview.page} total={overview.total} pageSize={overview.pageSize} label={overviewLabel} onPageSizeChange={pageSize => filter({ pageSize })} onChange={pageChange} />}
-        {route.tab === "local" && local && <ResourcePagination page={local.page} total={local.total} pageSize={local.pageSize} label={t("resources.tab.local")} onPageSizeChange={pageSize => filter({ pageSize })} onChange={pageChange} />}
         {route.tab === "operations" && operations && <ResourcePagination page={operations.page} total={operations.total} pageSize={operations.pageSize} label={t("resources.tab.operations")} onPageSizeChange={pageSize => filter({ pageSize })} onChange={pageChange} />}
         {!historyView && route.tab !== "operations" && archives && <ResourcePagination page={archives.page} total={archives.total} pageSize={archives.pageSize} label={t("resources.archive.records")} onPageSizeChange={pageSize => filter({ pageSize })} onChange={pageChange} />}
       </main>
       <aside className={`resource-details${detailsCollapsed ? " panel-collapsed" : ""}`} aria-label={t("resources.detail.title")}>
-        <div className="pane-heading"><span className="resource-detail-label">{t("resources.detail.title")}<span className="resource-detail-progress" role={detailLoading && hasDetailData ? "status" : undefined} aria-label={detailLoading && hasDetailData ? t("resources.loading.detail") : undefined}>{detailLoading && hasDetailData && <ArrowClockwise size={14} className="spinning" aria-hidden="true" />}</span></span><button className="icon-button panel-toggle" aria-label={detailsCollapsed ? t("resources.detail.expand") : t("resources.detail.collapse")} aria-expanded={!detailsCollapsed} aria-controls="resource-detail-content" onClick={() => setDetailsCollapsed(value => !value)}>{detailsCollapsed ? <CaretLeft size={17} /> : <CaretRight size={17} />}</button></div>
+        <div className="pane-heading"><span className="resource-detail-label">{t("resources.detail.title")}<span className="resource-detail-progress" role={detailLoading && hasDetailData ? "status" : undefined} aria-label={detailLoading && hasDetailData ? t("resources.loading.detail") : undefined}>{detailLoading && hasDetailData && <ArrowClockwise size={14} className="spinning" aria-hidden="true" />}</span></span><button className="icon-button panel-toggle" aria-label={detailsCollapsed ? t("resources.detail.expand") : t("resources.detail.collapse")} aria-expanded={!detailsCollapsed} aria-controls="resource-detail-content" onClick={() => detailsCollapsed ? setDetailsCollapsed(false) : closeDetails()}>{detailsCollapsed ? <CaretLeft size={17} /> : <CaretRight size={17} />}</button></div>
         <div className="resource-detail-scroll" ref={detailScroll} id="resource-detail-content" hidden={detailsCollapsed}>{!compact && detail}</div>
       </aside>
     </ResizableWorkspace>
     <ResourceDialog open={compact && filtersOpen && active} onOpenChange={setFiltersOpen} title={t("resources.filters.title")} description={t("resources.filters.description")} className="resource-filter-dialog">{filters}<div className="dialog-end"><button className="button primary" onClick={() => setFiltersOpen(false)}>{t("resources.done")}</button></div></ResourceDialog>
-    <ResourceDialog open={compact && !!route.id && active && !entriesOpen && !managementOpen} onOpenChange={open => { if (!open) update({ id: "" }); }} title={t("resources.detail.title")} description={route.kind === "skill" ? t("resources.detail.skillDescription") : t("resources.detail.mcpDescription")} className="resource-detail-dialog" contentRef={detailDialogScroll}>{detail}</ResourceDialog>
+    <ResourceDialog open={compact && (!!route.id || managementOpen) && active} onOpenChange={open => { if (!open) { if (managementOpen) closeManagement(false); else update({ id: "" }); } }} title={t("resources.detail.title")} description={route.kind === "skill" ? t("resources.detail.skillDescription") : t("resources.detail.mcpDescription")} className="resource-detail-dialog" contentRef={detailDialogScroll}>{detail}</ResourceDialog>
     <ResourceDialog open={sourcesOpen && active} onOpenChange={setSourcesOpen} title={t("resources.source.title")} description={t("resources.source.lastScanned", { date: status?.observedAt ? dateLabel(status.observedAt) : t("resources.source.neverScanned") })}>
       {sourceError && <div className="resource-alert" role="alert"><ResourceErrorText error={sourceError} /><button className="text-button" onClick={() => setSourcesRetry(value => value + 1)}>{t("common.retry")}</button></div>}
       {sourcesLoading && <div className="resource-loading" role="status">{t("resources.loading.detail")}</div>}
-      <div className="resource-source-list">{visibleSources.map(item => { const manual = item.manualSourceId ? sourceStatus?.manualSources.find(source => source.id === item.manualSourceId) : undefined; return <div key={item.id}><header><strong>{clientLabel(item.client)} · {item.kind === "skill" ? t("resources.kind.skill") : t("resources.kind.mcp")}</strong><span className={`resource-state${item.readState !== "ok" ? " is-warning" : ""}`}>{t(sourceStateNames[item.readState])}</span></header><p>{item.path}</p><div className="resource-tags"><span>{item.scope === "user" ? t("resources.scope.user") : t("resources.scope.project")}</span><span>{item.format}</span><span>{item.verified ? t("resources.source.verified") : t("resources.source.readOnlyUnsupported")}</span>{item.origin === "plugin" && <span>{t("resources.source.pluginOwner", { owner: item.owner ?? t("common.unknown") })}</span>}{(item.origin === "system" || item.origin === "managed") && <span>{t(protectionNames[item.origin]!)}</span>}{item.project && <span title={item.project}>{shortPath(item.project)}</span>}</div>{manual?.id && <button className="text-button" disabled={sourcePending} onClick={() => void removeSource(manual.id!)}>{t("resources.source.remove")}</button>}</div>; })}</div>
+      <div className="resource-scan-actions"><button className="button" onClick={() => { const client = route.client === "all" ? "codex" : route.client as Client; setSource({ client, kind: route.kind, path: "", format: route.kind === "skill" ? "skill-directory" : client === "codex" ? "toml" : "json" }); setSourceKeys(registrationKeys(client)); setSourceError(null); setSourcesOpen(false); setSourceAdding(true); }}><Plus size={14} />{t("resources.source.add")}</button></div>
+      {!visibleGaps.length && !visibleDiagnostics.length && !sourcesLoading && <p className="resource-management-note">{t("resources.workspace.scanClear")}</p>}
+      <details className="resource-data-details" open={sourceLocationsOpen} onToggle={event => setSourceLocationsOpen(event.currentTarget.open)}><summary>{t("resources.workspace.scanLocations", { count: visibleSources.length })}</summary>
+      <div className="resource-source-list">{sourceLocationsOpen && visibleSources.slice((sourceCurrentPage - 1) * 50, sourceCurrentPage * 50).map(item => { const manual = item.manualSourceId ? sourceStatus?.manualSources.find(source => source.id === item.manualSourceId) : undefined; return <div key={item.id}><header><strong>{clientLabel(item.client)} · {item.kind === "skill" ? t("resources.kind.skill") : t("resources.kind.mcp")}</strong><span className={`resource-state${item.readState !== "ok" ? " is-warning" : ""}`}>{t(sourceStateNames[item.readState])}</span></header><p>{item.path}</p><div className="resource-tags"><span>{item.scope === "user" ? t("resources.scope.user") : t("resources.scope.project")}</span><span>{item.format}</span><span>{item.verified ? t("resources.source.verified") : t("resources.source.readOnlyUnsupported")}</span>{item.origin === "plugin" && <span>{t("resources.source.pluginOwner", { owner: item.owner ?? t("common.unknown") })}</span>}{(item.origin === "system" || item.origin === "managed") && <span>{t(protectionNames[item.origin]!)}</span>}{item.project && <span title={item.project}>{shortPath(item.project)}</span>}</div>{manual?.id && <button className="text-button" disabled={sourcePending} onClick={() => void removeSource(manual.id!)}>{t("resources.source.remove")}</button>}</div>; })}</div>{sourceLocationsOpen && <ResourcePagination page={sourceCurrentPage} pageSize={50} total={visibleSources.length} label={t("resources.workspace.scanSettings")} onChange={setSourcePage} />}      </details>
       <SourceDiagnostics diagnostics={visibleDiagnostics} />
-      {!!visibleGaps.length && <details className="resource-data-details"><summary>{t("resources.source.gapCount", { count: visibleGaps.length })}</summary><div className="resource-source-gaps">{visibleGaps.map((gap, index) => <p key={index}>{clientLabel(gap.client)} · {gap.reason === "project_missing" ? t("resources.source.projectMissing") : gap.reason === "limit" ? t("resources.source.limit") : t(sourceStateNames[gap.reason])}</p>)}</div></details>}
+      {!!visibleGaps.length && <details className="resource-data-details" open={sourceGapsOpen} onToggle={event => setSourceGapsOpen(event.currentTarget.open)}><summary>{t("resources.source.gapCount", { count: visibleGaps.length })}</summary>{sourceGapsOpen && <div className="resource-source-gaps">{visibleGaps.map((gap, index) => <div key={index}><p className="resource-path">{visibleSourcePaths.get(gap.sourceId)}</p><p>{gap.reason === "limit" ? t("resources.source.limit") : t(sourceStateNames[gap.reason as keyof typeof sourceStateNames])}</p></div>)}</div>}</details>}
     </ResourceDialog>
     <ResourceDialog open={sourceAdding && active} onOpenChange={open => { if (!sourcePending) setSourceAdding(open); }} title={t("resources.source.addTitle")} description={t("resources.source.addDescription")}>
       <form className="resource-source-form" onSubmit={event => void addSource(event)}>
@@ -815,34 +801,8 @@ export default function Resources({ active, onSession, onHistoryReading, history
         <div className="dialog-end"><button type="button" className="button subtle" disabled={sourcePending} onClick={() => setSourceAdding(false)}>{t("common.cancel")}</button><button className="button primary" disabled={sourcePending || !source.path.trim()}>{sourcePending ? t("resources.source.adding") : t("resources.source.addAndScan")}</button></div>
       </form>
     </ResourceDialog>
-    <ResourceDialog open={entriesOpen && active} onOpenChange={closeEntries} title={t("resources.detail.manageEntries")} description={t("resources.management.chooseEntry")} className="resource-entry-dialog" focusTarget={managementFocusTarget} afterClose={afterEntriesClose}>
-      {entriesTarget && <div className="resource-preview-heading"><strong>{entriesTarget.name}</strong></div>}
-      {entriesError ? <div className="resource-alert" role="alert"><ResourceErrorText error={entriesError} /><button className="text-button" onClick={() => entriesTarget && void openEntries(entriesTarget.id, entriesTarget.name)}>{t("common.retry")}</button></div>
-        : !entriesTarget?.rows ? <div className="resource-loading" role="status">{t("resources.loading.detail")}</div>
-        : entriesTarget.rows.length ? <>
-          {entriesTarget.rows.some(row => row.usageUnassociated) && <p className="resource-management-note">{t("resources.management.unlinkedUsage")}</p>}
-          <div className="resource-management-bodies">{entriesTarget.rows.map((row, index) => <ManagementBody key={row.body.id} row={row} index={index} onManage={chooseEntryAction} />)}</div>
-        </> : <div className="resource-management-unavailable" role="status"><p>{t("resources.management.historyOnly")}</p></div>}
-    </ResourceDialog>
-    <ResourceDialog open={managementOpen && active} onOpenChange={closeManagement} focusTarget={managementFocusTarget} title={managementInput ? t("resources.management.actionPreview", { action: t(actionNames[managementInput.action]) }) : t("resources.management.preview")} description={t("resources.management.description")}>
-      {previewLoading ? <div className="resource-loading" role="status">{t("resources.management.loading")}</div> : preview ? <>
-        <div className="resource-preview-heading"><strong>{preview.resource.name}</strong><div className="resource-tags"><span>{clientLabel(preview.resource.client)}</span><span>{preview.resource.scope === "user" ? t("resources.scope.user") : t("resources.scope.project")}</span></div></div>
-        {preview.action === "trash" && preview.resource.kind === "skill" && <p className="resource-management-note">{t(preview.target === "file" ? "resources.management.fileEffect" : "resources.management.linkEffect")}</p>}
-        <p className="resource-management-note">{t("resources.management.referencesUnknown")}</p>
-        <dl className="resource-facts"><dt>{t("resources.facts.method")}</dt><dd>{t(operationMethodNames[preview.method])}</dd><dt>{t("resources.facts.original")}</dt><dd>{preview.sourcePath}</dd>{preview.destinationPath && <><dt>{t(preview.action === "disable" ? "resources.facts.backupDestination" : preview.action === "restore" ? "resources.facts.restoreDestination" : "resources.facts.trashDestination")}</dt><dd>{preview.destinationPath}</dd></>}{preview.resource.project && <><dt>{t("resources.project.label")}</dt><dd>{preview.resource.project}</dd></>}<dt>{t("resources.facts.restoration")}</dt><dd><ResourceMessage descriptor={preview.restorationDescriptor} original={preview.restoration} /></dd><dt>{t("resources.facts.expires")}</dt><dd>{dateLabel(preview.expiresAt)}</dd></dl>
-        {preview.protected && <div className="resource-alert" role="alert">{preview.protectionReasons.length ? formatList(preview.protectionReasons.map(reason => protectionNames[reason] ? t(protectionNames[reason]!) : t("common.originalDetail", { detail: reason }))) : t("resources.management.protected")}</div>}
-        <section className="resource-detail-section"><header><h3>{t("resources.management.affectedEntries")}</h3><span>{t("resources.entryCount", { count: preview.affectedEntries.length })}</span></header><div className="resource-preview-entries">{preview.affectedEntries.map(entry => <div key={`${entry.id}:${entry.scope}:${entry.project ?? ""}:${entry.entryPath}`}><strong>{clientLabel(entry.client)} · {entry.name}</strong><span>{entry.scope === "user" ? t("resources.scope.user") : entry.project ?? t("resources.project.unknown")}</span><p>{entry.entryPath}</p></div>)}</div></section>
-        {!!preview.revealedEntries?.length && <section className="resource-detail-section"><header><h3>{t("resources.management.revealedEntries")}</h3><span className="resource-state is-warning">{t("resources.entryCount", { count: preview.revealedEntries.length })}</span></header><div className="resource-preview-entries">{preview.revealedEntries.map((entry, index) => <div key={`${entry.client}:${entry.scope}:${entry.project ?? ""}:${entry.entryPath}:${index}`}><strong>{clientLabel(entry.client)} · {entry.name}</strong><span>{entry.scope === "user" ? t("resources.scope.userDefault") : entry.project ?? t("resources.project.unknown")}</span><p>{entry.entryPath}</p></div>)}</div></section>}
-        {preview.action === "purge" && <label className="resource-checkbox resource-purge-confirm"><input type="checkbox" checked={purgeConfirmed} onChange={event => setPurgeConfirmed(event.target.checked)} />{t("resources.management.confirmPurge")}</label>}
-        <div className="dialog-end"><button className="button subtle" disabled={applying} onClick={() => closeManagement(false)}>{t("common.cancel")}</button><button className={`button ${preview.action === "trash" || preview.action === "purge" ? "resource-danger-button" : "primary"}`} disabled={applying || preview.action === "purge" && !purgeConfirmed} onClick={() => void applyManagement()}>{applying ? t("resources.management.applying") : t("resources.management.confirm", { action: t(actionNames[preview.action]) })}</button></div>
-      </> : managementResult ? <>
-        <div className={`resource-${managementResult.status === "success" ? "feedback" : "alert"}`} role={managementResult.status === "success" ? "status" : "alert"}>{t(operationStatusNames[managementResult.status])}</div><ResourceMessage descriptor={managementResult.messageDescriptor} original={managementResult.message} details={managementResult.details} />
-        <div className="resource-tags"><span>{managementResult.localState === "changed" ? t("resources.management.changed") : managementResult.localState === "partial" ? t("resources.management.partial") : t("resources.management.unchanged")}</span><span>{managementResult.clientEffect === "pending_reload" ? t("resources.clientEffect.pending") : t("resources.clientEffect.unknown")}</span></div>
-        <div className="dialog-end">{managementResult.status !== "success" && managementInput && <button className="button" onClick={() => void showManagement(managementInput)}>{t("resources.management.previewAgain")}</button>}<button className="button primary" onClick={() => closeManagement(false)}>{t("resources.done")}</button></div>
-      </> : null}
-      {managementError && <div className="resource-alert" role="alert"><ResourceErrorText error={managementError} /></div>}
-      {managementError && !preview && managementInput && <div className="dialog-end"><button className="button subtle" onClick={() => closeManagement(false)}>{t("common.cancel")}</button><button className="button" onClick={() => void showManagement(managementInput)}>{t("resources.management.previewAgain")}</button></div>}
-    </ResourceDialog>
+
+
   </div>;
 }
 
@@ -856,39 +816,46 @@ function entryReadOnlyKey(entry: ResourceInventoryEntry): string {
     : "resources.management.readOnly";
 }
 
-function ManagementBody({ row, index, onManage }: { row: ResourceLocalRow; index: number; onManage: (input: ResourceManagementInput) => void }) {
-  const { language } = useI18n();
-  const files = row.entries.filter(entry => entry.kind === "skill" && (entry.entryType === "file" || entry.entryType === "directory"));
-  const file = files.find(entry => entry.capabilities.trash) ?? files[0];
-  const links = new Map<string, ResourceInventoryEntry>();
-  for (const entry of row.entries.filter(entry => entry.entryType === "symlink")) {
-    const previous = links.get(entry.entryPath);
-    if (!previous || !previous.capabilities.trash && entry.capabilities.trash) links.set(entry.entryPath, entry);
+function ManagementBody({ row, index, onManage, legacyFavorite, onClearFavorite }: { row: ResourceLocationGroup; index: number; onManage: (input: ResourceManagementInput) => void; legacyFavorite?: boolean; onClearFavorite?: () => void }) {
+  useI18n();
+  const uniqueByLocation = new Map<string, ResourceInventoryEntry>();
+  for (const entry of row.entries) {
+    const key = JSON.stringify([entry.entryPath, entry.locator.keyPath ?? []]);
+    const previous = uniqueByLocation.get(key);
+    uniqueByLocation.set(key, physicalLocationEntry(previous ? [previous, entry] : [entry])!);
   }
-  const clients = new Intl.ListFormat(language, { style: "short", type: "conjunction" }).format([...new Set(row.entries.map(entry => clientLabel(entry.client)))]);
+  const unique = [...uniqueByLocation.values()];
+  const files = row.entries.filter(entry => entry.kind === "skill" && ["file", "directory"].includes(entry.entryType));
+  const file = files.find(entry => entry.capabilities.trash) ?? files[0];
+  const links = unique.filter(entry => entry.entryType === "symlink");
+  const registration = row.body.kind === "mcp" ? physicalLocationEntry(row.entries) : undefined;
+  const controls = row.entries.filter(entry => entry.entryType !== "symlink" && entry.capabilities.disable);
   return <section className="resource-management-body" aria-label={t("resources.bodyName", { name: row.body.name, index: index + 1 })}>
-    <header><strong>{row.body.name}</strong>{!file && <span>{t("resources.entryCount", { count: row.entries.length })}</span>}</header>
-    <p className="resource-path">{file?.entryPath ?? row.body.targetPath ?? row.entries[0]?.entryPath ?? t("resources.detail.bodyUnknown")}</p>
-    {file && <>
-      <p className="resource-management-note">{t("resources.management.discoveredClients", { clients })}</p>
-      <div className="resource-entry-actions"><button className="button resource-danger-button" disabled={!file.capabilities.trash} data-resource-action={`${file.id}:trash`} aria-label={t("resources.management.trashFile", { path: file.entryPath })} onClick={() => onManage({ entryId: file.id, action: "trash" })}>{t("resources.action.trash")}</button></div>
+    {file ? <>
+      <header><strong>{formatList([...new Set(files.map(entry => t(entry.scope === "user" ? "resources.scope.user" : "resources.scope.project")))])}</strong><span>{t(methodNames[file.entryType])}</span></header>
+      <p className="resource-path">{file.entryPath}</p>
+      <div className="resource-entry-actions">{file.capabilities.trash && <button className="button resource-danger-button" data-resource-action={`${file.id}:trash`} aria-label={t("resources.management.trashFile", { path: file.entryPath })} onClick={() => onManage({ entryId: file.id, action: "trash" })}>{t("resources.workspace.previewTrash")}</button>}</div>
       {!file.capabilities.trash && <p className="resource-management-note" role="status">{t(entryReadOnlyKey(row.entries.find(entry => entry.protected) ?? file))}</p>}
-    </>}
-    {row.entries.filter(entry => (!file || entry.entryType === "symlink" || entry.capabilities.disable)
-      && (entry.entryType !== "symlink" || entry.capabilities.disable || links.get(entry.entryPath)?.id === entry.id)).map(entry => <Entry key={entry.id} entry={entry} onManage={onManage} hideTrash={entry.entryType === "symlink" && links.get(entry.entryPath)?.id !== entry.id} />)}
+      {controls.map(entry => <Entry key={entry.id} entry={entry} onManage={onManage} controlOnly />)}
+      {!!links.length && <details className="resource-data-details resource-linked-locations"><summary>{t("resources.workspace.linkCount", { count: links.length })}</summary>{links.map(entry => <Entry key={entry.id} entry={entry} onManage={onManage} />)}</details>}
+    </> : registration ? <>
+      <Entry entry={registration} onManage={onManage} />
+      {controls.some(entry => entry.id !== registration.id) && <details className="resource-data-details"><summary>{t("resources.workspace.additionalControls")}</summary>{controls.filter(entry => entry.id !== registration.id).map(entry => <Entry key={entry.id} entry={entry} onManage={onManage} controlOnly />)}</details>}
+    </> : unique.map(entry => <Entry key={entry.id} entry={entry} onManage={onManage} />)}
+    {legacyFavorite && <button className="text-button resource-legacy-favorite" onClick={onClearFavorite}>{t("resources.workspace.clearLocationFavorite")}</button>}
   </section>;
 }
 
-function Entry({ entry, onManage, hideTrash = false }: { entry: ResourceInventoryEntry; onManage: (input: ResourceManagementInput) => void; hideTrash?: boolean }) {
+function Entry({ entry, onManage, controlOnly = false }: { entry: ResourceInventoryEntry; onManage: (input: ResourceManagementInput) => void; controlOnly?: boolean }) {
   useI18n();
   const file = entry.kind === "skill" && (entry.entryType === "file" || entry.entryType === "directory");
   const unavailable = !entry.capabilities.disable && !entry.capabilities.trash;
-  return <div className="resource-entry"><header><strong>{clientLabel(entry.client)}</strong><span>{entry.scope === "user" ? t("resources.scope.user") : t("resources.scope.project")}</span></header>{entry.project && <p className="resource-path">{entry.project}</p>}<p className="resource-path">{entry.entryPath}</p>
+  return <div className="resource-entry"><header><strong>{controlOnly ? t("resources.workspace.clientControl", { client: clientLabel(entry.client) }) : clientLabel(entry.client)}</strong><span>{entry.scope === "user" ? t("resources.scope.user") : t("resources.scope.project")}</span></header>{entry.project && <p className="resource-path">{entry.project}</p>}<p className="resource-path">{controlOnly ? entry.locator.controlPath ?? entry.entryPath : entry.entryPath}</p>
     {entry.entryType === "registration" && entry.locator.keyPath?.length && <p className="resource-path">{entry.locator.keyPath.join(".")}</p>}
     {entry.entryType === "symlink" && <p className="resource-path">→ {entry.targetPath ?? entry.linkTarget ?? t("resources.entry.targetUnknown")}</p>}
     <div className="resource-tags"><span>{t(methodNames[entry.entryType])}</span>{entry.nativeState !== "unknown" && <span>{nativeStateLabel(entry.nativeState)}</span>}{entry.invocationMode === "user-only" && <span>{t("resources.entry.userOnly")}</span>}{entry.readState !== "present" && <span className="is-warning">{entry.readState === "broken" ? t("resources.entry.broken") : t("resources.source.unreadable")}</span>}</div>
     {entry.selectionScopes?.length ? <details className="resource-data-details"><summary>{t("resources.entry.selectionScopes", { count: entry.selectionScopes.length })}</summary><div className="resource-selection-scopes">{entry.selectionScopes.map((item, index) => <div key={`${item.scope}:${item.project ?? ""}:${index}`}><strong>{item.scope === "user" ? t("resources.scope.userDefault") : item.project ?? t("resources.project.unknown")}</strong><div className="resource-tags">{item.nativeState !== "unknown" && <span>{nativeStateLabel(item.nativeState)}</span>}{item.invocationMode === "user-only" && <span>{t("resources.entry.userOnly")}</span>}</div>{item.controlPath && <p className="resource-path">{item.controlPath}</p>}</div>)}</div></details> : null}
     {unavailable && <p className="resource-management-note" role="status">{t(entryReadOnlyKey(entry))}</p>}
-    <div className="resource-entry-actions">{entry.capabilities.disable && entry.nativeState !== "disabled" && <button className="button" data-resource-action={`${entry.id}:disable`} aria-label={t("resources.management.previewEntry", { action: t(actionNames.disable), name: entry.name, client: clientLabel(entry.client) })} onClick={() => onManage({ entryId: entry.id, action: "disable" })}>{t("resources.entry.previewDisable")}</button>}{entry.capabilities.trash && !file && !hideTrash && <button className="button resource-danger-button" data-resource-action={`${entry.id}:trash`} aria-label={entry.entryType === "symlink" ? t("resources.management.removeLink", { path: entry.entryPath }) : t("resources.management.previewEntry", { action: t(actionNames.trash), name: entry.name, client: clientLabel(entry.client) })} onClick={() => onManage({ entryId: entry.id, action: "trash" })}>{t(entry.entryType === "symlink" ? "resources.management.linkAction" : "resources.action.trash")}</button>}</div>
+    <div className="resource-entry-actions">{entry.capabilities.disable && entry.nativeState !== "disabled" && <button className="button" data-resource-action={`${entry.id}:disable`} aria-label={t("resources.management.previewEntry", { action: t(actionNames.disable), name: entry.name, client: clientLabel(entry.client) })} onClick={() => onManage({ entryId: entry.id, action: "disable" })}>{t("resources.entry.previewDisable")}</button>}{entry.capabilities.trash && !file && !controlOnly && <button className="button resource-danger-button" data-resource-action={`${entry.id}:trash`} aria-label={entry.entryType === "symlink" ? t("resources.management.removeLink", { path: entry.entryPath }) : t("resources.management.previewEntry", { action: t(actionNames.trash), name: entry.name, client: clientLabel(entry.client) })} onClick={() => onManage({ entryId: entry.id, action: "trash" })}>{t(entry.entryType === "symlink" ? "resources.workspace.previewLink" : "resources.workspace.previewRemoveRegistration")}</button>}</div>
   </div>;
 }

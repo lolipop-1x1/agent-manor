@@ -28,7 +28,7 @@ export function buildResourceMap(overview: ResourceOverviewResult, history: Reso
       clients: row.clients, favorite: row.favorite, favoriteIds: row.favoriteIds, localFavoriteIds: row.localFavoriteIds,
       protectedByConfiguration: row.protectedByConfiguration,
       protected: row.protected, observation: row.observation, localBodyIds: row.localBodyIds, hasHistory: row.hasHistory,
-      partial: row.partial, usageUnassociated: row.usageUnassociated };
+      partial: row.partial, usageUnassociated: row.usageUnassociated, localSummary: row.localSummary };
     if (value === null) zero.push(node);
     else if (value === 0) { node.share = 0; zero.push(node); }
     else { positive.push(node); totalValue += value; }

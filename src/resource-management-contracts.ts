@@ -5,6 +5,15 @@ export type ResourceManagementAction = "disable" | "standby" | "trash" | "restor
 export type ResourceArchiveState = "disabled" | "standby" | "trash" | "restored" | "purged";
 export type ResourceAffectedEntry = Pick<ResourceInventoryEntry, "id" | "name" | "client" | "scope" | "project" | "entryPath">;
 export interface ResourceManagementInput { entryId?: string; operationId?: string; action: ResourceManagementAction }
+/** 仅公开被改动的控制值及定位，不包含注册、命令、地址或凭证正文。 */
+export interface ResourceConfigurationPreview {
+  path: string;
+  keyPath: string[];
+  selector?: { key: "path" | "name"; value: string };
+  kind: "boolean" | "membership" | "registration" | "marker";
+  before: boolean | "missing" | "present";
+  after: boolean | "missing" | "present";
+}
 export interface ResourceManagementPreview {
   id: string;
   action: ResourceManagementAction;
@@ -15,6 +24,7 @@ export interface ResourceManagementPreview {
   target?: "entry" | "file";
   sourcePath: string;
   destinationPath?: string;
+  configuration?: ResourceConfigurationPreview;
   affectedEntries: ResourceAffectedEntry[];
   /** 当前所选入口被隔离后，可能重新可见的持久来源。 */
   revealedEntries?: Pick<ResourceInventoryEntry, "name" | "client" | "scope" | "project" | "entryPath">[];

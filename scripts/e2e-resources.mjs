@@ -5,1197 +5,259 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
+import { parse as parseToml } from "smol-toml";
 import { clientIds } from "../dist/clients.js";
 import { startService } from "../dist/server.js";
-import { parse as parseToml } from "smol-toml";
-import Database from "better-sqlite3";
 import { resourceFixture, skillRankingFixture, mcpOverviewFixture } from "./resource-fixture.mjs";
 
-// 全部历史 roots 和资源 home 均显式隔离；真实 Chrome 只操作人工资源。
+// 正式静态产物与真实服务、Chrome 联测；全部写操作仅作用于隔离人工资源。
 const run = promisify(execFile);
 const directory = await realpath(await mkdtemp(join(tmpdir(), "manor-resources-e2e-")));
 const artifacts = fileURLToPath(new URL("../.local/resource-e2e/", import.meta.url));
-const browserSession = `resources${process.pid}`;
+const session = `resources${process.pid}`;
+const checks = [], measurements = [];
 const started = Date.now();
-const checks = [];
-let service;
-let fixture;
-let base;
+let service, fixture, base;
 const browser = async args => {
-  const result = await run("playwright-cli", [`-s=${browserSession}`, ...args], {
-    cwd: directory, env: { ...process.env, TMPDIR: "/tmp" }, timeout: 60_000, maxBuffer: 5 * 1024 * 1024,
-  });
-  if (result.stdout.includes("### Error")) throw new Error(result.stdout);
-  return result.stdout;
+  const { stdout } = await run("playwright-cli", [`-s=${session}`, ...args], { cwd: directory, env: { ...process.env, TMPDIR: "/tmp" }, timeout: 60_000, maxBuffer: 5 * 1024 * 1024 });
+  if (stdout.includes("### Error")) throw new Error(stdout);
+  return stdout;
 };
 const api = async (path, method = "GET", body) => {
-  const response = await fetch(`${base}/api/v1${path}`, { method, headers: {
-    "x-agent-manor-instance": service.instance.id, ...(body === undefined ? {} : { "Content-Type": "application/json" }),
-  }, body: body === undefined ? undefined : JSON.stringify(body) });
+  const response = await fetch(`${base}/api/v1${path}`, { method, headers: { "x-agent-manor-instance": service.instance.id, ...(body === undefined ? {} : { "Content-Type": "application/json" }) }, body: body === undefined ? undefined : JSON.stringify(body) });
   const result = await response.json();
   if (!response.ok) throw Object.assign(new Error(result.error?.message ?? String(response.status)), { code: result.error?.code });
   return result;
 };
 const step = async (name, code) => {
-  const output = await browser(["run-code", `async page => {
-    const expect = (value, message) => { if (!value) throw new Error(message); };
-    ${code}
-    return { passed: ${JSON.stringify(name)} };
-  }`]);
-  checks.push(name);
-  console.log(`PASS ${name}`);
-  return output;
+  await browser(["run-code", `async page => { const expect=(value,message)=>{if(!value)throw new Error(message)}; ${code} return {passed:${JSON.stringify(name)}}; }`]);
+  checks.push(name); console.log(`PASS ${name}`);
 };
-const select = (label, option) => `await page.getByRole("combobox", {name:${JSON.stringify(label)},exact:true}).click(); await page.getByRole("option",{name:${JSON.stringify(option)},exact:true}).click();`;
-const view = label => ["已停用", "回收区", "操作记录"].includes(label)
-  ? `await page.getByRole("navigation",{name:"管理记录",exact:true}).getByRole("button",{name:${JSON.stringify(label)},exact:true}).click();`
-  : `await page.getByRole("navigation",{name:"资源视图"}).getByRole("button",{name:${JSON.stringify(label.endsWith(" 总览") ? "使用总览" : label)},exact:true}).click();`;
-const search = name => `{
-  const input=page.getByRole("textbox",{name:"搜索资源名称或路径",exact:true});
-  const value=${JSON.stringify(name)};
-  if(await input.inputValue()!==value) {
-    const response=page.waitForResponse(response=>{
-      const [path,query='']=response.url().split('?');
-      const q=query.split('&').find(part=>part.startsWith('q='))?.slice(2)??'';
-      return ['overview','local','map','archives','operations'].some(endpoint=>path.endsWith('/api/v1/resources/'+endpoint))
-        && decodeURIComponent(q.replaceAll('+',' '))===value && response.request().method()==='GET';
-    });
-    await input.fill(value); await (await response).finished();
-  }
-  await page.waitForFunction(()=>!document.querySelector('.resource-list-scroll[aria-busy="true"]'));
-}`;
-const local = name => `${view("本地资源")} ${search(name)} await page.getByRole("button",{name:${JSON.stringify(`查看${name}的本地详情`)},exact:true}).click(); await page.locator(".resource-detail-heading h2").filter({hasText:${JSON.stringify(name)}}).waitFor();`;
-const screenshot = name => `await page.screenshot({path:${JSON.stringify(join(artifacts, name))}});`;
-const actionNames = { disable: "停用", trash: "移入回收区", restore: "恢复", purge: "永久清除" };
-const previewEntry = (action, name, client = "Codex") => `${action === "trash" ? `await page.getByRole("complementary",{name:"资源详情",exact:true}).getByRole("button",{name:${JSON.stringify(`管理${name}`)},exact:true}).click(); const entries=page.getByRole("dialog",{name:"管理具体入口",exact:true}); await entries.getByRole("button",{name:${client === "Claude Code" ? '/^移除链接/' : '/^将.*移入回收区$/'} }).click();` : `await page.getByRole("button",{name:${JSON.stringify(`预览${actionNames[action]}${name}的${client}入口`)},exact:true}).click();`} await page.getByRole("dialog",{name:${JSON.stringify(`${actionNames[action]}预览`)},exact:true}).getByRole("button",{name:${JSON.stringify(`确认${actionNames[action]}`)},exact:true}).waitFor();`;
-const confirm = action => `{
-  const dialog=page.getByRole("dialog",{name:${JSON.stringify(`${actionNames[action]}预览`)},exact:true});
-  ${action === "purge" ? 'expect(await dialog.getByRole("button",{name:"确认永久清除",exact:true}).isDisabled(),"永久清除未要求二次确认"); await dialog.getByRole("checkbox",{name:"我确认永久清除所列恢复材料",exact:true}).check();' : ""}
-  await dialog.getByRole("button",{name:${JSON.stringify(`确认${actionNames[action]}`)},exact:true}).click();
-  await dialog.getByRole("button",{name:"完成",exact:true}).waitFor();
-  expect((await dialog.innerText()).includes(${JSON.stringify(action === "purge" ? "客户端生效状态未知" : "待重新加载")}),"结果未说明客户端生效边界");
-  expect((await dialog.getByRole("status").innerText()).includes("本地修改完成"),"管理操作未成功");
-  await dialog.getByRole("button",{name:"完成",exact:true}).click(); await dialog.waitFor({state:"hidden"});
-}`;
-const archive = (tab, name) => `${view(tab)} ${search(name)} await page.getByRole("button",{name:${JSON.stringify(`查看${name}的恢复记录`)},exact:true}).click(); await page.getByRole("button",{name:"预览恢复",exact:true}).waitFor();`;
-const restore = `await page.getByRole("button",{name:"预览恢复",exact:true}).click(); await page.getByRole("dialog",{name:"恢复预览",exact:true}).getByRole("button",{name:"确认恢复",exact:true}).waitFor(); ${confirm("restore")}`;
+const ready = `await page.waitForLoadState('networkidle'); await page.waitForFunction(()=>!document.querySelector('.resource-list-scroll[aria-busy="true"]')&&!document.querySelector('.resource-detail-body[aria-busy="true"]'));`;
+const route = (kind = "skill", q = "", id = "", detail = "overview") => `await page.goto(${JSON.stringify(base)}+'/#resources?'+${JSON.stringify(new URLSearchParams({kind,tab:"usage",view:"list",q,id,detail}).toString())}); await page.getByRole('table',{name:${JSON.stringify(kind === "skill" ? "Skill 总览" : "MCP 总览")},exact:true}).waitFor(); ${ready}`;
+const open = name => `await page.getByRole('button',{name:${JSON.stringify(`查看${name}的使用详情`)},exact:true}).click(); await page.locator('.resource-detail-heading h2').filter({hasText:${JSON.stringify(name)}}).waitFor(); ${ready}`;
+const tab = name => `await page.locator('.resource-detail-tabs').getByRole('button',{name:${JSON.stringify(name)},exact:true}).click();`;
+const select = (label, option) => `await page.getByRole('combobox',{name:${JSON.stringify(label)},exact:true}).click(); await page.getByRole('option',{name:${JSON.stringify(option)},exact:true}).click(); ${ready}`;
+const tools = name => `await page.getByRole('button',{name:'更多资源工具',exact:true}).click(); await page.getByRole('menuitem',{name:${JSON.stringify(name)},exact:true}).click(); ${ready}`;
+const location = path => `page.locator('.resource-management-body').filter({has:page.getByText(${JSON.stringify(path)},{exact:true})})`;
+const preview = `page.locator('.resource-preview-panel')`;
+const apply = label => `await ${preview}.getByRole('button',{name:${JSON.stringify(label)},exact:true}).click(); await ${preview}.getByRole('button',{name:'完成',exact:true}).waitFor(); expect((await ${preview}.getByRole('status').innerText()).includes('本地修改完成'),'操作没有成功');`;
+const finish = `await ${preview}.getByRole('button',{name:'完成',exact:true}).click(); await ${preview}.waitFor({state:'hidden'}); ${ready}`;
+const snap = name => `await page.screenshot({path:${JSON.stringify(join(artifacts,name))}});`;
 
 try {
-  await mkdir(artifacts, { recursive: true });
+  await mkdir(artifacts, {recursive:true});
   fixture = await resourceFixture(directory, 105);
-  await run("git", ["init", "-q", fixture.project]);
-  const claudeHistory = join(directory, "history-claude");
-  await mkdir(claudeHistory);
-  const roots = { ...Object.fromEntries(clientIds.map(client => [client, []])), codex: fixture.history, claude: claudeHistory };
-  service = await startService({ home: fixture.home, roots, resourceInventory: { userHome: fixture.userHome },
-    startupRefresh: true, staticRoot: fileURLToPath(new URL("../dist/web", import.meta.url)) });
+  const claudeHistory = join(directory,"claude-history"), secondProject = join(directory,"other-project");
+  await mkdir(claudeHistory); await mkdir(secondProject);
+  await skillRankingFixture(fixture,claudeHistory,secondProject);
+  await mcpOverviewFixture(fixture,claudeHistory,secondProject,105);
+  await appendFile(fixture.source, JSON.stringify({type:"response_item",timestamp:"2026-01-02T12:02:00Z",payload:{type:"function_call",name:"Skill",call_id:"retired-only",arguments:JSON.stringify({skill:"retired-only"})}})+'\n');
+  service = await startService({home:fixture.home,roots:{...Object.fromEntries(clientIds.map(client=>[client,[]])),codex:fixture.history,claude:claudeHistory},resourceInventory:{userHome:fixture.userHome},startupRefresh:true,staticRoot:fileURLToPath(new URL("../dist/web",import.meta.url))});
   base = `http://127.0.0.1:${service.instance.port}`;
-  let ready = false;
-  for (let attempt = 0; attempt < 400; attempt++) {
-    const status = await api("/sessions/status");
-    if (status.job?.status === "failed") throw new Error(status.job.error);
-    if (status.version) { ready = true; break; }
-    await new Promise(resolve => setTimeout(resolve, 25));
+  for(let attempt=0;attempt<400;attempt++) { const state=await api('/sessions/status'); if(state.job?.status==='failed')throw new Error(state.job.error); if(state.version)break; await new Promise(resolve=>setTimeout(resolve,25)); }
+  assert.ok((await api('/sessions/status')).version);
+  await api('/preferences','PUT',{language:'zh-CN'});
+  const initialConfig = await readFile(fixture.configPath,'utf8');
+  const sample = (await api('/resources/overview?kind=mcp')).resources.find(row=>row.identity.name==='sample');
+  const guide = (await api('/resources/overview?kind=skill')).resources.find(row=>row.identity.name==='guide');
+  assert.equal(guide.stats.events,5); assert.equal(guide.stats.sessions,3); assert.equal(sample.stats.events,29);
+  for(const query of ['kind=skill','kind=skill&presence=present','kind=skill&scope=project', 'kind=mcp']) {
+    for(let index=0;index<3;index++) {const begin=performance.now();const result=await api('/resources/overview?summary=true&'+query); measurements.push({query,ms:performance.now()-begin,bytes:Buffer.byteLength(JSON.stringify(result))});}
   }
-  assert.ok(ready, "人工历史未完成索引");
-  const initialConfig = await readFile(fixture.configPath, "utf8");
-  const usage = await api("/resources/usage?kind=skill");
-  assert.equal(usage.resources.find(row => row.identity.name === "guide")?.stats.successfulReads, 1);
-  await writeFile(join(fixture.project, "sample.ts"), "export const sample = 1;\n");
-  const registered = await api("/repositories", "POST", { path: fixture.project });
-  for (let attempt = 0; attempt < 400; attempt++) {
-    const { job } = await api(`/jobs/${registered.job.id}`);
-    if (job.status === "completed") break;
-    assert.notEqual(job.status, "failed", job.error);
-    await new Promise(resolve => setTimeout(resolve, 25));
-  }
-  assert.equal((await api(`/jobs/${registered.job.id}`)).job.status, "completed");
-  await api("/preferences", "PUT", { language: "zh-CN" });
-  await browser(["open", `${base}/#resources`, "--headed", "--browser=chrome"]);
-
-  await step("资源首屏不加载隐藏代码地图，切回地图按需加载", `
-    await page.getByRole("table",{name:"Skill 总览",exact:true}).waitFor();
-    expect(await page.locator('.resource-list-summary').count()===0,"Skill总览仍有重复总数行");
-    await page.waitForFunction(()=>performance.getEntriesByType("resource").some(entry=>new URL(entry.name).pathname==="/api/v1/status"));
-    const coverageCount=()=>page.evaluate(()=>performance.getEntriesByType("resource").filter(entry=>new URL(entry.name).pathname.endsWith("/coverage")).length);
-    expect(await coverageCount()===0,"资源首屏触发了隐藏地图查询");
-    const navigation=page.getByRole("navigation",{name:"功能导航"});
-    await navigation.getByRole("button",{name:"代码地图",exact:true}).click();
-    await page.locator(".map-file").first().waitFor();
-    const loaded=await coverageCount();
-    expect(loaded>0,"切回代码地图没有加载数据");
-    await navigation.getByRole("button",{name:"资源管理",exact:true}).click();
-    await page.getByRole("table",{name:"Skill 总览",exact:true}).waitFor();
-    expect(await coverageCount()===loaded,"返回资源页重新查询了隐藏地图");
+  await browser(['open',`${base}/#resources`,'--headed','--browser=chrome']);
+  await step('正式统一清单、三栏布局及按需加载',`
+    page.setDefaultTimeout(15000); await page.setViewportSize({width:1920,height:1000}); ${route()}
+    page.resourceErrors=[]; page.on('pageerror',error=>page.resourceErrors.push(error.message));
+    const table=page.getByRole('table',{name:'Skill 总览',exact:true});
+    expect(await table.getByRole('columnheader',{name:'本地位置',exact:true}).count()===1,'没有本地位置列');
+    expect(await table.getByRole('columnheader',{name:/涉及|管理/}).count()===0,'旧 Agent 或管理列残留');
+    expect(await page.getByRole('navigation',{name:'资源视图',exact:true}).count()===0,'双清单入口残留');
+    expect(await page.getByRole('button',{name:'来源与能力',exact:true}).count()===0,'来源入口仍常驻');
+    expect(await page.evaluate(()=>performance.getEntriesByType('resource').filter(e=>['/api/v1/resources/map','/api/v1/resources/status'].includes(new URL(e.name).pathname)&&!e.name.includes('summary=true')).length)===0,'首屏请求地图或完整诊断');
+    ${open('guide')}
+    const left=await page.getByRole('complementary',{name:'资源筛选',exact:true}).boundingBox();
+    const right=await page.getByRole('complementary',{name:'资源详情',exact:true}).boundingBox();
+    expect(left.width>=200&&right.width>=380,'三栏默认宽度不足');
+    expect((await table.boundingBox()).width<=1121,'宽屏表格无限拉伸');
+    ${snap('workspace-wide.png')}
   `);
-
-  await step("入口、Skill 读取与调用分列", `
-    page.resourceErrors=[]; page.on("pageerror",error=>page.resourceErrors.push(error.message));
-    await page.setViewportSize({width:1560,height:980});
-    await page.getByRole("navigation",{name:"功能导航"}).getByRole("button",{name:"资源管理",exact:true}).click();
-    await page.getByRole("button",{name:"查看guide的使用详情",exact:true}).click();
-    await page.locator(".resource-detail-heading h2").filter({hasText:"guide"}).waitFor();
-    if(await page.locator('.resource-usage-summary:not([open]) > summary').count()) await page.locator('.resource-usage-summary:not([open]) > summary').first().click(); const stats=await page.locator(".resource-stats").innerText();
-    expect(/1\\s*成功读取/.test(stats),"Skill读取未分列");
-    expect(/0\\s*显式调用/.test(stats),"读取被误计为显式调用");
-    expect(await page.locator(".resource-local-entries .resource-entry .resource-entry").count()>0,"Skill路径未关联");
-    ${screenshot("usage-light.png")}
+  await step('名称汇总、三分区和原始描述',`
+    expect(await page.locator('.resource-detail-tabs button').count()===3,'详情分区缺失');
+    expect((await page.locator('.resource-overview-stats').innerText()).includes('5'),'名称调用数错误');
+    ${tab('使用记录')}
+    expect(/5\\s*成功读取/.test(await page.locator('.resource-stats').innerText()),'读取统计丢失');
+    ${tab('文件位置')}
+    expect(await page.locator('.resource-management-body').count()>=3,'不同文件被合并为一个写入对象');
+    ${tab('概览')}
   `);
-  await step("整行打开详情，管理与文本选择独立", `
-    await page.waitForFunction(()=>!document.querySelector('.resource-list-scroll[aria-busy="true"]'));
-    const table=page.getByRole("table",{name:"Skill 总览",exact:true});
-    const guide=table.getByRole("row").filter({has:page.getByRole("button",{name:"查看guide的使用详情",exact:true})});
-    const other=table.locator("tbody tr").nth(1);
-    const name=await other.locator("th button").first().innerText();
-    await other.locator("td").nth(2).click();
-    await page.locator(".resource-detail-heading h2").filter({hasText:name}).waitFor();
-    const before=page.url();
-    await guide.locator("th button").first().evaluate(element=>{
-      const range=document.createRange(); range.selectNodeContents(element);
-      const selection=getSelection(); selection.removeAllRanges(); selection.addRange(range);
-    });
-    await guide.locator("td").first().dispatchEvent("click");
-    expect(page.url()===before,"文本选择误打开详情");
-    await page.evaluate(()=>getSelection().removeAllRanges());
-    await guide.getByRole("button",{name:"管理guide",exact:true}).click();
-    await page.getByRole("dialog",{name:"管理具体入口",exact:true}).waitFor();
-    expect(page.url()===before,"管理按钮触发整行导航");
-    await page.keyboard.press("Escape");
-    await guide.locator("td").last().click({position:{x:2,y:2}});
-    await page.locator(".resource-detail-heading h2").filter({hasText:"guide"}).waitFor();
-    await guide.getByRole("button",{name:"查看guide的使用详情",exact:true}).focus();
-    await page.keyboard.press("Enter");
-    expect((await page.locator(".resource-detail-heading h2").innerText())==="guide","键盘详情入口失效");
+  await step('整行、键盘、文本选择与详情关闭焦点',`
+    const table=page.getByRole('table',{name:'Skill 总览',exact:true}); const other=table.locator('tbody tr').nth(1);
+    const name=await other.locator('th button').innerText(); await other.locator('td').first().click();
+    await page.locator('.resource-detail-heading h2').filter({hasText:name}).waitFor(); ${ready}
+    const row=table.getByRole('row',{name:'查看guide的使用详情',exact:true});
+    const hash=page.url(); await row.locator('th button').evaluate(node=>{const range=document.createRange();range.selectNodeContents(node);const selection=getSelection();selection.removeAllRanges();selection.addRange(range)});
+    await row.locator('td').first().dispatchEvent('click'); expect(page.url()===hash,'选文字触发行导航'); await page.evaluate(()=>getSelection().removeAllRanges());
+    await row.focus(); await page.keyboard.press('Enter'); ${ready}
+    await page.keyboard.press('Escape'); expect(await row.evaluate(node=>document.activeElement===node),'关闭详情未回到资源行');
+    await row.press('Enter'); await page.locator('.resource-detail-heading h2').filter({hasText:'guide'}).waitFor(); ${ready}
   `);
-  await step("收藏即时响应，只写一次，保留 DOM、焦点、滚动及证据", `
-    await page.waitForFunction(()=>document.querySelector('.resource-evidence a')&&!document.querySelector('.resource-list-scroll[aria-busy="true"]'));
-    const row=page.getByRole("table",{name:"Skill 总览",exact:true}).getByRole("row").filter({has:page.getByRole("button",{name:"查看guide的使用详情",exact:true})});
-    const star=row.locator(".resource-favorite");
-    const table=await page.getByRole("table",{name:"Skill 总览",exact:true}).elementHandle();
-    const button=await star.elementHandle();
-    const detail=await page.locator(".resource-detail-heading").elementHandle();
-    const evidence=await page.locator(".resource-evidence").elementHandle();
-    const scroll=page.locator(".resource-list-scroll");
-    await scroll.evaluate(element=>element.scrollTop=10);
-    const hash=page.url(), top=await scroll.evaluate(element=>element.scrollTop);
-    const requests=[];
-    const listener=request=>{if(request.url().includes('/api/v1/resources/'))requests.push({url:request.url(),method:request.method()});};
-    page.on("request",listener);
-    let release; const gate=new Promise(resolve=>release=resolve);
-    await page.route("**/api/v1/resources/favorites",async route=>{await gate; await route.continue();});
-    const saved=page.waitForResponse(response=>response.url().endsWith('/resources/favorites'));
-    await star.click();
-    expect(await star.getAttribute("aria-pressed")==="true","收藏未即时响应");
-    expect(await star.getAttribute("aria-busy")==="true","收藏缺少保存状态");
-    expect(page.url()===hash,"收藏触发整行导航");
-    expect(await table.evaluate(element=>element.isConnected),"收藏卸载了列表");
-    await star.click({force:true});
-    release(); await (await saved).finished();
+  await step('收藏即时响应、单次写入、稳定 DOM 与焦点',`
+    const row=page.getByRole('row',{name:'查看guide的使用详情',exact:true}),star=row.locator('.resource-favorite');
+    const table=await page.getByRole('table',{name:'Skill 总览',exact:true}).elementHandle(), detail=await page.locator('.resource-detail-heading').elementHandle(), evidence=await page.locator('.resource-evidence').elementHandle();
+    const requests=[]; const listener=request=>{if(request.url().includes('/api/v1/resources/'))requests.push({url:request.url(),method:request.method()})}; page.on('request',listener);
+    let release;const gate=new Promise(resolve=>release=resolve);await page.route('**/api/v1/resources/favorites',async route=>{await gate;await route.continue()});
+    const saved=page.waitForResponse(response=>response.url().endsWith('/resources/favorites')); await star.click(); expect(await star.getAttribute('aria-pressed')==='true','收藏未即时反馈');
+    await star.click({force:true});release();await(await saved).finished();await page.waitForFunction(()=>!document.querySelector('.resource-favorite[aria-busy="true"]'));await page.unroute('**/api/v1/resources/favorites');
+    expect(requests.length===1&&requests[0].method==='POST','收藏触发额外查询');
+    expect(await table.evaluate(node=>node.isConnected)&&await detail.evaluate(node=>node.isConnected)&&await evidence.evaluate(node=>node.isConnected),'收藏卸载页面');
+    expect(await star.evaluate(node=>node===document.activeElement),'收藏丢失焦点'); page.off('request',listener);
+    const cleared=page.waitForResponse(response=>response.url().endsWith('/resources/favorites'));await star.click();await(await cleared).finished();await page.waitForFunction(()=>!document.querySelector('.resource-favorite[aria-busy="true"]'));
+  `);
+  await step('收藏失败回滚且不同资源保存顺序稳定',`
+    const star=page.getByRole('row',{name:'查看guide的使用详情',exact:true}).locator('.resource-favorite');
+    await page.route('**/api/v1/resources/favorites',route=>route.fulfill({status:503,contentType:'application/json',body:JSON.stringify({error:{code:'TEST_FAILURE',message:'人工收藏失败'}})}));
+    await star.click();await page.getByRole('alert').filter({hasText:'人工收藏失败'}).waitFor();await page.unroute('**/api/v1/resources/favorites');
+    expect(await star.getAttribute('aria-pressed')==='false','失败未回滚');
+    await page.getByRole('button',{name:'重试',exact:true}).click();${ready}
+    const rows=page.getByRole('table',{name:'Skill 总览',exact:true}).locator('tbody tr'); await rows.nth(2).locator('.resource-favorite').click();await rows.nth(3).locator('.resource-favorite').click();
     await page.waitForFunction(()=>!document.querySelector('.resource-favorite[aria-busy="true"]'));
-    await page.unroute("**/api/v1/resources/favorites");
-    await page.waitForTimeout(150);
-    expect(requests.length===1&&requests[0].method==="POST","收藏额外请求了清单、详情或证据："+JSON.stringify(requests));
-    expect(await button.evaluate(element=>element.isConnected&&element===document.activeElement),"收藏丢失按钮或焦点");
-    expect(await detail.evaluate(element=>element.isConnected)&&await evidence.evaluate(element=>element.isConnected),"收藏卸载了详情或证据");
-    expect(await scroll.evaluate(element=>element.scrollTop)===top,"收藏改变了滚动位置");
-    expect(await page.locator('.resource-attention-filters button strong').innerText()==="1","收藏计数未即时更新");
-    page.off("request",listener);
-    const cleared=page.waitForResponse(response=>response.url().endsWith('/resources/favorites'));
-    await star.click(); await (await cleared).finished();
-    await page.waitForFunction(()=>!document.querySelector('.resource-favorite[aria-busy="true"]'));
+    expect(await rows.nth(2).locator('.resource-favorite').getAttribute('aria-pressed')==='true'&&await rows.nth(3).locator('.resource-favorite').getAttribute('aria-pressed')==='true','不同资源收藏互相覆盖');
+    await rows.nth(2).locator('.resource-favorite').click();await rows.nth(3).locator('.resource-favorite').click();await page.waitForFunction(()=>!document.querySelector('.resource-favorite[aria-busy="true"]'));
   `);
-  await step("其他分页的详情收藏只重查计数，保留详情与证据", `
-    const detail=await page.locator(".resource-detail-heading").elementHandle();
-    const evidence=await page.locator(".resource-evidence").elementHandle();
-    await page.getByRole("button",{name:"Skill 总览第2页",exact:true}).click();
-    await page.waitForFunction(()=>!document.querySelector('.resource-list-scroll[aria-busy="true"]'));
-    const requests=[];
-    const listener=request=>{if(request.url().includes('/api/v1/resources/'))requests.push({url:request.url(),method:request.method()});};
-    page.on("request",listener);
-    const updated=page.waitForResponse(response=>response.url().includes('/resources/overview?'));
-    await page.locator(".resource-detail-heading .resource-favorite").click();
-    await (await updated).finished();
-    await page.waitForFunction(()=>!document.querySelector('.resource-list-scroll[aria-busy="true"]'));
-    await page.waitForFunction(()=>document.querySelector('.resource-attention-filters button strong')?.textContent==='1');
-    expect(requests.length===2&&requests.filter(request=>request.method==="POST").length===1,"其他分页收藏重取了详情或证据");
-    expect(await detail.evaluate(element=>element.isConnected)&&await evidence.evaluate(element=>element.isConnected),"其他分页收藏卸载了详情或证据");
-    page.off("request",listener);
-    await page.getByRole("button",{name:"Skill 总览第1页",exact:true}).click();
-    await page.waitForFunction(()=>!document.querySelector('.resource-list-scroll[aria-busy="true"]'));
-    await page.locator(".resource-detail-heading .resource-favorite").click();
-    await page.waitForFunction(()=>!document.querySelector('.resource-favorite[aria-busy="true"]'));
+  await step('本地范围筛选不改变历史调用，项目选择可搜索',`
+    ${select('位置范围','项目级')}
+    await page.getByRole('button',{name:'位置项目',exact:true}).click();await page.getByRole('combobox',{name:'位置项目搜索',exact:true}).fill('other-project');await page.getByRole('option').filter({hasText:'other-project'}).click();${ready}
+    const row=page.getByRole('row',{name:'查看guide的使用详情',exact:true});expect((await row.innerText()).includes('5'),'位置项目裁剪了历史次数');
+    expect((await row.innerText()).includes('项目级'),'位置范围未投影');
+    ${select('位置范围','全部范围')}
+    expect(await page.getByRole('button',{name:'位置项目',exact:true}).count()===0,'项目条件未渐进隐藏');
   `);
-  await step("收藏失败回滚，不同资源的连续操作独立保存", `
-    const rows=page.getByRole("table",{name:"Skill 总览",exact:true}).locator("tbody tr");
-    const first=rows.first().locator(".resource-favorite"), second=rows.nth(1).locator(".resource-favorite");
-    await page.route("**/api/v1/resources/favorites",route=>route.fulfill({status:503,contentType:"application/json",body:JSON.stringify({error:{code:"SYNTHETIC_FAILURE",message:"synthetic favorite failure"}})}));
-    await first.click();
-    await page.getByRole("alert").filter({hasText:"synthetic favorite failure"}).waitFor();
-    expect(await first.getAttribute("aria-pressed")==="false","保存失败没有回滚");
-    expect(await first.getAttribute("aria-busy")===null,"保存失败未结束等待状态");
-    await page.unroute("**/api/v1/resources/favorites");
-    let release; const gate=new Promise(resolve=>release=resolve);
-    await page.route("**/api/v1/resources/favorites",async route=>{await gate; await route.continue();});
-    await first.click(); await second.click();
-    expect(await first.getAttribute("aria-pressed")==="true"&&await second.getAttribute("aria-pressed")==="true","不同资源没有即时响应");
-    expect(await first.getAttribute("aria-busy")==="true"&&await second.getAttribute("aria-busy")==="true","等待状态没有按资源隔离");
-    release();
-    await page.waitForFunction(()=>!document.querySelector('.resource-favorite[aria-busy="true"]'));
-    expect(await first.getAttribute("aria-pressed")==="true"&&await second.getAttribute("aria-pressed")==="true","保存响应覆盖后续收藏");
-    expect(await page.locator('.resource-attention-filters button strong').innerText()==="2","连续收藏计数错误");
-    await page.unroute("**/api/v1/resources/favorites");
-    await first.click(); await second.click();
-    await page.waitForFunction(()=>!document.querySelector('.resource-favorite[aria-busy="true"]'));
+  await step('使用客户端与使用项目独立作用于历史',`
+    await page.locator('.resource-more-filters > summary').click();${select('使用客户端','Codex')}
+    expect((await page.getByRole('row',{name:'查看guide的使用详情',exact:true}).innerText()).includes('4'),'客户端未筛选历史');
+    ${select('使用客户端','全部客户端')}
+    await page.getByRole('button',{name:'使用项目',exact:true}).click();await page.getByRole('combobox',{name:'使用项目搜索',exact:true}).fill('other-project');await page.getByRole('option').filter({hasText:'other-project'}).click();${ready}
+    expect((await page.getByRole('row',{name:'查看guide的使用详情',exact:true}).innerText()).includes('1'),'使用项目未筛选历史');
+    await page.getByRole('button',{name:'重置筛选',exact:true}).click();${ready}
   `);
-  await step("后台更新保留列表与分页，失败保留内容", `
-    const table=await page.getByRole("table",{name:"Skill 总览",exact:true}).elementHandle();
-    const tableTop=await table.evaluate(element=>element.getBoundingClientRect().top);
-    const pager=await page.locator(".resources-main .resource-pager").elementHandle();
-    let release; const gate=new Promise(resolve=>release=resolve);
-    await page.route("**/api/v1/resources/overview?*",async route=>{await gate; await route.fulfill({status:503,contentType:"application/json",body:JSON.stringify({error:{code:"SYNTHETIC_FAILURE",message:"synthetic list failure"}})});});
-    await page.getByRole("button",{name:"按Skill排序",exact:true}).click();
-    await page.locator('.resource-list-scroll[aria-busy="true"]').waitFor();
-    expect(await table.evaluate(element=>element.isConnected)&&await pager.evaluate(element=>element.isConnected),"后台刷新卸载了已有内容");
-    expect(await page.getByRole("status",{name:"正在读取资源…",exact:true}).count()===1,"后台刷新缺少进度提示");
-    expect(Math.abs(await table.evaluate(element=>element.getBoundingClientRect().top)-tableTop)<1,"后台刷新提示导致表格跳动");
-    release(); await page.getByRole("alert").filter({hasText:"synthetic list failure"}).waitFor();
-    expect(await table.evaluate(element=>element.isConnected),"刷新失败清空了列表");
-    await page.unroute("**/api/v1/resources/overview?*");
-    await page.getByRole("alert").getByRole("button",{name:"重试",exact:true}).click();
-    await page.waitForFunction(()=>!document.querySelector('.resource-list-scroll[aria-busy="true"]'));
+  await step('未发现、未知和零值保持区别，空结果可恢复',`
+    ${select('本地状态','本地未发现')}
+    expect(await page.getByRole('row',{name:'查看retired-only的使用详情',exact:true}).isVisible(),'历史独有资源丢失');
+    ${select('本地状态','全部')}
+    const response=page.waitForResponse(response=>response.url().includes('/resources/overview?')&&response.url().includes('q=no-such-resource')); await page.getByRole('textbox',{name:'搜索资源名称或路径',exact:true}).fill('no-such-resource');await(await response).finished();${ready}
+    expect(await page.locator('.resource-empty').count()>0,'没有空结果状态');await page.getByRole('button',{name:'清空资源搜索',exact:true}).click();${ready}
   `);
-  const favoritesForPaging=(await api("/resources/overview?kind=skill&pageSize=100")).resources.slice(0,21).map(row=>row.identity.id);
-  for(const id of favoritesForPaging) await api("/resources/favorites","POST",{id,value:true});
-  await step("已收藏最后一页取消后夹紧页码，成员与计数一致", `
-    await page.goto(${JSON.stringify(base)}+'/#resources?candidate=favorite&page=2');
-    const table=page.getByRole("table",{name:"Skill 总览",exact:true});
-    await table.waitFor();
-    await page.waitForFunction(()=>!document.querySelector('.resource-list-scroll[aria-busy="true"]'));
-    expect(await table.locator("tbody tr").count()===1,"收藏末页测试数量不正确");
-    await table.locator(".resource-favorite").click();
-    await page.waitForFunction(()=>(new URLSearchParams(location.hash.split('?')[1]).get('page')??'1')==='1'&&!document.querySelector('.resource-list-scroll[aria-busy="true"]'));
-    expect(await table.locator("tbody tr").count()===20,"取消收藏后的分页成员不正确");
-    expect(await page.locator('.resource-attention-filters button strong').innerText()==="20","取消收藏后的计数错误");
+  await step('排序、首尾页、跳转和容量',`
+    await page.getByRole('button',{name:'Skill 总览末页',exact:true}).click();${ready}
+    const jump=page.getByRole('spinbutton',{name:'Skill 总览跳转页码',exact:true});await jump.fill('1');await jump.press('Enter');${ready}
+    await page.waitForFunction(()=>document.querySelector('[aria-label="Skill 总览首页"]')?.disabled);expect(await page.getByRole('button',{name:'Skill 总览首页',exact:true}).isDisabled(),'跳转没有回到首页');
+    await page.getByRole('button',{name:'按调用次数排序',exact:true}).click();${ready}
+    expect(await page.getByRole('columnheader').filter({hasText:'调用次数'}).getAttribute('aria-sort')==='ascending','表头排序没有反转');
+    ${select('Skill 总览每页条数','50 条／页')}
+    await page.waitForFunction(()=>document.querySelectorAll('.resource-overview-table tbody tr').length===50);expect(await page.getByRole('table',{name:'Skill 总览',exact:true}).locator('tbody tr').count()===50,'分页容量未生效');
+    await page.getByRole('button',{name:'重置筛选',exact:true}).click();${ready}
   `);
-  for(const id of favoritesForPaging) await api("/resources/favorites","POST",{id,value:false});
-  await api("/preferences", "PUT", { language: "en" });
-  await step("英文整行点击与本地资源收藏保留焦点", `
-    await page.goto(${JSON.stringify(base)}+'/#resources'); await page.reload();
-    const table=page.getByRole("table",{name:"Skill overview",exact:true}); await table.waitFor();
-    expect(await page.locator('.resource-list-summary').count()===0,"英文总览仍有重复总数行");
-    const row=table.getByRole("row").filter({has:page.getByRole("button",{name:"View usage details for guide",exact:true})});
-    await row.locator("td").nth(1).click();
-    await page.locator(".resource-detail-heading h2").filter({hasText:"guide"}).waitFor();
-    await page.getByRole("navigation",{name:"Resource views",exact:true}).getByRole("button",{name:"Local resources",exact:true}).click();
-    const local=page.getByRole("table",{name:"Local resources",exact:true}); await local.waitFor();
-    expect(await page.locator('.resource-list-summary').count()===1,"本地资源总数行丢失");
-    const guide=local.getByRole("row").filter({has:page.getByRole("button",{name:"View local details for guide",exact:true})});
-    await guide.locator("td").last().click();
-    await page.locator(".resource-detail-heading h2").filter({hasText:"guide"}).waitFor();
-    const star=guide.getByRole("button",{name:"Favorite guide",exact:true});
-    const button=await star.elementHandle();
-    await star.focus(); await page.keyboard.press("Enter");
-    await guide.getByRole("button",{name:"Remove guide from favorites",exact:true}).waitFor();
-    await page.waitForFunction(()=>!document.querySelector('.resource-favorite[aria-busy="true"]'));
-    expect(await button.evaluate(element=>element.isConnected&&element===document.activeElement),"英文本地收藏丢失焦点");
-    expect(await page.locator(".resource-detail-heading .resource-favorite").getAttribute("aria-pressed")==="true","本地详情收藏没有同步");
-    await guide.locator(".resource-favorite").click();
-    await page.waitForFunction(()=>!document.querySelector('.resource-favorite[aria-busy="true"]'));
+  await step('筛选更新保留旧表格、布局并暂停旧结果下钻',`
+    const table=await page.getByRole('table',{name:'Skill 总览',exact:true}).elementHandle(),top=(await page.locator('.resource-list-scroll').boundingBox()).y;
+    let release;const gate=new Promise(resolve=>release=resolve);await page.route('**/api/v1/resources/overview?**',async route=>{await gate;await route.continue()});
+    await page.getByRole('button',{name:'按调用次数排序',exact:true}).click();await page.locator('.resource-list-scroll[aria-busy="true"]').waitFor();
+    expect(await table.evaluate(node=>node.isConnected),'更新卸载旧表格');expect(await page.locator('.resource-list-scroll').getAttribute('inert')!==null,'旧结果可继续下钻');expect((await page.locator('.resource-list-scroll').boundingBox()).y===top,'更新造成布局跳动');
+    release();${ready}await page.unroute('**/api/v1/resources/overview?**');
   `);
-  await api("/preferences", "PUT", { language: "zh-CN" });
-  await step("恢复人工资源初始视图", `
-    await page.goto(${JSON.stringify(base)}+'/#resources'); await page.reload();
-    await page.getByRole("table",{name:"Skill 总览",exact:true}).waitFor();
-    await page.waitForFunction(()=>!document.querySelector('.resource-list-scroll[aria-busy="true"]'));
+  await step('刷新失败保留清单并能重试',`
+    const count=await page.locator('.resource-overview-table tbody tr').count();
+    await page.route('**/api/v1/resources/refresh?**',route=>route.fulfill({status:503,contentType:'application/json',body:JSON.stringify({error:{code:'TEST_FAILURE',message:'人工盘点失败'}})}));
+    await page.getByRole('button',{name:'刷新清单',exact:true}).click();await page.getByRole('alert').filter({hasText:'人工盘点失败'}).waitFor();
+    expect(await page.locator('.resource-overview-table tbody tr').count()===count,'失败清空了旧清单');await page.unroute('**/api/v1/resources/refresh?**');
+    await page.getByRole('alert').filter({hasText:'人工盘点失败'}).getByRole('button',{name:'重试',exact:true}).click();${ready}
   `);
-  await step("收藏筛选、空结果与键盘下拉", `
-    const row=page.getByRole("table",{name:"Skill 总览",exact:true}).getByRole("row").filter({has:page.getByRole("button",{name:"查看guide的使用详情",exact:true})});
-    await row.getByRole("button",{name:"收藏guide",exact:true}).click();
-    await row.getByRole("button",{name:"取消收藏guide",exact:true}).waitFor();
-    await page.getByRole("group",{name:"Skill 快速筛选",exact:true}).getByRole("button",{name:/^已收藏/}).click();
-    await page.getByRole("button",{name:"查看guide的使用详情",exact:true}).waitFor();
-    await row.getByRole("button",{name:"取消收藏guide",exact:true}).click();
-    await page.getByText("没有匹配的 Skill",{exact:true}).waitFor();
-    await page.getByRole("group",{name:"Skill 快速筛选",exact:true}).getByRole("button",{name:/^全部/}).click();
-    const picker=page.getByRole("combobox",{name:"资源Agent",exact:true});
-    await picker.focus(); await page.keyboard.press("ArrowDown");
-    await page.getByRole("option",{name:"Codex",exact:true}).focus(); await page.keyboard.press("Enter");
-    expect((await picker.innerText()).includes("Codex"),"键盘选择未生效");
-    await picker.click(); await page.keyboard.press("Escape");
-    await page.waitForFunction(()=>document.activeElement?.getAttribute("aria-label")==="资源Agent");
+  await step('旧本地链接进入统一位置详情',`
+    await page.goto(${JSON.stringify(base)}+'/#resources?kind=skill&tab=local&bodyId='+${JSON.stringify(guide.localBodyIds[0])});
+    await page.locator('.resource-detail-heading h2').filter({hasText:'guide'}).waitFor();${ready}
+    expect(await page.locator('.resource-detail-tabs button[aria-current="page"]').innerText()==='文件位置','旧链接丢失位置分区');
+    expect(await page.getByRole('navigation',{name:'资源视图',exact:true}).count()===0,'旧链接恢复了已删除视图');
   `);
-  await step("日期选择与清空、项目搜索", `
-    ${select("资源使用时间", "自定义日期")}
-    await page.getByRole("button",{name:"资源开始日期",exact:true}).click();
-    await page.getByRole("button",{name:"今天",exact:true}).click();
-    expect(!(await page.getByRole("button",{name:"资源开始日期",exact:true}).innerText()).includes("选择日期"),"日期未选中");
-    await page.getByRole("button",{name:"资源开始日期",exact:true}).click();
-    await page.getByRole("button",{name:"清空",exact:true}).click();
-    expect((await page.getByRole("button",{name:"资源开始日期",exact:true}).innerText()).includes("选择日期"),"日期未清空");
-    ${select("资源使用时间", "全部历史")}
-    expect(await page.locator(".resources-shell").getByRole("button",{name:"筛选项目",exact:true}).count()===0,"Skill排行仍展示项目筛选");
-    ${view("本地资源")}
-    await page.locator(".resources-shell").getByRole("button",{name:"筛选项目",exact:true}).click();
-    await page.getByRole("combobox",{name:"搜索项目",exact:true}).fill("sample-project");
-    await page.getByRole("option").filter({hasText:"sample-project"}).click();
-    await page.getByText("没有匹配的本地资源",{exact:true}).waitFor();
+  await step('Skill 原生路径规则预览、取消及焦点返回',`
+    ${route('skill','guide',guide.identity.id,'locations')}
+    const control=${location(fixture.guide)}.getByRole('button',{name:'预览停用guide的Codex入口',exact:true});await control.click();
+    await ${preview}.getByRole('button',{name:'停用此配置',exact:true}).waitFor();
+    expect((await page.locator('.resource-change').innerText()).includes('skills.config[].enabled')&&(await page.locator('.resource-change').innerText()).includes('SKILL.md'),'没有真实路径规则');
+    ${snap('skill-preview.png')}
+    await ${preview}.getByRole('button',{name:'取消',exact:true}).click();await ${preview}.waitFor({state:'hidden'});${ready}
+    await page.waitForFunction(label=>document.activeElement?.getAttribute('aria-label')===label,'预览停用guide的Codex入口');expect(await control.evaluate(node=>document.activeElement===node),'取消预览未恢复焦点');
   `);
-  await step("MCP 工具下钻与证据跳转返回", `
-    await page.getByRole("group",{name:"资源类型",exact:true}).getByRole("button",{name:"MCP",exact:true}).click();
-    ${view("MCP 总览")}
-    await page.getByRole("button",{name:"查看sample的使用详情",exact:true}).click();
-    const tool=page.locator(".resource-tool-list").getByRole("button").filter({hasText:"lookup"});
-    await tool.click();
-    await page.waitForFunction(()=>document.querySelectorAll(".resource-evidence a").length===1);
-    expect(await page.locator(".resource-evidence a").count()===1,"工具下钻未限制证据");
-    const resourceHash=await page.evaluate(()=>location.hash);
-    await page.locator(".resource-evidence a").first().click();
-    await page.waitForURL(/#sessions/);
-    expect(page.url().includes("mode=trace")&&page.url().includes("message="),"证据未定位轨迹");
-    await page.goBack(); await page.waitForURL(/#resources/);
-    expect((await page.evaluate(()=>location.hash))===resourceHash,"返回未保留筛选与资源位置");
-    await page.locator(".resource-evidence a").first().waitFor();
-    ${screenshot("mcp-tools.png")}
+  assert.equal(await readFile(fixture.configPath,'utf8'),initialConfig,'取消预览改写了配置');
+  await step('Skill 停用并直接预览恢复',`
+    await ${location(fixture.guide)}.getByRole('button',{name:'预览停用guide的Codex入口',exact:true}).click();${apply('停用此配置')}
   `);
-  await step("本地长列表分页与受视口约束滚动", `
-    await page.getByRole("group",{name:"资源类型",exact:true}).getByRole("button",{name:"Skill",exact:true}).click();
-    await page.getByRole("button",{name:"重置筛选",exact:true}).click();
-    ${view("本地资源")}
-    await page.getByRole("button",{name:"查看guide的本地详情",exact:true}).waitFor();
-    await page.getByRole("button",{name:"本地资源下一页",exact:true}).click();
-    await page.waitForFunction(()=>document.querySelector('nav[aria-label="本地资源"]')?.textContent.includes("第 2 /"));
-    expect(await page.getByRole("table",{name:"本地资源",exact:true}).locator("tbody tr").count()===20,"本地资源分页错误");
-    await page.locator(".resource-list-scroll").evaluate(element=>element.scrollTop=300);
-    const scroll=await page.locator(".resource-list-scroll").evaluate(element=>({top:element.scrollTop,height:element.clientHeight,full:element.scrollHeight}));
-    expect(scroll.top>0&&scroll.full>scroll.height,"列表没有独立滚动");
-    expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1&&document.documentElement.scrollHeight<=innerHeight+1),"资源页面溢出视口");
-    ${screenshot("local-list-light.png")}
-    await page.getByRole('button',{name:'外观',exact:true}).click(); await page.getByRole('combobox',{name:'显示模式',exact:true}).click(); await page.getByRole('option',{name:'深色',exact:true}).click(); await page.keyboard.press('Escape');
-    await page.waitForFunction(()=>document.documentElement.dataset.theme==="dark");
-    ${screenshot("local-list-dark.png")}
-    await page.getByRole('button',{name:'外观',exact:true}).click(); await page.getByRole('combobox',{name:'显示模式',exact:true}).click(); await page.getByRole('option',{name:'明亮',exact:true}).click(); await page.keyboard.press('Escape');
+  assert.equal(parseToml(await readFile(fixture.configPath,'utf8')).skills.config.at(-1).enabled,false);
+  await step('Skill 恢复撤销原路径规则',`await ${preview}.getByRole('button',{name:'预览恢复',exact:true}).click();${apply('恢复到原位置')}${finish}`);
+  assert.equal(await readFile(fixture.configPath,'utf8'),initialConfig);
+  await step('过期源内容使执行失效并允许重新预览',`await ${location(fixture.guide)}.getByRole('button',{name:'预览停用guide的Codex入口',exact:true}).click();await ${preview}.getByRole('button',{name:'停用此配置',exact:true}).waitFor();`);
+  await appendFile(fixture.configPath,'\n# external-fixture-change\n');
+  await step('冲突保留外部改动',`await ${preview}.getByRole('button',{name:'停用此配置',exact:true}).click();await ${preview}.getByRole('alert').waitFor();expect(await ${preview}.getByRole('button',{name:'停用此配置',exact:true}).count()===0,'冲突仍可执行旧预览');${finish}`);
+  assert.match(await readFile(fixture.configPath,'utf8'),/external-fixture-change/);await writeFile(fixture.configPath,initialConfig);
+  await step('Skill 回收展示真实路径变化并执行',`await ${location(fixture.guide)}.getByRole('button',{name:${JSON.stringify(`将${fixture.guide}移入回收区`)},exact:true}).click();await ${preview}.getByRole('button',{name:'移入回收区',exact:true}).waitFor();expect((await page.locator('.resource-change-diff').innerText()).includes('resource-vault'),'没有回收路径');${apply('移入回收区')}`);
+  await assert.rejects(access(fixture.guide),{code:'ENOENT'});
+  await mkdir(fixture.guide);await writeFile(join(fixture.guide,'occupied.txt'),'keep');
+  await step('恢复遇到原位置占用时不覆盖',`await ${preview}.getByRole('button',{name:'预览恢复',exact:true}).click();await ${preview}.getByRole('alert').waitFor();`);
+  assert.equal(await readFile(join(fixture.guide,'occupied.txt'),'utf8'),'keep');await rm(fixture.guide,{recursive:true});
+  await step('解决占用后重新预览并完整恢复附件',`await ${preview}.getByRole('button',{name:'重新预览',exact:true}).click();${apply('恢复到原位置')}${finish}`);
+  assert.equal(await readFile(join(fixture.guide,'asset.txt'),'utf8'),'保留资源附件\n');
+  await step('共享符号链接单独移除，目标文件保留',`
+    ${route('skill','shared')}${open('shared')}${tab('文件位置')}
+    await page.locator('.resource-linked-locations > summary').click();await page.getByRole('button',{name:${JSON.stringify(`移除链接${fixture.link}，保留目标文件`)},exact:true}).click();
+    await ${preview}.getByRole('button',{name:'移入回收区',exact:true}).waitFor();expect((await ${preview}.innerText()).includes('只移除这个链接'),'未解释链接边界');${apply('移入回收区')}
   `);
-
-  const manualRoot = join(directory, "manual-skills");
-  await mkdir(join(manualRoot, "manual-guide"), { recursive: true });
-  await writeFile(join(manualRoot, "manual-guide", "SKILL.md"), "---\nname: manual-guide\n---\n人工手动来源。\n");
-  await step("手动来源添加与只读状态", `
-    await page.getByRole("button",{name:"添加来源",exact:true}).click();
-    const dialog=page.getByRole("dialog",{name:"添加资源来源",exact:true});
-    await dialog.getByRole("textbox",{name:"资源来源绝对路径",exact:true}).fill(${JSON.stringify(manualRoot)});
-    await dialog.getByRole("button",{name:"添加并盘点",exact:true}).click();
-    await dialog.waitFor({state:"hidden"});
-    ${search("manual-guide")}
-    await page.getByRole("button",{name:"查看manual-guide的本地详情",exact:true}).click();
-    await page.locator(".resource-detail-heading h2").filter({hasText:"manual-guide"}).waitFor();
-    expect((await page.locator(".resource-entry").innerText()).includes("只读"),"手动未知来源未保持只读");
+  await assert.rejects(access(fixture.link),{code:'ENOENT'});await access(join(fixture.shared,'SKILL.md'));
+  await step('链接恢复仍指向原目标',`await ${preview}.getByRole('button',{name:'预览恢复',exact:true}).click();${apply('恢复到原位置')}${finish}`);
+  assert.equal(await realpath(fixture.link),await realpath(fixture.shared));
+  await step('MCP 独立注册和字段前后值，不展示敏感内容',`
+    ${route('mcp','sample',sample.identity.id,'locations')}
+    expect(await page.locator('.resource-management-body').count()===4,'同名注册被合并');
+    await ${location(fixture.configPath)}.getByRole('button',{name:'预览停用sample的Codex入口',exact:true}).click();await ${preview}.getByRole('button',{name:'停用此配置',exact:true}).waitFor();
+    const text=await ${preview}.innerText();expect(text.includes('mcp_servers.sample.enabled')&&text.includes('false'),'MCP字段差异缺失');expect(!/synthetic-secret|example-command|example.invalid/.test(text),'预览泄露注册值');
+    ${snap('mcp-preview.png')}${apply('停用此配置')}
   `);
-  // 管理交互由下一组使用真实 Dialog 执行；只有 API 用于回读与制造确定性冲突。
-  assert.equal(await readFile(fixture.configPath, "utf8"), initialConfig, "只读阶段修改了配置");
-  await step("原生 Skill 停用与恢复，具体确认与待重新加载", `${local("guide")} ${previewEntry("disable", "guide")}
-    expect((await page.getByRole("dialog",{name:"停用预览",exact:true}).innerText()).includes("恢复备份位置"),"停用备份冒充移动目标");
-    ${screenshot("disable-preview.png")} ${confirm("disable")}`);
-  const disabled = parseToml(await readFile(fixture.configPath, "utf8"));
-  assert.equal(disabled.skills.config.at(-1).enabled, false);
-  assert.equal(disabled.mcp_servers.sample.env.TOKEN, parseToml(initialConfig).mcp_servers.sample.env.TOKEN);
-  await step("已停用记录可恢复", `${archive("已停用", "guide")} ${restore}`);
-  assert.equal(parseToml(await readFile(fixture.configPath, "utf8")).mcp_servers.other.enabled, true);
-
-  await step("共享链接只隔离选中入口", `${local("shared")} ${previewEntry("trash", "shared", "Claude Code")} ${confirm("trash")}`);
-  await assert.rejects(access(fixture.link), { code: "ENOENT" });
-  assert.ok((await readFile(join(fixture.shared, "SKILL.md"), "utf8")).includes("共享测试资源"));
-  await step("回收入口恢复", `${archive("回收区", "shared")} ${restore}`);
-  assert.equal(await realpath(fixture.link), await realpath(fixture.shared));
-
-  const legacyEntry = (await api("/resources/local?kind=skill&q=sample-01")).rows.find(row => row.body.name === "sample-01").entries[0];
-  const legacyPreview = await api("/resources/preview", "POST", { entryId: legacyEntry.id, action: "standby" });
-  assert.equal((await api("/resources/apply", "POST", { previewId: legacyPreview.id, confirmed: true })).status, "success");
-  await step("旧备用链接归回收区并保留恢复入口", `
-    await page.evaluate(()=>location.hash='#resources?kind=skill&tab=standby&q=sample-01');
-    const nav=page.getByRole("navigation",{name:"管理记录",exact:true});
-    await nav.locator('button[aria-current="page"]').filter({hasText:"回收区"}).waitFor();
-    await page.waitForFunction(()=>new URLSearchParams(location.hash.split('?')[1]).get('tab')==='trash');
-    expect(await nav.getByRole("button",{name:"备用",exact:true}).count()===0,"旧链接仍显示备用标签");
-    await page.getByRole("button",{name:"查看sample-01的恢复记录",exact:true}).click();
-    await page.getByRole("button",{name:"预览永久清除",exact:true}).waitFor();
-    ${restore}
+  assert.equal(parseToml(await readFile(fixture.configPath,'utf8')).mcp_servers.sample.enabled,false);
+  await step('MCP 原生配置恢复',`await ${preview}.getByRole('button',{name:'预览恢复',exact:true}).click();${apply('恢复到原位置')}${finish}`);
+  assert.equal(await readFile(fixture.configPath,'utf8'),initialConfig);
+  const projectConfig=join(fixture.project,'.mcp.json'),projectBefore=await readFile(projectConfig,'utf8');
+  await step('MCP 移除只改一条注册',`await ${location(projectConfig)}.getByRole('button',{name:/^预览移入回收区/}).click();await ${preview}.getByRole('button',{name:'移除这条注册',exact:true}).waitFor();${apply('移除这条注册')}`);
+  assert.equal(JSON.parse(await readFile(projectConfig,'utf8')).mcpServers?.sample,undefined);
+  await step('MCP 恢复预览指向配置项，恢复原注册',`await ${preview}.getByRole('button',{name:'预览恢复',exact:true}).click();await ${preview}.getByRole('button',{name:'恢复这条注册',exact:true}).waitFor();const text=await page.locator('.resource-change').innerText();expect(text.includes('mcpServers.sample')&&!text.includes('resource-vault'),'注册恢复伪造了目录搬移');${apply('恢复这条注册')}${finish}`);
+  assert.equal(await readFile(projectConfig,'utf8'),projectBefore);
+  await step('MCP 工具证据分页与会话返回保留上下文',`
+    ${tab('使用记录')}${ready}
+    const tool=page.locator('.resource-tool-list').getByRole('button').filter({hasText:'lookup'});expect((await tool.innerText()).includes('22 次'),'工具未汇总跨客户端历史');await tool.click();${ready}
+    const pager=page.getByRole('navigation',{name:'使用证据',exact:true});await pager.getByRole('button',{name:'使用证据末页',exact:true}).click();
+    await page.waitForFunction(()=>document.querySelectorAll('.resource-evidence a').length===2);expect((await pager.innerText()).includes('21–22 / 22 条'),'证据分页被截断');
+    const hash=page.url().split('#')[1];await page.locator('.resource-evidence a').first().click();await page.waitForURL(/#sessions/);expect(page.url().includes('mode=trace')&&page.url().includes('message='),'没有定位到会话轨迹');await page.goBack();await pager.waitFor();${ready}expect(page.url().split('#')[1]===hash,'返回丢失工具或页码');
+    await page.getByRole('button',{name:'全部工具',exact:true}).click();${ready}
   `);
-
-  await step("来源变化前生成可审阅预览", `${local("guide")} ${previewEntry("trash", "guide")}`);
-  await appendFile(join(fixture.guide, "SKILL.md"), "\n预览后人工追加。\n");
-  await step("旧预览失效，不继续修改来源", `
-    const dialog=page.getByRole("dialog",{name:"移入回收区预览",exact:true});
-    await dialog.getByRole("button",{name:"确认移入回收区",exact:true}).click();
-    await dialog.getByRole("alert").waitFor();
-    expect(!(await dialog.innerText()).includes("本地已修改"),"冲突被宣称成功");
-    expect(await dialog.getByRole("button",{name:"确认移入回收区",exact:true}).count()===0,"旧预览确认入口仍可执行");
-    await dialog.getByRole("button",{name:"重新预览",exact:true}).waitFor();
-    const done=dialog.getByRole("button",{name:"完成",exact:true});
-    if(await done.count()) await done.click(); else await dialog.getByRole("button",{name:"取消",exact:true}).click();
+  await step('管理记录和回收工具从更多可达',`${tools('操作记录')}expect(await page.locator('.resource-row').count()>0,'操作记录丢失');${tools('回收区')}expect(await page.getByRole('heading',{name:'资源管理',exact:true}).count()===1,'回收区不可达');${tools('资源清单')}`);
+  await step('地图保留并共用筛选与详情',`
+    ${route('skill','guide')}${open('guide')}
+    await page.getByRole('group',{name:'资源展示方式',exact:true}).getByRole('button',{name:'地图',exact:true}).click();await page.getByRole('group',{name:'资源使用地图',exact:true}).waitFor();
+    await page.getByRole('button',{name:'查看guide的使用详情',exact:true}).waitFor();expect(await page.locator('.resource-detail-heading h2').innerText()==='guide','视图切换丢失选择');
+    ${snap('workspace-map.png')}
+    await page.getByRole('group',{name:'资源展示方式',exact:true}).getByRole('button',{name:'列表',exact:true}).click();${ready}expect(await page.getByRole('textbox',{name:'搜索资源名称或路径',exact:true}).inputValue()==='guide','地图丢失搜索');
   `);
-  assert.ok((await readFile(join(fixture.guide, "SKILL.md"), "utf8")).includes("预览后人工追加"));
-
-  await step("回收保留完整目录附件", `${local("guide")} ${previewEntry("trash", "guide")} ${confirm("trash")}`);
-  await assert.rejects(access(fixture.guide), { code: "ENOENT" });
-  await mkdir(fixture.guide, { recursive: true });
-  await writeFile(join(fixture.guide, "SKILL.md"), "新占用内容，不可覆盖。\n");
-  await step("恢复位置冲突直接可见并禁止覆盖", `
-    ${archive("回收区", "guide")}
-    await page.getByRole("button",{name:"预览恢复",exact:true}).click();
-    const dialog=page.getByRole("dialog",{name:"恢复预览",exact:true});
-    await dialog.getByRole("alert").waitFor();
-    expect(await dialog.getByRole("button",{name:"确认恢复",exact:true}).count()===0,"冲突仍可直接恢复");
-    await dialog.getByRole("button",{name:"重新预览",exact:true}).waitFor();
-    ${screenshot("restore-conflict.png")}
+  await step('扫描设置按需加载，普通缺失不作为主界面错误',`${tools('扫描详情与设置')}await page.getByRole('dialog',{name:'扫描详情与设置',exact:true}).waitFor();expect(await page.getByText('来源缺口',{exact:true}).count()===0,'诊断数直接报错');await page.keyboard.press('Escape');`);
+  await api('/preferences','PUT',{appearance:{mode:'dark',preset:'blue'}});
+  await step('深色主题使用真实共享偏好',`await page.evaluate(()=>window.dispatchEvent(new Event('focus')));await page.waitForFunction(()=>document.documentElement.dataset.theme==='dark');${snap('workspace-dark.png')}`);
+  await api('/preferences','PUT',{language:'en',appearance:{mode:'light',preset:'blue'}});
+  await step('英文、窄屏筛选和全屏详情',`
+    await page.evaluate(()=>window.dispatchEvent(new Event('focus')));await page.getByRole('combobox',{name:'Local presence',exact:true}).waitFor();await page.setViewportSize({width:390,height:844});
+    const dialog=page.getByRole('dialog',{name:'Resource details',exact:true});await dialog.waitFor();expect((await dialog.boundingBox()).width<=391,'详情宽度溢出');await page.keyboard.press('Escape');await dialog.waitFor({state:'hidden'});
+    await page.getByRole('button',{name:'Open resource filters',exact:true}).click();const filters=page.getByRole('dialog',{name:'Resource filters',exact:true});await filters.waitFor();await filters.getByRole('combobox',{name:'Local presence',exact:true}).click();await page.keyboard.press('ArrowDown');await page.keyboard.press('Enter');await page.keyboard.press('Escape');await filters.waitFor({state:'hidden'});
+    expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1),'手机页面横向溢出');expect(page.resourceErrors.length===0,'浏览器异常：'+page.resourceErrors.join(';'));${snap('workspace-phone.png')}
   `);
-  assert.equal(await readFile(join(fixture.guide, "SKILL.md"), "utf8"), "新占用内容，不可覆盖。\n");
-  await rm(fixture.guide, { recursive: true });
-  await step("冲突处理后必须重新预览再恢复", `
-    const dialog=page.getByRole("dialog",{name:"恢复预览",exact:true});
-    await dialog.getByRole("button",{name:"重新预览",exact:true}).click();
-    await dialog.getByRole("button",{name:"确认恢复",exact:true}).waitFor(); ${confirm("restore")}
-  `);
-  assert.equal(await readFile(join(fixture.guide, "asset.txt"), "utf8"), "保留资源附件\n");
-
-  await step("删除先回收，恢复材料仍可查看", `${local("sample-00")} ${previewEntry("trash", "sample-00")} ${confirm("trash")} ${archive("回收区", "sample-00")}`);
-  const recycled = (await api("/resources/archives?state=trash")).archives.find(item => item.entry.name === "sample-00");
-  assert.ok(recycled.restorable); await access(recycled.storedPath);
-  await step("永久清除另行确认", `
-    await page.getByRole("button",{name:"预览永久清除",exact:true}).click();
-    await page.getByRole("dialog",{name:"永久清除预览",exact:true}).getByRole("button",{name:"确认永久清除",exact:true}).waitFor();
-    ${confirm("purge")}
-  `);
-  await assert.rejects(access(recycled.storedPath), { code: "ENOENT" });
-
-  await step("MCP 原生停用保留其他注册与敏感材料", `
-    await page.getByRole("group",{name:"资源类型",exact:true}).getByRole("button",{name:"MCP",exact:true}).click();
-    ${local("sample")} ${previewEntry("disable", "sample")} ${confirm("disable")}
-  `);
-  const mcpDisabled = parseToml(await readFile(fixture.configPath, "utf8"));
-  assert.equal(mcpDisabled.mcp_servers.sample.enabled, false);
-  assert.deepEqual(mcpDisabled.mcp_servers.other, parseToml(initialConfig).mcp_servers.other);
-  assert.equal(mcpDisabled.mcp_servers.sample.env.TOKEN, parseToml(initialConfig).mcp_servers.sample.env.TOKEN);
-  await step("MCP 停用恢复与操作记录", `
-    ${archive("已停用", "sample")} ${restore}
-    ${view("操作记录")} ${search("")}
-    await page.getByRole("button",{name:"查看sample的恢复记录",exact:true}).waitFor();
-    expect((await page.locator(".resource-list-scroll").innerText()).includes("待重新加载"),"操作记录未保留客户端生效状态");
-    ${screenshot("operations.png")}
-  `);
-  await step("窄屏筛选、详情与独立滚动", `
-    await page.getByRole("group",{name:"资源类型",exact:true}).getByRole("button",{name:"Skill",exact:true}).click();
-    ${view("本地资源")} ${search("guide")}
-    await page.setViewportSize({width:760,height:900});
-    await page.getByRole("button",{name:"打开资源筛选",exact:true}).click();
-    const filterDialog=page.getByRole("dialog",{name:"资源筛选",exact:true});
-    await filterDialog.getByRole("combobox",{name:"资源客户端",exact:true}).click();
-    await page.getByRole("option",{name:"全部客户端",exact:true}).click();
-    await filterDialog.getByRole("button",{name:"完成",exact:true}).click();
-    await filterDialog.waitFor({state:"hidden"});
-    await page.getByRole("button",{name:"查看guide的本地详情",exact:true}).click();
-    const detailDialog=page.getByRole("dialog",{name:"资源详情",exact:true});
-    await detailDialog.getByRole("heading",{name:"guide",exact:true}).waitFor();
-    const box=await detailDialog.boundingBox(); expect(box.x>=0&&box.x+box.width<=760,"窄屏详情超出视口");
-    ${screenshot("narrow-detail.png")}
-    await page.keyboard.press("Escape"); await detailDialog.waitFor({state:"hidden"});
-    expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1&&document.documentElement.scrollHeight<=innerHeight+1),"窄屏页面溢出");
-    await page.setViewportSize({width:375,height:812});
-    ${search("")}
-    await page.getByRole("button",{name:"打开资源筛选",exact:true}).click();
-    const phoneFilter=page.getByRole("dialog",{name:"资源筛选",exact:true});
-    const filterBox=await phoneFilter.boundingBox(); expect(filterBox.x>=0&&filterBox.x+filterBox.width<=375,"375px筛选超出视口");
-    await phoneFilter.getByRole("button",{name:"完成",exact:true}).click(); await phoneFilter.waitFor({state:"hidden"});
-    await page.getByRole("button",{name:"查看guide的本地详情",exact:true}).click();
-    const phoneDetail=page.getByRole("dialog",{name:"资源详情",exact:true});
-    await phoneDetail.getByRole("heading",{name:"guide",exact:true}).waitFor();
-    await phoneDetail.getByRole("button",{name:"预览停用guide的Codex入口",exact:true}).click();
-    const nested=page.getByRole("dialog",{name:"停用预览",exact:true});
-    await nested.getByRole("button",{name:"确认停用",exact:true}).waitFor();
-    await page.keyboard.press("Escape"); await nested.waitFor({state:"hidden"});
-    await page.waitForFunction(()=>document.querySelector('[aria-label="预览停用guide的Codex入口"]')===document.activeElement,undefined,{timeout:2000});
-    expect(await phoneDetail.getByRole("button",{name:"预览停用guide的Codex入口",exact:true}).evaluate(element=>element===document.activeElement),"嵌套预览关闭未恢复操作焦点");
-    ${screenshot("phone-detail.png")}
-    await page.keyboard.press("Escape"); await phoneDetail.waitFor({state:"hidden"});
-    expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1&&document.documentElement.scrollHeight<=innerHeight+1),"375px页面溢出");
-    expect(page.resourceErrors.length===0,"浏览器异常："+page.resourceErrors.join(";"));
-    await page.setViewportSize({width:1560,height:980});
-  `);
-
-  // 前面的管理断言完成后才增加历史，避免改变初始排行及读取次数。
-  const secondProject = join(directory, "second-project");
-  await mkdir(secondProject);
-  await run("git", ["init", "-q", secondProject]);
-  const codexShared = [
-    { type: "session_meta", timestamp: "2026-01-03T12:00:00Z", payload: { id: "shared-codex-example", cwd: fixture.project, title: "共享 Skill 的 Codex 使用" } },
-    { type: "response_item", timestamp: "2026-01-03T12:00:01Z", payload: { type: "message", role: "user", content: [{ type: "input_text", text: "读取人工共享资源" }] } },
-    { type: "response_item", timestamp: "2026-01-03T12:00:02Z", payload: { type: "function_call", name: "shell_command", call_id: "shared-codex-read", arguments: JSON.stringify({ command: `cat '${join(fixture.shared, "SKILL.md")}'`, workdir: fixture.project }) } },
-    { type: "response_item", timestamp: "2026-01-03T12:00:03Z", payload: { type: "function_call_output", call_id: "shared-codex-read", output: "Exit code: 0\nOutput:\n共享测试资源。\n" } },
-    { type: "response_item", timestamp: "2026-01-03T12:00:04Z", payload: { type: "message", role: "assistant", channel: "final", content: [{ type: "output_text", text: "人工共享资源已读取" }] } },
-  ];
-  const claudeShared = [
-    { type: "user", uuid: "shared-claude-user", timestamp: "2026-01-04T12:00:00Z", sessionId: "shared-claude-example", cwd: secondProject, message: { content: [{ type: "text", text: "读取人工共享资源" }] } },
-    { type: "assistant", uuid: "shared-claude-request", timestamp: "2026-01-04T12:00:01Z", sessionId: "shared-claude-example", cwd: secondProject, message: { content: [{ type: "tool_use", id: "shared-claude-read", name: "Read", input: { file_path: join(fixture.link, "SKILL.md") } }] } },
-    { type: "user", uuid: "shared-claude-result", timestamp: "2026-01-04T12:00:02Z", sourceToolAssistantUUID: "shared-claude-request", sessionId: "shared-claude-example", cwd: secondProject, message: { content: [{ type: "tool_result", tool_use_id: "shared-claude-read", content: "共享测试资源。\n", is_error: false }] }, toolUseResult: { type: "text", file: { filePath: join(fixture.link, "SKILL.md"), content: "共享测试资源。\n", numLines: 1, startLine: 1, totalLines: 1 } } },
-    { type: "assistant", uuid: "shared-claude-final", timestamp: "2026-01-04T12:00:03Z", sessionId: "shared-claude-example", cwd: secondProject, message: { content: [{ type: "text", text: "人工共享资源已读取" }] } },
-  ];
-  await writeFile(join(fixture.history, "shared-example.jsonl"), codexShared.map(record => JSON.stringify(record)).join("\n") + "\n");
-  await writeFile(join(claudeHistory, "shared-example.jsonl"), claudeShared.map(record => JSON.stringify(record)).join("\n") + "\n");
-  const { job: refreshJob } = await api("/sessions/refresh", "POST");
-  let finished = refreshJob;
-  for (let attempt = 0; attempt < 400 && ["queued", "running"].includes(finished.status); attempt++) {
-    await new Promise(resolve => setTimeout(resolve, 25));
-    finished = (await api(`/jobs/${refreshJob.id}`)).job;
-  }
-  assert.equal(finished.status, "complete", finished.error);
-  await api("/resources/refresh", "POST");
-  const sharedRow = (await api("/resources/local?kind=skill&q=shared")).rows.find(row => row.body.name === "shared");
-  assert.equal(sharedRow.usage.sessions, 2);
-  const sharedDetail = await api(`/resources/local/${encodeURIComponent(sharedRow.body.id)}?kind=skill`);
-  assert.equal(sharedDetail.clients.length, 2);
-  assert.equal(sharedDetail.projects.length, 2);
-  assert.equal(sharedDetail.trend.reduce((sum, row) => sum + row.stats.events, 0), 2);
-  await step("共享本体合并跨客户端、项目及趋势", `
-    await page.getByRole("button",{name:"重置筛选",exact:true}).click();
-    await page.getByRole("button",{name:"刷新清单",exact:true}).click();
-    await page.getByRole("button",{name:"刷新清单",exact:true}).waitFor();
-    ${local("shared")}
-    const detail=page.getByRole("complementary",{name:"资源详情",exact:true});
-    if(await page.locator('.resource-usage-summary:not([open]) > summary').count()) await page.locator('.resource-usage-summary:not([open]) > summary').first().click();
-    expect(/2\\s*使用会话/.test(await detail.locator(".resource-stats").innerText()),"共享本体会话数未合并");
-    const clients=detail.locator(".resource-detail-section").filter({has:page.getByRole("heading",{name:"客户端分布",exact:true})});
-    const projects=detail.locator(".resource-detail-section").filter({has:page.getByRole("heading",{name:"项目分布",exact:true})});
-    expect(await clients.locator(".resource-distribution>div").count()===2,"本体客户端分布未合并");
-    expect((await clients.innerText()).includes("Codex")&&(await clients.innerText()).includes("Claude Code"),"本体客户端分布缺少真实来源");
-    expect(await projects.locator(".resource-distribution>div").count()===2,"本体项目分布未合并");
-    expect((await projects.innerText()).includes("sample-project")&&(await projects.innerText()).includes("second-project"),"本体项目分布缺少项目");
-    const codexEntry=detail.locator(".resource-entry").filter({has:page.getByText("Codex",{exact:true})});
-    expect(await codexEntry.count()===1,"共享本体的Codex物理入口缺失");
-    expect(await codexEntry.getByRole("button",{name:"预览移入回收区shared的Codex入口",exact:true}).count()===0,"共享物理本体仍可隔离");
-    expect(await codexEntry.getByRole("button",{name:"预览回收shared的Codex入口",exact:true}).count()===0,"共享物理本体仍可回收");
-    await detail.getByRole("img",{name:"每日资源使用次数",exact:true}).waitFor();
-    await detail.getByText("查看趋势数据 · 2 天",{exact:true}).click();
-    const trend=detail.locator(".resource-data-details").filter({hasText:"查看趋势数据 · 2 天"});
-    expect(await trend.locator("tbody tr").count()===2,"本体趋势没有保留全部日期");
-    ${screenshot("shared-body-analysis.png")}
-  `);
-
-  const unusedRow = (await api("/resources/local?kind=skill&q=sample-01")).rows.find(row => row.body.name === "sample-01");
-  const management = new Database(join(fixture.home, "resources.sqlite"));
-  try {
-    assert.equal(management.prepare("UPDATE resource_seen SET first_seen=? WHERE id=?").run("2025-01-01T00:00:00Z", unusedRow.entries[0].id).changes, 1);
-  } finally { management.close(); }
-  const unused = (await api("/resources/local?kind=skill&q=sample-01&candidate=unused")).rows[0];
-  assert.equal(unused.observation, "recorded");
-  assert.equal(unused.usage.sessions, 0);
-  await step("未发现使用筛选区分确定零值与未知", `
-    ${select("资源状态筛选", "未发现使用")}
-    ${search("sample-01")}
-    await page.getByRole("button",{name:"查看sample-01的本地详情",exact:true}).click();
-    const detail=page.getByRole("complementary",{name:"资源详情",exact:true});
-    await detail.getByRole("heading",{name:"sample-01",exact:true}).waitFor();
-    const tags=await detail.locator(".resource-tags").first().innerText();
-    expect(tags.includes("未发现使用")&&!tags.includes("已关联使用")&&!tags.includes("使用未知"),"零使用状态与未知混淆");
-    if(await page.locator('.resource-usage-summary:not([open]) > summary').count()) await page.locator('.resource-usage-summary:not([open]) > summary').first().click(); const stats=await detail.locator(".resource-stats").innerText();
-    expect(/0\\s*使用会话/.test(stats)&&/0\\s*显式调用/.test(stats)&&/0\\s*成功读取/.test(stats),"确定零使用没有显示0");
-    expect((await detail.locator(".resource-stats strong").allTextContents()).every(value=>value.trim()!=="未知"),"零计数错误显示未知");
-    expect((await page.locator(".resource-local-table tbody tr").innerText()).includes("未发现使用"),"列表未表达未发现使用状态");
-    expect(page.resourceErrors.length===0,"浏览器异常："+page.resourceErrors.join(";"));
-    ${screenshot("unused-zero-state.png")}
-  `);
-
-  const localAsc = await api("/resources/local?kind=skill&sort=uses&order=asc&pageSize=200");
-  const localDesc = await api("/resources/local?kind=skill&sort=uses&order=desc&pageSize=200");
-  for (const sorted of [localAsc, localDesc]) {
-    const firstUnknown = sorted.rows.findIndex(row => row.usage === null);
-    assert.ok(firstUnknown >= 0, "夹具缺少真正未知的断链来源");
-    assert.ok(sorted.rows.slice(firstUnknown).every(row => row.usage === null), "未知数值没有排在完整结果末尾");
-  }
-  await step("本地调用排序支持升降，完整结果中真正未知位于末尾", `
-    await page.getByRole("button",{name:"重置筛选",exact:true}).click();
-    ${select("资源排序方向", "降序")}
-    await page.waitForFunction(()=>document.querySelector('.resource-local-table tbody th button:first-child')?.textContent==='shared');
-    const rows=page.locator('.resource-local-table tbody tr');
-    expect((await rows.first().locator('td:last-child').innerText()).includes("2"),"本地会话降序未优先已知最大值");
-    expect((await rows.last().locator('td:last-child').innerText()).includes("0"),"新发现零记录仍被当成未知");
-    ${select("资源排序方向", "升序")}
-    await page.waitForFunction(name=>document.querySelector('.resource-local-table tbody th button:first-child')?.textContent===name,${JSON.stringify(localAsc.rows[0].body.name)});
-    expect((await rows.first().locator('td:last-child').innerText()).includes("0"),"本地会话升序未优先确定零值");
-    expect((await rows.last().locator('td:last-child').innerText()).includes("0"),"新发现零记录未按已知零值排序");
-    expect(await page.evaluate(()=>new URLSearchParams(location.hash.split('?')[1]).get('order'))==='asc',"本地排序方向未写入路由");
-    await page.getByRole("button",{name:"重置筛选",exact:true}).click();
-  `);
-
-  const rankingBodies = await skillRankingFixture(fixture, claudeHistory, secondProject);
-  const { job: rankingRefresh } = await api("/sessions/refresh", "POST");
-  let rankingJob = rankingRefresh;
-  for (let attempt = 0; attempt < 400 && ["queued", "running"].includes(rankingJob.status); attempt++) {
-    await new Promise(resolve => setTimeout(resolve, 25));
-    rankingJob = (await api(`/jobs/${rankingRefresh.id}`)).job;
-  }
-  assert.equal(rankingJob.status, "complete", rankingJob.error);
-  await api("/resources/refresh", "POST");
-  const ranked = (await api("/resources/usage?kind=skill&q=guide")).resources.filter(row => row.identity.name === "guide");
-  assert.equal(ranked.length, 1);
-  const guideRank = ranked[0];
-  assert.equal(guideRank.identity.grouping, "skill");
-  assert.equal(guideRank.identity.client, undefined); assert.equal(guideRank.identity.project, undefined); assert.equal(guideRank.identity.path, undefined);
-  assert.equal(guideRank.stats.sessions, 3); assert.equal(guideRank.stats.successfulReads, 5);
-  assert.deepEqual(new Set(guideRank.clients), new Set(["codex", "claude"]));
-  const rankedDetail = await api(`/resources/usage/${encodeURIComponent(guideRank.identity.id)}?kind=skill`);
-  assert.equal(rankedDetail.origins.length, 4); assert.equal(rankedDetail.projects.length, 2); assert.equal(rankedDetail.resource.association.state, "partial");
-  const oldOrigin = rankedDetail.origins.find(origin => origin.client === "codex" && origin.path === fixture.guide);
-  assert.ok(oldOrigin);
-  await api("/resources/favorites", "POST", { id: oldOrigin.id, value: true });
-  const guideOverview = (await api("/resources/overview?q=guide")).resources.find(row => row.identity.id === guideRank.identity.id);
-  assert.ok(guideOverview);
-  assert.ok(guideOverview.clients.includes("codex") && guideOverview.clients.includes("claude"));
-  const oldProjectHash = `#resources?kind=skill&tab=usage&project=${encodeURIComponent(fixture.project)}&q=guide&id=${encodeURIComponent(guideRank.identity.id)}`;
-  await step("Skill 全名合并跨 Agent、项目与路径，会话数取并集", `
-    page.resourceRequests=[];
-    page.on("request",request=>{if(request.url().includes("/api/v1/resources/usage")||request.url().includes("/api/v1/resources/overview"))page.resourceRequests.push(request.url())});
-    await page.evaluate(hash=>location.hash=hash,${JSON.stringify(oldProjectHash)});
-    const row=page.getByRole("table",{name:"Skill 总览",exact:true}).getByRole("row").filter({has:page.getByRole("button",{name:"查看guide的使用详情",exact:true})});
-    await row.getByRole("button",{name:"查看guide的使用详情",exact:true}).waitFor();
-    expect(await row.count()===1,"同名Skill仍按来源拆成多行");
-    expect((await row.locator(".resource-overview-agents").innerText())===${JSON.stringify(`涉及 ${guideOverview.clients.length} 个 Agent`)},"总览遗漏历史或本地Agent入口");
-    expect(await row.locator(".resource-row-subtitle").count()===0,"Skill排行仍展示单项目或路径");
-    expect((await row.getByRole("cell").nth(2).innerText())==="3","使用会话未取并集");
-    expect((await row.getByRole("cell").nth(1).innerText())===${JSON.stringify(String(guideOverview.stats.events))},"Skill调用次数没有包含成功读取");
-    expect(await row.getByRole("rowheader").count()===1&&await row.getByRole("cell").count()===5,"主列表缺少名称、调用次数、使用会话数或管理入口");
-    expect(await page.getByRole("combobox",{name:"资源Agent",exact:true}).count()===1,"Agent筛选没有复用统一组件");
-    expect(await page.locator(".resources-shell").getByRole("button",{name:"筛选项目",exact:true}).count()===0,"旧项目筛选仍可见");
-    const detail=page.getByRole("complementary",{name:"资源详情",exact:true});
-    await detail.getByRole("heading",{name:"guide",exact:true}).waitFor();
-    expect((await detail.locator(".resource-detail-heading>div>span").innerText())===${JSON.stringify(`涉及 ${guideOverview.clients.length} 个 Agent`)},"总览详情的Agent范围与列表不一致");
-    if(await page.locator('.resource-usage-summary:not([open]) > summary').count()) await page.locator('.resource-usage-summary:not([open]) > summary').first().click();
-    expect(/3\\s*使用会话/.test(await detail.locator(".resource-stats").innerText()),"详情会话并集错误");
-    if(await page.locator('.resource-usage-summary:not([open]) > summary').count()) await page.locator('.resource-usage-summary:not([open]) > summary').first().click();
-    expect(/5\\s*成功读取/.test(await detail.locator(".resource-stats").innerText()),"详情读取证据丢失");
-    expect(await detail.locator(".resource-local-entries > .resource-entry").count()===${guideOverview.localBodyIds.length},"历史来源被冒充成本地管理本体");
-    const agents=detail.locator(".resource-detail-section").filter({has:page.getByRole("heading",{name:"使用 Agent 分布",exact:true})});
-    const projects=detail.locator(".resource-detail-section").filter({has:page.getByRole("heading",{name:"项目分布",exact:true})});
-    expect(await agents.locator(".resource-distribution>div").count()===2,"Agent分布未合并");
-    expect(await projects.locator(".resource-distribution>div").count()===2,"项目来源未保留");
-    await detail.getByText("历史来源 · 4 个",{exact:true}).click();
-    expect(await detail.locator(".resource-origin-list>div").count()===4,"实际历史来源被名称汇总吞掉");
-    expect(page.resourceRequests.length>=3&&page.resourceRequests.every(url=>!/[?&]project=/.test(url)),"Skill排行请求仍被旧项目限制");
-    await row.getByRole("button",{name:"取消收藏guide",exact:true}).waitFor();
-    ${screenshot("skill-name-ranking.png")}
-  `);
-  await step("旧隐藏项目不限制精确用户及跨项目本体跳转", `
-    const detail=page.getByRole("complementary",{name:"资源详情",exact:true});
-    for(const path of ${JSON.stringify([fixture.guide, rankingBodies.claudeGuide])}) {
-      const body=detail.locator('.resource-local-entries > .resource-entry').filter({has:page.getByText(path,{exact:true})});
-      await body.getByRole("button",{name:/^查看guide的本地本体 /}).click();
-      await detail.getByRole("heading",{name:"客户端入口",exact:true}).waitFor();
-      expect(await page.evaluate(()=>new URLSearchParams(location.hash.split('?')[1]).get('project'))===null,"隐藏项目穿透到本地本体详情");
-      await detail.locator('.resource-entry').getByText(path,{exact:true}).first().waitFor();
-      expect(await detail.getByRole("alert").count()===0,"精确本体详情被旧项目限制");
-      await page.goBack();
-      await detail.getByRole("heading",{name:"本地本体与入口",exact:true}).waitFor();
-      expect(await page.evaluate(()=>new URLSearchParams(location.hash.split('?')[1]).get('project'))===${JSON.stringify(fixture.project)},"返回丢失原总览路由");
-    }
-  `);
-  await step("旧来源收藏兼容名称汇总与管理保护", `
-    const row=page.getByRole("table",{name:"Skill 总览",exact:true}).getByRole("row").filter({has:page.getByRole("button",{name:"查看guide的使用详情",exact:true})});
-    await row.getByRole("button",{name:"取消收藏guide",exact:true}).click();
-    await row.getByRole("button",{name:"收藏guide",exact:true}).waitFor();
-    await row.getByRole("button",{name:"收藏guide",exact:true}).click();
-    await row.getByRole("button",{name:"取消收藏guide",exact:true}).waitFor();
-  `);
-  assert.ok((await api("/resources/status")).favoriteIds.includes(guideRank.identity.id));
-  assert.ok(!(await api("/resources/status")).favoriteIds.includes(oldOrigin.id));
-  const nativeGuide = (await api("/resources/local?kind=skill&q=guide")).rows.flatMap(row => row.entries).find(entry => entry.client === "codex" && entry.entryPath === fixture.guide);
-  assert.ok(nativeGuide);
-  assert.equal((await api("/resources/preview", "POST", { entryId: nativeGuide.id, action: "disable" })).protected, true);
-  await step("Agent筛选保持Skill身份与证据跳转返回", `
-    ${select("资源Agent", "Codex")}
-    await page.waitForFunction(()=>{const row=[...document.querySelectorAll(".resource-overview-row")].find(element=>element.querySelector('[aria-label="查看guide的使用详情"]'));return row&&row.querySelectorAll("td")[2].textContent==="2"});
-    const codexRow=page.getByRole("table",{name:"Skill 总览",exact:true}).getByRole("row").filter({has:page.getByRole("button",{name:"查看guide的使用详情",exact:true})});
-    expect((await codexRow.locator(".resource-overview-agents").getAttribute("title")).includes("Codex"),"单Agent筛选名称错误");
-    expect(await page.evaluate(()=>new URLSearchParams(location.hash.split("?")[1]).get("id"))===${JSON.stringify(guideRank.identity.id)},"筛选改变了Skill身份");
-    ${select("资源Agent", "Claude Code")}
-    await page.waitForFunction(()=>{const row=[...document.querySelectorAll(".resource-overview-row")].find(element=>element.querySelector('[aria-label="查看guide的使用详情"]'));return row&&row.querySelectorAll("td")[2].textContent==="1"});
-    await page.waitForFunction(()=>document.querySelectorAll(".resource-evidence a").length===1);
-    const resourceHash=await page.evaluate(()=>location.hash);
-    await page.locator(".resource-evidence a").first().click(); await page.waitForURL(/#sessions/);
-    expect(page.url().includes("mode=trace")&&page.url().includes("message="),"Skill证据未定位轨迹");
-    await page.goBack(); await page.waitForURL(/#resources/);
-    expect((await page.evaluate(()=>location.hash))===resourceHash,"返回未保留Agent筛选与Skill");
-    await page.locator(".resource-evidence a").first().waitFor();
-    expect((await page.getByRole("combobox",{name:"资源Agent",exact:true}).innerText()).includes("Claude Code"),"返回丢失Agent筛选");
-    ${select("资源Agent", "全部 Agent")}
-    await page.waitForFunction(()=>{const row=[...document.querySelectorAll(".resource-overview-row")].find(element=>element.querySelector('[aria-label="查看guide的使用详情"]'));return row&&row.querySelectorAll("td")[2].textContent==="3"});
-    expect(page.resourceErrors.length===0,"浏览器异常："+page.resourceErrors.join(";"));
-  `);
-  await api("/resources/favorites", "POST", { id: guideRank.identity.id, value: false });
-
-  const overview = await api("/resources/overview?kind=skill&pageSize=100");
-  assert.ok(overview.total > 100);
-  assert.ok(overview.counts.used >= 2);
-  const zeroOverview = (await api("/resources/overview?kind=skill&q=sample-01")).resources.find(row => row.identity.name === "sample-01");
-  const freshOverview = (await api("/resources/overview?kind=skill&q=sample-02")).resources.find(row => row.identity.name === "sample-02");
-  assert.equal(zeroOverview.observation, "unused"); assert.equal(zeroOverview.stats.sessions, 0);
-  assert.equal(freshOverview.observation, "unused"); assert.equal(freshOverview.stats.sessions, 0);
-  await step("总览包含新发现的零记录本地资源", `
-    await page.getByRole("button",{name:"重置筛选",exact:true}).click();
-    ${view("Skill 总览")}
-    const table=page.getByRole("table",{name:"Skill 总览",exact:true}); await table.waitFor();
-    expect(await table.getByRole("columnheader").count()===6,"总览列数错误");
-    const quick=page.getByRole("group",{name:"Skill 快速筛选",exact:true});
-    expect(await quick.getByRole("button").count()===4 && await quick.getByRole("combobox",{name:"关注条件",exact:true}).count()===1,"快捷筛选缺失");
-    expect((await quick.getByRole("button",{name:/^全部/}).innerText()).includes(${JSON.stringify(String(overview.counts.all))}),"全部计数错误");
-    ${screenshot("overview-synthetic-light.png")}
-    await quick.getByRole("button",{name:/^已使用/}).click();
-    await page.waitForFunction(expected=>document.querySelectorAll('table[aria-label="Skill 总览"] tbody tr').length===expected, ${overview.counts.used});
-    expect(await table.getByRole("row").count()===${overview.counts.used + 1},"已使用筛选混入本地未知资源");
-    await quick.getByRole("button",{name:/^全部/}).click();
-    ${search("sample-02")}
-    const row=table.getByRole("row").filter({has:page.getByRole("button",{name:"查看sample-02的使用详情",exact:true})});
-    await row.waitFor(); expect((await row.getByRole("cell").allTextContents()).slice(1,2).every(value=>value==="0"),"新资源没有显示零记录");
-    const unusedResult=page.waitForResponse(response=>{const [path,query='']=response.url().split('?');const parts=query.split('&');return path.endsWith('/resources/overview')&&parts.includes('q=sample-02')&&parts.includes('candidate=unused')});
-    await quick.getByRole("button",{name:/^未发现使用/}).click();
-    await (await unusedResult).finished();
-    await row.getByRole("button",{name:"查看sample-02的使用详情",exact:true}).waitFor();
-    await row.getByRole("button",{name:"查看sample-02的使用详情",exact:true}).click();
-    const detail=page.getByRole("complementary",{name:"资源详情",exact:true});
-    await detail.getByRole("heading",{name:"sample-02",exact:true}).waitFor();
-    if(await page.locator('.resource-usage-summary:not([open]) > summary').count()) await page.locator('.resource-usage-summary:not([open]) > summary').first().click();
-    expect(/0\\s*使用会话/.test(await detail.locator(".resource-stats").innerText()),"新资源详情没有显示零记录");
-    await detail.getByRole("button",{name:"查看sample-02的本地本体 1",exact:true}).click();
-    await detail.getByRole("heading",{name:"sample-02",exact:true}).waitFor();
-    await detail.getByRole("heading",{name:"客户端入口",exact:true}).waitFor();
-    expect(await detail.locator(".resource-entry").count()===1,"跳转没有定位精确本体");
-  `);
-  await step("总览确定零值与快捷筛选重置页码", `
-    ${view("Skill 总览")} ${search("")}
-    await page.getByRole("button",{name:"Skill 总览第2页",exact:true}).click();
-    const quick=page.getByRole("group",{name:"Skill 快速筛选",exact:true});
-    await quick.getByRole("button",{name:/^未发现使用/}).click();
-    await page.getByRole("button",{name:"查看sample-01的使用详情",exact:true}).waitFor();
-    const row=page.getByRole("table",{name:"Skill 总览",exact:true}).getByRole("row").filter({has:page.getByRole("button",{name:"查看sample-01的使用详情",exact:true})});
-    expect((await row.getByRole("cell").allTextContents()).slice(1,2).every(value=>value==="0"),"确定零值没有显示0");
-    expect(await page.evaluate(()=>new URLSearchParams(location.hash.split("?")[1]).get("page"))===null,"快捷筛选未重置页码");
-    await row.getByRole("button",{name:"查看sample-01的使用详情",exact:true}).click();
-    const detail=page.getByRole("complementary",{name:"资源详情",exact:true});
-    await detail.getByRole("heading",{name:"sample-01",exact:true}).waitFor();
-    if(await page.locator('.resource-usage-summary:not([open]) > summary').count()) await page.locator('.resource-usage-summary:not([open]) > summary').first().click();
-    expect(/0\\s*使用会话/.test(await detail.locator(".resource-stats").innerText()),"无历史零使用详情错误");
-    ${screenshot("overview-unused-zero.png")}
-    await quick.getByRole("button",{name:/^全部/}).click();
-  `);
-  const skillNameAsc = (await api("/resources/overview?kind=skill&sort=name&order=asc")).resources[0].identity.name;
-  const skillNameDesc = (await api("/resources/overview?kind=skill&sort=name&order=desc")).resources[0].identity.name;
-  await step("总览表头升降排序、键盘操作与路由持久化", `
-    const table=page.getByRole("table",{name:"Skill 总览",exact:true});
-    await table.getByRole("button",{name:"按Skill排序",exact:true}).click();
-    await page.waitForFunction(()=>document.querySelector('.resource-overview-table th[aria-sort="ascending"] button')?.textContent.includes("Skill"));
-    await page.waitForFunction(()=>document.querySelector('.resource-overview-table tbody th button')?.textContent===${JSON.stringify(skillNameAsc)}&&!document.querySelector('.resource-list-scroll[aria-busy="true"]'));
-    const firstAsc=await table.getByRole("row").nth(1).getByRole("rowheader").getByRole("button").first().innerText();
-    await table.getByRole("button",{name:"按Skill排序",exact:true}).focus(); await page.keyboard.press("Enter");
-    await page.waitForFunction(()=>document.querySelector('.resource-overview-table th[aria-sort="descending"] button')?.textContent.includes("Skill"));
-    await page.waitForFunction(()=>document.querySelector('.resource-overview-table tbody th button')?.textContent===${JSON.stringify(skillNameDesc)}&&!document.querySelector('.resource-list-scroll[aria-busy="true"]'));
-    const firstDesc=await table.getByRole("row").nth(1).getByRole("rowheader").getByRole("button").first().innerText();
-    expect(firstAsc!==firstDesc,"名称排序未改变方向");
-    expect(await page.evaluate(()=>new URLSearchParams(location.hash.split("?")[1]).get("order"))==="desc","排序方向没有写入路由");
-    await page.reload(); await table.waitFor();
-    expect(await table.getByRole("columnheader").first().getAttribute("aria-sort")==="descending","刷新丢失排序方向");
-    await table.getByRole("button",{name:"按使用会话数排序",exact:true}).click();
-    await page.waitForFunction(()=>document.querySelector('.resource-overview-table th[aria-sort="descending"] button')?.textContent.includes("会话"));
-    await page.waitForFunction(()=>document.querySelector('.resource-overview-table tbody tr')?.querySelectorAll('td')[2]?.textContent==='3'&&!document.querySelector('.resource-list-scroll[aria-busy="true"]'));
-    expect((await table.getByRole("row").nth(1).getByRole("cell").nth(2).innerText())==="3","会话降序错误");
-  `);
-  await step("页码、首尾、跳转、容量与范围", `
-    const pager=page.getByRole("navigation",{name:"Skill 总览",exact:true});
-    await pager.getByRole("button",{name:"Skill 总览末页",exact:true}).click();
-    await page.waitForFunction(()=>document.querySelector('[aria-label="Skill 总览末页"]')?.disabled);
-    expect((await pager.innerText()).includes(${JSON.stringify(`/ ${overview.total} 条`)}),"分页未显示当前区间及总数");
-    await pager.getByRole("spinbutton",{name:"Skill 总览跳转页码",exact:true}).fill("2");
-    await pager.getByRole("button",{name:"Skill 总览跳转",exact:true}).click();
-    await page.waitForFunction(()=>new URLSearchParams(location.hash.split("?")[1]).get("page")==="2"&&!document.querySelector('.resource-list-scroll[aria-busy="true"]'));
-    await page.waitForFunction(()=>document.querySelector('nav[aria-label="Skill 总览"]')?.textContent.includes("21–40"));
-    expect((await pager.innerText()).includes("21–40"),"跳页区间错误");
-    ${select("Skill 总览每页条数", "50 条／页")}
-    await page.waitForFunction(()=>document.querySelectorAll('.resource-overview-table tbody tr').length===50);
-    expect(await page.evaluate(()=>new URLSearchParams(location.hash.split("?")[1]).get("page"))===null,"改变容量未重置页码");
-    ${select("Skill 总览每页条数", "100 条／页")}
-    await page.waitForFunction(()=>document.querySelectorAll('.resource-overview-table tbody tr').length===100);
-    await page.reload(); await page.getByRole("table",{name:"Skill 总览",exact:true}).waitFor();
-    expect((await pager.getByRole("combobox",{name:"Skill 总览每页条数",exact:true}).innerText()).includes("100"),"刷新丢失容量");
-    await pager.getByRole("button",{name:"Skill 总览下一页",exact:true}).click();
-    await page.waitForFunction(()=>document.querySelectorAll('.resource-overview-table tbody tr').length>0&&document.querySelectorAll('.resource-overview-table tbody tr').length<100);
-    await page.getByRole("textbox",{name:"搜索资源名称或路径",exact:true}).fill("no-such-skill");
-    await page.getByText("没有匹配的 Skill",{exact:true}).waitFor();
-    expect((await pager.innerText()).includes("0–0 / 0 条"),"空结果区间错误");
-    expect(await pager.getByRole("button",{name:"Skill 总览下一页",exact:true}).isDisabled(),"空结果仍可翻页");
-    await page.getByRole("button",{name:"重置筛选",exact:true}).click();
-  `);
-  await step("总览名称收藏与独立本体收藏", `
-    ${search("guide")}
-    await page.getByRole("button",{name:"查看guide的使用详情",exact:true}).click();
-    const detail=page.getByRole("complementary",{name:"资源详情",exact:true});
-    await detail.getByRole("heading",{name:"本地本体与入口",exact:true}).waitFor();
-    await detail.getByRole("button",{name:/^查看guide的本地本体 /}).nth(2).waitFor();
-    expect(await detail.getByRole("button",{name:/^查看guide的本地本体 /}).count()===3,"同名本体被名称汇总合并");
-    await detail.getByRole("button",{name:"收藏guide本体 1",exact:true}).click();
-    await detail.getByRole("button",{name:"取消收藏guide本体 1",exact:true}).waitFor();
-    const row=page.getByRole("table",{name:"Skill 总览",exact:true}).getByRole("row").filter({has:page.getByRole("button",{name:"查看guide的使用详情",exact:true})});
-    await row.getByRole("button",{name:"收藏guide",exact:true}).waitFor();
-    expect(await row.getByRole("button",{name:"收藏guide",exact:true}).count()===1,"本体收藏冒充名称收藏");
-    await row.getByRole("button",{name:"收藏guide",exact:true}).click();
-    await row.getByRole("button",{name:"取消收藏guide",exact:true}).waitFor();
-    await row.getByRole("button",{name:"取消收藏guide",exact:true}).click();
-    await row.getByRole("button",{name:"收藏guide",exact:true}).waitFor();
-    await detail.getByRole("button",{name:"取消收藏guide本体 1",exact:true}).waitFor();
-    await detail.getByRole('button',{name:'管理guide',exact:true}).click();
-    const manage=page.getByRole('dialog',{name:'管理具体入口',exact:true});
-    await manage.locator('.resource-management-body').first().getByRole('button',{name:/^将.*移入回收区$/}).click();
-    const protectedPreview=page.getByRole('dialog',{name:'移入回收区预览',exact:true});
-    await protectedPreview.getByRole('alert').filter({hasText:'此资源已收藏'}).waitFor();
-    expect(await protectedPreview.getByRole('button',{name:'确认移入回收区',exact:true}).count()===1,'收藏资源没有保留明确确认入口');
-    await page.keyboard.press('Escape'); await protectedPreview.waitFor({state:'hidden'});
-    await page.getByRole("group",{name:"Skill 快速筛选",exact:true}).getByRole("button",{name:/^已收藏/}).click();
-    await row.waitFor();
-    await detail.getByRole("button",{name:"取消收藏guide本体 1",exact:true}).click();
-    await page.getByText("没有匹配的 Skill",{exact:true}).waitFor();
-    await page.getByRole("group",{name:"Skill 快速筛选",exact:true}).getByRole("button",{name:/^全部/}).click();
-  `);
-  await step("仅历史入口边界、旧来源链接与精确证据", `
-    const legacyHash=${JSON.stringify(`#resources?kind=skill&tab=usage&id=${encodeURIComponent(oldOrigin.id)}`)};
-    await page.evaluate(hash=>location.hash=hash,legacyHash);
-    const detail=page.getByRole("complementary",{name:"资源详情",exact:true});
-    await detail.getByRole("heading",{name:"guide",exact:true}).waitFor();
-    if(await detail.locator('.resource-usage-summary:not([open]) > summary').count()) await detail.locator('.resource-usage-summary:not([open]) > summary').first().click();
-    await detail.locator(".resource-stats").filter({hasText:/2\\s*使用会话/}).waitFor();
-    if(await page.locator('.resource-usage-summary:not([open]) > summary').count()) await page.locator('.resource-usage-summary:not([open]) > summary').first().click();
-    expect(/2\\s*使用会话/.test(await detail.locator(".resource-stats").innerText()),"旧来源链接错误扩大为名称汇总");
-    await page.waitForFunction(()=>document.querySelectorAll('.resource-evidence a').length===2);
-    expect(await detail.getByRole("button",{name:/^查看guide的本地本体 /}).count()===1,"旧来源链接没有定位精确本体");
-    const retired=${JSON.stringify(rankedDetail.origins.find(origin => origin.path.includes("retired"))?.id)};
-    expect(!!retired,"人工仅历史来源缺失");
-    await page.evaluate(id=>location.hash='#resources?kind=skill&tab=usage&id='+encodeURIComponent(id),retired);
-    await detail.getByRole("heading",{name:"guide",exact:true}).waitFor();
-    await detail.getByText("当前清单没有此 Skill 的本地本体",{exact:true}).waitFor();
-    expect(await detail.getByRole("button",{name:/^查看guide的本地本体 /}).count()===0,"仅历史来源冒充本地入口");
-  `);
-  await step("总览深浅主题、375px独立横向滚动与键盘跳页", `
-    await page.evaluate(()=>location.hash='#resources?kind=skill&tab=usage');
-    await page.getByRole("table",{name:"Skill 总览",exact:true}).waitFor();
-    await page.getByRole('button',{name:'外观',exact:true}).click(); await page.getByRole('combobox',{name:'显示模式',exact:true}).click(); await page.getByRole('option',{name:'深色',exact:true}).click(); await page.keyboard.press('Escape');
-    ${screenshot("overview-dark.png")}
-    await page.getByRole('button',{name:'外观',exact:true}).click(); await page.getByRole('combobox',{name:'显示模式',exact:true}).click(); await page.getByRole('option',{name:'明亮',exact:true}).click(); await page.keyboard.press('Escape');
-    await page.setViewportSize({width:375,height:812});
-    const scroll=page.locator('.resource-list-scroll');
-    expect(await scroll.evaluate(element=>element.scrollWidth>element.clientWidth),"窄屏表格没有独立横向滚动");
-    await scroll.evaluate(element=>element.scrollLeft=250);
-    expect(await scroll.evaluate(element=>element.scrollLeft)>0,"表格不能横向滚动");
-    expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1&&document.documentElement.scrollHeight<=innerHeight+1),"窄屏总览溢出页面");
-    const jump=page.getByRole("spinbutton",{name:"Skill 总览跳转页码",exact:true});
-    await jump.fill('2'); await jump.focus(); await page.keyboard.press('Enter');
-    await page.waitForFunction(()=>new URLSearchParams(location.hash.split('?')[1]).get('page')==='2'&&!document.querySelector('.resource-list-scroll[aria-busy="true"]'));
-    ${screenshot("overview-phone.png")}
-    await page.setViewportSize({width:1560,height:980});
-    expect(page.resourceErrors.length===0,"浏览器异常："+page.resourceErrors.join(";"));
-  `);
-
-  const pageGuide = join(fixture.userHome, ".codex", "skills", "page-guide");
-  await mkdir(pageGuide, { recursive: true });
-  await writeFile(join(pageGuide, "SKILL.md"), "---\nname: page-guide\n---\n分页证据人工资源。\n");
-  const paginationHistory = [
-    { type: "session_meta", timestamp: "2026-01-07T12:00:00Z", payload: { id: "pagination-example", cwd: fixture.project, title: "分页合成证据" } },
-    { type: "response_item", timestamp: "2026-01-07T12:00:01Z", payload: { type: "message", role: "user", content: [{ type: "input_text", text: "读取合成资源并验证证据分页" }] } },
-  ];
-  for (let index = 0; index < 26; index++) {
-    const path = index < 25 ? join(pageGuide, "SKILL.md") : join(directory, "retired-only", "SKILL.md");
-    const timestamp = second => new Date(Date.UTC(2026, 0, 7, 12, 0, second)).toISOString();
-    paginationHistory.push({ type: "response_item", timestamp: timestamp(index * 2 + 2), payload: { type: "function_call", name: "shell_command", call_id: `pagination-read-${index}`, arguments: JSON.stringify({ command: `cat '${path}'`, workdir: fixture.project }) } });
-    paginationHistory.push({ type: "response_item", timestamp: timestamp(index * 2 + 3), payload: { type: "function_call_output", call_id: `pagination-read-${index}`, output: "Exit code: 0\nOutput:\n人工资源内容。\n" } });
-  }
-  paginationHistory.push({ type: "response_item", timestamp: "2026-01-07T12:01:00Z", payload: { type: "message", role: "assistant", channel: "final", content: [{ type: "output_text", text: "分页证据已记录" }] } });
-  await writeFile(join(fixture.history, "pagination-example.jsonl"), paginationHistory.map(record => JSON.stringify(record)).join("\n") + "\n");
-  const { job: paginationRefresh } = await api("/sessions/refresh", "POST");
-  let paginationJob = paginationRefresh;
-  for (let attempt = 0; attempt < 400 && ["queued", "running"].includes(paginationJob.status); attempt++) {
-    await new Promise(resolve => setTimeout(resolve, 25));
-    paginationJob = (await api(`/jobs/${paginationRefresh.id}`)).job;
-  }
-  assert.equal(paginationJob.status, "complete", paginationJob.error);
-  await api("/resources/refresh", "POST");
-  await step("证据固定十条、页码首尾与跳转返回", `
-    await page.getByRole("button",{name:"刷新清单",exact:true}).click();
-    await page.getByRole("button",{name:"刷新清单",exact:true}).waitFor();
-    ${search("page-guide")}
-    await page.getByRole("button",{name:"查看page-guide的使用详情",exact:true}).click();
-    const detail=page.getByRole("complementary",{name:"资源详情",exact:true});
-    const pager=detail.getByRole("navigation",{name:"使用证据",exact:true}); await pager.waitFor();
-    expect(await detail.locator('.resource-evidence a').count()===10,"证据第一页不是十条");
-    expect(await pager.getByRole("combobox").count()===0,"证据容量不应可调");
-    await pager.getByRole("button",{name:"使用证据末页",exact:true}).click();
-    await page.waitForFunction(()=>document.querySelectorAll('.resource-evidence a').length===5);
-    expect((await pager.innerText()).includes("21–25 / 25 条"),"证据末页区间错误");
-    await pager.getByRole("spinbutton",{name:"使用证据跳转页码",exact:true}).fill('2');
-    await pager.getByRole("button",{name:"使用证据跳转",exact:true}).click();
-    await page.waitForFunction(()=>document.querySelectorAll('.resource-evidence a').length===10&&new URLSearchParams(location.hash.split('?')[1]).get('evidencePage')==='2');
-    const resourceHash=await page.evaluate(()=>location.hash);
-    await detail.locator('.resource-evidence a').first().click(); await page.waitForURL(/#sessions/);
-    await page.goBack(); await page.waitForURL(/#resources/); await pager.waitFor();
-    expect((await page.evaluate(()=>location.hash))===resourceHash,"返回丢失证据页码");
-    expect((await pager.innerText()).includes("11–20 / 25 条"),"返回丢失证据区间");
-    await pager.getByRole("button",{name:"使用证据首页",exact:true}).click();
-    await page.waitForFunction(()=>new URLSearchParams(location.hash.split('?')[1]).get('evidencePage')===null);
-  `);
-  await step("总览列表直接管理保留筛选与选择，Esc恢复焦点", `
-    ${search("guide")}
-    const row=page.getByRole("table",{name:"Skill 总览",exact:true}).getByRole("row").filter({has:page.getByRole("button",{name:"查看guide的使用详情",exact:true})});
-    await row.getByRole("button",{name:"查看guide的使用详情",exact:true}).click();
-    const detail=page.getByRole("complementary",{name:"资源详情",exact:true});
-    await detail.getByRole("button",{name:"管理guide",exact:true}).waitFor();
-    const hash=await page.evaluate(()=>location.hash);
-    const trigger=row.getByRole("button",{name:"管理guide",exact:true}); await trigger.click();
-    const manage=page.getByRole("dialog",{name:"管理具体入口",exact:true}); await manage.waitFor();
-    await page.waitForFunction(()=>document.querySelectorAll('[role="dialog"] .resource-management-body').length>1);
-    expect((await manage.innerText()).includes('Codex')&&(await manage.innerText()).includes(${JSON.stringify(fixture.guide)}),"总览未显示实际路径与Agent");
-    expect(await manage.getByRole("button",{name:"预览停用guide的Codex入口",exact:true}).count()>0,"总览管理缺少具体入口动作");
-    expect(await manage.getByRole("button",{name:/备用/}).count()===0,"仍提供备用操作");
-    await page.keyboard.press('Escape'); await manage.waitFor({state:'hidden'});
-    expect(await trigger.evaluate(element=>element===document.activeElement),"列表管理Esc未恢复焦点");
-    expect(await page.evaluate(()=>location.hash)===hash,"管理改变总览筛选或选中项");
-    await detail.getByRole("button",{name:"管理guide",exact:true}).click(); await manage.waitFor();
-    await manage.getByRole("button",{name:"预览停用guide的Codex入口",exact:true}).first().click();
-    const preview=page.getByRole("dialog",{name:"停用预览",exact:true}); await preview.getByRole("button",{name:"确认停用",exact:true}).waitFor();
-    expect(await manage.count()===0,"总览入口与预览重叠");
-    await page.keyboard.press('Escape'); await preview.waitFor({state:'hidden'});
-    expect(await detail.getByRole("button",{name:"管理guide",exact:true}).evaluate(element=>element===document.activeElement),"预览关闭未恢复顶栏管理焦点");
-    expect(await page.evaluate(()=>location.hash)===hash,"预览改变总览视图");
-  `);
-  await step("仅历史资源在总览中保留状态", `
-    ${search("retired-only")}
-    const row=page.getByRole("table",{name:"Skill 总览",exact:true}).getByRole("row").filter({has:page.getByRole("button",{name:"查看retired-only的使用详情",exact:true})});
-    await row.waitFor(); expect(await row.getByRole("button",{name:"管理retired-only",exact:true}).count()===1,"历史资源缺少管理边界查询入口");
-    await row.getByRole("button",{name:"查看retired-only的使用详情",exact:true}).click();
-    const detail=page.getByRole("complementary",{name:"资源详情",exact:true});
-    await detail.getByText("当前清单没有此 Skill 的本地本体",{exact:true}).waitFor();
-    expect(await detail.getByRole("button",{name:/^查看retired-only的本地本体 /}).count()===0,"仅历史资源生成了管理对象");
-    await detail.getByRole("button",{name:"管理retired-only",exact:true}).click();
-    const manage=page.getByRole("dialog",{name:"管理具体入口",exact:true}); await manage.waitFor();
-    await manage.getByRole("status").filter({hasText:"当前结果中没有可管理的本地文件或配置，使用记录仍保留。"}).waitFor();
-    expect(await manage.getByRole("button",{name:/^预览/}).count()===0,"仅历史生成写操作");
-    await page.keyboard.press('Escape'); await manage.waitFor({state:'hidden'});
-    expect(page.resourceErrors.length===0,"浏览器异常："+page.resourceErrors.join(";"));
-  `);
-
-  const mcpFixture = await mcpOverviewFixture(fixture, claudeHistory, secondProject);
-  const { job: mcpRefresh } = await api("/sessions/refresh", "POST");
-  let mcpJob = mcpRefresh;
-  for (let attempt = 0; attempt < 400 && ["queued", "running"].includes(mcpJob.status); attempt++) {
-    await new Promise(resolve => setTimeout(resolve, 25));
-    mcpJob = (await api(`/jobs/${mcpRefresh.id}`)).job;
-  }
-  assert.equal(mcpJob.status, "complete", mcpJob.error);
-  await api("/resources/refresh", "POST");
-  const mcpUnused = (await api("/resources/local?kind=mcp&q=mcp-unused")).rows.find(row => row.body.name === "mcp-unused");
-  assert.ok(mcpUnused);
-  const mcpManagement = new Database(join(fixture.home, "resources.sqlite"));
-  try {
-    for (const entry of mcpUnused.entries) assert.equal(mcpManagement.prepare("UPDATE resource_seen SET first_seen=? WHERE id=?").run("2025-01-01T00:00:00Z", entry.id).changes, 1);
-  } finally { mcpManagement.close(); }
-  await api("/resources/refresh", "POST");
-  const mcpOverview = await api("/resources/overview?kind=mcp&pageSize=200");
-  const mcpSample = mcpOverview.resources.find(row => row.identity.name === "sample");
-  assert.ok(mcpOverview.total > 100); assert.ok(mcpSample);
-  assert.equal(mcpSample.stats.sessions, 3); assert.equal(mcpSample.stats.mcpCalls, 29);
-  assert.equal(mcpSample.stats.results.failure, 3); assert.equal(mcpSample.stats.results.success, 26);
-  const mcpDetail = await api(`/resources/overview/${encodeURIComponent(mcpSample.identity.id)}?kind=mcp`);
-  assert.equal(mcpDetail.history.clients.length, 2); assert.equal(mcpDetail.history.projects.length, 2);
-  assert.equal(mcpDetail.history.tools.reduce((count, tool) => count + tool.stats.mcpCalls, 0), 29);
-  assert.ok(mcpDetail.local.length > 1);
-  const legacyMcp = (await api("/resources/usage?kind=mcp&q=sample&pageSize=200")).resources.find(row => row.identity.name === "sample" && row.identity.client === "codex");
-  assert.ok(legacyMcp); assert.equal(legacyMcp.stats.mcpCalls, 27);
-  const mcpConfigs = [fixture.configPath, mcpFixture.claudeConfig, join(fixture.project, ".mcp.json"), join(secondProject, ".mcp.json")];
-  const mcpConfigSnapshots = await Promise.all(mcpConfigs.map(path => readFile(path, "utf8")));
-  const mcpHash = `#resources?kind=mcp&tab=usage&project=${encodeURIComponent(fixture.project)}`;
-  await step("MCP 总览合并服务名称、注册和会话并集", `
-    await page.evaluate(hash=>location.hash=hash,${JSON.stringify(mcpHash)});
-    const table=page.getByRole("table",{name:"MCP 总览",exact:true}); await table.waitFor();
-    expect(await table.getByRole("columnheader").count()===6,"MCP总览列数错误");
-    expect(await table.getByRole("button",{name:"按读取排序",exact:true}).count()===0,"MCP错误展示Skill读取列");
-    expect(await table.getByRole("button",{name:"按调用次数排序",exact:true}).count()===1,"MCP缺少调用次数列");
-    expect(await table.getByRole("columnheader").filter({hasText:"调用次数"}).getAttribute("aria-sort")==="descending","MCP默认没有按调用次数降序");
-    const quick=page.getByRole("group",{name:"MCP 快速筛选",exact:true});
-    expect(await page.locator('.resource-list-summary').count()===0,"MCP总览仍有重复总数行");
-    expect(await quick.getByRole("button").count()===4 && await quick.getByRole("combobox",{name:"关注条件",exact:true}).count()===1,"MCP快捷筛选缺失");
-    expect((await quick.getByRole("button",{name:/^全部/}).innerText()).includes(${JSON.stringify(String(mcpOverview.counts.all))}),"MCP快捷计数错误");
-    const row=table.getByRole("row").filter({has:page.getByRole("button",{name:"查看sample的使用详情",exact:true})});
-    expect(await row.count()===1,"同名服务仍按Agent或项目拆行");
-    expect((await row.getByRole("cell").nth(2).innerText())==="3","服务使用会话被重复累计");
-    expect((await row.locator('.resource-overview-agents').innerText())===${JSON.stringify(`涉及 ${mcpSample.clients.length} 个 Agent`)},"服务遗漏本地或历史Agent");
-    expect(await page.locator('.resources-shell').getByRole("button",{name:"筛选项目",exact:true}).count()===0,"MCP总览仍受项目筛选");
-    ${screenshot("mcp-overview-light.png")}
-    await row.getByRole("button",{name:"查看sample的使用详情",exact:true}).click();
-    const detail=page.getByRole("complementary",{name:"资源详情",exact:true});
-    await detail.getByRole("heading",{name:"sample",exact:true}).waitFor();
-    if(await page.locator('.resource-usage-summary:not([open]) > summary').count()) await page.locator('.resource-usage-summary:not([open]) > summary').first().click();
-    expect(/29\\s*调用次数/.test(await detail.locator('.resource-stats').innerText()),"服务详情统计丢失");
-    expect(await detail.getByRole("button",{name:/^查看sample的本地本体 /}).count()===${mcpDetail.local.length},"同名注册被错误合并为管理对象");
-    expect(!(await detail.innerText()).includes('synthetic-mcp-secret'),"页面泄露注册配置值");
-  `);
-  await step("MCP Agent 筛选保持服务身份、调用与会话范围", `
-    ${select("资源Agent", "Codex")}
-    await page.waitForFunction(()=>{const row=document.querySelector('[aria-label="查看sample的使用详情"]')?.closest('tr');return row&&row.querySelectorAll('td')[2].textContent==='2'});
-    const table=page.getByRole("table",{name:"MCP 总览",exact:true});
-    let row=table.getByRole("row").filter({has:page.getByRole("button",{name:"查看sample的使用详情",exact:true})});
-    expect((await row.getByRole("cell").nth(2).innerText())==="2","Codex会话范围错误");
-    await row.getByRole("button",{name:"查看sample的使用详情",exact:true}).click();
-    expect(await page.evaluate(()=>new URLSearchParams(location.hash.split('?')[1]).get('id'))===${JSON.stringify(mcpSample.identity.id)},"Agent筛选改变服务名称身份");
-    ${select("资源Agent", "Claude Code")}
-    await page.waitForFunction(()=>{const row=document.querySelector('[aria-label="查看sample的使用详情"]')?.closest('tr');return row&&row.querySelectorAll('td')[2].textContent==='1'});
-    row=table.getByRole("row").filter({has:page.getByRole("button",{name:"查看sample的使用详情",exact:true})});
-    expect((await row.getByRole("cell").nth(2).innerText())==="1","Claude会话范围错误");
-    ${select("资源Agent", "全部 Agent")}
-    await page.waitForFunction(()=>{const row=document.querySelector('[aria-label="查看sample的使用详情"]')?.closest('tr');return row&&row.querySelectorAll('td')[2].textContent==='3'});
-  `);
-  await step("MCP 工具下钻覆盖全名历史及证据分页返回", `
-    const detail=page.getByRole("complementary",{name:"资源详情",exact:true});
-    await detail.getByRole("heading",{name:"工具调用",exact:true}).waitFor();
-    const tool=detail.locator('.resource-tool-list').getByRole('button').filter({hasText:'lookup'});
-    expect((await tool.innerText()).includes('22 次'),"工具没有汇总跨Agent调用");
-    await tool.click();
-    const pager=detail.getByRole("navigation",{name:"使用证据",exact:true});
-    await pager.getByRole("button",{name:"使用证据末页",exact:true}).click();
-    await page.waitForFunction(()=>document.querySelectorAll('.resource-evidence a').length===2);
-    expect((await pager.innerText()).includes('21–22 / 22 条'),"工具证据被截断或串服务");
-    const hash=await page.evaluate(()=>location.hash);
-    await detail.locator('.resource-evidence a').first().click(); await page.waitForURL(/#sessions/);
-    expect(page.url().includes('mode=trace')&&page.url().includes('message='),"MCP证据未定位轨迹");
-    await page.goBack(); await pager.waitFor();
-    expect(await page.evaluate(()=>location.hash)===hash,"返回丢失服务与工具分页");
-    await detail.getByRole("button",{name:"全部工具",exact:true}).click();
-    await page.waitForFunction(()=>document.querySelector('.resource-pagination')?.textContent.includes('29 条')||document.querySelector('[aria-label="使用证据"]')?.textContent.includes('29 条'));
-  `);
-  await step("MCP 新注册立即归未发现使用、本地注册精确跳转", `
-    ${search("mcp-new")}
-    await page.getByRole("button",{name:"查看mcp-new的使用详情",exact:true}).click();
-    const detail=page.getByRole("complementary",{name:"资源详情",exact:true});
-    await detail.getByRole("heading",{name:"mcp-new",exact:true}).waitFor();
-    if(await page.locator('.resource-usage-summary:not([open]) > summary').count()) await page.locator('.resource-usage-summary:not([open]) > summary').first().click();
-    expect(/0\\s*调用次数/.test(await detail.locator('.resource-stats').innerText()),"新注册MCP没有显示真实零记录");
-    await detail.getByRole("button",{name:"查看mcp-new的本地本体 1",exact:true}).click();
-    await detail.getByRole("heading",{name:"客户端入口",exact:true}).waitFor();
-    expect(await page.evaluate(()=>new URLSearchParams(location.hash.split('?')[1]).get('project'))===null,"隐藏项目阻止用户级注册跳转");
-    expect(await detail.getByRole('alert').count()===0,"精确注册详情失败");
-    ${view("MCP 总览")} ${search("")}
-    await page.getByRole("group",{name:"MCP 快速筛选",exact:true}).getByRole('button',{name:/^未发现使用/}).click();
-    ${search("mcp-unused")}
-    await page.getByRole("button",{name:"查看mcp-unused的使用详情",exact:true}).click();
-    await detail.getByRole("heading",{name:"mcp-unused",exact:true}).waitFor();
-    if(await page.locator('.resource-usage-summary:not([open]) > summary').count()) await page.locator('.resource-usage-summary:not([open]) > summary').first().click();
-    expect(/0\\s*调用次数/.test(await detail.locator('.resource-stats').innerText()),"确定零调用没有显示零");
-    expect(await page.evaluate(()=>new URLSearchParams(location.hash.split('?')[1]).get('page'))===null,"状态筛选没有重置页码");
-    await page.getByRole("group",{name:"MCP 快速筛选",exact:true}).getByRole('button',{name:/^全部/}).click();
-    ${search("")}
-  `);
-  const mcpNameAsc = (await api("/resources/overview?kind=mcp&sort=name&order=asc")).resources[0].identity.name;
-  const mcpNameDesc = (await api("/resources/overview?kind=mcp&sort=name&order=desc")).resources[0].identity.name;
-  await step("MCP 排序、跳页、容量、刷新与空结果", `
-    const table=page.getByRole("table",{name:"MCP 总览",exact:true});
-    await table.getByRole('button',{name:'按服务器排序',exact:true}).click();
-    await page.waitForFunction(()=>document.querySelector('.resource-overview-table th[aria-sort="ascending"] button')?.textContent.includes('服务器'));
-    await page.waitForFunction(()=>document.querySelector('.resource-overview-table tbody th button')?.textContent===${JSON.stringify(mcpNameAsc)}&&!document.querySelector('.resource-list-scroll[aria-busy="true"]'));
-    const firstAsc=await table.getByRole('row').nth(1).getByRole('rowheader').getByRole('button').first().innerText();
-    await table.getByRole('button',{name:'按服务器排序',exact:true}).focus(); await page.keyboard.press('Enter');
-    await page.waitForFunction(()=>document.querySelector('.resource-overview-table th[aria-sort="descending"] button')?.textContent.includes('服务器'));
-    await page.waitForFunction(()=>document.querySelector('.resource-overview-table tbody th button')?.textContent===${JSON.stringify(mcpNameDesc)}&&!document.querySelector('.resource-list-scroll[aria-busy="true"]'));
-    expect((await table.getByRole('row').nth(1).getByRole('rowheader').getByRole('button').first().innerText())!==firstAsc,"MCP名称排序方向未改变");
-    const pager=page.getByRole('navigation',{name:'MCP 总览',exact:true});
-    await pager.getByRole('button',{name:'MCP 总览末页',exact:true}).click();
-    await page.waitForFunction(()=>document.querySelector('[aria-label="MCP 总览末页"]')?.disabled);
-    await pager.getByRole('spinbutton',{name:'MCP 总览跳转页码',exact:true}).fill('2');
-    await pager.getByRole('button',{name:'MCP 总览跳转',exact:true}).click();
-    await page.waitForFunction(()=>document.querySelector('nav[aria-label="MCP 总览"]')?.textContent.includes('21–40'));
-    ${select("MCP 总览每页条数", "50 条／页")}
-    await page.waitForFunction(()=>document.querySelectorAll('.resource-overview-table tbody tr').length===50);
-    ${select("MCP 总览每页条数", "100 条／页")}
-    await page.waitForFunction(()=>document.querySelectorAll('.resource-overview-table tbody tr').length===100);
-    await page.reload(); await table.waitFor();
-    expect((await pager.getByRole('combobox',{name:'MCP 总览每页条数',exact:true}).innerText()).includes('100'),"刷新丢失MCP容量");
-    expect(await table.getByRole('columnheader').first().getAttribute('aria-sort')==='descending',"刷新丢失MCP排序");
-    ${search("no-such-mcp")}
-    await page.getByText('没有匹配的 MCP',{exact:true}).waitFor();
-    expect((await pager.innerText()).includes('0–0 / 0 条'),"MCP空结果分页错误");
-    await page.getByRole('button',{name:'重置筛选',exact:true}).click();
-  `);
-  const managedMcpIndex = mcpDetail.local.findIndex(row => row.entries.some(entry => entry.client === "codex" && entry.entryPath === fixture.configPath)) + 1;
-  assert.ok(managedMcpIndex > 0, "夹具缺少可管理的 Codex 注册");
-  await step("MCP 名称收藏与独立注册收藏互不覆盖", `
-    ${search("sample")}
-    await page.getByRole('button',{name:'查看sample的使用详情',exact:true}).click();
-    const detail=page.getByRole('complementary',{name:'资源详情',exact:true});
-    await detail.getByRole('button',{name:${JSON.stringify(`收藏sample本体 ${managedMcpIndex}`)},exact:true}).click();
-    await detail.getByRole('button',{name:${JSON.stringify(`取消收藏sample本体 ${managedMcpIndex}`)},exact:true}).waitFor();
-    const row=page.getByRole('table',{name:'MCP 总览',exact:true}).getByRole('row').filter({has:page.getByRole('button',{name:'查看sample的使用详情',exact:true})});
-    await row.getByRole('button',{name:'收藏sample',exact:true}).click();
-    await row.getByRole('button',{name:'取消收藏sample',exact:true}).click();
-    await row.getByRole('button',{name:'收藏sample',exact:true}).waitFor();
-    await detail.getByRole('button',{name:${JSON.stringify(`取消收藏sample本体 ${managedMcpIndex}`)},exact:true}).waitFor();
-    await detail.getByRole('button',{name:'管理sample',exact:true}).click();
-    const manage=page.getByRole('dialog',{name:'管理具体入口',exact:true});
-    await manage.getByRole('button',{name:'预览停用sample的Codex入口',exact:true}).click();
-    const protectedPreview=page.getByRole('dialog',{name:'停用预览',exact:true});
-    await protectedPreview.getByRole('alert').filter({hasText:'此资源已收藏'}).waitFor();
-    expect(await protectedPreview.getByRole('button',{name:'确认停用',exact:true}).count()===1,'收藏注册没有保留明确确认入口');
-    await page.keyboard.press('Escape'); await protectedPreview.waitFor({state:'hidden'});
-    await page.getByRole('group',{name:'MCP 快速筛选',exact:true}).getByRole('button',{name:/^已收藏/}).click(); await row.waitFor();
-    await detail.getByRole('button',{name:${JSON.stringify(`取消收藏sample本体 ${managedMcpIndex}`)},exact:true}).click();
-    await page.getByText('没有匹配的 MCP',{exact:true}).waitFor();
-    await page.getByRole('group',{name:'MCP 快速筛选',exact:true}).getByRole('button',{name:/^全部/}).click();
-  `);
-  await step("MCP 旧来源精确链接与仅历史服务", `
-    await page.evaluate(id=>location.hash='#resources?kind=mcp&tab=usage&id='+encodeURIComponent(id),${JSON.stringify(legacyMcp.identity.id)});
-    const detail=page.getByRole('complementary',{name:'资源详情',exact:true});
-    await detail.getByRole('heading',{name:'sample',exact:true}).waitFor();
-    if(await detail.locator('.resource-usage-summary:not([open]) > summary').count()) await detail.locator('.resource-usage-summary:not([open]) > summary').first().click();
-    await detail.locator('.resource-stats').filter({hasText:/27\\s*调用次数/}).waitFor();
-    if(await page.locator('.resource-usage-summary:not([open]) > summary').count()) await page.locator('.resource-usage-summary:not([open]) > summary').first().click();
-    expect(/27\\s*调用次数/.test(await detail.locator('.resource-stats').innerText()),"旧来源链接被扩大成全名汇总");
-    if(await page.locator('.resource-usage-summary:not([open]) > summary').count()) await page.locator('.resource-usage-summary:not([open]) > summary').first().click();
-    expect(/2\\s*使用会话/.test(await detail.locator('.resource-stats').innerText()),"旧来源会话范围错误");
-    ${search("retired-service")}
-    const row=page.getByRole('table',{name:'MCP 总览',exact:true}).getByRole('row').filter({has:page.getByRole('button',{name:'查看retired-service的使用详情',exact:true})});
-    await row.waitFor(); expect(await row.getByRole('button',{name:'管理retired-service',exact:true}).count()===1,'历史服务缺少管理边界查询入口');
-    await row.getByRole('button',{name:'查看retired-service的使用详情',exact:true}).click();
-    await detail.getByText('当前清单没有此 MCP 的本地注册',{exact:true}).waitFor();
-    expect(await detail.getByRole('button',{name:/^查看retired-service的本地本体 /}).count()===0,"历史服务冒充注册对象");
-  `);
-  await step("MCP 深浅主题、375px独立滚动与键盘分页", `
-    await page.evaluate(()=>location.hash='#resources?kind=mcp&tab=usage');
-    await page.getByRole('table',{name:'MCP 总览',exact:true}).waitFor();
-    await page.getByRole('button',{name:'外观',exact:true}).click(); await page.getByRole('combobox',{name:'显示模式',exact:true}).click(); await page.getByRole('option',{name:'深色',exact:true}).click(); await page.keyboard.press('Escape');
-    ${screenshot("mcp-overview-dark.png")}
-    await page.getByRole('button',{name:'外观',exact:true}).click(); await page.getByRole('combobox',{name:'显示模式',exact:true}).click(); await page.getByRole('option',{name:'明亮',exact:true}).click(); await page.keyboard.press('Escape');
-    await page.setViewportSize({width:375,height:812});
-    const scroll=page.locator('.resource-list-scroll');
-    expect(await scroll.evaluate(element=>element.scrollWidth>element.clientWidth),"MCP窄屏表格没有独立滚动");
-    await scroll.evaluate(element=>element.scrollLeft=180);
-    expect(await scroll.evaluate(element=>element.scrollLeft)>0,"MCP表格不可横向滚动");
-    expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1&&document.documentElement.scrollHeight<=innerHeight+1),"MCP窄屏页面溢出");
-    const jump=page.getByRole('spinbutton',{name:'MCP 总览跳转页码',exact:true});
-    await jump.fill('2'); await jump.focus(); await page.keyboard.press('Enter');
-    await page.waitForFunction(()=>new URLSearchParams(location.hash.split('?')[1]).get('page')==='2'&&!document.querySelector('.resource-list-scroll[aria-busy="true"]'));
-    ${screenshot("mcp-overview-phone.png")}
-    await page.setViewportSize({width:1560,height:980});
-    expect(page.resourceErrors.length===0,"浏览器异常："+page.resourceErrors.join(';'));
-  `);
-  assert.deepEqual(await Promise.all(mcpConfigs.map(path => readFile(path, "utf8"))), mcpConfigSnapshots, "MCP总览浏览修改了注册配置");
-  await writeFile(join(artifacts, "report.json"), JSON.stringify({ passed: true, checks, elapsedMs: Date.now() - started }, null, 2));
-  console.log(`PASS 资源 Chrome 端到端 ${checks.length} 项`);
-} catch (error) {
-  await browser(["screenshot", `--filename=${join(artifacts, "failure.png")}`]).catch(() => {});
-  const state = await browser(["run-code", `async page => ({url:page.url(),text:(await page.locator("body").innerText()).slice(0,18000),focus:await page.evaluate(()=>({active:document.activeElement?.outerHTML,target:[...document.querySelectorAll('[aria-label="预览停用guide的Codex入口"]')].map(button=>({connected:button.isConnected,rects:button.getClientRects().length,html:button.outerHTML,focused:button===document.activeElement}))}))})`]).catch(() => "页面状态无法读取");
-  await writeFile(join(artifacts, "failure-state.txt"), state);
-  await writeFile(join(artifacts, "report.json"), JSON.stringify({ passed: false, checks, error: error.message, elapsedMs: Date.now() - started }, null, 2));
-  throw error;
-} finally {
-  await browser(["close"]).catch(() => {});
-  await service?.close().catch(() => {});
-  await rm(directory, { recursive: true, force: true });
-}
+  const report={passed:true,checks,measurements,elapsedMs:Date.now()-started};await writeFile(join(artifacts,'report.json'),JSON.stringify(report,null,2));
+  console.log(`PASS 正式资源工作区 Chrome ${checks.length} 项`);
+} catch(error) {
+  await browser(['screenshot',`--filename=${join(artifacts,'failure.png')}`]).catch(()=>{});
+  const state=await browser(['run-code',`async page=>({url:page.url(),text:(await page.locator('body').innerText()).slice(0,18000)})`]).catch(()=>null);
+  await writeFile(join(artifacts,'failure-state.txt'),state??'');await writeFile(join(artifacts,'report.json'),JSON.stringify({passed:false,checks,error:error.message,elapsedMs:Date.now()-started},null,2));throw error;
+} finally {await browser(['close']).catch(()=>{});await service?.close().catch(()=>{});await rm(directory,{recursive:true,force:true});}

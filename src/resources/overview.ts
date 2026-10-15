@@ -5,6 +5,7 @@ import { emptyResourceUsageStats, resourceOverviewIdentity } from "./usage.js";
 import { resourceGapRelevant } from "./coverage.js";
 import { skillDescription } from "./descriptions.js";
 import { resourceUsageThresholdMatches } from "./classification.js";
+import type { ResourceInventoryEntry, ResourceInventorySnapshot } from "../resource-inventory-contracts.js";
 
 interface OverviewBucket {
   identity: ResourceUsageIdentity;
@@ -13,6 +14,36 @@ interface OverviewBucket {
 }
 
 const candidates: ResourceOverviewCandidate[] = ["all", "used", "unused", "low", "old", "review", "favorite"];
+
+function locationScopes(entry: ResourceInventoryEntry, query: ResourceOverviewQuery) {
+  return [{ scope: entry.scope, project: entry.project }].filter(scope =>
+    (!query.scope || scope.scope === query.scope) && (!query.locationProject || scope.project === query.locationProject));
+}
+
+export function resourceLocations(rows: readonly ResourceLocalRow[], query: ResourceOverviewQuery): ResourceLocalRow[] {
+  return rows.flatMap(row => {
+    const entries = row.entries.filter(entry => locationScopes(entry, query).length);
+    return entries.length ? [{ ...row, entries }] : [];
+  });
+}
+
+function unavailableLocalClients(inventory: ResourceInventorySnapshot | undefined, query: ResourceOverviewQuery): ReadonlySet<Client> {
+  const sources = new Map(inventory?.sources.filter(source => source.kind === (query.kind ?? "skill")
+    && (!query.scope || source.scope === query.scope) && (!query.locationProject || source.project === query.locationProject)).map(source => [source.id, source]));
+  return new Set([...sources.values()].filter(source => ["invalid", "unreadable", "unsupported"].includes(source.readState)).map(source => source.client)
+    .concat(inventory?.gaps.flatMap(gap => sources.has(gap.sourceId) && !["missing", "project_missing"].includes(gap.reason) ? [gap.client] : []) ?? []));
+}
+
+export function resourceLocalSummary(rows: readonly ResourceLocalRow[], query: ResourceOverviewQuery,
+  inventory?: ResourceInventorySnapshot, clients: readonly Client[] = [], unavailable = unavailableLocalClients(inventory, query)): NonNullable<ResourceOverviewRow["localSummary"]> {
+  const entries = rows.flatMap(row => row.entries);
+  const present = entries.filter(entry => entry.readState === "present");
+  const uncertain = entries.some(entry => entry.readState === "unreadable") || !inventory
+    || (clients.length ? clients.some(client => unavailable.has(client)) : unavailable.size > 0);
+  return { presence: present.length ? "present" : uncertain ? "unknown" : "missing",
+    locations: new Set(entries.map(entry => JSON.stringify([entry.entryPath, entry.locator.keyPath ?? []]))).size,
+    scopes: [...new Set(entries.flatMap(entry => locationScopes(entry, query).map(scope => scope.scope)))].sort() };
+}
 
 function localIdentity(row: ResourceLocalRow): ResourceUsageIdentity {
   const entry = row.entries[0]!;
@@ -102,7 +133,7 @@ function positiveInteger(value: number | undefined, fallback: number): number {
 
 /** 历史已按名称、Agent 和日期聚合；本地仅补充真实本体与观测状态，不累加使用统计。 */
 export function buildResourceOverview(history: ResourceUsageResult | null, localRows: readonly ResourceLocalRow[],
-  query: ResourceOverviewQuery, options: { observedAt: string; partial: boolean; favorites?: ReadonlySet<string>; now?: number; unpaginated?: boolean }): ResourceOverviewResult {
+  query: ResourceOverviewQuery, options: { observedAt: string; partial: boolean; favorites?: ReadonlySet<string>; now?: number; unpaginated?: boolean; inventory?: ResourceInventorySnapshot }): ResourceOverviewResult {
   const kind = query.kind ?? "skill";
   const buckets = new Map<string, OverviewBucket>();
   for (const row of history?.resources ?? []) {
@@ -122,12 +153,18 @@ export function buildResourceOverview(history: ResourceUsageResult | null, local
   const counts: ResourceOverviewResult["counts"] = { all: 0, used: 0, unused: 0, low: 0, old: 0, review: 0, favorite: 0 };
   const rows: ResourceOverviewRow[] = [];
   const byHistoryId = new Map<string, ResourceLocalRow[]>();
+  const byBodyId = new Map(localRows.map(row => [row.body.id, row]));
+  const unavailable = unavailableLocalClients(options.inventory, query);
   for (const row of localRows) for (const id of row.historyIds) {
     const linked = byHistoryId.get(id) ?? []; linked.push(row); byHistoryId.set(id, linked);
   }
   for (const bucket of buckets.values()) {
     if (q && !matches(bucket, q)) continue;
     const row = rowOf(bucket, history, query, favorites, now, (bucket.history?.favoriteIds ?? []).flatMap(id => byHistoryId.get(id) ?? []));
+    const locations = resourceLocations(row.localBodyIds.flatMap(id => byBodyId.get(id) ? [byBodyId.get(id)!] : []), query);
+    row.localSummary = resourceLocalSummary(locations, query, options.inventory, bucket.history?.clients ?? [], unavailable);
+    if ((query.scope || query.locationProject) && !locations.length || query.presence && row.localSummary.presence !== query.presence) continue;
+    row.localBodyIds = locations.map(local => local.body.id).sort();
     for (const candidate of candidates) if (candidate === "all" || row.candidates.includes(candidate)) counts[candidate] += 1;
     if (query.candidate && query.candidate !== "all" && query.candidate !== "review" && !row.candidates.includes(query.candidate)
       || query.favorite && !row.candidates.includes("favorite")) continue;

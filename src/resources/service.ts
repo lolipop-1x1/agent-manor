@@ -6,7 +6,7 @@ import { ServiceError } from "../service/input.js";
 import { StoreError } from "../index/store.js";
 import { scanResourceInventory } from "./inventory.js";
 import { overviewResourceUsage, emptyResourceUsageStats, listResourceUsage, resourceOverviewIdentity, localResourceUsage, resourceUsageDetail, resourceUsageEvidence } from "./usage.js";
-import { buildResourceOverview } from "./overview.js";
+import { buildResourceOverview, resourceLocations, resourceLocalSummary } from "./overview.js";
 import { buildResourceMap } from "./map.js";
 import { ResourceManager } from "./management.js";
 import { resourceUsageThresholdMatches } from "./classification.js";
@@ -68,14 +68,14 @@ export class ResourceService {
     return { ...listResourceUsage(this.library, query, (await this.inventory()).entries, new Set(this.manager.favorites())), favoriteIds: this.manager.favorites() };
   }
   private async overviewData(query: ResourceOverviewQuery) {
-    const scope = { kind: query.kind ?? "skill", client: query.client, from: query.from, to: query.to,
+    const scope = { kind: query.kind ?? "skill", client: query.client, project: query.historyProject, from: query.from, to: query.to,
       version: query.version ?? this.library.currentVersion() };
     const inventory = await this.inventory();
     const generation = JSON.stringify([scope.version, inventory.observedAt]);
     if (this.overviewGeneration !== generation) { this.overviewCache.clear(); this.overviewGeneration = generation; }
     // 状态、排序和分页只改变视野；同一索引与盘点范围复用全量聚合。
     const key = JSON.stringify(scope);
-    const localQuery = { ...scope, lowSessions: query.lowSessions, inactiveDays: query.inactiveDays };
+    const localQuery = { ...scope, project: undefined, client: undefined, lowSessions: query.lowSessions, inactiveDays: query.inactiveDays };
     const cached = this.overviewCache.get(key);
     const value = cached ?? Promise.resolve().then(() => overviewResourceUsage(this.library, scope, inventory.entries, new Set()));
     this.overviewCache.delete(key);
@@ -93,37 +93,42 @@ export class ResourceService {
   async overview(query: ResourceOverviewQuery) {
     const { history, local } = await this.overviewData(query);
     return { ...buildResourceOverview(history, local.rows, query, { observedAt: local.inventory.observedAt,
-      partial: local.partial, favorites: new Set(this.manager.favorites()) }), favoriteIds: this.manager.favorites() };
+      partial: local.partial, inventory: local.inventory, favorites: new Set(this.manager.favorites()) }), favoriteIds: this.manager.favorites() };
   }
   async map(query: ResourceMapQuery): Promise<ResourceMapResult> {
     const { history, local } = await this.overviewData(query);
     const overview = buildResourceOverview(history, local.rows, query, { observedAt: local.inventory.observedAt,
-      partial: local.partial, favorites: new Set(this.manager.favorites()), unpaginated: true });
+      partial: local.partial, inventory: local.inventory, favorites: new Set(this.manager.favorites()), unpaginated: true });
     return buildResourceMap(overview, history, query);
   }
   async overviewDetail(id: string, query: ResourceOverviewQuery): Promise<ResourceOverviewDetail> {
     const { history, local } = await this.overviewData(query);
     const kind = query.kind ?? "skill";
-    const all = buildResourceOverview(history, local.rows, { ...query, q: undefined, candidate: "all", favorite: false }, {
-      observedAt: local.inventory.observedAt, partial: local.partial, favorites: new Set(this.manager.favorites()), unpaginated: true });
-    const target = all.resources.find(row => row.identity.id === id);
-    if (target) return { resource: target, history: target.hasHistory ? resourceUsageDetail(this.library, id, { ...query, kind, project: undefined },
-      local.inventory.entries, new Set(this.manager.favorites()), target.identity) : null, local: local.rows.filter(row => target.localBodyIds.includes(row.body.id)) };
-    const legacy = resourceUsageDetail(this.library, id, { ...query, kind, project: undefined }, local.inventory.entries, new Set(this.manager.favorites()));
+    const all = buildResourceOverview(history, local.rows, { ...query, presence: undefined, scope: undefined, locationProject: undefined, q: undefined, candidate: "all", favorite: false }, {
+      observedAt: local.inventory.observedAt, partial: local.partial, inventory: local.inventory, favorites: new Set(this.manager.favorites()), unpaginated: true });
+    const target = all.resources.find(row => row.identity.id === id) ?? all.resources.find(row => row.localBodyIds.includes(id));
+    if (target) {
+      const locations = resourceLocations(local.rows.filter(row => target.localBodyIds.includes(row.body.id)), query);
+      return { resource: { ...target, localSummary: resourceLocalSummary(locations, query, local.inventory, target.clients) },
+        history: target.hasHistory ? resourceUsageDetail(this.library, target.identity.id, { ...query, kind, project: query.historyProject },
+          local.inventory.entries, new Set(this.manager.favorites()), target.identity) : null, local: locations };
+    }
+    const legacy = resourceUsageDetail(this.library, id, { ...query, kind, project: query.historyProject }, local.inventory.entries, new Set(this.manager.favorites()));
     const bodyIds = new Set(local.inventory.entries.filter(entry => legacy.resource.association.entryIds.includes(entry.id)).map(entry => entry.bodyId));
+    const locations = resourceLocations(local.rows.filter(row => bodyIds.has(row.body.id)), query);
     return { resource: { identity: legacy.resource.identity, stats: legacy.resource.stats.events ? legacy.resource.stats : null, clients: legacy.resource.clients,
       favoriteIds: legacy.resource.favoriteIds, protectedByConfiguration: false,
       favorite: legacy.resource.favorite, protected: legacy.resource.favorite, observation: legacy.resource.stats.events ? "used" : "unknown",
       partial: legacy.coverage.partial, usageUnassociated: legacy.resource.association.state !== "linked",
       missingTimeEvents: legacy.resource.stats.missingTimeEvents,
-      candidates: [], localBodyIds: [...bodyIds], hasHistory: true }, history: legacy, local: local.rows.filter(row => bodyIds.has(row.body.id)) };
+      candidates: [], localBodyIds: [...bodyIds], hasHistory: true, localSummary: resourceLocalSummary(locations, query, local.inventory, legacy.resource.clients) }, history: legacy, local: locations };
   }
   async usageDetail(id: string, query: ResourceUsageQuery) {
     return { ...resourceUsageDetail(this.library, id, query, (await this.inventory()).entries, new Set(this.manager.favorites())), favoriteIds: this.manager.favorites() };
   }
   async evidence(id: string, query: Parameters<typeof resourceUsageEvidence>[2] = {}) {
     // 只复用已经取得的同版身份；单独查证据不触发全量总览聚合。
-    const scope = { kind: query.kind ?? "skill", client: query.client, from: query.from, to: query.to,
+    const scope = { kind: query.kind ?? "skill", client: query.client, project: query.project, from: query.from, to: query.to,
       version: query.version ?? this.library.currentVersion() };
     const cached = this.overviewCache.get(JSON.stringify(scope));
     const identity = (await cached)?.history?.resources.find(row => row.identity.id === id)?.identity;
@@ -158,6 +163,8 @@ export class ResourceService {
     if (historyAvailable) history = localResourceUsage(this.library, query, inventory.entries);
     const favoriteIds = new Set(this.manager.favorites());
     const byId = new Map(inventory.entries.map(entry => [entry.id, entry]));
+    const sourcesById = new Map(inventory.sources.map(source => [source.id, source]));
+    const gapSourceIds = new Set(inventory.gaps.map(gap => gap.sourceId));
     const fingerprints = new Map<string, Set<string>>();
     for (const body of inventory.bodies) if (body.contentFingerprint) {
       let ids = fingerprints.get(body.contentFingerprint);
@@ -182,12 +189,12 @@ export class ResourceService {
       const usageUnassociated = entries.some(entry => history?.uncertain.has(JSON.stringify([entry.kind, entry.client, entry.name])));
       const missingTimeEvents = usage?.stats.missingTimeEvents ?? 0;
       const sourceUnavailable = entries.some(entry => entry.readState !== "present" || !entry.capabilities.inventory
-        || inventory.sources.some(source => source.id === entry.sourceId && ["unreadable", "invalid", "unsupported"].includes(source.readState)));
+        || ["unreadable", "invalid", "unsupported"].includes(sourcesById.get(entry.sourceId)?.readState ?? ""));
       const unavailable = !history || history.unscopedUnavailableGaps || sourceUnavailable
         || entries.some(entry => history.unavailableClients.includes(entry.client));
       const partial = unavailable || Boolean(missingTimeEvents) || usageUnassociated || Boolean(history?.unscopedGaps)
         || entries.some(entry => history?.uncertainClients.includes(entry.client) || !entry.capabilities.associate
-          || inventory.gaps.some(gap => gap.sourceId === entry.sourceId));
+          || gapSourceIds.has(entry.sourceId));
       const unknown = unavailable || usageUnassociated || Boolean((query.from || query.to) && missingTimeEvents);
       const observation = usage?.stats.events || !unknown ? "recorded" : "unknown";
       const candidates: ResourceLocalRow["candidates"] = [];
@@ -217,8 +224,10 @@ export class ResourceService {
       return (left === null ? right === null ? 0 : 1 : right === null ? -1 : direction * (left - right))
         || a.body.name.localeCompare(b.body.name) || a.body.id.localeCompare(b.body.id);
     });
-    return { rows, inventory, history, partial: inventory.gaps.some(gap => inventory.sources.some(source => source.id === gap.sourceId
-      && (!query.kind || source.kind === query.kind) && (!query.client || source.client === query.client))) || !history || history.partial
+    return { rows, inventory, history, partial: inventory.gaps.some(gap => {
+      const source = sourcesById.get(gap.sourceId);
+      return source && (!query.kind || source.kind === query.kind) && (!query.client || source.client === query.client);
+    }) || !history || history.partial
       || rows.some(row => row.partial) };
   }
   async local(query: ResourceLocalQuery): Promise<ResourceLocalResult> {

@@ -25,7 +25,13 @@ export function resourceOverviewQuery(raw: Record<string, unknown>): ResourceOve
   const candidate = textValue(raw.candidate, "candidate");
   if (candidate && !["all", "used", "unused", "low", "old", "review", "favorite"].includes(candidate)) throw new ServiceError("INVALID_INPUT", "未知 candidate", { key: "diagnostics.service.resourceInput.m002" });
   const query = resourceQuery({ ...raw, candidate: undefined, pageSize: raw.pageSize ?? "20" });
+  const presence = textValue(raw.presence, "presence"), scope = textValue(raw.scope, "scope");
+  if (presence && !["present", "missing", "unknown"].includes(presence) || scope && !["user", "project"].includes(scope)) {
+    throw new ServiceError("INVALID_INPUT", "未知本地位置筛选", { key: "diagnostics.service.resourceInput.m001", params: { p0: presence ? "presence" : "scope" } });
+  }
   return { ...query, kind: query.kind ?? "skill", project: undefined,
+    presence: presence as ResourceOverviewQuery["presence"], scope: scope as ResourceOverviewQuery["scope"],
+    locationProject: textValue(raw.locationProject, "locationProject"), historyProject: textValue(raw.historyProject, "historyProject"),
     candidate: (candidate === "review" ? "all" : candidate) as ResourceOverviewQuery["candidate"] };
 }
 

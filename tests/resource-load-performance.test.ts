@@ -44,6 +44,8 @@ test("总览只读取一次事件流，Skill／MCP 切换、分页和地图复�
   assert.deepEqual(await service.overview({ kind: "skill" }), skill);
   assert.deepEqual(await service.overview({ kind: "mcp" }), mcp);
   await service.overview({ kind: "skill", page: 2, pageSize: 1, q: "guide", sort: "name", order: "asc" });
+  await service.overview({ kind: "skill", presence: "present", scope: "user" });
+  await service.map({ kind: "skill", presence: "missing" });
   const map = await service.map({ kind: "mcp", metric: "calls" });
   assert.equal(map.totalValue, 2);
   assert.equal(reads, 2, "阅读视野改变不能重读历史");
@@ -130,6 +132,11 @@ test("收藏变化复用历史并同步别名、本地保护、地图与筛选�
   const first = await service.overview({ kind: "skill" });
   const guide = first.resources.find(row => row.identity.name === "guide")!;
   const detail = await service.overviewDetail(guide.identity.id, { kind: "skill" });
+  const legacy = await service.overviewDetail(detail.local[0]!.body.id, { kind: "skill" });
+  assert.equal(legacy.resource.identity.id, guide.identity.id, "旧本体链接应进入名称详情");
+  const outsideLocation = await service.overviewDetail(guide.identity.id, { kind: "skill", scope: "project", locationProject: "/synthetic/unregistered-project" });
+  assert.equal(outsideLocation.local.length, 0);
+  assert.deepEqual(outsideLocation.history?.resource.stats, detail.history?.resource.stats, "位置条件不应隐藏已选资源或裁剪其历史");
   const alias = detail.history!.origins[0]!.id;
   let reads = 0;
   const original = library.resourceEvents.bind(library);

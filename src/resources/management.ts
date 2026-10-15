@@ -15,7 +15,7 @@ import type {
 } from "../resource-management-contracts.js";
 import { ServiceError } from "../service/input.js";
 import { acquireLock } from "../service/runtime.js";
-import { editableConfig, prepareConfig, restoreConfig } from "./config-editor.js";
+import { configurationPreview, editableConfig, prepareConfig, restoreConfig } from "./config-editor.js";
 import type { ConfigChange } from "./config-editor.js";
 import { resourceMaterialPath } from "./vault-path.js";
 
@@ -335,7 +335,9 @@ export class ResourceManager {
     const revealedEntries = input.action === "standby" || input.action === "trash" ? revealed(snapshot, entry) : undefined;
     const preview: ResourceManagementPreview = { id, action: input.action, entryId: entry.id, operationId: input.operationId,
       resource: { name: entry.name, kind: entry.kind, client: entry.client, scope: entry.scope, project: entry.project }, method, target,
-      sourcePath, destinationPath, affectedEntries: affected.flatMap(value => {
+      sourcePath, destinationPath, configuration: change ? configurationPreview(change)
+        : input.action === "restore" && archive?.change ? configurationPreview(archive.change, true) : undefined,
+      affectedEntries: affected.flatMap(value => {
         const scopes = value.selectionScopes?.filter(scope => !(input.action === "disable" && entry.locator.nativeControl === "codeflicker-skill" && entry.scope === "project")
           || scope.project === entry.project) ?? [{ scope: value.scope, project: value.project }];
         return scopes.map(scope => ({ id: value.id, name: value.name, client: value.client, scope: scope.scope, project: scope.project, entryPath: value.entryPath }));

@@ -12,7 +12,8 @@ test("面板默认宽度沿用桌面与窄屏布局", () => {
 
 test("工作区按阅读与资源任务分配宽度，用户调整仍优先", () => {
   assert.deepEqual(workspaceWidths(1280, {}, expanded, "sessions"), { sidebar: 300, details: 260 });
-  assert.deepEqual(workspaceWidths(1280, {}, expanded, "resources"), { sidebar: 180, details: 340 });
+  assert.deepEqual(workspaceWidths(1280, {}, expanded, "resources"), { sidebar: 220, details: 400 });
+  assert.deepEqual(workspaceWidths(1920, {}, expanded, "resources"), { sidebar: 220, details: 440 });
   for (const variant of ["sessions", "resources"] as const) {
     assert.deepEqual(workspaceWidths(1440, { sidebar: 350, details: 380 }, expanded, variant), { sidebar: 350, details: 380 });
     const compact = workspaceWidths(1024, { sidebar: 460, details: 620 }, expanded, variant);
