@@ -20,6 +20,8 @@ import { desktopMirrorStamp, desktopModels, loadDesktopTitles } from "./codeflic
 import { historyAdapter, historyClient } from "../history/adapters/index.js";
 import type { NormalizedSnapshot } from "../history/adapters/normalized.js";
 import { sourceQuickStamp } from "./quick-check.js";
+import { SessionImportPool } from "./import-pool.js";
+import type { SourceLocation } from "../history/types.js";
 
 // 会话规范化规则升级时使来源缓存失效，独立于地图索引迁移。
 const SESSION_INDEX_RULE_VERSION = "6";
@@ -45,10 +47,11 @@ async function confirmedMissing(path: string, error?: unknown): Promise<boolean>
 }
 
 /** 来源解析逐记录落库；完整发布前不改变任何正在查询的版本。 */
-export async function refreshSessions(store: SessionStore, jobId: string, roots?: DiscoverRoots, clearCache = false): Promise<void> {
+export async function refreshSessions(store: SessionStore, jobId: string, roots?: DiscoverRoots, clearCache = false, options: { concurrency?: number } = {}): Promise<void> {
   const job = store.getJob(jobId);
   // 执行时读取基础版本；统一轮次规则升级整体发布，避免范围外客户端沿用旧分类。
   const cached = new Map(store.cachedRevisions().map(item => [item.path, item]));
+  const checkpoints = new Map((clearCache ? [] : store.importCheckpoints()).map(item => [item.path, item]));
   const upgradeRounds = [...cached.values()].some(item => !item.fingerprint.endsWith(ROUND_RULES_FINGERPRINT));
   const client = clearCache || upgradeRounds ? undefined : job.client;
   const mode = clearCache ? "full" : job.mode ?? "quick";
@@ -60,11 +63,15 @@ export async function refreshSessions(store: SessionStore, jobId: string, roots?
     else counts.fallbacks.push({ reason, count: 1 });
   };
   store.updateJob(jobId, { status: "running", phase: "discover", phaseDescriptor: { key: "diagnostics.sessions.refresh.m004" }, progress: 0, client, mode, counts });
+  let pool: SessionImportPool | undefined;
   try {
     await store.prepareSearchIndex(progress => store.updateJob(jobId, { phase: "建立搜索索引", phaseDescriptor: { key: "diagnostics.sessions.refresh.m005" }, progress }));
+    store.beginInitialImport();
     store.updateJob(jobId, { phase: "discover", phaseDescriptor: { key: "diagnostics.sessions.refresh.m004" }, progress: 0 });
     const selected = [...cached.values()].filter(item => !client || item.client === client);
-    const cachedSources = selected.flatMap(item => item.location && item.quickFingerprint ? [{ location: item.location, stamp: item.quickFingerprint }] : []);
+    const discoveryCache = new Map([...selected, ...checkpoints.values()].map(item => [item.path, item]));
+    const cachedSources = [...discoveryCache.values()].filter(item => !client || item.client === client)
+      .flatMap(item => item.location && item.quickFingerprint ? [{ location: item.location, stamp: item.quickFingerprint }] : []);
     const sources = await discoverSources(roots, { clients: client ? [client] : undefined, cachedSources: mode === "quick" ? cachedSources : undefined });
     counts.discovered = sources.length;
     const codexTitles = sources.some(source => source.client === "codex") ? await loadCodexTitles(roots) : new Map<string, string>();
@@ -80,11 +87,16 @@ export async function refreshSessions(store: SessionStore, jobId: string, roots?
       await confirmedMissing(path);
       missing.add(previous.path);
     }
-    for (const [index, source] of sources.entries()) {
-      store.updateJob(jobId, { phase: "index", phaseDescriptor: { key: "diagnostics.sessions.refresh.m006" }, progress: sources.length ? index / sources.length : 0, counts });
+    store.pruneImportCheckpoints(discovered, client);
+    const concurrency = options.concurrency ?? (sources.length >= 8 ? 2 : 1);
+    if (!Number.isInteger(concurrency) || concurrency < 1 || concurrency > 4) throw new RangeError("解析并发数必须介于 1 和 4 之间");
+    if (concurrency > 1) pool = new SessionImportPool(concurrency);
+    let completed = 0;
+    const processSource = async (source: SourceLocation & { discoveryQuickStamp?: string }) => {
+      store.updateJob(jobId, { phase: "index", phaseDescriptor: { key: "diagnostics.sessions.refresh.m006" }, progress: completed / sources.length, counts });
       const { discoveryQuickStamp, ...location } = source;
       const sourceKey = sourceLocationKey(source);
-      const previous = cached.get(sourceKey);
+      const previous = checkpoints.get(sourceKey) ?? cached.get(sourceKey);
       const title = source.sessionId ? (source.client === "codex" ? codexTitles : source.client === "codeflicker-desktop" ? desktopTitles : new Map<string, string>()).get(source.sessionId) : undefined;
       // 标题、归属和模型仍分别检查，正文快检命中不能遮蔽旁路变化。
       const titleFingerprint = ["codex", "codeflicker-desktop"].includes(source.client) ? `:title-v1:${createHash("sha256").update(JSON.stringify(title ?? null)).digest("hex")}` : "";
@@ -127,13 +139,13 @@ export async function refreshSessions(store: SessionStore, jobId: string, roots?
       const metadataFingerprint = createHash("sha256").update(JSON.stringify({ rule: SESSION_INDEX_RULE_VERSION, source: location, metadataSuffix })).digest("hex");
       let stamp: string | undefined;
       try { stamp = await sourceQuickStamp(source); }
-      catch (error) { if (await confirmedMissing(source.path, error)) { missing.add(sourceKey); continue; } throw error; }
+      catch (error) { if (await confirmedMissing(source.path, error)) { missing.add(sourceKey); return; } throw error; }
       if (!clearCache && mode === "quick") {
         if (stamp && stamp === discoveryQuickStamp && previous?.quickFingerprint === stamp && previous.metadataFingerprint === metadataFingerprint
           && previous.fingerprint.startsWith(`${source.client}:${source.format ?? "default"}:`) && previous.fingerprint.endsWith(metadataSuffix)) {
           current.push({ ...previous, location });
           counts.quickReused += 1;
-          continue;
+          return;
         }
         fallback(!stamp ? "unsupported_source" : !previous ? "cache_missing" : !previous.quickFingerprint || !previous.metadataFingerprint ? "check_record_missing"
           : previous.metadataFingerprint !== metadataFingerprint ? "metadata_changed" : "source_changed");
@@ -141,18 +153,23 @@ export async function refreshSessions(store: SessionStore, jobId: string, roots?
       let nativeSnapshot: IdeSnapshot | undefined;
       let normalizedSnapshot: NormalizedSnapshot | undefined;
       const adapter = historyAdapter(source.format ?? historyClient(source.client).format);
-      let digest: { hash: string; bytes: number };
+      const streamingHash = (!previous || clearCache) && !adapter?.normalized && source.format !== IDE_FORMAT ? createHash("sha256") : undefined;
+      let digest: { hash?: string; bytes: number };
       try {
         nativeSnapshot = source.format === IDE_FORMAT ? await readIdeSnapshot(source) : undefined;
         normalizedSnapshot = adapter?.normalized ? await adapter.readRecords!(source) as NormalizedSnapshot : undefined;
-        digest = normalizedSnapshot ? { hash: `normalized-1:${normalizedSnapshot.hash}`, bytes: 0 }
+        if (streamingHash) {
+          const stat = await lstat(source.path);
+          if (!stat.isFile() || stat.isSymbolicLink()) throw new DiagnosticError("会话来源必须为普通文件", { key: "diagnostics.sessions.refresh.m001" });
+          digest = { bytes: stat.size };
+        } else digest = normalizedSnapshot ? { hash: `normalized-1:${normalizedSnapshot.hash}`, bytes: 0 }
           : nativeSnapshot ? { hash: `${SESSION_INDEX_RULE_VERSION}:${nativeSnapshot.hash}`, bytes: 0 } : await fingerprint(source.path);
       }
       catch (error) {
-        if (await confirmedMissing(source.path, error)) { missing.add(sourceKey); continue; }
+        if (await confirmedMissing(source.path, error)) { missing.add(sourceKey); return; }
         throw error;
       }
-      const sourceFingerprint = `${source.client}:${source.format ?? "default"}:${digest.hash}${metadataSuffix}`;
+      let sourceFingerprint = `${source.client}:${source.format ?? "default"}:${digest.hash ?? "pending"}${metadataSuffix}`;
       const cacheRecord = async (revision: string): Promise<SessionRevision> => {
         const stable = stamp && stamp === discoveryQuickStamp && await sourceQuickStamp(source) === stamp;
         return { path: sourceKey, revision, fingerprint: sourceFingerprint, client: source.client, location,
@@ -161,9 +178,9 @@ export async function refreshSessions(store: SessionStore, jobId: string, roots?
       if (!clearCache && previous?.fingerprint === sourceFingerprint && (!previous.metadataFingerprint || previous.metadataFingerprint === metadataFingerprint)) {
         current.push(await cacheRecord(previous.revision));
         counts.verifiedReused += 1;
-        continue;
+        return;
       }
-      const pending = store.createRevision(sourceKey, sourceFingerprint);
+      const pending = store.createRevision(sourceKey, sourceFingerprint, cached.size === 0);
       try {
         if (source.format === DESKTOP_FORMAT && !nativeModels) {
           nativeModels = await desktopModels(source.path);
@@ -171,7 +188,16 @@ export async function refreshSessions(store: SessionStore, jobId: string, roots?
             throw new DiagnosticError("会话来源已有内容在解析期间被改写，请重新刷新", { key: "diagnostics.sessions.refresh.m008" });
           }
         }
-        const meta = await parseSessionSource(source, pending.sink, { byteLimit: digest.bytes, title, projectMetadata, desktopModels: nativeModels?.entries, nativeSnapshot, normalizedSnapshot });
+        const parseOptions = { byteLimit: digest.bytes, title, projectMetadata, desktopModels: nativeModels?.entries };
+        const parsed = pool && !nativeSnapshot && !normalizedSnapshot
+          ? await pool.parse(source, parseOptions, Boolean(streamingHash), items => store.applyImportBatch(pending, items))
+          : { meta: await parseSessionSource(source, pending.sink, { ...parseOptions, nativeSnapshot, normalizedSnapshot,
+            onRead: streamingHash ? chunk => { streamingHash.update(chunk); } : undefined }), hash: streamingHash?.digest("hex") };
+        const meta = parsed.meta;
+        if (streamingHash) {
+          digest.hash = `${SESSION_INDEX_RULE_VERSION}:${parsed.hash}`;
+          sourceFingerprint = `${source.client}:${source.format ?? "default"}:${digest.hash}${metadataSuffix}`;
+        }
         if (nativeModels?.limited) meta.gaps.push({ kind: "budget_exceeded", message: "原生模型旁路日志超过有界读取上限，部分模型信息未关联", messageDescriptor: { key: "diagnostics.sessions.refresh.m007" }, sourceId: meta.sourceId });
         pending.flush();
         // 允许活动日志追加；发布的始终是开始检查时的同一字节前缀。
@@ -179,20 +205,39 @@ export async function refreshSessions(store: SessionStore, jobId: string, roots?
           : nativeSnapshot ? { hash: `${SESSION_INDEX_RULE_VERSION}:${(await readIdeSnapshot(source)).hash}` } : await fingerprint(source.path, digest.bytes);
         if (after.hash !== digest.hash) throw new DiagnosticError("会话来源已有内容在解析期间被改写，请重新刷新", { key: "diagnostics.sessions.refresh.m008" });
         await validateMirror();
-        store.finishRevision(pending.revision, meta);
-        current.push(await cacheRecord(pending.revision));
+        store.finishRevision(pending.revision, meta, sourceFingerprint);
+        const revision = await cacheRecord(pending.revision);
+        store.saveImportCheckpoint(revision);
+        current.push(revision);
         counts.parsed += 1;
       } catch (error) {
         store.removeRevision(pending.revision);
-        if (await confirmedMissing(source.path, error)) { missing.add(sourceKey); continue; }
+        if (await confirmedMissing(source.path, error)) { missing.add(sourceKey); return; }
         throw error;
       }
+    };
+    // 失败后先停止调度并收拢在途来源，避免清理半成品后仍有回调写库。
+    const active = new Set<Promise<void>>();
+    let failure: Error | undefined;
+    for (const source of sources) {
+      if (failure) break;
+      const recordFailure = (error: unknown) => { failure ??= error instanceof Error ? error : new Error(String(error)); };
+      const task = processSource(source).catch(recordFailure).then(() => {
+        completed += 1;
+        store.updateJob(jobId, { phase: "index", phaseDescriptor: { key: "diagnostics.sessions.refresh.m006" }, progress: completed / sources.length, counts });
+      }).catch(recordFailure).finally(() => { active.delete(task); });
+      active.add(task);
+      if (active.size >= concurrency) await Promise.race(active);
     }
+    await Promise.all(active);
+    if (failure) throw failure;
+    await pool?.close(); pool = undefined;
     counts.missing = missing.size;
     if (counts.missing) gaps.push({ kind: "source_missing", message: "已有来源已删除或移走，新版统计已排除；上一版保留供对照", messageDescriptor: { key: "diagnostics.sessions.refresh.m009" }, count: counts.missing });
     store.updateJob(jobId, { phase: "publish", phaseDescriptor: { key: "diagnostics.sessions.refresh.m010" }, progress: 0.99, counts });
     store.publish(jobId, current, gaps);
   } catch (error) {
+    await pool?.close();
     counts.missing = missing.size;
     store.updateJob(jobId, { counts });
     store.failJob(jobId, error instanceof Error ? error.message : String(error), errorDescriptor(error));

@@ -28,7 +28,8 @@ const MAX_PENDING_BYTES = 32 * 1024 * 1024;
 export const sessionKey = (client: Client, rawId: string): string => `${client}:${digest(rawId)}`;
 
 /** 分段读取并限制单条记录大小；不完整末行留待下次刷新，不能当作完整消息。 */
-async function* records(path: string, gap: (kind: GapKind, message: string, messageDescriptor?: MessageDescriptor) => void, byteLimit?: number) {
+async function* records(path: string, gap: (kind: GapKind, message: string, messageDescriptor?: MessageDescriptor) => void, byteLimit?: number,
+  onRead?: (chunk: Uint8Array) => void) {
   if (byteLimit === 0) return;
   let parts: Buffer[] = [];
   let length = 0;
@@ -36,6 +37,7 @@ async function* records(path: string, gap: (kind: GapKind, message: string, mess
   let oversized = false;
   for await (const value of createReadStream(path, { highWaterMark: 65_536, end: byteLimit === undefined ? undefined : byteLimit - 1 })) {
     const chunk = value as Buffer;
+    onRead?.(chunk);
     let start = 0;
     while (start < chunk.length) {
       const newline = chunk.indexOf(10, start);
@@ -79,7 +81,17 @@ function filePaths(input: unknown): string[] | undefined {
 
 interface Pending { message: SessionMessage; bytes: number; input: unknown }
 
-export async function parseSessionSource(source: SourceLocation, sink: SessionSink, options: { byteLimit?: number; title?: string; projectMetadata?: { project?: string; ambiguous?: boolean }; desktopModels?: Map<string, DesktopModelRecord>; nativeSnapshot?: IdeSnapshot; normalizedSnapshot?: NormalizedSnapshot } = {}): Promise<SessionSourceMeta> {
+export interface SessionParseOptions {
+  byteLimit?: number;
+  title?: string;
+  projectMetadata?: { project?: string; ambiguous?: boolean };
+  desktopModels?: Map<string, DesktopModelRecord>;
+  nativeSnapshot?: IdeSnapshot;
+  normalizedSnapshot?: NormalizedSnapshot;
+  onRead?: (chunk: Uint8Array) => void;
+}
+
+export async function parseSessionSource(source: SourceLocation, sink: SessionSink, options: SessionParseOptions = {}): Promise<SessionSourceMeta> {
   const adapter = historyAdapter(source.format ?? historyClient(source.client).format);
   if (adapter?.normalized) {
     const snapshot = options.normalizedSnapshot ?? await adapter.readRecords!(source) as NormalizedSnapshot;
@@ -87,7 +99,8 @@ export async function parseSessionSource(source: SourceLocation, sink: SessionSi
   }
   const ideSnapshot = options.nativeSnapshot ?? (source.format === IDE_FORMAT ? await readIdeSnapshot(source) : undefined);
   if (ideSnapshot) { source = ideSnapshot.source; options = { ...options, title: ideSnapshot.title }; }
-  const inputRecords = (onGap: (kind: GapKind, message: string, messageDescriptor?: MessageDescriptor) => void) => ideSnapshot ? ideSessionRecords(ideSnapshot) : records(source.path, onGap, options.byteLimit);
+  const inputRecords = (onGap: (kind: GapKind, message: string, messageDescriptor?: MessageDescriptor) => void, observe = false) =>
+    ideSnapshot ? ideSessionRecords(ideSnapshot) : records(source.path, onGap, options.byteLimit, observe ? options.onRead : undefined);
   const gaps = new Map<string, Gap>();
   const gap = (kind: GapKind, message: string, messageDescriptor?: MessageDescriptor) => {
     const key = `${kind}:${message}`;
@@ -265,7 +278,7 @@ export async function parseSessionSource(source: SourceLocation, sink: SessionSi
     } else if (!repeated) gap("unpaired_call", "工具结果缺少可唯一配对的请求，已保留原结果", { key: "diagnostics.sessions.parser.m006" });
     return value;
   };
-  for await (const { record, line } of inputRecords(gap)) {
+  for await (const { record, line } of inputRecords(gap, true)) {
     currentRecordLine = line;
     const payload = object(record.payload);
     const entrypoint = source.client === "codeflicker" && record.type === "message" ? string(record.entrypoint) : undefined;

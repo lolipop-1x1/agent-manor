@@ -20,7 +20,8 @@ import { localDay } from "../overview/dates.js";
 import { instant } from "../usage/analytics.js";
 import { pairToolCalls } from "../overview/analytics.js";
 import { promptCharacterCount, summarizeRoundMetrics, completeRoundSource, type RoundMessage } from "./round-metrics.js";
-import { initializeSearchIndex, prepareSearchIndex, registerSearchFunctions, searchCandidateIndex } from "./search-index.js";
+import { initializeSearchIndex, prepareSearchIndex, registerSearchFunctions, searchCandidateIndex, withCharacterTerms } from "./search-index.js";
+import type { ImportItem } from "./import-pool.js";
 import { initializeUsageFacts, prepareUsageFacts, readUsageFactMetadata, readUsageFacts, usageFactsReady, USAGE_FACT_FORMAT_VERSION } from "./usage-facts.js";
 import type { UsageFactMetadata } from "./usage-facts.js";
 
@@ -64,6 +65,24 @@ const kindsOf = (query: SessionQuery) => (query.kinds?.length ? query.kinds : ["
   .filter(kind => ["user", "assistant", "tool_call", "tool_result", "thinking", "system", "context", "compression"].includes(kind));
 const replyBodySql = `length(trim(text,${[9, 10, 11, 12, 13, 32, 160, 5760, ...Array.from({ length: 11 }, (_, i) => 8192 + i), 8232, 8233, 8239, 8287, 12288, 65279].map(code => `char(${code})`).join("||")}))>0`;
 const replyWhere = `kind='assistant' AND copied IS NOT 1 AND json_extract(json,'$.contextSource') IS NULL AND ${replyBodySql}`;
+const sessionQueryIndexes = `
+      CREATE INDEX IF NOT EXISTS session_message_order ON session_messages(revision,ordinal,id);
+      CREATE INDEX IF NOT EXISTS session_message_call ON session_messages(revision,call_id);
+      CREATE INDEX IF NOT EXISTS session_message_turn ON session_messages(revision,turn_id,ordinal,id);
+      CREATE INDEX IF NOT EXISTS session_message_round_boundary ON session_messages(revision,ordinal,id)
+        WHERE copied IS NOT 1 AND (kind='user' OR kind='assistant' AND final IS NOT NULL);
+      CREATE INDEX IF NOT EXISTS session_message_reply_boundary ON session_messages(revision,turn_id,ordinal DESC,id DESC)
+        WHERE ${replyWhere};
+      CREATE INDEX IF NOT EXISTS session_message_overview_projection_v2 ON session_messages(revision,ordinal,id,turn_id,record_line,kind,final,call_id,copied,
+        json_extract(json,'$.occurredAt'),json_extract(json,'$.tool'),json_extract(json,'$.status'),json_extract(json,'$.contextSource'),
+        json_extract(json,'$.resource'),json_extract(json,'$.resource.kind'),json_extract(json,'$.finalEvidence'),json_extract(json,'$.finalAt'),json_extract(json,'$.interrupted'));
+      CREATE INDEX IF NOT EXISTS session_message_resource_event_v2
+        ON session_messages(revision,json_extract(json,'$.resource.kind'),ordinal,id)
+        WHERE kind IN ('tool_call','user') AND copied IS NOT 1 AND json_extract(json,'$.resource.kind') IN ('mcp','skill_call','skill_read');
+      CREATE INDEX IF NOT EXISTS session_message_resource_call ON session_messages(revision,call_id,kind,copied)
+        WHERE kind='tool_call' AND copied IS NOT 1;
+      CREATE INDEX IF NOT EXISTS session_usage_order ON session_usage(revision);
+`;
 
 /** 全局正文按来源修订保存，读者只访问最后完整发布的版本。 */
 export class SessionStore {
@@ -121,24 +140,8 @@ export class SessionStore {
       CREATE TABLE IF NOT EXISTS session_messages (message_key INTEGER PRIMARY KEY, revision TEXT NOT NULL REFERENCES session_revisions(id) ON DELETE CASCADE,
         id TEXT NOT NULL, ordinal INTEGER NOT NULL, record_line INTEGER NOT NULL, turn_id TEXT NOT NULL, kind TEXT NOT NULL,
         final TEXT, call_id TEXT, copied INTEGER, text TEXT NOT NULL, json TEXT NOT NULL, UNIQUE(revision,id));
-      CREATE INDEX IF NOT EXISTS session_message_order ON session_messages(revision,ordinal,id);
-      CREATE INDEX IF NOT EXISTS session_message_call ON session_messages(revision,call_id);
-      CREATE INDEX IF NOT EXISTS session_message_turn ON session_messages(revision,turn_id,ordinal,id);
-      CREATE INDEX IF NOT EXISTS session_message_round_boundary ON session_messages(revision,ordinal,id)
-        WHERE copied IS NOT 1 AND (kind='user' OR kind='assistant' AND final IS NOT NULL);
-      CREATE INDEX IF NOT EXISTS session_message_reply_boundary ON session_messages(revision,turn_id,ordinal DESC,id DESC)
-        WHERE ${replyWhere};
-      CREATE INDEX IF NOT EXISTS session_message_overview_projection_v2 ON session_messages(revision,ordinal,id,turn_id,record_line,kind,final,call_id,copied,
-        json_extract(json,'$.occurredAt'),json_extract(json,'$.tool'),json_extract(json,'$.status'),json_extract(json,'$.contextSource'),
-        json_extract(json,'$.resource'),json_extract(json,'$.resource.kind'),json_extract(json,'$.finalEvidence'),json_extract(json,'$.finalAt'),json_extract(json,'$.interrupted'));
-      CREATE INDEX IF NOT EXISTS session_message_resource_event_v2
-        ON session_messages(revision,json_extract(json,'$.resource.kind'),ordinal,id)
-        WHERE kind IN ('tool_call','user') AND copied IS NOT 1 AND json_extract(json,'$.resource.kind') IN ('mcp','skill_call','skill_read');
-      CREATE INDEX IF NOT EXISTS session_message_resource_call ON session_messages(revision,call_id,kind,copied)
-        WHERE kind='tool_call' AND copied IS NOT 1;
       CREATE TABLE IF NOT EXISTS session_usage (revision TEXT NOT NULL REFERENCES session_revisions(id) ON DELETE CASCADE,
         id TEXT NOT NULL, message_id TEXT, turn_id TEXT, json TEXT NOT NULL, PRIMARY KEY(revision,id));
-      CREATE INDEX IF NOT EXISTS session_usage_order ON session_usage(revision);
       CREATE TABLE IF NOT EXISTS session_versions (id TEXT PRIMARY KEY, created_at TEXT NOT NULL, gaps TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS session_version_sources (version TEXT NOT NULL REFERENCES session_versions(id) ON DELETE CASCADE,
         path TEXT NOT NULL, revision TEXT NOT NULL REFERENCES session_revisions(id), PRIMARY KEY(version,path));
@@ -148,15 +151,21 @@ export class SessionStore {
         child TEXT NOT NULL, parent TEXT NOT NULL, PRIMARY KEY(version,child));
       CREATE INDEX IF NOT EXISTS session_relation_parent ON session_version_relations(version,parent);
       CREATE TABLE IF NOT EXISTS session_source_auxiliary_checks (path TEXT PRIMARY KEY, stamp TEXT NOT NULL, json TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS session_import_checkpoints (path TEXT PRIMARY KEY,
+        revision TEXT NOT NULL REFERENCES session_revisions(id) ON DELETE CASCADE);
       CREATE TABLE IF NOT EXISTS session_version_publication_inputs (version TEXT PRIMARY KEY REFERENCES session_versions(id) ON DELETE CASCADE, gaps TEXT NOT NULL);
     `);
         this.database.prepare("INSERT OR IGNORE INTO session_state(id,json) VALUES(1,?)").run(JSON.stringify({ stale: false }));
         initializeUsageFacts(this.database);
         initializeSearchIndex(this.database);
+        // 首次导入的其他连接不抢先重建已暂缓的辅助索引；完整发布前统一恢复。
+        if (this.currentVersion() || !this.database.prepare("SELECT 1 FROM session_jobs WHERE json_extract(json,'$.status')='running' LIMIT 1").get()) {
+          this.database.exec(sessionQueryIndexes);
+        }
       });
-      this.overviewMessageTable = this.database.prepare("SELECT 1 FROM sqlite_master WHERE type='index' AND name='session_message_overview_projection_v2'").get()
+      this.overviewMessageTable = !this.currentVersion() || this.database.prepare("SELECT 1 FROM sqlite_master WHERE type='index' AND name='session_message_overview_projection_v2'").get()
         ? "session_messages INDEXED BY session_message_overview_projection_v2" : "session_messages";
-      this.replyMessageTable = this.database.prepare("SELECT 1 FROM sqlite_master WHERE type='index' AND name='session_message_reply_boundary'").get()
+      this.replyMessageTable = !this.currentVersion() || this.database.prepare("SELECT 1 FROM sqlite_master WHERE type='index' AND name='session_message_reply_boundary'").get()
         ? "session_messages INDEXED BY session_message_reply_boundary" : "session_messages";
     } catch (error) { this.database.close(); throw error; }
   }
@@ -187,6 +196,16 @@ export class SessionStore {
   }
 
   prepareSearchIndex(onProgress?: (progress: number) => void): Promise<void> { return prepareSearchIndex(this.database, onProgress); }
+
+  /** 空库没有可查询版本，辅助索引统一后建；唯一约束、外键与全文索引始终保留。 */
+  beginInitialImport(): void {
+    if (this.currentVersion()) return;
+    const names = [...sessionQueryIndexes.matchAll(/CREATE INDEX IF NOT EXISTS (\w+)/g)].map(match => match[1]!);
+    this.database.transaction(() => {
+      for (const name of names) this.database.exec(`DROP INDEX IF EXISTS ${name}`);
+    })();
+  }
+
 
   private state(): Partial<SessionIndexStatus> {
     return decode(this.database.prepare("SELECT json FROM session_state WHERE id=1").get() as JsonRow);
@@ -275,12 +294,42 @@ export class SessionStore {
   cachedRevisions(): SessionRevision[] {
     const version = this.state().version;
     if (!version) return [];
+    return this.readRevisions("session_version_sources", "v.version=?", [version]);
+  }
+
+  importCheckpoints(): SessionRevision[] {
+    return this.readRevisions("session_import_checkpoints", "1=1", []);
+  }
+
+  private readRevisions(table: string, where: string, values: string[]): SessionRevision[] {
     const rows = this.database.prepare(`SELECT r.path,r.id AS revision,r.fingerprint,r.client,r.source_location,r.quick_fingerprint,r.metadata_fingerprint
-      FROM session_version_sources v JOIN session_revisions r ON r.id=v.revision WHERE v.version=?`).all(version) as
+      FROM ${table} v JOIN session_revisions r ON r.id=v.revision WHERE ${where}`).all(...values) as
       (SessionRevision & { source_location: string | null; quick_fingerprint: string | null; metadata_fingerprint: string | null })[];
     return rows.map(({ source_location, quick_fingerprint, metadata_fingerprint, ...revision }) => ({ ...revision,
       location: source_location ? JSON.parse(source_location) as SourceLocation : undefined,
       quickFingerprint: quick_fingerprint ?? undefined, metadataFingerprint: metadata_fingerprint ?? undefined }));
+  }
+
+  /** 仅完成校验的来源进入检查点；不进入当前可查询版本。 */
+  saveImportCheckpoint(item: SessionRevision): void {
+    this.database.transaction(() => {
+      const previous = this.database.prepare("SELECT revision FROM session_import_checkpoints WHERE path=?").get(item.path) as { revision: string } | undefined;
+      this.database.prepare("UPDATE session_revisions SET source_location=?,quick_fingerprint=?,metadata_fingerprint=? WHERE id=?")
+        .run(item.location ? JSON.stringify(item.location) : null, item.quickFingerprint ?? null, item.metadataFingerprint ?? null, item.revision);
+      this.database.prepare("INSERT INTO session_import_checkpoints(path,revision) VALUES(?,?) ON CONFLICT(path) DO UPDATE SET revision=excluded.revision")
+        .run(item.path, item.revision);
+      if (previous && previous.revision !== item.revision) this.database.prepare("DELETE FROM session_revisions WHERE id=? AND id NOT IN (SELECT revision FROM session_version_sources)").run(previous.revision);
+    })();
+  }
+
+  pruneImportCheckpoints(paths: ReadonlySet<string>, client?: Client): void {
+    const obsolete = this.importCheckpoints().filter(item => (!client || item.client === client) && !paths.has(item.path));
+    if (!obsolete.length) return;
+    this.database.transaction(() => {
+      const remove = this.database.prepare("DELETE FROM session_import_checkpoints WHERE path=?");
+      for (const item of obsolete) remove.run(item.path);
+      this.removeUnpublishedRevisions();
+    })();
   }
 
   auxiliaryCheck(path: string, stamp: string): { fingerprint: string; limited: boolean } | undefined {
@@ -294,7 +343,7 @@ export class SessionStore {
       .run(path, stamp, JSON.stringify(value));
   }
 
-  createRevision(path: string, fingerprint: string): { revision: string; sink: SessionSink; flush: () => void } {
+  createRevision(path: string, fingerprint: string, bulk = false): { revision: string; sink: SessionSink; flush: () => void } {
     const revision = randomUUID();
     this.database.prepare("INSERT INTO session_revisions(id,path,fingerprint,json) VALUES(?,?,?,?)").run(revision, path, fingerprint, "{}");
     const message = this.database.prepare(`INSERT INTO session_messages(revision,id,ordinal,record_line,turn_id,kind,final,call_id,copied,text,json)
@@ -321,19 +370,31 @@ export class SessionStore {
       bytes = 0;
     });
     const sink: SessionSink = {
-      message: value => { pending.push({ type: "message", value }); bytes += value.text.length * 2; if (pending.length >= 200 || bytes >= 2_000_000) flush(); },
-      usage: value => { pending.push({ type: "usage", value }); if (pending.length >= 200) flush(); },
+      message: value => { pending.push({ type: "message", value }); bytes += value.text.length * 2; if (pending.length >= (bulk ? 1000 : 200) || bytes >= (bulk ? 8_000_000 : 2_000_000)) flush(); },
+      usage: value => { pending.push({ type: "usage", value }); if (pending.length >= (bulk ? 1000 : 200)) flush(); },
     };
     return { revision, sink, flush };
   }
 
-  finishRevision(id: string, meta: SessionSourceMeta): void {
+  /** 预计算词项仅覆盖本批提交，常规增删改仍由同一套触发器维护。 */
+  applyImportBatch(pending: { sink: SessionSink; flush(): void }, items: ImportItem[]): void {
+    const terms = new Map(items.filter(item => item.type === "message").map(item => [item.value.text, item.terms]));
+    withCharacterTerms(this.database, terms, () => {
+      for (const item of items) {
+        if (item.type === "message") pending.sink.message(item.value);
+        else pending.sink.usage(item.value);
+      }
+      pending.flush();
+    });
+  }
+
+  finishRevision(id: string, meta: SessionSourceMeta, fingerprint?: string): void {
     this.resourceGapSourceClients = undefined;
     this.database.transaction(() => {
       const counts = this.database.prepare("SELECT COUNT(*) AS messages,COUNT(DISTINCT CASE WHEN kind='user' THEN turn_id END) AS turns FROM session_messages WHERE revision=?").get(id) as { messages: number; turns: number };
       const summary = sessionTitle({ ...meta, messageCount: counts.messages, turnCount: counts.turns });
-      this.database.prepare("UPDATE session_revisions SET session_id=?,client=?,project=?,title=?,started_at=?,updated_at=?,json=? WHERE id=?")
-        .run(meta.id, meta.client, meta.project ?? null, summary.title, meta.startedAt ?? null, meta.updatedAt ?? null, JSON.stringify(summary), id);
+      this.database.prepare("UPDATE session_revisions SET session_id=?,client=?,project=?,title=?,started_at=?,updated_at=?,json=?,fingerprint=COALESCE(?,fingerprint) WHERE id=?")
+        .run(meta.id, meta.client, meta.project ?? null, summary.title, meta.startedAt ?? null, meta.updatedAt ?? null, JSON.stringify(summary), fingerprint ?? null, id);
       this.ensureUsageFacts(id);
     }).immediate();
   }
@@ -342,10 +403,19 @@ export class SessionStore {
 
   private removeUnpublishedRevisions(): void {
     this.resourceGapSourceClients = undefined;
-    this.database.prepare("DELETE FROM session_revisions WHERE id NOT IN (SELECT revision FROM session_version_sources)").run();
+    this.database.prepare(`DELETE FROM session_revisions WHERE id NOT IN (SELECT revision FROM session_version_sources)
+      AND id NOT IN (SELECT revision FROM session_import_checkpoints)`).run();
+  }
+
+  private completeImport(jobId: string): void {
+    const client = this.getJob(jobId).client;
+    if (client) this.database.prepare("DELETE FROM session_import_checkpoints WHERE revision IN (SELECT id FROM session_revisions WHERE client=?)").run(client);
+    else this.database.prepare("DELETE FROM session_import_checkpoints").run();
+    this.removeUnpublishedRevisions();
   }
 
   publish(jobId: string, revisions: SessionRevision[], gaps: Gap[]): string {
+    if (!this.currentVersion()) this.database.exec(sessionQueryIndexes);
     const version = randomUUID();
     const createdAt = new Date().toISOString();
     const saveCheck = this.database.prepare(`UPDATE session_revisions SET source_location=?,quick_fingerprint=?,metadata_fingerprint=?
@@ -368,6 +438,7 @@ export class SessionStore {
       this.database.transaction(() => {
         for (const item of revisions) writeCheck(item);
         this.completeCheck(jobId, stateBefore.version!, createdAt, { ...stateBefore, stale: false });
+        this.completeImport(jobId);
       })();
       return stateBefore.version!;
     }
@@ -451,7 +522,7 @@ export class SessionStore {
       const previousVersion = state.version;
       this.completeCheck(jobId, version, createdAt, { version, previousVersion, createdAt, stale: false, gaps: publishedGaps, clientChecks: state.clientChecks });
       this.database.prepare("DELETE FROM session_versions WHERE id<>? AND id<>?").run(version, previousVersion ?? version);
-      this.removeUnpublishedRevisions();
+      this.completeImport(jobId);
       this.database.prepare("DELETE FROM session_source_auxiliary_checks WHERE path NOT IN (SELECT path FROM session_version_sources)").run();
     })();
     return version;

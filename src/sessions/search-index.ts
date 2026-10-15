@@ -1,6 +1,15 @@
 import type Database from "better-sqlite3";
 import { setImmediate } from "node:timers/promises";
 
+const preparedTerms = new WeakMap<Database.Database, ReadonlyMap<string, string>>();
+
+/** 只在当前同步写入批次复用解析线程已算好的词项，其他写入仍使用统一编码函数。 */
+export function withCharacterTerms<T>(database: Database.Database, terms: ReadonlyMap<string, string>, write: () => T): T {
+  preparedTerms.set(database, terms);
+  try { return write(); }
+  finally { preparedTerms.delete(database); }
+}
+
 /** 单字和相邻双字编码为 ASCII 词项；只折叠 ASCII 大写，保持 SQLite LIKE 的大小写规则。 */
 export function characterTerms(text: string): string {
   const singles = new Set<number>(), pairs = new Set<number>();
@@ -21,7 +30,10 @@ export function characterTerms(text: string): string {
 
 /** 所有写连接（包括维护连接）在触发器运行前注册同一个函数。 */
 export function registerSearchFunctions(database: Database.Database): void {
-  database.function("session_character_terms", { deterministic: true }, text => characterTerms(String(text)));
+  database.function("session_character_terms", { deterministic: true }, text => {
+    const value = String(text);
+    return preparedTerms.get(database)?.get(value) ?? characterTerms(value);
+  });
 }
 
 /** 正文仍由会话表唯一保存，两类 FTS 只保存词项和显式消息键。 */
