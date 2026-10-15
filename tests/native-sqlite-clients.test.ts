@@ -571,6 +571,24 @@ test("ZCode 任务索引按 session.id 关联；model_usage 按尝试计数，�
   paths.index.close();
 })));
 
+test("ZCode 步骤开始与文件附件元数据不产生代码活动或不支持诊断", async () => temporary(async directory => {
+  const paths = await createZCodeSchema(directory);
+  try {
+    paths.db.prepare("INSERT INTO session VALUES(?,?,?,?)").run("metadata", "/synthetic/repo", "Synthetic metadata", null);
+    insertOpenCodeMessage(paths.db, "metadata", "user", "user", 1, { content: "查看附件" });
+    insertOpenCodeMessage(paths.db, "metadata", "assistant", "assistant", 2, { content: "已收到" });
+    insertOpenCodePart(paths.db, "metadata", "assistant", "start", 2, { type: "step-start" });
+    insertOpenCodePart(paths.db, "metadata", "user", "attachment", 1, { type: "file", filename: "example.png", mime: "image/png",
+      url: "https://example.invalid/attachment", source: { type: "file", path: "/synthetic/attachment.png", text: "" }, metadata: { storageKind: "local", sizeBytes: 1, recoverability: "available" } });
+    const source = { path: paths.dbPath, client: "zcode" as const, format: ZCODE_FORMAT, selector: "metadata" };
+    const snapshot = await zcodeAdapter.readRecords!(source);
+    assert.ok(!snapshot.meta.gaps?.some(gap => gap.kind === "unsupported_format"));
+    assert.equal((await parseSource(paths.dbPath, "zcode", undefined, ZCODE_FORMAT, { location: source })).events.length, 0);
+    insertOpenCodePart(paths.db, "metadata", "assistant", "future", 3, { type: "future-part" });
+    assert.ok((await zcodeAdapter.readRecords!(source)).meta.gaps?.some(gap => gap.kind === "unsupported_format"));
+  } finally { paths.db.close(); paths.index.close(); }
+}));
+
 test("ZCode 无请求表用量时读取步骤结束用量，消息快照不重复累计", async () => temporary(async directory => {
   const paths = await createZCodeSchema(directory);
   paths.db.prepare("INSERT INTO session VALUES(?,?,?,?)").run("legacy", "/synthetic/repo", "Legacy usage", null);

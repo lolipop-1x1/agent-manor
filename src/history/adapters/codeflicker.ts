@@ -11,6 +11,7 @@ import type { HistoryAdapter, HistoryExtractionContext } from "./types.js";
 
 const hash = (value: string) => createHash("sha256").update(value).digest("hex");
 const integer = (value: unknown, minimum = 0) => Number.isSafeInteger(value) && Number(value) >= minimum;
+const nonCodeTools = new Set(["task", "kill_task", "kill_bash", "ls", "todoWrite", "skill", "AskUserQuestion", "ExitPlanMode", "Agent"]);
 
 function sourceMetadata(record: Record<string, unknown>, client: Client, path: string): SourceLocation {
   const sessionId = string(record.sessionId);
@@ -77,9 +78,14 @@ function successfulTemplate(tool: string, input: unknown, result: unknown): bool
   if (tool === "edit") return requested !== undefined && value.llmContent === `File ${requested} successfully edited.`;
   if (["grep", "glob"].includes(tool)) {
     const search = readPayload(result);
+    if (search.truncated === true || value.truncated === true || search.error !== undefined) return false;
+    const truncated = search.truncated ?? value.truncated;
+    const fileList = search.mode === undefined && integer(search.totalFiles) && integer(search.returnedFiles)
+      && Number(search.returnedFiles) <= Number(search.totalFiles) && Array.isArray(search.filenames)
+      && search.filenames.length === search.returnedFiles && truncated === false;
     return (integer(search.numFiles) || (integer(search.totalFiles) && integer(search.returnedFiles)))
       && Array.isArray(search.filenames) && search.filenames.every(path => typeof path === "string")
-      && typeof search.truncated === "boolean" && (tool === "glob" || ["files_with_matches", "content", "count"].includes(string(search.mode) ?? ""));
+      && truncated === false && (tool === "glob" || fileList || ["files_with_matches", "content", "count"].includes(string(search.mode) ?? ""));
   }
   if (tool === "todoWrite") {
     const display = object(value.returnDisplay);
@@ -93,7 +99,7 @@ export const codeflickerAdapter: HistoryAdapter = {
   id: "codeflicker-jsonl",
   quickCheck: { version: "1", dependencies: () => [] },
   discover(record, location) {
-    if (!["config", "message"].includes(string(record.type) ?? "") || !record.sessionId) return undefined;
+    if (!["config", "message", "user", "assistant"].includes(string(record.type) ?? "") || !record.sessionId) return undefined;
     const candidate = sourceMetadata(record, location.client, location.path);
     if (location.sourceId && candidate.sourceId !== location.sourceId) return undefined;
     const source = { ...location, ...candidate, cwd: candidate.cwd ?? location.cwd };
@@ -125,6 +131,7 @@ export const codeflickerAdapter: HistoryAdapter = {
       message: proofs.length ? "子会话原生身份或父结果存在多个／矛盾候选，未建立关系" : "子会话候选缺少可确认的父关系，独立保留调用而不合并父历史", messageDescriptor: proofs.length ? { key: "diagnostics.history.adapters.codeflicker.m001" } : { key: "diagnostics.history.adapters.codeflicker.m002" } }] };
   },
   extract(tool, inputValue, resultValue, _visible, context) {
+    if (nonCodeTools.has(tool)) return [{ kind: "other", fragments: [] }];
     const input = object(inputValue);
     const result = object(resultValue);
     const requested = string(input.file_path) ?? string(input.path) ?? string(input.dir_path);
@@ -195,6 +202,9 @@ export const codeflickerAdapter: HistoryAdapter = {
   },
   processRecord(record, context) {
     const { client, path, source, cursor, row, raw, gap, reference, findEvent, finish, pair } = context;
+    const message = object(record.message);
+    const legacy = ["user", "assistant"].includes(string(record.type) ?? "") && message.role === record.type;
+    if (legacy) record = { ...record, type: "message", role: message.role, content: message.content };
     if (["config", "message"].includes(string(record.type) ?? "") && record.sessionId) {
       const metadata = sourceMetadata(record, client, path);
       if (source.sessionId.startsWith("unknown:")) {
@@ -210,7 +220,7 @@ export const codeflickerAdapter: HistoryAdapter = {
       }
     }
     if (record.type !== "message") {
-      if (!["config", "snapshot"].includes(string(record.type) ?? "")) gap("unsupported_format", `物理记录 ${row} 的顶层类型 ${string(record.type) ?? "<缺少类型>"} 尚未适配`, (string(record.type)) !== undefined ? { key: "diagnostics.history.adapters.codeflicker.m013", params: { p0: String(row), p1: String(string(record.type)) } } : { key: "diagnostics.history.adapters.codeflicker.m014", params: { p0: String(row) } });
+      if (!["config", "snapshot", "custom-title"].includes(string(record.type) ?? "")) gap("unsupported_format", `物理记录 ${row} 的顶层类型 ${string(record.type) ?? "<缺少类型>"} 尚未适配`, (string(record.type)) !== undefined ? { key: "diagnostics.history.adapters.codeflicker.m013", params: { p0: String(row), p1: String(string(record.type)) } } : { key: "diagnostics.history.adapters.codeflicker.m014", params: { p0: String(row) } });
       return;
     }
     const blocks = Array.isArray(record.content) ? record.content : [];
@@ -222,24 +232,25 @@ export const codeflickerAdapter: HistoryAdapter = {
         const uuid = string(record.uuid);
         const key = uuid ? `request:${uuid}:${index}:${callId}:${hash(JSON.stringify(block))}` : undefined;
         registerRequest(context, { callId, requestUuid: uuid, tool, input: block.input, cwd: string(record.cwd), key });
-      } else if (record.role === "tool" && block.type === "tool-result") {
-        const callId = string(block.toolCallId) ?? "";
+      } else if ((record.role === "tool" && block.type === "tool-result") || (legacy && record.role === "user" && block.type === "tool_result")) {
+        const callId = string(legacy ? block.tool_use_id : block.toolCallId) ?? "";
         const key = `result:${record.uuid ?? row}:${index}:${callId}:${hash(JSON.stringify(block))}`;
         if (cursor.seen[key]) { findEvent(cursor.seen[key])?.sources.push(reference(row, raw, callId)); return; }
         const call = pair(callId, string(record.sourceToolAssistantUUID));
         if (!call) return;
-        const result = object(block.result);
+        const result = legacy ? { llmContent: string(block.content) ?? "", isError: typeof block.is_error === "boolean" ? block.is_error : undefined } : object(block.result);
         const visible = string(result.llmContent) ?? "";
         const bash = call.tool === "bash" ? bashResult(call.input, result) : undefined;
         const mismatchedTool = block.toolName !== undefined && block.toolName !== call.tool;
         const status: HistoryEvent["status"] = mismatchedTool ? "unknown" : result.isError === true ? "failure"
           : bash?.status ?? (result.isError === false || successfulTemplate(call.tool, call.input, result) ? "success" : "unknown");
         const reason = mismatchedTool ? "range_unknown: CodeFlicker 结果工具名与请求不符"
+          : nonCodeTools.has(call.tool) ? undefined
           : result.truncated === true ? "range_unknown: CodeFlicker 返回截断，未补读旁路内容"
           : status === "unknown" ? "range_unknown: CodeFlicker 结果未确认成功终态" : undefined;
         const event = findEvent(call.eventId);
         if (event && bash?.cwd) event.cwd = bash.cwd;
-        finish(call, result, visible, status, row, raw, reason, mismatchedTool ? { key: "diagnostics.history.adapters.codeflicker.toolMismatch" } : result.truncated === true ? { key: "diagnostics.history.adapters.codeflicker.m003" } : status === "unknown" ? { key: "diagnostics.history.adapters.codeflicker.statusUnknown" } : undefined);
+        finish(call, result, visible, status, row, raw, reason, mismatchedTool ? { key: "diagnostics.history.adapters.codeflicker.toolMismatch" } : nonCodeTools.has(call.tool) ? undefined : result.truncated === true ? { key: "diagnostics.history.adapters.codeflicker.m003" } : status === "unknown" ? { key: "diagnostics.history.adapters.codeflicker.statusUnknown" } : undefined);
         if (event && call.tool === "Agent" && status === "success" && typeof block.agentId === "string") event.output = json({ ...object(event.output), agentId: block.agentId });
         cursor.seen[key] = call.eventId;
       }

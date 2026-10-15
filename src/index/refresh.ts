@@ -262,7 +262,6 @@ export async function refreshRepository(store: AnalysisStore, jobId: string, roo
         }
       } else {
         unassociated.push(summary(source));
-        gaps.push(...source.gaps, ...association.gaps);
       }
     }
     for (const location of locations) {

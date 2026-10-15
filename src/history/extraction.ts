@@ -1,5 +1,6 @@
 import type { MessageDescriptor } from "../i18n/types.js";
 import { diffLines } from "diff";
+import { isAbsolute, join } from "node:path";
 import type { EventKind, EventStatus, EvidenceFragment, JsonValue } from "../contracts.js";
 
 export const object = (value: unknown): Record<string, unknown> =>
@@ -11,6 +12,8 @@ export const json = (value: unknown): JsonValue => JSON.parse(JSON.stringify(val
 export interface ToolEvidence {
   kind: EventKind;
   path?: string;
+  /** 组合命令的整体退出码不足以证明每个子命令的执行状态。 */
+  status?: "unknown";
   fragments: EvidenceFragment[];
   reason?: string;
   reasonDescriptor?: MessageDescriptor;
@@ -66,6 +69,7 @@ export function words(command: string, allowAnd = false): string[] | undefined {
       continue;
     }
     if (character === "'" || character === '"') { quote = character; active = true; }
+    else if (character === "#" && !active) break;
     else if (character === "\n" || character === "\r") return undefined;
     else if (/\s/.test(character)) { if (active) { tokens.push(token); token = ""; active = false; } }
     else if (character === "|") { if (active) { tokens.push(token); token = ""; active = false; } tokens.push("|"); }
@@ -149,6 +153,75 @@ function fixedSedBundle(command: string, output: string): ToolEvidence[] | undef
   });
 }
 
+function searchEvidence(tokens: string[]): ToolEvidence[] {
+  const pipe = tokens.indexOf("|");
+  if (pipe >= 0) tokens = tokens.slice(0, pipe);
+  if (tokens.includes("--files")) return [{ kind: "other", fragments: [], reason: "文件列举不属于内容读取", reasonDescriptor: { key: "diagnostics.history.extraction.m009" } }];
+  const withValue = new Set(["-g", "--glob", "--iglob", "-t", "--type", "-T", "--type-not", "-e", "--regexp", "-f", "--file", "-m", "--max-count", "-A", "--after-context", "-B", "--before-context", "-C", "--context", "--max-columns", "--max-filesize", "--encoding", "--threads", "-j", "--sort", "--sortr", "--ignore-file", "--type-add", "--type-clear", "--path-separator", "--replace", "-r"]);
+  const paths: string[] = [];
+  const flags = new Set(["--line-number", "--no-line-number", "--ignore-case", "--case-sensitive", "--smart-case", "--hidden", "--no-ignore", "--no-ignore-vcs", "--follow", "--fixed-strings", "--files-with-matches", "--files-without-match", "--count", "--count-matches", "--json", "--heading", "--no-heading", "--no-messages", "--multiline", "--multiline-dotall", "--pcre2", "--text", "--word-regexp", "--line-regexp", "--only-matching", "--invert-match", "--quiet", "--stats", "--crlf", "--null", "--null-data", "--with-filename", "--no-filename", "--column", "--trim", "--pretty", "--passthru", "--search-zip"]);
+  let pattern = false, operands = false, knownOptions = true;
+  for (let index = 1; index < tokens.length; index++) {
+    const token = tokens[index]!;
+    if (!operands && token === "--") { operands = true; continue; }
+    if (!operands && withValue.has(token)) {
+      if (["-e", "--regexp", "-f", "--file"].includes(token)) pattern = true;
+      index++;
+      continue;
+    }
+    if (!operands && token.startsWith("-")) {
+      if (token.startsWith("--")) {
+        const name = token.split("=")[0]!;
+        if (["--regexp", "--file"].includes(name)) pattern = true;
+        if (!withValue.has(name) && !flags.has(name)) knownOptions = false;
+      } else {
+        for (let option = 1; option < token.length; option++) {
+          const flag = `-${token[option]}`;
+          if (withValue.has(flag)) {
+            if (["-e", "-f"].includes(flag)) pattern = true;
+            if (option === token.length - 1) index++;
+            break;
+          }
+          if (!"0123456789niISHhFlLoucqvswxaUPNzZ".includes(token[option]!)) knownOptions = false;
+        }
+      }
+      continue;
+    }
+    if (!pattern) { pattern = true; continue; }
+    if (!/[|*?\[\]{}]/.test(token)) paths.push(token);
+  }
+  return paths.length && knownOptions ? paths.map(path => ({ kind: "search", path, fragments: [] })) : [{ kind: "search", fragments: [] }];
+}
+
+/** 只拆分引号外的顺序与逻辑连接，不求值变量、脚本或命令替换。 */
+function shellParts(command: string): { command: string; next?: string }[] | undefined {
+  const parts: { command: string; next?: string }[] = [];
+  let quote = "", start = 0;
+  for (let index = 0; index < command.length; index++) {
+    const character = command[index]!;
+    if (character === "\\") { index++; continue; }
+    if (quote) { if (character === quote) quote = ""; continue; }
+    if (character === "'" || character === '"') { quote = character; continue; }
+    if (character === "#" && (index === 0 || /\s/.test(command[index - 1]!))) {
+      const end = command.indexOf("\n", index);
+      if (end < 0) break;
+      index = end - 1;
+      continue;
+    }
+    if (/[`(){}<>]/.test(character)) return undefined;
+    const pair = command.slice(index, index + 2);
+    const separator = ["&&", "||"].includes(pair) ? pair : [";", "\n", "\r"].includes(character) ? character : undefined;
+    if (!separator) continue;
+    const part = command.slice(start, index).trim();
+    if (part && !part.startsWith("#")) parts.push({ command: part, next: separator });
+    index += separator.length - 1; start = index + 1;
+  }
+  const part = command.slice(start).trim();
+  if (quote) return undefined;
+  if (part && !part.startsWith("#")) parts.push({ command: part });
+  return parts;
+}
+
 export function shellEvidence(command: string, output: string): ToolEvidence[] {
   let tokens = words(command);
   if (tokens?.length === 3 && ["sh", "bash", "zsh"].includes(tokens[0]!.split("/").at(-1)!) && ["-c", "-lc"].includes(tokens[1]!)) {
@@ -157,16 +230,56 @@ export function shellEvidence(command: string, output: string): ToolEvidence[] {
   }
   const bundle = fixedSedBundle(command, output);
   if (bundle) return bundle;
+  const parts = shellParts(command);
+  if (parts && parts.length > 1) {
+    const sequentialSuccess = parts.every(part => !part.next || part.next === "&&");
+    let cwd = "";
+    const commands: { command: string; cwd: string }[] = [];
+    for (const part of parts) {
+      const values = words(part.command);
+      if (values?.[0] === "cd") {
+        if (!sequentialSuccess || values.length !== 2 || values[1]!.startsWith("-") || part.next !== "&&") return unsupportedShell();
+        cwd = isAbsolute(values[1]!) ? values[1]! : join(cwd, values[1]!);
+      } else if (!values || !["true", "false", ":"].includes(values[0] ?? "")) commands.push({ command: part.command, cwd });
+    }
+    const isolated = commands.length === 1 && sequentialSuccess;
+    return commands.flatMap(part => shellCommandEvidence(part.command, isolated ? output : "").map(event => ({
+      ...event, path: event.path && part.cwd && !isAbsolute(event.path) ? join(part.cwd, event.path) : event.path,
+      ...(!isolated && event.kind === "read" ? { fragments: [], reason: "range_unknown: 组合命令输出无法可靠区分文件边界", reasonDescriptor: { key: "diagnostics.history.extraction.compoundOutput" } } : {}),
+      ...(!sequentialSuccess ? { status: "unknown" as const, fragments: [], ...(event.kind === "read" ? { reason: "range_unknown: 组合命令无法确认各子命令的执行状态", reasonDescriptor: { key: "diagnostics.history.extraction.compoundStatus" } } : {}) } : {}),
+    })));
+  }
+  return shellCommandEvidence(command, output);
+}
+
+function unsupportedShell(): ToolEvidence[] {
+  return [{ kind: "other", fragments: [], reason: "unsupported_tool: 复杂 Shell 语法未解析", reasonDescriptor: { key: "diagnostics.history.extraction.m008" } }];
+}
+
+function shellCommandEvidence(command: string, output: string): ToolEvidence[] {
+  const tokens = words(command);
   if (!tokens?.length) return [{ kind: "other", fragments: [], reason: "unsupported_tool: 复杂 Shell 语法未解析", reasonDescriptor: { key: "diagnostics.history.extraction.m008" } }];
   const executable = tokens[0]!.split("/").at(-1)!;
-  if (executable === "rg") {
-    return [{ kind: tokens.includes("--files") ? "other" : "search", path: tokens.length > 2 && !tokens.at(-1)!.startsWith("-") ? tokens.at(-1) : undefined, fragments: [], reason: tokens.includes("--files") ? "文件列举不属于内容读取" : undefined, reasonDescriptor: tokens.includes("--files") ? { key: "diagnostics.history.extraction.m009" } : undefined }];
-  }
+  if (executable === "rg") return searchEvidence(tokens);
+  if (["pwd", "ls", "find", "git", "npm", "npx", "pnpm", "yarn", "mvn", "gradle", "gradlew", "echo", "printf", "sleep", "true", "false", "test", "wc", "stat", "file", "du", "df", "date", "mkdir", "rmdir", "playwright-cli"].includes(executable)) return [{ kind: "other", fragments: [] }];
   if (executable === "cat" && tokens.length === 2 && !tokens[1]!.startsWith("-")) return [read(output, tokens[1]!, 1)];
   if (executable === "cat" && tokens.length > 2 && tokens.slice(1).every((token) => !token.startsWith("-") && token !== "|")) {
     return tokens.slice(1).map((path) => ({ kind: "read", path, fragments: [], reason: "range_unknown: 多文件 cat 无可确认输出边界", reasonDescriptor: { key: "diagnostics.history.extraction.m010" } }));
   }
   if (executable === "sed" && tokens.length === 4 && tokens[1] === "-n") {
+    const selectors = tokens[2]!.split(";").map(value => /^(\d+)(?:,(\d+))?p$/.exec(value.trim()));
+    if (selectors.length > 1 && selectors.every(value => value && Number(value[1]) >= 1 && Number(value[2] ?? value[1]) >= Number(value[1]))) {
+      const ranges = selectors.map(value => ({ start: Number(value![1]), count: Number(value![2] ?? value![1]) - Number(value![1]) + 1 }));
+      if (ranges.some((range, index) => index > 0 && range.start < ranges[index - 1]!.start + ranges[index - 1]!.count)) return [{ kind: "read", path: tokens[3], fragments: [], reason: "range_unknown: 多段 sed 范围重叠或顺序不明确", reasonDescriptor: { key: "diagnostics.history.extraction.sedOrder" } }];
+      const returned = returnedText(output), lines = physicalLines(returned.content);
+      if (returned.truncated || lines.length !== ranges.reduce((sum, range) => sum + range.count, 0)) return [{ kind: "read", path: tokens[3], fragments: [], reason: "range_unknown: 多段 sed 返回截断或行数不符，无法确认分段边界", reasonDescriptor: { key: "diagnostics.history.extraction.m007" } }];
+      let offset = 0;
+      return [{ kind: "read", path: tokens[3], fragments: ranges.map(range => {
+        const content = lines.slice(offset, offset + range.count).join("\n") + "\n";
+        offset += range.count;
+        return { kind: "read", content, historicalStart: range.start, completeLines: true };
+      }) }];
+    }
     const range = /^(\d+)(?:,(\d+))?p$/.exec(tokens[2]!);
     if (range && Number(range[1]) >= 1 && Number(range[2] ?? range[1]) >= Number(range[1])) {
       const evidence = read(output, tokens[3]!, Number(range[1]));

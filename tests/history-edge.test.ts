@@ -160,8 +160,8 @@ test("固定范围多段 sed 完整返回时按顺序切分，缺行或截断不
     assert.ok(evidence.every(part => part.fragments.length === 0));
     assert.ok(evidence.every(part => part.reason?.startsWith("range_unknown:")));
   }
-  assert.equal(shellEvidence("sed -n '1,2p' a.ts\ncat b.ts", "one\ntwo\nthree\n")[0]!.kind, "other");
-  assert.equal(shellEvidence("/bin/zsh -lc 'cat a.ts && cat b.ts'", "one\ntwo\n")[0]!.kind, "other");
+  assert.ok(shellEvidence("sed -n '1,2p' a.ts\ncat b.ts", "one\ntwo\nthree\n").every(event => event.kind === "read" && event.fragments.length === 0));
+  assert.ok(shellEvidence("/bin/zsh -lc 'cat a.ts && cat b.ts'", "one\ntwo\n").every(event => event.kind === "read" && event.fragments.length === 0));
   await writeFile(path, encode([meta(),
     { type: "response_item", payload: { type: "function_call", name: "exec_command", call_id: "bundle", arguments: JSON.stringify({ cmd: invocation, workdir: "/synthetic/repo" }) } },
     command({ command: ["/bin/zsh", "-lc", invocation], formatted_output: "one\ntwo\nseven\nthree\nfour\n" }),

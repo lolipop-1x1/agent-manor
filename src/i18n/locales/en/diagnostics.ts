@@ -1,6 +1,9 @@
 import type { MessageCatalog } from "../../types.js";
 
 export default {
+  "diagnostics.history.extraction.sedOrder": "The sed ranges overlap or are not in ascending order",
+  "diagnostics.history.extraction.compoundOutput": "Combined command output does not identify reliable file boundaries",
+  "diagnostics.history.extraction.compoundStatus": "The execution status of each combined command cannot be confirmed",
   "diagnostics.usage.invalidQuery": "The usage query field {{field}} is invalid",
   "diagnostics.usage.versionMismatch": "The session index version has changed; load the latest usage results",
   "diagnostics.usage.priceVersionMismatch": "The price version is unavailable; load the latest prices",

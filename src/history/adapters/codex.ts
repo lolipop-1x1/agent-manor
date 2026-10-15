@@ -95,11 +95,13 @@ export const codexAdapter: HistoryAdapter = {
         const commandArray = Array.isArray(item.command) ? item.command : [];
         const command = string(commandArray.at(-1)) ?? string(item.command) ?? "";
         const evidence = shellEvidence(command, output ?? "");
+        const status = event.status;
         evidence.forEach((part, index) => {
           const target = index ? { ...event, id: `${event.id}:file:${index}`, sources: [...event.sources] } : event;
           target.kind = part.kind; target.path = part.path;
-          target.fragments = event.status === "success" && output !== undefined ? part.fragments : [];
-          target.reason = output === undefined ? "range_unknown: 具体命令缺少 formatted_output；未采用 stdout 补足" : event.status !== "success" ? "命令未成功完成" : part.reason; target.reasonDescriptor = output === undefined ? { key: "diagnostics.history.adapters.codex.m003" } : event.status !== "success" ? { key: "diagnostics.history.adapters.codex.m004" } : part.reasonDescriptor;
+          target.status = part.status ?? status;
+          target.fragments = target.status === "success" && output !== undefined ? part.fragments : [];
+          target.reason = output === undefined ? "range_unknown: 具体命令缺少 formatted_output；未采用 stdout 补足" : part.status || status === "success" ? part.reason : "命令未成功完成"; target.reasonDescriptor = output === undefined ? { key: "diagnostics.history.adapters.codex.m003" } : part.status || status === "success" ? part.reasonDescriptor : { key: "diagnostics.history.adapters.codex.m004" };
           if (index) source.events.push(target);
           if (target.reason?.startsWith("range_unknown:")) gap("range_unknown", target.reason, target.reasonDescriptor);
           if (target.reason?.startsWith("unsupported_tool:")) gap("unsupported_tool", target.reason, target.reasonDescriptor);
@@ -154,7 +156,7 @@ export const codexAdapter: HistoryAdapter = {
       }
       return;
     }
-    const supportedRecords = ["session_meta", "turn_context", "event_msg", "response_item", "compacted", "compaction", "token_usage_record", "world_state", "inter_agent_communication_metadata"];
+    const supportedRecords = ["session_meta", "turn_context", "event_msg", "response_item", "compacted", "compaction", "token_usage_record", "world_state", "inter_agent_communication_metadata", "retained_context"];
     const recordType = string(record.type) ?? "<缺少类型>";
     if (!supportedRecords.includes(recordType)) gap("unsupported_format", `物理记录 ${row} 的顶层类型 ${recordType} 尚未适配`, { key: "diagnostics.history.adapters.codex.m009", params: { p0: row, p1: String(recordType) } });
   },

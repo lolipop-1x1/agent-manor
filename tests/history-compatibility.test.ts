@@ -71,7 +71,7 @@ test("旧规则缓存即使字节未变化也重新解析，恢复完整 Claude 
   } finally { await rm(directory, { recursive: true, force: true }); }
 });
 
-test("现代单个 CommandExecution 仍支持 file URI 与编号返回，&& 链继续保留未知", async () => {
+test("现代单个 CommandExecution 支持 file URI 与编号返回，组合读取保留路径且不猜输出边界", async () => {
   const path = new URL("./fixtures/history/codex-modern.jsonl", import.meta.url).pathname;
   const original = await readFile(path);
   const parsed = await parseSource(path, "codex");
@@ -80,7 +80,7 @@ test("现代单个 CommandExecution 仍支持 file URI 与编号返回，&& 链�
   assert.equal(physicalLines(parsed.events[0]!.fragments[0]!.content).length, 2);
   assert.deepEqual(await readFile(path), original);
   const chain = shellEvidence("nl -ba a.ts && nl -ba b.ts", "1\talpha\n1\tbeta\n")[0]!;
-  assert.equal(chain.kind, "other");
+  assert.equal(chain.kind, "read");
   assert.equal(chain.fragments.length, 0);
-  assert.ok(chain.reason?.startsWith("unsupported_tool:"));
+  assert.ok(chain.reason?.startsWith("range_unknown:"));
 });

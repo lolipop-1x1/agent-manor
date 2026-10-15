@@ -25,6 +25,64 @@ async function temporary(run: (directory: string) => Promise<void>) {
   try { await run(directory); } finally { await rm(directory, { recursive: true, force: true }); }
 }
 
+test("grep 无 mode 的原生文件列表可确认成功，错误和不一致计数仍保留未知", async () => temporary(async directory => {
+  const path = join(directory, "search.jsonl");
+  const search = { totalFiles: 1, returnedFiles: 1, filenames: ["/synthetic/repo/a.ts"], truncated: false, durationMs: 1 };
+  await writeFile(path, encode([
+    call("search", "search", "grep", { pattern: "alpha", path: "/synthetic/repo" }), output("search-result", "search", { llmContent: JSON.stringify(search) }, "grep"),
+    call("inconsistent", "inconsistent", "grep"), output("inconsistent-result", "inconsistent", { llmContent: JSON.stringify({ ...search, returnedFiles: 3 }) }, "grep"),
+    call("failed", "failed", "grep"), output("failed-result", "failed", { llmContent: JSON.stringify(search), isError: true }, "grep"),
+  ]));
+  const parsed = await parseSource(path, "codeflicker");
+  assert.deepEqual(parsed.events.map(event => event.status), ["success", "unknown", "failure"]);
+  assert.ok(parsed.events.every(event => event.fragments.length === 0));
+}));
+
+test("grep 计数模板兼容外层截断字段，两层截断及错误不能伪造成功", async () => temporary(async directory => {
+  const path = join(directory, "count.jsonl");
+  const payload = { mode: "count", numFiles: 0, filenames: [], numMatches: 0, durationMs: 1 };
+  const results = [
+    { llmContent: JSON.stringify(payload), truncated: false },
+    { llmContent: JSON.stringify(payload), truncated: true },
+    { llmContent: JSON.stringify({ ...payload, truncated: true }), truncated: false },
+    { llmContent: JSON.stringify({ ...payload, truncated: false }), truncated: true },
+    { llmContent: JSON.stringify({ ...payload, error: "synthetic failure" }), truncated: false },
+    { llmContent: JSON.stringify(payload), truncated: false, isError: true },
+  ];
+  await writeFile(path, encode(results.flatMap((result, index) => [call(`count-${index}`, `count-${index}`, "grep"), output(`result-${index}`, `count-${index}`, result, "grep")])));
+  const parsed = await parseSource(path, "codeflicker");
+  assert.deepEqual(parsed.events.map(event => event.status), ["success", "unknown", "unknown", "unknown", "unknown", "failure"]);
+  assert.ok(parsed.events.every(event => event.fragments.length === 0));
+}));
+
+test("标题与进程控制不产生代码范围不支持诊断，执行状态仍保持未知", async () => temporary(async directory => {
+  const path = join(directory, "control.jsonl");
+  await writeFile(path, encode([
+    { type: "custom-title", sessionId: "synthetic-codeflicker", customTitle: "合成标题" },
+    ...["task", "kill_task", "kill_bash", "ls", "todoWrite", "skill", "AskUserQuestion", "ExitPlanMode", "Agent"].flatMap((tool, index) => [call(`request-${index}`, `call-${index}`, tool, {}), output(`result-${index}`, `call-${index}`, { llmContent: "合成控制结果" }, tool)]),
+  ]));
+  const parsed = await parseSource(path, "codeflicker");
+  assert.equal(parsed.events.length, 9);
+  assert.ok(parsed.events.every(event => event.status === "unknown" && event.fragments.length === 0));
+  assert.equal(parsed.gaps.length, 0);
+}));
+
+test("旧版嵌套消息恢复调用与结果配对，普通返回文本不伪造读取范围", async () => temporary(async directory => {
+  const path = join(directory, "legacy.jsonl");
+  await writeFile(path, encode([
+    { type: "user", sessionId: "legacy-demo", uuid: "question", message: { role: "user", content: "合成问题" } },
+    { type: "assistant", sessionId: "legacy-demo", uuid: "request", message: { role: "assistant", content: [{ type: "tool_use", id: "read", name: "read", input: { file_path: "/synthetic/repo/a.ts", offset: null, limit: null } }] } },
+    { type: "user", sessionId: "legacy-demo", uuid: "result", message: { role: "user", content: [{ type: "tool_result", tool_use_id: "read", content: "合成读取摘要", is_error: false }] } },
+    { type: "assistant", sessionId: "legacy-demo", uuid: "glob", message: { role: "assistant", content: [{ type: "tool_use", id: "glob", name: "glob", input: { pattern: "*.ts" } }] } },
+    { type: "user", sessionId: "legacy-demo", uuid: "glob-result", message: { role: "user", content: [{ type: "tool_result", tool_use_id: "glob", content: "合成文件列表", is_error: false }] } },
+  ]));
+  const parsed = await parseSource(path, "codeflicker");
+  assert.deepEqual(parsed.events.map(event => [event.tool, event.status, event.sources.length]), [["read", "success", 2], ["glob", "success", 2]]);
+  assert.ok(parsed.events.every(event => event.fragments.length === 0));
+  assert.ok(parsed.gaps.some(gap => gap.kind === "range_unknown"));
+  assert.ok(!parsed.gaps.some(gap => gap.kind === "unsupported_format" || gap.kind === "unpaired_call"));
+}));
+
 test("原生成功 read/edit/write 保留真实工具名、输入与物理记录证据", async () => {
   const parsed = await parseSource(fixture, "codeflicker");
   assert.equal(parsed.events.length, 3);

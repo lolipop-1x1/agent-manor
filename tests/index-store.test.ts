@@ -42,6 +42,21 @@ async function fixture(run: (context: { directory: string; repositoryPath: strin
   }
 }
 
+test("未归属来源不混入当前仓库诊断，仍可通过接口手动关联", async () => fixture(async ({ repositoryPath, history, sourcePath, store, repositoryId, refresh }) => {
+  await writeFile(sourcePath, encode([meta(repositoryPath), call(repositoryPath, "local"), output("local")]));
+  await writeFile(join(history, "unknown.jsonl"), encode([meta(undefined, "unknown"), call(undefined, "external", "cat $FILE"), output("external")]));
+  await refresh();
+  const result = store.listSources(repositoryId);
+  const candidate = result.unassociated.find(source => source.sessionId === "unknown")!;
+  assert.ok(candidate);
+  assert.ok(!result.gaps.some(gap => gap.sourceId === candidate.sourceId));
+  assert.ok(!buildCoverage(store.getSnapshot(repositoryId)).gaps.some(gap => gap.sourceId === candidate.sourceId));
+  store.associateSource(repositoryId, candidate.sourceId);
+  await refresh();
+  assert.ok(store.listSources(repositoryId).sources.some(source => source.sourceId === candidate.sourceId));
+  assert.ok(store.listSources(repositoryId).gaps.some(gap => gap.sourceId === candidate.sourceId && gap.kind === "unsupported_tool"));
+}));
+
 test("SQLite新结构与WAL；登记、完整版本和手动关联重开后保留", async () => fixture(async ({ directory, repositoryPath, history, sourcePath, store, repositoryId, refresh }) => {
   await writeFile(sourcePath, encode([meta(repositoryPath), call(repositoryPath, "first"), output("first")]));
   const orphan = join(history, "orphan.jsonl");

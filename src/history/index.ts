@@ -199,9 +199,10 @@ export async function parseSource(path: string, client: Client, previous?: Parse
       const target = index === 0 ? event : { ...event, id: `${event.id}:file:${index}`, sources: [...event.sources] };
       target.kind = evidence.kind;
       target.path = evidence.path;
-      target.fragments = status === "success" ? evidence.fragments : [];
-      target.reason = reason ?? (status === "success" ? evidence.reason : status === "failure" ? "工具执行失败" : "未确认工具成功终态");
-      target.reasonDescriptor = reason !== undefined ? reasonDescriptor : status === "success" ? evidence.reasonDescriptor : { key: status === "failure" ? "diagnostics.history.toolFailed" : "diagnostics.history.toolStatusUnknown" };
+      target.status = evidence.status ?? status;
+      target.fragments = target.status === "success" ? evidence.fragments : [];
+      target.reason = reason ?? (evidence.status || status === "success" ? evidence.reason : status === "failure" ? "工具执行失败" : "未确认工具成功终态");
+      target.reasonDescriptor = reason !== undefined ? reasonDescriptor : evidence.status || status === "success" ? evidence.reasonDescriptor : { key: status === "failure" ? "diagnostics.history.toolFailed" : "diagnostics.history.toolStatusUnknown" };
       if (index) source.events.push(target);
       if (target.reason?.startsWith("range_unknown:")) gap("range_unknown", target.reason, target.reasonDescriptor);
       if (target.reason?.startsWith("unsupported_tool:")) gap("unsupported_tool", target.reason, target.reasonDescriptor);
@@ -441,7 +442,7 @@ export async function associateSource(source: ParsedSource, baseline: Baseline, 
     }
     const sources = [...new Map([...event.sources, ...proof].map(reference => [JSON.stringify(reference), reference])).values()];
     events.push({ ...event, path, fragments, sources });
-    if (!available.has(path)) gaps.push({ kind: "range_unknown", message: `历史文件 ${path} 不在当前仓库基线中`, messageDescriptor: { key: "diagnostics.history.index.m008", params: { p0: String(path) } }, sourceId: source.sourceId });
+    if (!available.has(path) && (event.kind === "read" || event.kind === "edit")) gaps.push({ kind: "range_unknown", message: `历史文件 ${path} 不在当前仓库基线中`, messageDescriptor: { key: "diagnostics.history.index.m008", params: { p0: String(path) } }, sourceId: source.sourceId });
   }
   const cwd = normalizeHistoryPath(source.cwd);
   const belongsByCwd = Boolean(cwd && isAbsolute(cwd) && inside(root, await canonical(cwd)));

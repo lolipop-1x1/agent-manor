@@ -1,6 +1,9 @@
 import type { MessageCatalog } from "../../types.js";
 
 export default {
+  "diagnostics.history.extraction.sedOrder": "多段 sed 范围重叠或顺序不明确",
+  "diagnostics.history.extraction.compoundOutput": "组合命令输出无法可靠区分文件边界",
+  "diagnostics.history.extraction.compoundStatus": "组合命令无法确认各子命令的执行状态",
   "diagnostics.usage.invalidQuery": "用量查询字段 {{field}} 无效",
   "diagnostics.usage.versionMismatch": "会话索引版本已变化，请加载最新用量结果",
   "diagnostics.usage.priceVersionMismatch": "价格版本不可用，请加载最新价格",

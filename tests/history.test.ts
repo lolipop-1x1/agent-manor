@@ -52,7 +52,7 @@ test("Claude 规则升级重建旧空 cwd 游标，来源首个 cwd 不覆盖逐
   previous.cwd = undefined;
   (previous.cursor as { ruleVersion: string }).ruleVersion = "2";
   const parsed = await parseSource(path, "claude", previous);
-  assert.equal(PARSER_RULE_VERSION, "10");
+  assert.equal((parsed.cursor as { ruleVersion: string }).ruleVersion, PARSER_RULE_VERSION);
   assert.equal((parsed.cursor as { parsedRecords: number }).parsedRecords, 3);
   assert.equal(parsed.cwd, directory);
   assert.equal(parsed.events[0]!.cwd, "/synthetic/later");
@@ -101,6 +101,17 @@ test("旧版 shell_command 结果头与实际返回范围", async () => {
   assert.equal(parsed.events[0]!.fragments[0]!.historicalStart, 2);
   assert.equal(parsed.events[0]!.fragments[0]!.content, "beta\ngamma\n");
 });
+
+test("保留问答上下文属于 Codex 元数据，真正未知记录继续报告", async () => temporary(async directory => {
+  const path = join(directory, "retained-context.jsonl");
+  await writeFile(path, encode([meta(), { type: "retained_context", ordinal: 1, payload: { type: "verified_answer", acceptance_order: 1,
+    call_id: "synthetic-question", turn_id: "synthetic-turn", questions: [{ question: "选择范围", answer: "当前仓库" }] } }]));
+  const known = await parseSource(path, "codex");
+  assert.equal(known.events.length, 0);
+  assert.equal(known.gaps.length, 0);
+  await appendFile(path, encode([{ type: "future_record", payload: {} }]));
+  assert.ok((await parseSource(path, "codex")).gaps.some(gap => gap.kind === "unsupported_format"));
+}));
 
 test("完整字节边界、真正续读、跨轮配对、不完整 Unicode 尾部", async () => temporary(async (directory) => {
   const path = join(directory, "source.jsonl");
@@ -305,7 +316,8 @@ test("Shell 安全矩阵支持范围且复杂组合未知，搜索不入读取",
   ] as const) assert.equal(shellEvidence(command, output)[0]!.fragments[0]!.historicalStart, start, command);
   assert.equal(shellEvidence("cat a.ts b.ts", "alpha\nbeta\n").length, 2);
   assert.equal(shellEvidence("cat a.ts b.ts", "alpha\nbeta\n")[0]!.fragments.length, 0);
-  for (const command of ["cat a.ts && cat b.ts", "cat a.ts; cat b.ts", "cat $FILE", "cat a.ts > out", "head -c 10 a.ts", "nl a.ts", "python read.py"]) assert.ok(shellEvidence(command, "alpha\n")[0]!.reason?.startsWith("unsupported_tool:"), command);
+  for (const command of ["cat a.ts && cat b.ts", "cat a.ts; cat b.ts"]) assert.ok(shellEvidence(command, "alpha\n").every(event => event.kind === "read" && event.fragments.length === 0), command);
+  for (const command of ["cat $FILE", "cat a.ts > out", "head -c 10 a.ts", "nl a.ts", "python read.py"]) assert.ok(shellEvidence(command, "alpha\n")[0]!.reason?.startsWith("unsupported_tool:"), command);
   assert.equal(shellEvidence("rg -n alpha src/a.ts", "1:alpha\n")[0]!.kind, "search");
   assert.equal(shellEvidence("rg --files", "src/a.ts\n")[0]!.kind, "other");
   assert.equal(shellEvidence("head -n 1 src/a.ts", "one\ntwo\n")[0]!.fragments.length, 0);

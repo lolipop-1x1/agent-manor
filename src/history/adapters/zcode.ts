@@ -166,7 +166,7 @@ function buildRecords(messages: Record<string, unknown>[], parts: Record<string,
       const partId = string(part.data.id) ?? string(part.row.id) ?? `${id}:${partIndex}`;
       const partTime = timestamp(object(part.data.time).start ?? object(part.data.time).created ?? part.row.time_created) ?? created;
       const partOrder = messageIndex * 1_000 + partIndex + 1;
-      if (type === "text") continue;
+      if (["text", "step-start", "file"].includes(type ?? "")) continue;
       if (type === "step-finish") {
         if (stepUsage.includes(part)) {
           const usage = legacyUsage(part.data.tokens, meta);

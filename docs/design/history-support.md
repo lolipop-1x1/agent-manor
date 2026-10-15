@@ -1,6 +1,6 @@
 # 历史解析支持与证据边界
 
-规则版本：`PARSER_RULE_VERSION = "10"`，定义在 `src/version.ts`；旧规则游标重建。仓库中的测试样本全部匿名合成；格式结构参考本机只读取证笔记，本文不复制个人来源路径、日志或代码。格式兼容采用结构判断，不宣称整个客户端版本已验证。真实 CodeFlicker 仓库端到端验收见源码仓库的 `docs/validation/codeflicker.md`。
+规则版本：`PARSER_RULE_VERSION = "12"`，定义在 `src/version.ts`；旧规则游标重建。仓库中的测试样本全部匿名合成；格式结构参考本机只读取证笔记，本文不复制个人来源路径、日志或代码。格式兼容采用结构判断，不宣称整个客户端版本已验证。真实 CodeFlicker 仓库端到端验收见源码仓库的 `docs/validation/codeflicker.md`。
 
 Gemini CLI、Qwen Code、新版 Kimi Code CLI、Oh My Pi、Grok Build、Reasonix 和 Codewhale 的固定版本、原生根、分支、用量和合成验收边界见 [七个原生客户端来源](native-client-sources.md)。
 
@@ -33,17 +33,17 @@ fork 保存父 session、原始 ordinal 与 endByteOffset。ordinal 的准确客
 | Codex direct shell_command | JSON arguments 与文本 Exit code／Output 头 | 旧版结构实样核对；direct exec_command 按相同 shape 合成验证；缺终态保留 unknown |
 | Codex direct Read/Edit/Write | 结构化结果按直接工具 shape 提取 | 尚无对应本机 direct 实样；不能把普通返回文本当结构化读取范围 |
 | Codex apply_patch | 成功结果与 Add/Update/Delete File 内容 | 可提取变化，非标准 hunk 缺少可靠历史行号时保持未知；失败不产生片段 |
-| Codex `token_usage_record`／`world_state`／`inter_agent_communication_metadata` | 已知非工具元数据跳过 | 真实关联来源中核对为用量、状态和通信元数据；不含读写证据，不制造格式缺口；未知顶层类型继续保留缺口并显示类型名 |
+| Codex `token_usage_record`／`world_state`／`inter_agent_communication_metadata`／`retained_context` | 已知非工具元数据跳过 | 真实关联来源中核对为用量、状态、通信和保留问答元数据；不含读写证据，不制造格式缺口；未知顶层类型继续保留缺口并显示类型名 |
 | Claude Read | 实际 file.content/startLine/numLines/totalLines 与编号文本校验 | 结构实样核对；is_error 可省略但需要结构化成功结果；字段矛盾不产生覆盖片段；可确认的 SDK 虚拟 EOF 空行排除覆盖 |
 | Claude Edit | structuredPatch 的变化行与上下文 | 结构实样核对，纯删除保留活动；无结构化位置时只保留变化内容，不虚构历史行号 |
 | Claude Write create/overwrite | create 的内容，overwrite 的 originalFile/content 差异 | create 结构实样核对；overwrite 合成验证；未确认新建或旧内容则范围未知 |
 | Claude Bash | tool_result.is_error 与实际 content | 实样结构；持久化输出和截断不补读 stdout/旁路文件；后台接收状态为 unknown，后续后台终态通知尚未适配 |
 | Claude Agent／非工具快照 | 真实子来源独立解析，非工具记录跳过 | 不将摘要、totalToolUseCount、file-history-snapshot 等计为读取成功 |
-| CodeFlicker 原生 `message.content[]` | assistant 的 `tool_use` 与 tool 的 `tool-result` 按 ID 配对 | 保留原始小写工具名与参数、uuid 身份、物理行与哈希；新的 uuid 重用 call ID 是新活动；并发同 ID 无强关联字段时保持歧义；system/user/hook 内容不制造工具活动 |
+| CodeFlicker 原生 `message.content[]` | assistant 的 `tool_use` 与 tool 的 `tool-result` 按 ID 配对 | 保留原始小写工具名与参数、uuid 身份、物理行与哈希；新的 uuid 重用 call ID 是新活动；并发同 ID 无强关联字段时保持歧义；同时支持顶层 `user/assistant` 且内嵌 `message.role/content` 的旧结构，用户 `tool_result` 按 `tool_use_id` 配对；普通摘要不生成源码片段；custom-title、system/user/hook 普通内容不制造工具活动 |
 | CodeFlicker read | `llmContent` JSON 的 type/filePath/content/offset/limit/actualLinesRead/totalLines | 原生 CLI 执行器成功模板已核对；路径、范围与 split 计数须一致；末尾 SDK EOF 空项不计物理行，范围内真正的末尾空行保留；恰好 2003 字符且末尾 `...` 的 SDK 隐藏截断形态列缺口，该行不进入精确或近似覆盖，完整前后行保留实际位置；同形态天然源码也保守处理；不凭缺少 isError 判成功 |
 | CodeFlicker write/edit | 固定执行完成模板、returnDisplay 的 structuredPatch | 模板在文件写入完成后产生；标准 hunk 校验行数，仅新增／删除行算修改，context 只定位；write 无 patch 时依据实际写入语义补末尾 LF，不推断原文件一定为新建；edit 无位置时仅保留变化片段并列范围缺口 |
-| CodeFlicker bash | Command/Directory/Stdout/Stderr/Error/Exit Code 的原生返回包装 | 最终退出码与 Error 校验状态，读取仅消费白名单命令的实际 Stdout；绝对 Directory 只归属本次事件，不改会话 cwd，也不推断命令内 cd；截断标记、持久化旁路、后台状态或未知包装不补齐；复杂命令仍产生 unsupported_tool |
-| CodeFlicker grep/glob/ls/todoWrite | 搜索单列、列举与任务列表 other | grep/glob 完整 JSON 返回与 todo_write 结构可证实终态；搜索不产生主要读取覆盖；其他缺少已确认成功模板的结果保留 unknown |
+| CodeFlicker bash | Command/Directory/Stdout/Stderr/Error/Exit Code 的原生返回包装 | 最终退出码与 Error 校验状态，读取仅消费白名单命令的实际 Stdout；绝对 Directory 只归属本次事件，不改会话 cwd，字面 `cd ... &&` 的范围按下述 Shell 矩阵处理；截断标记、持久化旁路、后台状态或未知包装不补齐；复杂命令仍产生 unsupported_tool |
+| CodeFlicker grep/glob/ls/todoWrite | 搜索单列、列举与任务列表 other | grep/glob 完整 JSON 返回与 todo_write 结构可证实终态；无 mode 的 grep 文件列表须有一致的 totalFiles/returnedFiles/filenames，截断字段可来自内层或外层且必须为 false；任一层截断或 error 均否定模板成功；搜索不产生主要读取覆盖；task/kill_task/kill_bash、ls、todoWrite、skill、AskUserQuestion、ExitPlanMode、Agent 是控制、列举或交互工具，不产生代码范围不支持诊断，缺少终态时仍保留 unknown；其他缺少已确认成功模板的结果保留 unknown |
 
 CodeFlicker 的来源身份由原始 sessionId 与显式 agentId 构成，并始终带实际客户端身份；目录 slug 不用于还原 cwd。缺少 cwd 的来源可用实际绝对文件路径逐活动归属仓库。`agent-*.jsonl` 可独立发现和解析；显式 parentSessionId／parent_thread_id／forked_from_id 统一转换为来源关系。原生成功 Agent 结果块的 agentId 也可与同一实际客户端、同项目目录、唯一子 sessionId=`agent-<agentId>` 和同名 JSONL 交叉确认父关系；文件副本具有相同来源身份时不算多个父身份。子事件保留父结果原始引用和父 session，来源列表／结果来源同步表示关系，原始解析缓存不改写。失败、未知、跨目录、跨客户端、身份不符或多个不同父身份不建立推导关系并保留缺口；文件名、parentUuid 消息链、摘要、同一 call ID 或相同内容不能单独证明关系或重放。CLI 格式不读取旧 IDE SQLite；桌面版的 SQLite 支持见下文。未核对归档格式和补全／编辑预测未纳入支持。
 
@@ -59,22 +59,25 @@ CodeFlicker 的来源身份由原始 sessionId 与显式 agentId 构成，并始
 | --- | --- |
 | `cat file` | 成功实际返回，历史起始行 1 |
 | `cat file1 file2` | 保留各文件活动；无输出边界，不生成读取片段 |
-| `sed -n 'a,bp' file`／`sed -n 'ap' file` | 只支持正整数选择器，返回行数不得超过所选范围 |
+| `sed -n 'a,bp' file`／`sed -n 'ap' file` | 只支持正整数选择器，返回行数不得超过所选范围；同文件多个不重叠、递增的选择器仅在返回行数恰好等于范围总长且无截断时切分 |
 | 多行脚本内仅有上述固定范围 `sed`，可外包一层 `sh/bash/zsh -c/-lc` | 成功、无截断且实际总行数等于所有范围长度之和时，按命令顺序确定切分；缺行、混入其他命令或截断不补齐；不执行脚本 |
 | `head -n N file`／`head -N file` | 起始行 1；仅完整实际返回行，不超过 N |
 | `tail -n N file`／`tail -N file` | 保存返回内容用于匹配，历史起始行未知；不使用当前文件行数反推 |
 | `tail -n +N file` | 起始行 N |
 | `nl -ba file` | 校验每个实际编号行，编号递增范围作为历史线索 |
 | `nl -ba file \| sed -n 'a,bp'` | 唯一白名单管道，验证编号未超过选择范围 |
-| `rg -n ... path` | 搜索活动单列，不产生主要读取覆盖 |
+| `rg -n ... path` | 搜索活动单列，不产生主要读取覆盖；识别模式与选项参数，不将正则、glob 或控制后缀作为路径；无法确认选项时不推断路径 |
 | `rg --files` | 文件列举 other，不产生源码覆盖 |
-| `&&`、`;`、重定向、变量、glob、子命令、多行脚本、其他管道、字节截取 | unknown other 与 unsupported_tool 缺口；不根据最后退出码推前面子命令成功 |
+| 字面 `cd directory &&` 与白名单命令链 | 仅全链使用 `&&` 时更新字面 cwd；单次读取可消费实际输出，多次读取只保留路径活动，不猜混合输出边界 |
+| `;`、换行、`||` 连接的白名单命令 | 保留可识别目标；整体退出码不能证明各子命令执行成功，活动状态保持 unknown，不生成读取片段；混合条件中的 cd 不猜目录 |
+| `pwd`、`ls`、`find`、`git`、构建／包管理等已知非源码读取命令 | other，不把命令参数当文件或报代码读取不支持 |
+| 重定向、变量、未引用 glob、子命令、未支持脚本、其他管道、字节截取 | other 与 unsupported_tool 缺口；不执行历史命令，也不通过当前文件补齐历史返回 |
 
 普通源码里的 truncated 单词不会触发截断；只识别支持的工具包装标记。明确中间省略标记前的完整返回行可保留；只有头部提示截断而无法知道输出布局时，不推断行范围。末尾未换行的完整工具返回可代表完整物理末行；JSONL 自身未完成则整体等待。
 
 Claude SDK 部分完整 Read 用 `content.split("\n")` 计数，尾换行会生成额外编号 EOF 空行。只在结构化内容尾 LF、`numLines = 物理行数 + 1`、实际编号输出逐行连续且与结构化内容一致、最后编号等于 `totalLines` 且内容为空时确认这个虚拟末行。片段保留原始结构化源码，因此覆盖只包含物理行；真实的末尾空白行仍保留。缺失可见末行、非 EOF、末行有内容或计数字段矛盾时继续保留范围未知。无尾 LF 和既有物理行计数形式继续支持。
 
-新版命令事件中的多段 `nl ... && nl ...` 即使呈现多个编号段，也继续按复杂 Shell 缺口处理。多段读取仅新增上述固定范围 `sed` 的严格切分：其可输出行数各有上界，只有总返回达到所有上界之和才能确定边界；任一片段不足或存在截断，整组读取范围保持未知。单个新版命令的结构、file URI cwd 和编号内容已有合成回归验证。
+新版命令事件中的多段 `nl ... && nl ...` 保留文件活动，但多个文件重复编号不证明输出边界，不生成读取片段。多段读取采用上述固定范围 `sed` 的严格切分：其可输出行数各有上界，只有总返回达到所有上界之和才能确定边界；任一片段不足或存在截断，整组读取范围保持未知。单个新版命令的结构、file URI cwd 和编号内容已有合成回归验证。
 
 本轮额外只读核对两个真实 Claude 来源的全部 6 个 Read：全部获得与实际内容相同的物理行片段；两个完整返回的 SDK 计数分别为 185／362，覆盖片段分别保留 184／361 个物理行，未包含虚拟 EOF 行。120 行的无尾 LF 局部返回仍正常支持。这个来源级回读统计不等同于本项目 Claude 端到端验收，也不扩展未知客户端格式的支持声明。
 
@@ -114,7 +117,7 @@ IDE 的 `workspaceUri` 可能指向工作区缓存；仅正式 `workspace.json` 
 | `pi`／Pi | `~/.pi/agent/sessions` | V3 JSONL 事件树，按持久化父链保留当前与其他叶分支 |
 | `workbuddy`／WorkBuddy | `~/.workbuddy/projects` | JSONL 正文，与同身份的 SQLite 会话元信息关联 |
 | `opencode`／OpenCode | `~/.local/share/opencode` | `opencode.db` 中 session、message、part |
-| `zcode`／ZCode | `~/.zcode/cli/db` | `db.sqlite` 消息与模型请求，按身份关联桌面任务索引 |
+| `zcode`／ZCode | `~/.zcode/cli/db` | `db.sqlite` 消息与模型请求，按身份关联桌面任务索引；step-start 生命周期与 file 附件元数据不当作代码读取或格式缺口 |
 | `codebuddy`／CodeBuddy | `~/.codebuddy/projects` | JSONL 转录；已发现样本只有用户正文，其他能力按未记录展示 |
 | `qoder`／Qoder | `~/.qoder/projects` | JSONL 转录及 workspace 元信息，不将 workspace 首记录过滤掉 |
 

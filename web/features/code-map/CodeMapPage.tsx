@@ -1,8 +1,8 @@
 import { lazy, memo, Suspense, useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode, type RefObject } from "react";
 import * as Dialog from "@radix-ui/react-dialog";
 import * as Dropdown from "@radix-ui/react-dropdown-menu";
-import { ArrowClockwise, ArrowSquareOut, CaretDown, CaretLeft, CaretRight, CaretUp, Check, CircleNotch, Code, FileCode, Folder, MagnifyingGlass, MapTrifold, Plus, Stack, Trash, WarningCircle, X } from "@phosphor-icons/react";
-import type { Client, CoverageQuery, CoverageResult, DeleteRepositoryResponse, EvidenceResponse, FileCategory, FileDetail, FileEvent, Filters, Gap, HistoryEvent, IndexMaintenanceResult, Job, JobResponse, MapSession, MapSessionsResponse, RegisterRepositoryResponse, Repository, SourcesResponse, StatusResponse } from "../../../src/contracts";
+import { ArrowClockwise, ArrowSquareOut, CaretDown, CaretLeft, CaretRight, CaretUp, Check, CircleNotch, Code, FileCode, Folder, MagnifyingGlass, MapTrifold, Plus, Trash, WarningCircle, X } from "@phosphor-icons/react";
+import type { Client, CoverageQuery, CoverageResult, DeleteRepositoryResponse, EvidenceResponse, FileCategory, FileDetail, FileEvent, Filters, HistoryEvent, IndexMaintenanceResult, Job, JobResponse, MapSession, MapSessionsResponse, RegisterRepositoryResponse, Repository, StatusResponse } from "../../../src/contracts";
 import type { SessionIndexSummary, SessionSummary } from "../../../src/session-contracts";
 import { CLIENTS } from "../../../src/clients";
 import { ApiError, errorMessage, isAborted, request } from "../../shared/api";
@@ -20,7 +20,7 @@ import { useVisiblePolling } from "../../shared/refresh/useVisiblePolling";
 import { RefreshControl } from "../../shared/ui/RefreshControl";
 import { AutoRefreshControl } from "../../shared/ui/AutoRefreshControl";
 import { clientLabel, isMessageDescriptorKnown, messageText, t, useI18n } from "../../shared/i18n";
-import { boundQuery, categoryNames, fileHighlights, filename, gapNames, metricNames, metricValue, rangesLabel, refreshFailureReason, type Metric } from "./model";
+import { boundQuery, categoryNames, fileHighlights, filename, metricNames, metricValue, rangesLabel, refreshFailureReason, type Metric } from "./model";
 import { dateLabel, fmt, percent } from "../../shared/format";
 import { timeFilters } from "../../shared/time-filters";
 import { type Theme } from "../../shared/theme";
@@ -70,76 +70,6 @@ function Modal({ open, onOpenChange, title, description, children, wide = false,
     <Dialog.Title>{title}</Dialog.Title><Dialog.Description className="dialog-description">{description}</Dialog.Description>
     <Dialog.Close asChild><button className="icon-button dialog-close" disabled={busy} aria-label={t("codeMap.dialog.close")}><X size={18} /></button></Dialog.Close>{children}
   </Dialog.Content></Dialog.Portal></Dialog.Root>;
-}
-
-function Gaps({ gaps }: { gaps: Gap[] }) {
-  useI18n();
-  if (!gaps.length) return <p className="muted">{t("codeMap.gaps.empty")}</p>;
-  return <div className="gap-list">{gaps.map((gap, i) => <div key={`${gap.kind}-${gap.sourceId ?? i}`}><strong>{gapNames[gap.kind]}{gap.count !== undefined ? ` · ${fmt(gap.count)}` : ""}</strong><p>{!isMessageDescriptorKnown(gap.messageDescriptor) && <strong>{t("common.originalDetails")}: </strong>}{messageText(gap.messageDescriptor, gap.message)}{gap.details?.map((item, index) => <span key={index}> · {!isMessageDescriptorKnown(item) && <strong>{t("common.originalDetails")}: </strong>}{messageText(item, gap.message)}</span>)}</p>{gap.sourceId && <small>{t("codeMap.sourceId", { id: gap.sourceId })}</small>}</div>)}</div>;
-}
-
-function SourcesDialog({ repo, query, gapCount, onJob }: { repo: Repository; query?: CoverageQuery; gapCount: number; onJob: (job: Job) => void }) {
-  useI18n();
-  const [open, setOpen] = useState(false);
-  const [data, setData] = useState<SourcesResponse | null>(null);
-  const [error, setError] = useState<unknown>(null);
-  const [loading, setLoading] = useState(false);
-  const [retry, setRetry] = useState(0);
-  const [associating, setAssociating] = useState<string | null>(null);
-  const key = queryString(query ?? {});
-  useEffect(() => {
-    if (!open || !query?.version) return;
-    const controller = new AbortController();
-    setLoading(true); setError(null); setData(null);
-    void request<SourcesResponse>(`${repositoryPath(repo.id)}/sources${key}`, { signal: controller.signal })
-      .then(result => { if (result.version !== query.version) throw new ApiError("VERSION_MISMATCH", "来源返回的结果版本发生变化，请刷新后重试。", { key: "codeMap.error.versionSources" }); setData(result); })
-      .catch(failure => { if (!isAborted(failure)) setError(failure); })
-      .finally(() => { if (!controller.signal.aborted) setLoading(false); });
-    return () => controller.abort();
-  }, [open, repo.id, key, retry, query?.version]);
-  const associate = async (sourceId: string) => {
-    setAssociating(sourceId); setError(null);
-    try {
-      const response = await request<JobResponse>(`${repositoryPath(repo.id)}/associations`, { method: "POST", body: { sourceId } });
-      onJob(response.job); setOpen(false);
-    } catch (failure) { setError(failure); }
-    finally { setAssociating(null); }
-  };
-  return <>
-    <button className="button subtle" aria-label={t("codeMap.sources.trigger")} onClick={() => setOpen(true)}><Stack size={17} /><span className="desktop-text">{t("codeMap.sources.trigger")}</span>{gapCount > 0 && <span className="count-badge">{fmt(gapCount)}</span>}</button>
-    <Modal open={open} onOpenChange={setOpen} title={t("codeMap.sources.title")} description={t("codeMap.sources.description")}>
-      {!query?.version && <p className="muted">{t("codeMap.sources.notReady")}</p>}
-      {loading && <p className="muted" role="status">{t("codeMap.sources.loading")}</p>}
-      {!!error && <Notice danger action={<button className="button subtle" onClick={() => setRetry(value => value + 1)}>{t("common.retry")}</button>}><ErrorDetails error={error} /></Notice>}
-      {data && <>
-        <div className="source-summary">{CLIENTS.map(client => <div key={client.id}><strong>{fmt(data.sources.filter(source => source.client === client.id).length)}</strong><span>{t("codeMap.sources.clientSources", { client: clientLabel(client.id) })}</span></div>)}<div><strong>{fmt(data.unassociated.length)}</strong><span>{t("codeMap.sources.pending")}</span></div></div>
-        <h3>{t("codeMap.sources.associated")}</h3><div className="source-list">{data.sources.map(source => <div className="source-row" key={source.sourceId}><strong>{clientLabel(source.client)}<small>{source.association === "manual" ? t("codeMap.sources.manual") : t("codeMap.sources.auto")} · {t("codeMap.event.count", { count: source.eventCount })}</small></strong><code>{source.path}</code><small>{t("codeMap.sessionId", { id: source.sessionId })}</small></div>)}{!data.sources.length && <p className="muted">{t("codeMap.sources.noAssociated")}</p>}</div>
-        <h3>{t("codeMap.sources.unassociated")}</h3>{data.unassociated.length > 0 && <p className="muted small">{t("codeMap.sources.confirm", { repository: repo.name })}</p>}
-        <div className="source-list">{data.unassociated.map(source => <div className="source-row" key={source.sourceId}><strong>{clientLabel(source.client)} · {source.sessionId}</strong><code>{source.path}</code><small>{t("codeMap.sources.cwd", { path: source.cwd ?? t("common.unknown") })}</small><button className="button" disabled={associating !== null} onClick={() => void associate(source.sourceId)}>{associating === source.sourceId ? t("codeMap.sources.associating") : t("codeMap.sources.associate")}</button></div>)}{!data.unassociated.length && <p className="muted">{t("codeMap.sources.noUnassociated")}</p>}</div>
-        <h3>{t("codeMap.gaps.title")}</h3><Gaps gaps={data.gaps} /><p className="version-note">{t("codeMap.version.result", { version: data.version })}</p>
-      </>}
-    </Modal>
-  </>;
-}
-
-function CoverageGaps({ repoId, query, count }: { repoId: string; query: CoverageQuery; count: number }) {
-  useI18n();
-  const [open, setOpen] = useState(false), [data, setData] = useState<{ version: string; gaps: Gap[] }>();
-  const [loading, setLoading] = useState(false), [error, setError] = useState<unknown>(), [retry, setRetry] = useState(0);
-  const key = queryString(query);
-  const [loadedKey, setLoadedKey] = useState("");
-  useEffect(() => {
-    if (!open || loadedKey === key) return;
-    const controller = new AbortController(); setLoading(true); setError(undefined);
-    void request<{ version: string; gaps: Gap[] }>(`${repositoryPath(repoId)}/coverage/gaps${key}`, { signal: controller.signal })
-      .then(result => { if (!controller.signal.aborted && result.version === query.version) { setData(result); setLoadedKey(key); } })
-      .catch(error => { if (!isAborted(error)) setError(error); })
-      .finally(() => { if (!controller.signal.aborted) setLoading(false); });
-    return () => controller.abort();
-  }, [open, repoId, key, retry]);
-  return <details className="coverage-gaps" open={open} onToggle={event => setOpen(event.currentTarget.open)}><summary><WarningCircle size={15} />{t("codeMap.gaps.count", { count })}</summary>
-    {open && <>{loading && <p role="status">{t("codeMap.sources.loading")}</p>}{!!error && <Notice danger action={<button className="text-button" onClick={() => setRetry(value => value + 1)}>{t("common.retry")}</button>}><ErrorDetails error={error} /></Notice>}{data && loadedKey === key && <Gaps gaps={data.gaps} />}</>}
-  </details>;
 }
 
 function EvidenceDialog({ repoId, event, query, open, onOpenChange }: { repoId: string; event: HistoryEvent | null; query: CoverageQuery; open: boolean; onOpenChange: (open: boolean) => void }) {
@@ -581,7 +511,6 @@ export function useCodeMapPage({ active, theme, onSession }: {
       </aside>
       <main className="map-main"><div className="page-heading"><h1>{t("codeMap.title")}</h1><div className="map-heading-tools map-page-actions">
         <span className="map-query-progress">{(mapSessionsLoading || retainedCoverageLoading) && <span className="map-query-loading" role="status" aria-label={t(retainedCoverageLoading ? "codeMap.coverage.loading" : "codeMap.session.loading")} title={t(retainedCoverageLoading ? "codeMap.coverage.loading" : "codeMap.session.loading")}><CircleNotch size={17} aria-hidden="true" /></span>}</span>
-        {repository && <SourcesDialog key={`${repoId}:${renderEpoch}`} repo={repository} query={query} gapCount={coverage?.gapCount ?? coverage?.gaps.length ?? 0} onJob={next => { if (renderEpoch === pageEpoch.current) recordJob(next); }} />}
         <AutoRefreshControl scope="map" />
         <RefreshControl label={t("codeMap.refresh.action")} onRefresh={() => void runRefresh()} busy={actionPending || jobActive(job)} disabled={!repository}
           error={!!actionError || job?.status === "failed"} completedAt={job?.status === "completed" ? job.finishedAt : coverage?.createdAt}
@@ -609,7 +538,6 @@ export function useCodeMapPage({ active, theme, onSession }: {
           {visible.some(file => file.lineCount > 0) ? <CodeMap files={visible} directory={directory} metric={metric} selected={selected} browse={browse} select={selectFile} heading={mapHeading} legend={mapLegend} scopeKey={`${repoId}:${filterKey}:${search}`} /> : <>{mapHeading}<Empty title={visible.length ? t("codeMap.empty.emptyFiles") : t("codeMap.empty.noFiles")} action={<button className="button subtle" onClick={clearFilters}>{t("codeMap.filter.reset")}</button>}>{visible.length ? t("codeMap.empty.emptyFilesDescription") : t("codeMap.empty.noFilesDescription")}</Empty>{mapLegend}</>}
           {search && <p className="muted small">{t("codeMap.filter.searchScope")}</p>}
           <MapFileTable files={visible} selected={selected} metric={metric} search={search} select={selectFile} language={language} />
-          {(coverage!.gapCount ?? coverage!.gaps.length) > 0 && query && <CoverageGaps repoId={repoId} query={query} count={coverage!.gapCount ?? coverage!.gaps.length} />}
           <details className="baseline-note"><summary>{t("codeMap.analysis.info", { date: dateLabel(coverage!.createdAt) })}</summary><p>{t("codeMap.analysis.version", { version: coverage!.version })}<br />{t("codeMap.analysis.baseline", { hash: coverage!.baselineHash })}{coverage!.previousVersion && <>{t("codeMap.analysis.previous", { version: coverage!.previousVersion })}</>}</p></details>
         </>}
       </main>

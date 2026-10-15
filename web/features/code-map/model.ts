@@ -1,4 +1,4 @@
-import type { CoverageQuery, FileCategory, FileCoverage, FileDetail, Filters, GapKind, Job, LineRange } from "../../../src/contracts";
+import type { CoverageQuery, FileCategory, FileCoverage, FileDetail, Filters, Job, LineRange } from "../../../src/contracts";
 import type { MapRect } from "../../shared/map/geometry";
 import { isMessageDescriptorKnown, translate, translateMessage } from "../../../src/i18n";
 import { formatList, getLanguage, t } from "../../shared/i18n";
@@ -12,14 +12,6 @@ export const categoryNames: Record<FileCategory, string> = {
   get source() { return t("common.category.source"); }, get config() { return t("common.category.config"); },
   get docs() { return t("common.category.docs"); }, get unknown() { return t("common.category.unknown"); },
 };
-const gapKeys: Record<GapKind, string> = {
-  source_missing: "sourceMissing", source_unavailable: "sourceUnavailable", range_unknown: "rangeUnknown",
-  unsupported_format: "unsupportedFormat", unsupported_tool: "unsupportedTool", ambiguous: "ambiguous",
-  unassociated: "unassociated", parse_error: "parseError", incomplete_record: "incompleteRecord",
-  unpaired_call: "unpairedCall", budget_exceeded: "budgetExceeded",
-};
-export const gapNames = Object.fromEntries(Object.entries(gapKeys).map(([kind, key]) => [kind, key])) as Record<GapKind, string>;
-for (const [kind, key] of Object.entries(gapKeys)) Object.defineProperty(gapNames, kind, { get: () => t(`codeMap.gap.${key}`) });
 export const filename = (path: string) => path.split("/").at(-1) ?? path;
 export const rangesLabel = (ranges: LineRange[]) => formatList(ranges.map(range => range.start === range.end ? `L${fmt(range.start)}` : `L${fmt(range.start)}–${fmt(range.end)}`));
 
