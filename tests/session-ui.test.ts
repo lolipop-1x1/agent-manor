@@ -4,7 +4,7 @@ import type { Client } from "../src/clients.ts";
 import type { SessionMessage, SessionSearchHit } from "../src/session-contracts.ts";
 import { translate } from "../src/i18n/index.ts";
 import { panelSemantics } from "../web/shared/layout/workspace-layout.ts";
-import { sessionDisplayTitle, sessionParentTitle, sessionResourceName, sessionMessageText, displayRecorded, executionEntryLabel, groupedTurns, searchHitMode, searchKinds, sessionParams, turnTitle, usageAxis, usageIndexAt, usageSegments, workspaceSessionSemantics } from "../web/features/sessions/session-model.ts";
+import { sessionDisplayTitle, sessionParentTitle, sessionResourceName, sessionMessageText, displayRecorded, groupedTurns, searchHitMode, searchKinds, sessionParams, turnTitle, usageAxis, usageIndexAt, usageSegments, workspaceSessionSemantics } from "../web/features/sessions/session-model.ts";
 
 const summary = {
   id: "session-a", client: "codex" as Client, clientSessionId: "external-a", title: "合成会话", titleOrigin: "recorded" as const,
@@ -37,15 +37,6 @@ test("父标题和资源名称仅按来源描述翻译，未知正文描述保�
   assert.equal(sessionResourceName({ ...resource, nameDescriptor: { key: "sessions.resource.nameUnrecorded" } }, "en"), "Name not recorded");
   assert.equal(sessionResourceName({ ...resource, nameDescriptor: { key: "sessions.resource.nameUnrecorded" } }, "zh-CN"), "未记录名称");
   assert.equal(sessionResourceName({ ...resource, nameDescriptor: { key: "sessions.synthetic.obsolete" } }, "en"), "未记录名称");
-});
-
-test("Quiet 标签只映射已核查的 CLI 版本与入口，其他记录保持原文", () => {
-  const entry = { entrypoint: "sdk-cli", version: "0.3.26", recordLine: 1 };
-  assert.equal(executionEntryLabel("codeflicker", entry, "zh-CN"), "Quiet 模式");
-  assert.equal(executionEntryLabel("codeflicker", { ...entry, version: undefined }, "zh-CN"), "入口 sdk-cli");
-  assert.equal(executionEntryLabel("codeflicker", { ...entry, version: "0.3.27" }, "zh-CN"), "入口 sdk-cli");
-  assert.equal(executionEntryLabel("codeflicker", { ...entry, entrypoint: "cli" }, "zh-CN"), "入口 cli");
-  assert.equal(executionEntryLabel("codeflicker-desktop", entry, "zh-CN"), "入口 sdk-cli");
 });
 
 test("会话查询编码保留筛选、类型列表和消息精确定位", () => {
@@ -177,8 +168,6 @@ test("会话标签按指定语言呈现，真实同名标题、正文、入口�
   assert.equal(sessionMessageText(generated, "en"), "Content not recorded");
   assert.equal(sessionMessageText(generated, "zh-CN"), "未记录内容");
   assert.equal(original.text, "未记录内容");
-  assert.equal(executionEntryLabel("codeflicker", { entrypoint: "sdk-cli", version: "0.3.26", recordLine: 1 }, "en"), "Quiet mode");
-  assert.equal(executionEntryLabel("codeflicker", { entrypoint: "sdk-cli", version: "0.3.27", recordLine: 1 }, "en"), "Entry sdk-cli");
   assert.equal(turnTitle("session:turn:19", 1, "en"), "Turn 19");
   assert.equal(turnTitle("session:turn:0", 1, "en"), "Initial context");
   assert.equal(displayRecorded(undefined, "en"), "Not recorded");

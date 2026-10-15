@@ -3,10 +3,11 @@ import { CaretDoubleLeft, CaretDoubleRight, CaretLeft, CaretRight } from "@phosp
 import { FilterSelect } from "./FilterSelect";
 import { fmt } from "../format";
 import { useI18n } from "../i18n";
+import "./resource-pagination.css";
 
-export function ResourcePagination({ page, total, pageSize, onChange, onPageSizeChange, label, container }: {
+export function ResourcePagination({ page, total, pageSize, onChange, onPageSizeChange, label, container, compact = false }: {
   page: number; total: number; pageSize: number; onChange: (page: number) => void;
-  onPageSizeChange?: (pageSize: number) => void; label: string; container?: HTMLElement | null;
+  onPageSizeChange?: (pageSize: number) => void; label: string; container?: HTMLElement | null; compact?: boolean;
 }) {
   const { t } = useI18n();
   const pages = Math.max(1, Math.ceil(total / pageSize));
@@ -19,6 +20,15 @@ export function ResourcePagination({ page, total, pageSize, onChange, onPageSize
     const value = Number(target);
     if (Number.isSafeInteger(value) && value >= 1 && value <= pages) onChange(value);
   };
+  if (compact) return <nav className="resource-pager resource-pager-compact" aria-label={label}>
+    <button className="icon-button" disabled={current <= 1} aria-label={t("common.pagination.previous", { label })} onClick={() => onChange(current - 1)}><CaretLeft size={15} /></button>
+    <form className="resource-page-jump" onSubmit={jump}>
+      <input type="number" required min="1" max={pages} step="1" value={target} onChange={event => setTarget(event.target.value)} aria-label={t("common.pagination.jumpInput", { label })} />
+      <span className="resource-page-current" aria-label={t("common.pagination.current", { page: fmt(current), pages: fmt(pages) })}>/ {fmt(pages)}</span>
+      <button className="text-button" aria-label={t("common.pagination.jumpLabel", { label })}>{t("common.pagination.jump")}</button>
+    </form>
+    <button className="icon-button" disabled={current >= pages} aria-label={t("common.pagination.next", { label })} onClick={() => onChange(current + 1)}><CaretRight size={15} /></button>
+  </nav>;
   return <nav className="resource-pager" aria-label={label}>
     <span className="resource-page-range">{t("common.pagination.range", { start: fmt(total ? (current - 1) * pageSize + 1 : 0), end: fmt(Math.min(current * pageSize, total)), count: total })}</span>
     <div className="resource-page-controls">

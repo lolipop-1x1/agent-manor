@@ -57,16 +57,6 @@
 .resource-tags { display: flex; align-items: center; flex-wrap: wrap; gap: 5px; }
 .resource-tags > span, .resource-state { display: inline-flex; align-items: center; gap: 4px; padding: 3px 6px; border: 1px solid var(--border); border-radius: 4px; color: var(--muted); background: var(--surface); font-size: 10px; line-height: 1.35; }
 .resource-tags > span.is-warning, .resource-state.is-warning { color: var(--near); }
-.resource-pager { display: flex; align-items: center; justify-content: center; flex-wrap: wrap; gap: 8px 12px; min-width: 0; min-height: 50px; padding: 10px 0; flex-shrink: 0; border-top: 1px solid var(--border); color: var(--muted); font-size: 11px; }
-.resource-pager .icon-button { width: 28px; min-height: 28px; padding: 4px; }
-.resource-page-range, .resource-page-current { white-space: nowrap; font-variant-numeric: tabular-nums; }
-.resource-page-controls, .resource-page-number, .resource-page-jump { display: flex; align-items: center; gap: 3px; }
-.resource-page-number { gap: 5px; }
-.resource-page-controls [aria-current="page"] { color: var(--accent); background: var(--accent-soft); }
-.resource-page-jump { gap: 6px; }
-.resource-page-jump input { width: 48px; min-width: 0; height: 28px; padding: 3px 5px; border: 1px solid var(--border); border-radius: 4px; color: var(--text); background: var(--surface); font: inherit; }
-.resource-page-jump .text-button { font-size: 11px; }
-.resource-pager .filter-trigger { width: auto; min-width: 90px; font-size: 11px; }
 .resource-quick-filters { display: flex; flex-wrap: wrap; gap: 6px; padding: 0 0 12px; flex-shrink: 0; }
 .resource-usage-filters, .resource-attention-filters { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; }
 .resource-attention-filters { margin-left: auto; }

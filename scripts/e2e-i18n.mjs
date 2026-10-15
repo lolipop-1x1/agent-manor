@@ -428,9 +428,9 @@ try {
     await button("Statistics methodology").click();
     ensure((await page.getByRole("dialog", { name: "Statistics methodology", exact: true }).innerText()).includes("Retained text characters ÷ 4"), "英文估算公式完整可读");
     await page.keyboard.press("Escape");
-    await page.locator(".session-index-gaps summary").click();
-    await page.locator(".session-index-gaps").getByText("Unsupported event synthetic-event", { exact: true }).waitFor();
-    const gaps = await page.locator(".session-index-gaps").innerText();
+    await page.locator(".session-profile .session-gaps summary").click();
+    await page.locator(".session-profile .session-gaps").getByText("Unsupported event synthetic-event", { exact: true }).waitFor();
+    const gaps = await page.locator(".session-profile .session-gaps").innerText();
     ensure(gaps.includes("Unsupported event synthetic-event") && gaps.includes("Original details") && gaps.includes("原始外部诊断"), "产品缺口详情翻译且旧诊断保留原文");
     await page.route("**/api/v1/sessions/*/profile?*", route => route.fulfill({ status: 400, contentType: "application/json", body: JSON.stringify({ error: { code: "INVALID_INPUT", message: "保留原始产品错误", messageDescriptor: { key: "sessions.reading.evidenceMissing" } } }) }));
     await button("Include child sessions").click();

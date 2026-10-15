@@ -40,6 +40,10 @@ try {
   for (let index = 0; index < 7; index++) await writeFile(join(roots.codex, `${index}.jsonl`), line([
     { type: "session_meta", payload: { id: `other-${index}`, cwd: "/workspace/other", title: `另一个会话 ${index}`, ...(index === 0 ? { source: { subagent: { thread_spawn: { parent_thread_id: "bulk", agent_path: "/root/synthetic-child" } } } } : {}) } }, reply(`other-u-${index}`, "user", "检索标记"), reply(`other-a-${index}`, "assistant", "已完成", { channel: "final" }),
   ]));
+  for (let index = 0; index < 80; index++) await writeFile(join(roots.codex, `pagination-${index}.jsonl`), line([
+    { type: "session_meta", timestamp: "2026-09-01T00:00:00Z", payload: { id: `pagination-${index}`, cwd: "/workspace/pagination", title: `分页合成会话 ${index}` } },
+    { ...reply(`page-u-${index}`, "user", "分页合成问题"), timestamp: "2026-09-01T00:00:00Z" },
+  ]));
   await writeFile(join(roots.codeflicker, "failure.jsonl"), line([
     { type: "message", sessionId: "failure", uuid: "u", role: "user", content: "失败调用定位样本", timestamp: "2026-10-08T10:00:00Z", cwd: "/workspace/session-demo" },
     ...Array.from({ length: 12 }, (_, index) => [
@@ -63,6 +67,21 @@ try {
     const button = name => page.getByRole("button", { name, exact: true });
     await page.setViewportSize({ width: 1280, height: 720 });
     await page.context().grantPermissions(["clipboard-read", "clipboard-write"]);
+    const pagination = page.getByRole("navigation", { name: "会话列表分页", exact: true });
+    const pageInput = pagination.getByRole("spinbutton", { name: "会话列表分页跳转页码", exact: true });
+    await pageInput.waitFor();
+    ensure((await pagination.boundingBox()).height <= 38, "列表分页器占用高度过大");
+    ensure(await pagination.getByRole("button", { name: "会话列表分页上一页", exact: true }).isDisabled(), "首页上一页应禁用");
+    for (const invalid of ["0", "4", "1.5", ""]) {
+      await pageInput.fill(invalid); await pageInput.press("Enter");
+      ensure(await pageInput.evaluate(element => !element.checkValidity()), "非法页码未阻止跳转");
+    }
+    await pageInput.fill("3"); await pageInput.press("Enter");
+    await pagination.getByRole("button", { name: "会话列表分页下一页", exact: true }).waitFor({ state: "visible" });
+    await page.waitForFunction(() => document.querySelector('.resource-pager-compact input')?.value === "3" && document.querySelector('.session-list-item strong')?.textContent.startsWith("分页合成会话"));
+    ensure(await pagination.getByRole("button", { name: "会话列表分页下一页", exact: true }).isDisabled(), "末页下一页应禁用");
+    await pageInput.fill("1"); await pagination.getByRole("button", { name: "会话列表分页跳转", exact: true }).click();
+    await page.getByRole("button", { name: /^长会话验收 Codex/ }).waitFor();
     await page.getByRole("button", { name: /^长会话验收 Codex/ }).click();
     await page.getByRole("heading", { name: "长会话验收", exact: true }).waitFor();
     await page.getByRole("button", { name: /^更多筛选/ }).click();
@@ -94,6 +113,8 @@ try {
     const turnDialog = page.getByRole("dialog", { name: "轮次导航", exact: true });
     await turnTrigger.click();
     const turnInput = turnDialog.getByRole("spinbutton", { name: "跳转轮次", exact: true });
+    ensure(await turnInput.evaluate(element => document.activeElement === element && getComputedStyle(element).outlineOffset === "-1px"), "轮次输入焦点样式未收敛");
+    await page.screenshot({ path: ARTIFACTS + "/turn-jump-focus.png" });
     await turnInput.fill("111"); await turnInput.press("Enter");
     ensure(await turnDialog.isVisible() && await turnTrigger.getAttribute("data-turn") === "1", "越界输入不应跳转或关闭弹层");
     await turnInput.fill("2"); await turnInput.press("Enter");
@@ -111,9 +132,8 @@ try {
     await page.waitForFunction(() => document.querySelector(".session-turn-position")?.getAttribute("data-turn") === "1");
     await turnTrigger.click(); await turnDialog.press("Escape");
     await page.waitForFunction(() => document.activeElement?.classList.contains("session-turn-position"));
-    await button("来源详情").click();
-    await page.getByRole("dialog", { name: "来源详情", exact: true }).press("Escape");
-    await page.waitForFunction(() => document.activeElement?.classList.contains("session-source-trigger"));
+    ensure(await button("来源详情").count() === 0 && await page.locator(".session-index-gaps").count() === 0, "冗余详情入口仍存在");
+    ensure(!(await page.locator(".session-main-meta").innerText()).includes("轮"), "标题元信息仍重复轮次数");
     await button("复制代码").click();
     await page.locator(".session-code-block [role='status']").filter({ hasText: "已复制" }).waitFor();
     ensure((await page.evaluate(() => navigator.clipboard.readText())).length === 24000, "代码复制被预览截断");
@@ -135,7 +155,10 @@ try {
     await page.locator(".session-turn").last().locator("[role='status']").filter({ hasText: "已复制" }).waitFor();
     ensure((await page.evaluate(() => navigator.clipboard.readText())).includes("未确认结束"), "本轮复制丢失终态边界");
     await page.getByRole("tab", { name: "用量", exact: true }).click();
-    ensure(await page.getByText("已记录 109 / 110 条", { exact: true }).isVisible(), "部分缓存范围未显示");
+    await button("统计口径").click();
+    const usageHelp = page.getByRole("dialog", { name: "统计口径", exact: true });
+    ensure((await usageHelp.innerText()).includes("已记录 109 / 110 条"), "部分缓存范围未在帮助中显示");
+    await usageHelp.press("Escape");
     ensure(await page.getByText("缓存读取占比", { exact: true }).count() === 0, "不完整缓存仍显示比例");
     ensure(await page.getByText("缓存写入 Token", { exact: true }).count() === 0, "空指标卡未隐藏");
     const download = page.waitForEvent("download"); await button("导出当前分支对话").click();
@@ -231,11 +254,25 @@ try {
     ensure(await page.locator(".sessions-shell").getAttribute("data-compact-panel") === "list", "窄屏日期关闭同时关闭了列表");
     await filters.press("Escape");
     await page.waitForFunction(() => document.activeElement?.classList.contains("session-more-filters"));
+    ensure((await pagination.boundingBox()).height <= 38, "窄屏分页器高度过大");
+    await page.screenshot({ path: ARTIFACTS + "/mobile-pagination.png" });
+    await pageInput.fill("2"); await pageInput.press("Enter");
+    await page.waitForFunction(() => document.querySelector('.resource-pager-compact input')?.value === "2" && document.querySelector('.session-list-item strong')?.textContent.startsWith("分页合成会话"));
     await page.getByRole("combobox", { name: "筛选客户端", exact: true }).press("ArrowDown");
     await page.getByRole("option", { name: "Codex", exact: true }).press("Enter");
     await page.getByRole("combobox", { name: "筛选客户端", exact: true }).press("Escape"); await button("外观").click(); await page.getByRole("combobox", { name: "显示模式", exact: true }).click(); await page.getByRole("option", { name: "深色", exact: true }).click(); await page.getByRole("dialog", { name: "外观", exact: true }).press("Escape");
     await button("显示语言").click(); await page.getByRole("menuitemradio", { name: "English", exact: true }).click();
     await page.getByRole("button", { name: "Questions", exact: true }).waitFor();
+    await button("Session list").click();
+    const englishPageInput = page.getByRole("spinbutton", { name: "Session list pagination page to jump to", exact: true });
+    await englishPageInput.waitFor();
+    ensure(await page.getByRole("button", { name: "Session list pagination jump to page", exact: true }).isVisible(), "英文分页跳转缺失");
+    await englishPageInput.fill("2"); await englishPageInput.press("Enter");
+    await page.waitForFunction(() => document.querySelector('.resource-pager-compact input')?.value === "2" && document.querySelector('.session-list-item strong')?.textContent.startsWith("分页合成会话"));
+    await page.screenshot({ path: ARTIFACTS + "/mobile-dark-pagination-en.png" });
+    await englishPageInput.fill("1"); await englishPageInput.press("Enter");
+    await page.getByRole("button", { name: /^长会话验收 Codex/ }).waitFor();
+    await englishPageInput.press("Escape");
     ensure(page.url().includes("client=codex"), "语言切换改变筛选");
     ensure(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth), "窄屏出现页面水平溢出");
     await button("Session statistics").click(); await button("12 failed calls").click();
@@ -252,7 +289,7 @@ try {
     await page.getByRole("button", { name: /^长会话验收 Codex/ }).click();
     await button("对话").click(); await button("回复详情").waitFor();
     await page.screenshot({ path: ARTIFACTS + "/desktop.png" });
-    return { compactTurnMenu: true, inlineSource: true, advancedFilters: true, nestedDateEscape: true, evidencePreviewPagination: true, directModes: true, restoredProfile: true, panelToggle: true, directory: true, copy: true, groupedSearch: true, address: true, evidence: true, evidencePopover: true, evidenceSizing: listStyle, keyboard: true, dates: true, language: true, mobile: true };
+    return { compactTurnMenu: true, compactPagination: true, redundantDetailsRemoved: true, advancedFilters: true, nestedDateEscape: true, evidencePreviewPagination: true, directModes: true, restoredProfile: true, panelToggle: true, directory: true, copy: true, groupedSearch: true, address: true, evidence: true, evidencePopover: true, evidenceSizing: listStyle, keyboard: true, dates: true, language: true, mobile: true };
   };
   const output = await browser(["run-code", verify.toString().replaceAll("ARTIFACTS", JSON.stringify(artifacts))]);
   await writeFile(join(artifacts, "report.txt"), output);

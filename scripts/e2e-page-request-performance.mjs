@@ -71,39 +71,23 @@ try {
     await page.keyboard.press("Escape");
     await dialog.waitFor({state:"hidden"});
   `);
-  await step("会话首屏只取摘要，展开后才读取对应版本的缺口", `
+  await step("会话首屏只取摘要，不再显示全局导入详情", `
     await page.getByRole("button",{name:"会话库",exact:true}).click();
     await page.locator(".session-list-item").first().waitFor();
-    let paths=await page.evaluate(()=>performance.getEntriesByType("resource").map(item=>new URL(item.name).pathname+new URL(item.name).search));
+    const paths=await page.evaluate(()=>performance.getEntriesByType("resource").map(item=>new URL(item.name).pathname+new URL(item.name).search));
     expect(paths.includes("/api/v1/sessions/status?summary=true"),"会话状态必须使用摘要");
-    expect(!paths.some(path=>path.startsWith("/api/v1/sessions/gaps")),"缺口正文不能提前下载");
-    await page.route("**/api/v1/sessions/gaps?*",route=>route.fulfill({status:503,contentType:"application/json",body:JSON.stringify({error:{code:"SYNTHETIC_FAILURE",message:"synthetic-gap-failure"}})}));
-    await page.locator(".session-index-gaps > summary").click();
-    await page.locator(".session-index-gaps").getByRole("button",{name:"重试",exact:true}).waitFor();
-    await page.unroute("**/api/v1/sessions/gaps?*");
-    const diagnosticResponse=page.waitForResponse(response=>response.url().includes("/api/v1/sessions/gaps?version="));
-    await page.locator(".session-index-gaps").getByRole("button",{name:"重试",exact:true}).click();
-    await diagnosticResponse;
-    await page.locator(".session-index-gaps > div").first().waitFor();
-    await page.waitForLoadState("networkidle");
-    paths=await page.evaluate(()=>performance.getEntriesByType("resource").map(item=>new URL(item.name).pathname+new URL(item.name).search));
-    expect(paths.some(path=>path.startsWith("/api/v1/sessions/gaps?version=")),"缺口请求必须绑定版本");
-    expect(await page.locator(".session-index-gaps > div").count()>0,"诊断正文未显示");
-    await page.locator(".session-index-gaps > summary").click();
-    await page.locator(".session-index-gaps > div").first().waitFor({state:"detached"});
-    expect(await page.locator(".session-index-gaps > div").count()===0,"关闭时不保留诊断节点");
+    expect(!paths.some(path=>path.startsWith("/api/v1/sessions/gaps")),"会话列表不应下载全局缺口正文");
+    expect(await page.locator(".session-index-gaps").count()===0,"全局导入详情入口未移除");
   `);
   await fetch(`${base}/api/v1/preferences`, { method: "PUT", headers: { "Content-Type": "application/json", "x-agent-manor-instance": service.instance.id }, body: JSON.stringify({ language: "en" }) });
-  await step("英文与窄屏仍可按需查看同一版本的诊断", `
+  await step("英文与窄屏保持精简的会话列表", `
     await page.setViewportSize({width:375,height:812});
     await page.reload();
     await page.locator(".session-compact-actions").getByRole("button",{name:"Session list",exact:true}).click();
     await page.locator(".session-list-item").first().waitFor();
-    expect((await page.locator(".session-index-gaps > summary").innerText()).includes("Index gap"),"缺口数量未使用英文目录");
-    await page.locator(".session-index-gaps > summary").click();
-    await page.locator(".session-index-gaps > div").first().waitFor();
+    expect(await page.locator(".session-index-gaps").count()===0,"英文窄屏仍显示全局导入详情");
     const paths=await page.evaluate(()=>performance.getEntriesByType("resource").map(item=>new URL(item.name).pathname+new URL(item.name).search));
-    expect(paths.some(path=>path===${JSON.stringify(`/api/v1/sessions/gaps?version=${state.version}`)}),"语言与视口不能改变诊断版本");
+    expect(!paths.some(path=>path.startsWith("/api/v1/sessions/gaps")),"语言与视口变化不应请求全局缺口");
     await page.screenshot({path:${JSON.stringify(join(artifacts, "narrow-en.png"))}});
   `);
   await writeFile(join(artifacts, "report.json"), JSON.stringify({ checks }, null, 2));

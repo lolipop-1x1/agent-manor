@@ -6,6 +6,7 @@ import { clientLabel, getLanguage, t, useI18n } from "../../shared/i18n";
 import { formatDateTime } from "../../../src/i18n";
 import { sessionDisplayTitle } from "./session-model";
 import { Pager, SessionError } from "./SessionControls";
+import { ResourcePagination } from "../../shared/ui/ResourcePagination";
 
 export function Highlight({ text, query }: { text: string; query: string }): ReactNode {
   if (!query.trim()) return text;
@@ -53,6 +54,6 @@ export function SessionSearchGroups({ data, query, params, selectedSessionId, on
     {!!data.groups.length && <p className="session-search-totals">{t("sessions.search.groupTotals", { sessions: data.total, hits: data.hitCount })}</p>}
     {data.groups.map(group => <SearchGroup key={`${data.version}-${group.session.id}-${query}`} group={group} selected={group.session.id === selectedSessionId} query={query} params={params} onSelect={onSelect} />)}
     {!data.groups.length && <div className="session-empty-list session-search-empty" role="status"><MagnifyingGlass size={22} aria-hidden="true" /><p>{t("sessions.search.empty")}</p></div>}
-    {data.total > data.pageSize && <Pager page={data.page} pageSize={data.pageSize} total={data.total} onChange={onPage} label={t("sessions.list.pagination")} />}
+    {data.total > data.pageSize && <ResourcePagination compact page={data.page} pageSize={data.pageSize} total={data.total} onChange={onPage} label={t("sessions.list.pagination")} />}
   </section>;
 }

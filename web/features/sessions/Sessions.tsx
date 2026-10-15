@@ -10,13 +10,13 @@ import { ArrowClockwise, CaretDown, CaretLeft, CaretRight, ChatCircle, DownloadS
 import * as Tooltip from "@radix-ui/react-tooltip";
 import * as Popover from "@radix-ui/react-popover";
 import type { Client } from "../../../src/clients";
-import type { SessionGroupedSearchResult, SessionIndexStatus, SessionIndexSummary, SessionListResult, SessionMessage, SessionMessageResult, SessionProfile, SessionQuery, SessionRefreshOptions, SessionSearchHit, SessionSearchResult, SessionSummary, SessionTimelineResult } from "../../../src/session-contracts";
+import type { SessionGroupedSearchResult, SessionIndexSummary, SessionListResult, SessionMessage, SessionMessageResult, SessionProfile, SessionQuery, SessionRefreshOptions, SessionSearchHit, SessionSearchResult, SessionSummary, SessionTimelineResult } from "../../../src/session-contracts";
 import { ApiError, isAborted, request } from "../../shared/api";
 import { ResizableWorkspace } from "../../shared/layout/ResizableWorkspace";
-import { sessionDisplayTitle, sessionParentTitle, sessionMessageText, executionEntryLabel, groupedTurns, localDateBoundary, PAGE_SIZE, TURN_PAGE_SIZE, type EvidenceTarget, searchHitMode, searchKinds, sessionParams, turnTitle, workspaceSessionSemantics } from "./session-model";
+import { sessionDisplayTitle, sessionParentTitle, sessionMessageText, groupedTurns, localDateBoundary, PAGE_SIZE, TURN_PAGE_SIZE, type EvidenceTarget, searchHitMode, searchKinds, sessionParams, turnTitle, workspaceSessionSemantics } from "./session-model";
 import { MessageCard, kindLabels } from "./SessionMessage";
 import { SessionTrace } from "./SessionTrace";
-import { Notice, Pager, SessionDiagnostic, SessionError } from "./SessionControls";
+import { Notice, Pager, SessionError } from "./SessionControls";
 import { SessionProfilePane } from "./SessionProfile";
 import { HelpPopover } from "../../shared/ui/HelpPopover";
 import { AverageSpeedBadge } from "./SessionSpeed";
@@ -25,6 +25,7 @@ import { FilterSelect } from "../../shared/ui/FilterSelect";
 import { availableClientOptions } from "../../shared/ui/client-options";
 import { ProjectPicker } from "../../shared/ui/ProjectPicker";
 import { DatePicker } from "../../shared/ui/DatePicker";
+import { ResourcePagination } from "../../shared/ui/ResourcePagination";
 import { useHistoryRevision } from "../../shared/refresh/useHistoryRefresh";
 import { completeTurnMarkdown } from "./session-message-content";
 import { useContinuousReading } from "./useContinuousReading";
@@ -84,31 +85,6 @@ function TurnTimeline({ turn, position, mode, focusMessageId, project, onMap, ex
     {expanded && <div className="session-turn-events">
       {turn.messages.map(message => <MessageCard key={message.id} message={message} mode={mode} focused={focusMessageId === message.id} query={query} project={project} onMap={onMap} usage={messageSpeedRequest(message, speed)} version={version} />)}
     </div>}
-  </details>;
-}
-
-function SessionIndexGaps({ active, version }: { active: boolean; version?: string }) {
-  const [open, setOpen] = useState(false);
-  const [data, setData] = useState<{ version: string; gaps: SessionIndexStatus["gaps"] } | null>(null);
-  const [error, setError] = useState<Error | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [retry, setRetry] = useState(0);
-  useEffect(() => {
-    if (!active || !open || !version || data?.version === version) return;
-    const controller = new AbortController();
-    setLoading(true); setError(null);
-    void request<{ version: string; gaps: SessionIndexStatus["gaps"] }>(`/sessions/gaps${sessionParams({ version })}`, { signal: controller.signal })
-      .then(setData).catch(failure => { if (!isAborted(failure)) setError(failure instanceof Error ? failure : new Error(String(failure))); })
-      .finally(() => { if (!controller.signal.aborted) setLoading(false); });
-    return () => controller.abort();
-  }, [active, open, version, retry]);
-  return <details className="session-index-gaps" open={open} onToggle={event => setOpen(event.currentTarget.open)}>
-    <summary>{t("sessions.details.import")}</summary>
-    {open && <>
-      {loading && <p role="status">{t("sessions.status.loading")}</p>}
-      {error && <Notice danger action={<button className="text-button" onClick={() => setRetry(value => value + 1)}>{t("common.retry")}</button>}><SessionError error={error} /></Notice>}
-      {data && data.version === version && data.gaps.filter((gap, index, all) => all.findIndex(item => item.kind === gap.kind && item.message === gap.message) === index).map((gap, index) => <SessionDiagnostic key={`${gap.kind}-${gap.sourceId ?? index}`} gap={gap} />)}
-    </>}
   </details>;
 }
 
@@ -698,8 +674,7 @@ export default function Sessions({ active, target, onMap, onHistoryReading, hist
               <p>{status?.sessionCount ? t("sessions.list.adjust") : t("sessions.list.indexPrompt")}</p>{!status?.sessionCount && <button className="button primary" disabled={historyUpdating} onClick={() => onHistoryRefresh?.()}>{t("sessions.refresh.history")}</button>}
             </div>}
           </div>
-          {!debouncedGlobalQuery && sessionList && sessionList.total > PAGE_SIZE && <Pager page={sessionList.page} pageSize={sessionList.pageSize} total={sessionList.total} onChange={setListPage} label={t("sessions.list.pagination")} />}
-          {!!status?.gapCount && <SessionIndexGaps active={active} version={status.version} />}
+          {!debouncedGlobalQuery && sessionList && sessionList.total > PAGE_SIZE && <ResourcePagination compact page={sessionList.page} pageSize={sessionList.pageSize} total={sessionList.total} onChange={setListPage} label={t("sessions.list.pagination")} />}
         </div>
       </aside>
 
@@ -712,13 +687,7 @@ export default function Sessions({ active, target, onMap, onHistoryReading, hist
               <div className="session-heading-copy">
                 <h1 title={selectedSession ? sessionDisplayTitle(selectedSession) : undefined}>{selectedSession ? <Highlight text={sessionDisplayTitle(selectedSession)} query={debouncedGlobalQuery} /> : (selectedSessionId ? t("sessions.reading.loadingSession") : t("sessions.reading.selectHistory"))}</h1>
                 <div className="session-meta-line">
-                  {selectedSession && <p className="session-main-meta" title={selectedSession.project}>{clientLabel(selectedSession.client)} · {shortProject(selectedSession.project)} · {selectedSession.startedAt && <>{dateLabel(selectedSession.startedAt)} · </>}{t("sessions.turnCount", { count: selectedSession.turnCount })}{selectedSession.relationship ? ` · ${selectedSession.relationship === "fork" ? t("sessions.relationship.fork") : t("sessions.relationship.childAgent")}` : ""}</p>}
-                  {selectedSession && (selectedSession.projectOrigin || selectedSession.executionEntries?.length) && <Popover.Root key={selectedSession.id}><Popover.Trigger className="text-button session-source-trigger">{t("sessions.details.source")}<CaretDown size={11} aria-hidden="true" /></Popover.Trigger>
-                    <Popover.Portal><Popover.Content className="filter-menu session-source-details" align="start" sideOffset={6} collisionPadding={12} aria-label={t("sessions.details.source")}>
-                      {selectedSession.projectOrigin && <p>{t(selectedSession.projectOrigin === "tool_path" ? "sessions.reading.projectActivity" : selectedSession.projectOrigin === "client_metadata" ? "sessions.reading.projectMetadata" : "sessions.reading.projectCwd")}</p>}
-                      {selectedSession.executionEntries?.map(entry => <p key={`${entry.entrypoint}:${entry.recordLine}`}>{executionEntryLabel(selectedSession.client, entry)}</p>)}
-                    </Popover.Content></Popover.Portal>
-                  </Popover.Root>}
+                  {selectedSession && <p className="session-main-meta" title={selectedSession.project}>{clientLabel(selectedSession.client)} · {shortProject(selectedSession.project)}{selectedSession.startedAt && <> · {dateLabel(selectedSession.startedAt)}</>}{selectedSession.relationship ? ` · ${selectedSession.relationship === "fork" ? t("sessions.relationship.fork") : t("sessions.relationship.childAgent")}` : ""}</p>}
                 </div>
               </div>
               <div className="session-heading-actions">

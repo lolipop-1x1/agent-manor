@@ -1,17 +1,11 @@
 import type { MessageKind, SessionMessage, SessionQuery, SessionSearchHit, SessionSummary, SessionUsage } from "../../../src/session-contracts";
 import type { PanelSemantics, PanelSide } from "../../shared/layout/workspace-layout";
-import { isQuietEntry } from "../../../src/session-execution";
 import { formatNumber, translate, translateMessageOrOriginal, type Language } from "../../../src/i18n";
 import { getLanguage } from "../../shared/i18n";
 
 export const PAGE_SIZE = 40;
 export const TURN_PAGE_SIZE = 10;
 export type EvidenceTarget = { toolName?: string; resourceKind?: "mcp" | "skill_call" | "skill_read"; resourceName?: string; resourceServer?: string };
-
-export function executionEntryLabel(client: SessionSummary["client"], entry: NonNullable<SessionSummary["executionEntries"]>[number], language = getLanguage()): string {
-  // 仅采用已核查的客户端版本映射；入口标记也可能被原生子会话继承。
-  return translate(language, isQuietEntry(client, entry) ? "sessions.execution.quiet" : "sessions.execution.entry", { entrypoint: entry.entrypoint });
-}
 
 export function sessionDisplayTitle(session: SessionSummary, language = getLanguage()): string {
   if (session.titleOrigin !== "fallback") return session.title;
