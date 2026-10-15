@@ -21,7 +21,7 @@ export interface ManorController {
   dispose(): void;
 }
 interface CameraPose { position: THREE.Vector3; target: THREE.Vector3; zoom: number; offset: number }
-const estatePose = (): CameraPose => ({ position: new THREE.Vector3(32, 28, 40), target: new THREE.Vector3(0, 2, 1), zoom: .92, offset: .14 });
+const estatePose = (): CameraPose => ({ position: new THREE.Vector3(32, 28, 40), target: new THREE.Vector3(2, 1.5, 3), zoom: .74, offset: .08 });
 const teaPose = (): CameraPose => ({ position: new THREE.Vector3(17, 11.5, 20), target: new THREE.Vector3(5.6, 1.35, 5.7), zoom: 2.7, offset: .14 });
 
 export function createManorController(canvas: HTMLCanvasElement, host: HTMLElement, callbacks: Callbacks): ManorController {
@@ -34,7 +34,8 @@ export function createManorController(canvas: HTMLCanvasElement, host: HTMLEleme
   renderer.setClearColor(0xf6f4ed, 0);
   const scene = new THREE.Scene();
   scene.fog = new THREE.Fog(0xf0f1e7, 68, 112);
-  scene.add(createLandscape());
+  const landscape = createLandscape();
+  scene.add(landscape.group);
   scene.add(new THREE.HemisphereLight(0xfffbed, 0x869881, 2.3));
   const sun = new THREE.DirectionalLight(0xffedcd, 3.1);
   sun.position.set(-22, 35, 23);
@@ -114,6 +115,7 @@ export function createManorController(canvas: HTMLCanvasElement, host: HTMLEleme
     }
     estate.update(elapsed);
     tea.update(elapsed);
+    landscape.update(elapsed);
     renderer.render(scene, camera);
     // 用可观察的 DOM 状态验证暂停、恢复与镜头，不暴露产品数据或全局调试对象。
     host.dataset.sceneTime = elapsed.toFixed(3);
