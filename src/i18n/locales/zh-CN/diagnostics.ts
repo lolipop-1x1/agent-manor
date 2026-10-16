@@ -416,7 +416,7 @@ export default {
   "diagnostics.resources.management.m030": "恢复内容未通过校验，恢复材料继续保留",
   "diagnostics.resources.management.m031": "恢复材料校验失败，未修改来源",
   "diagnostics.resources.management.m032": "本次恢复材料已永久清除",
-  "diagnostics.resources.management.m033": "本地修改完成，客户端待重新加载",
+  "diagnostics.resources.management.m033": "本地修改完成",
   "diagnostics.resources.management.m034": "本地操作未完成；未确认客户端生效，请检查来源及恢复材料",
   "diagnostics.resources.configEditor.m001": "当前配置写法未完成保留编辑适配，只读",
   "diagnostics.resources.configEditor.m002": "资源已停用，没有新的本地修改",

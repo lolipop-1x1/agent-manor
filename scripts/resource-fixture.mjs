@@ -39,6 +39,7 @@ export async function resourceFixture(directory, count = 45) {
     record({ type: "function_call_output", call_id: "mcp-search", output: "Exit code: 1\nOutput:\n合成失败\n" }),
     record({ type: "message", role: "assistant", channel: "final", content: [{ type: "output_text", text: "合成检查完成" }] }),
   ];
+  await appendFile(configPath, `\n[[skills.config]]\npath = ${JSON.stringify(join(guide, "SKILL.md"))}\nenabled = true\n`);
   const source = join(history, "example.jsonl");
   await writeFile(source, messages.map(record => `${JSON.stringify(record)}\n`).join(""));
   return { directory, userHome, project, home, history, source, guide, shared, link, configPath };

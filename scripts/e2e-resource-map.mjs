@@ -183,7 +183,6 @@ try {
   const combined = await api("/resources/map?kind=skill&q=map-skill-001&metric=sessions");
   assert.equal(combined.positive[0].value, 2);
   const skillSessionMap = await api("/resources/map?kind=skill&q=map-&metric=sessions");
-  const compactTitle = skillSessionMap.zero.some(node => node.value === null) ? "其他资源" : "未发现使用";
   assert.equal(skillSessionMap.zero.find(node => node.name === "broken")?.value, null, "断链来源被补成零值");
   assert.equal(skillSessionMap.positive.find(row => row.name === "map-skill-000")?.value, 1);
   assert.equal(skillSessionMap.positive.find(row => row.name === "map-read-000")?.value, 1);
@@ -319,8 +318,8 @@ try {
       await days.fill('180');
       await page.waitForFunction(()=>new URLSearchParams(location.hash.split('?')[1]).get('inactive')==='180');
       await quick.getByRole('button',{name:/^未发现使用/}).click();
-      const zero=page.locator('details').filter({has:page.locator('summary').filter({hasText:'未发现使用'})});
-      await zero.waitFor();
+      await page.getByRole('group',{name:'资源使用地图',exact:true}).waitFor();
+      expect(await page.locator('.resource-map-compact').count()===0,'其他资源分组残留');
       expect(!(await page.locator('.resource-list-scroll').innerText()).includes('待检查'),'地图仍有待检查分组');
     }
     await page.evaluate(()=>location.hash='#resources?kind=skill&view=map&q=map-&metric=sessions');
@@ -342,9 +341,9 @@ try {
     await page.getByRole('spinbutton',{name:'地图使用会话数上限',exact:true}).fill('1');
     await page.waitForFunction(()=>new URLSearchParams(location.hash.split('?')[1]).get('maxValue')==='1');
     await page.waitForFunction(()=>[...document.querySelectorAll('.resource-map-colors path[class^="tone-"]')].reduce((count,path)=>count+(path.getAttribute('d').match(/M/g)?.length??0),0)>200);
-    expect(await page.getByRole('button',{name:'查看map-skill-001的使用详情',exact:true}).count()===0,'上限没有过滤多会话资源');
+    await page.getByRole('button',{name:'查看map-skill-001的使用详情',exact:true}).waitFor({state:'hidden'});
     expect(!(await page.locator('.resource-list-scroll').innerText()).includes('待检查'),'仍有待检查分类');
-    expect(await page.locator('.resource-map-compact summary').count()===1,'上限删除无面积入口');
+    expect(await page.locator('.resource-map-compact').count()===0,'其他资源分组仍存在');
     await page.getByRole('group',{name:'资源展示方式',exact:true}).getByRole('button',{name:'列表',exact:true}).click();
     await page.getByRole('table',{name:'Skill 总览',exact:true}).getByRole('button',{name:'按使用会话数排序',exact:true}).click();
     await page.getByRole('table',{name:'Skill 总览',exact:true}).getByRole('button',{name:'查看map-skill-001的使用详情',exact:true}).waitFor();
@@ -354,29 +353,29 @@ try {
     await page.getByRole('spinbutton',{name:'地图使用会话数上限',exact:true}).fill('');
     await page.getByRole('button',{name:'查看map-skill-001的使用详情',exact:true}).waitFor();
   `);
-  await step("零值独立分页，不重新查询地图", `
-    const zero=page.locator('details').filter({has:page.locator('summary').filter({hasText:${JSON.stringify(compactTitle)}})});
-    if(await zero.getAttribute('open')===null) await zero.locator('summary').click();
-    const broken=zero.getByRole('button',{name:'查看broken的使用详情',exact:true});
-    expect((await broken.innerText()).includes('使用未知')&&!(await broken.innerText()).includes('0 次调用'),'真正未知被补成0');
-    const before=page.mapRequests.length;
-    const zeroPager=zero.getByRole('navigation',{name:${JSON.stringify(compactTitle)},exact:true});
-    await zeroPager.getByRole('spinbutton',{name:${JSON.stringify(`${compactTitle}跳转页码`)},exact:true}).fill('2');
-    await zeroPager.getByRole('button',{name:${JSON.stringify(`${compactTitle}跳转`)},exact:true}).click();
-    await page.waitForFunction(label=>document.querySelector('nav[aria-label="'+label+'"]')?.textContent.includes('21–40'),${JSON.stringify(compactTitle)});
-    expect(await page.getByRole('navigation',{name:'待检查资源',exact:true}).count()===0,'待检查分页仍可见');
-    expect(page.mapRequests.length===before,'零值分页重新查询整图');
-    await zeroPager.getByRole('button',{name:${JSON.stringify(`${compactTitle}首页`)},exact:true}).click();
+  await step("地图不再重复零值列表，统一列表仍保留零值及未知资源", `
+    expect(await page.locator('.resource-map-compact').count()===0,'地图仍有其他资源');
+    await page.getByRole('group',{name:'资源展示方式',exact:true}).getByRole('button',{name:'列表',exact:true}).click();
+    const search=page.getByRole('textbox',{name:'搜索资源名称或路径',exact:true});
+    await search.fill('broken');
+    await page.getByRole('button',{name:'查看broken的使用详情',exact:true}).waitFor();
+    const row=page.getByRole('table',{name:'Skill 总览',exact:true}).locator('tbody tr');
+    expect((await row.innerText()).includes('—'),'未知资源被补成零');
+    await search.fill('map-review-000');
+    await page.getByRole('button',{name:'查看map-review-000的使用详情',exact:true}).click();
     const detail=page.getByRole('complementary',{name:'资源详情',exact:true});
-    await zero.getByRole('button',{name:'查看map-review-000的使用详情',exact:true}).click();
     await detail.getByRole('heading',{name:'map-review-000',exact:true}).waitFor();
-    await page.locator('.resource-detail-tabs').getByRole('button',{name:'使用记录',exact:true}).click();await page.waitForFunction(()=>!document.querySelector('.resource-detail-body[aria-busy="true"]'));
+    await detail.locator('.resource-detail-tabs').getByRole('button',{name:'使用记录',exact:true}).click();
+    await page.waitForFunction(()=>!document.querySelector('.resource-detail-body[aria-busy="true"]'));
     expect(/0\\s*使用会话/.test(await detail.locator('.resource-stats').innerText()),'零使用详情错误');
+    await search.fill('map-');
+    await page.getByRole('group',{name:'资源展示方式',exact:true}).getByRole('button',{name:'地图',exact:true}).click();
+    await page.getByRole('group',{name:'资源使用地图',exact:true}).waitFor();
     ${locateResource("map-read-000")}
     await detail.getByRole('heading',{name:'map-read-000',exact:true}).waitFor();
-    await page.locator('.resource-detail-tabs').getByRole('button',{name:'使用记录',exact:true}).click();await page.waitForFunction(()=>!document.querySelector('.resource-detail-body[aria-busy="true"]')); const stats=await detail.locator('.resource-stats').innerText();
-    expect(/0\\s*显式调用/.test(stats)&&/1\\s*成功读取/.test(stats),'零调用被认定未使用');
-    expect(/1\\s*成功读取/.test(stats),'读取证据没有保留');
+    await detail.locator('.resource-detail-tabs').getByRole('button',{name:'使用记录',exact:true}).click();
+    await page.waitForFunction(()=>!document.querySelector('.resource-detail-body[aria-busy="true"]'));
+    expect(/1\\s*成功读取/.test(await detail.locator('.resource-stats').innerText()),'读取证据丢失');
   `);
   await step("Agent 与时间筛选、直接链接和视图偏好", `
     if(await page.locator('.resource-more-filters').getAttribute('open')===null)await page.locator('.resource-more-filters > summary').click(); ${select("使用客户端", "Claude Code")}
@@ -436,13 +435,13 @@ try {
     await manage.locator('.resource-linked-locations > summary').click(); await manage.getByRole('button',{name:${JSON.stringify(`移除链接${fixture.sharedMapLink}，保留目标文件`)},exact:true}).click();
     const dialog=page.locator('.resource-preview-panel');
     await dialog.getByRole('button',{name:'移入回收区',exact:true}).waitFor();
-    expect((await dialog.innerText()).includes('Claude Code'),'预览没有明确所选入口');
+    expect((await dialog.innerText()).includes(${JSON.stringify(fixture.sharedMapLink)}),'预览没有明确所选路径');
     expect(await page.getByRole('dialog').count()===0,'桌面预览不应叠加弹层');
-    expect((await dialog.locator('.resource-change-diff').innerText()).includes('resource-vault'),'回收预览位置标签错误');
+    expect((await dialog.locator('.resource-change-diff').innerText()).includes('回收区（可恢复）'),'回收预览位置标签错误');
     await dialog.getByRole('button',{name:'移入回收区',exact:true}).click();
     await dialog.getByRole('button',{name:'完成',exact:true}).waitFor();
     expect((await dialog.getByRole('status').innerText()).includes('本地修改完成'),'回收未成功');
-    expect((await dialog.innerText()).includes('待重新加载'),'未保留客户端生效边界');
+    expect(!(await dialog.innerText()).includes('待重新加载'),'文件操作不应推测客户端重载状态');
     await dialog.getByRole('button',{name:'完成',exact:true}).click();
     await page.getByRole('group',{name:'资源使用地图',exact:true}).waitFor();
     await detail.getByRole('heading',{name:'map-skill-001',exact:true}).waitFor();
@@ -506,7 +505,7 @@ try {
     expect(await manage.locator('.resource-management-body').count()===2,'不同MCP注册被当成同一对象');
     await manage.getByRole('button',{name:'预览停用map-mcp-001的Codex入口',exact:true}).click();
     const dialog=page.locator('.resource-preview-panel');
-    await dialog.getByRole('button',{name:'停用此配置',exact:true}).click();
+    await dialog.getByRole('button',{name:'停用此全局配置',exact:true}).click();
     await dialog.getByRole('button',{name:'完成',exact:true}).waitFor();
     expect((await dialog.getByRole('status').innerText()).includes('本地修改完成'),'MCP停用失败');
     await dialog.getByRole('button',{name:'完成',exact:true}).click();
@@ -595,15 +594,14 @@ try {
     const tooltip=await page.getByRole('tooltip').innerText();
     expect(tooltip.includes('时间未记录')&&!tooltip.includes('部分记录')&&!tooltip.includes('统计不完整'),'具体时间值或概括提示展示不符合要求');
     await page.getByRole('textbox',{name:'搜索资源名称或路径',exact:true}).fill('map-system');
-    const zero=page.locator('details').filter({has:page.locator('summary').filter({hasText:'未发现使用'})});
-    await zero.locator('summary').filter({hasText:/未发现使用\\s*1$/}).waitFor();
-    if(await zero.getAttribute('open')===null) await zero.locator('summary').click();
+    await page.getByRole('group',{name:'资源展示方式',exact:true}).getByRole('button',{name:'列表',exact:true}).click();
     await page.getByRole('button',{name:'查看map-system的使用详情',exact:true}).click();
     const detail=page.getByRole('complementary',{name:'资源详情',exact:true});
     await detail.getByRole('heading',{name:'map-system',exact:true}).waitFor();
     await detail.locator('.resource-detail-tabs').getByRole('button',{name:'文件位置',exact:true}).click();
     const manage=detail.locator('.resource-location-list'); await manage.waitFor();
     expect(await manage.getByRole('button',{name:/^预览/}).count()===0,'系统资源有写操作');
+    await page.getByRole('group',{name:'资源展示方式',exact:true}).getByRole('button',{name:'地图',exact:true}).click();
     expect(await manage.getByRole('button',{name:/^将.*移入回收区$/}).count()===0,'系统资源有回收操作');
     await manage.getByText('系统资源受保护，当前入口只读。',{exact:true}).waitFor();
     await page.getByRole('textbox',{name:'搜索资源名称或路径',exact:true}).fill('no-such-map-resource');

@@ -58,6 +58,9 @@ export interface NativeResourceRule {
   keyPath: string[];
   member?: string;
   disabledValue?: boolean;
+  /** 控制规则的真实作用范围，独立于资源文件所在范围。 */
+  effectScope?: "client" | "project";
+  effectProject?: string;
   identity?: { kind: "skill" | "mcp"; scope: "global" | "project"; key?: string; source?: string; owner?: string; name: string };
 }
 export interface ResourceInventoryCapabilities {

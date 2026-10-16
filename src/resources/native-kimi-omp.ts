@@ -72,7 +72,7 @@ export async function planKimiOmpInventory(options: NativePlannerOptions): Promi
     const source = add("kimi", "mcp", path, "json", { project, keyPath: ["mcpServers"], ...extra }); const config = await parsed(path, "json", source);
     source.native = { priority, dependencyPaths: [path], registrationWritable: !source.owner,
       stateFor: name => ({ nativeState: object(object(config.mcpServers)[name]).enabled === false ? "disabled" : "enabled",
-        ...(!source.owner ? { controlPath: path, rule: { format: "json" as const, type: "boolean" as const, keyPath: ["mcpServers", name, "enabled"], disabledValue: false } } : {}) }), ...extra.native };
+        ...(!source.owner ? { controlPath: path, rule: { format: "json" as const, type: "boolean" as const, keyPath: ["mcpServers", name, "enabled"], disabledValue: false, effectScope: project ? "project" as const : "client" as const, effectProject: project } } : {}) }), ...extra.native };
     return source;
   };
   await kimiMcp(join(kimiHome, "mcp.json"), 20);
@@ -217,7 +217,7 @@ export async function planKimiOmpInventory(options: NativePlannerOptions): Promi
       || included.length > 0 && !included.some(pattern => wildcard(pattern, name));
     const control = selectedProject ? projectSettings.get(selectedProject)?.control ?? globalControl : globalControl;
     return { nativeState: hardDisabled || excluded ? "disabled" : "enabled", invocationMode: frontmatter?.hide === true || frontmatter?.["disable-model-invocation"] === true ? "user-only" : "auto",
-      ...(!hardDisabled ? { controlPath: control, rule: { format: control.endsWith(".json") ? "json" as const : "yaml" as const, type: "name-list" as const, keyPath: ["disabledExtensions"], member: `skill:${name}` } } : {}) };
+      ...(!hardDisabled ? { controlPath: control, rule: { format: control.endsWith(".json") ? "json" as const : "yaml" as const, type: "name-list" as const, keyPath: ["disabledExtensions"], member: `skill:${name}`, effectScope: control === globalControl ? "client" as const : "project" as const, effectProject: control === globalControl ? undefined : selectedProject } } : {}) };
   };
   const ompSkill = (path: string, provider: string, priority: number, project?: string, extra: Partial<InventorySourcePlan> = {}) => {
     const pathRoot = basename(path) === "skills" ? basename(dirname(path)) : basename(path);
@@ -266,8 +266,8 @@ export async function planKimiOmpInventory(options: NativePlannerOptions): Promi
         const denied = strings(ompMcpConfig.disabledServers).includes(name); const forced = strings(ompMcpConfig.enabledServers).includes(name);
         const disabled = !providerEnabled(provider, project, source.scope === "user" && foreignProviders.has(provider)) || denied || !forced && (server.enabled === false || server.disabled === true || server.active === false);
         return { nativeState: disabled ? "disabled" : "enabled", controlPath: writable && !forced ? source.path : ompUserMcpPath,
-          rule: writable && !forced ? { format: "json", type: "boolean", keyPath: ["mcpServers", name, "enabled"], disabledValue: false }
-            : { format: "json", type: "name-list", keyPath: ["disabledServers"], member: name } };
+          rule: writable && !forced ? { format: "json", type: "boolean", keyPath: ["mcpServers", name, "enabled"], disabledValue: false, effectScope: source.project ? "project" : "client", effectProject: source.project }
+            : { format: "json", type: "name-list", keyPath: ["disabledServers"], member: name, effectScope: "client" } };
       } };
   };
   configureOmpMcp(ompUserMcpSource, ompMcpConfig, "native", 10000, true);

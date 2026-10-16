@@ -88,7 +88,7 @@ try {
     ${tab('使用记录')}
     expect(/5\\s*成功读取/.test(await page.locator('.resource-stats').innerText()),'读取统计丢失');
     ${tab('文件位置')}
-    expect(await page.locator('.resource-management-body').count()>=3,'不同文件被合并为一个写入对象');
+    expect(await page.locator('.resource-management-body').count()>=3,'不同文件被合并为一个写入对象');expect(!(await page.locator('.resource-location-list').innerText()).includes('Oh My Pi'),'兼容目录产生虚构客户端');expect(!(await page.locator('.resource-location-list').innerText()).includes('Reasonix'),'兼容目录产生虚构客户端');
     ${tab('概览')}
   `);
   await step('整行、键盘、文本选择与详情关闭焦点',`
@@ -181,7 +181,7 @@ try {
   await step('Skill 原生路径规则预览、取消及焦点返回',`
     ${route('skill','guide',guide.identity.id,'locations')}
     const control=${location(fixture.guide)}.getByRole('button',{name:'预览停用guide的Codex入口',exact:true});await control.click();
-    await ${preview}.getByRole('button',{name:'停用此配置',exact:true}).waitFor();
+    await ${preview}.getByRole('button',{name:'停用此路径的配置',exact:true}).waitFor();
     expect((await page.locator('.resource-change').innerText()).includes('skills.config[].enabled')&&(await page.locator('.resource-change').innerText()).includes('SKILL.md'),'没有真实路径规则');
     ${snap('skill-preview.png')}
     await ${preview}.getByRole('button',{name:'取消',exact:true}).click();await ${preview}.waitFor({state:'hidden'});${ready}
@@ -189,16 +189,16 @@ try {
   `);
   assert.equal(await readFile(fixture.configPath,'utf8'),initialConfig,'取消预览改写了配置');
   await step('Skill 停用并直接预览恢复',`
-    await ${location(fixture.guide)}.getByRole('button',{name:'预览停用guide的Codex入口',exact:true}).click();${apply('停用此配置')}
+    await ${location(fixture.guide)}.getByRole('button',{name:'预览停用guide的Codex入口',exact:true}).click();${apply('停用此路径的配置')}
   `);
   assert.equal(parseToml(await readFile(fixture.configPath,'utf8')).skills.config.at(-1).enabled,false);
   await step('Skill 恢复撤销原路径规则',`await ${preview}.getByRole('button',{name:'预览恢复',exact:true}).click();${apply('恢复到原位置')}${finish}`);
   assert.equal(await readFile(fixture.configPath,'utf8'),initialConfig);
-  await step('过期源内容使执行失效并允许重新预览',`await ${location(fixture.guide)}.getByRole('button',{name:'预览停用guide的Codex入口',exact:true}).click();await ${preview}.getByRole('button',{name:'停用此配置',exact:true}).waitFor();`);
+  await step('过期源内容使执行失效并允许重新预览',`await ${location(fixture.guide)}.getByRole('button',{name:'预览停用guide的Codex入口',exact:true}).click();await ${preview}.getByRole('button',{name:'停用此路径的配置',exact:true}).waitFor();`);
   await appendFile(fixture.configPath,'\n# external-fixture-change\n');
-  await step('冲突保留外部改动',`await ${preview}.getByRole('button',{name:'停用此配置',exact:true}).click();await ${preview}.getByRole('alert').waitFor();expect(await ${preview}.getByRole('button',{name:'停用此配置',exact:true}).count()===0,'冲突仍可执行旧预览');${finish}`);
+  await step('冲突保留外部改动',`await ${preview}.getByRole('button',{name:'停用此路径的配置',exact:true}).click();await ${preview}.getByRole('alert').waitFor();expect(await ${preview}.getByRole('button',{name:'停用此路径的配置',exact:true}).count()===0,'冲突仍可执行旧预览');${finish}`);
   assert.match(await readFile(fixture.configPath,'utf8'),/external-fixture-change/);await writeFile(fixture.configPath,initialConfig);
-  await step('Skill 回收展示真实路径变化并执行',`await ${location(fixture.guide)}.getByRole('button',{name:${JSON.stringify(`将${fixture.guide}移入回收区`)},exact:true}).click();await ${preview}.getByRole('button',{name:'移入回收区',exact:true}).waitFor();expect((await page.locator('.resource-change-diff').innerText()).includes('resource-vault'),'没有回收路径');${apply('移入回收区')}`);
+  await step('Skill 回收展示真实路径变化并执行',`await ${location(fixture.guide)}.getByRole('button',{name:${JSON.stringify(`将${fixture.guide}移入回收区`)},exact:true}).click();await ${preview}.getByRole('button',{name:'移入回收区',exact:true}).waitFor();expect((await page.locator('.resource-change-diff').innerText()).includes('回收区（可恢复）'),'没有回收变化');expect(!(await ${preview}.innerText()).includes('resource-vault'),'内部回收路径泄露到预览');${apply('移入回收区')}`);
   await assert.rejects(access(fixture.guide),{code:'ENOENT'});
   await mkdir(fixture.guide);await writeFile(join(fixture.guide,'occupied.txt'),'keep');
   await step('恢复遇到原位置占用时不覆盖',`await ${preview}.getByRole('button',{name:'预览恢复',exact:true}).click();await ${preview}.getByRole('alert').waitFor();`);
@@ -216,9 +216,9 @@ try {
   await step('MCP 独立注册和字段前后值，不展示敏感内容',`
     ${route('mcp','sample',sample.identity.id,'locations')}
     expect(await page.locator('.resource-management-body').count()===4,'同名注册被合并');
-    await ${location(fixture.configPath)}.getByRole('button',{name:'预览停用sample的Codex入口',exact:true}).click();await ${preview}.getByRole('button',{name:'停用此配置',exact:true}).waitFor();
+    await ${location(fixture.configPath)}.getByRole('button',{name:'预览停用sample的Codex入口',exact:true}).click();await ${preview}.getByRole('button',{name:'停用此全局配置',exact:true}).waitFor();
     const text=await ${preview}.innerText();expect(text.includes('mcp_servers.sample.enabled')&&text.includes('false'),'MCP字段差异缺失');expect(!/synthetic-secret|example-command|example.invalid/.test(text),'预览泄露注册值');
-    ${snap('mcp-preview.png')}${apply('停用此配置')}
+    ${snap('mcp-preview.png')}${apply('停用此全局配置')}
   `);
   assert.equal(parseToml(await readFile(fixture.configPath,'utf8')).mcp_servers.sample.enabled,false);
   await step('MCP 原生配置恢复',`await ${preview}.getByRole('button',{name:'预览恢复',exact:true}).click();${apply('恢复到原位置')}${finish}`);

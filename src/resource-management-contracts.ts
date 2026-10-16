@@ -13,6 +13,8 @@ export interface ResourceConfigurationPreview {
   kind: "boolean" | "membership" | "registration" | "marker";
   before: boolean | "missing" | "present";
   after: boolean | "missing" | "present";
+  controlScope?: "path" | "project" | "client";
+  controlProject?: string;
 }
 export interface ResourceManagementPreview {
   id: string;

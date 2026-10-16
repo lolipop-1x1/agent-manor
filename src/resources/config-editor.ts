@@ -1,4 +1,5 @@
 import { readFile } from "node:fs/promises";
+import { join } from "node:path";
 import { parse as parseToml } from "smol-toml";
 import { applyEdits, modify, parse as parseJson } from "jsonc-parser";
 import type { ParseError } from "jsonc-parser";
@@ -91,6 +92,34 @@ function activationMatches(row: Record<string, unknown>, rule: NativeResourceRul
   const identity = rule.identity;
   return !!identity && ["kind", "scope", "key", "source", "owner", "name"].every(key => (row[key] ?? "") === (object(identity)[key] ?? ""));
 }
+
+/** 配置中须有当前资源的明确依据，兼容目录和默认启用不构成控制入口。 */
+export function hasExplicitResourceControl(text: string, entry: ResourceInventoryEntry, cache = new Map<string, unknown>()): boolean {
+  if (!text.trim()) return false;
+  const path = entry.locator.controlPath ?? entry.locator.configPath;
+  try {
+    const format = entry.locator.nativeRule?.format ?? entry.locator.format ?? (entry.client === "codex" ? "toml" : "json");
+    const key = `${format}:${path}`;
+    if (!cache.has(key)) cache.set(key, nativeValue(text, format));
+    const value = cache.get(key);
+    if (entry.kind === "mcp" && path === entry.locator.configPath) {
+      const registration = entry.locator.keyPath?.length ? get(value, entry.locator.keyPath) : undefined;
+      return !!registration && typeof registration === "object" && !Array.isArray(registration);
+    }
+    if (entry.kind === "mcp" && ["mcpServers", "mcp_servers"].some(key => Object.hasOwn(object(get(value, [key])), entry.server ?? entry.name))) return true;
+    const rule = entry.locator.nativeRule;
+    if (rule?.type === "boolean") return typeof get(value, rule.keyPath) === "boolean";
+    if (rule?.type === "activation") return (get(value, rule.keyPath) as unknown[] | undefined)?.some(row => activationMatches(object(row), rule)) ?? false;
+    if (rule?.type === "name-list") return [get(value, rule.keyPath), get(value, ["skills", "enabled"]), get(value, ["enabledServers"])]
+      .some(names => Array.isArray(names) && names.includes(rule.member));
+    if (entry.locator.nativeControl === "codeflicker-skill") return Object.values(nameRules(value, entry.name)).some(count => count > 0);
+    if (entry.locator.nativeControl === "codex-skill") return [entry.locator.skillFile,
+      entry.targetPath && (entry.entryType === "file" ? entry.targetPath : join(entry.targetPath, "SKILL.md"))]
+      .some(skillPath => skillPath !== undefined && skillRules(value, skillPath).length > 0);
+    return false;
+  } catch { return false; }
+}
+
 function nativeSelection(value: unknown, rule: NativeResourceRule): string {
   const selected = get(value, rule.keyPath);
   if (rule.type === "boolean") {

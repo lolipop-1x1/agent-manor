@@ -416,7 +416,7 @@ export default {
   "diagnostics.resources.management.m030": "Restored content failed validation; recovery materials were retained",
   "diagnostics.resources.management.m031": "Recovery-material validation failed; the source was not modified",
   "diagnostics.resources.management.m032": "These recovery materials were permanently cleared",
-  "diagnostics.resources.management.m033": "Local changes are complete; the client needs to reload",
+  "diagnostics.resources.management.m033": "Local changes are complete",
   "diagnostics.resources.management.m034": "The local operation did not complete, and client activation is unconfirmed; inspect the source and recovery materials",
   "diagnostics.resources.configEditor.m001": "Preserving this configuration syntax during edits is not supported yet; this entry is read-only",
   "diagnostics.resources.configEditor.m002": "The resource is already disabled; no new local changes were made",

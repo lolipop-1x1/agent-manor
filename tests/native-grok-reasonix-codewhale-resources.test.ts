@@ -28,7 +28,7 @@ test("Grok 普通 Skill 按名字控制，兼容 body 保持只读且共享原�
   const source = await plans(home); const native = source.find(source => source.client === "grok" && source.path === join(home, ".grok", "skills"))!;
   const foreign = source.find(source => source.client === "grok" && source.path === join(home, ".agents", "skills"))!;
   assert.equal(native.native!.stateFor("off").nativeState, "disabled"); assert.equal(native.native!.stateFor("on").nativeState, "enabled");
-  assert.deepEqual(native.native!.stateFor("off").rule, { type: "name-list", format: "toml", keyPath: ["skills", "disabled"], member: "off" });
+  assert.deepEqual(native.native!.stateFor("off").rule, { type: "name-list", format: "toml", keyPath: ["skills", "disabled"], member: "off", effectScope: "client" });
   assert.equal(foreign.verified, false); assert.equal(foreign.native!.stateFor("off").controlPath, join(home, ".grok", "config.toml"));
 }));
 

@@ -3,14 +3,13 @@ import { ArrowsIn, ArrowsOut, Crosshair, Minus, Plus, Resize, ShieldCheck, Star 
 import type { ResourceMapMetric, ResourceMapNode, ResourceMapSummary } from "../../../src/resource-service-contracts";
 import { ProjectPicker } from "../../shared/ui/ProjectPicker";
 import { HelpPopover } from "../../shared/ui/HelpPopover";
-import { ResourcePagination } from "../../shared/ui/ResourcePagination";
 import { dateLabel, fmt } from "../../shared/format";
 import { clipRect, fitCamera, mapTileFillRect, type MapPoint, type MapRect } from "../../shared/map/geometry";
 import { MapTileLayer } from "../../shared/map/MapTileLayer";
 import { layoutResourceMap, locateResourceMapCamera, panResourceMapCamera, resizeResourceMapCamera, resourceMapProjectRect, resourceMapTileAt, zoomResourceMapCamera, type ResourceMapCamera } from "./resource-map-layout";
 import { formatList, getLanguage, messageText, t, useI18n } from "../../shared/i18n";
 import { formatPercent } from "../../../src/i18n";
-import { resourceMapCompactTitleKey, resourceMapValueMessage } from "./resource-usage-state";
+import { resourceMapValueMessage } from "./resource-usage-state";
 import "./resource-map.css";
 
 const metricLabel = (metric: ResourceMapMetric) => t(metric === "sessions" ? "resources.sort.sessions" : metric === "reads" ? "resources.map.reads" : "resources.sort.calls");
@@ -31,29 +30,10 @@ const statusLabel = (node: ResourceMapNode) => formatList([node.favorite && t("r
 
 interface ResourceMapProps {
   data: ResourceMapSummary; selected: string; onSelect: (id: string) => void;
-  zeroPage: number; zeroSize: number;
-  onZeroPage: (page: number) => void; onZeroSize: (size: number) => void;
+
 }
 
-function CompactResources({ nodes, title, label, metric, selected, page, pageSize, onSelect, onPage, onSize }: {
-  nodes: ResourceMapNode[]; title: string; label: string; metric: ResourceMapMetric; selected: string;
-  page: number; pageSize: number; onSelect: (id: string) => void; onPage: (page: number) => void; onSize: (size: number) => void;
-}) {
-  useI18n();
-  const current = Math.min(page, Math.max(1, Math.ceil(nodes.length / pageSize)));
-  const rows = nodes.slice((current - 1) * pageSize, current * pageSize);
-  return <details className="resource-map-compact"><summary>{title}<span>{fmt(nodes.length)}</span></summary>
-    <div className="resource-map-compact-content">
-      {rows.length ? <div className="resource-map-compact-rows">{rows.map(node => { const value = resourceMapValueMessage(node, metric); return <button key={node.id} aria-label={t("resources.viewUsage", { name: messageText(node.nameDescriptor, node.name) })} className={selected === node.id ? "is-selected" : ""} onClick={() => onSelect(node.id)}>
-        <strong>{messageText(node.nameDescriptor, node.name)}</strong><span>{t(value.key, value.params)}</span>
-        <div className="resource-tags">{node.favorite && <span><Star size={12} />{t("resources.candidate.favorite")}</span>}{node.protected && <span><ShieldCheck size={12} />{t("resources.protected")}</span>}</div>
-      </button>; })}</div> : <div className="resource-empty">{t("resources.map.empty")}</div>}
-      <ResourcePagination label={label} page={current} pageSize={pageSize} total={nodes.length} onChange={onPage} onPageSizeChange={onSize} />
-    </div>
-  </details>;
-}
-
-export function ResourceMap({ data, selected, onSelect, zeroPage, zeroSize, onZeroPage, onZeroSize }: ResourceMapProps) {
+export function ResourceMap({ data, selected, onSelect }: ResourceMapProps) {
   const { percent } = useI18n();
   const explorer = useRef<HTMLElement>(null), host = useRef<HTMLDivElement>(null);
   const tooltipId = useId();
@@ -81,9 +61,9 @@ export function ResourceMap({ data, selected, onSelect, zeroPage, zeroSize, onZe
     // 管理及收藏刷新未改变面积布局时保留地图视野。
     if (previousGeometry.current !== geometry) {
       const reset = fitCamera(layout.bounds, sizeRef.current);
-      cameraRef.current = reset; setCamera(reset);
+      cameraRef.current = reset; setCamera(reset); setHint(null);
     }
-    previousGeometry.current = geometry; setHint(null);
+    previousGeometry.current = geometry;
     const observer = new ResizeObserver(entries => {
       const entry = entries[0]; if (!entry || !entry.contentRect.width || !entry.contentRect.height) return;
       const next = { width: entry.contentRect.width, height: entry.contentRect.height }, previous = sizeRef.current;
@@ -187,7 +167,6 @@ export function ResourceMap({ data, selected, onSelect, zeroPage, zeroSize, onZe
     }
   };
   const selectedTile = layout.tiles.some(tile => tile.id === selected);
-  const compactTitle = t(resourceMapCompactTitleKey(data.zero, data.metric));
   const zoomPercent = camera.scale / fit.scale * 100;
   return <div className="resource-map-view">
     <section className="resource-map-explorer" ref={explorer} aria-label={t("resources.map.explorer")}>
@@ -227,6 +206,5 @@ export function ResourceMap({ data, selected, onSelect, zeroPage, zeroSize, onZe
       </div>
       <div className="resource-map-legend" aria-label={t("resources.map.legend")}><span><i className="recency-recent" />{t("resources.time.thirty")}</span><span><i className="recency-older" />{t("resources.map.older")}</span><span><i className="recency-old" />{t("resources.map.old")}</span><span><i className="recency-missing" />{t("resources.map.timeMissing")}</span></div>
     </section>
-    <div className="resource-map-secondary"><CompactResources nodes={data.zero} title={compactTitle} label={compactTitle} metric={data.metric} selected={selected} page={zeroPage} pageSize={zeroSize} onSelect={onSelect} onPage={onZeroPage} onSize={onZeroSize} /></div>
   </div>;
 }

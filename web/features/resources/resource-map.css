@@ -37,19 +37,6 @@
 .resource-map-legend .recency-older { background: var(--map-1); }
 .resource-map-legend .recency-old { background: var(--map-0); }
 .resource-map-legend .recency-missing { border: 1px dashed var(--near); background: var(--surface-alt); }
-.resource-map-secondary { display: grid; grid-template-columns: minmax(0, 1fr); gap: 10px; flex-shrink: 0; }
-.resource-map-compact { min-width: 0; border: 1px solid var(--border); border-radius: 5px; background: var(--surface); }
-.resource-map-compact > summary { padding: 10px; color: var(--text); cursor: pointer; font-size: 12px; }
-.resource-map-compact > summary > span { padding-left: 8px; color: var(--muted); font-variant-numeric: tabular-nums; }
-.resource-map-compact-content { max-height: min(300px, 34dvh); overflow: auto; overscroll-behavior: contain; scrollbar-width: thin; }
-.resource-map-compact-rows { display: grid; }
-.resource-map-compact-rows > button { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 7px; width: 100%; padding: 11px 10px; border: 0; border-top: 1px solid var(--border); background: transparent; text-align: left; font-size: 11px; }
-.resource-map-compact-rows > button:hover { background: var(--surface-alt); }
-.resource-map-compact-rows > button.is-selected { background: var(--accent-soft); }
-.resource-map-compact-rows strong { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 550; }
-.resource-map-compact-rows > button > span { color: var(--muted); font-variant-numeric: tabular-nums; }
-.resource-map-compact-rows .resource-tags { grid-column: 1 / -1; }
-.resource-map-compact .resource-pager { padding: 8px; }
 @media (max-width: 767px) {
   .resource-map-settings { gap: 8px; }
   .resource-map-settings > .filter-trigger { min-width: 130px; }
@@ -57,6 +44,5 @@
   .resource-map-toolbar > .help-trigger { margin-left: 0; }
   .resource-map-locator { flex-wrap: wrap; }
   .resource-map-locator > .filter-trigger { width: 100%; }
-  .resource-map-secondary { grid-template-columns: minmax(0, 1fr); }
   .resource-map-explorer:fullscreen { padding: 10px; }
 }

@@ -197,3 +197,21 @@ test("新发现资源分类不依赖观测期限，复用历史聚合", async co
     assert.equal(reads, 1, "经过时间不重读已有历史范围");
   });
 });
+
+test("管理预览复用盘点与收藏历史，目标变化仍在执行前产生冲突", async () => fixture(async (service, library, manager, context) => {
+  const guide = (await service.overview({ kind: "skill" })).resources.find(row => row.identity.name === "guide")!;
+  service.setFavorite(guide.identity.id, true);
+  const detail = await service.overviewDetail(guide.identity.id, { kind: "skill" });
+  const entry = detail.local.flatMap(row => row.entries).find(entry => entry.client === "codex" && entry.entryPath === context.guide)!;
+  const decorate = manager.decorateInventory.bind(manager); let scans = 0;
+  manager.decorateInventory = (...args) => { scans++; return decorate(...args); };
+  const events = library.resourceEvents.bind(library); let reads = 0;
+  library.resourceEvents = (...args) => { reads++; return events(...args); };
+  const preview = await service.preview({ entryId: entry.id, action: "trash" });
+  assert.equal(preview.protected, true);
+  assert.equal(scans, 0, "预览不重新盘点全部资源");
+  assert.equal(reads, 0, "已有收藏关联不重复读取全部历史");
+  await appendFile(join(context.guide, "asset.txt"), "预览后发生变化\n");
+  assert.equal((await service.apply(preview.id, true)).status, "conflict");
+  assert.ok(scans > 0, "执行前仍重新发现引用与保护状态");
+}));

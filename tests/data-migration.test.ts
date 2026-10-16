@@ -82,7 +82,7 @@ test("活动服务、管理锁及已存在目标不会被迁移覆盖", async ()
 test("停用备份迁入 backups，恢复保持外部 Skill 与无关配置", async () => fixture(async (root, source, destination) => {
   const skill = join(root, "skills", "guide"); const config = join(root, "client", "config.toml");
   await mkdir(skill, { recursive: true }); await writeFile(join(skill, "SKILL.md"), "# 人工合成\n");
-  await mkdir(dirname(config)); await writeFile(config, 'model = "synthetic-model"\n');
+  await mkdir(dirname(config)); const original = `model = "synthetic-model"\n[[skills.config]]\npath = ${JSON.stringify(join(skill, "SKILL.md"))}\nenabled = true\n`; await writeFile(config, original);
   const snapshot = inventory(skill); snapshot.entries[0]!.locator.nativeControl = "codex-skill"; snapshot.entries[0]!.locator.controlPath = config;
   const manager = new ResourceManager(source);
   const plan = await manager.preview({ action: "disable", entryId: snapshot.entries[0]!.id }, snapshot);
@@ -96,7 +96,7 @@ test("停用备份迁入 backups，恢复保持外部 Skill 与无关配置", as
     assert.equal(archive.originalPath, config);
     const preview = await migrated.preview({ action: "restore", operationId: archive.operationId }, snapshot);
     assert.equal((await migrated.apply(preview.id, true, snapshot)).status, "success");
-    assert.equal(await readFile(config, "utf8"), 'model = "synthetic-model"\n');
+    assert.equal(await readFile(config, "utf8"), original);
   } finally { migrated.close(); }
 }));
 

@@ -148,7 +148,7 @@ test("资源写入必须确认具体预览，管理状态不随历史缓存重�
   const preview = await apiRequest<ResourceManagementPreview>(service.instance, "/resources/preview", "POST", { entryId: entry.id, action: "standby" });
   await assert.rejects(apiRequest(service.instance, "/resources/apply", "POST", { previewId: preview.id, confirmed: false }), { code: "INVALID_INPUT" });
   const applied = await apiRequest<ResourceManagementOperation>(service.instance, "/resources/apply", "POST", { previewId: preview.id, confirmed: true });
-  assert.equal(applied.status, "success"); assert.equal(applied.clientEffect, "pending_reload");
+  assert.equal(applied.status, "success"); assert.equal(applied.clientEffect, "unknown");
   await assert.rejects(readFile(join(context.guide, "SKILL.md")), { code: "ENOENT" });
   const { job } = await apiRequest<{ job: SessionJob }>(service.instance, "/sessions/cache", "DELETE");
   for (let attempt = 0; attempt < 400; attempt++) {

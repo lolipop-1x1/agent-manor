@@ -18,6 +18,15 @@ export function resourceLocationGroups(rows: ResourceLocalRow[], kind: ResourceK
 }
 
 export function physicalLocationEntry(entries: ResourceInventoryEntry[]): ResourceInventoryEntry | undefined {
-  return [...entries].sort((a, b) => Number(b.capabilities.trash && !b.capabilities.disable) - Number(a.capabilities.trash && !a.capabilities.disable)
-    || Number(b.capabilities.trash) - Number(a.capabilities.trash) || a.client.localeCompare(b.client))[0];
+  return [...entries].sort((a, b) => Number(b.capabilities.trash) - Number(a.capabilities.trash)
+    || Number(b.locator.controlPath === b.entryPath) - Number(a.locator.controlPath === a.entryPath)
+    || Number(a.scope === "project") - Number(b.scope === "project")
+    || Number(!!a.locator.nativeRule) - Number(!!b.locator.nativeRule) || a.client.localeCompare(b.client))[0];
+}
+
+/** 相同路径被兼容适配器重复发现时，不将项目继承关系当作新的文件范围。 */
+export function resourceLocationScopes(entries: ResourceInventoryEntry[]): ResourceInventoryEntry["scope"][] {
+  const paths = new Map<string, ResourceInventoryEntry[]>();
+  for (const entry of entries) paths.set(entry.entryPath, [...paths.get(entry.entryPath) ?? [], entry]);
+  return [...new Set([...paths.values()].map(values => physicalLocationEntry(values)!.scope))];
 }

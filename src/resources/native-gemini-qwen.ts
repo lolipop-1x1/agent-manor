@@ -65,7 +65,7 @@ function normalizedQwenServer(raw: Value): Value {
 }
 
 function listRule(keyPath: string[], member: string): NativeResourceRule {
-  return { format: "jsonc", type: "name-list", keyPath, member };
+  return { format: "jsonc", type: "name-list", keyPath, member, effectScope: "client" };
 }
 
 function validSettings(value: Value, client: "gemini" | "qwen"): boolean {
@@ -198,7 +198,7 @@ export async function planGeminiQwenInventory(options: NativePlannerOptions): Pr
         if (blockedDefault?.scope === "system" || blockedDefault?.scope === "systemDefaults" || extensionDisabled) return { nativeState: "disabled", invocationMode };
         const controlPath = control?.path ?? blockedDefault?.path ?? (level === "project" && project ? join(project, client === "gemini" ? ".gemini" : ".qwen", "settings.json") : userPath);
         return { nativeState: hardDisabled || defaultEntry ? "disabled" : "enabled", invocationMode,
-          controlPath, rule: listRule(["skills", defaultEntry && !hardDisabled ? "defaultDisabled" : "disabled"], defaultEntry ?? names[0]!) };
+          controlPath, rule: { ...listRule(["skills", defaultEntry && !hardDisabled ? "defaultDisabled" : "disabled"], defaultEntry ?? names[0]!), effectScope: (control ?? blockedDefault)?.scope === "project" || !control && !blockedDefault && level === "project" && project ? "project" : "client", effectProject: project } };
       };
     const skill = (path: string, level: "user" | "project" | "extension", priority: number, extra: Partial<InventorySourcePlan> = {}, state = skillState(level)) => {
       const native: NativeInventoryMetadata = { priority, depth: 1, skipRootSkill: client === "qwen", scanRootAndChildren: client === "gemini", skillNameFor: client === "gemini" ? geminiSkillName : undefined,
@@ -248,8 +248,8 @@ export async function planGeminiQwenInventory(options: NativePlannerOptions): Pr
       }
       const disabled = client === "gemini" ? object(enablement?.value[normalized(name)]).enabled === false
         : owner ? strings(object(preferences?.value.disabledMcpServers)[owner]).includes(name) : false;
-      const rule: NativeResourceRule = client === "gemini" ? { format: "json", type: "boolean", keyPath: [normalized(name), "enabled"], disabledValue: false }
-        : owner ? { format: "json", type: "name-list", keyPath: ["disabledMcpServers", owner], member: name }
+      const rule: NativeResourceRule = client === "gemini" ? { format: "json", type: "boolean", keyPath: [normalized(name), "enabled"], disabledValue: false, effectScope: "client" }
+        : owner ? { format: "json", type: "name-list", keyPath: ["disabledMcpServers", owner], member: name, effectScope: "client" }
           : listRule(["mcp", "excluded"], name);
       return { nativeState: disabled ? "disabled" : "enabled", controlPath: client === "qwen" && owner ? preferencePath : enablementPath, rule };
     };

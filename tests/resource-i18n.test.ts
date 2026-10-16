@@ -4,7 +4,7 @@ import { formatDate, formatPercent, translate } from "../src/i18n/index.js";
 import { resourceQuery } from "../web/features/resources/resource-api.js";
 import { timeFilters } from "../web/shared/time-filters.js";
 import type { ResourceMapNode } from "../src/resource-service-contracts.js";
-import { normalizeResourceRouteParams, resourceMapCompactTitleKey, resourceMapValueMessage } from "../web/features/resources/resource-usage-state.js";
+import { normalizeResourceRouteParams, resourceMapValueMessage } from "../web/features/resources/resource-usage-state.js";
 
 test("趋势活动与会话各自使用复数，独立数量不串用单数规则", () => {
   for (const [events, sessions, expected] of [[1, 1, "1 activity · 1 session"], [1, 2, "1 activity · 2 sessions"],
@@ -76,15 +76,17 @@ test("来源诊断和作用范围使用独立中英文复数，原生边界明�
 
 test("旧待检查路由回到全部，仅移除废弃分组分页并保留查询与选择", () => {
   for (const kind of ["skill", "mcp"]) for (const tab of ["usage", "local"]) {
-    const params = new URLSearchParams({ kind, tab, candidate: "review", reviewPage: "3", reviewSize: "50",
+    const params = new URLSearchParams({ kind, tab, candidate: "review", reviewPage: "3", reviewSize: "50", zeroPage: "2", zeroSize: "50",
       client: "codex", window: "custom", from: "2026-10-01", to: "2026-10-08", q: "synthetic resource",
-      id: "synthetic-resource", view: "map", metric: "sessions", maxValue: "2", zeroPage: "2", zeroSize: "50",
+      id: "synthetic-resource", view: "map", metric: "sessions", maxValue: "2",
       page: "3", pageSize: "100", low: "2", inactive: "90", favorite: "true", sort: "name", order: "asc" });
     const normalized = normalizeResourceRouteParams(params);
     assert.equal(normalized.get("candidate"), "all");
     assert.equal(normalized.has("reviewPage"), false);
     assert.equal(normalized.has("reviewSize"), false);
-    for (const [key, value] of params) if (!["candidate", "reviewPage", "reviewSize"].includes(key)) assert.equal(normalized.get(key), value);
+    assert.equal(normalized.has("zeroPage"), false);
+    assert.equal(normalized.has("zeroSize"), false);
+    for (const [key, value] of params) if (!["candidate", "reviewPage", "reviewSize", "zeroPage", "zeroSize"].includes(key)) assert.equal(normalized.get(key), value);
     assert.equal(params.get("candidate"), "review");
     assert.equal(normalizeResourceRouteParams(normalized).toString(), normalized.toString());
     params.set("candidate", "unused");
@@ -106,7 +108,7 @@ test("CLI 人类帮助与资源帮助均不再展示待检查分类", () => {
   }
 });
 
-test("单一地图紧凑区区分正常零值与未知，不把未知指标显示为零或未发现使用", () => {
+test("资源指标区分正常零值与未知，不把未知指标显示为零或未发现使用", () => {
   const zero: ResourceMapNode = { id: "synthetic-zero", name: "synthetic-zero", value: 0, share: 0,
     metrics: { calls: 0, reads: 0, sessions: 0 }, lastUsedAt: null, missingTimeEvents: 0, clients: ["codex"],
     favorite: true, protected: true, observation: "unused", localBodyIds: ["synthetic-body"], hasHistory: false,
@@ -114,12 +116,9 @@ test("单一地图紧凑区区分正常零值与未知，不把未知指标显�
   const unknown: ResourceMapNode = { ...zero, id: "synthetic-unknown", name: "synthetic-unknown", value: null, share: null,
     metrics: null, observation: "unknown", partial: true, usageUnassociated: true };
   for (const metric of ["uses", "sessions"] as const) {
-    assert.equal(resourceMapCompactTitleKey([zero], metric), "resources.candidate.unused");
-    assert.equal(resourceMapCompactTitleKey([zero, unknown], metric), "resources.map.otherResources");
     const unknownValue = resourceMapValueMessage(unknown, metric);
     assert.equal(unknownValue.params, undefined);
     for (const language of ["en", "zh-CN"] as const) {
-      assert.equal(translate(language, resourceMapCompactTitleKey([zero, unknown], metric)), language === "en" ? "Other resources" : "其他资源");
       const valueText = translate(language, unknownValue.key, unknownValue.params);
       assert.equal(valueText, language === "en" ? "Use unknown" : "使用未知");
       assert.doesNotMatch(valueText, /0|未发现使用|No observed use/);
@@ -127,5 +126,4 @@ test("单一地图紧凑区区分正常零值与未知，不把未知指标显�
       assert.match(translate(language, zeroValue.key, zeroValue.params), /0/);
     }
   }
-  assert.equal(resourceMapCompactTitleKey([{ ...zero, observation: "used" }], "calls"), "resources.map.zeroCalls");
 });

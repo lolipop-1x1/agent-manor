@@ -78,8 +78,9 @@ test("Reasonix 原生 activation 恢复完整声明身份，保留其他项目�
 }));
 
 test("共享原生名字的管理预览列明用户与项目范围，写入后可恢复", async () => fixture(async directory => {
-  const path = join(directory, "config.json"); const selected = entry(path, { format: "json", type: "name-list", keyPath: ["skills", "disabled"], member: "guide" });
+  const path = join(directory, "config.json"); const selected = entry(path, { format: "json", type: "name-list", keyPath: ["skills", "disabled"], member: "guide", effectScope: "client" });
   await mkdir(dirname(selected.locator.skillFile!), { recursive: true }); await writeFile(selected.locator.skillFile!, "# 合成资源\n");
+  await writeFile(path, JSON.stringify({ skills: { enabled: ["guide"] } }));
   const project = { ...selected, id: "project-entry", sourceId: "project-source", bodyId: "project-body", scope: "project" as const, project: join(directory, "project") };
   const snapshot: ResourceInventorySnapshot = { observedAt: selected.observedAt, entries: [selected, project], bodies: [], gaps: [], sources: [selected, project].map(value => ({
     id: value.sourceId, client: value.client, kind: value.kind, scope: value.scope, project: value.project, path: value.entryPath,
@@ -88,13 +89,13 @@ test("共享原生名字的管理预览列明用户与项目范围，写入后�
   try {
     assert.equal(manager.decorateInventory(snapshot).entries[0]!.capabilities.disable, true);
     const preview = await manager.preview({ entryId: selected.id, action: "disable" }, snapshot);
-    assert.equal(preview.affectedEntries.length, 2); assert.equal(preview.clientEffect, "pending_reload");
+    assert.equal(preview.configuration?.controlScope, "client"); assert.equal(preview.affectedEntries.length, 2); assert.equal(preview.clientEffect, "pending_reload");
     assert.equal((await manager.apply(preview.id, true, snapshot)).status, "success");
     assert.deepEqual(JSON.parse(await readFile(path, "utf8")).skills.disabled, ["guide"]);
     const archive = manager.archives("disabled")[0]!;
     const restore = await manager.preview({ operationId: archive.operationId, action: "restore" }, snapshot);
     assert.equal((await manager.apply(restore.id, true, snapshot)).status, "success");
-    await assert.rejects(readFile(path));
+    assert.deepEqual(JSON.parse(await readFile(path, "utf8")), { skills: { enabled: ["guide"] } });
   } finally { manager.close(); }
 }));
 

@@ -51,11 +51,14 @@ test("CLI Skill 停用保留仅用户触发与未知字段，恢复只撤销目�
   assert.equal(result.skills.unknown, "retained"); assert.equal(result.unknown, 8);
 }));
 
-test("CLI 新建控制文件停用后可恢复原缺失状态，目标规则改动时保留恢复材料并拒绝覆盖", async () => fixture(async (manager, userHome, scan) => {
-  const path = join(userHome, ".codeflicker", "skills", "guide"); await skill(path);
+test("CLI 缺少明确控制配置时不创建规则，已有规则恢复遇到目标变化保留材料", async () => fixture(async (manager, userHome, scan) => {
+  await skill(join(userHome, ".codeflicker", "skills", "guide"));
   const control = join(userHome, ".codeflicker", "config.json");
-  let initial = await scan(); await apply(manager, initial, selected(initial, "codeflicker", "skill"), "disable");
-  await restore(manager, await scan()); await assert.rejects(stat(control));
+  let initial = await scan(); const resource = selected(initial, "codeflicker", "skill");
+  assert.equal(manager.decorateInventory(initial).entries.find(entry => entry.id === resource.id)?.capabilities.disable, false);
+  await assert.rejects(manager.preview({ entryId: resource.id, action: "disable" }, initial), ServiceError);
+  await assert.rejects(stat(control));
+  await config(control, { skills: { enabled: ["guide"] } });
   initial = await scan(); await apply(manager, initial, selected(initial, "codeflicker", "skill"), "disable");
   await config(control, { skills: { disabled: ["guide"], userOnly: ["guide"] }, unknown: 9 });
   const archive = manager.archives("disabled")[0]!;
@@ -63,25 +66,24 @@ test("CLI 新建控制文件停用后可恢复原缺失状态，目标规则改�
   assert.equal(manager.archives("disabled")[0]?.restorable, true); assert.equal(JSON.parse(await readFile(control, "utf8")).unknown, 9);
 }));
 
-test("CLI 缺失控制文件恢复时保留停用后新增的无关设置", async () => fixture(async (manager, userHome, scan) => {
+test("CLI 现有控制配置恢复时保留停用后新增的无关设置", async () => fixture(async (manager, userHome, scan) => {
   await skill(join(userHome, ".codeflicker", "skills", "guide"));
-  const initial = await scan(); await apply(manager, initial, selected(initial, "codeflicker", "skill"), "disable");
   const control = join(userHome, ".codeflicker", "config.json");
+  await config(control, { skills: { enabled: ["guide"] } });
+  const initial = await scan(); await apply(manager, initial, selected(initial, "codeflicker", "skill"), "disable");
   const after = JSON.parse(await readFile(control, "utf8")); after.language = "synthetic-language"; await config(control, after);
-  await restore(manager, await scan()); assert.deepEqual(JSON.parse(await readFile(control, "utf8")), { language: "synthetic-language" });
+  await restore(manager, await scan()); assert.deepEqual(JSON.parse(await readFile(control, "utf8")), { skills: { enabled: ["guide"] }, language: "synthetic-language" });
 }));
 
-test("桌面独立 Skill 使用可恢复标记停用，标记被修改时恢复拒绝覆盖", async () => fixture(async (manager, userHome, scan) => {
+test("桌面 Skill 默认目录只开放文件管理，不凭目录创建启停标记", async () => fixture(async (manager, userHome, scan) => {
   const path = join(userHome, ".myflicker", "skills", "guide"); await skill(path);
-  let initial = await scan(); const entry = selected(initial, "codeflicker-desktop", "skill");
-  assert.equal(manager.decorateInventory(initial).entries.find(value => value.id === entry.id)?.capabilities.disable, true);
-  await apply(manager, initial, entry, "disable"); assert.equal(await readFile(join(path, ".disable"), "utf8"), "");
-  const disabled = await scan(); assert.equal(selected(disabled, "codeflicker-desktop", "skill").nativeState, "disabled");
-  await restore(manager, disabled); await assert.rejects(stat(join(path, ".disable"))); assert.match(await readFile(join(path, "SKILL.md"), "utf8"), /人工合成/);
-  initial = await scan(); await apply(manager, initial, selected(initial, "codeflicker-desktop", "skill"), "disable");
-  await writeFile(join(path, ".disable"), "synthetic-client-marker"); const archive = manager.archives("disabled")[0]!;
-  await assert.rejects(manager.preview({ operationId: archive.operationId, action: "restore" }, await scan()), (error: unknown) => error instanceof ServiceError && error.code === "CONTENT_STALE");
-  assert.equal(await readFile(join(path, ".disable"), "utf8"), "synthetic-client-marker");
+  const initial = await scan(); const resource = selected(initial, "codeflicker-desktop", "skill");
+  const capabilities = manager.decorateInventory(initial).entries.find(entry => entry.id === resource.id)!.capabilities;
+  assert.equal(capabilities.disable, false); assert.equal(capabilities.trash, true);
+  await assert.rejects(manager.preview({ entryId: resource.id, action: "disable" }, initial), ServiceError);
+  await assert.rejects(stat(join(path, ".disable")));
+  await apply(manager, initial, resource, "trash"); await assert.rejects(stat(path));
+  await restore(manager, await scan()); assert.match(await readFile(join(path, "SKILL.md"), "utf8"), /人工合成/);
 }));
 
 test("桌面共享本体不能用标记冒充独立停用，链接可独立回收且不改目标", async () => fixture(async (manager, userHome, scan) => {
@@ -137,6 +139,7 @@ test("CLI 当前 Skill 回收预览显示下层来源，后续盘点重新显示
 test("CLI 用户名称规则预览列出同名项目与有效作用范围，未知范围不开放原生停用", async () => fixture(async (manager, userHome) => {
   const project = join(userHome, "projects", "synthetic-project");
   await skill(join(userHome, ".codeflicker", "skills", "guide")); await skill(join(project, ".codeflicker", "skills", "guide"));
+  await config(join(userHome, ".codeflicker", "config.json"), { skills: { enabled: ["guide"] } });
   const scan = () => scanResourceInventory({ userHome, projects: [project], environment: {} });
   const initial = await scan(); const entry = initial.entries.find(value => value.client === "codeflicker" && value.kind === "skill" && value.scope === "user" && value.name === "guide")!;
   assert.ok(entry);
@@ -149,24 +152,25 @@ test("CLI 用户名称规则预览列出同名项目与有效作用范围，未�
   assert.equal(manager.decorateInventory(unknown).entries.find(value => value.id === entry.id)?.capabilities.disable, false);
   await assert.rejects(manager.preview({ entryId: entry.id, action: "disable" }, unknown), (error: unknown) => error instanceof ServiceError && error.code === "FORBIDDEN");
   assert.equal((await manager.apply(preview.id, true, unknown)).status, "conflict");
-  await assert.rejects(stat(join(userHome, ".codeflicker", "config.json")));
+  assert.deepEqual(JSON.parse(await readFile(join(userHome, ".codeflicker", "config.json"), "utf8")), { skills: { enabled: ["guide"] } });
 }));
 
-test("CLI 项目 Skill 停用仅创建该项目本地名单并保留用户设置，恢复目标缺失状态", async () => fixture(async (manager, userHome) => {
+test("CLI 项目 Skill 停用仅修改已有项目规则，恢复保留用户与项目原配置", async () => fixture(async (manager, userHome) => {
   const project = join(userHome, "projects", "synthetic-project");
   await skill(join(project, ".codeflicker", "skills", "project-guide"), "project-guide");
   const globalConfig = join(userHome, ".codeflicker", "config.json");
   const original = { skills: { disabled: ["global-off"], userOnly: ["project-guide"] }, unknown: 7 };
   await config(globalConfig, original);
+  const localConfig = join(project, ".codeflicker", "config.local.json");
+  const localOriginal = { skills: { userOnly: ["project-guide"] } }; await config(localConfig, localOriginal);
   const scan = () => scanResourceInventory({ userHome, projects: [project], environment: {} });
   const initial = await scan(); const entry = selected(initial, "codeflicker", "skill", "project-guide");
   assert.equal(entry.scope, "project"); assert.equal(entry.invocationMode, "user-only");
-  const preview = await apply(manager, initial, entry, "disable"); assert.ok(preview.affectedEntries.every(value => value.project === project));
+  const preview = await apply(manager, initial, entry, "disable"); assert.equal(preview.configuration?.controlScope, "project"); assert.equal(preview.configuration?.controlProject, project); assert.ok(preview.affectedEntries.every(value => value.project === project));
   assert.deepEqual(JSON.parse(await readFile(globalConfig, "utf8")), original);
-  const localConfig = join(project, ".codeflicker", "config.local.json");
-  assert.deepEqual(JSON.parse(await readFile(localConfig, "utf8")), { skills: { disabled: ["project-guide"] } });
+  assert.deepEqual(JSON.parse(await readFile(localConfig, "utf8")), { skills: { userOnly: ["project-guide"], disabled: ["project-guide"] } });
   assert.equal(selected(await scan(), "codeflicker", "skill", "project-guide").nativeState, "disabled");
-  await restore(manager, await scan()); await assert.rejects(stat(localConfig));
+  await restore(manager, await scan()); assert.deepEqual(JSON.parse(await readFile(localConfig, "utf8")), localOriginal);
   assert.equal(selected(await scan(), "codeflicker", "skill", "project-guide").invocationMode, "user-only");
 }));
 

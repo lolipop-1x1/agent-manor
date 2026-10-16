@@ -58,15 +58,17 @@ test("本地位置独立表达存在、未发现及不可读，不改写名称�
   assert.equal(result.resources.find(row => row.identity.name === "retired")!.localSummary?.presence, "missing");
   assert.strictEqual(result.resources.find(row => row.identity.name === "retired")!.stats, recorded.resources[1]!.stats);
   inventory.sources[0]!.readState = "unreadable";
-  const unknown = buildResourceOverview(recorded, [present], { presence: "unknown" }, { ...options, inventory });
-  assert.deepEqual(unknown.resources.map(row => row.identity.name), ["retired"]);
-  assert.equal(unknown.resources[0]!.stats?.events, 3);
-  assert.equal(unknown.counts.all, 1);
+  assert.equal(buildResourceOverview(recorded, [present], { presence: "unknown" }, { ...options, inventory }).total, 0,
+    "其他来源的读取缺口不能改变这条资源的本地状态");
+  present.entries[0]!.readState = "unreadable";
+  const unreadable = buildResourceOverview(recorded, [present], { presence: "unknown" }, { ...options, inventory });
+  assert.deepEqual(unreadable.resources.map(row => row.identity.name), ["guide"]);
+  assert.equal(unreadable.resources[0]!.stats?.events, 3);
 });
 
 test("位置项目按文件归属筛选，不将用户文件的项目生效范围算作项目位置", () => {
   const scopes = [{ scope: "user" as const }, { scope: "project" as const, project: "/synthetic/project" }];
-  const shared = local("guide", "shared", { entries: [entry("shared", "codex", { selectionScopes: scopes }), entry("shared", "pi", { entryPath: "/synthetic/codex/skills/shared", selectionScopes: scopes })] });
+  const shared = local("guide", "shared", { entries: [entry("shared", "codex", { selectionScopes: scopes }), entry("shared", "pi", { entryPath: "/synthetic/codex/skills/shared", scope: "project", project: "/synthetic/project", selectionScopes: scopes })] });
   const project = local("guide", "project", { entries: [entry("project", "codex", { scope: "project", project: "/synthetic/project" })] });
   const other = local("other");
   const recorded = history([historyRow("guide", { stats: stats({ events: 11, sessions: 7 }) }), historyRow("retired")]);

@@ -146,7 +146,7 @@ export async function planGrokReasonixCodewhaleInventory(options: NativePlannerO
     const compat = object(config?.compat); const claude = object(compat.claude).skills !== false; const cursor = object(compat.cursor).skills === true;
     const disabled = new Set(strings(skills.disabled));
     const skillState = (name: string): NativeResourceState => ({ nativeState: config === undefined ? "unknown" : disabled.has(name) ? "disabled" : "enabled",
-      controlPath: configPath, rule: { type: "name-list", format: "toml", keyPath: ["skills", "disabled"], member: name } });
+      controlPath: configPath, rule: { type: "name-list", format: "toml", keyPath: ["skills", "disabled"], member: name, effectScope: "client" } });
     skill("grok", join(grokHome, "skills"), 500, skillState, {}, [configPath]);
     add("grok", "skill", join(grokHome, "commands"), "skill-files", { native: { priority: 490, dependencyPaths: [configPath], stateFor: skillState,
       skillNameFor: (frontmatter, path, raw) => nativeSkillName("grok", frontmatter, path, raw) } });
@@ -157,7 +157,7 @@ export async function planGrokReasonixCodewhaleInventory(options: NativePlannerO
     const grokMcpState = (source: Record<string, unknown>) => (name: string): NativeResourceState => {
       const row = object(source[name]); const disabledNames = strings(config?.disabled_mcp_servers);
       return { nativeState: config === undefined ? "unknown" : row.enabled === false || row.disabled === true || disabledNames.includes(name) ? "disabled" : "enabled", controlPath: configPath,
-        ...(config !== undefined ? { rule: { type: "name-list" as const, format: "toml" as const, keyPath: ["disabled_mcp_servers"], member: name } } : {}) };
+        ...(config !== undefined ? { rule: { type: "name-list" as const, format: "toml" as const, keyPath: ["disabled_mcp_servers"], member: name, effectScope: "client" as const } } : {}) };
     };
     await map("grok", configPath, "toml", ["mcp_servers"], 1000, grokMcpState(object(config?.mcp_servers)));
     const folders = object(trust?.folders);
@@ -220,7 +220,7 @@ export async function planGrokReasonixCodewhaleInventory(options: NativePlannerO
         : row ? row.enabled === true ? "enabled" : "disabled" : declared && !projectMcp ? "enabled" : "disabled";
       // 项目声明摘要还包含被命令引用文件与 dotenv；未核验其完整展开时不写入批准。
       return { nativeState, controlPath: activationPath,
-        ...projectMcp && digest === undefined ? {} : { rule: { type: "activation", format: "json", keyPath: ["overrides"], identity: { kind, scope, ...(scope === "project" && identity ? { key: identity.key } : {}), ...(source ? { source } : {}), name: normal } } } };
+        ...projectMcp && digest === undefined ? {} : { rule: { type: "activation", format: "json", keyPath: ["overrides"], effectScope: scope === "project" ? "project" : "client", effectProject: scope === "project" ? project : undefined, identity: { kind, scope, ...(scope === "project" && identity ? { key: identity.key } : {}), ...(source ? { source } : {}), name: normal } } } };
     };
     const reasonixSkills = object(config?.skills);
     const skillState = (name: string, project?: string) => ({ ...decide("skill", name, project, "", !strings(reasonixSkills.disabled_skills).includes(name)), invocationMode: reasonixSkills.disable_implicit_invocation === true ? "user-only" as const : "auto" as const });
@@ -260,10 +260,10 @@ export async function planGrokReasonixCodewhaleInventory(options: NativePlannerO
     const configPath = environment.CODEWHALE_CONFIG_PATH ? expand(userHome, environment.CODEWHALE_CONFIG_PATH) : join(whaleHome, "config.toml");
     const config = await parseConfig(configPath, "toml"); const mcpPath = text(config?.mcp_config_path) ? expand(userHome, text(config?.mcp_config_path)!) : join(whaleHome, "mcp.json");
     const mcp = await parseConfig(mcpPath, "json"); const rootKey = mcp?.servers ? "servers" : "mcpServers";
-    const mcpState = (value: Record<string, unknown> | undefined, path: string, key: string) => (name: string): NativeResourceState => {
+    const mcpState = (value: Record<string, unknown> | undefined, path: string, key: string, project?: string) => (name: string): NativeResourceState => {
       const row = object(object(value?.[key])[name]); const field = row.disabled === true ? "disabled" : "enabled";
       return { nativeState: value === undefined ? "unknown" : row.enabled === false || row.disabled === true ? "disabled" : "enabled", controlPath: path,
-        rule: { type: "boolean", format: "json", keyPath: [key, name, field], disabledValue: field === "disabled" } };
+        rule: { type: "boolean", format: "json", keyPath: [key, name, field], disabledValue: field === "disabled", effectScope: project ? "project" : "client", effectProject: project } };
     };
     skill("codewhale", join(whaleHome, "skills"), 500, () => constant("enabled"), {}, [configPath]);
     for (const [index, dir] of [".agents", ".claude", ".deepseek"].entries()) skill("codewhale", join(userHome, dir, "skills"), 400 - index, () => constant("enabled"), { origin: "compatibility", verified: false }, [configPath]);
@@ -279,8 +279,8 @@ export async function planGrokReasonixCodewhaleInventory(options: NativePlannerO
         { project, origin: index === 0 ? "standard" : "compatibility", verified: index === 0,
           native: { priority: 900 - index, dependencyPaths: [configPath], stateFor: () => constant(trusted ? "enabled" : "unknown"), eligibleFor: () => trusted } }, [configPath]);
       const projectMcpPath = join(project, ".codewhale", "mcp.json"); const projectMcp = await parseConfig(projectMcpPath, "json"); const key = projectMcp?.servers ? "servers" : "mcpServers";
-      await map("codewhale", projectMcpPath, "json", [key], 1000, mcpState(projectMcp, projectMcpPath, key), { project,
-        native: { priority: 1000, dependencyPaths: [configPath, projectMcpPath], stateFor: mcpState(projectMcp, projectMcpPath, key), eligibleFor: () => trusted, registrationWritable: true } });
+      await map("codewhale", projectMcpPath, "json", [key], 1000, mcpState(projectMcp, projectMcpPath, key, project), { project,
+        native: { priority: 1000, dependencyPaths: [configPath, projectMcpPath], stateFor: mcpState(projectMcp, projectMcpPath, key, project), eligibleFor: () => trusted, registrationWritable: true } });
     }
     const pluginPath = join(whaleHome, "plugins", "state.json"); const pluginState = await parseConfig(pluginPath, "json");
     await bundles("codewhale", join(whaleHome, "plugins")); for (const project of projects) await bundles("codewhale", join(project, ".codewhale", "plugins"), project);

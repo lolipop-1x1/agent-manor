@@ -63,7 +63,7 @@ test("共享链接只隔离所选入口，具体确认后写入，备用恢复�
   assert.equal(await readlink(first), target);
   await assert.rejects(manager.apply(preview.id, false as true, initial), ServiceError);
   const applied = await manager.apply(preview.id, true, initial);
-  assert.equal(applied.status, "success"); assert.equal(applied.clientEffect, "pending_reload");
+  assert.equal(applied.status, "success"); assert.equal(applied.clientEffect, "unknown");
   assert.equal(applied.messageDescriptor?.key, "diagnostics.resources.management.m033");
   assert.equal(manager.operations(1, 50, { project: "none" }).total, 1);
   assert.equal(manager.operations(1, 50, { project: "/synthetic/project" }).total, 0);
@@ -81,7 +81,7 @@ test("共享链接只隔离所选入口，具体确认后写入，备用恢复�
 test("共享目录支持文件回收，旧隔离仍关闭，原生禁用与链接隔离不删除本体", async () => fixture(async (manager, directory) => {
   const userHome = join(directory, "synthetic-user"); const path = join(userHome, ".agents", "skills", "guide"); await skill(path);
   const alias = join(userHome, ".claude", "skills", "guide"); const config = join(userHome, ".codex", "config.toml");
-  await mkdir(dirname(config), { recursive: true }); await writeFile(config, "# 合成配置\n");
+  await mkdir(dirname(config), { recursive: true }); await writeFile(config, `# 合成配置\n[[skills.config]]\npath = ${JSON.stringify(join(path, "SKILL.md"))}\nenabled = true\n`);
   const samePath = await scanResourceInventory({ userHome, environment: {} });
   const selected = samePath.entries.find(value => value.client === "codex" && value.entryPath === path)!;
   assert.ok(samePath.entries.filter(value => value.entryPath === path).length > 1);
@@ -249,7 +249,7 @@ test("Codex MCP 原生停用局部修改 TOML，保留注释整数和未知项�
 
 test("Codex Skill 原生开关使用 canonical SKILL.md，恢复只撤销本次规则；复杂 TOML 明确只读", async () => fixture(async (manager, directory) => {
   const path = join(directory, "skills", "guide"); await skill(path); const config = join(directory, "config.toml");
-  await writeFile(config, '# 保留内容\nunknown = 7\n[[skills.config]]\nname = "other-skill"\nenabled = false\n');
+  await writeFile(config, `# 保留内容\nunknown = 7\n[[skills.config]]\nname = "other-skill"\nenabled = false\n[[skills.config]]\npath = ${JSON.stringify(join(path, "SKILL.md"))}\nenabled = true\n`);
   const selected = entry(path, { locator: { type: "skill", nativeControl: "codex-skill", controlPath: config, skillFile: join(path, "SKILL.md") } });
   const initial = snapshot([selected]);
   const preview = await manager.preview({ entryId: selected.id, action: "disable" }, initial);
@@ -260,7 +260,7 @@ test("Codex Skill 原生开关使用 canonical SKILL.md，恢复只撤销本次�
   const archive = manager.archives("disabled")[0]!;
   const restore = await manager.preview({ operationId: archive.operationId, action: "restore" }, initial);
   assert.equal((await manager.apply(restore.id, true, initial)).status, "success");
-  const restored = await readFile(config, "utf8"); assert.ok(restored.includes("unknown = 8")); assert.ok(restored.includes("later-skill")); assert.ok(restored.includes("other-skill")); assert.ok(!restored.includes(join(path, "SKILL.md")));
+  const restored = await readFile(config, "utf8"); assert.ok(restored.includes("unknown = 8")); assert.ok(restored.includes("later-skill")); assert.ok(restored.includes("other-skill")); assert.equal((parseToml(restored) as { skills: { config: { path?: string; enabled: boolean }[] } }).skills.config.find(rule => rule.path === join(path, "SKILL.md"))?.enabled, true);
   await writeFile(config, 'unknown = """\n人工多行配置\n"""\n');
   assert.equal(manager.decorateInventory(initial).entries[0]?.capabilities.disable, false);
   await assert.rejects(manager.preview({ entryId: selected.id, action: "disable" }, initial), (error: unknown) => error instanceof ServiceError && error.code === "FORBIDDEN");
@@ -332,7 +332,8 @@ test("TOML 注册回收与恢复只操作所选表和子表，合法但未经保
 test("真实盘点契约到管理模块贯通，收藏本体显示保护，原生停用与恢复按当前快照复核", async () => fixture(async (manager, directory) => {
   const userHome = join(directory, "synthetic-user"); const path = join(userHome, ".agents", "skills", "guide"); await skill(path);
   const config = join(userHome, ".codex", "config.toml"); await mkdir(dirname(config), { recursive: true });
-  await writeFile(config, '[mcp_servers.selected]\ncommand = "synthetic-tool"\n');
+  const originalConfig = `[mcp_servers.selected]\ncommand = "synthetic-tool"\n[[skills.config]]\npath = ${JSON.stringify(join(path, "SKILL.md"))}\nenabled = true\n`;
+  await writeFile(config, originalConfig);
   const initial = await scanResourceInventory({ userHome, environment: {} });
   const selected = initial.entries.find(value => value.kind === "skill" && value.client === "codex")!;
   assert.ok(selected); manager.setFavorite(selected.bodyId, true);
@@ -344,7 +345,7 @@ test("真实盘点契约到管理模块贯通，收藏本体显示保护，原�
   await assert.rejects(manager.preview({ entryId: selected.id, action: "disable" }, disabled), ServiceError);
   const archive = manager.archives("disabled")[0]!; const restore = await manager.preview({ operationId: archive.operationId, action: "restore" }, disabled);
   assert.equal((await manager.apply(restore.id, true, disabled)).status, "success");
-  assert.equal(await readFile(config, "utf8"), '[mcp_servers.selected]\ncommand = "synthetic-tool"\n');
+  assert.equal(await readFile(config, "utf8"), originalConfig);
 }));
 
 test("写入后反馈失败保留部分完成与可用恢复材料，不虚报成功；恢复后的材料另行清除", async () => fixture(async (manager, directory) => {

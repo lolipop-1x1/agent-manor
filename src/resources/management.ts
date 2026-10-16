@@ -15,7 +15,8 @@ import type {
 } from "../resource-management-contracts.js";
 import { ServiceError } from "../service/input.js";
 import { acquireLock } from "../service/runtime.js";
-import { configurationPreview, editableConfig, prepareConfig, restoreConfig } from "./config-editor.js";
+import { configurationPreview, editableConfig, hasExplicitResourceControl, prepareConfig, restoreConfig } from "./config-editor.js";
+import { resourceControlScope } from "./control-scope.js";
 import type { ConfigChange } from "./config-editor.js";
 import { resourceMaterialPath } from "./vault-path.js";
 
@@ -89,6 +90,7 @@ function nameScopesKnown(entry: ResourceInventoryEntry, snapshot: ResourceInvent
 }
 function nativeDisable(entry: ResourceInventoryEntry, snapshot: ResourceInventorySnapshot): boolean {
   if (entry.nativeState === "disabled") return false;
+  if (!resourceControlScope(entry)) return false;
   const control = entry.locator.nativeControl;
   if (control === "native-rule") return entry.nativeState === "enabled" && !!entry.locator.nativeRule && !!entry.locator.controlPath && nameScopesKnown(entry, snapshot);
   if (entry.client === "codex") return entry.scope === "user" && (entry.kind === "skill" ? control === "codex-skill" && !!entry.locator.controlPath
@@ -188,10 +190,10 @@ export class ResourceManager {
     this.observeInventory(snapshot);
     const favorites = new Set(this.favorites()); const seen = new Map((this.database.prepare("SELECT id,first_seen FROM resource_seen").all() as { id: string; first_seen: string }[])
       .map(row => [row.id, row.first_seen]));
-    const archives = this.archives(); const texts = new Map<string, string | undefined>(); const editability = new Map<string, boolean>();
+    const archives = this.archives(); const texts = new Map<string, string | undefined>(); const editability = new Map<string, boolean>(); const controls = new Map<string, unknown>();
     return { ...snapshot, entries: snapshot.entries.map(entry => {
       const writable = this.writable(entry, snapshot);
-      let disable = writable && nativeDisable(entry, snapshot);
+      let disable = writable;
       const path = entry.locator.controlPath ?? entry.locator.configPath;
       if (writable && path && !texts.has(path)) {
         try { texts.set(path, existsSync(path) ? readFileSync(path, "utf8") : entry.kind === "skill" || entry.locator.nativeRule ? "" : undefined); }
@@ -200,7 +202,7 @@ export class ResourceManager {
       const editKey = JSON.stringify([writable, entry.kind, entry.locator.nativeControl, path, entry.locator.keyPath]);
       if (!editability.has(editKey)) editability.set(editKey, writable && path !== undefined && texts.get(path) !== undefined && editableConfig(texts.get(path)!, entry));
       const configWritable = editability.get(editKey)!;
-      disable = disable && configWritable;
+      disable = disable && configWritable && hasExplicitResourceControl(texts.get(path!)!, entry, controls) && nativeDisable(entry, snapshot);
       const refs = references(snapshot, entry);
       const source = snapshot.sources.find(value => value.id === entry.sourceId);
       let registrationEditable = configWritable;
@@ -265,6 +267,11 @@ export class ResourceManager {
       || (input.action === "restore" || input.action === "purge" ? !input.operationId || !!input.entryId : !input.entryId || !!input.operationId)) {
       throw new ServiceError("INVALID_INPUT", "操作必须指定所选入口或恢复记录", { key: "diagnostics.resources.management.m006" });
     }
+    const inspections = new Map<string, Promise<Inspection>>();
+    const inspectOnce = (path: string) => {
+      if (!inspections.has(path)) inspections.set(path, inspect(path));
+      return inspections.get(path)!;
+    };
     const archive = input.operationId ? this.archive(input.operationId) : undefined;
     const entry = archive?.public.entry ?? snapshot.entries.find(value => value.id === input.entryId);
     if (!entry) throw new ServiceError("SOURCE_NOT_FOUND", "资源入口不存在", { key: "diagnostics.resources.management.m007" });
@@ -282,7 +289,7 @@ export class ResourceManager {
     if (sharedPhysical(entry, refs) && (input.action === "standby" || input.action === "restore" && !archive?.change && target !== "file")) {
       throw new ServiceError("FORBIDDEN", "该物理本体有其他已发现入口引用，隔离或恢复范围尚未核验，请选择符号链接入口或原生停用", { key: "diagnostics.resources.management.m010" });
     }
-    const check = async (path: string) => { if (!dependencies.some(value => value.path === path)) dependencies.push({ path, hash: (await inspect(path)).hash }); };
+    const check = async (path: string) => { if (!dependencies.some(value => value.path === path)) dependencies.push({ path, hash: (await inspectOnce(path)).hash }); };
     for (const path of entry.locator.dependencyPaths ?? []) await check(path);
     let change: ConfigChange | undefined; let restoreText: string | undefined; let linkTarget: Plan["linkTarget"];
     let sourcePath = entry.entryPath; let destinationPath: string | undefined;
@@ -290,17 +297,17 @@ export class ResourceManager {
     if (archive) {
       sourcePath = archive.public.storedPath!; method = input.action === "restore" ? "restore" : "permanent_purge";
       await check(sourcePath);
-      if ((await inspect(sourcePath)).contentHash !== archive.backupHash) stale("恢复材料已变化，请检查操作记录", { key: "diagnostics.resources.management.m011" });
+      if ((await inspectOnce(sourcePath)).contentHash !== archive.backupHash) stale("恢复材料已变化，请检查操作记录", { key: "diagnostics.resources.management.m011" });
       if (input.action === "restore") {
         for (const reference of refs) await check(reference.entryPath);
         destinationPath = archive.public.originalPath;
         await check(destinationPath);
         if (archive.change) {
-          if ((await inspect(destinationPath)).modes[0]?.type === "symlink") throw new ServiceError("FORBIDDEN", "共享配置链接的恢复写入能力尚未核验，只读", { key: "diagnostics.resources.management.m012" });
+          if ((await inspectOnce(destinationPath)).modes[0]?.type === "symlink") throw new ServiceError("FORBIDDEN", "共享配置链接的恢复写入能力尚未核验，只读", { key: "diagnostics.resources.management.m012" });
           try { restoreText = restoreConfig(archive.change, await readFile(destinationPath, "utf8")); }
           catch (error) { if (error instanceof ServiceError) throw error; stale("配置无法读取，恢复不会覆盖现有文件", { key: "diagnostics.resources.management.m013" }); }
         } else {
-          if ((await inspect(destinationPath)).hash !== "missing") stale("原位置已被占用，恢复不会覆盖现有资源", { key: "diagnostics.resources.management.m014" });
+          if ((await inspectOnce(destinationPath)).hash !== "missing") stale("原位置已被占用，恢复不会覆盖现有资源", { key: "diagnostics.resources.management.m014" });
           if (entry.entryType === "symlink") {
             const path = resolve(dirname(destinationPath), await readlink(sourcePath));
             try { linkTarget = { path, resolved: await realpath(path) }; }
@@ -311,7 +318,8 @@ export class ResourceManager {
     } else {
       const writable = input.action === "trash" && entry.kind === "skill" ? this.fileWritable(entry, snapshot) : this.writable(entry, snapshot);
       if (!writable) throw new ServiceError("FORBIDDEN", "该来源没有已核验的写入能力，只读", { key: "diagnostics.resources.management.m015" });
-      if (input.action === "disable" && !nativeDisable(entry, snapshot)) {
+      if (input.action === "disable" && (!nativeDisable(entry, snapshot)
+        || !hasExplicitResourceControl(await readFile(entry.locator.controlPath ?? entry.locator.configPath!, "utf8").catch(() => ""), entry))) {
         throw new ServiceError(entry.nativeState === "disabled" ? "INVALID_INPUT" : "FORBIDDEN", entry.nativeState === "disabled" ? "资源已停用，没有新的本地修改" : "该入口未适配原生停用，可检查明确的隔离操作", entry.nativeState === "disabled" ? { key: "diagnostics.resources.management.m016" } : { key: "diagnostics.resources.management.m017" });
       }
       await check(entry.entryPath);
@@ -321,7 +329,7 @@ export class ResourceManager {
         const skillPath = entry.kind === "skill" ? await realpath(entry.locator.skillFile ?? join(entry.entryPath, "SKILL.md")) : undefined;
         try { change = await prepareConfig(entry, input.action as "disable" | "standby" | "trash", skillPath); }
         catch (error) { if (error instanceof ServiceError) throw error; throw new ServiceError("FORBIDDEN", "配置无法可靠读取或编辑，当前保持只读", { key: "diagnostics.resources.management.m018" }); }
-        const file = await inspect(change.path);
+        const file = await inspectOnce(change.path);
         if (file.modes[0]?.type === "symlink") throw new ServiceError("FORBIDDEN", "共享配置链接的写入能力尚未核验，只读", { key: "diagnostics.resources.management.m019" });
         if ((file.hash === "missing" ? "" : await readFile(change.path, "utf8")) !== change.beforeText) stale();
         await check(change.path); sourcePath = change.path;
@@ -335,8 +343,8 @@ export class ResourceManager {
     const revealedEntries = input.action === "standby" || input.action === "trash" ? revealed(snapshot, entry) : undefined;
     const preview: ResourceManagementPreview = { id, action: input.action, entryId: entry.id, operationId: input.operationId,
       resource: { name: entry.name, kind: entry.kind, client: entry.client, scope: entry.scope, project: entry.project }, method, target,
-      sourcePath, destinationPath, configuration: change ? configurationPreview(change)
-        : input.action === "restore" && archive?.change ? configurationPreview(archive.change, true) : undefined,
+      sourcePath, destinationPath, configuration: change ? { ...configurationPreview(change), ...resourceControlScope(entry) }
+        : input.action === "restore" && archive?.change ? { ...configurationPreview(archive.change, true), ...resourceControlScope(entry) } : undefined,
       affectedEntries: affected.flatMap(value => {
         const scopes = value.selectionScopes?.filter(scope => !(input.action === "disable" && entry.locator.nativeControl === "codeflicker-skill" && entry.scope === "project")
           || scope.project === entry.project) ?? [{ scope: value.scope, project: value.project }];
@@ -344,7 +352,7 @@ export class ResourceManager {
       }), revealedEntries, referencesComplete: false,
       protected: favorite, protectionReasons: favorite ? ["favorite"] : [],
       restoration: input.action === "purge" ? "永久清除本次恢复材料后将失去该恢复路径；其他副本可能仍存在" : "保存原位置及受限恢复材料；恢复冲突时不覆盖当前内容", restorationDescriptor: input.action === "purge" ? { key: "diagnostics.resources.management.m020" } : { key: "diagnostics.resources.management.m021" },
-      createdAt, expiresAt, requiresConfirmation: true, clientEffect: input.action === "purge" ? "unknown" : "pending_reload" };
+      createdAt, expiresAt, requiresConfirmation: true, clientEffect: input.action !== "purge" && (change || archive?.change) ? "pending_reload" : "unknown" };
     if ((target === "file" || entry.entryType === "symlink" && !archive?.change) && archive?.public.affectedEntries) preview.affectedEntries = [...new Map(
       [...archive.public.affectedEntries, ...preview.affectedEntries].map(value => [JSON.stringify([value.id, value.scope, value.project, value.entryPath]), value])).values()];
     const plan: Plan = { public: preview, entry, dependencies, references: signature(snapshot, entry), archiveId: archive?.public.id, change, restoreText, linkTarget };
@@ -472,8 +480,8 @@ export class ResourceManager {
           else await rm(plan.entry.entryPath, { recursive: plan.entry.entryType === "directory", force: false });
           saved.public.operationStatus = "success"; this.saveArchive(saved, "complete");
         }
-        operation.status = "success"; operation.message = preview.action === "purge" ? "本次恢复材料已永久清除" : "本地修改完成，客户端待重新加载"; operation.messageDescriptor = preview.action === "purge" ? { key: "diagnostics.resources.management.m032" } : { key: "diagnostics.resources.management.m033" };
-        operation.localState = "changed"; operation.clientEffect = preview.action === "purge" ? "unknown" : "pending_reload";
+        operation.status = "success"; operation.message = preview.action === "purge" ? "本次恢复材料已永久清除" : "本地修改完成"; operation.messageDescriptor = preview.action === "purge" ? { key: "diagnostics.resources.management.m032" } : { key: "diagnostics.resources.management.m033" };
+        operation.localState = "changed"; operation.clientEffect = preview.action === "purge" ? "unknown" : preview.clientEffect;
       } catch (error) {
         const unchanged = plan.archiveId ? !mutationStarted : (await inspect(preview.sourcePath).catch(() => undefined))?.hash === plan.dependencies.find(value => value.path === preview.sourcePath)?.hash;
         const conflict = error instanceof ServiceError && error.code === "CONTENT_STALE";

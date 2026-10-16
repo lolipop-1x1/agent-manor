@@ -15,34 +15,28 @@ interface OverviewBucket {
 
 const candidates: ResourceOverviewCandidate[] = ["all", "used", "unused", "low", "old", "review", "favorite"];
 
-function locationScopes(entry: ResourceInventoryEntry, query: ResourceOverviewQuery) {
-  return [{ scope: entry.scope, project: entry.project }].filter(scope =>
+function locationScopes(entry: ResourceInventoryEntry, query: ResourceOverviewQuery, globalPaths: ReadonlySet<string>) {
+  return [{ scope: globalPaths.has(entry.entryPath) ? "user" as const : entry.scope, project: globalPaths.has(entry.entryPath) ? undefined : entry.project }].filter(scope =>
     (!query.scope || scope.scope === query.scope) && (!query.locationProject || scope.project === query.locationProject));
 }
 
 export function resourceLocations(rows: readonly ResourceLocalRow[], query: ResourceOverviewQuery): ResourceLocalRow[] {
+  const globalPaths = new Set(rows.flatMap(row => row.entries.filter(entry => entry.scope === "user").map(entry => entry.entryPath)));
   return rows.flatMap(row => {
-    const entries = row.entries.filter(entry => locationScopes(entry, query).length);
+    const entries = row.entries.filter(entry => locationScopes(entry, query, globalPaths).length);
     return entries.length ? [{ ...row, entries }] : [];
   });
 }
 
-function unavailableLocalClients(inventory: ResourceInventorySnapshot | undefined, query: ResourceOverviewQuery): ReadonlySet<Client> {
-  const sources = new Map(inventory?.sources.filter(source => source.kind === (query.kind ?? "skill")
-    && (!query.scope || source.scope === query.scope) && (!query.locationProject || source.project === query.locationProject)).map(source => [source.id, source]));
-  return new Set([...sources.values()].filter(source => ["invalid", "unreadable", "unsupported"].includes(source.readState)).map(source => source.client)
-    .concat(inventory?.gaps.flatMap(gap => sources.has(gap.sourceId) && !["missing", "project_missing"].includes(gap.reason) ? [gap.client] : []) ?? []));
-}
-
 export function resourceLocalSummary(rows: readonly ResourceLocalRow[], query: ResourceOverviewQuery,
-  inventory?: ResourceInventorySnapshot, clients: readonly Client[] = [], unavailable = unavailableLocalClients(inventory, query)): NonNullable<ResourceOverviewRow["localSummary"]> {
+  inventory?: ResourceInventorySnapshot): NonNullable<ResourceOverviewRow["localSummary"]> {
   const entries = rows.flatMap(row => row.entries);
+  const globalPaths = new Set(entries.filter(entry => entry.scope === "user").map(entry => entry.entryPath));
   const present = entries.filter(entry => entry.readState === "present");
-  const uncertain = entries.some(entry => entry.readState === "unreadable") || !inventory
-    || (clients.length ? clients.some(client => unavailable.has(client)) : unavailable.size > 0);
+  const uncertain = entries.some(entry => entry.readState === "unreadable") || !inventory;
   return { presence: present.length ? "present" : uncertain ? "unknown" : "missing",
     locations: new Set(entries.map(entry => JSON.stringify([entry.entryPath, entry.locator.keyPath ?? []]))).size,
-    scopes: [...new Set(entries.flatMap(entry => locationScopes(entry, query).map(scope => scope.scope)))].sort() };
+    scopes: [...new Set(entries.flatMap(entry => locationScopes(entry, query, globalPaths).map(scope => scope.scope)))].sort() };
 }
 
 function localIdentity(row: ResourceLocalRow): ResourceUsageIdentity {
@@ -154,7 +148,6 @@ export function buildResourceOverview(history: ResourceUsageResult | null, local
   const rows: ResourceOverviewRow[] = [];
   const byHistoryId = new Map<string, ResourceLocalRow[]>();
   const byBodyId = new Map(localRows.map(row => [row.body.id, row]));
-  const unavailable = unavailableLocalClients(options.inventory, query);
   for (const row of localRows) for (const id of row.historyIds) {
     const linked = byHistoryId.get(id) ?? []; linked.push(row); byHistoryId.set(id, linked);
   }
@@ -162,7 +155,7 @@ export function buildResourceOverview(history: ResourceUsageResult | null, local
     if (q && !matches(bucket, q)) continue;
     const row = rowOf(bucket, history, query, favorites, now, (bucket.history?.favoriteIds ?? []).flatMap(id => byHistoryId.get(id) ?? []));
     const locations = resourceLocations(row.localBodyIds.flatMap(id => byBodyId.get(id) ? [byBodyId.get(id)!] : []), query);
-    row.localSummary = resourceLocalSummary(locations, query, options.inventory, bucket.history?.clients ?? [], unavailable);
+    row.localSummary = resourceLocalSummary(locations, query, options.inventory);
     if ((query.scope || query.locationProject) && !locations.length || query.presence && row.localSummary.presence !== query.presence) continue;
     row.localBodyIds = locations.map(local => local.body.id).sort();
     for (const candidate of candidates) if (candidate === "all" || row.candidates.includes(candidate)) counts[candidate] += 1;

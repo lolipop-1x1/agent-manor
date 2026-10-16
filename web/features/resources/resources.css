@@ -329,7 +329,6 @@
 .resource-change-diff > svg { color: var(--muted); }
 .resource-preview-entries > div { padding: 10px 0; border: 0; border-bottom: 1px solid var(--border); border-radius: 0; }
 .resource-preview-panel .dialog-end { position: sticky; bottom: -20px; z-index: 2; padding: 16px 0 20px; margin-top: 22px; border-top: 1px solid var(--border); background: var(--surface); }
-.resource-preview-panel .resource-impact-heading { font-size: 13px; margin: 26px 0 10px; }
 .resource-scan-actions { margin: 16px 0; }
 .resource-stats span, .resource-detail-section > header > span, .resource-entry > header > span, .resource-tool-list small, .resource-evidence > a > span, .resource-result { font-size: 11px; }
 

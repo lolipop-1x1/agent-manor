@@ -57,7 +57,7 @@ export class ResourceService {
     for (const kind of ["skill", "mcp"] as const) {
       const local = [...new Set(inventory.entries.filter(entry => entry.kind === kind).map(entry => entry.client))].sort();
       clientOptions[kind].local = local;
-      clientOptions[kind].usage = [...new Set([...local, ...history[kind]])].sort();
+      clientOptions[kind].usage = [...history[kind]].sort();
     }
     for (const row of this.manager.clientOptions()) if (!clientOptions[row.kind][row.view].includes(row.client)) clientOptions[row.kind][row.view].push(row.client);
     return { observedAt: inventory.observedAt, clientOptions, sources: inventory.sources, gaps: inventory.gaps, diagnostics: inventory.diagnostics,
@@ -109,7 +109,7 @@ export class ResourceService {
     const target = all.resources.find(row => row.identity.id === id) ?? all.resources.find(row => row.localBodyIds.includes(id));
     if (target) {
       const locations = resourceLocations(local.rows.filter(row => target.localBodyIds.includes(row.body.id)), query);
-      return { resource: { ...target, localSummary: resourceLocalSummary(locations, query, local.inventory, target.clients) },
+      return { resource: { ...target, localSummary: resourceLocalSummary(locations, query, local.inventory) },
         history: target.hasHistory ? resourceUsageDetail(this.library, target.identity.id, { ...query, kind, project: query.historyProject },
           local.inventory.entries, new Set(this.manager.favorites()), target.identity) : null, local: locations };
     }
@@ -121,7 +121,7 @@ export class ResourceService {
       favorite: legacy.resource.favorite, protected: legacy.resource.favorite, observation: legacy.resource.stats.events ? "used" : "unknown",
       partial: legacy.coverage.partial, usageUnassociated: legacy.resource.association.state !== "linked",
       missingTimeEvents: legacy.resource.stats.missingTimeEvents,
-      candidates: [], localBodyIds: [...bodyIds], hasHistory: true, localSummary: resourceLocalSummary(locations, query, local.inventory, legacy.resource.clients) }, history: legacy, local: locations };
+      candidates: [], localBodyIds: [...bodyIds], hasHistory: true, localSummary: resourceLocalSummary(locations, query, local.inventory) }, history: legacy, local: locations };
   }
   async usageDetail(id: string, query: ResourceUsageQuery) {
     return { ...resourceUsageDetail(this.library, id, query, (await this.inventory()).entries, new Set(this.manager.favorites())), favoriteIds: this.manager.favorites() };
@@ -246,17 +246,19 @@ export class ResourceService {
   }
   async addSource(source: ResourceManualSource) { this.manager.addManualSource(source); return this.refresh(); }
   async removeSource(id: string) { this.manager.removeManualSource(id); return this.refresh(); }
-  private async managementInventory() {
-    const scanned = await this.scan();
+  private async managementInventory(fresh = false) {
+    const scanned = await (fresh ? this.scan() : this.inventory());
     const favorites = new Set(this.manager.favorites());
     const snapshot = { ...scanned, entries: scanned.entries.map(entry => ({ ...entry,
       favorite: "favorite" in entry && entry.favorite === true || favorites.has(resourceOverviewIdentity({ id: entry.id, kind: entry.kind, name: entry.name, client: entry.client }).id) })) };
-    if (![...favorites].some(id => id.startsWith("resource:"))) return snapshot;
+    const names = new Set(snapshot.entries.map(entry => resourceOverviewIdentity({ id: entry.id, kind: entry.kind, name: entry.name, client: entry.client }).id));
+    if (![...favorites].some(id => id.startsWith("resource:") && !names.has(id))) return snapshot;
     try {
-      const history = localResourceUsage(this.library, {}, snapshot.entries);
+      const scopes = await Promise.all((["skill", "mcp"] as const).map(kind => this.overviewData({ kind })));
+      const protectedBodies = new Set(scopes.flatMap(({ local }) => local.rows.filter(row => row.favorite).map(row => row.body.id)));
       return { ...snapshot, entries: snapshot.entries.map(entry => ({ ...entry,
         favorite: "favorite" in entry && entry.favorite === true || favorites.has(resourceOverviewIdentity({ id: entry.id, kind: entry.kind, name: entry.name, client: entry.client }).id)
-          || (history.bodies.get(entry.bodyId)?.favoriteIds.some(id => favorites.has(id)) ?? false) })) };
+          || protectedBodies.has(entry.bodyId) })) };
     } catch (error) {
       if (!(error instanceof StoreError) || error.code !== "ANALYSIS_NOT_READY") throw error;
       return snapshot;
@@ -264,8 +266,9 @@ export class ResourceService {
   }
   async preview(input: Parameters<ResourceManager["preview"]>[0]) { return this.manager.preview(input, await this.managementInventory()); }
   async apply(id: string, confirmed: true) {
-    const result = await this.manager.apply(id, confirmed, await this.managementInventory());
-    await this.scan();
+    const result = await this.manager.apply(id, confirmed, await this.managementInventory(true));
+    // 写入完成即可反馈；后续读取共享一次新盘点，避免执行请求再阻塞一次全量扫描。
+    if (result.localState !== "unchanged") { this.snapshot = undefined; this.overviewCache.clear(); }
     return result;
   }
 }
