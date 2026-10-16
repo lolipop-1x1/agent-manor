@@ -282,6 +282,7 @@ export default function Resources({ active, onSession, onHistoryReading, history
   const [detailError, setDetailError] = useState<Error | null>(null);
   const [evidenceError, setEvidenceError] = useState<Error | null>(null);
   const [reload, setReload] = useState(0);
+  const [managementReload, setManagementReload] = useState(0);
   const [historyReload, setHistoryReload] = useState(0);
   useHistoryRevision(active, historyRevision, () => setHistoryReload(value => value + 1), listLoading || detailLoading || evidenceLoading, onHistoryReading);
   const detailTarget = useRef("");
@@ -337,7 +338,10 @@ export default function Resources({ active, onSession, onHistoryReading, history
   const routeRef = useRef(route);
   const managementRequest = useRef(0);
   const completedPreview = useRef<ResourceManagementPreview | null>(null);
+  const previewAbort = useRef<AbortController | null>(null);
   routeRef.current = route;
+  useEffect(() => () => { managementRequest.current++; previewAbort.current?.abort(); }, []);
+  useEffect(() => { if (!active) { managementRequest.current++; previewAbort.current?.abort(); } }, [active]);
 
   const update = useCallback((patch: Partial<ResourceRoute>, push = false) => {
     const next = { ...routeRef.current, ...patch }; routeRef.current = next; setRoute(next);
@@ -351,7 +355,7 @@ export default function Resources({ active, onSession, onHistoryReading, history
     const saved = viewRoutes.current.get(`${kind}:${tab}`);
     const next = { ...(saved?.route ?? { ...current, kind, tab, q: "", id: "", page: 1, evidencePage: 1, tool: "", client: "all", project: "all", window: "all", from: "", to: "", candidate: "all" as const, favorite: false, presence: "all" as const, scope: "all" as const, locationProject: "all" }), ...patch, kind, tab };
     savedScroll.current = Object.keys(patch).length ? 0 : saved?.scroll ?? 0; restoreScroll.current = true;
-    managementRequest.current++; setManagementOpen(false); setManagementResult(null); setManagementError(null); setFiltersOpen(false);
+    managementRequest.current++; previewAbort.current?.abort(); setManagementOpen(false); setManagementResult(null); setManagementError(null); setFiltersOpen(false);
     update(next, true); setQueryText(next.q);
   };
   useEffect(() => {
@@ -364,13 +368,13 @@ export default function Resources({ active, onSession, onHistoryReading, history
   const pageChange = (page: number) => { if (listScroll.current) listScroll.current.scrollTop = 0; update({ page }); };
   const select = (id: string) => {
     if (busy.current.list || refreshing || applying) return;
-    managementRequest.current++; setManagementOpen(false); managementReturnPending.current = false;
+    managementRequest.current++; previewAbort.current?.abort(); setManagementOpen(false); managementReturnPending.current = false;
     savedScroll.current = listScroll.current?.scrollTop ?? 0; setDetailsCollapsed(false); update({ id, evidencePage: 1, tool: "" }, true);
   };
   const closeDetails = () => {
     if (applying) return;
     const id = routeRef.current.id;
-    managementRequest.current++; setManagementOpen(false); setDetailsCollapsed(true);
+    managementRequest.current++; previewAbort.current?.abort(); setManagementOpen(false); setDetailsCollapsed(true);
     if (compact) update({ id: "" });
     requestAnimationFrame(() => document.querySelector<HTMLElement>(`[data-resource-row="${CSS.escape(id)}"]`)?.focus());
   };
@@ -397,7 +401,7 @@ export default function Resources({ active, onSession, onHistoryReading, history
       if (current.kind !== next.kind || current.tab !== next.tab) {
         viewRoutes.current.set(`${current.kind}:${current.tab}`, { route: current, scroll: listScroll.current?.scrollTop ?? 0 });
         savedScroll.current = viewRoutes.current.get(`${next.kind}:${next.tab}`)?.scroll ?? 0;
-        managementRequest.current++; setManagementOpen(false); setManagementResult(null); setManagementError(null); setFiltersOpen(false);
+        managementRequest.current++; previewAbort.current?.abort(); setManagementOpen(false); setManagementResult(null); setManagementError(null); setFiltersOpen(false);
       }
       routeRef.current = next; setRoute(next); setQueryText(next.q); restoreScroll.current = true;
     };
@@ -451,7 +455,7 @@ export default function Resources({ active, onSession, onHistoryReading, history
     metric: route.metric, maxValue: route.maxValue === "" ? undefined : Number(route.maxValue),
   }), [scopeQuery, positionQuery, queryText, route.candidate, route.favorite, route.low, route.inactive, route.metric, route.maxValue]);
   const listRequestQuery = mapView ? mapQuery : overviewQuery;
-  const mapRequestKey = JSON.stringify([mapQuery, reload, historyReload, favoriteReload]);
+  const mapRequestKey = JSON.stringify([mapQuery, reload, historyReload, favoriteReload, managementReload]);
   const evidenceRequestKey = JSON.stringify([scopeQuery, route.evidencePage, route.tool, reload, historyReload]);
   const hasListData = mapView ? !!map : overviewRanking ? !!overview : route.tab === "operations" ? !!operations : !!archives;
   const listProgress = <span className="resource-list-progress" role={listLoading && hasListData ? "status" : undefined} aria-label={listLoading && hasListData ? t("resources.loading.resources") : undefined}>{listLoading && hasListData && <ArrowClockwise size={14} className="spinning" aria-hidden="true" />}</span>;
@@ -475,7 +479,7 @@ export default function Resources({ active, onSession, onHistoryReading, history
       if (result.page !== routeRef.current.page) update({ page: result.page });
     }).catch(failure => { if (!isAborted(failure)) setError(failure instanceof Error ? failure : new Error(errorMessage(failure))); }).finally(done);
     return () => controller.abort();
-  }, [active, mapView, listRequestQuery, mapRequestKey, overviewRanking, route.tab, reload, historyReload, favoriteReload, invalidTime]);
+  }, [active, mapView, listRequestQuery, mapRequestKey, overviewRanking, route.tab, reload, historyReload, favoriteReload, managementReload, invalidTime]);
   useEffect(() => {
     if (!active || route.tab === "usage") return;
     const controller = new AbortController(); setListLoading(true); setError(null);
@@ -483,7 +487,7 @@ export default function Resources({ active, onSession, onHistoryReading, history
       : resourceApi.archives("recoverable", managementQuery, controller.signal).then(result => { if (!controller.signal.aborted) { setArchives(result); if (result.page !== routeRef.current.page) update({ page: result.page }); } });
     void task.catch(failure => { if (!isAborted(failure)) setError(failure instanceof Error ? failure : new Error(errorMessage(failure))); }).finally(() => { if (!controller.signal.aborted) setListLoading(false); });
     return () => controller.abort();
-  }, [active, route.tab, managementQuery, reload]);
+  }, [active, route.tab, managementQuery, reload, managementReload]);
   useEffect(() => {
     if (!active) return;
     if (!route.id || invalidTime || route.tab !== "usage") { setUsageDetail(null); setOverviewDetail(null); setDetailLoading(false); setDetailError(null); setEvidenceError(null); detailTarget.current = ""; return; }
@@ -495,7 +499,8 @@ export default function Resources({ active, onSession, onHistoryReading, history
     const revision = favoriteRevision.current;
     const task = resourceApi.overviewDetail(route.id, { ...scopeQuery, ...positionQuery, lowSessions: route.low, inactiveDays: route.inactive }, controller.signal).then(async result => {
       // 详情与证据同版准备成功后一起替换，更新期间保留完整旧内容。
-      const nextEvidence = result.history ? await resourceApi.evidence(result.history.resource.identity.id,
+      const nextEvidence = result.history ? evidenceLoaded.current?.id === result.history.resource.identity.id
+        && evidenceLoaded.current.key === evidenceRequestKey && evidence?.version === result.history.version ? evidence : await resourceApi.evidence(result.history.resource.identity.id,
         { ...scopeQuery, version: result.history.version, page: route.evidencePage, pageSize: 10, tool: route.tool || undefined }, controller.signal) : null;
       if (controller.signal.aborted) return;
       if (result.favoriteIds) acceptFavoriteIds(result.favoriteIds, revision);
@@ -504,7 +509,7 @@ export default function Resources({ active, onSession, onHistoryReading, history
     });
     void task.catch(failure => { if (!isAborted(failure)) setDetailError(failure instanceof Error ? failure : new Error(errorMessage(failure))); }).finally(() => { if (!controller.signal.aborted) { detailPending.current = false; setDetailLoading(false); } });
     return () => { controller.abort(); detailPending.current = false; };
-  }, [active, route.id, route.tab, scopeQuery, positionQuery, overviewRanking, route.low, route.inactive, reload, historyReload, invalidTime]);
+  }, [active, route.id, route.tab, scopeQuery, positionQuery, overviewRanking, route.low, route.inactive, reload, historyReload, managementReload, invalidTime]);
   const evidenceId = overviewRanking ? usageDetail?.resource.identity.id : route.id;
   useEffect(() => {
     if (detailPending.current || detailError) return;
@@ -589,17 +594,19 @@ export default function Resources({ active, onSession, onHistoryReading, history
       managementFocusAction.current = managementFocus.current?.dataset.resourceAction ?? null;
     }
     const sequence = ++managementRequest.current;
+    previewAbort.current?.abort();
+    const controller = new AbortController(); previewAbort.current = controller;
     completedPreview.current = null;
     setManagementInput(input); setManagementOpen(true); setDetailsCollapsed(false); setPreview(null); setManagementError(null); setManagementResult(null); setPurgeConfirmed(false); setPreviewLoading(true);
     try {
-      const result = await resourceApi.preview(input);
+      const result = await resourceApi.preview(input, controller.signal);
       if (sequence === managementRequest.current) setPreview(result);
     } catch (failure) { if (sequence === managementRequest.current) setManagementError(failure instanceof Error ? failure : new Error(errorMessage(failure))); }
     finally { if (sequence === managementRequest.current) setPreviewLoading(false); }
   };
   const closeManagement = (open: boolean) => {
     if (applying) return;
-    if (!open) { managementRequest.current++; setPreview(null); }
+    if (!open) { managementRequest.current++; previewAbort.current?.abort(); setPreview(null); }
     setManagementOpen(open);
     if (!open) { managementReturnPending.current = true; update({ detail: "locations", ...(routeRef.current.tab === "recovery" && managementResult?.status === "success" ? { id: "" } : {}) }); }
   };
@@ -621,7 +628,7 @@ export default function Resources({ active, onSession, onHistoryReading, history
     setApplying(true); setManagementError(null);
     try {
       const result = await resourceApi.apply(preview.id);
-      setManagementResult(result); setPreview(null); setReload(value => value + 1);
+      setManagementResult(result); setPreview(null); setManagementReload(value => value + 1);
       completedPreview.current = preview;
     } catch (failure) { setManagementError(failure instanceof Error ? failure : new Error(errorMessage(failure))); setPreview(null); }
     finally { setApplying(false); }

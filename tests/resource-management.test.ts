@@ -520,7 +520,7 @@ test("链式链接目标缺失仍可恢复，目标内容变化不影响链接�
   assert.equal(trash.target, "entry"); assert.equal((await manager.apply(trash.id, true, initial)).status, "success");
   const archive = manager.archives("trash")[0]!; await rm(target, { recursive: true });
   const restore = await manager.preview({ operationId: archive.operationId, action: "restore" }, snapshot([]));
-  assert.deepEqual(restore.link, { target: middle, state: "missing" });
+  assert.deepEqual(restore.link, { target: middle, resolvedTarget: middle, state: "missing" });
   const restored = await manager.apply(restore.id, true, snapshot([]));
   assert.equal(restored.status, "success"); assert.deepEqual(restored.link, restore.link);
   assert.equal(await readlink(path), middle); await assert.rejects(realpath(path)); assert.equal(await readlink(middle), target);
@@ -541,7 +541,7 @@ for (const relativeLink of [false, true]) test(`原本断开的${relativeLink ? 
   const selected = entry(path, { entryType: "symlink", readState: "broken", linkTarget: text });
   const initial = snapshot([selected]);
   const trash = await manager.preview({ entryId: selected.id, action: "trash" }, initial);
-  assert.deepEqual(trash.link, { target: text, state: "missing" });
+  assert.deepEqual(trash.link, { target: text, resolvedTarget: target, state: "missing" });
   const removed = await manager.apply(trash.id, true, initial); assert.equal(removed.status, "success");
   await assert.rejects(lstat(path)); await assert.rejects(lstat(target)); assert.equal(await readlink(other), target);
   const archive = manager.archives("trash")[0]!;
@@ -566,7 +566,7 @@ test("循环目标状态无法确认时仍只恢复所选链接", async () => fi
   await symlink(target, target); await symlink(target, path);
   const selected = entry(path, { entryType: "symlink", readState: "broken", linkTarget: target });
   const initial = snapshot([selected]); const trash = await manager.preview({ entryId: selected.id, action: "trash" }, initial);
-  assert.deepEqual(trash.link, { target, state: "unreadable" });
+  assert.deepEqual(trash.link, { target, resolvedTarget: target, state: "unreadable" });
   const removed = await manager.apply(trash.id, true, initial);
   const restore = await manager.preview({ operationId: removed.id, action: "restore" }, snapshot([]));
   assert.deepEqual(restore.link, trash.link);

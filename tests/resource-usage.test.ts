@@ -4,14 +4,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { clientIds } from "../src/clients.js";
-import type { ResourceAssociationEntry, ResourceHistoryIdentity } from "../src/resource-contracts.js";
+import type { ResourceAssociationEntry, ResourceHistoryIdentity, ResourceUsageQuery } from "../src/resource-contracts.js";
 import type { ResourceInventoryEntry } from "../src/resource-inventory-contracts.js";
 import type { SessionMessage, SessionSourceMeta } from "../src/session-contracts.js";
 import { StoreError } from "../src/index/store.js";
 import { parseSessionSource } from "../src/sessions/parser.js";
 import { SessionStore } from "../src/sessions/store.js";
 import { scanResourceInventory } from "../src/resources/inventory.js";
-import { aggregateResourceUsage, associateResourceHistory, emptyResourceUsageStats, listResourceUsage, localResourceUsage, resourceHistoryIdentity, resourceOverviewIdentity, resourceUsageDetail, resourceUsageEvidence } from "../src/resources/usage.js";
+import { aggregateResourceUsage, associateResourceHistory, collectResourceUsage, projectResourceUsage, emptyResourceUsageStats, listResourceUsage, localResourceUsage, resourceHistoryIdentity, resourceOverviewIdentity, resourceUsageDetail, resourceUsageEvidence } from "../src/resources/usage.js";
 
 const occurredAt = "2026-01-02T12:00:00Z";
 async function fixture(run: (store: SessionStore, directory: string) => Promise<void> | void): Promise<void> {
@@ -640,4 +640,28 @@ test("资源缺口归属缓存随修订元数据写入与移除失效，保持�
   assert.equal(read({ client: "codex" }).gaps.length, 0);
   store.removeRevision(added.revision);
   assert.equal(read().unscopedGaps, true);
+}));
+
+test("压缩历史投影与逐事件聚合一致，重关联保持会话并集、缺失时间和来源身份", async () => fixture(store => {
+  const sources = ["one", "two"].map((id, index) => source(store, meta(id, { client: index ? "claude" : "codex", project: index ? undefined : "/synthetic/project" }), [
+    message(id, 0, { resource: { kind: "skill_read", name: "guide", path: "/synthetic/skills/guide/SKILL.md" }, status: "success", durationMs: 15 }),
+    message(id, 1, { resource: { kind: "skill_call", name: "guide", path: "/synthetic/other/guide" }, status: "failure", durationMs: 7 }),
+    message(id, 2, { resource: { kind: "skill_call", name: "guide" }, occurredAt: undefined }),
+    message(id, 3, { resource: { kind: "skill_read", name: "guide" }, status: "failure" }),
+    message(id, 4, { resource: { kind: "mcp", name: "lookup", server: "example" }, status: "success" }),
+    message(id, 5, { resource: { kind: "mcp", name: "lookup" }, status: "unknown", occurredAt: undefined }),
+  ]));
+  store.publish(store.createJob().id, sources, []);
+  const entries: ResourceInventoryEntry[] = ["codex", "claude"].map(client => ({ id: `entry-${client}`, sourceId: `source-${client}`, bodyId: "shared-body", kind: "skill", name: "guide", client: client as "codex" | "claude",
+    scope: "user", entryPath: `/synthetic/${client}/guide`, targetPath: "/synthetic/skills/guide", entryType: "symlink", readState: "present", nativeState: "unknown", sourceFormat: "skill-directory", observedAt: occurredAt, protected: false, locator: { type: "skill" },
+    capabilities: { inventory: true, associate: true, disable: false, standby: false, restore: false, trash: false, purge: false } }));
+  const queries: ResourceUsageQuery[] = [{}, { kind: "skill" }, { kind: "mcp" }, { from: "2026-01-01T00:00:00Z", to: "2026-01-03T00:00:00Z" }, { from: "2090-01-01T00:00:00Z" }, { client: "codex" }, { project: "none" }];
+  for (const query of queries) {
+    const aggregate = collectResourceUsage(store, query);
+    for (const current of [entries, [], [entries[0]!, { ...entries[0]!, id: "ambiguous-entry", bodyId: "different-body" }]]) {
+      const projected = projectResourceUsage(aggregate, query, current, new Set());
+      assert.deepEqual(projected.history, aggregateResourceUsage(store, query, current, new Set(), true));
+      assert.deepEqual(projected.local, localResourceUsage(store, query, current));
+    }
+  }
 }));

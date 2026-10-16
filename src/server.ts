@@ -25,6 +25,7 @@ import { clientIds } from "./clients.js";
 import type { Client } from "./contracts.js";
 import type { ResourceInventoryOptions } from "./resource-inventory-contracts.js";
 import { ResourceManager } from "./resources/management.js";
+import { ResourceUsageManager } from "./resources/usage-manager.js";
 import { ResourceService } from "./resources/service.js";
 import { registerResourceRoutes } from "./service/resource-routes.js";
 import { readPreferences, registerPreferenceRoutes } from "./service/preferences.js";
@@ -69,6 +70,7 @@ export async function startService(options: ServiceOptions = {}) {
   let manager: WorkerManager | undefined;
   let sessions: SessionStore | undefined;
   let resourceManager: ResourceManager | undefined;
+  let resourceHistory: ResourceUsageManager | undefined;
   let pricing: PricingService | undefined;
   let usageManager: UsageManager | undefined;
   let overviewManager: OverviewManager | undefined;
@@ -98,10 +100,12 @@ export async function startService(options: ServiceOptions = {}) {
     usageManager = new UsageManager(library, pricing, join(home, "usage-rollups.sqlite"));
     overviewManager = new OverviewManager(library, pricing, () => index.listRepositories(), undefined, usageManager);
     const management = resourceManager;
+    resourceHistory = new ResourceUsageManager(library);
     const resources = new ResourceService(library, management, options.resourceInventory ?? { environment: process.env }, () =>
-      [...new Set([...index.listRepositories().map(repository => repository.path), ...library.status().projects])]);
+      [...new Set([...index.listRepositories().map(repository => repository.path), ...library.status().projects])], resourceHistory);
     app.addHook("onClose", async () => {
       await searchManager?.close();
+      await resourceHistory?.close();
       await overviewManager?.close();
       await usageManager?.close();
       await worker.close();
@@ -347,6 +351,7 @@ export async function startService(options: ServiceOptions = {}) {
     await app.close().catch(() => undefined);
     await manager?.close().catch(() => undefined);
     await searchManager?.close().catch(() => undefined);
+    await resourceHistory?.close().catch(() => undefined);
     await usageManager?.close().catch(() => undefined);
     await overviewManager?.close().catch(() => undefined);
     try { store?.close(); } catch { /* 初始化失败时可能已关闭。 */ }

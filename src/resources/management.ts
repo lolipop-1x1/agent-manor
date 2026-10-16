@@ -8,7 +8,7 @@ import { chmod, copyFile, cp, lstat, mkdir, open, readFile, readdir, readlink, r
 import { constants } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { clientIds } from "../clients.js";
-import type { ResourceInventoryEntry, ResourceInventorySnapshot, ResourceManualSource } from "../resource-inventory-contracts.js";
+import type { ResourceInventoryEntry, ResourceInventorySnapshot, ResourceInventorySource, ResourceManualSource } from "../resource-inventory-contracts.js";
 import type {
   ManagedResourceInventorySnapshot, ResourceManagementArchive, ResourceManagementInput, ResourceManagementOperation,
   ResourceManagementOperationQuery, ResourceManagementOperations, ResourceManagementPreview, StoredResourceManualSource,
@@ -49,15 +49,16 @@ async function inspect(path: string): Promise<Inspection> {
 /** 链接按原始指向恢复；目标状态仅供展示，不作为链接恢复条件。 */
 async function linkStatus(path: string, originalPath: string): Promise<NonNullable<ResourceManagementPreview["link"]>> {
   const target = await readlink(path);
+  let resolvedTarget = resolve(dirname(originalPath), target);
   let file: string;
-  try { const resolved = await realpath(resolve(dirname(originalPath), target)); file = (await lstat(resolved)).isDirectory() ? join(resolved, "SKILL.md") : resolved; }
-  catch (error) { return { target, state: ["ENOENT", "ENOTDIR"].includes((error as NodeJS.ErrnoException).code ?? "") ? "missing" : "unreadable" }; }
+  try { resolvedTarget = await realpath(resolvedTarget); file = (await lstat(resolvedTarget)).isDirectory() ? join(resolvedTarget, "SKILL.md") : resolvedTarget; }
+  catch (error) { return { target, resolvedTarget, state: ["ENOENT", "ENOTDIR"].includes((error as NodeJS.ErrnoException).code ?? "") ? "missing" : "unreadable" }; }
   try {
     const handle = await open(file, "r");
-    try { return { target, state: (await handle.stat()).isFile() ? "available" : "skill_unreadable" }; }
+    try { return { target, resolvedTarget, state: (await handle.stat()).isFile() ? "available" : "skill_unreadable" }; }
     finally { await handle.close(); }
   }
-  catch (error) { return { target, state: ["ENOENT", "ENOTDIR"].includes((error as NodeJS.ErrnoException).code ?? "") ? "skill_missing" : "skill_unreadable" }; }
+  catch (error) { return { target, resolvedTarget, state: ["ENOENT", "ENOTDIR"].includes((error as NodeJS.ErrnoException).code ?? "") ? "skill_missing" : "skill_unreadable" }; }
 }
 /** 迁移核对恢复材料时复用管理操作的内容校验口径。 */
 export async function resourceMaterialFingerprint(path: string): Promise<string> { return (await inspect(path)).contentHash; }
@@ -73,6 +74,26 @@ function references(snapshot: ResourceInventorySnapshot, entry: ResourceInventor
     || value.targetPath !== undefined && paths.has(value.targetPath)
     || value.entryType === "symlink" && value.linkTarget !== undefined && paths.has(resolve(dirname(value.entryPath), value.linkTarget)))
     .sort((left, right) => left.id.localeCompare(right.id));
+}
+/** 同一轮能力计算共用引用索引，匹配规则与执行时的完整引用检查保持一致。 */
+function referenceIndex(snapshot: ResourceInventorySnapshot) {
+  const bodies = new Map<string, ResourceInventoryEntry[]>(), paths = new Map<string, ResourceInventoryEntry[]>();
+  const targets = new Map<string, ResourceInventoryEntry[]>(), links = new Map<string, ResourceInventoryEntry[]>();
+  const add = (map: Map<string, ResourceInventoryEntry[]>, key: string, entry: ResourceInventoryEntry) => {
+    const values = map.get(key); if (values) values.push(entry); else map.set(key, [entry]);
+  };
+  for (const entry of snapshot.entries) {
+    add(bodies, entry.bodyId, entry); add(paths, entry.entryPath, entry);
+    if (entry.targetPath !== undefined) add(targets, entry.targetPath, entry);
+    if (entry.entryType === "symlink" && entry.linkTarget !== undefined) add(links, resolve(dirname(entry.entryPath), entry.linkTarget), entry);
+  }
+  return (entry: ResourceInventoryEntry) => {
+    const candidates = entry.kind === "mcp" ? [...(bodies.get(entry.bodyId) ?? []).filter(value => value.kind === "mcp"),
+      ...(paths.get(entry.entryPath) ?? []).filter(value => value.kind === "mcp" && (value.server ?? value.name) === (entry.server ?? entry.name))]
+      : [...(bodies.get(entry.bodyId) ?? []), ...(paths.get(entry.entryPath) ?? []),
+        ...[entry.entryPath, entry.targetPath].flatMap(path => path === undefined ? [] : [...(targets.get(path) ?? []), ...(links.get(path) ?? [])])];
+    return [...new Set(candidates)].sort((left, right) => left.id.localeCompare(right.id));
+  };
 }
 /** 入口隔离保持原范围；共享文件回收另行核验完整的已知引用。 */
 function sharedPhysical(entry: ResourceInventoryEntry, refs: readonly ResourceInventoryEntry[]): boolean {
@@ -178,8 +199,7 @@ export class ResourceManager {
     const insert = this.database.prepare("INSERT OR IGNORE INTO resource_seen(id,first_seen) VALUES(?,?)");
     this.database.transaction(() => { for (const entry of snapshot.entries) insert.run(entry.id, snapshot.observedAt); })();
   }
-  private writable(entry: ResourceInventoryEntry, snapshot: ResourceInventorySnapshot): boolean {
-    const source = snapshot.sources.find(value => value.id === entry.sourceId);
+  private writable(entry: ResourceInventoryEntry, snapshot: ResourceInventorySnapshot, source = snapshot.sources.find(value => value.id === entry.sourceId)): boolean {
     return !entry.protected && !entry.owner && (source?.verified === true || entry.locator.nativeRule !== undefined) && source?.client === entry.client && source.kind === entry.kind
       && !["plugin", "system", "managed"].includes(source.origin)
       && (["codex", "claude"].includes(entry.client) || entry.client === "codeflicker" && ["codeflicker-skill", "codeflicker-mcp"].includes(entry.locator.nativeControl ?? "")
@@ -187,12 +207,11 @@ export class ResourceManager {
         || !!entry.locator.nativeRule || entry.locator.registrationWritable === true)
       && entry.readState !== "unreadable";
   }
-  private fileWritable(entry: ResourceInventoryEntry, snapshot: ResourceInventorySnapshot): boolean {
-    const source = snapshot.sources.find(value => value.id === entry.sourceId);
+  private fileWritable(entry: ResourceInventoryEntry, snapshot: ResourceInventorySnapshot, refs = references(snapshot, entry), source: ResourceInventorySource | undefined = snapshot.sources.find(value => value.id === entry.sourceId)): boolean {
     return entry.kind === "skill" && !entry.protected && !entry.owner && source?.verified === true
       && source.client === entry.client && source.kind === entry.kind && !["plugin", "system", "managed"].includes(source.origin)
       && entry.readState !== "unreadable" && ["directory", "file", "symlink"].includes(entry.entryType)
-      && !references(snapshot, entry).some(value => value.protected || value.owner);
+      && !refs.some(value => value.protected || value.owner);
   }
   private favorite(entry: ResourceInventoryEntry, snapshot: ResourceInventorySnapshot): boolean {
     const favorites = new Set(this.favorites());
@@ -204,8 +223,10 @@ export class ResourceManager {
     const favorites = new Set(this.favorites()); const seen = new Map((this.database.prepare("SELECT id,first_seen FROM resource_seen").all() as { id: string; first_seen: string }[])
       .map(row => [row.id, row.first_seen]));
     const archives = this.archives(); const texts = new Map<string, string | undefined>(); const editability = new Map<string, boolean>(); const controls = new Map<string, unknown>();
+    const sources = new Map(snapshot.sources.map(source => [source.id, source])); const indexedReferences = referenceIndex(snapshot);
     return { ...snapshot, entries: snapshot.entries.map(entry => {
-      const writable = this.writable(entry, snapshot);
+      const source = sources.get(entry.sourceId);
+      const writable = this.writable(entry, snapshot, source);
       let disable = writable;
       const path = entry.locator.controlPath ?? entry.locator.configPath;
       if (writable && path && !texts.has(path)) {
@@ -216,8 +237,7 @@ export class ResourceManager {
       if (!editability.has(editKey)) editability.set(editKey, writable && path !== undefined && texts.get(path) !== undefined && editableConfig(texts.get(path)!, entry));
       const configWritable = editability.get(editKey)!;
       disable = disable && configWritable && hasExplicitResourceControl(texts.get(path!)!, entry, controls) && nativeDisable(entry, snapshot);
-      const refs = references(snapshot, entry);
-      const source = snapshot.sources.find(value => value.id === entry.sourceId);
+      const refs = indexedReferences(entry);
       let registrationEditable = configWritable;
       if (entry.kind === "mcp" && entry.locator.nativeRule) {
         const configPath = entry.locator.configPath;
@@ -225,7 +245,7 @@ export class ResourceManager {
         catch { registrationEditable = false; }
       }
       const isolation = writable && source?.verified === true && (entry.kind === "skill" || registrationEditable && (!entry.locator.nativeRule || entry.locator.registrationWritable === true)) && !sharedPhysical(entry, refs);
-      const trash = entry.kind === "skill" ? this.fileWritable(entry, snapshot) : isolation;
+      const trash = entry.kind === "skill" ? this.fileWritable(entry, snapshot, refs, source) : isolation;
       const archive = archives.find(value => (value.entry.id === entry.id || value.target === "file"
         && (value.entry.bodyId === entry.bodyId || value.affectedEntries?.some(affected => affected.id === entry.id)))
         && !["restored", "purged"].includes(value.state));

@@ -1,6 +1,8 @@
 import type { MessageCatalog } from "../../types.js";
 
 export default {
+  "diagnostics.resources.history.busy": "The resource statistics queue is full. Try again shortly.",
+  "diagnostics.resources.history.stopped": "The resource statistics worker has stopped.",
   "diagnostics.sessions.search.stopped": "The search worker has stopped.",
   "diagnostics.sessions.search.busy": "The search queue is full. Try again shortly.",
   "diagnostics.history.extraction.sedOrder": "The sed ranges overlap or are not in ascending order",

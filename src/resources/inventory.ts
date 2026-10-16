@@ -59,6 +59,7 @@ export async function scanResourceInventory(options: ResourceInventoryOptions = 
   const cachedDirectory = (path: string, _options: { withFileTypes: true }) => { let value = directoryCache.get(path); if (!value) { value = readDirectory(path); directoryCache.set(path, value); } return value; };
   const configCache = new Map<string, Promise<ObjectValue | undefined>>();
   const skillTextCache = new Map<string, Promise<string>>();
+  const skillMetadataCache = new Map<string, { metadata?: ObjectValue; invalid: boolean; fingerprint: string }>();
   const parseConfig = (path: string, format: ResourceSourceFormat): Promise<ObjectValue | undefined> => {
     const key = `${format}:${path}`;
     let result = configCache.get(key);
@@ -194,9 +195,9 @@ export async function scanResourceInventory(options: ResourceInventoryOptions = 
       entries.push({ ...base, bodyId: identity("body", ["broken", source.id, path]), name: basename(path), readState: "broken", nativeState: "unknown" });
       return;
     }
-    let text: string;
+    let text: string, canonicalFile: string;
     try {
-      const canonicalFile = await cachedRealpath(skillFile);
+      canonicalFile = await cachedRealpath(skillFile);
       if (containmentRoot && !contained(await cachedRealpath(containmentRoot), canonicalFile)) {
         diagnostics.push({ sourceId: source.id, client: source.client, kind: "skill", scope: source.scope, project: source.project, reason: "invalid_reference", path: skillFile });
         gaps.push({ sourceId: source.id, client: source.client, reason: "invalid" }); return;
@@ -213,13 +214,18 @@ export async function scanResourceInventory(options: ResourceInventoryOptions = 
       if (!missing(error)) gaps.push({ sourceId: source.id, client: source.client, reason: error instanceof Error && error.message === "skill_limit" ? "limit" : "unreadable" });
       return;
     }
-    const frontmatter = /^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/.exec(text)?.[1];
-    let metadata: ObjectValue | undefined;
-    if (frontmatter) {
-      const document = parseDocument(frontmatter, { uniqueKeys: true });
-      if (!document.errors.length) { try { metadata = object(document.toJS({ maxAliasCount: 20 })); } catch { /* 超量 alias 不能当作可信元信息。 */ } }
-      if (!metadata) gaps.push({ sourceId: source.id, client: source.client, reason: "invalid" });
+    let parsed = skillMetadataCache.get(canonicalFile);
+    if (!parsed) {
+      const frontmatter = /^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/.exec(text)?.[1];
+      let metadata: ObjectValue | undefined;
+      if (frontmatter) {
+        const document = parseDocument(frontmatter, { uniqueKeys: true });
+        if (!document.errors.length) { try { metadata = object(document.toJS({ maxAliasCount: 20 })); } catch { /* 超量 alias 不能当作可信元信息。 */ } }
+      }
+      parsed = { metadata, invalid: !!frontmatter && !metadata, fingerprint: hash(text) }; skillMetadataCache.set(canonicalFile, parsed);
     }
+    const { metadata } = parsed;
+    if (parsed.invalid) gaps.push({ sourceId: source.id, client: source.client, reason: "invalid" });
     const field = (key: string): string | undefined => typeof metadata?.[key] === "string" ? metadata[key] as string : undefined;
     if (source.native?.acceptsSkill && !source.native.acceptsSkill(metadata, path)) {
       diagnostics.push({ sourceId: source.id, client: source.client, kind: "skill", scope: source.scope, project: source.project, reason: "invalid_reference", path });
@@ -238,7 +244,7 @@ export async function scanResourceInventory(options: ResourceInventoryOptions = 
       diagnostics.push({ sourceId: source.id, client: source.client, kind: "skill", scope: source.scope, project: source.project, reason: "invalid_reference", path });
       return;
     }
-    const fingerprint = hash(text);
+    const fingerprint = parsed.fingerprint;
     let nativeState = await skillState(source, skillFile, name);
     let invocationMode: ResourceInventoryEntry["invocationMode"];
     if (source.native) {

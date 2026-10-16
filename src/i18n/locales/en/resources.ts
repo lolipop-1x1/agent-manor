@@ -34,6 +34,7 @@ export default {
   "resources.workspace.purged": "Recovery material permanently removed",
   "resources.archive.restorableLink": "Link restorable",
   "resources.workspace.linkTarget": "Link target",
+  "resources.workspace.resolvedLinkTarget": "Resolved target location",
   "resources.workspace.linkState.available": "Target Skill file readable",
   "resources.workspace.linkState.missing": "Target missing",
   "resources.workspace.linkState.unreadable": "Target status unknown",

@@ -71,6 +71,7 @@ try {
   await step('正式统一清单、三栏布局及按需加载',`
     page.setDefaultTimeout(15000); await page.setViewportSize({width:1920,height:1000}); ${route()}
     page.resourceErrors=[]; page.on('pageerror',error=>page.resourceErrors.push(error.message));
+    page.resourceCalls=[];page.on('request',request=>{if(request.url().includes('/api/v1/resources/'))page.resourceCalls.push({url:request.url(),method:request.method()})});
     const table=page.getByRole('table',{name:'Skill 总览',exact:true});
     expect(await table.getByRole('columnheader',{name:'本地位置',exact:true}).count()===1,'没有本地位置列');
     expect(await table.getByRole('columnheader',{name:/涉及|管理/}).count()===0,'旧 Agent 或管理列残留');
@@ -191,7 +192,9 @@ try {
   `);
   assert.equal(await readFile(fixture.configPath,'utf8'),initialConfig,'取消预览改写了配置');
   await step('Skill 停用并直接预览恢复',`
-    await ${location(fixture.guide)}.getByRole('button',{name:'预览停用guide的Codex入口',exact:true}).click();${apply('停用此路径的配置')}
+    await ${location(fixture.guide)}.getByRole('button',{name:'预览停用guide的Codex入口',exact:true}).click();
+    await ${preview}.getByRole('button',{name:'停用此路径的配置',exact:true}).waitFor();page.resourceCalls=[];${apply('停用此路径的配置')}${ready}
+    expect(!page.resourceCalls.some(request=>request.url.includes('/resources/status')||request.url.includes('/evidence')),'本地操作重载了无关状态或使用证据');
   `);
   assert.equal(parseToml(await readFile(fixture.configPath,'utf8')).skills.config.at(-1).enabled,false);
   await step('Skill 恢复撤销原路径规则',`await ${preview}.getByRole('button',{name:/^预览(撤销停用|还原配置|还原链接|还原文件)$/,exact:true}).click();${apply('恢复到原位置')}${finish}`);
@@ -221,7 +224,8 @@ try {
     await page.getByRole('button',{name:${JSON.stringify(`移除链接${fixture.broken}，保留目标文件`)},exact:true}).click();
     await ${preview}.getByRole('button',{name:'移除这个链接',exact:true}).waitFor();
     expect((await ${preview}.innerText()).includes(${JSON.stringify(brokenText)}),'断链原始指向缺失');
-    expect((await ${preview}.innerText()).includes('目标不存在'),'没有标明目标缺失');${apply('移入回收区')}${finish}
+    expect((await ${preview}.innerText()).includes('目标不存在'),'没有标明目标缺失');
+    expect((await ${preview}.innerText()).includes('实际目标位置')&&(await ${preview}.innerText()).includes(${JSON.stringify(fixture.brokenTarget)}),'没有显示相对链接解析后的实际位置');${apply('移入回收区')}${finish}
     ${tools('回收区')}
     await page.getByRole('button',{name:'查看broken的恢复记录',exact:true}).click();${ready}
     const detail=await page.getByRole('complementary',{name:'资源详情',exact:true}).innerText();

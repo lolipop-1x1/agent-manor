@@ -35,6 +35,6 @@ export const resourceApi = {
   removeSource: (id: string) => request<ResourceStatusSummary>(`/resources/sources/${encodeURIComponent(id)}?summary=true`, { method: "DELETE" }),
   archives: (state: ResourceArchiveState | "recoverable", query: ResourceManagementQuery, signal?: AbortSignal) => request<ResourceArchiveResult>(`/resources/archives${resourceQuery({ ...query, state })}`, { signal }),
   operations: (query: ResourceManagementQuery, signal?: AbortSignal) => request<ResourceManagementOperations>(`/resources/operations${resourceQuery(query)}`, { signal }),
-  preview: (input: ResourceManagementInput) => request<ResourceManagementPreview>("/resources/preview", { method: "POST", body: input as unknown as JsonValue }),
+  preview: (input: ResourceManagementInput, signal?: AbortSignal) => request<ResourceManagementPreview>("/resources/preview", { method: "POST", body: input as unknown as JsonValue, signal }),
   apply: (previewId: string) => request<ResourceManagementOperation>("/resources/apply", { method: "POST", body: { previewId, confirmed: true } }),
 };

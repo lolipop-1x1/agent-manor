@@ -34,6 +34,7 @@ export default {
   "resources.workspace.purged": "恢复材料已永久清除",
   "resources.archive.restorableLink": "可恢复链接",
   "resources.workspace.linkTarget": "链接指向",
+  "resources.workspace.resolvedLinkTarget": "实际目标位置",
   "resources.workspace.linkState.available": "目标 Skill 文件可读取",
   "resources.workspace.linkState.missing": "目标不存在",
   "resources.workspace.linkState.unreadable": "无法确认目标状态",

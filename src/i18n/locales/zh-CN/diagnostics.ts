@@ -1,6 +1,8 @@
 import type { MessageCatalog } from "../../types.js";
 
 export default {
+  "diagnostics.resources.history.busy": "资源统计队列已满，请稍后重试。",
+  "diagnostics.resources.history.stopped": "资源统计后台已停止。",
   "diagnostics.sessions.search.stopped": "搜索后台已停止。",
   "diagnostics.sessions.search.busy": "搜索队列已满，请稍后重试。",
   "diagnostics.history.extraction.sedOrder": "多段 sed 范围重叠或顺序不明确",

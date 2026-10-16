@@ -11,6 +11,7 @@ import { buildResourceMap } from "./map.js";
 import { ResourceManager } from "./management.js";
 import { resourceUsageThresholdMatches } from "./classification.js";
 import { applyResourceFavorites } from "./favorites.js";
+import { ResourceUsageCache, type ResourceHistoryReader } from "./usage-cache.js";
 
 export function summarizeResourceStatus(status: ResourceStatus): ResourceStatusSummary {
   const sources = new Map(status.sources.map(source => [source.id, source]));
@@ -32,8 +33,11 @@ export class ResourceService {
   private pending?: Promise<ResourceInventorySnapshot>;
   private readonly overviewCache = new Map<string, Promise<ReturnType<typeof overviewResourceUsage>>>();
   private overviewGeneration?: string;
+  private readonly history: ResourceHistoryReader;
   constructor(readonly library: SessionStore, readonly manager: ResourceManager,
-    private readonly inventoryOptions: ResourceInventoryOptions, private readonly projects: () => string[]) {}
+    private readonly inventoryOptions: ResourceInventoryOptions, private readonly projects: () => string[], history?: ResourceHistoryReader) {
+    this.history = history ?? new ResourceUsageCache(library);
+  }
 
   private inventory(): Promise<ResourceInventorySnapshot> {
     return this.snapshot ? Promise.resolve(this.snapshot) : this.scan();
@@ -77,7 +81,7 @@ export class ResourceService {
     const key = JSON.stringify(scope);
     const localQuery = { ...scope, project: undefined, client: undefined, lowSessions: query.lowSessions, inactiveDays: query.inactiveDays };
     const cached = this.overviewCache.get(key);
-    const value = cached ?? Promise.resolve().then(() => overviewResourceUsage(this.library, scope, inventory.entries, new Set()));
+    const value = cached ?? this.history.overview(scope, inventory.entries);
     this.overviewCache.delete(key);
     this.overviewCache.set(key, value);
     if (this.overviewCache.size > 8) this.overviewCache.delete(this.overviewCache.keys().next().value!);
@@ -160,7 +164,7 @@ export class ResourceService {
     prepared?: { inventory: ResourceInventorySnapshot; history?: ReturnType<typeof localResourceUsage> }): Promise<{ rows: ResourceLocalRow[]; inventory: ResourceInventorySnapshot; partial: boolean; history?: ReturnType<typeof localResourceUsage> }> {
     const inventory = prepared?.inventory ?? await this.inventory();
     let history = prepared?.history;
-    if (historyAvailable) history = localResourceUsage(this.library, query, inventory.entries);
+    if (historyAvailable) history = (await this.history.overview(query, inventory.entries)).local;
     const favoriteIds = new Set(this.manager.favorites());
     const byId = new Map(inventory.entries.map(entry => [entry.id, entry]));
     const sourcesById = new Map(inventory.sources.map(source => [source.id, source]));

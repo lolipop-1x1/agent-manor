@@ -18,6 +18,7 @@ export interface ResourceConfigurationPreview {
 }
 export interface ResourceLinkStatus {
   target: string;
+  resolvedTarget?: string;
   state: "available" | "missing" | "unreadable" | "skill_missing" | "skill_unreadable";
 }
 export interface ResourceManagementPreview {

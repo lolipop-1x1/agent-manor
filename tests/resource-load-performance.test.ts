@@ -6,6 +6,7 @@ import test from "node:test";
 import { resourceFixture } from "../scripts/resource-fixture.mjs";
 import { ResourceManager } from "../src/resources/management.js";
 import { ResourceService } from "../src/resources/service.js";
+import { ResourceUsageManager } from "../src/resources/usage-manager.js";
 import { parseSessionSource } from "../src/sessions/parser.js";
 import { SessionStore } from "../src/sessions/store.js";
 
@@ -125,7 +126,7 @@ test("收藏、索引发布、资源刷新和统计范围变化不会返回旧�
   assert.equal(dated.stats?.successfulReads, 0);
   const reclassified = await service.overview({ kind: "skill", lowSessions: 9 });
   assert.deepEqual(reclassified.stats, published.stats);
-  assert.equal(reads, 5, "阈值只重新分类，不重读相同范围历史");
+  assert.equal(reads, 4, "盘点和阈值只重新关联、分类，不重读相同版本与范围的历史");
 }));
 
 test("收藏变化复用历史并同步别名、本地保护、地图与筛选计数", async () => fixture(async (service, library) => {
@@ -214,4 +215,42 @@ test("管理预览复用盘点与收藏历史，目标变化仍在执行前产�
   await appendFile(join(context.guide, "asset.txt"), "预览后发生变化\n");
   assert.equal((await service.apply(preview.id, true)).status, "conflict");
   assert.ok(scans > 0, "执行前仍重新发现引用与保护状态");
+}));
+
+test("本地入口消失后只重算关联，历史事件聚合不随盘点失效", async () => fixture(async (service, library, _manager, context) => {
+  let reads = 0; const original = library.resourceEvents.bind(library);
+  library.resourceEvents = (...args) => { reads++; return original(...args); };
+  const before = await service.overview({ kind: "skill" });
+  const guide = before.resources.find(row => row.identity.name === "guide")!;
+  assert.ok(guide.localBodyIds.length);
+  await rm(context.guide, { recursive: true }); await service.refresh();
+  const after = await service.overview({ kind: "skill" });
+  const changed = after.resources.find(row => row.identity.id === guide.identity.id)!;
+  assert.deepEqual(changed.stats, guide.stats);
+  assert.equal(changed.localBodyIds.length, 0);
+  assert.equal(reads, 1, "本地变更不能重读未变化的历史事件");
+}));
+
+test("只读资源 Worker 冷查询期间主线程继续调度，同条件合并且关闭拒绝新任务", async () => fixture(async (service, library) => {
+  const inventory = (await service.local({ kind: "skill" })).rows.flatMap(row => row.entries);
+  const manager = new ResourceUsageManager(library);
+  try {
+    let scheduled = false;
+    const first = manager.overview({ kind: "skill" }, inventory);
+    assert.equal(manager.overview({ kind: "skill" }, inventory), first);
+    setImmediate(() => { scheduled = true; });
+    const result = await first;
+    assert.equal(scheduled, true);
+    assert.equal(result.history.stats.successfulReads, 1);
+    const mcp = await manager.overview({ kind: "mcp" }, inventory);
+    assert.equal(mcp.history.stats.mcpCalls, 2);
+  } finally { await manager.close(); }
+  await assert.rejects(manager.overview({ kind: "skill" }, inventory), /资源统计后台已停止/);
+}));
+
+test("资源 Worker 关闭时拒绝尚未完成的读取，不遗留等待任务", async () => fixture(async (_service, library) => {
+  const manager = new ResourceUsageManager(library);
+  const pending = manager.overview({ kind: "skill" }, []);
+  const rejected = assert.rejects(pending, /资源统计后台已停止/);
+  await manager.close(); await rejected;
 }));
