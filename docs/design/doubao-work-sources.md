@@ -6,7 +6,7 @@
 
 默认发现操作系统 home 下 `Library/Application Support/DoubaoWork/Default/IndexedDB` 中启动页与聊天页的原生 LevelDB `CURRENT` 文件。`AGENT_MANOR_DOUBAO_WORK_DIR` 或显式 roots 可覆盖发现目录；显式空数组关闭该客户端。
 
-原生来源是 IndexedDB／LevelDB 与同级外置 blob，不是 JSONL。读取器使用 Node.js 直接校验 MANIFEST 活动表、WAL、序号、删除标记与 CRC32C，解开 Snappy、IndexedDB／Blink 包装及已核验的 V8 对象。只反序列化账号分区下的 `conversations` store，不打开数据库、不创建锁或迁移文件，也不要求 Python。
+原生来源是 IndexedDB／LevelDB 与同级外置 blob，不是 JSONL。读取器使用 Node.js 直接校验 MANIFEST 活动表、当前及前一活动 WAL、序号、删除标记与 CRC32C，解开 Snappy、IndexedDB／Blink 包装及已核验的 V8 对象。只反序列化账号分区下的 `conversations` store，不打开数据库、不创建锁或迁移文件，也不要求 Python。
 
 来源读取有文件数、目录深度、总字节、单值、解压与对象结构预算。成员或读取前后元信息变化、缺失 blob、损坏或未知格式均失败，保留上一完整索引；不能把读取错误发布为空会话集。读取不访问登录凭证，不调用云端历史接口，也不主动启动或操作豆包工作。
 
@@ -14,7 +14,7 @@
 
 缓存值是会话聚合响应，使用账号分区与原生会话身份定位。启动页和聊天页可能保存不同投影；同一会话只选择一个来源，优先消息较多的投影，不拼接不一致快照。两个有正文的投影冲突时保留歧义诊断，消息多不代表历史完整。
 
-消息按原生 `index_in_conv` 排序，数字身份保留为字符串。真实用户消息与已核验的回复引用建立轮次；会话内共享的 `section_id` 不作为轮次身份。项目采用原生明确工作目录，不把产品项目 ID、授权目录或目录名当作 Git 根。
+消息按原生 `index_in_conv` 排序，数字身份保留为字符串。真实用户消息与已核验的回复引用建立轮次；缺少或无效引用的回复保留正文和未关联状态，不归入最近用户轮次。会话内共享的 `section_id` 不作为轮次身份。项目采用原生明确工作目录，不把产品项目 ID、授权目录或目录名当作 Git 根。
 
 | 能力 | 当前支持与边界 |
 | --- | --- |

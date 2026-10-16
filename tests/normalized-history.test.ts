@@ -10,6 +10,27 @@ import { parseSource } from "../src/history/index.js";
 import { createNormalizedAdapter, normalizedHash, normalizedRecord, normalizedSnapshot, parseNormalizedSession, readBoundedJsonl } from "../src/history/adapters/normalized.js";
 import type { SessionMessage, SessionUsage } from "../src/session-contracts.js";
 
+test("显式未关联消息使用未知轮次，不改变后续默认继承或明确关联", () => {
+  const messages = new Map<string, SessionMessage>();
+  const meta = parseNormalizedSession(normalizedSnapshot({ client: "pi", path: "/workspace/history.jsonl", sessionId: "unassigned" }, [
+    normalizedRecord({ key: "u1", kind: "user", text: "First request" }, "{}", 1),
+    normalizedRecord({ key: "a1", kind: "assistant", text: "First reply" }, "{}", 2),
+    normalizedRecord({ key: "u2", kind: "user", text: "Second request" }, "{}", 3),
+    normalizedRecord({ key: "orphan", kind: "assistant", text: "Unlinked reply", turnKey: null, allowInferredFinal: false }, "{}", 4),
+    normalizedRecord({ key: "inherited", kind: "context", text: "Inherited context" }, "{}", 5),
+    normalizedRecord({ key: "linked", kind: "assistant", text: "Linked to first", turnKey: "u1" }, "{}", 6),
+    normalizedRecord({ key: "after-link", kind: "context", text: "Context after link" }, "{}", 7),
+  ]), { message: value => messages.set(value.id, value), usage: () => {} });
+  const byText = (text: string) => [...messages.values()].find(value => value.text === text)!;
+  assert.equal(meta.turnCount, 2);
+  assert.equal(byText("Unlinked reply").turnId, `${meta.id}:turn:0`);
+  assert.equal(byText("Unlinked reply").kind, "assistant");
+  assert.equal(byText("Inherited context").turnId, byText("Second request").turnId);
+  assert.equal(byText("First reply").turnId, byText("First request").turnId);
+  assert.equal(byText("Linked to first").turnId, byText("First request").turnId);
+  assert.equal(byText("Context after link").turnId, byText("First request").turnId);
+});
+
 test("规范化保留分支及实际用量，失败工具不会产生 Skill 读取证据", () => {
   const messages = new Map<string, SessionMessage>(); const usages = new Map<string, SessionUsage>();
   const snapshot = normalizedSnapshot({ client: "pi", path: "/workspace/history.jsonl", sessionId: "synthetic-session", cwd: "/workspace/app" }, [

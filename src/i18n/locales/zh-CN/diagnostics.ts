@@ -601,4 +601,9 @@ export default {
   "diagnostics.history.adapters.doubaoWork.invalidSelector": "豆包工作来源选择器无效",
   "diagnostics.history.adapters.doubaoWork.cacheOnly": "豆包工作来源为本机会话缓存，未保证完整历史或新增任务持续落盘",
   "diagnostics.history.adapters.doubaoWork.cacheReadFailed": "豆包工作本机缓存读取失败：{{reason}}",
+  "diagnostics.history.adapters.doubaoWork.cacheInvalid": "豆包工作本机缓存读取失败：缓存格式无效或不完整",
+  "diagnostics.history.adapters.doubaoWork.cacheUnsupported": "豆包工作本机缓存读取失败：尚未支持的缓存格式或文件类型",
+  "diagnostics.history.adapters.doubaoWork.cacheLimit": "豆包工作本机缓存读取失败：缓存超过有界读取或解码上限",
+  "diagnostics.history.adapters.doubaoWork.cacheDependencyMissing": "豆包工作本机缓存读取失败：活动文件或外置值缺失或已改变",
+  "diagnostics.history.adapters.doubaoWork.cacheChanged": "豆包工作本机缓存读取失败：取得快照期间缓存发生变化",
 } satisfies MessageCatalog;

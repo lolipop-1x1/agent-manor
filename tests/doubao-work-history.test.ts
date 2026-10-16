@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, rm, symlink } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, symlink, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -11,8 +11,10 @@ import { normalizedHash } from "../src/history/adapters/normalized.js";
 import { parseSessionSource } from "../src/sessions/parser.js";
 import { refreshSessions } from "../src/sessions/refresh.js";
 import { SessionStore } from "../src/sessions/store.js";
+import { deriveRoundFacts } from "../src/sessions/round-metrics.js";
 import type { SessionMessage, SessionUsage } from "../src/session-contracts.js";
-import { writeDoubaoWorkCache } from "./helpers/doubao-work-store.js";
+import { dialogueMarkdown } from "../web/features/sessions/session-export.js";
+import { cacheBatch, cacheLog, cacheManifest, syntheticCacheEntries, writeDoubaoWorkCache } from "./helpers/doubao-work-store.js";
 import { isolatedHistoryRoots } from "./helpers/history-roots.js";
 
 const registry = HISTORY_ADAPTERS as HistoryAdapter[];
@@ -179,6 +181,68 @@ test("豆包工作回复引用跨用户输入关联原轮次，不将共享 sect
   assert.equal(messages.find(value => value.text === "Reply to first")?.turnId, messages.find(value => value.text === "First request")?.turnId);
   assert.equal(messages.find(value => value.text === "Reply to second")?.turnId, messages.find(value => value.text === "Second request")?.turnId);
   assert.notEqual(messages.find(value => value.text === "Reply to first")?.turnId, messages.find(value => value.text === "Second request")?.turnId);
+}));
+
+for (const reply of [undefined, "missing-user", "a-one"]) {
+  test(`豆包工作缺少有效回复引用 ${String(reply)} 时保留正文但不推定用户轮次`, async () => temporary(async directory => {
+    await writeDoubaoWorkCache(join(directory, "launcher.leveldb"), [{ account: "DoubaoPC_synthetic", value: response([conversation([
+      message("u-one", 1, "1", [textBlock("u-one-text", "First request")]),
+      message("a-one", 2, "2", [textBlock("a-one-text", "First reply")], { bot_reply_message_id: "u-one" }),
+      message("u-two", 1, "3", [textBlock("u-two-text", "Second request")]),
+      message("a-two", 2, "4", [textBlock("a-two-text", "Unlinked reply")], { bot_reply_message_id: reply }),
+    ])]) }]);
+    const store = new SessionStore(join(directory, "index.sqlite"));
+    try {
+      const job = store.createJob({ client: "doubao-work", mode: "full" });
+      await refreshSessions(store, job.id, isolatedHistoryRoots({ "doubao-work": directory }));
+      const session = store.list().sessions[0]!;
+      for (const mode of ["brief", "full", "trace"] as const) {
+        const messages = store.messages(session.id, { mode }).messages;
+        const unlinked = messages.find(value => value.text === "Unlinked reply")!;
+        assert.equal(unlinked.kind, "assistant");
+        assert.equal(unlinked.turnId, `${session.id}:turn:0`);
+        assert.equal(unlinked.final, undefined);
+      }
+      const messages = store.messages(session.id, { mode: "full" }).messages;
+      const { rounds } = deriveRoundFacts(messages, []);
+      assert.deepEqual(rounds.map(round => round.eligible), [true, false]);
+      assert.equal(rounds[1]!.end, undefined);
+      assert.equal(store.profile(session.id).roundMetrics?.completedTurns, 1);
+      const brief = store.messages(session.id, { mode: "brief" }).messages;
+      for (const language of ["en", "zh-CN"] as const) assert.ok(dialogueMarkdown(brief, language).includes("Unlinked reply"));
+    } finally { store.close(); }
+  }));
+}
+
+test("豆包工作活动 previous log 缺失导致刷新失败，保留已发布会话、搜索与版本", async () => temporary(async directory => {
+  const origin = join(directory, "launcher.leveldb");
+  const initial = [{ account: "DoubaoPC_synthetic", value: response([conversation([
+    message("u", 1, "1", [textBlock("text", "synthetic searchable previous log")]),
+  ])]) }];
+  await writeDoubaoWorkCache(origin, initial);
+  const { entries } = syntheticCacheEntries(initial);
+  await writeFile(join(origin, "000003.log"), cacheLog([cacheBatch(entries.slice(2), 10)]));
+  await writeFile(join(origin, "000004.log"), cacheLog([cacheBatch(entries.slice(0, 2), 20)]));
+  await writeFile(join(origin, "MANIFEST-000001"), cacheManifest(undefined, 4, 3));
+  const store = new SessionStore(join(directory, "index.sqlite"));
+  const refresh = async () => {
+    const job = store.createJob({ client: "doubao-work", mode: "quick" });
+    await refreshSessions(store, job.id, isolatedHistoryRoots({ "doubao-work": directory }));
+    return store.getJob(job.id);
+  };
+  try {
+    assert.equal((await refresh()).status, "complete");
+    assert.equal(store.list().total, 1);
+    assert.equal(store.search({ q: "searchable" }).hits.length, 1);
+    const version = store.status().version;
+    await unlink(join(origin, "000003.log"));
+    await assert.rejects(refresh(), /active log is missing/);
+    assert.equal(store.status().job?.status, "failed");
+    assert.equal(store.status().version, version);
+    assert.equal(store.status().stale, true);
+    assert.equal(store.list().total, 1);
+    assert.equal(store.search({ q: "searchable" }).hits.length, 1);
+  } finally { store.close(); }
 }));
 
 test("豆包工作工作目录冲突和块父关系缺口可见，产品项目身份不替代本机项目路径", async () => temporary(async directory => {

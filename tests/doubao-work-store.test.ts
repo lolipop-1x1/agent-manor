@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { DiagnosticError, errorDescriptor } from "../src/i18n/diagnostics.js";
+import { translateMessage } from "../src/i18n/index.js";
 import { CACHE_BYTE_LIMIT, decompressSnappy } from "../src/history/adapters/doubao-work-leveldb.js";
 import { readDoubaoWorkCache } from "../src/history/adapters/doubao-work-store.js";
 import {
@@ -82,6 +83,42 @@ test("豆包缓存包含 previous log，但不会复活更旧日志中的记录"
   });
 });
 
+test("豆包缓存缺失 MANIFEST 引用的 previous log 时失败，不将元数据当作有效空来源", async () => {
+  await fixture(async (directory, current) => {
+    const { entries } = syntheticCacheEntries([record]);
+    await writeFile(path.join(directory, "000003.log"), cacheLog([cacheBatch(entries.slice(2), 10)]));
+    await writeFile(path.join(directory, "000004.log"), cacheLog([cacheBatch(entries.slice(0, 2), 20)]));
+    await writeFile(path.join(directory, "MANIFEST-000001"), cacheManifest(undefined, 4, 3));
+    assert.deepEqual((await readDoubaoWorkCache(current)).records, [record]);
+    await unlink(path.join(directory, "000003.log"));
+    await assert.rejects(readDoubaoWorkCache(current), /active log is missing/);
+  });
+});
+
+test("豆包缓存自产格式错误在组合后保留稳定中英文描述与原始 cause", async () => {
+  await fixture(async (directory, current) => {
+    for (const corruption of ["current", "checksum"] as const) {
+      await writeDoubaoWorkCache(directory, [record]);
+      if (corruption === "current") await writeFile(current, "invalid");
+      else {
+        const logPath = path.join(directory, "000002.log");
+        const log = await readFile(logPath); log[0] = log[0]! ^ 1;
+        await writeFile(logPath, log);
+      }
+      await assert.rejects(readDoubaoWorkCache(current), (error: unknown) => {
+        assert.ok(error instanceof DiagnosticError && error.cause instanceof DiagnosticError);
+        const descriptor = errorDescriptor(error)!;
+        assert.deepEqual(descriptor, errorDescriptor(error.cause));
+        assert.equal(descriptor.key, "diagnostics.history.adapters.doubaoWork.cacheInvalid");
+        assert.equal(translateMessage("zh-CN", descriptor), "豆包工作本机缓存读取失败：缓存格式无效或不完整");
+        assert.equal(translateMessage("en", descriptor), "Unable to read the Doubao Work local cache: invalid or incomplete cache format");
+        assert.match(error.cause.message, corruption === "current" ? /invalid CURRENT/ : /checksum/);
+        return true;
+      });
+    }
+  });
+});
+
 test("豆包缓存保留独立账号命名空间，忽略非豆包数据库", async () => {
   await fixture(async (directory, current) => {
     const other = { account: "DoubaoPC_other_synthetic", value: { text: "第二个合成账号" } };
@@ -112,6 +149,10 @@ test("豆包缓存产品诊断包含稳定翻译描述并保留原始错误与 e
       assert.equal((error as NodeJS.ErrnoException).code, "ENOENT");
       assert.equal((error as NodeJS.ErrnoException).path, current);
       assert.ok(error.cause instanceof Error);
+      assert.equal(errorDescriptor(error)?.params?.reason, error.cause.message);
+      for (const language of ["en", "zh-CN"] as const) {
+        assert.ok(translateMessage(language, errorDescriptor(error)!).includes(error.cause.message));
+      }
       assert.match(error.message, /^豆包工作会话缓存读取失败：/);
       return true;
     });
@@ -183,10 +224,17 @@ test("豆包缓存未知 Blink 包装和无法解码的 V8 都失败", async () 
     const { entries } = syntheticCacheEntries([record]);
     entries.at(-1)!.value = Buffer.from([1, 255, 17, 9]);
     await writeFile(path.join(directory, "000002.log"), cacheLog([cacheBatch(entries)]));
-    await assert.rejects(readDoubaoWorkCache(current), /unsupported Blink wrapper/);
+    await assert.rejects(readDoubaoWorkCache(current), error => {
+      assert.equal(errorDescriptor(error)?.key, "diagnostics.history.adapters.doubaoWork.cacheUnsupported");
+      return /unsupported Blink wrapper/.test(String(error));
+    });
     entries.at(-1)!.value = Buffer.from([1, 255, 16, 1, 2, 3]);
     await writeFile(path.join(directory, "000002.log"), cacheLog([cacheBatch(entries)]));
-    await assert.rejects(readDoubaoWorkCache(current), /V8 value could not be decoded/);
+    await assert.rejects(readDoubaoWorkCache(current), error => {
+      assert.ok(error instanceof DiagnosticError && error.cause instanceof DiagnosticError);
+      assert.ok(error.cause.cause instanceof Error);
+      return /V8 value could not be decoded/.test(error.message);
+    });
   });
 });
 

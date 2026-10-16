@@ -101,9 +101,10 @@ export function cacheTable(entries: SyntheticCacheEntry[], sequence = 1, compres
   return Buffer.concat([data, index, footer]);
 }
 
-export function cacheManifest(table?: { number: number; size: number }, logNumber = 2): Buffer {
+export function cacheManifest(table?: { number: number; size: number }, logNumber = 2, previousLog = 0): Buffer {
   return cacheLog([Buffer.concat([
     cacheVarint(1), cacheBytes(Buffer.from("idb_cmp1")), cacheVarint(2), cacheVarint(logNumber),
+    cacheVarint(9), cacheVarint(previousLog),
     ...(table ? [cacheVarint(7), cacheVarint(0), cacheVarint(table.number), cacheVarint(table.size), cacheBytes(Buffer.alloc(0)), cacheBytes(Buffer.alloc(0))] : []),
   ])]);
 }

@@ -13,7 +13,7 @@ Status: claimed
 
 ## 当前前沿
 
-没有新的产品行为选择。真实来源、原生读写任务、产品集成与合成浏览器验收已完成；正在执行最终完整回归和独立审查。已确认的支持与未知边界记录在来源文档，不由用户猜测字段语义。
+没有新的产品行为选择。真实来源、原生读写任务、产品集成与合成浏览器验收已完成；修复前全套 1301 项通过，独立审查发现的 3 个边界问题正在统一修复并复验。已确认的支持与未知边界记录在来源文档，不由用户猜测字段语义。
 
 [接入规格](spec.md) 已确认，按任务依赖图直接在 main 并行开发。主 Agent 统一集成、审查、真实数据与浏览器验收及推送；不创建额外分支、PR 或工作区。
 
@@ -24,8 +24,8 @@ Status: claimed
 - [03 原生缓存读取](issues/03-native-cache-reader.md)：resolved。
 - [04 历史语义适配](issues/04-history-adapter.md)：resolved；依赖 03 的读取契约。
 - [05 本地资源接入](issues/05-resources.md)：resolved。
-- [06 产品集成与真实验收](issues/06-integration-validation.md)：claimed；依赖 03、04、05。
-- [07 代码审查与修复](issues/07-review.md)：依赖 06。
+- [06 产品集成与真实验收](issues/06-integration-validation.md)：resolved；依赖 03、04、05。
+- [07 代码审查与修复](issues/07-review.md)：claimed；依赖 06。
 - [08 提交与推送](issues/08-delivery.md)：依赖 07。
 - [原生验收记录](validation.md)：真实缓存产品验证与合成 Chrome 7 项验收完成；缓存更新缺口仍保留。
 

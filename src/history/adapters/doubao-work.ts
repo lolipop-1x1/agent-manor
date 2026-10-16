@@ -124,7 +124,7 @@ function messageRecords(conversation: Conversation, meta: NormalizedSessionMetad
     const target = reply ? byId.get(reply) : undefined;
     const linked = isAssistant && target?.user_type === 1 && index(target.index_in_conv) !== undefined && item.index !== undefined
       && index(target.index_in_conv)! < item.index;
-    const turnKey = isUser ? item.id : linked ? reply : undefined;
+    const turnKey = isUser ? item.id : linked ? reply : isAssistant ? null : undefined;
     if (isAssistant && !linked) addGap(gaps, "replyMissing", "豆包工作回复缺少可核验的用户消息关联，未推定完整轮次", "ambiguous");
     if (!isUser && !isAssistant) addGap(gaps, "unknownRole", "豆包工作包含尚未适配的消息角色，按上下文保留");
     if (ext.context_window_usage !== undefined || ext.commerce_model_data_v1 !== undefined || ext.commerce_usage_data_v1 !== undefined

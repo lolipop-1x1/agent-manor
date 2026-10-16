@@ -40,7 +40,8 @@ export interface NormalizedEvent {
   /** 模型请求身份独立于消息片段与工具调用身份。 */
   requestKey?: string;
   requestTiming?: SessionUsage["timing"];
-  turnKey?: string;
+  /** null 明确表示无法关联用户轮次；undefined 保留按顺序继承的默认行为。 */
+  turnKey?: string | null;
   branchIds?: string[];
   currentBranch?: boolean;
   copied?: boolean;
@@ -175,7 +176,7 @@ export function parseNormalizedSession(snapshot: NormalizedSnapshot, sink: Sessi
   const messages = new Map<string, number>(); const pending = new Map<string, SessionMessage[]>(); const inputs = new Map<string, unknown>();
   const candidates = new Map<string, { message: SessionMessage; allowInferredFinal: boolean; finalEvidence?: SessionMessage["finalEvidence"]; finalAt?: string; requestKey?: string }>();
   const finals = new Map<string, Set<SessionMessage>>(); const interrupted = new Map<string, NormalizedEvent[]>();
-  const turns = new Map<string, string>(); const models = new Set<string>(); let turn = `${id}:turn:0`;
+  const turns = new Map<string, string>(); const models = new Set<string>(); const unassignedTurn = `${id}:turn:0`; let currentTurn = unassignedTurn;
   const messageIds = new Map<string, string>();
   const boundaryMessages = new Map<string, string[]>();
   const requestGroups = new Map<string, { first: SessionMessage; messages: Set<string>; timing?: SessionUsage["timing"]; usage?: SessionUsage }>();
@@ -194,11 +195,12 @@ export function parseNormalizedSession(snapshot: NormalizedSnapshot, sink: Sessi
   for (const row of snapshot.records) {
     const event = row.record.normalizedEvent as NormalizedEvent | undefined;
     if (!event) continue;
-    if (event.kind === "user") {
+    if (event.kind === "user" && event.turnKey !== null) {
       const key = event.turnKey ?? event.key;
       if (!turns.has(key)) turns.set(key, `${id}:turn:${++meta.turnCount}`);
-      turn = turns.get(key)!;
-    } else if (event.turnKey && turns.has(event.turnKey)) turn = turns.get(event.turnKey)!;
+      currentTurn = turns.get(key)!;
+    } else if (event.turnKey && turns.has(event.turnKey)) currentTurn = turns.get(event.turnKey)!;
+    const turn = event.turnKey === null ? unassignedTurn : currentTurn;
     const previous = messages.get(event.key);
     const partial = event.interrupted === true || event.requestTiming?.completion === "partial"
       || ["assistant", "thinking"].includes(event.kind) && event.status === "failure";

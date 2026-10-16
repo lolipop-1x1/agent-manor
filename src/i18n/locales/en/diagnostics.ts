@@ -601,4 +601,9 @@ export default {
   "diagnostics.history.adapters.doubaoWork.invalidSelector": "Doubao Work source selector is invalid",
   "diagnostics.history.adapters.doubaoWork.cacheOnly": "Doubao Work source is a local conversation cache; complete history and continuous persistence of new tasks are not guaranteed",
   "diagnostics.history.adapters.doubaoWork.cacheReadFailed": "Unable to read the Doubao Work local cache: {{reason}}",
+  "diagnostics.history.adapters.doubaoWork.cacheInvalid": "Unable to read the Doubao Work local cache: invalid or incomplete cache format",
+  "diagnostics.history.adapters.doubaoWork.cacheUnsupported": "Unable to read the Doubao Work local cache: unsupported cache format or file entry",
+  "diagnostics.history.adapters.doubaoWork.cacheLimit": "Unable to read the Doubao Work local cache: the cache exceeds its bounded read or decoding limit",
+  "diagnostics.history.adapters.doubaoWork.cacheDependencyMissing": "Unable to read the Doubao Work local cache: an active file or external value is missing or changed",
+  "diagnostics.history.adapters.doubaoWork.cacheChanged": "Unable to read the Doubao Work local cache: the cache changed while taking a snapshot",
 } satisfies MessageCatalog;
