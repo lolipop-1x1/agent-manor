@@ -4,7 +4,7 @@ import * as Tooltip from "@radix-ui/react-tooltip";
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import { ArrowClockwise, ArrowSquareOut, CaretDown, CaretLeft, CaretRight, CaretUp, CaretUpDown, DotsThree, Funnel, List, ArrowCounterClockwise, ClockCounterClockwise, MagnifyingGlass, MapTrifold, Plus, Star, X } from "@phosphor-icons/react";
 import { CLIENTS, type Client } from "../../../src/clients";
-import type { ResourceKind, ResourceUsageDetail, ResourceUsageDistribution, ResourceUsageEvidenceResult, ResourceUsageStats, ResourceUsageTrend } from "../../../src/resource-contracts";
+import type { ResourceKind, ResourceUsageDetail, ResourceUsageDistribution, ResourceUsageEvidenceResult, ResourceUsageStats } from "../../../src/resource-contracts";
 import type { ResourceInventoryDiagnostic, ResourceInventoryEntry, ResourceManualSource } from "../../../src/resource-inventory-contracts";
 import type { ResourceManagementAction, ResourceManagementInput, ResourceManagementOperation, ResourceManagementOperations, ResourceManagementPreview } from "../../../src/resource-management-contracts";
 import type { ResourceCandidate, ResourceMapQuery, ResourceMapSummary, ResourceOverviewCandidate, ResourceOverviewDetail, ResourceOverviewQuery, ResourceOverviewSummary, ResourceOverviewRow, ResourceStatus, ResourceStatusSummary } from "../../../src/resource-service-contracts";
@@ -16,6 +16,8 @@ import { HelpPopover } from "../../shared/ui/HelpPopover";
 import { ProjectPicker } from "../../shared/ui/ProjectPicker";
 import { ResourcePagination } from "../../shared/ui/ResourcePagination";
 import { ResourceMap } from "./ResourceMap";
+import { ResourceTrend } from "./ResourceTrend";
+import { ResourceEmpty } from "./ResourceEmpty";
 import { resourceControlScope } from "../../../src/resources/control-scope";
 import { recoveryKind, restoreActionKey, managementSuccessKey } from "./resource-recovery";
 import { ResourceChange } from "./ResourceChange";
@@ -141,6 +143,10 @@ function ResourceDialog({ open, onOpenChange, title, description, children, clas
   const returnFocus = useRef<HTMLElement | null>(null);
   return <Dialog.Root open={open} onOpenChange={onOpenChange}><Dialog.Portal>
     <Dialog.Overlay className="dialog-overlay" /><Dialog.Content ref={contentRef} className={`dialog-content resource-dialog ${className}`}
+      onEscapeKeyDown={event => {
+        // Radix 先于图表收到 Escape，先保留详情，再由图表收起明细浮层。
+        if (event.target instanceof Element && event.target.closest(".resource-trend-hit[aria-describedby]")) event.preventDefault();
+      }}
       onOpenAutoFocus={() => { returnFocus.current = document.activeElement instanceof HTMLElement ? document.activeElement : null; }}
       onCloseAutoFocus={event => {
         const target = focusTarget?.() ?? returnFocus.current;
@@ -164,9 +170,6 @@ function ResourceMessage({ descriptor, original, details }: { descriptor?: Messa
 }
 function ResourceErrorText({ error }: { error: Error }) {
   return <ResourceMessage descriptor={error instanceof ApiError ? error.messageDescriptor : undefined} original={error.message} />;
-}
-function ResourceEmpty({ children }: { children: ReactNode }) {
-  return <div className="resource-empty"><MagnifyingGlass size={24} /><span>{children}</span></div>;
 }
 function FavoriteButton({ name, favorite, disabled, onClick }: { name: string; favorite: boolean; disabled?: boolean; onClick: () => void }) {
   useI18n();
@@ -217,28 +220,6 @@ function Stats({ stats, kind }: { stats: ResourceUsageStats | null; kind: Resour
     <div><strong>{stats?.duration.averageMs === null || !stats ? t("common.notRecorded") : t("resources.stat.milliseconds", { value: Math.round(stats.duration.averageMs) })}</strong><span>{t("resources.stat.averageDuration", { count: stats?.duration.samples ?? 0 })}</span></div>
     {stats && <div><strong>{fmt(stats.results.unknown)}</strong><span>{t("resources.result.unknown")}</span></div>}
   </div>;
-}
-function Trend({ rows, timeZone }: { rows: ResourceUsageTrend[]; timeZone: string }) {
-  const { date } = useI18n();
-  const trendDate = (value: string) => date(`${value}T00:00:00`);
-  const max = rows.reduce((maximum, row) => Math.max(maximum, row.stats.events), 1);
-  const start = rows.length ? Date.parse(rows[0]!.date) : 0;
-  const end = rows.length ? Date.parse(rows.at(-1)!.date) : start;
-  const x = (date: string) => 38 + (end === start ? .5 : (Date.parse(date) - start) / (end - start)) * 238;
-  const y = (events: number) => 127 - events / max * 90;
-  return <section className="resource-detail-section">
-    <header><h3>{t("resources.trend.title")}</h3><HelpPopover label={t("resources.trend.help")}><p>{t("resources.trend.helpText", { timeZone })}</p></HelpPopover></header>
-    {!rows.length ? <ResourceEmpty>{t("resources.trend.empty")}</ResourceEmpty> : <>
-      <svg className="resource-trend" viewBox="0 0 300 163" role="img" aria-label={t("resources.trend.aria")}>
-        {[0, max].map(value => <g key={value}><line x1="38" x2="279" y1={y(value)} y2={y(value)} /><text x="31" y={y(value) + 4} textAnchor="end">{fmt(value)}</text></g>)}
-        <text x="38" y="18">{t("resources.trend.count")}</text>
-        <polyline points={rows.map(row => `${x(row.date)},${y(row.stats.events)}`).join(" ")} />
-        {rows.map(row => <circle key={row.date} cx={x(row.date)} cy={y(row.stats.events)} r="2.5"><title>{t("resources.trend.point", { date: trendDate(row.date), events: t("resources.map.metricValue", { count: row.stats.events }), sessions: t("resources.map.sessionValue", { count: row.stats.sessions }) })}</title></circle>)}
-        <text x="38" y="150">{trendDate(rows[0]!.date)}</text><text x="279" y="150" textAnchor="end">{trendDate(rows.at(-1)!.date)}</text>
-      </svg>
-      <details className="resource-data-details"><summary>{t("resources.trend.data", { count: rows.length })}</summary><div className="resource-table-scroll"><table><thead><tr><th>{t("resources.trend.date")}</th><th>{t("resources.trend.events")}</th><th>{t("resources.trend.sessions")}</th></tr></thead><tbody>{rows.map(row => <tr key={row.date}><td>{trendDate(row.date)}</td><td>{fmt(row.stats.events)}</td><td>{fmt(row.stats.sessions)}</td></tr>)}</tbody></table></div></details>
-    </>}
-  </section>;
 }
 function Distribution({ rows, title, label }: { rows: ResourceUsageDistribution[]; title: string; label: (value: string | null) => string }) {
   useI18n();
@@ -722,7 +703,7 @@ export default function Resources({ active, onSession, onHistoryReading, history
       </div> : route.detail === "history" ? <>
         <Stats stats={selectedResource.stats} kind={route.kind} />
         {usageDetail ? <>
-        <Trend rows={usageDetail.trend} timeZone={usageDetail.timeZone} />
+        <ResourceTrend rows={usageDetail.trend} timeZone={usageDetail.timeZone} kind={route.kind} />
         <Distribution rows={usageDetail.clients} title={t("resources.distribution.clients")} label={value => value ? clientLabel(value as Client) : t("resources.client.notRecorded")} />
         <Distribution rows={usageDetail.projects} title={t("resources.distribution.projects")} label={value => value ? shortPath(value) : t("resources.project.none")} />
         <HistoryGaps gaps={usageDetail.coverage.gaps} />

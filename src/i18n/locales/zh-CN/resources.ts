@@ -123,6 +123,7 @@ export default {
   "resources.trend.help": "趋势口径",
   "resources.trend.empty": "当前范围没有可归入日期的记录",
   "resources.trend.aria": "每日资源使用次数",
+  "resources.trend.select": "选择资源趋势日期",
   "resources.trend.count": "次数",
   "resources.trend.date": "日期",
   "resources.trend.events": "活动次数",

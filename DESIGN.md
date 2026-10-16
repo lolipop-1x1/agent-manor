@@ -347,6 +347,8 @@ components:
 
 资源分页复用 [ResourcePagination](web/shared/ui/ResourcePagination.tsx)，包含区间、首尾页、页码、跳转和每页条数。对话框使用现有 Radix 结构，宽度受视口约束，长内容在浮层内滚动。
 
+Skill 与 MCP 使用趋势和会话请求趋势复用 [ChartTooltip](web/shared/charts/ChartTooltip.tsx) 的明细浮层。资源趋势按实际日期间距定位，悬停或点选显示日期、使用／调用次数和使用会话数；单个键盘入口支持方向键、Home、End 与 Escape，窄屏先收起浮层再关闭详情。浮层不参与排版，查看日期不增加接口请求。
+
 **The Shared Control Rule.** 新增同类筛选、日期、帮助和分页沿用现有共享组件，不在页面中另外实现键盘、焦点及弹层管理。
 
 ### Overview investigations

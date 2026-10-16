@@ -1,0 +1,7 @@
+.chart-tooltip { position: absolute; top: 8px; z-index: 1; width: 190px; max-width: calc(100% - 16px); pointer-events: none; border: 1px solid var(--border); border-radius: 5px; padding: 8px; color: var(--text); background: var(--surface); box-shadow: 0 3px 12px #0002; font-size: 11px; }
+.chart-tooltip > strong { display: block; overflow-wrap: anywhere; }
+.chart-tooltip dl { display: grid; gap: 5px; margin: 8px 0; }
+.chart-tooltip dl > div { display: flex; justify-content: space-between; flex-wrap: wrap; gap: 2px 8px; }
+.chart-tooltip dt { display: flex; align-items: center; gap: 5px; color: var(--muted); }
+.chart-tooltip dt i { width: 8px; height: 3px; background: var(--series-color, var(--accent)); }
+.chart-tooltip dd { margin: 0; font-variant-numeric: tabular-nums; }

@@ -124,6 +124,7 @@ export default {
   "resources.trend.help": "Trend definition",
   "resources.trend.empty": "No dated records in this range",
   "resources.trend.aria": "Daily resource use",
+  "resources.trend.select": "Select resource trend date",
   "resources.trend.count": "Count",
   "resources.trend.date": "Date",
   "resources.trend.events": "Activity count",

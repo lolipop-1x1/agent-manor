@@ -14,6 +14,7 @@ import { AverageSpeedMetric, RequestSpeedBadge, SpeedAlgorithmHelp, SpeedColumnH
 import { usageCoverage } from "./session-usage-coverage";
 import { requestLocation } from "./session-speed-model";
 import { NativeUsageReports } from "./NativeUsageReports";
+import { ChartTooltip } from "../../shared/charts/ChartTooltip";
 import { isAborted, request } from "../../shared/api";
 
 const formatCount = (value: number) => formatNumber(getLanguage(), value);
@@ -94,13 +95,13 @@ function UsageChart({ profile, onFocusStep }: { profile: SessionProfile; onFocus
               }
             }} />
         </svg>
-        {active && selected !== undefined && <div id={tooltipId} role="tooltip" className="session-chart-tooltip" style={x(selected) < 50 ? { right: 8 } : { left: 8 }}>
+        {active && selected !== undefined && <ChartTooltip id={tooltipId} className="session-chart-tooltip" position={x(selected) / 100}>
           <strong>{t(active.sessionId !== profile.sessionIds[0] ? "sessions.profile.childRequestNumber" : "sessions.profile.requestNumber", { number: formatCount(offset + selected + 1) })}</strong>
           {active.model && <span className="session-chart-tooltip-model">{active.model}</span>}
           <dl>{usageSeries.filter(([key]) => active[key] !== undefined).map(([key, label]) => <div key={key}><dt><i className={`series-${key}`} />{t(label)}</dt><dd>{displayRecorded(active[key])}{active[key] === undefined ? "" : " Token"}</dd></div>)}</dl>
           <RequestSpeedBadge usage={active} interactive={false} />
           {active.occurredAt && <small>{dateLabel(active.occurredAt)}</small>}
-        </div>}
+        </ChartTooltip>}
       </div>
       <span /><div className="session-chart-axis"><span>{formatCount(offset + 1)}</span><span>{t("sessions.profile.chartRequestIndex")}</span><span>{profile.steps.length > 1 ? formatCount(offset + profile.steps.length) : ""}</span></div>
     </div>

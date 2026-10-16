@@ -111,11 +111,17 @@
 .resource-detail-section > header > span { color: var(--muted); font-size: 10px; }
 .resource-detail-section > header h3 { font-size: 12px; }
 .resource-detail-section .help-trigger { font-size: 10px; }
+.resource-trend-chart { position: relative; }
 .resource-trend { display: block; width: 100%; }
 .resource-trend line { stroke: var(--border); }
 .resource-trend text { fill: var(--muted); font-family: inherit; font-size: 10px; }
 .resource-trend polyline { fill: none; stroke: var(--accent); stroke-width: 2; stroke-linejoin: round; }
 .resource-trend circle { fill: var(--accent); }
+.resource-trend-hit { position: absolute; left: 12.666667%; right: 8%; top: 22.699387%; bottom: 22.08589%; cursor: crosshair; }
+.resource-trend-hit:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.resource-trend-reference { pointer-events: none; }
+.resource-trend-reference line { stroke: var(--muted); stroke-width: 1; stroke-dasharray: 3 3; }
+.resource-trend-reference circle { stroke: var(--surface); stroke-width: 1.5; }
 .resource-data-details { margin-top: 13px; color: var(--muted); font-size: 11px; }
 .resource-data-details > summary { cursor: pointer; padding: 5px 0; }
 .resource-table-scroll { max-height: 220px; overflow: auto; scrollbar-width: thin; }

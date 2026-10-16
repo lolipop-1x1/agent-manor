@@ -229,14 +229,8 @@
 .session-chart-reference { pointer-events: none; }
 .session-chart-reference > line { stroke: var(--muted); stroke-width: 1; stroke-dasharray: 3 3; }
 .session-chart-axis { display: flex; justify-content: space-between; margin-top: 10px; }
-.session-chart-tooltip { position: absolute; top: 8px; z-index: 1; width: 190px; max-width: calc(100% - 16px); pointer-events: none; border: 1px solid var(--border); border-radius: 5px; padding: 8px; color: var(--text); background: var(--surface); box-shadow: 0 3px 12px #0002; font-size: 11px; }
-.session-chart-tooltip > strong, .session-chart-tooltip-model { display: block; overflow-wrap: anywhere; }
+.session-chart-tooltip-model { display: block; overflow-wrap: anywhere; }
 .session-chart-tooltip-model { margin-top: 3px; color: var(--muted); font-size: 10px; }
-.session-chart-tooltip dl { display: grid; gap: 5px; margin: 8px 0; }
-.session-chart-tooltip dl > div { display: flex; justify-content: space-between; flex-wrap: wrap; gap: 2px 8px; }
-.session-chart-tooltip dt { display: flex; align-items: center; gap: 5px; color: var(--muted); }
-.session-chart-tooltip dt i { width: 8px; height: 3px; background: var(--series-color); }
-.session-chart-tooltip dd { margin: 0; font-variant-numeric: tabular-nums; }
 .session-chart-tooltip > small { display: block; font-size: 9px; overflow-wrap: anywhere; }
 .session-message-text { max-width: 75ch; margin-top: 10px; color: var(--text); font-size: 14px; line-height: 1.75; overflow-wrap: anywhere; }
 .session-message-text > :first-child { margin-top: 0; }

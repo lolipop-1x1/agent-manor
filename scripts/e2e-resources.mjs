@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { parse as parseToml } from "smol-toml";
 import { clientIds } from "../dist/clients.js";
+import { formatDate } from "../dist/i18n/index.js";
 import { startService } from "../dist/server.js";
 import { resourceFixture, skillRankingFixture, mcpOverviewFixture } from "./resource-fixture.mjs";
 
@@ -93,6 +94,43 @@ try {
     ${tab('文件位置')}
     expect(await page.locator('.resource-management-body').count()>=3,'不同文件被合并为一个写入对象');expect(!(await page.locator('.resource-location-list').innerText()).includes('Oh My Pi'),'兼容目录产生虚构客户端');expect(!(await page.locator('.resource-location-list').innerText()).includes('Reasonix'),'兼容目录产生虚构客户端');
     ${tab('概览')}
+  `);
+  for (const [kind, target] of [['skill',guide],['mcp',sample]]) {
+    const trend=(await api(`/resources/overview/${encodeURIComponent(target.identity.id)}?kind=${kind}`)).history.trend;
+    const first=trend[0],last=trend.at(-1);
+    await step(`${kind} 趋势浮层按实际日期定位、键盘可达且不改变布局`,`
+      ${route(kind,target.identity.name,target.identity.id,'history')}
+      const hit=page.getByRole('slider',{name:'选择资源趋势日期',exact:true});await hit.scrollIntoViewIfNeeded();
+      const area=page.locator('.resource-trend-chart'),before=await area.boundingBox(),bounds=await hit.boundingBox(),requests=page.resourceCalls.length;
+      await hit.hover({position:{x:1,y:bounds.height/2}});const tip=page.getByRole('tooltip');await tip.waitFor();
+      expect(await tip.locator('strong').innerText()===${JSON.stringify(formatDate('zh-CN',first.date+'T00:00:00'))},'首日期不一致');
+      expect((await tip.locator('dd').allTextContents()).join('|')===${JSON.stringify(`${first.stats.events}|${first.stats.sessions}`)},'首日期数值不一致');
+      expect((await tip.innerText()).includes(${JSON.stringify(kind==='skill'?'使用次数':'调用次数')}),'次数名称未区分 Skill 和 MCP');
+      await hit.hover({position:{x:bounds.width-1,y:bounds.height/2}});
+      expect((await tip.locator('dd').allTextContents()).join('|')===${JSON.stringify(`${last.stats.events}|${last.stats.sessions}`)},'末日期数值不一致');
+      const overlay=await tip.boundingBox();expect(overlay.x>=before.x&&overlay.x+overlay.width<=before.x+before.width+1,'浮层横向溢出图表');
+      expect((await area.boundingBox()).height===before.height,'浮层推开了图表');expect(await page.locator('.resource-trend-reference line').count()===1,'日期引导线缺失');
+      await page.mouse.move(0,0);await tip.waitFor({state:'hidden'});await hit.focus();await hit.press('End');
+      expect(await hit.getAttribute('aria-valuenow')===${JSON.stringify(String(trend.length))},'End 未选择末日期');await hit.press('ArrowLeft');
+      expect(await hit.getAttribute('aria-valuenow')===${JSON.stringify(String(Math.max(1,trend.length-1)))},'方向键未移动日期');await hit.press('Home');
+      expect((await tip.locator('dd').allTextContents()).join('|')===${JSON.stringify(`${first.stats.events}|${first.stats.sessions}`)},'Home 未回到首日期');
+      ${snap(`${kind}-trend-tooltip.png`)}await hit.press('Escape');await tip.waitFor({state:'hidden'});expect(await page.locator('.resource-detail-heading h2').innerText()===${JSON.stringify(target.identity.name)},'收起浮层关闭了资源详情');
+      expect(page.resourceCalls.length===requests,'悬停或键盘操作请求了接口');
+    `);
+  }
+  await step('单日趋势、触屏中断和窄屏浮层保持可用',`
+    await page.setViewportSize({width:390,height:844});
+    await page.goto(${JSON.stringify(base+'/#resources?'+new URLSearchParams({kind:'skill',tab:'usage',view:'list',q:'guide',id:guide.identity.id,detail:'history',client:'claude'}))});${ready}
+    const dialog=page.getByRole('dialog',{name:'资源详情',exact:true});await dialog.waitFor();const hit=page.getByRole('slider',{name:'选择资源趋势日期',exact:true});await hit.scrollIntoViewIfNeeded();
+    expect(await hit.getAttribute('aria-valuemax')==='1','单日期夹具没有收窄');const bounds=await hit.boundingBox();
+    const touch={pointerType:'touch',pointerId:7,clientX:bounds.x+bounds.width/2,clientY:bounds.y+bounds.height/2};
+    await hit.dispatchEvent('pointerdown',touch);const tip=page.getByRole('tooltip');await tip.waitFor();await hit.dispatchEvent('pointerleave',touch);expect(await tip.isVisible(),'触屏抬起后明细丢失');
+    const box=await tip.boundingBox();expect(box.x>=0&&box.x+box.width<=390,'窄屏浮层溢出');${snap('skill-trend-mobile.png')}
+    await hit.dispatchEvent('pointercancel',touch);await tip.waitFor({state:'hidden'});await hit.dispatchEvent('pointerdown',touch);await tip.waitFor();
+    await hit.focus();await hit.press('End');await hit.press('ArrowRight');expect(await hit.getAttribute('aria-valuenow')==='1','单日期越界');
+    await hit.press('Escape');await tip.waitFor({state:'hidden'});expect(await dialog.isVisible(),'Escape 关闭了整个详情');
+    await hit.press('Escape');await dialog.waitFor({state:'hidden'});
+    await page.setViewportSize({width:1920,height:1000});${route()}${open('guide')}
   `);
   await step('整行、键盘、文本选择与详情关闭焦点',`
     const table=page.getByRole('table',{name:'Skill 总览',exact:true}); const other=table.locator('tbody tr').nth(1);
@@ -409,13 +447,18 @@ try {
   `);
   await step('扫描设置按需加载，普通缺失不作为主界面错误',`${tools('扫描详情与设置')}await page.getByRole('dialog',{name:'扫描详情与设置',exact:true}).waitFor();expect(await page.getByText('来源缺口',{exact:true}).count()===0,'诊断数直接报错');await page.keyboard.press('Escape');`);
   await api('/preferences','PUT',{appearance:{mode:'dark',preset:'blue'}});
-  await step('深色主题使用真实共享偏好',`await page.evaluate(()=>window.dispatchEvent(new Event('focus')));await page.waitForFunction(()=>document.documentElement.dataset.theme==='dark');${snap('workspace-dark.png')}`);
+  await step('深色主题使用真实共享偏好',`await page.evaluate(()=>window.dispatchEvent(new Event('focus')));await page.waitForFunction(()=>document.documentElement.dataset.theme==='dark');
+    ${tab('使用记录')}const hit=page.getByRole('slider',{name:'选择资源趋势日期',exact:true});await hit.focus();await hit.press('End');await page.getByRole('tooltip').waitFor();${snap('workspace-dark.png')}
+    await hit.press('Escape');`);
   await api('/preferences','PUT',{language:'en',appearance:{mode:'light',preset:'blue'}});
   await step('英文、窄屏筛选和全屏详情',`
     await page.evaluate(()=>window.dispatchEvent(new Event('focus')));await page.getByRole('combobox',{name:'Local presence',exact:true}).waitFor();await page.setViewportSize({width:390,height:844});
     const dialog=page.getByRole('dialog',{name:'Resource details',exact:true});await dialog.waitFor();expect((await dialog.boundingBox()).width<=391,'详情宽度溢出');await page.keyboard.press('Escape');await dialog.waitFor({state:'hidden'});
     await page.getByRole('button',{name:'Open resource filters',exact:true}).click();const filters=page.getByRole('dialog',{name:'Resource filters',exact:true});await filters.waitFor();await filters.getByRole('combobox',{name:'Local presence',exact:true}).click();await page.keyboard.press('ArrowDown');await page.keyboard.press('Enter');await page.keyboard.press('Escape');await filters.waitFor({state:'hidden'});
     expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1),'手机页面横向溢出');expect(page.resourceErrors.length===0,'浏览器异常：'+page.resourceErrors.join(';'));${snap('workspace-phone.png')}
+    await page.getByRole('button',{name:'View usage details for guide',exact:true}).click();await dialog.waitFor();
+    const hit=page.getByRole('slider',{name:'Select resource trend date',exact:true});await hit.focus();await hit.press('Home');const tip=page.getByRole('tooltip');await tip.waitFor();
+    expect((await tip.innerText()).includes('Uses')&&(await tip.innerText()).includes('Usage sessions'),'英文浮层名称未翻译');expect(!(await tip.innerText()).includes('使用'),'英文浮层残留中文');${snap('skill-trend-english.png')}await hit.press('Escape');
   `);
   const report={passed:true,checks,measurements,elapsedMs:Date.now()-started};await writeFile(join(artifacts,'report.json'),JSON.stringify(report,null,2));
   console.log(`PASS 正式资源工作区 Chrome ${checks.length} 项`);
