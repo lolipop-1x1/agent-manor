@@ -12,6 +12,10 @@
 - 使用 Impeccable 时，官网落地页及展示页的制作流程读取 .impeccable/config.json 中的偏好；应用页面和文档采用代码优先。
 - DESIGN.md 的 frontmatter 保存基础设计 token；.impeccable/design.json 保存扩展信息和组件预览。预览色阶不作为生产配色的替代来源。
 
+### Agent 客户端接入
+
+- 新增 Agent 客户端，或扩展已有客户端的历史格式、资源来源和管理能力时，先阅读[新增 Agent 客户端接入指南](docs/agents/adding-agent-client.md)。
+
 ### 前端统一组件
 
 - 后续前端开发先复用项目现有的统一组件；新增同类交互不要在页面中另写一套控件。通用交互优先基于现有 Radix 组件封装，复用主题、尺寸、焦点及弹层规范。
