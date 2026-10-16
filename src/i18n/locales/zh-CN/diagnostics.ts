@@ -70,7 +70,7 @@ export default {
   "diagnostics.history.adapters.codeflicker.m014": "物理记录 {{p0}} 的顶层类型 <缺少类型> 尚未适配",
   "diagnostics.history.adapters.codex.m001": "unsupported_tool: exec 包装未发现具体事件，未执行或猜测 JavaScript",
   "diagnostics.history.adapters.codex.m002": "直接调用与具体命令事件存在多个对应候选，未合并身份",
-  "diagnostics.history.adapters.codex.m003": "range_unknown: 具体命令缺少 formatted_output；未采用 stdout 补足",
+  "diagnostics.history.adapters.codex.m003": "range_unknown: 具体命令缺少已记录的输出正文",
   "diagnostics.history.adapters.codex.m004": "命令未成功完成",
   "diagnostics.history.adapters.codex.m005": "文件修改未成功",
   "diagnostics.history.adapters.codex.m006": "range_unknown: 文件删除保留编辑活动，无当前新增行",

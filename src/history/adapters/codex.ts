@@ -89,7 +89,7 @@ export const codexAdapter: HistoryAdapter = {
       event.input = json(item.type === "CommandExecution" ? { command: item.command, cwd: item.cwd } : item.changes);
       const exitCode = number(item.exit_code);
       event.status = item.status === "failed" || (exitCode !== undefined && exitCode !== 0) ? "failure" : item.status === "completed" && (item.type === "FileChange" || exitCode === 0) ? "success" : "unknown";
-      const output = string(item.formatted_output);
+      const output = string(item.formatted_output) ?? string(item.aggregated_output);
       event.output = json({ formatted_output: output, exit_code: exitCode, status: item.status });
       if (item.type === "CommandExecution") {
         const commandArray = Array.isArray(item.command) ? item.command : [];
@@ -101,7 +101,7 @@ export const codexAdapter: HistoryAdapter = {
           target.kind = part.kind; target.path = part.path;
           target.status = part.status ?? status;
           target.fragments = target.status === "success" && output !== undefined ? part.fragments : [];
-          target.reason = output === undefined ? "range_unknown: 具体命令缺少 formatted_output；未采用 stdout 补足" : part.status || status === "success" ? part.reason : "命令未成功完成"; target.reasonDescriptor = output === undefined ? { key: "diagnostics.history.adapters.codex.m003" } : part.status || status === "success" ? part.reasonDescriptor : { key: "diagnostics.history.adapters.codex.m004" };
+          target.reason = output === undefined ? "range_unknown: 具体命令缺少已记录的输出正文" : part.status || status === "success" ? part.reason : "命令未成功完成"; target.reasonDescriptor = output === undefined ? { key: "diagnostics.history.adapters.codex.m003" } : part.status || status === "success" ? part.reasonDescriptor : { key: "diagnostics.history.adapters.codex.m004" };
           if (index) source.events.push(target);
           if (target.reason?.startsWith("range_unknown:")) gap("range_unknown", target.reason, target.reasonDescriptor);
           if (target.reason?.startsWith("unsupported_tool:")) gap("unsupported_tool", target.reason, target.reasonDescriptor);

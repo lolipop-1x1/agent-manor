@@ -70,7 +70,7 @@ export default {
   "diagnostics.history.adapters.codeflicker.m014": "Record {{p0}} has an unsupported top-level type: <missing type>",
   "diagnostics.history.adapters.codex.m001": "unsupported_tool: No concrete events were found in the exec wrapper; JavaScript was neither executed nor inferred",
   "diagnostics.history.adapters.codex.m002": "Multiple candidates link direct calls to concrete command events; identities were not merged",
-  "diagnostics.history.adapters.codex.m003": "range_unknown: The concrete command has no formatted_output; stdout was not used to fill the gap",
+  "diagnostics.history.adapters.codex.m003": "range_unknown: The concrete command has no recorded output content",
   "diagnostics.history.adapters.codex.m004": "The command did not complete successfully",
   "diagnostics.history.adapters.codex.m005": "The file modification did not succeed",
   "diagnostics.history.adapters.codex.m006": "range_unknown: File deletion was retained as editing activity, with no new lines in the current file",

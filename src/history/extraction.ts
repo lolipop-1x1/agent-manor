@@ -194,7 +194,7 @@ function searchEvidence(tokens: string[]): ToolEvidence[] {
 }
 
 /** 只拆分引号外的顺序与逻辑连接，不求值变量、脚本或命令替换。 */
-function shellParts(command: string): { command: string; next?: string }[] | undefined {
+export function shellParts(command: string): { command: string; next?: string }[] | undefined {
   const parts: { command: string; next?: string }[] = [];
   let quote = "", start = 0;
   for (let index = 0; index < command.length; index++) {

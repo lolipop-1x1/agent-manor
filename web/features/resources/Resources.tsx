@@ -99,6 +99,7 @@ function address(route: ResourceRoute) {
     evidencePage: route.evidencePage === 1 ? undefined : route.evidencePage }).slice(1));
   return `#resources?${normalizeResourceRouteParams(params)}`;
 }
+const usageMetricLabel = (kind: ResourceKind) => t(kind === "skill" ? "resources.column.uses" : "resources.column.calls");
 const shortPath = (path: string) => path.split(/[\\/]/).filter(Boolean).at(-1) ?? path;
 const sourceStateNames = { ok: "resources.source.ok", missing: "resources.source.missing", unreadable: "resources.source.unreadable", invalid: "resources.source.invalid", unsupported: "resources.source.unsupported" };
 const methodNames = { directory: "resources.entry.directory", symlink: "resources.entry.symlink", file: "resources.entry.file", registration: "resources.entry.registration" };
@@ -184,7 +185,7 @@ function OverviewTable({ rows, route, onSort, onSelect, onFavorite, favoritePend
   onFavorite: (id: string, favorite: boolean) => void; favoritePending: ReadonlySet<string>;
 }) {
   const { dateTime } = useI18n();
-  const columns = [{ value: "name", label: route.kind === "skill" ? t("resources.kind.skill") : t("resources.column.server") }, { value: "uses", label: t("resources.column.calls") }, { value: "sessions", label: t("resources.column.sessions") }, { value: "recent", label: t("resources.column.recent") }];
+  const columns = [{ value: "name", label: route.kind === "skill" ? t("resources.kind.skill") : t("resources.column.server") }, { value: "uses", label: usageMetricLabel(route.kind) }, { value: "sessions", label: t("resources.column.sessions") }, { value: "recent", label: t("resources.column.recent") }];
   const heading = (column: { value: string; label: string }) => <th key={column.value} scope="col" aria-sort={route.sort === column.value ? route.order === "asc" ? "ascending" : "descending" : "none"}>
     <button aria-label={t("resources.sortColumn", { column: column.label })} onClick={() => onSort(column.value)}>{column.label}{route.sort === column.value ? route.order === "asc" ? <CaretUp size={12} aria-hidden="true" /> : <CaretDown size={12} aria-hidden="true" /> : <CaretUpDown size={12} aria-hidden="true" />}</button>
   </th>;
@@ -208,7 +209,7 @@ function SkillDescription({ description }: { description?: string }) {
 function Stats({ stats, kind }: { stats: ResourceUsageStats | null; kind: ResourceKind }) {
   const { percent } = useI18n();
   return <div className="resource-stats">
-    <div><strong>{stats ? fmt(stats.events) : t("common.unknown")}</strong><span>{t("resources.column.calls")}</span></div>
+    <div><strong>{stats ? fmt(stats.events) : t("common.unknown")}</strong><span>{usageMetricLabel(kind)}</span></div>
     <div><strong>{stats ? fmt(stats.sessions) : t("common.unknown")}</strong><span>{t("resources.stat.sessions")}</span></div>
     {kind === "skill" && <div><strong>{stats ? fmt(stats.explicitCalls) : t("common.unknown")}</strong><span>{t("resources.stat.explicitCalls")}</span></div>}
     {kind === "skill" && <div><strong>{stats ? fmt(stats.successfulReads) : t("common.unknown")}</strong><span>{t("resources.stat.successfulReads")}</span></div>}
@@ -250,7 +251,7 @@ function UsageHelp({ kind }: { kind: ResourceKind }) {
   useI18n();
   return <HelpPopover label={t("resources.help.usage")}><dl>
     <div><dt>{t("resources.overview", { kind: kind === "skill" ? t("resources.kind.skill") : t("resources.kind.mcp") })}</dt><dd>{t(kind === "skill" ? "resources.help.skillOverview" : "resources.help.mcpOverview")}</dd></div>
-    <div><dt>{t("resources.column.calls")}</dt><dd>{t(kind === "skill" ? "resources.help.skillCalls" : "resources.help.mcpCalls")}</dd></div>
+    <div><dt>{usageMetricLabel(kind)}</dt><dd>{t(kind === "skill" ? "resources.help.skillCalls" : "resources.help.mcpCalls")}</dd></div>
     <div><dt>{t("resources.stat.sessions")}</dt><dd>{t(kind === "skill" ? "resources.help.skillSessions" : "resources.help.mcpSessions")}</dd></div>
     <div><dt>{t("resources.help.knownResults")}</dt><dd>{t("resources.help.knownResultsText")}</dd></div>
     <div><dt>{t("resources.help.association")}</dt><dd>{t("resources.help.associationText")}</dd></div>
@@ -729,7 +730,7 @@ export default function Resources({ active, onSession, onHistoryReading, history
         <section className="resource-detail-section"><header><h3>{route.tool ? t("resources.toolEvidence", { name: route.tool }) : t("resources.evidence.title")}</h3>{route.tool && <button className="text-button" onClick={() => update({ tool: "", evidencePage: 1 })}>{t("resources.evidence.allTools")}</button>}</header>{evidenceLinks()}</section>
       </> : <ResourceEmpty>{t("resources.evidence.empty")}</ResourceEmpty>}</> : <>
         <p className="resource-history-scope">{t("resources.workspace.historyScope", { client: route.client === "all" ? t("resources.client.all") : clientLabel(route.client as Client), project: route.project === "all" ? t("resources.project.all") : shortPath(route.project) })}</p>
-        <div className="resource-overview-stats"><div><span>{t("resources.column.calls")}</span><strong>{selectedResource.stats ? fmt(selectedResource.stats.events) : "—"}</strong></div><div><span>{t("resources.column.sessions")}</span><strong>{selectedResource.stats ? fmt(selectedResource.stats.sessions) : "—"}</strong></div><div><span>{t("resources.column.recent")}</span><strong className="resource-overview-date">{selectedResource.stats?.lastUsedAt ? dateLabel(selectedResource.stats.lastUsedAt) : "—"}</strong></div></div>
+        <div className="resource-overview-stats"><div><span>{usageMetricLabel(route.kind)}</span><strong>{selectedResource.stats ? fmt(selectedResource.stats.events) : "—"}</strong></div><div><span>{t("resources.column.sessions")}</span><strong>{selectedResource.stats ? fmt(selectedResource.stats.sessions) : "—"}</strong></div><div><span>{t("resources.column.recent")}</span><strong className="resource-overview-date">{selectedResource.stats?.lastUsedAt ? dateLabel(selectedResource.stats.lastUsedAt) : "—"}</strong></div></div>
         <section className="resource-detail-section"><header><h3>{t(route.kind === "skill" ? "resources.workspace.fileLocations" : "resources.workspace.configLocations")}</h3><button className="text-button" onClick={() => update({ detail: "locations" })}>{t("resources.workspace.viewLocations")}<CaretRight size={14} /></button></header>
           {locations.length ? locations.map(row => <button className="resource-location-link" key={row.key ?? row.body.id} onClick={() => update({ detail: "locations" })}><span>{formatList(resourceLocationScopes(row.entries).map(scope => t(scope === "user" ? "resources.scope.user" : "resources.scope.project")))}</span><code>{row.body.targetPath ?? row.entries[0]?.entryPath}</code></button>) : <p className="resource-management-note">{t(selectedResource.localSummary?.presence === "unknown" ? "resources.workspace.presenceUnknown" : "resources.management.historyOnly")}</p>}
         </section>
@@ -780,7 +781,7 @@ export default function Resources({ active, onSession, onHistoryReading, history
           {route.tab === "operations" && operations && <span>{t("resources.operationCount", { count: operations.total })}</span>}{!historyView && route.tab !== "operations" && archives && <span>{t("resources.resourceCount", { count: archives.total })}</span>}
         </div>}
         {mapView && <div className="resource-map-settings">
-          {mapView && <><FilterSelect label={t("resources.map.metricFilter")} value={route.metric} options={[{ value: "uses", label: t("resources.sort.calls") }, { value: "sessions", label: t("resources.sort.sessions") }]} onChange={value => filter({ metric: value as ResourceRoute["metric"], maxValue: "" })} /><label className="resource-map-limit">{t(route.metric === "sessions" ? "resources.sort.sessions" : "resources.sort.calls")} ≤<input type="number" min="0" step="1" aria-label={t("resources.map.limit", { metric: t(route.metric === "sessions" ? "resources.sort.sessions" : "resources.sort.calls") })} value={route.maxValue} placeholder={t("resources.map.unlimited")} onChange={event => { const value = event.target.value; if (value === "" || /^\d+$/.test(value) && Number.isSafeInteger(Number(value))) filter({ maxValue: value }); }} /></label></>}
+          {mapView && <><FilterSelect label={t("resources.map.metricFilter")} value={route.metric} options={[{ value: "uses", label: usageMetricLabel(route.kind) }, { value: "sessions", label: t("resources.sort.sessions") }]} onChange={value => filter({ metric: value as ResourceRoute["metric"], maxValue: "" })} /><label className="resource-map-limit">{(route.metric === "sessions" ? t("resources.sort.sessions") : usageMetricLabel(route.kind))} ≤<input type="number" min="0" step="1" aria-label={t("resources.map.limit", { metric: (route.metric === "sessions" ? t("resources.sort.sessions") : usageMetricLabel(route.kind)) })} value={route.maxValue} placeholder={t("resources.map.unlimited")} onChange={event => { const value = event.target.value; if (value === "" || /^\d+$/.test(value) && Number.isSafeInteger(Number(value))) filter({ maxValue: value }); }} /></label></>}
         </div>}
         {invalidTime && <div className="resource-alert" role="alert">{t("resources.time.invalidRange")}</div>}
         {inventoryError && <div className="resource-alert" role="alert"><ResourceErrorText error={inventoryError} /><button className="text-button" disabled={refreshing} onClick={() => void refresh()}>{t("common.retry")}</button></div>}

@@ -54,6 +54,33 @@ test("Skill 原生展开证据参与排行，工具结果不使画像和排行�
   assert.equal(profile.resources.find(resource => resource.kind === "skill_read")?.count, 1);
 }));
 
+test("同次调用的多 Skill 贯通排行、单资源查询、证据及画像，不增加工具调用", async () => fixture(store => {
+  const first = { kind: "skill_read", name: "first", path: "/synthetic/skills/first/SKILL.md" } as const;
+  const second = { kind: "skill_read", name: "second", path: "/synthetic/skills/second/SKILL.md" } as const;
+  const summary = meta("multiple-skills");
+  const call = message(summary.id, 1, { resource: first, resources: [first, second, first], status: "success" });
+  const result = message(summary.id, 2, { kind: "tool_result", callId: call.callId, resource: first, resources: [first, second], status: "success" });
+  const copied = message(summary.id, 3, { resource: first, resources: [first, second], copied: true });
+  store.publish(store.createJob().id, [source(store, summary, [call, result, copied])], []);
+  const events = [...store.resourceEvents().events];
+  assert.deepEqual(events.map(event => event.name), ["first", "second"]);
+  assert.equal(new Set(events.map(event => event.id)).size, 2);
+  assert.equal(new Set(events.map(event => event.messageId)).size, 1);
+  const identity = resourceHistoryIdentity(events[1]!);
+  assert.equal([...store.resourceEvents({}, identity).events].length, 1);
+  const ranking = listResourceUsage(store);
+  assert.deepEqual(ranking.resources.map(row => [row.identity.name, row.stats.events]), [["first", 1], ["second", 1]]);
+  const detail = resourceUsageDetail(store, identity.id);
+  assert.equal(detail.resource.stats.events, 1);
+  assert.equal(resourceUsageEvidence(store, identity.id).total, 1);
+  const profile = store.profile(summary.id);
+  assert.equal(profile.tools[0]?.calls, 1);
+  assert.deepEqual(profile.resources.map(row => [row.name, row.count]), [["first", 1], ["second", 1]]);
+  const located = store.messages(summary.id, { resourceKind: "skill_read", resourceName: "second", mode: "trace" });
+  assert.equal(located.focusMessageId, call.id);
+  assert.equal(store.overviewSource().resources.length, 2);
+}));
+
 test("缺失 Skill 名描述贯通资源聚合但不改变稳定身份，混合旧或真实同名保留原名", async () => fixture(store => {
   const descriptor = { key: "sessions.resource.nameUnrecorded" };
   const generated = source(store, meta("generated"), [message("generated", 0, { resource: { kind: "skill_call", name: "未记录名称", nameDescriptor: descriptor } })]);

@@ -155,8 +155,8 @@ try {
     await page.getByRole('button',{name:'Skill 总览末页',exact:true}).click();${ready}
     const jump=page.getByRole('spinbutton',{name:'Skill 总览跳转页码',exact:true});await jump.fill('1');await jump.press('Enter');${ready}
     await page.waitForFunction(()=>document.querySelector('[aria-label="Skill 总览首页"]')?.disabled);expect(await page.getByRole('button',{name:'Skill 总览首页',exact:true}).isDisabled(),'跳转没有回到首页');
-    await page.getByRole('button',{name:'按调用次数排序',exact:true}).click();${ready}
-    expect(await page.getByRole('columnheader').filter({hasText:'调用次数'}).getAttribute('aria-sort')==='ascending','表头排序没有反转');
+    await page.getByRole('button',{name:'按使用次数排序',exact:true}).click();${ready}
+    expect(await page.getByRole('columnheader').filter({hasText:'使用次数'}).getAttribute('aria-sort')==='ascending','表头排序没有反转');
     ${select('Skill 总览每页条数','50 条／页')}
     await page.waitForFunction(()=>document.querySelectorAll('.resource-overview-table tbody tr').length===50);expect(await page.getByRole('table',{name:'Skill 总览',exact:true}).locator('tbody tr').count()===50,'分页容量未生效');
     await page.getByRole('button',{name:'重置筛选',exact:true}).click();${ready}
@@ -164,7 +164,7 @@ try {
   await step('筛选更新保留旧表格、布局并暂停旧结果下钻',`
     const table=await page.getByRole('table',{name:'Skill 总览',exact:true}).elementHandle(),top=(await page.locator('.resource-list-scroll').boundingBox()).y;
     let release;const gate=new Promise(resolve=>release=resolve);await page.route('**/api/v1/resources/overview?**',async route=>{await gate;await route.continue()});
-    await page.getByRole('button',{name:'按调用次数排序',exact:true}).click();await page.locator('.resource-list-scroll[aria-busy="true"]').waitFor();
+    await page.getByRole('button',{name:'按使用次数排序',exact:true}).click();await page.locator('.resource-list-scroll[aria-busy="true"]').waitFor();
     expect(await table.evaluate(node=>node.isConnected),'更新卸载旧表格');expect(await page.locator('.resource-list-scroll').getAttribute('inert')!==null,'旧结果可继续下钻');expect((await page.locator('.resource-list-scroll').boundingBox()).y===top,'更新造成布局跳动');
     release();${ready}await page.unroute('**/api/v1/resources/overview?**');
   `);

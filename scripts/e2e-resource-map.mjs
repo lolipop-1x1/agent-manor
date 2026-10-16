@@ -199,7 +199,7 @@ try {
     page.on('request',request=>{if(request.url().includes('/api/v1/resources/map'))page.mapRequests.push(request.url())});
     await page.setViewportSize({width:1560,height:980});
     const table=page.getByRole('table',{name:'Skill 总览',exact:true}); await table.waitFor();
-    expect(await table.getByRole('columnheader').filter({hasText:'调用次数'}).getAttribute('aria-sort')==='descending','Skill 默认排序不是调用次数');
+    expect(await table.getByRole('columnheader').filter({hasText:'使用次数'}).getAttribute('aria-sort')==='descending','Skill 默认排序不是使用次数');
     expect(await table.getByRole('columnheader').count()===6,'Skill 列表缺少次数或会话列');
     expect(await table.getByRole('columnheader',{name:'本地位置',exact:true}).count()===1,'Skill 列表缺少位置列');
     expect(page.mapRequests.length===0,'列表提前读取地图');
@@ -211,7 +211,7 @@ try {
     expect(page.mapRequests.length>0,'地图没有完整查询');
     expect(page.mapRequests.every(url=>!url.includes('pageSize=')&&!url.includes('&page=')),'地图沿用列表分页');
     expect(await page.getByRole('combobox',{name:'地图面积指标',exact:true}).count()===1,'地图缺少次数与会话指标切换');
-    expect(page.mapRequests.every(url=>/[?&]metric=uses(?:&|$)/.test(url)),'地图默认未使用合并调用次数');
+    expect(page.mapRequests.every(url=>/[?&]metric=uses(?:&|$)/.test(url)),'地图默认未使用合并使用次数');
     const area=await page.locator('.resource-map-tile[data-resource-id]').evaluateAll(${resourceTileAreas.toString()},${JSON.stringify([maps.skill.positive.find(row=>row.name==='map-skill-000').id,maps.skill.positive.find(row=>row.name==='map-skill-001').id])});
     expect(Math.abs(area[0]/area[1]-100/11)<1e-7,'面积未包含重复调用与成功读取');
     ${screenshot("skill-map-light.png")}
@@ -240,21 +240,21 @@ try {
     }
     await page.getByRole('button',{name:'适应资源地图窗口',exact:true}).click();
   `);
-  await step("悬停与键盘展示调用次数，读取型资源直接进入地图", `
+  await step("悬停与键盘展示使用次数，读取型资源直接进入地图", `
     const tile=page.getByRole('button',{name:'查看map-skill-001的使用详情',exact:true});
     await tile.hover();
     const tooltip=page.getByRole('tooltip'); await tooltip.waitFor();
-    expect((await tooltip.innerText()).includes('map-skill-001')&&(await tooltip.innerText()).includes('调用次数 · 11 次调用'),'悬停未显示完整名称及合并调用次数');
+    expect((await tooltip.innerText()).includes('map-skill-001')&&(await tooltip.innerText()).includes('使用次数 · 11 次使用'),'悬停未显示完整名称及合并使用次数');
     await tile.focus(); await tooltip.waitFor();
     expect((await tooltip.innerText()).includes('最近使用'),'键盘聚焦缺少最近使用');
     ${locateResource("map-read-000")}
     await page.getByRole('button',{name:'查看map-read-000的使用详情',exact:true}).focus();
     await tooltip.waitFor();
-    expect((await tooltip.innerText()).includes('调用次数 · 1 次调用'),'只读取的 Skill 没有计入调用次数');
+    expect((await tooltip.innerText()).includes('使用次数 · 1 次使用'),'只读取的 Skill 没有计入使用次数');
     await page.getByRole('button',{name:'适应资源地图窗口',exact:true}).click();
   `);
   await step("次数和会话切换、上限重置、键盘操作及刷新保留", `
-    await page.getByRole('spinbutton',{name:'地图调用次数上限',exact:true}).fill('10');
+    await page.getByRole('spinbutton',{name:'地图使用次数上限',exact:true}).fill('10');
     await page.waitForFunction(()=>new URLSearchParams(location.hash.split('?')[1]).get('maxValue')==='10');
     const metric=page.getByRole('combobox',{name:'地图面积指标',exact:true});
     await metric.click(); await page.getByRole('option',{name:'使用会话数',exact:true}).click();
@@ -270,12 +270,12 @@ try {
     await page.getByRole('option',{name:'使用会话数',exact:true}).waitFor();
     await page.waitForFunction(()=>document.activeElement?.getAttribute('role')==='option'&&document.activeElement.textContent.includes('使用会话数'));
     await page.keyboard.press('Home');
-    await page.waitForFunction(()=>document.activeElement?.getAttribute('role')==='option'&&document.activeElement.textContent.includes('调用次数'));
+    await page.waitForFunction(()=>document.activeElement?.getAttribute('role')==='option'&&document.activeElement.textContent.includes('使用次数'));
     await page.keyboard.press('Enter');
-    await page.getByRole('spinbutton',{name:'地图调用次数上限',exact:true}).waitFor();
+    await page.getByRole('spinbutton',{name:'地图使用次数上限',exact:true}).waitFor();
     await page.waitForFunction(()=>!document.querySelector('.resource-list-scroll[aria-busy="true"]'));
     await page.getByRole('button',{name:'查看map-skill-001的使用详情',exact:true}).focus();
-    await page.getByRole('tooltip').filter({hasText:'调用次数 · 11 次调用'}).waitFor();
+    await page.getByRole('tooltip').filter({hasText:'使用次数 · 11 次使用'}).waitFor();
     page.mapRequests=[]; page.mapErrors=[];
   `);
   await step("旧调用与读取链接统一合并调用指标，旧上限不沿用", `
@@ -290,7 +290,7 @@ try {
       const table=page.getByRole('table',{name:'Skill 总览',exact:true}); await table.waitFor();
       expect(await table.getByRole('columnheader').count()===6,'主列表没有同时保留次数和会话列');
       expect((await table.getByRole('row').nth(1).getByRole('cell').nth(2).innerText())==='1','读取型资源没有计入使用会话');
-      expect(await table.getByRole('button',{name:'按调用次数排序',exact:true}).count()===1&&await table.getByRole('button',{name:'按读取次数排序',exact:true}).count()===0,'表头缺少调用排序或仍单列读取次数');
+      expect(await table.getByRole('button',{name:'按使用次数排序',exact:true}).count()===1&&await table.getByRole('button',{name:'按读取次数排序',exact:true}).count()===0,'表头缺少调用排序或仍单列读取次数');
     }
     await page.evaluate(()=>location.hash='#resources?kind=skill&view=map&q=map-&metric=sessions');
     await page.getByRole('button',{name:'查看map-skill-000的使用详情',exact:true}).waitFor();
@@ -475,15 +475,15 @@ try {
     await page.reload();
     const metric=page.getByRole('combobox',{name:'Map area metric',exact:true}); await metric.waitFor();
     expect(await metric.innerText()==='Usage sessions','语言切换改变地图指标');
-    await metric.click(); await page.getByRole('option',{name:'Calls',exact:true}).click();
-    await page.getByRole('spinbutton',{name:'Map Calls maximum',exact:true}).waitFor();
+    await metric.click(); await page.getByRole('option',{name:'Uses',exact:true}).click();
+    await page.getByRole('spinbutton',{name:'Map Uses maximum',exact:true}).waitFor();
     await page.getByRole('button',{name:'View usage details for map-skill-001',exact:true}).focus();
-    await page.getByRole('tooltip').filter({hasText:'Calls · 11 calls'}).waitFor();
+    await page.getByRole('tooltip').filter({hasText:'Uses · 11 uses'}).waitFor();
   `);
   await api("/preferences", "PUT", { language: "zh-CN" });
   await step("切回中文保留次数指标", `
     await page.reload(); await page.getByRole('combobox',{name:'地图面积指标',exact:true}).waitFor();
-    expect(await page.getByRole('combobox',{name:'地图面积指标',exact:true}).innerText()==='调用次数','切回中文丢失次数指标');
+    expect(await page.getByRole('combobox',{name:'地图面积指标',exact:true}).innerText()==='使用次数','切回中文丢失次数指标');
   `);
   await step("MCP 默认调用地图及独立注册管理", `
     await page.getByRole('group',{name:'资源类型',exact:true}).getByRole('button',{name:'MCP',exact:true}).click();

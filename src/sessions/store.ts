@@ -16,6 +16,7 @@ import { summarizeRequestSpeed } from "../session-speed.js";
 import { INDEX_SCHEMA_VERSION, initializeIndexSchema } from "../index/schema.js";
 import { resourceGapRelevant } from "../resources/coverage.js";
 import { sessionTitle, userTitle } from "./title.js";
+import { messageResources } from "./resources.js";
 import { localDay } from "../overview/dates.js";
 import { instant } from "../usage/analytics.js";
 import { pairToolCalls } from "../overview/analytics.js";
@@ -639,15 +640,20 @@ export class SessionStore {
     const kind = query.kind ?? identity?.kind;
     if (kind) parts.push(kind === "mcp" ? "json_extract(m.json,'$.resource.kind')='mcp'" : "json_extract(m.json,'$.resource.kind') IN ('skill_call','skill_read')");
     if (identity) {
-      parts.push(identity.kind === "mcp" ? "json_extract(m.json,'$.resource.server') IS ?" : "json_extract(m.json,'$.resource.name')=?");
+      parts.push(identity.kind === "mcp" ? "json_extract(m.json,'$.resource.server') IS ?"
+        : "(json_extract(m.json,'$.resource.name')=? OR EXISTS (SELECT 1 FROM json_each(m.json,'$.resources') use WHERE json_extract(use.value,'$.name')=?))");
       if (identity.kind === "mcp" && identity.server === undefined) {
         parts[parts.length - 1] = "json_extract(m.json,'$.resource.server') IS NULL";
-      } else values.push(identity.kind === "mcp" ? identity.server! : identity.name);
+      } else {
+        values.push(identity.kind === "mcp" ? identity.server! : identity.name);
+        if (identity.kind !== "mcp") values.push(identity.name);
+      }
     }
     const rows = this.overviewStatement(`SELECT m.id AS message_id,m.ordinal,m.turn_id,m.record_line,r.session_id,r.client,r.project,
       r.id AS revision,r.fingerprint,json_extract(r.json,'$.path') AS source_path,json_extract(r.json,'$.sourceId') AS source_id,
       json_extract(m.json,'$.resource.kind') AS resource_kind,json_extract(m.json,'$.resource.name') AS resource_name,
       json_extract(m.json,'$.resource.nameDescriptor') AS resource_name_descriptor,
+      json_extract(m.json,'$.resources') AS resources,
       json_extract(m.json,'$.resource.server') AS resource_server,json_extract(m.json,'$.resource.path') AS resource_path,
       json_extract(m.json,'$.filePaths') AS file_paths,json_extract(m.json,'$.tool') AS tool,
       json_extract(m.json,'$.occurredAt') AS occurred_at,
@@ -670,7 +676,7 @@ export class SessionStore {
       ORDER BY r.session_id,m.ordinal,m.id`).iterate(...values) as Iterable<{
         message_id: string; ordinal: number; turn_id: string; record_line: number; session_id: string; client: Client; project: string | null;
         revision: string; fingerprint: string; source_path: string; source_id: string; resource_kind: ResourceUsageEvent["kind"];
-        resource_name: string | null; resource_name_descriptor: string | null; resource_server: string | null; resource_path: string | null; file_paths: string | null;
+        resource_name: string | null; resource_name_descriptor: string | null; resource_server: string | null; resource_path: string | null; file_paths: string | null; resources: string | null;
         tool: string | null; occurred_at: string | null; status: ResourceUsageEvent["status"]; duration_ms: number | null;
         result_id: string | null; result_count: number; call_count: number;
       }>;
@@ -678,18 +684,24 @@ export class SessionStore {
       for (const row of rows) {
         const paths = row.file_paths ? JSON.parse(row.file_paths) as string[] : [];
         const skillPath = paths.find(path => /(?:^|[/\\])SKILL\.md$/.test(path));
-        const path = row.resource_path ?? (row.resource_kind === "mcp" ? undefined : skillPath
-          ?? (row.resource_kind === "skill_call" ? paths[0] : undefined));
-        yield { id: `${row.session_id}:${row.message_id}`, sessionId: row.session_id, messageId: row.message_id,
-          turnId: row.turn_id, ordinal: row.ordinal, client: row.client, project: row.project ?? undefined,
-          kind: row.resource_kind, name: row.resource_name ?? "未记录名称",
+        const resources = messageResources({ resource: { kind: row.resource_kind, name: row.resource_name ?? "未记录名称",
           ...(row.resource_name_descriptor ? { nameDescriptor: JSON.parse(row.resource_name_descriptor) } : {}), server: row.resource_server ?? undefined,
+          path: row.resource_path ?? undefined }, resources: row.resources ? JSON.parse(row.resources) : undefined });
+        for (const [index, resource] of resources.entries()) {
+          if (kind === "mcp" && resource.kind !== "mcp" || kind === "skill" && resource.kind === "mcp") continue;
+          if (identity && (identity.kind === "mcp" ? resource.server !== identity.server : resource.name !== identity.name)) continue;
+          const path = resource.path ?? (resource.kind === "mcp" || index > 0 ? undefined : skillPath
+            ?? (resource.kind === "skill_call" ? paths[0] : undefined));
+          yield { id: `${row.session_id}:${row.message_id}${index ? `:resource:${index}` : ""}`, sessionId: row.session_id, messageId: row.message_id,
+          turnId: row.turn_id, ordinal: row.ordinal, client: row.client, project: row.project ?? undefined,
+          kind: resource.kind, name: resource.name, ...(resource.nameDescriptor ? { nameDescriptor: resource.nameDescriptor } : {}), server: resource.server,
           path, tool: row.tool ?? undefined, occurredAt: row.occurred_at ?? undefined,
           status: row.status === "success" || row.status === "failure" ? row.status : "unknown",
           durationMs: typeof row.duration_ms === "number" && Number.isFinite(row.duration_ms) && row.duration_ms >= 0 ? row.duration_ms : undefined,
           resultMessageId: row.result_id ?? undefined,
           pairing: row.call_count > 1 || row.result_count > 1 ? "ambiguous" : row.result_id ? "unique" : "missing",
           source: { path: row.source_path, sourceId: row.source_id, revision: row.revision, fingerprint: row.fingerprint, recordLine: row.record_line } };
+        }
       }
     })();
     const allGaps = revision === undefined ? JSON.parse((this.overviewStatement("SELECT gaps FROM session_versions WHERE id=?").get(version) as { gaps: string }).gaps) as Gap[] : [];
@@ -865,8 +877,12 @@ export class SessionStore {
     if (query.messageId) { targetParts.push("id=?"); targetValues.push(query.messageId); }
     else {
       if (query.toolName) { targetParts.push("kind='tool_call' AND json_extract(json,'$.tool')=?"); targetValues.push(query.toolName); }
-      for (const [key, value] of [["kind", query.resourceKind], ["name", query.resourceName], ["server", query.resourceServer]] as const) {
-        if (value) { targetParts.push(`json_extract(json,'$.resource.${key}')=?`); targetValues.push(value); }
+      const resourceFilters = ([["kind", query.resourceKind], ["name", query.resourceName], ["server", query.resourceServer]] as const)
+        .flatMap(([key, value]) => value ? [{ key, value }] : []);
+      if (resourceFilters.length) {
+        targetParts.push(`(${resourceFilters.map(({ key }) => `json_extract(session_messages.json,'$.resource.${key}')=?`).join(" AND ")}
+          OR EXISTS (SELECT 1 FROM json_each(session_messages.json,'$.resources') usage WHERE ${resourceFilters.map(({ key }) => `json_extract(usage.value,'$.${key}')=?`).join(" AND ")}))`);
+        targetValues.push(...resourceFilters.map(({ value }) => value), ...resourceFilters.map(({ value }) => value));
       }
     }
     const target = targetParts.length ? this.database.prepare(`${cte} SELECT ordinal,id,turn_id,kind,final FROM session_messages
@@ -1741,8 +1757,8 @@ export class SessionStore {
           if (message.durationMs !== undefined) tool.durationMs = (tool.durationMs ?? 0) + message.durationMs;
           tools.set(name, tool);
         }
-        if ((message.kind === "tool_call" || message.kind === "user" && message.resource?.kind === "skill_read") && message.resource) {
-          const { path: _resourcePath, ...identity } = message.resource;
+        if (message.kind === "tool_call" || message.kind === "user" && message.resource?.kind === "skill_read") for (const usage of messageResources(message)) {
+          const { path: _resourcePath, ...identity } = usage;
           const key = JSON.stringify(identity);
           const resource = resources.get(key) ?? { ...identity, count: 0 };
           resource.count += 1;

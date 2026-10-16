@@ -16,6 +16,24 @@ test("搜索参数、正则、逻辑后缀和文件模式不充当文件路径",
   assert.ok(shellEvidence("rg --unknown-value value sample", "").every(event => event.path === undefined));
 });
 
+test("Codex 原生命令兼容输出字段，源码片段仍只来自明确读取范围", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "manor-codex-output-"));
+  try {
+  for (const field of ["formatted_output", "aggregated_output"]) {
+      const path = join(directory, `${field}.jsonl`);
+      await writeFile(path, [
+        { type: "session_meta", payload: { id: "synthetic-output", cwd: "/synthetic/repo" } },
+        { type: "event_msg", payload: { type: "item_completed", item: { type: "CommandExecution", id: "read", command: "cat src/a.ts", status: "completed", exit_code: 0, [field]: "alpha\n" } } },
+        { type: "event_msg", payload: { type: "item_completed", item: { type: "CommandExecution", id: "bundle", command: "cat src/a.ts src/b.ts", status: "completed", exit_code: 0, [field]: "alpha\nbeta\n" } } },
+      ].map(row => JSON.stringify(row) + "\n").join(""));
+      const reads = (await parseSource(path, "codex")).events.filter(event => event.kind === "read");
+      assert.equal(reads.length, 3, field);
+      assert.equal(reads[0]?.fragments[0]?.content, "alpha\n", field);
+      assert.ok(reads.slice(1).every(event => event.fragments.length === 0), "多文件输出不能因此获得伪造的代码行范围");
+    }
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});
+
 test("切换目录后的单次读取使用实际目录，不把日志或命令参数当作路径", () => {
   const event = shellEvidence("cd /workspace/example && cat src/a.ts", "alpha\n")[0]!;
   assert.equal(event.path, "/workspace/example/src/a.ts");

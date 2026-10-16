@@ -1,9 +1,10 @@
 import type { MessageDescriptor } from "../../../src/i18n/types";
 import type { ResourceMapMetric, ResourceMapNode } from "../../../src/resource-service-contracts";
+import type { ResourceKind } from "../../../src/resource-contracts";
 
-export function resourceMapValueMessage(node: Pick<ResourceMapNode, "value" | "observation">, metric: ResourceMapMetric): MessageDescriptor {
+export function resourceMapValueMessage(node: Pick<ResourceMapNode, "value" | "observation">, metric: ResourceMapMetric, kind?: ResourceKind): MessageDescriptor {
   if (node.value === null) return { key: node.observation === "insufficient" ? "resources.observation.insufficient" : "resources.observation.unknown" };
-  return { key: metric === "sessions" ? "resources.map.sessionValue" : metric === "reads" ? "resources.map.metricValue" : "resources.map.callValue", params: { count: node.value } };
+  return { key: metric === "sessions" ? "resources.map.sessionValue" : metric === "reads" ? "resources.map.metricValue" : kind === "skill" ? "resources.map.useValue" : "resources.map.callValue", params: { count: node.value } };
 }
 
 export function normalizeResourceRouteParams(params: URLSearchParams): URLSearchParams {

@@ -4,7 +4,7 @@ import { createReadStream } from "node:fs";
 import { basename, dirname, isAbsolute, resolve } from "node:path";
 import type { Client, Gap, GapKind } from "../contracts.js";
 import { historyRelationships, normalizeHistoryPath } from "../history/adapters/common.js";
-import { shellResult } from "../history/extraction.js";
+import { shellResult, string as recordedString } from "../history/extraction.js";
 import type { SourceLocation } from "../history/types.js";
 import type { MessageKind, SessionMessage, SessionSink, SessionSourceMeta, SessionRequestTiming } from "../session-contracts.js";
 import { object, string, tokens, UsageParser } from "./parser-usage.js";
@@ -126,7 +126,7 @@ export async function parseSessionSource(source: SourceLocation, sink: SessionSi
     relationship: source.parentSessionId ? "child" : undefined, messageCount: 0, turnCount: 0, models: [], gaps: [] };
   const seen = new Map<string, { ordinal: number; turnId: string }>();
   const pending = new Map<string, Pending>();
-  const completed = new Map<string, Pick<SessionMessage, "status" | "durationMs" | "resource" | "filePaths">>();
+  const completed = new Map<string, Pick<SessionMessage, "status" | "durationMs" | "resource" | "resources" | "filePaths">>();
   const models = new Set<string>();
   const targets = new Map<string, Set<string>>();
   let targetsLimited = false;
@@ -271,7 +271,8 @@ export async function parseSessionSource(source: SourceLocation, sink: SessionSi
         shellResult(body).output, meta.project ?? source.cwd, adapter?.extract) : undefined;
       const paths = [...new Set([...(call.message.filePaths ?? []), ...(read?.paths ?? [])])];
       const completion = { status, filePaths: paths.length ? paths : undefined,
-        resource: call.message.resource ?? read?.resource, durationMs: extra.durationMs ?? call.message.durationMs };
+        resource: call.message.resource ?? read?.resource, resources: call.message.resource ? call.message.resources : read?.resources,
+        durationMs: extra.durationMs ?? call.message.durationMs };
       sink.message({ ...call.message, ...completion });
       completed.set(call.message.id, completion);
       pendingBytes -= call.bytes; pending.delete(callId);
@@ -493,7 +494,7 @@ export async function parseSessionSource(source: SourceLocation, sink: SessionSi
               : item.status === "completed" && (item.type === "FileChange" || item.exit_code === 0) ? "success" : "unknown";
             if (!matching) toolCall(`item:${callId}:call`, string(item.type)!, item.command ?? item.changes, callId, line, { ...extra, model: currentModel }, false);
             const duration = typeof payload.started_at_ms === "number" && typeof payload.completed_at_ms === "number" && payload.completed_at_ms >= payload.started_at_ms ? payload.completed_at_ms - payload.started_at_ms : undefined;
-            toolResult(`item:${callId}:result`, matching?.[0] ?? callId, display(item.formatted_output ?? item.changes), line, status, { ...extra, durationMs: duration });
+            toolResult(`item:${callId}:result`, matching?.[0] ?? callId, display(recordedString(item.formatted_output) ?? recordedString(item.aggregated_output) ?? item.changes), line, status, { ...extra, durationMs: duration });
           }
         }
         continue;

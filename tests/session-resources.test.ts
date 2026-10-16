@@ -56,3 +56,22 @@ test("原生 Read 返回路径矛盾时不退回普通正文归属", () => {
   assert.equal(successfulSkillRead("read", { file_path: path }, result, result.llmContent, undefined, adapter.extract).resource, undefined);
   assert.equal(successfulSkillRead("Read", { file_path: path }, { file: { ...file, filePath: "/synthetic/other.md" } }, `1\t${content}`).resource, undefined);
 });
+
+test("一次成功命令读取多个 Skill 按返回正文确认并去重，不要求精确代码行范围", () => {
+  const first = "/synthetic/skills/first/SKILL.md", second = "/synthetic/skills/second/SKILL.md";
+  const body = "---\nname: first\n---\n第一份指导。\n---\nname: second\n---\n第二份指导。\n";
+  for (const command of [`cat ${first} ${second} ${first}`, `cat ${first} && cat ${second}`, `cat ${first}; cat ${second}`, `cat ${first}\ncat ${second}`, `git status --short; cat ${first} ${second}`]) {
+    const read = successfulSkillRead("exec_command", { cmd: command }, {}, body);
+    assert.deepEqual(read.resources, [{ kind: "skill_read", name: "first", path: first }, { kind: "skill_read", name: "second", path: second }], command);
+  }
+  for (const command of [`false && cat ${first}; true`, `cat ${first} || true`, `echo 'name: first'; cat ${first}`, `rg first ${first}`]) {
+    assert.equal(successfulSkillRead("exec_command", { cmd: command }, {}, body).resource, undefined, command);
+  }
+  assert.equal(successfulSkillRead("exec_command", { cmd: `cat ${first} ${second}` }, {}, "name: first is mentioned").resource, undefined);
+  const partial = successfulSkillRead("exec_command", { cmd: `cat ${first}; cat ${second}` }, {}, "cat: /synthetic/skills/first/SKILL.md: No such file\n---\nname: second\n---\n第二份指导。\n");
+  assert.deepEqual(partial.resource, { kind: "skill_read", name: "second", path: second });
+  assert.equal(successfulSkillRead("exec_command", { cmd: `cat ${first} ${second}` }, {}, "```yaml\n---\nname: first\n---\n示例而非文件正文\n```\n").resource, undefined);
+  const truncated = successfulSkillRead("exec_command", { cmd: `cat ${first} ${second}` }, {}, "---\nname: first\n---\n正文\n[output truncated]\n---\nname: second\n---\n");
+  assert.deepEqual(truncated.resource, { kind: "skill_read", name: "first", path: first });
+  assert.equal(successfulSkillRead("exec_command", { cmd: `cat ${first} /synthetic/another/first/SKILL.md` }, {}, body).resource, undefined, "同名不同路径无法由合并正文确定归属时保持未知");
+});

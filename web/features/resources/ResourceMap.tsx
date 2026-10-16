@@ -1,5 +1,6 @@
 import { useEffect, useId, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent, type PointerEvent } from "react";
 import { ArrowsIn, ArrowsOut, Crosshair, Minus, Plus, Resize, ShieldCheck, Star } from "@phosphor-icons/react";
+import type { ResourceKind } from "../../../src/resource-contracts";
 import type { ResourceMapMetric, ResourceMapNode, ResourceMapSummary } from "../../../src/resource-service-contracts";
 import { ProjectPicker } from "../../shared/ui/ProjectPicker";
 import { HelpPopover } from "../../shared/ui/HelpPopover";
@@ -12,9 +13,9 @@ import { formatPercent } from "../../../src/i18n";
 import { resourceMapValueMessage } from "./resource-usage-state";
 import "./resource-map.css";
 
-const metricLabel = (metric: ResourceMapMetric) => t(metric === "sessions" ? "resources.sort.sessions" : metric === "reads" ? "resources.map.reads" : "resources.sort.calls");
-const metricValue = (metric: ResourceMapMetric, count: number) => {
-  const message = resourceMapValueMessage({ value: count, observation: "used" }, metric);
+const metricLabel = (metric: ResourceMapMetric, kind: ResourceKind) => t(metric === "sessions" ? "resources.sort.sessions" : metric === "reads" ? "resources.map.reads" : kind === "skill" ? "resources.column.uses" : "resources.sort.calls");
+const metricValue = (metric: ResourceMapMetric, count: number, kind: ResourceKind) => {
+  const message = resourceMapValueMessage({ value: count, observation: "used" }, metric, kind);
   return t(message.key, message.params);
 };
 const shareLabel = (value: number | null) => value === null ? t("common.unknown") : value > 0 && value < .00001 ? `<${formatPercent(getLanguage(), .00001, { maximumFractionDigits: 3 })}` : formatPercent(getLanguage(), value, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -178,7 +179,7 @@ export function ResourceMap({ data, selected, onSelect }: ResourceMapProps) {
         <button className="map-tool-button" aria-label={t("resources.map.locateSelectedAria")} disabled={!selectedTile} onClick={() => locate(selected)}><Crosshair size={16} />{t("resources.map.locateSelected")}</button>
       </div><button className="map-tool-button" aria-label={fullscreen ? t("resources.map.fullscreenExitAria") : t("resources.map.fullscreenEnterAria")} onClick={() => void toggleFullscreen()}>{fullscreen ? <ArrowsIn size={16} /> : <ArrowsOut size={16} />}{fullscreen ? t("resources.map.fullscreenExit") : t("resources.map.fullscreenEnter")}</button>
         <HelpPopover label={t("resources.map.help")} container={fullscreen ? explorer.current : undefined}><dl>
-          <div><dt>{t("resources.map.helpArea")}</dt><dd>{t("resources.map.helpAreaText", { metric: metricLabel(data.metric) })}</dd></div>
+          <div><dt>{t("resources.map.helpArea")}</dt><dd>{t("resources.map.helpAreaText", { metric: metricLabel(data.metric, data.kind) })}</dd></div>
           <div><dt>{t("resources.map.helpColor")}</dt><dd>{t("resources.map.helpColorText")}</dd></div>
           <div><dt>{t("resources.map.helpBrowse")}</dt><dd>{t("resources.map.helpBrowseText")}</dd></div>
           <div><dt>{t("resources.map.helpManage")}</dt><dd>{t("resources.map.helpManageText")}</dd></div>
@@ -196,12 +197,12 @@ export function ResourceMap({ data, selected, onSelect }: ResourceMapProps) {
           const node = tile.node;
           return <button key={tile.id} data-resource-id={tile.id} style={position(rect)} className={`resource-map-tile recency-${tone(node, today)}${selected === tile.id ? " is-selected" : ""}`} aria-label={t("resources.viewUsage", { name: messageText(node.nameDescriptor, node.name) })} aria-describedby={hint?.node.id === tile.id ? tooltipId : undefined}
             onClick={() => void chooseResource(tile.id)} onFocus={() => setHint({ node, point: { x: rect.x, y: rect.y } })} onBlur={() => setHint(null)}>
-            <span className="resource-map-tile-copy">{rect.width >= 48 && rect.height >= 28 && <strong>{messageText(node.nameDescriptor, node.name)}</strong>}{rect.width >= 80 && rect.height >= 55 && <span>{metricValue(data.metric, node.value!)}</span>}{rect.width >= 130 && rect.height >= 88 && <small>{shareLabel(node.share)}{node.favorite && <Star size={12} weight="fill" />}{node.protected && <ShieldCheck size={12} />}</small>}</span>
+            <span className="resource-map-tile-copy">{rect.width >= 48 && rect.height >= 28 && <strong>{messageText(node.nameDescriptor, node.name)}</strong>}{rect.width >= 80 && rect.height >= 55 && <span>{metricValue(data.metric, node.value!, data.kind)}</span>}{rect.width >= 130 && rect.height >= 88 && <small>{shareLabel(node.share)}{node.favorite && <Star size={12} weight="fill" />}{node.protected && <ShieldCheck size={12} />}</small>}</span>
           </button>;
         })}
         {!data.positive.length && <div className="resource-map-empty">{t("resources.map.noPositive")}</div>}
         {hint && !dragging && <div id={tooltipId} role="tooltip" className="resource-map-tooltip" style={{ left: Math.max(6, Math.min(hint.point.x + 12, size.width - Math.min(300, size.width - 12))), top: Math.max(6, Math.min(hint.point.y + 14, size.height - 160)), maxWidth: Math.min(300, size.width - 12) }}>
-          <strong>{messageText(hint.node.nameDescriptor, hint.node.name)}</strong><span>{t("resources.map.tooltipMetric", { metric: metricLabel(data.metric), value: metricValue(data.metric, hint.node.value!) })}</span><span>{t("resources.map.tooltipShare", { share: shareLabel(hint.node.share) })}</span><span>{t("resources.lastUsed", { date: hint.node.lastUsedAt ? dateLabel(hint.node.lastUsedAt) : t("resources.map.timeMissing") })}</span>{statusLabel(hint.node) && <span>{statusLabel(hint.node)}</span>}
+          <strong>{messageText(hint.node.nameDescriptor, hint.node.name)}</strong><span>{t("resources.map.tooltipMetric", { metric: metricLabel(data.metric, data.kind), value: metricValue(data.metric, hint.node.value!, data.kind) })}</span><span>{t("resources.map.tooltipShare", { share: shareLabel(hint.node.share) })}</span><span>{t("resources.lastUsed", { date: hint.node.lastUsedAt ? dateLabel(hint.node.lastUsedAt) : t("resources.map.timeMissing") })}</span>{statusLabel(hint.node) && <span>{statusLabel(hint.node)}</span>}
         </div>}
       </div>
       <div className="resource-map-legend" aria-label={t("resources.map.legend")}><span><i className="recency-recent" />{t("resources.time.thirty")}</span><span><i className="recency-older" />{t("resources.map.older")}</span><span><i className="recency-old" />{t("resources.map.old")}</span><span><i className="recency-missing" />{t("resources.map.timeMissing")}</span></div>

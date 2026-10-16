@@ -4,6 +4,7 @@ import type { Gap } from "./contracts.js";
 import type { RequestSpeedSummary } from "./session-speed.js";
 
 export type MessageKind = "user" | "assistant" | "thinking" | "tool_call" | "tool_result" | "system" | "context" | "compression";
+export interface SessionResource { kind: "mcp" | "skill_call" | "skill_read"; name: string; nameDescriptor?: MessageDescriptor; server?: string; path?: string }
 export interface SessionMessage {
   id: string;
   sessionId: string;
@@ -38,7 +39,9 @@ export interface SessionMessage {
   /** 会话内树的叶分支成员；共同祖先可属于多个分支。 */
   branchIds?: string[];
   currentBranch?: boolean;
-  resource?: { kind: "mcp" | "skill_call" | "skill_read"; name: string; nameDescriptor?: MessageDescriptor; server?: string; path?: string };
+  resource?: SessionResource;
+  /** 同一真实调用的多份资源证据；resource 保留第一份以兼容旧消息。 */
+  resources?: SessionResource[];
   filePaths?: string[];
   /** 注入上下文或本地 Hook 的来源；正文仍保留原记录。 */
   contextSource?: "agents_md" | "environment" | "client" | "hook";

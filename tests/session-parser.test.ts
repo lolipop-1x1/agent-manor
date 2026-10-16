@@ -495,6 +495,38 @@ test("写入、搜索、任意 command 参数及空 Shell 返回不能冒充 Ski
     [{ kind: "skill_read", name: "actual", path: "/synthetic/repo/skills/actual/SKILL.md" }]);
 });
 
+test("Codex 命令的兼容输出字段保留 Skill 正文，重复原生事件只计一次调用", async () => {
+  for (const field of ["formatted_output", "aggregated_output"]) {
+    const completed = { type: "event_msg", timestamp, payload: { type: "item_completed", item: {
+      type: "CommandExecution", id: "native-read", command: ["/bin/sh", "-c", "cat /synthetic/skills/demo/SKILL.md"],
+      status: "completed", exit_code: 0, [field]: "---\nname: demo\n---\n人工读取正文。\n",
+    } } };
+    const sample = await parsed("codex", [meta(), user(), completed, completed]);
+    const calls = sample.messages.filter(message => message.kind === "tool_call");
+    assert.equal(calls.length, 1, field);
+    assert.deepEqual(calls[0]?.resource, { kind: "skill_read", name: "demo", path: "/synthetic/skills/demo/SKILL.md" }, field);
+    assert.match(sample.messages.find(message => message.kind === "tool_result")!.text, /人工读取正文/, field);
+    assert.equal(sample.summary.turnCount, 1);
+  }
+});
+
+test("多 Skill 的单次命令保留一次调用，失败或明确空的优先输出不补使用", async () => {
+  const paths = ["/synthetic/skills/first/SKILL.md", "/synthetic/skills/second/SKILL.md"];
+  const body = "---\nname: first\n---\n第一份正文\n---\nname: second\n---\n第二份正文\n";
+  const completed = (id: string, fields = {}) => ({ type: "event_msg", timestamp, payload: { type: "item_completed", item: {
+    type: "CommandExecution", id, command: ["/bin/sh", "-c", `cat ${paths.join(" ")} ${paths[0]}`], status: "completed", exit_code: 0, aggregated_output: body, ...fields,
+  } } });
+  const sample = await parsed("codex", [meta(), user(), completed("read"), completed("failed", { exit_code: 1 }), completed("empty", { formatted_output: "" }),
+    completed("stdout-only", { aggregated_output: undefined, stdout: body })]);
+  const calls = sample.messages.filter(message => message.kind === "tool_call");
+  assert.equal(calls.length, 4);
+  assert.deepEqual(calls[0]?.resources?.map(resource => resource.name), ["first", "second"]);
+  assert.equal(calls[1]?.resource, undefined);
+  assert.equal(calls[2]?.resource, undefined);
+  assert.equal(calls[3]?.resource, undefined);
+  assert.equal(sample.summary.turnCount, 1);
+});
+
 test("Claude 结构化 Read 省略 is_error 仍确认读取，多结果不共享旁路元信息", async () => {
   const path = "/synthetic/skills/demo/SKILL.md";
   const read = (id: string) => ({ type: "assistant", uuid: `a-${id}`, sessionId: "claude-demo", cwd: "/synthetic/repo",

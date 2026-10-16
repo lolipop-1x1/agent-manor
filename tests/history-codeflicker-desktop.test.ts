@@ -98,7 +98,7 @@ test("桌面原生 Skill 目录贯通历史关联，旧解析缓存刷新后补�
     assert.equal(first.identity.name, "fixture-skill"); assert.equal(first.stats.explicitCalls, 1); assert.equal(first.stats.sessions, 1); assert.equal(first.association.state, "linked");
     const cached = store.cachedRevisions()[0]!; assert.ok(cached.fingerprint.includes(":skill-directory-v1"));
     const oldFingerprint = cached.fingerprint.replace(":skill-directory-v1", "");
-    const oldSuffix = /^[^:]+:[^:]+:6:[a-f0-9]{64}(.*)$/.exec(oldFingerprint)?.[1]; assert.ok(oldSuffix);
+    const oldSuffix = /^[^:]+:[^:]+:\d+:[a-f0-9]{64}(.*)$/.exec(oldFingerprint)?.[1]; assert.ok(oldSuffix);
     const oldMetadata = createHash("sha256").update(JSON.stringify({ rule: "6", source: cached.location, metadataSuffix: oldSuffix })).digest("hex");
     const database = new Database(dbPath);
     database.prepare("UPDATE session_revisions SET fingerprint=?,metadata_fingerprint=? WHERE id=?").run(oldFingerprint, oldMetadata, cached.revision);

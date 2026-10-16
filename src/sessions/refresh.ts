@@ -24,7 +24,7 @@ import { SessionImportPool } from "./import-pool.js";
 import type { SourceLocation } from "../history/types.js";
 
 // 会话规范化规则升级时使来源缓存失效，独立于地图索引迁移。
-const SESSION_INDEX_RULE_VERSION = "6";
+const SESSION_INDEX_RULE_VERSION = "7";
 const ROUND_RULES_FINGERPRINT = ":round-rules-v1";
 
 async function fingerprint(path: string, byteLimit?: number): Promise<{ hash: string; bytes: number }> {

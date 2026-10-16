@@ -261,6 +261,7 @@ export function parseNormalizedSession(snapshot: NormalizedSnapshot, sink: Sessi
         if (call.status === "success" && !call.resource) {
           const read = successfulSkillRead(call.tool ?? "", inputs.get(call.id), event.result, event.text ?? "", source.cwd, extract);
           call.resource = read.resource;
+          call.resources = read.resources;
           call.filePaths = [...new Set([...(call.filePaths ?? []), ...read.paths])];
         }
         sink.message(call); pending.delete(event.callId ?? ""); inputs.delete(call.id);
