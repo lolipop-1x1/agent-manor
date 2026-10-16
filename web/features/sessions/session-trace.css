@@ -102,7 +102,7 @@
   .trace-inspector-scroll { padding: 8px; }
 }
 
-.trace-group > [role="cell"] { display: flex; align-items: center; gap: 8px; }
+.trace-group > [role="cell"] { display: flex; align-items: center; gap: 8px; padding-right: 16px; }
 .trace-group > [role="cell"] > button { min-width: 0; }
 .trace-group > [role="cell"] > .trace-turn-toggle { width: auto; flex-shrink: 0; }
 .trace-group .trace-turn-preview { flex: 1; min-width: 0; }

@@ -1,6 +1,7 @@
 # 主干提交与远端回读
 
 Type: task
+Status: claimed
 Blocked by: 07
 
 ## 目标

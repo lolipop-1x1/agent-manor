@@ -41,7 +41,7 @@ const screenshot = name => `await page.screenshot({path:${quote(join(artifacts, 
 
 try {
   await mkdir(artifacts, { recursive: true });
-  fixture = await createDoubaoWorkScenario(directory);
+  fixture = await createDoubaoWorkScenario(directory, { includeUnlinkedReplies: true });
   service = await startService({ home: fixture.home, roots: fixture.roots, resourceInventory: { userHome: fixture.userHome, environment: {} },
     staticRoot: fileURLToPath(new URL("../dist/web/", import.meta.url)),
     usagePricing: { fetch: async () => { throw new Error("synthetic offline pricing"); } } });
@@ -54,6 +54,10 @@ try {
   }
   const list = await api("/sessions?client=doubao-work"); assert.equal(list.total, 1);
   const session = list.sessions[0], sessionUrl = `${base}/#sessions?id=${encodeURIComponent(session.id)}&mode=brief`;
+  const initialMessages = await api(`/sessions/${encodeURIComponent(session.id)}/messages?mode=full`);
+  const unlinked = fixture.unlinkedReplies.map(text => initialMessages.messages.find(message => message.kind === "assistant" && message.text === text));
+  assert.ok(unlinked.every(Boolean)); assert.equal(new Set(unlinked.map(message => message.turnId)).size, 2);
+  assert.equal(session.turnCount, 2);
   await api("/preferences", "PUT", { language: "zh-CN", appearance: { mode: "light", preset: "blue" } });
   await browser(["open", sessionUrl, "--headed", "--browser=chrome"]);
   await step("中文客户端筛选、键盘选择与两轮简易对话", `
@@ -68,6 +72,84 @@ try {
     expect(await page.locator('.session-message.kind-thinking,.session-message.kind-context').count()===0,'对话模式混入过程');
     expect((await page.locator('.session-message-scroll').innerText()).includes(${quote(fixture.needle)}),'用户正文缺失');
     ${screenshot("sessions-zh-wide.png")}
+  `);
+  await step("两条未知轮次回复在三种阅读模式独立可达，导航只保留真实两轮", `
+    const unlinked=${quote(unlinked)};
+    for(const mode of ${quote([t("sessions.mode.brief"), t("sessions.mode.full"), t("sessions.mode.trace")])}) {
+      await page.getByRole('group',{name:${quote(t("sessions.reading.mode"))},exact:true}).getByRole('button',{name:mode,exact:true}).click(); ${idle}
+      const trace=mode===${quote(t("sessions.mode.trace"))};
+      if(trace) {
+        await page.getByRole('table',{name:${quote(t("sessions.trace.table"))},exact:true}).waitFor();
+        await page.locator('.trace-ledger-scroll').evaluate(element=>element.scrollTop=element.scrollHeight);
+      }
+      for(const message of unlinked) {
+        const group=page.locator('[id='+JSON.stringify('session-turn-'+message.turnId)+']'); await group.waitFor();
+        const title=trace?group.locator('.trace-turn-toggle strong'):group.locator(':scope > summary > span').first();
+        expect(await title.innerText()===${quote(t("sessions.turn.unrecorded"))},'未知组被标成初始上下文或编号轮次');
+        if(trace) await page.locator('.trace-row').filter({hasText:message.text}).waitFor();
+        else {
+          if(await group.getAttribute('open')===null) await group.locator(':scope > summary').click();
+          await group.locator('.session-message.kind-assistant').filter({hasText:message.text}).waitFor();
+        }
+      }
+      await page.getByRole('button',{name:${quote(t("sessions.turn.byQuestion"))},exact:true}).click();
+      const questions=page.getByRole('dialog',{name:${quote(t("sessions.turn.byQuestion"))},exact:true});
+      await questions.locator('.session-question-row').first().waitFor();
+      expect(await questions.locator('.session-question-row').count()===2,'未知展示组变成了假用户轮次');
+      expect(!(await questions.innerText()).includes(${quote(t("sessions.turn.unrecorded"))}),'未知组进入了用户问题目录');
+      await page.keyboard.press('Escape');
+    }
+    await page.getByRole('group',{name:${quote(t("sessions.reading.mode"))},exact:true}).getByRole('button',{name:${quote(t("sessions.mode.brief"))},exact:true}).click(); ${idle}
+    ${screenshot("sessions-unlinked-brief.png")}
+  `);
+  await step("未知组实际复制互不串组，保留未确认回复语义", `
+    await page.context().grantPermissions(['clipboard-read','clipboard-write']);
+    page.doubaoTraceCopyHitTests=[];
+    for(const mode of ${quote([t("sessions.mode.brief"), t("sessions.mode.full"), t("sessions.mode.trace")])}) {
+      await page.getByRole('group',{name:${quote(t("sessions.reading.mode"))},exact:true}).getByRole('button',{name:mode,exact:true}).click(); ${idle}
+      if(mode===${quote(t("sessions.mode.trace"))}) await page.locator('.trace-ledger-scroll').evaluate(element=>element.scrollTop=element.scrollHeight);
+      for(const message of ${quote(unlinked)}) {
+        const group=page.locator('[id='+JSON.stringify('session-turn-'+message.turnId)+']'); await group.waitFor();
+        await page.evaluate(()=>navigator.clipboard.writeText('synthetic-copy-not-completed'));
+        const copy=group.getByRole('button',{name:${quote(t("sessions.copy.turn"))},exact:true});
+        if(mode===${quote(t("sessions.mode.trace"))}) {
+          // 覆盖式滚动条不能遮挡复制按钮；不修改 DOM 或使用强制点击。
+          const pointerCheck=await copy.evaluate(element=>{
+            const bounds=element.getBoundingClientRect(),hit=document.elementFromPoint(bounds.x+bounds.width/2,bounds.y+bounds.height/2);
+            const viewport=element.closest('.trace-ledger-scroll');
+            return {group:element.closest('.trace-group').id,bounds:{x:bounds.x,y:bounds.y,width:bounds.width,height:bounds.height},
+              centerHitsButton:element===hit||element.contains(hit),hitTag:hit?.tagName,hitClass:hit?.className,
+              viewport:{clientWidth:viewport.clientWidth,offsetWidth:viewport.offsetWidth,scrollWidth:viewport.scrollWidth}};
+          });
+          page.doubaoTraceCopyHitTests.push(pointerCheck);
+          expect(pointerCheck.centerHitsButton,'执行轨迹复制按钮的鼠标中心被遮挡');
+        }
+        await copy.click();
+        await group.locator('[role="status"]').filter({hasText:${quote(t("sessions.copy.done"))}}).waitFor();
+        await page.waitForFunction(async expected=>(await navigator.clipboard.readText()).includes(expected),message.text);
+        const copied=await page.evaluate(()=>navigator.clipboard.readText());
+        expect(copied.includes(message.text),'未知组复制丢失本组回复');
+        expect(!${quote(fixture.unlinkedReplies)}.some(text=>text!==message.text&&copied.includes(text)),'未知组复制串入另一个未知回复');
+        expect(!copied.includes(${quote(fixture.needle)})&&!copied.includes('合成回复：已保留本机证据。')&&!copied.includes('说明可确认的来源边界'),'未知组复制串入已知用户轮次');
+        expect(copied.includes('未确认'),'未知组复制丢失未确认语义');
+      }
+    }
+    ${screenshot("sessions-unlinked-trace-copied.png")}
+    await page.getByRole('group',{name:${quote(t("sessions.reading.mode"))},exact:true}).getByRole('button',{name:${quote(t("sessions.mode.brief"))},exact:true}).click(); ${idle}
+  `);
+  const pointerState=await browser(["run-code", "async page => page.doubaoTraceCopyHitTests"]);
+  await writeFile(join(artifacts, "trace-copy-pointer-state.txt"),pointerState);
+  const pointerChecks=JSON.parse(pointerState.match(/### Result\s*\n([\s\S]*?)\n### Ran/)?.[1]??"[]");
+  assert.equal(pointerChecks.length,2);
+  await step("未知展示组不扩充真实用户轮次跳转范围", `
+    await page.locator('.session-turn-position').click();
+    const navigation=page.getByRole('dialog',{name:${quote(t("sessions.turn.navigation"))},exact:true}); await navigation.waitFor();
+    expect(await navigation.getByRole('spinbutton').getAttribute('max')==='2','未知回复扩充了跳转轮次上限');
+    await navigation.getByRole('button',{name:${quote(t("sessions.turn.last"))},exact:true}).click();
+    await page.waitForFunction(()=>document.querySelector('.session-turn-position')?.dataset.turn==='2');
+    await page.locator('.session-turn-position').click();
+    await page.getByRole('dialog',{name:${quote(t("sessions.turn.navigation"))},exact:true}).getByRole('button',{name:${quote(t("sessions.turn.first"))},exact:true}).click();
+    await page.waitForFunction(()=>document.querySelector('.session-turn-position')?.dataset.turn==='1');
   `);
   await step("全部记录和执行轨迹保留过程及未知文件卡片", `
     await page.getByRole('group',{name:${quote(t("sessions.reading.mode"))},exact:true}).getByRole('button',{name:${quote(t("sessions.mode.full"))},exact:true}).click(); ${idle}
@@ -93,6 +175,7 @@ try {
   `);
   const exported = await readFile(join(artifacts, "conversation.md"), "utf8");
   assert.ok(exported.includes(fixture.needle) && exported.includes("合成回复") && exported.includes("未确认")); assert.ok(!exported.includes(fixture.thinking));
+  for (const reply of fixture.unlinkedReplies) assert.ok(exported.includes(reply), "整段对话下载不能丢失独立未知回复");
   await step("普通与托管资源位置、未知使用范围和只读保护", `
     await page.goto(${quote(`${base}/#resources?kind=skill&tab=usage&window=all`)}); ${resourcesReady}
     await page.locator('.resource-more-filters summary').click();
@@ -149,7 +232,9 @@ try {
     expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1),'窄屏横向溢出');
     expect(page.doubaoErrors.length===0,'浏览器异常：'+page.doubaoErrors.join(';'));
   `);
-  await writeFile(join(artifacts, "report.json"), JSON.stringify({ passed: true, checks, elapsedMs: Date.now() - started,
+  currentStep="执行轨迹复制按钮的基线鼠标可达性";
+  assert.ok(pointerChecks.every(check=>check.centerHitsButton),"执行轨迹复制按钮的原始中心被滚动区遮挡");
+  await writeFile(join(artifacts, "report.json"), JSON.stringify({ passed: true, checks, traceCopyPointerChecks:pointerChecks, elapsedMs: Date.now() - started,
     fixtureOnly: true, realHistoryRead: false, realResourceWrites: false }, null, 2) + "\n");
   await Promise.all(["failure.png", "failure-state.txt"].map(name => rm(join(artifacts, name), { force: true })));
   console.log(`PASS 豆包工作正式产物 Chrome ${checks.length} 项`);
@@ -157,6 +242,7 @@ try {
   await browser(["screenshot", `--filename=${join(artifacts, "failure.png")}`]).catch(() => {});
   const state = await browser(["run-code", "async page => ({url:page.url(),text:(await page.locator('body').innerText()).slice(0,18000)})"]).catch(() => "");
   await writeFile(join(artifacts, "failure-state.txt"), state);
+  await writeFile(join(artifacts, "trace-copy-pointer-state.txt"), await browser(["run-code", "async page => page.doubaoTraceCopyHitTests ?? []"]).catch(() => ""));
   await writeFile(join(artifacts, "report.json"), JSON.stringify({ passed: false, checks, step: currentStep, error: error.message, elapsedMs: Date.now() - started }, null, 2) + "\n");
   throw error;
 } finally {

@@ -10,7 +10,7 @@ const skill = (name: string) => `---\nname: ${name}\ndescription: 人工合成�
 const text = (id: string, value: string, parent = "0") => ({ block_id: id, parent_id: parent, block_type: 10000, content: { text_block: { text: value } } });
 
 /** 全部路径与内容都由测试新建；不使用日常 home、历史或客户端配置。 */
-export async function createDoubaoWorkScenario(directory: string) {
+export async function createDoubaoWorkScenario(directory: string, options: { includeUnlinkedReplies?: boolean } = {}) {
   const home = join(directory, "data"), userHome = join(directory, "synthetic-user"), project = join(directory, "synthetic-project");
   const history = join(directory, "history");
   const launcher = join(history, "chrome_doubaowork-launcher_0.indexeddb.leveldb");
@@ -24,6 +24,7 @@ export async function createDoubaoWorkScenario(directory: string) {
   await run("git", ["init", "-q", project]);
   await run("git", ["-C", project, "add", "src/example.ts"]);
   const title = "豆包合成兼容任务", needle = "DoubaoFixtureNeedle", thinking = "只用于完整过程的合成检查";
+  const unlinkedReplies = ["未知轮次独立回复甲 OrphanReplyAlpha", "未知轮次独立回复乙 OrphanReplyBeta"];
   const response = (cells: unknown[]) => ({ downlink_body: { pull_recent_conv_chain_downlink_body: {
     has_more: false, next_conv_version: "8", first_conv_version: "1", cells: cells.map(conversation => ({ conversation })),
   } } });
@@ -53,6 +54,11 @@ export async function createDoubaoWorkScenario(directory: string) {
       ], { bot_reply_message_id: "synthetic-user-one" }),
       message("synthetic-user-two", 1, 3, [text("request-two", "说明可确认的来源边界")]),
       message("synthetic-answer-two", 2, 4, [text("answer-two", "这是本机缓存的合成回复，完成状态未确认。")], { bot_reply_message_id: "synthetic-user-two" }),
+      // 分别覆盖缺失关联和无效目标；它们都不能继承最近一条用户消息。
+      ...(options.includeUnlinkedReplies ? [
+        message("synthetic-unlinked-one", 2, 5, [text("unlinked-answer-one", unlinkedReplies[0]!)]),
+        message("synthetic-unlinked-two", 2, 6, [text("unlinked-answer-two", unlinkedReplies[1]!)], { bot_reply_message_id: "synthetic-missing-user" }),
+      ] : []),
     ],
   });
   const writeCache = async (reply = "合成回复：已保留本机证据。", present = true) => {
@@ -61,6 +67,6 @@ export async function createDoubaoWorkScenario(directory: string) {
     return current;
   };
   const current = await writeCache();
-  return { directory, home, userHome, project, history, launcher, chat, current, title, needle, thinking, sharedSkill, managedSkill,
+  return { directory, home, userHome, project, history, launcher, chat, current, title, needle, thinking, sharedSkill, managedSkill, unlinkedReplies,
     roots: isolatedHistoryRoots({ "doubao-work": history }), writeCache };
 }
