@@ -351,3 +351,34 @@ test("真实 CLI 通过同一服务查询、收藏、预览与确认，不另写
   assert.equal(result.status, "success");
   assert.equal((await command(["archives", "--state", "standby"])).total, 1);
 }));
+
+test("恢复中心 HTTP 合并后分页和搜索，兼容旧查询且还原后移出中心", async () => fixture(async (context, service) => {
+  const local = await apiRequest<ResourceLocalResult>(service.instance, "/resources/local?kind=skill&pageSize=200");
+  const entries = local.rows.flatMap(row => row.entries);
+  const chosen = [
+    { entry: entries.find(value => value.client === "codex" && value.entryPath === context.guide)!, action: "disable" },
+    { entry: entries.find(value => value.client === "claude" && value.entryPath === context.link)!, action: "trash" },
+    { entry: entries.find(value => value.client === "codex" && value.entryPath === join(context.userHome, ".codex", "skills", "sample-00"))!, action: "trash" },
+  ];
+  for (const value of chosen) {
+    assert.ok(value.entry);
+    const preview = await apiRequest<ResourceManagementPreview>(service.instance, "/resources/preview", "POST", { entryId: value.entry.id, action: value.action });
+    const result = await apiRequest<ResourceManagementOperation>(service.instance, "/resources/apply", "POST", { previewId: preview.id, confirmed: true });
+    assert.equal(result.status, "success");
+  }
+  type Page = { archives: import("../src/resource-management-contracts.js").ResourceManagementArchive[]; total: number; page: number };
+  const first = await apiRequest<Page>(service.instance, "/resources/archives?state=recoverable&kind=skill&pageSize=1");
+  const second = await apiRequest<Page>(service.instance, "/resources/archives?state=recoverable&kind=skill&pageSize=1&page=2");
+  assert.equal(first.total, 3); assert.equal(first.archives.length, 1); assert.equal(second.total, 3);
+  assert.notEqual(first.archives[0]!.id, second.archives[0]!.id);
+  assert.ok(first.archives[0]!.createdAt >= second.archives[0]!.createdAt);
+  assert.equal((await apiRequest<Page>(service.instance, "/resources/archives?state=disabled")).total, 1);
+  assert.equal((await apiRequest<Page>(service.instance, "/resources/archives?state=trash")).total, 2);
+  assert.equal((await apiRequest<Page>(service.instance, "/resources/archives?state=recoverable&kind=mcp")).total, 0);
+  const match = await apiRequest<Page>(service.instance, "/resources/archives?state=recoverable&q=guide"); assert.equal(match.total, 1);
+  const last = await apiRequest<Page>(service.instance, "/resources/archives?state=recoverable&pageSize=1&page=99"); assert.equal(last.page, 3);
+  const preview = await apiRequest<ResourceManagementPreview>(service.instance, "/resources/preview", "POST", { operationId: match.archives[0]!.operationId, action: "restore" });
+  assert.equal((await apiRequest<ResourceManagementOperation>(service.instance, "/resources/apply", "POST", { previewId: preview.id, confirmed: true })).status, "success");
+  const after = await apiRequest<Page>(service.instance, "/resources/archives?state=recoverable"); assert.equal(after.total, 2);
+  assert.ok(!after.archives.some(value => value.id === match.archives[0]!.id));
+}));

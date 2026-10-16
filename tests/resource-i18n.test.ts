@@ -127,3 +127,14 @@ test("资源指标区分正常零值与未知，不把未知指标显示为零�
     }
   }
 });
+
+
+test("旧停用和回收地址合并为恢复中心，记录页不继承使用与本地筛选", () => {
+  for (const tab of ["disabled", "trash", "standby", "recovery", "operations"]) {
+    const normalized = normalizeResourceRouteParams(new URLSearchParams({ tab, q: "guide", id: "synthetic-record", page: "2", client: "claude", project: "/synthetic/project", window: "30", presence: "missing", candidate: "low", view: "map" }));
+    assert.equal(normalized.get("tab"), tab === "operations" ? "operations" : "recovery");
+    assert.equal(normalized.get("q"), "guide"); assert.equal(normalized.get("id"), "synthetic-record"); assert.equal(normalized.get("page"), "2");
+    for (const key of ["client", "project", "window", "presence", "candidate", "view"]) assert.equal(normalized.has(key), false);
+    assert.equal(normalizeResourceRouteParams(normalized).toString(), normalized.toString());
+  }
+});

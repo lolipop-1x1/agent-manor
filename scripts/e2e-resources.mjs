@@ -38,10 +38,10 @@ const route = (kind = "skill", q = "", id = "", detail = "overview") => `await p
 const open = name => `await page.getByRole('button',{name:${JSON.stringify(`查看${name}的使用详情`)},exact:true}).click(); await page.locator('.resource-detail-heading h2').filter({hasText:${JSON.stringify(name)}}).waitFor(); ${ready}`;
 const tab = name => `await page.locator('.resource-detail-tabs').getByRole('button',{name:${JSON.stringify(name)},exact:true}).click();`;
 const select = (label, option) => `await page.getByRole('combobox',{name:${JSON.stringify(label)},exact:true}).click(); await page.getByRole('option',{name:${JSON.stringify(option)},exact:true}).click(); ${ready}`;
-const tools = name => `await page.getByRole('button',{name:'更多资源工具',exact:true}).click(); await page.getByRole('menuitem',{name:${JSON.stringify(name)},exact:true}).click(); ${ready}`;
+const tools = name => name === '扫描详情与设置' ? `await page.getByRole('button',{name:'更多资源工具',exact:true}).click(); await page.getByRole('menuitem',{name:${JSON.stringify(name)},exact:true}).click(); ${ready}` : `await page.getByRole('navigation',{name:'资源导航',exact:true}).getByRole('button',{name:${JSON.stringify(['回收区','已停用'].includes(name)?'恢复中心':name)},exact:true}).click(); ${ready}`;
 const location = path => `page.locator('.resource-management-body').filter({has:page.getByText(${JSON.stringify(path)},{exact:true})})`;
 const preview = `page.locator('.resource-preview-panel')`;
-const apply = label => `await ${preview}.getByRole('button',{name:${JSON.stringify(label)},exact:true}).click(); await ${preview}.getByRole('button',{name:'完成',exact:true}).waitFor(); expect((await ${preview}.getByRole('status').innerText()).includes('本地修改完成'),'操作没有成功');`;
+const apply = label => `await ${preview}.getByRole('button',{name:${label === '恢复到原位置' ? '/^(撤销停用|还原配置|还原链接|还原文件)$/' : label === '移入回收区' ? '/^(移入回收区|移除这个链接)$/' : JSON.stringify(label)},exact:true}).click(); await ${preview}.getByRole('button',{name:'完成',exact:true}).waitFor(); await ${preview}.getByRole('status').waitFor(); expect(await page.locator('.resource-map-feedback').count()===0,'常驻成功通知仍存在');`;
 const finish = `await ${preview}.getByRole('button',{name:'完成',exact:true}).click(); await ${preview}.waitFor({state:'hidden'}); ${ready}`;
 const snap = name => `await page.screenshot({path:${JSON.stringify(join(artifacts,name))}});`;
 
@@ -78,7 +78,7 @@ try {
     expect(await page.getByRole('button',{name:'来源与能力',exact:true}).count()===0,'来源入口仍常驻');
     expect(await page.evaluate(()=>performance.getEntriesByType('resource').filter(e=>['/api/v1/resources/map','/api/v1/resources/status'].includes(new URL(e.name).pathname)&&!e.name.includes('summary=true')).length)===0,'首屏请求地图或完整诊断');
     ${open('guide')}
-    const left=await page.getByRole('complementary',{name:'资源筛选',exact:true}).boundingBox();
+    const left=await page.getByRole('complementary',{name:'资源导航',exact:true}).boundingBox();
     const right=await page.getByRole('complementary',{name:'资源详情',exact:true}).boundingBox();
     expect(left.width>=200&&right.width>=380,'三栏默认宽度不足');
     expect((await table.boundingBox()).width<=1121,'宽屏表格无限拉伸');
@@ -194,7 +194,7 @@ try {
     await ${location(fixture.guide)}.getByRole('button',{name:'预览停用guide的Codex入口',exact:true}).click();${apply('停用此路径的配置')}
   `);
   assert.equal(parseToml(await readFile(fixture.configPath,'utf8')).skills.config.at(-1).enabled,false);
-  await step('Skill 恢复撤销原路径规则',`await ${preview}.getByRole('button',{name:'预览恢复',exact:true}).click();${apply('恢复到原位置')}${finish}`);
+  await step('Skill 恢复撤销原路径规则',`await ${preview}.getByRole('button',{name:/^预览(撤销停用|还原配置|还原链接|还原文件)$/,exact:true}).click();${apply('恢复到原位置')}${finish}`);
   assert.equal(await readFile(fixture.configPath,'utf8'),initialConfig);
   await step('过期源内容使执行失效并允许重新预览',`await ${location(fixture.guide)}.getByRole('button',{name:'预览停用guide的Codex入口',exact:true}).click();await ${preview}.getByRole('button',{name:'停用此路径的配置',exact:true}).waitFor();`);
   await appendFile(fixture.configPath,'\n# external-fixture-change\n');
@@ -203,53 +203,53 @@ try {
   await step('Skill 回收展示真实路径变化并执行',`await ${location(fixture.guide)}.getByRole('button',{name:${JSON.stringify(`将${fixture.guide}移入回收区`)},exact:true}).click();await ${preview}.getByRole('button',{name:'移入回收区',exact:true}).waitFor();expect((await page.locator('.resource-change-diff').innerText()).includes('回收区（可恢复）'),'没有回收变化');expect(!(await ${preview}.innerText()).includes('resource-vault'),'内部回收路径泄露到预览');${apply('移入回收区')}`);
   await assert.rejects(access(fixture.guide),{code:'ENOENT'});
   await mkdir(fixture.guide);await writeFile(join(fixture.guide,'occupied.txt'),'keep');
-  await step('恢复遇到原位置占用时不覆盖',`await ${preview}.getByRole('button',{name:'预览恢复',exact:true}).click();await ${preview}.getByRole('alert').waitFor();`);
+  await step('恢复遇到原位置占用时不覆盖',`await ${preview}.getByRole('button',{name:/^预览(撤销停用|还原配置|还原链接|还原文件)$/,exact:true}).click();await ${preview}.getByRole('alert').waitFor();`);
   assert.equal(await readFile(join(fixture.guide,'occupied.txt'),'utf8'),'keep');await rm(fixture.guide,{recursive:true});
   await step('解决占用后重新预览并完整恢复附件',`await ${preview}.getByRole('button',{name:'重新预览',exact:true}).click();${apply('恢复到原位置')}${finish}`);
   assert.equal(await readFile(join(fixture.guide,'asset.txt'),'utf8'),'保留资源附件\n');
   await step('共享符号链接单独移除，目标文件保留',`
     ${route('skill','shared')}${open('shared')}${tab('文件位置')}
     await page.locator('.resource-linked-locations > summary').click();await page.getByRole('button',{name:${JSON.stringify(`移除链接${fixture.link}，保留目标文件`)},exact:true}).click();
-    await ${preview}.getByRole('button',{name:'移入回收区',exact:true}).waitFor();expect((await ${preview}.innerText()).includes('只移除这个链接'),'未解释链接边界');${apply('移入回收区')}
+    await ${preview}.getByRole('button',{name:'移除这个链接',exact:true}).waitFor();expect((await ${preview}.innerText()).includes('只移除这个链接'),'未解释链接边界');${apply('移入回收区')}
   `);
   await assert.rejects(access(fixture.link),{code:'ENOENT'});await access(join(fixture.shared,'SKILL.md'));
-  await step('链接恢复仍指向原目标',`await ${preview}.getByRole('button',{name:'预览恢复',exact:true}).click();${apply('恢复到原位置')}${finish}`);
+  await step('链接恢复仍指向原目标',`await ${preview}.getByRole('button',{name:/^预览(撤销停用|还原配置|还原链接|还原文件)$/,exact:true}).click();${apply('恢复到原位置')}${finish}`);
   assert.equal(await realpath(fixture.link),await realpath(fixture.shared));
   await step('断链移除预览显示原始指向和目标缺失',`
     ${route('skill','broken')}${open('broken')}${tab('文件位置')}
     expect(await page.getByRole('button',{name:${JSON.stringify(`移除链接${fixture.broken}，保留目标文件`)},exact:true}).count()===1,'同一个断链被重复展示');
     await page.getByRole('button',{name:${JSON.stringify(`移除链接${fixture.broken}，保留目标文件`)},exact:true}).click();
-    await ${preview}.getByRole('button',{name:'移入回收区',exact:true}).waitFor();
+    await ${preview}.getByRole('button',{name:'移除这个链接',exact:true}).waitFor();
     expect((await ${preview}.innerText()).includes(${JSON.stringify(brokenText)}),'断链原始指向缺失');
     expect((await ${preview}.innerText()).includes('目标不存在'),'没有标明目标缺失');${apply('移入回收区')}${finish}
     ${tools('回收区')}
     await page.getByRole('button',{name:'查看broken的恢复记录',exact:true}).click();${ready}
     const detail=await page.getByRole('complementary',{name:'资源详情',exact:true}).innerText();
-    expect(detail.includes('可恢复链接')&&detail.includes('移除时链接已断开'),'链接恢复材料和移除时状态不清晰');
+    expect(detail.includes('移除了这个链接')&&detail.includes('移除时链接已断开'),'链接恢复材料和移除时状态不清晰');
   `);
   await assert.rejects(lstat(fixture.broken),{code:'ENOENT'});
   await assert.rejects(lstat(fixture.brokenTarget),{code:'ENOENT'});
   await step('断链恢复预览不再阻塞，窄屏入口可达',`
-    await page.getByRole('button',{name:'预览恢复',exact:true}).click();
-    await ${preview}.getByRole('button',{name:'恢复到原位置',exact:true}).waitFor();
+    await page.getByRole('button',{name:/^预览(撤销停用|还原配置|还原链接|还原文件)$/,exact:true}).click();
+    await ${preview}.getByRole('button',{name:/^(撤销停用|还原配置|还原链接|还原文件)$/,exact:true}).waitFor();
     const text=await ${preview}.innerText();expect(text.includes(${JSON.stringify(fixture.broken)})&&text.includes('目标不存在'),'恢复原位置或目标状态缺失');
     expect(!text.includes('关联的其他文件位置')&&!text.includes('resource-vault'),'自身或内部路径误列');
     await page.setViewportSize({width:390,height:844});
-    expect(await ${preview}.getByRole('button',{name:'恢复到原位置',exact:true}).isVisible(),'窄屏确认入口不可达');${snap('broken-link-restore-mobile.png')}
+    expect(await ${preview}.getByRole('button',{name:/^(撤销停用|还原配置|还原链接|还原文件)$/,exact:true}).isVisible(),'窄屏确认入口不可达');${snap('broken-link-restore-mobile.png')}
     await page.setViewportSize({width:1920,height:1000});${snap('broken-link-restore.png')}
   `);
   await api('/preferences','PUT',{language:'en',appearance:{mode:'dark',preset:'blue'}});
   await step('英文深色断链预览保持原位置和缺失含义',`
     await page.evaluate(()=>window.dispatchEvent(new Event('focus')));
-    await ${preview}.getByRole('button',{name:'Restore to original location',exact:true}).waitFor();
+    await ${preview}.getByRole('button',{name:'Restore link',exact:true}).waitFor();
     expect((await ${preview}.innerText()).includes('Target missing'),'英文目标状态缺失');
     expect(!(await ${preview}.innerText()).includes('resource-vault'),'英文泄露内部路径');${snap('broken-link-restore-en-dark.png')}
   `);
   await api('/preferences','PUT',{language:'zh-CN',appearance:{mode:'light',preset:'blue'}});
   await step('断链恢复成功并明确 Skill 仍不可用',`
     await page.evaluate(()=>window.dispatchEvent(new Event('focus')));
-    await ${preview}.getByRole('button',{name:'恢复到原位置',exact:true}).waitFor();${apply('恢复到原位置')}
-    expect((await ${preview}.innerText()).includes('链接已恢复，目标仍缺失，Skill 暂不可用'),'恢复反馈混淆链接和可用性');${snap('broken-link-restored.png')}${finish}
+    await ${preview}.getByRole('button',{name:/^(撤销停用|还原配置|还原链接|还原文件)$/,exact:true}).waitFor();${apply('恢复到原位置')}
+    expect((await ${preview}.innerText()).includes('链接已还原，但指向的目标不存在，此入口仍无法使用'),'恢复反馈混淆链接和可用性');${snap('broken-link-restored.png')}${finish}
   `);
   assert.equal(await readlink(fixture.broken),brokenText);await assert.rejects(realpath(fixture.broken),{code:'ENOENT'});
   assert.equal(await readlink(brokenSibling),fixture.brokenTarget);
@@ -259,7 +259,7 @@ try {
     await page.getByRole('button',{name:${JSON.stringify(`移除链接${fixture.broken}，保留目标文件`)},exact:true}).click();${apply('移入回收区')}${finish}
     ${tools('回收区')}
     await page.getByRole('button',{name:'查看broken的恢复记录',exact:true}).click();${ready}
-    await page.getByRole('button',{name:'预览永久清除',exact:true}).click();
+    await page.getByRole('button',{name:'更多恢复操作',exact:true}).click();await page.getByRole('menuitem',{name:'永久清除恢复材料',exact:true}).click();
     await ${preview}.getByRole('checkbox',{name:'我确认永久清除所列恢复材料',exact:true}).waitFor();
     const text=await ${preview}.innerText();expect(text.includes(${JSON.stringify(fixture.broken)}),'永久清除原位置显示错误');
     expect(text.split('永久清除此链接的恢复材料').length===2,'永久清除说明重复');
@@ -287,9 +287,9 @@ try {
     await page.getByRole('button',{name:${JSON.stringify(`移除链接${fixture.link}，保留目标文件`)},exact:true}).click();${apply('移入回收区')}${finish}
     ${tools('回收区')}
     await page.getByRole('button',{name:'查看shared的恢复记录',exact:true}).click();${ready}
-    await page.getByRole('button',{name:'预览永久清除',exact:true}).click();
+    await page.getByRole('button',{name:'更多恢复操作',exact:true}).click();await page.getByRole('menuitem',{name:'永久清除恢复材料',exact:true}).click();
     await ${preview}.getByRole('checkbox',{name:'我确认永久清除所列恢复材料',exact:true}).waitFor();
-    expect((await ${preview}.innerText()).includes('目标存在'),'有效链接目标状态不正确');
+    expect((await ${preview}.innerText()).includes('目标 Skill 文件可读取'),'有效链接目标状态不正确');
   `);
   const sharedArchive = (await api('/resources/archives?kind=skill&state=trash&q=shared')).archives[0];
   await step('有效链接永久清除保留目标文件和兄弟链接',`
@@ -308,12 +308,12 @@ try {
     ${snap('mcp-preview.png')}${apply('停用此全局配置')}
   `);
   assert.equal(parseToml(await readFile(fixture.configPath,'utf8')).mcp_servers.sample.enabled,false);
-  await step('MCP 原生配置恢复',`await ${preview}.getByRole('button',{name:'预览恢复',exact:true}).click();${apply('恢复到原位置')}${finish}`);
+  await step('MCP 原生配置恢复',`await ${preview}.getByRole('button',{name:/^预览(撤销停用|还原配置|还原链接|还原文件)$/,exact:true}).click();${apply('恢复到原位置')}${finish}`);
   assert.equal(await readFile(fixture.configPath,'utf8'),initialConfig);
   const projectConfig=join(fixture.project,'.mcp.json'),projectBefore=await readFile(projectConfig,'utf8');
   await step('MCP 移除只改一条注册',`await ${location(projectConfig)}.getByRole('button',{name:/^预览移入回收区/}).click();await ${preview}.getByRole('button',{name:'移除这条注册',exact:true}).waitFor();${apply('移除这条注册')}`);
   assert.equal(JSON.parse(await readFile(projectConfig,'utf8')).mcpServers?.sample,undefined);
-  await step('MCP 恢复预览指向配置项，恢复原注册',`await ${preview}.getByRole('button',{name:'预览恢复',exact:true}).click();await ${preview}.getByRole('button',{name:'恢复这条注册',exact:true}).waitFor();const text=await page.locator('.resource-change').innerText();expect(text.includes('mcpServers.sample')&&!text.includes('resource-vault'),'注册恢复伪造了目录搬移');${apply('恢复这条注册')}${finish}`);
+  await step('MCP 恢复预览指向配置项，恢复原注册',`await ${preview}.getByRole('button',{name:/^预览(撤销停用|还原配置|还原链接|还原文件)$/,exact:true}).click();await ${preview}.getByRole('button',{name:'还原配置',exact:true}).waitFor();const text=await page.locator('.resource-change').innerText();expect(text.includes('mcpServers.sample')&&!text.includes('resource-vault'),'注册恢复伪造了目录搬移');${apply('还原配置')}${finish}`);
   assert.equal(await readFile(projectConfig,'utf8'),projectBefore);
   await step('MCP 工具证据分页与会话返回保留上下文',`
     ${tab('使用记录')}${ready}
@@ -323,7 +323,79 @@ try {
     const hash=page.url().split('#')[1];await page.locator('.resource-evidence a').first().click();await page.waitForURL(/#sessions/);expect(page.url().includes('mode=trace')&&page.url().includes('message='),'没有定位到会话轨迹');await page.goBack();await pager.waitFor();${ready}expect(page.url().split('#')[1]===hash,'返回丢失工具或页码');
     await page.getByRole('button',{name:'全部工具',exact:true}).click();${ready}
   `);
-  await step('管理记录和回收工具从更多可达',`${tools('操作记录')}expect(await page.locator('.resource-row').count()>0,'操作记录丢失');${tools('回收区')}expect(await page.getByRole('heading',{name:'资源管理',exact:true}).count()===1,'回收区不可达');${tools('资源清单')}`);
+  await step('恢复中心与操作记录从常驻导航可达',`${tools('操作记录')}expect(await page.locator('.resource-row').count()>0,'操作记录丢失');${tools('回收区')}expect(await page.getByRole('heading',{name:'资源管理',exact:true}).count()===1,'回收区不可达');${tools('资源清单')}`);
+  await symlink(fixture.shared,fixture.link);
+  await api('/resources/refresh','POST',{});
+  const seedEntries = (await api('/resources/local?kind=skill&pageSize=200')).rows.flatMap(row=>row.entries);
+  const seed = async (path,action) => {
+    const entry = seedEntries.find(row=>row.entryPath===path&&row.capabilities[action]);assert.ok(entry);
+    const plan=await api('/resources/preview','POST',{entryId:entry.id,action});
+    const result=await api('/resources/apply','POST',{previewId:plan.id,confirmed:true});assert.equal(result.status,'success');return result;
+  };
+  await seed(fixture.guide,'disable');await seed(fixture.link,'trash');
+  await seed(join(fixture.userHome,'.codex','skills','sample-00'),'trash');
+  assert.equal((await api('/resources/archives?kind=skill&state=recoverable')).total,3);
+  await step('常驻导航合并恢复记录，筛选及浏览状态独立保留',`
+    ${route('skill','sample')}${select('本地状态','本地存在')}${open('sample-03')}
+    await page.locator('.resource-list-scroll').evaluate(node=>node.scrollTop=420);
+    page.savedResourceScroll=await page.locator('.resource-list-scroll').evaluate(node=>node.scrollTop);
+    ${tools('恢复中心')}
+    expect(await page.getByRole('textbox',{name:'搜索资源名称或路径',exact:true}).inputValue()==='','清单搜索污染恢复中心');
+    const sidebar=page.getByRole('complementary',{name:'资源导航',exact:true});
+    expect(await sidebar.getByRole('combobox').count()===0&&await sidebar.getByText('更多筛选',{exact:true}).count()===0,'恢复中心残留清单筛选');
+    const collapse=sidebar.getByRole('button',{name:'收起资源侧栏',exact:true});
+    expect(await collapse.getAttribute('aria-controls')==='resource-sidebar-content','侧栏按钮仍关联筛选区');
+    await collapse.click();expect(await page.locator('#resource-sidebar-content').isHidden(),'收起侧栏未隐藏导航');
+    await sidebar.getByRole('button',{name:'展开资源侧栏',exact:true}).click();
+    expect(await page.locator('.resource-row').count()===3,'配置与文件记录未合并');
+    const text=await page.locator('.resource-rows').innerText();expect(text.includes('启停规则')&&text.includes('移除了这个链接')&&text.includes('回收了此处的文件'),'记录没有解释具体变化');
+    await page.getByRole('button',{name:'查看guide的恢复记录',exact:true}).click();${ready}
+    await page.getByRole('button',{name:'预览撤销停用',exact:true}).click();await ${preview}.getByRole('button',{name:'撤销停用',exact:true}).waitFor();
+    await ${preview}.getByRole('button',{name:'取消',exact:true}).click();${ready}
+    ${snap('recovery-center-wide.png')}
+    ${tools('操作记录')}
+    expect(await sidebar.getByRole('combobox').count()===0,'操作记录残留筛选');
+    await page.getByRole('textbox',{name:'搜索资源名称或路径',exact:true}).fill('nothing-synthetic');${ready}
+    ${tools('恢复中心')}
+    expect(await page.getByRole('textbox',{name:'搜索资源名称或路径',exact:true}).inputValue()==='','操作记录搜索污染恢复中心');
+    expect((await page.locator('.resource-detail-heading').innerText()).includes('guide'),'恢复中心选中记录丢失');
+    ${tools('资源清单')}
+    expect(await page.getByRole('textbox',{name:'搜索资源名称或路径',exact:true}).inputValue()==='sample','返回清单丢失搜索');
+    expect((await page.getByRole('combobox',{name:'本地状态',exact:true}).innerText()).includes('本地存在'),'返回清单丢失本地筛选');
+    expect((await page.locator('.resource-detail-heading').innerText()).includes('sample-03'),'返回清单丢失选择');
+    expect(await page.locator('.resource-list-scroll').evaluate(node=>node.scrollTop)>300,'返回清单丢失滚动位置');
+  `);
+  await step('恢复中心撤销停用并只显示一次具体结果',`
+    ${tools('恢复中心')}
+    await page.getByRole('button',{name:'预览撤销停用',exact:true}).click();${apply('恢复到原位置')}
+    expect((await ${preview}.getByRole('status').innerText()).includes('已撤销此次停用'),'结果不具体');
+    expect(await ${preview}.locator('.resource-tags').count()===0,'重复的本地修改标签仍存在');${finish}
+    expect(await page.getByRole('button',{name:'查看guide的恢复记录',exact:true}).count()===0,'已还原记录留在中心');
+  `);
+  await step('恢复中心还原文件和链接后不再保留待恢复记录',`
+    await page.getByRole('button',{name:'查看sample-00的恢复记录',exact:true}).click();${ready}
+    await page.getByRole('button',{name:'预览还原文件',exact:true}).click();${apply('恢复到原位置')}${finish}
+    await page.getByRole('button',{name:'查看shared的恢复记录',exact:true}).click();${ready}
+    await page.getByRole('button',{name:'预览还原链接',exact:true}).click();${apply('恢复到原位置')}${finish}
+    expect(await page.locator('.resource-row').count()===0,'恢复中心没有移除已还原记录');
+  `);
+  assert.equal(await readlink(fixture.link),fixture.shared);await access(join(fixture.userHome,'.codex','skills','sample-00','SKILL.md'));
+  await step('旧已停用和回收地址归一化，隐藏筛选不会影响恢复记录',`
+    await page.goto(${JSON.stringify(base)}+'/#resources?kind=skill&tab=disabled&client=claude&project=%2Fsynthetic%2Fhidden&window=30&presence=missing');${ready}
+    expect(/[?&]tab=recovery(?:&|$)/.test(page.url()),'旧地址没有跳转恢复中心');
+    expect(!/[?&]client=/.test(page.url()),'旧筛选仍留在地址');
+    expect(await page.getByRole('navigation',{name:'资源导航',exact:true}).getByRole('button',{name:'恢复中心',exact:true}).getAttribute('aria-current')==='page','常驻导航没有指示当前页');
+  `);
+  await step('窄屏直接显示三个导航入口，记录页没有清单筛选',`
+    await page.setViewportSize({width:390,height:844});
+    const nav=page.getByRole('navigation',{name:'资源导航',exact:true});await nav.getByRole('button',{name:'恢复中心',exact:true}).waitFor();
+    expect(await nav.getByRole('button').count()===3,'窄屏缺少直接导航');
+    expect(await page.getByRole('button',{name:'打开资源筛选',exact:true}).count()===0,'记录页仍有清单筛选按钮');
+    expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1),'窄屏记录页横向溢出');${snap('recovery-center-mobile.png')}
+    await nav.getByRole('button',{name:'操作记录',exact:true}).click();${ready}
+    expect(await nav.getByRole('button',{name:'操作记录',exact:true}).getAttribute('aria-current')==='page','移动导航未切换');
+    await page.setViewportSize({width:1920,height:1000});
+  `);
   await step('地图保留并共用筛选与详情',`
     ${route('skill','guide')}${open('guide')}
     await page.getByRole('group',{name:'资源展示方式',exact:true}).getByRole('button',{name:'地图',exact:true}).click();await page.getByRole('group',{name:'资源使用地图',exact:true}).waitFor();

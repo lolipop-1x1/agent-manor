@@ -45,7 +45,7 @@ const step = async (name, code) => {
   checks.push(name);
   console.log(`PASS ${name}`);
 };
-const select = (label, option) => `await page.getByRole('combobox',{name:${JSON.stringify(label)},exact:true}).click(); await page.getByRole('option',{name:${JSON.stringify(option)},exact:true}).click();`;
+const select = (label, option) => `await page.getByRole('combobox',{name:${JSON.stringify(label)},exact:true}).click(); await page.getByRole('option',{name:${JSON.stringify(option)},exact:true}).click(); await page.waitForLoadState('networkidle'); await page.waitForFunction(()=>!document.querySelector('.resource-list-scroll[aria-busy="true"]'));`;
 const locateResource = name => `await page.getByRole('button',{name:'定位资源',exact:true}).click(); await page.getByRole('combobox',{name:'定位资源搜索',exact:true}).fill(${JSON.stringify(name)}); await page.getByRole('option',{name:${JSON.stringify(name)},exact:true}).click();`;
 const screenshot = name => `await page.screenshot({path:${JSON.stringify(join(artifacts, name))}});`;
 const boundaryRendering = () => {
@@ -434,13 +434,13 @@ try {
     expect(await manage.getByRole('button',{name:${JSON.stringify(`将${join(fixture.userHome, '.codex', 'skills', 'map-skill-001')}移入回收区`)},exact:true}).count()===1,'共享物理本体缺少唯一管理入口');
     await manage.locator('.resource-linked-locations > summary').click(); await manage.getByRole('button',{name:${JSON.stringify(`移除链接${fixture.sharedMapLink}，保留目标文件`)},exact:true}).click();
     const dialog=page.locator('.resource-preview-panel');
-    await dialog.getByRole('button',{name:'移入回收区',exact:true}).waitFor();
+    await dialog.getByRole('button',{name:'移除这个链接',exact:true}).waitFor();
     expect((await dialog.innerText()).includes(${JSON.stringify(fixture.sharedMapLink)}),'预览没有明确所选路径');
     expect(await page.getByRole('dialog').count()===0,'桌面预览不应叠加弹层');
     expect((await dialog.locator('.resource-change-diff').innerText()).includes('回收区（可恢复）'),'回收预览位置标签错误');
-    await dialog.getByRole('button',{name:'移入回收区',exact:true}).click();
+    await dialog.getByRole('button',{name:'移除这个链接',exact:true}).click();
     await dialog.getByRole('button',{name:'完成',exact:true}).waitFor();
-    expect((await dialog.getByRole('status').innerText()).includes('本地修改完成'),'回收未成功');
+    expect((await dialog.getByRole('status').innerText()).includes('此链接已移除，目标文件未改动'),'移除链接未成功');
     expect(!(await dialog.innerText()).includes('待重新加载'),'文件操作不应推测客户端重载状态');
     await dialog.getByRole('button',{name:'完成',exact:true}).click();
     await page.getByRole('group',{name:'资源使用地图',exact:true}).waitFor();
@@ -454,15 +454,15 @@ try {
   await assert.rejects(readFile(fixture.sharedMapLink), { code: "ENOENT" });
   assert.ok((await readFile(join(fixture.userHome, ".codex", "skills", "map-skill-001", "SKILL.md"), "utf8")).includes("人工地图资源"));
   await step("共享入口恢复后返回地图保留历史", `
-    await page.getByRole('button',{name:'更多资源工具',exact:true}).click(); await page.getByRole('menuitem',{name:'回收区',exact:true}).click();
+    await page.getByRole('navigation',{name:'资源导航',exact:true}).getByRole('button',{name:'恢复中心',exact:true}).click();
     await page.getByRole('button',{name:'查看map-skill-001的恢复记录',exact:true}).click();
-    await page.getByRole('button',{name:'预览恢复',exact:true}).click();
+    await page.getByRole('button',{name:/^预览(还原文件|还原链接|撤销停用|还原配置)$/,exact:true}).click();
     const dialog=page.locator('.resource-preview-panel');
-    await dialog.getByRole('button',{name:'恢复到原位置',exact:true}).click();
+    await dialog.getByRole('button',{name:/^(还原文件|还原链接|撤销停用|还原配置)$/,exact:true}).click();
     await dialog.getByRole('button',{name:'完成',exact:true}).waitFor();
-    expect((await dialog.getByRole('status').innerText()).includes('本地修改完成'),'恢复未成功');
+    expect((await dialog.getByRole('status').innerText()).includes('链接已还原，目标 Skill 文件可读取'),'还原链接未成功');
     await dialog.getByRole('button',{name:'完成',exact:true}).click();
-    await page.getByRole('button',{name:'更多资源工具',exact:true}).click(); await page.getByRole('menuitem',{name:'资源清单',exact:true}).click();
+    await page.getByRole('navigation',{name:'资源导航',exact:true}).getByRole('button',{name:'资源清单',exact:true}).click();
     await page.getByRole('group',{name:'资源使用地图',exact:true}).waitFor();
   `);
   assert.equal(await realpath(fixture.sharedMapLink), await realpath(join(fixture.userHome, ".codex", "skills", "map-skill-001")));
@@ -507,7 +507,7 @@ try {
     const dialog=page.locator('.resource-preview-panel');
     await dialog.getByRole('button',{name:'停用此全局配置',exact:true}).click();
     await dialog.getByRole('button',{name:'完成',exact:true}).waitFor();
-    expect((await dialog.getByRole('status').innerText()).includes('本地修改完成'),'MCP停用失败');
+    expect((await dialog.getByRole('status').innerText()).includes('已修改此配置的启停规则'),'MCP停用失败');
     await dialog.getByRole('button',{name:'完成',exact:true}).click();
     await page.getByRole('group',{name:'资源使用地图',exact:true}).waitFor();
     await detail.getByRole('heading',{name:'map-mcp-001',exact:true}).waitFor();
@@ -518,15 +518,15 @@ try {
   assert.equal(await readFile(fixture.claudeConfigPath, "utf8"), claudeConfigBefore, "所选注册操作误改其他 Agent");
   assert.deepEqual(parseToml(await readFile(fixture.configPath, "utf8")).mcp_servers.sample, parseToml(configBefore).mcp_servers.sample);
   await step("MCP 恢复保持原始配置与地图证据", `
-    await page.getByRole('button',{name:'更多资源工具',exact:true}).click(); await page.getByRole('menuitem',{name:'已停用',exact:true}).click();
+    await page.getByRole('navigation',{name:'资源导航',exact:true}).getByRole('button',{name:'恢复中心',exact:true}).click();
     await page.getByRole('button',{name:'查看map-mcp-001的恢复记录',exact:true}).click();
-    await page.getByRole('button',{name:'预览恢复',exact:true}).click();
+    await page.getByRole('button',{name:/^预览(还原文件|还原链接|撤销停用|还原配置)$/,exact:true}).click();
     const dialog=page.locator('.resource-preview-panel');
-    await dialog.getByRole('button',{name:'恢复到原位置',exact:true}).click();
+    await dialog.getByRole('button',{name:/^(还原文件|还原链接|撤销停用|还原配置)$/,exact:true}).click();
     await dialog.getByRole('button',{name:'完成',exact:true}).waitFor();
-    expect((await dialog.getByRole('status').innerText()).includes('本地修改完成'),'MCP恢复失败');
+    expect((await dialog.getByRole('status').innerText()).includes('已撤销此次停用'),'MCP恢复失败');
     await dialog.getByRole('button',{name:'完成',exact:true}).click();
-    await page.getByRole('button',{name:'更多资源工具',exact:true}).click(); await page.getByRole('menuitem',{name:'资源清单',exact:true}).click();
+    await page.getByRole('navigation',{name:'资源导航',exact:true}).getByRole('button',{name:'资源清单',exact:true}).click();
     await page.getByRole('group',{name:'资源使用地图',exact:true}).waitFor();
     await page.getByRole('textbox',{name:'搜索资源名称或路径',exact:true}).fill('map-history-only');
     await page.getByRole('button',{name:'查看map-history-only的使用详情',exact:true}).click();
@@ -674,14 +674,14 @@ try {
     await page.getByRole('group',{name:'资源使用地图',exact:true}).waitFor();
     await page.locator('.resource-detail-tabs').getByRole('button',{name:'使用记录',exact:true}).click();await page.waitForFunction(()=>!document.querySelector('.resource-detail-body[aria-busy="true"]'));
     expect(/1\\s*显式调用/.test(await detail.locator('.resource-stats').innerText()),'回收抹掉真实历史');
-    await page.getByRole('button',{name:'更多资源工具',exact:true}).click(); await page.getByRole('menuitem',{name:'回收区',exact:true}).click();
+    await page.getByRole('navigation',{name:'资源导航',exact:true}).getByRole('button',{name:'恢复中心',exact:true}).click();
     await page.getByRole('button',{name:'查看map-skill-002的恢复记录',exact:true}).click();
-    await page.getByRole('button',{name:'预览恢复',exact:true}).click();
+    await page.getByRole('button',{name:/^预览(还原文件|还原链接|撤销停用|还原配置)$/,exact:true}).click();
     const restore=page.locator('.resource-preview-panel');
-    await restore.getByRole('button',{name:'恢复到原位置',exact:true}).click();
+    await restore.getByRole('button',{name:/^(还原文件|还原链接|撤销停用|还原配置)$/,exact:true}).click();
     await restore.getByRole('button',{name:'完成',exact:true}).waitFor();
     await restore.getByRole('button',{name:'完成',exact:true}).click();
-    await page.getByRole('button',{name:'更多资源工具',exact:true}).click(); await page.getByRole('menuitem',{name:'资源清单',exact:true}).click();
+    await page.getByRole('navigation',{name:'资源导航',exact:true}).getByRole('button',{name:'资源清单',exact:true}).click();
     await page.getByRole('group',{name:'资源使用地图',exact:true}).waitFor();
     await page.getByRole('button',{name:'查看map-skill-002的使用详情',exact:true}).click();
     await detail.getByRole('heading',{name:'map-skill-002',exact:true}).waitFor();

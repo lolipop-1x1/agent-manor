@@ -4,7 +4,7 @@ import type { MessageDescriptor } from "../i18n/types.js";
 import Database from "better-sqlite3";
 import { createHash, randomUUID } from "node:crypto";
 import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { chmod, copyFile, cp, lstat, mkdir, readFile, readdir, readlink, realpath, rename, rm, symlink, writeFile } from "node:fs/promises";
+import { chmod, copyFile, cp, lstat, mkdir, open, readFile, readdir, readlink, realpath, rename, rm, symlink, writeFile } from "node:fs/promises";
 import { constants } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { clientIds } from "../clients.js";
@@ -49,8 +49,15 @@ async function inspect(path: string): Promise<Inspection> {
 /** 链接按原始指向恢复；目标状态仅供展示，不作为链接恢复条件。 */
 async function linkStatus(path: string, originalPath: string): Promise<NonNullable<ResourceManagementPreview["link"]>> {
   const target = await readlink(path);
-  try { await realpath(resolve(dirname(originalPath), target)); return { target, state: "available" }; }
+  let file: string;
+  try { const resolved = await realpath(resolve(dirname(originalPath), target)); file = (await lstat(resolved)).isDirectory() ? join(resolved, "SKILL.md") : resolved; }
   catch (error) { return { target, state: ["ENOENT", "ENOTDIR"].includes((error as NodeJS.ErrnoException).code ?? "") ? "missing" : "unreadable" }; }
+  try {
+    const handle = await open(file, "r");
+    try { return { target, state: (await handle.stat()).isFile() ? "available" : "skill_unreadable" }; }
+    finally { await handle.close(); }
+  }
+  catch (error) { return { target, state: ["ENOENT", "ENOTDIR"].includes((error as NodeJS.ErrnoException).code ?? "") ? "skill_missing" : "skill_unreadable" }; }
 }
 /** 迁移核对恢复材料时复用管理操作的内容校验口径。 */
 export async function resourceMaterialFingerprint(path: string): Promise<string> { return (await inspect(path)).contentHash; }
@@ -226,10 +233,10 @@ export class ResourceManager {
         capabilities: { ...entry.capabilities, disable, standby: isolation, trash, restore: !!archive?.restorable, purge: !!archive?.restorable } };
     }) };
   }
-  archives(state?: ResourceManagementArchive["state"]): ResourceManagementArchive[] {
-    const filter = state === "trash" ? " AND state IN ('trash','standby')" : state ? " AND state=?" : "";
-    const rows = this.database.prepare(`SELECT json FROM resource_archives WHERE phase<>'prepared'${filter} ORDER BY rowid DESC`)
-      .all(...(state && state !== "trash" ? [state] : [])) as JsonRow[];
+  archives(state?: ResourceManagementArchive["state"] | "recoverable"): ResourceManagementArchive[] {
+    const filter = state === "recoverable" ? " AND state IN ('disabled','standby','trash') AND json_extract(json,'$.public.restorable')=1 AND json_extract(json,'$.public.storedPath') IS NOT NULL" : state === "trash" ? " AND state IN ('trash','standby')" : state ? " AND state=?" : "";
+    const rows = this.database.prepare(`SELECT json FROM resource_archives WHERE phase<>'prepared'${filter} ORDER BY ${state === "recoverable" ? "json_extract(json,'$.public.createdAt') DESC," : ""}rowid DESC`)
+      .all(...(state && state !== "trash" && state !== "recoverable" ? [state] : [])) as JsonRow[];
     return rows.map(row => decode<PrivateArchive>(row).public);
   }
   /** 管理候选覆盖完整记录和共享本体关联入口，不受列表分页影响。 */

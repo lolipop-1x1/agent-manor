@@ -33,7 +33,7 @@ export const resourceApi = {
   favorite: (id: string, value: boolean) => request<{ favoriteIds: string[] }>("/resources/favorites", { method: "POST", body: { id, value } }),
   addSource: (source: ResourceManualSource) => request<ResourceStatusSummary>("/resources/sources?summary=true", { method: "POST", body: source as unknown as JsonValue }),
   removeSource: (id: string) => request<ResourceStatusSummary>(`/resources/sources/${encodeURIComponent(id)}?summary=true`, { method: "DELETE" }),
-  archives: (state: ResourceArchiveState, query: ResourceManagementQuery, signal?: AbortSignal) => request<ResourceArchiveResult>(`/resources/archives${resourceQuery({ ...query, state })}`, { signal }),
+  archives: (state: ResourceArchiveState | "recoverable", query: ResourceManagementQuery, signal?: AbortSignal) => request<ResourceArchiveResult>(`/resources/archives${resourceQuery({ ...query, state })}`, { signal }),
   operations: (query: ResourceManagementQuery, signal?: AbortSignal) => request<ResourceManagementOperations>(`/resources/operations${resourceQuery(query)}`, { signal }),
   preview: (input: ResourceManagementInput) => request<ResourceManagementPreview>("/resources/preview", { method: "POST", body: input as unknown as JsonValue }),
   apply: (previewId: string) => request<ResourceManagementOperation>("/resources/apply", { method: "POST", body: { previewId, confirmed: true } }),

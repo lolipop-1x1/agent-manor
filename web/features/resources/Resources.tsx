@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type
 import * as Dialog from "@radix-ui/react-dialog";
 import * as Tooltip from "@radix-ui/react-tooltip";
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
-import { ArrowClockwise, ArrowSquareOut, CaretDown, CaretLeft, CaretRight, CaretUp, CaretUpDown, DotsThree, Funnel, List, MagnifyingGlass, MapTrifold, Plus, Star, X } from "@phosphor-icons/react";
+import { ArrowClockwise, ArrowSquareOut, CaretDown, CaretLeft, CaretRight, CaretUp, CaretUpDown, DotsThree, Funnel, List, ArrowCounterClockwise, ClockCounterClockwise, MagnifyingGlass, MapTrifold, Plus, Star, X } from "@phosphor-icons/react";
 import { CLIENTS, type Client } from "../../../src/clients";
 import type { ResourceKind, ResourceUsageDetail, ResourceUsageDistribution, ResourceUsageEvidenceResult, ResourceUsageStats, ResourceUsageTrend } from "../../../src/resource-contracts";
 import type { ResourceInventoryDiagnostic, ResourceInventoryEntry, ResourceManualSource } from "../../../src/resource-inventory-contracts";
@@ -17,6 +17,7 @@ import { ProjectPicker } from "../../shared/ui/ProjectPicker";
 import { ResourcePagination } from "../../shared/ui/ResourcePagination";
 import { ResourceMap } from "./ResourceMap";
 import { resourceControlScope } from "../../../src/resources/control-scope";
+import { recoveryKind, restoreActionKey, managementSuccessKey } from "./resource-recovery";
 import { ResourceChange } from "./ResourceChange";
 import { physicalLocationEntry, resourceLocationGroups, resourceLocationScopes, type ResourceLocationGroup } from "./resource-location-groups";
 import { normalizeResourceRouteParams } from "./resource-usage-state";
@@ -32,7 +33,7 @@ import "./resources.css";
 import { RefreshControl } from "../../shared/ui/RefreshControl";
 import { useHistoryRevision } from "../../shared/refresh/useHistoryRefresh";
 
-type ResourceTab = "usage" | "disabled" | "trash" | "operations";
+type ResourceTab = "usage" | "recovery" | "operations";
 interface ResourceRoute {
   kind: ResourceKind; tab: ResourceTab; client: string; project: string; window: string;
   from: string; to: string; q: string; sort: string; order: "asc" | "desc"; candidate: Exclude<ResourceCandidate | ResourceOverviewCandidate, "review">;
@@ -43,8 +44,7 @@ interface ResourceRoute {
 }
 const tabs: { value: ResourceTab; labelKey: string }[] = [
   { value: "usage", labelKey: "resources.workspace.resourceList" },
-  { value: "disabled", labelKey: "resources.tab.disabled" },
-  { value: "trash", labelKey: "resources.tab.trash" }, { value: "operations", labelKey: "resources.tab.operations" },
+  { value: "recovery", labelKey: "resources.recovery.title" }, { value: "operations", labelKey: "resources.tab.operations" },
 ];
 const overviewCandidates: { value: Exclude<ResourceOverviewCandidate, "review">; labelKey: string }[] = [
   { value: "all", labelKey: "resources.candidate.all" }, { value: "used", labelKey: "resources.candidate.used" }, { value: "unused", labelKey: "resources.candidate.unused" },
@@ -74,7 +74,7 @@ const readRoute = (): ResourceRoute => {
   const maximum = ["uses", "sessions"].includes(params.get("metric") ?? "") ? params.get("maxValue") : null;
   return {
     kind,
-    tab: params.get("tab") === "local" ? "usage" : params.get("tab") === "standby" ? "trash" : tabs.some(tab => tab.value === params.get("tab")) ? params.get("tab") as ResourceTab : "usage",
+    tab: params.get("tab") === "local" ? "usage" : tabs.some(tab => tab.value === params.get("tab")) ? params.get("tab") as ResourceTab : "usage",
     client: CLIENTS.some(client => client.id === params.get("client")) ? params.get("client")! : "all",
     project: params.get("tab") === "local" ? "all" : params.get("project") ?? "all", window: ["7", "30", "90", "custom"].includes(params.get("window") ?? "") ? params.get("window")! : "all",
     from: validDate(params.get("from")), to: validDate(params.get("to")),
@@ -94,9 +94,10 @@ const readRoute = (): ResourceRoute => {
   };
 };
 function address(route: ResourceRoute) {
-  return `#resources${resourceQuery({ ...route, client: route.client === "all" ? undefined : route.client,
+  const params = new URLSearchParams(resourceQuery({ ...route, client: route.client === "all" ? undefined : route.client,
     project: route.project === "all" ? undefined : route.project, page: route.page === 1 ? undefined : route.page,
-    evidencePage: route.evidencePage === 1 ? undefined : route.evidencePage })}`;
+    evidencePage: route.evidencePage === 1 ? undefined : route.evidencePage }).slice(1));
+  return `#resources?${normalizeResourceRouteParams(params)}`;
 }
 const shortPath = (path: string) => path.split(/[\\/]/).filter(Boolean).at(-1) ?? path;
 const sourceStateNames = { ok: "resources.source.ok", missing: "resources.source.missing", unreadable: "resources.source.unreadable", invalid: "resources.source.invalid", unsupported: "resources.source.unsupported" };
@@ -104,7 +105,6 @@ const methodNames = { directory: "resources.entry.directory", symlink: "resource
 const resultNames = { success: "resources.result.success", failure: "resources.result.failure", unknown: "resources.result.unknown" };
 const evidenceNames = { skill_call: "resources.evidence.skillCall", skill_read: "resources.evidence.skillRead", mcp: "resources.evidence.mcp" };
 const actionNames: Record<ResourceManagementAction, string> = { disable: "resources.action.disable", standby: "resources.action.standby", trash: "resources.action.trash", restore: "resources.action.restore", purge: "resources.action.purge" };
-const archiveNames = { disabled: "resources.tab.disabled", standby: "resources.tab.trash", trash: "resources.tab.trash", restored: "resources.archive.restored", purged: "resources.archive.purged" };
 const operationStatusNames = { success: "resources.operation.success", failure: "resources.operation.failure", conflict: "resources.operation.conflict", partial: "resources.operation.partial" };
 const operationMethodNames = { native_toggle: "resources.operationMethod.nativeToggle", entry_isolation: "resources.operationMethod.entryIsolation", registration_remove: "resources.operationMethod.registrationRemove", restore: "resources.operationMethod.restore", permanent_purge: "resources.operationMethod.purge" };
 const protectionNames: Record<string, string> = { favorite: "resources.protection.favorite", system: "resources.protection.system", plugin: "resources.protection.plugin", managed: "resources.protection.managed" };
@@ -281,7 +281,6 @@ export default function Resources({ active, onSession, onHistoryReading, history
   const [error, setError] = useState<Error | null>(null);
   const [detailError, setDetailError] = useState<Error | null>(null);
   const [evidenceError, setEvidenceError] = useState<Error | null>(null);
-  const [feedback, setFeedback] = useState<MessageDescriptor | null>(null);
   const [reload, setReload] = useState(0);
   const [historyReload, setHistoryReload] = useState(0);
   useHistoryRevision(active, historyRevision, () => setHistoryReload(value => value + 1), listLoading || detailLoading || evidenceLoading, onHistoryReading);
@@ -334,19 +333,31 @@ export default function Resources({ active, onSession, onHistoryReading, history
   const restoreScroll = useRef(false);
   const busy = useRef({ list: listLoading, detail: detailLoading || evidenceLoading });
   busy.current = { list: listLoading, detail: detailLoading || evidenceLoading };
-  const resourceBrowseRoute = useRef<ResourceRoute | null>(null);
+  const viewRoutes = useRef(new Map<string, { route: ResourceRoute; scroll: number }>());
   const routeRef = useRef(route);
   const managementRequest = useRef(0);
+  const completedPreview = useRef<ResourceManagementPreview | null>(null);
   routeRef.current = route;
 
   const update = useCallback((patch: Partial<ResourceRoute>, push = false) => {
     const next = { ...routeRef.current, ...patch }; routeRef.current = next; setRoute(next);
     if (location.hash.startsWith("#resources")) history[push ? "pushState" : "replaceState"]({}, "", address(next));
   }, []);
+  const switchView = (tab: ResourceTab, patch: Partial<ResourceRoute> = {}, kind = routeRef.current.kind) => {
+    if (applying) return;
+    const current = routeRef.current;
+    if (current.tab === tab && current.kind === kind && !Object.keys(patch).length) return;
+    viewRoutes.current.set(`${current.kind}:${current.tab}`, { route: current, scroll: listScroll.current?.scrollTop ?? 0 });
+    const saved = viewRoutes.current.get(`${kind}:${tab}`);
+    const next = { ...(saved?.route ?? { ...current, kind, tab, q: "", id: "", page: 1, evidencePage: 1, tool: "", client: "all", project: "all", window: "all", from: "", to: "", candidate: "all" as const, favorite: false, presence: "all" as const, scope: "all" as const, locationProject: "all" }), ...patch, kind, tab };
+    savedScroll.current = Object.keys(patch).length ? 0 : saved?.scroll ?? 0; restoreScroll.current = true;
+    managementRequest.current++; setManagementOpen(false); setManagementResult(null); setManagementError(null); setFiltersOpen(false);
+    update(next, true); setQueryText(next.q);
+  };
   useEffect(() => {
     if (!active || !location.hash.startsWith("#resources")) return;
-    const params = new URLSearchParams(location.hash.split("?")[1]);
-    if (!["uses", "sessions"].includes(params.get("metric") ?? "") || ["calls", "reads"].includes(params.get("sort") ?? "") || ["standby", "local"].includes(params.get("tab") ?? "") || params.get("candidate") === "review" || params.has("reviewPage") || params.has("reviewSize")) history.replaceState({}, "", address(route));
+    const canonical = address(route);
+    if (location.hash !== canonical) history.replaceState({}, "", canonical);
   }, [active, route]);
   const filter = (patch: Partial<ResourceRoute>) => { if (listScroll.current) listScroll.current.scrollTop = 0; update({ ...patch, page: 1, evidencePage: 1 }); };
   const sort = (value: string) => filter({ sort: value, order: route.sort === value ? route.order === "asc" ? "desc" : "asc" : value === "name" ? "asc" : "desc" });
@@ -382,7 +393,13 @@ export default function Resources({ active, onSession, onHistoryReading, history
   useEffect(() => {
     const navigate = () => {
       if (!location.hash.startsWith("#resources")) return;
-      const next = readRoute(); routeRef.current = next; setRoute(next); setQueryText(next.q); restoreScroll.current = true;
+      const next = readRoute(); const current = routeRef.current;
+      if (current.kind !== next.kind || current.tab !== next.tab) {
+        viewRoutes.current.set(`${current.kind}:${current.tab}`, { route: current, scroll: listScroll.current?.scrollTop ?? 0 });
+        savedScroll.current = viewRoutes.current.get(`${next.kind}:${next.tab}`)?.scroll ?? 0;
+        managementRequest.current++; setManagementOpen(false); setManagementResult(null); setManagementError(null); setFiltersOpen(false);
+      }
+      routeRef.current = next; setRoute(next); setQueryText(next.q); restoreScroll.current = true;
     };
     globalThis.addEventListener("hashchange", navigate); globalThis.addEventListener("popstate", navigate);
     return () => { globalThis.removeEventListener("hashchange", navigate); globalThis.removeEventListener("popstate", navigate); };
@@ -439,7 +456,7 @@ export default function Resources({ active, onSession, onHistoryReading, history
   const hasListData = mapView ? !!map : overviewRanking ? !!overview : route.tab === "operations" ? !!operations : !!archives;
   const listProgress = <span className="resource-list-progress" role={listLoading && hasListData ? "status" : undefined} aria-label={listLoading && hasListData ? t("resources.loading.resources") : undefined}>{listLoading && hasListData && <ArrowClockwise size={14} className="spinning" aria-hidden="true" />}</span>;
   useEffect(() => { try { localStorage.setItem("agent-manor:resource-view", route.view); } catch { /* 存储不可用时视图仍可切换。 */ } }, [route.view]);
-  const managementQuery = useMemo(() => ({ kind: route.kind, client: route.client === "all" ? undefined : route.client, project: route.project === "all" ? undefined : route.project, q: queryText, page: route.page, pageSize: route.pageSize }), [route.kind, route.client, route.project, queryText, route.page, route.pageSize]);
+  const managementQuery = useMemo(() => ({ kind: route.kind, q: queryText, page: route.page, pageSize: route.pageSize }), [route.kind, queryText, route.page, route.pageSize]);
   useEffect(() => {
     if (!active || invalidTime || route.tab !== "usage") return;
     // 证据页返回时复用同范围的完整地图，保持已挂载相机的缩放与位置。
@@ -462,8 +479,8 @@ export default function Resources({ active, onSession, onHistoryReading, history
   useEffect(() => {
     if (!active || route.tab === "usage") return;
     const controller = new AbortController(); setListLoading(true); setError(null);
-    const task = route.tab === "operations" ? resourceApi.operations(managementQuery, controller.signal).then(setOperations)
-      : resourceApi.archives(route.tab, managementQuery, controller.signal).then(setArchives);
+    const task = route.tab === "operations" ? resourceApi.operations(managementQuery, controller.signal).then(result => { if (!controller.signal.aborted) setOperations(result); })
+      : resourceApi.archives("recoverable", managementQuery, controller.signal).then(result => { if (!controller.signal.aborted) { setArchives(result); if (result.page !== routeRef.current.page) update({ page: result.page }); } });
     void task.catch(failure => { if (!isAborted(failure)) setError(failure instanceof Error ? failure : new Error(errorMessage(failure))); }).finally(() => { if (!controller.signal.aborted) setListLoading(false); });
     return () => controller.abort();
   }, [active, route.tab, managementQuery, reload]);
@@ -504,7 +521,7 @@ export default function Resources({ active, onSession, onHistoryReading, history
       if (!busy.current.list && restoreScroll.current && listScroll.current) { listScroll.current.scrollTop = savedScroll.current; restoreScroll.current = false; }
     });
     return () => cancelAnimationFrame(frame);
-  }, [active, listLoading]);
+  }, [active, listLoading, route.tab, route.kind]);
   useEffect(() => {
     if (!active || detailLoading || evidenceLoading || !returnFromEvidence.current || !usageDetail) return;
     const frame = requestAnimationFrame(() => {
@@ -543,7 +560,7 @@ export default function Resources({ active, onSession, onHistoryReading, history
   };
   const refresh = async () => {
     setRefreshing(true); setError(null); setInventoryError(null);
-    try { setStatus(await resourceApi.refresh()); setReload(value => value + 1); setFeedback({ key: "resources.feedback.inventoryUpdated" }); }
+    try { setStatus(await resourceApi.refresh()); setReload(value => value + 1); }
     catch (failure) { setInventoryError(failure instanceof Error ? failure : new Error(errorMessage(failure))); }
     finally { setRefreshing(false); }
   };
@@ -551,13 +568,13 @@ export default function Resources({ active, onSession, onHistoryReading, history
     event.preventDefault(); setSourcePending(true); setSourceError(null);
     try {
       const result = await resourceApi.addSource({ ...source, path: source.path.trim(), keyPath: source.kind === "mcp" ? sourceKeys.split(".").map(key => key.trim()).filter(Boolean) : undefined });
-      setStatus(result); setSourceAdding(false); setReload(value => value + 1); setFeedback({ key: "resources.feedback.sourceAdded" });
+      setStatus(result); setSourceAdding(false); setReload(value => value + 1);
     } catch (failure) { setSourceError(failure instanceof Error ? failure : new Error(errorMessage(failure))); }
     finally { setSourcePending(false); }
   };
   const removeSource = async (id: string) => {
     setSourcePending(true); setSourceError(null);
-    try { setStatus(await resourceApi.removeSource(id)); setReload(value => value + 1); setFeedback({ key: "resources.feedback.sourceRemoved" }); }
+    try { setStatus(await resourceApi.removeSource(id)); setReload(value => value + 1); }
     catch (failure) { setSourceError(failure instanceof Error ? failure : new Error(errorMessage(failure))); }
     finally { setSourcePending(false); }
   };
@@ -572,6 +589,7 @@ export default function Resources({ active, onSession, onHistoryReading, history
       managementFocusAction.current = managementFocus.current?.dataset.resourceAction ?? null;
     }
     const sequence = ++managementRequest.current;
+    completedPreview.current = null;
     setManagementInput(input); setManagementOpen(true); setDetailsCollapsed(false); setPreview(null); setManagementError(null); setManagementResult(null); setPurgeConfirmed(false); setPreviewLoading(true);
     try {
       const result = await resourceApi.preview(input);
@@ -583,7 +601,7 @@ export default function Resources({ active, onSession, onHistoryReading, history
     if (applying) return;
     if (!open) { managementRequest.current++; setPreview(null); }
     setManagementOpen(open);
-    if (!open) { managementReturnPending.current = true; update({ detail: "locations" }); }
+    if (!open) { managementReturnPending.current = true; update({ detail: "locations", ...(routeRef.current.tab === "recovery" && managementResult?.status === "success" ? { id: "" } : {}) }); }
   };
   useEffect(() => {
     if (!managementOpen) return;
@@ -604,7 +622,7 @@ export default function Resources({ active, onSession, onHistoryReading, history
     try {
       const result = await resourceApi.apply(preview.id);
       setManagementResult(result); setPreview(null); setReload(value => value + 1);
-      if (result.status === "success") setFeedback({ key: "resources.workspace.changeComplete" });
+      completedPreview.current = preview;
     } catch (failure) { setManagementError(failure instanceof Error ? failure : new Error(errorMessage(failure))); setPreview(null); }
     finally { setApplying(false); }
   };
@@ -612,7 +630,7 @@ export default function Resources({ active, onSession, onHistoryReading, history
     const defaults = { ...readRoute(), client: "all", project: "all", window: "all", from: "", to: "", q: "", sort: "uses", metric: "uses" as const, order: "desc" as const, candidate: "all" as const, low: 2, inactive: 90, favorite: false, page: 1, pageSize: 20, maxValue: "", presence: "all" as const, scope: "all" as const, locationProject: "all" };
     setQueryText(""); update(defaults);
   };
-  const clientOptions = status?.clientOptions?.[route.kind][route.tab];
+  const clientOptions = route.tab === "usage" ? status?.clientOptions?.[route.kind].usage : undefined;
   useEffect(() => {
     if (active && !clientCandidatesPending.current && clientOptions && route.client !== "all" && !clientOptions.includes(route.client as Client)) filter({ client: "all" });
   }, [active, clientOptions, route.kind, route.tab, route.client]);
@@ -625,7 +643,7 @@ export default function Resources({ active, onSession, onHistoryReading, history
   const visibleGaps = sourcesOpen && active ? [...new Map(sourceStatus?.gaps.filter(gap => visibleSourcePaths.has(gap.sourceId) && ["unreadable", "invalid", "limit"].includes(gap.reason)).map(gap => [JSON.stringify([visibleSourcePaths.get(gap.sourceId), gap.reason]), gap]) ?? []).values()] : [];
   const visibleDiagnostics = sourcesOpen && active ? [...new Map(sourceStatus?.diagnostics?.filter(item => sourceInScope(item) && ["conflict", "invalid_reference"].includes(item.reason)).map(item => [JSON.stringify([item.path, item.reason]), item]) ?? []).values()] : [];
   const historyView = route.tab === "usage";
-  const filters = <div className="resource-filter-content" id={compact ? undefined : "resource-filter-content"}>
+  const filters = historyView ? <div className="resource-filter-content" id={compact ? undefined : "resource-filter-content"}>
     {historyView && <>
       <div className="resource-field"><span>{t("resources.workspace.localState")}</span><FilterSelect label={t("resources.workspace.localState")} value={route.presence} options={["all", "present", "missing", "unknown"].map(value => ({ value, label: t(`resources.workspace.presence.${value}`) }))} onChange={value => filter({ presence: value as ResourceRoute["presence"] })} /></div>
       <div className="resource-field"><span>{t("resources.workspace.locationScope")}</span><FilterSelect label={t("resources.workspace.locationScope")} value={route.scope} options={[{ value: "all", label: t("resources.workspace.allScopes") }, { value: "user", label: t("resources.scope.user") }, { value: "project", label: t("resources.scope.project") }]} onChange={value => filter({ scope: value as ResourceRoute["scope"], locationProject: "all" })} /></div>
@@ -634,14 +652,14 @@ export default function Resources({ active, onSession, onHistoryReading, history
       {route.window === "custom" && <div className="resource-date-fields"><div className="resource-field"><span>{t("resources.time.from")}</span><DatePicker label={t("resources.time.startDate")} value={route.from} onChange={value => filter({ from: value })} /></div><div className="resource-field"><span>{t("resources.time.to")}</span><DatePicker label={t("resources.time.endDate")} value={route.to} onChange={value => filter({ to: value })} /></div></div>}
     </>}
     <details className="resource-more-filters"><summary>{t("resources.workspace.moreFilters")}</summary>
-      <div className="resource-field"><span>{t("resources.workspace.usageClient")}</span><FilterSelect label={t("resources.workspace.usageClient")} value={route.client} options={[{ value: "all", label: t("resources.client.all") }, ...availableClientOptions(status?.clientOptions?.[route.kind][route.tab])]} onChange={value => filter({ client: value })} /></div>
+      <div className="resource-field"><span>{t("resources.workspace.usageClient")}</span><FilterSelect label={t("resources.workspace.usageClient")} value={route.client} options={[{ value: "all", label: t("resources.client.all") }, ...availableClientOptions(status?.clientOptions?.[route.kind].usage)]} onChange={value => filter({ client: value })} /></div>
       <div className="resource-field"><span>{t("resources.workspace.usageProject")}</span><ProjectPicker label={t("resources.workspace.usageProject")} value={route.project} options={projectOptions} onChange={value => filter({ project: value })} /></div>
       {historyView && <div className="resource-field"><span>{t("resources.attention.filter")}</span><FilterSelect label={t("resources.attention.filter")} value={["low", "old"].includes(route.candidate) ? route.candidate : "all"} options={[{ value: "all", label: t("resources.attention.any") }, ...overviewCandidates.filter(candidate => ["low", "old"].includes(candidate.value)).map(candidate => ({ value: candidate.value, label: t(candidate.labelKey) }))]} onChange={value => filter({ candidate: value as ResourceRoute["candidate"] })} /></div>}
       {route.candidate === "low" && <label className="resource-field">{t("resources.candidate.lowThreshold")}<input type="number" min="1" max="10000" aria-label={t("resources.candidate.lowThresholdAria")} value={route.low} onChange={event => { const value = Number(event.target.value); if (Number.isSafeInteger(value) && value > 0 && value <= 10000) filter({ low: value }); }} /></label>}
       {route.candidate === "old" && <label className="resource-field">{t("resources.candidate.oldThreshold")}<input type="number" min="1" max="3650" aria-label={t("resources.candidate.oldThresholdAria")} value={route.inactive} onChange={event => { const value = Number(event.target.value); if (Number.isSafeInteger(value) && value > 0 && value <= 3650) filter({ inactive: value }); }} /></label>}
     </details>
     <button className="button subtle resource-reset" onClick={reset}>{t("resources.filters.reset")}</button>
-  </div>;
+  </div> : null;
 
   const selectedArchive = archives?.archives.find(item => item.id === route.id);
   const selectedOperation = operations?.operations.find(item => item.id === route.id);
@@ -656,9 +674,10 @@ export default function Resources({ active, onSession, onHistoryReading, history
   const knownAffected = [...new Map((preview?.affectedEntries ?? []).map(entry => [entry.entryPath, entry])).values()];
   const relatedLocations = knownAffected.filter(entry => entry.entryPath !== (preview?.originalPath ?? preview?.destinationPath ?? preview?.sourcePath));
   const knownRevealed = [...new Map((preview?.revealedEntries ?? []).map(entry => [JSON.stringify([entry.entryPath, entry.scope, entry.project]), entry])).values()];
+  const confirmationKey = preview ? preview.action === "restore" ? restoreActionKey(preview) : preview.action === "disable" ? disableActionKey(undefined, preview) : preview.action === "trash" ? preview.configuration?.kind === "registration" ? "resources.workspace.removeRegistration" : preview.link ? "resources.management.linkAction" : "resources.workspace.trashLocation" : "resources.management.confirm" : "";
   const management = <section className="resource-preview-panel" aria-label={t("resources.workspace.changePreview")}>
-    <button className="text-button resource-preview-back" disabled={applying} onClick={() => closeManagement(false)}><CaretLeft size={14} />{t("resources.workspace.backToLocations")}</button>
-    <h2 tabIndex={-1} ref={managementHeading}>{managementInput ? t("resources.management.actionPreview", { action: t(actionNames[managementInput.action]) }) : t("resources.management.preview")}</h2>
+    <button className="text-button resource-preview-back" disabled={applying} onClick={() => closeManagement(false)}><CaretLeft size={14} />{t(route.tab === "recovery" ? "resources.recovery.back" : "resources.workspace.backToLocations")}</button>
+    <h2 tabIndex={-1} ref={managementHeading}>{managementResult ? t("resources.recovery.resultTitle") : managementInput ? t("resources.management.actionPreview", { action: preview?.action === "restore" ? t(restoreActionKey(preview)) : t(actionNames[managementInput.action]) }) : t("resources.management.preview")}</h2>
 
       {previewLoading ? <div className="resource-loading" role="status">{t("resources.management.loading")}</div> : preview ? <>
         <div className="resource-preview-heading"><strong>{preview.resource.name}</strong></div>
@@ -670,12 +689,12 @@ export default function Resources({ active, onSession, onHistoryReading, history
 
         {!!knownRevealed.length && <section className="resource-detail-section"><header><h3>{t("resources.management.revealedEntries")}</h3><span className="resource-state is-warning">{t("resources.entryCount", { count: knownRevealed.length })}</span></header><div className="resource-preview-entries">{knownRevealed.map((entry, index) => <div key={`${entry.client}:${entry.scope}:${entry.project ?? ""}:${entry.entryPath}:${index}`}><strong>{entry.name}</strong><span>{entry.scope === "user" ? t("resources.scope.userDefault") : entry.project ?? t("resources.project.unknown")}</span><p>{entry.entryPath}</p></div>)}</div></section>}
         {preview.action === "purge" && <label className="resource-checkbox resource-purge-confirm"><input type="checkbox" checked={purgeConfirmed} onChange={event => setPurgeConfirmed(event.target.checked)} />{t("resources.management.confirmPurge")}</label>}
-        <div className="dialog-end"><button className="button subtle" disabled={applying} onClick={() => closeManagement(false)}>{t("common.cancel")}</button><button className={`button ${preview.action === "trash" || preview.action === "purge" ? "resource-danger-button" : "primary"}`} disabled={applying || preview.action === "purge" && !purgeConfirmed} onClick={() => void applyManagement()}>{applying ? t("resources.management.applying") : t(preview.configuration?.kind === "registration" ? preview.action === "restore" ? "resources.workspace.restoreRegistration" : "resources.workspace.removeRegistration" : preview.action === "disable" ? disableActionKey(undefined, preview) : preview.action === "restore" ? "resources.workspace.restoreLocation" : preview.action === "trash" ? "resources.workspace.trashLocation" : "resources.management.confirm", { action: t(actionNames[preview.action]) })}</button></div>
+        <div className="dialog-end"><button className="button subtle" disabled={applying} onClick={() => closeManagement(false)}>{t("common.cancel")}</button><button className={`button ${preview.action === "trash" || preview.action === "purge" ? "resource-danger-button" : "primary"}`} disabled={applying || preview.action === "purge" && !purgeConfirmed} onClick={() => void applyManagement()}>{applying ? t("resources.management.applying") : t(confirmationKey, { action: t(actionNames[preview.action]) })}</button></div>
       </> : managementResult ? <>
-        <div className={`resource-${managementResult.status === "success" ? "feedback" : "alert"}`} role={managementResult.status === "success" ? "status" : "alert"}>{t(managementResult.status === "success" && managementResult.action === "purge" ? "resources.workspace.purged" : operationStatusNames[managementResult.status])}</div>{managementResult.status !== "success" && <ResourceMessage descriptor={managementResult.messageDescriptor} original={managementResult.message} details={managementResult.details} />}
-        {managementResult.status === "success" && managementResult.link && <p className="resource-management-note">{t(`resources.workspace.restoredLink.${managementResult.link.state}`)}</p>}
-        <div className="resource-tags"><span>{managementResult.localState === "changed" ? t("resources.management.changed") : managementResult.localState === "partial" ? t("resources.management.partial") : t("resources.management.unchanged")}</span></div>
-        <div className="dialog-end">{managementResult.archiveId && ["disable", "trash", "standby"].includes(managementResult.action) && <button className="button" onClick={() => void showManagement({ action: "restore", operationId: managementResult.id })}>{t("resources.archive.previewRestore")}</button>}{managementResult.status !== "success" && managementInput && <button className="button" onClick={() => void showManagement(managementInput)}>{t("resources.management.previewAgain")}</button>}<button className="button primary" onClick={() => closeManagement(false)}>{t("resources.done")}</button></div>
+        <div className="resource-preview-heading"><strong>{managementResult.name}</strong></div>
+        <div className={`resource-${managementResult.status === "success" ? "feedback" : "alert"}`} role={managementResult.status === "success" ? "status" : "alert"}>{t(managementResult.status === "success" && completedPreview.current ? managementSuccessKey(completedPreview.current, managementResult) : operationStatusNames[managementResult.status])}</div>
+        {managementResult.status !== "success" && <ResourceMessage descriptor={managementResult.messageDescriptor} original={managementResult.message} details={managementResult.details} />}
+        <div className="dialog-end">{managementResult.archiveId && ["disable", "trash", "standby"].includes(managementResult.action) && <button className="button" onClick={() => void showManagement({ action: "restore", operationId: managementResult.id })}>{t("resources.recovery.previewAction", { action: completedPreview.current ? t(restoreActionKey(completedPreview.current)) : t("resources.action.restore") })}</button>}{managementResult.status !== "success" && managementInput && <button className="button" onClick={() => void showManagement(managementInput)}>{t("resources.management.previewAgain")}</button>}<button className="button primary" onClick={() => closeManagement(false)}>{t("resources.done")}</button></div>
       </> : null}
       {managementError && <div className="resource-alert" role="alert"><ResourceErrorText error={managementError} /></div>}
       {managementError && !preview && managementInput && <div className="dialog-end"><button className="button subtle" onClick={() => closeManagement(false)}>{t("common.cancel")}</button><button className="button" onClick={() => void showManagement(managementInput)}>{t("resources.management.previewAgain")}</button></div>}
@@ -711,36 +730,39 @@ export default function Resources({ active, onSession, onHistoryReading, history
       </>}
     </> : selectedArchive && !historyView && route.tab !== "operations" ? <>
       <div className="resource-detail-heading"><div><h2>{selectedArchive.entry.name}</h2></div></div>
-      <div className="resource-tags"><span>{t(archiveNames[selectedArchive.state])}</span><span>{selectedArchive.restorable ? t(selectedArchive.entry.entryType === "symlink" && selectedArchive.state !== "disabled" && selectedArchive.target !== "file" ? "resources.archive.restorableLink" : "resources.archive.restorable") : t("resources.archive.unavailable")}</span>{selectedArchive.operationStatus === "partial" && <span className="is-warning">{t("resources.operation.partial")}</span>}</div>
-      <dl className="resource-facts"><dt>{t("resources.facts.original")}</dt><dd>{selectedArchive.originalPath}</dd><dt>{t("resources.facts.scope")}</dt><dd>{selectedArchive.entry.scope === "user" ? t("resources.scope.user") : selectedArchive.entry.project ?? t("resources.project.unknown")}</dd><dt>{t("resources.facts.managementTime")}</dt><dd>{dateLabel(selectedArchive.createdAt)}</dd>{selectedArchive.storedPath && <><dt>{t("resources.facts.recovery")}</dt><dd>{t("resources.workspace.recoveryAvailable")}</dd></>}</dl>
+      <p className="resource-recovery-description">{t(`resources.recovery.description.${recoveryKind(selectedArchive)}`)}</p>{selectedArchive.operationStatus === "partial" && <p className="resource-state is-warning">{t("resources.operation.partial")}</p>}
+      <dl className="resource-facts"><dt>{t("resources.facts.original")}</dt><dd>{selectedArchive.originalPath}</dd>{selectedArchive.state !== "disabled" && <><dt>{t("resources.facts.scope")}</dt><dd>{selectedArchive.entry.scope === "user" ? t("resources.scope.user") : selectedArchive.entry.project ?? t("resources.project.unknown")}</dd></>}<dt>{t("resources.facts.managementTime")}</dt><dd>{dateLabel(selectedArchive.createdAt)}</dd></dl>
       {selectedArchive.entry.entryType === "symlink" && selectedArchive.state !== "disabled" && selectedArchive.entry.readState === "broken" && <p className="resource-management-note">{t("resources.workspace.removedBrokenLink")}</p>}
-      <div className="resource-entry-actions"><button className="button primary" disabled={!selectedArchive.restorable} onClick={() => void showManagement({ action: "restore", operationId: selectedArchive.operationId })}>{t("resources.archive.previewRestore")}</button>{["trash", "standby"].includes(selectedArchive.state) && <button className="button resource-danger-button" onClick={() => void showManagement({ action: "purge", operationId: selectedArchive.operationId })}>{t("resources.archive.previewPurge")}</button>}</div>
+      <div className="resource-entry-actions"><button className="button primary" disabled={!selectedArchive.restorable} onClick={() => void showManagement({ action: "restore", operationId: selectedArchive.operationId })}>{t("resources.recovery.previewAction", { action: t(`resources.recovery.restore.${recoveryKind(selectedArchive)}`) })}</button>
+        {selectedArchive.storedPath && <DropdownMenu.Root><DropdownMenu.Trigger className="icon-button" aria-label={t("resources.recovery.moreActions")}><DotsThree size={22} /></DropdownMenu.Trigger><DropdownMenu.Portal><DropdownMenu.Content className="resource-tools-menu" align="start" sideOffset={7}><DropdownMenu.Item className="resource-tools-item" onSelect={() => void showManagement({ action: "purge", operationId: selectedArchive.operationId })}>{t("resources.recovery.clearMaterial")}</DropdownMenu.Item></DropdownMenu.Content></DropdownMenu.Portal></DropdownMenu.Root>}
+      </div>
     </> : selectedOperation && route.tab === "operations" ? <>
       <div className="resource-detail-heading"><div><h2>{selectedOperation.name}</h2></div></div>
       <div className="resource-tags"><span>{t(actionNames[selectedOperation.action])}</span><span className={selectedOperation.status === "success" ? "" : "is-warning"}>{t(operationStatusNames[selectedOperation.status])}</span></div>
       {selectedOperation.status !== "success" && <ResourceMessage descriptor={selectedOperation.messageDescriptor} original={selectedOperation.message} details={selectedOperation.details} />}
       <dl className="resource-facts"><dt>{t("resources.facts.executionTime")}</dt><dd>{dateLabel(selectedOperation.createdAt)}</dd><dt>{t("resources.facts.scope")}</dt><dd>{selectedOperation.resource.scope === "user" ? t("resources.scope.user") : selectedOperation.resource.project ?? t("resources.project.unknown")}</dd><dt>{t("resources.facts.localState")}</dt><dd>{selectedOperation.localState === "changed" ? t("resources.localState.changed") : selectedOperation.localState === "partial" ? t("resources.localState.partial") : t("resources.localState.unchanged")}</dd></dl>
-      {selectedOperation.archiveId && ["disable", "standby", "trash"].includes(selectedOperation.action) && <button className="button" onClick={() => update({ tab: selectedOperation.action === "disable" ? "disabled" : "trash", q: selectedOperation.name, id: "", page: 1 }, true)}>{t("resources.archive.viewRecovery")}</button>}
+      {selectedOperation.archiveId && ["disable", "standby", "trash"].includes(selectedOperation.action) && <button className="button" onClick={() => switchView("recovery", { q: selectedOperation.name, id: "", page: 1 })}>{t("resources.archive.viewRecovery")}</button>}
     </> : <ResourceEmpty>{t("resources.detail.empty")}</ResourceEmpty>}
     </div>
   </>;
 
+  const navigation = (mobile = false) => <nav className={mobile ? "resource-mobile-navigation" : "resource-management-nav"} aria-label={t("resources.recovery.navigation")}>{tabs.map(tab => {
+    const Icon = tab.value === "usage" ? List : tab.value === "recovery" ? ArrowCounterClockwise : ClockCounterClockwise;
+    return <button key={tab.value} disabled={applying} aria-current={route.tab === tab.value ? "page" : undefined} onClick={() => switchView(tab.value)}><Icon size={17} aria-hidden="true" />{t(tab.labelKey)}</button>;
+  })}</nav>;
   const tools = <DropdownMenu.Root><DropdownMenu.Trigger className="icon-button" aria-label={t("resources.workspace.tools")}><DotsThree size={22} /></DropdownMenu.Trigger><DropdownMenu.Portal><DropdownMenu.Content className="resource-tools-menu" align="end" sideOffset={7} collisionPadding={12}>
-    {[{ value: "usage" as const, labelKey: "resources.workspace.resourceList" }, ...tabs.filter(tab => !["usage", "local"].includes(tab.value))].map(tab => <DropdownMenu.Item key={tab.value} className="resource-tools-item" onSelect={() => {
-      if (tab.value === "usage" && resourceBrowseRoute.current) { const saved = resourceBrowseRoute.current; update(saved, true); setQueryText(saved.q); resourceBrowseRoute.current = null; }
-      else { if (route.tab === "usage") resourceBrowseRoute.current = route; update({ tab: tab.value, id: "", page: 1, tool: "", q: "", candidate: "all" }, true); setQueryText(""); }
-    }}>{t(tab.labelKey)}</DropdownMenu.Item>)}
-    <DropdownMenu.Separator className="resource-tools-separator" /><DropdownMenu.Item className="resource-tools-item" onSelect={() => setSourcesOpen(true)}>{t("resources.workspace.scanSettings")}</DropdownMenu.Item>
+    <DropdownMenu.Item className="resource-tools-item" onSelect={() => setSourcesOpen(true)}>{t("resources.workspace.scanSettings")}</DropdownMenu.Item>
   </DropdownMenu.Content></DropdownMenu.Portal></DropdownMenu.Root>;
 
   return <div className="resources-shell" aria-label={t("resources.title")} data-compact={compact} data-resource-view={mapView ? "map" : "list"} onKeyDown={event => { if (event.key === "Escape" && !compact && !document.fullscreenElement && !event.defaultPrevented && !(event.target instanceof Element && event.target.closest("input, [role=combobox], [role=dialog], [role=menu]"))) { event.preventDefault(); if (managementOpen) closeManagement(false); else closeDetails(); } }}>
-    <ResizableWorkspace variant="resources" sidebarCollapsed={sidebarCollapsed} detailsCollapsed={detailsCollapsed} semantics={{ sidebar: { label: t("resources.layout.sidebarWidth"), controls: "resource-filter-content" }, details: { label: t("resources.layout.detailsWidth"), controls: "resource-detail-content" } }}>
-      <aside className={`sidebar resource-sidebar${sidebarCollapsed ? " panel-collapsed" : ""}`} aria-label={t("resources.filters.title")}>
-        <div className="pane-heading"><span>{t("resources.filters.label")}</span><button className="icon-button panel-toggle" aria-label={sidebarCollapsed ? t("resources.filters.expand") : t("resources.filters.collapse")} aria-expanded={!sidebarCollapsed} aria-controls="resource-filter-content" onClick={() => setSidebarCollapsed(value => !value)}>{sidebarCollapsed ? <CaretRight size={17} /> : <CaretLeft size={17} />}</button></div>{!sidebarCollapsed && !compact && filters}
+    <ResizableWorkspace variant="resources" sidebarCollapsed={sidebarCollapsed} detailsCollapsed={detailsCollapsed} semantics={{ sidebar: { label: t("resources.layout.sidebarWidth"), controls: "resource-sidebar-content" }, details: { label: t("resources.layout.detailsWidth"), controls: "resource-detail-content" } }}>
+      <aside className={`sidebar resource-sidebar${sidebarCollapsed ? " panel-collapsed" : ""}`} aria-label={t("resources.recovery.navigation")}>
+        <div className="pane-heading"><span>{t("resources.recovery.navigation")}</span><button className="icon-button panel-toggle" aria-label={sidebarCollapsed ? t("resources.recovery.expandSidebar") : t("resources.recovery.collapseSidebar")} aria-expanded={!sidebarCollapsed} aria-controls="resource-sidebar-content" onClick={() => setSidebarCollapsed(value => !value)}>{sidebarCollapsed ? <CaretRight size={17} /> : <CaretLeft size={17} />}</button></div><div id="resource-sidebar-content" className="resource-sidebar-content" hidden={sidebarCollapsed || compact}>{!sidebarCollapsed && !compact && <>{navigation()}{historyView && <div className="resource-sidebar-filters">{filters}</div>}</>}</div>
       </aside>
       <main className="resources-main">
-        <header className="resources-heading"><h1>{t("resources.title")}</h1><div className="resource-kind-tabs" role="group" aria-label={t("resources.kind.label")}>{(["skill", "mcp"] as const).map(kind => <button key={kind} aria-pressed={route.kind === kind} className={route.kind === kind ? "is-selected" : ""} onClick={() => update({ kind, id: "", page: 1, tool: "", metric: kind === route.kind ? route.metric : "uses", maxValue: kind === route.kind ? route.maxValue : "", candidate: kind === "mcp" && route.candidate === "duplicate" ? "all" : route.candidate, sort: kind === route.kind ? route.sort : "uses", order: kind === route.kind ? route.order : "desc" })}>{kind === "skill" ? t("resources.kind.skill") : t("resources.kind.mcp")}</button>)}<UsageHelp kind={route.kind} /></div><div className="resources-heading-actions"><button className="icon-button resource-mobile-filter" aria-label={t("resources.filters.open")} onClick={() => setFiltersOpen(true)}><Funnel size={18} /></button><RefreshControl label={t("resources.refresh.label")} busy={refreshing} onRefresh={() => void refresh()} error={!!inventoryError} completedAt={status?.observedAt ?? undefined} details={<p>{t("common.refresh.resourceScope")}</p>} />{tools}</div></header>
+        <header className="resources-heading"><h1>{t("resources.title")}</h1><div className="resource-kind-tabs" role="group" aria-label={t("resources.kind.label")}>{(["skill", "mcp"] as const).map(kind => <button key={kind} disabled={applying} aria-pressed={route.kind === kind} className={route.kind === kind ? "is-selected" : ""} onClick={() => switchView(route.tab, {}, kind)}>{kind === "skill" ? t("resources.kind.skill") : t("resources.kind.mcp")}</button>)}<UsageHelp kind={route.kind} /></div><div className="resources-heading-actions">{historyView && <button className="icon-button resource-mobile-filter" aria-label={t("resources.filters.open")} onClick={() => setFiltersOpen(true)}><Funnel size={18} /></button>}<RefreshControl label={t("resources.refresh.label")} busy={refreshing} onRefresh={() => void refresh()} error={!!inventoryError} completedAt={status?.observedAt ?? undefined} details={<p>{t("common.refresh.resourceScope")}</p>} />{tools}</div></header>
 
+        {navigation(true)}
         <div className="resource-list-toolbar">
           <label className="resource-search"><MagnifyingGlass size={16} aria-hidden="true" /><input aria-label={t("resources.search.label")} value={route.q} placeholder={t("resources.search.label")} onChange={event => filter({ q: event.target.value })} />{route.q && <button className="icon-button" aria-label={t("resources.search.clear")} onClick={() => filter({ q: "" })}><X size={14} /></button>}</label>
           {overviewRanking && <div className="resource-display-switch" role="group" aria-label={t("resources.view.display")}>{(["list", "map"] as const).map(view => <button key={view} aria-pressed={route.view === view} onClick={() => update({ view })}>{view === "list" ? <List size={15} aria-hidden="true" /> : <MapTrifold size={15} aria-hidden="true" />}{view === "list" ? t("resources.view.list") : t("resources.view.map")}</button>)}</div>}
@@ -756,7 +778,6 @@ export default function Resources({ active, onSession, onHistoryReading, history
         {invalidTime && <div className="resource-alert" role="alert">{t("resources.time.invalidRange")}</div>}
         {inventoryError && <div className="resource-alert" role="alert"><ResourceErrorText error={inventoryError} /><button className="text-button" disabled={refreshing} onClick={() => void refresh()}>{t("common.retry")}</button></div>}
         {error && <div className="resource-alert" role="alert"><ResourceErrorText error={error} /><button className="text-button" onClick={() => setReload(value => value + 1)}>{t("common.retry")}</button></div>}
-        {feedback && <div className="resource-feedback resource-map-feedback" role="status">{t(feedback.key, feedback.params)}<button className="icon-button" aria-label={t("resources.feedback.close")} onClick={() => setFeedback(null)}><X size={14} /></button></div>}
         {overviewRanking && overviewData && <>
           <div className="resource-quick-filters" role="group" aria-label={t("resources.quickFilters", { kind: route.kind === "skill" ? t("resources.kind.skill") : t("resources.kind.mcp") })}>
             <div className="resource-usage-filters" role="group" aria-label={t("resources.usageStates")}>{overviewCandidates.slice(0, 3).map(candidate => <button key={candidate.value} aria-pressed={route.candidate === candidate.value || candidate.value === "all" && !overviewCandidates.some(item => item.value === route.candidate)} onClick={() => filter({ candidate: candidate.value, favorite: false })}>{t(candidate.labelKey)}<strong>{fmt(overviewData.counts[candidate.value])}</strong></button>)}</div>
@@ -769,7 +790,7 @@ export default function Resources({ active, onSession, onHistoryReading, history
 
         </>}
         <div className={`resource-list-scroll${mapView ? " resource-map-scroll" : ""}`} ref={listScroll} aria-busy={listLoading} inert={listLoading || refreshing || !!error}>
-          {listLoading && !hasListData ? <div role="status" className="resource-loading">{t("resources.loading.resources")}</div> : invalidTime ? null : mapView ? map && <ResourceMap data={map} selected={route.id} onSelect={select} /> : overviewRanking ? overview?.resources.length ? <OverviewTable rows={overview.resources} route={route} onSort={sort} onSelect={select} onFavorite={(id, current) => void favorite(id, current)} favoritePending={favoritePending} /> : <ResourceEmpty>{t("resources.empty.kind", { kind: route.kind === "skill" ? t("resources.kind.skill") : t("resources.kind.mcp") })}</ResourceEmpty> : route.tab === "operations" ? operations?.operations.length ? <div className="resource-rows">{operations.operations.map(operation => <div className={`resource-row${route.id === operation.id ? " is-selected" : ""}`} key={operation.id}><button className="resource-row-main" aria-label={t("resources.viewOperation", { name: operation.name, action: t(actionNames[operation.action]) })} onClick={() => select(operation.id)}><div className="resource-row-heading"><strong>{operation.name}</strong><span>{t(actionNames[operation.action])}</span></div><div className="resource-row-metrics"><span>{t(operation.resource.scope === "user" ? "resources.scope.user" : "resources.scope.project")}</span><span>{dateLabel(operation.createdAt)}</span></div><div className="resource-tags"><span className={operation.status === "success" ? "" : "is-warning"}>{t(operationStatusNames[operation.status])}</span></div></button></div>)}</div> : <ResourceEmpty>{t("resources.empty.operations")}</ResourceEmpty> : archives?.archives.length ? <div className="resource-rows">{archives.archives.map(archive => <div className={`resource-row${route.id === archive.id ? " is-selected" : ""}`} key={archive.id}><button className="resource-row-main" aria-label={t("resources.viewRecovery", { name: archive.entry.name })} onClick={() => select(archive.id)}><div className="resource-row-heading"><strong>{archive.entry.name}</strong><span>{t(archive.entry.scope === "user" ? "resources.scope.user" : "resources.scope.project")}</span></div><div className="resource-row-subtitle" title={archive.originalPath}>{archive.originalPath}</div><div className="resource-row-metrics"><span>{dateLabel(archive.createdAt)}</span></div><div className="resource-tags"><span>{t(archiveNames[archive.state])}</span><span className={!archive.restorable ? "is-warning" : ""}>{archive.restorable ? t(archive.entry.entryType === "symlink" && archive.state !== "disabled" && archive.target !== "file" ? "resources.archive.restorableLink" : "resources.archive.restorable") : t("resources.archive.unavailable")}</span>{archive.operationStatus === "partial" && <span className="is-warning">{t("resources.operation.partial")}</span>}</div></button></div>)}</div> : <ResourceEmpty>{t("resources.empty.archive", { state: t(tabs.find(tab => tab.value === route.tab)!.labelKey) })}</ResourceEmpty>}
+          {listLoading && !hasListData ? <div role="status" className="resource-loading">{t("resources.loading.resources")}</div> : invalidTime ? null : mapView ? map && <ResourceMap data={map} selected={route.id} onSelect={select} /> : overviewRanking ? overview?.resources.length ? <OverviewTable rows={overview.resources} route={route} onSort={sort} onSelect={select} onFavorite={(id, current) => void favorite(id, current)} favoritePending={favoritePending} /> : <ResourceEmpty>{t("resources.empty.kind", { kind: route.kind === "skill" ? t("resources.kind.skill") : t("resources.kind.mcp") })}</ResourceEmpty> : route.tab === "operations" ? operations?.operations.length ? <div className="resource-rows">{operations.operations.map(operation => <div className={`resource-row${route.id === operation.id ? " is-selected" : ""}`} key={operation.id}><button className="resource-row-main" aria-label={t("resources.viewOperation", { name: operation.name, action: t(actionNames[operation.action]) })} onClick={() => select(operation.id)}><div className="resource-row-heading"><strong>{operation.name}</strong><span>{t(actionNames[operation.action])}</span></div><div className="resource-row-metrics"><span>{t(operation.resource.scope === "user" ? "resources.scope.user" : "resources.scope.project")}</span><span>{dateLabel(operation.createdAt)}</span></div><div className="resource-tags"><span className={operation.status === "success" ? "" : "is-warning"}>{t(operationStatusNames[operation.status])}</span></div></button></div>)}</div> : <ResourceEmpty>{t("resources.empty.operations")}</ResourceEmpty> : archives?.archives.length ? <div className="resource-rows">{archives.archives.map(archive => <div className={`resource-row${route.id === archive.id ? " is-selected" : ""}`} key={archive.id}><button className="resource-row-main" aria-label={t("resources.viewRecovery", { name: archive.entry.name })} onClick={() => select(archive.id)}><div className="resource-row-heading"><strong>{archive.entry.name}</strong></div><div className="resource-row-subtitle" title={archive.originalPath}>{archive.originalPath}</div><div className="resource-row-metrics"><span>{dateLabel(archive.createdAt)}</span></div><div className="resource-row-metrics"><span>{t(`resources.recovery.description.${recoveryKind(archive)}`)}</span>{archive.operationStatus === "partial" && <span className="is-warning">{t("resources.operation.partial")}</span>}</div></button></div>)}</div> : <ResourceEmpty>{t("resources.recovery.empty")}</ResourceEmpty>}
         </div>
         {overviewRanking && !mapView && overview && <ResourcePagination page={overview.page} total={overview.total} pageSize={overview.pageSize} label={overviewLabel} onPageSizeChange={pageSize => filter({ pageSize })} onChange={pageChange} />}
         {route.tab === "operations" && operations && <ResourcePagination page={operations.page} total={operations.total} pageSize={operations.pageSize} label={t("resources.tab.operations")} onPageSizeChange={pageSize => filter({ pageSize })} onChange={pageChange} />}
@@ -780,7 +801,7 @@ export default function Resources({ active, onSession, onHistoryReading, history
         <div className="resource-detail-scroll" ref={detailScroll} id="resource-detail-content" hidden={detailsCollapsed}>{!compact && detail}</div>
       </aside>
     </ResizableWorkspace>
-    <ResourceDialog open={compact && filtersOpen && active} onOpenChange={setFiltersOpen} title={t("resources.filters.title")} description={t("resources.filters.description")} className="resource-filter-dialog">{filters}<div className="dialog-end"><button className="button primary" onClick={() => setFiltersOpen(false)}>{t("resources.done")}</button></div></ResourceDialog>
+    <ResourceDialog open={compact && historyView && filtersOpen && active} onOpenChange={setFiltersOpen} title={t("resources.filters.title")} description={t("resources.filters.description")} className="resource-filter-dialog">{filters}<div className="dialog-end"><button className="button primary" onClick={() => setFiltersOpen(false)}>{t("resources.done")}</button></div></ResourceDialog>
     <ResourceDialog open={compact && (!!route.id || managementOpen) && active} onOpenChange={open => { if (!open) { if (managementOpen) closeManagement(false); else update({ id: "" }); } }} title={t("resources.detail.title")} description={route.kind === "skill" ? t("resources.detail.skillDescription") : t("resources.detail.mcpDescription")} className="resource-detail-dialog" contentRef={detailDialogScroll}>{detail}</ResourceDialog>
     <ResourceDialog open={sourcesOpen && active} onOpenChange={setSourcesOpen} title={t("resources.source.title")} description={t("resources.source.lastScanned", { date: status?.observedAt ? dateLabel(status.observedAt) : t("resources.source.neverScanned") })}>
       {sourceError && <div className="resource-alert" role="alert"><ResourceErrorText error={sourceError} /><button className="text-button" onClick={() => setSourcesRetry(value => value + 1)}>{t("common.retry")}</button></div>}

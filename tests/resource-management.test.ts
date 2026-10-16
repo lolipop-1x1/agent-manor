@@ -624,3 +624,56 @@ test("共享链接回收只影响同一路径的发现入口，恢复保留这�
   assert.equal((await manager.apply(restore.id, true, current)).status, "success");
   assert.equal(await readlink(path), target);
 }));
+
+
+test("恢复中心合并尚未撤销的配置、链接和文件变更，按变更时间排序", async () => fixture(async (manager, directory) => {
+  const config = join(directory, "config.toml"); await writeFile(config, '[mcp_servers.selected]\ncommand = "synthetic-tool"\nenabled = true\n');
+  const registered = mcp(config, "toml", { nativeState: "enabled" });
+  const disabled = await manager.apply((await manager.preview({ entryId: registered.id, action: "disable" }, snapshot([registered]))).id, true, snapshot([registered]));
+  const file = join(directory, "guide"); await skill(file); const selected = entry(file);
+  const removed = await manager.apply((await manager.preview({ entryId: selected.id, action: "trash" }, snapshot([selected]))).id, true, snapshot([selected]));
+  const link = join(directory, "link"); await symlink(file, link); const linked = entry(link, { id: "linked", entryType: "symlink", readState: "broken", linkTarget: file });
+  const unlinked = await manager.apply((await manager.preview({ entryId: linked.id, action: "standby" }, snapshot([linked]))).id, true, snapshot([linked]));
+  assert.equal(manager.archives("recoverable").length, 3);
+  const database = new Database(manager.dbPath);
+  try {
+    const archive = manager.archives("disabled")[0]!;
+    const row = database.prepare("SELECT json FROM resource_archives WHERE id=?").get(archive.id) as { json: string };
+    const stored = JSON.parse(row.json); stored.public.createdAt = "2099-01-01T00:00:00Z";
+    database.prepare("UPDATE resource_archives SET json=? WHERE id=?").run(JSON.stringify(stored), archive.id);
+  } finally { database.close(); }
+  assert.equal(manager.archives("recoverable")[0]?.operationId, disabled.id);
+  assert.equal(manager.archives("trash").length, 2);
+  const restore = await manager.preview({ operationId: removed.id, action: "restore" }, snapshot([]));
+  assert.equal((await manager.apply(restore.id, true, snapshot([]))).status, "success");
+  assert.ok(!manager.archives("recoverable").some(value => value.operationId === removed.id));
+  const purge = await manager.preview({ operationId: disabled.id, action: "purge" }, snapshot([]));
+  assert.equal((await manager.apply(purge.id, true, snapshot([]))).status, "success");
+  assert.equal(parseToml(await readFile(config, "utf8")).mcp_servers.selected.enabled, false);
+  assert.deepEqual(manager.archives("recoverable").map(value => value.operationId), [unlinked.id]);
+  assert.equal(manager.operations().total, 5);
+}));
+
+test("恢复材料被外部删除后保留待撤销记录，预览明确拒绝且不写原位置", async () => fixture(async (manager, directory) => {
+  const path = join(directory, "link"); const target = join(directory, "missing-target"); await symlink(target, path);
+  const selected = entry(path, { entryType: "symlink", readState: "broken", linkTarget: target }); const initial = snapshot([selected]);
+  const removed = await manager.apply((await manager.preview({ entryId: selected.id, action: "trash" }, initial)).id, true, initial);
+  await rm(manager.archives("recoverable")[0]!.storedPath!);
+  assert.equal(manager.archives("recoverable")[0]?.operationId, removed.id);
+  await assert.rejects(manager.preview({ operationId: removed.id, action: "restore" }, snapshot([])),
+    (error: unknown) => error instanceof ServiceError && error.code === "CONTENT_STALE");
+  await assert.rejects(lstat(path)); await assert.rejects(lstat(target));
+  assert.equal(manager.operations().total, 1);
+}));
+
+for (const missingFile of [true, false]) test(`恢复链接核验实际目标 Skill 文件${missingFile ? "缺失" : "不可读"}`, async () => fixture(async (manager, directory) => {
+  const target = join(directory, "target"); const path = join(directory, "link"); await mkdir(target);
+  if (!missingFile) await mkdir(join(target, "SKILL.md"));
+  await symlink(target, path); const selected = entry(path, { entryType: "symlink", linkTarget: target }); const initial = snapshot([selected]);
+  const trash = await manager.preview({ entryId: selected.id, action: "trash" }, initial);
+  assert.equal(trash.link?.state, missingFile ? "skill_missing" : "skill_unreadable");
+  const removed = await manager.apply(trash.id, true, initial);
+  const restore = await manager.preview({ operationId: removed.id, action: "restore" }, snapshot([]));
+  const result = await manager.apply(restore.id, true, snapshot([]));
+  assert.equal(result.status, "success"); assert.equal(result.link?.state, trash.link?.state); assert.equal(await readlink(path), target);
+}));
