@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import test from "node:test";
 import { Readable } from "node:stream";
 import { mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
@@ -10,25 +11,43 @@ import { parseSource } from "../src/history/index.js";
 import { createNormalizedAdapter, normalizedHash, normalizedRecord, normalizedSnapshot, parseNormalizedSession, readBoundedJsonl } from "../src/history/adapters/normalized.js";
 import type { SessionMessage, SessionUsage } from "../src/session-contracts.js";
 
-test("显式未关联消息使用未知轮次，不改变后续默认继承或明确关联", () => {
+test("显式未关联消息按原始记录分组，不改变默认未知轮次、后续继承或明确关联", () => {
   const messages = new Map<string, SessionMessage>();
   const meta = parseNormalizedSession(normalizedSnapshot({ client: "pi", path: "/workspace/history.jsonl", sessionId: "unassigned" }, [
+    normalizedRecord({ key: "before-user", kind: "assistant", text: "Before any request" }, "{}", 0),
     normalizedRecord({ key: "u1", kind: "user", text: "First request" }, "{}", 1),
     normalizedRecord({ key: "a1", kind: "assistant", text: "First reply" }, "{}", 2),
     normalizedRecord({ key: "u2", kind: "user", text: "Second request" }, "{}", 3),
     normalizedRecord({ key: "orphan", kind: "assistant", text: "Unlinked reply", turnKey: null, allowInferredFinal: false }, "{}", 4),
+    normalizedRecord({ key: "orphan-block", kind: "assistant", text: "Same native reply", turnKey: null, allowInferredFinal: false }, "{}", 4),
+    normalizedRecord({ key: "other-orphan", kind: "assistant", text: "Another unlinked reply", turnKey: null, allowInferredFinal: false }, "{}", 5),
     normalizedRecord({ key: "inherited", kind: "context", text: "Inherited context" }, "{}", 5),
     normalizedRecord({ key: "linked", kind: "assistant", text: "Linked to first", turnKey: "u1" }, "{}", 6),
     normalizedRecord({ key: "after-link", kind: "context", text: "Context after link" }, "{}", 7),
   ]), { message: value => messages.set(value.id, value), usage: () => {} });
   const byText = (text: string) => [...messages.values()].find(value => value.text === text)!;
   assert.equal(meta.turnCount, 2);
-  assert.equal(byText("Unlinked reply").turnId, `${meta.id}:turn:0`);
+  assert.equal(byText("Before any request").turnId, `${meta.id}:turn:0`);
+  assert.equal(byText("Unlinked reply").turnId, `${meta.id}:turn:unassigned:4`);
+  assert.equal(byText("Same native reply").turnId, byText("Unlinked reply").turnId);
+  assert.equal(byText("Another unlinked reply").turnId, `${meta.id}:turn:unassigned:5`);
   assert.equal(byText("Unlinked reply").kind, "assistant");
   assert.equal(byText("Inherited context").turnId, byText("Second request").turnId);
   assert.equal(byText("First reply").turnId, byText("First request").turnId);
   assert.equal(byText("Linked to first").turnId, byText("First request").turnId);
   assert.equal(byText("Context after link").turnId, byText("First request").turnId);
+});
+
+test("未关联展示分组规则仅使显式 null 来源的旧指纹失效", () => {
+  const source = { client: "pi" as const, path: "/workspace/history.jsonl", sessionId: "unassigned-upgrade" };
+  for (const turnKey of [null, undefined]) {
+    const row = normalizedRecord({ key: "reply", kind: "assistant", text: "Saved reply", turnKey }, "{}", 1);
+    const previousHash = createHash("sha256").update(JSON.stringify([undefined, source.sessionId, undefined, {}]))
+      .update(JSON.stringify([row.line, normalizedHash(row.raw), row.record])).digest("hex");
+    const currentHash = normalizedSnapshot(source, [row]).hash;
+    if (turnKey === null) assert.notEqual(currentHash, previousHash);
+    else assert.equal(currentHash, previousHash);
+  }
 });
 
 test("规范化保留分支及实际用量，失败工具不会产生 Skill 读取证据", () => {

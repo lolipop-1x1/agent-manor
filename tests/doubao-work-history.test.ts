@@ -200,7 +200,7 @@ for (const reply of [undefined, "missing-user", "a-one"]) {
         const messages = store.messages(session.id, { mode }).messages;
         const unlinked = messages.find(value => value.text === "Unlinked reply")!;
         assert.equal(unlinked.kind, "assistant");
-        assert.equal(unlinked.turnId, `${session.id}:turn:0`);
+        assert.equal(unlinked.turnId, `${session.id}:turn:unassigned:4`);
         assert.equal(unlinked.final, undefined);
       }
       const messages = store.messages(session.id, { mode: "full" }).messages;
@@ -213,6 +213,44 @@ for (const reply of [undefined, "missing-user", "a-one"]) {
     } finally { store.close(); }
   }));
 }
+
+test("豆包工作多条未知回复分别保留原生消息分组，同一消息多块不制造用户轮次", async () => temporary(async directory => {
+  await writeDoubaoWorkCache(join(directory, "launcher.leveldb"), [{ account: "DoubaoPC_synthetic", value: response([conversation([
+    message("u-one", 1, "1", [textBlock("u-one-text", "First request")]),
+    message("a-one", 2, "2", [textBlock("a-one-progress", "First saved fragment"), textBlock("a-one-text", "First unlinked reply")]),
+    message("u-two", 1, "3", [textBlock("u-two-text", "Second request")]),
+    message("a-two", 2, "4", [textBlock("a-two-progress", "Second saved fragment"), textBlock("a-two-text", "Second unlinked reply")]),
+  ])]) }]);
+  const store = new SessionStore(join(directory, "index.sqlite"));
+  try {
+    const job = store.createJob({ client: "doubao-work", mode: "full" });
+    await refreshSessions(store, job.id, isolatedHistoryRoots({ "doubao-work": directory }));
+    const session = store.list().sessions[0]!;
+    assert.equal(session.turnCount, 2);
+    for (const mode of ["brief", "full", "trace"] as const) {
+      const messages = store.messages(session.id, { mode }).messages;
+      assert.ok(messages.some(value => value.text === "First unlinked reply"));
+      assert.ok(messages.some(value => value.text === "Second unlinked reply"));
+      assert.equal(messages.length, mode === "brief" ? 4 : 6);
+    }
+    const full = store.messages(session.id, { mode: "full" }).messages;
+    const byText = (text: string) => full.find(value => value.text === text)!;
+    assert.equal(byText("First saved fragment").turnId, byText("First unlinked reply").turnId);
+    assert.equal(byText("Second saved fragment").turnId, byText("Second unlinked reply").turnId);
+    assert.notEqual(byText("First unlinked reply").turnId, byText("Second unlinked reply").turnId);
+    assert.notEqual(byText("First unlinked reply").turnId, byText("First request").turnId);
+    assert.notEqual(byText("Second unlinked reply").turnId, byText("Second request").turnId);
+    const { rounds } = deriveRoundFacts(full, []);
+    assert.deepEqual(rounds.map(round => round.eligible), [false, false]);
+    assert.equal(store.profile(session.id).roundMetrics?.completedTurns, 0);
+    const brief = store.messages(session.id, { mode: "brief" }).messages;
+    for (const language of ["en", "zh-CN"] as const) {
+      const markdown = dialogueMarkdown(brief, language);
+      assert.ok(markdown.includes("First unlinked reply"));
+      assert.ok(markdown.includes("Second unlinked reply"));
+    }
+  } finally { store.close(); }
+}));
 
 test("豆包工作活动 previous log 缺失导致刷新失败，保留已发布会话、搜索与版本", async () => temporary(async directory => {
   const origin = join(directory, "launcher.leveldb");
