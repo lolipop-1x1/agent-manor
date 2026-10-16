@@ -104,7 +104,7 @@ export function normalizedSnapshot(source: SourceLocation, records: RawHistoryRe
     let rawHash = rawHashes.get(row.raw);
     if (!rawHash) { rawHash = normalizedHash(row.raw); rawHashes.set(row.raw, rawHash); }
     // 未关联消息的分组规则参与指纹，避免复用曾把不同原生回复合并的修订。
-    if (object(row.record.normalizedEvent).turnKey === null) digest.update("unassigned-record-v1");
+    if (object(row.record.normalizedEvent).turnKey === null) digest.update("unassigned-record-v2");
     digest.update(JSON.stringify([row.line, rawHash, row.record]));
   }
   const hash = digest.digest("hex");
@@ -202,7 +202,8 @@ export function parseNormalizedSession(snapshot: NormalizedSnapshot, sink: Sessi
       if (!turns.has(key)) turns.set(key, `${id}:turn:${++meta.turnCount}`);
       currentTurn = turns.get(key)!;
     } else if (event.turnKey && turns.has(event.turnKey)) currentTurn = turns.get(event.turnKey)!;
-    const turn = event.turnKey === null ? `${id}:turn:unassigned:${row.line}` : currentTurn;
+    // 独立保留每条未知回复，同时沿用位置 0 的分页规则，不计入实际用户轮次。
+    const turn = event.turnKey === null ? `${id}:unassigned:${row.line}:turn:0` : currentTurn;
     const previous = messages.get(event.key);
     const partial = event.interrupted === true || event.requestTiming?.completion === "partial"
       || ["assistant", "thinking"].includes(event.kind) && event.status === "failure";

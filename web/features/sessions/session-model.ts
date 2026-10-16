@@ -57,6 +57,7 @@ export function usageIndexAt(position: number, count: number): number {
 }
 
 export function turnTitle(id: string, position: number, language = getLanguage()): string {
+  if (/:unassigned:\d+:turn:0$/.test(id)) return translate(language, "sessions.turn.unrecorded");
   const match = /:turn:(\d+)$/.exec(id);
   if (match) return translate(language, Number(match[1]) === 0 ? "sessions.turn.initial" : "sessions.turn.number", { number: formatNumber(language, Number(match[1])) });
   return translate(language, id === "unknown" ? "sessions.turn.unrecorded" : "sessions.turn.pageGroup", { number: formatNumber(language, position) });

@@ -109,3 +109,39 @@ test("完整轮复制复用同版查询、视图分支和语言，只导出指�
     assert.ok(text.includes("AI reply")); assert.ok(text.includes("original tail")); assert.ok(!text.includes("excluded context"));
   } finally { globalThis.fetch = original; }
 });
+
+test("未知回复组和初始组复制从第一页读取，不发送零轮次位置或混入其他组", async () => {
+  const { completeTurnMarkdown } = await import("../web/features/sessions/session-message-content.ts");
+  const original = globalThis.fetch;
+  const turns = ["session-a:turn:0", "session-a:unassigned:4:turn:0"];
+  let version = "version-a";
+  globalThis.fetch = async input => {
+    const query = new URL(String(input), "http://example.invalid").searchParams;
+    assert.equal(query.get("version"), "version-a");
+    assert.equal(query.get("mode"), "full");
+    assert.equal(query.get("branch"), "all");
+    assert.equal(query.get("pageUnit"), "turn");
+    assert.equal(query.get("page"), "1");
+    assert.equal(query.get("turnPosition"), null);
+    assert.equal(query.get("messageLimit"), null);
+    assert.equal(query.get("maxTextChars"), null);
+    return Response.json({ version, messages: [
+      ...turns.map((turnId, index) => ({ id: `reply-${index}`, sessionId: "session-a", kind: "assistant", turnId, text: `Complete saved reply ${index}` })),
+      { id: "user", sessionId: "session-a", kind: "user", turnId: "session-a:turn:1", text: "Unrelated request" },
+    ] });
+  };
+  try {
+    for (const [index, turn] of turns.entries()) {
+      for (const language of ["en", "zh-CN"] as const) {
+        const text = await completeTurnMarkdown("session-a", turn, 0, { version: "version-a", mode: "full", branch: "all" }, language);
+        assert.ok(text.includes(`Complete saved reply ${index}`));
+        assert.ok(!text.includes(`Complete saved reply ${1 - index}`));
+        assert.ok(!text.includes("Unrelated request"));
+      }
+    }
+    version = "version-b";
+    await assert.rejects(completeTurnMarkdown("session-a", turns[1]!, 0, { version: "version-a", mode: "full", branch: "all" }, "en"), { code: "VERSION_MISMATCH" });
+    globalThis.fetch = async () => { throw new Error("synthetic unavailable source"); };
+    await assert.rejects(completeTurnMarkdown("session-a", turns[1]!, 0, { version: "version-a", mode: "full", branch: "all" }, "en"), { code: "CONNECTION_FAILED" });
+  } finally { globalThis.fetch = original; }
+});

@@ -12,8 +12,10 @@ import { parseSessionSource } from "../src/sessions/parser.js";
 import { refreshSessions } from "../src/sessions/refresh.js";
 import { SessionStore } from "../src/sessions/store.js";
 import { deriveRoundFacts } from "../src/sessions/round-metrics.js";
-import type { SessionMessage, SessionUsage } from "../src/session-contracts.js";
-import { dialogueMarkdown } from "../web/features/sessions/session-export.js";
+import { startService } from "../src/server.js";
+import { apiRequest } from "../src/service/runtime.js";
+import type { SessionMessage, SessionMessageResult, SessionTurnDirectory, SessionUsage } from "../src/session-contracts.js";
+import { collectDialogue, dialogueMarkdown } from "../web/features/sessions/session-export.js";
 import { cacheBatch, cacheLog, cacheManifest, syntheticCacheEntries, writeDoubaoWorkCache } from "./helpers/doubao-work-store.js";
 import { isolatedHistoryRoots } from "./helpers/history-roots.js";
 
@@ -200,7 +202,7 @@ for (const reply of [undefined, "missing-user", "a-one"]) {
         const messages = store.messages(session.id, { mode }).messages;
         const unlinked = messages.find(value => value.text === "Unlinked reply")!;
         assert.equal(unlinked.kind, "assistant");
-        assert.equal(unlinked.turnId, `${session.id}:turn:unassigned:4`);
+        assert.equal(unlinked.turnId, `${session.id}:unassigned:4:turn:0`);
         assert.equal(unlinked.final, undefined);
       }
       const messages = store.messages(session.id, { mode: "full" }).messages;
@@ -240,6 +242,29 @@ test("豆包工作多条未知回复分别保留原生消息分组，同一消�
     assert.notEqual(byText("First unlinked reply").turnId, byText("Second unlinked reply").turnId);
     assert.notEqual(byText("First unlinked reply").turnId, byText("First request").turnId);
     assert.notEqual(byText("Second unlinked reply").turnId, byText("Second request").turnId);
+    for (const mode of ["brief", "full", "trace"] as const) {
+      const first = store.messages(session.id, { mode, pageUnit: "turn", pageSize: 1 });
+      const second = store.messages(session.id, { mode, pageUnit: "turn", pageSize: 1, turnPosition: 2 });
+      assert.equal(first.totalTurns, 2);
+      assert.deepEqual(first.turns?.map(turn => turn.position), [0, 0, 1]);
+      assert.deepEqual(second.turns?.map(turn => turn.position), [2]);
+      assert.equal(second.messages[0]?.text, "Second request");
+      const directory = store.turnDirectory(session.id, { mode, pageSize: 1, page: 2 });
+      assert.equal(directory.total, 2);
+      assert.deepEqual(directory.turns.map(turn => [turn.position, turn.question]), [[2, "Second request"]]);
+      const chunks: SessionMessage[] = [];
+      for (let offset = 0; ; offset++) {
+        const chunk = store.messages(session.id, { mode, pageUnit: "turn", pageSize: 1, messageLimit: 1, messageOffset: offset });
+        chunks.push(...chunk.messages);
+        if (!chunk.hasMoreMessages) break;
+      }
+      assert.equal(chunks.length + second.messages.length, mode === "brief" ? 4 : 6);
+      assert.equal(new Set([...chunks, ...second.messages].map(message => message.id)).size, mode === "brief" ? 4 : 6);
+      const target = store.messages(session.id, { mode, pageUnit: "turn", pageSize: 1, page: 2, messageLimit: 1, messageId: byText("Second unlinked reply").id });
+      assert.equal(target.page, 1);
+      assert.equal(target.messages[0]?.text, "Second unlinked reply");
+      assert.equal(target.focusMessageId, byText("Second unlinked reply").id);
+    }
     const { rounds } = deriveRoundFacts(full, []);
     assert.deepEqual(rounds.map(round => round.eligible), [false, false]);
     assert.equal(store.profile(session.id).roundMetrics?.completedTurns, 0);
@@ -249,6 +274,31 @@ test("豆包工作多条未知回复分别保留原生消息分组，同一消�
       assert.ok(markdown.includes("First unlinked reply"));
       assert.ok(markdown.includes("Second unlinked reply"));
     }
+    const service = await startService({ home: directory, roots: isolatedHistoryRoots(), startupRefresh: false });
+    try {
+      for (const mode of ["brief", "full", "trace"]) {
+        const route = `/sessions/${session.id}/messages?mode=${mode}&pageUnit=turn&pageSize=1`;
+        const first = await apiRequest<SessionMessageResult>(service.instance, route);
+        const second = await apiRequest<SessionMessageResult>(service.instance, `${route}&turnPosition=2`);
+        assert.equal(first.totalTurns, 2);
+        assert.deepEqual(first.turns?.map(turn => turn.position), [0, 0, 1]);
+        assert.deepEqual(second.turns?.map(turn => turn.position), [2]);
+        assert.equal(new Set([...first.messages, ...second.messages].map(message => message.id)).size, mode === "brief" ? 4 : 6);
+        const directory = await apiRequest<SessionTurnDirectory>(service.instance, `/sessions/${session.id}/turns?mode=${mode}&pageSize=1&page=2`);
+        assert.equal(directory.total, 2);
+        assert.deepEqual(directory.turns.map(turn => [turn.position, turn.question]), [[2, "Second request"]]);
+        const target = await apiRequest<SessionMessageResult>(service.instance, `${route}&turnPosition=2&messageLimit=1&messageId=${byText("Second unlinked reply").id}`);
+        assert.equal(target.page, 1);
+        assert.equal(target.messages[0]?.text, "Second unlinked reply");
+      }
+      const dialogue = await collectDialogue(page => apiRequest(service.instance,
+        `/sessions/${session.id}/messages?mode=brief&pageSize=1&page=${page}`), store.status().version!);
+      for (const language of ["en", "zh-CN"] as const) {
+        const markdown = dialogueMarkdown(dialogue, language);
+        assert.ok(markdown.includes("First unlinked reply"));
+        assert.ok(markdown.includes("Second unlinked reply"));
+      }
+    } finally { await service.close(); }
   } finally { store.close(); }
 }));
 

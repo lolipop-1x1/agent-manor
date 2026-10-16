@@ -28,9 +28,9 @@ test("显式未关联消息按原始记录分组，不改变默认未知轮次�
   const byText = (text: string) => [...messages.values()].find(value => value.text === text)!;
   assert.equal(meta.turnCount, 2);
   assert.equal(byText("Before any request").turnId, `${meta.id}:turn:0`);
-  assert.equal(byText("Unlinked reply").turnId, `${meta.id}:turn:unassigned:4`);
+  assert.equal(byText("Unlinked reply").turnId, `${meta.id}:unassigned:4:turn:0`);
   assert.equal(byText("Same native reply").turnId, byText("Unlinked reply").turnId);
-  assert.equal(byText("Another unlinked reply").turnId, `${meta.id}:turn:unassigned:5`);
+  assert.equal(byText("Another unlinked reply").turnId, `${meta.id}:unassigned:5:turn:0`);
   assert.equal(byText("Unlinked reply").kind, "assistant");
   assert.equal(byText("Inherited context").turnId, byText("Second request").turnId);
   assert.equal(byText("First reply").turnId, byText("First request").turnId);
@@ -43,6 +43,7 @@ test("未关联展示分组规则仅使显式 null 来源的旧指纹失效", ()
   for (const turnKey of [null, undefined]) {
     const row = normalizedRecord({ key: "reply", kind: "assistant", text: "Saved reply", turnKey }, "{}", 1);
     const previousHash = createHash("sha256").update(JSON.stringify([undefined, source.sessionId, undefined, {}]))
+      .update(turnKey === null ? "unassigned-record-v1" : "")
       .update(JSON.stringify([row.line, normalizedHash(row.raw), row.record])).digest("hex");
     const currentHash = normalizedSnapshot(source, [row]).hash;
     if (turnKey === null) assert.notEqual(currentHash, previousHash);

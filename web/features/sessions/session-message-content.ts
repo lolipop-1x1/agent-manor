@@ -16,7 +16,8 @@ export async function completeMessage(message: SessionMessage, version?: string,
 /** 轮次复制沿用当前视图与分支；整页额外包含的上下文不能混进该轮。 */
 export async function completeTurnMarkdown(sessionId: string, turnId: string, position: number | undefined,
   query: { version?: string; mode?: "brief" | "full" | "trace"; branch?: string }, language: Language): Promise<string> {
-  const result = await request<SessionMessageResult>(`/sessions/${encodeURIComponent(sessionId)}/messages${sessionParams({ ...query, pageUnit: "turn", pageSize: 1, turnPosition: position })}`);
+  const result = await request<SessionMessageResult>(`/sessions/${encodeURIComponent(sessionId)}/messages${sessionParams({ ...query, pageUnit: "turn", pageSize: 1,
+    page: position === 0 ? 1 : undefined, turnPosition: position === 0 ? undefined : position })}`);
   if (result.version !== query.version) throw new ApiError("VERSION_MISMATCH", "结果版本发生变化，请重试。", { key: "sessions.reading.versionChanged" });
   return dialogueMarkdown(result.messages.filter(message => message.turnId === turnId), language);
 }

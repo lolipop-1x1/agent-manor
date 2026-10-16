@@ -708,6 +708,30 @@ test("完整轮次分页保留初始、未知及超大单轮，首末和消息�
   assert.throws(() => store.messages(id, { mode: "brief", toolName: "read" }), { code: "INVALID_INPUT" });
 }));
 
+test("只有未知展示组的会话仍能分页和定位，不制造轮次目录或用户轮次", async () => fixture(store => {
+  const id = "unassigned-only";
+  const values = [
+    message(id, 0, { turnId: `${id}:turn:0`, kind: "context", text: "Initial context" }),
+    message(id, 1, { turnId: `${id}:unassigned:1:turn:0`, kind: "assistant", text: "First unlinked reply" }),
+    message(id, 2, { turnId: `${id}:unassigned:2:turn:0`, kind: "assistant", text: "Second unlinked reply" }),
+  ];
+  store.publish(store.createJob().id, [source(store, meta(id), values)], []);
+  for (const mode of ["brief", "full", "trace"] as const) {
+    const result = store.messages(id, { mode, pageUnit: "turn", pageSize: 1, page: 5 });
+    assert.equal(result.page, 1);
+    assert.equal(result.totalTurns, 0);
+    assert.equal(result.total, mode === "brief" ? 2 : 3);
+    assert.ok(result.turns?.every(turn => turn.position === 0));
+    assert.equal(result.messages.length, result.total);
+    assert.equal(store.turnDirectory(id, { mode }).total, 0);
+    const target = store.messages(id, { mode, pageUnit: "turn", pageSize: 1, messageLimit: 1, messageId: "message-2" });
+    assert.equal(target.page, 1);
+    assert.equal(target.messages[0]?.text, "Second unlinked reply");
+  }
+  assert.equal(store.profile(id).roundMetrics?.userTurns, 0);
+  assert.equal(store.profile(id).roundMetrics?.completedTurns, 0);
+}));
+
 test("简易视图轮次顺序依据完整消息，过程和最终回复的交错不改变组序号", async () => fixture(store => {
   const revision = source(store, meta("interleaved-turns"), [
     message("interleaved-turns", 0, { turnId: "first", kind: "thinking" }),

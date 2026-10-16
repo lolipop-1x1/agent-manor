@@ -154,6 +154,8 @@ test("分页消息仍显示来源的真实轮次编号，不按当前页从1重�
   assert.equal(turnTitle("session:turn:19", 1, "zh-CN"), "第 19 轮");
   assert.equal(turnTitle("session:turn:0", 1, "zh-CN"), "初始上下文");
   assert.equal(turnTitle("unknown", 1, "zh-CN"), "轮次未记录");
+  assert.equal(turnTitle("session:unassigned:4:turn:0", 0, "zh-CN"), "轮次未记录");
+  assert.equal(turnTitle("session:unassigned:4:turn:0", 0, "en"), "Turn not recorded");
 });
 
 
