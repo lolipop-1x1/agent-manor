@@ -1,5 +1,5 @@
 import { appendFile, mkdir, readFile, symlink, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { join, relative, dirname } from "node:path";
 
 /** 人工资源与历史：仅在调用方创建的隔离目录内使用。 */
 export async function resourceFixture(directory, count = 45) {
@@ -15,7 +15,9 @@ export async function resourceFixture(directory, count = 45) {
   await writeFile(join(guide, "asset.txt"), "保留资源附件\n");
   await writeFile(join(shared, "SKILL.md"), "---\nname: shared\n---\n共享测试资源。\n");
   await symlink(shared, link, "dir");
-  await symlink(join(directory, "missing-target"), join(userHome, ".claude", "skills", "broken"), "dir");
+  const broken = join(userHome, ".claude", "skills", "broken");
+  const brokenTarget = join(directory, "missing-target");
+  await symlink(relative(dirname(broken), brokenTarget), broken, "dir");
   for (let index = 0; index < count; index++) {
     const path = join(userHome, ".codex", "skills", `sample-${String(index).padStart(2, "0")}`);
     await mkdir(path, { recursive: true });
@@ -42,7 +44,7 @@ export async function resourceFixture(directory, count = 45) {
   await appendFile(configPath, `\n[[skills.config]]\npath = ${JSON.stringify(join(guide, "SKILL.md"))}\nenabled = true\n`);
   const source = join(history, "example.jsonl");
   await writeFile(source, messages.map(record => `${JSON.stringify(record)}\n`).join(""));
-  return { directory, userHome, project, home, history, source, guide, shared, link, configPath };
+  return { directory, userHome, project, home, history, source, guide, shared, link, broken, brokenTarget, configPath };
 }
 
 /** 同名 Skill 的多个真实来源，其中一份历史资源已不在本地。 */

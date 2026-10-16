@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { chmod, mkdir, mkdtemp, readFile, readlink, realpath, rename, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { chmod, lstat, mkdir, mkdtemp, readFile, readlink, realpath, rename, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, relative, sep } from "node:path";
 import test from "node:test";
@@ -512,18 +512,98 @@ test("共享文件中的保护引用阻止回收，新增保护引用使旧预�
   assert.equal(manager.archives().length, 0); assert.match(await readFile(join(path, "SKILL.md"), "utf8"), /人工合成/);
 }));
 
-test("链接恢复核验最终目标，拒绝链式断链，目标内容变化不影响恢复", async () => fixture(async (manager, directory) => {
+test("链式链接目标缺失仍可恢复，目标内容变化不影响链接恢复", async () => fixture(async (manager, directory) => {
   const target = join(directory, "target"); await skill(target);
   const middle = join(directory, "middle"); const path = join(directory, "link"); await symlink(target, middle); await symlink(middle, path);
   const selected = entry(path, { entryType: "symlink", linkTarget: middle, targetPath: target });
   const initial = snapshot([selected]); const trash = await manager.preview({ entryId: selected.id, action: "trash" }, initial);
   assert.equal(trash.target, "entry"); assert.equal((await manager.apply(trash.id, true, initial)).status, "success");
   const archive = manager.archives("trash")[0]!; await rm(target, { recursive: true });
-  await assert.rejects(manager.preview({ operationId: archive.operationId, action: "restore" }, snapshot([])), (error: unknown) => error instanceof ServiceError && error.messageDescriptor?.key === "diagnostics.resources.management.linkTargetMissing");
-  assert.equal(manager.archives()[0]?.restorable, true);
-  await skill(target); const restore = await manager.preview({ operationId: archive.operationId, action: "restore" }, snapshot([]));
+  const restore = await manager.preview({ operationId: archive.operationId, action: "restore" }, snapshot([]));
+  assert.deepEqual(restore.link, { target: middle, state: "missing" });
+  const restored = await manager.apply(restore.id, true, snapshot([]));
+  assert.equal(restored.status, "success"); assert.deepEqual(restored.link, restore.link);
+  assert.equal(await readlink(path), middle); await assert.rejects(realpath(path)); assert.equal(await readlink(middle), target);
+  await skill(target);
+  const again = await manager.preview({ entryId: selected.id, action: "trash" }, initial);
+  const removed = await manager.apply(again.id, true, initial);
+  const available = await manager.preview({ operationId: removed.id, action: "restore" }, snapshot([]));
   await writeFile(join(target, "extra.md"), "合成目标的内容变更\n");
-  assert.equal((await manager.apply(restore.id, true, snapshot([]))).status, "success"); assert.equal(await readlink(path), middle);
+  assert.equal((await manager.apply(available.id, true, snapshot([]))).status, "success");
+  assert.equal(await readlink(path), middle); assert.equal(await readFile(join(target, "extra.md"), "utf8"), "合成目标的内容变更\n");
+}));
+
+for (const relativeLink of [false, true]) test(`原本断开的${relativeLink ? "相对" : "绝对"}链接可移除恢复并单独永久清除`, async () => fixture(async (manager, directory) => {
+  const target = join(directory, "missing-target"); const path = join(directory, "links", "guide");
+  const other = join(directory, "other-link"); await mkdir(dirname(path));
+  const text = relativeLink ? relative(dirname(path), target) : target;
+  await symlink(text, path); await symlink(target, other);
+  const selected = entry(path, { entryType: "symlink", readState: "broken", linkTarget: text });
+  const initial = snapshot([selected]);
+  const trash = await manager.preview({ entryId: selected.id, action: "trash" }, initial);
+  assert.deepEqual(trash.link, { target: text, state: "missing" });
+  const removed = await manager.apply(trash.id, true, initial); assert.equal(removed.status, "success");
+  await assert.rejects(lstat(path)); await assert.rejects(lstat(target)); assert.equal(await readlink(other), target);
+  const archive = manager.archives("trash")[0]!;
+  assert.equal(await readlink(archive.storedPath!), text); assert.equal(archive.restorable, true);
+  const restore = await manager.preview({ operationId: removed.id, action: "restore" }, snapshot([]));
+  assert.equal(restore.originalPath, path); assert.deepEqual(restore.link, trash.link);
+  assert.equal((await manager.apply(restore.id, true, snapshot([]))).status, "success");
+  assert.equal(await readlink(path), text); await assert.rejects(realpath(path));
+  const again = await manager.preview({ entryId: selected.id, action: "trash" }, initial);
+  const removedAgain = await manager.apply(again.id, true, initial);
+  const purge = await manager.preview({ operationId: removedAgain.id, action: "purge" }, snapshot([]));
+  assert.equal(purge.originalPath, path); assert.deepEqual(purge.link, trash.link);
+  const material = manager.archives("trash")[0]!.storedPath!;
+  assert.equal((await manager.apply(purge.id, true, snapshot([]))).status, "success");
+  await assert.rejects(lstat(material)); await assert.rejects(lstat(path)); await assert.rejects(lstat(target));
+  assert.equal(await readlink(other), target);
+  await assert.rejects(manager.preview({ operationId: removedAgain.id, action: "restore" }, snapshot([])), ServiceError);
+}));
+
+test("循环目标状态无法确认时仍只恢复所选链接", async () => fixture(async (manager, directory) => {
+  const target = join(directory, "loop"); const path = join(directory, "link");
+  await symlink(target, target); await symlink(target, path);
+  const selected = entry(path, { entryType: "symlink", readState: "broken", linkTarget: target });
+  const initial = snapshot([selected]); const trash = await manager.preview({ entryId: selected.id, action: "trash" }, initial);
+  assert.deepEqual(trash.link, { target, state: "unreadable" });
+  const removed = await manager.apply(trash.id, true, initial);
+  const restore = await manager.preview({ operationId: removed.id, action: "restore" }, snapshot([]));
+  assert.deepEqual(restore.link, trash.link);
+  const restored = await manager.apply(restore.id, true, snapshot([]));
+  assert.equal(restored.status, "success"); assert.deepEqual(restored.link, restore.link);
+  assert.equal(await readlink(path), target); assert.equal(await readlink(target), target);
+}));
+
+for (const targetAppears of [false, true]) test(`预览后目标${targetAppears ? "出现" : "消失"}不阻止恢复链接，结果使用执行时状态`, async () => fixture(async (manager, directory) => {
+  const target = join(directory, "target"); const path = join(directory, "link");
+  if (!targetAppears) await skill(target);
+  await symlink(target, path);
+  const selected = entry(path, { entryType: "symlink", linkTarget: target, readState: targetAppears ? "broken" : "present" });
+  const initial = snapshot([selected]); const trash = await manager.preview({ entryId: selected.id, action: "trash" }, initial);
+  const removed = await manager.apply(trash.id, true, initial);
+  const restore = await manager.preview({ operationId: removed.id, action: "restore" }, snapshot([]));
+  assert.equal(restore.link?.state, targetAppears ? "missing" : "available");
+  if (targetAppears) await skill(target); else await rm(target, { recursive: true });
+  const restored = await manager.apply(restore.id, true, snapshot([]));
+  assert.equal(restored.status, "success"); assert.equal(restored.link?.state, targetAppears ? "available" : "missing");
+  assert.equal(await readlink(path), target);
+}));
+
+for (const conflict of ["occupied", "material"] as const) test(`断链恢复仍拒绝${conflict === "occupied" ? "原位置被其他断链占用" : "材料指向被篡改"}`, async () => fixture(async (manager, directory) => {
+  const path = join(directory, "link"); const target = join(directory, "missing-target"); await symlink(target, path);
+  const initial = snapshot([entry(path, { entryType: "symlink", readState: "broken", linkTarget: target })]);
+  const trash = await manager.preview({ entryId: initial.entries[0]!.id, action: "trash" }, initial);
+  const removed = await manager.apply(trash.id, true, initial);
+  const archive = manager.archives("trash")[0]!;
+  const restore = await manager.preview({ operationId: removed.id, action: "restore" }, snapshot([]));
+  const replacement = join(directory, "other-missing-target");
+  if (conflict === "occupied") await symlink(replacement, path);
+  else { await rm(archive.storedPath!); await symlink(replacement, archive.storedPath!); }
+  assert.equal((await manager.apply(restore.id, true, snapshot([]))).status, "conflict");
+  assert.equal(manager.archives("trash")[0]?.restorable, true);
+  if (conflict === "occupied") assert.equal(await readlink(path), replacement); else await assert.rejects(lstat(path));
+  await assert.rejects(manager.preview({ operationId: removed.id, action: "restore" }, snapshot([])), ServiceError);
 }));
 
 test("共享链接回收只影响同一路径的发现入口，恢复保留这些客户端范围", async () => fixture(async (manager, directory) => {

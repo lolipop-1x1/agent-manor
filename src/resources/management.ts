@@ -25,7 +25,7 @@ interface Inspection { hash: string; modes: Mode[]; contentHash: string }
 interface Dependency { path: string; hash: string }
 interface PrivateArchive { public: ResourceManagementArchive; change?: ConfigChange; modes: Mode[]; backupHash: string }
 interface Plan { public: ResourceManagementPreview; entry: ResourceInventoryEntry; dependencies: Dependency[]; references: string;
-  archiveId?: string; change?: ConfigChange; restoreText?: string; linkTarget?: { path: string; resolved: string } }
+  archiveId?: string; change?: ConfigChange; restoreText?: string }
 interface JsonRow { json: string }
 const digest = (text: string | Buffer): string => createHash("sha256").update(text).digest("hex");
 const decode = <T>(row: JsonRow): T => JSON.parse(row.json) as T;
@@ -45,6 +45,12 @@ async function inspect(path: string): Promise<Inspection> {
   try { await walk(path); }
   catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return { hash: "missing", contentHash: "missing", modes: [] }; throw error; }
   return { hash: digest(parts.join("\n")), contentHash: digest(contents.join("\n")), modes };
+}
+/** 链接按原始指向恢复；目标状态仅供展示，不作为链接恢复条件。 */
+async function linkStatus(path: string, originalPath: string): Promise<NonNullable<ResourceManagementPreview["link"]>> {
+  const target = await readlink(path);
+  try { await realpath(resolve(dirname(originalPath), target)); return { target, state: "available" }; }
+  catch (error) { return { target, state: ["ENOENT", "ENOTDIR"].includes((error as NodeJS.ErrnoException).code ?? "") ? "missing" : "unreadable" }; }
 }
 /** 迁移核对恢复材料时复用管理操作的内容校验口径。 */
 export async function resourceMaterialFingerprint(path: string): Promise<string> { return (await inspect(path)).contentHash; }
@@ -291,7 +297,7 @@ export class ResourceManager {
     }
     const check = async (path: string) => { if (!dependencies.some(value => value.path === path)) dependencies.push({ path, hash: (await inspectOnce(path)).hash }); };
     for (const path of entry.locator.dependencyPaths ?? []) await check(path);
-    let change: ConfigChange | undefined; let restoreText: string | undefined; let linkTarget: Plan["linkTarget"];
+    let change: ConfigChange | undefined; let restoreText: string | undefined;
     let sourcePath = entry.entryPath; let destinationPath: string | undefined;
     let method: ResourceManagementPreview["method"] = input.action === "disable" ? "native_toggle" : entry.kind === "mcp" ? "registration_remove" : "entry_isolation";
     if (archive) {
@@ -308,11 +314,6 @@ export class ResourceManager {
           catch (error) { if (error instanceof ServiceError) throw error; stale("配置无法读取，恢复不会覆盖现有文件", { key: "diagnostics.resources.management.m013" }); }
         } else {
           if ((await inspectOnce(destinationPath)).hash !== "missing") stale("原位置已被占用，恢复不会覆盖现有资源", { key: "diagnostics.resources.management.m014" });
-          if (entry.entryType === "symlink") {
-            const path = resolve(dirname(destinationPath), await readlink(sourcePath));
-            try { linkTarget = { path, resolved: await realpath(path) }; }
-            catch { stale("链接目标已不存在，请先恢复目标文件", { key: "diagnostics.resources.management.linkTargetMissing" }); }
-          }
         }
       }
     } else {
@@ -343,7 +344,9 @@ export class ResourceManager {
     const revealedEntries = input.action === "standby" || input.action === "trash" ? revealed(snapshot, entry) : undefined;
     const preview: ResourceManagementPreview = { id, action: input.action, entryId: entry.id, operationId: input.operationId,
       resource: { name: entry.name, kind: entry.kind, client: entry.client, scope: entry.scope, project: entry.project }, method, target,
-      sourcePath, destinationPath, configuration: change ? { ...configurationPreview(change), ...resourceControlScope(entry) }
+      sourcePath, destinationPath, originalPath: archive?.public.originalPath ?? sourcePath,
+      link: entry.entryType === "symlink" && !change && !archive?.change ? await linkStatus(sourcePath, archive?.public.originalPath ?? entry.entryPath) : undefined,
+      configuration: change ? { ...configurationPreview(change), ...resourceControlScope(entry) }
         : input.action === "restore" && archive?.change ? { ...configurationPreview(archive.change, true), ...resourceControlScope(entry) } : undefined,
       affectedEntries: affected.flatMap(value => {
         const scopes = value.selectionScopes?.filter(scope => !(input.action === "disable" && entry.locator.nativeControl === "codeflicker-skill" && entry.scope === "project")
@@ -355,7 +358,7 @@ export class ResourceManager {
       createdAt, expiresAt, requiresConfirmation: true, clientEffect: input.action !== "purge" && (change || archive?.change) ? "pending_reload" : "unknown" };
     if ((target === "file" || entry.entryType === "symlink" && !archive?.change) && archive?.public.affectedEntries) preview.affectedEntries = [...new Map(
       [...archive.public.affectedEntries, ...preview.affectedEntries].map(value => [JSON.stringify([value.id, value.scope, value.project, value.entryPath]), value])).values()];
-    const plan: Plan = { public: preview, entry, dependencies, references: signature(snapshot, entry), archiveId: archive?.public.id, change, restoreText, linkTarget };
+    const plan: Plan = { public: preview, entry, dependencies, references: signature(snapshot, entry), archiveId: archive?.public.id, change, restoreText };
     this.database.prepare("INSERT INTO resource_plans(id,expires_at,json) VALUES(?,?,?)").run(id, expiresAt, JSON.stringify(plan)); return preview;
   }
 
@@ -420,10 +423,6 @@ export class ResourceManager {
           stale("该物理本体有其他已发现入口引用，隔离或恢复范围尚未核验，请重新检查入口", { key: "diagnostics.resources.management.m028" });
         }
         for (const dependency of plan.dependencies) if ((await inspect(dependency.path)).hash !== dependency.hash) stale();
-        if (plan.linkTarget) {
-          const current = await realpath(plan.linkTarget.path).catch(() => stale());
-          if (current !== plan.linkTarget.resolved) stale();
-        }
         if (plan.archiveId) {
           saved = this.archive(preview.operationId!);
           if (preview.action === "restore" ? !saved.public.restorable : !saved.public.storedPath || saved.public.state === "purged") stale("该恢复记录已变化，请重新生成预览", { key: "diagnostics.resources.management.m029" });
@@ -453,6 +452,7 @@ export class ResourceManager {
             }
             await permissions(destination, saved.modes, false);
             if ((await inspect(destination)).contentHash !== saved.backupHash) throw new ServiceError("INTERNAL_ERROR", "恢复内容未通过校验，恢复材料继续保留", { key: "diagnostics.resources.management.m030" });
+            if (root.type === "symlink") operation.link = await linkStatus(destination, destination);
             saved.public.state = "restored"; saved.public.restorable = false; saved.public.operationStatus = "success";
           }
           this.saveArchive(saved, "complete"); operation.archiveId = saved.public.id;

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { access, appendFile, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { access, appendFile, lstat, mkdir, mkdtemp, readFile, readlink, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -58,6 +58,8 @@ try {
   for(let attempt=0;attempt<400;attempt++) { const state=await api('/sessions/status'); if(state.job?.status==='failed')throw new Error(state.job.error); if(state.version)break; await new Promise(resolve=>setTimeout(resolve,25)); }
   assert.ok((await api('/sessions/status')).version);
   await api('/preferences','PUT',{language:'zh-CN'});
+  const brokenText = await readlink(fixture.broken);
+  const brokenSibling = join(directory,"broken-sibling"); await symlink(fixture.brokenTarget,brokenSibling);
   const initialConfig = await readFile(fixture.configPath,'utf8');
   const sample = (await api('/resources/overview?kind=mcp')).resources.find(row=>row.identity.name==='sample');
   const guide = (await api('/resources/overview?kind=skill')).resources.find(row=>row.identity.name==='guide');
@@ -213,6 +215,91 @@ try {
   await assert.rejects(access(fixture.link),{code:'ENOENT'});await access(join(fixture.shared,'SKILL.md'));
   await step('链接恢复仍指向原目标',`await ${preview}.getByRole('button',{name:'预览恢复',exact:true}).click();${apply('恢复到原位置')}${finish}`);
   assert.equal(await realpath(fixture.link),await realpath(fixture.shared));
+  await step('断链移除预览显示原始指向和目标缺失',`
+    ${route('skill','broken')}${open('broken')}${tab('文件位置')}
+    expect(await page.getByRole('button',{name:${JSON.stringify(`移除链接${fixture.broken}，保留目标文件`)},exact:true}).count()===1,'同一个断链被重复展示');
+    await page.getByRole('button',{name:${JSON.stringify(`移除链接${fixture.broken}，保留目标文件`)},exact:true}).click();
+    await ${preview}.getByRole('button',{name:'移入回收区',exact:true}).waitFor();
+    expect((await ${preview}.innerText()).includes(${JSON.stringify(brokenText)}),'断链原始指向缺失');
+    expect((await ${preview}.innerText()).includes('目标不存在'),'没有标明目标缺失');${apply('移入回收区')}${finish}
+    ${tools('回收区')}
+    await page.getByRole('button',{name:'查看broken的恢复记录',exact:true}).click();${ready}
+    const detail=await page.getByRole('complementary',{name:'资源详情',exact:true}).innerText();
+    expect(detail.includes('可恢复链接')&&detail.includes('移除时链接已断开'),'链接恢复材料和移除时状态不清晰');
+  `);
+  await assert.rejects(lstat(fixture.broken),{code:'ENOENT'});
+  await assert.rejects(lstat(fixture.brokenTarget),{code:'ENOENT'});
+  await step('断链恢复预览不再阻塞，窄屏入口可达',`
+    await page.getByRole('button',{name:'预览恢复',exact:true}).click();
+    await ${preview}.getByRole('button',{name:'恢复到原位置',exact:true}).waitFor();
+    const text=await ${preview}.innerText();expect(text.includes(${JSON.stringify(fixture.broken)})&&text.includes('目标不存在'),'恢复原位置或目标状态缺失');
+    expect(!text.includes('关联的其他文件位置')&&!text.includes('resource-vault'),'自身或内部路径误列');
+    await page.setViewportSize({width:390,height:844});
+    expect(await ${preview}.getByRole('button',{name:'恢复到原位置',exact:true}).isVisible(),'窄屏确认入口不可达');${snap('broken-link-restore-mobile.png')}
+    await page.setViewportSize({width:1920,height:1000});${snap('broken-link-restore.png')}
+  `);
+  await api('/preferences','PUT',{language:'en',appearance:{mode:'dark',preset:'blue'}});
+  await step('英文深色断链预览保持原位置和缺失含义',`
+    await page.evaluate(()=>window.dispatchEvent(new Event('focus')));
+    await ${preview}.getByRole('button',{name:'Restore to original location',exact:true}).waitFor();
+    expect((await ${preview}.innerText()).includes('Target missing'),'英文目标状态缺失');
+    expect(!(await ${preview}.innerText()).includes('resource-vault'),'英文泄露内部路径');${snap('broken-link-restore-en-dark.png')}
+  `);
+  await api('/preferences','PUT',{language:'zh-CN',appearance:{mode:'light',preset:'blue'}});
+  await step('断链恢复成功并明确 Skill 仍不可用',`
+    await page.evaluate(()=>window.dispatchEvent(new Event('focus')));
+    await ${preview}.getByRole('button',{name:'恢复到原位置',exact:true}).waitFor();${apply('恢复到原位置')}
+    expect((await ${preview}.innerText()).includes('链接已恢复，目标仍缺失，Skill 暂不可用'),'恢复反馈混淆链接和可用性');${snap('broken-link-restored.png')}${finish}
+  `);
+  assert.equal(await readlink(fixture.broken),brokenText);await assert.rejects(realpath(fixture.broken),{code:'ENOENT'});
+  assert.equal(await readlink(brokenSibling),fixture.brokenTarget);
+  await step('恢复后的断链仍显示目标缺失，可以再次移除',`
+    ${route('skill','broken')}${open('broken')}${tab('文件位置')}
+    expect((await page.locator('.resource-location-list').innerText()).includes('断链'),'扫描未保留断链状态');
+    await page.getByRole('button',{name:${JSON.stringify(`移除链接${fixture.broken}，保留目标文件`)},exact:true}).click();${apply('移入回收区')}${finish}
+    ${tools('回收区')}
+    await page.getByRole('button',{name:'查看broken的恢复记录',exact:true}).click();${ready}
+    await page.getByRole('button',{name:'预览永久清除',exact:true}).click();
+    await ${preview}.getByRole('checkbox',{name:'我确认永久清除所列恢复材料',exact:true}).waitFor();
+    const text=await ${preview}.innerText();expect(text.includes(${JSON.stringify(fixture.broken)}),'永久清除原位置显示错误');
+    expect(text.split('永久清除此链接的恢复材料').length===2,'永久清除说明重复');
+    expect(!text.includes('关联的其他文件位置')&&!text.includes('resource-vault'),'永久清除误列自身或内部路径');
+    expect(await ${preview}.getByRole('button',{name:'确认永久清除',exact:true}).isDisabled(),'没有勾选即可永久清除');${snap('broken-link-purge.png')}
+  `);
+  const brokenArchive = (await api('/resources/archives?kind=skill&state=trash&q=broken')).archives[0];
+  assert.equal(await readlink(brokenArchive.storedPath),brokenText);
+  await step('断链永久清除通过正式页面确认后仅删除本次恢复材料',`
+    await ${preview}.getByRole('checkbox',{name:'我确认永久清除所列恢复材料',exact:true}).check();
+    await ${preview}.getByRole('button',{name:'确认永久清除',exact:true}).click();
+    await ${preview}.getByRole('button',{name:'完成',exact:true}).waitFor();
+    expect((await ${preview}.getByRole('status').innerText()).includes('恢复材料已永久清除'),'永久清除没有成功');${snap('broken-link-purged.png')}${finish}
+    expect(await page.getByRole('button',{name:'查看broken的恢复记录',exact:true}).count()===0,'回收区仍可恢复已清除的链接');
+  `);
+  await assert.rejects(lstat(brokenArchive.storedPath),{code:'ENOENT'});await assert.rejects(lstat(fixture.broken),{code:'ENOENT'});
+  await assert.rejects(lstat(fixture.brokenTarget),{code:'ENOENT'});assert.equal(await readlink(brokenSibling),fixture.brokenTarget);
+  assert.equal(await realpath(fixture.link),await realpath(fixture.shared));
+  await assert.rejects(api('/resources/preview','POST',{action:'restore',operationId:brokenArchive.operationId}),{code:'INVALID_INPUT'});
+  const sharedSibling = join(directory,'shared-sibling');await symlink(fixture.shared,sharedSibling);
+  const sharedText = await readFile(join(fixture.shared,'SKILL.md'),'utf8');
+  await step('有效链接再次移除后可单独预览永久清除',`
+    ${route('skill','shared')}${open('shared')}${tab('文件位置')}
+    await page.locator('.resource-linked-locations > summary').click();
+    await page.getByRole('button',{name:${JSON.stringify(`移除链接${fixture.link}，保留目标文件`)},exact:true}).click();${apply('移入回收区')}${finish}
+    ${tools('回收区')}
+    await page.getByRole('button',{name:'查看shared的恢复记录',exact:true}).click();${ready}
+    await page.getByRole('button',{name:'预览永久清除',exact:true}).click();
+    await ${preview}.getByRole('checkbox',{name:'我确认永久清除所列恢复材料',exact:true}).waitFor();
+    expect((await ${preview}.innerText()).includes('目标存在'),'有效链接目标状态不正确');
+  `);
+  const sharedArchive = (await api('/resources/archives?kind=skill&state=trash&q=shared')).archives[0];
+  await step('有效链接永久清除保留目标文件和兄弟链接',`
+    await ${preview}.getByRole('checkbox',{name:'我确认永久清除所列恢复材料',exact:true}).check();
+    await ${preview}.getByRole('button',{name:'确认永久清除',exact:true}).click();
+    await ${preview}.getByRole('button',{name:'完成',exact:true}).waitFor();
+    expect((await ${preview}.getByRole('status').innerText()).includes('恢复材料已永久清除'),'永久清除失败');${finish}
+  `);
+  await assert.rejects(lstat(sharedArchive.storedPath),{code:'ENOENT'});await assert.rejects(lstat(fixture.link),{code:'ENOENT'});
+  assert.equal(await readFile(join(fixture.shared,'SKILL.md'),'utf8'),sharedText);assert.equal(await readlink(sharedSibling),fixture.shared);
   await step('MCP 独立注册和字段前后值，不展示敏感内容',`
     ${route('mcp','sample',sample.identity.id,'locations')}
     expect(await page.locator('.resource-management-body').count()===4,'同名注册被合并');

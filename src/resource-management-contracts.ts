@@ -16,6 +16,10 @@ export interface ResourceConfigurationPreview {
   controlScope?: "path" | "project" | "client";
   controlProject?: string;
 }
+export interface ResourceLinkStatus {
+  target: string;
+  state: "available" | "missing" | "unreadable";
+}
 export interface ResourceManagementPreview {
   id: string;
   action: ResourceManagementAction;
@@ -25,6 +29,8 @@ export interface ResourceManagementPreview {
   method: "native_toggle" | "entry_isolation" | "registration_remove" | "restore" | "permanent_purge";
   target?: "entry" | "file";
   sourcePath: string;
+  originalPath?: string;
+  link?: ResourceLinkStatus;
   destinationPath?: string;
   configuration?: ResourceConfigurationPreview;
   affectedEntries: ResourceAffectedEntry[];
@@ -57,6 +63,7 @@ export interface ResourceManagementOperation {
   clientEffect: "pending_reload" | "unknown";
   target?: "entry" | "file";
   affectedEntries?: ResourceAffectedEntry[];
+  link?: ResourceLinkStatus;
 }
 export interface ResourceManagementArchive {
   id: string;

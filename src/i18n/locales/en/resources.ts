@@ -1,6 +1,18 @@
 import type { MessageCatalog } from "../../types.js";
 
 export default {
+  "resources.workspace.removedBrokenLink": "This link was broken when removed. Restoring it recreates the link only.",
+  "resources.workspace.purged": "Recovery material permanently removed",
+  "resources.archive.restorableLink": "Link restorable",
+  "resources.workspace.linkTarget": "Link target",
+  "resources.workspace.linkState.available": "Target exists",
+  "resources.workspace.linkState.missing": "Target missing",
+  "resources.workspace.linkState.unreadable": "Target status unknown",
+  "resources.workspace.restoreLinkEffect": "Recreate the original link without overwriting new content at its location or changing target files. Missing target files must be restored separately.",
+  "resources.workspace.purgeLinkEffect": "Permanently remove this link’s recovery material. This record can no longer restore the link. Target files and other links are unaffected.",
+  "resources.workspace.restoredLink.available": "Link restored. The target exists.",
+  "resources.workspace.restoredLink.missing": "Link restored. The target is still missing, so the Skill remains unavailable.",
+  "resources.workspace.restoredLink.unreadable": "Link restored. The target status could not be confirmed.",
   "resources.detail.usageSummary": "Usage statistics and distribution",
   "resources.detail.observation": "Usage observation",
   "resources.kind.skill": "Skill",

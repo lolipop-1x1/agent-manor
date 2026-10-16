@@ -1,6 +1,18 @@
 import type { MessageCatalog } from "../../types.js";
 
 export default {
+  "resources.workspace.removedBrokenLink": "移除时链接已断开；恢复操作只还原链接。",
+  "resources.workspace.purged": "恢复材料已永久清除",
+  "resources.archive.restorableLink": "可恢复链接",
+  "resources.workspace.linkTarget": "链接指向",
+  "resources.workspace.linkState.available": "目标存在",
+  "resources.workspace.linkState.missing": "目标不存在",
+  "resources.workspace.linkState.unreadable": "无法确认目标状态",
+  "resources.workspace.restoreLinkEffect": "按原始指向恢复链接，不覆盖原位置的新内容。目标文件不受影响，缺失时需另行恢复。",
+  "resources.workspace.purgeLinkEffect": "永久清除此链接的恢复材料，无法再通过这条记录恢复。目标文件和其他链接不受影响。",
+  "resources.workspace.restoredLink.available": "链接已恢复，目标存在。",
+  "resources.workspace.restoredLink.missing": "链接已恢复，目标仍缺失，Skill 暂不可用。",
+  "resources.workspace.restoredLink.unreadable": "链接已恢复，暂时无法确认目标状态。",
   "resources.detail.usageSummary": "使用统计与分布",
   "resources.detail.observation": "使用观察",
   "resources.kind.skill": "Skill",
