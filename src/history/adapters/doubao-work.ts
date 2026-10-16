@@ -25,6 +25,29 @@ const timestamp = (value: unknown): string | undefined => {
   const raw = identity(value);
   return raw && /^\d{10}$/.test(raw) ? new Date(Number(raw) * 1_000).toISOString() : undefined;
 };
+const decodedObject = (value: unknown): Record<string, unknown> => {
+  if (typeof value !== "string") return object(value);
+  try { return object(JSON.parse(value)); } catch { return {}; }
+};
+const messageFinish = (value: unknown, occurredAt: string | undefined): Pick<NormalizedEvent, "finishedAt" | "durationMs"> | undefined => {
+  const raw = identity(value);
+  if (!occurredAt || !raw || !/^\d+$/.test(raw)) return undefined;
+  const end = Number(raw); const start = Date.parse(occurredAt);
+  if (!Number.isSafeInteger(end) || end < start || !Number.isFinite(new Date(end).getTime())) return undefined;
+  return { finishedAt: new Date(end).toISOString(), durationMs: end - start };
+};
+
+function contextSnapshot(value: unknown, id: string, occurredAt: string | undefined): NonNullable<NormalizedSessionMetadata["contextSnapshots"]>[number] | undefined {
+  const usage = decodedObject(value);
+  const components = [usage.system_prompt, usage.messages, usage.skills, usage.tools];
+  if (!components.every((component): component is number => typeof component === "number" && Number.isSafeInteger(component) && component >= 0)) return undefined;
+  const capacity = usage.total_window_size;
+  if (typeof capacity !== "number" || !Number.isSafeInteger(capacity) || capacity <= 0) return undefined;
+  const used = components.reduce((sum, component) => sum + component, 0);
+  if (!Number.isSafeInteger(used)) return undefined;
+  return { id, occurredAt, usedTokens: used, capacityTokens: capacity,
+    systemPromptTokens: components[0]!, messageTokens: components[1]!, skillTokens: components[2]!, toolTokens: components[3]! };
+}
 
 /** 每个值都是聚合响应；未知响应不能当作一份有效的空目录。 */
 function conversations(records: CacheRecord[]): Conversation[] {
@@ -109,17 +132,22 @@ function messageRecords(conversation: Conversation, meta: NormalizedSessionMetad
   const { messages: _messages, ...conversationMetadata } = conversation.value;
   const records: RawHistoryRecord[] = [];
   const workspaces = new Set<string>();
+  const addWorkspace = (value: unknown) => {
+    const workspace = normalizeHistoryPath(string(value));
+    if (workspace && !workspace.includes("\0") && isAbsolute(workspace)) workspaces.add(workspace);
+  };
+  addWorkspace(decodedObject(object(conversation.value.conv_extra).agent_task_param).workspace);
   for (const [messagePosition, item] of ordered.entries()) {
     const message = item.message;
     const ext = object(message.ext);
     const clientOption = object(object(ext.general_task_param).client_option);
-    const workspace = normalizeHistoryPath(string(clientOption.workspace));
-    if (workspace && isAbsolute(workspace)) workspaces.add(workspace);
+    addWorkspace(clientOption.workspace);
     const raw = JSON.stringify({ conversation: conversationMetadata, message });
     const line = messagePosition + 1;
     const occurredAt = timestamp(message.create_time);
     const isUser = message.user_type === 1;
     const isAssistant = message.user_type === 2;
+    const finish = isAssistant ? messageFinish(ext.finish_time_ms, occurredAt) : undefined;
     const reply = identity(message.bot_reply_message_id);
     const target = reply ? byId.get(reply) : undefined;
     const linked = isAssistant && target?.user_type === 1 && index(target.index_in_conv) !== undefined && item.index !== undefined
@@ -127,10 +155,14 @@ function messageRecords(conversation: Conversation, meta: NormalizedSessionMetad
     const turnKey = isUser ? item.id : linked ? reply : isAssistant ? null : undefined;
     if (isAssistant && !linked) addGap(gaps, "replyMissing", "豆包工作回复缺少可核验的用户消息关联，未推定完整轮次", "ambiguous");
     if (!isUser && !isAssistant) addGap(gaps, "unknownRole", "豆包工作包含尚未适配的消息角色，按上下文保留");
-    if (ext.context_window_usage !== undefined || ext.commerce_model_data_v1 !== undefined || ext.commerce_usage_data_v1 !== undefined
-      || ext.tea_tags_time_cost !== undefined || ext.perf_mark !== undefined) {
-      addGap(gaps, "measurementUnknown", "豆包工作上下文占用、显示计量及首包字段未核验为请求用量或首 Token，未计入请求统计");
+    const context = isAssistant && ext.context_window_usage !== undefined ? contextSnapshot(ext.context_window_usage,
+      `doubao-context:${normalizedHash(JSON.stringify([conversation.selector, item.id])).slice(0, 24)}`, occurredAt) : undefined;
+    if (context) (meta.contextSnapshots ??= []).push(context);
+    if ((ext.context_window_usage !== undefined && !context) || (isAssistant && ext.finish_time_ms !== undefined && !finish)
+      || ext.commerce_model_data_v1 !== undefined || ext.commerce_usage_data_v1 !== undefined || ext.tea_tags_time_cost !== undefined || ext.perf_mark !== undefined) {
+      addGap(gaps, "measurementUnknown", "豆包工作部分计量或时间字段缺少可核验口径，未计入请求统计");
     }
+    const recordStart = records.length;
     const blocks = Array.isArray(message.content_block) ? message.content_block.map(object) : [];
     const blockById = new Map<string, Record<string, unknown>>();
     for (const block of blocks) {
@@ -190,6 +222,14 @@ function messageRecords(conversation: Conversation, meta: NormalizedSessionMetad
       const content = string(message.content);
       emit("message", { kind: isUser ? "user" : isAssistant ? "assistant" : "context", text: content ?? "" });
       addGap(gaps, "messageWithoutBlocks", "豆包工作消息缺少已核验的内容块，保留原始内容并标记格式缺口");
+    }
+    if (finish) {
+      // 一条原生回复的结束时间只落到最后一个正文块，不将多个块重复计时。
+      const last = records.slice(recordStart).reverse().find(row => {
+        const event = row.record.normalizedEvent as NormalizedEvent;
+        return event.kind === "assistant" && (Boolean(event.text?.trim()) || !blocks.length);
+      });
+      if (last) Object.assign(last.record.normalizedEvent as NormalizedEvent, finish);
     }
   }
   if (workspaces.size > 1) addGap(gaps, "workspaceConflict", "豆包工作缓存记录多个工作目录，未选择单一项目归属", "ambiguous");

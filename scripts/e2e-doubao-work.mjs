@@ -73,6 +73,19 @@ try {
     expect((await page.locator('.session-message-scroll').innerText()).includes(${quote(fixture.needle)}),'用户正文缺失');
     ${screenshot("sessions-zh-wide.png")}
   `);
+  await step("会话级项目与独立上下文快照启用用量页，缺少调用仍保持未知", `
+    expect((await page.locator('.sessions-main-heading').innerText()).includes('synthetic-project'),'会话级工作目录未显示');
+    const tabs=page.getByRole('tablist',{name:${quote(t("sessions.profile.categories"))}});
+    expect(await tabs.getByRole('tab',{name:${quote(t("sessions.profile.calls"))},exact:true}).count()===0,'未知工具被补造为调用');
+    await page.getByRole('tab',{name:${quote(t("sessions.profile.usage"))},exact:true}).click();
+    const context=page.getByRole('region',{name:${quote(t("sessions.contextWindow.title"))},exact:true});
+    await context.waitFor(); expect((await context.innerText()).includes('65'),'上下文占用未显示');
+    expect(await page.getByRole('heading',{name:${quote(t("sessions.trace.usageRequest"))},exact:true}).count()===0,'快照误显示零请求');
+    await context.getByRole('button',{name:${quote(t("sessions.contextWindow.help"))},exact:true}).click();
+    await page.getByText(${quote(t("sessions.contextWindow.helpText"))},{exact:true}).waitFor();
+    await page.keyboard.press('Escape');
+    await page.getByRole('tab',{name:${quote(t("sessions.profile.overview"))},exact:true}).click();
+  `);
   await step("两条未知轮次回复在三种阅读模式独立可达，导航只保留真实两轮", `
     const unlinked=${quote(unlinked)};
     for(const mode of ${quote([t("sessions.mode.brief"), t("sessions.mode.full"), t("sessions.mode.trace")])}) {
@@ -214,6 +227,9 @@ try {
     for(const label of ${quote([t("sessions.mode.brief", "en"), t("sessions.mode.full", "en"), t("sessions.mode.trace", "en")])}) {
       await page.getByRole('group',{name:${quote(t("sessions.reading.mode", "en"))},exact:true}).getByRole('button',{name:label,exact:true}).click(); ${idle}
     }
+    await page.getByRole('tab',{name:${quote(t("sessions.profile.usage", "en"))},exact:true}).click();
+    const context=page.getByRole('region',{name:${quote(t("sessions.contextWindow.title", "en"))},exact:true}); await context.waitFor();
+    expect((await context.innerText()).includes(${quote(t("sessions.contextWindow.latest", "en"))}),'英文上下文标签缺失');
     ${screenshot("sessions-en-dark.png")}
   `);
   await step("英文窄屏资源详情与筛选可达", `

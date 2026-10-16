@@ -31,14 +31,15 @@ export async function createDoubaoWorkScenario(directory: string, options: { inc
   const message = (id: string, role: number, index: number, blocks: unknown[], extra: Record<string, unknown> = {}) => ({
     message_id: id, user_type: role, index_in_conv: String(index), create_time: String(1792029600 + index), update_time: String(1792029600 + index),
     section_id: "synthetic-shared-section", content_type: 9999, content: "", thinking_content: "", content_block: blocks,
-    ext: { general_task_param: { client_option: { workspace: project } },
-      context_window_usage: { system_prompt: 20, messages: 30, skills: 10, tools: 5, total_window_size: 1000 },
+    ext: { finish_time_ms: role === 2 ? String((1792029600 + index + 10) * 1000) : undefined,
+      context_window_usage: role === 2 ? JSON.stringify({ system_prompt: 20, messages: 30, skills: 10, tools: 5, total_window_size: 1000 }) : undefined,
       input_skill: { skill_id: "synthetic-selected-only", skill_type: 0 },
       tea_tags_time_cost: { first_packet_cost_time: "8" }, commerce_usage_data_v1: { label: "Display only", value: "1" } }, ...extra,
   });
   const conversation = (reply: string, summary = false) => ({
     conversation_id: "synthetic-doubao-conversation", name: title, conv_version: "8", create_time: "1792029600", update_time: "1792029610",
     project_reference: { project_id: "synthetic-product-project" },
+    conv_extra: { project_id: "synthetic-product-project", agent_task_param: JSON.stringify({ workspace: project }) },
     messages: summary ? [] : [
       message("synthetic-user-one", 1, 1, [text("request-one", `检查合成文件 ${needle}`)]),
       message("synthetic-answer-one", 2, 2, [

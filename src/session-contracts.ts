@@ -30,6 +30,8 @@ export interface SessionMessage {
   finalEvidence?: "turn_terminal" | "normal_stop" | "response_completed";
   /** 来源记录的响应结束时间，区别于消息创建时间。 */
   finalAt?: string;
+  /** 原生消息的结束时间；不代表整轮终答或任务成功。 */
+  finishedAt?: string;
   interrupted?: boolean;
   durationMs?: number;
   /** 仅用于对话展示兜底，不代表来源确认了结束。 */
@@ -114,6 +116,17 @@ export interface NativeUsageReport extends Partial<Pick<SessionUsage, "model" | 
   nativeModelCalls?: number;
   totalTokens?: number;
 }
+/** 原生上下文窗口占用快照，不能累加为请求用量或费用。 */
+export interface SessionContextSnapshot {
+  id: string;
+  occurredAt?: string;
+  usedTokens: number;
+  capacityTokens: number;
+  systemPromptTokens: number;
+  messageTokens: number;
+  skillTokens: number;
+  toolTokens: number;
+}
 export interface SessionSummary {
   id: string;
   client: Client;
@@ -140,6 +153,7 @@ export interface SessionSummary {
   turnCount: number;
   models: string[];
   usageReports?: NativeUsageReport[];
+  contextSnapshots?: SessionContextSnapshot[];
   gaps: Gap[];
 }
 export interface SessionSourceMeta extends SessionSummary {
@@ -310,6 +324,7 @@ export interface SessionProfile {
   compressions: number;
   children: SessionSummary[];
   usageReports?: (NativeUsageReport & { sessionId: string })[];
+  contextSnapshots?: (SessionContextSnapshot & { sessionId: string })[];
   outputSpeed?: RequestSpeedSummary;
   steps: SessionProfileStep[];
   stepsTotal?: number;

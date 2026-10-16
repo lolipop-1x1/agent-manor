@@ -106,6 +106,140 @@ test("豆包工作按原生顺序读取块树、用户轮次和工作目录，�
   assert.equal((repeated.cursor as { parsedRecords: number }).parsedRecords, 0);
 }));
 
+test("豆包工作会话级 JSON 或对象任务目录参与归属，路径归一化不使用项目 ID 或授权目录", async () => temporary(async directory => {
+  const origin = join(directory, "launcher.leveldb");
+  for (const agentTaskParam of [JSON.stringify({ workspace: "/synthetic/project/../project" }), { workspace: "/synthetic/project" }]) {
+    const path = await writeDoubaoWorkCache(origin, [{ account: "DoubaoPC_synthetic", value: response([conversation([
+      message("u", 1, "1", [textBlock("question", "Synthetic request")], {
+        ext: { general_task_param: { client_option: { workspace: "/synthetic/project/", shared_folder_path: ["/synthetic/allowed"] } } },
+      }),
+    ], { conv_extra: { project_id: "synthetic-product-project", agent_task_param: agentTaskParam } })]) }]);
+    const { meta } = await readSession(path);
+    assert.equal(meta.project, "/synthetic/project");
+    assert.equal(meta.projectOrigin, "client_metadata");
+    assert.ok(!meta.gaps.some(gap => gap.messageDescriptor?.key.endsWith("workspaceConflict")));
+  }
+  const path = await writeDoubaoWorkCache(origin, [{ account: "DoubaoPC_synthetic", value: response([conversation([], {
+    conv_extra: { agent_task_param: JSON.stringify({ workspace: "/synthetic/project" }) },
+  })]) }]);
+  assert.equal((await readSession(path)).meta.project, "/synthetic/project");
+}));
+
+test("豆包工作无效或相对会话任务目录保持未知，与消息目录冲突时不选择项目", async () => temporary(async directory => {
+  const origin = join(directory, "launcher.leveldb");
+  for (const agentTaskParam of ["{invalid", "[]", "null", [], null, { workspace: "relative/project" }, { workspace: 12 },
+    { workspace: "/synthetic/invalid\0path" }, { workspace: "file:///synthetic/invalid%00path" },
+    { folder_name: "project", shared_folder_path: ["/synthetic/allowed"] }]) {
+    const path = await writeDoubaoWorkCache(origin, [{ account: "DoubaoPC_synthetic", value: response([conversation([], {
+      conv_extra: { project_id: "synthetic-product-project", agent_task_param: agentTaskParam },
+    })]) }]);
+    assert.equal((await readSession(path)).meta.project, undefined);
+  }
+  const path = await writeDoubaoWorkCache(origin, [{ account: "DoubaoPC_synthetic", value: response([conversation([
+    message("u", 1, "1", [textBlock("question", "Synthetic request")], {
+      ext: { general_task_param: { client_option: { workspace: "/synthetic/other" } } },
+    }),
+  ], { conv_extra: { agent_task_param: JSON.stringify({ workspace: "/synthetic/project" }) } })]) }]);
+  const { meta } = await readSession(path);
+  assert.equal(meta.project, undefined);
+  assert.ok(meta.gaps.some(gap => gap.messageDescriptor?.key.endsWith("workspaceConflict")));
+}));
+
+test("豆包工作上下文窗口逐消息保留快照和零占用，重复投影与内容块不产生请求或累计用量", async () => temporary(async directory => {
+  const context = { system_prompt: 10, messages: 20, skills: 30, tools: 40, total_window_size: 1000 };
+  const zero = { system_prompt: 0, messages: 0, skills: 0, tools: 0, total_window_size: 1000 };
+  const native = conversation([
+    message("u", 1, "1", [textBlock("question", "Synthetic request")]),
+    message("a", 2, "2", [textBlock("fragment", "First fragment"), textBlock("answer", "Synthetic answer")], {
+      bot_reply_message_id: "u", ext: { context_window_usage: JSON.stringify(context) },
+    }),
+    message("b", 2, "3", [textBlock("answer-zero", "Synthetic empty context")], {
+      bot_reply_message_id: "u", ext: { context_window_usage: zero },
+    }),
+  ]);
+  const records = [{ account: "DoubaoPC_synthetic", value: response([native]) }];
+  const launcher = await writeDoubaoWorkCache(join(directory, "launcher.leveldb"), records);
+  const chat = await writeDoubaoWorkCache(join(directory, "chat.leveldb"), records);
+  const { meta, usages, messages } = await readSession(launcher);
+  assert.equal(meta.contextSnapshots?.length, 2);
+  assert.deepEqual(meta.contextSnapshots?.map(({ id: _id, ...value }) => value), [
+    { occurredAt: "2023-11-14T22:13:20.000Z", usedTokens: 100, capacityTokens: 1000, systemPromptTokens: 10, messageTokens: 20, skillTokens: 30, toolTokens: 40 },
+    { occurredAt: "2023-11-14T22:13:20.000Z", usedTokens: 0, capacityTokens: 1000, systemPromptTokens: 0, messageTokens: 0, skillTokens: 0, toolTokens: 0 },
+  ]);
+  assert.equal(new Set(meta.contextSnapshots?.map(value => value.id)).size, 2);
+  assert.deepEqual((await readSession(chat)).meta.contextSnapshots, meta.contextSnapshots);
+  assert.deepEqual(usages, []);
+  assert.equal(meta.usageReports, undefined);
+  assert.ok(!meta.gaps.some(gap => gap.messageDescriptor?.key.endsWith("measurementUnknown")));
+  assert.ok(messages.every(value => !value.final && !value.tool && !value.model));
+  assert.equal((await discoverSources(isolatedHistoryRoots({ "doubao-work": directory }))).length, 1);
+  const parsed = await parseSource(launcher, "doubao-work", undefined, DOUBAO_WORK_FORMAT, { location: (await readSession(launcher)).source });
+  assert.deepEqual(parsed.events, []);
+}));
+
+test("豆包工作上下文快照拒绝坏 JSON、缺失、非整数、负数、无效容量与总和溢出，用户字段不充当模型计量", async () => temporary(async directory => {
+  const context = { system_prompt: 1, messages: 2, skills: 3, tools: 4, total_window_size: 1000 };
+  const invalid = ["{invalid", "[]", null, [], {}, { ...context, messages: "2" }, { ...context, messages: -1 },
+    { ...context, messages: 1.5 }, { ...context, messages: Number.MAX_SAFE_INTEGER + 1 }, { ...context, total_window_size: 0 },
+    { ...context, total_window_size: -1 }, { ...context, total_window_size: "1000" }, { ...context, total_window_size: Number.MAX_SAFE_INTEGER + 1 },
+    { ...context, system_prompt: Number.MAX_SAFE_INTEGER, messages: 1 }];
+  const path = await writeDoubaoWorkCache(join(directory, "launcher.leveldb"), [{ account: "DoubaoPC_synthetic", value: response([conversation([
+    message("u", 1, "1", [textBlock("question", "Synthetic request")], { ext: { context_window_usage: context } }),
+    ...invalid.map((value, i) => message(`a-${i}`, 2, String(i + 2), [textBlock(`answer-${i}`, "Synthetic answer")], {
+      bot_reply_message_id: "u", ext: { context_window_usage: value },
+    })),
+  ])]) }]);
+  const { meta, usages } = await readSession(path);
+  assert.equal(meta.contextSnapshots, undefined);
+  assert.ok(meta.gaps.some(gap => gap.messageDescriptor?.key.endsWith("measurementUnknown")));
+  assert.deepEqual(usages, []);
+}));
+
+test("豆包工作消息结束时间只记录最后非空正文块，无块兜底和零耗时不提升终答或请求证据", async () => temporary(async directory => {
+  const path = await writeDoubaoWorkCache(join(directory, "launcher.leveldb"), [{ account: "DoubaoPC_synthetic", value: response([conversation([
+    message("u", 1, "1", [textBlock("question", "Synthetic request")], { ext: { finish_time_ms: "1700000005000" } }),
+    message("a", 2, "2", [
+      { block_id: "thinking", block_type: 10040, parent_id: "0", content: { thinking_block: { finish_title: "Synthetic process" } } },
+      textBlock("thought", "Synthetic thought", "thinking"), textBlock("fragment", "First fragment"),
+      textBlock("answer", "Synthetic answer"), textBlock("empty", "  "),
+    ], { bot_reply_message_id: "u", ext: { finish_time_ms: "1700000009087" } }),
+    message("b", 2, "3", [], { bot_reply_message_id: "u", content: "Fallback answer", ext: { finish_time_ms: 1700000000000 } }),
+    message("c", 2, "4", [], { bot_reply_message_id: "u", ext: { finish_time_ms: "1700000001000" } }),
+  ])]) }]);
+  const { messages, usages } = await readSession(path);
+  const finished = messages.filter(value => value.finishedAt);
+  assert.deepEqual(finished.map(value => [value.text, value.finishedAt, value.durationMs]), [
+    ["Synthetic answer", "2023-11-14T22:13:29.087Z", 9087],
+    ["Fallback answer", "2023-11-14T22:13:20.000Z", 0],
+    ["", "2023-11-14T22:13:21.000Z", 1000],
+  ]);
+  assert.ok(messages.every(value => !value.final && !value.finalAt && !value.finalEvidence && !value.status));
+  assert.ok(messages.filter(value => !value.finishedAt).every(value => value.durationMs === undefined));
+  assert.deepEqual(usages, []);
+}));
+
+test("豆包工作无效结束时间或缺少消息创建时间不生成时长，纯过程消息不获得正文结束时间", async () => temporary(async directory => {
+  const invalid = ["1700000000", "1700000000000.5", "-1", "not-a-time", true, null, Number.MAX_SAFE_INTEGER, Number.MAX_SAFE_INTEGER + 1,
+    "8640000000000001", "1699999999999"];
+  const path = await writeDoubaoWorkCache(join(directory, "launcher.leveldb"), [{ account: "DoubaoPC_synthetic", value: response([conversation([
+    message("u", 1, "1", [textBlock("question", "Synthetic request")]),
+    ...invalid.map((value, i) => message(`a-${i}`, 2, String(i + 2), [textBlock(`answer-${i}`, "Synthetic answer")], {
+      bot_reply_message_id: "u", ext: { finish_time_ms: value },
+    })),
+    message("missing-start", 2, "20", [textBlock("no-start", "Synthetic missing start")], {
+      create_time: "invalid", bot_reply_message_id: "u", ext: { finish_time_ms: "1700000001000" },
+    }),
+    message("thinking-only", 2, "21", [
+      { block_id: "thinking", block_type: 10040, parent_id: "0", content: { thinking_block: {} } },
+      textBlock("thought", "Synthetic thought", "thinking"), textBlock("empty", " "),
+    ], { bot_reply_message_id: "u", ext: { finish_time_ms: "1700000001000" } }),
+  ])]) }]);
+  const { messages, meta, usages } = await readSession(path);
+  assert.ok(messages.every(value => value.finishedAt === undefined && value.durationMs === undefined));
+  assert.ok(meta.gaps.some(gap => gap.messageDescriptor?.key.endsWith("measurementUnknown")));
+  assert.deepEqual(usages, []);
+}));
+
 test("豆包工作同会话多投影只选一个来源，账号分区不会因原生会话身份相同而合并", async () => temporary(async directory => {
   const full = conversation([message("u", 1, "1", [textBlock("u-text", "Synthetic request")])]);
   const summary = conversation([]);

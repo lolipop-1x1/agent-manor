@@ -14,6 +14,7 @@ import { AverageSpeedMetric, RequestSpeedBadge, SpeedAlgorithmHelp, SpeedColumnH
 import { usageCoverage } from "./session-usage-coverage";
 import { requestLocation } from "./session-speed-model";
 import { NativeUsageReports } from "./NativeUsageReports";
+import { ContextWindowSnapshots } from "./ContextWindowSnapshots";
 import { ChartTooltip } from "../../shared/charts/ChartTooltip";
 import { isAborted, request } from "../../shared/api";
 
@@ -121,7 +122,7 @@ export function SessionProfilePane({ active, profile, loading, error, includeChi
   onSelectChild: (session: SessionSummary) => void; onFocusStep: (step: SessionProfile["steps"][number]) => void; onFind: (target: EvidenceTarget) => void;
   onFocusEvent: (event: SessionTimelineEvent) => void;
 }) {
-  const { number } = useI18n();
+  const { number, language } = useI18n();
   const [tab, setTab] = useState<"overview" | "calls" | "usage">("overview");
   const [stepPage, setStepPage] = useState(1);
   const [usageDetails, setUsageDetails] = useState<SessionProfile>();
@@ -132,7 +133,8 @@ export function SessionProfilePane({ active, profile, loading, error, includeChi
   const [costRetry, setCostRetry] = useState(0);
   const hasCalls = !!profile && (profile.tools.length > 0 || profile.resources.length > 0);
   const visibleMetrics = profile ? metrics.filter(([key]) => profile.usage[key] !== null) : [];
-  const hasUsage = visibleMetrics.length > 0 || !!profile?.usage.requests || !!profile?.usageReports?.length;
+  const hasRequestUsage = visibleMetrics.length > 0 || !!profile?.usage.requests;
+  const hasUsage = hasRequestUsage || !!profile?.usageReports?.length || !!profile?.contextSnapshots?.length;
   const hasNativeCost = (usageDetails ?? profile)?.steps.some(step => step.nativeReportedCostUsd !== undefined);
   const speedSummary = useMemo(() => profile?.outputSpeed ?? (profile ? summarizeRequestSpeed(profile.steps) : undefined), [profile]);
   const hasSpeed = !!speedSummary?.requests;
@@ -225,7 +227,7 @@ export function SessionProfilePane({ active, profile, loading, error, includeChi
         {visibleTab === "overview" && profile.models.length > 0 && <section className="session-profile-section"><div className="session-section-heading"><h3>{t("sessions.profile.models")}</h3><span>{t("sessions.profile.modelCount", { count: profile.models.length })}</span></div>
           {profile.models.map(item => <ProfileBar key={item.model} label={item.model} count={item.count} max={Math.max(...profile.models.map(model => model.count))} unit="records" />)}
         </section>}
-        {visibleTab !== "calls" && hasUsage && <>
+        {visibleTab !== "calls" && hasRequestUsage && <>
           <section className="session-profile-section"><div className="session-section-heading"><h3>{t("sessions.trace.usageRequest")}</h3><div className="section-actions"><span>{t("sessions.profile.requestCount", { count: profile.usage.requests })}</span><HelpPopover iconOnly label={t("sessions.profile.statsHelp")}>
             <p>{t("sessions.profile.cacheHelp")}</p><p>{t("sessions.profile.scopeHelp", { scope: profile.scope === "tree" ? t("sessions.profile.selfTree") : t("sessions.profile.currentSelf") })}</p>
             <p>{t("sessions.profile.coverageHelp", { input: profile.usage.inputRecordedRequests, requests: profile.usage.requests, cache: profile.usage.cacheRecordedRequests })}</p>
@@ -257,6 +259,8 @@ export function SessionProfilePane({ active, profile, loading, error, includeChi
             </tbody></table></div>
             {(visibleUsage.stepsTotal ?? profile.usage.requests) > 12 && <Pager page={stepPage} pageSize={12} total={visibleUsage.stepsTotal ?? profile.usage.requests} onChange={setStepPage} label={t("sessions.profile.requestPagination")} showEnds />}</>}
         </section>}
+        {visibleTab === "usage" && !!profile.contextSnapshots?.length && <ContextWindowSnapshots snapshots={profile.contextSnapshots} rootSessionId={profile.sessionIds[0]!} language={language}
+          help={<HelpPopover iconOnly label={t("sessions.contextWindow.help")}><p>{t("sessions.contextWindow.helpText")}</p></HelpPopover>} />}
         {(visibleTab === "usage" || visibleTab === "overview" && !profile.usage.requests) && !!profile.usageReports?.length && <NativeUsageReports reports={profile.usageReports} />}
         {visibleTab === "calls" && <>
           {profile.tools.length > 0 && <section className="session-profile-section"><div className="session-section-heading"><h3>{t("sessions.profile.tools")}</h3><span>{t("sessions.profile.callCount", { count: profile.tools.reduce((total, item) => total + item.calls, 0) })}</span></div>

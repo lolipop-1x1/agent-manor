@@ -69,7 +69,7 @@ export function weeklyRoundFacts(events: WeeklyReviewEvent[], requests: Overview
   const { rounds, unassigned } = deriveRoundFacts(events, requests.map(request => request.usage), complete);
   return { unassigned, rounds: rounds.map(round => ({ turnId: round.turnId, messageId: round.start.id,
     title: previews.get(round.start.id)?.trim() || "", startedAt: round.start.occurredAt,
-    endedAt: round.end?.occurredAt, completion: round.completion, eligible: round.eligible, finalEvidence: round.end?.finalEvidence,
+    endedAt: round.endedAt, completion: round.completion, eligible: round.eligible, finalEvidence: round.end?.finalEvidence,
     steps: round.steps, toolCalls: round.toolCalls, tokens: complete ? round.tokens : null, durationMs: round.durationMs })) };
 }
 
@@ -172,7 +172,7 @@ export class WeeklyReviewFactStore {
   }
   private prepare(revision: string, sourceRevision: string, session: SessionSummary, bounds: { fromMs: number; toMs: number }, timezone: string, days: DayProjection,
     processMetadata: () => Map<string, ProcessMetadata>): void {
-    if (this.database.prepare("SELECT 1 FROM weekly_revisions WHERE revision=? AND format=11").get(revision)) return;
+    if (this.database.prepare("SELECT 1 FROM weekly_revisions WHERE revision=? AND format=12").get(revision)) return;
     const includeRounds = session.relationship !== "child";
     const cached = this.processSource(sourceRevision, session.id, bounds, includeRounds, days, processMetadata());
     const source = this.sessions.weeklyReviewRevisionFacts(sourceRevision, session.id,
@@ -188,7 +188,7 @@ export class WeeklyReviewFactStore {
       missingTimeRequests: source.missingTimeRequests ?? source.requests.filter(request => instant(request.usage.occurredAt ?? "") === undefined).length, unassignedRequests: unassigned };
     this.database.transaction(() => {
       this.database.prepare("DELETE FROM weekly_revisions WHERE revision=?").run(revision);
-      this.database.prepare("INSERT INTO weekly_revisions VALUES(?,?,11,?)").run(revision, sourceRevision, JSON.stringify(metadata));
+      this.database.prepare("INSERT INTO weekly_revisions VALUES(?,?,12,?)").run(revision, sourceRevision, JSON.stringify(metadata));
       const eventInsert = this.database.prepare("INSERT INTO weekly_events VALUES(?,?,?,?)");
       for (const event of events) eventInsert.run(revision, event.id, instant(event.occurredAt ?? "") ?? null, JSON.stringify(event));
       const requestInsert = this.database.prepare("INSERT INTO weekly_requests VALUES(?,?,?,?)");
@@ -226,7 +226,7 @@ export class WeeklyReviewFactStore {
         for (const { revision: sourceRevision, session } of batch) {
           // 未变化且活动已结束的来源可复用覆盖窗口；跨日只丢弃窗口外事件，不重新扫描原历史。
           const updated = localDay(session.updatedAt, timezone);
-          const reusable = updated ? this.database.prepare(`SELECT revision FROM weekly_revisions WHERE source_revision=? AND format=11
+          const reusable = updated ? this.database.prepare(`SELECT revision FROM weekly_revisions WHERE source_revision=? AND format=12
             AND json_extract(revision,'$[3]')=? AND json_extract(revision,'$[1]')<=? AND json_extract(revision,'$[2]')>=?
             AND COALESCE(json_extract(revision,'$[4]'),'user')=?
             ORDER BY json_extract(revision,'$[2]') DESC LIMIT 1`).get(sourceRevision, timezone, range.from, updated < range.to ? updated : range.to,

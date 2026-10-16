@@ -20,7 +20,7 @@ import { messageResources } from "./resources.js";
 import { localDay } from "../overview/dates.js";
 import { instant } from "../usage/analytics.js";
 import { pairToolCalls } from "../overview/analytics.js";
-import { promptCharacterCount, summarizeRoundMetrics, completeRoundSource, type RoundMessage } from "./round-metrics.js";
+import { promptCharacterCount, summarizeRoundMetrics, completeRoundSource, replyObservedAt, type RoundMessage } from "./round-metrics.js";
 import { initializeSearchIndex, prepareSearchIndex, registerSearchFunctions, searchCandidateIndex, withCharacterTerms } from "./search-index.js";
 import type { ImportItem } from "./import-pool.js";
 import { initializeUsageFacts, prepareUsageFacts, readUsageFactMetadata, readUsageFacts, usageFactsReady, USAGE_FACT_FORMAT_VERSION } from "./usage-facts.js";
@@ -1085,7 +1085,7 @@ export class SessionStore {
     events: WeeklyReviewEvent[]; requests: OverviewSource["requests"]; retainedCompressions?: number; missingTimeEvents?: number; missingTimeRequests?: number; activityDays?: string[];
   } {
     const identityColumns = "id,ordinal,turn_id,record_line,kind,final,call_id";
-    const endColumns = "json_extract(json,'$.finalEvidence') AS final_evidence,json_extract(json,'$.finalAt') AS final_at,json_extract(json,'$.interrupted') AS interrupted";
+    const endColumns = "json_extract(json,'$.finalEvidence') AS final_evidence,json_extract(json,'$.finalAt') AS final_at,json_extract(json,'$.finishedAt') AS finished_at,json_extract(json,'$.interrupted') AS interrupted";
     const columns = `${identityColumns},${endColumns},
       json_extract(json,'$.occurredAt') AS occurred_at,json_extract(json,'$.tool') AS tool,
       json_extract(json,'$.status') AS status,json_extract(json,'$.contextSource') AS context_source,
@@ -1094,16 +1094,16 @@ export class SessionStore {
         THEN session_prompt_characters(text) END AS prompt_characters,
       ${scope ? "NULL" : "CASE WHEN kind='user' THEN substr(text,1,120) END"} AS prompt_preview`;
     type Row = { id: string; ordinal: number; turn_id: string; record_line: number; kind: WeeklyReviewEvent["kind"];
-      final: WeeklyReviewEvent["final"] | null; final_evidence: WeeklyReviewEvent["finalEvidence"] | null; final_at: string | null; interrupted: number | null; call_id: string | null; occurred_at: string | null; tool: string | null;
+      final: WeeklyReviewEvent["final"] | null; final_evidence: WeeklyReviewEvent["finalEvidence"] | null; final_at: string | null; finished_at: string | null; interrupted: number | null; call_id: string | null; occurred_at: string | null; tool: string | null;
       status: WeeklyReviewEvent["status"] | null; context_source: WeeklyReviewEvent["contextSource"] | null;
       resource: string | null; prompt_characters: number | null; prompt_preview: string | null };
     const replies = scope?.includeRounds === false ? new Set<string>() : this.lastReplyIds(revision);
     const boundaryMetadata = new Map(scope?.boundaryEvents?.map(event => [event.id, event]));
     const decode = (row: Row): WeeklyReviewEvent => boundaryMetadata.has(row.id)
       ? { ...boundaryMetadata.get(row.id)!, sessionId, ordinal: row.ordinal, turnId: row.turn_id, recordLine: row.record_line,
-        hasReply: replies.has(row.id), final: row.final ?? undefined, finalEvidence: row.final_evidence ?? undefined, finalAt: row.final_at ?? undefined, interrupted: row.interrupted === 1 || undefined, callId: row.call_id ?? undefined }
+        hasReply: replies.has(row.id), final: row.final ?? undefined, finalEvidence: row.final_evidence ?? undefined, finalAt: row.final_at ?? undefined, finishedAt: row.finished_at ?? undefined, interrupted: row.interrupted === 1 || undefined, callId: row.call_id ?? undefined }
       : ({ id: row.id, sessionId, ordinal: row.ordinal, turnId: row.turn_id, recordLine: row.record_line,
-      kind: row.kind, hasReply: replies.has(row.id), final: row.final ?? undefined, finalEvidence: row.final_evidence ?? undefined, finalAt: row.final_at ?? undefined, interrupted: row.interrupted === 1 || undefined, callId: row.call_id ?? undefined, occurredAt: row.occurred_at ?? undefined,
+      kind: row.kind, hasReply: replies.has(row.id), final: row.final ?? undefined, finalEvidence: row.final_evidence ?? undefined, finalAt: row.final_at ?? undefined, finishedAt: row.finished_at ?? undefined, interrupted: row.interrupted === 1 || undefined, callId: row.call_id ?? undefined, occurredAt: row.occurred_at ?? undefined,
       tool: row.tool ?? undefined, status: row.status ?? undefined, contextSource: row.context_source ?? undefined,
       ...(row.resource ? { resource: JSON.parse(row.resource) } : {}),
       ...(row.prompt_characters === null ? {} : { promptCharacters: row.prompt_characters }),
@@ -1121,11 +1121,11 @@ export class SessionStore {
         ...(scope?.includeRounds === false ? [scope.fromMs, scope.toMs] : [])) as Row[]).map(decode);
     if (!scope) return { events: boundaryRows, requests: this.overviewRevisionRequests(revision, sessionId) };
     const inRange = (value?: string) => { const time = Date.parse(value ?? ""); return Number.isFinite(time) && time >= scope.fromMs && time < scope.toMs; };
-    const selectedTurns = new Set(boundaryRows.filter(event => inRange(event.occurredAt) && !event.contextSource
+    const selectedTurns = new Set(boundaryRows.filter(event => inRange(event.kind === "assistant" ? replyObservedAt(event) : event.occurredAt) && !event.contextSource
       && !(event.kind === "user" && event.resource?.kind === "skill_read")).map(event => event.turnId));
     const fullTurns = new Map<string, WeeklyReviewEvent>();
     for (const event of boundaryRows) if (event.kind === "assistant" && event.hasReply) fullTurns.set(event.turnId, event);
-    const fullIds = JSON.stringify([...fullTurns.values()].filter(event => inRange(event.occurredAt)).map(event => event.turnId));
+    const fullIds = JSON.stringify([...fullTurns.values()].filter(event => inRange(replyObservedAt(event))).map(event => event.turnId));
     let boundaries = boundaryRows.filter(event => selectedTurns.has(event.turnId));
     const cachedProcess = scope.processFacts?.(JSON.parse(fullIds) as string[]);
     const process = scope.includeRounds === false ? [] : cachedProcess?.events ?? (this.overviewStatement(`SELECT ${columns} FROM ${this.overviewMessageTable} WHERE revision=? AND copied IS NOT 1
@@ -1723,6 +1723,7 @@ export class SessionStore {
     for (const sessionId of included) {
       const { revision, summary } = this.session(sessionId, version);
       if (summary.usageReports?.length) (profile.usageReports ??= []).push(...summary.usageReports.map(report => ({ ...report, sessionId })));
+      if (summary.contextSnapshots?.length) (profile.contextSnapshots ??= []).push(...summary.contextSnapshots.map(snapshot => ({ ...snapshot, sessionId })));
       if (sessionId !== id) profile.gaps.push(...summary.gaps);
       const confirmedChildren = new Set(getChildren(sessionId).map(child => child.id));
       const missing = new Set(summary.childSessionIds?.filter(child => !confirmedChildren.has(child)) ?? []);

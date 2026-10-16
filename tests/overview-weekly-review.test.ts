@@ -326,7 +326,7 @@ test("后台复盘跳过年范围准备，重复和重启缓存复用，价格�
     const persisted = new Database(join(directory, "overview-results.sqlite"));
     try {
       const cached = persisted.prepare("SELECT key,json FROM overview_results WHERE json_extract(key,'$[1]')='review'").get() as { key: string; json: string };
-      assert.equal(JSON.parse(cached.key)[0], "weekly-review-v14");
+      assert.equal(JSON.parse(cached.key)[0], "weekly-review-v15");
       const incomplete = JSON.parse(cached.json); delete incomplete.sessions.roundsPerSession;
       persisted.prepare("UPDATE overview_results SET json=? WHERE key=?").run(JSON.stringify(incomplete), cached.key);
     } finally { persisted.close(); }

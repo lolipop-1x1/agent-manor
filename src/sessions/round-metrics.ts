@@ -7,6 +7,7 @@ export interface RoundFact {
   turnId: string;
   start: RoundMessage;
   end?: RoundMessage;
+  endedAt?: string;
   completion: "explicit" | "inferred" | "unconfirmed";
   eligible: boolean;
   steps: number | null;
@@ -47,6 +48,12 @@ export function completeRoundSource(gaps: Gap[]): boolean {
 }
 const token = (value: number | undefined): value is number => value !== undefined && Number.isSafeInteger(value) && value >= 0;
 
+/** 消息结束时间独立于整轮终态；无效值退回消息创建时间。 */
+export function replyObservedAt(message?: Pick<SessionMessage, "occurredAt" | "finishedAt">): string | undefined {
+  const created = Date.parse(message?.occurredAt ?? ""), finished = Date.parse(message?.finishedAt ?? "");
+  return Number.isFinite(created) && Number.isFinite(finished) && finished >= created ? message!.finishedAt : message?.occurredAt;
+}
+
 /** 画像与周复盘共用真实需求及最后非空回复；回复边界不表示任务成功。 */
 export function deriveRoundFacts(messages: Iterable<RoundMessage>, requests: Iterable<RoundRequest>, complete = true): { rounds: RoundFact[]; unassigned: number } {
   const starts = new Map<string, RoundMessage>(), ends = new Map<string, RoundMessage>();
@@ -75,8 +82,9 @@ export function deriveRoundFacts(messages: Iterable<RoundMessage>, requests: Ite
     const candidate = ends.get(turnId), values = grouped.get(turnId) ?? [];
     const end = candidate && candidate.ordinal >= start.ordinal ? candidate : undefined;
     const completion = end ? end.final ?? "inferred" : "unconfirmed", eligible = end !== undefined;
-    const startTime = Date.parse(start.occurredAt ?? ""), endTime = Date.parse(end?.occurredAt ?? "");
-    return { turnId, start, end, completion, eligible, steps: complete && values.length ? values.length : null, toolCalls: tools.get(turnId) ?? 0,
+    const endedAt = replyObservedAt(end);
+    const startTime = Date.parse(start.occurredAt ?? ""), endTime = Date.parse(endedAt ?? "");
+    return { turnId, start, end, endedAt, completion, eligible, steps: complete && values.length ? values.length : null, toolCalls: tools.get(turnId) ?? 0,
       tokens: complete && values.length && values.every(request => token(request.inputTokens) && token(request.outputTokens))
         ? values.reduce((sum, request) => sum + request.inputTokens! + request.outputTokens!, 0) : null,
       durationMs: Number.isFinite(startTime) && Number.isFinite(endTime) && endTime >= startTime ? endTime - startTime : null };

@@ -29,6 +29,7 @@ export interface NormalizedEvent {
   final?: "explicit" | "inferred";
   finalEvidence?: SessionMessage["finalEvidence"];
   finalAt?: string;
+  finishedAt?: string;
   /** 原生状态不足以确认终答时，禁止共享管道从最后一条 assistant 消息推断 final。 */
   allowInferredFinal?: boolean;
   interrupted?: boolean;
@@ -61,6 +62,7 @@ export interface NormalizedSessionMetadata {
   branches?: SessionSourceMeta["branches"];
   gaps?: Gap[];
   usageReports?: SessionSourceMeta["usageReports"];
+  contextSnapshots?: SessionSourceMeta["contextSnapshots"];
 }
 export interface NormalizedSnapshot extends HistoryRecordSnapshot { meta: NormalizedSessionMetadata }
 export type RawHistoryRecord = { record: Record<string, unknown>; raw: string; line: number };
@@ -173,7 +175,7 @@ export function parseNormalizedSession(snapshot: NormalizedSnapshot, sink: Sessi
     title: native.title ?? "未命名会话", titleOrigin: native.title ? native.titleOrigin ?? "recorded" : "fallback",
     project: source.cwd && isAbsolute(source.cwd) ? source.cwd : undefined, projectOrigin: source.cwd && isAbsolute(source.cwd) ? "client_metadata" : undefined,
     parentSessionId: native.parentSessionId ? normalizedSessionKey(source.client, native.parentSessionId) : undefined,
-    relationship: native.relationship, branches: native.branches, childSessionIds: native.childSessionIds?.map(child => normalizedSessionKey(source.client, child)), usageReports: native.usageReports,
+    relationship: native.relationship, branches: native.branches, childSessionIds: native.childSessionIds?.map(child => normalizedSessionKey(source.client, child)), usageReports: native.usageReports, contextSnapshots: native.contextSnapshots,
     messageCount: 0, turnCount: 0, models: [], gaps: [...(native.gaps ?? [])] };
   const messages = new Map<string, number>(); const pending = new Map<string, SessionMessage[]>(); const inputs = new Map<string, unknown>();
   const candidates = new Map<string, { message: SessionMessage; allowInferredFinal: boolean; finalEvidence?: SessionMessage["finalEvidence"]; finalAt?: string; requestKey?: string }>();
@@ -214,7 +216,7 @@ export function parseNormalizedSession(snapshot: NormalizedSnapshot, sink: Sessi
       reasoningEffort: event.reasoningEffort,
       callId: event.callId, tool: event.tool, status: event.status, final: partial ? undefined : event.final,
       finalEvidence: !partial && event.final ? event.finalEvidence : undefined,
-      finalAt: !partial && event.final ? event.finalAt : undefined, durationMs: event.durationMs,
+      finalAt: !partial && event.final ? event.finalAt : undefined, finishedAt: event.finishedAt, durationMs: event.durationMs,
       interrupted: event.interrupted, copied: event.copied, branchIds: event.branchIds, currentBranch: event.currentBranch,
       filePaths: paths.length ? paths : undefined, resource: event.kind === "tool_call" ? event.resource ?? callResource(event.tool ?? "", event.input, meta.project ?? source.cwd)
         : event.kind === "user" ? event.resource : undefined };
@@ -227,6 +229,9 @@ export function parseNormalizedSession(snapshot: NormalizedSnapshot, sink: Sessi
     boundaryMessages.set(pointKey, pointMessages);
     if (event.model) models.add(event.model);
     if (event.occurredAt) { meta.startedAt = !meta.startedAt || event.occurredAt < meta.startedAt ? event.occurredAt : meta.startedAt; meta.updatedAt = !meta.updatedAt || event.occurredAt > meta.updatedAt ? event.occurredAt : meta.updatedAt; }
+    if (event.finishedAt && Number.isFinite(Date.parse(event.finishedAt)) && event.occurredAt && Date.parse(event.finishedAt) >= Date.parse(event.occurredAt)) {
+      meta.updatedAt = !meta.updatedAt || event.finishedAt > meta.updatedAt ? event.finishedAt : meta.updatedAt;
+    }
     if (event.kind === "user" && !event.copied && meta.titleOrigin === "fallback" && event.text?.trim()) { meta.title = event.text.trim().replace(/\s+/g, " ").slice(0, 120); meta.titleOrigin = "first_user"; }
     const candidateOrdinal = candidates.get(turn)?.message.ordinal;
     const relatedOrdinal = event.usageMessageKey ? messages.get(event.usageMessageKey) : undefined;

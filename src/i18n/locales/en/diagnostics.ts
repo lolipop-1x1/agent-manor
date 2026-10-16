@@ -591,7 +591,7 @@ export default {
   "diagnostics.history.adapters.doubaoWork.messageOrder": "Doubao Work messages lack a unique native order; cached order was preserved with a gap",
   "diagnostics.history.adapters.doubaoWork.replyMissing": "Doubao Work reply lacks a verified user message link; a complete round was not inferred",
   "diagnostics.history.adapters.doubaoWork.unknownRole": "An unsupported Doubao Work message role was preserved as context",
-  "diagnostics.history.adapters.doubaoWork.measurementUnknown": "Doubao Work context, display measurements and first-packet fields are not verified request usage or first-token timing",
+  "diagnostics.history.adapters.doubaoWork.measurementUnknown": "Some Doubao Work measurement or timing fields lack a verified interpretation and are excluded from request statistics",
   "diagnostics.history.adapters.doubaoWork.blockParent": "Doubao Work content block parents are missing or cyclic; process nesting was not inferred",
   "diagnostics.history.adapters.doubaoWork.fileCardUnknown": "Doubao Work file cards lack verified tool identity, success status and ranges; they do not count as successful calls or exact code coverage",
   "diagnostics.history.adapters.doubaoWork.unknownBlock": "An unsupported Doubao Work content block was preserved for inspection",

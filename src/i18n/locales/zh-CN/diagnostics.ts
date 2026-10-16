@@ -591,7 +591,7 @@ export default {
   "diagnostics.history.adapters.doubaoWork.messageOrder": "豆包工作消息缺少唯一原生顺序，保留缓存排列并标记顺序缺口",
   "diagnostics.history.adapters.doubaoWork.replyMissing": "豆包工作回复缺少可核验的用户消息关联，未推定完整轮次",
   "diagnostics.history.adapters.doubaoWork.unknownRole": "豆包工作包含尚未适配的消息角色，按上下文保留",
-  "diagnostics.history.adapters.doubaoWork.measurementUnknown": "豆包工作上下文占用、显示计量及首包字段未核验为请求用量或首 Token，未计入请求统计",
+  "diagnostics.history.adapters.doubaoWork.measurementUnknown": "豆包工作部分计量或时间字段缺少可核验口径，未计入请求统计",
   "diagnostics.history.adapters.doubaoWork.blockParent": "豆包工作内容块父关系缺失或成环，未猜测过程层级",
   "diagnostics.history.adapters.doubaoWork.fileCardUnknown": "豆包工作文件卡片缺少已核验的工具身份、成功状态和范围，未计为成功调用或精确代码覆盖",
   "diagnostics.history.adapters.doubaoWork.unknownBlock": "豆包工作存在尚未适配的内容块，保留原始结构供查看",

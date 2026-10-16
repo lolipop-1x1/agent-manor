@@ -27,6 +27,22 @@ test("提示词字符统一排除 Unicode 空白并按码点计算", () => {
   assert.equal(promptCharacterCount("你\u3000好\u00a0🙂\nA\tB\r\f"), 5);
 });
 
+test("原生消息结束时间修正观测耗时但不提升终答和请求证据", () => {
+  const rows = [message(0, "native", { occurredAt: "2026-10-05T09:00:00Z" }),
+    message(1, "native", { kind: "assistant", occurredAt: "2026-10-05T09:00:01Z", finishedAt: "2026-10-05T09:01:00Z" })];
+  const fact = deriveRoundFacts(rows, [], false).rounds[0]!;
+  assert.equal(fact.endedAt, "2026-10-05T09:01:00Z");
+  assert.equal(fact.durationMs, 60_000);
+  assert.equal(fact.completion, "inferred");
+  assert.equal(fact.end?.final, undefined);
+  assert.equal(fact.end?.finalEvidence, undefined);
+  assert.equal(fact.steps, null);
+  for (const finishedAt of [undefined, "invalid", "2026-10-05T08:59:59Z"]) {
+    rows[1]!.finishedAt = finishedAt;
+    assert.equal(deriveRoundFacts(rows, []).rounds[0]!.durationMs, 1_000);
+  }
+});
+
 test("明确请求的用量分项缺口不阻断步骤和耗时，未知 Token 仍保留为空", () => {
   for (const key of ["diagnostics.sessions.parserUsage.m001", "diagnostics.history.adapters.zcode.legacyUsage"]) {
     const complete = completeRoundSource([{ kind: "unsupported_format", message: "合成分项缺口", messageDescriptor: { key } }]);

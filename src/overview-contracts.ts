@@ -101,7 +101,7 @@ export interface WeeklyReviewDetailQuery {
   pageSize?: number;
 }
 /** 复盘派生事实只保留输入长度及短定位片段，不复制工具参数或完整正文。 */
-export type WeeklyReviewEvent = OverviewEvent & Pick<SessionMessage, "final" | "finalEvidence" | "finalAt" | "interrupted"> & { recordLine: number;
+export type WeeklyReviewEvent = OverviewEvent & Pick<SessionMessage, "final" | "finalEvidence" | "finalAt" | "finishedAt" | "interrupted"> & { recordLine: number;
   promptCharacters?: number; promptPreview?: string; hasReply?: boolean };
 export interface WeeklyReviewDetailPage {
   version: string;
