@@ -18,6 +18,8 @@
     "docs/agents/public-content.md",
     "docs/design/history-support.md",
     "docs/design/native-client-sources.md",
+    "docs/design/doubao-work-sources.md",
+    "docs/validation/doubao-work.md",
     "docs/design/baseline-rules.md",
     "docs/design/matching-rules.md",
     "docs/design/session-history.md",

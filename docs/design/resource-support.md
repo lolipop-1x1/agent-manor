@@ -25,6 +25,7 @@
 | Grok Build | 用户、可信项目、兼容与已安装插件 | 用户／项目 TOML、插件及兼容来源 | MCP 项目从仓库根到 cwd 覆盖用户；个人停用写用户 disabled_mcp_servers 名单，注册回收独立；managed／插件保护 |
 | Reasonix | 用户、项目、配置 roots 与插件包 | 用户／项目 plugins 与 `.mcp.json`，durable activation | 项目覆盖使用工作区身份，简单声明核验 digest；复杂变量／脚本展开不能确认时保持未知和只读 |
 | Codewhale | 原生、配置根、项目、兼容与插件 | global、可信 project 与插件 | 当前格式 home 回退；普通 Skill 无逐项停用，插件受保护 |
+| 豆包工作 | 用户／已知项目 `.agents/skills`，profile 工作区托管 `.skills`／`.user_skills` | 自动注册入口未核验 | 顶层入口盘点、状态未知；普通共享入口可回收恢复，托管目录保护，详见 [来源边界](doubao-work-sources.md) |
 
 用户目录由操作系统 home 决定。可明确传入 `CODEX_HOME`、`DSH_HOME`、`DSH_AGENTS_HOME`、`PI_CODING_AGENT_DIR`、`XDG_CONFIG_HOME`、`MYFLICKER_HOME` 的已核验覆盖值；测试传入人工 home，不修改进程 `HOME`。项目扫描只限已登记、历史中确认或手动声明的项目根，不遍历仓库寻找任意配置。不从目录编码或相近路径推导新项目；对已有项目 cwd，Grok MCP 与 Oh My Pi Skill 按已核验的原生规则纳入仓库祖先入口。
 

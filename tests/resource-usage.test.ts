@@ -602,7 +602,8 @@ test("真实解析器到索引保留成功 Skill 正文读取，文本提及和�
 
 test("资源相关性依稳定诊断标识，无关正文用量和关系缺口不使资源覆盖变成部分记录", async () => fixture(store => {
   const unrelated = ["diagnostics.sessions.parser.m012", "diagnostics.sessions.parser.m014",
-    "diagnostics.sessions.parser.m017", "diagnostics.sessions.parser.m020", "diagnostics.sessions.parser.m021"];
+    "diagnostics.sessions.parser.m017", "diagnostics.sessions.parser.m020", "diagnostics.sessions.parser.m021",
+    "diagnostics.history.adapters.doubaoWork.measurementUnknown", "diagnostics.history.adapters.doubaoWork.workspaceConflict"];
   const summary = meta("unrelated", { gaps: unrelated.map(key => ({ kind: "unsupported_format", message: `人工合成诊断 ${key}`,
     messageDescriptor: { key } })) });
   const revision = source(store, summary, [message(summary.id, 0, { resource: { kind: "skill_call", name: "guide" } }),
@@ -614,7 +615,8 @@ test("资源相关性依稳定诊断标识，无关正文用量和关系缺口�
   assert.deepEqual(usage.coverage.uncertainClients, []);
   assert.equal(usage.stats.events, 2);
   assert.equal(usage.stats.results.unknown, 2);
-  for (const key of ["diagnostics.sessions.parser.m018", "diagnostics.sessions.parser.m019", "diagnostics.history.adapters.codebuddy.resourceCoverage"]) {
+  for (const key of ["diagnostics.sessions.parser.m018", "diagnostics.sessions.parser.m019", "diagnostics.history.adapters.codebuddy.resourceCoverage",
+    "diagnostics.history.adapters.doubaoWork.cacheOnly", "diagnostics.history.adapters.doubaoWork.fileCardUnknown"]) {
     store.publish(store.createJob().id, [revision], [{ kind: "unsupported_format", sourceId: summary.sourceId,
       message: "思考正文与附件（文案不决定相关性）", messageDescriptor: { key } }]);
     const related = aggregateResourceUsage(store);

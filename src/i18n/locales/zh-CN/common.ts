@@ -75,6 +75,7 @@ export default {
   "common.itemCount_other": "{{count, number}} 项",
   "common.language.menu": "显示语言",
   "common.client.codeflickerDesktop": "CodeFlicker 桌面版",
+  "common.client.doubaoWork": "豆包工作",
   "common.error.connection": "无法连接本地分析服务，请确认服务正在运行后重试。",
   "common.error.http": "服务返回异常（HTTP {{status}}），请重试。",
   "common.error.invalidResponse": "服务未返回有效结果，请重试。",

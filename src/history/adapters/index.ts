@@ -18,6 +18,7 @@ import { ompAdapter, ompHistoryRoots } from "./omp.js";
 import { grokAdapter, grokHistoryRoots } from "./grok.js";
 import { reasonixAdapter, reasonixHistoryRoots } from "./reasonix.js";
 import { codewhaleAdapter, codewhaleHistoryRoots } from "./codewhale.js";
+import { doubaoWorkAdapter, DOUBAO_WORK_FORMAT } from "./doubao-work.js";
 import type { HistoryAdapter, HistoryClient } from "./types.js";
 
 export type { HistoryAdapter, HistoryAdapterContext, HistoryClient } from "./types.js";
@@ -44,12 +45,15 @@ export const HISTORY_CLIENTS: readonly HistoryClient[] = [
     acceptsFile: path => path.endsWith(".jsonl") && !/\.(?:events|conflicts|guardian|wire|adjudication|execution|turns)\.jsonl$/.test(path) },
   { client: "codewhale", format: codewhaleAdapter.id, environmentVariable: "AGENT_MANOR_CODEWHALE_DIR", defaultRoots: [".codewhale/sessions"], resolveNativeRoots: codewhaleHistoryRoots,
     acceptsFile: path => path.endsWith(".json") && !/[/\\](?:checkpoints|\.goals|\.late-usage|\.journal-archive)[/\\]/.test(path) },
+  { client: "doubao-work", format: DOUBAO_WORK_FORMAT, environmentVariable: "AGENT_MANOR_DOUBAO_WORK_DIR", defaultRoots: ["Library/Application Support/DoubaoWork/Default/IndexedDB"],
+    containerFormat: DOUBAO_WORK_FORMAT, acceptsFile: () => false,
+    acceptsContainer: path => /[/\\](?:chrome_doubaowork-(?:launcher|chat)_0\.indexeddb|launcher|chat)\.leveldb[/\\]CURRENT$/.test(path) },
 ];
 
 /** 仅注册随安装包提供的适配器，本轮不提供动态插件加载。 */
 export const HISTORY_ADAPTERS: readonly HistoryAdapter[] = [codexAdapter, claudeAdapter, codeflickerAdapter, codeflickerDesktopAdapter, codeflickerIdeAdapter,
   dshAdapter, piAdapter, workbuddyAdapter, opencodeAdapter, zcodeAdapter, codebuddyAdapter, qoderAdapter,
-  geminiAdapter, qwenAdapter, kimiAdapter, ompAdapter, grokAdapter, reasonixAdapter, codewhaleAdapter];
+  geminiAdapter, qwenAdapter, kimiAdapter, ompAdapter, grokAdapter, reasonixAdapter, codewhaleAdapter, doubaoWorkAdapter];
 export const historyClient = (client: Client): HistoryClient => HISTORY_CLIENTS.find(item => item.client === client)!;
 export const historyAdapter = (format: string): HistoryAdapter | undefined => HISTORY_ADAPTERS.find(item => item.id === format);
 

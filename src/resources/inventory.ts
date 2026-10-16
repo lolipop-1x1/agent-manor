@@ -17,6 +17,7 @@ import { projectNativeEntries } from "./native-inventory.js";
 import { planGeminiQwenInventory } from "./native-gemini-qwen.js";
 import { planKimiOmpInventory } from "./native-kimi-omp.js";
 import { planGrokReasonixCodewhaleInventory } from "./native-grok-reasonix-codewhale.js";
+import { planDoubaoWorkInventory } from "./doubao-work-inventory.js";
 
 type ObjectValue = Record<string, unknown>;
 type SourcePlan = InventorySourcePlan;
@@ -145,6 +146,7 @@ export async function scanResourceInventory(options: ResourceInventoryOptions = 
   await planGeminiQwenInventory({ userHome, projects: existingProjects, environment, add, parseConfig, gaps, diagnostics });
   await planKimiOmpInventory({ userHome, projects: existingProjects, environment, add, parseConfig, gaps, diagnostics });
   await planGrokReasonixCodewhaleInventory({ userHome, projects: existingProjects, environment, add, parseConfig, gaps, diagnostics });
+  await planDoubaoWorkInventory({ userHome, projects: existingProjects, environment, add, parseConfig, gaps, diagnostics });
   for (const manual of options.manualSources ?? []) {
     const extra = { project: manual.project, origin: "manual" as const, verified: false, keyPath: manual.keyPath, manualSourceId: manual.id };
     const format = manual.format ?? (manual.kind === "skill" ? "skill-directory" : manual.path.endsWith(".toml") ? "toml" : manual.path.endsWith(".jsonc") ? "jsonc" : "json");
@@ -181,7 +183,7 @@ export async function scanResourceInventory(options: ResourceInventoryOptions = 
     const entryType: ResourceInventoryEntry["entryType"] = info.isSymbolicLink() ? "symlink" : info.isDirectory() ? "directory" : "file";
     if (info.isSymbolicLink()) linkTarget = await readlink(path);
     try { targetPath = await cachedRealpath(path); } catch (error) { if (!missing(error) && object(error)?.code !== "ELOOP") throw error; }
-    const containmentRoot = source.native?.containmentRoot ?? source.codeflicker?.containmentRoot;
+    const containmentRoot = source.skillContainmentRoot ?? source.native?.containmentRoot ?? source.codeflicker?.containmentRoot;
     if (targetPath && containmentRoot && !contained(await cachedRealpath(containmentRoot), targetPath)) {
       diagnostics.push({ sourceId: source.id, client: source.client, kind: "skill", scope: source.scope, project: source.project, reason: "invalid_reference", path });
       gaps.push({ sourceId: source.id, client: source.client, reason: "invalid" }); return;
@@ -283,6 +285,7 @@ export async function scanResourceInventory(options: ResourceInventoryOptions = 
     const seen = new Set<string>();
     let visited = 0;
     const visit = async (path: string, depth: number, system: boolean): Promise<void> => {
+      if (source.skillDepth !== undefined && depth > source.skillDepth) return;
       if (source.codeflicker?.depth !== undefined && depth > source.codeflicker.depth) return;
       if (source.native?.depth !== undefined && depth > source.native.depth) return;
       if (++visited > 10000 || depth > 16) { if (!gaps.some(gap => gap.sourceId === source.id && gap.reason === "limit")) gaps.push({ sourceId: source.id, client: source.client, reason: "limit" }); return; }
@@ -459,6 +462,6 @@ export async function scanResourceInventory(options: ResourceInventoryOptions = 
     if (!body) { body = { id: entry.bodyId, kind: entry.kind, name: entry.name, targetPath: entry.targetPath, entryIds: [], contentFingerprint: entry.contentFingerprint, fingerprintScope: entry.fingerprintScope }; bodies.set(body.id, body); }
     body.entryIds.push(entry.id);
   }
-  const publicSources = sources.map(({ keyPath: _keyPath, flat: _flat, nativeControl: _nativeControl, controlPath: _controlPath, codeflicker: _codeflicker, native: _native, metadataOnly: _metadataOnly, ...source }) => source);
+  const publicSources = sources.map(({ keyPath: _keyPath, flat: _flat, skillDepth: _skillDepth, skillContainmentRoot: _skillContainmentRoot, nativeControl: _nativeControl, controlPath: _controlPath, codeflicker: _codeflicker, native: _native, metadataOnly: _metadataOnly, ...source }) => source);
   return { observedAt, sources: publicSources, entries, bodies: [...bodies.values()], gaps, diagnostics };
 }

@@ -21,6 +21,9 @@ export interface CodeFlickerMetadata {
 }
 export type InventorySourcePlan = ResourceInventorySource & {
   keyPath?: string[]; flat?: boolean;
+  /** 仅扫描明确的 Skill 层级，不引入原生同名选择规则。 */
+  skillDepth?: number;
+  skillContainmentRoot?: string;
   nativeControl?: ResourceInventoryEntry["locator"]["nativeControl"];
   controlPath?: string; codeflicker?: CodeFlickerMetadata; native?: NativeInventoryMetadata; metadataOnly?: boolean;
 };

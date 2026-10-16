@@ -4,6 +4,8 @@
 
 Gemini CLI、Qwen Code、新版 Kimi Code CLI、Oh My Pi、Grok Build、Reasonix 和 Codewhale 的固定版本、原生根、分支、用量和合成验收边界见 [七个原生客户端来源](native-client-sources.md)。
 
+豆包工作使用独立客户端 `doubao-work`，从本机 IndexedDB／LevelDB 和外置 blob 读取会话缓存。正文、过程、原始回读与资源管理的支持范围，以及缓存更新缺口见 [豆包工作来源](doubao-work-sources.md)；不将文件卡片冒充成功工具或完整历史。
+
 ## 来源、身份与续读
 
 新增内置 Agent 时，在源码 `src/clients.ts` 声明稳定 ID、显示名称与缩写，在 `src/history/adapters/index.ts` 声明发现根、环境变量、来源过滤和格式 ID，再按 `src/history/adapters/types.ts` 的 HistoryAdapter 接口实现元数据、配对、续读与证据转换，并增加匿名格式测试。这些源码路径供仓库开发使用，安装包交付对应的已编译模块。来源和格式分别注册，适配器接收实际客户端身份；统计、仓库归属、Web 筛选与 CLI 校验继续消费共用声明和通用事件，不逐客户端添加判断。

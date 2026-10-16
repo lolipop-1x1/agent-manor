@@ -18,6 +18,7 @@ export const CLIENTS = [
   { id: "grok", name: "Grok Build", abbreviation: "GK" },
   { id: "reasonix", name: "Reasonix", abbreviation: "RX" },
   { id: "codewhale", name: "Codewhale", abbreviation: "CW" },
+  { id: "doubao-work", name: "Doubao Work", abbreviation: "DW" },
 ] as const;
 
 export type Client = typeof CLIENTS[number]["id"];

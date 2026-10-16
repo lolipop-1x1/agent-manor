@@ -13,7 +13,8 @@ export const getLanguage = () => currentLanguage;
 /** 非 React 格式函数按当前语言求值；组件通过 useI18n 订阅更新。 */
 export const t = (key: string, params?: MessageParams) => translate(currentLanguage, key, params);
 export const messageText = (descriptor: MessageDescriptor | undefined, original: string | undefined): string => translateMessageOrOriginal(currentLanguage, descriptor, original);
-export const clientLabel = (client: Client): string => client === "codeflicker-desktop" ? t("common.client.codeflickerDesktop") : CLIENTS.find(item => item.id === client)!.name;
+export const clientLabel = (client: Client): string => client === "codeflicker-desktop" ? t("common.client.codeflickerDesktop")
+  : client === "doubao-work" ? t("common.client.doubaoWork") : CLIENTS.find(item => item.id === client)!.name;
 export const formatList = (values: string[]): string => new Intl.ListFormat(currentLanguage, { style: "short", type: "unit" }).format(values);
 
 interface I18nContextValue {

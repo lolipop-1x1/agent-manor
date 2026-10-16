@@ -79,6 +79,7 @@ export default {
   "common.itemCount_other": "{{count, number}} items",
   "common.language.menu": "Display language",
   "common.client.codeflickerDesktop": "CodeFlicker Desktop",
+  "common.client.doubaoWork": "Doubao Work",
   "common.error.connection": "Unable to connect to the local analysis service. Check that it is running, then try again.",
   "common.error.http": "The service returned an error (HTTP {{status}}). Try again.",
   "common.error.invalidResponse": "The service did not return a valid result. Try again.",

@@ -29,6 +29,8 @@ CodeFlicker CLI 查询使用 `--client codeflicker`，保持返回的版本与�
 
 ## 解读与报告
 
+豆包工作查询使用 `--client doubao-work`。它读取本机会话缓存；遇到历史缺失、文件卡片、用量或 Skill／MCP 覆盖问题时，先核对包内 [豆包工作来源与支持范围](../../docs/design/doubao-work-sources.md)，再解释结果。
+
 - 报告仓库、版本、`createdAt`、`stale`、筛选与 `gaps`。精确文件／行覆盖率分别用 `summary.readExact.files / fileCount`、`summary.readExact.lines / lineCount`，修改使用 `editExact`；零分母不生成百分比。近似单列，不加入精确百分比。
 - `file.contentStale === true` 或 `content === null` 时，不把旧范围套到当前代码。刷新完成后重新查询版本；刷新失败保留旧版，但说明它过期。
 - `readCount`／`editCount` 是历史成功活动；搜索、失败、未知范围分别保留，`activityCount` 是去重总次数。各状态列可能重叠，不相加。

@@ -27,6 +27,8 @@ const unrelatedKeys = new Set([
   "diagnostics.history.adapters.zcode.m007",
   "diagnostics.history.adapters.zcode.m008", "diagnostics.history.adapters.zcode.m011",
   "diagnostics.history.adapters.pi.m020",
+  "diagnostics.history.adapters.doubaoWork.measurementUnknown",
+  "diagnostics.history.adapters.doubaoWork.workspaceConflict",
 ]);
 
 /** 未识别诊断仍保守标记部分记录；不匹配翻译后的句子，也不否定已有请求。 */
