@@ -1,7 +1,7 @@
 # 项目、上下文占用与消息结束时间
 
 Type: task
-Status: claimed
+Status: resolved
 Blocked by: 08
 
 ## 目标
@@ -22,4 +22,4 @@ Blocked by: 08
 
 真实运行服务专项刷新核对 3 个会话、78 个块、1 个项目、7 条快照及 7 条结束消息；其他客户端会话数量保持不变。实际页面验证项目、用量、明细、帮助和 390 px 横向滚动；正式合成 Chrome 11 项、全量回归 1324 项及最终相关 25 项通过。规范审查发现的领域与帮助口径差异已统一修复并独立复核；需求审查无未处理发现。
 
-公开检查、类型检查和正式构建通过；剩余 main 提交、推送和远端回读。详细支持边界见 [来源说明](../../../docs/design/doubao-work-sources.md)，验收见 [公开记录](../../../docs/validation/doubao-work.md)。
+公开检查、类型检查和正式构建通过。实现提交 `48f875efd529455d3fec0ccf3a4f0451c19832e5` 已推送 main，并回读确认远端 SHA 一致、ahead／behind 为 0／0。详细支持边界见 [来源说明](../../../docs/design/doubao-work-sources.md)，验收见 [公开记录](../../../docs/validation/doubao-work.md)。

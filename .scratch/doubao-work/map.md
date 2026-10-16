@@ -1,7 +1,7 @@
 # 豆包工作接入设计树
 
 Type: task
-Status: claimed
+Status: resolved
 
 ## 已作决策
 
@@ -13,9 +13,9 @@ Status: claimed
 
 ## 当前前沿
 
-用户报告项目及用量缺失后的复核发现会话级 workspace、原生上下文窗口和消息结束时间可以补齐，见 [09 元数据补齐](issues/09-metadata-coverage.md)。本轮保持本机边界与未知口径，补齐后重新执行真实产品及浏览器核验。
+项目及画像缺失补验已完成，见 [09 元数据补齐](issues/09-metadata-coverage.md)。会话级 workspace、原生上下文窗口和消息结束时间已贯通真实生产刷新、API 及浏览器；完整回归 1324 项、最终相关 25 项及正式 Chrome 11 项通过。独立两轴审查无未处理发现，实现提交 `48f875e` 已推送 main 并回读一致。
 
-没有新的产品行为选择。真实来源、原生读写任务、产品集成与合成浏览器验收已完成；独立审查发现已统一修复并通过两轴复核，214 项针对性回归通过；完整回归 1312 项、补充 UI 35 项、Chrome 10 项及包外安装均通过；功能已推送 main 并确认远端一致，任务记录完成收尾。已确认的支持与未知边界记录在来源文档，不由用户猜测字段语义。
+初次交付的缓存读取、原生读写任务、产品集成及资源管理验收继续有效；缓存缺失、请求计量及工具身份的未知边界见来源文档，不由用户猜测字段语义。
 
 [接入规格](spec.md) 已确认，按任务依赖图直接在 main 并行开发。主 Agent 统一集成、审查、真实数据与浏览器验收及推送；不创建额外分支、PR 或工作区。
 
@@ -29,7 +29,7 @@ Status: claimed
 - [06 产品集成与真实验收](issues/06-integration-validation.md)：resolved；依赖 03、04、05。
 - [07 代码审查与修复](issues/07-review.md)：resolved；依赖 06。
 - [08 提交与推送](issues/08-delivery.md)：resolved；依赖 07。
-- [09 元数据补齐](issues/09-metadata-coverage.md)：claimed；依赖 08。
+- [09 元数据补齐](issues/09-metadata-coverage.md)：resolved；依赖 08。
 - [原生验收记录](validation.md)：真实缓存产品验证与合成 Chrome 7 项验收完成；缓存更新缺口仍保留。
 
 ## 本机证据边界
