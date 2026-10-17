@@ -137,6 +137,10 @@ export interface ResourceUsageDetail {
   coverage: ResourceUsageCoverage;
   origins: ResourceHistoryIdentity[];
 }
+/** 页面按需读取完整缺口，统计与完整详情使用相同版本。 */
+export type ResourceUsageDetailSummary = Omit<ResourceUsageDetail, "coverage"> & {
+  coverage: Omit<ResourceUsageCoverage, "gaps"> & { gapCount: number };
+};
 export interface ResourceUsageEvidenceQuery extends ResourceUsageQuery {
   evidenceKind?: ResourceEvidenceKind;
   tool?: string;

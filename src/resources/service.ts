@@ -1,11 +1,11 @@
 import type { SessionStore } from "../sessions/store.js";
 import type { ResourceInventoryOptions, ResourceInventorySnapshot, ResourceManualSource } from "../resource-inventory-contracts.js";
 import type { ResourceLocalDetail, ResourceLocalQuery, ResourceLocalResult, ResourceLocalRow, ResourceStatus, ResourceStatusSummary, ResourceClientOptions, ResourceOverviewResult, ResourceOverviewQuery, ResourceOverviewDetail, ResourceMapQuery, ResourceMapResult } from "../resource-service-contracts.js";
-import type { ResourceUsageQuery } from "../resource-contracts.js";
+import type { ResourceUsageQuery, ResourceUsageEvidenceQuery } from "../resource-contracts.js";
 import { ServiceError } from "../service/input.js";
 import { StoreError } from "../index/store.js";
 import { scanResourceInventory } from "./inventory.js";
-import { overviewResourceUsage, emptyResourceUsageStats, listResourceUsage, resourceOverviewIdentity, localResourceUsage, resourceUsageDetail, resourceUsageEvidence } from "./usage.js";
+import { overviewResourceUsage, emptyResourceUsageStats, listResourceUsage, resourceOverviewIdentity, localResourceUsage, resourceUsageDetail } from "./usage.js";
 import { buildResourceOverview, resourceLocations, resourceLocalSummary } from "./overview.js";
 import { buildResourceMap } from "./map.js";
 import { ResourceManager } from "./management.js";
@@ -105,7 +105,7 @@ export class ResourceService {
       partial: local.partial, inventory: local.inventory, favorites: new Set(this.manager.favorites()), unpaginated: true });
     return buildResourceMap(overview, history, query);
   }
-  async overviewDetail(id: string, query: ResourceOverviewQuery): Promise<ResourceOverviewDetail> {
+  async overviewDetail(id: string, query: ResourceOverviewQuery, section?: "overview" | "locations"): Promise<ResourceOverviewDetail> {
     const { history, local } = await this.overviewData(query);
     const kind = query.kind ?? "skill";
     const all = buildResourceOverview(history, local.rows, { ...query, presence: undefined, scope: undefined, locationProject: undefined, q: undefined, candidate: "all", favorite: false }, {
@@ -113,30 +113,34 @@ export class ResourceService {
     const target = all.resources.find(row => row.identity.id === id) ?? all.resources.find(row => row.localBodyIds.includes(id));
     if (target) {
       const locations = resourceLocations(local.rows.filter(row => target.localBodyIds.includes(row.body.id)), query);
-      return { resource: { ...target, localSummary: resourceLocalSummary(locations, query, local.inventory) },
-        history: target.hasHistory ? resourceUsageDetail(this.library, target.identity.id, { ...query, kind, project: query.historyProject },
-          local.inventory.entries, new Set(this.manager.favorites()), target.identity) : null, local: locations };
+      const detail = target.hasHistory && !section ? await this.history.detail(target.identity.id, { ...query, kind, project: query.historyProject, version: history?.version },
+        local.inventory.entries, target.identity) : null;
+      return { version: history?.version ?? null, resource: { ...target, localSummary: resourceLocalSummary(locations, query, local.inventory) },
+        history: detail ? { ...detail, resource: applyResourceFavorites(detail.resource, new Set(this.manager.favorites())) } : null, local: locations };
     }
-    const legacy = resourceUsageDetail(this.library, id, { ...query, kind, project: query.historyProject }, local.inventory.entries, new Set(this.manager.favorites()));
+    const raw = await this.history.detail(id, { ...query, kind, project: query.historyProject, version: history?.version }, local.inventory.entries);
+    const legacy = { ...raw, resource: applyResourceFavorites(raw.resource, new Set(this.manager.favorites())) };
     const bodyIds = new Set(local.inventory.entries.filter(entry => legacy.resource.association.entryIds.includes(entry.id)).map(entry => entry.bodyId));
     const locations = resourceLocations(local.rows.filter(row => bodyIds.has(row.body.id)), query);
-    return { resource: { identity: legacy.resource.identity, stats: legacy.resource.stats.events ? legacy.resource.stats : null, clients: legacy.resource.clients,
+    return { version: legacy.version, resource: { identity: legacy.resource.identity, stats: legacy.resource.stats.events ? legacy.resource.stats : null, clients: legacy.resource.clients,
       favoriteIds: legacy.resource.favoriteIds, protectedByConfiguration: false,
       favorite: legacy.resource.favorite, protected: legacy.resource.favorite, observation: legacy.resource.stats.events ? "used" : "unknown",
       partial: legacy.coverage.partial, usageUnassociated: legacy.resource.association.state !== "linked",
       missingTimeEvents: legacy.resource.stats.missingTimeEvents,
-      candidates: [], localBodyIds: [...bodyIds], hasHistory: true, localSummary: resourceLocalSummary(locations, query, local.inventory) }, history: legacy, local: locations };
+      candidates: [], localBodyIds: [...bodyIds], hasHistory: true, localSummary: resourceLocalSummary(locations, query, local.inventory) }, history: section ? null : legacy, local: locations };
   }
-  async usageDetail(id: string, query: ResourceUsageQuery) {
-    return { ...resourceUsageDetail(this.library, id, query, (await this.inventory()).entries, new Set(this.manager.favorites())), favoriteIds: this.manager.favorites() };
+  async usageDetail(id: string, query: ResourceUsageQuery, summary = false) {
+    const entries = (await this.inventory()).entries;
+    const result = summary ? await this.history.summary(id, query, entries) : await this.history.detail(id, query, entries);
+    return { ...result, resource: applyResourceFavorites(result.resource, new Set(this.manager.favorites())), favoriteIds: this.manager.favorites() };
   }
-  async evidence(id: string, query: Parameters<typeof resourceUsageEvidence>[2] = {}) {
+  async evidence(id: string, query: ResourceUsageEvidenceQuery = {}) {
     // 只复用已经取得的同版身份；单独查证据不触发全量总览聚合。
     const scope = { kind: query.kind ?? "skill", client: query.client, project: query.project, from: query.from, to: query.to,
       version: query.version ?? this.library.currentVersion() };
     const cached = this.overviewCache.get(JSON.stringify(scope));
     const identity = (await cached)?.history?.resources.find(row => row.identity.id === id)?.identity;
-    return resourceUsageEvidence(this.library, id, query, identity);
+    return this.history.evidence(id, query, identity);
   }
 
   setFavorite(id: string, value: boolean) {

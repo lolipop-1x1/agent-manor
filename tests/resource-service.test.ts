@@ -12,7 +12,7 @@ import { startService } from "../src/server.js";
 import { apiRequest, delay } from "../src/service/runtime.js";
 import { createProgram } from "../src/cli.js";
 import type { ResourceLocalResult, ResourceMapResult, ResourceMapSummary, ResourceOverviewDetail, ResourceOverviewResult, ResourceOverviewSummary, ResourceStatus, ResourceStatusSummary } from "../src/resource-service-contracts.js";
-import type { ResourceUsageEvidenceResult, ResourceUsageResult } from "../src/resource-contracts.js";
+import type { ResourceUsageDetail, ResourceUsageDetailSummary, ResourceUsageEvidenceResult, ResourceUsageResult } from "../src/resource-contracts.js";
 import { resourceHistoryIdentity } from "../src/resources/usage.js";
 import type { ResourceManagementOperation, ResourceManagementPreview } from "../src/resource-management-contracts.js";
 import type { SessionIndexStatus, SessionIndexSummary, SessionJob } from "../src/session-contracts.js";
@@ -111,6 +111,17 @@ test("页面摘要省略诊断正文，完整接口和按版本缺口仍可读�
     const compactMap = await apiRequest<ResourceMapSummary>(service.instance, `/resources/map?kind=${kind}&summary=true`);
     const { gaps: _mapGaps, ...mapCoverage } = map.coverage!;
     assert.deepEqual(compactMap, { ...map, coverage: mapCoverage });
+    const row = overview.resources.find(resource => resource.hasHistory)!;
+    const id = encodeURIComponent(row.identity.id);
+    const fullDetail = await apiRequest<ResourceOverviewDetail>(service.instance, `/resources/overview/${id}?kind=${kind}`);
+    const light = await apiRequest<ResourceOverviewDetail>(service.instance, `/resources/overview/${id}?kind=${kind}&section=overview`);
+    assert.deepEqual(light, { ...fullDetail, history: null }, "轻量概览不执行或传输完整历史详情");
+    assert.equal(light.version, fullDetail.history!.version);
+    const detail = await apiRequest<ResourceUsageDetail>(service.instance, `/resources/usage/${id}?kind=${kind}&version=${light.version}`);
+    const detailSummary = await apiRequest<ResourceUsageDetailSummary>(service.instance, `/resources/usage/${id}?kind=${kind}&version=${light.version}&summary=true`);
+    const { gaps: detailGaps, ...detailCoverage } = detail.coverage;
+    assert.deepEqual(detailSummary, { ...detail, coverage: { ...detailCoverage, gapCount: detailGaps.length } });
+    assert.equal("gaps" in detailSummary.coverage, false);
   }
   const session = await apiRequest<SessionIndexStatus>(service.instance, "/sessions/status");
   const compactSession = await apiRequest<SessionIndexSummary>(service.instance, "/sessions/status?summary=true");
@@ -118,6 +129,7 @@ test("页面摘要省略诊断正文，完整接口和按版本缺口仍可读�
   assert.deepEqual(compactSession, { ...sessionFields, gapCount: gaps.length });
   assert.deepEqual(await apiRequest(service.instance, `/sessions/gaps?version=${session.version}`), { version: session.version, gaps });
   await assert.rejects(apiRequest(service.instance, "/resources/status?summary=invalid"), /summary/);
+  await assert.rejects(apiRequest(service.instance, "/resources/overview/resource:invalid?section=invalid"), { code: "INVALID_INPUT" });
 }));
 
 test("本地与总览的低频及长期未用阈值一致，包含时间边界", async testContext => fixture(async (_context, service) => {

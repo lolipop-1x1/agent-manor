@@ -31,9 +31,13 @@ export function registerResourceRoutes(app: FastifyInstance, resources: Resource
     const result = await resources.map(resourceMapQuery(request.query));
     return summary ? summarizeResourceCoverage(result) : result;
   });
-  app.get<{ Params: Id; Querystring: Query }>(`${base}/overview/:id`, request => resources.overviewDetail(request.params.id, resourceOverviewQuery(request.query)));
+  app.get<{ Params: Id; Querystring: Query }>(`${base}/overview/:id`, request => {
+    const section = textValue(request.query.section, "section");
+    if (section && !["overview", "locations"].includes(section)) throw new ServiceError("INVALID_INPUT", "未知详情区域", { key: "diagnostics.service.resourceInput.m001", params: { p0: "section" } });
+    return resources.overviewDetail(request.params.id, resourceOverviewQuery(request.query), section as "overview" | "locations" | undefined);
+  });
   app.get<{ Querystring: Query }>(`${base}/usage`, request => resources.usage(resourceQuery(request.query)));
-  app.get<{ Params: Id; Querystring: Query }>(`${base}/usage/:id`, request => resources.usageDetail(request.params.id, resourceQuery(request.query)));
+  app.get<{ Params: Id; Querystring: Query }>(`${base}/usage/:id`, request => resources.usageDetail(request.params.id, resourceQuery(request.query), queryBoolean(request.query.summary, "summary")));
   app.get<{ Params: Id; Querystring: Query }>(`${base}/usage/:id/evidence`, request => resources.evidence(request.params.id, resourceQuery(request.query)));
   app.get<{ Querystring: Query }>(`${base}/local`, request => resources.local(resourceQuery(request.query)));
   app.get<{ Params: Id; Querystring: Query }>(`${base}/local/:id`, request => resources.localDetail(request.params.id, resourceQuery(request.query)));

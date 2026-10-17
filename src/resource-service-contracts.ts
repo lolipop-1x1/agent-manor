@@ -103,6 +103,7 @@ export type ResourceOverviewSummary = Omit<ResourceOverviewResult, "coverage"> &
   coverage: Omit<NonNullable<ResourceOverviewResult["coverage"]>, "gaps"> | null;
 };
 export interface ResourceOverviewDetail {
+  version: string | null;
   resource: ResourceOverviewRow;
   history: ResourceUsageDetail | null;
   local: ResourceLocalRow[];

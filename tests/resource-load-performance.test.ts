@@ -7,6 +7,8 @@ import { resourceFixture } from "../scripts/resource-fixture.mjs";
 import { ResourceManager } from "../src/resources/management.js";
 import { ResourceService } from "../src/resources/service.js";
 import { ResourceUsageManager } from "../src/resources/usage-manager.js";
+import { ResourceUsageCache } from "../src/resources/usage-cache.js";
+import { resourceHistoryIdentity, resourceUsageDetail, resourceUsageEvidence } from "../src/resources/usage.js";
 import { parseSessionSource } from "../src/sessions/parser.js";
 import { SessionStore } from "../src/sessions/store.js";
 
@@ -126,7 +128,7 @@ test("收藏、索引发布、资源刷新和统计范围变化不会返回旧�
   assert.equal(dated.stats?.successfulReads, 0);
   const reclassified = await service.overview({ kind: "skill", lowSessions: 9 });
   assert.deepEqual(reclassified.stats, published.stats);
-  assert.equal(reads, 4, "盘点和阈值只重新关联、分类，不重读相同版本与范围的历史");
+  assert.equal(reads, 3, "盘点、阈值和日期只重新关联、分类，不重读同版元数据");
 }));
 
 test("收藏变化复用历史并同步别名、本地保护、地图与筛选计数", async () => fixture(async (service, library) => {
@@ -179,7 +181,11 @@ test("相同范围并发共享聚合，失败后可重试且范围缓存数量�
   for (let index = 1; index <= 12; index++) await service.overview({ kind: "mcp", from: `2026-01-${String(index).padStart(2, "0")}T00:00:00Z` });
   const before = reads;
   await service.overview({ kind: "mcp" });
-  assert.equal(reads, before + 1, "被淘汰的范围重新查询，不无限保留历史范围");
+  assert.equal(reads, before, "被淘汰的日期聚合仍可从有界元数据重算");
+  for (let index = 0; index < 10; index++) await service.overview({ kind: "mcp", historyProject: `/synthetic/project-${index}` });
+  const afterScopes = reads;
+  await service.overview({ kind: "mcp" });
+  assert.equal(reads, afterScopes + 1, "被淘汰的客户端／项目元数据重新读取，不无限驻留");
 }));
 
 test("新发现资源分类不依赖观测期限，复用历史聚合", async context => {
@@ -253,4 +259,55 @@ test("资源 Worker 关闭时拒绝尚未完成的读取，不遗留等待任务
   const pending = manager.overview({ kind: "skill" }, []);
   const rejected = assert.rejects(pending, /资源统计后台已停止/);
   await manager.close(); await rejected;
+}));
+
+test("日期范围、名称详情和证据共用有界事件元数据，统计与原查询逐项一致", async () => fixture(async (service, library) => {
+  const entries = (await service.local({ kind: "skill" })).rows.flatMap(row => row.entries);
+  const cache = new ResourceUsageCache(library);
+  let reads = 0;
+  const original = library.resourceEvents.bind(library);
+  library.resourceEvents = (...args) => { reads++; return original(...args); };
+  for (const kind of ["skill", "mcp"] as const) {
+    const result = cache.read({ kind }, entries);
+    const identity = result.history.resources[0]!.identity;
+    const before = reads;
+    const detail = await cache.detail(identity.id, { kind }, entries, identity);
+    const evidence = await cache.evidence(identity.id, { kind }, identity);
+    cache.read({ kind, from: "2090-01-01T00:00:00Z" }, entries);
+    assert.equal(reads, before, "新日期、详情和证据不重复读取同版事件元数据");
+    assert.deepEqual(detail, resourceUsageDetail(library, identity.id, { kind }, entries, new Set(), identity));
+    assert.deepEqual(evidence, resourceUsageEvidence(library, identity.id, { kind }, identity));
+    assert.equal(new Set(evidence.events.map(event => event.id)).size, evidence.total);
+  }
+}));
+
+test("详情和证据通过只读 Worker 调度，摘要保留统计但不传输缺口正文", async () => fixture(async (service, library) => {
+  const entries = (await service.local({ kind: "skill" })).rows.flatMap(row => row.entries);
+  const manager = new ResourceUsageManager(library);
+  try {
+    for (const kind of ["skill", "mcp"] as const) {
+      const identity = (await manager.overview({ kind }, entries)).history.resources[0]!.identity;
+      let scheduled = false;
+      const pending = manager.summary(identity.id, { kind }, entries, identity);
+      setImmediate(() => { scheduled = true; });
+      const summary = await pending;
+      assert.equal(scheduled, true);
+      const full = resourceUsageDetail(library, identity.id, { kind }, entries, new Set(), identity);
+      const { gaps, ...coverage } = full.coverage;
+      assert.deepEqual(summary, { ...full, coverage: { ...coverage, gapCount: gaps.length } });
+      assert.equal("gaps" in summary.coverage, false);
+      assert.deepEqual(await manager.evidence(identity.id, { kind }, identity), resourceUsageEvidence(library, identity.id, { kind }, identity));
+    }
+  } finally { await manager.close(); }
+}));
+
+test("旧来源身份与显式项目范围冲突时仍沿用原查询的空范围", async () => fixture(async (_service, library, _manager, context) => {
+  const cache = new ResourceUsageCache(library);
+  const event = [...library.resourceEvents({ kind: "skill" }).events][0]!;
+  const identity = { ...resourceHistoryIdentity({ ...event, project: undefined }), grouping: "source" as const };
+  const query = { kind: "skill" as const, project: context.project };
+  const before = resourceUsageDetail(library, identity.id, query, [], new Set(), identity);
+  assert.equal(before.coverage.sessionCount, 0);
+  assert.deepEqual(await cache.detail(identity.id, query, [], identity), before);
+  assert.deepEqual(await cache.evidence(identity.id, query, identity), resourceUsageEvidence(library, identity.id, query, identity));
 }));

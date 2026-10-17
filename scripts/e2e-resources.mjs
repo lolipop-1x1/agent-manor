@@ -144,6 +144,7 @@ try {
     await row.press('Enter'); await page.locator('.resource-detail-heading h2').filter({hasText:'guide'}).waitFor(); ${ready}
   `);
   await step('收藏即时响应、单次写入、稳定 DOM 与焦点',`
+    ${tab('使用记录')}${ready}
     const row=page.getByRole('row',{name:'查看guide的使用详情',exact:true}),star=row.locator('.resource-favorite');
     const table=await page.getByRole('table',{name:'Skill 总览',exact:true}).elementHandle(), detail=await page.locator('.resource-detail-heading').elementHandle(), evidence=await page.locator('.resource-evidence').elementHandle();
     const requests=[]; const listener=request=>{if(request.url().includes('/api/v1/resources/'))requests.push({url:request.url(),method:request.method()})}; page.on('request',listener);

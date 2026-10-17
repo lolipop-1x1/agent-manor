@@ -4,7 +4,7 @@ import * as Tooltip from "@radix-ui/react-tooltip";
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import { ArrowClockwise, ArrowSquareOut, CaretDown, CaretLeft, CaretRight, CaretUp, CaretUpDown, DotsThree, Funnel, List, ArrowCounterClockwise, ClockCounterClockwise, MagnifyingGlass, MapTrifold, Plus, Star, X } from "@phosphor-icons/react";
 import { CLIENTS, type Client } from "../../../src/clients";
-import type { ResourceKind, ResourceUsageDetail, ResourceUsageDistribution, ResourceUsageEvidenceResult, ResourceUsageStats } from "../../../src/resource-contracts";
+import type { ResourceKind, ResourceUsageDetail, ResourceUsageDetailSummary, ResourceUsageDistribution, ResourceUsageEvidenceResult, ResourceUsageStats } from "../../../src/resource-contracts";
 import type { ResourceInventoryDiagnostic, ResourceInventoryEntry, ResourceManualSource } from "../../../src/resource-inventory-contracts";
 import type { ResourceManagementAction, ResourceManagementInput, ResourceManagementOperation, ResourceManagementOperations, ResourceManagementPreview } from "../../../src/resource-management-contracts";
 import type { ResourceCandidate, ResourceMapQuery, ResourceMapSummary, ResourceOverviewCandidate, ResourceOverviewDetail, ResourceOverviewQuery, ResourceOverviewSummary, ResourceOverviewRow, ResourceStatus, ResourceStatusSummary } from "../../../src/resource-service-contracts";
@@ -127,12 +127,25 @@ function SourceDiagnostics({ diagnostics }: { diagnostics?: ResourceInventoryDia
   </div></details>;
 }
 
-function HistoryGaps({ gaps }: { gaps: ResourceUsageDetail["coverage"]["gaps"] }) {
+function HistoryGaps({ detail, query }: { detail: ResourceUsageDetailSummary; query: ResourceUsageFilters }) {
   const [open, setOpen] = useState(false);
-  if (!gaps.length) return null;
+  const [gaps, setGaps] = useState<ResourceUsageDetail["coverage"]["gaps"] | null>(null);
+  const [error, setError] = useState<Error | null>(null);
+  const [retry, setRetry] = useState(0);
+  useEffect(() => {
+    if (!open || gaps) return;
+    const controller = new AbortController(); setError(null);
+    void resourceApi.usageGaps(detail.resource.identity.id, { ...query, version: detail.version }, controller.signal)
+      .then(result => { if (!controller.signal.aborted) setGaps(result); })
+      .catch(failure => { if (!isAborted(failure)) setError(failure instanceof Error ? failure : new Error(errorMessage(failure))); });
+    return () => controller.abort();
+  }, [open, gaps, detail.version, detail.resource.identity.id, query, retry]);
+  if (!detail.coverage.gapCount) return null;
   return <details className="resource-data-details" open={open} onToggle={event => setOpen(event.currentTarget.open)}>
-    <summary>{t("resources.source.gapCount", { count: gaps.length })}</summary>
-    {open && <div className="resource-source-gaps">{gaps.map((gap, index) => <div key={index}><ResourceMessage descriptor={gap.messageDescriptor} original={gap.message} details={gap.details} />{gap.sourceId && <p className="resource-path">{gap.sourceId}</p>}</div>)}</div>}
+    <summary>{t("resources.source.gapCount", { count: detail.coverage.gapCount })}</summary>
+    {open && (error ? <div role="alert"><ResourceErrorText error={error} /><button className="text-button" onClick={() => setRetry(value => value + 1)}>{t("common.retry")}</button></div>
+      : gaps ? <div className="resource-source-gaps">{gaps.map((gap, index) => <div key={index}><ResourceMessage descriptor={gap.messageDescriptor} original={gap.message} details={gap.details} />{gap.sourceId && <p className="resource-path">{gap.sourceId}</p>}</div>)}</div>
+      : <p role="status">{t("common.loading")}</p>)}
   </details>;
 }
 
@@ -253,7 +266,7 @@ export default function Resources({ active, onSession, onHistoryReading, history
   const [map, setMap] = useState<ResourceMapSummary | null>(null);
   const mapLoadedQuery = useRef("");
   const [overviewDetail, setOverviewDetail] = useState<FavoriteResult<ResourceOverviewDetail> | null>(null);
-  const [usageDetail, setUsageDetail] = useState<ResourceUsageDetail | null>(null);
+  const [usageDetail, setUsageDetail] = useState<FavoriteResult<ResourceUsageDetailSummary> | null>(null);
   const [evidence, setEvidence] = useState<ResourceUsageEvidenceResult | null>(null);
   const [archives, setArchives] = useState<ResourceArchiveResult | null>(null);
   const [operations, setOperations] = useState<ResourceManagementOperations | null>(null);
@@ -268,7 +281,7 @@ export default function Resources({ active, onSession, onHistoryReading, history
   const [historyReload, setHistoryReload] = useState(0);
   useHistoryRevision(active, historyRevision, () => setHistoryReload(value => value + 1), listLoading || detailLoading || evidenceLoading, onHistoryReading);
   const detailTarget = useRef("");
-  const detailPending = useRef(false);
+  const usageLoaded = useRef("");
   const evidenceLoaded = useRef<{ id: string; key: string } | undefined>(undefined);
   const [favoriteReload, setFavoriteReload] = useState(0);
   const [refreshing, setRefreshing] = useState(false);
@@ -472,36 +485,39 @@ export default function Resources({ active, onSession, onHistoryReading, history
   }, [active, route.tab, managementQuery, reload, managementReload]);
   useEffect(() => {
     if (!active) return;
-    if (!route.id || invalidTime || route.tab !== "usage") { setUsageDetail(null); setOverviewDetail(null); setDetailLoading(false); setDetailError(null); setEvidenceError(null); detailTarget.current = ""; return; }
+    if (!route.id || invalidTime || route.tab !== "usage") { setUsageDetail(null); setOverviewDetail(null); setDetailLoading(false); setDetailError(null); setEvidenceError(null); detailTarget.current = ""; usageLoaded.current = ""; return; }
     const target = JSON.stringify([route.tab, route.kind, route.id]);
-    if (detailTarget.current !== target) { setUsageDetail(null); setOverviewDetail(null); setEvidence(null); }
+    if (detailTarget.current !== target) { setUsageDetail(null); setOverviewDetail(null); setEvidence(null); usageLoaded.current = ""; }
     detailTarget.current = target;
     const controller = new AbortController(); setDetailLoading(true); setDetailError(null); setEvidenceError(null);
-    detailPending.current = true;
     const revision = favoriteRevision.current;
-    const task = resourceApi.overviewDetail(route.id, { ...scopeQuery, ...positionQuery, lowSessions: route.low, inactiveDays: route.inactive }, controller.signal).then(async result => {
-      // 详情与证据同版准备成功后一起替换，更新期间保留完整旧内容。
-      const nextEvidence = result.history ? evidenceLoaded.current?.id === result.history.resource.identity.id
-        && evidenceLoaded.current.key === evidenceRequestKey && evidence?.version === result.history.version ? evidence : await resourceApi.evidence(result.history.resource.identity.id,
-        { ...scopeQuery, version: result.history.version, page: route.evidencePage, pageSize: 10, tool: route.tool || undefined }, controller.signal) : null;
+    const task = resourceApi.overviewDetail(route.id, { ...scopeQuery, ...positionQuery, lowSessions: route.low, inactiveDays: route.inactive }, controller.signal).then(result => {
       if (controller.signal.aborted) return;
       if (result.favoriteIds) acceptFavoriteIds(result.favoriteIds, revision);
-      if (result.history) evidenceLoaded.current = { id: result.history.resource.identity.id, key: evidenceRequestKey };
-      setEvidence(nextEvidence); setEvidenceLoading(false); setOverviewDetail(result); setUsageDetail(result.history); syncFavorites();
+      setOverviewDetail(result); syncFavorites();
     });
-    void task.catch(failure => { if (!isAborted(failure)) setDetailError(failure instanceof Error ? failure : new Error(errorMessage(failure))); }).finally(() => { if (!controller.signal.aborted) { detailPending.current = false; setDetailLoading(false); } });
-    return () => { controller.abort(); detailPending.current = false; };
-  }, [active, route.id, route.tab, scopeQuery, positionQuery, overviewRanking, route.low, route.inactive, reload, historyReload, managementReload, invalidTime]);
-  const evidenceId = overviewRanking ? usageDetail?.resource.identity.id : route.id;
-  useEffect(() => {
-    if (detailPending.current || detailError) return;
-    if (!active || !evidenceId || route.tab !== "usage" || invalidTime) { setEvidence(null); setEvidenceLoading(false); return; }
-    if (evidenceLoaded.current?.id === evidenceId && evidenceLoaded.current.key === evidenceRequestKey) return;
-    const controller = new AbortController(); setEvidenceLoading(true); setEvidenceError(null);
-    void resourceApi.evidence(evidenceId, { ...scopeQuery, version: usageDetail?.version, page: route.evidencePage, pageSize: 10, tool: route.tool || undefined }, controller.signal)
-      .then(result => { if (!controller.signal.aborted) { evidenceLoaded.current = { id: evidenceId, key: evidenceRequestKey }; setEvidence(result); } }).catch(failure => { if (!isAborted(failure)) setEvidenceError(failure instanceof Error ? failure : new Error(errorMessage(failure))); }).finally(() => { if (!controller.signal.aborted) setEvidenceLoading(false); });
+    void task.catch(failure => { if (!isAborted(failure)) setDetailError(failure instanceof Error ? failure : new Error(errorMessage(failure))); }).finally(() => { if (!controller.signal.aborted) setDetailLoading(false); });
     return () => controller.abort();
-  }, [active, evidenceId, evidenceRequestKey, route.tab, route.evidencePage, route.tool, scopeQuery, usageDetail?.version, reload, historyReload, detailLoading, detailError, invalidTime]);
+  }, [active, route.id, route.tab, scopeQuery, positionQuery, overviewRanking, route.low, route.inactive, reload, historyReload, managementReload, invalidTime]);
+  const evidenceId = overviewDetail?.resource.identity.id;
+  const usageRequestKey = JSON.stringify([scopeQuery, overviewDetail?.version, evidenceId, reload, historyReload, managementReload]);
+  useEffect(() => {
+    if (!active || route.detail !== "history" || route.tab !== "usage" || invalidTime || detailLoading || detailError
+      || !evidenceId || !overviewDetail?.resource.hasHistory || !overviewDetail.version) { setEvidenceLoading(false); return; }
+    if (usageLoaded.current === usageRequestKey && evidenceLoaded.current?.id === evidenceId && evidenceLoaded.current.key === evidenceRequestKey) return;
+    const controller = new AbortController(); setEvidenceLoading(true); setEvidenceError(null);
+    const fixed = { ...scopeQuery, version: overviewDetail.version };
+    const revision = favoriteRevision.current;
+    // 统计与证据并行读取同一完整版本；概览和位置不等待这条链路。
+    void Promise.all([usageLoaded.current === usageRequestKey && usageDetail ? Promise.resolve(usageDetail) : resourceApi.usageDetail(evidenceId, fixed, controller.signal),
+      resourceApi.evidence(evidenceId, { ...fixed, page: route.evidencePage, pageSize: 10, tool: route.tool || undefined }, controller.signal)])
+      .then(([detail, result]) => { if (!controller.signal.aborted) {
+        if (detail.favoriteIds) acceptFavoriteIds(detail.favoriteIds, revision);
+        usageLoaded.current = usageRequestKey; evidenceLoaded.current = { id: evidenceId, key: evidenceRequestKey };
+        setUsageDetail(detail); setEvidence(result); syncFavorites();
+      } }).catch(failure => { if (!isAborted(failure)) setEvidenceError(failure instanceof Error ? failure : new Error(errorMessage(failure))); }).finally(() => { if (!controller.signal.aborted) setEvidenceLoading(false); });
+    return () => controller.abort();
+  }, [active, evidenceId, evidenceRequestKey, usageRequestKey, route.tab, route.detail, route.evidencePage, route.tool, scopeQuery, overviewDetail?.version, overviewDetail?.resource.hasHistory, detailLoading, detailError, invalidTime]);
   useEffect(() => {
     if (!active || listLoading || !restoreScroll.current) return;
     const frame = requestAnimationFrame(() => {
@@ -690,7 +706,7 @@ export default function Resources({ active, onSession, onHistoryReading, history
   </section>;
   const detail = managementOpen ? management : <>
     {(detailError || evidenceError) && <div className="resource-alert" role="alert"><ResourceErrorText error={detailError ?? evidenceError!} /><button className="text-button" onClick={() => setReload(value => value + 1)}>{t("common.retry")}</button></div>}
-    <div className="resource-detail-body" aria-busy={detailLoading || evidenceLoading} inert={detailLoading || evidenceLoading || refreshing || !!detailError || !!evidenceError}>
+    <div className="resource-detail-body" aria-busy={detailLoading || evidenceLoading} inert={detailLoading || refreshing || !!detailError}>
     {detailError && !hasDetailData ? null : detailLoading && !hasDetailData ? <div role="status" className="resource-loading">{t("resources.loading.detail")}</div> : overviewDetail && selectedResource ? <>
       <div className="resource-detail-heading"><h2>{messageText(selectedResource.identity.nameDescriptor, selectedResource.identity.name)}</h2><FavoriteButton name={messageText(selectedResource.identity.nameDescriptor, selectedResource.identity.name)} favorite={selectedResource.favorite} disabled={favoritePending.has(selectedResource.identity.id)} onClick={() => void favorite(selectedResource.identity.id, selectedResource.favorite)} /></div>
       <SkillDescription description={selectedResource.description} />
@@ -700,16 +716,18 @@ export default function Resources({ active, onSession, onHistoryReading, history
           const legacyIds = [...new Set(row.entries.flatMap(entry => [entry.bodyId, entry.id]))].filter(id => status?.favoriteIds.includes(id));
           return <ManagementBody key={row.key ?? row.body.id} row={row} index={index} onManage={input => void showManagement(input)} legacyFavorite={!!legacyIds.length} onClearFavorite={() => { for (const id of legacyIds) void favorite(id, true); }} />;
         }) : <ResourceEmpty>{t("resources.management.historyOnly")}</ResourceEmpty>}
-      </div> : route.detail === "history" ? <>
-        <Stats stats={selectedResource.stats} kind={route.kind} />
+      </div> : route.detail === "history" ? <div aria-busy={evidenceLoading}>
+        {evidenceLoading && !usageDetail && <p role="status">{t("resources.loading.evidence")}</p>}
+        <div inert={evidenceLoading || !!evidenceError}>
+        <Stats stats={usageDetail?.resource.stats ?? selectedResource.stats} kind={route.kind} />
         {usageDetail ? <>
         <ResourceTrend rows={usageDetail.trend} timeZone={usageDetail.timeZone} kind={route.kind} />
         <Distribution rows={usageDetail.clients} title={t("resources.distribution.clients")} label={value => value ? clientLabel(value as Client) : t("resources.client.notRecorded")} />
         <Distribution rows={usageDetail.projects} title={t("resources.distribution.projects")} label={value => value ? shortPath(value) : t("resources.project.none")} />
-        <HistoryGaps gaps={usageDetail.coverage.gaps} />
+        <HistoryGaps key={JSON.stringify([usageDetail.version, evidenceId, scopeQuery])} detail={usageDetail} query={scopeQuery} />
         {route.kind === "mcp" && <section className="resource-detail-section"><header><h3>{t("resources.stat.toolCalls")}</h3></header><div className="resource-tool-list">{usageDetail.tools.map(tool => <button key={tool.name} className={route.tool === tool.name ? "is-selected" : ""} aria-pressed={route.tool === tool.name} onClick={() => update({ tool: route.tool === tool.name ? "" : tool.name, evidencePage: 1 })}><strong>{tool.name}</strong><span>{t("resources.callCount", { count: tool.stats.mcpCalls })}</span><small>{t("resources.toolResults", { failure: tool.stats.results.failure, unknown: tool.stats.results.unknown, duration: tool.stats.duration.samples ? t("resources.durationSamples", { duration: Math.round(tool.stats.duration.averageMs!), count: tool.stats.duration.samples }) : t("resources.evidence.durationMissing") })}</small></button>)}</div></section>}
         <section className="resource-detail-section"><header><h3>{route.tool ? t("resources.toolEvidence", { name: route.tool }) : t("resources.evidence.title")}</h3>{route.tool && <button className="text-button" onClick={() => update({ tool: "", evidencePage: 1 })}>{t("resources.evidence.allTools")}</button>}</header>{evidenceLinks()}</section>
-      </> : <ResourceEmpty>{t("resources.evidence.empty")}</ResourceEmpty>}</> : <>
+      </> : !evidenceLoading && <ResourceEmpty>{t("resources.evidence.empty")}</ResourceEmpty>}</div></div> : <>
         <p className="resource-history-scope">{t("resources.workspace.historyScope", { client: route.client === "all" ? t("resources.client.all") : clientLabel(route.client as Client), project: route.project === "all" ? t("resources.project.all") : shortPath(route.project) })}</p>
         <div className="resource-overview-stats"><div><span>{usageMetricLabel(route.kind)}</span><strong>{selectedResource.stats ? fmt(selectedResource.stats.events) : "—"}</strong></div><div><span>{t("resources.column.sessions")}</span><strong>{selectedResource.stats ? fmt(selectedResource.stats.sessions) : "—"}</strong></div><div><span>{t("resources.column.recent")}</span><strong className="resource-overview-date">{selectedResource.stats?.lastUsedAt ? dateLabel(selectedResource.stats.lastUsedAt) : "—"}</strong></div></div>
         <section className="resource-detail-section"><header><h3>{t(route.kind === "skill" ? "resources.workspace.fileLocations" : "resources.workspace.configLocations")}</h3><button className="text-button" onClick={() => update({ detail: "locations" })}>{t("resources.workspace.viewLocations")}<CaretRight size={14} /></button></header>
