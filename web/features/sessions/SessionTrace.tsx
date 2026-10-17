@@ -8,8 +8,8 @@ import { TraceTimeline } from "./TraceTimeline";
 import { CopyButton } from "./SessionCopy";
 import { Highlight } from "./SessionSearchGroups";
 import { HelpPopover } from "../../shared/ui/HelpPopover";
-import { displayRecorded, sessionResourceName, sessionMessageText, turnTitle } from "./session-model";
-import { TRACE_ROW_HEIGHT, traceAnchoredScroll, tracePreview, traceTurns, traceWindow, type TraceRecord } from "./session-trace-model";
+import { displayRecorded, sessionResourceName, sessionMessageText, sessionOperationLabel, turnTitle } from "./session-model";
+import { TRACE_ROW_HEIGHT, traceAnchoredScroll, tracePreview, traceRecordPreview, traceTurns, traceWindow, type TraceRecord } from "./session-trace-model";
 import "./session-trace.css";
 import { AverageSpeedBadge, RequestSpeedBadge, SpeedColumnHeader } from "./SessionSpeed";
 import { messageSpeedRequest, type SessionSpeedMap } from "./session-speed-model";
@@ -203,17 +203,17 @@ export function SessionTrace({ messages, steps, focusMessageId, focusRequest, fo
           const { message, result, usage } = record;
           const value = usage.length === 1 ? usage[0] : undefined;
           const isTool = message.kind === "tool_call" || message.kind === "tool_result";
-          const input = message.kind === "assistant" || message.kind === "thinking" || message.kind === "tool_result" ? "—" : tracePreview(sessionMessageText(message));
-          const output = result ? tracePreview(sessionMessageText(result)) : message.kind === "tool_call" ? t("sessions.trace.resultMissing") : input === "—" ? tracePreview(sessionMessageText(message)) : "—";
-          const status = result?.status ?? message.status;
+          const { input, output } = traceRecordPreview(record);
+          const name = message.operation ? sessionOperationLabel(message.operation) : isTool ? message.tool ?? t("sessions.message.tool") : usage.length ? t("sessions.trace.usageRequest") : t(kindLabels[message.kind]);
+          const status = message.operation ? "unknown" : result?.status ?? message.status;
           const duration = result?.durationMs ?? message.durationMs;
           const active = record === selected;
           const request = messageSpeedRequest(message, speed);
-          return <div key={message.id} role="row" aria-rowindex={index + 2} aria-selected={active} className={`trace-row kind-${message.kind}${active ? " is-selected" : ""}`} onClick={() => inspect(message)}>
+          return <div key={message.id} role="row" aria-rowindex={index + 2} aria-selected={active} className={`trace-row kind-${message.kind}${message.operation ? " is-operation" : ""}${active ? " is-selected" : ""}`} onClick={() => inspect(message)}>
             <span role="cell" className="trace-ordinal">#{formatNumber(getLanguage(), message.ordinal)}</span>
-            <div role="cell" className="trace-event"><button id={`trace-select-${message.id}`} aria-label={t("sessions.trace.viewRecord", { number: formatNumber(getLanguage(), message.ordinal), name: isTool ? message.tool ?? t("sessions.message.tool") : t(kindLabels[message.kind]) })} onClick={event => { event.stopPropagation(); inspect(message); }} onKeyDown={event => {
+            <div role="cell" className="trace-event"><button id={`trace-select-${message.id}`} aria-label={t("sessions.trace.viewRecord", { number: formatNumber(getLanguage(), message.ordinal), name })} onClick={event => { event.stopPropagation(); inspect(message); }} onKeyDown={event => {
               if (["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) { event.preventDefault(); moveSelection(index, event.key); }
-            }}><i aria-hidden="true" /><span><strong>{isTool ? message.tool ?? t("sessions.message.tool") : usage.length ? t("sessions.trace.usageRequest") : t(kindLabels[message.kind])}</strong><small>{status ? t(statuses[status]) : message.final ? t("sessions.message.final") : message.model ?? ""}</small></span></button></div>
+            }}><i aria-hidden="true" /><span><strong>{name}</strong><small>{message.operation ? t("sessions.operation.resultUnknown") : status ? t(statuses[status]) : message.final ? t("sessions.message.final") : message.model ?? ""}</small></span></button></div>
             <span role="cell" className="trace-preview" title={input}>{input}</span>
             <span role="cell" className={`trace-preview${status === "failure" ? " is-failure" : ""}`} title={output}>{output}</span>
             {hasSpeed && <span role="cell">{request ? <RequestSpeedBadge usage={request} compact onLocate={messageId => onFocusStep({ ...request, messageId })} /> : "—"}</span>}
@@ -253,9 +253,9 @@ export function SessionTrace({ messages, steps, focusMessageId, focusRequest, fo
         <button className="text-button" disabled={selectedIndex >= records.length - 1} onClick={() => navigateDetail(1)}>{t("sessions.trace.nextNode")}<CaretRight size={14} aria-hidden="true" /></button></div>
       </nav>}
       <header>
-        <div className="trace-detail-heading"><strong>#{formatNumber(getLanguage(), selectedMessage.ordinal)} · {selected.message.tool ?? t(kindLabels[selected.message.kind])}</strong>
+        <div className="trace-detail-heading"><strong>#{formatNumber(getLanguage(), selectedMessage.ordinal)} · {selectedMessage.operation ? sessionOperationLabel(selectedMessage.operation) : selected.message.tool ?? t(kindLabels[selected.message.kind])}</strong>
           <div className="trace-detail-meta">{selectedMessage.model && <span>{selectedMessage.model}</span>}{selectedMessage.final && <span>{selectedMessage.final === "explicit" ? t("sessions.message.finalExplicit") : t("sessions.message.finalInferred")}</span>}
-            {(selected.result?.status ?? selectedMessage.status) && <span className={(selected.result?.status ?? selectedMessage.status) === "failure" ? "is-failure" : undefined}>{t(statuses[(selected.result?.status ?? selectedMessage.status)!])}</span>}
+            {selectedMessage.operation ? <span>{t("sessions.operation.resultUnknown")}</span> : (selected.result?.status ?? selectedMessage.status) && <span className={(selected.result?.status ?? selectedMessage.status) === "failure" ? "is-failure" : undefined}>{t(statuses[(selected.result?.status ?? selectedMessage.status)!])}</span>}
             {selected.message.kind === "tool_call" && !selected.result && <span>{t("sessions.trace.resultMissing")}</span>}
             {selectedMessage.occurredAt && <time>{timeLabel(selectedMessage.occurredAt)}</time>}
             {(selected.result?.durationMs ?? selectedMessage.durationMs) !== undefined && <span>{displayRecorded(selected.result?.durationMs ?? selectedMessage.durationMs)} ms</span>}
@@ -291,6 +291,7 @@ export function SessionTrace({ messages, steps, focusMessageId, focusRequest, fo
         {detailLoading && <p role="status">{t("sessions.body.loading")}</p>}
         {detailError && <p role="alert"><SessionError error={detailError} /> <button className="text-button" onClick={() => setDetailRetry(value => value + 1)}>{t("common.retry")}</button></p>}
         <article id={`session-message-${selectedMessage.id}`} className={`trace-detail-body kind-${selectedMessage.kind}`} data-message-id={selectedMessage.id}>
+          {selectedMessage.operation?.label && <p className="session-operation-title">{selectedMessage.operation.label}</p>}
           {raw ? <pre className="trace-raw-content"><Highlight text={selectedMessage.text || t("sessions.body.emptyRaw")} query={query} /></pre> : <MessageBody message={selectedMessage} focused={!selectedMessage.textTruncated} flat query={query} project={project} onMap={onMap} version={version} />}
         </article>
         {!!linkedFiles.length && <details className="session-file-links"><summary>{t("sessions.trace.linkedFiles", { count: linkedFiles.length })}</summary><div>

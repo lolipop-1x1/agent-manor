@@ -9,7 +9,7 @@ import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { Clock, Info, MapTrifold } from "@phosphor-icons/react";
 import type { MessageKind, SessionMessage, SessionUsage } from "../../../src/session-contracts";
-import { displayRecorded, sessionResourceName, sessionMessageText } from "./session-model";
+import { displayRecorded, sessionResourceName, sessionMessageText, sessionOperationLabel } from "./session-model";
 import { completeMessage } from "./session-message-content";
 import { isAborted } from "../../shared/api";
 import { SessionError } from "./SessionControls";
@@ -53,9 +53,9 @@ export function MessageBody({ message, focused, project, onMap, flat = false, qu
   const completeCodes = useMemo(() => text.length > PREVIEW_LENGTH ? completeCodeBlocks(text) : undefined, [text]);
   const shown = full ? text : text.slice(0, PREVIEW_LENGTH);
   const more = <>{textLength > PREVIEW_LENGTH && <button className="text-button session-text-expand" disabled={loading} onClick={() => { if (error) setRetry(value => value + 1); setFull(value => error ? true : !value); }}>{loading ? t("sessions.body.loading") : error ? t("common.retry") : full ? t("sessions.body.collapse") : t("sessions.body.expand", { count: textLength })}</button>}{error && <p role="alert"><SessionError error={error} /></p>}</>;
-  if (isProcess && flat) return <div className="trace-payload"><pre><Highlight text={shown} query={query} /></pre>{more}</div>;
+  if (isProcess && flat) return <div className="trace-payload">{message.operation && <div className="session-operation-content-label">{t("sessions.operation.content")}</div>}<pre><Highlight text={shown} query={query} /></pre>{more}</div>;
   if (isProcess) return <details className="session-message-detail" open={open} onToggle={event => setOpen(event.currentTarget.open)}>
-    <summary>{t("sessions.body.detail", { kind: t(kindLabels[message.kind]), count: textLength })}</summary>
+    <summary>{t("sessions.body.detail", { kind: message.operation ? t("sessions.operation.content") : t(kindLabels[message.kind]), count: textLength })}</summary>
     {open && <><pre><Highlight text={shown} query={query} /></pre>{more}</>}
   </details>;
   return <div className="session-message-text">
@@ -87,17 +87,17 @@ export const MessageCard = memo(function MessageCard({ message, mode, focused, p
 }) {
   useI18n();
   const isTool = message.kind === "tool_call" || message.kind === "tool_result";
-  return <article id={`session-message-${message.id}`} className={`session-message kind-${message.kind}${focused ? " is-focused" : ""}`}>
+  return <article id={`session-message-${message.id}`} className={`session-message kind-${message.kind}${message.operation ? " is-operation" : ""}${focused ? " is-focused" : ""}`}>
     <div className="session-message-marker" aria-hidden="true" />
     <header className="session-message-head">
       {isTool && <span className={`session-kind kind-${message.kind}`}>{t(kindLabels[message.kind])}</span>}
-      <strong>{isTool ? message.tool ?? t("sessions.message.tool") : message.kind === "assistant" ? message.model ? t("sessions.message.aiModel", { model: message.model }) : t("sessions.message.aiReply") : t(kindLabels[message.kind])}</strong>
+      <strong>{message.operation ? sessionOperationLabel(message.operation) : isTool ? message.tool ?? t("sessions.message.tool") : message.kind === "assistant" ? message.model ? t("sessions.message.aiModel", { model: message.model }) : t("sessions.message.aiReply") : t(kindLabels[message.kind])}</strong>
       {usage && <RequestSpeedBadge usage={usage} />}
       {message.final && mode !== "brief" && <span className={`session-final is-${message.final}`}>{message.final === "explicit" ? t("sessions.message.finalExplicit") : t("sessions.message.finalInferred")}</span>}
       {message.currentBranch === false && <span className="session-evidence-label">{t("sessions.message.otherBranch")}</span>}
       {message.copied && <span className="session-evidence-label">{t("sessions.message.copied")}</span>}
       {message.contextSource && <span className="session-evidence-label">{message.contextSource === "hook" ? t("sessions.context.hook") : message.contextSource === "agents_md" ? t("sessions.context.agents") : t("sessions.context.clientBundle")}</span>}
-      {message.status && <span className={`session-status is-${message.status}`}>{t(statusLabels[message.status])}</span>}
+      {message.operation ? <span className="session-status is-unknown">{t("sessions.operation.resultUnknown")}</span> : message.status && <span className={`session-status is-${message.status}`}>{t(statusLabels[message.status])}</span>}
       {message.durationMs !== undefined && <span className="session-duration"><Clock size={12} />{displayRecorded(message.durationMs)} ms</span>}
       {message.occurredAt && <time>{formatDateTime(getLanguage(), message.occurredAt)}</time>}
       {message.kind === "assistant" && <div className="session-message-actions">
@@ -109,6 +109,7 @@ export const MessageCard = memo(function MessageCard({ message, mode, focused, p
       {message.resource && <div>{t(resourceLabels[message.resource.kind])} · {message.resource.server ? `${message.resource.server} / ` : ""}{sessionResourceName(message.resource)}</div>}
       {message.callId && <div>{t("sessions.message.callId", { id: message.callId })}</div>}{mode === "trace" && <div>{t("sessions.message.recordMeta", { turn: message.turnId, record: formatNumber(getLanguage(), message.recordLine) })}</div>}
     </details>}
+    {message.operation?.label && <p className="session-operation-title">{message.operation.label}</p>}
     <MessageBody message={message} focused={focused} query={query} project={project} onMap={onMap} version={version} />
     {!!message.filePaths?.length && <details className="session-file-links"><summary>{t("sessions.message.fileCount", { count: message.filePaths.length })}</summary><div>
       {message.filePaths.map(path => <button key={path} className="session-file-link" onClick={() => onMap(path, project)}>{path} <MapTrifold size={13} aria-hidden="true" /></button>)}

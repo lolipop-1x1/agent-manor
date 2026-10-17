@@ -55,6 +55,9 @@ try {
   const list = await api("/sessions?client=doubao-work"); assert.equal(list.total, 1);
   const session = list.sessions[0], sessionUrl = `${base}/#sessions?id=${encodeURIComponent(session.id)}&mode=brief`;
   const initialMessages = await api(`/sessions/${encodeURIComponent(session.id)}/messages?mode=full`);
+  const profile = await api(`/sessions/${encodeURIComponent(session.id)}/profile`);
+  assert.equal(profile.tools.length, 0); assert.equal(profile.usage.requests, 0);
+  assert.equal(profile.operations.reduce((count, item) => count + item.records, 0), 2);
   const unlinked = fixture.unlinkedReplies.map(text => initialMessages.messages.find(message => message.kind === "assistant" && message.text === text));
   assert.ok(unlinked.every(Boolean)); assert.equal(new Set(unlinked.map(message => message.turnId)).size, 2);
   assert.equal(session.turnCount, 2);
@@ -73,13 +76,23 @@ try {
     expect((await page.locator('.session-message-scroll').innerText()).includes(${quote(fixture.needle)}),'用户正文缺失');
     ${screenshot("sessions-zh-wide.png")}
   `);
-  await step("会话级项目与独立上下文快照启用用量页，缺少调用仍保持未知", `
+  await step("共享调用页保留原生操作并可定位，独立上下文快照不生成请求", `
     expect((await page.locator('.sessions-main-heading').innerText()).includes('synthetic-project'),'会话级工作目录未显示');
     const tabs=page.getByRole('tablist',{name:${quote(t("sessions.profile.categories"))}});
-    expect(await tabs.getByRole('tab',{name:${quote(t("sessions.profile.calls"))},exact:true}).count()===0,'未知工具被补造为调用');
+    await tabs.getByRole('tab',{name:${quote(t("sessions.profile.calls"))},exact:true}).click();
+    const operations=page.getByRole('region',{name:${quote(t("sessions.operation.title"))},exact:true}); await operations.waitFor();
+    expect((await operations.innerText()).includes(${quote(t("sessions.operation.resultUnknown"))}),'操作结果被补成成功');
+    expect(await page.getByRole('heading',{name:${quote(t("sessions.profile.tools"))},exact:true}).count()===0,'原生卡片被计成工具调用');
+    await operations.getByRole('button',{name:${quote(t("sessions.operation.type.view"))},exact:true}).click(); ${idle}
+    await page.locator('.trace-detail-body').filter({hasText:'export const synthetic = true;'}).waitFor();
+    await page.getByText(${quote(translate("zh-CN", "sessions.reading.located", { kind: translate("zh-CN", "sessions.operation.event", { type: t("sessions.operation.type.view") }) }))},{exact:true}).waitFor({state:'attached'});
+    expect(await page.locator('.trace-row.is-operation').count()===2,'操作轨迹未保留独立身份');
+    expect(await page.locator('.trace-mark.kind-operation').count()===2,'原生操作未进入时间线操作轨道');
+    ${screenshot("sessions-native-operation.png")}
     await page.getByRole('tab',{name:${quote(t("sessions.profile.usage"))},exact:true}).click();
     const context=page.getByRole('region',{name:${quote(t("sessions.contextWindow.title"))},exact:true});
     await context.waitFor(); expect((await context.innerText()).includes('65'),'上下文占用未显示');
+    expect(await context.locator('.session-usage-grid.compact').count()===0,'上下文未复用两列指标网格');
     expect(await page.getByRole('heading',{name:${quote(t("sessions.trace.usageRequest"))},exact:true}).count()===0,'快照误显示零请求');
     await context.getByRole('button',{name:${quote(t("sessions.contextWindow.help"))},exact:true}).click();
     await page.getByText(${quote(t("sessions.contextWindow.helpText"))},{exact:true}).waitFor();
@@ -227,6 +240,9 @@ try {
     for(const label of ${quote([t("sessions.mode.brief", "en"), t("sessions.mode.full", "en"), t("sessions.mode.trace", "en")])}) {
       await page.getByRole('group',{name:${quote(t("sessions.reading.mode", "en"))},exact:true}).getByRole('button',{name:label,exact:true}).click(); ${idle}
     }
+    await page.getByRole('tab',{name:${quote(t("sessions.profile.calls", "en"))},exact:true}).click();
+    const operations=page.getByRole('region',{name:${quote(t("sessions.operation.title", "en"))},exact:true}); await operations.waitFor();
+    expect((await operations.innerText()).includes(${quote(t("sessions.operation.resultUnknown", "en"))}),'英文操作状态未保留未知');
     await page.getByRole('tab',{name:${quote(t("sessions.profile.usage", "en"))},exact:true}).click();
     const context=page.getByRole('region',{name:${quote(t("sessions.contextWindow.title", "en"))},exact:true}); await context.waitFor();
     expect((await context.innerText()).includes(${quote(t("sessions.contextWindow.latest", "en"))}),'英文上下文标签缺失');

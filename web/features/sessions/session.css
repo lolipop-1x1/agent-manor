@@ -124,6 +124,8 @@
 .session-bar-row { display: grid; grid-template-columns: minmax(45px, .8fr) minmax(36px, 1.5fr) auto; align-items: center; gap: 7px; padding: 4px 1px; }
 .session-bar-row > span:first-child { overflow: hidden; color: var(--muted); font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
 .session-bar-row strong { color: var(--text); font-size: 9px; font-weight: 500; white-space: nowrap; }
+.session-operation-title { margin: 8px 0; font-size: 12px; line-height: 1.6; overflow-wrap: anywhere; }
+.session-operation-content-label { margin-bottom: 6px; color: var(--muted); font-size: 10px; }
 .session-bar-track { height: 7px; overflow: hidden; border-radius: 5px; background: var(--accent-soft); }
 .session-bar-track i { display: block; height: 100%; border-radius: inherit; background: var(--accent); }
 .session-usage-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 7px; padding: 4px 0; }

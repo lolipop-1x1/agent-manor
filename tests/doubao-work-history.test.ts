@@ -91,6 +91,8 @@ test("豆包工作按原生顺序读取块树、用户轮次和工作目录，�
   assert.equal(messages.find(value => value.text === "Inspect the synthetic source")?.kind, "thinking");
   const card = messages.find(value => value.text.includes("File does not exist"))!;
   assert.equal(card.kind, "context");
+  assert.deepEqual(card.operation, { type: "view", label: "Read file", presentationComplete: true });
+  assert.deepEqual(JSON.parse(card.text), blocks[2]!.content.file_operation_block);
   assert.equal(card.status, undefined);
   assert.deepEqual(card.filePaths, ["/synthetic/project/src/missing.ts"]);
   assert.ok(messages.every(value => !value.tool && !value.resource && !value.final && !value.durationMs));
@@ -104,6 +106,73 @@ test("豆包工作按原生顺序读取块树、用户轮次和工作目录，�
   assert.ok(parsed.gaps.some(gap => gap.messageDescriptor?.key.endsWith("cacheOnly")));
   const repeated = await parseSource(path, "doubao-work", parsed, DOUBAO_WORK_FORMAT, { location: source });
   assert.equal((repeated.cursor as { parsedRecords: number }).parsedRecords, 0);
+}));
+
+test("豆包工作原生操作保留所有枚举与完整卡正文，展示完成和运行标题不推定工具执行", async () => temporary(async directory => {
+  const values = [1, 2, 3, 4, 5, 0, 99, "1", null, 1.5, -1, undefined];
+  const complete: unknown[] = [true, false, "true", 1, undefined];
+  const blocks = values.map((operationType, i) => ({
+    block_id: `operation-${i}`, block_type: 10019, parent_id: "0", is_finish: complete[i % complete.length],
+    content: { file_operation_block: {
+      operation_type: operationType, path: i % 2 === 0 ? "/synthetic/project/process.txt" : "relative.txt",
+      content: "Synthetic command-looking body\nexit code 0\nstdout is not proven", file_type: "text", file_content_type: "code",
+      file_name: "process.txt", scene: 1, header: i === 1 ? { name: "Synthetic create fallback", style: 1 }
+        : { summary: `Run synthetic command ${i}`, name: "Synthetic native card", style: 2 },
+      future_field: { nested: ["Synthetic unchanged field", 7] },
+    } },
+  }));
+  const path = await writeDoubaoWorkCache(join(directory, "launcher.leveldb"), [{ account: "DoubaoPC_synthetic", value: response([conversation([
+    message("u", 1, "1", [textBlock("question", "Synthetic request")]),
+    message("a", 2, "2", blocks, { bot_reply_message_id: "u" }),
+  ])]) }]);
+  const { messages, usages, meta, source } = await readSession(path);
+  const operations = messages.filter(value => value.operation);
+  assert.deepEqual(operations.map(value => value.operation?.type), ["view", "create", "edit", "list", "replace", ...Array(7).fill("unknown")]);
+  assert.equal(operations.length, values.length);
+  for (const [i, value] of operations.entries()) {
+    const native = blocks[i]!.content.file_operation_block;
+    assert.deepEqual(JSON.parse(value.text), JSON.parse(JSON.stringify(native)));
+    assert.deepEqual(value.operation, {
+      type: i < 5 ? ["view", "create", "edit", "list", "replace"][i] : "unknown",
+      label: i === 1 ? "Synthetic create fallback" : `Run synthetic command ${i}`,
+      presentationComplete: typeof complete[i % complete.length] === "boolean" ? complete[i % complete.length] : undefined,
+    });
+    assert.equal(value.kind, "context");
+    assert.deepEqual(value.filePaths, i % 2 === 0 ? ["/synthetic/project/process.txt"] : undefined);
+    assert.ok(!value.callId && !value.tool && !value.status && !value.resource && !value.resources && !value.durationMs && !value.final);
+  }
+  assert.deepEqual(usages, []);
+  assert.equal(meta.usageReports, undefined);
+  assert.ok(meta.gaps.some(gap => gap.messageDescriptor?.key.endsWith("fileCardUnknown")));
+  const parsed = await parseSource(path, "doubao-work", undefined, DOUBAO_WORK_FORMAT, { location: source });
+  assert.deepEqual(parsed.events, []);
+  assert.deepEqual(parsed.relationships, []);
+}));
+
+test("豆包工作原生操作类型变化使来源指纹失效，不复用旧卡片类型", async () => temporary(async directory => {
+  const origin = join(directory, "launcher.leveldb");
+  const records = (operationType: number) => [{ account: "DoubaoPC_synthetic", value: response([conversation([
+    message("u", 1, "1", [textBlock("question", "Synthetic request")]),
+    message("a", 2, "2", [{ block_id: "operation", block_type: 10019, parent_id: "0", is_finish: true, content: {
+      file_operation_block: { operation_type: operationType, path: "/synthetic/project/process.txt", content: "Synthetic unchanged body",
+        header: { summary: "Synthetic unchanged card" } },
+    } }], { bot_reply_message_id: "u" }),
+  ])]) }];
+  const path = await writeDoubaoWorkCache(origin, records(1));
+  const initial = await readSession(path);
+  const initialSnapshot = await doubaoWorkAdapter.readRecords!(initial.source);
+  const parsed = await parseSource(path, "doubao-work", undefined, DOUBAO_WORK_FORMAT, { location: initial.source });
+  await writeDoubaoWorkCache(origin, records(3));
+  const changed = await readSession(path);
+  const changedSnapshot = await doubaoWorkAdapter.readRecords!(changed.source);
+  assert.notEqual(changed.source.sourceCompleteness?.fingerprint, initial.source.sourceCompleteness?.fingerprint);
+  assert.notEqual(changedSnapshot.hash, initialSnapshot.hash);
+  assert.equal(initial.messages.find(value => value.operation)?.operation?.type, "view");
+  assert.equal(changed.messages.find(value => value.operation)?.operation?.type, "edit");
+  const refreshed = await parseSource(path, "doubao-work", parsed, DOUBAO_WORK_FORMAT, { location: changed.source });
+  assert.ok((refreshed.cursor as { parsedRecords: number }).parsedRecords > 0);
+  assert.deepEqual(changed.usages, []);
+  assert.deepEqual(refreshed.events, []);
 }));
 
 test("豆包工作会话级 JSON 或对象任务目录参与归属，路径归一化不使用项目 ID 或授权目录", async () => temporary(async directory => {

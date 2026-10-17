@@ -205,8 +205,13 @@ function messageRecords(conversation: Conversation, meta: NormalizedSessionMetad
         const card = object(content.file_operation_block);
         const header = object(card.header);
         const path = string(card.path);
-        emit(id, { kind: "context", text: [string(header.summary) ?? string(header.name), path, string(card.content)]
-          .filter(value => value !== undefined && value !== "").join("\n"), filePaths: path && isAbsolute(path) ? [path] : undefined });
+        const types = ["unknown", "view", "create", "edit", "list", "replace"] as const;
+        const type = typeof card.operation_type === "number" && Number.isInteger(card.operation_type)
+          ? types[card.operation_type] ?? "unknown" : "unknown";
+        emit(id, { kind: "context", text: JSON.stringify(card, null, 2),
+          operation: { type, label: string(header.summary) ?? string(header.name),
+            presentationComplete: typeof block.is_finish === "boolean" ? block.is_finish : undefined },
+          filePaths: path && isAbsolute(path) ? [path] : undefined });
         addGap(gaps, "fileCardUnknown", "豆包工作文件卡片缺少已核验的工具身份、成功状态和范围，未计为成功调用或精确代码覆盖");
       } else if (block.block_type === 10063 && content.local_file_block !== undefined) {
         const file = object(content.local_file_block);

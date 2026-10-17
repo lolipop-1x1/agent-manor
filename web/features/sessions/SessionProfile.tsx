@@ -4,7 +4,7 @@ import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { ArrowClockwise, CaretLeft, CaretRight, Crosshair } from "@phosphor-icons/react";
 import type { SessionProfile, SessionSummary, SessionTimelineEvent } from "../../../src/session-contracts";
 import type { SessionCostSummary } from "../../../src/usage-contracts";
-import { sessionDisplayTitle, displayRecorded, sessionResourceName, sessionParams, usageAxis, usageIndexAt, usageSegments, type EvidenceTarget } from "./session-model";
+import { sessionDisplayTitle, displayRecorded, sessionResourceName, sessionOperationType, sessionProfileHasCalls, sessionParams, usageAxis, usageIndexAt, usageSegments, type EvidenceTarget } from "./session-model";
 import { kindLabels, resourceLabels } from "./SessionMessage";
 import { Notice, Pager, SessionDiagnostic, SessionError } from "./SessionControls";
 import { HelpPopover } from "../../shared/ui/HelpPopover";
@@ -131,7 +131,7 @@ export function SessionProfilePane({ active, profile, loading, error, includeChi
   const [usageRetry, setUsageRetry] = useState(0);
   const [costState, setCostState] = useState<{ key: string; loading: boolean; value?: SessionCostSummary; error?: Error }>();
   const [costRetry, setCostRetry] = useState(0);
-  const hasCalls = !!profile && (profile.tools.length > 0 || profile.resources.length > 0);
+  const hasCalls = sessionProfileHasCalls(profile);
   const visibleMetrics = profile ? metrics.filter(([key]) => profile.usage[key] !== null) : [];
   const hasRequestUsage = visibleMetrics.length > 0 || !!profile?.usage.requests;
   const hasUsage = hasRequestUsage || !!profile?.usageReports?.length || !!profile?.contextSnapshots?.length;
@@ -263,6 +263,11 @@ export function SessionProfilePane({ active, profile, loading, error, includeChi
           help={<HelpPopover iconOnly label={t("sessions.contextWindow.help")}><p>{t("sessions.contextWindow.helpText")}</p></HelpPopover>} />}
         {(visibleTab === "usage" || visibleTab === "overview" && !profile.usage.requests) && !!profile.usageReports?.length && <NativeUsageReports reports={profile.usageReports} />}
         {visibleTab === "calls" && <>
+          {!!profile.operations?.length && <section className="session-profile-section" aria-label={t("sessions.operation.title")}><div className="session-section-heading"><h3>{t("sessions.operation.title")}</h3><HelpPopover iconOnly label={t("sessions.operation.help")}><p>{t("sessions.operation.helpText")}</p></HelpPopover></div>
+            {profile.operations.map(item => <div className="session-tool-stat" key={item.type}><div className="session-tool-title"><button className="session-stat-link" title={t("sessions.operation.locate")} onClick={() => onFocusEvent(item.firstEvent)}>{sessionOperationType(item.type)}</button><span>{t("sessions.operation.resultUnknown")}</span></div>
+              <ProfileBar label={t("sessions.operation.records")} count={item.records} max={Math.max(1, ...profile.operations!.map(operation => operation.records))} unit="records" />
+            </div>)}
+          </section>}
           {profile.tools.length > 0 && <section className="session-profile-section"><div className="session-section-heading"><h3>{t("sessions.profile.tools")}</h3><span>{t("sessions.profile.callCount", { count: profile.tools.reduce((total, item) => total + item.calls, 0) })}</span></div>
             {profile.tools.map(item => <div className="session-tool-stat" key={item.name}><div className="session-tool-title"><button className="session-stat-link" title={t("sessions.profile.locateCall")} onClick={() => onFind({ toolName: item.name })}>{item.name}</button><span>{t("sessions.profile.callCount", { count: item.calls })}</span></div>
               <div className="session-tool-outcomes">{item.success > 0 && <span>{t("sessions.calls.successCount", { count: item.success })}</span>}{item.failure > 0 && <span>{t("sessions.calls.failureCount", { count: item.failure })}</span>}{item.unknown > 0 && <span>{t("sessions.calls.missingCount", { count: item.unknown })}</span>}{item.durationMs !== null && <span>{t("sessions.profile.duration", { duration: `${displayRecorded(item.durationMs)} ms` })}</span>}</div>

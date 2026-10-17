@@ -1429,22 +1429,23 @@ export class SessionStore {
         ...(projectionRow.time_start !== null ? { timeStart: projectionRow.time_start, timeEnd: projectionRow.time_end! } : {}) };
     }
     if (maxEvents && total > maxEvents) {
-      const kindCount = (this.database.prepare("SELECT COUNT(DISTINCT kind) AS count FROM session_messages WHERE revision=?").get(revision) as { count: number }).count;
+      const groupKind = "CASE WHEN json_extract(json,'$.operation') IS NOT NULL THEN 'operation' ELSE kind END";
+      const kindCount = (this.database.prepare(`SELECT COUNT(DISTINCT ${groupKind}) AS count FROM session_messages WHERE revision=?`).get(revision) as { count: number }).count;
       // 固定桶和类型聚合保留密度；代表点仍使用真实消息身份供点击定位。
       const byKind = maxEvents >= kindCount;
       const buckets = Math.max(1, Math.floor(maxEvents / (byKind ? kindCount : 1)));
       const rows = this.database.prepare(`WITH ranked AS (
-        SELECT ${MESSAGE_COLUMNS},ROW_NUMBER() OVER (ORDER BY ordinal,id)-1 AS position,
+        SELECT ${MESSAGE_COLUMNS},${groupKind} AS group_kind,ROW_NUMBER() OVER (ORDER BY ordinal,id)-1 AS position,
           FIRST_VALUE(id) OVER (PARTITION BY CASE WHEN turn_id='' THEN 'unknown' ELSE turn_id END ORDER BY ordinal,id) AS turn_first_id,
           MIN(ordinal) OVER (PARTITION BY CASE WHEN turn_id='' THEN 'unknown' ELSE turn_id END) AS turn_start,
           ROW_NUMBER() OVER (PARTITION BY CASE WHEN turn_id='' THEN 'unknown' ELSE turn_id END ORDER BY ordinal,id)-1 AS turn_offset,
           COUNT(*) OVER (PARTITION BY CASE WHEN turn_id='' THEN 'unknown' ELSE turn_id END) AS turn_count FROM session_messages WHERE revision=?
       ), positioned AS (SELECT *,DENSE_RANK() OVER (ORDER BY turn_start,turn_first_id)-1 AS turn_position FROM ranked),
       bucketed AS (SELECT *,MIN(?,CAST(position*?/CAST(? AS REAL) AS INTEGER)) AS bucket FROM positioned), grouped AS (
-        SELECT *,COUNT(*) OVER (PARTITION BY bucket${byKind ? ",kind" : ""}) AS count,
-          MIN(ordinal) OVER (PARTITION BY bucket${byKind ? ",kind" : ""}) AS range_start,
-          MAX(ordinal) OVER (PARTITION BY bucket${byKind ? ",kind" : ""}) AS range_end,
-          ROW_NUMBER() OVER (PARTITION BY bucket${byKind ? ",kind" : ""} ORDER BY CASE WHEN id=? THEN 0 ELSE 1 END,ordinal,id) AS rank FROM bucketed
+        SELECT *,COUNT(*) OVER (PARTITION BY bucket${byKind ? ",group_kind" : ""}) AS count,
+          MIN(ordinal) OVER (PARTITION BY bucket${byKind ? ",group_kind" : ""}) AS range_start,
+          MAX(ordinal) OVER (PARTITION BY bucket${byKind ? ",group_kind" : ""}) AS range_end,
+          ROW_NUMBER() OVER (PARTITION BY bucket${byKind ? ",group_kind" : ""} ORDER BY CASE WHEN id=? THEN 0 ELSE 1 END,ordinal,id) AS rank FROM bucketed
       ) SELECT ${MESSAGE_COLUMNS},count,range_start,range_end,turn_position,turn_offset,turn_count,id IN
         (SELECT message_id FROM session_usage WHERE revision=? AND message_id IS NOT NULL) AS has_usage FROM grouped WHERE rank=1 ORDER BY ordinal,id`)
         .all(revision, buckets - 1, buckets, total, query.messageId ?? "", revision) as (MessageMetadataRow & { count: number; range_start: number; range_end: number; has_usage: number; turn_position: number; turn_offset: number; turn_count: number })[];
@@ -1468,7 +1469,7 @@ export class SessionStore {
       'ordinal',ordinal,'turnId',turn_id,'kind',kind,'occurredAt',json_extract(json,'$.occurredAt'),
       'model',json_extract(json,'$.model'),'callId',call_id,'tool',json_extract(json,'$.tool'),
       'status',json_extract(json,'$.status'),'durationMs',json_extract(json,'$.durationMs'),
-      'contextSource',json_extract(json,'$.contextSource'),'copied',copied,'usage',id IN
+      'contextSource',json_extract(json,'$.contextSource'),'operation',json_extract(json,'$.operation'),'copied',copied,'usage',id IN
         (SELECT message_id FROM session_usage WHERE revision=? AND message_id IS NOT NULL)${maxEvents ? ",'turnPosition',turn_position,'turnOffset',turn_offset,'turnCount',turn_count" : ""}) AS json
       FROM ${maxEvents ? "positioned" : "session_messages"} WHERE revision=? ORDER BY ordinal,id`).all(...(maxEvents ? [revision] : []), revision, revision) as JsonRow[];
     return { version, ...(maxEvents ? { total, aggregated: false, projection } : {}), events: events.map(row => {
@@ -1709,6 +1710,7 @@ export class SessionStore {
     const models = new Map<string, number>();
     const estimates = new Map<SessionMessage["kind"], number>();
     const tools = new Map<string, SessionProfile["tools"][number]>();
+    const operations = new Map<string, NonNullable<SessionProfile["operations"]>[number]>();
     const resources = new Map<string, SessionProfile["resources"][number]>();
     const turns = new Set<string>();
     const roundMessages: RoundMessage[] = [];
@@ -1750,6 +1752,13 @@ export class SessionStore {
         if (message.kind === "user" && message.turnId) turns.add(`${sessionId}:${message.turnId}`);
         if (message.model) models.set(message.model, (models.get(message.model) ?? 0) + 1);
         if (message.kind === "compression") profile.compressions += 1;
+        if (message.operation) {
+          const { id, sessionId, ordinal, turnId, kind, occurredAt, operation } = message;
+          const item = operations.get(operation.type) ?? { type: operation.type, records: 0,
+            firstEvent: { id, sessionId, ordinal, turnId, kind, occurredAt, operation } };
+          item.records += 1;
+          operations.set(operation.type, item);
+        }
         if (message.kind === "tool_call") {
           const name = message.tool ?? "未记录工具名称";
           const tool = tools.get(name) ?? { name, calls: 0, success: 0, failure: 0, unknown: 0, durationMs: null };
@@ -1793,6 +1802,7 @@ export class SessionStore {
       this.cacheUsageCount(revision, usageCount);
     }
     profile.outputSpeed = summarizeRequestSpeed(profile.steps);
+    if (operations.size) profile.operations = [...operations.values()];
     profile.roundMetrics = summarizeRoundMetrics(roundMessages, profile.steps.filter(step => step.sessionId === id), completeRoundSource(root.summary.gaps));
     profile.turnCount = turns.size;
     profile.usage.cacheReadRatio = pairedInput > 0 ? pairedCache / pairedInput : null;

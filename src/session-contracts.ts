@@ -5,6 +5,12 @@ import type { RequestSpeedSummary } from "./session-speed.js";
 
 export type MessageKind = "user" | "assistant" | "thinking" | "tool_call" | "tool_result" | "system" | "context" | "compression";
 export interface SessionResource { kind: "mcp" | "skill_call" | "skill_read"; name: string; nameDescriptor?: MessageDescriptor; server?: string; path?: string }
+/** 客户端原生过程卡；卡片类型和展示完成均不证明真实工具身份或执行成功。 */
+export interface SessionOperation {
+  type: "view" | "create" | "edit" | "list" | "replace" | "unknown";
+  label?: string;
+  presentationComplete?: boolean;
+}
 export interface SessionMessage {
   id: string;
   sessionId: string;
@@ -44,13 +50,14 @@ export interface SessionMessage {
   resource?: SessionResource;
   /** 同一真实调用的多份资源证据；resource 保留第一份以兼容旧消息。 */
   resources?: SessionResource[];
+  operation?: SessionOperation;
   filePaths?: string[];
   /** 注入上下文或本地 Hook 的来源；正文仍保留原记录。 */
   contextSource?: "agents_md" | "environment" | "client" | "hook";
   contextEvidence?: "client_metadata" | "wrapper";
 }
 /** 总览只返回定位和显示所需元信息，不加载正文。 */
-export type SessionTimelineEvent = Pick<SessionMessage, "id" | "sessionId" | "ordinal" | "turnId" | "kind" | "occurredAt" | "model" | "callId" | "tool" | "status" | "durationMs" | "contextSource" | "copied"> & { usage?: boolean; turnPosition?: number; turnOffset?: number; turnCount?: number };
+export type SessionTimelineEvent = Pick<SessionMessage, "id" | "sessionId" | "ordinal" | "turnId" | "kind" | "occurredAt" | "model" | "callId" | "tool" | "status" | "durationMs" | "contextSource" | "copied" | "operation"> & { usage?: boolean; turnPosition?: number; turnOffset?: number; turnCount?: number };
 export interface SessionTimelineProjection { totalTurns: number; timeStart?: number; timeEnd?: number; missingTime: number; firstOrdinal?: number; lastOrdinal?: number }
 export interface SessionTimelineQuery { version?: string; maxEvents?: number; messageId?: string }
 export interface SessionTimelineResult {
@@ -320,6 +327,7 @@ export interface SessionProfile {
   peakInputRequest?: Pick<SessionUsage, "id" | "messageId" | "turnId"> & { sessionId: string };
   estimate: { method: string; methodDescriptor?: MessageDescriptor; total: number; byKind: { kind: MessageKind; tokens: number }[] };
   tools: { name: string; calls: number; success: number; failure: number; unknown: number; durationMs: number | null }[];
+  operations?: { type: SessionOperation["type"]; records: number; firstEvent: SessionTimelineEvent }[];
   resources: (NonNullable<SessionMessage["resource"]> & { count: number })[];
   compressions: number;
   children: SessionSummary[];

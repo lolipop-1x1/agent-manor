@@ -5,7 +5,7 @@ import { CaretDown, Crosshair, Minus, Plus, Resize } from "@phosphor-icons/react
 import type { SessionTimelineEvent, SessionTimelineResult } from "../../../src/session-contracts";
 import { SessionError } from "./SessionControls";
 import { kindLabels } from "./SessionMessage";
-import { sessionParams, turnTitle } from "./session-model";
+import { sessionOperationLabel, sessionParams, turnTitle } from "./session-model";
 import { isAborted, request } from "../../shared/api";
 import { Hint } from "../../shared/ui/Hint";
 import { TRACE_MAX_ZOOM, timelineCenteredScroll, timelineFraction, timelineNodes, timelinePosition, timelineProjection, timelineVisibleMarks, timelineZoomScroll, type TraceProjection } from "./session-trace-model";
@@ -94,7 +94,7 @@ export function TraceTimeline({ data, sessionId, selectedId, loading, error, onS
     return () => node.removeEventListener("wheel", wheel);
   }, [width, zoom, error]);
   const hovered = hover ? nodes[hover.index] : undefined;
-  const label = (event: SessionTimelineEvent) => `#${formatNumber(getLanguage(), event.ordinal)} · ${event.usage ? t("sessions.timeline.usage") : event.tool ?? t(kindLabels[event.kind])} · ${turnTitle(event.turnId, 1)}`;
+  const label = (event: SessionTimelineEvent) => `#${formatNumber(getLanguage(), event.ordinal)} · ${event.operation ? sessionOperationLabel(event.operation) : event.usage ? t("sessions.timeline.usage") : event.tool ?? t(kindLabels[event.kind])} · ${turnTitle(event.turnId, 1)}`;
   const nearest = (x: number, lane: number) => spans.filter(span => span.lane === lane).reduce<typeof spans[number] | undefined>((best, span) => !best || Math.abs(span.x - x) < Math.abs(best.x - x) ? span : best, undefined);
   const time = (value: number) => formatTime(getLanguage(), value);
   return <section className={`trace-timeline${collapsed ? " is-collapsed" : ""}`} data-version={shownData?.version} aria-label={t("sessions.timeline.title")}>
@@ -108,7 +108,7 @@ export function TraceTimeline({ data, sessionId, selectedId, loading, error, onS
           <Hint label={t("sessions.timeline.locate")}><button className="icon-button" aria-label={t("sessions.timeline.locate")} disabled={!selected} onClick={locate}><Crosshair size={14} aria-hidden="true" /></button></Hint>
         </div></div></div>
     {error || detailError ? <p className="trace-timeline-error" role="alert"><SessionError error={(error ?? detailError)!} /> <button className="text-button" onClick={() => { setDetailRetry(value => value + 1); onRetry(); }}>{t("sessions.timeline.retry")}</button></p> : <div className="trace-timeline-body" hidden={collapsed}>
-      <div className="trace-timeline-plot"><div className="trace-lane-labels" aria-hidden="true"><span>{t("sessions.usage.input")}</span><span>{t("sessions.timeline.model")}</span><span>{t("sessions.message.tool")}</span></div>
+      <div className="trace-timeline-plot"><div className="trace-lane-labels" aria-hidden="true"><span>{t("sessions.usage.input")}</span><span>{t("sessions.timeline.model")}</span><span>{t("sessions.timeline.toolsOperations")}</span></div>
         <div ref={viewport} className="trace-timeline-viewport" onScroll={event => { setScroll(event.currentTarget.scrollLeft); setHover(undefined); }}>
         <svg viewBox={`0 0 ${plotWidth} 66`} style={{ width: plotWidth }} role="group" tabIndex={0} aria-label={t("sessions.timeline.keyboard")} onKeyDown={event => {
           if (["+", "=", "-", "0"].includes(event.key)) {
@@ -133,15 +133,15 @@ export function TraceTimeline({ data, sessionId, selectedId, loading, error, onS
           if (span) onSelect(span.event);
         }}>
           {[22, 44].map(y => <line key={y} x1={0} x2={plotWidth} y1={y} y2={y} className="trace-lane-divider" />)}
-          {marks.map(span => <rect key={`${span.lane}:${span.x}`} x={timelinePosition(span.x, plotWidth) - 2} y={span.lane * 22 + 7} width={5} height={9} rx={1} className={`trace-mark kind-${span.event.usage ? "usage" : span.event.kind}${span.event.status === "failure" ? " is-failure" : ""}`} />)}
+          {marks.map(span => <rect key={`${span.lane}:${span.x}`} x={timelinePosition(span.x, plotWidth) - 2} y={span.lane * 22 + 7} width={5} height={9} rx={1} className={`trace-mark kind-${span.event.operation ? "operation" : span.event.usage ? "usage" : span.event.kind}${!span.event.operation && span.event.status === "failure" ? " is-failure" : ""}`} />)}
           {selected && <rect x={timelinePosition(selected.x, plotWidth) - 4} y={selected.lane * 22 + 5} width={9} height={13} rx={2} className="trace-mark-selection" />}
         </svg></div>
-        {hovered && hover && <div className="trace-timeline-tooltip" role="tooltip" style={{ ...(hover.x < width / 2 ? { left: 44 + hover.x } : { right: 10 + width - hover.x }), top: hover.y + 18 }}>
-          <strong>{label(hovered.event)}</strong>{hovered.event.occurredAt && <span>{formatDateTime(getLanguage(), hovered.event.occurredAt)}</span>}
+        {hovered && hover && <div className="trace-timeline-tooltip" role="tooltip" style={{ ...(hover.x < width / 2 ? { left: 68 + hover.x } : { right: 10 + width - hover.x }), top: hover.y + 18 }}>
+          <strong>{label(hovered.event)}</strong>{hovered.event.operation && <><span>{hovered.event.operation.label}</span><span>{t("sessions.operation.resultUnknown")}</span></>}{hovered.event.occurredAt && <span>{formatDateTime(getLanguage(), hovered.event.occurredAt)}</span>}
           {hovered.event.model && <span>{hovered.event.model}</span>}{hovered.event.durationMs !== undefined && <span>{t("sessions.timeline.duration", { value: formatNumber(getLanguage(), hovered.event.durationMs) })}</span>}
         </div>}
       </div>
-      <div className="trace-timeline-foot"><div className="trace-timeline-legend"><span><i className="key-user" />{t("sessions.kind.user")}</span><span><i className="key-context" />{t("sessions.kind.context")}</span><span><i className="key-model" />{t("sessions.timeline.model")}</span><span><i className="key-tool" />{t("sessions.message.tool")}</span></div>
+      <div className="trace-timeline-foot"><div className="trace-timeline-legend"><span><i className="key-user" />{t("sessions.kind.user")}</span><span><i className="key-context" />{t("sessions.kind.context")}</span><span><i className="key-model" />{t("sessions.timeline.model")}</span><span><i className="key-tool" />{t("sessions.message.tool")}</span>{events.some(event => event.operation) && <span><i className="key-operation" />{t("sessions.operation.legend")}</span>}</div>
         {mode === "time" && <span>{spans.length ? `${time(start)} → ${time(end)}` : t("sessions.timeline.noTime")}</span>}{missing > 0 && <span>{t("sessions.timeline.missingTime", { count: missing })}</span>}</div>
     </div>}
   </section>;

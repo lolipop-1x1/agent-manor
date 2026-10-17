@@ -26,11 +26,11 @@ export function ContextWindowSnapshots({ snapshots, rootSessionId, language, hel
     : t("sessions.contextWindow.child", { number: count(children.indexOf(snapshot.sessionId) + 1) });
   return <section className="session-profile-section" aria-label={t("sessions.contextWindow.title")}>
     <div className="session-section-heading"><h3>{t("sessions.contextWindow.title")}</h3>{help}</div>
-    <div className="session-usage-grid compact">
+    <div className="session-usage-grid">
       <div><strong>{count(latest.usedTokens)}</strong><span>{t("sessions.contextWindow.latest")}</span></div>
       <div><strong>{count(latest.capacityTokens)}</strong><span>{t("sessions.contextWindow.capacity")}</span></div>
       <div><strong>{ratio(latest)}</strong><span>{t("sessions.contextWindow.ratio")}</span></div>
-      <div><strong>{t("sessions.contextWindow.peakValue", { used: count(peak.usedTokens), capacity: count(peak.capacityTokens), ratio: ratio(peak) })}</strong><span>{t("sessions.contextWindow.peak")}</span></div>
+      <div title={t("sessions.contextWindow.peakValue", { used: count(peak.usedTokens), capacity: count(peak.capacityTokens), ratio: ratio(peak) })}><strong>{count(peak.usedTokens)}</strong><span>{t("sessions.contextWindow.peak")}</span></div>
       {parts.map(([key, label]) => <div key={key}><strong>{count(latest[key])}</strong><span>{t(label)}</span></div>)}
     </div>
     <details className="session-stat-details"><summary>{t("sessions.contextWindow.snapshots", { count: snapshots.length })}</summary>

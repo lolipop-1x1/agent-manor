@@ -59,6 +59,7 @@
 .trace-source summary { cursor: pointer; }
 .trace-source > div { padding-top: 5px; }
 .kind-context .trace-event i { background: #63a58c; }
+.is-operation .trace-event i { background: var(--near); }
 .trace-timeline { flex: 0 0 auto; border: 1px solid var(--border); border-radius: 6px; background: var(--surface); margin: 3px 0 6px; }
 .trace-timeline-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 6px 12px; padding: 4px 10px; background: var(--surface-alt); border-bottom: 1px solid var(--border); font-size: 10px; color: var(--muted); }
 .trace-timeline-head > [role="group"] { display: flex; gap: 10px; }
@@ -70,7 +71,7 @@
 .trace-timeline-zoom .icon-button { width: 26px; min-height: 26px; padding: 4px; color: var(--text); }
 .trace-timeline-zoom output { min-width: 48px; font-size: 10px; }
 .trace-timeline-plot { display: flex; position: relative; padding: 0 10px; height: 80px; }
-.trace-lane-labels { display: grid; grid-template-rows: repeat(3, 22px); width: 34px; flex: 0 0 auto; color: var(--muted); font-size: 10px; align-items: center; }
+.trace-lane-labels { display: grid; grid-template-rows: repeat(3, 22px); width: 58px; flex: 0 0 auto; color: var(--muted); font-size: 10px; align-items: center; }
 .trace-timeline-viewport { flex: 1; min-width: 0; overflow-x: auto; overflow-y: hidden; overscroll-behavior-x: contain; scrollbar-width: thin; }
 .trace-timeline-plot svg { display: block; height: 66px; cursor: crosshair; }
 .trace-lane-divider { stroke: var(--border); stroke-width: 1; }
@@ -78,6 +79,7 @@
 .trace-mark.kind-user { fill: #368ec3; }
 .trace-mark.kind-assistant, .trace-mark.kind-thinking, .trace-mark.kind-usage { fill: #8971b5; }
 .trace-mark.kind-tool_call, .trace-mark.kind-tool_result { fill: #ca902c; }
+.trace-mark.kind-operation { fill: var(--near); }
 .trace-mark.kind-system { fill: var(--muted); }
 .trace-mark.kind-compression { fill: var(--near); }
 .trace-mark.is-failure { fill: var(--danger); }
@@ -90,6 +92,7 @@
 .trace-timeline-legend .key-context { background: #63a58c; }
 .trace-timeline-legend .key-model { background: #8971b5; }
 .trace-timeline-legend .key-tool { background: #ca902c; }
+.trace-timeline-legend .key-operation { background: var(--near); }
 .trace-timeline-tooltip { position: absolute; z-index: 5; display: grid; gap: 3px; max-width: min(340px, 75%); padding: 8px 10px; border: 1px solid var(--border); border-radius: 5px; background: var(--surface); color: var(--text); box-shadow: 0 4px 14px #0002; pointer-events: none; font-size: 10px; }
 .trace-timeline-tooltip strong { font-weight: 500; }
 .trace-timeline-tooltip span { color: var(--muted); }

@@ -14,7 +14,7 @@ const snapshot = (id: string, fields: Partial<Snapshot> = {}): Snapshot => ({
 const markup = (snapshots: Snapshot[], language: Language = "en") => renderToStaticMarkup(createElement(ContextWindowSnapshots, {
   snapshots, rootSessionId: "synthetic-root", language, help: createElement("button", { "aria-label": translate(language, "sessions.contextWindow.help") }, "?"),
 }));
-const metric = (html: string, label: string) => [...html.matchAll(/<div><strong>(.*?)<\/strong><span>(.*?)<\/span><\/div>/g)]
+const metric = (html: string, label: string) => [...html.matchAll(/<div(?: [^>]*)?><strong>(.*?)<\/strong><span>(.*?)<\/span><\/div>/g)]
   .find(row => row[2] === label)?.[1];
 
 test("上下文快照不存在时不渲染空区域，已记录零值正常显示", () => {
@@ -36,10 +36,14 @@ test("最新记录按时间选择，最高占用的容量和比例始终来自�
   assert.equal(metric(html, "Latest recorded tokens"), "2,000");
   assert.equal(metric(html, "Window capacity (tokens)"), "4,000");
   assert.equal(metric(html, "Window occupancy"), "50%");
-  assert.equal(metric(html, "Peak recorded tokens"), "9,000 / 20,000 (45%)");
+  assert.equal(metric(html, "Peak recorded tokens"), "9,000");
+  assert.ok(html.includes('title="9,000 / 20,000 (45%)"'));
+  assert.ok(html.includes('<div class="session-usage-grid">'));
+  assert.ok(!html.includes('class="session-usage-grid compact"'));
   assert.equal(metric(html, "Message tokens"), "1,800");
   assert.ok(!html.includes("12,000"));
   assert.equal((html.match(/<tbody><tr>|<\/tr><tr>/g) ?? []).length, 3);
+  assert.ok(html.includes("<td>9,000</td><td>20,000</td><td>45%</td>"));
 });
 
 test("时间缺失按来源顺序兜底，不覆盖有明确时间的最近记录", () => {

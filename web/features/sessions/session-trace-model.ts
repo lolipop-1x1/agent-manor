@@ -1,5 +1,5 @@
 import type { SessionMessage, SessionMessageResult, SessionTimelineEvent, SessionTimelineProjection, SessionUsage } from "../../../src/session-contracts";
-import { groupedTurns } from "./session-model";
+import { groupedTurns, sessionMessageText } from "./session-model";
 import { t } from "../../shared/i18n";
 
 export interface TraceRecord {
@@ -85,7 +85,7 @@ export function timelineProjection(nodes: ReturnType<typeof timelineNodes>, mode
       : complete?.firstOrdinal !== undefined && complete.lastOrdinal !== undefined
         ? (node.event.ordinal - complete.firstOrdinal) / Math.max(1, complete.lastOrdinal - complete.firstOrdinal)
         : index / Math.max(1, nodes.length - 1);
-    const lane = node.event.kind.startsWith("tool_") ? 2 : node.event.usage || ["assistant", "thinking", "compression"].includes(node.event.kind) ? 1 : 0;
+    const lane = node.event.operation || node.event.kind.startsWith("tool_") ? 2 : node.event.usage || ["assistant", "thinking", "compression"].includes(node.event.kind) ? 1 : 0;
     return [{ ...node, x, lane, index }];
   });
   return { spans, missing: mode === "time" && complete ? complete.missingTime : nodes.length - spans.length, start, end };
@@ -119,6 +119,12 @@ export function timelineVisibleMarks(spans: ReturnType<typeof timelineProjection
 
 export function tracePreview(text: string): string {
   return text.slice(0, 600).replace(/\s+/g, " ").trim() || t("sessions.body.emptyPreview");
+}
+
+export function traceRecordPreview({ message, result }: TraceRecord): { input: string; output: string } {
+  if (message.operation) return { input: message.operation.label || "—", output: `${t("sessions.operation.content")} · ${tracePreview(sessionMessageText(message))}` };
+  const input = message.kind === "assistant" || message.kind === "thinking" || message.kind === "tool_result" ? "—" : tracePreview(sessionMessageText(message));
+  return { input, output: result ? tracePreview(sessionMessageText(result)) : message.kind === "tool_call" ? t("sessions.trace.resultMissing") : input === "—" ? tracePreview(sessionMessageText(message)) : "—" };
 }
 
 export const TRACE_ROW_HEIGHT = 40;

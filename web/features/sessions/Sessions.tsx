@@ -13,7 +13,7 @@ import type { Client } from "../../../src/clients";
 import type { SessionGroupedSearchResult, SessionIndexSummary, SessionListResult, SessionMessage, SessionMessageResult, SessionProfile, SessionQuery, SessionRefreshOptions, SessionSearchHit, SessionSearchResult, SessionSummary, SessionTimelineResult } from "../../../src/session-contracts";
 import { ApiError, isAborted, request } from "../../shared/api";
 import { ResizableWorkspace } from "../../shared/layout/ResizableWorkspace";
-import { sessionDisplayTitle, sessionParentTitle, sessionMessageText, groupedTurns, localDateBoundary, PAGE_SIZE, TURN_PAGE_SIZE, type EvidenceTarget, searchHitMode, searchKinds, sessionParams, turnTitle, workspaceSessionSemantics } from "./session-model";
+import { sessionDisplayTitle, sessionParentTitle, sessionMessageText, sessionOperationLabel, groupedTurns, localDateBoundary, PAGE_SIZE, TURN_PAGE_SIZE, type EvidenceTarget, searchHitMode, searchKinds, sessionParams, turnTitle, workspaceSessionSemantics } from "./session-model";
 import { MessageCard, kindLabels } from "./SessionMessage";
 import { SessionTrace } from "./SessionTrace";
 import { Notice, Pager, SessionError } from "./SessionControls";
@@ -798,7 +798,7 @@ export default function Sessions({ active, target, onMap, onHistoryReading, hist
               <button className="text-button" disabled={!!continuous.loading || messageLoading} onClick={() => void continuous.load("later")}>{t(continuous.error && continuous.errorDirection === "later" ? "common.retry" : "sessions.reading.loadLater")}</button>
               {continuous.loading === "later" && <span role="status">{t("common.loading")}</span>}
             </div>}
-            {currentMessage && <span className="sr-only" aria-live="polite">{t("sessions.reading.located", { kind: t(kindLabels[currentMessage.kind]) })}</span>}
+            {currentMessage && <span className="sr-only" aria-live="polite">{t("sessions.reading.located", { kind: currentMessage.operation ? sessionOperationLabel(currentMessage.operation) : t(kindLabels[currentMessage.kind]) })}</span>}
           </> : <div className="session-message-empty"><ChatCircle size={30} aria-hidden="true" /><h2>{t("sessions.reading.select")}</h2><p className="muted">{t("sessions.reading.selectHelp")}</p></div>}
         </div>
 

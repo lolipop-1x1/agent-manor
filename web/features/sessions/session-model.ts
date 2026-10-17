@@ -1,4 +1,4 @@
-import type { MessageKind, SessionMessage, SessionQuery, SessionSearchHit, SessionSummary, SessionUsage } from "../../../src/session-contracts";
+import type { MessageKind, SessionMessage, SessionOperation, SessionProfile, SessionQuery, SessionSearchHit, SessionSummary, SessionUsage } from "../../../src/session-contracts";
 import type { PanelSemantics, PanelSide } from "../../shared/layout/workspace-layout";
 import { formatNumber, translate, translateMessageOrOriginal, type Language } from "../../../src/i18n";
 import { getLanguage } from "../../shared/i18n";
@@ -18,6 +18,18 @@ export function sessionParentTitle(session: SessionSummary, language = getLangua
 
 export function sessionResourceName(resource: NonNullable<SessionMessage["resource"]>, language = getLanguage()): string {
   return translateMessageOrOriginal(language, resource.nameDescriptor, resource.name);
+}
+
+export function sessionOperationType(type: SessionOperation["type"], language = getLanguage()): string {
+  return translate(language, `sessions.operation.type.${type}`);
+}
+
+export function sessionOperationLabel(operation: SessionOperation, language = getLanguage()): string {
+  return translate(language, "sessions.operation.event", { type: sessionOperationType(operation.type, language) });
+}
+
+export function sessionProfileHasCalls(profile?: Pick<SessionProfile, "tools" | "resources" | "operations"> | null): boolean {
+  return !!profile && (profile.tools.length > 0 || profile.resources.length > 0 || !!profile.operations?.length);
 }
 
 export function sessionMessageText(message: SessionMessage, language = getLanguage()): string {

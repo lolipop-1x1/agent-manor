@@ -48,6 +48,7 @@ export interface NormalizedEvent {
   copied?: boolean;
   filePaths?: string[];
   resource?: SessionMessage["resource"];
+  operation?: SessionMessage["operation"];
   nativeOrdinal?: number;
   nativeIdentityHash?: string;
 }
@@ -218,6 +219,7 @@ export function parseNormalizedSession(snapshot: NormalizedSnapshot, sink: Sessi
       finalEvidence: !partial && event.final ? event.finalEvidence : undefined,
       finalAt: !partial && event.final ? event.finalAt : undefined, finishedAt: event.finishedAt, durationMs: event.durationMs,
       interrupted: event.interrupted, copied: event.copied, branchIds: event.branchIds, currentBranch: event.currentBranch,
+      operation: event.operation,
       filePaths: paths.length ? paths : undefined, resource: event.kind === "tool_call" ? event.resource ?? callResource(event.tool ?? "", event.input, meta.project ?? source.cwd)
         : event.kind === "user" ? event.resource : undefined };
     if (event.kind === "tool_call" && value.resource?.kind === "skill_read") value.resource = undefined;
