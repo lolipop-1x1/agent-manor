@@ -1,7 +1,7 @@
 # 豆包工作接入设计树
 
 Type: task
-Status: resolved
+Status: claimed
 
 ## 已作决策
 
@@ -12,6 +12,8 @@ Status: resolved
 5. 领域术语：会话缓存属于来源副本，本地缺失不等于远端删除；已记录到 CONTEXT.md。
 
 ## 当前前沿
+
+[14 正文来源差异调查](issues/14-body-source-investigation.md) 的只读调查已完成；新增任务正文兼容仍未解决。已确认会话页历史通过远端 HTTPS 加载，当前本机摘要、任务恢复状态和补查缓存未提供目标完整正文。不能将原生界面可见回复等同于已接入完整历史，也不能将空摘要解释为原生无消息。继续维持仅本机来源边界。
 
 [13 展示豆包原生模型选择记录](issues/13-model-records.md) 已完成。原生 Auto 进入共享模型记录，五类会话列表快照补充摘要、项目和时间；仅摘要不补造正文或回复模型。独立暂存副本类型／构建、相关 70 项、Chrome 12 项及包外安装补验通过，真实原端口 API／页面已显示模型图表，范围外客户端会话数不变。
 
@@ -42,6 +44,7 @@ Status: resolved
 - [11 跨客户端统一用量画像](issues/11-unified-usage.md)：resolved；依赖 10。
 - [12 从执行轨迹估算模型步骤](issues/12-trace-step-estimate.md)：resolved；依赖 11。
 - [13 展示豆包原生模型选择记录](issues/13-model-records.md)：resolved；依赖 12。
+- [14 正文来源差异调查](issues/14-body-source-investigation.md)：resolved（仅调查完成，正文缺口未修复）；依赖 13。
 - [原生验收记录](validation.md)：真实缓存产品验证与合成 Chrome 7 项验收完成；缓存更新缺口仍保留。
 
 ## 本机证据边界
