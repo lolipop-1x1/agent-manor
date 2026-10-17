@@ -1,7 +1,6 @@
-import { getLanguage, isMessageDescriptorKnown, messageText, t, useI18n } from "../../shared/i18n";
+import { getLanguage, isMessageDescriptorKnown, t, useI18n } from "../../shared/i18n";
 import { formatNumber } from "../../../src/i18n";
 import type { ReactNode } from "react";
-import type { Gap } from "../../../src/contracts";
 import { ApiError, errorMessage } from "../../shared/api";
 import { CaretDoubleLeft, CaretDoubleRight, CaretLeft, CaretRight, WarningCircle } from "@phosphor-icons/react";
 
@@ -15,13 +14,6 @@ export function Notice({ children, danger = false, action }: { children: ReactNo
 export function SessionError({ error }: { error: Error | string }) {
   useI18n();
   return <>{!(error instanceof ApiError && isMessageDescriptorKnown(error.messageDescriptor)) && <strong>{t("common.originalDetails")}: </strong>}{errorMessage(error)}</>;
-}
-
-export function SessionDiagnostic({ gap }: { gap: Gap }) {
-  useI18n();
-  return <div><p>{!isMessageDescriptorKnown(gap.messageDescriptor) && <strong>{t("common.originalDetails")}: </strong>}{messageText(gap.messageDescriptor, gap.message)}</p>
-    {gap.details?.map((detail, index) => <p key={`${detail.key}-${index}`}>{!isMessageDescriptorKnown(detail) && <strong>{t("common.originalDetails")}: </strong>}{messageText(detail, gap.message)}</p>)}
-  </div>;
 }
 
 export function Pager({ page, pageSize, total, onChange, label, showEnds = false }: { page: number; pageSize: number; total: number; onChange: (page: number) => void; label: string; showEnds?: boolean }) {

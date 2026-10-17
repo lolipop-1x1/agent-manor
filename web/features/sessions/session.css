@@ -40,7 +40,6 @@
 .session-search-empty p { font-size: 11px; }
 .session-pager { display: flex; align-items: center; justify-content: center; gap: 9px; padding: 9px 2px; color: var(--muted); font-size: 10px; }
 .session-pager .icon-button { width: 27px; min-height: 27px; padding: 3px; }
-.session-gaps summary { cursor: pointer; }
 .session-list-loading, .session-search-status, .session-message-loading { margin: 5px 0; color: var(--muted); font-size: 11px; }
 .sessions-main { display: flex; flex-direction: column; min-width: 0; min-height: 0; padding: 16px 22px 0; overflow: hidden; }
 .session-reading-header { padding-bottom: 12px; }
@@ -157,10 +156,6 @@
 .session-child:hover { color: var(--accent); background: var(--surface-alt); }
 .session-child strong { font-size: 10px; }
 .session-child small { color: var(--muted); font-size: 9px; }
-.session-gaps { border-top: 1px solid var(--border); padding: 9px 0; color: var(--muted); font-size: 10px; }
-.session-gaps div { padding: 6px 0; }
-.session-gaps strong { color: var(--text); }
-.session-gaps p { margin-top: 4px; line-height: 1.6; }
 .session-profile-empty { padding: 12px 0; }
 .session-profile-empty h3 { margin-bottom: 7px; }
 .session-profile-empty p { font-size: 10px; line-height: 1.6; }

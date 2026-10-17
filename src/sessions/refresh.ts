@@ -136,8 +136,9 @@ export async function refreshSessions(store: SessionStore, jobId: string, roots?
         : ["pi", "qoder"].includes(source.client) ? ":reasoning-effort-v1" : "";
       // 原生与规范化来源均升级轮次依据，固定版本只在规则变更后使旧会话缓存失效一次。
       const nativeSkillFingerprint = ["codex", "codeflicker"].includes(source.client) ? ":native-skill-v1" : "";
+      const readableContentFingerprint = source.client === "codex" ? ":readable-content-v1" : "";
       const prefixFingerprint = source.historyPrefix ? `:history-prefix-v2:${source.historyPrefix.hash}` : "";
-      const metadataSuffix = `${nativeSkillFingerprint}${prefixFingerprint}${requestTimingFingerprint}${contextUsageFingerprint}${requestUsageFingerprint}${pricingProviderFingerprint}${zcodeInputFingerprint}${reasoningEffortFingerprint}${opencodeOutputFingerprint}${cliCacheFingerprint}${sourceUsageFingerprint}${ideRequestFingerprint}${titleFingerprint}${childTitleFingerprint}${projectFingerprint}${desktopFingerprint}${desktopResourceFingerprint}${ROUND_RULES_FINGERPRINT}`;
+      const metadataSuffix = `${nativeSkillFingerprint}${readableContentFingerprint}${prefixFingerprint}${requestTimingFingerprint}${contextUsageFingerprint}${requestUsageFingerprint}${pricingProviderFingerprint}${zcodeInputFingerprint}${reasoningEffortFingerprint}${opencodeOutputFingerprint}${cliCacheFingerprint}${sourceUsageFingerprint}${ideRequestFingerprint}${titleFingerprint}${childTitleFingerprint}${projectFingerprint}${desktopFingerprint}${desktopResourceFingerprint}${ROUND_RULES_FINGERPRINT}`;
       const metadataFingerprint = createHash("sha256").update(JSON.stringify({ rule: SESSION_INDEX_RULE_VERSION, source: location, metadataSuffix })).digest("hex");
       let stamp: string | undefined;
       try { stamp = await sourceQuickStamp(source); }

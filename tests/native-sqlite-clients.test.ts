@@ -59,6 +59,28 @@ function insertOpenCodePart(database: Database.Database, sessionId: string, mess
     JSON.stringify({ id, sessionID: sessionId, messageID: messageId, time: { start: time, end: time + 1 }, ...data }));
 }
 
+test("OpenCode 步骤与补丁引用保留为过程，不冒充工具调用或代码修改", async () => temporary(async directory => {
+  const path = join(directory, "opencode.db"), writer = new Database(path);
+  createOpenCodeSchema(writer);
+  insertOpenCodeSession(writer, { id: "metadata", directory: "/synthetic/repo" });
+  insertOpenCodeMessage(writer, "metadata", "assistant", "assistant", 1);
+  insertOpenCodePart(writer, "metadata", "assistant", "step", 2, { type: "step-start", snapshot: "synthetic-snapshot" });
+  insertOpenCodePart(writer, "metadata", "assistant", "patch", 3, { type: "patch", hash: "synthetic-patch", files: ["/synthetic/repo/example.ts"] });
+  insertOpenCodePart(writer, "metadata", "assistant", "future", 4, { type: "future-part" });
+  writer.close();
+  const source = { path, client: "opencode" as const, format: OPENCODE_FORMAT, selector: "metadata", sessionId: "metadata" };
+  const snapshot = await opencodeAdapter.readRecords!(source);
+  assert.deepEqual(snapshot.meta.gaps?.filter(gap => gap.messageDescriptor?.key === "diagnostics.history.adapters.opencode.m006")
+    .map(gap => gap.messageDescriptor?.params?.p0), ["future-part"]);
+  const messages: SessionMessage[] = [];
+  parseNormalizedSession(snapshot, { message: value => messages.push(value), usage: () => {} });
+  assert.equal(messages.filter(message => message.kind === "tool_call" || message.kind === "tool_result").length, 0);
+  assert.equal(messages.filter(message => message.kind === "context").length, 3);
+  assert.deepEqual(messages.find(message => message.filePaths?.length)?.filePaths, ["/synthetic/repo/example.ts"]);
+  const parsed = await parseSource(path, "opencode", undefined, OPENCODE_FORMAT, { location: source });
+  assert.equal(parsed.events.length, 0, "补丁标识及文件清单不能补造代码修改范围");
+}));
+
 function insertOpenCodeTools(database: Database.Database, sessionId: string, assistantId: string) {
   const readOutput = "<path>/synthetic/repo/src/read.ts</path>\n<type>file</type>\n<content>\n1: export const alpha = true;\n2: export const beta = false;\n\n(End of file - total 2 lines)\n</content>";
   insertOpenCodePart(database, sessionId, assistantId, "read-part", 3, {

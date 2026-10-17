@@ -430,7 +430,14 @@ async function snapshot(location: SourceLocation): Promise<NormalizedSnapshot> {
       records.push(normalizedRecord({ key, kind: "context", text: `DSH 过程事件 ${detail}`, textDescriptor: { key: "sessions.body.dshEvent", params: { detail } }, occurredAt, turnKey, copied }, row.raw, row.line, seq));
       continue;
     }
-    if (type === "request/header" || type === "request/context") {
+    if (type === "command/run" || type === "command/done") {
+      const text = type === "command/run" ? [string(data.name), string(data.args)].filter(Boolean).join(" ") : string(data.text);
+      records.push(normalizedRecord({ key, kind: "context", text: text || type, occurredAt, turnKey, copied }, row.raw, row.line, seq));
+      continue;
+    }
+    if (["request/header", "request/context", "permission/preset", "sandbox/mode", "approval/policy", "agent/inbox/spliced",
+      "session/title", "session/title-llm-request", "todo/write", "subagent/catalog", "goal/change", "model/selection",
+      "compaction/start", "compaction/end", "compaction/prune", "workspace/changes"].includes(type)) {
       records.push(normalizedRecord({ key, kind: "context", text: `DSH 过程事件 ${type}`, textDescriptor: { key: "sessions.body.dshEvent", params: { detail: type } }, occurredAt, turnKey, copied }, row.raw, row.line, seq));
       continue;
     }

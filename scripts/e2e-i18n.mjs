@@ -347,6 +347,9 @@ try {
   sessionService = await startService({ home, roots: Object.fromEntries(clientIds.map(client => [client, []])), startupRefresh: false,
     resourceInventory: { userHome: join(directory, "session-user") }, staticRoot: fileURLToPath(new URL("../dist/web", import.meta.url)) });
  const sessionBase = `http://127.0.0.1:${sessionService.instance.port}`;
+ const diagnosticProfile = await (await fetch(`${sessionBase}/api/v1/sessions/${encodeURIComponent(id)}/profile?summary=true`)).json();
+ assert.ok(diagnosticProfile.gaps.some(value => value.message === gap.message && value.details?.[0]?.params?.type === "synthetic-event"));
+ assert.ok(diagnosticProfile.gaps.some(value => value.message === legacyGap.message && value.messageDescriptor?.key === legacyGap.messageDescriptor.key));
  await fetch(`${sessionBase}/api/v1/preferences`, { method: "PUT", headers: { "Content-Type": "application/json", "x-agent-manor-instance": sessionService.instance.id }, body: JSON.stringify({ language: "zh-CN" }) });
  await browser(["goto", `${sessionBase}/#sessions?id=${id}&mode=brief`]);
   const verifySessions = async page => {
@@ -428,10 +431,7 @@ try {
     await button("Statistics methodology").click();
     ensure((await page.getByRole("dialog", { name: "Statistics methodology", exact: true }).innerText()).includes("Retained text characters ÷ 4"), "英文估算公式完整可读");
     await page.keyboard.press("Escape");
-    await page.locator(".session-profile .session-gaps summary").click();
-    await page.locator(".session-profile .session-gaps").getByText("Unsupported event synthetic-event", { exact: true }).waitFor();
-    const gaps = await page.locator(".session-profile .session-gaps").innerText();
-    ensure(gaps.includes("Unsupported event synthetic-event") && gaps.includes("Original details") && gaps.includes("原始外部诊断"), "产品缺口详情翻译且旧诊断保留原文");
+    ensure(await page.getByText(/^(导入详情|Import details)$/).count() === 0, "画像不再展示底层导入诊断");
     await page.route("**/api/v1/sessions/*/profile?*", route => route.fulfill({ status: 400, contentType: "application/json", body: JSON.stringify({ error: { code: "INVALID_INPUT", message: "保留原始产品错误", messageDescriptor: { key: "sessions.reading.evidenceMissing" } } }) }));
     await button("Include child sessions").click();
     await page.locator(".session-message-scroll .session-notice.is-danger").waitFor();

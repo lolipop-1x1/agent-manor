@@ -279,6 +279,24 @@ test("Codex 有正文响应时仍保留事件中已记录的思考，不将加�
   assert.equal(sample.summary.gaps.filter(gap => gap.kind === "unsupported_format").length, 0);
 });
 
+test("Codex 可读压缩摘要优先于加密字段，空正文回退摘要且不误报缺失", async () => {
+  for (const fields of [{ content: "合成压缩摘要" }, { summary: "合成压缩摘要" },
+    { content: [], summary: "合成压缩摘要" }, { content: "  ", summary: [{ type: "text", text: "合成压缩摘要" }] },
+    { content: [{ type: "text", text: "合成压缩摘要" }], summary: "其他合成摘要" }]) {
+    const sample = await parsed("codex", [meta(), user(), response({ type: "compaction", ...fields, encrypted_content: "synthetic-encrypted" })]);
+    assert.equal(sample.messages.find(message => message.kind === "compression")?.text, "合成压缩摘要");
+    assert.ok(!sample.summary.gaps.some(gap => gap.messageDescriptor?.key === "diagnostics.sessions.parser.m013"));
+  }
+  const encrypted = await parsed("codex", [meta(), user(), response({ type: "compaction", content: "  ", encrypted_content: "synthetic-encrypted" })]);
+  assert.ok(encrypted.summary.gaps.some(gap => gap.messageDescriptor?.key === "diagnostics.sessions.parser.m013"));
+});
+
+test("Codex 空白思考摘要回退已保存正文，不把明文漏成加密内容", async () => {
+  const sample = await parsed("codex", [meta(), user(), response({ type: "reasoning", summary: "  ", content: [{ type: "text", text: "合成思考正文" }], encrypted_content: "synthetic-encrypted" })]);
+  assert.equal(sample.messages.find(message => message.kind === "thinking")?.text, "合成思考正文");
+  assert.ok(!sample.summary.gaps.some(gap => gap.messageDescriptor?.key === "diagnostics.sessions.parser.m012"));
+});
+
 test("Codex 用量投影两个顺序均去重，同值独立 response 身份不能合并", async () => {
   for (const events of [[counted(), requestUsage("one"), counted()], [requestUsage("one"), counted()]]) {
     const sample = await parsed("codex", [meta(), user(), ...events]);

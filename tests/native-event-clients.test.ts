@@ -246,6 +246,25 @@ test("DSH 官方过程事件与未知语义 gap 不令完整 V3 输给损坏 V4"
     { key: "sessions.body.unsupportedEvent", params: { type: "future/native-event" } });
 }));
 
+test("DSH 已知辅助事件保留上下文和原始证据，不制造调用或格式缺口", async () => temporary(async directory => {
+  const path = join(directory, "session.v4.jsonl");
+  const types = ["permission/preset", "sandbox/mode", "approval/policy", "agent/inbox/spliced", "session/title", "session/title-llm-request", "todo/write", "subagent/catalog", "goal/change",
+    "model/selection", "compaction/start", "compaction/end", "compaction/prune", "workspace/changes"];
+  await writeFile(path, encode([dshHeader(4, "synthetic-auxiliary"), ...types.map((type, seq) => dshEvent(type, seq, { value: "人工合成元数据" })),
+    dshEvent("command/run", types.length, { commandId: "synthetic-command", name: "compact", args: "合成参数", source: { kind: "user" } }),
+    dshEvent("command/done", types.length + 1, { commandId: "synthetic-command", kind: "success", text: "合成命令结果" }),
+    dshEvent("future/native-event", types.length + 2, { value: "未知语义" })]));
+  const snapshot = await dshAdapter.readRecords!({ path, client: "dsh", format: DSH_FORMAT }) as NormalizedSnapshot;
+  const parsed = sink(snapshot);
+  assert.equal(parsed.messages.filter(message => message.kind === "context").length, types.length + 3);
+  assert.equal(parsed.messages.filter(message => ["user", "assistant", "tool_call", "tool_result"].includes(message.kind)).length, 0);
+  assert.equal(parsed.usage.length, 0);
+  assert.ok(parsed.messages.some(message => message.text === "compact 合成参数"));
+  assert.ok(parsed.messages.some(message => message.text === "合成命令结果"));
+  assert.deepEqual(snapshot.meta.gaps?.filter(gap => gap.kind === "unsupported_format").map(gap => gap.messageDescriptor?.params?.p0), ["future/native-event"]);
+  for (const type of types) assert.ok(snapshot.records.some(row => row.raw && JSON.parse(row.raw).type === type && row.record.normalizedEvent?.kind === "context"));
+}));
+
 test("DSH 未知代际仍保留来源并显式标记 unsupported_format", async () => temporary(async directory => {
   register(dshAdapter);
   const path = join(directory, "session.v5.jsonl");

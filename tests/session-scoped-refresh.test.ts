@@ -58,6 +58,32 @@ test("原始用量规则升级使未变来源重新解析，范围外客户端�
   assert.equal(reused.counts?.quickReused, 1);
 }));
 
+test("可读正文规则升级修复旧诊断并保留摘要，其他客户端不重建", async () => fixture(async (store, directory) => {
+  const codex = join(directory, "codex"), claude = join(directory, "claude");
+  await mkdir(codex); await mkdir(claude);
+  await writeFile(join(codex, "source.jsonl"), codexSource("readable-summary", "合成需求")
+    + encode({ type: "response_item", payload: { type: "compaction", content: [], summary: "合成压缩摘要", encrypted_content: "synthetic" } }));
+  await writeFile(join(claude, "source.jsonl"), encode({ type: "user", uuid: "user", sessionId: "other-demo", message: { content: "其他客户端" } }));
+  const roots = isolatedHistoryRoots({ codex, claude });
+  await refresh(store, roots);
+  const previous = store.cachedRevisions().find(item => item.client === "codex")!;
+  const other = store.cachedRevisions().find(item => item.client === "claude")!;
+  assert.ok(previous.fingerprint.includes(":readable-content-v1"));
+  const session = store.list({ client: "codex" }).sessions[0]!;
+  const db = new Database(store.dbPath);
+  try {
+    db.prepare("UPDATE session_revisions SET fingerprint=replace(fingerprint,':readable-content-v1',''),metadata_fingerprint=NULL,json=json_set(json,'$.gaps',json(?)) WHERE id=?")
+      .run(JSON.stringify([{ kind: "unsupported_format", message: "合成旧诊断", messageDescriptor: { key: "diagnostics.sessions.parser.m013" } }]), previous.revision);
+  } finally { db.close(); }
+  assert.ok(store.profile(session.id).gaps.some(gap => gap.messageDescriptor?.key === "diagnostics.sessions.parser.m013"));
+  const upgraded = await refresh(store, roots, { client: "codex", mode: "quick" });
+  assert.equal(upgraded.counts?.parsed, 1);
+  assert.ok(!store.profile(session.id).gaps.some(gap => gap.messageDescriptor?.key === "diagnostics.sessions.parser.m013"));
+  assert.ok(store.messages(session.id, { mode: "full" }).messages.some(message => message.kind === "compression" && message.text === "合成压缩摘要"));
+  assert.equal(store.cachedRevisions().find(item => item.client === "claude")!.revision, other.revision);
+  assert.equal((await refresh(store, roots, { client: "codex", mode: "quick" })).counts?.quickReused, 1);
+}));
+
 test("局部刷新只访问所选 Agent，连续发布保留其他来源与检查时间", async () => fixture(async (store, directory) => {
   const codex = join(directory, "codex", "sessions");
   const claude = join(directory, "claude");

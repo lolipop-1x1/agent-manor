@@ -6,7 +6,7 @@ import type { SessionProfile, SessionSummary, SessionTimelineEvent } from "../..
 import type { SessionCostSummary } from "../../../src/usage-contracts";
 import { sessionDisplayTitle, displayRecorded, sessionResourceName, sessionOperationType, sessionProfileHasCalls, sessionParams, usageAxis, usageIndexAt, usageSegments, type EvidenceTarget } from "./session-model";
 import { kindLabels, resourceLabels } from "./SessionMessage";
-import { Notice, Pager, SessionDiagnostic, SessionError } from "./SessionControls";
+import { Notice, Pager, SessionError } from "./SessionControls";
 import { HelpPopover } from "../../shared/ui/HelpPopover";
 import { SessionEvidence } from "./SessionEvidence";
 import { summarizeRequestSpeed } from "../../../src/session-speed";
@@ -257,7 +257,6 @@ export function SessionProfilePane({ active, profile, loading, error, includeChi
         {visibleTab === "overview" && profile.children.length > 0 && <section className="session-profile-section"><div className="session-section-heading"><h3>{t("sessions.profile.children")}</h3><span>{t("sessions.profile.childCount", { count: profile.children.length })}</span></div>
           {profile.children.map(child => <button className="session-child" key={child.id} onClick={() => onSelectChild(child)}><strong>{sessionDisplayTitle(child)}</strong><small>{clientLabel(child.client)} · {shortProject(child.project)} · {child.relationship === "fork" ? t("sessions.relationship.forkShort") : t("sessions.relationship.child")}</small></button>)}
         </section>}
-        {profile.gaps.length > 0 && <details className="session-gaps"><summary>{t("sessions.details.import")}</summary>{profile.gaps.filter((gap, index, all) => all.findIndex(item => item.kind === gap.kind && item.message === gap.message) === index).map((gap, index) => <SessionDiagnostic key={`${gap.kind}-${index}`} gap={gap} />)}</details>}
       </>}
     </div>
   </aside>;

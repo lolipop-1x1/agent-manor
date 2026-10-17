@@ -190,8 +190,14 @@ function buildRecords(sessionId: string, messages: Record<string, unknown>[], pa
         staged.push({ event: { key: `compression:${partId}`, kind: "compression", ...(summary ? { text: summary } : {}),
           model, occurredAt: partTime, turnKey, allowInferredFinal: false }, raw: partRaw, order: partOrder });
       }
+      if (type === "step-start" || type === "patch") {
+        const filePaths = type === "patch" && Array.isArray(part.data.files) ? part.data.files.filter((value): value is string => typeof value === "string") : undefined;
+        staged.push({ event: { key: `metadata:${partId}`, kind: "context", text: `OpenCode 过程事件 ${type}`,
+          textDescriptor: { key: "sessions.body.opencodeEvent", params: { type } }, filePaths,
+          model, occurredAt: partTime, turnKey, allowInferredFinal: false }, raw: partRaw, order: partOrder });
+      }
       if (type !== "tool") {
-        if (!["text", "reasoning", "step-finish", "compaction", "summary"].includes(type ?? "")) {
+        if (!["text", "reasoning", "step-start", "step-finish", "patch", "compaction", "summary"].includes(type ?? "")) {
           meta.gaps ??= [];
           meta.gaps.push({ kind: "unsupported_format", message: `OpenCode part 类型 ${type ?? "<缺少类型>"} 尚未适配`, messageDescriptor: (type) !== undefined ? { key: "diagnostics.history.adapters.opencode.m006", params: { p0: String(type) } } : { key: "diagnostics.history.adapters.opencode.m007" } });
           staged.push({ event: { key: `unknown-part:${partId}`, kind: "context", text: `未适配 OpenCode part 类型 ${type ?? "<缺少类型>"}`,

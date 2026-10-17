@@ -549,7 +549,7 @@ export async function parseSessionSource(source: SourceLocation, sink: SessionSi
           final: final ? "explicit" : undefined, finalEvidence: final ? "response_completed" : undefined }, kind === "user");
         if (!copied && kind === "assistant" && partial) interruptCandidate(timing?.interrupt(undefined, true), true);
       } else if (type === "reasoning") {
-        const body = text(payload.summary) || text(payload.content);
+        const body = [payload.summary, payload.content].map(text).find(value => value.trim()) ?? "";
         if (!body && payload.encrypted_content && projectedReasoning?.turnId !== turnId) gap("unsupported_format", "思考正文仅有加密内容，未解密或补造", { key: "diagnostics.sessions.parser.m012" });
         if (body) message(projectedReasoning?.turnId === turnId && projectedReasoning.text === body ? projectedReasoning.key : key, "thinking", body, line, extra);
         else if (projectedReasoning?.turnId !== turnId) message(key, "thinking", "", line, extra);
@@ -570,8 +570,9 @@ export async function parseSessionSource(source: SourceLocation, sink: SessionSi
         toolResult(key, string(payload.call_id) ?? key, display(payload.output), line, status, { ...extra,
           durationMs: tokens(result.duration_ms) ?? tokens(result.durationMs) ?? (typeof result.wall_time_seconds === "number" ? result.wall_time_seconds * 1000 : undefined) }, output);
       } else if (type === "compaction") {
-        message(key, "compression", text(payload.content ?? payload.summary), line, extra);
-        if (payload.encrypted_content) gap("unsupported_format", "压缩记录未保存可读正文", { key: "diagnostics.sessions.parser.m013" });
+        const body = [payload.content, payload.summary].map(text).find(value => value.trim()) ?? "";
+        message(key, "compression", body, line, extra);
+        if (!body && payload.encrypted_content) gap("unsupported_format", "压缩记录未保存可读正文", { key: "diagnostics.sessions.parser.m013" });
       }
       continue;
     }
