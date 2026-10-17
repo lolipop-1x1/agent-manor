@@ -37,6 +37,10 @@
 .semantic-settings-body h3 { margin: 0 0 16px; font-size: 14px; font-weight: 550; }
 .semantic-field { display: flex; flex-direction: column; min-width: 0; gap: 7px; color: var(--text); font-size: 12px; }
 .semantic-field > span { line-height: 1.4; }
+.semantic-field-heading { display: flex; align-items: center; gap: 4px; min-width: 0; line-height: 1.4; }
+.semantic-field-heading > .help-trigger { width: 24px; height: 24px; padding: 3px; }
+.semantic-help-command { display: block; margin-top: 8px; color: var(--text); }
+.semantic-settings .help-popover-body > p { margin: 0; }
 .semantic-field input, .semantic-model-input > input { min-width: 0; width: 100%; border: 1px solid var(--border); border-radius: 5px; background: var(--surface); color: var(--text); padding: 9px 10px; font: inherit; font-size: 13px; line-height: 1.4; caret-color: var(--accent); }
 .semantic-field input::placeholder, .semantic-model-input > input::placeholder { color: var(--muted); opacity: 1; }
 .semantic-field input:focus-visible, .semantic-model-input > input:focus-visible { border-color: var(--accent); outline: 2px solid var(--accent-soft); outline-offset: 1px; }
