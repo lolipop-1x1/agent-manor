@@ -557,14 +557,21 @@ export function resolveSharedHistory(sources: ParsedSource[]): SharedHistoryResu
 
 function mergeEvent(events: Map<string, HistoryEvent>, event: HistoryEvent, gaps: Gap[]) {
   const existing = events.get(event.id);
-  if (!existing) { events.set(event.id, structuredClone(event)); return; }
+  const reasonDescriptor = event.reasonDescriptor ? { ...event.reasonDescriptor,
+    ...(event.reasonDescriptor.params ? { params: { ...event.reasonDescriptor.params } } : {}) } : undefined;
+  // 归并只修改元数据容器；工具输入、输出及片段正文保持只读共享，避免整轮再复制一份历史正文。
+  if (!existing) {
+    events.set(event.id, { ...event, fragments: event.fragments.map(fragment => ({ ...fragment })),
+      sources: event.sources.map(reference => ({ ...reference })), ...(reasonDescriptor ? { reasonDescriptor } : {}) });
+    return;
+  }
   const seen = new Set(existing.sources.map((reference) => `${reference.path}:${reference.recordLine}:${reference.hash}`));
   if (existing.status === "unknown" && event.status !== "unknown") {
     existing.status = event.status;
-    existing.fragments = structuredClone(event.fragments);
+    existing.fragments = event.fragments.map(fragment => ({ ...fragment }));
     existing.output = event.output;
     existing.reason = event.reason;
-    existing.reasonDescriptor = event.reasonDescriptor;
+    existing.reasonDescriptor = reasonDescriptor;
   } else if (existing.status !== "unknown" && event.status !== "unknown" && existing.status !== event.status) {
     existing.status = "unknown";
     existing.fragments = [];
@@ -573,6 +580,6 @@ function mergeEvent(events: Map<string, HistoryEvent>, event: HistoryEvent, gaps
   }
   for (const reference of event.sources) {
     const key = `${reference.path}:${reference.recordLine}:${reference.hash}`;
-    if (!seen.has(key)) { existing.sources.push(reference); seen.add(key); }
+    if (!seen.has(key)) { existing.sources.push({ ...reference }); seen.add(key); }
   }
 }

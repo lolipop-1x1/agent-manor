@@ -1,6 +1,10 @@
 import type { MessageCatalog } from "../../types.js";
 
 export default {
+  "codeMap.view.distribution": "活动分布",
+  "codeMap.view.replay": "活动回放",
+  "codeMap.view.tabs": "代码地图视图",
+
   "codeMap.session.label": "会话",
   "codeMap.session.filter": "筛选会话",
   "codeMap.session.search": "搜索标题或会话 ID",

@@ -3,12 +3,13 @@ import Database from "better-sqlite3";
 import { randomUUID } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import { dirname, resolve } from "node:path";
-import type { AnalysisSnapshot, ApiErrorCode, HistorySource, Job, Mapping, ParsedSource, Repository, SourcesResponse } from "../contracts.js";
+import type { AnalysisSnapshot, ApiErrorCode, HistoryEvent, HistorySource, Job, Mapping, ParsedSource, Repository, SourcesResponse } from "../contracts.js";
 import { getRepository } from "../analysis/index.js";
 import { INDEX_SCHEMA_VERSION, initializeIndexSchema } from "./schema.js";
 import { PARSER_RULE_VERSION } from "../version.js";
 import type { DiscoverOptions } from "../history/types.js";
 import { inactiveClientIds, isSupportedClient } from "../clients.js";
+import type { ReplaySnapshot } from "../replay/types.js";
 
 export class StoreError extends Error {
   constructor(public readonly code: ApiErrorCode, message: string, readonly messageDescriptor?: MessageDescriptor) {
@@ -197,6 +198,80 @@ export class AnalysisStore {
 
   getSnapshot(repositoryId: string, version?: string): AnalysisSnapshot {
     return this.readSnapshot(repositoryId, version, false);
+  }
+
+  /** 缓存命中前也核对版本保留状态，不能让已淘汰的数据继续提供证据。 */
+  analysisVersion(repositoryId: string, version?: string): string {
+    const selected = this.selectVersion(repositoryId, version);
+    if (!this.database.prepare("SELECT 1 FROM versions WHERE repository_id=? AND version=?").get(repositoryId, selected)) {
+      throw new StoreError("VERSION_NOT_FOUND", "分析结果版本不可用：不存在或已被淘汰", { key: "diagnostics.index.store.m004" });
+    }
+    return selected;
+  }
+
+  /** 直接在分块内选取回放元数据；JSONB 遍历不反复编码大段输入、输出与历史源码。 */
+  getReplaySnapshot(repositoryId: string, version?: string): ReplaySnapshot {
+    // 版本检查、头部和全部分块共用 WAL 读取快照，后台淘汰不能截断本次读取。
+    return this.database.transaction(() => this.readReplaySnapshot(repositoryId, version)).deferred();
+  }
+
+  private readReplaySnapshot(repositoryId: string, version?: string): ReplaySnapshot {
+    const selected = this.analysisVersion(repositoryId, version);
+    const repository = this.getRepository(repositoryId);
+    const row = this.database.prepare("SELECT snapshot AS json FROM versions WHERE repository_id=? AND version=?")
+      .get(repositoryId, selected) as JsonRow | undefined;
+    if (!row) throw new StoreError("VERSION_NOT_FOUND", "分析结果版本不可用：不存在或已被淘汰", { key: "diagnostics.index.store.m004" });
+    const header = (JSON.parse(row.json) as { value: AnalysisSnapshot }).value;
+    const result: ReplaySnapshot = { repository: { ...header.repository, version: selected, stale: repository.stale || selected !== repository.version },
+      version: selected, baselineHash: header.baseline.hash, files: [], events: [], mappings: [], gaps: [], eventParts: new Map() };
+    const parts = this.database.prepare(`SELECT field,part,CASE field
+      WHEN 'baseline.files' THEN (SELECT json_group_array(json_object('path',json_extract(value,'$.path'),
+        'category',json_extract(value,'$.category'),'lineCount',json_extract(value,'$.lineCount'))) FROM jsonb_each(p.json))
+      WHEN 'events' THEN (SELECT json_group_array(json_object('id',json_extract(e.value,'$.id'),'client',json_extract(e.value,'$.client'),
+        'sessionId',json_extract(e.value,'$.sessionId'),'tool',json_extract(e.value,'$.tool'),'kind',json_extract(e.value,'$.kind'),
+        'status',json_extract(e.value,'$.status'),'occurredAt',json_extract(e.value,'$.occurredAt'),'cwd',json_extract(e.value,'$.cwd'),
+        'path',json_extract(e.value,'$.path'),'sources',json_extract(e.value,'$.sources'),
+        'fragments',json(COALESCE((SELECT json_group_array(json_object('path',json_extract(f.value,'$.path')))
+          FROM jsonb_each(e.value,'$.fragments') f WHERE json_extract(f.value,'$.path') IS NOT NULL),'[]')))) FROM jsonb_each(p.json) e)
+      WHEN 'mappings' THEN (SELECT json_group_array(json_object('eventId',json_extract(value,'$.eventId'),
+        'filePath',json_extract(value,'$.filePath'))) FROM jsonb_each(p.json))
+      ELSE json END AS json FROM payload_parts p WHERE repository_id=? AND kind='snapshot' AND owner=?
+        AND field IN ('baseline.files','events','mappings','gaps') ORDER BY field,part`)
+      .iterate(repositoryId, selected) as Iterable<{ field: string; part: number; json: string }>;
+    for (const part of parts) {
+      const field = part.field === "baseline.files" ? "files" : part.field as "events" | "mappings" | "gaps";
+      const values = JSON.parse(part.json) as unknown[];
+      for (const value of values) {
+        if (field === "events") {
+          const event = value as ReplaySnapshot["events"][number];
+          for (const key of ["occurredAt", "cwd", "path"] as const) if (event[key] == null) delete event[key];
+          if (isSupportedClient(event.client) && !result.eventParts.has(event.id)) result.eventParts.set(event.id, part.part);
+        }
+        (result[field] as unknown[]).push(value);
+      }
+    }
+    const events = result.events.filter(event => isSupportedClient(event.client));
+    if (events.length !== result.events.length) {
+      const ids = new Set(events.map(event => event.id));
+      result.events = events;
+      result.mappings = result.mappings.filter(mapping => ids.has(mapping.eventId));
+    }
+    result.gaps = result.gaps.filter(gap => !inactiveClientIds.some(client => gap.sourceId?.startsWith(`${client}:`)));
+    return result;
+  }
+
+  /** 固定版本和已知分块只回读一个完整活动，不恢复整个仓库正文。 */
+  getReplayEvent(repositoryId: string, version: string, part: number, eventId: string): HistoryEvent {
+    return this.database.transaction(() => {
+      const selected = this.analysisVersion(repositoryId, version);
+      const row = this.database.prepare(`SELECT json(e.value) AS json FROM payload_parts p,jsonb_each(p.json) e
+        WHERE p.repository_id=? AND p.kind='snapshot' AND p.owner=? AND p.field='events' AND p.part=?
+          AND json_extract(e.value,'$.id')=? LIMIT 1`).get(repositoryId, selected, part, eventId) as JsonRow | undefined;
+      if (!row) throw new StoreError("EVENT_NOT_FOUND", "活动不在所选分析范围内", { key: "diagnostics.server.m018" });
+      const event = JSON.parse(row.json) as HistoryEvent;
+      if (!isSupportedClient(event.client)) throw new StoreError("EVENT_NOT_FOUND", "活动不在所选分析范围内", { key: "diagnostics.server.m018" });
+      return event;
+    }).deferred();
   }
 
   /** 总览覆盖摘要省略基线正文、事件正文与工具参数，原证据仍由完整快照接口读取。 */

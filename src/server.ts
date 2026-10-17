@@ -40,6 +40,8 @@ import { SemanticManager } from "./semantic/manager.js";
 import { registerSemanticRoutes, semanticRequest } from "./service/semantic-routes.js";
 import { defaultSemanticConfig } from "./semantic/config.js";
 import type { SemanticSearchQuery } from "./semantic-contracts.js";
+import { registerReplayRoutes } from "./service/replay-routes.js";
+import { ReplayManager } from "./replay/manager.js";
 
 export interface ServiceOptions {
   home?: string;
@@ -81,6 +83,7 @@ export async function startService(options: ServiceOptions = {}) {
   let usageManager: UsageManager | undefined;
   let overviewManager: OverviewManager | undefined;
   let searchManager: SessionSearchManager | undefined;
+  let replayManager: ReplayManager | undefined;
   let semanticManager: SemanticManager | undefined;
   let autoSync: SessionAutoSyncScheduler | undefined;
   let unsubscribePreferences: (() => void) | undefined;
@@ -105,6 +108,7 @@ export async function startService(options: ServiceOptions = {}) {
       return { q: query.q ?? "", scope, page: query.page, pageSize: query.pageSize, sort: sort as SemanticSearchQuery["sort"], sessionId: textValue(raw.sessionId, "sessionId") };
     };
     searchManager = new SessionSearchManager(library);
+    replayManager = new ReplayManager(index, library);
     semanticManager = new SemanticManager(home, library);
     const searches = searchManager;
     const search = async (request: FastifyRequest, reply: FastifyReply, type: SearchOperation, query: SessionQuery & { sessionId?: string }) => {
@@ -144,6 +148,7 @@ export async function startService(options: ServiceOptions = {}) {
       sync.close();
       await semanticManager?.close();
       await searchManager?.close();
+      await replayManager?.close();
       await resourceHistory?.close();
       await overviewManager?.close();
       await usageManager?.close();
@@ -166,6 +171,7 @@ export async function startService(options: ServiceOptions = {}) {
     registerUsageRoutes(app, usageManager, pricing, library);
     registerOverviewRoutes(app, overviewManager);
     registerSemanticRoutes(app, semanticManager);
+    registerReplayRoutes(app, replayManager);
     app.addHook("onRequest", async (request) => {
       let host: URL;
       try { host = new URL(`http://${request.headers.host ?? ""}`); } catch { throw new ServiceError("FORBIDDEN", "无效 Host", { key: "diagnostics.server.m005" }); }
@@ -400,6 +406,7 @@ export async function startService(options: ServiceOptions = {}) {
     await app.close().catch(() => undefined);
     await manager?.close().catch(() => undefined);
     await searchManager?.close().catch(() => undefined);
+    await replayManager?.close().catch(() => undefined);
     await resourceHistory?.close().catch(() => undefined);
     await usageManager?.close().catch(() => undefined);
     await overviewManager?.close().catch(() => undefined);

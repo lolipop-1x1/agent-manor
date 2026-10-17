@@ -16,13 +16,14 @@ const fileLabel = (file: FileCoverage, metric: Metric) => t("codeMap.map.fileLab
 interface CodeMapProps {
   files: FileCoverage[]; directory: string; metric: Metric; selected: string | null;
   browse: (directory: string) => void; select: (path: string) => void; heading: ReactNode; legend: ReactNode; scopeKey?: string;
+  playback?: { visited: ReadonlyMap<string, number>; current: ReadonlyMap<string, { track: number; kind: string; status: string }[]> };
 }
 export function CodeMap(props: CodeMapProps) {
   const { language } = useI18n();
   // 仅传递绘制所需的语言，其他偏好更新不重绘大型结果。
   return <MapCanvas {...props} language={language} />;
 }
-const MapCanvas = memo(function MapCanvas({ files, directory, metric, selected, browse, select, heading, legend, scopeKey = directory, language }: CodeMapProps & { language: string }) {
+const MapCanvas = memo(function MapCanvas({ files, directory, metric, selected, browse, select, heading, legend, scopeKey = directory, language, playback }: CodeMapProps & { language: string }) {
   const explorer = useRef<HTMLElement>(null);
   const host = useRef<HTMLDivElement>(null);
   const layout = useMemo(() => layoutMap(files, directory), [files, directory]);
@@ -98,10 +99,11 @@ const MapCanvas = memo(function MapCanvas({ files, directory, metric, selected, 
   const visible = useMemo(() => visibleTiles(layout.files, camera, size), [layout, camera, size]);
   const maxCount = useMemo(() => files.reduce((max, file) => Math.max(max, file.activityCount), 1), [files]);
   const tone = (file: FileCoverage) => {
+    if (playback) return playback.visited.has(file.path) ? 1 : 0;
     const value = metricValue(file, metric);
     return value === 0 ? 0 : Math.min(4, Math.ceil(value / (metric === "activity" ? maxCount : file.lineCount) * 4)) as MapTone;
   };
-  const colorTiles = useMemo(() => visible.map(({ tile, visible: rect }) => ({ rect, tone: tone(tile.file) })), [visible, metric, maxCount]);
+  const colorTiles = useMemo(() => visible.map(({ tile, visible: rect }) => ({ rect, tone: tone(tile.file) })), [visible, metric, maxCount, playback]);
   const readable = useMemo(() => visible.filter(({ visible: rect }) => rect.width >= 28 && rect.height >= 16), [visible]);
   const headings = useMemo(() => layout.directories.filter(node => node.depth === 1).flatMap(node => {
     const rect = clipRect(projectRect(node, camera), size);
@@ -109,6 +111,13 @@ const MapCanvas = memo(function MapCanvas({ files, directory, metric, selected, 
       ? [{ node, rect: { x: rect.x + 5, y: rect.y + 3, width: rect.width - 10, height: 22 } }] : [];
   }), [layout, camera, size]);
   const headingRects = useMemo(() => headings.map(heading => heading.rect), [headings]);
+  const replayScopes = useMemo(() => !playback ? [] : [{ ...layout.bounds, path: "." }, ...layout.directories].flatMap(node => {
+    const markers = playback.current.get(node.path);
+    const visited = playback.visited.has(node.path);
+    if (!markers && !visited) return [];
+    const rect = clipRect(projectRect(node, camera), size);
+    return rect ? [{ path: node.path, rect, markers, visited }] : [];
+  }), [playback, layout, camera, size]);
   const localPoint = (event: { clientX: number; clientY: number }) => {
     const bounds = host.current!.getBoundingClientRect();
     return { x: event.clientX - bounds.left, y: event.clientY - bounds.top };
@@ -210,15 +219,21 @@ const MapCanvas = memo(function MapCanvas({ files, directory, metric, selected, 
         const nameVisible = labels.width >= 37 && labels.height >= 18;
         const metricVisible = labels.width >= 67 && labels.height >= 54;
         const roomy = labels.width >= 102 && labels.height >= 78;
-        return <button key={file.path} data-path={file.path} className={`map-file tone-${tone(file)}${selected === file.path ? " selected" : ""}${metric !== "activity" && near ? " has-near" : ""}`} style={position(rect)} aria-label={fileLabel(file, metric)}
+        return <button key={file.path} data-path={file.path} data-replay-visited={playback?.visited.get(file.path) ?? undefined} data-replay-current={playback?.current.has(file.path) || undefined} className={`map-file tone-${tone(file)}${selected === file.path ? " selected" : ""}${!playback && metric !== "activity" && near ? " has-near" : ""}`} style={position(rect)} aria-label={playback ? file.path : fileLabel(file, metric)}
           onClick={() => { select(file.path); setHint(null); }} onFocus={() => setHint({ tile, point: { x: labels.x, y: labels.y } })} onBlur={() => setHint(null)}>
           <span className="map-file-labels" style={{ top: labels.y - rect.y - 1 }}>
-            {nameVisible && <span className="tile-name">{tile.name}</span>}{metricVisible && <strong>{valueLabel(file, metric)}</strong>}{roomy && <span className="tile-meta">{t("codeMap.line.count", { count: file.lineCount })}{metric !== "activity" && near > 0 && <em>{t("codeMap.map.nearCount", { count: near })}</em>}</span>}
+            {nameVisible && <span className="tile-name">{tile.name}</span>}{!playback && metricVisible && <strong>{valueLabel(file, metric)}</strong>}{roomy && <span className="tile-meta">{t("codeMap.line.count", { count: file.lineCount })}{!playback && metric !== "activity" && near > 0 && <em>{t("codeMap.map.nearCount", { count: near })}</em>}</span>}
           </span>
         </button>;
       })}
-      {headings.map(({ node, rect }) => <button key={node.path} className="map-directory" style={{ left: rect.x, top: rect.y, maxWidth: rect.width }} onClick={() => browse(node.path)} aria-label={t("codeMap.map.enterDirectory", { path: node.path })}><Folder size={13} /><span>{node.name}</span><CaretRight size={12} /></button>)}
-      {hint && !dragging && <div className="map-hover-hint" role="tooltip" style={{ left: Math.max(4, Math.min(hint.point.x + 12, size.width - Math.min(310, size.width - 8))), top: Math.max(4, Math.min(hint.point.y + 16, size.height - 78)), maxWidth: Math.min(310, size.width - 8) }}><span>{hint.tile.path}</span><strong>{metricNames[metric]} {valueLabel(hint.tile.file, metric)}</strong><small>{t("codeMap.line.count", { count: hint.tile.file.lineCount })}</small></div>}
+      {playback && <svg className="replay-map-overlay" width={size.width} height={size.height} aria-hidden="true">{replayScopes.map(({ path, rect, markers }) => <g key={`scope-${path}`}><rect className={`replay-scope-outline${markers ? " current" : ""}`} x={rect.x + 3} y={rect.y + 3} width={Math.max(0, rect.width - 6)} height={Math.max(0, rect.height - 6)} rx="2" />{markers?.slice(0, Math.max(1, Math.floor(rect.width / 22))).map((marker, i) => <g key={`${marker.track}-${marker.kind}-${marker.status}`} transform={`translate(${rect.x + 14 + i * 22},${rect.y + Math.min(43, rect.height / 2)})`} className={`replay-map-marker replay-track-${marker.track % 6} ${marker.status}`}><path d="M0 -10L10 0L0 10L-10 0Z" /><text textAnchor="middle" dominantBaseline="central">{marker.track + 1}</text></g>)}</g>)}{visible.flatMap(({ tile, visible: rect }) => {
+        const markers = playback.current.get(tile.path);
+        return markers ? [<g key={tile.path}><rect className="replay-current-outline" x={rect.x + 2} y={rect.y + 2} width={Math.max(0, rect.width - 4)} height={Math.max(0, rect.height - 4)} rx="2" />{markers.slice(0, Math.max(1, Math.floor(rect.width / 22))).map((marker, i) => <g key={`${marker.track}-${marker.kind}-${marker.status}`} transform={`translate(${rect.x + 13 + i * 22},${rect.y + Math.min(44, rect.height / 2)})`} className={`replay-map-marker replay-track-${marker.track % 6} ${marker.status}`}>
+          {marker.kind === "edit" ? <rect x="-8" y="-8" width="16" height="16" rx="2" /> : marker.kind === "search" ? <path d="M0 -10L10 0L0 10L-10 0Z" /> : <circle r="9" />}<text textAnchor="middle" dominantBaseline="central">{marker.track + 1}</text>
+        </g>)}</g>] : [];
+      })}</svg>}
+      {headings.map(({ node, rect }) => playback ? <span key={node.path} className="map-directory replay-map-directory" style={{ left: rect.x, top: rect.y, maxWidth: rect.width }}><Folder size={13} /><span>{node.name}</span></span> : <button key={node.path} className="map-directory" style={{ left: rect.x, top: rect.y, maxWidth: rect.width }} onClick={() => browse(node.path)} aria-label={t("codeMap.map.enterDirectory", { path: node.path })}><Folder size={13} /><span>{node.name}</span><CaretRight size={12} /></button>)}
+      {hint && !dragging && <div className="map-hover-hint" role="tooltip" style={{ left: Math.max(4, Math.min(hint.point.x + 12, size.width - Math.min(310, size.width - 8))), top: Math.max(4, Math.min(hint.point.y + 16, size.height - 78)), maxWidth: Math.min(310, size.width - 8) }}><span>{hint.tile.path}</span>{!playback && <strong>{metricNames[metric]} {valueLabel(hint.tile.file, metric)}</strong>}<small>{t("codeMap.line.count", { count: hint.tile.file.lineCount })}</small></div>}
     </div>
     {legend}
   </section>;

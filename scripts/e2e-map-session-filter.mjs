@@ -126,9 +126,9 @@ try {
     await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
     const scale = await page.locator(".code-map").getAttribute("data-scale");
     const retained = await page.evaluateHandle(() => [".code-map", ".sessions-shell", ".resources-shell"].map(selector => document.querySelector(selector)));
-    for (const [name, activeIndex] of [["资源管理", 2], ["会话库", 1], ["代码地图", 0]]) {
+    for (const [name, activeView] of [["资源管理", "resources"], ["会话库", "sessions"], ["代码地图", "map"]]) {
       await page.getByRole("navigation", { name: "功能导航", exact: true }).getByRole("button", { name, exact: true }).click();
-      await page.waitForFunction(index => [...document.querySelectorAll(".product-view")].every((view, position) => view.hidden === (position !== index)), activeIndex);
+      await page.waitForFunction(view => location.hash.startsWith(`#${view}`), activeView);
       ensure(await page.evaluate(nodes => [".code-map", ".sessions-shell", ".resources-shell"].every((selector, index) => nodes[index]?.isConnected && nodes[index] === document.querySelector(selector)), retained), "跨页面切换重建了页面节点");
     }
     await settle();
@@ -136,7 +136,7 @@ try {
     ensure(await page.locator(".code-map").getAttribute("data-scale") === scale, `跨页面切换丢失地图视野：${scale} → ${await page.locator(".code-map").getAttribute("data-scale")}`);
     await retained.dispose();
     await page.screenshot({ path: fixture.artifacts + "/session-selected.png" });
-    await button("切换主题").click(); await picker().click(); await search.fill("map-child");
+    await button("外观").click(); await page.getByRole("combobox", { name: "显示模式", exact: true }).click(); await page.getByRole("option", { name: "深色", exact: true }).click(); await page.keyboard.press("Escape"); await picker().click(); await search.fill("map-child");
     await page.screenshot({ path: fixture.artifacts + "/session-dark-menu.png" }); await search.press("Escape");
     await button("显示语言").click(); await page.getByRole("menuitemradio", { name: "English", exact: true }).click();
     ensure((await button("Filter sessions").innerText()).includes("读取入口"), "语言切换丢失选中会话");

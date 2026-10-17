@@ -113,7 +113,7 @@ try {
   assert.ok(indexed.projects.includes(globalProject));
   assert.equal(indexed.projects[0], beta, "全局项目未按最新会话活动排序");
   fixture = { alpha, beta, globalProject, alphaId: initial.repository.id, base, artifacts, count: indexed.projects.length };
-  await browser(["open", base, "--headed", "--browser=chrome"]); opened = true;
+  await browser(["open", `${base}/#map`, "--headed", "--browser=chrome"]); opened = true;
   await step("全局项目、已登记标记、名称与路径搜索、同名项目、长列表和键盘", async (page, f, u) => {
     await page.setViewportSize({ width: 1440, height: 960 });
     await page.addInitScript(() => { globalThis.__lifecycleErrors = []; });
@@ -249,7 +249,7 @@ try {
   try {
     database.exec("CREATE TRIGGER synthetic_publish_failure BEFORE INSERT ON versions BEGIN SELECT RAISE(ABORT,'synthetic publish failure'); END");
     await writeFile(join(beta, "src/recreated.ts"), "export const recreated = 2;\n");
-    await step("另一标签页删除并同路径重登，版本退回无结果时清空旧地图与选择", async (page, f, u) => {
+    await step("另一标签页删除并同路径重登，重载后清空旧地图与选择", async (page, f, u) => {
       await u.map("beta-repository");
       const sessionFilter = u.button("筛选会话");
       await sessionFilter.click(); await page.getByRole("option").filter({ hasText: "合成项目 project-1" }).click();
@@ -263,7 +263,6 @@ try {
         u.ensure(response.ok(), "外部页面 API 失败 " + path); return response.json();
       };
       const previous = (await api("/status?summary=true")).repositories.find(repo => repo.path === f.beta);
-      await page.evaluate(version => { globalThis.__previousBetaVersion = version; }, previous.version);
       let releaseStatus;
       const changed = new Promise(resolve => { releaseStatus = resolve; });
       const pattern = "**/api/v1/status?summary=true";
@@ -272,8 +271,10 @@ try {
         await api("/repositories/" + previous.id, "DELETE");
         const registered = await api("/repositories", "POST", { path: f.beta });
         u.ensure(registered.repository.id === previous.id && !registered.repository.version, "同路径没有复用 ID 或新登记残留版本");
-        await page.evaluate(value => { globalThis.__recreatedBetaJob = value.job.id; globalThis.__recreatedBetaId = value.repository.id; }, registered);
         releaseStatus();
+        // 自动分析关闭时不做周期状态检查，重载显式读取其他标签页的变更。
+        await page.reload();
+        await page.evaluate(value => { globalThis.__recreatedBetaJob = value.job; globalThis.__recreatedBetaId = value.id; globalThis.__previousBetaVersion = value.previousVersion; }, { id: registered.repository.id, job: registered.job.id, previousVersion: previous.version });
         await page.locator(".code-map").waitFor({ state: "hidden" });
         await page.getByText("仓库尚无完整分析结果", { exact: true }).waitFor();
         u.ensure(await page.getByRole("heading", { name: "beta.ts", exact: true }).count() === 0, "旧文件详情仍可见");
@@ -304,7 +305,7 @@ try {
     });
     database.exec("DROP TRIGGER synthetic_publish_failure");
     await step("重新分析完成后自动加载新版本，保留清空后的选择状态", async (page, f, u) => {
-      await page.getByRole("banner").getByRole("button", { name: "刷新分析", exact: true }).click(); await u.map("beta-repository");
+      await page.locator(".code-map-toolbar").getByRole("button", { name: "刷新分析", exact: true }).click(); await u.map("beta-repository");
       await page.getByRole("button", { name: /^src\/recreated\.ts/ }).waitFor();
       const saved = await page.evaluate(() => ({ id: globalThis.__recreatedBetaId, version: globalThis.__previousBetaVersion }));
       const status = await (await page.request.get(f.base + "/api/v1/status?summary=true")).json();
@@ -321,9 +322,9 @@ try {
     if (heldRefresh) postMessage.call(heldRefresh.worker, heldRefresh.message, ...heldRefresh.args);
     database.exec("DROP TRIGGER IF EXISTS synthetic_publish_failure"); database.close();
   }
-  await step("删除时旧统计请求被丢弃，另一标签页自动恢复到剩余仓库", async (page, f, u) => {
+  await step("删除时旧统计请求被丢弃，另一标签页重载后恢复到剩余仓库", async (page, f, u) => {
     await u.choose(f.alpha); await u.map("alpha-repository");
-    const other = await page.context().newPage(); await other.goto(f.base); const second = ui(other); await second.map("alpha-repository");
+    const other = await page.context().newPage(); await other.goto(`${f.base}/#map`); const second = ui(other); await second.map("alpha-repository");
     let release; let hit; let once = true;
     const held = new Promise(resolve => { release = resolve; }); const started = new Promise(resolve => { hit = resolve; });
     const pattern = `**/api/v1/repositories/${f.alphaId}/coverage?*`;
@@ -334,7 +335,7 @@ try {
     await page.reload(); await started; await u.remove(); await u.deletion().getByRole("button", { name: u.names.delete, exact: true }).click(); await u.map("beta-repository");
     release(); await page.unroute(pattern); await page.waitForTimeout(100);
     u.ensure(await u.button(u.names.choose).innerText() === "beta-repository", "旧请求恢复已删除仓库");
-    await second.map("beta-repository"); await other.close();
+    await other.reload(); await second.map("beta-repository"); await other.close();
   });
   await step("全部删除后空状态、焦点恢复与立即重新登记", async (page, f, u) => {
     await u.remove(); await u.deletion().getByRole("button", { name: u.names.delete, exact: true }).click(); await u.button(u.names.empty).waitFor();

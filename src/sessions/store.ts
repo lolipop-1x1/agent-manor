@@ -26,6 +26,7 @@ import { initializeSearchIndex, prepareSearchIndex, registerSearchFunctions, sea
 import type { ImportItem } from "./import-pool.js";
 import { initializeUsageFacts, prepareUsageFacts, readUsageFactMetadata, readUsageFacts, usageFactsReady, USAGE_FACT_FORMAT_VERSION } from "./usage-facts.js";
 import type { UsageFactMetadata } from "./usage-facts.js";
+import type { ReplayMessageMetadata, ReplaySessionMetadata } from "../replay/types.js";
 
 interface JsonRow { json: string }
 interface SearchMessageRow extends JsonRow {
@@ -1062,6 +1063,65 @@ export class SessionStore {
   }
 
   usageVersion(requestedVersion?: string): string { return this.version(requestedVersion); }
+
+  /** 一次读取固定版本的轻量目录，避免为每个候选构建完整画像。 */
+  replayDirectory(requestedVersion?: string): { version: string; sessions: ReplaySessionMetadata[] } {
+    return this.database.transaction(() => {
+      const version = this.version(requestedVersion);
+      const rows = this.database.prepare(`SELECT v.session_id AS id,r.id AS revision,r.client,
+        json_extract(r.json,'$.clientSessionId') AS client_session_id,
+        json_extract(r.json,'$.title') AS title,json_extract(r.json,'$.titleOrigin') AS title_origin,
+        json_extract(r.json,'$.taskName') AS task_name,json_extract(r.json,'$.agentName') AS agent_name,
+        json_extract(r.json,'$.relationship') AS relationship,relation.parent,
+        json_extract(r.json,'$.childSessionIds') AS children,r.updated_at,
+        json_extract(r.json,'$.path') AS path,json_extract(r.json,'$.sourceId') AS source_id,
+        json_extract(r.json,'$.gaps') AS gaps
+        FROM session_version_sessions v JOIN session_revisions r ON r.id=v.revision
+        LEFT JOIN session_version_relations relation ON relation.version=v.version AND relation.child=v.session_id
+        WHERE v.version=? ORDER BY v.session_id`).all(version) as {
+          id: string; revision: string; client: Client; client_session_id: string; title: string;
+          title_origin: SessionSummary["titleOrigin"]; relationship: "child" | "fork" | null;
+          task_name: string | null; agent_name: string | null;
+          parent: string | null; children: string | null; updated_at: string | null; path: string; source_id: string; gaps: string | null;
+        }[];
+      return { version, sessions: rows.filter(row => isSupportedClient(row.client)).map(row => {
+        const title = sessionTitle({ id: row.id, client: row.client, clientSessionId: row.client_session_id,
+          title: row.title, titleOrigin: row.title_origin, relationship: row.parent ? "child" : row.relationship ?? undefined,
+          taskName: row.task_name ?? undefined, agentName: row.agent_name ?? undefined, messageCount: 0, turnCount: 0, models: [], gaps: [] });
+        return { id: row.id, revision: row.revision, client: row.client, clientSessionId: row.client_session_id,
+          title: title.title, titleOrigin: title.titleOrigin,
+          ...(row.parent ? { parentId: row.parent, relationship: "child" as const } : row.relationship === "fork" ? { relationship: "fork" as const } : {}),
+          childSessionIds: row.children ? JSON.parse(row.children) as string[] : [], updatedAt: row.updated_at ?? undefined,
+          path: row.path, sourceId: row.source_id, gaps: row.gaps ? JSON.parse(row.gaps) as Gap[] : [] };
+      }) };
+    })();
+  }
+
+  /** 对整个会话树点查请求元数据；结果正文和无关会话不参与回放定位。 */
+  replayMessages(requestedVersion: string, sessionIds: string[]): ReplayMessageMetadata[] {
+    return this.database.transaction(() => this.readReplayMessages(requestedVersion, sessionIds)).deferred();
+  }
+
+  private readReplayMessages(requestedVersion: string, sessionIds: string[]): ReplayMessageMetadata[] {
+    const version = this.version(requestedVersion);
+    if (!sessionIds.length) return [];
+    // IN 子查询按版本与会话复合主键点查，避免普通 JSON 数组 JOIN 先扫描全版本消息。
+    const rows = this.database.prepare(`SELECT v.session_id,m.id,m.ordinal,m.record_line,m.kind,m.call_id,
+      COALESCE(json_extract(m.json,'$.sourcePath'),json_extract(r.json,'$.path')) AS source_path,
+      json_extract(m.json,'$.tool') AS tool,json_extract(m.json,'$.occurredAt') AS occurred_at,
+      json_extract(m.json,'$.durationMs') AS duration_ms
+      FROM session_version_sessions v
+      JOIN session_revisions r ON r.id=v.revision JOIN session_messages m ON m.revision=v.revision
+      WHERE v.version=? AND v.session_id IN (SELECT value FROM json_each(?))
+        AND m.copied IS NOT 1 AND m.kind='tool_call'
+      ORDER BY v.session_id,m.ordinal,m.id`).all(version, JSON.stringify(sessionIds)) as {
+        session_id: string; id: string; ordinal: number; record_line: number; kind: string; call_id: string | null;
+        source_path: string; tool: string | null; occurred_at: string | null; duration_ms: number | null;
+      }[];
+    return rows.map(row => ({ id: row.id, sessionId: row.session_id, ordinal: row.ordinal, recordLine: row.record_line,
+      sourcePath: row.source_path, kind: row.kind, callId: row.call_id ?? undefined, tool: row.tool ?? undefined,
+      occurredAt: row.occurred_at ?? undefined, durationMs: row.duration_ms ?? undefined }));
+  }
 
   overviewGaps(requestedVersion?: string): Gap[] {
     const version = this.version(requestedVersion);

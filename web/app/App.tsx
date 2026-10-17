@@ -37,6 +37,7 @@ export function App() {
   const [view, setView] = useState<ProductView>(hashView);
   const viewScroll = useRef({ overview: 0, map: 0, sessions: 0, resources: 0, usage: 0 });
   const overviewAddress = useRef(location.hash.startsWith("#overview") ? location.hash : "#overview");
+  const mapAddress = useRef(location.hash.startsWith("#map") ? location.hash : "#map");
   const sessionAddress = useRef(location.hash.startsWith("#sessions") ? location.hash : "#sessions");
   const resourceAddress = useRef(location.hash.startsWith("#resources") ? location.hash : "#resources");
   const usageAddress = useRef(location.hash.startsWith("#usage") ? location.hash : "#usage");
@@ -74,11 +75,12 @@ export function App() {
     return () => globalThis.removeEventListener("hashchange", navigate);
   }, [activateView]);
   const switchView = (next: ProductView) => {
+    if (location.hash.startsWith("#map")) mapAddress.current = location.hash;
     if (location.hash.startsWith("#overview")) overviewAddress.current = location.hash;
     if (location.hash.startsWith("#resources")) resourceAddress.current = location.hash;
     if (location.hash.startsWith("#sessions")) sessionAddress.current = location.hash;
     if (location.hash.startsWith("#usage")) usageAddress.current = location.hash;
-    activateView(next); location.hash = next === "overview" ? overviewAddress.current : next === "resources" ? resourceAddress.current : next === "sessions" ? sessionAddress.current : next === "usage" ? usageAddress.current : next;
+    activateView(next); location.hash = next === "overview" ? overviewAddress.current : next === "resources" ? resourceAddress.current : next === "sessions" ? sessionAddress.current : next === "usage" ? usageAddress.current : next === "map" ? mapAddress.current : next;
   };
   const openResourceSession = (target: { sessionId: string; messageId: string }) => {
     resourceAddress.current = location.hash;
@@ -95,11 +97,13 @@ export function App() {
   const openOverviewUsage = (hash: string) => { overviewAddress.current = location.hash; activateView("usage"); location.hash = hash; };
   const theme = useTheme(appearance);
   const history = useHistoryRefresh();
-  const openMapSession = (target: { sessionId: string; messageId?: string }) => {
+  const openMapSession = (target: { sessionId: string; messageId?: string; version?: string }) => {
     if (location.hash.startsWith("#usage")) usageAddress.current = location.hash;
+    if (location.hash.startsWith("#map")) mapAddress.current = location.hash;
     setSessionTarget(target); activateView("sessions");
     const destination = new URLSearchParams({ id: target.sessionId });
     if (target.messageId) destination.set("message", target.messageId);
+    if (target.version) destination.set("version", target.version);
     location.hash = `sessions?${destination}`;
   };
   const map = useCodeMapPage({ active: view === "map", theme, onSession: openMapSession });
@@ -107,6 +111,12 @@ export function App() {
     if (location.hash.startsWith("#sessions")) sessionAddress.current = location.hash;
     map.openMap(path, project, session);
     activateView("map"); location.hash = "map";
+  };
+  const openReplay = (session: SessionSummary) => {
+    if (location.hash.startsWith("#sessions")) sessionAddress.current = location.hash;
+    const destination = map.openReplay(session);
+    mapAddress.current = destination;
+    activateView("map"); location.hash = destination;
   };
   const openOverviewMap = (target: OverviewMapTarget) => {
     overviewAddress.current = location.hash;
@@ -133,7 +143,7 @@ export function App() {
     </div>
     <section className="product-view" hidden={view !== "overview"} aria-label={t("overview.title")}><Overview historyRevision={history.revision} active={view === "overview"} onSession={openOverviewSession} onUsage={openOverviewUsage} onMap={openOverviewMap} /></section>
     {map.page}
-    <section className="product-view" hidden={view !== "sessions"} aria-label={t("codeMap.view.sessions")}><Sessions historyRevision={history.revision} historyUpdating={history.updating} onHistoryRefresh={options => void history.refresh(options)} active={view === "sessions"} target={sessionTarget} onMap={openMap} /></section>
+    <section className="product-view" hidden={view !== "sessions"} aria-label={t("codeMap.view.sessions")}><Sessions historyRevision={history.revision} historyUpdating={history.updating} onHistoryRefresh={options => void history.refresh(options)} active={view === "sessions"} target={sessionTarget} onMap={openMap} onReplay={openReplay} /></section>
     <section className="product-view" hidden={view !== "resources"} aria-label={t("codeMap.view.resources")}><Resources historyRevision={history.revision} active={view === "resources"} onSession={openResourceSession} /></section>
     <section className="product-view" hidden={view !== "usage"} aria-label={t("usage.title")}><Usage historyRevision={history.revision} active={view === "usage"} onSession={openMapSession} /></section>
   </Tooltip.Provider>;

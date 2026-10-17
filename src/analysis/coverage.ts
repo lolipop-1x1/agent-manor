@@ -6,7 +6,7 @@ import { countRangeLines, mergeRanges, subtractRanges } from "./ranges.js";
 import { classifyFile } from "./baseline.js";
 
 /** 这里只处理已经可靠归属的当前 worktree 路径，不猜测其他 clone/worktree。 */
-export function eventFilePaths(event: HistoryEvent, repository: Repository): string[] {
+export function eventFilePaths(event: Pick<HistoryEvent, "path" | "cwd"> & { fragments: { path?: string }[] }, repository: Repository): string[] {
   const paths = [event.path, ...event.fragments.map((fragment) => fragment.path)].filter((path): path is string => Boolean(path));
   const result = new Set<string>();
   for (const path of paths) {

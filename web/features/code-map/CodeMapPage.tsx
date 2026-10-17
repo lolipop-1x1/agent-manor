@@ -25,6 +25,7 @@ import { dateLabel, fmt, percent } from "../../shared/format";
 import { timeFilters } from "../../shared/time-filters";
 import { type Theme } from "../../shared/theme";
 import "./repository-dialog.css";
+import "./code-map-navigation.css";
 
 const kindKeys = { read: "codeMap.kind.read", edit: "codeMap.kind.edit", search: "codeMap.kind.search", other: "codeMap.kind.other" };
 const statusKeys = { success: "codeMap.status.success", failure: "codeMap.status.failure", unknown: "codeMap.status.unknown" };
@@ -32,6 +33,16 @@ const jobActive = (job: Job | null) => job?.status === "queued" || job?.status =
 const mapSessionKey = (session: Pick<MapSession, "client" | "clientSessionId">) => JSON.stringify([session.client, session.clientSessionId]);
 const mapSessionTitle = (session: MapSession) => messageText(session.titleDescriptor, session.title ?? session.clientSessionId);
 const CodeViewer = lazy(() => import("./CodeViewer").then(module => ({ default: module.CodeViewer })));
+const ActivityReplay = lazy(() => import("./ActivityReplay").then(module => ({ default: module.ActivityReplay })));
+type MapTab = "distribution" | "replay";
+const mapRoute = () => new URLSearchParams(location.hash.startsWith("#map?") ? location.hash.slice(5) : "");
+const mapAddress = (tab: MapTab, repositoryId: string, sessionId?: string) => {
+  const params = new URLSearchParams();
+  if (tab === "replay") params.set("view", "replay");
+  if (repositoryId) params.set("repository", repositoryId);
+  if (tab === "replay" && sessionId) params.set("session", sessionId);
+  return params.size ? `#map?${params}` : "#map";
+};
 
 // 语言是显式输入；历史进度轮询不重复构建闭合文件表的全部行。
 const MapFileTable = memo(function MapFileTable({ files, selected, metric, search, select }: {
@@ -165,9 +176,13 @@ function FilePane({ repoId, detail, loading, error, retry, collapsed, toggle, me
 }
 
 export function useCodeMapPage({ active, theme, onSession }: {
-  active: boolean; theme: Theme; onSession: (target: { sessionId: string; messageId?: string }) => void;
+  active: boolean; theme: Theme; onSession: (target: { sessionId: string; messageId?: string; version?: string }) => void;
 }) {
   const { language, refreshIntervals: { map: mapAutoRefreshInterval } } = useI18n();
+  const [mapTab, setMapTab] = useState<MapTab>(() => mapRoute().get("view") === "replay" ? "replay" : "distribution");
+  const [replayTarget, setReplayTarget] = useState<string | undefined>(() => mapRoute().get("session") ?? undefined);
+  const [replayVisited, setReplayVisited] = useState(() => mapRoute().get("view") === "replay");
+  const distributionActive = active && mapTab === "distribution";
   const repositoryTrigger = useRef<HTMLButtonElement>(null);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [narrow, setNarrow] = useState(() => globalThis.matchMedia("(max-width: 767px)").matches);
@@ -256,6 +271,30 @@ export function useCodeMapPage({ active, theme, onSession }: {
     if (reset) setReload(value => value + 1);
     if (id) localStorage.setItem("agent-manor-repository", id); else localStorage.removeItem("agent-manor-repository");
   }, []);
+  useEffect(() => {
+    const navigate = () => {
+      if (!location.hash.startsWith("#map")) return;
+      const route = mapRoute();
+      const tab = route.get("view") === "replay" ? "replay" : "distribution";
+      setMapTab(tab);
+      if (tab === "replay") { setReplayVisited(true); setReplayTarget(route.get("session") ?? undefined); }
+      const target = route.get("repository");
+      if (target && currentRepositories.current.some(repo => repo.id === target)) chooseRepo(target);
+    };
+    navigate();
+    globalThis.addEventListener("hashchange", navigate);
+    return () => globalThis.removeEventListener("hashchange", navigate);
+  }, [chooseRepo, repositories.length]);
+  const switchMapTab = (tab: MapTab) => {
+    setMapTab(tab);
+    if (tab === "replay") setReplayVisited(true);
+    location.hash = mapAddress(tab, repoId, replayTarget);
+  };
+  const selectRepository = (id: string) => {
+    if (id === repoId) return;
+    chooseRepo(id); setReplayTarget(undefined);
+    location.hash = mapAddress(mapTab, id);
+  };
   const applyStatus = useCallback((result: StatusResponse) => {
     const current = currentRepoId.current;
     const previous = currentRepositories.current.find(repo => repo.id === current);
@@ -265,7 +304,7 @@ export function useCodeMapPage({ active, theme, onSession }: {
     const maintenance = result.indexMaintenance;
     setIndexMaintenance(maintenance && (maintenance.status === "failed" || maintenance.reason === "insufficientSpace" || maintenance.reason === "busy") ? maintenance : null);
     const next = result.repositories.some(repo => repo.id === current) ? current
-      : (!current ? result.repositories.find(repo => repo.id === localStorage.getItem("agent-manor-repository"))?.id : undefined) ?? result.repositories[0]?.id ?? "";
+      : (!current ? result.repositories.find(repo => repo.id === (mapRoute().get("repository") ?? localStorage.getItem("agent-manor-repository")))?.id : undefined) ?? result.repositories[0]?.id ?? "";
     if (next !== current) chooseRepo(next);
     else if (previous?.version && registered && !registered.version) chooseRepo(current, true);
   }, [chooseRepo]);
@@ -315,7 +354,7 @@ export function useCodeMapPage({ active, theme, onSession }: {
     setJob(latest ?? null);
   }, [repoId, jobs]);
   useEffect(() => {
-    if (!active || !repoId || invalidTime) return;
+    if (!distributionActive || !repoId || invalidTime) return;
     const requestKey = `${repoId}:${filterKey}:${reload}`;
     if (coverage?.version === version && loadedCoverage.current === requestKey) return;
     const controller = new AbortController();
@@ -335,9 +374,9 @@ export function useCodeMapPage({ active, theme, onSession }: {
     })().catch(failure => { if (!controller.signal.aborted && epoch === pageEpoch.current && !isAborted(failure) && !recoverMissingRepository(failure)) { setCoverageError(failure); setCoverage(current => current?.repository.id === repoId && coverageKey === filterKey ? current : null); } })
       .finally(() => { if (!controller.signal.aborted && epoch === pageEpoch.current) setCoverageLoading(false); });
     return () => controller.abort();
-  }, [active, repoId, filterKey, version, reload, invalidTime]);
+  }, [distributionActive, repoId, filterKey, version, reload, invalidTime]);
   useEffect(() => {
-    if (!active || !coverage || coverage.repository.id !== repoId) return;
+    if (!distributionActive || !coverage || coverage.repository.id !== repoId) return;
     const controller = new AbortController();
     const epoch = pageEpoch.current;
     setMapSessionsLoading(true); setMapSessionsError(null);
@@ -349,13 +388,13 @@ export function useCodeMapPage({ active, theme, onSession }: {
       }).catch(failure => { if (!controller.signal.aborted && epoch === pageEpoch.current && !isAborted(failure) && !recoverMissingRepository(failure)) setMapSessionsError(failure); })
       .finally(() => { if (!controller.signal.aborted && epoch === pageEpoch.current) setMapSessionsLoading(false); });
     return () => controller.abort();
-  }, [active, repoId, coverage?.version, mapSessionsRetry]);
+  }, [distributionActive, repoId, coverage?.version, mapSessionsRetry]);
   useEffect(() => {
     if (active && coverage?.repository.id === repoId && mapSessionList?.version === coverage.version
       && mapSessionList.clients && client !== "all" && !mapSessionList.clients.includes(client)) setClient("all");
   }, [active, repoId, coverage?.version, mapSessionList, client]);
   useEffect(() => {
-    if (!active) return;
+    if (!distributionActive) return;
     if (!repoId || !selected || !coverage || !query || coverageLoading || invalidTime) { setDetail(null); setDetailLoading(false); setDetailError(null); return; }
     const controller = new AbortController();
     const epoch = pageEpoch.current;
@@ -365,7 +404,7 @@ export function useCodeMapPage({ active, theme, onSession }: {
       .catch(failure => { if (!controller.signal.aborted && epoch === pageEpoch.current && !isAborted(failure) && !recoverMissingRepository(failure)) setDetailError(failure); })
       .finally(() => { if (!controller.signal.aborted && epoch === pageEpoch.current) setDetailLoading(false); });
     return () => controller.abort();
-  }, [active, repoId, selected, coverage?.version, filterKey, detailRetry, coverageLoading, invalidTime]);
+  }, [distributionActive, repoId, selected, coverage?.version, filterKey, detailRetry, coverageLoading, invalidTime]);
   useEffect(() => {
     if (!job || !jobActive(job)) return;
     let cancelled = false;
@@ -403,6 +442,7 @@ export function useCodeMapPage({ active, theme, onSession }: {
     } catch (failure) { setActionError(failure); }
   };
   const openMap = (path?: string, project?: string, session?: SessionSummary, scope?: { repositoryId: string; version?: string; from: string; to: string; clients?: string[] }) => {
+    setMapTab("distribution");
     const repo = [...repositories].sort((a, b) => b.path.length - a.path.length).find(candidate =>
       scope?.repositoryId === candidate.id || project === candidate.path || project?.startsWith(`${candidate.path}/`) || path?.startsWith(`${candidate.path}/`));
     if (!repo) { setActionError(new ApiError("REPOSITORY_NOT_REGISTERED", "此会话项目尚未登记代码地图，请先登记本机仓库。", { key: "codeMap.error.repositoryMissing" })); return; }
@@ -418,6 +458,16 @@ export function useCodeMapPage({ active, theme, onSession }: {
       setClient(scope.clients?.length === 1 && CLIENTS.some(item => item.id === scope.clients![0]) ? scope.clients[0] as Client : "all");
     } else pinnedVersion.current = undefined;
     setSelected(local ?? null); setDetailsCollapsed(false);
+  };
+  const openReplay = (session: SessionSummary) => {
+    const repo = [...repositories].sort((a, b) => b.path.length - a.path.length).find(candidate => session.project === candidate.path || session.project?.startsWith(`${candidate.path}/`));
+    setMapTab("replay"); setReplayVisited(true);
+    if (!repo) {
+      setActionError(new ApiError("REPOSITORY_NOT_REGISTERED", "此会话项目尚未登记代码地图，请先登记本机仓库。", { key: "codeMap.error.repositoryMissing" }));
+      return mapAddress("replay", repoId);
+    }
+    chooseRepo(repo.id); setReplayTarget(session.id);
+    return mapAddress("replay", repo.id, session.id);
   };
   const browse = useCallback((path: string) => { setDirectory(path); setSelected(null); }, []);
   const selectFile = useCallback((path: string) => { setSelected(path); setDetailsCollapsed(false); }, []);
@@ -486,30 +536,24 @@ export function useCodeMapPage({ active, theme, onSession }: {
   const mapLegend = useMemo(() => <div className="map-legend"><span>{metric === "activity" ? t("codeMap.metric.activity") : t("codeMap.exactCoverage")}</span><span className="legend-scale">{[0, 1, 2, 3, 4].map(tone => <i key={tone} className={`tone-${tone}`} />)}</span><span>{metric === "activity" ? t("codeMap.activity.range", { count: visible.reduce((max, file) => Math.max(max, metricValue(file, metric)), 0) }) : "0 → 100%"}</span><span className="near-key legend-near" /><span>{t("codeMap.near")}</span><small>{t("codeMap.area")}</small></div>, [metric, visible, language]);
   return {
     openMap,
+    openReplay,
     maintenanceNotice: indexMaintenance && <Notice danger={indexMaintenance.status === "failed"} action={<button className="button subtle" onClick={() => setIndexMaintenance(null)}>{t("common.close")}</button>}>
       {messageText(indexMaintenance.messageDescriptor, t("diagnostics.index.maintenance.error"))}
       {indexMaintenance.details && <details><summary>{t("common.originalDetails")}</summary><pre tabIndex={0}>{indexMaintenance.details}</pre></details>}
     </Notice>,
     page: (
     <section className="product-view code-map-page" hidden={!active} aria-label={t("codeMap.view.map")}>
-    {!!initialError && <Notice danger action={<button className="button subtle" onClick={() => setStatusRetry(value => value + 1)}>{t("codeMap.refresh.retryConnection")}</button>}><ErrorDetails error={initialError} /></Notice>}
-    {!!actionError && <Notice danger action={<button className="button subtle" onClick={() => setActionError(null)}>{t("common.close")}</button>}><ErrorDetails error={actionError} /></Notice>}
-    {job && job.status !== "completed" && <div className={`result-status${job.status === "failed" ? " failed" : ""}`} role="status">
-      {job.status === "failed" ? <><WarningCircle size={16} /><span>{t("codeMap.refresh.failure", { reason: refreshFailureReason(job), context: t(coverage ? "codeMap.refresh.previous" : "codeMap.refresh.noResults") })}</span><button className="text-button" disabled={actionPending} onClick={() => void runRefresh()}>{t("codeMap.refresh.retry")}</button></>
-        : job.status === "cancelled" ? <span>{t("codeMap.refresh.cancelled")}</span>
-          : <><ArrowClockwise size={15} className="spinning" /><span>{job.status === "queued" ? t("codeMap.refresh.queued") : isMessageDescriptorKnown(job.phaseDescriptor) ? messageText(job.phaseDescriptor, job.phase) : t("common.originalDetail", { detail: job.phase })}</span><progress max="1" value={Math.max(0, Math.min(1, job.progress))} aria-label={t("codeMap.refresh.progress")} /><small>{new Intl.NumberFormat(language, { style: "percent", maximumFractionDigits: 0 }).format(job.progress)}{coverage ? t("codeMap.refresh.retained") : ""}</small></>}
-    </div>}
-    {coverage?.stale && !jobActive(job) && job?.status !== "failed" && <Notice action={<button className="text-button" onClick={() => void runRefresh()}>{t("codeMap.refresh.action")}</button>}>{t("codeMap.refresh.stale", { date: dateLabel(coverage.createdAt) })}</Notice>}
-    {initialLoading && !repository ? <Empty title={t("codeMap.empty.connect")}>{t("codeMap.empty.loading")}</Empty> : !repository ? <Empty title={t("codeMap.empty.start")}>{t("codeMap.empty.register")}<br />{t("codeMap.empty.local")}</Empty> : <ResizableWorkspace sidebarCollapsed={navigationCollapsed} detailsCollapsed={detailsCollapsed}>
-      <aside className={`sidebar${navigationCollapsed ? " panel-collapsed" : ""}`} aria-label={t("codeMap.repository.navigation")}>
-        {narrow ? <button className="repository-navigation-toggle" aria-label={t(navigationCollapsed ? "codeMap.repository.expandScope" : "codeMap.repository.collapseScope", { repository: repository.name, directory: directory || t("codeMap.directory.root") })} aria-expanded={!navigationCollapsed} aria-controls="repository-navigation-content" onClick={() => setNavigationOpen(value => !value)}>
-          <Folder size={18} aria-hidden="true" /><span><strong>{repository.name}</strong><small title={directory || repository.path}>{directory || t("codeMap.directory.root")}</small></span>{navigationCollapsed ? <CaretDown size={17} aria-hidden="true" /> : <CaretUp size={17} aria-hidden="true" />}
-        </button> : <div className="pane-heading"><span>{t("codeMap.repository.navigation")}</span><Hint label={navigationCollapsed ? t("codeMap.repository.expand") : t("codeMap.repository.collapse")}><button className="icon-button panel-toggle" aria-label={navigationCollapsed ? t("codeMap.repository.expand") : t("codeMap.repository.collapse")} aria-expanded={!navigationCollapsed} aria-controls="repository-navigation-content" onClick={() => setSidebarCollapsed(value => !value)}>{navigationCollapsed ? <CaretRight size={17} /> : <CaretLeft size={17} />}</button></Hint></div>}
-        <div id="repository-navigation-content" className="sidebar-content" hidden={navigationCollapsed}><div className="repository-picker"><Dropdown.Root><Dropdown.Trigger ref={repositoryTrigger} className="repository-trigger" aria-label={t("codeMap.repository.choose")}><Folder size={19} weight="duotone" /><strong>{repository.name}</strong><CaretDown size={14} /></Dropdown.Trigger><Dropdown.Portal><Dropdown.Content className="dropdown-content" sideOffset={6}>{repositories.map(repo => <Dropdown.Item key={repo.id} className="dropdown-item" onSelect={() => chooseRepo(repo.id)}>{repo.id === repoId && <Check size={14} />}<span>{repo.name}<small>{repo.path}</small></span></Dropdown.Item>)}<Dropdown.Separator className="dropdown-separator" /><Dropdown.Item className="dropdown-item" onSelect={() => { setRegisterError(null); setRegisterOpen(true); }}><Plus size={15} />{t("codeMap.repository.register")}</Dropdown.Item><Dropdown.Separator className="dropdown-separator" /><Dropdown.Item className="dropdown-item repository-delete-action" onSelect={() => { setDeleteError(null); setDeleteTarget({ ...repository }); }}><Trash size={15} />{t("codeMap.repository.deleteCurrent")}</Dropdown.Item></Dropdown.Content></Dropdown.Portal></Dropdown.Root></div>
-        <p className="repo-path" title={repository.path}>{repository.path}</p><div className="sidebar-label">{t("codeMap.repository.directories")}</div><DirectoryTree key={repoId} files={rootCoverage?.files ?? []} selected={directory} browse={browse} />
-        <div className="sidebar-bottom"><button className="text-button" onClick={() => { setRegisterError(null); setRegisterOpen(true); }}><Plus size={14} />{t("codeMap.repository.other")}</button></div></div>
-      </aside>
-      <main className="map-main"><div className="page-heading"><h1>{t("codeMap.title")}</h1><div className="map-heading-tools map-page-actions">
+    <div className="code-map-toolbar"><h1>{t("codeMap.title")}</h1>
+      {repository && <div className="repository-picker"><Dropdown.Root><Dropdown.Trigger ref={repositoryTrigger} className="repository-trigger" aria-label={t("codeMap.repository.choose")}><Folder size={19} weight="duotone" /><strong>{repository.name}</strong><CaretDown size={14} /></Dropdown.Trigger><Dropdown.Portal><Dropdown.Content className="dropdown-content" sideOffset={6}>{repositories.map(repo => <Dropdown.Item key={repo.id} className="dropdown-item" onSelect={() => selectRepository(repo.id)}>{repo.id === repoId && <Check size={14} />}<span>{repo.name}<small>{repo.path}</small></span></Dropdown.Item>)}<Dropdown.Separator className="dropdown-separator" /><Dropdown.Item className="dropdown-item" onSelect={() => { setRegisterError(null); setRegisterOpen(true); }}><Plus size={15} />{t("codeMap.repository.register")}</Dropdown.Item><Dropdown.Separator className="dropdown-separator" /><Dropdown.Item className="dropdown-item repository-delete-action" onSelect={() => { setDeleteError(null); setDeleteTarget({ ...repository }); }}><Trash size={15} />{t("codeMap.repository.deleteCurrent")}</Dropdown.Item></Dropdown.Content></Dropdown.Portal></Dropdown.Root></div>}
+      <div className="code-map-tabs" role="tablist" aria-label={t("codeMap.view.tabs")}>
+        {(["distribution", "replay"] as const).map((tab, index) => <button key={tab} id={`code-map-tab-${tab}`} role="tab" aria-selected={mapTab === tab} aria-controls={`code-map-panel-${tab}`} tabIndex={mapTab === tab ? 0 : -1} onClick={() => switchMapTab(tab)} onKeyDown={event => {
+          if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
+          event.preventDefault();
+          const next = event.key === "Home" ? "distribution" : event.key === "End" ? "replay" : index === 0 ? "replay" : "distribution";
+          switchMapTab(next); document.getElementById(`code-map-tab-${next}`)?.focus();
+        }}>{t(`codeMap.view.${tab}`)}</button>)}
+      </div>
+      <div className="map-heading-tools map-page-actions">
         <span className="map-query-progress">{(mapSessionsLoading || retainedCoverageLoading) && <span className="map-query-loading" role="status" aria-label={t(retainedCoverageLoading ? "codeMap.coverage.loading" : "codeMap.session.loading")} title={t(retainedCoverageLoading ? "codeMap.coverage.loading" : "codeMap.session.loading")}><CircleNotch size={17} aria-hidden="true" /></span>}</span>
         <AutoRefreshControl scope="map" />
         <RefreshControl label={t("codeMap.refresh.action")} onRefresh={() => void runRefresh()} busy={actionPending || jobActive(job)} disabled={!repository}
@@ -519,7 +563,26 @@ export function useCodeMapPage({ active, theme, onSession }: {
         <div><dt>{t("codeMap.help.coverageTitle")}</dt><dd>{t("codeMap.help.coverage")}</dd></div>
         <div><dt>{t("codeMap.help.filtersTitle")}</dt><dd>{t("codeMap.help.filters")}</dd></div>
         <div><dt>{t("codeMap.session.helpTitle")}</dt><dd>{t("codeMap.session.help")}</dd></div>
-        <div><dt>{t("codeMap.help.baselineTitle")}</dt><dd>{t("codeMap.help.baseline")}</dd></div></dl></HelpPopover></div></div>
+        <div><dt>{t("codeMap.help.baselineTitle")}</dt><dd>{t("codeMap.help.baseline")}</dd></div></dl></HelpPopover></div>
+    </div>
+    {!!initialError && <Notice danger action={<button className="button subtle" onClick={() => setStatusRetry(value => value + 1)}>{t("codeMap.refresh.retryConnection")}</button>}><ErrorDetails error={initialError} /></Notice>}
+    {!!actionError && <Notice danger action={<button className="button subtle" onClick={() => setActionError(null)}>{t("common.close")}</button>}><ErrorDetails error={actionError} /></Notice>}
+    {job && job.status !== "completed" && <div className={`result-status${job.status === "failed" ? " failed" : ""}`} role="status">
+      {job.status === "failed" ? <><WarningCircle size={16} /><span>{t("codeMap.refresh.failure", { reason: refreshFailureReason(job), context: t(coverage || repository?.version ? "codeMap.refresh.previous" : "codeMap.refresh.noResults") })}</span><button className="text-button" disabled={actionPending} onClick={() => void runRefresh()}>{t("codeMap.refresh.retry")}</button></>
+        : job.status === "cancelled" ? <span>{t("codeMap.refresh.cancelled")}</span>
+          : <><ArrowClockwise size={15} className="spinning" /><span>{job.status === "queued" ? t("codeMap.refresh.queued") : isMessageDescriptorKnown(job.phaseDescriptor) ? messageText(job.phaseDescriptor, job.phase) : t("common.originalDetail", { detail: job.phase })}</span><progress max="1" value={Math.max(0, Math.min(1, job.progress))} aria-label={t("codeMap.refresh.progress")} /><small>{new Intl.NumberFormat(language, { style: "percent", maximumFractionDigits: 0 }).format(job.progress)}{coverage ? t("codeMap.refresh.retained") : ""}</small></>}
+    </div>}
+    {mapTab === "distribution" && coverage?.stale && !jobActive(job) && job?.status !== "failed" && <Notice action={<button className="text-button" onClick={() => void runRefresh()}>{t("codeMap.refresh.action")}</button>}>{t("codeMap.refresh.stale", { date: dateLabel(coverage.createdAt) })}</Notice>}
+    {initialLoading && !repository ? <Empty title={t("codeMap.empty.connect")}>{t("codeMap.empty.loading")}</Empty> : !repository ? <Empty title={t("codeMap.empty.start")}>{t("codeMap.empty.register")}<br />{t("codeMap.empty.local")}</Empty> : <><div id="code-map-panel-distribution" role="tabpanel" aria-labelledby="code-map-tab-distribution" hidden={mapTab !== "distribution"}><ResizableWorkspace sidebarCollapsed={navigationCollapsed} detailsCollapsed={detailsCollapsed}>
+      <aside className={`sidebar${navigationCollapsed ? " panel-collapsed" : ""}`} aria-label={t("codeMap.repository.navigation")}>
+        {narrow ? <button className="repository-navigation-toggle" aria-label={t(navigationCollapsed ? "codeMap.repository.expandScope" : "codeMap.repository.collapseScope", { repository: repository.name, directory: directory || t("codeMap.directory.root") })} aria-expanded={!navigationCollapsed} aria-controls="repository-navigation-content" onClick={() => setNavigationOpen(value => !value)}>
+          <Folder size={18} aria-hidden="true" /><span><strong>{repository.name}</strong><small title={directory || repository.path}>{directory || t("codeMap.directory.root")}</small></span>{navigationCollapsed ? <CaretDown size={17} aria-hidden="true" /> : <CaretUp size={17} aria-hidden="true" />}
+        </button> : <div className="pane-heading"><span>{t("codeMap.repository.navigation")}</span><Hint label={navigationCollapsed ? t("codeMap.repository.expand") : t("codeMap.repository.collapse")}><button className="icon-button panel-toggle" aria-label={navigationCollapsed ? t("codeMap.repository.expand") : t("codeMap.repository.collapse")} aria-expanded={!navigationCollapsed} aria-controls="repository-navigation-content" onClick={() => setSidebarCollapsed(value => !value)}>{navigationCollapsed ? <CaretRight size={17} /> : <CaretLeft size={17} />}</button></Hint></div>}
+        <div id="repository-navigation-content" className="sidebar-content" hidden={navigationCollapsed}>
+        <div className="sidebar-label">{t("codeMap.repository.directories")}</div><DirectoryTree key={repoId} files={rootCoverage?.files ?? []} selected={directory} browse={browse} />
+        <div className="sidebar-bottom"><button className="text-button" onClick={() => { setRegisterError(null); setRegisterOpen(true); }}><Plus size={14} />{t("codeMap.repository.other")}</button></div></div>
+      </aside>
+      <main className="map-main">
         <div className="filters"><div className="select-field"><span>{t("codeMap.filter.client")}</span><FilterSelect label={t("codeMap.filter.clientLabel")} value={client} options={[{ value: "all", label: t("codeMap.filter.allClients") }, ...availableClientOptions(mapSessionList?.clients)]} onChange={value => { setClient(value as Client | "all"); if (value !== "all" && value !== mapSession?.client) setMapSession(undefined); }} /></div>
           <div className="select-field map-session-filter"><span>{t("codeMap.session.label")}</span><ProjectPicker label={t("codeMap.session.filter")} placeholder={t("codeMap.session.search")} value={mapSession ? mapSessionKey(mapSession) : "all"} options={[{ value: "all", label: t("codeMap.session.all") }, ...mapSessionOptions]} onChange={value => setMapSession(value === "all" ? undefined : availableMapSessions.find(session => mapSessionKey(session) === value) ?? mapSession)} />
             {mapSession && <Hint label={t("codeMap.session.clear")}><button className="icon-button" aria-label={t("codeMap.session.clear")} onClick={() => setMapSession(undefined)}><X size={14} /></button></Hint>}
@@ -542,7 +605,13 @@ export function useCodeMapPage({ active, theme, onSession }: {
         </>}
       </main>
       <FilePane repoId={repoId} detail={detail} loading={detailLoading} error={detailError} retry={() => setDetailRetry(value => value + 1)} collapsed={detailsCollapsed} toggle={() => setDetailsCollapsed(value => !value)} metric={metric} theme={theme} query={query} sessions={availableMapSessions} openSession={event => void openSession(event)} />
-    </ResizableWorkspace>}
+    </ResizableWorkspace></div>
+      <div id="code-map-panel-replay" role="tabpanel" aria-labelledby="code-map-tab-replay" hidden={mapTab !== "replay"}>
+        {replayVisited && <Suspense fallback={<div className="query-loading" role="status">{t("replay.loading")}</div>}><ActivityReplay key={repoId} repositoryId={repoId} active={active && mapTab === "replay"} theme={theme} targetSessionId={replayTarget} onSession={onSession} onTargetChange={sessionId => {
+          setReplayTarget(sessionId);
+          history.replaceState(null, "", mapAddress("replay", repoId, sessionId));
+        }} /></Suspense>}
+      </div></>}
     {!repository && !initialLoading && <div className="first-register"><button ref={repositoryTrigger} className="button primary" onClick={() => { setRegisterError(null); setRegisterOpen(true); }}><Plus size={17} />{t("codeMap.repository.registerLocal")}</button></div>}
     <Modal open={registerOpen} onOpenChange={setRegisterOpen} fallbackFocus={repositoryTrigger} busy={registering} title={t("codeMap.repository.registerTitle")} description={t("codeMap.repository.registerDescription")}>
       <form className="register-form" onSubmit={event => void register(event)}>

@@ -1,6 +1,10 @@
 import type { MessageCatalog } from "../../types.js";
 
 export default {
+  "codeMap.view.distribution": "Activity distribution",
+  "codeMap.view.replay": "Activity replay",
+  "codeMap.view.tabs": "Code map views",
+
   "codeMap.session.label": "Session",
   "codeMap.session.filter": "Filter sessions",
   "codeMap.session.search": "Search titles or session IDs",

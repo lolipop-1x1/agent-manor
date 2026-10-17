@@ -8,7 +8,7 @@ import { SessionTurnNavigation } from "./SessionTurnNavigation";
 import { CopyButton } from "./SessionCopy";
 import { collectDialogue, dialogueMarkdown } from "./session-export";
 import { readSessionFilters, readSessionSearchScope, writeSessionSearchFilters } from "./session-address";
-import { ArrowClockwise, CaretDown, CaretLeft, CaretRight, ChatCircle, DownloadSimple, MagnifyingGlass, MapTrifold, X } from "@phosphor-icons/react";
+import { ArrowClockwise, CaretDown, CaretLeft, CaretRight, ChatCircle, DownloadSimple, MagnifyingGlass, MapTrifold, Play, X } from "@phosphor-icons/react";
 import * as Tooltip from "@radix-ui/react-tooltip";
 import * as Popover from "@radix-ui/react-popover";
 import type { SessionGroupedSearchResult, SessionIndexSummary, SessionListResult, SessionMessage, SessionMessageResult, SessionProfile, SessionRefreshOptions, SessionSearchHit, SessionSearchResult, SessionSummary, SessionTimelineResult } from "../../../src/session-contracts";
@@ -97,8 +97,9 @@ function useScopedPage(scope: string) {
   return [page, setPage] as const;
 }
 
-export default function Sessions({ active, target, onMap, onHistoryReading, historyRevision = 0, historyUpdating = false, onHistoryRefresh, onHistoryStatus }: {
+export default function Sessions({ active, target, onMap, onReplay, onHistoryReading, historyRevision = 0, historyUpdating = false, onHistoryRefresh, onHistoryStatus }: {
   active: boolean; target?: Target; onMap: (path?: string, project?: string, session?: SessionSummary) => void;
+  onReplay?: (session: SessionSummary) => void;
   historyRevision?: number; onHistoryReading?: (reading: boolean) => void; historyUpdating?: boolean; onHistoryRefresh?: (options?: SessionRefreshOptions) => void;
   onHistoryStatus?: (status: SessionIndexSummary) => void;
 }) {
@@ -691,6 +692,7 @@ export default function Sessions({ active, target, onMap, onHistoryReading, hist
               <div className="session-heading-actions">
                 <span className="session-pane-progress" role={messageLoading && selectedMessageData ? "status" : undefined} aria-label={messageLoading && selectedMessageData ? t("sessions.reading.loadingMessages", { mode: t(modeLabels[mode]) }) : undefined}>{messageLoading && selectedMessageData && <ArrowClockwise size={14} className="is-spinning" aria-hidden="true" />}</span>
                 <button className="button subtle session-map-button" onClick={() => mapForSession(undefined, selectedSession?.project)} disabled={!selectedSession?.project}><MapTrifold size={16} />{t("sessions.reading.map")}</button>
+                {onReplay && <button className="button subtle session-map-button session-replay-button" onClick={() => selectedSession && onReplay(selectedSession)} disabled={!selectedSession?.project}><Play size={16} aria-hidden="true" /><span>{t("replay.title")}</span></button>}
                 <Tooltip.Root><Tooltip.Trigger asChild>
                   <button className="button session-export-button" aria-label={t(exporting ? "sessions.export.loading" : "sessions.export.branch")} disabled={!selectedSession || exporting} onClick={() => void exportDialogue()}><DownloadSimple size={15} aria-hidden="true" /><span className="session-export-label">{t(exporting ? "sessions.export.loading" : "sessions.export.short")}</span></button>
                 </Tooltip.Trigger><Tooltip.Portal><Tooltip.Content className="tooltip" sideOffset={6}>{t("sessions.export.branch")}<Tooltip.Arrow /></Tooltip.Content></Tooltip.Portal></Tooltip.Root>

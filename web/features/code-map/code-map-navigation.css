@@ -1,0 +1,28 @@
+.code-map-toolbar { display: flex; align-items: center; gap: 20px; min-height: 56px; padding: 0 22px; border-bottom: 1px solid var(--border); background: var(--surface); }
+.code-map-toolbar h1 { margin: 0; white-space: nowrap; font-size: 18px; letter-spacing: -.4px; }
+.code-map-toolbar .repository-picker { flex: 0 1 230px; min-width: 100px; margin: 0; }
+.code-map-toolbar .repository-trigger { height: 34px; padding: 4px 10px; gap: 7px; }
+.code-map-toolbar .repository-trigger strong { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.code-map-tabs { align-self: stretch; display: flex; flex-shrink: 0; gap: 18px; }
+.code-map-tabs [role="tab"] { border: 0; border-bottom: 2px solid transparent; border-radius: 0; background: transparent; padding: 0 2px; color: var(--muted); font-size: 13px; font-weight: 600; }
+.code-map-tabs [aria-selected="true"] { color: var(--accent); border-bottom-color: var(--accent); }
+.code-map-tabs [role="tab"]:hover { color: var(--text); }
+.code-map-toolbar .map-page-actions { margin-left: auto; flex-shrink: 0; }
+.code-map-page > [role="tabpanel"] { min-width: 0; }
+#code-map-panel-distribution > .workspace { min-height: calc(100dvh - var(--app-header-height, 58px) - 57px); }
+#code-map-panel-distribution .filters { margin-top: 0; }
+.code-map-toolbar + .notice { margin-top: 12px; }
+@media (max-width: 1050px) {
+  .code-map-toolbar { flex-wrap: wrap; gap: 0 16px; padding: 0 16px; }
+  .code-map-toolbar .map-page-actions { gap: 8px; }
+  .code-map-toolbar .repository-picker { flex-basis: 180px; }
+  .code-map-tabs { min-height: 54px; }
+}
+@media (max-width: 767px) {
+  .code-map-toolbar { gap: 0 12px; padding: 4px 12px 0; }
+  .code-map-toolbar h1 { display: none; }
+  .code-map-toolbar .repository-picker { flex: 1; max-width: calc(100% - 62px); }
+  .code-map-toolbar .map-page-actions { order: 1; }
+  .code-map-toolbar .map-page-actions > .map-query-progress, .code-map-toolbar .map-page-actions > .auto-refresh-control { display: none; }
+  .code-map-tabs { flex-basis: 100%; order: 2; min-height: 40px; }
+}

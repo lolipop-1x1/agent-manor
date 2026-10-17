@@ -23,6 +23,7 @@
     "docs/design/baseline-rules.md",
     "docs/design/matching-rules.md",
     "docs/design/session-history.md",
+    "docs/design/session-code-replay.md",
     "docs/design/session-import-performance.md",
     "docs/design/usage-statistics.md",
     "docs/design/overview-dashboard.md",
