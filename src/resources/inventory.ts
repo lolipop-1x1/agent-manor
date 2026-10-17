@@ -6,7 +6,7 @@ import { parse as parseToml } from "smol-toml";
 import { parse as parseJsonc } from "jsonc-parser";
 import type { ParseError } from "jsonc-parser";
 import { parseDocument } from "yaml";
-import { clientIds } from "../clients.js";
+import { clientIds, isSupportedClient } from "../clients.js";
 import type { Client } from "../clients.js";
 import type { ResourceKind } from "../resource-contracts.js";
 import type { ResourceInventoryBody, ResourceInventoryEntry, ResourceInventoryGap, ResourceInventoryOptions,
@@ -17,7 +17,7 @@ import { projectNativeEntries } from "./native-inventory.js";
 import { planGeminiQwenInventory } from "./native-gemini-qwen.js";
 import { planKimiOmpInventory } from "./native-kimi-omp.js";
 import { planGrokReasonixCodewhaleInventory } from "./native-grok-reasonix-codewhale.js";
-import { planDoubaoWorkInventory } from "./doubao-work-inventory.js";
+import { doubaoWorkManagedSkillRoots, planDoubaoWorkInventory } from "./doubao-work-inventory.js";
 
 type ObjectValue = Record<string, unknown>;
 type SourcePlan = InventorySourcePlan;
@@ -146,8 +146,9 @@ export async function scanResourceInventory(options: ResourceInventoryOptions = 
   await planGeminiQwenInventory({ userHome, projects: existingProjects, environment, add, parseConfig, gaps, diagnostics });
   await planKimiOmpInventory({ userHome, projects: existingProjects, environment, add, parseConfig, gaps, diagnostics });
   await planGrokReasonixCodewhaleInventory({ userHome, projects: existingProjects, environment, add, parseConfig, gaps, diagnostics });
-  await planDoubaoWorkInventory({ userHome, projects: existingProjects, environment, add, parseConfig, gaps, diagnostics });
+  if (isSupportedClient("doubao-work")) await planDoubaoWorkInventory({ userHome, projects: existingProjects, environment, add, parseConfig, gaps, diagnostics });
   for (const manual of options.manualSources ?? []) {
+    if (!isSupportedClient(manual.client)) continue;
     const extra = { project: manual.project, origin: "manual" as const, verified: false, keyPath: manual.keyPath, manualSourceId: manual.id };
     const format = manual.format ?? (manual.kind === "skill" ? "skill-directory" : manual.path.endsWith(".toml") ? "toml" : manual.path.endsWith(".jsonc") ? "jsonc" : "json");
     add(manual.client, manual.kind, manual.path, format, { ...extra, keyPath: manual.keyPath ?? (manual.client === "codex" ? ["mcp_servers"] : manual.client === "opencode" ? ["mcp"] : ["mcpServers"]) });
@@ -177,12 +178,15 @@ export async function scanResourceInventory(options: ResourceInventoryOptions = 
       return state;
     } catch (error) { return missing(error) ? "enabled" : "unknown"; }
   };
+  const managedSkillRoots = await Promise.all(doubaoWorkManagedSkillRoots(userHome).map(root => cachedRealpath(root).catch(() => root)));
   const appendSkill = async (source: SourcePlan, path: string, skillFile: string, protectedSystem: boolean): Promise<void> => {
     let linkTarget: string | undefined, targetPath: string | undefined;
     const info = await cachedLstat(path);
     const entryType: ResourceInventoryEntry["entryType"] = info.isSymbolicLink() ? "symlink" : info.isDirectory() ? "directory" : "file";
     if (info.isSymbolicLink()) linkTarget = await readlink(path);
     try { targetPath = await cachedRealpath(path); } catch (error) { if (!missing(error) && object(error)?.code !== "ELOOP") throw error; }
+    // 停用盘点后，其他客户端指向原生托管目录的共享入口仍保持只读。
+    const managed = source.origin === "managed" || targetPath !== undefined && managedSkillRoots.some(root => contained(root, targetPath!));
     const containmentRoot = source.skillContainmentRoot ?? source.native?.containmentRoot ?? source.codeflicker?.containmentRoot;
     if (targetPath && containmentRoot && !contained(await cachedRealpath(containmentRoot), targetPath)) {
       diagnostics.push({ sourceId: source.id, client: source.client, kind: "skill", scope: source.scope, project: source.project, reason: "invalid_reference", path });
@@ -190,8 +194,8 @@ export async function scanResourceInventory(options: ResourceInventoryOptions = 
     }
     const base = { id: identity("entry", [source.id, path]), kind: "skill" as const, client: source.client, project: source.project, scope: source.scope,
       sourceId: source.id, entryPath: path, targetPath, entryType, linkTarget, observedAt, sourceFormat: source.format,
-      owner: source.owner, protected: Boolean(source.owner) || protectedSystem || source.origin === "managed", protectionReason: source.owner ? "plugin" as const : protectedSystem ? "system" as const : source.origin === "managed" ? "managed" as const : undefined,
-      locator: { type: "skill" as const, skillFile, nativeControl: source.owner || protectedSystem || source.origin === "managed" ? undefined : source.nativeControl, controlPath: source.controlPath,
+      owner: source.owner, protected: Boolean(source.owner) || protectedSystem || managed, protectionReason: source.owner ? "plugin" as const : protectedSystem ? "system" as const : managed ? "managed" as const : undefined,
+      locator: { type: "skill" as const, skillFile, nativeControl: source.owner || protectedSystem || managed ? undefined : source.nativeControl, controlPath: source.controlPath,
         dependencyPaths: source.native?.dependencyPaths ?? source.codeflicker?.dependencyPaths }, capabilities: { ...writeDisabled } };
     if (!targetPath) {
       entries.push({ ...base, bodyId: identity("body", ["broken", source.id, path]), name: basename(path), readState: "broken", nativeState: "unknown" });

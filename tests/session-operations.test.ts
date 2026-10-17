@@ -17,8 +17,8 @@ test("原生操作独立贯通画像、完整及聚合时间线，不生成工�
     ...types.map((type, index) => normalizedRecord({ key: `card-${index}`, kind: "context", text: JSON.stringify({ content: "synthetic card" }),
       operation: { type, label: "Synthetic native card", presentationComplete: true }, turnKey: "u" }, "{}", index + 22))];
   try {
-    const snapshots = [normalizedSnapshot({ client: "doubao-work", path: "/synthetic/parent/CURRENT", sessionId: "parent" }, records),
-      normalizedSnapshot({ client: "doubao-work", path: "/synthetic/child/CURRENT", sessionId: "child" }, [
+    const snapshots = [normalizedSnapshot({ client: "pi", path: "/synthetic/parent/CURRENT", sessionId: "parent" }, records),
+      normalizedSnapshot({ client: "pi", path: "/synthetic/child/CURRENT", sessionId: "child" }, [
         normalizedRecord({ key: "child-card", kind: "context", text: "synthetic child", operation: { type: "edit" } }, "{}", 1),
       ], { parentSessionId: "parent", relationship: "child" })];
     const sources = snapshots.map(snapshot => {

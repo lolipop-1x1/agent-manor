@@ -644,3 +644,45 @@ test("淘汰阶段失败回滚新版、分块、仓库指针及任务完成状�
   assert.throws(() => store.getSnapshot(repositoryId, first), error => error instanceof StoreError && error.code === "VERSION_NOT_FOUND");
   assert.equal(store.getSnapshot(repositoryId, second).events.length, 1);
 }));
+
+test("旧地图版本和刷新缓存排除停用客户端的来源、事件、映射及来源缺口", async () => fixture(async ({ repositoryPath, sourcePath, store, repositoryId, refresh }) => {
+  await writeFile(sourcePath, encode([meta(repositoryPath), call(repositoryPath, "active"), output("active")]));
+  await refresh();
+  const original = store.getSnapshot(repositoryId);
+  const parsed = store.getParsedSources(repositoryId);
+  const source = { ...original.sources[0]!, path: join(repositoryPath, "missing-retired-cache"), sourceId: "doubao-work:synthetic-retired", client: "doubao-work" as const, sessionId: "synthetic-retired" };
+  const event = { ...original.events[0]!, id: "synthetic-retired-event", client: "doubao-work" as const, sourceId: source.sourceId, sessionId: source.sessionId };
+  const gap = { kind: "ambiguous" as const, message: "Synthetic paused gap", sourceId: source.sourceId };
+  const snapshot = { ...original, version: "synthetic-legacy-map", sources: [...original.sources, source], events: [...original.events, event],
+    mappings: [...original.mappings, { ...original.mappings[0]!, eventId: event.id }], gaps: [...original.gaps, gap] };
+  const job = store.createJob(repositoryId);
+  store.updateJob(job.id, { status: "running" });
+  store.publish({ snapshot, sources: { ...store.listSources(repositoryId), sources: snapshot.sources, unassociated: [source], gaps: snapshot.gaps },
+    parsed: [...parsed, { ...parsed[0]!, ...source, events: [event], gaps: [gap] }], mappings: [],
+    stats: { sourcesParsed: 0, parsedRecords: 0, mappingsComputed: 0, mappingsReused: 0 }, clearCache: false, jobId: job.id });
+  for (const result of [store.getSnapshot(repositoryId), store.getCoverageSnapshot(repositoryId, snapshot.version)]) {
+    assert.deepEqual(result.sources, original.sources);
+    assert.deepEqual(result.events.map(event => event.id), original.events.map(event => event.id));
+    assert.deepEqual(result.mappings, original.mappings);
+    assert.ok(result.gaps.every(gap => gap.sourceId !== source.sourceId));
+    assert.deepEqual(buildCoverage(result).summary, buildCoverage(original).summary);
+  }
+  const sources = store.listSources(repositoryId, snapshot.version);
+  assert.ok(sources.sources.every(source => source.client !== "doubao-work"));
+  assert.deepEqual(sources.unassociated, []);
+  assert.ok(sources.gaps.every(gap => gap.sourceId !== source.sourceId));
+  // 模拟停用前遗留的跟踪行，刷新不能再读取已经缺失的豆包缓存。
+  const database = new Database(store.dbPath);
+  try {
+    database.prepare("INSERT INTO tracked_sources(repository_id,source_id,json) VALUES(?,?,?)")
+      .run(repositoryId, source.sourceId, JSON.stringify(source));
+    assert.deepEqual(store.getTrackedSources(repositoryId).map(source => source.client), ["codex"]);
+    assert.deepEqual(store.getParsedSources(repositoryId), parsed);
+    assert.ok(store.getParsedSourceLocations(repositoryId).every(source => source.client === "codex"));
+    assert.ok(store.getDiscoveryCache(repositoryId).every(entry => entry.location.client === "codex"));
+    await refresh();
+    assert.deepEqual(store.getSnapshot(repositoryId).events.map(event => event.id), original.events.map(event => event.id));
+    assert.equal(store.listSources(repositoryId).gaps.length, 0);
+    assert.equal((database.prepare("SELECT COUNT(*) AS count FROM tracked_sources WHERE source_id=?").get(source.sourceId) as { count: number }).count, 0);
+  } finally { database.close(); }
+}));

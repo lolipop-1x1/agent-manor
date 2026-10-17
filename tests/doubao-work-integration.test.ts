@@ -1,116 +1,111 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { mkdtemp, readFile, realpath, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import test from "node:test";
-import type { CoverageResult, EventsResponse, JobResponse, RegisterRepositoryResponse, SourcesResponse } from "../src/contracts.js";
-import type { SessionIndexStatus, SessionJob, SessionListResult, SessionMessageResult, SessionProfile, SessionSearchResult } from "../src/session-contracts.js";
-import type { ResourceLocalResult } from "../src/resource-service-contracts.js";
-import type { ResourceManagementOperation, ResourceManagementPreview } from "../src/resource-management-contracts.js";
-import type { UsageReport } from "../src/usage-contracts.js";
-import type { OverviewReport } from "../src/overview-contracts.js";
+import Database from "better-sqlite3";
+import { clientIds, clientName, CLIENTS } from "../src/clients.js";
 import { discoverSources } from "../src/history/index.js";
-import { HISTORY_ADAPTERS, readHistoryEvidence } from "../src/history/adapters/index.js";
-import { normalizedHash } from "../src/history/adapters/normalized.js";
+import { doubaoWorkAdapter } from "../src/history/adapters/doubao-work.js";
+import { parseSessionSource } from "../src/sessions/parser.js";
+import { SessionStore } from "../src/sessions/store.js";
 import { startService } from "../src/server.js";
-import { apiRequest, delay } from "../src/service/runtime.js";
-import { collectDialogue, dialogueMarkdown } from "../web/features/sessions/session-export.js";
+import { delay } from "../src/service/runtime.js";
 import { createDoubaoWorkScenario } from "./helpers/doubao-work-scenario.js";
 import { isolatedHistoryEnvironment } from "./helpers/history-roots.js";
 
 const run = promisify(execFile);
 
-test("豆包合成缓存贯通 HTTP、CLI、完整索引、阅读导出、未知统计、地图与资源管理", async () => {
-  const directory = await realpath(await mkdtemp(join(tmpdir(), "manor-doubao-integration-")));
+test("豆包停用升级原子排除旧索引和旧版本，HTTP、CLI、全局刷新及统计不再导入或展示", async () => {
+  const directory = await realpath(await mkdtemp(join(tmpdir(), "manor-paused-doubao-")));
   const fixture = await createDoubaoWorkScenario(directory);
-  const service = await startService({ home: fixture.home, roots: fixture.roots, startupRefresh: false,
-    resourceInventory: { userHome: fixture.userHome, environment: {} }, usagePricing: { fetch: (async () => { throw new Error("synthetic offline pricing"); }) as typeof fetch } });
-  const api = <T>(route: string, method = "GET", body?: unknown) => apiRequest<T>(service.instance, route, method, body);
-  const cliPath = fileURLToPath(new URL("../src/cli.ts", import.meta.url));
-  const hook = fileURLToPath(import.meta.resolve("tsx/esm"));
-  const env = isolatedHistoryEnvironment(directory, { AGENT_MANOR_HOME: fixture.home });
-  const command = async <T>(args: string[]) => JSON.parse((await run(process.execPath, ["--import", hook, cliPath, ...args, "--json"],
-    { cwd: directory, env, timeout: 60_000, maxBuffer: 4 * 1024 * 1024 })).stdout) as T;
-  const wait = async (id: string) => {
-    for (let attempt = 0; attempt < 400; attempt++) {
-      const { job } = await api<{ job: SessionJob | JobResponse["job"] }>(`/jobs/${id}`);
-      assert.notEqual(job.status, "failed", "error" in job ? job.error : undefined);
-      if (["complete", "completed"].includes(job.status)) return job;
-      await delay(25);
-    }
-    assert.fail("隔离任务未在限定时间内结束");
-  };
+  const supportedRoot = join(directory, "supported"); await mkdir(supportedRoot);
+  const supportedPath = join(supportedRoot, "supported.jsonl");
+  await writeFile(supportedPath, [
+    { type: "session_meta", payload: { id: "synthetic-supported", cwd: fixture.project } },
+    { type: "response_item", timestamp: "2026-10-16T00:00:00Z", payload: { type: "message", role: "user", content: [{ type: "input_text", text: "SupportedFixtureNeedle" }] } },
+    { type: "response_item", timestamp: "2026-10-16T00:00:01Z", payload: { type: "message", role: "assistant", content: [{ type: "output_text", text: "Synthetic supported answer" }] } },
+  ].map(row => JSON.stringify(row)).join("\n") + "\n");
+  const roots = { ...fixture.roots, codex: [supportedRoot] };
+  let store = new SessionStore(join(fixture.home, "index.sqlite"));
+  const oldVersions: string[] = [];
+  let supportedId = "", pausedId = "", oldRevisionCount = 0;
   try {
-    const refresh = await api<{ job: SessionJob }>("/sessions/refresh", "POST", { client: "doubao-work", mode: "full" }); await wait(refresh.job.id);
-    const list = await api<SessionListResult>("/sessions?client=doubao-work");
-    assert.equal(list.total, 1); const session = list.sessions[0]!;
-    assert.equal(session.title, fixture.title); assert.equal(session.project, fixture.project); assert.equal(session.turnCount, 2);
-    assert.deepEqual(await command(["sessions", "list", "--client", "doubao-work"]), list);
-    const modes = new Map<string, SessionMessageResult>();
-    for (const mode of ["brief", "full", "trace"]) {
-      const result = await api<SessionMessageResult>(`/sessions/${session.id}/messages?mode=${mode}&version=${list.version}&pageSize=200`);
-      assert.equal(result.version, list.version); modes.set(mode, result);
-      assert.deepEqual(await command(["sessions", "messages", session.id, "--mode", mode, "--version", list.version, "--page-size", "200"]), result);
+    assert.equal(clientIds.includes("doubao-work"), false);
+    assert.equal(CLIENTS.some(client => client.id === "doubao-work"), false);
+    assert.equal(clientName("doubao-work"), "Doubao Work", "旧身份和研究代码仍保留");
+    assert.deepEqual((await discoverSources(roots)).map(source => source.client), ["codex"]);
+    const native = (await doubaoWorkAdapter.discoverFile!({ client: "doubao-work", path: fixture.current }))[0]!;
+    const sources = [native, { client: "codex" as const, path: supportedPath, format: "codex-jsonl" }];
+    const revisions = [];
+    for (const source of sources) {
+      const pending = store.createRevision(source.path, "synthetic-legacy");
+      const meta = await parseSessionSource(source, pending.sink);
+      if (source.client === "codex") {
+        supportedId = meta.id;
+        pending.sink.usage({ id: "synthetic-supported-request", model: "synthetic-model", inputTokens: 12, outputTokens: 4, occurredAt: "2026-10-16T00:00:01Z" });
+      } else pausedId = meta.id;
+      pending.flush(); store.finishRevision(pending.revision, meta);
+      revisions.push({ path: source.path, revision: pending.revision, fingerprint: "synthetic-legacy" });
     }
-    assert.equal(modes.get("brief")!.messages.length, 4);
-    assert.ok(!modes.get("brief")!.messages.some(message => message.kind === "thinking" || message.kind === "context"));
-    assert.ok(modes.get("full")!.messages.some(message => message.text === fixture.thinking));
-    assert.ok(modes.get("trace")!.messages.some(message => message.text.includes("File does not exist") && message.kind === "context"));
-    assert.ok(modes.get("trace")!.messages.every(message => !message.tool && !message.status && !message.final && !message.resource));
-    const search = await api<SessionSearchResult>(`/sessions/search?client=doubao-work&q=${fixture.needle}`);
-    assert.equal(search.total, 1); assert.equal(search.hits[0]?.session.id, session.id);
-    assert.deepEqual(await command(["sessions", "search", fixture.needle, "--client", "doubao-work"]), search);
-    const dialogue = await collectDialogue(page => api(`/sessions/${session.id}/messages?mode=brief&version=${list.version}&page=${page}&pageSize=2`), list.version);
-    const markdown = dialogueMarkdown(dialogue, "zh-CN");
-    assert.ok(markdown.includes(fixture.needle)); assert.ok(markdown.includes("合成回复")); assert.ok(markdown.includes("未确认")); assert.ok(!markdown.includes(fixture.thinking));
-    const locations = await discoverSources(fixture.roots); assert.equal(locations.length, 1);
-    const source = locations[0]!, adapter = HISTORY_ADAPTERS.find(value => value.id === source.format)!;
-    const raw = (await adapter.readRecords!(source)).records.find(value => value.line === 2)!;
-    const reference = { sourceId: source.sourceId!, format: source.format!, path: source.path, selector: source.selector, recordLine: raw.line, hash: normalizedHash(raw.raw) };
-    assert.ok((await readHistoryEvidence(reference))?.raw.includes("合成回复"));
-    const profile = await api<SessionProfile>(`/sessions/${session.id}/profile?version=${list.version}`);
-    assert.equal(profile.usage.requests, 0); assert.equal(profile.usage.inputTokens, null); assert.equal(profile.usage.outputTokens, null);
-    assert.deepEqual(profile.steps, []); assert.deepEqual(profile.tools, []); assert.deepEqual(profile.resources, []);
-    assert.ok(profile.gaps.some(gap => gap.messageDescriptor?.key.endsWith("measurementUnknown")));
-    const clients = encodeURIComponent(JSON.stringify(["doubao-work"]));
-    const usage = await api<UsageReport>(`/usage?clients=${clients}&from=2026-10-01&to=2026-10-31`);
-    assert.equal(usage.totals.requests, 0); assert.equal(usage.totals.tokens, null); assert.equal(usage.totals.estimatedCost, null);
-    const overview = await api<OverviewReport>(`/overview/report?clients=${clients}&window=custom&from=2026-10-01&to=2026-10-31`);
-    assert.equal(overview.summary.sessions, 1); assert.equal(overview.summary.requests, 0); assert.equal(overview.summary.tokens, null);
-    assert.equal(overview.process.failures, 0); assert.deepEqual(overview.resources.skills, []); assert.deepEqual(overview.resources.mcp, []);
-    const registered = await api<RegisterRepositoryResponse>("/repositories", "POST", { path: fixture.project }); await wait(registered.job!.id);
-    const repositoryRoute = `/repositories/${registered.repository.id}`;
-    const coverage = await api<CoverageResult>(`${repositoryRoute}/coverage?client=doubao-work`);
-    assert.deepEqual(coverage.summary.readExact, { files: 0, lines: 0 }); assert.deepEqual(coverage.summary.editExact, { files: 0, lines: 0 });
-    assert.equal((await api<EventsResponse>(`${repositoryRoute}/events?client=doubao-work`)).total, 0);
-    const sources = await api<SourcesResponse>(`${repositoryRoute}/sources?client=doubao-work`);
-    assert.equal(sources.sources.length, 1); assert.ok(sources.gaps.some(gap => gap.messageDescriptor?.key.endsWith("fileCardUnknown")));
-    assert.deepEqual(await command(["coverage", registered.repository.id, "--client", "doubao-work"]), coverage);
-    const local = await api<ResourceLocalResult>("/resources/local?kind=skill&client=doubao-work"); assert.equal(local.total, 2);
-    const managed = local.rows.find(row => row.body.name === "doubao-managed-guide")!, ordinary = local.rows.find(row => row.body.name === "doubao-shared-guide")!;
-    const managedEntry = managed.entries.find(entry => entry.client === "doubao-work")!, ordinaryEntry = ordinary.entries.find(entry => entry.client === "doubao-work")!;
-    assert.equal(managedEntry.protected, true); assert.equal(managedEntry.capabilities.trash, false);
-    await assert.rejects(api("/resources/preview", "POST", { entryId: managedEntry.id, action: "trash" }), { code: "FORBIDDEN" });
-    assert.equal(ordinaryEntry.capabilities.trash, true); assert.equal(ordinaryEntry.capabilities.disable, false);
-    const preview = await api<ResourceManagementPreview>("/resources/preview", "POST", { entryId: ordinaryEntry.id, action: "trash" });
-    const removed = await api<ResourceManagementOperation>("/resources/apply", "POST", { previewId: preview.id, confirmed: true }); assert.equal(removed.status, "success");
-    await assert.rejects(readFile(join(fixture.sharedSkill, "SKILL.md")));
-    const restore = await api<ResourceManagementPreview>("/resources/preview", "POST", { operationId: removed.id, action: "restore" });
-    assert.equal((await api<ResourceManagementOperation>("/resources/apply", "POST", { previewId: restore.id, confirmed: true })).status, "success");
-    assert.ok((await readFile(join(fixture.sharedSkill, "SKILL.md"), "utf8")).includes("人工合成"));
-    await fixture.writeCache("替换后的合成回复");
-    assert.equal(await readHistoryEvidence(reference), undefined);
-    assert.equal((await command<{ job: SessionJob }>(["sessions", "refresh", "--client", "doubao-work", "--mode", "full", "--wait"])).job.status, "complete");
-    const changed = await api<SessionListResult>("/sessions?client=doubao-work"); assert.notEqual(changed.version, list.version);
-    const changedMessages = await api<SessionMessageResult>(`/sessions/${session.id}/messages?mode=brief`);
-    assert.ok(changedMessages.messages.some(message => message.text === "替换后的合成回复"));
-    await fixture.writeCache("", false);
-    assert.equal((await command<{ job: SessionJob }>(["sessions", "refresh", "--client", "doubao-work", "--mode", "full", "--wait"])).job.status, "complete");
-    assert.equal((await api<SessionListResult>("/sessions?client=doubao-work")).total, 0);
-    assert.equal((await api<SessionIndexStatus>("/sessions/status")).stale, false);
-    assert.equal((await api<ResourceLocalResult>("/resources/local?kind=skill&client=doubao-work")).total, 2);
-  } finally { await service.close(); await rm(directory, { recursive: true, force: true }); }
+    const gap = { kind: "unsupported_format" as const, message: "Synthetic paused gap", sourceId: native.sourceId };
+    oldVersions.push(store.publish(store.createJob().id, revisions, [gap]));
+    oldVersions.push(store.publish(store.createJob().id, revisions, [gap, { kind: "ambiguous", message: "Synthetic active gap", sourceId: "codex:synthetic-supported" }]));
+    assert.equal(store.list().total, 2, "模拟停用前已发布的索引");
+    const pausedJob = store.status().job!;
+    store.updateJob(pausedJob.id, { client: "doubao-work" });
+    const before = store.profile(supportedId); oldRevisionCount = revisions.length;
+    store.close(); store = new SessionStore(join(fixture.home, "index.sqlite"));
+    assert.ok(!oldVersions.includes(store.currentVersion()!));
+    assert.equal(store.status().previousVersion, undefined);
+    assert.deepEqual(store.status().clients, ["codex"]);
+    assert.notEqual(store.status().job?.id, pausedJob.id, "历史豆包专项同步不再显示为当前任务");
+    assert.equal(store.status().sessionCount, 1); assert.equal(store.status().sourceCount, 1);
+    assert.ok(store.indexGaps().gaps.every(gap => !gap.sourceId?.startsWith("doubao-work:")));
+    assert.equal(store.list().total, 1); assert.equal(store.search({ q: fixture.needle }).total, 0);
+    assert.throws(() => store.messages(pausedId), /不存在/);
+    for (const version of oldVersions) assert.throws(() => store.list({ version }), /版本不存在/);
+    assert.deepEqual(store.profile(supportedId).usage, before.usage);
+    assert.equal(store.profile(supportedId).messageCount, before.messageCount);
+    assert.ok(store.usageFactSessions().sessions.every(row => row.session.client !== "doubao-work"));
+    assert.ok(store.overviewSource().sessions.every(row => row.client !== "doubao-work"));
+    const database = new Database(join(fixture.home, "index.sqlite"), { readonly: true });
+    try { assert.equal((database.prepare("SELECT COUNT(*) AS count FROM session_revisions").get() as { count: number }).count, oldRevisionCount); }
+    finally { database.close(); }
+    const version = store.currentVersion(); store.close(); store = new SessionStore(join(fixture.home, "index.sqlite"));
+    assert.equal(store.currentVersion(), version, "重复启动不重复发布");
+    store.close();
+    const sourceBefore = await readFile(fixture.current);
+    const service = await startService({ home: fixture.home, roots, startupRefresh: false,
+      resourceInventory: { userHome: fixture.userHome, environment: {} }, usagePricing: { fetch: (async () => { throw new Error("synthetic offline pricing"); }) as typeof fetch } });
+    try {
+      const api = async (url: string, method: "GET" | "POST" = "GET", payload?: object) => service.app.inject({ method, url: `/api/v1${url}`, payload, headers: { host: `127.0.0.1:${service.instance.port}`, "x-agent-manor-instance": service.instance.id } });
+      for (const url of ["/sessions?client=doubao-work", "/sessions/search?client=doubao-work&q=fixture", "/usage?clients=%5B%22doubao-work%22%5D"]) {
+        assert.equal((await api(url)).statusCode, 400);
+      }
+      assert.equal((await api("/sessions/refresh", "POST", { client: "doubao-work" })).statusCode, 400);
+      assert.equal((await api(`/sessions/${pausedId}/messages?mode=full`)).statusCode, 404);
+      assert.equal((await api("/sessions")).json().total, 1);
+      const status = (await api("/resources/status")).json();
+      assert.ok(status.sources.every((row: { client: string }) => row.client !== "doubao-work"));
+      for (const url of ["/overview/report?window=all", "/usage?from=2020-01-01&to=2030-01-01"]) {
+        const response = await api(url); assert.equal(response.statusCode, 200, response.body);
+        assert.ok(!response.body.includes('"doubao-work"'));
+      }
+      const env = isolatedHistoryEnvironment(directory, { AGENT_MANOR_HOME: fixture.home });
+      await assert.rejects(run(process.execPath, ["--import", "tsx", "src/cli.ts", "sessions", "list", "--client", "doubao-work", "--json"], { env, timeout: 15_000 }));
+      const refresh = (await api("/sessions/refresh", "POST", {})).json();
+      let job;
+      for (let attempt = 0; attempt < 200; attempt++) {
+        job = (await api(`/jobs/${refresh.job.id}`)).json().job;
+        if (["complete", "failed"].includes(job.status)) break;
+        await delay(20);
+      }
+      assert.equal(job.status, "complete"); assert.equal(job.counts.discovered, 1);
+      assert.deepEqual((await api("/sessions")).json().sessions.map((row: { client: string }) => row.client), ["codex"]);
+      assert.deepEqual(await readFile(fixture.current), sourceBefore);
+    } finally { await service.close(); }
+  } finally { try { store.close(); } catch {} await rm(directory, { recursive: true, force: true }); }
 });

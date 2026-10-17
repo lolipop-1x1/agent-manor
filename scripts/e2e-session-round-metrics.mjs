@@ -72,7 +72,7 @@ try {
       record(12, "second", "user", "再确认", { occurredAt: recordedAt(120, 1) }),
       record(13, "second", "reasoning", "复制的分析", { copied: true }),
       record(14, "second", "assistant", "已确认", { final: "explicit", occurredAt: recordedAt(240, 1) }),
-    ], [], { client: "doubao-work", sourceId: "doubao-work:trace" }),
+    ], [], { client: "pi", sourceId: "doubao-work:trace" }),
     source("zero", "合成零值", [
       record(0, "first", "user", " \n", { occurredAt: recordedAt(0) }),
       record(1, "first", "assistant", "完成", { final: "explicit", occurredAt: recordedAt(0) }),
@@ -143,7 +143,7 @@ try {
     await page.getByRole("heading", { name: "合成未结束", exact: true }).waitFor();
     await page.waitForLoadState("networkidle");
     ensure(await row("平均模型步骤").innerText() === "≈ 1" && await row("平均轮次耗时").innerText() === "—" && await row("平均提示词字数").innerText() === "2", "无请求的已保存回复估算一步且未知耗时保留空值");
-    await page.getByRole("button", { name: /^合成轨迹估算 豆包工作/ }).click();
+    await page.getByRole("button", { name: /^合成轨迹估算 Pi/ }).click();
     await page.getByRole("heading", { name: "合成轨迹估算", exact: true }).waitFor();
     await page.waitForLoadState("networkidle");
     ensure(await row("平均模型步骤").innerText() === "≈ 2", "连续输出合并且原生操作和工具分隔后按两轮均值估算");
@@ -167,7 +167,7 @@ try {
     await englishHelp.waitFor();
     ensure((await englishHelp.innerText()).includes("User turns: 2"), "英文帮助提供样本");
     await englishHelp.press("Escape");
-    await page.getByRole("button", { name: /^合成轨迹估算 Doubao Work/ }).click();
+    await page.getByRole("button", { name: /^合成轨迹估算 Pi/ }).click();
     await page.getByRole("heading", { name: "合成轨迹估算", exact: true }).waitFor();
     await page.waitForLoadState("networkidle");
     ensure(await row("Avg. model steps").innerText() === "≈ 2", "英文轨迹估算保持相同数值与估算标识");

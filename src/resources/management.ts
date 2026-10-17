@@ -7,7 +7,7 @@ import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, writeFileSyn
 import { chmod, copyFile, cp, lstat, mkdir, open, readFile, readdir, readlink, realpath, rename, rm, symlink, writeFile } from "node:fs/promises";
 import { constants } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
-import { clientIds } from "../clients.js";
+import { clientIds, inactiveClientIds, isSupportedClient } from "../clients.js";
 import type { ResourceInventoryEntry, ResourceInventorySnapshot, ResourceInventorySource, ResourceManualSource } from "../resource-inventory-contracts.js";
 import type {
   ManagedResourceInventorySnapshot, ResourceManagementArchive, ResourceManagementInput, ResourceManagementOperation,
@@ -176,7 +176,8 @@ export class ResourceManager {
     else this.database.prepare("DELETE FROM resource_favorites WHERE id=?").run(id);
   }
   manualSources(): StoredResourceManualSource[] {
-    return (this.database.prepare("SELECT json FROM resource_manual_sources ORDER BY rowid").all() as JsonRow[]).map(row => decode(row));
+    return (this.database.prepare("SELECT json FROM resource_manual_sources ORDER BY rowid").all() as JsonRow[])
+      .map(row => decode<StoredResourceManualSource>(row)).filter(source => isSupportedClient(source.client));
   }
   addManualSource(input: ResourceManualSource): StoredResourceManualSource {
     if (!input || !clientIds.includes(input.client) || !["skill", "mcp"].includes(input.kind) || typeof input.path !== "string" || !isAbsolute(input.path)
@@ -257,11 +258,12 @@ export class ResourceManager {
     const filter = state === "recoverable" ? " AND state IN ('disabled','standby','trash') AND json_extract(json,'$.public.restorable')=1 AND json_extract(json,'$.public.storedPath') IS NOT NULL" : state === "trash" ? " AND state IN ('trash','standby')" : state ? " AND state=?" : "";
     const rows = this.database.prepare(`SELECT json FROM resource_archives WHERE phase<>'prepared'${filter} ORDER BY ${state === "recoverable" ? "json_extract(json,'$.public.createdAt') DESC," : ""}rowid DESC`)
       .all(...(state && state !== "trash" && state !== "recoverable" ? [state] : [])) as JsonRow[];
-    return rows.map(row => decode<PrivateArchive>(row).public);
+    return rows.map(row => decode<PrivateArchive>(row).public).filter(archive => isSupportedClient(archive.entry.client))
+      .map(archive => ({ ...archive, affectedEntries: archive.affectedEntries?.filter(entry => isSupportedClient(entry.client)) }));
   }
   /** 管理候选覆盖完整记录和共享本体关联入口，不受列表分页影响。 */
   clientOptions(): { kind: ResourceKind; client: Client; view: "disabled" | "trash" | "operations" }[] {
-    return this.database.prepare(`
+    const rows = this.database.prepare(`
       SELECT DISTINCT json_extract(json,'$.resource.kind') AS kind,json_extract(json,'$.resource.client') AS client,'operations' AS view
       FROM resource_operations
       UNION SELECT json_extract(o.json,'$.resource.kind'),json_extract(ref.value,'$.client'),'operations'
@@ -272,10 +274,12 @@ export class ResourceManager {
       FROM resource_archives a,json_each(a.json,'$.public.affectedEntries') ref
       WHERE a.phase<>'prepared' AND a.state IN ('disabled','standby','trash') AND json_extract(a.json,'$.public.target')='file'
     `).all() as { kind: ResourceKind; client: Client; view: "disabled" | "trash" | "operations" }[];
+    return rows.filter(row => isSupportedClient(row.client));
   }
   operations(page = 1, pageSize = 50, query: ResourceManagementOperationQuery = {}): ResourceManagementOperations {
     page = Math.max(1, Math.floor(page)); pageSize = Math.min(200, Math.max(1, Math.floor(pageSize)));
-    const parts: string[] = []; const values: string[] = [];
+    const parts: string[] = ["json_extract(resource_operations.json,'$.resource.client') NOT IN (SELECT value FROM json_each(?))"];
+    const values: string[] = [JSON.stringify(inactiveClientIds)];
     for (const [field, value] of [["kind", query.kind], ["client", query.client], ["project", query.project]] as const) if (value !== undefined) {
       const shared = field !== "kind" ? ` OR (json_extract(resource_operations.json,'$.target')='file' AND EXISTS (SELECT 1 FROM json_each(json_extract(resource_operations.json,'$.affectedEntries')) ref WHERE json_extract(ref.value,'$.${field}')${field === "project" && value === "none" ? " IS NULL" : "=?"}))` : "";
       if (field === "project" && value === "none") parts.push(`(json_extract(resource_operations.json,'$.resource.project') IS NULL${shared})`);
@@ -288,7 +292,8 @@ export class ResourceManager {
     const filter = parts.length ? ` WHERE ${parts.join(" AND ")}` : "";
     const total = (this.database.prepare(`SELECT COUNT(*) AS total FROM resource_operations${filter}`).get(...values) as { total: number }).total;
     const operations = (this.database.prepare(`SELECT json FROM resource_operations${filter} ORDER BY created_at DESC,rowid DESC LIMIT ? OFFSET ?`)
-      .all(...values, pageSize, (page - 1) * pageSize) as JsonRow[]).map(row => decode<ResourceManagementOperation>(row));
+      .all(...values, pageSize, (page - 1) * pageSize) as JsonRow[]).map(row => decode<ResourceManagementOperation>(row))
+      .map(operation => ({ ...operation, affectedEntries: operation.affectedEntries?.filter(entry => isSupportedClient(entry.client)) }));
     return { operations, total, page, pageSize };
   }
   private archive(operationId: string): PrivateArchive {
@@ -307,7 +312,7 @@ export class ResourceManager {
     };
     const archive = input.operationId ? this.archive(input.operationId) : undefined;
     const entry = archive?.public.entry ?? snapshot.entries.find(value => value.id === input.entryId);
-    if (!entry) throw new ServiceError("SOURCE_NOT_FOUND", "资源入口不存在", { key: "diagnostics.resources.management.m007" });
+    if (!entry || !isSupportedClient(entry.client)) throw new ServiceError("SOURCE_NOT_FOUND", "资源入口不存在", { key: "diagnostics.resources.management.m007" });
     if (entry.protected || entry.owner) throw new ServiceError("FORBIDDEN", "系统或插件受管理资源只读", { key: "diagnostics.resources.management.m008" });
     if (archive && (input.action === "restore" ? !archive.public.restorable : !archive.public.storedPath || archive.public.state === "purged")) {
       throw new ServiceError("INVALID_INPUT", "该记录已恢复或永久清除，所选操作不可用", { key: "diagnostics.resources.management.m009" });
@@ -435,6 +440,7 @@ export class ResourceManager {
       if (!row) throw new ServiceError("SOURCE_NOT_FOUND", "预览不存在或已经过期", { key: "diagnostics.resources.management.m023" });
       if (row.consumed) throw new ServiceError("CONTENT_STALE", "该预览已执行，请重新生成预览", { key: "diagnostics.resources.management.m024" });
       const plan = decode<Plan>(row); const preview = plan.public;
+      if (!isSupportedClient(plan.entry.client)) throw new ServiceError("SOURCE_NOT_FOUND", "资源入口不存在", { key: "diagnostics.resources.management.m007" });
       const operation: ResourceManagementOperation = { id: randomUUID(), previewId, action: preview.action, entryId: preview.entryId,
         name: preview.resource.name, resource: { kind: plan.entry.kind, client: plan.entry.client, scope: plan.entry.scope, project: plan.entry.project },
         status: "partial", message: "执行尚未确认完成，恢复材料保留", messageDescriptor: { key: "diagnostics.resources.management.m025" }, createdAt: new Date().toISOString(), localState: "partial", clientEffect: "unknown",

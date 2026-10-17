@@ -1,5 +1,5 @@
 /** 各入口共享的客户端身份；不依赖 Node 或历史格式。 */
-export const CLIENTS = [
+const KNOWN_CLIENTS = [
   { id: "codex", name: "Codex", abbreviation: "CX" },
   { id: "claude", name: "Claude Code", abbreviation: "CC" },
   { id: "codeflicker", name: "CodeFlicker CLI", abbreviation: "CF" },
@@ -21,6 +21,10 @@ export const CLIENTS = [
   { id: "doubao-work", name: "Doubao Work", abbreviation: "DW" },
 ] as const;
 
-export type Client = typeof CLIENTS[number]["id"];
+export type Client = typeof KNOWN_CLIENTS[number]["id"];
+// 保留旧索引身份与研究解析器；本机历史不完整的客户端暂不进入产品入口。
+export const inactiveClientIds: readonly Client[] = ["doubao-work"];
+export const CLIENTS = KNOWN_CLIENTS.filter(client => !inactiveClientIds.includes(client.id));
 export const clientIds: readonly Client[] = CLIENTS.map(client => client.id);
-export const clientName = (client: Client): string => CLIENTS.find(item => item.id === client)!.name;
+export const isSupportedClient = (client: string): client is Client => clientIds.includes(client as Client);
+export const clientName = (client: Client): string => KNOWN_CLIENTS.find(item => item.id === client)!.name;

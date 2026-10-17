@@ -16,7 +16,7 @@ test("上下文快照独立持久化，画像及跨周回复耗时在原始和�
   const context: SessionContextSnapshot = { id: "synthetic-context", occurredAt: "2026-10-05T00:00:30.000Z", usedTokens: 40,
     capacityTokens: 100, systemPromptTokens: 10, messageTokens: 20, skillTokens: 5, toolTokens: 5 };
   try {
-    const snapshot = normalizedSnapshot({ client: "doubao-work", path: "/synthetic/cache/CURRENT", sessionId: "synthetic-native" }, [
+    const snapshot = normalizedSnapshot({ client: "pi", path: "/synthetic/cache/CURRENT", sessionId: "synthetic-native" }, [
       normalizedRecord({ key: "u", kind: "user", text: "合成需求", turnKey: "u", occurredAt: "2026-10-04T23:59:00.000Z" }, "{}", 1),
       normalizedRecord({ key: "a", kind: "assistant", text: "合成回复", turnKey: "u", allowInferredFinal: false,
         occurredAt: "2026-10-04T23:59:01.000Z", finishedAt: "2026-10-05T00:00:30.000Z", durationMs: 89_000 }, "{}", 2),

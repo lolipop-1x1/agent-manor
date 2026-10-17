@@ -1,4 +1,5 @@
 import type { UsageMetric, UsageQuery, UsageTimeBucket, UsageTotals } from "../../../src/usage-contracts";
+import { isSupportedClient } from "../../../src/clients";
 
 export type DateWindow = "today" | "yesterday" | "7" | "14" | "30" | "90" | "all" | "custom";
 export interface UsageRoute extends UsageQuery { window: DateWindow; selectedSession?: string; requestPage?: number; chart: "bar" | "line"; attribution: "treemap" | "bar"; timeFrom?: string; timeTo?: string; trendMetric?: "speed" }
@@ -22,6 +23,7 @@ export function readUsageRoute(hash: string): UsageRoute {
   for (const key of numericKeys) {
     const value = params.get(key); if (value !== null && value.trim() !== "" && Number.isFinite(Number(value)) && Number(value) >= 0) route[key] = Number(value);
   }
+  for (const key of ["clients", "excludeClients"] as const) route[key] = route[key]?.filter(isSupportedClient);
   for (const [key, choices] of Object.entries(enums)) { const value = params.get(key); if (value && (choices as readonly string[]).includes(value)) Object.assign(route, { [key]: value }); }
   route.from = validDay(params.get("from")); route.to = validDay(params.get("to"));
   const timeFrom = params.get("timeFrom"); const timeTo = params.get("timeTo");

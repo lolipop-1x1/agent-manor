@@ -4,7 +4,7 @@
 
 支持 Codex、Claude Code、CodeFlicker CLI／桌面版、DeepSeek Harness、Pi、WorkBuddy、OpenCode、ZCode、CodeBuddy、Qoder，以及 Gemini CLI、Qwen Code、新版 Kimi Code CLI、Oh My Pi、Grok Build、Reasonix、Codewhale。各来源按实际留存记录展示消息、工具与用量；缺失数据明确标注，格式边界见 [历史支持矩阵](docs/design/history-support.md)。新增七个客户端按固定源码版本及合成来源验收，原生客户端运行仍待验证。
 
-豆包工作使用独立的 `doubao-work` 客户端，接入本机会话缓存、正文与过程阅读、搜索、导出和本地 Skill 盘点。缓存不保证包含全部历史或持续写入新任务；用量、工具成功状态与资源管理按已核验能力开放，详见 [豆包工作来源与支持范围](docs/design/doubao-work-sources.md)。
+豆包工作目前**暂不支持**，已停用数据导入、资源盘点和页面入口。本机缓存只有部分摘要和消息片段，无法稳定还原完整会话与新增任务；调查结论与恢复支持前提见 [豆包工作来源调查](docs/design/doubao-work-sources.md)。
 
 首版提供目录代码地图、文件与行覆盖率、活动和原始证据回查，以及共用一个本地后台的 Web、CLI 和 Agent Skill。精确对应与近似对应分别展示；不能确定的范围保留采集缺口。
 

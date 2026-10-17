@@ -14,10 +14,11 @@ import { SessionStore } from "../src/sessions/store.js";
 import { deriveRoundFacts } from "../src/sessions/round-metrics.js";
 import { startService } from "../src/server.js";
 import { apiRequest } from "../src/service/runtime.js";
-import type { SessionMessage, SessionMessageResult, SessionTurnDirectory, SessionUsage } from "../src/session-contracts.js";
-import { collectDialogue, dialogueMarkdown } from "../web/features/sessions/session-export.js";
-import { cacheBatch, cacheLog, cacheManifest, syntheticCacheEntries, writeDoubaoWorkCache } from "./helpers/doubao-work-store.js";
+import type { SessionMessage, SessionUsage } from "../src/session-contracts.js";
+import { dialogueMarkdown } from "../web/features/sessions/session-export.js";
+import { writeDoubaoWorkCache } from "./helpers/doubao-work-store.js";
 import { isolatedHistoryRoots } from "./helpers/history-roots.js";
+import { importDoubaoResearch } from "./helpers/doubao-work-research.js";
 
 const registry = HISTORY_ADAPTERS as HistoryAdapter[];
 const textBlock = (id: string, text: string, parent = "0") => ({ block_id: id, block_type: 10000, parent_id: parent, content: { text_block: { text } } });
@@ -241,7 +242,7 @@ test("豆包工作上下文窗口逐消息保留快照和零占用，重复投�
   assert.equal(meta.usageReports, undefined);
   assert.ok(!meta.gaps.some(gap => gap.messageDescriptor?.key.endsWith("measurementUnknown")));
   assert.ok(messages.every(value => !value.final && !value.tool && !value.model));
-  assert.equal((await discoverSources(isolatedHistoryRoots({ "doubao-work": directory }))).length, 1);
+  assert.equal((await discoverSources(isolatedHistoryRoots({ "doubao-work": directory }))).length, 0);
   const parsed = await parseSource(launcher, "doubao-work", undefined, DOUBAO_WORK_FORMAT, { location: (await readSession(launcher)).source });
   assert.deepEqual(parsed.events, []);
 }));
@@ -322,14 +323,15 @@ test("豆包工作同会话多投影只选一个来源，账号分区不会因�
   assert.equal(selected.length, 2);
   assert.equal(selected.find(source => source.selector === JSON.stringify(["DoubaoPC_first", full.conversation_id]))?.path, launcher);
   assert.equal(new Set(selected.map(source => source.sourceId)).size, 2);
-  const discovered = await discoverSources(isolatedHistoryRoots({ "doubao-work": directory }));
+  assert.deepEqual(await discoverSources(isolatedHistoryRoots({ "doubao-work": directory })), []);
+  const discovered = selected;
   assert.equal(discovered.length, 2);
   assert.ok(discovered.every(source => source.format === DOUBAO_WORK_FORMAT));
   await writeDoubaoWorkCache(join(directory, "chat.leveldb"), [{ account: "DoubaoPC_first", value: response([conversation([
     message("u", 1, "1", [textBlock("u-text", "Changed request")]),
     message("a", 2, "2", [textBlock("a-text", "Another answer")], { bot_reply_message_id: "u" }),
   ])]) }]);
-  const changed = await discoverSources(isolatedHistoryRoots({ "doubao-work": directory }));
+  const changed = doubaoWorkAdapter.selectSources!((await Promise.all([launcher, chat].map(path => doubaoWorkAdapter.discoverFile!({ path, client: "doubao-work" })))).flat());
   assert.equal(changed.length, 1);
   assert.equal(changed[0]?.path, chat);
   assert.equal(changed[0]?.adapterGap?.kind, "ambiguous");
@@ -347,18 +349,19 @@ test("豆包工作原始证据重新定位并校验哈希，缓存替换、会�
   const snapshot = await doubaoWorkAdapter.readRecords!(source);
   const row = snapshot.records.find(value => value.line === 1)!;
   const reference = { sourceId: source.sourceId!, format: DOUBAO_WORK_FORMAT, path, selector: source.selector, recordLine: 1, hash: normalizedHash(row.raw) };
-  assert.ok((await readHistoryEvidence(reference))?.raw.includes("Initial synthetic text"));
-  assert.equal(await readHistoryEvidence({ ...reference, hash: "different" }), undefined);
+  assert.ok((await doubaoWorkAdapter.readEvidence(reference))?.raw.includes("Initial synthetic text"));
+  assert.equal(await readHistoryEvidence(reference), undefined, "产品回读入口已停用，研究解析器仍可独立核验");
+  assert.equal(await doubaoWorkAdapter.readEvidence({ ...reference, hash: "different" }), undefined);
   const linked = join(directory, "linked-CURRENT"); await symlink(path, linked);
-  assert.equal(await readHistoryEvidence({ ...reference, path: linked }), undefined);
+  assert.equal(await doubaoWorkAdapter.readEvidence({ ...reference, path: linked }), undefined);
   await writeDoubaoWorkCache(origin, [{ account: "DoubaoPC_synthetic", value: response([conversation([
     message("u", 1, "1", [textBlock("text", "Changed synthetic text")]),
   ])]) }]);
-  assert.equal(await readHistoryEvidence(reference), undefined);
+  assert.equal(await doubaoWorkAdapter.readEvidence(reference), undefined);
   await writeDoubaoWorkCache(origin, [{ account: "DoubaoPC_synthetic", value: response([]) }]);
   assert.deepEqual(await doubaoWorkAdapter.discoverFile!({ client: "doubao-work", path }), []);
   await assert.rejects(doubaoWorkAdapter.readRecords!(source), error => (error as NodeJS.ErrnoException).code === "ENOENT");
-  assert.equal(await readHistoryEvidence(reference), undefined);
+  assert.equal(await doubaoWorkAdapter.readEvidence(reference), undefined);
 }));
 
 test("豆包工作损坏聚合响应和重复消息身份报错，不能伪装成缓存清理", async () => temporary(async directory => {
@@ -398,8 +401,7 @@ for (const reply of [undefined, "missing-user", "a-one"]) {
     ])]) }]);
     const store = new SessionStore(join(directory, "index.sqlite"));
     try {
-      const job = store.createJob({ client: "doubao-work", mode: "full" });
-      await refreshSessions(store, job.id, isolatedHistoryRoots({ "doubao-work": directory }));
+      await importDoubaoResearch(store, directory);
       const session = store.list().sessions[0]!;
       for (const mode of ["brief", "full", "trace"] as const) {
         const messages = store.messages(session.id, { mode }).messages;
@@ -428,8 +430,7 @@ test("豆包工作多条未知回复分别保留原生消息分组，同一消�
   ])]) }]);
   const store = new SessionStore(join(directory, "index.sqlite"));
   try {
-    const job = store.createJob({ client: "doubao-work", mode: "full" });
-    await refreshSessions(store, job.id, isolatedHistoryRoots({ "doubao-work": directory }));
+    await importDoubaoResearch(store, directory);
     const session = store.list().sessions[0]!;
     assert.equal(session.turnCount, 2);
     for (const mode of ["brief", "full", "trace"] as const) {
@@ -479,61 +480,17 @@ test("豆包工作多条未知回复分别保留原生消息分组，同一消�
     }
     const service = await startService({ home: directory, roots: isolatedHistoryRoots(), startupRefresh: false });
     try {
-      for (const mode of ["brief", "full", "trace"]) {
-        const route = `/sessions/${session.id}/messages?mode=${mode}&pageUnit=turn&pageSize=1`;
-        const first = await apiRequest<SessionMessageResult>(service.instance, route);
-        const second = await apiRequest<SessionMessageResult>(service.instance, `${route}&turnPosition=2`);
-        assert.equal(first.totalTurns, 2);
-        assert.deepEqual(first.turns?.map(turn => turn.position), [0, 0, 1]);
-        assert.deepEqual(second.turns?.map(turn => turn.position), [2]);
-        assert.equal(new Set([...first.messages, ...second.messages].map(message => message.id)).size, mode === "brief" ? 4 : 6);
-        const directory = await apiRequest<SessionTurnDirectory>(service.instance, `/sessions/${session.id}/turns?mode=${mode}&pageSize=1&page=2`);
-        assert.equal(directory.total, 2);
-        assert.deepEqual(directory.turns.map(turn => [turn.position, turn.question]), [[2, "Second request"]]);
-        const target = await apiRequest<SessionMessageResult>(service.instance, `${route}&turnPosition=2&messageLimit=1&messageId=${byText("Second unlinked reply").id}`);
-        assert.equal(target.page, 1);
-        assert.equal(target.messages[0]?.text, "Second unlinked reply");
-      }
-      const dialogue = await collectDialogue(page => apiRequest(service.instance,
-        `/sessions/${session.id}/messages?mode=brief&pageSize=1&page=${page}`), store.status().version!);
-      for (const language of ["en", "zh-CN"] as const) {
-        const markdown = dialogueMarkdown(dialogue, language);
-        assert.ok(markdown.includes("First unlinked reply"));
-        assert.ok(markdown.includes("Second unlinked reply"));
-      }
+      await assert.rejects(apiRequest(service.instance, `/sessions/${session.id}/messages?mode=full`),
+        (error: unknown) => (error as { code?: string }).code === "SOURCE_NOT_FOUND");
     } finally { await service.close(); }
   } finally { store.close(); }
 }));
 
-test("豆包工作活动 previous log 缺失导致刷新失败，保留已发布会话、搜索与版本", async () => temporary(async directory => {
+test("豆包工作停用后不发现或读取缺失 manifest 的缓存", async () => temporary(async directory => {
   const origin = join(directory, "launcher.leveldb");
-  const initial = [{ account: "DoubaoPC_synthetic", value: response([conversation([
-    message("u", 1, "1", [textBlock("text", "synthetic searchable previous log")]),
-  ])]) }];
-  await writeDoubaoWorkCache(origin, initial);
-  const { entries } = syntheticCacheEntries(initial);
-  await writeFile(join(origin, "000003.log"), cacheLog([cacheBatch(entries.slice(2), 10)]));
-  await writeFile(join(origin, "000004.log"), cacheLog([cacheBatch(entries.slice(0, 2), 20)]));
-  await writeFile(join(origin, "MANIFEST-000001"), cacheManifest(undefined, 4, 3));
-  const store = new SessionStore(join(directory, "index.sqlite"));
-  const refresh = async () => {
-    const job = store.createJob({ client: "doubao-work", mode: "quick" });
-    await refreshSessions(store, job.id, isolatedHistoryRoots({ "doubao-work": directory }));
-    return store.getJob(job.id);
-  };
-  try {
-    assert.equal((await refresh()).status, "complete");
-    assert.equal(store.list().total, 1);
-    assert.equal(store.search({ q: "searchable" }).hits.length, 1);
-    const version = store.status().version;
-    await unlink(join(origin, "000003.log"));
-    await assert.rejects(refresh(), /active log is missing/);
-    assert.equal(store.status().job?.status, "failed");
-    assert.equal(store.status().version, version);
-    assert.equal(store.status().stale, true);
-    assert.equal(store.list().total, 1);
-    assert.equal(store.search({ q: "searchable" }).hits.length, 1);
-  } finally { store.close(); }
+  await writeDoubaoWorkCache(origin, [{ account: "DoubaoPC_synthetic", value: response([]) }]);
+  await unlink(join(origin, "MANIFEST-000001"));
+  assert.deepEqual(await discoverSources(isolatedHistoryRoots({ "doubao-work": directory })), []);
 }));
 
 test("豆包工作工作目录冲突和块父关系缺口可见，产品项目身份不替代本机项目路径", async () => temporary(async directory => {
@@ -550,40 +507,15 @@ test("豆包工作工作目录冲突和块父关系缺口可见，产品项目�
   assert.ok(meta.gaps.some(gap => gap.messageDescriptor?.key.endsWith("blockParent")));
 }));
 
-test("豆包工作刷新失败保留完整版本，只有有效空缓存才移除会话与搜索结果", async () => temporary(async directory => {
-  const origin = join(directory, "launcher.leveldb");
-  const initial = [{ account: "DoubaoPC_synthetic", value: response([conversation([
-    message("u", 1, "1", [textBlock("text", "synthetic searchable cache text")]),
-  ])]) }];
-  await writeDoubaoWorkCache(origin, initial);
+test("豆包工作停用后全局刷新忽略损坏缓存，显式刷新被拒绝", async () => temporary(async directory => {
+  await writeDoubaoWorkCache(join(directory, "launcher.leveldb"), [{ account: "DoubaoPC_synthetic", value: { unsupported_response: true } }]);
   const store = new SessionStore(join(directory, "index.sqlite"));
-  const roots = isolatedHistoryRoots({ "doubao-work": directory });
-  const refresh = async () => {
-    const job = store.createJob({ client: "doubao-work", mode: "quick" });
-    await refreshSessions(store, job.id, roots);
-    return store.getJob(job.id);
-  };
   try {
-    assert.equal((await refresh()).status, "complete");
-    assert.equal(store.list().total, 1);
-    assert.equal(store.search({ q: "searchable" }).hits.length, 1);
-    const repeated = await refresh();
-    assert.equal(repeated.status, "complete");
-    assert.equal(repeated.counts?.verifiedReused, 1);
-    const version = store.status().version;
-    await writeDoubaoWorkCache(origin, [{ account: "DoubaoPC_synthetic", value: { unsupported_response: true } }]);
-    await assert.rejects(refresh(), /缓存结构/);
-    assert.equal(store.status().job?.status, "failed");
-    assert.equal(store.status().version, version);
-    assert.equal(store.status().stale, true);
-    assert.equal(store.list().total, 1);
-    assert.equal(store.search({ q: "searchable" }).hits.length, 1);
-    await writeDoubaoWorkCache(origin, [{ account: "DoubaoPC_synthetic", value: response([]) }]);
-    const removed = await refresh();
-    assert.equal(removed.status, "complete");
-    assert.equal(removed.counts?.missing, 1);
+    assert.throws(() => store.createJob({ client: "doubao-work" }), /未知客户端/);
+    const job = store.createJob();
+    await refreshSessions(store, job.id, isolatedHistoryRoots({ "doubao-work": directory }));
+    assert.equal(store.getJob(job.id).status, "complete");
     assert.equal(store.list().total, 0);
-    assert.equal(store.search({ q: "searchable" }).hits.length, 0);
     assert.equal(store.status().stale, false);
   } finally { store.close(); }
 }));

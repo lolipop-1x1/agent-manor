@@ -1,12 +1,13 @@
 import { join } from "node:path";
 import type { NativePlannerOptions } from "./native-inventory.js";
 
+export const doubaoWorkManagedSkillRoots = (userHome: string): string[] => [".skills", ".user_skills"]
+  .map(name => join(userHome, "Library", "Application Support", "DoubaoWork", "Default", ".doubaowork", "agent_mode", "workspace", name));
+
 /** 仅登记已核验的本机入口；下载同步目录不能当作普通可管理 Skill。 */
 export async function planDoubaoWorkInventory({ userHome, projects, add }: NativePlannerOptions): Promise<void> {
   const profile = join(userHome, "Library", "Application Support", "DoubaoWork", "Default");
-  const workspace = join(profile, ".doubaowork", "agent_mode", "workspace");
-  for (const name of [".skills", ".user_skills"]) {
-    const path = join(workspace, name);
+  for (const path of doubaoWorkManagedSkillRoots(userHome)) {
     // 原生安装器会替换目录，USER watcher 还会上传和同步删除，始终保护。
     add("doubao-work", "skill", path, "skill-directory", { origin: "managed", skillDepth: 1, skillContainmentRoot: path });
   }

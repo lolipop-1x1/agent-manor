@@ -4,7 +4,7 @@ import { randomUUID } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import type { Gap, HistoryEvent } from "../contracts.js";
-import { clientIds } from "../clients.js";
+import { clientIds, inactiveClientIds, isSupportedClient } from "../clients.js";
 import type { Client } from "../clients.js";
 import type { SourceLocation } from "../history/types.js";
 import type { ResourceEventStream, ResourceHistoryIdentity, ResourceUsageIdentity, ResourceUsageEvent, ResourceUsageQuery, ResourceKind } from "../resource-contracts.js";
@@ -168,6 +168,7 @@ export class SessionStore {
         ? "session_messages INDEXED BY session_message_overview_projection_v2" : "session_messages";
       this.replyMessageTable = !this.currentVersion() || this.database.prepare("SELECT 1 FROM sqlite_master WHERE type='index' AND name='session_message_reply_boundary'").get()
         ? "session_messages INDEXED BY session_message_reply_boundary" : "session_messages";
+      if (!options.readonly) this.excludeInactiveClients();
     } catch (error) { this.database.close(); throw error; }
   }
 
@@ -216,6 +217,44 @@ export class SessionStore {
     this.database.prepare("UPDATE session_state SET json=? WHERE id=1").run(JSON.stringify(state));
   }
 
+  /** 停用客户端只调整派生版本成员；新版本使旧统计缓存失效，不读取或删除原生历史。 */
+  private excludeInactiveClients(): void {
+    const inactive = JSON.stringify(inactiveClientIds);
+    const state = this.state();
+    const keepGap = (gap: Gap) => !inactiveClientIds.some(client => gap.sourceId?.startsWith(`${client}:`));
+    const gaps = (state.gaps ?? []).filter(keepGap);
+    const clientChecks = state.clientChecks?.filter(check => isSupportedClient(check.client));
+    const affected = this.database.prepare(`SELECT 1 FROM session_version_sources v JOIN session_revisions r ON r.id=v.revision
+      WHERE r.client IN (SELECT value FROM json_each(?)) LIMIT 1`).get(inactive);
+    if (!affected || !state.version) {
+      if (gaps.length !== (state.gaps ?? []).length || clientChecks?.length !== state.clientChecks?.length) this.saveState({ ...state, gaps, clientChecks });
+      return;
+    }
+    this.database.transaction(() => {
+      const version = randomUUID(), createdAt = new Date().toISOString();
+      const previous = this.database.prepare("SELECT gaps FROM session_versions WHERE id=?").get(state.version) as { gaps: string };
+      const publishedGaps = (JSON.parse(previous.gaps) as Gap[]).filter(keepGap);
+      this.database.prepare("INSERT INTO session_versions(id,created_at,gaps) VALUES(?,?,?)").run(version, createdAt, JSON.stringify(publishedGaps));
+      this.database.prepare(`INSERT INTO session_version_sources(version,path,revision)
+        SELECT ?,v.path,v.revision FROM session_version_sources v JOIN session_revisions r ON r.id=v.revision
+        WHERE v.version=? AND COALESCE(r.client,'') NOT IN (SELECT value FROM json_each(?))`).run(version, state.version, inactive);
+      this.database.prepare(`INSERT INTO session_version_sessions(version,session_id,revision)
+        SELECT ?,v.session_id,v.revision FROM session_version_sessions v JOIN session_revisions r ON r.id=v.revision
+        WHERE v.version=? AND COALESCE(r.client,'') NOT IN (SELECT value FROM json_each(?))`).run(version, state.version, inactive);
+      this.database.prepare(`INSERT INTO session_version_relations(version,child,parent)
+        SELECT ?,r.child,r.parent FROM session_version_relations r
+        JOIN session_version_sessions c ON c.version=? AND c.session_id=r.child
+        JOIN session_version_sessions p ON p.version=c.version AND p.session_id=r.parent WHERE r.version=?`).run(version, version, state.version);
+      const inputs = this.database.prepare("SELECT gaps FROM session_version_publication_inputs WHERE version=?").get(state.version) as { gaps: string } | undefined;
+      if (inputs) this.database.prepare("INSERT INTO session_version_publication_inputs(version,gaps) VALUES(?,?)")
+        .run(version, JSON.stringify((JSON.parse(inputs.gaps) as Gap[]).filter(keepGap)));
+      this.database.prepare("DELETE FROM session_versions WHERE id<>?").run(version);
+      this.database.prepare(`DELETE FROM session_import_checkpoints WHERE revision IN
+        (SELECT id FROM session_revisions WHERE client IN (SELECT value FROM json_each(?)))`).run(inactive);
+      this.saveState({ ...state, version, previousVersion: undefined, createdAt, gaps: publishedGaps, clientChecks });
+    })();
+  }
+
   currentVersion(): string | undefined {
     return (this.database.prepare("SELECT json_extract(json,'$.version') AS version FROM session_state WHERE id=1").get() as { version: string | null }).version ?? undefined;
   }
@@ -235,7 +274,9 @@ export class SessionStore {
   }
 
   private indexStatus(state: Partial<SessionIndexStatus>): SessionIndexStatus {
-    const latestJob = this.database.prepare("SELECT json FROM session_jobs ORDER BY created_at DESC,rowid DESC LIMIT 1").get() as JsonRow | undefined;
+    const latestJob = this.database.prepare(`SELECT json FROM session_jobs
+      WHERE json_extract(json,'$.client') IS NULL OR json_extract(json,'$.client') NOT IN (SELECT value FROM json_each(?))
+      ORDER BY created_at DESC,rowid DESC LIMIT 1`).get(JSON.stringify(inactiveClientIds)) as JsonRow | undefined;
     const result: SessionIndexStatus = { ...state, stale: state.stale ?? false, sessionCount: 0, sourceCount: 0, gaps: state.gaps ?? [], projects: [], clients: [] };
     if (state.version && this.statusMetadata?.version === state.version) {
       result.sessionCount = this.statusMetadata.sessionCount;
@@ -257,6 +298,7 @@ export class SessionStore {
   }
 
   createJob(options: SessionRefreshOptions = {}): SessionJob {
+    if (options.client && !isSupportedClient(options.client)) throw new StoreError("INVALID_INPUT", "未知客户端", { key: "diagnostics.service.sessionInput.m002" });
     const job: SessionJob = { id: randomUUID(), status: "queued", phase: "queued", phaseDescriptor: { key: "diagnostics.sessions.store.m001" }, progress: 0, createdAt: new Date().toISOString(),
       client: options.client, mode: options.mode ?? "quick" };
     this.database.prepare("INSERT INTO session_jobs(id,created_at,json) VALUES(?,?,?)").run(job.id, job.createdAt, JSON.stringify(job));

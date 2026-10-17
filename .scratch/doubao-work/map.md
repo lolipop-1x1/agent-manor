@@ -1,7 +1,7 @@
 # 豆包工作接入设计树
 
 Type: task
-Status: claimed
+Status: resolved
 
 ## 已作决策
 
@@ -12,6 +12,8 @@ Status: claimed
 5. 领域术语：会话缓存属于来源副本，本地缺失不等于远端删除；已记录到 CONTEXT.md。
 
 ## 当前前沿
+
+[15 暂停豆包工作导入与产品入口](issues/15-disable-integration.md) 已完成。用户决定先屏蔽，本机来源不足以稳定还原新增任务与完整历史；当前状态为暂不支持。历史、资源、CLI／API 及页面统一停用，旧会话索引发布排除豆包的新完整版本，代码地图旧跟踪缓存也不会恢复导入。原生数据与恢复材料保留；类型、构建、全量 1378 项、专项 24 项及正式 Chrome 6 项通过，真实原端口和其他客户端成员一致性已核对。以下接入结果均为停用前历史记录，不作为当前能力声明。
 
 [14 正文来源差异调查](issues/14-body-source-investigation.md) 的只读调查已完成；新增任务正文兼容仍未解决。已确认会话页历史通过远端 HTTPS 加载，当前本机摘要、任务恢复状态和补查缓存未提供目标完整正文。不能将原生界面可见回复等同于已接入完整历史，也不能将空摘要解释为原生无消息。继续维持仅本机来源边界。
 
@@ -45,6 +47,7 @@ Status: claimed
 - [12 从执行轨迹估算模型步骤](issues/12-trace-step-estimate.md)：resolved；依赖 11。
 - [13 展示豆包原生模型选择记录](issues/13-model-records.md)：resolved；依赖 12。
 - [14 正文来源差异调查](issues/14-body-source-investigation.md)：resolved（仅调查完成，正文缺口未修复）；依赖 13。
+- [15 暂停导入与产品入口](issues/15-disable-integration.md)：resolved；依赖 14。
 - [原生验收记录](validation.md)：真实缓存产品验证与合成 Chrome 7 项验收完成；缓存更新缺口仍保留。
 
 ## 本机证据边界

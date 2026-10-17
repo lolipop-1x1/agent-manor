@@ -2,6 +2,7 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react
 import * as Tooltip from "@radix-ui/react-tooltip";
 import { GithubLogo } from "@phosphor-icons/react";
 import type { SessionSummary } from "../../src/session-contracts";
+import { inactiveClientIds } from "../../src/clients";
 import { errorMessage } from "../shared/api";
 import { useCodeMapPage } from "../features/code-map/CodeMapPage";
 import { useHistoryRefresh } from "../shared/refresh/useHistoryRefresh";
@@ -54,6 +55,13 @@ export function App() {
       if (!location.hash.startsWith("#sessions")) return;
       const params = new URLSearchParams(location.hash.split("?")[1]);
       const sessionId = params.get("id");
+      if (sessionId && inactiveClientIds.some(client => sessionId.startsWith(`${client}:`))) {
+        for (const name of ["id", "message", "version", "mode", "page", "turn", "branch"]) params.delete(name);
+        if (inactiveClientIds.some(client => params.get("client") === client)) params.delete("client");
+        setSessionTarget(undefined);
+        location.hash = params.size ? `#sessions?${params}` : "#sessions";
+        return;
+      }
       const mode = params.get("mode");
       const positive = (name: string) => { const value = Number(params.get(name)); return Number.isSafeInteger(value) && value > 0 ? value : undefined; };
       if (sessionId) { const next = { sessionId, messageId: params.get("message") ?? undefined, version: params.get("version") ?? undefined,

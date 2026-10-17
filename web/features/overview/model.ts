@@ -1,5 +1,6 @@
 import { usageDimensionKey, usageDimensionValue } from "../../../src/usage/dimensions";
 import { localDay, validDay } from "../usage/model";
+import { isSupportedClient } from "../../../src/clients";
 
 export type OverviewWindow = "365" | "7" | "30" | "90" | "year" | "all" | "custom";
 export interface OverviewRoute {
@@ -21,6 +22,7 @@ export function readOverviewRoute(hash: string): OverviewRoute {
   }
   const choices = { activity: ["sessions", "requests", "tokens", "tools"], metric: ["tokens", "cost", "requests"], interval: ["day", "week", "month"], distribution: ["project", "client", "model", "tool"], combinationUnit: ["session", "turn"] };
   for (const [key, values] of Object.entries(choices)) if (values.includes(params.get(key) ?? "")) Object.assign(route, { [key]: params.get(key) });
+  route.clients = route.clients?.filter(isSupportedClient);
   return route;
 }
 export function overviewParameters(value: object): string {

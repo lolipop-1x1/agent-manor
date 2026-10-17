@@ -8,6 +8,7 @@ import { getRepository } from "../analysis/index.js";
 import { INDEX_SCHEMA_VERSION, initializeIndexSchema } from "./schema.js";
 import { PARSER_RULE_VERSION } from "../version.js";
 import type { DiscoverOptions } from "../history/types.js";
+import { inactiveClientIds, isSupportedClient } from "../clients.js";
 
 export class StoreError extends Error {
   constructor(public readonly code: ApiErrorCode, message: string, readonly messageDescriptor?: MessageDescriptor) {
@@ -211,7 +212,14 @@ export class AnalysisStore {
       .get(repositoryId, selected) as JsonRow | undefined;
     if (!row) throw new StoreError("VERSION_NOT_FOUND", "分析结果版本不可用：不存在或已被淘汰", { key: "diagnostics.index.store.m004" });
     const snapshot = this.readPayload<AnalysisSnapshot>(row.json, repositoryId, "snapshot", selected, coverageOnly);
-    snapshot.sources = snapshot.sources.map((source) => this.sourceMetadata(source));
+    snapshot.sources = snapshot.sources.filter(source => isSupportedClient(source.client)).map(source => this.sourceMetadata(source));
+    const events = snapshot.events.filter(event => isSupportedClient(event.client));
+    if (events.length !== snapshot.events.length) {
+      const eventIds = new Set(events.map(event => event.id));
+      snapshot.mappings = snapshot.mappings.filter(mapping => eventIds.has(mapping.eventId));
+      snapshot.events = events;
+    }
+    snapshot.gaps = snapshot.gaps.filter(gap => !inactiveClientIds.some(client => gap.sourceId?.startsWith(`${client}:`)));
     snapshot.repository.stale = repository.stale || selected !== repository.version;
     snapshot.baseline.repository = { ...snapshot.repository };
     return snapshot;
@@ -229,7 +237,9 @@ export class AnalysisStore {
       .iterate(repositoryId, selected) as Iterable<JsonRow>) {
       for (const gap of JSON.parse(part.json) as SourcesResponse["gaps"]) gaps.push(gap);
     }
-    return { ...sources, gaps };
+    return { ...sources, sources: sources.sources.filter(source => isSupportedClient(source.client)),
+      unassociated: sources.unassociated.filter(source => isSupportedClient(source.client)),
+      gaps: gaps.filter(gap => !inactiveClientIds.some(client => gap.sourceId?.startsWith(`${client}:`))) };
   }
 
   associateSource(repositoryId: string, sourceId: string): void {
@@ -251,7 +261,8 @@ export class AnalysisStore {
   getParsedSources(repositoryId: string): ParsedSource[] {
     const rows = this.database.prepare("SELECT source_id,path,json FROM source_cache WHERE repository_id=? ORDER BY path")
       .iterate(repositoryId) as Iterable<JsonRow & { source_id: string; path: string }>;
-    return Array.from(rows, (row) => this.readPayload<ParsedSource>(row.json, repositoryId, "parsed", JSON.stringify([row.source_id, row.path])));
+    return Array.from(rows).filter(row => isSupportedClient((JSON.parse(row.json) as { value: ParsedSource }).value.client))
+      .map(row => this.readPayload<ParsedSource>(row.json, repositoryId, "parsed", JSON.stringify([row.source_id, row.path])));
   }
 
   getParsedSourceLocations(repositoryId: string): HistorySource[] {
@@ -259,7 +270,7 @@ export class AnalysisStore {
     return Array.from(rows, row => {
       const decoded = JSON.parse(row.json) as { value: ParsedSource };
       return this.sourceMetadata(decoded.value);
-    });
+    }).filter(source => isSupportedClient(source.client));
   }
 
   getDiscoveryCache(repositoryId: string): NonNullable<DiscoverOptions["cachedSources"]> {
@@ -267,6 +278,7 @@ export class AnalysisStore {
     const cached: NonNullable<DiscoverOptions["cachedSources"]>[number][] = [];
     for (const row of rows) {
       const source = (JSON.parse(row.json) as { value: ParsedSource }).value;
+      if (!isSupportedClient(source.client)) continue;
       const cursor = source.cursor as { ruleVersion?: string; quickStamp?: string } | undefined;
       if (cursor?.ruleVersion === PARSER_RULE_VERSION && cursor.quickStamp) cached.push({ location: this.sourceMetadata(source), stamp: cursor.quickStamp });
     }
@@ -274,6 +286,7 @@ export class AnalysisStore {
   }
 
   getParsedSource(repositoryId: string, sourceId: string, path: string): ParsedSource | undefined {
+    if (inactiveClientIds.some(client => sourceId.startsWith(`${client}:`))) return undefined;
     const row = this.database.prepare("SELECT json FROM source_cache WHERE repository_id=? AND source_id=? AND path=?")
       .get(repositoryId, sourceId, path) as JsonRow | undefined;
     return row ? this.readPayload<ParsedSource>(row.json, repositoryId, "parsed", JSON.stringify([sourceId, path])) : undefined;
@@ -281,7 +294,8 @@ export class AnalysisStore {
 
   getTrackedSources(repositoryId: string): HistorySource[] {
     return (this.database.prepare("SELECT json FROM tracked_sources WHERE repository_id=? ORDER BY source_id")
-      .all(repositoryId) as JsonRow[]).map((row) => JSON.parse(row.json) as HistorySource);
+      .all(repositoryId) as JsonRow[]).map((row) => JSON.parse(row.json) as HistorySource)
+      .filter(source => isSupportedClient(source.client));
   }
 
   getMapping(repositoryId: string, key: string): Mapping | undefined {
@@ -399,7 +413,9 @@ export class AnalysisStore {
             ["events", "gaps", "relationships", "cursor.pending", "cursor.recordEnds", "cursor.relationships", "cursor.seen", "cursor.occurrences"], !reused));
       }
       const trackSource = this.database.prepare("INSERT INTO tracked_sources(repository_id,source_id,json) VALUES(?,?,?) ON CONFLICT(repository_id,source_id) DO UPDATE SET json=excluded.json WHERE json<>excluded.json");
-      for (const source of snapshot.sources) trackSource.run(snapshot.repository.id, source.sourceId, JSON.stringify(this.sourceMetadata(source)));
+      this.database.prepare("DELETE FROM tracked_sources WHERE repository_id=? AND json_extract(json,'$.client') IN (SELECT value FROM json_each(?))")
+        .run(repositoryId, JSON.stringify(inactiveClientIds));
+      for (const source of snapshot.sources.filter(source => isSupportedClient(source.client))) trackSource.run(snapshot.repository.id, source.sourceId, JSON.stringify(this.sourceMetadata(source)));
       const saveMapping = this.database.prepare("INSERT INTO mapping_cache(repository_id,key,json) VALUES(?,?,?) ON CONFLICT(repository_id,key) DO UPDATE SET json=excluded.json WHERE json<>excluded.json");
       for (const entry of input.mappings) saveMapping.run(snapshot.repository.id, entry.key, JSON.stringify(entry.mapping));
       this.database.prepare("UPDATE repositories SET version=?,stale=0 WHERE id=?").run(snapshot.version, snapshot.repository.id);
