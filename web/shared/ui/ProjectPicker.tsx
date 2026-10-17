@@ -8,7 +8,7 @@ import { formatList, useI18n } from "../i18n";
 
 type ProjectPickerProps = {
   options: FilterOption[];
-  label?: string; placeholder?: string; container?: HTMLElement | null; modal?: boolean;
+  label?: string; placeholder?: string; emptyLabel?: string; container?: HTMLElement | null; modal?: boolean;
 } & ({ multiple?: false; value: string; onChange: (value: string) => void }
   | { multiple: true; value: string[]; onChange: (value: string[]) => void });
 
@@ -25,12 +25,12 @@ export function ProjectPicker(props: ProjectPickerProps) {
   const optionsLabel = label ? t("common.picker.options", { label }) : t("common.project.options");
   return <Popover.Root open={open} onOpenChange={next => { if (next && props.multiple) setDraft([...props.value]); setOpen(next); }} modal={modal}>
     <Popover.Trigger className="filter-trigger" aria-label={displayLabel} title={props.multiple ? formatList(selectedOptions.map(option => option.label)) : selected?.description ?? selected?.label}>
-      <span>{props.multiple ? t("common.picker.selected", { label: displayLabel, count: props.value.length }) : selected?.label ?? (label ?? t("common.project.all"))}</span><CaretDown size={14} aria-hidden="true" />
+      <span>{props.multiple ? !props.value.length && props.emptyLabel ? props.emptyLabel : t("common.picker.selected", { label: displayLabel, count: props.value.length }) : selected?.label ?? (label ?? t("common.project.all"))}</span><CaretDown size={14} aria-hidden="true" />
     </Popover.Trigger>
     <Popover.Portal container={container}><Popover.Content className="filter-menu project-picker-menu" align="start" sideOffset={6} collisionPadding={12} aria-label={menuLabel} onEscapeKeyDown={event => event.stopPropagation()}>
       <Command label={searchLabel} defaultValue={props.multiple ? undefined : props.value} loop>
         <div className="project-picker-search"><MagnifyingGlass size={15} aria-hidden="true" />
-          <Command.Input aria-label={searchLabel} placeholder={placeholder ?? t("common.project.searchPlaceholder")} />
+          <Command.Input aria-label={searchLabel} placeholder={placeholder ?? (label ? searchLabel : t("common.project.searchPlaceholder"))} />
         </div>
         <Command.List className="project-picker-options" label={optionsLabel} aria-multiselectable={props.multiple || undefined} style={props.multiple ? { maxHeight: "min(280px, calc(var(--radix-popover-content-available-height) - 96px))" } : undefined}>
           <Command.Empty className="project-picker-empty">{t(label ? "common.picker.empty" : "common.project.empty")}</Command.Empty>

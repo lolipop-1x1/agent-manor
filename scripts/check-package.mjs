@@ -1,7 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { VERSION } from "../dist/version.js";
 
-const requiredFiles = ["dist/cli.js", "dist/server.js", "dist/worker.js", "dist/web/index.html"];
+const requiredFiles = ["dist/cli.js", "dist/server.js", "dist/worker.js", "dist/semantic/worker.js", "dist/web/index.html"];
 for (const path of requiredFiles) {
   if (!existsSync(new URL(`../${path}`, import.meta.url))) {
     throw new Error(`缺少交付入口：${path}`);

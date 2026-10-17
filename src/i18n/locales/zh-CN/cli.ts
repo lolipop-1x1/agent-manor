@@ -33,6 +33,8 @@ export default {
   "cli.executionMode": "regular、quiet 或 all，默认 regular",
   "cli.includeSubagents": "同时列出有明确委派证据的子 Agent 会话",
   "cli.sessionSearch": "搜索全部有效索引，返回消息定位",
+  "cli.semanticSearchMode": "搜索模式：keyword 或 semantic（默认 keyword）",
+  "cli.semanticSearchSort": "语义排序：relevance 或 updated",
   "cli.sessionId": "仅搜索指定会话",
   "cli.searchExecutionMode": "regular、quiet 或 all，默认搜索全部模式",
   "cli.messages": "分页浏览简易、完整或轨迹消息",

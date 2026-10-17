@@ -10,4 +10,4 @@ status: accepted
 
 保留策略不延长原始来源生命周期，仍遵循 [ADR 0005](0005-rebuildable-global-session-index.md)：来源确认消失或内容变化后，对应旧内容的位置映射失效，不以保留向量继续返回过时正文。同一编码结果有其他有效位置引用时可以继续使用，删除一处来源不使其他位置失效；清理窗口外内容时也不能删除仍被窗口内或其他保留位置引用的共享向量。模型和编码空间变化仍遵循 [ADR 0015](0015-optional-semantic-search-model-connections.md)。
 
-范围与生命周期的确认过程见 [设计访谈](../../.scratch/semantic-search/map.md)，内容复用的具体技术方案见 [规格草稿](../../.scratch/semantic-search/spec.md)。本决定为已确认规划，尚未交付功能。
+范围与生命周期的确认过程见 [设计访谈](../../.scratch/semantic-search/map.md)，内容复用的具体技术方案见 [规格草稿](../../.scratch/semantic-search/spec.md)。实现与支持边界见 [语义搜索](../design/semantic-search.md)。

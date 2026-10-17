@@ -173,7 +173,24 @@ export interface SessionSink {
   message(message: SessionMessage): void;
   usage(usage: SessionUsage): void;
 }
+export interface SessionSearchScope {
+  clients: Client[];
+  projects: string[];
+  relationship: "all" | "exclude_children" | "children" | "forks" | "unknown";
+  executionMode: "all" | "exclude_quiet" | "quiet" | "unknown";
+  models: string[];
+  title: string;
+  minMessages?: number;
+  maxMessages?: number;
+  minTurns?: number;
+  maxTurns?: number;
+  from?: string;
+  to?: string;
+  branch: "all" | "current";
+}
+export interface SessionSearchFacets { clients: Client[]; projects: string[]; models: string[] }
 export interface SessionQuery {
+  scope?: SessionSearchScope;
   executionMode?: "regular" | "quiet" | "all";
   /** 仅控制列表；搜索与直接访问始终保留子会话。 */
   includeSubagents?: boolean;

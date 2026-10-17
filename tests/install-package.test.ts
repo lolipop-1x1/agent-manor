@@ -51,7 +51,7 @@ test("npm tarball真实包外安装，原生SQLite与CLI/Worker/Web/Skill无需�
     const [pack] = JSON.parse(packed.stdout.slice(metadataStart)) as { filename: string; files: { path: string }[]; integrity: string; size: number }[];
     assert.ok(pack);
     const paths = new Set(pack.files.map((file) => file.path));
-    for (const file of ["dist/cli.js", "dist/server.js", "dist/worker.js", "dist/clients.js", "dist/history/adapters/codeflicker.js", "dist/web/index.html", "skills/agent-manor/SKILL.md", "docs/usage.md",
+    for (const file of ["dist/cli.js", "dist/server.js", "dist/worker.js", "dist/semantic/worker.js", "dist/clients.js", "dist/history/adapters/codeflicker.js", "dist/web/index.html", "skills/agent-manor/SKILL.md", "docs/usage.md", "docs/design/semantic-search.md", "docs/validation/semantic-search.md",
       "docs/design/native-client-sources.md", ...["gemini", "qwen", "kimi", "omp", "grok", "reasonix", "codewhale"].map(client => `dist/history/adapters/${client}.js`)]) assert.ok(paths.has(file), file);
     assert.ok([...paths].some((path) => path.startsWith("dist/web/assets/") && path.endsWith(".js")));
     assert.ok(![...paths].some((path) => path.startsWith("src/") || path.startsWith("tests/") || path.startsWith(".scratch/")));
@@ -64,9 +64,10 @@ test("npm tarball真实包外安装，原生SQLite与CLI/Worker/Web/Skill无需�
     const packageRoot = join(install, "node_modules/agent-manor");
     cli = join(packageRoot, "dist/cli.js");
     assert.ok((await realpath(cli)).startsWith(install + "/"));
-    const sqlite = JSON.parse((await run(process.execPath, ["--input-type=module", "-e", "import Database from 'better-sqlite3'; const db = new Database(':memory:'); console.log(JSON.stringify({loaded: db.prepare('SELECT 1 AS loaded').get().loaded, sqlite: db.prepare('SELECT sqlite_version() AS version').get().version})); db.close();"], { cwd: install })).stdout) as { loaded: number; sqlite: string };
+    const sqlite = JSON.parse((await run(process.execPath, ["--input-type=module", "-e", "import Database from 'better-sqlite3'; import * as vec from 'sqlite-vec'; const db = new Database(':memory:'); vec.load(db); console.log(JSON.stringify({loaded: db.prepare('SELECT 1 AS loaded').get().loaded, sqlite: db.prepare('SELECT sqlite_version() AS version').get().version, vector: db.prepare(\"SELECT vec_distance_cosine('[1,0]', '[0,1]') AS distance\").get().distance})); db.close();"], { cwd: install })).stdout) as { loaded: number; sqlite: string; vector: number };
     assert.equal(sqlite.loaded, 1);
     assert.match(sqlite.sqlite, /^\d+\.\d+\./);
+    assert.equal(sqlite.vector, 1);
     assert.equal(existsSync(join(install, "node_modules/typescript")), false);
     assert.equal(existsSync(join(install, "node_modules/vite")), false);
     bin = join(install, `node_modules/.bin/agent-manor${process.platform === "win32" ? ".cmd" : ""}`);

@@ -104,6 +104,14 @@ agent-manor --home /absolute/path/to/data --lang auto --help
 
 全局搜索默认覆盖标题及用户／AI 正文，过程内容可额外选入；会话内命中显示在浮层中，清除搜索恢复原阅读位置。点击用量图、请求编号、工具或资源名称可回到证据记录。
 
+搜索方式默认“关键词”，也可主动启用“语义”。点击搜索入口旁的“搜索设置”，在同一对话框配置服务地址、Embedding 模型及可选 Key，测试连接后选择维护范围，预览规模、复用量和预估费用，再开始构建。首次完整构建后方可查询；保存连接不会处理历史。模型服务需由用户提供，本产品不自动下载、安装或启动模型。Key 可以按需显示、复制、替换和清除。
+
+语义模式描述想找的对话，按 Enter 或点击“搜索”提交。后台在查询缓存未命中时调用模型编码查询，然后在本地匹配已有向量。输入文字、切换模式以及改变筛选／排序／分页不会自动调用模型；缓存过期时需重新提交。结果按会话分组，以相关性排序，可切换最近更新，并从原文片段跳转消息。一次最多保留 200 个候选会话，每组最多 3 个片段，候选数不是全历史精确命中数。
+
+维护范围和查询筛选独立。最近天数、项目、客户端、会话关系、Quiet、历史模型、标题、消息／轮次数等均可筛选，默认排除已确认子 Agent 和 Quiet。移出维护范围的有效索引默认保留并可搜索；仅在主动开启“清理时间窗口外的索引”后清理相应派生数据。原始会话不受影响。
+
+构建状态可从搜索旁的状态入口反复打开。暂停后台构建保留检查点，主动语义查询仍可调用模型；关闭网页后服务继续已启动任务。调用策略页配置并发、批次、限流、超时、重试、单价和每日估算预算，并查看本功能用量。未配置单价时费用为未知；预算不是服务商账单上限。“关闭语义搜索”保留索引，“清除语义索引”需要单独确认，保留模型连接。详细边界见 [语义搜索](design/semantic-search.md) 与 [验证记录](validation/semantic-search.md)。
+
 有会话内分支时，“阅读分支”可选择当前分支、全部分支或保存的叶分支。简易默认当前分支，完整／轨迹默认全部；已保存真实对话不会因压缩摘要而消失。切换分支仅改变阅读视野，画像和代码活动仍统计全部实际活动；有原生复制依据的继承前缀排除重复统计。CLI 对应 `--branch current|all|<分支ID>`，消息 API 对应 `branch`。
 
 执行轨迹保留全宽节点表格，选中节点后在下方阅读正文，列表与详情分别滚动。详情默认约占一半可用高度，可拖动分隔线调整，也可聚焦分隔线用上下键调整；比例保存在当前浏览器。“放大详情”使用整个中间工作区，支持切换本页上一／下一节点；“返回轨迹”或 Escape 恢复列表位置与焦点。工具配对节点可切换输入参数／返回结果，单正文不显示重复标签页，正文可切换预览／原始内容。
@@ -120,6 +128,7 @@ agent-manor sessions status --json
 agent-manor sessions list --client codeflicker --page 1 --page-size 50 --json
 agent-manor sessions list --include-subagents --json
 agent-manor sessions search "状态检查" --json
+agent-manor sessions search "如何处理连接超时和重试" --mode semantic --sort relevance --json
 agent-manor sessions search "工具关键词" --kinds user,assistant,tool_call,tool_result --json
 agent-manor sessions messages <sessionId> --mode brief --json
 agent-manor sessions messages <sessionId> --mode trace --message-id <messageId> --json
@@ -139,7 +148,7 @@ API 为 `GET /api/v1/sessions`、`/sessions/search`、`/sessions/:id/messages`�
 
 消息 API 可选择 `pageUnit=turn`，此时默认每页 10 轮，返回 `totalTurns`、当前页的 `turns` 元信息和完整消息；`total` 仍为当前视图消息数。`turnPosition` 为当前视图的一基轮次位置，`messageId` 定位优先于轮次位置。初始上下文 `position=0`，随第一页返回且不计入 `totalTurns`。`toolName` 或 `resourceKind/resourceName/resourceServer` 可以定位首条调用／资源证据，返回 `focusMessageId`；过程记录不属于简易模式，需要完整或轨迹模式。未指定 `pageUnit` 时沿用按消息分页，现有 CLI 查询保持原有行为。
 
-浏览所需正文仅存本机索引，不上传、不调用模型；原始来源消失后新版排除，刷新失败继续显示上一完整版本。记录值、估算值与缺失的含义见 [会话统计口径](design/session-history.md)。
+浏览、统计及关键词搜索只使用本机索引，不调用模型。主动启用语义搜索后，正文构建和未缓存查询会发送到用户配置的模型服务；选择远端服务时相应文本会离开本机。CLI 通过 `sessions search --mode semantic` 复用 Web 配置和索引，支持 `--sort relevance|updated` 及现有项目／客户端／日期等筛选，默认排除已确认子 Agent，可用 `--include-subagents` 纳入。原始来源消失后新版排除，刷新失败继续显示上一完整版本。记录值、估算值与缺失的含义见 [会话统计口径](design/session-history.md)。
 
 ## 代码地图命令
 

@@ -16,6 +16,7 @@ import { summarizeRequestSpeed } from "../session-speed.js";
 import { INDEX_SCHEMA_VERSION, initializeIndexSchema } from "../index/schema.js";
 import { resourceGapRelevant } from "../resources/coverage.js";
 import { sessionTitle, userTitle } from "./title.js";
+import { searchScopeFilter } from "./search-scope.js";
 import { messageResources } from "./resources.js";
 import { localDay } from "../overview/dates.js";
 import { instant } from "../usage/analytics.js";
@@ -620,6 +621,11 @@ export class SessionStore {
   }
 
   private filters(query: SessionQuery): { sql: string; values: SqlValue[] } {
+    if (query.scope) {
+      const relationship = "CASE WHEN EXISTS(SELECT 1 FROM session_version_relations relation WHERE relation.version=v.version AND relation.child=v.session_id) THEN 'child' ELSE COALESCE(json_extract(r.json,'$.relationship'),'') END";
+      const filter = searchScopeFilter(query.scope, relationship);
+      return { sql: filter.clauses.length ? " AND " + filter.clauses.join(" AND ") : "", values: filter.values };
+    }
     const parts: string[] = [];
     const values: SqlValue[] = [];
     for (const [column, value] of [["r.client", query.client], ["r.project", query.project]] as const) {
@@ -631,6 +637,17 @@ export class SessionStore {
     if (query.executionMode === "quiet") parts.push("json_extract(r.json,'$.executionMode')='quiet'");
     if (query.executionMode === "regular") parts.push("COALESCE(json_extract(r.json,'$.executionMode'),'')<>'quiet'");
     return { sql: parts.length ? " AND " + parts.join(" AND ") : "", values };
+  }
+
+  searchFacets(): { clients: Client[]; projects: string[]; models: string[] } {
+    const version = this.currentVersion();
+    if (!version) return { clients: [], projects: [], models: [] };
+    const from = "FROM session_version_sessions v JOIN session_revisions r ON r.id=v.revision";
+    return {
+      clients: (this.database.prepare(`SELECT DISTINCT r.client value ${from} WHERE v.version=? ORDER BY value`).all(version) as { value: Client }[]).map(row => row.value),
+      projects: (this.database.prepare(`SELECT DISTINCT r.project value ${from} WHERE v.version=? AND r.project IS NOT NULL AND r.project<>'' ORDER BY value`).all(version) as { value: string }[]).map(row => row.value),
+      models: (this.database.prepare(`SELECT DISTINCT model.value ${from} JOIN json_each(r.json,'$.models') model WHERE v.version=? AND model.type='text' ORDER BY model.value`).all(version) as { value: string }[]).map(row => row.value),
+    };
   }
 
   /** 客户端候选读取资源事件及状态索引，不解码正文或重新解析历史。 */
@@ -780,14 +797,14 @@ export class SessionStore {
   }
 
   private listCandidates(query: SessionQuery, version: string, sessionId?: string) {
-    const filter = this.filters({ ...query, executionMode: query.executionMode ?? "regular" });
+    const filter = this.filters({ ...query, executionMode: query.executionMode ?? (query.scope ? undefined : "regular") });
     if (sessionId) { filter.sql += " AND v.session_id=?"; filter.values.push(sessionId); }
     // 仅有本地 Hook 的来源保留回查，但默认列表不当作对话展示。
-    if (query.executionMode !== "all") filter.sql += ` AND (r.client<>'codeflicker'
+    if (!query.scope && query.executionMode !== "all") filter.sql += ` AND (r.client<>'codeflicker'
       OR COALESCE(json_extract(r.json,'$.messageCount'),0)=0 OR COALESCE(json_extract(r.json,'$.turnCount'),0)>0
       OR EXISTS (SELECT 1 FROM session_messages m WHERE m.revision=r.id
         AND (m.kind<>'context' OR COALESCE(json_extract(m.json,'$.contextSource'),'')<>'hook')))`;
-    if (!query.includeSubagents) filter.sql += ` AND COALESCE(json_extract(r.json,'$.relationship'),'')<>'child'
+    if (!query.scope && !query.includeSubagents) filter.sql += ` AND COALESCE(json_extract(r.json,'$.relationship'),'')<>'child'
       AND NOT EXISTS (SELECT 1 FROM session_version_relations relation WHERE relation.version=v.version AND relation.child=v.session_id)`;
     if (query.q?.trim()) {
       const kinds = kindsOf(query);
@@ -796,7 +813,7 @@ export class SessionStore {
       const filterKinds = candidate?.table === "session_character_search";
       const candidates = match ? `m.rowid IN (SELECT rowid FROM ${candidate!.table} WHERE ${candidate!.table} MATCH ?${this.searchGuard}${filterKinds ? `
         INTERSECT SELECT message_key FROM session_messages WHERE kind IN (${kinds.map(() => "?").join(",") || "NULL"})${this.searchGuard}` : ""}) AND ` : "";
-      const body = `m.kind IN (${kinds.map(() => "?").join(",") || "NULL"})${candidate?.exact ? "" : " AND m.text LIKE ? ESCAPE '\\'"}`;
+      const body = `m.kind IN (${kinds.map(() => "?").join(",") || "NULL"})${query.scope?.branch === "current" ? " AND COALESCE(json_extract(m.json,'$.currentBranch'),1)=1" : ""}${candidate?.exact ? "" : " AND m.text LIKE ? ESCAPE '\\'"}`;
       const matched = match ? `r.id IN (SELECT m.revision FROM session_messages m WHERE ${candidates}${body})`
         : `EXISTS(SELECT 1 FROM session_messages m WHERE m.revision=r.id AND ${body})`;
       filter.sql += ` AND (r.title LIKE ? ESCAPE '\\' OR ${matched})`;
@@ -1566,7 +1583,7 @@ export class SessionStore {
     const title = `SELECT v.session_id,NULL AS message_id,NULL AS turn_id,'title' AS kind,r.id AS revision,
       COALESCE(r.updated_at,r.started_at,'') AS updated_at,0 AS ordinal ${common} AND r.title LIKE ? ESCAPE '\\'`;
     let scopedFts = false;
-    if (match && (query.client || query.project !== undefined || query.sessionId)) {
+    if (match && (query.client || query.project !== undefined || query.sessionId || query.scope)) {
       const counts = this.database.prepare(`WITH scoped AS (
         SELECT json_extract(r.json,'$.messageCount') AS message_count
         FROM session_version_sessions v JOIN session_revisions r ON r.id=v.revision
@@ -1587,7 +1604,7 @@ export class SessionStore {
         JOIN session_revisions r ON r.id=v.revision JOIN session_messages m ON m.revision=r.id`;
     const messages = `SELECT v.session_id,m.id AS message_id,m.turn_id,m.kind,r.id AS revision,
       COALESCE(r.updated_at,r.started_at,'') AS updated_at,m.ordinal ${messageFrom}
-      WHERE v.version=?${filter.sql}${this.searchGuard}${candidates} AND m.kind IN (${selectedKinds.map(() => "?").join(",") || "NULL"})${candidate?.exact ? "" : " AND m.text LIKE ? ESCAPE '\\'"}`;
+      WHERE v.version=?${filter.sql}${this.searchGuard}${candidates} AND m.kind IN (${selectedKinds.map(() => "?").join(",") || "NULL"})${query.scope?.branch === "current" ? " AND COALESCE(json_extract(m.json,'$.currentBranch'),1)=1" : ""}${candidate?.exact ? "" : " AND m.text LIKE ? ESCAPE '\\'"}`;
     const union = `${title} UNION ALL ${messages}`;
     const needle = (query.q ?? "").trim();
     const values = [version, ...filter.values, pattern, version, ...filter.values, ...(match ? [match, ...(filterKinds ? selectedKinds : [])] : []), ...selectedKinds, ...(candidate?.exact ? [] : [pattern])];

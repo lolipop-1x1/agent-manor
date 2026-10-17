@@ -103,6 +103,7 @@ export function sessionParams(query: Partial<SessionQuery> & {
 }): string {
   const params = new URLSearchParams();
   const values: Record<string, string | number | boolean | readonly string[] | undefined> = {
+    scope: query.scope ? JSON.stringify(query.scope) : undefined,
     client: query.client,
     project: query.project,
     from: query.from,

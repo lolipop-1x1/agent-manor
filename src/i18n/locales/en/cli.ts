@@ -33,6 +33,8 @@ export default {
   "cli.executionMode": "regular, quiet or all; default: regular",
   "cli.includeSubagents": "Include subagent sessions with explicit delegation evidence",
   "cli.sessionSearch": "Search all valid indexes and return message locations",
+  "cli.semanticSearchMode": "Search mode: keyword or semantic (default: keyword)",
+  "cli.semanticSearchSort": "Semantic ordering: relevance or updated",
   "cli.sessionId": "Search only the specified session",
   "cli.searchExecutionMode": "regular, quiet or all; searches all modes by default",
   "cli.messages": "Browse brief, full or trace messages with pagination",

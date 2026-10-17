@@ -35,6 +35,10 @@ import { registerUsageRoutes } from "./service/usage-routes.js";
 import { UsageManager } from "./usage/manager.js";
 import { OverviewManager } from "./overview/manager.js";
 import { registerOverviewRoutes } from "./service/overview-routes.js";
+import { SemanticManager } from "./semantic/manager.js";
+import { registerSemanticRoutes, semanticRequest } from "./service/semantic-routes.js";
+import { defaultSemanticConfig } from "./semantic/config.js";
+import type { SemanticSearchQuery } from "./semantic-contracts.js";
 
 export interface ServiceOptions {
   home?: string;
@@ -75,6 +79,7 @@ export async function startService(options: ServiceOptions = {}) {
   let usageManager: UsageManager | undefined;
   let overviewManager: OverviewManager | undefined;
   let searchManager: SessionSearchManager | undefined;
+  let semanticManager: SemanticManager | undefined;
   const app = Fastify({ logger: false, bodyLimit: 65_536, forceCloseConnections: true });
   const instance: ServiceInstance = { id: randomUUID(), pid: process.pid, host: "127.0.0.1", port: requestedPort, startedAt: new Date().toISOString() };
   try {
@@ -84,7 +89,19 @@ export async function startService(options: ServiceOptions = {}) {
     manager = new WorkerManager(store, { roots: options.roots }, sessions);
     const index = store;
     const library = sessions;
+    const semanticQuery = (raw: Record<string, unknown>): SemanticSearchQuery => {
+      const query = sessionQuery(raw);
+      if (query.version && query.version !== library.currentVersion()) throw new ServiceError("CONTENT_STALE", "Semantic search requires the current history version");
+      const scope = { ...defaultSemanticConfig().scope, timeRange: "all" as const,
+        clients: query.client ? [query.client] : [], projects: query.project ? [query.project === "none" ? "" : query.project] : [],
+        from: query.from, to: query.to, executionMode: query.executionMode === "quiet" ? "quiet" as const : query.executionMode === "all" ? "all" as const : "exclude_quiet" as const,
+        relationship: queryBoolean(raw.includeSubagents, "includeSubagents") ? "all" as const : "exclude_children" as const, ...query.scope };
+      const sort = textValue(raw.sort, "sort");
+      if (sort && sort !== "relevance" && sort !== "updated") throw new ServiceError("INVALID_INPUT", "Unknown semantic sort");
+      return { q: query.q ?? "", scope, page: query.page, pageSize: query.pageSize, sort: sort as SemanticSearchQuery["sort"], sessionId: textValue(raw.sessionId, "sessionId") };
+    };
     searchManager = new SessionSearchManager(library);
+    semanticManager = new SemanticManager(home, library);
     const searches = searchManager;
     const search = async (request: FastifyRequest, reply: FastifyReply, type: SearchOperation, query: SessionQuery & { sessionId?: string }) => {
       const controller = new AbortController();
@@ -104,6 +121,7 @@ export async function startService(options: ServiceOptions = {}) {
     const resources = new ResourceService(library, management, options.resourceInventory ?? { environment: process.env }, () =>
       [...new Set([...index.listRepositories().map(repository => repository.path), ...library.status().projects])], resourceHistory);
     app.addHook("onClose", async () => {
+      await semanticManager?.close();
       await searchManager?.close();
       await resourceHistory?.close();
       await overviewManager?.close();
@@ -126,6 +144,7 @@ export async function startService(options: ServiceOptions = {}) {
     app.setNotFoundHandler((_request, reply) => { reply.code(404).send({ error: { code: "FILE_NOT_FOUND", message: "资源不存在", messageDescriptor: { key: "diagnostics.server.m004" } } }); });
     registerUsageRoutes(app, usageManager, pricing, library);
     registerOverviewRoutes(app, overviewManager);
+    registerSemanticRoutes(app, semanticManager);
     app.addHook("onRequest", async (request) => {
       let host: URL;
       try { host = new URL(`http://${request.headers.host ?? ""}`); } catch { throw new ServiceError("FORBIDDEN", "无效 Host", { key: "diagnostics.server.m005" }); }
@@ -182,17 +201,24 @@ export async function startService(options: ServiceOptions = {}) {
       return { repositoryId: request.params.id };
     });
     app.get<{ Querystring: Query }>("/api/v1/sessions/status", async request => queryBoolean(request.query.summary, "summary") ? library.statusSummary() : library.status());
+    app.get("/api/v1/sessions/facets", async () => library.searchFacets());
     app.get<{ Querystring: Query }>("/api/v1/sessions/gaps", async request => library.indexGaps(textValue(request.query.version, "version")));
     app.get<{ Querystring: Query }>("/api/v1/sessions", async (request, reply) => {
       const query = sessionQuery(request.query);
       return query.q?.trim() ? search(request, reply, "list", query) : library.list(query);
     });
-    app.get<{ Querystring: Query }>("/api/v1/sessions/search/groups", async (request, reply) => search(request, reply, "groups", sessionQuery(request.query)));
+    app.get<{ Querystring: Query }>("/api/v1/sessions/search/groups", async (request, reply) => request.query.mode === "semantic"
+      ? semanticRequest(() => semanticManager!.search(semanticQuery(request.query))) : search(request, reply, "groups", sessionQuery(request.query)));
     app.get<{ Params: { id: string }; Querystring: Query }>("/api/v1/sessions/:id/turns", async request => library.turnDirectory(request.params.id, sessionMessageQuery(request.query)));
     app.get<{ Params: { id: string }; Querystring: Query }>("/api/v1/sessions/:id/matches", async (request, reply) => search(request, reply, "matches", { ...sessionQuery(request.query), sessionId: request.params.id }));
     app.get<{ Querystring: Query }>("/api/v1/sessions/search", async (request, reply) => {
       const query = sessionQuery(request.query);
       if (!query.q) throw new ServiceError("INVALID_INPUT", "搜索需要 q", { key: "diagnostics.server.m014" });
+      if (request.query.mode === "semantic") {
+        const result = await semanticRequest(() => semanticManager!.search(semanticQuery(request.query)));
+        return { ...result, hits: result.groups.flatMap(group => group.hits) };
+      }
+      if (request.query.mode !== undefined && request.query.mode !== "keyword") throw new ServiceError("INVALID_INPUT", "Unknown search mode");
       return search(request, reply, "records", { ...query, sessionId: textValue(request.query.sessionId, "sessionId") });
     });
     app.get<{ Querystring: Query }>("/api/v1/sessions/locate", async request => {

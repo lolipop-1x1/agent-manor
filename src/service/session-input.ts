@@ -2,6 +2,7 @@ import type { MessageKind, SessionMessageQuery, SessionQuery, SessionRefreshOpti
 import { clientIds } from "../clients.js";
 import type { Client } from "../clients.js";
 import { coverageQuery, integer, ServiceError, textValue } from "./input.js";
+import { validateSearchScope } from "../sessions/search-scope.js";
 
 export function sessionRefreshOptions(body: unknown): SessionRefreshOptions {
   if (body === undefined) return {};
@@ -20,6 +21,13 @@ export function sessionQuery(raw: Record<string, unknown>): SessionQuery {
   const { client, from, to, version } = coverageQuery(raw);
   const query: SessionQuery = { client, from, to, version, page: integer(raw.page, "page", 1, 1_000_000),
     pageSize: integer(raw.pageSize, "pageSize", 50, 200) };
+  if (raw.scope !== undefined) {
+    try {
+      const value = raw.scope;
+      if (typeof value !== "string" || !value.trim() || value.length > 65536) throw new Error("scope");
+      query.scope = validateSearchScope(JSON.parse(value));
+    } catch { throw new ServiceError("INVALID_INPUT", "会话搜索范围无效", { key: "sessions.filter.invalidScope" }); }
+  }
   for (const key of ["project", "q"] as const) query[key] = textValue(raw[key], key);
   if (raw.includeSubagents !== undefined) query.includeSubagents = queryBoolean(raw.includeSubagents, "includeSubagents");
   if (raw.executionMode !== undefined) {

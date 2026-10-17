@@ -134,7 +134,7 @@ export function createProgram(language: Language = "en"): Command {
   const sessionQueryString = (command: Command, extra: Record<string, string | undefined> = {}) => {
     const opts = command.optsWithGlobals<Options>();
     const params = new URLSearchParams();
-    for (const key of ["client", "project", "from", "to", "version", "page", "kinds", "q", "mode", "messageId", "sessionId", "executionMode", "branch"]) {
+    for (const key of ["client", "project", "from", "to", "version", "page", "kinds", "q", "mode", "messageId", "sessionId", "executionMode", "branch", "sort"]) {
       if (typeof opts[key] === "string") params.set(key, opts[key] as string);
     }
     if (typeof opts.pageSize === "string") params.set("pageSize", opts.pageSize);
@@ -149,8 +149,12 @@ export function createProgram(language: Language = "en"): Command {
     .action(async (_options: Options, command: Command) => { await request(command, `/sessions${sessionQueryString(command,
       { includeSubagents: command.optsWithGlobals<Options>().includeSubagents ? "true" : undefined })}`); });
   sessionFilters(sessions.command("search <text>").description(t("cli.sessionSearch"))).option("--session-id <id>", t("cli.sessionId"))
+    .option("--mode <mode>", t("cli.semanticSearchMode"))
+    .option("--sort <sort>", t("cli.semanticSearchSort"))
+    .option("--include-subagents", t("cli.includeSubagents"))
     .option("--execution-mode <mode>", t("cli.searchExecutionMode"))
-    .action(async (q: string, _options: Options, command: Command) => { await request(command, `/sessions/search${sessionQueryString(command, { q })}`); });
+    .action(async (q: string, _options: Options, command: Command) => { await request(command, `/sessions/search${sessionQueryString(command,
+      { q, includeSubagents: command.optsWithGlobals<Options>().includeSubagents ? "true" : undefined })}`); });
   sessionFilters(sessions.command("messages <id>").description(t("cli.messages")))
     .option("--branch <id>", t("cli.branch"))
     .option("--mode <mode>", t("cli.mode")).option("--message-id <id>", t("cli.messageId"))
