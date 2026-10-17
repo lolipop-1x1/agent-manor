@@ -55,6 +55,8 @@ export interface NormalizedEvent {
 
 export interface NormalizedSessionMetadata {
   title?: string;
+  startedAt?: string;
+  updatedAt?: string;
   titleOrigin?: SessionSourceMeta["titleOrigin"];
   relationship?: "child" | "fork";
   parentSessionId?: string;
@@ -174,6 +176,7 @@ export function parseNormalizedSession(snapshot: NormalizedSnapshot, sink: Sessi
   const meta: SessionSourceMeta = { id, client: source.client, clientSessionId: rawId, path: source.path,
     sourceId: source.sourceId ?? `${source.client}:${normalizedHash(rawId).slice(0, 24)}`,
     title: native.title ?? "未命名会话", titleOrigin: native.title ? native.titleOrigin ?? "recorded" : "fallback",
+    startedAt: native.startedAt, updatedAt: native.updatedAt,
     project: source.cwd && isAbsolute(source.cwd) ? source.cwd : undefined, projectOrigin: source.cwd && isAbsolute(source.cwd) ? "client_metadata" : undefined,
     parentSessionId: native.parentSessionId ? normalizedSessionKey(source.client, native.parentSessionId) : undefined,
     relationship: native.relationship, branches: native.branches, childSessionIds: native.childSessionIds?.map(child => normalizedSessionKey(source.client, child)), usageReports: native.usageReports, contextSnapshots: native.contextSnapshots,

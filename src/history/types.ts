@@ -20,7 +20,7 @@ export interface SourceLocation {
   /** 仅在本次发现中绑定已读取的元信息；不参与持久元信息指纹。 */
   discoveryQuickStamp?: string;
   /** 仅供来源选择器比较副本完整度；解析完成后不写入历史元数据。 */
-  sourceCompleteness?: { version?: number; supported: boolean; complete: boolean; fingerprint: string };
+  sourceCompleteness?: { version?: number; nativeVersion?: string; supported: boolean; complete: boolean; fingerprint: string };
   adapterGap?: Gap;
 }
 

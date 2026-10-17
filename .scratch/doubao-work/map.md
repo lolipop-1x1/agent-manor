@@ -13,6 +13,8 @@ Status: resolved
 
 ## 当前前沿
 
+[13 展示豆包原生模型选择记录](issues/13-model-records.md) 已完成。原生 Auto 进入共享模型记录，五类会话列表快照补充摘要、项目和时间；仅摘要不补造正文或回复模型。独立暂存副本类型／构建、相关 70 项、Chrome 12 项及包外安装补验通过，真实原端口 API／页面已显示模型图表，范围外客户端会话数不变。
+
 [12 从执行轨迹估算模型步骤](issues/12-trace-step-estimate.md) 已完成。所有客户端采用原生请求优先、缺请求时按连续模型输出段估算，画像与七天复盘共用算法，独立标记估算来源。相关 492 项、Chrome 32 项、真实豆包与 Codex 回读、独立提交副本验证及两轴审查通过。
 
 [11 跨客户端统一用量画像](issues/11-unified-usage.md) 已完成。所有来源共用 Token 用量摘要和前六格，缺失保持未知；Codex 原生同事件占用与容量接入共享快照，保留请求计量和上下文占用各自口径。396 个 Codex 来源已升级，真实 API／浏览器、全量 1345 项、最终 UI 17 项、正式 Chrome 11 项及中英文请求／费用场景通过，独立两轴审查已复核。实现提交 `e61f6ca` 已推送 main 并回读一致，并行的其他工作区改动原样保留。
@@ -39,6 +41,7 @@ Status: resolved
 - [10 原生操作记录](issues/10-process-cards.md)：resolved；依赖 09。
 - [11 跨客户端统一用量画像](issues/11-unified-usage.md)：resolved；依赖 10。
 - [12 从执行轨迹估算模型步骤](issues/12-trace-step-estimate.md)：resolved；依赖 11。
+- [13 展示豆包原生模型选择记录](issues/13-model-records.md)：resolved；依赖 12。
 - [原生验收记录](validation.md)：真实缓存产品验证与合成 Chrome 7 项验收完成；缓存更新缺口仍保留。
 
 ## 本机证据边界

@@ -167,7 +167,7 @@ test("豆包缓存支持跨 32KB 日志分片，不截断大消息", async () =>
   });
 });
 
-test("豆包缓存只解码 conversations，不解码其他 store 的载荷", async () => {
+test("豆包缓存不解码会话范围外 store 的载荷", async () => {
   await fixture(async (directory, current) => {
     const { entries } = syntheticCacheEntries([record]);
     entries.push({ key: Buffer.from([0, 1, 2, 1, 3, 0, 0, 0, 0, 0, 0, 0, 0]), value: Buffer.from("unrelated secret store is not decoded") });

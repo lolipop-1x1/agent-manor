@@ -18,7 +18,7 @@ const VALUE_COUNT_LIMIT = 10_000;
 interface FileStamp { name: string; stamp: string; size: number }
 interface CacheSnapshot { files: Map<string, Buffer>; fingerprint: string }
 export interface DoubaoWorkCache {
-  records: { account: string; value: Record<string, unknown> }[];
+  records: { account: string; store?: "conversationListDataSnapshots"; value: Record<string, unknown> }[];
   fingerprint: string;
 }
 
@@ -254,14 +254,16 @@ async function readCache(currentPath: string): Promise<DoubaoWorkCache> {
       if (name.startsWith("DoubaoPC_")) accounts.set(integer(entry.value), name);
     }
   }
-  const stores = new Set<string>();
+  const stores = new Map<string, "conversations" | "conversationListDataSnapshots">();
   for (const { entry, prefix } of entries) {
     if (!accounts.has(prefix.database) || prefix.store || prefix.index || prefix.tail[0] !== 50) continue;
     const input = new CacheCursor(prefix.tail.subarray(1));
     const store = input.uint();
-    if (input.byte() === 0 && string(entry.value) === "conversations") stores.add(`${prefix.database}:${store}`);
+    if (input.byte() !== 0) continue;
+    const name = string(entry.value);
+    if (name === "conversations" || name === "conversationListDataSnapshots") stores.set(`${prefix.database}:${store}`, name);
   }
-  if (!accounts.size || [...accounts.keys()].some(database => ![...stores].some(store => store.startsWith(`${database}:`)))) {
+  if (!accounts.size || [...accounts.keys()].some(database => ![...stores.keys()].some(store => store.startsWith(`${database}:`)))) {
     throw cacheFailure("unsupported", "Doubao Work cache has no recognized account conversation store");
   }
   const records: DoubaoWorkCache["records"] = [];
@@ -274,7 +276,9 @@ async function readCache(currentPath: string): Promise<DoubaoWorkCache> {
     const payload = entry.value.subarray(input.offset);
     bytes += payload.length;
     if (records.length >= VALUE_COUNT_LIMIT || bytes > CACHE_BYTE_LIMIT) throw cacheFailure("limit", "Doubao Work conversation cache exceeds its value limit");
-    records.push({ account: accounts.get(prefix.database)!, value: unwrapValue(payload, entry, prefix.database, prefix.store, latest, snapshot.files, budget) });
+    records.push({ account: accounts.get(prefix.database)!,
+      ...(stores.get(`${prefix.database}:${prefix.store}`) === "conversationListDataSnapshots" ? { store: "conversationListDataSnapshots" as const } : {}),
+      value: unwrapValue(payload, entry, prefix.database, prefix.store, latest, snapshot.files, budget) });
   }
   return { records, fingerprint: snapshot.fingerprint };
 }

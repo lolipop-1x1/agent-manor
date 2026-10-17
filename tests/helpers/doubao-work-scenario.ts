@@ -33,6 +33,7 @@ export async function createDoubaoWorkScenario(directory: string, options: { inc
     section_id: "synthetic-shared-section", content_type: 9999, content: "", thinking_content: "", content_block: blocks,
     ext: { finish_time_ms: role === 2 ? String((1792029600 + index + 10) * 1000) : undefined,
       context_window_usage: role === 2 ? JSON.stringify({ system_prompt: 20, messages: 30, skills: 10, tools: 5, total_window_size: 1000 }) : undefined,
+      commerce_model_data_v1: role === 2 ? { items: [{ label: "Model", value: "Auto" }] } : undefined,
       input_skill: { skill_id: "synthetic-selected-only", skill_type: 0 },
       tea_tags_time_cost: { first_packet_cost_time: "8" }, commerce_usage_data_v1: { label: "Display only", value: "1" } }, ...extra,
   });

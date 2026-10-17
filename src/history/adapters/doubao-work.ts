@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { isAbsolute } from "node:path";
 import type { Gap } from "../../contracts.js";
 import { DiagnosticError } from "../../i18n/diagnostics.js";
@@ -5,12 +6,13 @@ import type { SourceLocation } from "../types.js";
 import { object, string } from "../extraction.js";
 import { normalizeHistoryPath } from "./common.js";
 import { readDoubaoWorkCache } from "./doubao-work-store.js";
+import type { DoubaoWorkCache } from "./doubao-work-store.js";
 import type { NormalizedEvent, NormalizedSessionMetadata, NormalizedSnapshot, RawHistoryRecord } from "./normalized.js";
 import { createNormalizedAdapter, normalizedHash, normalizedRecord, normalizedSessionKey, normalizedSnapshot } from "./normalized.js";
 
 export const DOUBAO_WORK_FORMAT = "doubao-work-indexeddb";
-type CacheRecord = { account: string; value: Record<string, unknown> };
-type Conversation = { account: string; value: Record<string, unknown>; selector: string };
+type CacheRecord = DoubaoWorkCache["records"][number];
+type Conversation = { account: string; value: Record<string, unknown>; selector: string; listSnapshot?: boolean; conflicting?: boolean };
 
 const descriptor = (key: string) => ({ key: `diagnostics.history.adapters.doubaoWork.${key}` });
 const invalid = () => new DiagnosticError("豆包工作会话缓存结构不完整或尚未适配，未发布空来源", descriptor("invalidCache"));
@@ -49,21 +51,47 @@ function contextSnapshot(value: unknown, id: string, occurredAt: string | undefi
     systemPromptTokens: components[0]!, messageTokens: components[1]!, skillTokens: components[2]!, toolTokens: components[3]! };
 }
 
-/** 每个值都是聚合响应；未知响应不能当作一份有效的空目录。 */
+function listConversations(record: CacheRecord): unknown[] {
+  const uid = identity(record.value.uid);
+  if (!uid || record.account !== `DoubaoPC_${createHash("md5").update(uid).digest("hex")}`) throw invalid();
+  const data = object(record.value.data);
+  const array = (value: unknown): unknown[] => { if (!Array.isArray(value)) throw invalid(); return value; };
+  switch (record.value.schema) {
+    case "conversation-list-data-device-group-v1": return array(data.devices).flatMap(value => array(object(value).conversations));
+    case "conversation-list-data-project-v4": return array(data.projects).flatMap(value => array(object(value).conversations));
+    case "conversation-list-data-non-device-v1":
+    case "conversation-list-data-non-project-v2":
+    case "conversation-list-data-overall-v2": return array(data.conversations);
+    default: throw invalid();
+  }
+}
+
+/** 只读取已确认的聚合响应与列表快照；未知结构不能当作有效空目录。 */
 function conversations(records: CacheRecord[]): Conversation[] {
   const found = new Map<string, Conversation>();
   for (const record of records) {
     if (!record.account) throw invalid();
+    const listSnapshot = record.store === "conversationListDataSnapshots";
     const body = object(object(record.value.downlink_body).pull_recent_conv_chain_downlink_body);
-    if (!Array.isArray(body.cells)) throw invalid();
-    for (const cellValue of body.cells) {
-      const value = object(object(cellValue).conversation);
+    if (!listSnapshot && !Array.isArray(body.cells)) throw invalid();
+    const values = listSnapshot ? listConversations(record) : (body.cells as unknown[]).map(value => object(value).conversation);
+    for (const item of values) {
+      const raw = object(item);
+      const value = listSnapshot ? { ...raw, conv_extra: decodedObject(raw.extra) } : raw;
       const id = identity(value.conversation_id);
       if (!id || value.messages !== undefined && !Array.isArray(value.messages)) throw invalid();
       const selector = JSON.stringify([record.account, id]);
       const previous = found.get(selector);
-      if (previous && JSON.stringify(previous.value) !== JSON.stringify(value)) throw invalid();
-      found.set(selector, { account: record.account, value, selector });
+      const candidate: Conversation = { account: record.account, value, selector, listSnapshot };
+      if (previous && JSON.stringify(previous.value) !== JSON.stringify(value)) {
+        if (!previous.listSnapshot && !listSnapshot) throw invalid();
+        const count = (conversation: Conversation) => (conversation.value.messages as unknown[] | undefined)?.length ?? 0;
+        const left = count(previous); const right = count(candidate);
+        const newer = (index(value.conv_version) ?? 0n) > (index(previous.value.conv_version) ?? 0n);
+        const preferred = right > left || right === left && newer ? candidate : previous;
+        preferred.conflicting = previous.conflicting || candidate.conflicting || left > 0 && right > 0;
+        found.set(selector, preferred);
+      } else found.set(selector, previous ?? candidate);
     }
   }
   return [...found.values()];
@@ -72,7 +100,10 @@ function conversations(records: CacheRecord[]): Conversation[] {
 function sourceLocation(location: SourceLocation, conversation: Conversation): SourceLocation {
   const { adapterGap: _adapterGap, sourceCompleteness: _sourceCompleteness, ...base } = location;
   return { ...base, format: DOUBAO_WORK_FORMAT, selector: conversation.selector, sessionId: conversation.selector,
-    sourceId: normalizedSessionKey(location.client, conversation.selector) };
+    sourceId: normalizedSessionKey(location.client, conversation.selector),
+    ...(conversation.conflicting ? { adapterGap: { kind: "ambiguous" as const,
+      message: "豆包工作同会话缓存投影不同，选择消息较多的单一来源，未拼接不一致快照",
+      messageDescriptor: descriptor("projectionConflict") } } : {}) };
 }
 
 async function discoverFile(location: SourceLocation): Promise<SourceLocation[]> {
@@ -82,6 +113,7 @@ async function discoverFile(location: SourceLocation): Promise<SourceLocation[]>
     return { ...sourceLocation(location, conversation), sourceCompleteness: {
       // 这里只比较投影中的消息数量，不表示已确认完整的远端历史。
       version: messages?.length ?? 0, supported: true, complete: Boolean(messages?.length),
+      nativeVersion: index(conversation.value.conv_version)?.toString(),
       fingerprint: normalizedHash(JSON.stringify(conversation.value)),
     } };
   });
@@ -95,7 +127,9 @@ function selectSources(locations: SourceLocation[]): SourceLocation[] {
     const previous = selected.get(key);
     if (!previous) { selected.set(key, location); continue; }
     const count = (source: SourceLocation) => source.sourceCompleteness?.version ?? 0;
-    const preferred = count(location) > count(previous) || count(location) === count(previous) && location.path.localeCompare(previous.path) < 0
+    const version = (source: SourceLocation) => index(source.sourceCompleteness?.nativeVersion) ?? 0n;
+    const preferred = count(location) > count(previous) || count(location) === count(previous)
+      && (version(location) > version(previous) || version(location) === version(previous) && location.path.localeCompare(previous.path) < 0)
       ? location : previous;
     const differentMessages = count(previous) > 0 && count(location) > 0
       && previous.sourceCompleteness?.fingerprint !== location.sourceCompleteness?.fingerprint;
@@ -110,6 +144,17 @@ function selectSources(locations: SourceLocation[]): SourceLocation[] {
 
 function addGap(gaps: Gap[], key: string, message: string, kind: Gap["kind"] = "unsupported_format"): void {
   if (!gaps.some(gap => gap.messageDescriptor?.key === descriptor(key).key)) gaps.push({ kind, message, messageDescriptor: descriptor(key) });
+}
+
+function reportedModel(value: unknown): string | undefined {
+  const items = decodedObject(value).items;
+  if (!Array.isArray(items) || items.length !== 1) return undefined;
+  const item = object(items[0]);
+  const label = string(item.label)?.trim();
+  const model = string(item.value)?.trim();
+  if (!label || !model || label.length > 200 || model.length > 200 || /[\u0000-\u001f\u007f]/.test(label + model)
+    || /^[+-]?(?:\d+\.?\d*|\.\d+)$/.test(model)) return undefined;
+  return model;
 }
 
 function messageRecords(conversation: Conversation, meta: NormalizedSessionMetadata): { records: RawHistoryRecord[]; cwd?: string } {
@@ -147,6 +192,7 @@ function messageRecords(conversation: Conversation, meta: NormalizedSessionMetad
     const occurredAt = timestamp(message.create_time);
     const isUser = message.user_type === 1;
     const isAssistant = message.user_type === 2;
+    const model = isAssistant ? reportedModel(ext.commerce_model_data_v1) : undefined;
     const finish = isAssistant ? messageFinish(ext.finish_time_ms, occurredAt) : undefined;
     const reply = identity(message.bot_reply_message_id);
     const target = reply ? byId.get(reply) : undefined;
@@ -189,7 +235,8 @@ function messageRecords(conversation: Conversation, meta: NormalizedSessionMetad
     const emit = (suffix: string, event: Omit<NormalizedEvent, "key">) => records.push(normalizedRecord({
       key: `${item.id}:${suffix}`, occurredAt, turnKey, allowInferredFinal: false,
       nativeOrdinal: item.index !== undefined && item.index <= BigInt(Number.MAX_SAFE_INTEGER) ? Number(item.index) : undefined,
-      nativeIdentityHash: normalizedHash(JSON.stringify([item.id, suffix])), ...event,
+      nativeIdentityHash: normalizedHash(JSON.stringify([item.id, suffix])),
+      ...(["thinking", "assistant"].includes(event.kind) && model ? { model } : {}), ...event,
     }, raw, line));
     for (const block of blocks) {
       const id = identity(block.block_id)!;
@@ -254,6 +301,11 @@ async function readSnapshot(location: SourceLocation): Promise<NormalizedSnapsho
     message: "豆包工作来源为本机会话缓存，未保证完整历史或新增任务持续落盘", messageDescriptor: descriptor("cacheOnly") }] };
   if (location.adapterGap) meta.gaps!.push(location.adapterGap);
   const built = messageRecords(conversation, meta);
+  if (!built.records.length) {
+    meta.startedAt = timestamp(conversation.value.create_time);
+    const updatedAt = timestamp(conversation.value.update_time);
+    meta.updatedAt = updatedAt && (!meta.startedAt || updatedAt >= meta.startedAt) ? updatedAt : meta.startedAt;
+  }
   const source = { ...sourceLocation(location, conversation), cwd: built.cwd };
   return normalizedSnapshot(source, built.records, meta, JSON.stringify(conversation.value));
 }

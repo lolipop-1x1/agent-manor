@@ -57,6 +57,7 @@ try {
   const initialMessages = await api(`/sessions/${encodeURIComponent(session.id)}/messages?mode=full`);
   const profile = await api(`/sessions/${encodeURIComponent(session.id)}/profile`);
   assert.equal(profile.tools.length, 0); assert.equal(profile.usage.requests, 0);
+  assert.deepEqual(profile.models, [{ model: "Auto", count: 5 }]);
   assert.equal(profile.operations.reduce((count, item) => count + item.records, 0), 2);
   const unlinked = fixture.unlinkedReplies.map(text => initialMessages.messages.find(message => message.kind === "assistant" && message.text === text));
   assert.ok(unlinked.every(Boolean)); assert.equal(new Set(unlinked.map(message => message.turnId)).size, 2);
@@ -75,6 +76,12 @@ try {
     expect(await page.locator('.session-message.kind-thinking,.session-message.kind-context').count()===0,'对话模式混入过程');
     expect((await page.locator('.session-message-scroll').innerText()).includes(${quote(fixture.needle)}),'用户正文缺失');
     ${screenshot("sessions-zh-wide.png")}
+  `);
+  await step("Auto 复用共享模型记录组件，计数包含思考与回复", `
+    const models=page.locator('.session-profile-section').filter({has:page.getByRole('heading',{name:${quote(t("sessions.profile.models"))},exact:true})});
+    await models.getByText('Auto',{exact:true}).waitFor();
+    expect(await models.locator('.session-bar-row strong').innerText()===${quote(translate("zh-CN", "sessions.recordCount", {count:5}))},'共享模型记录数不符');
+    ${screenshot("sessions-model-auto.png")}
   `);
   await step("共享调用页保留原生操作并可定位，统一 Token 摘要不混淆请求与占用", `
     expect((await page.locator('.sessions-main-heading').innerText()).includes('synthetic-project'),'会话级工作目录未显示');
@@ -240,6 +247,10 @@ try {
     const client=page.getByRole('combobox',{name:${quote(t("sessions.filter.client", "en"))},exact:true}); await client.click();
     await page.getByRole('option',{name:'Doubao Work',exact:true}).click(); ${idle}
     expect((await page.locator('.sessions-main-heading h1').innerText())===${quote(fixture.title)},'英文切换修改原始标题');
+    await page.getByRole('tab',{name:${quote(t("sessions.profile.overview", "en"))},exact:true}).click();
+    const models=page.locator('.session-profile-section').filter({has:page.getByRole('heading',{name:${quote(t("sessions.profile.models", "en"))},exact:true})});
+    await models.getByText('Auto',{exact:true}).waitFor();
+    expect(await models.locator('.session-bar-row strong').innerText()===${quote(translate("en", "sessions.recordCount", {count:5}))},'英文共享模型记录数不符');
     for(const label of ${quote([t("sessions.mode.brief", "en"), t("sessions.mode.full", "en"), t("sessions.mode.trace", "en")])}) {
       await page.getByRole('group',{name:${quote(t("sessions.reading.mode", "en"))},exact:true}).getByRole('button',{name:label,exact:true}).click(); ${idle}
     }
