@@ -1,7 +1,7 @@
 # 豆包工作接入设计树
 
 Type: task
-Status: claimed
+Status: resolved
 
 ## 已作决策
 
@@ -13,7 +13,7 @@ Status: claimed
 
 ## 当前前沿
 
-[10 原生操作记录](issues/10-process-cards.md) 正在补齐。用户指出右侧视觉差异及中间过程不可辨认；复现发现 18 张原生卡全部展平为普通上下文。按已核验枚举恢复共享操作元数据、轨迹及调用页的独立卡片统计；上下文快照复用既有指标网格。请求、工具成功及费用边界保持独立。
+[10 原生操作记录](issues/10-process-cards.md) 已完成。按已核验枚举恢复 18 张原生卡的共享操作元数据、轨迹及调用页独立分类统计和定位；上下文快照复用既有两列指标网格。生产刷新、真实浏览器、正式 Chrome 11 项及完整回归 1332 项通过，独立两轴审查无未处理发现。实现提交 `ea239a3` 已推送 main 并回读一致；请求、工具成功及费用边界保持独立。
 
 项目及画像缺失补验已完成，见 [09 元数据补齐](issues/09-metadata-coverage.md)。会话级 workspace、原生上下文窗口和消息结束时间已贯通真实生产刷新、API 及浏览器；完整回归 1324 项、最终相关 25 项及正式 Chrome 11 项通过。独立两轴审查无未处理发现，实现提交 `48f875e` 已推送 main 并回读一致。
 
@@ -32,7 +32,7 @@ Status: claimed
 - [07 代码审查与修复](issues/07-review.md)：resolved；依赖 06。
 - [08 提交与推送](issues/08-delivery.md)：resolved；依赖 07。
 - [09 元数据补齐](issues/09-metadata-coverage.md)：resolved；依赖 08。
-- [10 原生操作记录](issues/10-process-cards.md)：claimed；依赖 09。
+- [10 原生操作记录](issues/10-process-cards.md)：resolved；依赖 09。
 - [原生验收记录](validation.md)：真实缓存产品验证与合成 Chrome 7 项验收完成；缓存更新缺口仍保留。
 
 ## 本机证据边界
