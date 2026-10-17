@@ -6,7 +6,7 @@ import type { Client, Gap, GapKind } from "../contracts.js";
 import { historyRelationships, normalizeHistoryPath } from "../history/adapters/common.js";
 import { shellResult, string as recordedString } from "../history/extraction.js";
 import type { SourceLocation } from "../history/types.js";
-import type { MessageKind, SessionMessage, SessionSink, SessionSourceMeta, SessionRequestTiming } from "../session-contracts.js";
+import type { MessageKind, SessionContextSnapshot, SessionMessage, SessionSink, SessionSourceMeta, SessionRequestTiming } from "../session-contracts.js";
 import { object, string, tokens, UsageParser } from "./parser-usage.js";
 import { RequestTimingParser } from "./parser-timing.js";
 import { projectFromToolPaths } from "./parser-project.js";
@@ -132,6 +132,15 @@ export async function parseSessionSource(source: SourceLocation, sink: SessionSi
   let targetsLimited = false;
   let pendingBytes = 0;
   let turnId = `${id}:turn:0`;
+  const contextSnapshots = new Map<string, SessionContextSnapshot>();
+  const recordContext = (value: unknown, capacity: unknown, identity: unknown, occurredAt?: string) => {
+    const usedTokens = tokens(value);
+    if (usedTokens === undefined) return;
+    const capacityTokens = tokens(capacity);
+    const snapshotId = `${id}:context:${digest(JSON.stringify([identity, usedTokens, capacityTokens]))}`;
+    contextSnapshots.set(snapshotId, { id: snapshotId, occurredAt: occurredAt ?? contextSnapshots.get(snapshotId)?.occurredAt, usedTokens,
+      ...(capacityTokens !== undefined && capacityTokens > 0 ? { capacityTokens } : {}) });
+  };
   let currentModel: string | undefined;
   let currentReasoningEffort: string | undefined;
   let currentProvider: string | undefined;
@@ -440,6 +449,7 @@ export async function parseSessionSource(source: SourceLocation, sink: SessionSi
       }
       if (record.type === "token_usage_record") {
         if (!copied) {
+          recordContext(object(payload.usage).context_tokens, undefined, payload.response_id ?? [turnId, payload.usage], occurredAt);
           const usageId = usage.codex(payload.usage, payload.thread_token_usage, string(payload.response_id),
             { turnId, model: currentModel, ...(timing?.codexReasoningSetting() ?? { reasoningEffort: currentReasoningEffort }),
               provider: currentProvider, occurredAt, requestGroup: timing?.codexRequestGroup() });
@@ -462,6 +472,8 @@ export async function parseSessionSource(source: SourceLocation, sink: SessionSi
         if (payload.type === "token_count") {
           const info = object(payload.info);
           if (!copied) {
+            recordContext(object(info.last_token_usage).context_tokens ?? object(info.last_token_usage).total_tokens,
+              info.model_context_window, [turnId, info.last_token_usage, info.total_token_usage], occurredAt);
             const usageId = usage.codex({ ...object(info.last_token_usage), context_tokens: object(info.last_token_usage).context_tokens ?? object(info.last_token_usage).total_tokens },
               info.total_token_usage, undefined, { turnId, model: currentModel,
                 ...(timing?.codexReasoningSetting() ?? { reasoningEffort: currentReasoningEffort }),
@@ -659,6 +671,7 @@ export async function parseSessionSource(source: SourceLocation, sink: SessionSi
   }
   timing?.finish();
   for (const [responseId, snapshot] of codexUsageSnapshots) {
+    recordContext(object(snapshot.value.usage).context_tokens, undefined, responseId, string(snapshot.value.timestamp));
     if (usage.hasCodexResponse(responseId, snapshot.value.usage, snapshot.value.thread_token_usage)) continue;
     currentRecordLine = snapshot.line;
     // 压缩只保存最近请求的快照时恢复明确响应身份；不借用压缩时间或当前模型补齐请求。
@@ -668,6 +681,7 @@ export async function parseSessionSource(source: SourceLocation, sink: SessionSi
       occurredAt: string(snapshot.value.timestamp),
     });
   }
+  if (contextSnapshots.size) meta.contextSnapshots = [...contextSnapshots.values()];
   for (const request of desktopRequests.values()) {
     if (request.usageId && request.timing) usage.timing(request.usageId, request.timing, [...request.messages]);
   }

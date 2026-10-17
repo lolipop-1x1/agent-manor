@@ -60,6 +60,7 @@ test("Codex 自身执行起点之前的明确父历史仍被排除，不能重�
   assert.equal(sample.messages.find(value => value.text === "合成父请求")?.copied, true);
   assert.equal(sample.messages.find(value => value.text === "合成子请求")?.copied, undefined);
   assert.equal(sample.meta.title, "合成子请求");
+  assert.deepEqual(sample.meta.contextSnapshots?.map(snapshot => snapshot.usedTokens), [120], "父历史的上下文快照也必须排除");
 });
 
 test("Codex 真正分叉的父历史边界与身份保持不变", async () => {

@@ -1,7 +1,7 @@
 import { clientLabel, getLanguage, isMessageDescriptorKnown, messageText, t, useI18n } from "../../shared/i18n";
-import { formatDateTime, formatNumber, formatPercent } from "../../../src/i18n";
+import { formatDateTime, formatNumber } from "../../../src/i18n";
 import { useEffect, useId, useMemo, useRef, useState } from "react";
-import { ArrowClockwise, CaretLeft, CaretRight, Crosshair } from "@phosphor-icons/react";
+import { ArrowClockwise, CaretLeft, CaretRight } from "@phosphor-icons/react";
 import type { SessionProfile, SessionSummary, SessionTimelineEvent } from "../../../src/session-contracts";
 import type { SessionCostSummary } from "../../../src/usage-contracts";
 import { sessionDisplayTitle, displayRecorded, sessionResourceName, sessionOperationType, sessionProfileHasCalls, sessionParams, usageAxis, usageIndexAt, usageSegments, type EvidenceTarget } from "./session-model";
@@ -11,17 +11,15 @@ import { HelpPopover } from "../../shared/ui/HelpPopover";
 import { SessionEvidence } from "./SessionEvidence";
 import { summarizeRequestSpeed } from "../../../src/session-speed";
 import { AverageSpeedMetric, RequestSpeedBadge, SpeedAlgorithmHelp, SpeedColumnHeader } from "./SessionSpeed";
-import { usageCoverage } from "./session-usage-coverage";
+import { SessionUsageSummary, sessionHasRequestUsage, sessionUsageCoverage } from "./SessionUsageSummary";
 import { requestLocation } from "./session-speed-model";
 import { NativeUsageReports } from "./NativeUsageReports";
-import { ContextWindowSnapshots } from "./ContextWindowSnapshots";
 import { ChartTooltip } from "../../shared/charts/ChartTooltip";
 import { isAborted, request } from "../../shared/api";
 
 const formatCount = (value: number) => formatNumber(getLanguage(), value);
 const dateLabel = (value?: string) => value ? formatDateTime(getLanguage(), value) : t("sessions.message.timeMissing");
 const shortProject = (value?: string) => value ? value.split(/[\\/]/).filter(Boolean).at(-1) ?? value : t("sessions.noProject");
-const normalizedRatio = (value: number | null) => value === null ? t("common.notRecorded") : formatPercent(getLanguage(), value, { minimumFractionDigits: 1 });
 const usageSeries = [["inputTokens", "sessions.usage.input"], ["cachedInputTokens", "sessions.usage.cachedInput"], ["outputTokens", "sessions.usage.output"]] as const;
 
 function ProfileBar({ label, count, max, unit }: { label: string; count: number; max: number; unit?: "records" | "tokens" }) {
@@ -109,12 +107,6 @@ function UsageChart({ profile, onFocusStep }: { profile: SessionProfile; onFocus
   </div>;
 }
 
-const metrics = [
-  ["inputTokens", "sessions.profile.totalInput"], ["outputTokens", "sessions.profile.outputTokens"],
-  ["cachedInputTokens", "sessions.profile.cachedTokens"], ["cacheWriteTokens", "sessions.profile.cacheWriteTokens"],
-  ["reasoningOutputTokens", "sessions.profile.reasoningTokens"], ["peakInputTokens", "sessions.profile.maxInput"], ["peakContextTokens", "sessions.profile.peakContext"],
-] as const;
-
 export function SessionProfilePane({ active, profile, loading, error, includeChildren, setIncludeChildren, collapsed, setCollapsed, onRetry, onSelectChild, onFocusStep, onFind, onFocusEvent }: {
   active: boolean;
   profile: SessionProfile | null; loading: boolean; error: Error | null; includeChildren: boolean; setIncludeChildren: (value: boolean) => void;
@@ -132,15 +124,12 @@ export function SessionProfilePane({ active, profile, loading, error, includeChi
   const [costState, setCostState] = useState<{ key: string; loading: boolean; value?: SessionCostSummary; error?: Error }>();
   const [costRetry, setCostRetry] = useState(0);
   const hasCalls = sessionProfileHasCalls(profile);
-  const visibleMetrics = profile ? metrics.filter(([key]) => profile.usage[key] !== null) : [];
-  const hasRequestUsage = visibleMetrics.length > 0 || !!profile?.usage.requests;
+  const hasRequestUsage = !!profile && sessionHasRequestUsage(profile);
   const hasUsage = hasRequestUsage || !!profile?.usageReports?.length || !!profile?.contextSnapshots?.length;
   const hasNativeCost = (usageDetails ?? profile)?.steps.some(step => step.nativeReportedCostUsd !== undefined);
   const speedSummary = useMemo(() => profile?.outputSpeed ?? (profile ? summarizeRequestSpeed(profile.steps) : undefined), [profile]);
   const hasSpeed = !!speedSummary?.requests;
   const visibleTab = tab === "calls" && !hasCalls || tab === "usage" && !hasUsage ? "overview" : tab;
-  const primaryMetrics = visibleMetrics.filter(([key]) => key === "inputTokens" || key === "outputTokens");
-  const extraMetrics = visibleMetrics.filter(([key]) => visibleTab === "usage" && !["inputTokens", "outputTokens", "peakInputTokens"].includes(key));
   const requestedScope = includeChildren ? "tree" : "self";
   const costKey = JSON.stringify([profile?.version, profile?.sessionIds[0], requestedScope]);
   useEffect(() => {
@@ -177,15 +166,7 @@ export function SessionProfilePane({ active, profile, loading, error, includeChi
   const roundDuration = rounds?.averageDurationMs;
   const durationUnit = roundDuration != null && roundDuration >= 3_600_000 ? "hour" : roundDuration != null && roundDuration >= 60_000 ? "minute" : "second";
   const durationDivisor = durationUnit === "hour" ? 3_600_000 : durationUnit === "minute" ? 60_000 : 1000;
-  const peak = profile?.peakInputRequest ?? profile?.steps.find(step => step.inputTokens === profile.usage.peakInputTokens && !!step.messageId);
-  const coverage = profile ? usageCoverage(profile.usage, [...primaryMetrics, ...(profile.usage.peakInputTokens !== null ? [metrics[5]] : []), ...extraMetrics]) : [];
-  const metric = ([key, label]: typeof metrics[number]) => {
-    if (!profile) return null;
-    const partial = coverage.some(group => group.labels.includes(label));
-    const name = !partial ? t(label) : key === "peakInputTokens" ? t("sessions.profile.maxRecordedInput") : t("sessions.profile.recordedSubtotal", { label: t(label) });
-    return <div key={key}><strong>{key === "peakInputTokens" && peak ? <button className="session-stat-link session-peak-link" aria-label={t("sessions.evidence.peak", { value: formatCount(profile.usage.peakInputTokens!) })} onClick={() => onFocusStep(peak)}>{displayRecorded(profile.usage[key])}<Crosshair size={13} aria-hidden="true" /></button> : displayRecorded(profile.usage[key])}</strong><span>{name}</span>
-      </div>;
-  };
+  const coverage = profile ? sessionUsageCoverage(profile, visibleTab === "usage") : [];
   return <aside className={`evidence-pane session-profile${collapsed ? " panel-collapsed" : ""}`} aria-label={t("sessions.profile.title")}>
     <div className="pane-heading"><span className="session-pane-label">{t("sessions.profile.title")}<span className="session-pane-progress" role={(loading || usageLoading) && profile ? "status" : undefined} aria-label={(loading || usageLoading) && profile ? t("sessions.profile.loading") : undefined}>{(loading || usageLoading) && profile && <ArrowClockwise size={14} className="is-spinning" aria-hidden="true" />}</span></span><div className="session-profile-heading-actions">
       <div className="session-profile-scope" role="group" aria-label={t("sessions.profile.scope")} hidden={collapsed}>
@@ -227,25 +208,21 @@ export function SessionProfilePane({ active, profile, loading, error, includeChi
         {visibleTab === "overview" && profile.models.length > 0 && <section className="session-profile-section"><div className="session-section-heading"><h3>{t("sessions.profile.models")}</h3><span>{t("sessions.profile.modelCount", { count: profile.models.length })}</span></div>
           {profile.models.map(item => <ProfileBar key={item.model} label={item.model} count={item.count} max={Math.max(...profile.models.map(model => model.count))} unit="records" />)}
         </section>}
-        {visibleTab !== "calls" && hasRequestUsage && <>
-          <section className="session-profile-section"><div className="session-section-heading"><h3>{t("sessions.trace.usageRequest")}</h3><div className="section-actions"><span>{t("sessions.profile.requestCount", { count: profile.usage.requests })}</span><HelpPopover iconOnly label={t("sessions.profile.statsHelp")}>
-            <p>{t("sessions.profile.cacheHelp")}</p><p>{t("sessions.profile.scopeHelp", { scope: profile.scope === "tree" ? t("sessions.profile.selfTree") : t("sessions.profile.currentSelf") })}</p>
+        {visibleTab !== "calls" && hasUsage && <SessionUsageSummary profile={profile} language={language} expanded={visibleTab === "usage"} onFocusStep={onFocusStep}
+          help={<HelpPopover iconOnly label={t("sessions.profile.statsHelp")}>
+            <p>{t("sessions.usage.summaryHelp")}</p><p>{t("sessions.profile.cacheHelp")}</p><p>{t("sessions.profile.scopeHelp", { scope: profile.scope === "tree" ? t("sessions.profile.selfTree") : t("sessions.profile.currentSelf") })}</p>
             <p>{t("sessions.profile.coverageHelp", { input: profile.usage.inputRecordedRequests, requests: profile.usage.requests, cache: profile.usage.cacheRecordedRequests })}</p>
             {coverage.map(group => <p key={group.count}>{t("sessions.profile.fieldCoverage", { fields: group.labels.map(label => t(label)).join(" · "), count: group.count, total: group.total })}</p>)}
             <p>{t("sessions.profile.costHelp")}</p><p>{t("usage.help.cost")}</p>
             {visibleCost && <><p>{t("usage.coverage.cost", { complete: visibleCost.totals.pricedRequests, partial: visibleCost.totals.partiallyPricedRequests, missing: visibleCost.totals.unpricedRequests })}</p><p>{t("usage.coverage.priceBasis", { historical: visibleCost.totals.historicalPricedRequests, snapshot: visibleCost.totals.currentSnapshotPricedRequests, manual: visibleCost.totals.manualPricedRequests })}</p></>}
             <p>{isMessageDescriptorKnown(profile.estimate.methodDescriptor) ? messageText(profile.estimate.methodDescriptor, profile.estimate.method) : profile.estimate.method}</p>
-            {hasNativeCost && <p>{t("sessions.nativeUsage.costHelp")}</p>}<SpeedAlgorithmHelp />
-          </HelpPopover></div></div>
-            <div className="session-usage-grid">{primaryMetrics.map(metric)}<AverageSpeedMetric summary={speedSummary} />
-              {profile.usage.peakInputTokens !== null && metric(["peakInputTokens", "sessions.profile.maxInput"])}{extraMetrics.map(metric)}</div>
-            <div className="session-cost" role="group" aria-label={t(costLabel)} data-price-version={visibleCost?.priceVersion}>
+            {hasNativeCost && <p>{t("sessions.nativeUsage.costHelp")}</p>}{!!profile.contextSnapshots?.length && <p>{t("sessions.contextWindow.helpText")}</p>}<SpeedAlgorithmHelp />
+          </HelpPopover>}
+          speed={<AverageSpeedMetric summary={speedSummary} />}
+          cost={<div className="session-cost" role="group" aria-label={t(costLabel)} data-price-version={visibleCost?.priceVersion}>
               <div className="session-cost-heading"><span>{t(costLabel)}</span>{costLoading ? <span role="status">{t("common.loading")}</span> : <strong><span className="session-cost-value">{visibleCost?.totals.estimatedCost == null ? "—" : number(visibleCost.totals.estimatedCost, { style: "currency", currency: "USD", currencyDisplay: "narrowSymbol", minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span></strong>}</div>
               {costError && <Notice danger action={<button className="text-button" onClick={() => setCostRetry(value => value + 1)}>{t("common.retry")}</button>}><SessionError error={costError} /></Notice>}
-            </div>
-            {profile.usage.cacheReadRatio !== null && <div className="session-cache-ratio"><div className="session-cost-heading"><span>{t(profile.usage.inputRecordedRequests === profile.usage.requests && profile.usage.cacheRecordedRequests === profile.usage.requests ? "sessions.profile.cacheRatio" : "sessions.profile.cacheRatioRecorded")}</span><strong>{normalizedRatio(profile.usage.cacheReadRatio)}</strong></div></div>}
-          </section>
-        </>}
+            </div>} />}
         {visibleTab === "usage" && profile.usage.requests > 0 && <section className="session-profile-section"><div className="session-section-heading"><h3>{t("sessions.profile.trend")}</h3><HelpPopover label={t("sessions.profile.chartHelp")}>
           <p>{t("sessions.profile.chartCoordinatesHelp")}</p><p>{t("sessions.profile.chartLocateHelp")}</p>
         </HelpPopover></div>
@@ -259,8 +236,6 @@ export function SessionProfilePane({ active, profile, loading, error, includeChi
             </tbody></table></div>
             {(visibleUsage.stepsTotal ?? profile.usage.requests) > 12 && <Pager page={stepPage} pageSize={12} total={visibleUsage.stepsTotal ?? profile.usage.requests} onChange={setStepPage} label={t("sessions.profile.requestPagination")} showEnds />}</>}
         </section>}
-        {visibleTab === "usage" && !!profile.contextSnapshots?.length && <ContextWindowSnapshots snapshots={profile.contextSnapshots} rootSessionId={profile.sessionIds[0]!} language={language}
-          help={<HelpPopover iconOnly label={t("sessions.contextWindow.help")}><p>{t("sessions.contextWindow.helpText")}</p></HelpPopover>} />}
         {(visibleTab === "usage" || visibleTab === "overview" && !profile.usage.requests) && !!profile.usageReports?.length && <NativeUsageReports reports={profile.usageReports} />}
         {visibleTab === "calls" && <>
           {!!profile.operations?.length && <section className="session-profile-section" aria-label={t("sessions.operation.title")}><div className="session-section-heading"><h3>{t("sessions.operation.title")}</h3><HelpPopover iconOnly label={t("sessions.operation.help")}><p>{t("sessions.operation.helpText")}</p></HelpPopover></div>

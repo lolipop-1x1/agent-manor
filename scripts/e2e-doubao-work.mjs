@@ -76,7 +76,7 @@ try {
     expect((await page.locator('.session-message-scroll').innerText()).includes(${quote(fixture.needle)}),'用户正文缺失');
     ${screenshot("sessions-zh-wide.png")}
   `);
-  await step("共享调用页保留原生操作并可定位，独立上下文快照不生成请求", `
+  await step("共享调用页保留原生操作并可定位，统一 Token 摘要不混淆请求与占用", `
     expect((await page.locator('.sessions-main-heading').innerText()).includes('synthetic-project'),'会话级工作目录未显示');
     const tabs=page.getByRole('tablist',{name:${quote(t("sessions.profile.categories"))}});
     await tabs.getByRole('tab',{name:${quote(t("sessions.profile.calls"))},exact:true}).click();
@@ -90,11 +90,14 @@ try {
     expect(await page.locator('.trace-mark.kind-operation').count()===2,'原生操作未进入时间线操作轨道');
     ${screenshot("sessions-native-operation.png")}
     await page.getByRole('tab',{name:${quote(t("sessions.profile.usage"))},exact:true}).click();
-    const context=page.getByRole('region',{name:${quote(t("sessions.contextWindow.title"))},exact:true});
+    const context=page.getByRole('region',{name:${quote(t("sessions.usage.summary"))},exact:true});
     await context.waitFor(); expect((await context.innerText()).includes('65'),'上下文占用未显示');
     expect(await context.locator('.session-usage-grid.compact').count()===0,'上下文未复用两列指标网格');
     expect(await page.getByRole('heading',{name:${quote(t("sessions.trace.usageRequest"))},exact:true}).count()===0,'快照误显示零请求');
-    await context.getByRole('button',{name:${quote(t("sessions.contextWindow.help"))},exact:true}).click();
+    expect(await context.getByText(${quote(t("sessions.profile.totalInput"))},{exact:true}).locator('..').locator('strong').innerText()==='—','上下文被补成请求输入');
+    expect(await context.getByText(${quote(t("sessions.profile.outputTokens"))},{exact:true}).locator('..').locator('strong').innerText()==='—','上下文被补成请求输出');
+    expect(await context.locator(':scope > details').count()===1,'快照未收进展开明细');
+    await context.getByRole('button',{name:${quote(t("sessions.profile.statsHelp"))},exact:true}).click();
     await page.getByText(${quote(t("sessions.contextWindow.helpText"))},{exact:true}).waitFor();
     await page.keyboard.press('Escape');
     await page.getByRole('tab',{name:${quote(t("sessions.profile.overview"))},exact:true}).click();
@@ -244,8 +247,10 @@ try {
     const operations=page.getByRole('region',{name:${quote(t("sessions.operation.title", "en"))},exact:true}); await operations.waitFor();
     expect((await operations.innerText()).includes(${quote(t("sessions.operation.resultUnknown", "en"))}),'英文操作状态未保留未知');
     await page.getByRole('tab',{name:${quote(t("sessions.profile.usage", "en"))},exact:true}).click();
-    const context=page.getByRole('region',{name:${quote(t("sessions.contextWindow.title", "en"))},exact:true}); await context.waitFor();
+    const context=page.getByRole('region',{name:${quote(t("sessions.usage.summary", "en"))},exact:true}); await context.waitFor();
     expect((await context.innerText()).includes(${quote(t("sessions.contextWindow.latest", "en"))}),'英文上下文标签缺失');
+    expect(await context.getByText(${quote(t("sessions.profile.totalInput", "en"))},{exact:true}).locator('..').locator('strong').innerText()==='—','英文共享输入缺失值不符');
+    expect(await context.getByText(${quote(t("sessions.profile.outputTokens", "en"))},{exact:true}).locator('..').locator('strong').innerText()==='—','英文共享输出缺失值不符');
     ${screenshot("sessions-en-dark.png")}
   `);
   await step("英文窄屏资源详情与筛选可达", `

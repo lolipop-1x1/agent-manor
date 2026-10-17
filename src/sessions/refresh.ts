@@ -121,7 +121,7 @@ export async function refreshSessions(store: SessionStore, jobId: string, roots?
       const desktopFingerprint = mirrorMetadata ? `:desktop-v4:${source.cwd ?? ""}:${mirrorMetadata.fingerprint}:${mirrorMetadata.limited}` : "";
       // 保留原生 Skill 目录的资源规则只失效桌面会话缓存，避免触发其他客户端重建。
       const desktopResourceFingerprint = source.client === "codeflicker-desktop" ? ":skill-directory-v1" : "";
-      const contextUsageFingerprint = source.client === "codex" ? ":active-context-v1" : "";
+      const contextUsageFingerprint = source.client === "codex" ? ":active-context-v3" : "";
       const requestUsageFingerprint = ["codex", "workbuddy", "dsh"].includes(source.client) ? ":request-usage-v2" : "";
       const pricingProviderFingerprint = ["codex", "pi", "zcode", "dsh"].includes(source.client) ? ":usage-provider-v1" : "";
       const zcodeInputFingerprint = source.client === "zcode" ? ":input-buckets-v3" : "";

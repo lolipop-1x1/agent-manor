@@ -123,16 +123,16 @@ export interface NativeUsageReport extends Partial<Pick<SessionUsage, "model" | 
   nativeModelCalls?: number;
   totalTokens?: number;
 }
-/** 原生上下文窗口占用快照，不能累加为请求用量或费用。 */
+/** 原生上下文窗口占用快照；容量和分项分别保留未知，不能累加为请求用量或费用。 */
 export interface SessionContextSnapshot {
   id: string;
   occurredAt?: string;
   usedTokens: number;
-  capacityTokens: number;
-  systemPromptTokens: number;
-  messageTokens: number;
-  skillTokens: number;
-  toolTokens: number;
+  capacityTokens?: number;
+  systemPromptTokens?: number;
+  messageTokens?: number;
+  skillTokens?: number;
+  toolTokens?: number;
 }
 export interface SessionSummary {
   id: string;

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import Database from "better-sqlite3";
 import { execFile } from "node:child_process";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
@@ -115,6 +115,42 @@ test("请求用量规则升级使旧事实失效，局部刷新仍复用范围�
     await wait(all.id);
     assert.equal(sessions.getJob(all.id).counts?.parsed, 0);
     assert.equal(sessions.getJob(all.id).counts?.quickReused, 2);
+  } finally {
+    database.close(); await manager.close(); sessions.close(); index.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("共享上下文快照规则升级重建旧 Codex 来源，范围外修订和请求用量不变", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "manor-context-rule-"));
+  const roots = await fixture(directory);
+  await appendFile(join(roots.codex, "demo.jsonl"), JSON.stringify({ type: "event_msg", payload: { type: "token_count", info: {
+    total_token_usage: { input_tokens: 100, output_tokens: 20 }, last_token_usage: { input_tokens: 100, output_tokens: 20, total_tokens: 120 },
+  } } }) + "\n");
+  const index = new AnalysisStore(join(directory, "index.sqlite"));
+  const sessions = new SessionStore(index.dbPath);
+  const manager = new WorkerManager(index, { roots }, sessions);
+  const database = new Database(index.dbPath);
+  async function wait(id: string) {
+    for (let count = 0; count < 600 && ["queued", "running"].includes(sessions.getJob(id).status); count++) await delay(20);
+    assert.equal(sessions.getJob(id).status, "complete", sessions.getJob(id).error);
+  }
+  try {
+    await wait(manager.refreshSessions().id);
+    const before = sessions.usageFactSessions().sessions;
+    const old = before.find(item => item.session.client === "codex")!;
+    const outside = before.find(item => item.session.client === "claude")!;
+    const requests = sessions.profile(old.session.id).usage.requests;
+    database.prepare("UPDATE session_revisions SET fingerprint=replace(fingerprint, ':active-context-v3', ':active-context-v1'),metadata_fingerprint='old-context-rule',json=json_remove(json,'$.contextSnapshots') WHERE id=?").run(old.revision);
+    const job = manager.refreshSessions(false, { client: "codex", mode: "quick" });
+    await wait(job.id);
+    assert.equal(sessions.getJob(job.id).counts?.parsed, 1);
+    const current = sessions.usageFactSessions().sessions;
+    assert.notEqual(current.find(item => item.session.client === "codex")?.revision, old.revision);
+    assert.equal(current.find(item => item.session.client === "claude")?.revision, outside.revision);
+    const profile = sessions.profile(old.session.id);
+    assert.deepEqual(profile.contextSnapshots?.map(snapshot => snapshot.usedTokens), [120]);
+    assert.equal(profile.usage.requests, requests);
   } finally {
     database.close(); await manager.close(); sessions.close(); index.close();
     await rm(directory, { recursive: true, force: true });

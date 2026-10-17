@@ -1,7 +1,7 @@
 # 豆包工作接入设计树
 
 Type: task
-Status: resolved
+Status: claimed
 
 ## 已作决策
 
@@ -12,6 +12,8 @@ Status: resolved
 5. 领域术语：会话缓存属于来源副本，本地缺失不等于远端删除；已记录到 CONTEXT.md。
 
 ## 当前前沿
+
+[11 跨客户端统一用量画像](issues/11-unified-usage.md) 正在收口。用户要求移除独立上下文用量主面板，各 Agent 共用摘要与指标布局；保留请求计量和上下文占用的各自口径，并核对其他来源可确认的上下文字段。
 
 [10 原生操作记录](issues/10-process-cards.md) 已完成。按已核验枚举恢复 18 张原生卡的共享操作元数据、轨迹及调用页独立分类统计和定位；上下文快照复用既有两列指标网格。生产刷新、真实浏览器、正式 Chrome 11 项及完整回归 1332 项通过，独立两轴审查无未处理发现。实现提交 `ea239a3` 已推送 main 并回读一致；请求、工具成功及费用边界保持独立。
 
@@ -33,6 +35,7 @@ Status: resolved
 - [08 提交与推送](issues/08-delivery.md)：resolved；依赖 07。
 - [09 元数据补齐](issues/09-metadata-coverage.md)：resolved；依赖 08。
 - [10 原生操作记录](issues/10-process-cards.md)：resolved；依赖 09。
+- [11 跨客户端统一用量画像](issues/11-unified-usage.md)：claimed；依赖 10。
 - [原生验收记录](validation.md)：真实缓存产品验证与合成 Chrome 7 项验收完成；缓存更新缺口仍保留。
 
 ## 本机证据边界

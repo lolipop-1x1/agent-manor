@@ -10,7 +10,7 @@ import { clientIds } from "../dist/clients.js";
 import { writePreferences } from "../dist/service/preferences.js";
 import { encodeSession, longSessionFixture } from "./session-fixture.mjs";
 
-// 隔离人工历史，验证完整趋势、表格分页和父子会话范围。
+// 隔离人工历史，验证画像 API 与界面的完整趋势、分页及父子范围一致；底层统计正确性由独立测试覆盖。
 const run = promisify(execFile);
 const directory = await realpath(await mkdtemp(join(tmpdir(), "manor-usage-trend-")));
 const artifacts = fileURLToPath(new URL("../.local/session-usage-trend-e2e/", import.meta.url));
@@ -51,7 +51,9 @@ try {
   const selected = list.sessions.find(item => item.clientSessionId === "demo-long");
   assert.ok(selected);
   const own = await api(`/sessions/${selected.id}/profile`), tree = await api(`/sessions/${selected.id}/profile?includeChildren=true`);
-  assert.equal(own.steps.length, 210); assert.equal(tree.steps.length, 216);
+  const scopes = [own.usage.requests, tree.usage.requests];
+  assert.ok(scopes[0] > 0); assert.ok(scopes[1] > scopes[0]);
+  assert.equal(own.steps.length, scopes[0]); assert.equal(tree.steps.length, scopes[1]);
   await browser(["open", base, "--headed", "--browser=chrome"]); opened = true;
   const verify = async (page, fixture) => {
     page.setDefaultTimeout(15_000);
@@ -61,12 +63,21 @@ try {
     await page.setViewportSize({ width: 1560, height: 1080 }); await page.reload();
     await page.getByRole("button", { name: zh ? "会话库" : "Sessions", exact: true }).click();
     await page.locator(".session-list-item").filter({ hasText: "长会话工作区验收" }).click();
-    const cost = page.getByRole("group", { name: zh ? "估算费用" : "Estimated cost", exact: true });
+    const summary = page.getByRole("region", { name: zh ? "Token 用量" : "Token usage", exact: true });
+    await summary.waitFor();
+    ensure(await summary.locator(":scope > .session-usage-grid").count() === 1, "请求摘要未复用统一 Token 指标区域");
+    const cost = summary.getByRole("group", { name: zh ? /^估算费用(?:小计)?$/ : /^Estimated cost(?: subtotal)?$/ });
+    const help = async text => {
+      await summary.getByRole("button", { name: zh ? "统计口径" : "Statistics methodology", exact: true }).click();
+      await page.getByText(text, { exact: true }).waitFor();
+      await page.keyboard.press("Escape");
+    };
+    const treeTotal = new Intl.NumberFormat(fixture.language).format(fixture.scopes[1]);
     await cost.getByText("$0.39", { exact: true }).waitFor();
     ensure((await cost.innerText()).includes("$"), "会话概览费用缺少美元符号");
     await page.getByRole("tab", { name: zh ? "用量" : "Usage", exact: true }).click();
-    for (const total of [210, 216]) {
-      if (total === 216) {
+    for (const [scopeIndex, total] of fixture.scopes.entries()) {
+      if (scopeIndex === 1) {
         await page.getByRole("button", { name: zh ? "包含子会话" : "Include child sessions", exact: true }).click();
         await page.waitForFunction(total => document.querySelector(".session-chart-hit")?.getAttribute("aria-valuemax") === String(total), total);
       }
@@ -131,18 +142,16 @@ try {
     ensure(!(await cost.innerText()).includes(zh ? "未定价" : "unpriced"), "明确零价被当作未定价");
     await price([]);
     await cost.getByText("—", { exact: true }).waitFor();
-    await cost.getByText(zh ? "完整估价 0 · 部分 0 · 未定价 216" : "Fully priced 0 · partial 0 · unpriced 216", { exact: true }).waitFor();
+    await help(zh ? `完整估价 0 · 部分 0 · 未定价 ${treeTotal}` : `Fully priced 0 · partial 0 · unpriced ${treeTotal}`);
     await page.screenshot({ path: `${fixture.artifacts}/${fixture.language}-cost-unpriced.png` });
     await price([{ model: "fixture-model", input: 2, output: 10 }]);
     await cost.getByText("$0.34", { exact: true }).waitFor();
-    await cost.getByText(zh ? "已知费用小计" : "Known cost subtotal", { exact: true }).waitFor();
-    await cost.getByText(zh ? "完整估价 0 · 部分 216 · 未定价 0" : "Fully priced 0 · partial 216 · unpriced 0", { exact: true }).waitFor();
+    await cost.getByText(zh ? "估算费用小计" : "Estimated cost subtotal", { exact: true }).waitFor();
+    await help(zh ? `完整估价 0 · 部分 ${treeTotal} · 未定价 0` : `Fully priced 0 · partial ${treeTotal} · unpriced 0`);
     await page.screenshot({ path: `${fixture.artifacts}/${fixture.language}-cost-partial.png` });
     await price([{ model: "fixture-model", input: 2, output: 10, cacheRead: 0.2 }]);
     await cost.getByText("$0.39", { exact: true }).waitFor();
-    await page.getByRole("button", { name: zh ? "统计口径" : "Statistics methodology", exact: true }).click();
-    await page.getByText(zh ? "可估价请求依据：历史单价 0 · 当前快照 0 · 用户单价 216" : "Priced requests: historical 0 · current snapshot 0 · manual 216", { exact: true }).waitFor();
-    await page.keyboard.press("Escape");
+    await help(zh ? `可估价请求依据：历史单价 0 · 当前快照 0 · 用户单价 ${treeTotal}` : `Priced requests: historical 0 · current snapshot 0 · manual ${treeTotal}`);
     await page.route(costRoute, route => route.fulfill({ status: 503, contentType: "application/json", body: JSON.stringify({ error: { code: "INTERNAL_ERROR", message: "synthetic pricing failure", messageDescriptor: { key: "common.error.query" } } }) }));
     await page.getByRole("button", { name: zh ? "收起会话画像" : "Collapse session profile", exact: true }).click();
     await page.getByRole("button", { name: zh ? "展开会话画像" : "Expand session profile", exact: true }).click();
@@ -166,12 +175,12 @@ try {
     await page.getByRole("option", { name: zh ? "明亮" : "Light", exact: true }).click();
     await page.getByRole("dialog", { name: zh ? "外观" : "Appearance", exact: true }).press("Escape");
     ensure(errors.length === 0, errors.join(";"));
-    return { passed: true, language: fixture.language, scopes: [210, 216], cost: ["overview", "scope", "pagination", "manual-update", "zero", "unpriced", "partial", "help", "retry", "mobile-dark"], errors };
+    return { passed: true, language: fixture.language, scopes: fixture.scopes, comparison: "profile-api-to-ui", cost: ["overview", "scope", "pagination", "manual-update", "zero", "unpriced", "partial", "help", "retry", "mobile-dark"], errors };
   };
   const reports = [];
   for (const language of ["zh-CN", "en"]) {
     await api("/preferences", { method: "PUT", headers: { "Content-Type": "application/json", "x-agent-manor-instance": service.instance.id }, body: JSON.stringify({ language }) });
-    const result = await browser(["run-code", `async page => (${verify.toString()})(page, ${JSON.stringify({ language, artifacts, base })})`]);
+    const result = await browser(["run-code", `async page => (${verify.toString()})(page, ${JSON.stringify({ language, artifacts, base, scopes })})`]);
     reports.push(result); console.log(result.split("### Ran Playwright code")[0]);
   }
   await writeFile(join(artifacts, "report.txt"), reports.join("\n"));
