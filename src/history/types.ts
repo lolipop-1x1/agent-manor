@@ -17,6 +17,9 @@ export interface SourceLocation {
   sessionId?: string;
   cwd?: string;
   parentSessionId?: string;
+  /** 原生同线程续段声明；偏移按解压后的 JSONL 字节计算。 */
+  historyContinuation?: { endByteOffset: number; endOrdinalExclusive: number };
+  historyPrefix?: { path: string; hash: string; endByteOffset: number; endOrdinalExclusive: number };
   /** 仅在本次发现中绑定已读取的元信息；不参与持久元信息指纹。 */
   discoveryQuickStamp?: string;
   /** 仅供来源选择器比较副本完整度；解析完成后不写入历史元数据。 */

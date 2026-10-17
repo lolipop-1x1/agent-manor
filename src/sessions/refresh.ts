@@ -135,7 +135,9 @@ export async function refreshSessions(store: SessionStore, jobId: string, roots?
       const reasoningEffortFingerprint = ["codex", "claude", "codeflicker", "codeflicker-desktop"].includes(source.client) ? ":reasoning-effort-v2"
         : ["pi", "qoder"].includes(source.client) ? ":reasoning-effort-v1" : "";
       // 原生与规范化来源均升级轮次依据，固定版本只在规则变更后使旧会话缓存失效一次。
-      const metadataSuffix = `${requestTimingFingerprint}${contextUsageFingerprint}${requestUsageFingerprint}${pricingProviderFingerprint}${zcodeInputFingerprint}${reasoningEffortFingerprint}${opencodeOutputFingerprint}${cliCacheFingerprint}${sourceUsageFingerprint}${ideRequestFingerprint}${titleFingerprint}${childTitleFingerprint}${projectFingerprint}${desktopFingerprint}${desktopResourceFingerprint}${ROUND_RULES_FINGERPRINT}`;
+      const nativeSkillFingerprint = ["codex", "codeflicker"].includes(source.client) ? ":native-skill-v1" : "";
+      const prefixFingerprint = source.historyPrefix ? `:history-prefix-v2:${source.historyPrefix.hash}` : "";
+      const metadataSuffix = `${nativeSkillFingerprint}${prefixFingerprint}${requestTimingFingerprint}${contextUsageFingerprint}${requestUsageFingerprint}${pricingProviderFingerprint}${zcodeInputFingerprint}${reasoningEffortFingerprint}${opencodeOutputFingerprint}${cliCacheFingerprint}${sourceUsageFingerprint}${ideRequestFingerprint}${titleFingerprint}${childTitleFingerprint}${projectFingerprint}${desktopFingerprint}${desktopResourceFingerprint}${ROUND_RULES_FINGERPRINT}`;
       const metadataFingerprint = createHash("sha256").update(JSON.stringify({ rule: SESSION_INDEX_RULE_VERSION, source: location, metadataSuffix })).digest("hex");
       let stamp: string | undefined;
       try { stamp = await sourceQuickStamp(source); }
@@ -182,6 +184,8 @@ export async function refreshSessions(store: SessionStore, jobId: string, roots?
       }
       const pending = store.createRevision(sourceKey, sourceFingerprint, cached.size === 0);
       try {
+        const prefixLocation = source.historyPrefix ? { client: source.client, format: source.format, path: source.historyPrefix.path } : undefined;
+        const prefixStamp = prefixLocation ? await sourceQuickStamp(prefixLocation) : undefined;
         if (source.format === DESKTOP_FORMAT && !nativeModels) {
           nativeModels = await desktopModels(source.path);
           if (nativeModels.fingerprint !== mirrorMetadata?.fingerprint || nativeModels.limited !== mirrorMetadata?.limited) {
@@ -204,6 +208,7 @@ export async function refreshSessions(store: SessionStore, jobId: string, roots?
         const after = normalizedSnapshot ? { hash: `normalized-1:${(await adapter!.readRecords!(source)).hash}` }
           : nativeSnapshot ? { hash: `${SESSION_INDEX_RULE_VERSION}:${(await readIdeSnapshot(source)).hash}` } : await fingerprint(source.path, digest.bytes);
         if (after.hash !== digest.hash) throw new DiagnosticError("会话来源已有内容在解析期间被改写，请重新刷新", { key: "diagnostics.sessions.refresh.m008" });
+        if (prefixLocation && (!prefixStamp || await sourceQuickStamp(prefixLocation) !== prefixStamp)) throw new DiagnosticError("会话来源已有内容在解析期间被改写，请重新刷新", { key: "diagnostics.sessions.refresh.m008" });
         await validateMirror();
         store.finishRevision(pending.revision, meta, sourceFingerprint);
         const revision = await cacheRecord(pending.revision);

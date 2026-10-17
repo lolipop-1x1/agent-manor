@@ -4,6 +4,7 @@ import { json, number, object, returnedText, shellEvidence, shellResult, string,
 import type { SourceLocation } from "../types.js";
 import { defaultToolEvidence, historyRelationships, normalizeHistoryPath, registerRequest } from "./common.js";
 import { readJsonlEvidence } from "./jsonl.js";
+import { codexContinuation } from "../codex-prefix.js";
 import type { HistoryAdapter } from "./types.js";
 
 const hash = (value: string) => createHash("sha256").update(value).digest("hex");
@@ -18,13 +19,14 @@ function sourceMetadata(raw: unknown, client: Client, path: string): SourceLocat
   return {
     path, client, format: "codex-jsonl", cwd, sessionId: agentId && sessionId ? `${sessionId}/agent/${agentId}` : sessionId,
     parentSessionId,
+    ...(codexContinuation(record) ? { historyContinuation: codexContinuation(record) } : {}),
     sourceId: sessionId ? `${client}:${hash(JSON.stringify({ sessionId, agentId, timestamp: payload.timestamp ?? record.timestamp, cwd })).slice(0, 24)}` : undefined,
   };
 }
 
 export const codexAdapter: HistoryAdapter = {
   id: "codex-jsonl",
-  quickCheck: { version: "1", dependencies: () => [] },
+  quickCheck: { version: "1", dependencies: source => source.historyPrefix ? [source.historyPrefix.path] : [] },
   discover(record, location) {
     return record.type === "session_meta" ? { source: sourceMetadata(record, location.client, location.path), complete: true } : undefined;
   },

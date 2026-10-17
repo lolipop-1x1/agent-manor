@@ -25,7 +25,7 @@ export type { HistoryAdapter, HistoryAdapterContext, HistoryClient } from "./typ
 
 /** Node 来源声明与客户端展示声明分开；只把 roots 纯数据传给 Worker。 */
 export const HISTORY_CLIENTS: readonly HistoryClient[] = [
-  { client: "codex", format: "codex-jsonl", environmentVariable: "AGENT_MANOR_CODEX_DIR", defaultRoots: [".codex/sessions", ".codex/archived_sessions"] },
+  { client: "codex", format: "codex-jsonl", environmentVariable: "AGENT_MANOR_CODEX_DIR", defaultRoots: [".codex/sessions", ".codex/archived_sessions"], acceptsFile: path => path.endsWith(".jsonl") || path.endsWith(".jsonl.zst") },
   { client: "claude", format: "claude-jsonl", environmentVariable: "AGENT_MANOR_CLAUDE_DIR", defaultRoots: [".claude/projects"] },
   { client: "codeflicker", format: "codeflicker-jsonl", environmentVariable: "AGENT_MANOR_CODEFLICKER_DIR", defaultRoots: [".codeflicker/projects"], acceptsFile: path => path.endsWith(".jsonl") && !path.split(/[\\/]/).some(part => ["requests", "file-history"].includes(part)) },
   { client: "codeflicker-desktop", format: "codeflicker-desktop-jsonl", environmentVariable: "AGENT_MANOR_CODEFLICKER_DESKTOP_DIR", homeEnvironmentVariable: "MYFLICKER_HOME", defaultRoots: [".myflicker/sessions", ".codeflicker/data/codeflicker"], containerFormat: IDE_FORMAT, acceptsContainer: path => /[/\\](?:session_data|composer_data)\.sqlite$/.test(path), acceptsFile: path => /[/\\]message[/\\]cache\.jsonl$/.test(path) },

@@ -1,6 +1,5 @@
 import type { MessageDescriptor } from "../i18n/types.js";
 import { createHash } from "node:crypto";
-import { createReadStream } from "node:fs";
 import { basename, dirname, isAbsolute, resolve } from "node:path";
 import type { Client, Gap, GapKind } from "../contracts.js";
 import { historyRelationships, normalizeHistoryPath } from "../history/adapters/common.js";
@@ -11,6 +10,8 @@ import { object, string, tokens, UsageParser } from "./parser-usage.js";
 import { RequestTimingParser } from "./parser-timing.js";
 import { projectFromToolPaths } from "./parser-project.js";
 import { sessionTitle, userTitle } from "./title.js";
+import { compressedHistory, historyBytes } from "../history/stream.js";
+import { historyPrefixBytes, verifyCodexPrefix } from "../history/codex-prefix.js";
 import { codexContext } from "./codex-context.js";
 import { DESKTOP_FORMAT, desktopCalls, desktopIdentity, desktopResult, desktopTimestamp } from "../history/adapters/codeflicker-desktop.js";
 import type { DesktopModelRecord } from "./codeflicker-desktop.js";
@@ -20,6 +21,7 @@ import { ideSessionRecords } from "./codeflicker-ide.js";
 import { sessionExecutionMode } from "../session-execution.js";
 import { historyAdapter, historyClient } from "../history/adapters/index.js";
 import { parseNormalizedSession, type NormalizedSnapshot } from "../history/adapters/normalized.js";
+import { codexSkillInstructions, CliSkillInstructions } from "./native-skills.js";
 import { callResource, successfulSkillRead } from "./resources.js";
 
 const digest = (value: string) => createHash("sha256").update(value).digest("hex").slice(0, 24);
@@ -29,15 +31,13 @@ export const sessionKey = (client: Client, rawId: string): string => `${client}:
 
 /** 分段读取并限制单条记录大小；不完整末行留待下次刷新，不能当作完整消息。 */
 async function* records(path: string, gap: (kind: GapKind, message: string, messageDescriptor?: MessageDescriptor) => void, byteLimit?: number,
-  onRead?: (chunk: Uint8Array) => void) {
-  if (byteLimit === 0) return;
+  onRead?: (chunk: Uint8Array) => void, prefix?: SourceLocation["historyPrefix"]) {
+  if (byteLimit === 0 && !compressedHistory(path)) return;
   let parts: Buffer[] = [];
   let length = 0;
   let line = 0;
   let oversized = false;
-  for await (const value of createReadStream(path, { highWaterMark: 65_536, end: byteLimit === undefined ? undefined : byteLimit - 1 })) {
-    const chunk = value as Buffer;
-    onRead?.(chunk);
+  for await (const chunk of prefix ? historyPrefixBytes(prefix) : historyBytes(path, { byteLimit, onRead })) {
     let start = 0;
     while (start < chunk.length) {
       const newline = chunk.indexOf(10, start);
@@ -99,8 +99,21 @@ export async function parseSessionSource(source: SourceLocation, sink: SessionSi
   }
   const ideSnapshot = options.nativeSnapshot ?? (source.format === IDE_FORMAT ? await readIdeSnapshot(source) : undefined);
   if (ideSnapshot) { source = ideSnapshot.source; options = { ...options, title: ideSnapshot.title }; }
-  const inputRecords = (onGap: (kind: GapKind, message: string, messageDescriptor?: MessageDescriptor) => void, observe = false) =>
-    ideSnapshot ? ideSessionRecords(ideSnapshot) : records(source.path, onGap, options.byteLimit, observe ? options.onRead : undefined);
+  async function* inputRecords(onGap: (kind: GapKind, message: string, messageDescriptor?: MessageDescriptor) => void, observe = false) {
+    if (ideSnapshot) { yield* ideSessionRecords(ideSnapshot); return; }
+    const prefix = source.historyPrefix;
+    if (prefix) for await (const row of records(prefix.path, onGap, undefined, undefined, prefix)) {
+      yield { ...row, sourcePath: prefix.path };
+    }
+    let header = false;
+    for await (const row of records(source.path, onGap, options.byteLimit, observe ? options.onRead : undefined)) {
+      if (source.client === "codex" && !header && row.record.type === "session_meta") {
+        verifyCodexPrefix(row.record, source); header = true;
+      }
+      yield row;
+    }
+    if (prefix && !header) verifyCodexPrefix({}, source);
+  }
   const gaps = new Map<string, Gap>();
   const gap = (kind: GapKind, message: string, messageDescriptor?: MessageDescriptor) => {
     const key = `${kind}:${message}`;
@@ -155,6 +168,7 @@ export async function parseSessionSource(source: SourceLocation, sink: SessionSi
   let firstUserTitle: string | undefined;
   let nativeCodexTurn: string | undefined;
   const codexTurnIds = new Map<string, string>();
+  const cliSkills = new CliSkillInstructions();
   const codexUsageSnapshots = new Map<string, { value: Record<string, unknown>; line: number }>();
   // Codex 同时保存响应项与 UI 事件投影；存在响应正文时采用响应项，避免把同一消息计两遍。
   if (source.client === "codex") {
@@ -181,6 +195,7 @@ export async function parseSessionSource(source: SourceLocation, sink: SessionSi
     }
   }
   let currentRecordLine = 0;
+  let currentSourcePath: string | undefined;
   const usageMarkers = new Map<string, SessionMessage>();
   const usage = new UsageParser(id, { message: sink.message, usage: value => {
     if (source.client !== "codex" || value.messageId || !usage.hasRecordedUsage(value.id)) { sink.usage(value); return; }
@@ -223,7 +238,7 @@ export async function parseSessionSource(source: SourceLocation, sink: SessionSi
       seen.set(key, identity);
     }
     const value: SessionMessage = { id: `${id}:message:${digest(key)}`, sessionId: id, ordinal: identity.ordinal,
-      recordLine: row, turnId: identity.turnId, kind, text: body, ...extra };
+      recordLine: row, ...(currentSourcePath ? { sourcePath: currentSourcePath } : {}), turnId: identity.turnId, kind, text: body, ...extra };
     if (source.client === "codex" && kind === "user" && !value.copied && nativeCodexTurn) codexTurnIds.set(nativeCodexTurn, value.turnId);
     if (timing?.interruptedMessage(value.id)) {
       value.interrupted = true; value.final = undefined; value.finalEvidence = undefined; value.finalAt = undefined;
@@ -288,7 +303,9 @@ export async function parseSessionSource(source: SourceLocation, sink: SessionSi
     } else if (!repeated) gap("unpaired_call", "工具结果缺少可唯一配对的请求，已保留原结果", { key: "diagnostics.sessions.parser.m006" });
     return value;
   };
-  for await (const { record, line } of inputRecords(gap, true)) {
+  for await (const input of inputRecords(gap, true)) {
+    const { record, line } = input;
+    currentSourcePath = "sourcePath" in input ? input.sourcePath : undefined;
     currentRecordLine = line;
     const payload = object(record.payload);
     const entrypoint = source.client === "codeflicker" && record.type === "message" ? string(record.entrypoint) : undefined;
@@ -425,6 +442,8 @@ export async function parseSessionSource(source: SourceLocation, sink: SessionSi
       continue;
     }
     if (source.client === "codex") {
+      // 两个物理分段会有相同行号，缺少原生身份时也不能合并成同一条消息。
+      const recordPosition = currentSourcePath ? `prefix:${line}` : line;
       if (record.type === "turn_context" || record.type === "event_msg" && payload.type === "task_started") {
         nativeCodexTurn = string(payload.turn_id);
       }
@@ -466,7 +485,7 @@ export async function parseSessionSource(source: SourceLocation, sink: SessionSi
         if (snapshot.thread_id === rawId && responseId && recorded && !codexUsageSnapshots.has(responseId)) {
           codexUsageSnapshots.set(responseId, { value: snapshot, line });
         }
-        message(`compression:${line}`, "compression", text(payload.message ?? payload.summary), line, extra); continue;
+        message(`compression:${recordPosition}`, "compression", text(payload.message ?? payload.summary), line, extra); continue;
       }
       if (record.type === "event_msg") {
         if (payload.type === "token_count") {
@@ -481,7 +500,7 @@ export async function parseSessionSource(source: SourceLocation, sink: SessionSi
             timing?.codexUsage(usageId, { occurredAt, recordLine: line, messageId: usageId ? usageMarkers.get(usageId)?.id : undefined });
           }
         } else if (payload.type === "agent_reasoning") {
-          const key = `event:${string(payload.id) ?? line}`;
+          const key = `event:${string(payload.id) ?? recordPosition}`;
           const body = text(payload.message ?? payload.text);
           message(key, "thinking", body, line, { ...extra, model: currentModel, reasoningEffort: currentReasoningEffort });
           projectedReasoning = { key, text: body, turnId };
@@ -489,16 +508,16 @@ export async function parseSessionSource(source: SourceLocation, sink: SessionSi
           const body = text(payload.message ?? payload.text);
           const context = payload.type === "user_message" ? codexContext(body, passthrough.content_item_kinds) : undefined;
           const kind = payload.type === "user_message" ? context ? "context" : "user" : "assistant";
-          message(`event:${string(payload.id) ?? line}`, kind, body, line, { ...extra, ...context, model: kind === "user" ? undefined : currentModel,
+          message(`event:${string(payload.id) ?? recordPosition}`, kind, body, line, { ...extra, ...context, model: kind === "user" ? undefined : currentModel,
             reasoningEffort: kind === "assistant" ? currentReasoningEffort : undefined }, kind === "user");
         } else if (["task_aborted", "turn_aborted", "error"].includes(string(payload.type) ?? "")) {
           const aborted = payload.type !== "error";
           if (!copied) interruptCandidate(timing?.interrupt(undefined, aborted && Boolean(candidate)), aborted);
-          message(`event:${line}`, "system", display(payload), line, extra);
+          message(`event:${recordPosition}`, "system", display(payload), line, extra);
         } else if (payload.type === "item_completed") {
           const item = object(payload.item);
           if (["CommandExecution", "FileChange"].includes(string(item.type) ?? "")) {
-            const callId = string(item.id) ?? `item:${line}`;
+            const callId = string(item.id) ?? `item:${recordPosition}`;
             const command = Array.isArray(item.command) ? item.command.at(-1) : item.command;
             const matching = [...pending.entries()].find(([, call]) => ["exec_command", "shell_command", "functions.exec_command", "functions.shell_command"].includes(call.message.tool ?? "")
               && (object(call.input).cmd ?? object(call.input).command) === command);
@@ -513,18 +532,19 @@ export async function parseSessionSource(source: SourceLocation, sink: SessionSi
       }
       if (record.type !== "response_item") continue;
       const type = string(payload.type);
-      const key = string(payload.id) ? `response:${payload.id}` : `response:${line}`;
+      const key = string(payload.id) ? `response:${payload.id}` : `response:${recordPosition}`;
       extra.model = string(payload.model) ?? currentModel;
       extra.reasoningEffort = currentReasoningEffort;
       if (type === "message" || type === "agent_message") {
         const role = type === "agent_message" ? "assistant" : string(payload.role);
         const body = text(payload.content);
         const context = role === "user" ? codexContext(body, passthrough.content_item_kinds) : undefined;
+        const skills = role === "user" ? codexSkillInstructions(body, passthrough.content_item_kinds) : [];
         const kind: MessageKind = role === "user" ? context ? "context" : "user" : role === "assistant" ? "assistant" : "system";
         const phase = string(payload.phase) ?? string(payload.channel) ?? string(passthrough.channel);
         const partial = nativeInterrupted || payload.isInterrupted === true || payload.interrupted === true;
         const final = kind === "assistant" && !partial && ["final", "final_answer"].includes(phase ?? "");
-        message(key, kind, body, line, { ...extra, ...context, reasoningEffort: kind === "assistant" ? currentReasoningEffort : undefined,
+        message(key, kind, body, line, { ...extra, ...context, ...(skills.length ? { resource: skills[0], resources: skills, status: "success" as const } : {}), reasoningEffort: kind === "assistant" ? currentReasoningEffort : undefined,
           interrupted: kind === "assistant" && partial ? true : undefined,
           final: final ? "explicit" : undefined, finalEvidence: final ? "response_completed" : undefined }, kind === "user");
         if (!copied && kind === "assistant" && partial) interruptCandidate(timing?.interrupt(undefined, true), true);
@@ -589,6 +609,7 @@ export async function parseSessionSource(source: SourceLocation, sink: SessionSi
           durationMs: hook ? tokens(attachment.durationMs) : undefined });
       continue;
     }
+    const nativeSkill = source.client === "codeflicker" ? cliSkills.read(record, text(content)) : undefined;
     const blocks = Array.isArray(content) ? content : typeof content === "string" ? [{ type: "text", text: content }] : [];
     // 取消记录是客户端保存的单文本块控制事件，普通正文中的同名字符串仍是用户需求。
     if (source.client === "codeflicker" && role === "user" && Array.isArray(content) && blocks.length === 1
@@ -621,6 +642,7 @@ export async function parseSessionSource(source: SourceLocation, sink: SessionSi
       if (type === "text") {
         const kind: MessageKind = human ? "user" : injected ? "context" : role === "assistant" ? "assistant" : "system";
         emitted = message(key, kind, text(block.text), line, { ...extra,
+          ...(nativeSkill && index === 0 ? { resource: nativeSkill, status: "success" as const } : {}),
           ...(injected ? { contextSource: "client" as const, contextEvidence: "client_metadata" as const } : {}),
           final: kind === "assistant" && normalStop ? "explicit" : undefined,
           finalEvidence: kind === "assistant" && normalStop ? "normal_stop" : undefined }, human && !firstMessage);

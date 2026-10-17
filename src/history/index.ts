@@ -1,6 +1,7 @@
+import { DiagnosticError } from "../i18n/diagnostics.js";
 import type { MessageDescriptor } from "../i18n/types.js";
 import { createHash } from "node:crypto";
-import { lstat, open, readFile, readdir, realpath } from "node:fs/promises";
+import { lstat, readFile, readdir, realpath } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { execFile } from "node:child_process";
@@ -11,6 +12,8 @@ import { json, object, returnedText, string, words } from "./extraction.js";
 import { normalizeHistoryPath } from "./adapters/common.js";
 import { HISTORY_ADAPTERS, HISTORY_CLIENTS, historyAdapter, historyClient } from "./adapters/index.js";
 import type { HistoryAdapterContext, HistoryClient } from "./adapters/types.js";
+import { historyHead, historyBytes, compressedHistory } from "./stream.js";
+import { bindCodexPrefixes } from "./codex-prefix.js";
 import { sourceQuickCheck, sourceQuickStamp } from "./quick-check.js";
 
 import type { DiscoverOptions, DiscoverRoots, HistoricalWorktree, HistoryCursor, HistoryRelationship, ParsedHistorySource, PendingCall, SharedHistoryResult, SourceAssociation, SourceLocation } from "./types.js";
@@ -79,17 +82,13 @@ export async function discoverSources(roots: DiscoverRoots = {}, options: Discov
         await discoverFile(location, async () => {
           let metadata: SourceLocation = location;
           if (adapter) {
-            const handle = await open(child, "r");
-            try {
-              const buffer = Buffer.alloc(65_536);
-              const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
-              for (const line of buffer.subarray(0, bytesRead).toString("utf8").split("\n").slice(0, 32)) {
-                try {
-                  const candidate = adapter.discover(object(JSON.parse(line)), metadata);
-                  if (candidate) { metadata = candidate.source; if (candidate.complete) break; }
-                } catch { /* 发现阶段不把坏行误认为有效元数据。 */ }
-              }
-            } finally { await handle.close(); }
+            const buffer = await historyHead(child);
+            for (const line of buffer.toString("utf8").split("\n").slice(0, 32)) {
+              try {
+                const candidate = adapter.discover(object(JSON.parse(line)), metadata);
+                if (candidate) { metadata = candidate.source; if (candidate.complete) break; }
+              } catch { /* 发现阶段不把坏行误认为有效元数据。 */ }
+            }
           }
           return [await adapter?.readSourceMetadata?.(metadata) ?? metadata];
         });
@@ -104,7 +103,7 @@ export async function discoverSources(roots: DiscoverRoots = {}, options: Discov
       : clientHome ? [join(clientHome, "sessions"), ...declaration.defaultRoots.slice(1).map(path => join(homedir(), path))] : declaration.defaultRoots.map(path => join(homedir(), path)));
     for (const root of typeof configured === "string" ? [configured] : configured) await walk(resolve(root), declaration);
   }
-  return HISTORY_ADAPTERS.reduce((sources, adapter) => adapter.selectSources?.(sources) ?? sources, found);
+  return bindCodexPrefixes(HISTORY_ADAPTERS.reduce((sources, adapter) => adapter.selectSources?.(sources) ?? sources, found));
 }
 
 function cursorOf(source: ParsedSource | undefined): HistoryCursor | undefined {
@@ -122,7 +121,9 @@ export async function parseSource(path: string, client: Client, previous?: Parse
   const container = await adapter?.readRecords?.({ ...options.location, path: absolutePath, client, format });
   const metadata = container?.source ?? await adapter?.readSourceMetadata?.({ path: absolutePath, client, format });
   // 原生容器直接消费记录快照，没有 JSONL 字节前缀游标。
-  const bytes = container ? Buffer.alloc(0) : await readFile(absolutePath);
+  const compressed = !container && compressedHistory(absolutePath);
+  const bytes = container || compressed ? Buffer.alloc(0) : await readFile(absolutePath);
+  const compressedHash = createHash("sha256");
   const sourceHash = container?.hash ?? hash(bytes);
   let oldCursor = cursorOf(previous);
   if (container && previous?.hash === sourceHash && previous.client === client && oldCursor?.format === format && (!oldCursor.associationOnly || options.allowAssociationMetadata)) {
@@ -132,7 +133,7 @@ export async function parseSource(path: string, client: Client, previous?: Parse
     reused.cursor = json({ ...oldCursor, parsedRecords: 0 });
     return reused;
   }
-  if (container) { previous = undefined; oldCursor = undefined; }
+  if (container || compressed) { previous = undefined; oldCursor = undefined; }
   // 旁路 cwd 改变时重建事件，不能沿用旧归属或相对路径解析。
   if (metadata && previous && (metadata.cwd !== previous.cwd || metadata.sessionId !== previous.sessionId)) {
     previous = undefined;
@@ -220,19 +221,46 @@ export async function parseSource(path: string, client: Client, previous?: Parse
   }
   if (!adapter && !source.gaps.some(item => item.kind === "unsupported_format")) gap("unsupported_format", `历史格式 ${format} 尚未注册适配器`, { key: "diagnostics.history.index.m004", params: { p0: String(format) } });
   let position = cursor.completeBytes;
-  let nativePosition = 0;
-  while (container ? nativePosition < container.records.length : position < bytes.length) {
-    const nativeRecord = container?.records[nativePosition++];
-    const newline = nativeRecord ? 0 : bytes.indexOf(10, position);
-    if (!nativeRecord && newline < 0) break;
-    const raw = nativeRecord?.raw ?? bytes.subarray(position, newline).toString("utf8");
-    if (!nativeRecord) position = newline + 1;
-    cursor.recordLine = nativeRecord?.line ?? cursor.recordLine + 1;
+  let incomplete = false;
+  async function* sourceRecords() {
+    if (container) { yield* container.records; return; }
+    if (!compressed) {
+      while (position < bytes.length) {
+        const newline = bytes.indexOf(10, position);
+        if (newline < 0) { incomplete = true; break; }
+        const raw = bytes.subarray(position, newline).toString("utf8");
+        position = newline + 1;
+        yield { raw, line: cursor.recordLine + 1, record: undefined };
+      }
+      return;
+    }
+    let parts: Buffer[] = [], size = 0, line = 0;
+    for await (const chunk of historyBytes(absolutePath, { onRead: chunk => { compressedHash.update(chunk); } })) {
+      let start = 0;
+      while (start < chunk.length) {
+        const newline = chunk.indexOf(10, start), end = newline < 0 ? chunk.length : newline;
+        const part = chunk.subarray(start, end);
+        size += part.length;
+        if (size > 16 * 1024 * 1024) throw new DiagnosticError("压缩历史单条记录超过 16 MiB", { key: "diagnostics.history.compressed.recordBudget" });
+        parts.push(part);
+        if (newline < 0) break;
+        const raw = Buffer.concat(parts, size).toString("utf8");
+        position += size + 1;
+        parts = []; size = 0;
+        yield { raw, line: ++line, record: undefined };
+        start = newline + 1;
+      }
+    }
+    incomplete = size > 0;
+  }
+  for await (const item of sourceRecords()) {
+    const { raw } = item;
+    cursor.recordLine = item.line;
     cursor.parsedRecords += 1;
-    if (!nativeRecord) cursor.recordEnds.push(position);
+    if (!container && !compressed) cursor.recordEnds.push(position);
     const row = cursor.recordLine;
     let record: Record<string, unknown>;
-    try { record = nativeRecord?.record ?? object(JSON.parse(raw)); }
+    try { record = item.record ?? object(JSON.parse(raw)); }
     catch { gap("parse_error", `物理记录 ${row} 不是有效 JSON`, { key: "diagnostics.history.index.m005", params: { p0: row } }); continue; }
     if (adapter) {
       activeContext = { client, path: absolutePath, row, raw, occurredAt: string(record.timestamp), source, cursor,
@@ -240,11 +268,12 @@ export async function parseSource(path: string, client: Client, previous?: Parse
       adapter.processRecord(record, activeContext);
     }
   }
-  cursor.completeBytes = position;
-  cursor.prefixHash = hash(bytes.subarray(0, position));
-  source.completeBytes = position;
+  cursor.completeBytes = compressed ? 0 : position;
+  cursor.prefixHash = compressed ? hash("") : hash(bytes.subarray(0, position));
+  source.completeBytes = cursor.completeBytes;
+  if (compressed) source.hash = compressedHash.digest("hex");
   source.cursor = json(cursor);
-  if (position < bytes.length) gap("incomplete_record", "末尾记录尚未以换行完成，等待下一轮补齐", { key: "diagnostics.history.index.m006" });
+  if (incomplete) gap("incomplete_record", "末尾记录尚未以换行完成，等待下一轮补齐", { key: "diagnostics.history.index.m006" });
   for (const call of cursor.pending) gap("unpaired_call", `调用 ${call.callId} 的出现位置 ${call.recordLine} 尚无可确认结果`, { key: "diagnostics.history.index.m007", params: { p0: String(call.callId), p1: String(call.recordLine) } });
   return source;
 }

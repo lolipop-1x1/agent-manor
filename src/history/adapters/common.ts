@@ -17,7 +17,9 @@ export function normalizeHistoryPath(value: string | undefined): string | undefi
 
 export function historyRelationships(record: Record<string, unknown>): HistoryRelationship[] {
   const payload = object(record.payload);
-  const history = object(payload.history_base ?? record.history_base);
+  const declaredHistory = object(payload.history_base ?? record.history_base);
+  // 同线程续段是存储前缀，不能将自己的旧记录标为复制的父历史。
+  const history = typeof payload.id === "string" && declaredHistory.thread_id === payload.id ? {} : declaredHistory;
   const forkParent = string(history.thread_id) ?? string(payload.forked_from_id) ?? string(record.forked_from_id);
   const source = object(payload.source ?? record.source);
   const spawn = object(object(source.subagent).thread_spawn);

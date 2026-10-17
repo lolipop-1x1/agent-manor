@@ -77,9 +77,9 @@ const sessionQueryIndexes = `
       CREATE INDEX IF NOT EXISTS session_message_overview_projection_v2 ON session_messages(revision,ordinal,id,turn_id,record_line,kind,final,call_id,copied,
         json_extract(json,'$.occurredAt'),json_extract(json,'$.tool'),json_extract(json,'$.status'),json_extract(json,'$.contextSource'),
         json_extract(json,'$.resource'),json_extract(json,'$.resource.kind'),json_extract(json,'$.finalEvidence'),json_extract(json,'$.finalAt'),json_extract(json,'$.interrupted'));
-      CREATE INDEX IF NOT EXISTS session_message_resource_event_v2
+      CREATE INDEX IF NOT EXISTS session_message_resource_event_v3
         ON session_messages(revision,json_extract(json,'$.resource.kind'),ordinal,id)
-        WHERE kind IN ('tool_call','user') AND copied IS NOT 1 AND json_extract(json,'$.resource.kind') IN ('mcp','skill_call','skill_read');
+        WHERE kind IN ('tool_call','user','context') AND copied IS NOT 1 AND json_extract(json,'$.resource.kind') IN ('mcp','skill_call','skill_read');
       CREATE INDEX IF NOT EXISTS session_message_resource_call ON session_messages(revision,call_id,kind,copied)
         WHERE kind='tool_call' AND copied IS NOT 1;
       CREATE INDEX IF NOT EXISTS session_usage_order ON session_usage(revision);
@@ -597,8 +597,9 @@ export class SessionStore {
     if (!version) return { skill: [], mcp: [] };
     if (this.resourceClientMetadata?.version !== version) {
       const scope = `FROM session_version_sessions v JOIN session_revisions r ON r.id=v.revision
-        JOIN session_messages m INDEXED BY session_message_resource_event_v2 ON m.revision=v.revision
-        WHERE v.version=? AND m.kind IN ('tool_call','user') AND m.copied IS NOT 1
+        JOIN session_messages m INDEXED BY session_message_resource_event_v3 ON m.revision=v.revision
+        WHERE v.version=? AND m.kind IN ('tool_call','user','context') AND m.copied IS NOT 1
+        AND (m.kind<>'context' OR json_extract(m.json,'$.resource.kind')='skill_read')
         AND json_extract(m.json,'$.resource.kind') IN ('mcp','skill_call','skill_read')`;
       const rows = this.overviewStatement(`SELECT DISTINCT r.client,json_extract(m.json,'$.resource.kind') AS kind ${scope}
         AND json_extract(m.json,'$.resource.kind')<>'skill_read' ORDER BY r.client`)
@@ -608,9 +609,9 @@ export class SessionStore {
       const reads = this.overviewStatement(`SELECT DISTINCT r.client ${scope} AND json_extract(m.json,'$.resource.kind')='skill_read'
         AND r.client NOT IN (SELECT value FROM json_each(?))
         AND COALESCE(CASE WHEN json_extract(m.json,'$.status') IN ('success','failure') THEN json_extract(m.json,'$.status') END,
-          CASE WHEN (SELECT COUNT(*) FROM session_messages c WHERE c.revision=m.revision AND c.call_id=m.call_id
+          CASE WHEN (SELECT COUNT(*) FROM session_messages c INDEXED BY session_message_resource_call WHERE c.revision=m.revision AND c.call_id=m.call_id
             AND c.kind='tool_call' AND c.copied IS NOT 1)=1 THEN
-            (SELECT MAX(json_extract(z.json,'$.status')) FROM session_messages z WHERE z.revision=m.revision AND z.call_id=m.call_id
+            (SELECT MAX(json_extract(z.json,'$.status')) FROM session_messages z INDEXED BY session_message_call WHERE z.revision=m.revision AND z.call_id=m.call_id
               AND z.kind='tool_result' AND z.copied IS NOT 1 HAVING COUNT(*)=1) END,'unknown')='success' ORDER BY r.client`)
         .all(version, JSON.stringify(skill)) as { client: Client }[];
       this.resourceClientMetadata = { version, clients: {
@@ -649,8 +650,8 @@ export class SessionStore {
         if (identity.kind !== "mcp") values.push(identity.name);
       }
     }
-    const rows = this.overviewStatement(`SELECT m.id AS message_id,m.ordinal,m.turn_id,m.record_line,r.session_id,r.client,r.project,
-      r.id AS revision,r.fingerprint,json_extract(r.json,'$.path') AS source_path,json_extract(r.json,'$.sourceId') AS source_id,
+    const rows = this.overviewStatement(`SELECT m.id AS message_id,m.kind AS message_kind,m.ordinal,m.turn_id,m.record_line,r.session_id,r.client,r.project,
+      r.id AS revision,r.fingerprint,COALESCE(json_extract(m.json,'$.sourcePath'),json_extract(r.json,'$.path')) AS source_path,json_extract(r.json,'$.sourceId') AS source_id,
       json_extract(m.json,'$.resource.kind') AS resource_kind,json_extract(m.json,'$.resource.name') AS resource_name,
       json_extract(m.json,'$.resource.nameDescriptor') AS resource_name_descriptor,
       json_extract(m.json,'$.resources') AS resources,
@@ -658,23 +659,24 @@ export class SessionStore {
       json_extract(m.json,'$.filePaths') AS file_paths,json_extract(m.json,'$.tool') AS tool,
       json_extract(m.json,'$.occurredAt') AS occurred_at,
       COALESCE(CASE WHEN json_extract(m.json,'$.status') IN ('success','failure') THEN json_extract(m.json,'$.status') END,
-        CASE WHEN (SELECT COUNT(*) FROM session_messages c WHERE c.revision=m.revision AND c.call_id=m.call_id
+        CASE WHEN (SELECT COUNT(*) FROM session_messages c INDEXED BY session_message_resource_call WHERE c.revision=m.revision AND c.call_id=m.call_id
           AND c.kind='tool_call' AND c.copied IS NOT 1)=1 THEN json_extract(result.json,'$.status') END,'unknown') AS status,
       COALESCE(json_extract(m.json,'$.durationMs'),json_extract(result.json,'$.durationMs')) AS duration_ms,
       result.id AS result_id,
-      (SELECT COUNT(*) FROM session_messages z WHERE z.revision=m.revision AND z.call_id=m.call_id
+      (SELECT COUNT(*) FROM session_messages z INDEXED BY session_message_call WHERE z.revision=m.revision AND z.call_id=m.call_id
         AND z.kind='tool_result' AND z.copied IS NOT 1) AS result_count,
-      (SELECT COUNT(*) FROM session_messages c WHERE c.revision=m.revision AND c.call_id=m.call_id
+      (SELECT COUNT(*) FROM session_messages c INDEXED BY session_message_resource_call WHERE c.revision=m.revision AND c.call_id=m.call_id
         AND c.kind='tool_call' AND c.copied IS NOT 1) AS call_count
       FROM session_version_sessions v JOIN session_revisions r ON r.id=v.revision
-      JOIN session_messages m INDEXED BY session_message_resource_event_v2 ON m.revision=r.id AND m.kind IN ('tool_call','user') AND m.copied IS NOT 1
-      LEFT JOIN session_messages result ON result.revision=m.revision AND result.id=(SELECT MIN(z.id) FROM session_messages z
+      JOIN session_messages m INDEXED BY session_message_resource_event_v3 ON m.revision=r.id AND m.kind IN ('tool_call','user','context') AND m.copied IS NOT 1
+        AND (m.kind<>'context' OR json_extract(m.json,'$.resource.kind')='skill_read')
+      LEFT JOIN session_messages result ON result.revision=m.revision AND result.id=(SELECT MIN(z.id) FROM session_messages z INDEXED BY session_message_call
         WHERE z.revision=m.revision AND z.call_id=m.call_id AND z.kind='tool_result' AND z.copied IS NOT 1 HAVING COUNT(*)=1)
-      AND (SELECT COUNT(*) FROM session_messages c WHERE c.revision=m.revision AND c.call_id=m.call_id
+      AND (SELECT COUNT(*) FROM session_messages c INDEXED BY session_message_resource_call WHERE c.revision=m.revision AND c.call_id=m.call_id
         AND c.kind='tool_call' AND c.copied IS NOT 1)=1
       WHERE ${parts.join(" AND ")} AND json_extract(m.json,'$.resource.kind') IN ('mcp','skill_call','skill_read')
       ORDER BY r.session_id,m.ordinal,m.id`).iterate(...values) as Iterable<{
-        message_id: string; ordinal: number; turn_id: string; record_line: number; session_id: string; client: Client; project: string | null;
+        message_id: string; message_kind: string; ordinal: number; turn_id: string; record_line: number; session_id: string; client: Client; project: string | null;
         revision: string; fingerprint: string; source_path: string; source_id: string; resource_kind: ResourceUsageEvent["kind"];
         resource_name: string | null; resource_name_descriptor: string | null; resource_server: string | null; resource_path: string | null; file_paths: string | null; resources: string | null;
         tool: string | null; occurred_at: string | null; status: ResourceUsageEvent["status"]; duration_ms: number | null;
@@ -688,6 +690,7 @@ export class SessionStore {
           ...(row.resource_name_descriptor ? { nameDescriptor: JSON.parse(row.resource_name_descriptor) } : {}), server: row.resource_server ?? undefined,
           path: row.resource_path ?? undefined }, resources: row.resources ? JSON.parse(row.resources) : undefined });
         for (const [index, resource] of resources.entries()) {
+          if (row.message_kind === "context" && resource.kind !== "skill_read") continue;
           if (kind === "mcp" && resource.kind !== "mcp" || kind === "skill" && resource.kind === "mcp") continue;
           if (identity && (identity.kind === "mcp" ? resource.server !== identity.server : resource.name !== identity.name)) continue;
           const path = resource.path ?? (resource.kind === "mcp" || index > 0 ? undefined : skillPath
@@ -1795,7 +1798,8 @@ export class SessionStore {
           if (message.durationMs !== undefined) tool.durationMs = (tool.durationMs ?? 0) + message.durationMs;
           tools.set(name, tool);
         }
-        if (message.kind === "tool_call" || message.kind === "user" && message.resource?.kind === "skill_read") for (const usage of messageResources(message)) {
+        if (message.kind === "tool_call" || ["user", "context"].includes(message.kind) && message.resource?.kind === "skill_read") for (const usage of messageResources(message)) {
+          if (message.kind === "context" && usage.kind !== "skill_read") continue;
           const { path: _resourcePath, ...identity } = usage;
           const key = JSON.stringify(identity);
           const resource = resources.get(key) ?? { ...identity, count: 0 };

@@ -16,6 +16,8 @@ export interface SessionMessage {
   sessionId: string;
   ordinal: number;
   recordLine: number;
+  /** 同线程分段历史的消息保留其物理来源，行号仍属于该文件。 */
+  sourcePath?: string;
   turnId: string;
   kind: MessageKind;
   text: string;
