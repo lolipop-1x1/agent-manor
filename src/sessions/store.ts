@@ -1108,6 +1108,29 @@ export class SessionStore {
       ...(row.resource ? { resource: JSON.parse(row.resource) } : {}),
       ...(row.prompt_characters === null ? {} : { promptCharacters: row.prompt_characters }),
       ...(row.prompt_preview === null ? {} : { promptPreview: row.prompt_preview }) });
+    // 只有缺少原生请求的轮次补读轨迹；正文只在 SQLite 中判空，不搬运思考和工具内容。
+    const traceEvents = (events: WeeklyReviewEvent[], requests: OverviewSource["requests"]): WeeklyReviewEvent[] => {
+      const requested = new Set(requests.flatMap(request => request.usage.turnId ? [request.usage.turnId] : []));
+      const turns = [...new Set(events.filter(event => event.kind === "user" && !event.contextSource && event.resource?.kind !== "skill_read"
+        && !requested.has(event.turnId)).map(event => event.turnId))];
+      if (!turns.length) return events;
+      const rows = this.overviewStatement(`SELECT ${identityColumns},${endColumns},
+        json_extract(json,'$.occurredAt') AS occurred_at,json_extract(json,'$.contextSource') AS context_source,
+        json_extract(json,'$.operation.type') AS operation_type,
+        CASE WHEN kind IN ('thinking','assistant') AND ${replyBodySql} THEN 1 ELSE 0 END AS has_model_content
+        FROM session_messages WHERE revision=? AND copied IS NOT 1 AND turn_id IN (SELECT value FROM json_each(?))
+          AND (kind IN ('thinking','assistant','tool_call','tool_result') OR json_extract(json,'$.operation.type') IS NOT NULL)
+        ORDER BY ordinal,id`).all(revision, JSON.stringify(turns)) as (Pick<Row, "id" | "ordinal" | "turn_id" | "record_line" | "kind" | "final" | "final_evidence" | "final_at" | "finished_at" | "interrupted" | "call_id" | "occurred_at" | "context_source">
+          & { operation_type: NonNullable<SessionMessage["operation"]>["type"] | null; has_model_content: number })[];
+      const combined = new Map(events.map(event => [event.id, event]));
+      for (const row of rows) combined.set(row.id, { ...combined.get(row.id), id: row.id, sessionId, ordinal: row.ordinal,
+        turnId: row.turn_id, recordLine: row.record_line, kind: row.kind, hasReply: replies.has(row.id),
+        hasModelContent: row.has_model_content === 1, final: row.final ?? undefined, finalEvidence: row.final_evidence ?? undefined,
+        finalAt: row.final_at ?? undefined, finishedAt: row.finished_at ?? undefined, interrupted: row.interrupted === 1 || undefined,
+        callId: row.call_id ?? undefined, occurredAt: row.occurred_at ?? undefined, contextSource: row.context_source ?? undefined,
+        ...(row.operation_type === null ? {} : { operation: { type: row.operation_type } }) });
+      return [...combined.values()].sort((a, b) => a.ordinal - b.ordinal);
+    };
     const prefix = scope ? [scope.fromMs, scope.toMs] : [];
     const cachedBoundaries = scope?.boundaryEvents !== undefined;
     const cachedRows = scope?.boundaryEvents?.filter(event => event.kind === "user" || replies.has(event.id));
@@ -1119,7 +1142,10 @@ export class SessionStore {
       ${scope?.includeRounds === false ? "AND kind='user' AND usage_time_ms(json_extract(json,'$.occurredAt'))>=? AND usage_time_ms(json_extract(json,'$.occurredAt'))<?" : ""}
       ORDER BY ordinal,id`).all(...(cachedBoundaries ? [JSON.stringify(cachedRows!.map(event => [event.id, event.ordinal]))] : prefix), revision, JSON.stringify([...replies]),
         ...(scope?.includeRounds === false ? [scope.fromMs, scope.toMs] : [])) as Row[]).map(decode);
-    if (!scope) return { events: boundaryRows, requests: this.overviewRevisionRequests(revision, sessionId) };
+    if (!scope) {
+      const requests = this.overviewRevisionRequests(revision, sessionId);
+      return { events: traceEvents(boundaryRows, requests), requests };
+    }
     const inRange = (value?: string) => { const time = Date.parse(value ?? ""); return Number.isFinite(time) && time >= scope.fromMs && time < scope.toMs; };
     const selectedTurns = new Set(boundaryRows.filter(event => inRange(event.kind === "assistant" ? replyObservedAt(event) : event.occurredAt) && !event.contextSource
       && !(event.kind === "user" && event.resource?.kind === "skill_read")).map(event => event.turnId));
@@ -1213,7 +1239,8 @@ export class SessionStore {
         : `SELECT COUNT(*) FROM session_usage u WHERE revision=? AND ${copied ? this.eligibleUsageWhere() : "1"}
           AND usage_time_ms(json_extract(u.json,'$.occurredAt')) IS NULL`}) AS missing_requests`)
       .get(revision, revision, revision) as { compressions: number; missing_events: number; missing_requests: number };
-    return { events: [...boundaries, ...process].sort((a, b) => a.ordinal - b.ordinal), requests,
+    const events = [...boundaries, ...process].sort((a, b) => a.ordinal - b.ordinal);
+    return { events: scope.includeRounds === false ? events : traceEvents(events, requests), requests,
       activityDays, retainedCompressions: metadata.compressions, missingTimeEvents: metadata.missing_events, missingTimeRequests: metadata.missing_requests };
   }
 
@@ -1741,11 +1768,12 @@ export class SessionStore {
       }
       const replies = sessionId === id ? this.lastReplyIds(revision) : new Set<string>();
       const requestBranches = new Map<string, Pick<SessionMessage, "branchIds" | "currentBranch">>();
-      for (const row of this.database.prepare(`SELECT ${MESSAGE_COLUMNS},${sessionId === id ? "CASE WHEN kind='user' THEN text ELSE NULL END" : "NULL"} AS prompt_text
-        FROM session_messages WHERE revision=? AND copied IS NOT 1 ORDER BY ordinal,id`).iterate(revision) as Iterable<MessageMetadataRow & { prompt_text: string | null }>) {
+      for (const row of this.database.prepare(`SELECT ${MESSAGE_COLUMNS},${sessionId === id ? "CASE WHEN kind='user' THEN text ELSE NULL END" : "NULL"} AS prompt_text,
+        ${sessionId === id ? `CASE WHEN kind IN ('assistant','thinking') THEN ${replyBodySql} ELSE 0 END` : "0"} AS model_content
+        FROM session_messages WHERE revision=? AND copied IS NOT 1 ORDER BY ordinal,id`).iterate(revision) as Iterable<MessageMetadataRow & { prompt_text: string | null; model_content: number }>) {
         const message = decodeMessageMetadata(row);
-        if (sessionId === id && (["user", "assistant", "tool_call", "thinking"].includes(message.kind) || message.interrupted)) {
-          roundMessages.push({ ...message, hasReply: replies.has(message.id), ...(row.prompt_text !== null ? { text: row.prompt_text } : {}) });
+        if (sessionId === id && (["user", "assistant", "tool_call", "tool_result", "thinking"].includes(message.kind) || message.operation || message.interrupted)) {
+          roundMessages.push({ ...message, hasReply: replies.has(message.id), hasModelContent: Boolean(row.model_content), ...(row.prompt_text !== null ? { text: row.prompt_text } : {}) });
         }
         if (message.branchIds || message.currentBranch !== undefined) requestBranches.set(message.id, message);
         profile.messageCount += 1;

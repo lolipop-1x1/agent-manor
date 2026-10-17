@@ -22,6 +22,7 @@ const browser = async args => {
   return result.stdout;
 };
 const record = (ordinal, turnId, kind, text, extra = {}) => ({ id: `message-${ordinal}`, ordinal, recordLine: ordinal + 1, turnId, kind, text, ...extra });
+const recordedAt = (seconds = 0, daysAgo = 10) => { const value = new Date(); value.setDate(value.getDate() - daysAgo); value.setHours(9, 0, seconds, 0); return value.toISOString(); };
 let service;
 try {
   await mkdir(artifacts, { recursive: true });
@@ -40,24 +41,41 @@ try {
   };
   const sources = [
     source("parent", "合成平均指标", [
-      record(0, "first", "user", "修复 ", { occurredAt: "2026-10-05T09:00:00Z" }),
+      record(0, "first", "user", "修复 ", { occurredAt: recordedAt(0) }),
       record(1, "first", "user", "问题", { recordLine: 1 }),
-      record(2, "first", "assistant", "完成", { final: "explicit", occurredAt: "2026-10-05T09:01:00Z" }),
-      record(3, "second", "user", "检查", { occurredAt: "2026-10-05T09:02:00Z" }),
-      record(4, "second", "assistant", "完成", { final: "explicit", occurredAt: "2026-10-05T09:04:00Z" }),
+      record(2, "first", "assistant", "完成", { final: "explicit", occurredAt: recordedAt(60) }),
+      record(3, "second", "user", "检查", { occurredAt: recordedAt(120) }),
+      record(4, "second", "assistant", "完成", { final: "explicit", occurredAt: recordedAt(240) }),
       record(5, "context", "user", "自动注入文字", { contextSource: "client" }),
       record(6, "copied", "user", "继承文字", { copied: true }),
     ], [{ id: "a", turnId: "first", model: "synthetic-model", inputTokens: 100, cachedInputTokens: 80, cacheWriteTokens: 0, outputTokens: 10 },
       { id: "b", turnId: "first", model: "synthetic-model", inputTokens: 200, cachedInputTokens: 160, cacheWriteTokens: 0, outputTokens: 20 },
       { id: "c", turnId: "second" }]),
     source("child", "合成子会话", [
-      record(0, "first", "user", "子需求", { occurredAt: "2026-10-05T09:00:00Z" }),
-      record(1, "first", "assistant", "完成", { final: "explicit", occurredAt: "2026-10-05T09:10:00Z" }),
+      record(0, "first", "user", "子需求", { occurredAt: recordedAt(0) }),
+      record(1, "first", "assistant", "完成", { final: "explicit", occurredAt: recordedAt(600) }),
     ], [{ id: "child-a", turnId: "first" }], { parentSessionId: "parent", relationship: "child" }),
     source("pending", "合成未结束", [record(0, "first", "user", "继续"), record(1, "first", "assistant", "处理中", { final: "inferred" })], []),
+    source("trace", "合成轨迹估算", [
+      record(0, "first", "user", "检查轨迹", { occurredAt: recordedAt(0, 1) }),
+      record(1, "first", "reasoning", "先分析"),
+      record(2, "first", "assistant", "开始处理"),
+      record(3, "first", "context", "普通上下文"),
+      record(4, "first", "assistant", "继续同一输出段"),
+      record(5, "first", "context", "原生查看卡片", { operation: { type: "view", presentationComplete: true } }),
+      record(6, "first", "context", "并行查看卡片", { operation: { type: "view", presentationComplete: true } }),
+      record(7, "first", "reasoning", "读完再分析"),
+      record(8, "first", "assistant", "准备验证"),
+      record(9, "first", "tool_call", "验证", { callId: "synthetic-check", tool: "check" }),
+      record(10, "first", "tool_result", "验证结果", { callId: "synthetic-check", tool: "check" }),
+      record(11, "first", "assistant", "验证完成", { final: "explicit", occurredAt: recordedAt(60, 1) }),
+      record(12, "second", "user", "再确认", { occurredAt: recordedAt(120, 1) }),
+      record(13, "second", "reasoning", "复制的分析", { copied: true }),
+      record(14, "second", "assistant", "已确认", { final: "explicit", occurredAt: recordedAt(240, 1) }),
+    ], [], { client: "doubao-work", sourceId: "doubao-work:trace" }),
     source("zero", "合成零值", [
-      record(0, "first", "user", " \n", { occurredAt: "2026-10-05T09:00:00Z" }),
-      record(1, "first", "assistant", "完成", { final: "explicit", occurredAt: "2026-10-05T09:00:00Z" }),
+      record(0, "first", "user", " \n", { occurredAt: recordedAt(0) }),
+      record(1, "first", "assistant", "完成", { final: "explicit", occurredAt: recordedAt(0) }),
     ], [{ id: "zero-a", turnId: "first" }]),
   ];
   store.publish(store.createJob().id, sources, []);
@@ -70,6 +88,16 @@ try {
   assert.deepEqual(own.roundMetrics, { userTurns: 2, completedTurns: 2, stepTurns: 2, timedTurns: 2, promptInputs: 2,
     averageSteps: 1.5, averageDurationMs: 90_000, averagePromptCharacters: 3 });
   assert.deepEqual(tree.roundMetrics, own.roundMetrics);
+  const trace = await (await fetch(`${base}/api/v1/sessions/trace/profile?summary=true`)).json();
+  assert.equal(trace.roundMetrics.averageSteps, 2);
+  assert.equal(trace.roundMetrics.estimatedStepTurns, 2);
+  assert.equal(trace.usage.requests, 0);
+  assert.equal(trace.usage.inputTokens, null);
+  assert.equal(trace.usage.outputTokens, null);
+  const review = await (await fetch(`${base}/api/v1/overview/review`)).json();
+  assert.equal(review.rounds.steps.average, 2);
+  assert.equal(review.rounds.steps.estimatedSamples, 2);
+
   await browser(["open", `${base}/#sessions`, "--headed", "--browser=chrome"]);
   const verify = async page => {
     const checks = [];
@@ -98,7 +126,7 @@ try {
     await button("轮次与提示词统计口径").click();
     const help = page.getByRole("dialog", { name: "轮次与提示词统计口径", exact: true });
     await help.waitFor();
-    ensure((await help.innerText()).includes("用户轮次 2，明确结束 2") && (await help.innerText()).includes("2 次真实用户输入"), "帮助提供同一统计范围的样本数");
+    ensure((await help.innerText()).includes("用户轮次 2，有回复 2") && (await help.innerText()).includes("2 次真实用户输入"), "帮助提供同一统计范围的样本数");
     await help.press("Escape");
     await page.waitForFunction(() => document.activeElement?.getAttribute("aria-label") === "轮次与提示词统计口径");
     ensure(await button("轮次与提示词统计口径").evaluate(element => element === document.activeElement), "关闭帮助恢复焦点");
@@ -114,7 +142,16 @@ try {
     await page.getByRole("button", { name: /^合成未结束 Codex/ }).click();
     await page.getByRole("heading", { name: "合成未结束", exact: true }).waitFor();
     await page.waitForLoadState("networkidle");
-    ensure(await row("平均模型步骤").innerText() === "—" && await row("平均轮次耗时").innerText() === "—" && await row("平均提示词字数").innerText() === "2", "未确认结束显示空值且仍统计用户输入");
+    ensure(await row("平均模型步骤").innerText() === "≈ 1" && await row("平均轮次耗时").innerText() === "—" && await row("平均提示词字数").innerText() === "2", "无请求的已保存回复估算一步且未知耗时保留空值");
+    await page.getByRole("button", { name: /^合成轨迹估算 豆包工作/ }).click();
+    await page.getByRole("heading", { name: "合成轨迹估算", exact: true }).waitFor();
+    await page.waitForLoadState("networkidle");
+    ensure(await row("平均模型步骤").innerText() === "≈ 2", "连续输出合并且原生操作和工具分隔后按两轮均值估算");
+    ensure(await row("平均轮次耗时").innerText() === "1.5分钟", "轨迹估算不改变明确消息的轮次耗时");
+    ensure(await page.getByRole("tab", { name: "用量", exact: true }).count() === 0, "轨迹估算不制造请求用量页签");
+    await button("轮次与提示词统计口径").click(); await help.waitFor();
+    ensure((await help.innerText()).includes("2 轮按执行轨迹估算") && (await help.innerText()).includes("不等于完整 API 请求数"), "中文帮助披露轨迹样本与 API 边界");
+    await help.press("Escape");
     await page.getByRole("button", { name: /^合成零值 Codex/ }).click();
     await page.getByRole("heading", { name: "合成零值", exact: true }).waitFor();
     await page.waitForLoadState("networkidle");
@@ -130,17 +167,52 @@ try {
     await englishHelp.waitFor();
     ensure((await englishHelp.innerText()).includes("User turns: 2"), "英文帮助提供样本");
     await englishHelp.press("Escape");
+    await page.getByRole("button", { name: /^合成轨迹估算 Doubao Work/ }).click();
+    await page.getByRole("heading", { name: "合成轨迹估算", exact: true }).waitFor();
+    await page.waitForLoadState("networkidle");
+    ensure(await row("Avg. model steps").innerText() === "≈ 2", "英文轨迹估算保持相同数值与估算标识");
+    await button("Turn and prompt statistics").click(); await englishHelp.waitFor();
+    ensure((await englishHelp.innerText()).includes("2 turns use execution-trace estimates") && (await englishHelp.innerText()).includes("not the full API request count"), "英文帮助披露轨迹估算来源");
+    await englishHelp.press("Escape");
     await button("Appearance").click(); await page.getByRole("combobox", { name: "Display mode", exact: true }).click();
     await page.getByRole("option", { name: "Dark", exact: true }).click(); await page.getByRole("dialog", { name: "Appearance", exact: true }).press("Escape");
     await page.setViewportSize({ width: 390, height: 844 });
     await button("Session statistics").click();
     await row("Avg. model steps").waitFor();
-    ensure(await row("Avg. prompt characters").isVisible(), "窄屏画像显示三个指标");
+    ensure(await row("Avg. prompt characters").isVisible() && await row("Avg. model steps").innerText() === "≈ 2", "窄屏画像显示轨迹估算和其他指标");
     ensure(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), "窄屏没有页面横向溢出");
     await button("Turn and prompt statistics").click(); await englishHelp.waitFor();
     ensure(await englishHelp.evaluate(element => { const box = element.getBoundingClientRect(); return box.left >= 0 && box.right <= innerWidth && box.bottom <= innerHeight; }), "窄屏帮助位于视口内");
     await page.screenshot({ path: ARTIFACTS + "/mobile-dark-en.png" });
     await englishHelp.press("Escape");
+    await page.setViewportSize({ width: 1280, height: 900 });
+    await page.goto(page.url().split("#")[0] + "#overview");
+    await page.locator(".weekly-review[aria-busy='false'] .weekly-review-groups").waitFor();
+    const weeklySteps = page.locator(".weekly-review-metric").filter({ has: page.getByText("Average model steps", { exact: true }) });
+    ensure(await weeklySteps.locator("strong").innerText() === "≈ 2", "七天复盘步骤均值独立按轨迹估算样本标约数");
+    await weeklySteps.click();
+    await page.locator(".weekly-review-dialog .overview-investigation-body[aria-busy='false']").waitFor();
+    const stepCells = await page.locator(".weekly-review-records tbody tr td:nth-child(3)").allTextContents();
+    ensure(stepCells.length === 2 && stepCells.every(value => /^≈ [13]$/.test(value)), "七天逐轮步骤保留轨迹估算标识");
+    ensure((await page.locator(".weekly-review-summary").innerText()).includes("≈ 2"), "七天步骤明细摘要保留估算标识");
+    await button("Statistics").click();
+    const distribution = page.locator(".weekly-review-distribution tbody tr").filter({ has: page.getByText("Model steps", { exact: true }) });
+    const distributionCells = await distribution.locator("td").allTextContents();
+    ensure(distributionCells.slice(1, 5).every(value => value.startsWith("≈ ")) && distributionCells[5] === "2", "七天步骤均值中位P90最大值标估算，样本数保持精确");
+    await page.locator(".weekly-review-dialog").getByRole("button", { name: "Insight definitions", exact: true }).click();
+    const weeklyHelp = page.getByRole("dialog", { name: "Insight definitions", exact: true }); await weeklyHelp.waitFor();
+    ensure((await weeklyHelp.innerText()).includes("2 step samples use execution-trace estimates"), "七天复盘帮助显示独立估算样本");
+    await weeklyHelp.press("Escape"); await page.keyboard.press("Escape");
+    await button("Display language").click(); await page.getByRole("menuitemradio", { name: "Simplified Chinese", exact: true }).click();
+    const chineseWeeklySteps = page.locator(".weekly-review-metric").filter({ has: page.getByText("平均模型步骤", { exact: true }) });
+    await chineseWeeklySteps.waitFor();
+    ensure(await chineseWeeklySteps.locator("strong").innerText() === "≈ 2", "七天复盘中文保持估算标识与同一数值");
+    await chineseWeeklySteps.click(); await page.locator(".weekly-review-dialog .overview-investigation-body[aria-busy='false']").waitFor();
+    await page.locator(".weekly-review-dialog").getByRole("button", { name: "洞察口径", exact: true }).click();
+    const chineseWeeklyHelp = page.getByRole("dialog", { name: "洞察口径", exact: true }); await chineseWeeklyHelp.waitFor();
+    ensure((await chineseWeeklyHelp.innerText()).includes("2 个步骤样本按执行轨迹估算"), "七天复盘中文帮助解释轨迹来源");
+    await page.screenshot({ path: ARTIFACTS + "/weekly-trace-zh.png" });
+    await chineseWeeklyHelp.press("Escape"); await page.keyboard.press("Escape");
     return { checks, count: checks.length };
   };
   const output = await browser(["run-code", verify.toString().replaceAll("ARTIFACTS", JSON.stringify(artifacts))]);

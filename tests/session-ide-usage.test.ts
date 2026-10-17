@@ -166,12 +166,13 @@ test("IDE 明确原生请求即使 Token 缺失也计步骤，m017 不阻断轮�
   assert.deepEqual(sample.usages.map(x => x.occurredAt), [new Date(messages[1]!.ts).toISOString(), new Date(messages[3]!.ts).toISOString()]);
 }));
 
-test("IDE 没有原生请求组的留存回复不补成模型步骤", async () => fixture(async (directory, put) => {
+test("IDE 没有原生请求组时从留存回复估算步骤，不补造请求", async () => fixture(async (directory, put) => {
   put("composer_data.sqlite", "composerData:session", { sessionId: "session", localMessages: [messages[0]!, messages[2]!] });
   const sample = await collect(directory);
   const { completeRoundSource, summarizeRoundMetrics } = await import("../src/sessions/round-metrics.js");
   assert.equal(sample.usages.length, 0);
   const metrics = summarizeRoundMetrics(sample.messages, sample.usages, completeRoundSource(sample.meta.gaps));
-  assert.equal(metrics.averageSteps, null);
+  assert.equal(metrics.averageSteps, 1);
+  assert.equal(metrics.estimatedStepTurns, 1);
   assert.equal(metrics.averageDurationMs, 2_000);
 }));

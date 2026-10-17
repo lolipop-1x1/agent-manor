@@ -30,6 +30,8 @@ test("上下文快照独立持久化，画像及跨周回复耗时在原始和�
     const profile = store.profile(meta.id);
     assert.deepEqual(profile.contextSnapshots, [{ ...context, sessionId: meta.id }]);
     assert.equal(profile.roundMetrics?.averageDurationMs, 90_000);
+    assert.equal(profile.roundMetrics?.averageSteps, 1);
+    assert.equal(profile.roundMetrics?.estimatedStepTurns, 1);
     assert.equal(profile.usage.requests, 0);
     assert.equal(profile.usage.inputTokens, null);
     assert.equal(profile.usage.peakContextTokens, null, "独立窗口快照不混入逐请求峰值");

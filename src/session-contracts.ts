@@ -302,6 +302,7 @@ export interface SessionRoundMetrics {
   completedTurns: number;
   inferredTurns?: number;
   inferredStepTurns?: number;
+  estimatedStepTurns?: number;
   inferredTimedTurns?: number;
   stepTurns: number;
   timedTurns: number;

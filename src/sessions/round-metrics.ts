@@ -1,7 +1,7 @@
 import type { Gap } from "../contracts.js";
 import type { SessionMessage, SessionRoundMetrics, SessionUsage } from "../session-contracts.js";
 
-export type RoundMessage = Omit<SessionMessage, "text" | "sessionId"> & { text?: string; hasReply?: boolean };
+export type RoundMessage = Omit<SessionMessage, "text" | "sessionId"> & { text?: string; hasReply?: boolean; hasModelContent?: boolean };
 type RoundRequest = Pick<SessionUsage, "id"> & Partial<Omit<SessionUsage, "id">>;
 export interface RoundFact {
   turnId: string;
@@ -11,6 +11,7 @@ export interface RoundFact {
   completion: "explicit" | "inferred" | "unconfirmed";
   eligible: boolean;
   steps: number | null;
+  stepsEstimated?: boolean;
   toolCalls: number;
   tokens: number | null;
   durationMs: number | null;
@@ -58,9 +59,21 @@ export function replyObservedAt(message?: Pick<SessionMessage, "occurredAt" | "f
 export function deriveRoundFacts(messages: Iterable<RoundMessage>, requests: Iterable<RoundRequest>, complete = true): { rounds: RoundFact[]; unassigned: number } {
   const starts = new Map<string, RoundMessage>(), ends = new Map<string, RoundMessage>();
   const identities = new Map<string, string>(), tools = new Map<string, number>();
-  for (const message of messages) {
-    if (message.copied || !message.turnId) continue;
+  const traces = new Map<string, { open: boolean; starts: number[] }>(), seenMessages = new Set<string>();
+  for (const message of [...messages].sort((left, right) => left.ordinal - right.ordinal || left.id.localeCompare(right.id))) {
+    if (message.copied || !message.turnId || seenMessages.has(message.id)) continue;
+    seenMessages.add(message.id);
     identities.set(message.id, message.turnId);
+    if (!message.contextSource) {
+      const trace = traces.get(message.turnId) ?? { open: false, starts: [] };
+      traces.set(message.turnId, trace);
+      if (message.operation || message.kind === "tool_call" || message.kind === "tool_result"
+        || message.kind === "user" && isRoundActivityEvent(message)) trace.open = false;
+      if (["thinking", "assistant"].includes(message.kind) && (message.hasModelContent ?? Boolean(message.text?.trim()))) {
+        if (!trace.open) trace.starts.push(message.ordinal);
+        trace.open = true;
+      }
+    }
     if (!isRoundActivityEvent(message)) continue;
     if (message.kind === "user" && (!starts.has(message.turnId) || message.ordinal < starts.get(message.turnId)!.ordinal)) starts.set(message.turnId, message);
     const hasReply = message.hasReply ?? (message.text?.trim().length ?? 0) > 0;
@@ -84,7 +97,11 @@ export function deriveRoundFacts(messages: Iterable<RoundMessage>, requests: Ite
     const completion = end ? end.final ?? "inferred" : "unconfirmed", eligible = end !== undefined;
     const endedAt = replyObservedAt(end);
     const startTime = Date.parse(start.occurredAt ?? ""), endTime = Date.parse(endedAt ?? "");
-    return { turnId, start, end, endedAt, completion, eligible, steps: complete && values.length ? values.length : null, toolCalls: tools.get(turnId) ?? 0,
+    // 轨迹仅估算已留存模型输出段，不生成请求，也不覆盖已有请求的边界缺口。
+    const traceSteps = end ? traces.get(turnId)?.starts.filter(ordinal => ordinal >= start.ordinal && ordinal <= end.ordinal).length ?? 0 : 0;
+    const estimated = values.length === 0 && traceSteps > 0;
+    return { turnId, start, end, endedAt, completion, eligible, steps: complete && values.length ? values.length : estimated ? traceSteps : null,
+      ...(estimated ? { stepsEstimated: true } : {}), toolCalls: tools.get(turnId) ?? 0,
       tokens: complete && values.length && values.every(request => token(request.inputTokens) && token(request.outputTokens))
         ? values.reduce((sum, request) => sum + request.inputTokens! + request.outputTokens!, 0) : null,
       durationMs: Number.isFinite(startTime) && Number.isFinite(endTime) && endTime >= startTime ? endTime - startTime : null };
@@ -102,8 +119,10 @@ export function summarizeRoundMetrics(messages: Iterable<RoundMessage>, requests
   const eligible = rounds.filter(round => round.eligible), steps = eligible.filter(round => round.steps !== null), timed = eligible.filter(round => round.durationMs !== null);
   const inferred = eligible.filter(round => round.completion === "inferred").length;
   const inferredSteps = steps.filter(round => round.completion === "inferred").length, inferredTimed = timed.filter(round => round.completion === "inferred").length;
+  const estimatedSteps = steps.filter(round => round.stepsEstimated).length;
   return { userTurns: rounds.length, completedTurns: eligible.length, stepTurns: steps.length, timedTurns: timed.length, promptInputs: prompts.size,
     ...(inferred ? { inferredTurns: inferred } : {}), ...(inferredSteps ? { inferredStepTurns: inferredSteps } : {}), ...(inferredTimed ? { inferredTimedTurns: inferredTimed } : {}),
+    ...(estimatedSteps ? { estimatedStepTurns: estimatedSteps } : {}),
     averageSteps: steps.length ? steps.reduce((sum, round) => sum + round.steps!, 0) / steps.length : null,
     averageDurationMs: timed.length ? timed.reduce((sum, round) => sum + round.durationMs!, 0) / timed.length : null,
     averagePromptCharacters: prompts.size ? [...prompts.values()].reduce((sum, count) => sum + count, 0) / prompts.size : null };

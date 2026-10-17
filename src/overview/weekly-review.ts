@@ -30,7 +30,7 @@ function roundRecord(session: SessionSummary, round: WeeklyRoundFact): WeeklyRev
     ...(round.title ? { titleOrigin: "first_user" } : {}), turnId: round.turnId, messageId: round.messageId,
     startedAt: round.startedAt, endedAt: round.endedAt, occurredAt: round.endedAt ?? round.startedAt, completion: round.completion,
     eligible: round.eligible ?? round.completion === "explicit", finalEvidence: round.finalEvidence,
-    steps: round.steps ?? undefined, toolCalls: round.toolCalls, tokens: round.tokens, durationMs: round.durationMs });
+    steps: round.steps ?? undefined, ...(round.stepsEstimated ? { stepsEstimated: true } : {}), toolCalls: round.toolCalls, tokens: round.tokens, durationMs: round.durationMs });
 }
 type RequestRecord = WeeklyReviewRecord & { state: "zero" | "partial" | "full" | "unknown" };
 function requestRecord(session: SessionSummary, request: OverviewRequest, pricing: PricingView, title?: string, prices?: Map<string, NonNullable<WeeklyReviewRecord["cost"]>["price"]>): RequestRecord {
@@ -116,7 +116,8 @@ export function buildWeeklyReview(facts: WeeklySessionFacts[], query: OverviewQu
   const distribution = (key: "steps" | "toolCalls" | "tokens" | "durationMs") => {
     const result = weeklyDistribution(endedRounds.map(row => row[key]));
     const inferredSamples = endedRounds.filter(row => row.completion === "inferred" && row[key] != null).length;
-    return { ...result, ...(inferredSamples ? { inferredSamples } : {}) };
+    const estimatedSamples = key === "steps" ? endedRounds.filter(row => row.stepsEstimated && row.steps != null).length : 0;
+    return { ...result, ...(inferredSamples ? { inferredSamples } : {}), ...(estimatedSamples ? { estimatedSamples } : {}) };
   };
   const inferredRounds = allRounds.filter(round => round.completion === "inferred" && inPeriod(round.endedAt, range, timezone));
   const missingEndTime = startedRounds.filter(round => round.completion !== "unconfirmed" && !round.endedAt);

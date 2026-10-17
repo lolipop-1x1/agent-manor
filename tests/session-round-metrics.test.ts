@@ -36,7 +36,8 @@ test("原生消息结束时间修正观测耗时但不提升终答和请求证�
   assert.equal(fact.completion, "inferred");
   assert.equal(fact.end?.final, undefined);
   assert.equal(fact.end?.finalEvidence, undefined);
-  assert.equal(fact.steps, null);
+  assert.equal(fact.steps, 1);
+  assert.equal(fact.stepsEstimated, true);
   for (const finishedAt of [undefined, "invalid", "2026-10-05T08:59:59Z"]) {
     rows[1]!.finishedAt = finishedAt;
     assert.equal(deriveRoundFacts(rows, []).rounds[0]!.durationMs, 1_000);
@@ -113,16 +114,17 @@ test("复制记录、明确注入、技能读取和工具结果不计用户轮�
     averageSteps: null, averageDurationMs: null, averagePromptCharacters: null });
 });
 
-test("明确结束但缺少请求关联不当作零步骤，缺失或倒序时间不当作零耗时", () => {
+test("缺请求时从回复估算步骤，缺失或倒序时间不当作零耗时", () => {
   const result = summarizeRoundMetrics([
     message(0, "missing"), final(1, "missing", "2026-10-05T09:00:00Z"),
     message(2, "invalid", { occurredAt: "invalid" }), final(3, "invalid", "2026-10-05T09:00:00Z"),
     message(4, "reversed", { occurredAt: "2026-10-05T10:00:00Z" }), final(5, "reversed", "2026-10-05T09:00:00Z"),
   ], []);
   assert.equal(result.completedTurns, 3);
-  assert.equal(result.stepTurns, 0);
+  assert.equal(result.stepTurns, 3);
+  assert.equal(result.estimatedStepTurns, 3);
   assert.equal(result.timedTurns, 0);
-  assert.equal(result.averageSteps, null);
+  assert.equal(result.averageSteps, 1);
   assert.equal(result.averageDurationMs, null);
 });
 

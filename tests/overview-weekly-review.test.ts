@@ -326,7 +326,7 @@ test("后台复盘跳过年范围准备，重复和重启缓存复用，价格�
     const persisted = new Database(join(directory, "overview-results.sqlite"));
     try {
       const cached = persisted.prepare("SELECT key,json FROM overview_results WHERE json_extract(key,'$[1]')='review'").get() as { key: string; json: string };
-      assert.equal(JSON.parse(cached.key)[0], "weekly-review-v15");
+      assert.equal(JSON.parse(cached.key)[0], "weekly-review-v16");
       const incomplete = JSON.parse(cached.json); delete incomplete.sessions.roundsPerSession;
       persisted.prepare("UPDATE overview_results SET json=? WHERE key=?").run(JSON.stringify(incomplete), cached.key);
     } finally { persisted.close(); }
@@ -608,7 +608,7 @@ test("无请求用量的执行仍算活跃，规则升级重算一次后复用�
   try {
     for (const row of database.prepare("SELECT revision,json FROM weekly_revisions").all() as { revision: string; json: string }[]) {
       const metadata = JSON.parse(row.json); metadata.activityDays = [];
-      database.prepare("UPDATE weekly_revisions SET format=5,json=? WHERE revision=?").run(JSON.stringify(metadata), row.revision);
+      database.prepare("UPDATE weekly_revisions SET format=12,json=? WHERE revision=?").run(JSON.stringify(metadata), row.revision);
     }
   } finally { database.close(); }
   const read = store.weeklyReviewRevisionFacts;
@@ -793,4 +793,77 @@ test("按回复时间无需补查请求结束记录，旧请求不搬运", async
     assert.equal(report.rounds.durationMs.average, 60000);
     assert.equal(materialized, 0, "不为回复边界读取额外请求结束元信息");
   } finally { facts.close(); Database.prototype.prepare = prepare; }
+}));
+
+test("无请求轮次按完整轨迹估算，原始和既有窄缓存一致且不制造请求用量", async () => fixture(async (store, directory) => {
+  const at = "2026-10-07T01:00:00Z", end = "2026-10-07T01:01:00Z";
+  const records = [
+    message("trace", "u", 1, at),
+    message("trace", "thinking", 2, at, { kind: "thinking", text: "分析" }),
+    message("trace", "assistant", 3, at, { kind: "assistant", text: "说明" }),
+    message("trace", "context", 4, at, { kind: "context", text: "普通上下文" }),
+    message("trace", "continued", 5, at, { kind: "thinking", text: "继续分析" }),
+    message("trace", "operation-a", 6, at, { kind: "context", operation: { type: "view" }, text: "并行操作甲" }),
+    message("trace", "operation-b", 7, at, { kind: "context", operation: { type: "view" }, text: "并行操作乙" }),
+    message("trace", "next-thinking", 8, at, { kind: "thinking", text: "第二段" }),
+    message("trace", "result", 9, at, { kind: "tool_result", text: "工具正文".repeat(1000) }),
+    message("trace", "last-thinking", 10, at, { kind: "thinking", text: "第三段" }),
+    message("trace", "injected", 11, at, { kind: "assistant", text: "注入", contextSource: "client" }),
+    message("trace", "copied", 12, at, { kind: "assistant", text: "复制", copied: true }),
+    message("trace", "blank", 13, at, { kind: "assistant", text: "\u3000\u00a0\n\t" }),
+    message("trace", "end", 14, end, { kind: "assistant", text: "第三段终答", final: "explicit" }),
+    message("trace", "second-u", 15, at, { turnId: "second" }),
+    message("trace", "second-end", 16, end, { turnId: "second", kind: "assistant", text: "推断结束" }),
+    message("trace", "pending-u", 17, at, { turnId: "pending" }),
+    message("trace", "pending-thinking", 18, end, { turnId: "pending", kind: "thinking", text: "还在思考" }),
+  ];
+  const nativeRecords = [message("native", "u", 1, at),
+    message("native", "thinking", 2, at, { kind: "thinking" }),
+    message("native", "end", 3, end, { kind: "assistant", final: "explicit" })];
+  const request = (id: string) => usage(id, at, { inputTokens: undefined, outputTokens: undefined, cachedInputTokens: undefined });
+  const sources = [revision(store, "trace", records, [], { client: "doubao-work" }),
+    revision(store, "native", nativeRecords, [request("native-a"), request("native-b")]),
+    revision(store, "partial", nativeRecords.map(row => ({ ...row, sessionId: "partial" })), [request("partial-a")],
+      { gaps: [{ kind: "ambiguous", message: "合成请求身份缺口", messageDescriptor: { key: "diagnostics.sessions.parserUsage.m003" } }] })];
+  const version = store.publish(store.createJob().id, sources, []), query = { version, timezone: "UTC", anchorDay: "2026-10-12" };
+  let expected: ReturnType<typeof buildWeeklyReview> | undefined;
+  const check = async (name: string) => {
+    const factsStore = new WeeklyReviewFactStore(store, join(directory, name));
+    const read = store.weeklyReviewRevisionFacts.bind(store), projected: ReturnType<SessionStore["weeklyReviewRevisionFacts"]>[] = [];
+    store.weeklyReviewRevisionFacts = (...args) => { const result = read(...args); projected.push(result); return result; };
+    try {
+      const source = await factsStore.source(query, now), data = buildWeeklyReview(source.facts, query, pricing, now);
+      const trace = source.facts.find(fact => fact.session.id === "trace")!;
+      assert.deepEqual(trace.rounds.map(round => [round.turnId, round.steps, !!round.stepsEstimated, round.eligible]).sort((a, b) => String(a[0]).localeCompare(String(b[0]))),
+        [["pending", null, false, false], ["second", 1, true, true], ["turn", 3, true, true]]);
+      assert.equal(source.facts.find(fact => fact.session.id === "native")!.rounds[0]!.steps, 2, "原生请求优先于一个可见输出段");
+      assert.equal(source.facts.find(fact => fact.session.id === "native")!.rounds[0]!.stepsEstimated, undefined);
+      assert.equal(source.facts.find(fact => fact.session.id === "partial")!.rounds[0]!.steps, null, "不以轨迹覆盖原生身份缺口");
+      assert.equal(data.review.rounds.steps.average, 2);
+      assert.equal(data.review.rounds.steps.samples, 3);
+      assert.equal(data.review.rounds.steps.missing, 1);
+      assert.equal(data.review.rounds.steps.estimatedSamples, 2);
+      assert.equal(data.review.rounds.steps.inferredSamples, 1, "步骤估算与结束推断分别统计");
+      assert.equal(data.review.rounds.tokens.samples, 0);
+      assert.equal(data.review.rounds.tokens.estimatedSamples, undefined);
+      assert.equal(data.review.cache.requests, 3);
+      assert.equal(trace.requests.length, 0);
+      assert.equal(trace.rounds[0]!.tokens, null);
+      const detail = weeklyReviewDetail(data, { kind: "rounds", filter: "ended" });
+      assert.equal(detail.rows.find(row => row.sessionId === "trace" && row.turnId === "turn")!.stepsEstimated, true);
+      assert.equal(detail.rows.find(row => row.sessionId === "native")!.stepsEstimated, undefined);
+      const projectedTrace = projected.find(fact => fact.events.some(event => event.sessionId === "trace"))!;
+      assert.deepEqual(projectedTrace.events.filter(event => event.operation).map(event => event.id), ["operation-a", "operation-b"]);
+      assert(projectedTrace.events.some(event => event.id === "result"), "工具结果保留输出段边界");
+      assert(projectedTrace.events.some(event => event.id === "thinking" && event.hasModelContent));
+      assert(!projectedTrace.events.some(event => "text" in event), "窄投影不返回模型和工具正文");
+      if (expected) { assert.deepEqual(data.review, expected.review); assert.deepEqual(data.rows, expected.rows); }
+      else expected = data;
+      assert.deepEqual(buildWeeklyReview((await factsStore.source(query, now)).facts, query, pricing, now).review, data.review);
+    } finally { factsStore.close(); store.weeklyReviewRevisionFacts = read; }
+  };
+  await check("trace-raw.sqlite");
+  const overview = new OverviewFactStore(store);
+  try { await overview.prepare(query, now); } finally { overview.close(); }
+  await check("trace-cached.sqlite");
 }));

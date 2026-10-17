@@ -13,6 +13,8 @@ Status: resolved
 
 ## 当前前沿
 
+[12 从执行轨迹估算模型步骤](issues/12-trace-step-estimate.md) 已完成。所有客户端采用原生请求优先、缺请求时按连续模型输出段估算，画像与七天复盘共用算法，独立标记估算来源。相关 492 项、Chrome 32 项、真实豆包与 Codex 回读、独立提交副本验证及两轴审查通过。
+
 [11 跨客户端统一用量画像](issues/11-unified-usage.md) 已完成。所有来源共用 Token 用量摘要和前六格，缺失保持未知；Codex 原生同事件占用与容量接入共享快照，保留请求计量和上下文占用各自口径。396 个 Codex 来源已升级，真实 API／浏览器、全量 1345 项、最终 UI 17 项、正式 Chrome 11 项及中英文请求／费用场景通过，独立两轴审查已复核。实现提交 `e61f6ca` 已推送 main 并回读一致，并行的其他工作区改动原样保留。
 
 [10 原生操作记录](issues/10-process-cards.md) 已完成。按已核验枚举恢复 18 张原生卡的共享操作元数据、轨迹及调用页独立分类统计和定位；上下文快照复用既有两列指标网格。生产刷新、真实浏览器、正式 Chrome 11 项及完整回归 1332 项通过，独立两轴审查无未处理发现。实现提交 `ea239a3` 已推送 main 并回读一致；请求、工具成功及费用边界保持独立。
@@ -36,6 +38,7 @@ Status: resolved
 - [09 元数据补齐](issues/09-metadata-coverage.md)：resolved；依赖 08。
 - [10 原生操作记录](issues/10-process-cards.md)：resolved；依赖 09。
 - [11 跨客户端统一用量画像](issues/11-unified-usage.md)：resolved；依赖 10。
+- [12 从执行轨迹估算模型步骤](issues/12-trace-step-estimate.md)：resolved；依赖 11。
 - [原生验收记录](validation.md)：真实缓存产品验证与合成 Chrome 7 项验收完成；缓存更新缺口仍保留。
 
 ## 本机证据边界

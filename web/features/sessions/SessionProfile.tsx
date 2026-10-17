@@ -190,13 +190,14 @@ export function SessionProfilePane({ active, profile, loading, error, includeChi
             <p>{t("sessions.profile.roundScopeHelp")}</p>
             <p>{t("sessions.profile.roundInferredHelp", { count: rounds.inferredTurns ?? 0 })}</p>
             <p>{t("sessions.profile.roundStepsHelp", { total: rounds.userTurns, ended: rounds.completedTurns, count: rounds.stepTurns })}</p>
+            <p>{t("sessions.profile.roundEstimatedStepsHelp", { count: rounds.estimatedStepTurns ?? 0 })}</p>
             <p>{t("sessions.profile.roundDurationHelp", { count: rounds.timedTurns, ended: rounds.completedTurns })}</p>
             <p>{t("sessions.profile.promptLengthHelp", { count: rounds.promptInputs })}</p>
           </HelpPopover>}
         </div></div>
           <div className="session-usage-grid compact"><div><strong>{formatCount(profile.messageCount)}</strong><span>{t("sessions.profile.messages")}</span></div><div><strong>{formatCount(profile.turnCount)}</strong><span>{t("sessions.timeline.turn")}</span></div>
             <div><strong>{formatCount(profile.estimate.total)}</strong><span>{t("sessions.profile.estimateTokens")}</span></div><div><strong>{profile.compressions > 0 ? <SessionEvidence kind="compression" profile={profile} onSelect={onFocusEvent}><button className="session-stat-link" aria-label={t("sessions.evidence.compressionCount", { count: profile.compressions })}>{formatCount(profile.compressions)}</button></SessionEvidence> : formatCount(profile.compressions)}</strong><span>{t("sessions.profile.compressions")}</span></div>
-            {rounds && <><div><strong>{rounds.averageSteps === null ? "—" : `${(rounds.inferredStepTurns ?? 0) > 0 ? "≈ " : ""}${number(rounds.averageSteps, { maximumFractionDigits: 1 })}`}</strong><span>{t("sessions.profile.averageSteps")}</span></div>
+            {rounds && <><div><strong>{rounds.averageSteps === null ? "—" : `${(rounds.inferredStepTurns ?? 0) > 0 || (rounds.estimatedStepTurns ?? 0) > 0 ? "≈ " : ""}${number(rounds.averageSteps, { maximumFractionDigits: 1 })}`}</strong><span>{t("sessions.profile.averageSteps")}</span></div>
               <div><strong>{roundDuration == null ? "—" : `${(rounds.inferredTimedTurns ?? 0) > 0 ? "≈ " : ""}${number(roundDuration / durationDivisor, { style: "unit", unit: durationUnit, unitDisplay: "short", maximumFractionDigits: 1 })}`}</strong><span>{t("sessions.profile.averageRoundDuration")}</span></div>
               <div><strong>{rounds.averagePromptCharacters === null ? "—" : number(rounds.averagePromptCharacters, { maximumFractionDigits: 1 })}</strong><span>{t("sessions.profile.averagePromptCharacters")}</span></div></>}
           </div>
