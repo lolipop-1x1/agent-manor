@@ -126,7 +126,7 @@ test("旧偏好默认关闭，独立与并发更新保留其他字段，失败�
   assert.deepEqual(await updatePreferences(home, { sessionsAutoRefreshInterval: 0, mapAutoRefreshInterval: 0 }), { language: "auto", sessionsAutoRefreshInterval: 0, mapAutoRefreshInterval: 0 });
 }));
 
-test("刷新间隔通过 HTTP 严格校验并持久化，设置本身不创建索引任务", async () => fixture(async directory => {
+test("刷新间隔通过 HTTP 严格校验并持久化，历史开关交给后台而地图不主动分析", async () => fixture(async directory => {
   const home = join(directory, "data");
   const service = await startService(options(directory, home));
   try {
@@ -144,7 +144,9 @@ test("刷新间隔通过 HTTP 严格校验并持久化，设置本身不创建�
     }
     const status = await apiRequest<StatusResponse>(service.instance, "/status");
     assert.equal(status.jobs.length, 0);
-    assert.equal(status.sessions?.job, undefined);
+    assert.ok(status.sessions?.job, "首次开启历史策略会立即提交全局检查");
+    assert.equal(status.sessions.job.client, undefined);
+    assert.equal(status.sessions.job.mode, "quick");
   } finally { await service.close(); }
 }));
 

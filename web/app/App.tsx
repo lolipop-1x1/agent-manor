@@ -20,7 +20,7 @@ import { Hint } from "../shared/ui/Hint";
 import "./navigation.css";
 
 export function App() {
-  const { language, appearance, refreshIntervals: { sessions: sessionsAutoRefreshInterval } } = useI18n();
+  const { language, appearance } = useI18n();
   const headerFrame = useRef<HTMLDivElement>(null);
   useLayoutEffect(() => {
     const frame = headerFrame.current;
@@ -94,10 +94,7 @@ export function App() {
   };
   const openOverviewUsage = (hash: string) => { overviewAddress.current = location.hash; activateView("usage"); location.hash = hash; };
   const theme = useTheme(appearance);
-  const historyReading = useRef(false);
-  const onHistoryReading = useCallback((reading: boolean) => { historyReading.current = reading; }, []);
-  const canCheckHistory = useCallback(() => !historyReading.current, []);
-  const history = useHistoryRefresh(sessionsAutoRefreshInterval, canCheckHistory);
+  const history = useHistoryRefresh();
   const openMapSession = (target: { sessionId: string; messageId?: string }) => {
     if (location.hash.startsWith("#usage")) usageAddress.current = location.hash;
     setSessionTarget(target); activateView("sessions");
@@ -122,7 +119,7 @@ export function App() {
       <div className="header-actions">
         <AutoRefreshControl scope="sessions" />
         <HistoryRefreshControl busy={history.updating} starting={history.starting} onRetry={history.retry}
-          job={history.job} error={history.error} onRefresh={options => void history.refresh(options)} />
+          job={history.job} autoSync={history.status?.autoSync} error={history.error} onRefresh={options => void history.refresh(options)} />
         <div className="header-display-actions">
           <LanguageMenu />
           <AppearanceMenu />
@@ -131,13 +128,13 @@ export function App() {
       </div>
     </header>
     <LanguageNotice />
-    {(history.error || !history.starting && history.job?.status === "failed") && <div className="history-error" role="alert"><span>{history.error ? t("common.history.errorDetail", { operation: t(`common.history.operation.${history.errorOperation}`), detail: errorMessage(history.error) }) : messageText(history.job?.errorDescriptor, history.job?.error ?? t("common.history.failed"))}</span><button className="text-button" onClick={history.retry}>{t("common.retry")}</button></div>}
+    {(history.error || !history.starting && (history.status?.autoSync?.error || history.job?.status === "failed")) && <div className="history-error" role="alert"><span>{history.error ? t("common.history.errorDetail", { operation: t(`common.history.operation.${history.errorOperation}`), detail: errorMessage(history.error) }) : history.status?.autoSync?.error ? messageText(history.status.autoSync.errorDescriptor, history.status.autoSync.error) : messageText(history.job?.errorDescriptor, history.job?.error ?? t("common.history.failed"))}</span><button className="text-button" onClick={history.retry}>{t("common.retry")}</button></div>}
     {map.maintenanceNotice}
     </div>
-    <section className="product-view" hidden={view !== "overview"} aria-label={t("overview.title")}><Overview historyRevision={history.revision} onHistoryReading={onHistoryReading} active={view === "overview"} onSession={openOverviewSession} onUsage={openOverviewUsage} onMap={openOverviewMap} /></section>
+    <section className="product-view" hidden={view !== "overview"} aria-label={t("overview.title")}><Overview historyRevision={history.revision} active={view === "overview"} onSession={openOverviewSession} onUsage={openOverviewUsage} onMap={openOverviewMap} /></section>
     {map.page}
-    <section className="product-view" hidden={view !== "sessions"} aria-label={t("codeMap.view.sessions")}><Sessions historyRevision={history.revision} onHistoryReading={onHistoryReading} historyUpdating={history.updating} onHistoryRefresh={options => void history.refresh(options)} onHistoryStatus={history.observeStatus} active={view === "sessions"} target={sessionTarget} onMap={openMap} /></section>
-    <section className="product-view" hidden={view !== "resources"} aria-label={t("codeMap.view.resources")}><Resources historyRevision={history.revision} onHistoryReading={onHistoryReading} active={view === "resources"} onSession={openResourceSession} /></section>
-    <section className="product-view" hidden={view !== "usage"} aria-label={t("usage.title")}><Usage historyRevision={history.revision} onHistoryReading={onHistoryReading} active={view === "usage"} onSession={openMapSession} /></section>
+    <section className="product-view" hidden={view !== "sessions"} aria-label={t("codeMap.view.sessions")}><Sessions historyRevision={history.revision} historyUpdating={history.updating} onHistoryRefresh={options => void history.refresh(options)} active={view === "sessions"} target={sessionTarget} onMap={openMap} /></section>
+    <section className="product-view" hidden={view !== "resources"} aria-label={t("codeMap.view.resources")}><Resources historyRevision={history.revision} active={view === "resources"} onSession={openResourceSession} /></section>
+    <section className="product-view" hidden={view !== "usage"} aria-label={t("usage.title")}><Usage historyRevision={history.revision} active={view === "usage"} onSession={openMapSession} /></section>
   </Tooltip.Provider>;
 }

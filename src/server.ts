@@ -28,7 +28,8 @@ import { ResourceManager } from "./resources/management.js";
 import { ResourceUsageManager } from "./resources/usage-manager.js";
 import { ResourceService } from "./resources/service.js";
 import { registerResourceRoutes } from "./service/resource-routes.js";
-import { readPreferences, registerPreferenceRoutes } from "./service/preferences.js";
+import { readPreferences, registerPreferenceRoutes, subscribePreferences } from "./service/preferences.js";
+import { SessionAutoSyncScheduler, type SessionAutoSyncClock } from "./service/session-auto-sync.js";
 import { compactIndexAtStartup } from "./index/maintenance.js";
 import { PricingService } from "./usage/pricing.js";
 import { registerUsageRoutes } from "./service/usage-routes.js";
@@ -46,6 +47,7 @@ export interface ServiceOptions {
   roots?: DiscoverRoots;
   staticRoot?: string;
   startupRefresh?: boolean;
+  sessionsAutoSyncClock?: SessionAutoSyncClock;
   resourceInventory?: ResourceInventoryOptions;
   usagePricing?: { fetch?: typeof globalThis.fetch; now?: () => Date };
 }
@@ -80,6 +82,8 @@ export async function startService(options: ServiceOptions = {}) {
   let overviewManager: OverviewManager | undefined;
   let searchManager: SessionSearchManager | undefined;
   let semanticManager: SemanticManager | undefined;
+  let autoSync: SessionAutoSyncScheduler | undefined;
+  let unsubscribePreferences: (() => void) | undefined;
   const app = Fastify({ logger: false, bodyLimit: 65_536, forceCloseConnections: true });
   const instance: ServiceInstance = { id: randomUUID(), pid: process.pid, host: "127.0.0.1", port: requestedPort, startedAt: new Date().toISOString() };
   try {
@@ -112,6 +116,21 @@ export async function startService(options: ServiceOptions = {}) {
       finally { request.raw.removeListener("aborted", cancel); reply.raw.removeListener("close", cancel); }
     };
     const worker = manager;
+    autoSync = new SessionAutoSyncScheduler(worker, library.globalCheckState(), options.sessionsAutoSyncClock);
+    const sync = autoSync;
+    let syncInterval = 0;
+    // 偏好损坏不能阻止显式语言覆盖或手动检查；保留原文件和偏好接口的真实错误。
+    try { syncInterval = (await readPreferences(home)).sessionsAutoRefreshInterval; }
+    catch { /* 无法读取策略时不安排后台自动检查。 */ }
+    unsubscribePreferences = subscribePreferences(home, preferences => {
+      syncInterval = preferences.sessionsAutoRefreshInterval;
+      sync.updateInterval(syncInterval);
+    });
+    const sessionStatus = (summary: boolean) => {
+      const active = worker.activeSessionJobs();
+      const job = active.find(candidate => candidate.status === "running") ?? active.find(candidate => candidate.status === "queued");
+      return { ...(summary ? library.statusSummary() : library.status()), ...(job ? { job } : {}), autoSync: sync.status() };
+    };
     resourceManager = new ResourceManager(home);
     pricing = new PricingService(home, options.usagePricing);
     usageManager = new UsageManager(library, pricing, join(home, "usage-rollups.sqlite"));
@@ -121,6 +140,8 @@ export async function startService(options: ServiceOptions = {}) {
     const resources = new ResourceService(library, management, options.resourceInventory ?? { environment: process.env }, () =>
       [...new Set([...index.listRepositories().map(repository => repository.path), ...library.status().projects])], resourceHistory);
     app.addHook("onClose", async () => {
+      unsubscribePreferences?.();
+      sync.close();
       await semanticManager?.close();
       await searchManager?.close();
       await resourceHistory?.close();
@@ -178,7 +199,7 @@ export async function startService(options: ServiceOptions = {}) {
     });
     registerPreferenceRoutes(app, home);
     app.get<{ Querystring: Record<string, unknown> }>("/api/v1/status", async request => ({ instance, version: VERSION, repositories: index.listRepositories(), jobs: index.listJobs(),
-      sessions: queryBoolean(request.query.summary, "summary") ? library.statusSummary() : library.status(), indexMaintenance, indexReclaim: worker.reclaimStatus }));
+      sessions: sessionStatus(queryBoolean(request.query.summary, "summary")), indexMaintenance, indexReclaim: worker.reclaimStatus }));
     app.post("/api/v1/stop", async (request, reply) => {
       emptyBody(request.body);
       reply.send({ stopping: true });
@@ -200,7 +221,7 @@ export async function startService(options: ServiceOptions = {}) {
       worker.deleteRepository(request.params.id);
       return { repositoryId: request.params.id };
     });
-    app.get<{ Querystring: Query }>("/api/v1/sessions/status", async request => queryBoolean(request.query.summary, "summary") ? library.statusSummary() : library.status());
+    app.get<{ Querystring: Query }>("/api/v1/sessions/status", async request => sessionStatus(queryBoolean(request.query.summary, "summary")));
     app.get("/api/v1/sessions/facets", async () => library.searchFacets());
     app.get<{ Querystring: Query }>("/api/v1/sessions/gaps", async request => library.indexGaps(textValue(request.query.version, "version")));
     app.get<{ Querystring: Query }>("/api/v1/sessions", async (request, reply) => {
@@ -236,8 +257,7 @@ export async function startService(options: ServiceOptions = {}) {
     app.post("/api/v1/sessions/refresh", async request => ({ job: worker.refreshSessions(false, sessionRefreshOptions(request.body)) }));
     app.post("/api/v1/sessions/auto-refresh", async request => {
       emptyBody(request.body);
-      const { sessionsAutoRefreshInterval } = await readPreferences(home);
-      return { job: worker.autoRefreshSessions(Date.now(), sessionsAutoRefreshInterval) };
+      return { job: worker.autoRefreshSessions(Date.now(), sync.status().intervalMs) };
     });
     registerResourceRoutes(app, resources);
     app.delete("/api/v1/sessions/cache", async request => { emptyBody(request.body); return { job: worker.refreshSessions(true) }; });
@@ -372,8 +392,11 @@ export async function startService(options: ServiceOptions = {}) {
       worker.refreshSessions();
       for (const repository of index.listRepositories()) worker.refresh(repository.id);
     }
+    sync.updateInterval(syncInterval);
     return { app, instance, close: () => app.close() };
   } catch (error) {
+    unsubscribePreferences?.();
+    autoSync?.close();
     await app.close().catch(() => undefined);
     await manager?.close().catch(() => undefined);
     await searchManager?.close().catch(() => undefined);

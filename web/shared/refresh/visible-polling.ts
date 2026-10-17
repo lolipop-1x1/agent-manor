@@ -7,7 +7,7 @@ export interface VisiblePollingEnvironment {
 }
 
 /** 隐藏时不安排新请求，恢复时按上次检查时间补查；慢请求之间不重叠。 */
-export function startVisiblePolling(environment: VisiblePollingEnvironment, interval: number, task: (signal: AbortSignal) => Promise<void>, onError: (error: unknown) => void) {
+export function startVisiblePolling(environment: VisiblePollingEnvironment, interval: number, task: (signal: AbortSignal) => Promise<void>, onError: (error: unknown) => void, immediateOnVisible = false) {
   const controller = new AbortController();
   let timer: unknown;
   let running = false;
@@ -26,7 +26,10 @@ export function startVisiblePolling(environment: VisiblePollingEnvironment, inte
     catch (error) { if (!controller.signal.aborted) onError(error); }
     finally { running = false; schedule(); }
   };
-  const unsubscribe = environment.subscribe(schedule);
+  const unsubscribe = environment.subscribe(() => {
+    if (immediateOnVisible && environment.visible()) lastStarted = undefined;
+    schedule();
+  });
   schedule();
   return () => { controller.abort(); if (timer !== undefined) environment.cancel(timer); unsubscribe(); };
 }

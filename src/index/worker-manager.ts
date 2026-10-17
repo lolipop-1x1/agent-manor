@@ -12,6 +12,15 @@ export interface WorkerManagerOptions {
   workerUrl?: URL;
 }
 
+export interface SessionWorkerRequest extends SessionRefreshOptions { clearCache: boolean }
+
+/** 完整校验覆盖快速检查；清缓存意图只能由同等清理覆盖。 */
+export function sessionRequestCovers(existing: SessionWorkerRequest, requested: SessionWorkerRequest): boolean {
+  return (!existing.client || existing.client === requested.client)
+    && (!requested.clearCache || existing.clearCache)
+    && ((existing.mode ?? "quick") === "full" || (requested.mode ?? "quick") === "quick");
+}
+
 /** 一个长期 Worker 串行分析全部仓库，主线程只登记任务和查询完整版本。 */
 export class WorkerManager {
   private worker: Worker;
@@ -19,10 +28,10 @@ export class WorkerManager {
   private readonly cancelled = new Map<string, Job>();
   private readonly active = new Set<string>();
   private readonly sessionActive = new Set<string>();
-  private readonly sessionRequests = new Map<string, string>();
+  private readonly sessionRequests = new Map<string, SessionWorkerRequest>();
+  private readonly changeListeners = new Set<(jobs: SessionJob[]) => void>();
   private closed = false;
   private failure?: string;
-  private lastSessionCheck = -Infinity;
   private readonly lastMapChecks = new Map<string, number>();
   reclaimStatus?: IndexMaintenanceResult;
 
@@ -62,6 +71,7 @@ export class WorkerManager {
     const job = this.store.createJob(repositoryId);
     this.active.add(job.id);
     this.worker.postMessage({ type: "refresh", jobId: job.id, clearCache });
+    this.changed();
     return job;
   }
 
@@ -88,6 +98,7 @@ export class WorkerManager {
     }
     this.lastMapChecks.delete(repositoryId);
     if (!this.closed && !this.failure && jobIds.length) this.worker.postMessage({ type: "cancel", jobIds });
+    this.changed();
   }
 
   /** 多个可见标签页共享检查间隔，手动刷新仍保持原有排队语义。 */
@@ -104,31 +115,45 @@ export class WorkerManager {
     return job;
   }
 
-  autoRefreshSessions(now = Date.now(), interval = 60_000): SessionJob | undefined {
+  /** 旧网页的周期入口只观察；后台统一调度，不再因读取推进时间。 */
+  autoRefreshSessions(_now = Date.now(), interval = 60_000): SessionJob | undefined {
     if (this.closed || !this.sessions) throw new DiagnosticError("会话索引 Worker 不可用", { key: "diagnostics.index.workerManager.m002" });
     if (!interval) return undefined;
-    // 不在已有局部或完整检查之后重复堆积自动任务。
-    const active = this.sessionActive.values().next().value as string | undefined;
-    if (active) return this.sessions.getJob(active);
-    if (now - this.lastSessionCheck < interval) return undefined;
-    const job = this.refreshSessions();
-    this.lastSessionCheck = now;
-    return job;
+    return this.coveringSessionJob(false);
   }
+
+  get busy(): boolean { return this.active.size > 0 || this.sessionActive.size > 0; }
+
+  activeSessionJobs(): SessionJob[] { return [...this.sessionActive].map(id => this.sessions!.getJob(id)); }
+
+  coveringSessionJob(clearCache = false, options: SessionRefreshOptions = {}): SessionJob | undefined {
+    const requested: SessionWorkerRequest = { ...options, mode: clearCache ? "full" : options.mode ?? "quick", clearCache };
+    for (const id of this.sessionActive) {
+      const request = this.sessionRequests.get(id);
+      const job = this.sessions!.getJob(id);
+      if (request && (job.status === "queued" || job.status === "running") && sessionRequestCovers(request, requested)) return job;
+    }
+    return undefined;
+  }
+
+  subscribeChanges(listener: (jobs: SessionJob[]) => void): () => void {
+    this.changeListeners.add(listener);
+    return () => { this.changeListeners.delete(listener); };
+  }
+
+  private changed(jobs: SessionJob[] = []): void { for (const listener of this.changeListeners) listener(jobs); }
 
   refreshSessions(clearCache = false, options: SessionRefreshOptions = {}): SessionJob {
     if (this.closed || !this.sessions) throw new DiagnosticError("会话索引 Worker 不可用", { key: "diagnostics.index.workerManager.m002" });
     const request: SessionRefreshOptions = clearCache ? { mode: "full" } : { client: options.client, mode: options.mode ?? "quick" };
-    const key = JSON.stringify([clearCache, request.client ?? null, request.mode]);
-    if (!clearCache) {
-      for (const id of this.sessionActive) if (this.sessionRequests.get(id) === key) return this.sessions.getJob(id);
-    }
+    const existing = this.coveringSessionJob(clearCache, request);
+    if (existing) return existing;
     if (this.failure) { this.worker = this.createWorker(); this.failure = undefined; }
     const job = this.sessions.createJob(request);
-    this.lastSessionCheck = Date.now();
     this.sessionActive.add(job.id);
-    this.sessionRequests.set(job.id, key);
+    this.sessionRequests.set(job.id, { ...request, clearCache });
     this.worker.postMessage({ type: "sessions", jobId: job.id, clearCache });
+    this.changed([job]);
     return job;
   }
 
@@ -142,30 +167,38 @@ export class WorkerManager {
     });
   }
 
-  private finished(jobId: string): void {
-    if (this.sessionActive.delete(jobId)) { this.sessionRequests.delete(jobId); return; }
+  private finished(jobId: string, notify = true): void {
+    if (this.sessionActive.delete(jobId)) {
+      this.sessionRequests.delete(jobId);
+      this.changed([this.sessions!.getJob(jobId)]);
+      return;
+    }
     this.active.delete(jobId);
     const job = this.cancelled.get(jobId) ?? this.store.findJob(jobId);
     this.cancelled.delete(jobId);
     if (!job) return;
     for (const resolve of this.pending.get(jobId) ?? []) resolve(job);
     this.pending.delete(jobId);
+    if (notify) this.changed();
   }
 
   private failed(error: string, errorDescriptor?: MessageDescriptor): void {
     this.failure = error;
+    const sessionJobs: SessionJob[] = [];
     for (const id of [...this.sessionActive]) {
       const job = this.sessions!.getJob(id);
       if (job.status !== "complete" && job.status !== "failed") this.sessions!.failJob(id, error, errorDescriptor);
       this.sessionActive.delete(id);
       this.sessionRequests.delete(id);
+      sessionJobs.push(this.sessions!.getJob(id));
     }
     for (const id of [...this.active]) {
       const job = this.store.findJob(id);
       if (job && job.status !== "completed" && job.status !== "failed") this.store.failJob(id, error, errorDescriptor);
-      this.finished(id);
+      this.finished(id, false);
     }
     this.cancelled.clear();
+    this.changed(sessionJobs);
   }
 
   async close(): Promise<void> {

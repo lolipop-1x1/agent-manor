@@ -244,7 +244,17 @@ export interface SessionIndexStatus {
   clientChecks?: SessionClientCheck[];
   job?: SessionJob;
 }
-export interface SessionIndexSummary extends Omit<SessionIndexStatus, "gaps"> { gapCount: number }
+export interface SessionAutoSyncStatus {
+  intervalMs: number;
+  state: "disabled" | "waiting" | "pending" | "running" | "backoff";
+  nextRunAt?: string;
+  lastSuccessAt?: string;
+  consecutiveFailures: number;
+  job?: SessionJob;
+  error?: string;
+  errorDescriptor?: MessageDescriptor;
+}
+export interface SessionIndexSummary extends Omit<SessionIndexStatus, "gaps"> { gapCount: number; autoSync?: SessionAutoSyncStatus }
 export interface SessionJob {
   id: string;
   status: "queued" | "running" | "complete" | "failed";

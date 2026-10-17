@@ -1,6 +1,17 @@
 import type { MessageCatalog } from "../../types.js";
 
 export default {
+  "common.history.lastSuccess": "最近全局成功检查",
+  "common.history.nextCheck": "下次自动检查",
+  "common.history.nextRetry": "下次自动重试",
+  "common.history.pendingCheck": "当前任务结束后补查",
+  "common.history.afterCompletion": "本轮完成后按间隔安排",
+  "common.history.failures": "连续失败次数",
+  "common.history.scope": "正在检查",
+  "common.history.allClients": "全部客户端",
+  "common.history.help": "自动同步说明",
+  "common.history.help.background": "开启后由本地后台按设定间隔检查全部历史，关闭网页也会继续。成功检查完成后开始计算下一轮间隔；失败时延后重试。显式停止后台后停止，电脑睡眠期间不执行，唤醒后到期只补查一次。",
+  "common.history.help.semantic": "历史同步只负责把客户端记录导入会话库。已开启的语义索引按自己的范围、等待时间和预算维护；关闭历史自动同步不会暂停语义维护。",
   "common.history.starting": "开始同步",
   "common.history.preparing": "准备同步",
   "common.history.queued": "等待同步",
@@ -57,7 +68,7 @@ export default {
   "common.autoRefresh.sessions": "历史自动同步",
   "common.autoRefresh.sessionsShort": "自动同步",
   "common.autoRefresh.short": "自动刷新",
-  "common.autoRefresh.sessionsVisible": "网页可见时自动同步全部客户端的历史。",
+  "common.autoRefresh.sessionsVisible": "本地后台自动同步全部客户端的历史，关闭网页仍会继续。",
   "common.autoRefresh.map": "代码地图自动刷新",
   "common.autoRefresh.off": "关闭",
   "common.autoRefresh.seconds_other": "{{count, number}} 秒",

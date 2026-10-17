@@ -1,24 +1,26 @@
 import { useEffect, useState } from "react";
 import * as Popover from "@radix-ui/react-popover";
 import { CaretDown } from "@phosphor-icons/react";
-import type { SessionJob, SessionRefreshOptions } from "../../../src/session-contracts";
+import type { SessionAutoSyncStatus, SessionJob, SessionRefreshOptions } from "../../../src/session-contracts";
 import { errorMessage } from "../../shared/api";
-import { messageText, useI18n } from "../../shared/i18n";
+import { clientLabel, messageText, useI18n } from "../../shared/i18n";
 import { RefreshControl } from "../../shared/ui/RefreshControl";
+import { HelpPopover } from "../../shared/ui/HelpPopover";
 import "../../shared/ui/filter-controls.css";
 
 const phaseLabels: Record<string, string> = { queued: "common.history.queued", discover: "common.history.discover", index: "common.history.running", publish: "common.history.publish" };
 
-export function HistoryRefreshControl({ busy, starting, onRefresh, onRetry, job, error }: {
+export function HistoryRefreshControl({ busy, starting, onRefresh, onRetry, job, autoSync, error }: {
   busy: boolean; starting: boolean; onRefresh: (options: SessionRefreshOptions) => void; onRetry: () => void;
-  job?: SessionJob; error?: Error | null;
+  job?: SessionJob; autoSync?: SessionAutoSyncStatus; error?: Error | null;
 }) {
   const { t, dateTime, number, percent } = useI18n();
   const [open, setOpen] = useState(false);
   const [now, setNow] = useState(Date.now);
-  const activeJob = !starting && busy && (job?.status === "running" || job?.status === "queued") ? job : undefined;
-  const completedAt = job?.status === "complete" ? job.finishedAt : undefined;
-  const failed = !starting && (!!error || job?.status === "failed");
+  const activeJob = !starting && busy ? [job, autoSync?.job].find(item => item?.status === "running" || item?.status === "queued") : undefined;
+  const completedAt = autoSync ? autoSync.lastSuccessAt : job?.status === "complete" && !job.client ? job.finishedAt : undefined;
+  const failed = !starting && (!!error || !!autoSync?.error || job?.status === "failed");
+  const failure = error ? errorMessage(error) : autoSync?.error ? messageText(autoSync.errorDescriptor, autoSync.error) : messageText(job?.errorDescriptor, job?.error ?? t("common.history.failed"));
   // 百分比仅表示已处理的来源比例；发现与发布阶段没有可计算的总体进度。
   const progress = activeJob?.phase === "index" ? Math.min(0.99, Math.max(0, activeJob.progress)) : null;
   const phase = activeJob ? phaseLabels[activeJob.phase] ? t(phaseLabels[activeJob.phase]!) : messageText(activeJob.phaseDescriptor, activeJob.phase) : t("common.history.starting");
@@ -39,14 +41,21 @@ export function HistoryRefreshControl({ busy, starting, onRefresh, onRetry, job,
         <CaretDown size={12} aria-hidden="true" />
       </Popover.Trigger>
       <Popover.Portal><Popover.Content className="filter-menu history-refresh-panel" align="end" sideOffset={6} collisionPadding={12} aria-label={t("common.history.status")}>
-        <strong>{t("common.history.status")}</strong>
-        {failed ? <><p className="history-refresh-failure" role="alert">{error ? errorMessage(error) : messageText(job?.errorDescriptor, job?.error ?? t("common.history.failed"))}</p><button className="button" onClick={onRetry}>{t("common.retry")}</button></>
-          : busy ? <><p className="history-refresh-phase" role="status">{phase}</p><dl className="history-refresh-facts">
+        <header className="history-refresh-heading"><strong>{t("common.history.status")}</strong><HelpPopover label={t("common.history.help")} iconOnly><p>{t("common.history.help.background")}</p><p>{t("common.history.help.semantic")}</p></HelpPopover></header>
+        {failed && <><p className="history-refresh-failure" role="alert">{failure}</p><button className="button" onClick={onRetry}>{t("common.retry")}</button></>}
+        {busy && <><p className="history-refresh-phase" role="status">{phase}</p><dl className="history-refresh-facts">
+            {activeJob && <><dt>{t("common.history.scope")}</dt><dd>{activeJob.client ? clientLabel(activeJob.client) : t("common.history.allClients")}</dd></>}
             {activeJob?.counts && activeJob.phase === "index" && <><dt>{t("common.history.processed")}</dt><dd>{t("common.history.processedCount", { count: number(Math.round(activeJob.progress * activeJob.counts.discovered)), total: number(activeJob.counts.discovered) })}</dd></>}
             {activeJob && <><dt>{t("common.history.elapsed")}</dt><dd>{t("common.history.elapsedValue", { minutes: number(Math.floor(elapsed / 60)), seconds: number(elapsed % 60) })}</dd></>}
-          </dl></>
-            : completedAt ? <dl className="history-refresh-facts"><dt>{t("common.history.lastUpdated")}</dt><dd><time dateTime={completedAt}>{dateTime(completedAt)}</time></dd></dl>
-              : <p className="history-refresh-empty">{t("common.history.noUpdateTime")}</p>}
+          </dl></>}
+        <dl className="history-refresh-facts">
+          <dt>{t("common.history.lastSuccess")}</dt><dd>{completedAt ? <time dateTime={completedAt}>{dateTime(completedAt, { dateStyle: "medium", timeStyle: "medium" })}</time> : t("common.history.noUpdateTime")}</dd>
+          {autoSync && <><dt>{t(autoSync.state === "backoff" ? "common.history.nextRetry" : "common.history.nextCheck")}</dt><dd>{autoSync.state === "disabled" ? t("common.autoRefresh.off")
+            : autoSync.state === "pending" ? t("common.history.pendingCheck")
+              : autoSync.nextRunAt ? <time dateTime={autoSync.nextRunAt}>{dateTime(autoSync.nextRunAt, { dateStyle: "medium", timeStyle: "medium" })}</time>
+                : t("common.history.afterCompletion")}</dd></>}
+          {!!autoSync?.consecutiveFailures && <><dt>{t("common.history.failures")}</dt><dd>{number(autoSync.consecutiveFailures)}</dd></>}
+        </dl>
       </Popover.Content></Popover.Portal>
     </Popover.Root>} /></div>;
 }

@@ -16,10 +16,11 @@
 .refresh-error-icon { color: var(--danger); }
 .history-refresh-menu-trigger { width: 25px; padding: 5px; }
 .history-refresh-panel { display: grid; gap: 12px; width: 300px; max-height: var(--radix-popover-content-available-height); overflow-y: auto; padding: 14px; font-size: 12px; }
-.history-refresh-panel > strong { font-size: 14px; font-weight: 600; }
+.history-refresh-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.history-refresh-heading > strong { font-size: 14px; font-weight: 600; }
 .history-refresh-panel p, .history-refresh-facts { margin: 0; }
 .history-refresh-facts { display: grid; grid-template-columns: auto 1fr; gap: 10px 16px; align-items: baseline; }
-.history-refresh-facts dt, .history-refresh-empty { color: var(--muted); }
+.history-refresh-facts dt { color: var(--muted); }
 .history-refresh-facts dd { margin: 0; text-align: right; font-variant-numeric: tabular-nums; }
 .history-refresh-failure { color: var(--danger); overflow-wrap: anywhere; }
 .history-refresh-panel .button { justify-self: end; }

@@ -25,6 +25,7 @@ interface I18nContextValue {
   setPreference: (preference: LanguagePreference) => Promise<void>;
   refreshIntervals: Record<RefreshScope, AutoRefreshInterval>;
   setAutoRefreshInterval: (scope: RefreshScope, interval: AutoRefreshInterval) => Promise<void>;
+  beginSessionIntervalObservation: () => (interval: number) => void;
   saving: boolean;
   error: "read" | "save" | null;
 }
@@ -51,6 +52,7 @@ export function I18nProvider({ children }: { children: ReactNode }) {
   const [error, setError] = useState<"read" | "save" | null>(null);
   const [saving, setSaving] = useState(false);
   const requestId = useRef(0);
+  const sessionIntervalRevision = useRef(0);
   const pendingWrite = useRef(false);
   const writeQueue = useRef<Promise<void>>(Promise.resolve());
   const writeCount = useRef(0);
@@ -62,6 +64,7 @@ export function I18nProvider({ children }: { children: ReactNode }) {
     const synchronize = () => {
       if (pendingWrite.current) return;
       const id = ++requestId.current;
+      const intervalRevision = sessionIntervalRevision.current;
       void readPreference(controller.signal).then(async value => {
         if (id !== requestId.current) return;
         if (!value.appearance) {
@@ -73,7 +76,9 @@ export function I18nProvider({ children }: { children: ReactNode }) {
           }
         }
         updateAppearance(value.appearance ?? defaultAppearance);
-        updatePreference(value.language); updateRefreshIntervals({ sessions: value.sessionsAutoRefreshInterval, map: value.mapAutoRefreshInterval }); setError(null);
+        updatePreference(value.language);
+        updateRefreshIntervals(current => ({ sessions: intervalRevision === sessionIntervalRevision.current ? value.sessionsAutoRefreshInterval : current.sessions, map: value.mapAutoRefreshInterval }));
+        setError(null);
       }).catch(() => {
         if (controller.signal.aborted || id !== requestId.current) return;
         updatePreference(value => value ?? "auto"); setError("read");
@@ -111,7 +116,16 @@ export function I18nProvider({ children }: { children: ReactNode }) {
   const setPreference = useCallback((language: LanguagePreference) => savePreference({ language }), [savePreference]);
   const setAutoRefreshInterval = useCallback((scope: RefreshScope, interval: AutoRefreshInterval) => savePreference(scope === "sessions"
     ? { sessionsAutoRefreshInterval: interval } : { mapAutoRefreshInterval: interval }), [savePreference]);
-  const value = useMemo(() => ({ appearance, setAppearance, language, preference: preference ?? "auto", setPreference, refreshIntervals, setAutoRefreshInterval, saving, error }), [appearance, setAppearance, language, preference, setPreference, refreshIntervals, setAutoRefreshInterval, saving, error]);
+  const beginSessionIntervalObservation = useCallback(() => {
+    const generation = requestId.current, writing = pendingWrite.current;
+    return (interval: number) => {
+      // 保存前开始或保存期间开始的旧状态读取，不能覆盖保存结果。
+      if (writing || pendingWrite.current || generation !== requestId.current || !isAutoRefreshInterval(interval)) return;
+      ++sessionIntervalRevision.current;
+      updateRefreshIntervals(current => current.sessions === interval ? current : { ...current, sessions: interval });
+    };
+  }, []);
+  const value = useMemo(() => ({ appearance, setAppearance, language, preference: preference ?? "auto", setPreference, refreshIntervals, setAutoRefreshInterval, beginSessionIntervalObservation, saving, error }), [appearance, setAppearance, language, preference, setPreference, refreshIntervals, setAutoRefreshInterval, beginSessionIntervalObservation, saving, error]);
   if (preference === null) return <div className="query-loading" role="status">{t("common.loading")}</div>;
   return <I18nContext.Provider value={value}>{children}</I18nContext.Provider>;
 }

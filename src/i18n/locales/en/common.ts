@@ -1,6 +1,17 @@
 import type { MessageCatalog } from "../../types.js";
 
 export default {
+  "common.history.lastSuccess": "Last successful global check",
+  "common.history.nextCheck": "Next automatic check",
+  "common.history.nextRetry": "Next automatic retry",
+  "common.history.pendingCheck": "After the current task finishes",
+  "common.history.afterCompletion": "Scheduled after this check completes",
+  "common.history.failures": "Consecutive failures",
+  "common.history.scope": "Checking",
+  "common.history.allClients": "All clients",
+  "common.history.help": "About automatic sync",
+  "common.history.help.background": "The local service checks all history at the selected interval, even after you close every page. The next interval starts after a successful check; failures delay automatic retries. Stopping the service stops checks. No checks run during system sleep, and waking performs at most one overdue check.",
+  "common.history.help.semantic": "History sync imports client records into the session library. An enabled semantic index follows its own scope, waiting times and budget. Turning off automatic history sync does not pause semantic maintenance.",
   "common.history.starting": "Starting",
   "common.history.preparing": "Preparing",
   "common.history.queued": "Waiting",
@@ -58,7 +69,7 @@ export default {
   "common.autoRefresh.sessions": "History auto sync",
   "common.autoRefresh.sessionsShort": "Auto sync",
   "common.autoRefresh.short": "Auto refresh",
-  "common.autoRefresh.sessionsVisible": "Sync history for all clients automatically while the browser page is visible.",
+  "common.autoRefresh.sessionsVisible": "The local service syncs history from all clients, even after you close every page.",
   "common.autoRefresh.map": "Code map auto refresh",
   "common.autoRefresh.off": "Off",
   "common.autoRefresh.seconds_one": "{{count, number}} second",

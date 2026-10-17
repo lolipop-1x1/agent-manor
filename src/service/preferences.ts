@@ -32,6 +32,16 @@ export async function readPreferences(home: string): Promise<PreferencesResponse
 }
 
 const pendingWrites = new Map<string, Promise<PreferencesResponse>>();
+const listeners = new Map<string, Set<(preferences: PreferencesResponse) => void>>();
+
+/** 同一数据目录的后台在原子保存成功后接管策略，观察请求不写回设置。 */
+export function subscribePreferences(home: string, listener: (preferences: PreferencesResponse) => void): () => void {
+  const key = resolve(home);
+  const observers = listeners.get(key) ?? new Set();
+  observers.add(listener);
+  listeners.set(key, observers);
+  return () => { observers.delete(listener); if (!observers.size) listeners.delete(key); };
+}
 
 /** 合并更新串行保存，避免语言和刷新设置的并发写入互相覆盖。 */
 export function updatePreferences(home: string, body: unknown): Promise<PreferencesResponse> {
@@ -45,7 +55,11 @@ export function updatePreferences(home: string, body: unknown): Promise<Preferen
   if ("sessionsAutoRefreshInterval" in patch && !isAutoRefreshInterval(patch.sessionsAutoRefreshInterval)
     || "mapAutoRefreshInterval" in patch && !isAutoRefreshInterval(patch.mapAutoRefreshInterval)) throw new ServiceError("INVALID_INPUT", "刷新间隔必须是受支持的毫秒间隔", { key: "diagnostics.service.preferences.interval" });
   const key = resolve(home);
-  const operation = (pendingWrites.get(key) ?? Promise.resolve()).catch(() => {}).then(() => savePreferences(home, patch));
+  const operation = (pendingWrites.get(key) ?? Promise.resolve()).catch(() => {}).then(async () => {
+    const preferences = await savePreferences(home, patch);
+    for (const listener of listeners.get(key) ?? []) listener(preferences);
+    return preferences;
+  });
   pendingWrites.set(key, operation);
   const release = () => { if (pendingWrites.get(key) === operation) pendingWrites.delete(key); };
   void operation.then(release, release);

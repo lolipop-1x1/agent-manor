@@ -312,6 +312,19 @@ export class SessionStore {
     return decode(row);
   }
 
+  /** 检查完成时间独立于发布版本，无变化的检查也能作为下一轮基准。 */
+  globalCheckState(): { lastSuccessAt?: string; lastFinished?: SessionJob; consecutiveFailures: number } {
+    const global = "json_extract(json,'$.client') IS NULL";
+    const success = this.database.prepare(`SELECT rowid,json FROM session_jobs WHERE ${global}
+      AND json_extract(json,'$.status')='complete' AND json_extract(json,'$.finishedAt') IS NOT NULL ORDER BY rowid DESC LIMIT 1`).get() as (JsonRow & { rowid: number }) | undefined;
+    const latest = this.database.prepare(`SELECT json FROM session_jobs WHERE ${global}
+      AND json_extract(json,'$.status') IN ('complete','failed') AND json_extract(json,'$.finishedAt') IS NOT NULL ORDER BY rowid DESC LIMIT 1`).get() as JsonRow | undefined;
+    const failures = this.database.prepare(`SELECT COUNT(*) AS count FROM session_jobs WHERE ${global}
+      AND json_extract(json,'$.status')='failed' AND rowid>?`).get(success?.rowid ?? 0) as { count: number };
+    return { lastSuccessAt: success ? decode<SessionJob>(success).finishedAt : undefined,
+      lastFinished: latest ? decode<SessionJob>(latest) : undefined, consecutiveFailures: failures.count };
+  }
+
   updateJob(id: string, patch: Partial<SessionJob>): SessionJob {
     const job = { ...this.getJob(id), ...patch };
     this.database.prepare("UPDATE session_jobs SET json=? WHERE id=?").run(JSON.stringify(job), id);

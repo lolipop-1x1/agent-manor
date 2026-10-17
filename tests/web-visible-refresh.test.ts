@@ -66,6 +66,17 @@ test("检查未结束时不重叠，隐藏不取消已开始请求，卸载取�
   stop(); assert.equal(signal?.aborted, true); release();
 });
 
+test("后台状态观察在恢复可见时立即补读，默认地图轮询仍遵守原周期", async () => {
+  const fixture = clock(), calls: number[] = [];
+  const stop = startVisiblePolling(fixture.environment, 5000, async () => { calls.push(fixture.environment.now()); }, error => { throw error; }, true);
+  await fixture.advance(0); assert.deepEqual(calls, [0]);
+  await fixture.advance(100); fixture.visibility(false); await fixture.advance(100);
+  fixture.visibility(true); await fixture.advance(0); assert.deepEqual(calls, [0, 200]);
+  fixture.visibility(false); await fixture.advance(60_000); fixture.visibility(true); await fixture.advance(0);
+  assert.deepEqual(calls, [0, 200, 60_200]);
+  stop();
+});
+
 test("失败之后仍按间隔重试，不用快速空转请求", async () => {
   const fixture = clock(), failures: unknown[] = []; let calls = 0;
   const stop = startVisiblePolling(fixture.environment, 5000, async () => { calls++; throw new Error("synthetic failure"); }, error => { failures.push(error); });

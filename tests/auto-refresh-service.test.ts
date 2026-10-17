@@ -10,12 +10,12 @@ import { WorkerManager } from "../src/index/worker-manager.js";
 import { SessionStore } from "../src/sessions/store.js";
 import { startService } from "../src/server.js";
 import { apiRequest, delay } from "../src/service/runtime.js";
-import type { SessionJob } from "../src/session-contracts.js";
+import type { SessionIndexSummary, SessionJob } from "../src/session-contracts.js";
 import { isolatedHistoryRoots } from "./helpers/history-roots.js";
 
 const execute = promisify(execFile);
 
-test("自动任务跨标签页合并，完成后间隔内不重复；手动范围不被改写", async () => {
+test("会话手动请求合并且范围不被改写；地图仍按独立周期触发", async () => {
   const directory = await mkdtemp(join(tmpdir(), "manor-auto-"));
   const history = join(directory, "history"); await mkdir(history);
   await writeFile(join(history, "session.jsonl"), JSON.stringify({ type: "session_meta", payload: { id: "auto-fixture" } }) + "\n");
@@ -24,20 +24,16 @@ test("自动任务跨标签页合并，完成后间隔内不重复；手动范�
   const manager = new WorkerManager(index, { roots: isolatedHistoryRoots({ codex: history }) }, library);
   try {
     const now = Date.now();
-    const first = manager.autoRefreshSessions(now)!;
+    const first = manager.refreshSessions();
     assert.equal(first.client, undefined);
     assert.equal(first.mode, "quick");
-    assert.equal(manager.autoRefreshSessions(now + 10)?.id, first.id);
+    assert.equal(manager.refreshSessions().id, first.id);
     for (let count = 0; count < 300 && library.getJob(first.id).status !== "complete"; count++) {
       assert.notEqual(library.getJob(first.id).status, "failed"); await delay(20);
     }
     assert.equal(library.getJob(first.id).status, "complete");
-    // 完成消息可能尚在主线程事件队列中，等待被调度器消费。
     await delay(30);
-    assert.equal(manager.autoRefreshSessions(now + 59_999), undefined);
-    assert.equal(manager.autoRefreshSessions(now + 600_000, 0), undefined);
-    assert.equal(manager.autoRefreshSessions(now + 599_999, 600_000), undefined);
-    const second = manager.autoRefreshSessions(now + 60_000)!;
+    const second = manager.refreshSessions();
     assert.notEqual(second.id, first.id);
     const manual = manager.refreshSessions(false, { client: "claude", mode: "full" });
     assert.equal(manual.client, "claude"); assert.equal(manual.mode, "full");
@@ -59,19 +55,29 @@ test("自动任务跨标签页合并，完成后间隔内不重复；手动范�
   } finally { await manager.close(); library.close(); index.close(); await rm(directory, { recursive: true, force: true }); }
 });
 
-test("HTTP 自动刷新默认关闭，开启后合并任务，关闭不影响手动刷新", async () => {
+test("HTTP 旧自动接口只观察后台任务，策略默认关闭且关闭后仍可手动同步", async () => {
   const directory = await mkdtemp(join(tmpdir(), "manor-auto-http-"));
   const service = await startService({ home: directory, roots: isolatedHistoryRoots(), startupRefresh: false });
   try {
     await assert.rejects(apiRequest(service.instance, "/sessions/auto-refresh", "POST", { client: "codex" }), { code: "INVALID_INPUT" });
     assert.deepEqual(await apiRequest(service.instance, "/sessions/auto-refresh", "POST", {}), {});
     await apiRequest(service.instance, "/preferences", "PUT", { sessionsAutoRefreshInterval: 5000 });
+    const status = await apiRequest<SessionIndexSummary>(service.instance, "/sessions/status?summary=true");
+    assert.equal(status.autoSync?.intervalMs, 5_000);
+    assert.ok(status.autoSync?.job || status.autoSync?.lastSuccessAt);
     const first = await apiRequest<{ job?: SessionJob }>(service.instance, "/sessions/auto-refresh", "POST");
-    assert.ok(first.job);
     const second = await apiRequest<{ job?: SessionJob }>(service.instance, "/sessions/auto-refresh", "POST", {});
-    assert.ok(!second.job || second.job.id === first.job.id);
+    assert.ok(!first.job || first.job.id === status.autoSync?.job?.id);
+    assert.ok(!second.job || second.job.id === first.job?.id);
     await apiRequest(service.instance, "/preferences", "PUT", { sessionsAutoRefreshInterval: 0 });
     assert.deepEqual(await apiRequest(service.instance, "/sessions/auto-refresh", "POST", {}), {});
+    // 关闭自动策略不终止已提交的全局检查；完成后局部手动请求应照常执行。
+    for (let attempt = 0; attempt < 200; attempt++) {
+      const current = await apiRequest<SessionIndexSummary>(service.instance, "/sessions/status?summary=true");
+      assert.notEqual(current.job?.status, "failed");
+      if (current.job?.status === "complete") break;
+      await delay(20);
+    }
     const manual = await apiRequest<{ job: SessionJob }>(service.instance, "/sessions/refresh", "POST", { client: "pi" });
     assert.equal(manual.job.client, "pi");
   } finally { await service.close(); await rm(directory, { recursive: true, force: true }); }
@@ -88,7 +94,7 @@ test("会话库与代码地图的持久刷新开关互不影响，手动地图�
     const mapRoute = `/repositories/${registration.repository.id}`;
     await apiRequest(service.instance, "/preferences", "PUT", { sessionsAutoRefreshInterval: 5_000 });
     assert.deepEqual(await apiRequest(service.instance, `${mapRoute}/auto-refresh`, "POST", {}), {});
-    assert.ok((await apiRequest<{ job?: SessionJob }>(service.instance, "/sessions/auto-refresh", "POST", {})).job);
+    assert.equal((await apiRequest<SessionIndexSummary>(service.instance, "/sessions/status?summary=true")).autoSync?.intervalMs, 5_000);
     await apiRequest(service.instance, "/preferences", "PUT", { sessionsAutoRefreshInterval: 0, mapAutoRefreshInterval: 5_000 });
     assert.deepEqual(await apiRequest(service.instance, "/sessions/auto-refresh", "POST", {}), {});
     // 登记仓库也会记入检查时间；等待最短间隔后，地图独立创建新任务。
