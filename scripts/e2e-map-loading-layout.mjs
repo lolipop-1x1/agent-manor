@@ -46,7 +46,7 @@ try {
     if (result.job.status === "completed") break;
     await new Promise(resolve => setTimeout(resolve, 25));
   }
-  await browser(["open", base, "--headed", "--browser=chrome"]); opened = true;
+  await browser(["open", `${base}/#map`, "--headed", "--browser=chrome"]); opened = true;
   const verify = async (page, fixture) => {
     page.setDefaultTimeout(15_000);
     const errors = []; page.on("pageerror", error => errors.push(error.message));
@@ -60,7 +60,11 @@ try {
     const gate = new Promise(resolve => { release = resolve; });
     const pattern = `**/api/v1/repositories/*/${kind}?**`;
     await page.route(pattern, async route => {
-      const response = await route.fetch(); await gate; await route.fulfill({ response });
+      const response = await route.fetch(); await gate;
+      // 刷新切换版本时旧请求可以被取消，不能把代理对已关闭请求的响应当成页面错误。
+      if (route.request().failure()) return;
+      try { await route.fulfill({ response }); }
+      catch (error) { if (!String(error).includes("Route is already handled")) throw error; }
     });
     const text = language === "zh-CN" ? kind === "sessions" ? "正在读取地图会话…" : "正在查询所选范围…"
       : kind === "sessions" ? "Loading map sessions…" : "Loading selected scope…";
@@ -84,7 +88,7 @@ try {
       ensure(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), "加载提示导致横向溢出");
       ensure(errors.length === 0, errors.join(";"));
       return { passed: true, language, width, kind, height, shift, errors };
-    } finally { release(); await page.unroute(pattern); }
+    } finally { release(); await page.unrouteAll({ behavior: "wait" }); }
   };
   const reports = [];
   for (const language of ["zh-CN", "en"]) {

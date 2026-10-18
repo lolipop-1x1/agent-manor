@@ -23,6 +23,6 @@
   .code-map-toolbar h1 { display: none; }
   .code-map-toolbar .repository-picker { flex: 1; max-width: calc(100% - 62px); }
   .code-map-toolbar .map-page-actions { order: 1; }
-  .code-map-toolbar .map-page-actions > .map-query-progress, .code-map-toolbar .map-page-actions > .auto-refresh-control { display: none; }
+  .code-map-toolbar .map-page-actions > .auto-refresh-control { display: none; }
   .code-map-tabs { flex-basis: 100%; order: 2; min-height: 40px; }
 }

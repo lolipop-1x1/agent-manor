@@ -1,6 +1,8 @@
 import type { MessageCatalog } from "../../types.js";
 
 export default {
+  "codeMap.error.queryBusy": "Map queries are busy. Try again shortly.",
+  "codeMap.error.queryStopped": "Map query worker stopped",
   "codeMap.view.distribution": "Activity distribution",
   "codeMap.view.replay": "Activity replay",
   "codeMap.view.tabs": "Code map views",

@@ -85,7 +85,8 @@ test("总览覆盖快照在 SQL 中移除正文，计数与映射覆盖保持一
   await writeFile(sourcePath, encode([meta(repositoryPath), call(repositoryPath, "read"), output("read")]));
   const version = await refresh();
   const full = store.getSnapshot(repositoryId, version);
-  const narrow = store.getCoverageSnapshot(repositoryId, version);
+  const eventParts = new Map<string, number>();
+  const narrow = store.getCoverageSnapshot(repositoryId, version, eventParts);
   assert.deepEqual(buildCoverage(narrow), buildCoverage(full));
   assert.deepEqual(narrow.mappings, full.mappings);
   assert.deepEqual(narrow.sources, full.sources);
@@ -94,7 +95,37 @@ test("总览覆盖快照在 SQL 中移除正文，计数与映射覆盖保持一
     && event.fragments.every(fragment => fragment.content === "")));
   assert.ok(JSON.stringify(narrow).length < JSON.stringify(full).length);
   assert.deepEqual(store.getSnapshot(repositoryId, version), full);
+  assert.deepEqual([...eventParts.keys()], full.events.map(event => event.id));
+  assert.deepEqual(store.getSnapshotEvents(repositoryId, version, eventParts), full.events);
+  assert.deepEqual(store.getSnapshotEvents(repositoryId, version, new Map()), []);
   assert.throws(() => store.getCoverageSnapshot(repositoryId, "missing"), error => error instanceof StoreError && error.code === "VERSION_NOT_FOUND");
+}));
+
+test("紧凑覆盖缓存随版本发布，旧数据按需补齐，重开只读查询不恢复原始正文", async () => fixture(async ({ repositoryPath, sourcePath, store, repositoryId, refresh }) => {
+  await writeFile(sourcePath, encode([meta(repositoryPath), call(repositoryPath, "read"), output("read")]));
+  const version = await refresh();
+  const expected = buildCoverage(store.getSnapshot(repositoryId, version));
+  const database = new Database(store.dbPath);
+  const cached = () => (database.prepare("SELECT count(*) AS n FROM payload_parts WHERE repository_id=? AND kind='coverage-v1' AND owner=?")
+    .get(repositoryId, version) as { n: number }).n;
+  assert.ok(cached() > 0, "发布完整版本时应同时准备紧凑数据");
+  database.prepare("DELETE FROM payload_parts WHERE repository_id=? AND kind='coverage-v1' AND owner=?").run(repositoryId, version);
+  const readonly = new AnalysisStore(store.dbPath, { readonly: true });
+  try {
+    assert.deepEqual(buildCoverage(readonly.getCoverageSnapshot(repositoryId, version)), expected);
+    assert.equal(cached(), 0, "只读消费者不能补写缓存");
+    assert.deepEqual(buildCoverage(store.getCoverageSnapshot(repositoryId, version)), expected);
+    assert.ok(cached() > 0);
+    const internal = readonly as unknown as { readPayload(json: string, id: string, kind: string, ...args: unknown[]): unknown };
+    const original = internal.readPayload.bind(readonly);
+    internal.readPayload = (json, id, kind, ...args) => {
+      assert.equal(kind, "coverage-v1", "重开查询应只读取紧凑数据");
+      return original(json, id, kind, ...args);
+    };
+    const parts = new Map<string, number>();
+    assert.deepEqual(buildCoverage(readonly.getCoverageSnapshot(repositoryId, version, parts)), expected);
+    assert.equal(parts.size, 1);
+  } finally { readonly.close(); database.close(); }
 }));
 
 test("无变化快检复用正文和旧版，当前单文件变化只使对应失效", async () => fixture(async ({ repositoryPath, sourcePath, store, repositoryId, refresh }) => {

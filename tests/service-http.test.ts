@@ -7,6 +7,7 @@ import { join } from "node:path";
 import { promisify } from "node:util";
 import test from "node:test";
 import Database from "better-sqlite3";
+import { AnalysisStore } from "../src/index/store.js";
 import type { CoverageResult, DeleteRepositoryResponse, EvidenceResponse, EventsResponse, FileDetail, JobResponse, MapSessionsResponse, RegisterRepositoryResponse, RepositoriesResponse, SourcesResponse } from "../src/contracts.js";
 import type { SessionIndexStatus, SessionJob, SessionListResult } from "../src/session-contracts.js";
 import type { ResourceUsageResult } from "../src/resource-contracts.js";
@@ -65,6 +66,30 @@ async function wait(service: Awaited<ReturnType<typeof startService>>, jobId: st
   }
   throw new Error("测试刷新超时");
 }
+
+test("地图查询不得在 HTTP 主线程恢复完整快照或覆盖快照", async () => fixture(async ({ service, register }) => {
+  const original = AnalysisStore.prototype.getSnapshot;
+  const coverage = AnalysisStore.prototype.getCoverageSnapshot;
+  AnalysisStore.prototype.getSnapshot = () => { throw new Error("禁止 HTTP 主线程读取快照"); };
+  AnalysisStore.prototype.getCoverageSnapshot = () => { throw new Error("禁止 HTTP 主线程读取覆盖快照"); };
+  try {
+    const base = `/repositories/${register.repository.id}`;
+    const result = await apiRequest<CoverageResult>(service.instance, `${base}/coverage?summary=true`);
+    assert.equal(result.files.length, 2);
+    assert.ok((await apiRequest<MapSessionsResponse>(service.instance, `${base}/sessions`)).sessions.length);
+    const file = await apiRequest<FileDetail>(service.instance, `${base}/file?path=src/a.ts`);
+    assert.ok(file.content);
+    assert.ok(file.events[0]!.output);
+    const events = await apiRequest<EventsResponse>(service.instance, `${base}/events`);
+    assert.ok(events.events[0]!.output);
+    const evidence = await apiRequest<EvidenceResponse>(service.instance, `${base}/evidence/${events.events[0]!.id}`);
+    assert.ok(evidence.records.length);
+    await apiRequest(service.instance, `${base}/coverage/gaps`);
+    await apiRequest(service.instance, `${base}/hotspots`);
+    await apiRequest(service.instance, `${base}/unobserved`);
+    await apiRequest(service.instance, `${base}/sources`);
+  } finally { AnalysisStore.prototype.getSnapshot = original; AnalysisStore.prototype.getCoverageSnapshot = coverage; }
+}));
 
 test("重复登记复用已有仓库和分析，子目录归根，worktree 独立登记", async () => fixture(async ({ directory, repository, service, register }) => {
   const initial = await apiRequest<{ jobs: unknown[] }>(service.instance, "/status");

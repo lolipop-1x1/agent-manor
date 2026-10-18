@@ -49,15 +49,17 @@ export interface PublishInput {
 interface JsonRow { json: string }
 interface RepositoryRow { json: string; version: string | null; stale: number }
 interface RefreshJob extends Job { refreshStats?: RefreshStats }
-type PayloadKind = "snapshot" | "sources" | "parsed";
+type PayloadKind = "snapshot" | "sources" | "parsed" | "coverage-v1";
 const PART_SIZE = 1024 * 1024;
 
 /** 查询只读取完整已发布版本；可复用缓存与版本发布在同一事务提交。 */
 export class AnalysisStore {
   readonly dbPath: string;
   private readonly database: Database.Database;
+  private readonly readOnly: boolean;
 
   constructor(dbPath: string, options: { readonly?: boolean } = {}) {
+    this.readOnly = options.readonly ?? false;
     this.dbPath = resolve(dbPath);
     if (!options.readonly) mkdirSync(dirname(this.dbPath), { recursive: true });
     this.database = new Database(this.dbPath, options.readonly ? { readonly: true, fileMustExist: true } : {});
@@ -88,7 +90,7 @@ export class AnalysisStore {
   }
 
   /** 大集合逐项编码，读回也逐块恢复，不拼接整版 JSON 字符串。 */
-  private writePayload(value: object, repositoryId: string, kind: PayloadKind, owner: string, fields: string[], writeParts = true): string {
+  private writePayload(value: object, repositoryId: string, kind: PayloadKind, owner: string, fields: string[], writeParts = true, eventParts?: Map<string, number>): string {
     const header = { ...value } as Record<string, unknown>;
     const save = this.database.prepare("INSERT INTO payload_parts(repository_id,kind,owner,field,part,json) VALUES(?,?,?,?,?,?)");
     for (const field of fields) {
@@ -119,6 +121,10 @@ export class AnalysisStore {
         if (encoded === undefined && !array) continue;
         const item = array ? encoded ?? "null" : JSON.stringify(itemKey) + ":" + encoded;
         if (size + item.length > PART_SIZE) flush();
+        if (eventParts && field === "events") {
+          const id = (collection as HistoryEvent[])[Number(itemKey)]!.id;
+          if (!eventParts.has(id)) eventParts.set(id, part);
+        }
         parts.push(item);
         size += item.length + 1;
       }
@@ -127,23 +133,47 @@ export class AnalysisStore {
     return JSON.stringify({ partsFormat: 4, value: header });
   }
 
-  private readPayload<T>(json: string, repositoryId: string, kind: PayloadKind, owner: string, coverageOnly = false): T {
+  private readPayload<T>(json: string, repositoryId: string, kind: PayloadKind, owner: string, coverageOnly = false, eventParts?: Map<string, number>): T {
     const decoded = JSON.parse(json) as { value: Record<string, unknown> };
     // 覆盖计算只用路径、身份与已算好的映射；在 SQLite 内移除正文，避免读回整仓库及工具输出。
     const projection = coverageOnly ? `CASE field
-      WHEN 'baseline.files' THEN (SELECT json_group_array(json_set(value,'$.content','')) FROM json_each(p.json))
-      WHEN 'events' THEN (SELECT json_group_array(json_set(json_remove(value,'$.input','$.output','$.reason'),
-        '$.fragments',json(COALESCE((SELECT json_group_array(json_set(f.value,'$.content','')) FROM json_each(e.value,'$.fragments') f),'[]')))) FROM json_each(p.json) e)
-      WHEN 'sources' THEN (SELECT json_group_array(json_remove(value,'$.events','$.cursor','$.gaps')) FROM json_each(p.json))
+      WHEN 'baseline.files' THEN (SELECT json_group_array(json_object('path',json_extract(value,'$.path'),
+        'category',json_extract(value,'$.category'),'lineCount',json_extract(value,'$.lineCount'),'hash',json_extract(value,'$.hash'),'content','')) FROM jsonb_each(p.json))
+      WHEN 'events' THEN (SELECT json_group_array(json_object('id',json_extract(e.value,'$.id'),'client',json_extract(e.value,'$.client'),
+        'sessionId',json_extract(e.value,'$.sessionId'),'parentSessionId',json_extract(e.value,'$.parentSessionId'),
+        'tool',json_extract(e.value,'$.tool'),'kind',json_extract(e.value,'$.kind'),'status',json_extract(e.value,'$.status'),
+        'occurredAt',json_extract(e.value,'$.occurredAt'),'cwd',json_extract(e.value,'$.cwd'),'path',json_extract(e.value,'$.path'),
+        'sources',json_extract(e.value,'$.sources'),'reasonDescriptor',json_extract(e.value,'$.reasonDescriptor'),
+        'fragments',json(COALESCE((SELECT json_group_array(json_object('content','','kind',json_extract(f.value,'$.kind'),
+          'path',json_extract(f.value,'$.path'),'historicalStart',json_extract(f.value,'$.historicalStart'),
+          'completeLines',json(f.value -> '$.completeLines'))) FROM jsonb_each(e.value,'$.fragments') f),'[]')))) FROM jsonb_each(p.json) e)
+      WHEN 'sources' THEN (SELECT json_group_array(json_object('sourceId',json_extract(value,'$.sourceId'),'client',json_extract(value,'$.client'),
+        'format',json_extract(value,'$.format'),'path',json_extract(value,'$.path'),'selector',json_extract(value,'$.selector'),
+        'hash',json_extract(value,'$.hash'),'sessionId',json_extract(value,'$.sessionId'),'cwd',json_extract(value,'$.cwd'),
+        'parentSessionId',json_extract(value,'$.parentSessionId'))) FROM jsonb_each(p.json))
       ELSE json END` : "json";
-    const rows = this.database.prepare(`SELECT field,${projection} AS json FROM payload_parts p WHERE repository_id=? AND kind=? AND owner=? ORDER BY field,part`)
-      .iterate(repositoryId, kind, owner) as Iterable<{ field: string; json: string }>;
+    const rows = this.database.prepare(`SELECT field,part,${projection} AS json FROM payload_parts p WHERE repository_id=? AND kind=? AND owner=? AND field<>'$header' ORDER BY field,part`)
+      .iterate(repositoryId, kind, owner) as Iterable<{ field: string; part: number; json: string }>;
     for (const row of rows) {
       const path = row.field.split(".");
       let target = decoded.value;
       for (const key of path.slice(0, -1)) target = target[key] as Record<string, unknown>;
       const collection = target[path.at(-1)!];
       const part = JSON.parse(row.json) as unknown[] | Record<string, unknown>;
+      if (coverageOnly && Array.isArray(part)) {
+        for (const value of part as Record<string, unknown>[]) {
+          if (row.field === "events" || row.field === "sources") {
+            for (const key of Object.keys(value)) if (value[key] === null) delete value[key];
+          }
+          if (row.field === "events") for (const fragment of value.fragments as HistoryEvent["fragments"]) {
+            if (fragment.path === null) delete fragment.path;
+            if (fragment.historicalStart === null) delete fragment.historicalStart;
+          }
+        }
+      }
+      if (eventParts && row.field === "events" && Array.isArray(part)) {
+        for (const event of part as HistoryEvent[]) if (!eventParts.has(event.id)) eventParts.set(event.id, row.part);
+      }
       if (Array.isArray(collection) && Array.isArray(part)) {
         for (const item of part) collection.push(item);
       } else Object.assign(collection as object, part);
@@ -275,18 +305,87 @@ export class AnalysisStore {
   }
 
   /** 总览覆盖摘要省略基线正文、事件正文与工具参数，原证据仍由完整快照接口读取。 */
-  getCoverageSnapshot(repositoryId: string, version?: string): AnalysisSnapshot {
-    return this.readSnapshot(repositoryId, version, true);
+  getCoverageSnapshot(repositoryId: string, version?: string, eventParts?: Map<string, number>): AnalysisSnapshot {
+    const parts = eventParts ?? new Map<string, number>();
+    let missing = false;
+    const snapshot = this.database.transaction(() => {
+      const selected = this.analysisVersion(repositoryId, version);
+      const row = this.database.prepare("SELECT json FROM payload_parts WHERE repository_id=? AND kind='coverage-v1' AND owner=? AND field='$header' AND part=0")
+        .get(repositoryId, selected) as JsonRow | undefined;
+      if (row) {
+        const cached = this.readPayload<{ snapshot: AnalysisSnapshot; eventParts: Record<string, number> }>(row.json, repositoryId, "coverage-v1", selected);
+        for (const [id, part] of Object.entries(cached.eventParts)) parts.set(id, part);
+        return this.normalizeSnapshot(cached.snapshot, this.getRepository(repositoryId), selected);
+      }
+      missing = true;
+      return this.readSnapshot(repositoryId, selected, true, parts);
+    }).deferred();
+    // 老版本首次读取后补齐派生缓存，不改分析版本或原始证据；只读消费者不写入。
+    if (missing && !this.readOnly) this.cacheCoverageSnapshot(snapshot, parts);
+    return snapshot;
   }
 
-  private readSnapshot(repositoryId: string, version: string | undefined, coverageOnly: boolean): AnalysisSnapshot {
+  private coverageMetadata(snapshot: AnalysisSnapshot): AnalysisSnapshot {
+    return { ...snapshot, baseline: { ...snapshot.baseline, files: snapshot.baseline.files.map(file => ({ ...file, content: "" })) },
+      sources: snapshot.sources.map(source => this.sourceMetadata(source)), events: snapshot.events.map(event => {
+        const { input: _input, output: _output, reason: _reason, ...metadata } = event;
+        return { ...metadata, fragments: event.fragments.map(fragment => ({ ...fragment, content: "" })) };
+      }) };
+  }
+
+  private cacheCoverageSnapshot(snapshot: AnalysisSnapshot, eventParts: ReadonlyMap<string, number>): void {
+    try {
+      this.database.transaction(() => {
+        const repositoryId = snapshot.repository.id, version = snapshot.version;
+        // 等待写锁期间版本可能已淘汰；不能重新插入已过期的缓存。
+        if (!this.database.prepare("SELECT 1 FROM versions WHERE repository_id=? AND version=?").get(repositoryId, version)) return;
+        if (this.database.prepare("SELECT 1 FROM payload_parts WHERE repository_id=? AND kind='coverage-v1' AND owner=? AND field='$header'").get(repositoryId, version)) return;
+        const json = this.writePayload({ snapshot, eventParts: Object.fromEntries(eventParts) }, repositoryId, "coverage-v1", version,
+          ["snapshot.baseline.files", "snapshot.baseline.excluded", "snapshot.sources", "snapshot.events", "snapshot.mappings", "snapshot.gaps", "eventParts"]);
+        this.database.prepare("INSERT INTO payload_parts(repository_id,kind,owner,field,part,json) VALUES(?,'coverage-v1',?,'$header',0,?)")
+          .run(repositoryId, version, json);
+      }).immediate();
+    } catch (error) {
+      // 缓存写锁争用或空间不足时仍返回完整结果，下一次未命中可以重试。
+      if (!["SQLITE_BUSY", "SQLITE_FULL"].includes((error as { code?: string }).code ?? "")) throw error;
+    }
+  }
+
+  /** 详情只恢复选中活动所在的分块；同一分块内多条活动一次读取，避免重读整仓正文。 */
+  getSnapshotEvents(repositoryId: string, version: string, eventParts: ReadonlyMap<string, number>): HistoryEvent[] {
+    return this.database.transaction(() => {
+      const selected = this.analysisVersion(repositoryId, version);
+      const groups = new Map<number, string[]>();
+      for (const [id, part] of eventParts) {
+        if (!groups.has(part)) groups.set(part, []);
+        groups.get(part)!.push(id);
+      }
+      const query = this.database.prepare(`SELECT json(e.value) AS json FROM payload_parts p,jsonb_each(p.json) e
+        WHERE p.repository_id=? AND p.kind='snapshot' AND p.owner=? AND p.field='events' AND p.part=?
+          AND json_extract(e.value,'$.id') IN (SELECT value FROM json_each(?))`);
+      const events: HistoryEvent[] = [];
+      for (const [part, ids] of groups) {
+        for (const row of query.iterate(repositoryId, selected, part, JSON.stringify(ids)) as Iterable<JsonRow>) {
+          const event = JSON.parse(row.json) as HistoryEvent;
+          if (isSupportedClient(event.client)) events.push(event);
+        }
+      }
+      return events;
+    }).deferred();
+  }
+
+  private readSnapshot(repositoryId: string, version: string | undefined, coverageOnly: boolean, eventParts?: Map<string, number>): AnalysisSnapshot {
     const repository = this.getRepository(repositoryId);
     const selected = version ?? repository.version;
     if (!selected) throw new StoreError("ANALYSIS_NOT_READY", "仓库尚无完整分析结果", { key: "diagnostics.index.store.m003" });
     const row = this.database.prepare("SELECT snapshot AS json FROM versions WHERE repository_id=? AND version=?")
       .get(repositoryId, selected) as JsonRow | undefined;
     if (!row) throw new StoreError("VERSION_NOT_FOUND", "分析结果版本不可用：不存在或已被淘汰", { key: "diagnostics.index.store.m004" });
-    const snapshot = this.readPayload<AnalysisSnapshot>(row.json, repositoryId, "snapshot", selected, coverageOnly);
+    const snapshot = this.readPayload<AnalysisSnapshot>(row.json, repositoryId, "snapshot", selected, coverageOnly, eventParts);
+    return this.normalizeSnapshot(snapshot, repository, selected);
+  }
+
+  private normalizeSnapshot(snapshot: AnalysisSnapshot, repository: Repository, selected: string): AnalysisSnapshot {
     snapshot.sources = snapshot.sources.filter(source => isSupportedClient(source.client)).map(source => this.sourceMetadata(source));
     const events = snapshot.events.filter(event => isSupportedClient(event.client));
     if (events.length !== snapshot.events.length) {
@@ -458,13 +557,15 @@ export class AnalysisStore {
       this.assertRunningJob(input.jobId, repositoryId);
       const { gaps: _sourceGaps, ...savedSources } = input.sources;
       const savedSnapshot = { ...snapshot, sources: snapshot.sources.map((source) => this.sourceMetadata(source)) };
+      const eventParts = new Map<string, number>();
       // 无变化检查沿用完整旧版；发布时统计和创建时间保持不可变。
       if (input.reusedVersion) {
         if (this.getRepository(repositoryId).version !== input.reusedVersion) throw new StoreError("VERSION_NOT_FOUND", "分析结果版本不可用：不存在或已被淘汰", { key: "diagnostics.index.store.m004" });
       } else this.database.prepare("INSERT INTO versions(repository_id,version,snapshot,sources,stats) VALUES(?,?,?,?,?)")
         .run(repositoryId, snapshot.version,
-          this.writePayload(savedSnapshot, repositoryId, "snapshot", snapshot.version, ["baseline.files", "baseline.excluded", "sources", "events", "mappings", "gaps"]),
+          this.writePayload(savedSnapshot, repositoryId, "snapshot", snapshot.version, ["baseline.files", "baseline.excluded", "sources", "events", "mappings", "gaps"], true, eventParts),
           this.writePayload(savedSources, repositoryId, "sources", snapshot.version, ["sources", "unassociated"]), JSON.stringify(input.stats));
+      if (!input.reusedVersion) this.cacheCoverageSnapshot(this.coverageMetadata(savedSnapshot), eventParts);
       if (input.clearCache) {
         this.database.prepare("DELETE FROM mapping_cache WHERE repository_id=?").run(snapshot.repository.id);
       }
@@ -498,7 +599,7 @@ export class AnalysisStore {
         refreshStats: input.stats });
       // 发布序号独立于版本名称、创建时间及普通 rowid；淘汰与发布一同提交。
       const expired = "SELECT version FROM versions WHERE repository_id=? ORDER BY publication DESC LIMIT -1 OFFSET 2";
-      this.database.prepare(`DELETE FROM payload_parts WHERE repository_id=? AND kind IN ('snapshot','sources') AND owner IN (${expired})`)
+      this.database.prepare(`DELETE FROM payload_parts WHERE repository_id=? AND kind IN ('snapshot','sources','coverage-v1') AND owner IN (${expired})`)
         .run(repositoryId, repositoryId);
       this.database.prepare(`DELETE FROM versions WHERE repository_id=? AND version IN (${expired})`)
         .run(repositoryId, repositoryId);

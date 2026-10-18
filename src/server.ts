@@ -9,14 +9,11 @@ import { randomUUID } from "node:crypto";
 import { existsSync, lstatSync, realpathSync } from "node:fs";
 import { join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
-import type { AnalysisSnapshot, ApiErrorCode, CoverageQuery, DeleteRepositoryResponse, FileDetail, Filters, RegisterRepositoryResponse, ServiceInstance } from "./contracts.js";
-import { buildCoverage, eventFilePaths, filterEvents, filterHistoricalEvents, getHotspots, getUnreadFiles, selectedSource } from "./analysis/coverage.js";
-import { mapClientOptions, mapSessions } from "./analysis/sessions.js";
+import type { ApiErrorCode, DeleteRepositoryResponse, RegisterRepositoryResponse, ServiceInstance } from "./contracts.js";
 import type { DiscoverRoots } from "./history/index.js";
 import { AnalysisStore, StoreError, WorkerManager } from "./index/index.js";
 import { VERSION } from "./version.js";
-import { bodyText, coverageQuery, emptyBody, eventsQuery, integer, relativePath, ServiceError } from "./service/input.js";
-import { contentHash, readCurrentFile, readEvidence } from "./service/files.js";
+import { bodyText, emptyBody, integer, ServiceError } from "./service/input.js";
 import { acquireLock, dataHome, removeInstance, writeInstance } from "./service/runtime.js";
 import { SessionStore } from "./sessions/store.js";
 import { queryBoolean, sessionMessageQuery, sessionProfileQuery, sessionQuery, sessionRefreshOptions, sessionTimelineQuery } from "./service/session-input.js";
@@ -42,6 +39,8 @@ import { defaultSemanticConfig } from "./semantic/config.js";
 import type { SemanticSearchQuery } from "./semantic-contracts.js";
 import { registerReplayRoutes } from "./service/replay-routes.js";
 import { ReplayManager } from "./replay/manager.js";
+import { MapQueryManager } from "./analysis/query-manager.js";
+import { registerMapQueryRoutes } from "./service/map-query-routes.js";
 
 export interface ServiceOptions {
   home?: string;
@@ -62,13 +61,6 @@ function statusCode(code: ApiErrorCode): number {
   return 404;
 }
 
-function filtersOf({ version: _version, ...filters }: CoverageQuery): Filters { return filters; }
-function hasEventPath(snapshot: AnalysisSnapshot, eventId: string, path: string): boolean {
-  const event = snapshot.events.find((candidate) => candidate.id === eventId);
-  return Boolean(event && (eventFilePaths(event, snapshot.repository).includes(path)
-    || snapshot.mappings.some((mapping) => mapping.eventId === eventId && mapping.filePath === path)));
-}
-
 export async function startService(options: ServiceOptions = {}) {
   const home = dataHome(options.home);
   const requestedPort = options.port ?? (process.env.AGENT_MANOR_PORT ? Number(process.env.AGENT_MANOR_PORT) : 0);
@@ -84,6 +76,7 @@ export async function startService(options: ServiceOptions = {}) {
   let overviewManager: OverviewManager | undefined;
   let searchManager: SessionSearchManager | undefined;
   let replayManager: ReplayManager | undefined;
+  let mapQueryManager: MapQueryManager | undefined;
   let semanticManager: SemanticManager | undefined;
   let autoSync: SessionAutoSyncScheduler | undefined;
   let unsubscribePreferences: (() => void) | undefined;
@@ -109,6 +102,7 @@ export async function startService(options: ServiceOptions = {}) {
     };
     searchManager = new SessionSearchManager(library);
     replayManager = new ReplayManager(index, library);
+    mapQueryManager = new MapQueryManager(index);
     semanticManager = new SemanticManager(home, library);
     const searches = searchManager;
     const search = async (request: FastifyRequest, reply: FastifyReply, type: SearchOperation, query: SessionQuery & { sessionId?: string }) => {
@@ -149,6 +143,7 @@ export async function startService(options: ServiceOptions = {}) {
       await semanticManager?.close();
       await searchManager?.close();
       await replayManager?.close();
+      await mapQueryManager?.close();
       await resourceHistory?.close();
       await overviewManager?.close();
       await usageManager?.close();
@@ -172,6 +167,7 @@ export async function startService(options: ServiceOptions = {}) {
     registerOverviewRoutes(app, overviewManager);
     registerSemanticRoutes(app, semanticManager);
     registerReplayRoutes(app, replayManager);
+    registerMapQueryRoutes(app, mapQueryManager);
     app.addHook("onRequest", async (request) => {
       let host: URL;
       try { host = new URL(`http://${request.headers.host ?? ""}`); } catch { throw new ServiceError("FORBIDDEN", "无效 Host", { key: "diagnostics.server.m005" }); }
@@ -267,87 +263,6 @@ export async function startService(options: ServiceOptions = {}) {
     });
     registerResourceRoutes(app, resources);
     app.delete("/api/v1/sessions/cache", async request => { emptyBody(request.body); return { job: worker.refreshSessions(true) }; });
-    const snapshotFor = (id: string, query: CoverageQuery) => index.getSnapshot(id, query.version);
-    app.get<{ Params: RepositoryParams; Querystring: Query }>(`${base}/sessions`, async request => {
-      const snapshot = snapshotFor(request.params.id, coverageQuery(request.query));
-      return { version: snapshot.version, clients: mapClientOptions(snapshot), sessions: mapSessions(snapshot, library.summariesByIdentity([...snapshot.sources, ...snapshot.events])) };
-    });
-    app.get<{ Params: RepositoryParams; Querystring: Query }>(`${base}/coverage`, async (request) => {
-      const query = coverageQuery(request.query);
-      const result = buildCoverage(snapshotFor(request.params.id, query), filtersOf(query));
-      return queryBoolean(request.query.summary, "summary") ? { ...result, gaps: [], gapCount: result.gaps.length } : result;
-    });
-    app.get<{ Params: RepositoryParams; Querystring: Query }>(`${base}/coverage/gaps`, async request => {
-      const query = coverageQuery(request.query);
-      const result = buildCoverage(snapshotFor(request.params.id, query), filtersOf(query));
-      return { version: result.version, gaps: result.gaps };
-    });
-    app.get<{ Params: RepositoryParams; Querystring: Query }>(`${base}/hotspots`, async (request) => {
-      const query = coverageQuery(request.query);
-      const metric = request.query.metric ?? "activity";
-      if (metric !== "read" && metric !== "edit" && metric !== "activity") throw new ServiceError("INVALID_INPUT", "未知热点指标", { key: "diagnostics.server.m016" });
-      const coverage = buildCoverage(snapshotFor(request.params.id, query), filtersOf(query));
-      return { ...coverage, files: getHotspots(coverage, metric, integer(request.query.limit, "limit", 20, 1000)) };
-    });
-    app.get<{ Params: RepositoryParams; Querystring: Query }>(`${base}/unobserved`, async (request) => {
-      const query = coverageQuery(request.query);
-      const coverage = buildCoverage(snapshotFor(request.params.id, query), filtersOf(query));
-      return { ...coverage, files: getUnreadFiles(coverage) };
-    });
-    app.get<{ Params: RepositoryParams; Querystring: Query }>(`${base}/file`, async (request): Promise<FileDetail> => {
-      const query = coverageQuery(request.query);
-      const path = relativePath(request.query.path);
-      const snapshot = snapshotFor(request.params.id, query);
-      const coverage = buildCoverage(snapshot, filtersOf(query));
-      const file = coverage.files.find((candidate) => candidate.path === path);
-      if (!file) throw new ServiceError("FILE_NOT_FOUND", "文件不在所选分析范围内", { key: "diagnostics.server.m017" });
-      let content: string | null = null;
-      let hash: string | undefined;
-      try {
-        const bytes = await readCurrentFile(snapshot.repository.path, path);
-        hash = contentHash(bytes);
-        if (hash === file.hash) content = bytes.toString("utf8");
-      } catch (error) {
-        if (error instanceof ServiceError) throw error;
-        if (!["ENOENT", "ENOTDIR", "ELOOP"].includes((error as NodeJS.ErrnoException).code ?? "")) throw error;
-      }
-      const events = filterEvents(snapshot, filtersOf(query)).filter((event) => hasEventPath(snapshot, event.id, path)).map((event) => ({
-        ...event, mapping: content === null ? undefined : snapshot.mappings.find((mapping) => mapping.eventId === event.id && mapping.filePath === path),
-      }));
-      return { repository: coverage.repository, version: coverage.version, baselineHash: coverage.baselineHash,
-        createdAt: coverage.createdAt, stale: coverage.stale || content === null, filters: coverage.filters,
-        previousVersion: coverage.previousVersion, file, content, contentHash: hash, contentStale: content === null, events };
-    });
-    app.get<{ Params: RepositoryParams; Querystring: Query }>(`${base}/events`, async (request) => {
-      const query = eventsQuery(request.query);
-      const snapshot = snapshotFor(request.params.id, query);
-      const events = filterHistoricalEvents(snapshot, filtersOf(query)).filter((event) => (!query.kind || event.kind === query.kind)
-        && (!query.path || hasEventPath(snapshot, event.id, query.path)));
-      const start = (query.page! - 1) * query.pageSize!;
-      return { version: snapshot.version, events: events.slice(start, start + query.pageSize!), total: events.length, page: query.page, pageSize: query.pageSize };
-    });
-    app.get<{ Params: RepositoryParams & { eventId: string }; Querystring: Query }>(`${base}/evidence/:eventId`, async (request) => {
-      const query = coverageQuery(request.query);
-      const snapshot = snapshotFor(request.params.id, query);
-      const event = filterHistoricalEvents(snapshot, filtersOf(query)).find((candidate) => candidate.id === request.params.eventId);
-      if (!event) throw new ServiceError("EVENT_NOT_FOUND", "活动不在所选分析范围内", { key: "diagnostics.server.m018" });
-      const records = [];
-      const unavailable = [];
-      for (const source of event.sources) {
-        const record = await readEvidence(source);
-        if (record) records.push(record); else unavailable.push(source);
-      }
-      return { version: snapshot.version, event, records, unavailable };
-    });
-    app.get<{ Params: RepositoryParams; Querystring: Query }>(`${base}/sources`, async (request) => {
-      const query = coverageQuery(request.query);
-      const result = index.listSources(request.params.id, query.version);
-      if (!query.client && !query.sessionClient) return result;
-      const sources = result.sources.filter(source => selectedSource(source, query));
-      const unassociated = result.unassociated.filter(source => selectedSource(source, query));
-      return { ...result, sources, unassociated,
-        gaps: result.gaps.filter(gap => !gap.sourceId || [...sources, ...unassociated].some(source => source.sourceId === gap.sourceId)) };
-    });
     app.post<{ Params: RepositoryParams }>(`${base}/associations`, async (request) => {
       index.associateSource(request.params.id, bodyText(request.body, "sourceId"));
       return { job: worker.refresh(request.params.id) };
@@ -407,6 +322,7 @@ export async function startService(options: ServiceOptions = {}) {
     await manager?.close().catch(() => undefined);
     await searchManager?.close().catch(() => undefined);
     await replayManager?.close().catch(() => undefined);
+    await mapQueryManager?.close().catch(() => undefined);
     await resourceHistory?.close().catch(() => undefined);
     await usageManager?.close().catch(() => undefined);
     await overviewManager?.close().catch(() => undefined);

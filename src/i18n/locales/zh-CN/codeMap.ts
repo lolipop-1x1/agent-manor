@@ -1,6 +1,8 @@
 import type { MessageCatalog } from "../../types.js";
 
 export default {
+  "codeMap.error.queryBusy": "地图查询繁忙，请稍后重试",
+  "codeMap.error.queryStopped": "地图查询后台已停止",
   "codeMap.view.distribution": "活动分布",
   "codeMap.view.replay": "活动回放",
   "codeMap.view.tabs": "代码地图视图",
