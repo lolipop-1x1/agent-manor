@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useId, useState } from "react";
 import * as Dropdown from "@radix-ui/react-dropdown-menu";
 import { ArrowLeft, ArrowSquareOut, DotsThree, PencilSimple } from "@phosphor-icons/react";
 import { diffLines } from "diff";
@@ -25,7 +25,7 @@ function RevisionBody({ revision }: { revision: KnowledgeRevision }) {
 }
 
 export function KnowledgeDetail({ detail, reviewing, busy: loading, onEdit, onChanged, onBack }: { detail: Detail; reviewing: boolean; busy: boolean; onEdit: () => void; onChanged: (detail: Detail) => void; onBack: () => void }) {
-  const { t, dateTime } = useI18n();
+  const { t, dateTime } = useI18n(), panelId = useId();
   const [tab, setTab] = useState("body"), [versionId, setVersionId] = useState<string>();
   const [mobileCompare, setMobileCompare] = useState("new");
   const [busy, setBusy] = useState(false), [error, setError] = useState<unknown>();
@@ -68,8 +68,8 @@ export function KnowledgeDetail({ detail, reviewing, busy: loading, onEdit, onCh
       <footer className="knowledge-review-footer"><button className="text-button" disabled={busy || loading} onClick={() => setConfirm("reject")}>{t("knowledge.reject")}</button><span /><button className="button" disabled={busy || loading} onClick={onEdit}>{t("knowledge.editSuggestion")}</button><button className="button primary" disabled={busy || loading} onClick={() => setConfirm("approve")}>{t("knowledge.approve")}</button></footer>
     </> : <p className="knowledge-empty-inline">{t("knowledge.noPending")}</p> : <>
       {pending && pending.id !== active.id && <button className="knowledge-pending-link" onClick={() => { location.hash = `#knowledge?${new URLSearchParams({ page: "review", id: detail.id, review: "pending" })}`; }}>{t("knowledge.reviewAction")}<ArrowSquareOut size={15} /></button>}
-      <KnowledgeTabs label={t("knowledge.title")} value={tab} onChange={setTab} options={["body", "sources", "versions"].map(value => ({ value, label: t(`knowledge.${value}`) }))} />
-      <div role="tabpanel">{tab === "body" ? <RevisionBody revision={active} /> : tab === "sources" ? <KnowledgeSources sources={active.sources ?? []} disabled={loading || busy} /> : <>
+      <KnowledgeTabs panelId={panelId} label={t("knowledge.title")} value={tab} onChange={setTab} options={["body", "sources", "versions"].map(value => ({ value, label: t(`knowledge.${value}`) }))} />
+      <div role="tabpanel" id={panelId} aria-labelledby={`${panelId}-${tab}-tab`}>{tab === "body" ? <RevisionBody revision={active} /> : tab === "sources" ? <KnowledgeSources sources={active.sources ?? []} disabled={loading || busy} /> : <>
         <div className="knowledge-history-layout"><ol className="knowledge-revisions">{[...detail.revisions].sort((a, b) => b.version - a.version).map(revision => <li key={revision.id}><button aria-current={revision.id === active.id ? "true" : undefined} disabled={loading || busy} onClick={() => setVersionId(revision.id)}><strong>{t("knowledge.version", { version: revision.version })}</strong><span>{t(`knowledge.review.${revision.review}`)}</span><time>{dateTime(revision.createdAt)}</time>{revision.author && <span>{revision.author}</span>}{revision.changeReason && <span>{revision.changeReason}</span>}</button></li>)}</ol><section className="knowledge-history-snapshot"><header><h3>{active.title}</h3><button className="button" disabled={busy || loading} onClick={() => setConfirm("restore")}>{t("knowledge.restore")}</button></header><RevisionBody revision={active} />{active.id !== detail.revision.id && <details className="knowledge-details"><summary>{t("knowledge.compareCurrent")}</summary><div className="knowledge-revision-diff">{diffLines(active.body, detail.revision.body).map((change, index) => <div key={index} className={`knowledge-diff${change.added ? " added" : change.removed ? " removed" : ""}`}>{(change.added || change.removed) && <span className="knowledge-diff-label">{change.added ? "+ " : "− "}{t(change.added ? "knowledge.added" : "knowledge.removed")}</span>}<KnowledgeMarkdown body={change.value} /></div>)}</div></details>}</section></div>
         <details className="knowledge-details"><summary>{t("knowledge.audit")}</summary><ol className="knowledge-audit">{detail.audit.map(item => <li key={item.id}><time>{dateTime(item.createdAt)}</time><span>{isMessageDescriptorKnown({ key: `knowledge.audit.${item.action}` }) ? t(`knowledge.audit.${item.action}`) : item.action}</span>{item.reason && <p>{item.reason}</p>}</li>)}</ol></details>
       </>}</div>

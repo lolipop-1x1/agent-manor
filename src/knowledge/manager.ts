@@ -1,13 +1,13 @@
 import { createHash, randomUUID } from "node:crypto";
-import type { KnowledgeConfig, KnowledgeExtractionScope, KnowledgeJob, KnowledgeLanguage, KnowledgePreview, KnowledgeSettings, KnowledgeSettingsInput, KnowledgeSourceReader, KnowledgeTarget, KnowledgeTaskStatus, KnowledgeTryResult } from "../knowledge-contracts.js";
+import type { KnowledgeConfig, KnowledgeExtractionScope, KnowledgeJob, KnowledgeLanguage, KnowledgePreview, KnowledgeSettings, KnowledgeSettingsInput, KnowledgeSourceReader, KnowledgeTarget, KnowledgeTaskStatus, KnowledgeTryResult, KnowledgeRequestEvent, KnowledgeTaskEvent } from "../knowledge-contracts.js";
 import { KnowledgeConfigStore, KnowledgeModelError, knowledgeFingerprint, validateKnowledgeConfig, validateKnowledgeScope } from "./config.js";
-import { KnowledgeGenerationScheduler, estimateKnowledgeTokens, emptyKnowledgeUsage } from "./generation.js";
-import { KnowledgeExtractionPipeline, type PipelineCheckpoint } from "./pipeline.js";
+import { KnowledgeGenerationScheduler, estimateKnowledgeTokens, emptyKnowledgeUsage, applyKnowledgeRequestUsage, knowledgeRequestCost } from "./generation.js";
+import { KnowledgeExtractionPipeline, type PipelineCheckpoint, type PipelineOptions } from "./pipeline.js";
 import type { KnowledgeStore } from "./store.js";
 import { knowledgeLimitations } from "./diagnostics.js";
 
 interface PreviewRecord { preview: KnowledgePreview; config: KnowledgeConfig }
-interface JobRecord { job: KnowledgeJob; preview: KnowledgePreview; config: KnowledgeConfig; order: number[]; cursor: number; successful: number[]; failureIndexes: number[]; chunks: Record<string, { total: number; completed: number }>; keySnapshot: boolean }
+interface JobRecord { job: KnowledgeJob; preview: KnowledgePreview; config: KnowledgeConfig; order: number[]; cursor: number; successful: number[]; failureIndexes: number[]; chunks: Record<string, { total: number; completed: number }>; keySnapshot: boolean; budgetInput?: number; budgetCost?: number }
 interface Coverage { messages: Record<string, { hash: string; version: string; fingerprint: string; taskId: string }>; updatedAt: string }
 interface ManagerState { previews: string[]; jobs: string[]; idempotency: Record<string, { previewId: string; jobId: string }>; automatic: KnowledgeTaskStatus["automatic"] & { failureCount?: number; notBefore?: string; signature?: string } }
 const stateKey = "extraction.manager";
@@ -16,6 +16,7 @@ function digest(value: unknown): string { return createHash("sha256").update(JSO
 function modelError(code: string, message: string, status = 400): KnowledgeModelError { return new KnowledgeModelError(code, message, status); }
 function terminal(job: KnowledgeJob): boolean { return ["complete", "partial", "failed", "budget_stopped"].includes(job.status); }
 function diagnostic(error: unknown): string { return (error instanceof Error ? error.message : String(error)).slice(0, 4096); }
+function jobTitle(record: JobRecord): string | undefined { return record.preview.targets.length === 1 ? record.job.title ?? record.preview.targets[0]?.title : undefined; }
 
 export class KnowledgeManager {
   private readonly config: KnowledgeConfigStore;
@@ -26,18 +27,50 @@ export class KnowledgeManager {
   private running?: Promise<void>;
   private wake?: ReturnType<typeof setTimeout>;
   private starting: Promise<unknown> = Promise.resolve();
-  constructor(home: string, private readonly store: KnowledgeStore, private readonly sources: KnowledgeSourceReader) {
-    this.config = new KnowledgeConfigStore(home); this.scheduler = new KnowledgeGenerationScheduler(store); this.pipeline = new KnowledgeExtractionPipeline(this.scheduler, store, sources);
+  constructor(home: string, private readonly store: KnowledgeStore, private readonly sources: KnowledgeSourceReader, options?: PipelineOptions) {
+    this.config = new KnowledgeConfigStore(home); this.scheduler = new KnowledgeGenerationScheduler(store); this.pipeline = new KnowledgeExtractionPipeline(this.scheduler, store, sources, options);
     const state = this.state();
     for (const id of state.jobs) {
       const record = this.record(id);
-      if (record && ["running", "queued"].includes(record.job.status)) { record.job.status = "paused"; record.job.updatedAt = now(); record.job.error = "interrupted"; record.job.errorDescriptor = { key: "knowledge.errors.stopped" }; this.save(record); }
+      if (record && ["running", "queued"].includes(record.job.status)) { record.job.status = "paused"; record.job.updatedAt = now(); record.job.error = "interrupted"; record.job.errorDescriptor = { key: "knowledge.errors.stopped" }; this.event(record, { kind: "paused", error: "interrupted", errorDescriptor: { key: "knowledge.errors.stopped" } }); this.save(record); }
     }
     this.schedule();
   }
   private state(): ManagerState { return this.store.getState<ManagerState>(stateKey) ?? { previews: [], jobs: [], idempotency: {}, automatic: { enabled: false } }; }
   private record(id: string): JobRecord | undefined { return this.store.getState<JobRecord>(`extraction.job:${id}`); }
   private save(record: JobRecord): void { this.store.setState(`extraction.job:${record.job.id}`, record); }
+  private event(record: JobRecord, event: Omit<KnowledgeTaskEvent, "id" | "at"> & { at?: string }): void {
+    record.job.events ??= [];
+    record.job.events.push({ ...event, id: randomUUID(), at: event.at ?? now() });
+    if (record.job.events.length > 400) { record.job.droppedEvents = (record.job.droppedEvents ?? 0) + record.job.events.length - 400; record.job.events = record.job.events.slice(-400); }
+  }
+  private request(id: string, event: KnowledgeRequestEvent): void {
+    const record = this.record(id); if (!record) throw modelError("task_not_found", "找不到沉淀任务", 404);
+    const generation = record.config.generation;
+    if (event.kind === "before") {
+      const input = event.measurement.inputTokenUpperBound ?? event.measurement.inputTokens;
+      const cost = knowledgeRequestCost(record.config, { inputTokens: input, outputTokens: event.measurement.outputTokens }, true);
+      if (generation.taskInputTokenBudget !== undefined && (record.budgetInput ?? 0) + input > generation.taskInputTokenBudget) throw modelError("task_token_budget_exceeded", "已达到本次知识沉淀的输入 Token 预算", 429);
+      if (generation.taskBudget !== undefined && (cost === null || (record.budgetCost ?? 0) + cost > generation.taskBudget)) throw modelError("task_budget_exceeded", "已达到本次知识沉淀的费用预算", 429);
+      return;
+    }
+    record.job.usage ??= emptyKnowledgeUsage(); applyKnowledgeRequestUsage(record.job.usage, event);
+    if (event.kind === "reserved") {
+      const input = event.measurement.inputTokenUpperBound ?? event.measurement.inputTokens;
+      record.budgetInput = (record.budgetInput ?? 0) + input;
+      record.budgetCost = (record.budgetCost ?? 0) + (knowledgeRequestCost(record.config, { inputTokens: input, outputTokens: event.measurement.outputTokens }, true) ?? 0);
+    } else if (event.kind === "settled") {
+      const reservedInput = event.reservation.inputTokenUpperBound ?? event.reservation.inputTokens;
+      if (event.measurement.actualInputTokens !== undefined) record.budgetInput = Math.max(0, (record.budgetInput ?? 0) - reservedInput + event.measurement.actualInputTokens);
+      if (event.measurement.actualInputTokens !== undefined && event.measurement.actualOutputTokens !== undefined && event.measurement.estimatedCost !== null) {
+        const reservedCost = knowledgeRequestCost(record.config, { inputTokens: reservedInput, outputTokens: event.reservation.outputTokens }, true);
+        if (reservedCost !== null) record.budgetCost = Math.max(0, (record.budgetCost ?? 0) - reservedCost + event.measurement.estimatedCost);
+      }
+    }
+    this.event(record, event.kind === "failed" ? { kind: "request", at: event.at, requestId: event.requestId, purpose: event.purpose, attempt: event.attempt, requestState: "failed", error: event.error, errorDescriptor: event.errorDescriptor }
+      : { kind: "request", at: event.at, requestId: event.requestId, purpose: event.purpose, attempt: event.attempt, requestState: event.kind, measurement: event.measurement });
+    record.job.updatedAt = now(); this.save(record);
+  }
   private coverageKey(target: KnowledgeTarget): string { return `extraction.coverage:${digest([target.client, target.sessionId, target.branch])}`; }
   private checkpointKey(id: string, target: KnowledgeTarget): string { return `extraction.work:${id}:${digest([target.sessionId, target.branch])}`; }
   private trim(state: ManagerState): void {
@@ -107,16 +140,16 @@ export class KnowledgeManager {
       try { await this.sources.read(target); } catch (cause) { throw modelError("source_changed", `来源已变化，请重新预览：${diagnostic(cause)}`, 409); }
     }
     const id = randomUUID(), key = capture.generationKey; await this.config.snapshot(id, key);
-    const job: KnowledgeJob = { id, previewId, status: "queued", phase: "planning", createdAt: now(), updatedAt: now(), totalSessions: stored.preview.sessionCount, completedSessions: 0, totalChunks: stored.preview.plannedChunks ?? 0, completedChunks: 0, createdEntries: 0, updatedEntries: 0, duplicates: 0, noValue: 0, needsContext: 0, failedSessions: [], results: [], outputLanguage: stored.config.outputLanguage, fingerprint: stored.preview.fingerprint };
+    const job: KnowledgeJob = { id, previewId, status: "queued", phase: "planning", createdAt: now(), updatedAt: now(), totalSessions: stored.preview.sessionCount, completedSessions: 0, totalChunks: stored.preview.plannedChunks ?? 0, completedChunks: 0, createdEntries: 0, updatedEntries: 0, duplicates: 0, noValue: 0, needsContext: 0, failedSessions: [], results: [], outputLanguage: stored.config.outputLanguage, fingerprint: stored.preview.fingerprint, title: stored.preview.targets.length === 1 ? stored.preview.targets[0]?.title : undefined, model: structuredClone(stored.config.generation), usage: emptyKnowledgeUsage(), events: [] };
     const record: JobRecord = { job, preview: stored.preview, config: stored.config, order: stored.preview.targets.map((_target, index) => index), cursor: 0, successful: [], failureIndexes: [], chunks: Object.fromEntries(stored.preview.targets.map((target, index) => [String(index), { total: target.plannedChunks ?? 0, completed: 0 }])), keySnapshot: key !== undefined };
     this.store.transaction(() => {
       const current = this.state(); current.jobs.push(id); if (idempotencyHash) current.idempotency[idempotencyHash] = { previewId, jobId: id };
-      this.save(record); this.trim(current); this.store.setState(stateKey, current);
+      this.event(record, { kind: "queued", phase: "planning" }); this.save(record); this.trim(current); this.store.setState(stateKey, current);
     });
     await this.config.retainSnapshots(this.state().jobs);
     this.kick(); return structuredClone(job);
   }
-  async job(id: string): Promise<KnowledgeJob> { const record = this.record(id); if (!record) throw modelError("task_not_found", "找不到沉淀任务", 404); return structuredClone(record.job); }
+  async job(id: string): Promise<KnowledgeJob> { const record = this.record(id); if (!record) throw modelError("task_not_found", "找不到沉淀任务", 404); return structuredClone({ ...record.job, title: jobTitle(record) }); }
   async previewById(id: string): Promise<KnowledgePreview> {
     const preview = this.store.getState<PreviewRecord | null>(`extraction.preview:${id}`)?.preview ?? this.state().jobs.map(jobId => this.record(jobId)?.preview).find(value => value?.id === id);
     if (!preview) throw modelError("preview_stale", "沉淀预览不存在或已失效", 404);
@@ -124,17 +157,18 @@ export class KnowledgeManager {
   }
   async status(): Promise<KnowledgeTaskStatus> {
     const settings = await this.settings(), state = this.state();
-    return { jobs: state.jobs.map(id => this.record(id)?.job).filter((job): job is KnowledgeJob => Boolean(job)).reverse().map(job => structuredClone(job)), usage: this.scheduler.usage(), automatic: { enabled: settings.config.automatic.enabled, lastCheckAt: state.automatic.lastCheckAt, nextCheckAt: state.automatic.nextCheckAt, error: state.automatic.error, errorDescriptor: state.automatic.errorDescriptor } };
+    const jobs = state.jobs.map(id => this.record(id)).filter((record): record is JobRecord => Boolean(record)).reverse().map(record => { const { events: _events, ...job } = record.job; return structuredClone({ ...job, title: jobTitle(record) }); });
+    return { jobs, usage: this.scheduler.usage(), automatic: { enabled: settings.config.automatic.enabled, lastCheckAt: state.automatic.lastCheckAt, nextCheckAt: state.automatic.nextCheckAt, error: state.automatic.error, errorDescriptor: state.automatic.errorDescriptor } };
   }
   async action(id: string, action: "pause" | "resume" | "retry"): Promise<KnowledgeJob> {
     if (this.closed) throw modelError("stopped", "知识后台已停止", 503);
     const record = this.record(id); if (!record) throw modelError("task_not_found", "找不到沉淀任务", 404);
     if (action !== "pause" && record.preview.fingerprint !== knowledgeFingerprint(record.config)) throw modelError("preview_stale", "输入处理方案已更新，请新建预览后开始沉淀", 409);
     if (action === "pause") {
-      if (["queued", "running"].includes(record.job.status)) { record.job.status = "paused"; record.job.updatedAt = now(); this.save(record); this.controllers.get(id)?.abort(); }
+      if (["queued", "running"].includes(record.job.status)) { record.job.status = "paused"; record.job.updatedAt = now(); this.event(record, { kind: "paused", phase: record.job.phase }); this.save(record); this.controllers.get(id)?.abort(); }
     } else if (action === "resume") {
       if (record.job.status !== "paused") throw modelError("conflict", "只有暂停任务可以恢复", 409);
-      record.job.status = "queued"; delete record.job.error; delete record.job.errorDescriptor; record.job.updatedAt = now(); this.save(record); this.kick();
+      record.job.status = "queued"; this.event(record, { kind: "resumed", phase: record.job.phase }); delete record.job.error; delete record.job.errorDescriptor; record.job.updatedAt = now(); this.save(record); this.kick();
     } else if (action === "retry") {
       if (!["partial", "failed", "budget_stopped"].includes(record.job.status)) throw modelError("conflict", "当前任务没有可重试的失败范围", 409);
       record.order = [...new Set([...record.failureIndexes, ...record.order.slice(record.cursor)])]; record.cursor = 0; record.failureIndexes = [];
@@ -142,7 +176,7 @@ export class KnowledgeManager {
         const key = this.checkpointKey(id, record.preview.targets[index]!), checkpoint = this.store.getState<PipelineCheckpoint | null>(key);
         if (checkpoint?.needsContext) { this.store.deleteState(key); delete record.chunks[String(index)]; }
       }
-      record.job.needsContext = 0; record.job.failedSessions = []; record.job.status = "queued"; delete record.job.finishedAt; delete record.job.error; delete record.job.errorDescriptor; record.job.updatedAt = now(); this.save(record); this.kick();
+      this.event(record, { kind: "retried", phase: record.job.phase }); record.job.needsContext = 0; record.job.failedSessions = []; record.job.status = "queued"; delete record.job.finishedAt; delete record.job.error; delete record.job.errorDescriptor; record.job.updatedAt = now(); this.save(record); this.kick();
     } else throw modelError("request_invalid", "不支持的任务操作");
     return this.job(id);
   }
@@ -157,30 +191,31 @@ export class KnowledgeManager {
       const controller = new AbortController(); this.controllers.set(id, controller);
       try { await this.run(id, controller.signal); }
       catch (cause) {
-        const record = this.record(id); if (record && !["paused", "complete", "partial"].includes(record.job.status)) { record.job.status = "failed"; record.job.error = diagnostic(cause); record.job.errorDescriptor = { key: "knowledge.errors.persistence_failed" }; record.job.updatedAt = now(); this.save(record); }
+        const record = this.record(id); if (record && !["paused", "complete", "partial"].includes(record.job.status)) { record.job.status = "failed"; record.job.error = diagnostic(cause); record.job.errorDescriptor = { key: "knowledge.errors.persistence_failed" }; record.job.updatedAt = now(); this.event(record, { kind: "error", error: "persistence_failed", errorDescriptor: record.job.errorDescriptor }); this.save(record); }
       } finally { this.controllers.delete(id); }
     }
   }
   private async run(id: string, signal: AbortSignal): Promise<void> {
-    let record = this.record(id)!; record.job.status = "running"; record.job.updatedAt = now(); this.save(record);
+    let record = this.record(id)!; record.job.status = "running"; record.job.updatedAt = now(); this.event(record, { kind: "started", phase: "planning" }); this.save(record);
     const key = record.keySnapshot ? await this.config.key("generation", id) : undefined;
     for (; record.cursor < record.order.length;) {
       if (signal.aborted || this.closed) return;
       const index = record.order[record.cursor]!, target = record.preview.targets[index]!, checkpointKey = this.checkpointKey(id, target);
       try {
-        record.job.phase = "planning"; this.save(record);
+        record.job.phase = "planning"; this.event(record, { kind: "phase", phase: "planning", sessionId: target.sessionId }); this.save(record);
         let conversation;
         try { conversation = await this.sources.read(target); } catch (cause) { throw modelError("source_changed", `来源已变化：${diagnostic(cause)}`, 409); }
         const checkpoint = this.store.getState<PipelineCheckpoint | null>(checkpointKey) ?? undefined;
         const result = await this.pipeline.run(conversation, record.config, key, checkpoint, {
           signal,
-          phase: phase => { const latest = this.record(id)!; if (latest.job.status === "paused") return; latest.job.phase = phase; latest.job.updatedAt = now(); this.save(latest); },
+          request: event => this.request(id, event),
+          phase: phase => { const latest = this.record(id)!; if (latest.job.status === "paused") return; if (latest.job.phase !== phase) this.event(latest, { kind: "phase", phase, sessionId: target.sessionId }); latest.job.phase = phase; latest.job.updatedAt = now(); this.save(latest); },
           checkpoint: async (state, chunks) => {
             if (signal.aborted) throw modelError("cancelled", "沉淀已暂停", 499);
             this.store.transaction(() => {
               const latest = this.record(id)!; latest.chunks[String(index)] = { total: chunks, completed: state.next };
               latest.job.totalChunks = Object.values(latest.chunks).reduce((sum, item) => sum + item.total, 0); latest.job.completedChunks = Object.values(latest.chunks).reduce((sum, item) => sum + item.completed, 0);
-              latest.job.updatedAt = now(); this.store.setState(checkpointKey, state); this.save(latest);
+              this.event(latest, { kind: "progress", sessionId: target.sessionId, completedChunks: latest.job.completedChunks, totalChunks: latest.job.totalChunks }); latest.job.updatedAt = now(); this.store.setState(checkpointKey, state); this.save(latest);
             });
           },
         });
@@ -188,9 +223,9 @@ export class KnowledgeManager {
         record = this.record(id)!;
         if (result.needsContext) {
           const errorDescriptor = { key: "knowledge.errors.context_required" };
-          record.job.needsContext++; record.failureIndexes.push(index); record.job.failedSessions.push({ sessionId: target.sessionId, title: target.title, error: "Knowledge extraction needs more source context.", errorDescriptor }); record.job.error = "Knowledge extraction needs more source context."; record.job.errorDescriptor = errorDescriptor; record.cursor++; record.job.updatedAt = now(); this.save(record); continue;
+          record.job.needsContext++; record.failureIndexes.push(index); record.job.failedSessions.push({ sessionId: target.sessionId, title: target.title, error: "Knowledge extraction needs more source context.", errorDescriptor }); record.job.error = "Knowledge extraction needs more source context."; record.job.errorDescriptor = errorDescriptor; record.cursor++; record.job.updatedAt = now(); this.event(record, { kind: "error", sessionId: target.sessionId, error: "context_required", errorDescriptor }); this.save(record); continue;
         }
-        record.job.phase = "saving"; this.save(record);
+        record.job.phase = "saving"; this.event(record, { kind: "phase", phase: "saving", sessionId: target.sessionId }); this.save(record);
         // 候选、任务结果和非连续消息覆盖在同一 SQLite 事务提交；没有价值也推进实际完成的身份集合。
         this.store.transaction(() => {
           const latest = this.record(id)!;
@@ -214,15 +249,15 @@ export class KnowledgeManager {
       } catch (cause) {
         record = this.record(id)!;
         if (signal.aborted || record.job.status === "paused" || this.closed) return;
-        if (cause instanceof KnowledgeModelError && cause.code === "budget_exceeded") { record.job.status = "budget_stopped"; record.job.error = cause.message; record.job.errorDescriptor = cause.messageDescriptor; record.job.updatedAt = now(); this.save(record); return; }
+        if (cause instanceof KnowledgeModelError && ["budget_exceeded", "task_budget_exceeded", "task_token_budget_exceeded"].includes(cause.code)) { record.job.status = "budget_stopped"; record.job.error = cause.message; record.job.errorDescriptor = cause.messageDescriptor; record.job.updatedAt = now(); this.event(record, { kind: "error", error: cause.code, errorDescriptor: cause.messageDescriptor }); this.save(record); return; }
         const errorDescriptor = cause instanceof KnowledgeModelError ? cause.messageDescriptor : { key: "knowledge.errors.persistence_failed" };
         record.failureIndexes.push(index); record.job.failedSessions.push({ sessionId: target.sessionId, title: target.title, error: diagnostic(cause), errorDescriptor }); record.cursor++; record.job.error = diagnostic(cause);
-        record.job.errorDescriptor = errorDescriptor; record.job.updatedAt = now(); this.save(record);
+        record.job.errorDescriptor = errorDescriptor; record.job.updatedAt = now(); this.event(record, { kind: "error", sessionId: target.sessionId, error: cause instanceof KnowledgeModelError ? cause.code : "persistence_failed", errorDescriptor }); this.save(record);
       }
     }
     record = this.record(id)!; if (record.job.status === "paused" || signal.aborted) return;
     record.job.status = record.job.failedSessions.length ? record.successful.length > 0 ? "partial" : "failed" : "complete";
-    record.job.phase = "complete"; record.job.finishedAt = now(); record.job.updatedAt = now(); this.save(record);
+    record.job.phase = "complete"; record.job.finishedAt = now(); record.job.updatedAt = now(); this.event(record, { kind: "completed", phase: "complete" }); this.save(record);
   }
   private async overrides(input?: KnowledgeSettingsInput): Promise<{ config: KnowledgeConfig; key?: string }> {
     if (!input) { const settings = await this.settings(); return { config: settings.config, key: await this.key("generation") }; }
@@ -283,7 +318,7 @@ export class KnowledgeManager {
   }
   async close(): Promise<void> {
     this.closed = true; if (this.wake) clearTimeout(this.wake);
-    for (const [id, controller] of this.controllers) { const record = this.record(id); if (record && record.job.status === "running") { record.job.status = "paused"; record.job.updatedAt = now(); this.save(record); } controller.abort(); }
+    for (const [id, controller] of this.controllers) { const record = this.record(id); if (record && record.job.status === "running") { record.job.status = "paused"; record.job.updatedAt = now(); this.event(record, { kind: "paused", phase: record.job.phase }); this.save(record); } controller.abort(); }
     await this.scheduler.close(); await this.running; await this.starting;
   }
 }

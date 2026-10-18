@@ -2,7 +2,7 @@ import Database from "better-sqlite3";
 import { createHash, randomUUID } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import { dirname, join } from "node:path";
-import type { KnowledgeEntry, KnowledgeIndexPreview, KnowledgeIndexStatus, KnowledgeList, KnowledgeQuery, KnowledgeRevision, KnowledgeSettings } from "../knowledge-contracts.js";
+import type { KnowledgeConfig, KnowledgeDraft, KnowledgeEntry, KnowledgeIndexPreview, KnowledgeIndexStatus, KnowledgeList, KnowledgeQuery, KnowledgeRevision, KnowledgeSettings } from "../knowledge-contracts.js";
 import type { SemanticConnection, SemanticSettings } from "../semantic-contracts.js";
 import { defaultSemanticConfig, normalizeEmbeddingUrl, SemanticError } from "../semantic/config.js";
 import { EmbeddingScheduler } from "../semantic/scheduler.js";
@@ -64,8 +64,8 @@ export class KnowledgeSemantic {
   private fail(code: "index_required" | "index_changed" | "preview_stale" | "busy", message: string): never {
     throw new SemanticError(`knowledge_${code}`, message, 409, undefined, { key: `knowledge.errors.${code}` });
   }
-  private async configuration(): Promise<Configuration> {
-    const config = (await this.provider.settings()).config;
+  private async configuration(input?: KnowledgeConfig): Promise<Configuration> {
+    const config = input ?? (await this.provider.settings()).config;
     const embedding = config.embedding;
     if (embedding.mode === "off") this.fail("index_required", "Knowledge semantic search is disabled");
     const base = defaultSemanticConfig();
@@ -78,6 +78,41 @@ export class KnowledgeSemantic {
       requestsPerMinute: embedding.requestsPerMinute, pricePerMillion: embedding.pricePerMillion, dailyBudget: embedding.dailyBudget,
     } }, hasKey: false, fingerprint };
     return { fingerprint, settings, key: inherited ? await this.reused.key() : await this.provider.key("embedding") };
+  }
+
+  /** 任务内候选只做短文本召回，不要求构建正式知识索引，也不改变知识审阅状态。 */
+  async compareCandidates(candidate: KnowledgeDraft, others: readonly KnowledgeDraft[], config: KnowledgeConfig, signal?: AbortSignal): Promise<number[] | undefined> {
+    if (config.embedding.mode === "off" || !others.length) return undefined;
+    const configuration = await this.configuration(config), connection = configuration.settings.config.connection;
+    const text = (item: KnowledgeDraft) => {
+      const content = [item.title, item.summary, item.applicability, item.body, item.tags?.join(" ")].filter(Boolean).join("\n");
+      // 召回材料有界；完整正文仍交给后续关系判断，不用分数代替证据校验。
+      let bytes = 0, result = "";
+      for (const character of content) { bytes += Buffer.byteLength(character); if (bytes > 1800) break; result += character; }
+      return connection.documentPrefix + result;
+    };
+    const texts = [candidate, ...others].map(text), unique = [...new Set(texts)], values = new Map<string, number[]>();
+    const fingerprint = digest({ candidateRecipe: 1, connection: { ...connection, url: normalizeEmbeddingUrl(connection.url) } });
+    for (const value of unique) {
+      const row = this.db.prepare("SELECT json FROM vectors WHERE fingerprint=? AND key=?").get(fingerprint, digest(value)) as { json: string } | undefined;
+      if (row) values.set(value, JSON.parse(row.json) as number[]);
+    }
+    const pending = unique.filter(value => !values.has(value));
+    for (let offset = 0; offset < pending.length; offset += 8) {
+      const batch = pending.slice(offset, offset + 8), response = await this.scheduler.execute(batch, "query", signal, { settings: configuration.settings, apiKey: configuration.key });
+      if (signal?.aborted) throw new SemanticError("semantic_cancelled", "Candidate comparison was cancelled", 499);
+      if ((await this.configuration(config)).fingerprint !== configuration.fingerprint) this.fail("index_changed", "Embedding configuration changed during candidate matching");
+      this.db.transaction(() => batch.forEach((value, index) => {
+        const vector = response.vectors[index]!; values.set(value, vector);
+        this.db.prepare("INSERT OR REPLACE INTO vectors VALUES(?,?,?,?)").run(fingerprint, digest(value), vector.length, JSON.stringify(vector));
+      }))();
+    }
+    const query = values.get(texts[0]!)!, magnitude = (vector: number[]) => Math.sqrt(vector.reduce((sum, value) => sum + value * value, 0));
+    return texts.slice(1).map(value => {
+      const vector = values.get(value)!, denominator = magnitude(query) * magnitude(vector);
+      if (query.length !== vector.length || !denominator) this.fail("index_changed", "Candidate embedding dimensions changed");
+      return query.reduce((sum, item, index) => sum + item * vector[index]!, 0) / denominator;
+    });
   }
 
   private current(query: KnowledgeQuery = {}): KnowledgeEntry[] {

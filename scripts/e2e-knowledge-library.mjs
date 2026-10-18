@@ -34,6 +34,16 @@ try {
       await open(`#knowledge?view=all&id=${config.mainId}`); await settled();
       await button("外观").click(); await select("显示模式", "明亮"); await page.keyboard.press("Escape"); await page.keyboard.press("Escape"); await page.locator(".appearance-menu").waitFor({ state: "hidden" });
       ensure((await page.getByRole("heading", { name: "配置更新后仍读取旧值", exact: true }).count()) === 1, "主界面显示当前发布正文");
+      const separator = page.getByRole("separator", { name: "调节知识列表宽度", exact: true });
+      const firstWidth = (await page.locator(".knowledge-list-pane").boundingBox()).width; await separator.focus(); await separator.press("ArrowRight");
+      ensure(Math.abs((await page.locator(".knowledge-list-pane").boundingBox()).width - firstWidth - 10) < 2, "列表分隔线支持键盘调宽");
+      const handle = await separator.boundingBox(); await page.mouse.move(handle.x + handle.width / 2, handle.y + 50); await page.mouse.down(); await page.mouse.move(handle.x + 60, handle.y + 50); await page.mouse.up();
+      const draggedWidth = (await page.locator(".knowledge-list-pane").boundingBox()).width; ensure(draggedWidth > firstWidth + 40, "列表分隔线支持鼠标拖动");
+      await page.reload(); await settled(); ensure(Math.abs((await page.locator(".knowledge-list-pane").boundingBox()).width - draggedWidth) < 2, "知识库宽度刷新后独立保留");
+      await page.getByRole("textbox", { name: "搜索知识", exact: true }).click();
+      ensure(await page.getByRole("textbox", { name: "搜索知识", exact: true }).evaluate(el => getComputedStyle(el).outlineStyle === "none" || getComputedStyle(el).outlineWidth === "0px"), "搜索输入没有重复的内部焦点框");
+      await separator.focus(); await separator.press("Home");
+      ensure(await page.locator(".product-nav-beta").innerText() === "Beta", "知识导航显示Beta标记");
       await shot("01-library-zh-light");
       const search = page.getByRole("textbox", { name: "搜索知识", exact: true });
       await search.fill("配置更新"); await search.press("Enter"); await count(1); await settled(); ensure(await page.locator(".knowledge-entry").count() === 1, "关键词搜索");
@@ -93,7 +103,7 @@ try {
     await group("tasks", async () => {
       await open("#sessions?id=knowledge-session-1&mode=trace"); await page.locator(".trace-ledger,.session-message").first().waitFor();
       await button("沉淀此会话").click(); await page.getByRole("menuitem", { name: "沉淀当前轮次", exact: true }).click();
-      await page.getByRole("heading", { name: "沉淀任务", exact: true }).waitFor();
+      await page.getByRole("heading", { name: "沉淀知识", exact: true }).waitFor();
       await page.locator('.knowledge-preview[aria-busy="false"]').waitFor();
       ensure((await page.locator(".knowledge-selected-title").innerText()) === "合成排障会话 2", "会话入口直接显示所选标题");
       ensure(await button("开始沉淀").isEnabled(), "会话入口自动完成预览并提供开始动作");
@@ -106,14 +116,35 @@ try {
       await page.locator('.knowledge-preview[aria-busy="false"]').waitFor(); await page.getByText("1 个会话 · 1 轮", { exact: true }).waitFor();
       ensure(await button("开始沉淀").isEnabled(), "快速修改轮次只采用最后一次完整预览");
       ensure(await page.getByText("1 个会话 · 1 轮", { exact: true }).count() === 1, "会话轮次入口固定范围预览");
-      await button("开始沉淀").click(); await button("暂停").click(); await button("继续").waitFor(); ensure(true, "后台任务可暂停");
+      await button("开始沉淀").click(); await page.getByRole("heading", { name: "沉淀任务详情", exact: true }).waitFor(); await button("暂停").click(); await button("继续").waitFor(); ensure(true, "后台任务可暂停");
+      await page.getByRole("tab", { name: "过程", exact: true }).click(); await page.locator(".knowledge-event-list li").first().waitFor(); ensure(true, "任务详情可查看持久处理过程");
       await shot("03-tasks-zh-light"); await button("继续").click();
       await page.getByText("已完成", { exact: true }).first().waitFor({ timeout: 30_000 });
       const status = await api("/extractions"); ensure(status.jobs[0].status === "complete" && status.jobs[0].results.length > 0, "恢复后完成并保存待审结果");
-      await button("查看待审结果").click(); await page.getByRole("heading", { name: "审阅修改", exact: true }).waitFor(); ensure(true, "任务结果进入审阅闭环");
+      await page.getByRole("tab", { name: "结果", exact: true }).click(); await button("查看待审结果").click(); await page.getByRole("heading", { name: "审阅修改", exact: true }).waitFor(); ensure(true, "任务结果进入审阅闭环");
+    });
+    await group("task-history-and-picker", async () => {
+      await open("#knowledge?page=tasks"); await page.getByRole("heading", { name: "任务记录", exact: true }).waitFor();
+      await page.locator(".knowledge-task-list button").first().click(); await page.getByRole("heading", { name: "沉淀任务详情", exact: true }).waitFor(); await page.reload();
+      const selectedTaskId = await page.evaluate(() => new URLSearchParams(location.hash.split("?")[1]).get("taskId"));
+      ensure(!!selectedTaskId && (await api(`/extractions/${selectedTaskId}`)).events?.length > 0, "任务详情接口保留过程事件");
+      await page.getByRole("tab", { name: "过程", exact: true }).click(); await page.locator(".knowledge-event-list li").first().waitFor(); ensure(true, "任务详情深链刷新后仍能读取过程");
+      await button("返回任务记录").click(); await button("沉淀知识").click(); await page.getByRole("textbox", { name: "搜索会话标题", exact: true }).waitFor();
+      ensure(await button("开始沉淀").isEnabled() === false, "新建沉淀不自动选旧任务或锁定范围");
+      const search = page.getByRole("textbox", { name: "搜索会话标题", exact: true }); await search.fill("no-such-synthetic-session"); await page.getByText("没有符合条件的会话", { exact: true }).waitFor(); ensure(true, "会话选择支持搜索空结果");
+      await search.fill(""); await select("来源客户端", "claude"); await page.locator('.knowledge-session-options[aria-busy="false"]').waitFor();
+      await page.getByRole("button", { name: /合成排障会话 3/ }).click(); await page.locator('.knowledge-preview[aria-busy="false"]').waitFor();
+      ensure(await page.locator(".knowledge-selected-title").innerText() === "合成排障会话 3", "新建页可直接筛选选择会话并预览");
+      await shot("03b-select-session-zh-light");
     });
     await group("settings", async () => {
       await open("#knowledge?page=settings"); await page.getByRole("heading", { name: "知识库设置", exact: true }).waitFor();
+      const generationKey = page.getByLabel("生成模型 API Key", { exact: true });
+      await button("查看 API Key").first().click(); await page.waitForFunction(() => document.querySelector('input[aria-label="生成模型 API Key"]')?.type === "text");
+      ensure(await generationKey.inputValue() === "synthetic-browser-key", "可按需查看已经保存的生成Key"); ensure(!await button("保存设置").isEnabled(), "查看Key不被当作配置修改");
+      await button("隐藏 API Key").first().click(); ensure(await generationKey.inputValue() === "", "隐藏后清除读取的Key明文");
+      await button("查看 API Key").first().click(); await page.getByRole("tab", { name: "自动沉淀", exact: true }).click(); await page.getByRole("tab", { name: "模型与语言", exact: true }).click();
+      ensure(await generationKey.inputValue() === "" && await generationKey.getAttribute("type") === "password", "切换设置Tab后Key重新隐藏");
       // password 控件没有隐式 textbox role，使用明确可访问名称定位。
       await page.getByLabel("生成模型 API Key", { exact: true }).fill("synthetic-new-browser-key");
       await select("输出语言", "English"); await button("保存设置").click(); await page.getByText("已保存", { exact: true }).waitFor();
@@ -135,8 +166,8 @@ try {
       await button("Browse views").click(); const drawer = page.getByRole("dialog"); await drawer.waitFor(); await page.keyboard.press("Escape"); await drawer.waitFor({ state: "hidden" });
       ensure(await button("Browse views").evaluate(el => el === document.activeElement), "窄屏抽屉 Escape 恢复触发焦点");
       ensure((await api("/settings")).config.outputLanguage === "en", "界面语言切换保留知识输出语言");
-      await page.goto(`${config.base}/#knowledge?page=tasks&sessionId=knowledge-session-2&sessionTitle=Selected%20conversation&totalTurns=4`);
-      await page.getByRole("heading", { name: "Extraction tasks", exact: true }).waitFor(); await page.locator('.knowledge-preview[aria-busy="false"]').waitFor();
+      await page.goto(`${config.base}/#knowledge?page=new&sessionId=knowledge-session-2&sessionTitle=Selected%20conversation&totalTurns=4`);
+      await page.getByRole("heading", { name: "Extract knowledge", exact: true }).waitFor(); await page.locator('.knowledge-preview[aria-busy="false"]').waitFor();
       ensure(await button("Start extraction").isEnabled() && await page.getByRole("combobox", { name: "Extraction range", exact: true }).innerText() === "Entire conversation", "英文窄屏自动预览和整会话选择可用");
       ensure(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), "390px 英文深色预览无全局横向溢出");
       await shot("06-mobile-preview-en-dark");

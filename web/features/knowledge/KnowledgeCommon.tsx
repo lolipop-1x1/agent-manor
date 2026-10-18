@@ -27,8 +27,8 @@ export function KnowledgeBusy({ busy }: { busy: boolean }) {
   const { t } = useI18n();
   return <span className="knowledge-busy" role={busy ? "status" : undefined} aria-label={busy ? t("knowledge.loading") : undefined}>{busy && <ArrowClockwise size={15} className="is-spinning" aria-hidden="true" />}</span>;
 }
-export function KnowledgeTabs({ value, options, onChange, label }: { value: string; options: { value: string; label: string }[]; onChange: (value: string) => void; label: string }) {
-  return <div className="knowledge-tabs" role="tablist" aria-label={label}><SelectionIndicator value={value} selector='[aria-selected="true"]' line />{options.map((option, index) => <button key={option.value} role="tab" aria-selected={option.value === value} tabIndex={option.value === value ? 0 : -1} onClick={() => onChange(option.value)} onKeyDown={event => {
+export function KnowledgeTabs({ value, options, onChange, label, panelId }: { panelId?: string; value: string; options: { value: string; label: string }[]; onChange: (value: string) => void; label: string }) {
+  return <div className="knowledge-tabs" role="tablist" aria-label={label}><SelectionIndicator value={value} selector='[aria-selected="true"]' line />{options.map((option, index) => <button key={option.value} role="tab" id={panelId ? `${panelId}-${option.value}-tab` : undefined} aria-controls={panelId} aria-selected={option.value === value} tabIndex={option.value === value ? 0 : -1} onClick={() => onChange(option.value)} onKeyDown={event => {
     if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
     event.preventDefault();
     const next = event.key === "Home" ? 0 : event.key === "End" ? options.length - 1 : (index + (event.key === "ArrowRight" ? 1 : -1) + options.length) % options.length;
@@ -42,6 +42,7 @@ export function KnowledgeDialog({ title, children, open, onClose, footer, wide =
   const { t } = useI18n();
   const descriptionId = useId(), returnFocus = useRef<HTMLElement | null>(null), content = useRef<HTMLDivElement | null>(null);
   return <Dialog.Root open={open} onOpenChange={next => { if (!next) onClose(); }}><Dialog.Portal><Dialog.Overlay className="dialog-overlay" /><Dialog.Content ref={content} data-knowledge-dialog className={`knowledge-dialog dialog-content${wide ? " is-wide" : ""}`} aria-describedby={description ? descriptionId : undefined} onPointerDownOutside={event => event.preventDefault()}
+    onEscapeKeyDown={event => { event.stopImmediatePropagation(); }}
     onOpenAutoFocus={() => { returnFocus.current = document.activeElement instanceof HTMLElement ? document.activeElement : null; }}
     onCloseAutoFocus={event => {
       event.preventDefault();

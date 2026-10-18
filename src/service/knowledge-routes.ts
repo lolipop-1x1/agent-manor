@@ -124,6 +124,13 @@ export function registerKnowledgeRoutes(app: FastifyInstance, store: KnowledgeSt
     reply.header("Cache-Control", "no-store");
     return knowledgeRequest(() => manager.settings(enumeration(object(request.query).language, ["zh-CN", "en"], "language")));
   });
+  app.post(`${prefix}/settings/key`, async (request, reply) => knowledgeRequest(async () => {
+    management(request);
+    reply.header("Cache-Control", "no-store");
+    const kind = enumeration(object(request.body).kind, ["generation", "embedding"], "kind");
+    if (!kind) throw new ServiceError("INVALID_INPUT", "A credential kind is required", { key: "knowledge.errors.request_invalid" });
+    return { key: await manager.key(kind) ?? "" };
+  }));
   app.put(`${prefix}/settings`, async request => knowledgeRequest(() => manager.saveSettings(object(request.body) as unknown as KnowledgeSettingsInput)));
   app.post(`${prefix}/test`, async request => knowledgeRequest(() => {
     const input = object(request.body);

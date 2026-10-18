@@ -92,7 +92,8 @@ export interface KnowledgeGeneration {
   url: string; model: string; contextTokens: number; outputTokens: number;
   reasoningEffort?: "none" | "low" | "medium" | "high";
   timeoutMs: number; retries: number; requestsPerMinute: number;
-  inputPricePerMillion?: number; outputPricePerMillion?: number; dailyBudget?: number;
+  inputPricePerMillion?: number; cachedInputPricePerMillion?: number; outputPricePerMillion?: number; dailyBudget?: number;
+  taskInputTokenBudget?: number; taskBudget?: number;
 }
 export interface KnowledgeExtractionScope extends Omit<SemanticScope, "branch"> {
   sessionIds?: string[];
@@ -130,6 +131,7 @@ export interface KnowledgePreview {
 export type KnowledgeJobStatus = "queued" | "running" | "paused" | "complete" | "partial" | "failed" | "budget_stopped";
 export interface KnowledgeJob {
   id: string; previewId: string; status: KnowledgeJobStatus;
+  title?: string; model?: KnowledgeGeneration; usage?: KnowledgeUsage; events?: KnowledgeTaskEvent[]; droppedEvents?: number;
   phase: "planning" | "extracting" | "merging" | "saving" | "complete";
   createdAt: string; updatedAt: string; finishedAt?: string;
   totalSessions: number; completedSessions: number; totalChunks: number; completedChunks: number;
@@ -139,15 +141,35 @@ export interface KnowledgeJob {
   error?: string; errorDescriptor?: MessageDescriptor;
   outputLanguage: KnowledgeLanguage; fingerprint: string;
 }
-export type KnowledgeUsagePurpose = "extract" | "merge" | "try" | "test";
+export type KnowledgeUsagePurpose = "extract" | "merge" | "reread" | "try" | "test";
 export interface KnowledgeUsageCounters {
   requests: number; inputTokens: number; outputTokens: number; estimatedCost: number | null;
   estimatedInputTokens: number; estimatedOutputTokens: number; actualInputTokens: number; actualOutputTokens: number; actualRequests: number;
+  cachedInputTokens?: number; uncachedInputTokens?: number; cacheDetailedRequests?: number;
 }
 export interface KnowledgeUsage {
   requests: number; inputTokens: number; outputTokens: number; estimatedCost: number | null; date: string;
   estimatedInputTokens?: number; estimatedOutputTokens?: number; actualInputTokens?: number; actualOutputTokens?: number; actualRequests?: number;
+  cachedInputTokens?: number; uncachedInputTokens?: number; cacheDetailedRequests?: number;
   byPurpose?: Record<KnowledgeUsagePurpose, KnowledgeUsageCounters>;
+}
+export interface KnowledgeRequestMeasurement {
+  inputTokens: number; outputTokens: number; inputTokenUpperBound?: number; actualInputTokens?: number; actualOutputTokens?: number;
+  cachedInputTokens?: number; uncachedInputTokens?: number; estimatedCost: number | null;
+}
+export type KnowledgeRequestEvent = {
+  requestId: string; at: string; purpose: KnowledgeUsagePurpose; attempt: number;
+} & (
+  { kind: "before" | "reserved"; measurement: KnowledgeRequestMeasurement }
+  | { kind: "settled"; measurement: KnowledgeRequestMeasurement; reservation: KnowledgeRequestMeasurement }
+  | { kind: "failed"; error: string; errorDescriptor?: MessageDescriptor }
+);
+export type KnowledgeRequestObserver = (event: KnowledgeRequestEvent) => void | Promise<void>;
+export interface KnowledgeTaskEvent {
+  id: string; at: string; kind: "queued" | "started" | "phase" | "progress" | "request" | "error" | "paused" | "resumed" | "retried" | "completed";
+  phase?: KnowledgeJob["phase"]; sessionId?: string; completedChunks?: number; totalChunks?: number;
+  requestId?: string; purpose?: KnowledgeUsagePurpose; attempt?: number; requestState?: "reserved" | "settled" | "failed";
+  measurement?: KnowledgeRequestMeasurement; error?: string; errorDescriptor?: MessageDescriptor;
 }
 export interface KnowledgeTaskStatus { jobs: KnowledgeJob[]; usage: KnowledgeUsage; automatic: { enabled: boolean; lastCheckAt?: string; nextCheckAt?: string; error?: string; errorDescriptor?: MessageDescriptor } }
 export interface KnowledgeTryResult { candidates: KnowledgeDraft[]; disposition: "knowledge" | "no_value" | "needs_context"; limitations: string[]; limitationDetails?: KnowledgeLimitation[]; usage: KnowledgeUsage }

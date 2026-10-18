@@ -1,10 +1,11 @@
+import { randomUUID } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
-import type { KnowledgeConfig, KnowledgeUsage, KnowledgeUsageCounters, KnowledgeUsagePurpose } from "../knowledge-contracts.js";
+import type { KnowledgeConfig, KnowledgeUsage, KnowledgeUsageCounters, KnowledgeUsagePurpose, KnowledgeRequestEvent, KnowledgeRequestMeasurement, KnowledgeRequestObserver } from "../knowledge-contracts.js";
 import type { KnowledgeStore } from "./store.js";
 import { KnowledgeModelError, normalizeGenerationUrl } from "./config.js";
 
 export interface ChatMessage { role: "system" | "user"; content: string }
-export interface GenerationResult { value: unknown; inputTokens: number; outputTokens: number; actualInputTokens?: number; actualOutputTokens?: number }
+export interface GenerationResult { value: unknown; inputTokens: number; outputTokens: number; actualInputTokens?: number; actualOutputTokens?: number; cachedInputTokens?: number; uncachedInputTokens?: number }
 interface Ledger { current: KnowledgeUsage; previous: Record<string, KnowledgeUsage>; rate: number[]; knownCost: number; unpricedInput: number; unpricedOutput: number }
 /** 无模型 tokenizer 时沿用本地文本粗估；字节上界单独用于窗口保护。 */
 export function estimateKnowledgeTokens(text: string): number { return Math.ceil(Buffer.byteLength(text, "utf8") / 3); }
@@ -14,11 +15,12 @@ export function requestUpperBound(messages: readonly ChatMessage[]): number { re
 export function fitsRequest(config: KnowledgeConfig, messages: readonly ChatMessage[]): boolean { return requestUpperBound(messages) + config.generation.outputTokens + 256 <= config.generation.contextTokens; }
 function today(): string { const date = new Date(); return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`; }
 function emptyCounters(): KnowledgeUsageCounters { return { requests: 0, inputTokens: 0, outputTokens: 0, estimatedCost: 0, estimatedInputTokens: 0, estimatedOutputTokens: 0, actualInputTokens: 0, actualOutputTokens: 0, actualRequests: 0 }; }
-export function emptyKnowledgeUsage(date = today()): KnowledgeUsage { return { ...emptyCounters(), date, byPurpose: { extract: emptyCounters(), merge: emptyCounters(), try: emptyCounters(), test: emptyCounters() } }; }
+export function emptyKnowledgeUsage(date = today()): KnowledgeUsage { return { ...emptyCounters(), date, byPurpose: { extract: emptyCounters(), merge: emptyCounters(), reread: emptyCounters(), try: emptyCounters(), test: emptyCounters() } }; }
 function normalizeUsage(usage: KnowledgeUsage): KnowledgeUsage & KnowledgeUsageCounters {
   // 较早记录没有实测依据，迁移为估算，不能倒推为服务端实测用量。
   usage.estimatedInputTokens ??= usage.inputTokens; usage.estimatedOutputTokens ??= usage.outputTokens; usage.actualInputTokens ??= 0; usage.actualOutputTokens ??= 0; usage.actualRequests ??= 0;
-  usage.byPurpose ??= { extract: emptyCounters(), merge: emptyCounters(), try: emptyCounters(), test: emptyCounters() };
+  usage.byPurpose ??= { extract: emptyCounters(), merge: emptyCounters(), reread: emptyCounters(), try: emptyCounters(), test: emptyCounters() };
+  for (const purpose of ["extract", "merge", "reread", "try", "test"] as const) usage.byPurpose[purpose] ??= emptyCounters();
   return usage as KnowledgeUsage & KnowledgeUsageCounters;
 }
 function reserveCounters(usage: KnowledgeUsage, purpose: KnowledgeUsagePurpose, inputTokens: number, outputTokens: number, cost: number | null): void {
@@ -36,7 +38,33 @@ function settleCounters(usage: KnowledgeUsage, purpose: KnowledgeUsagePurpose, r
     target.estimatedOutputTokens += result.actualOutputTokens === undefined ? outputDifference : -reservation.outputTokens;
     target.actualInputTokens += result.actualInputTokens ?? 0; target.actualOutputTokens += result.actualOutputTokens ?? 0;
     if (result.actualInputTokens !== undefined && result.actualOutputTokens !== undefined) target.actualRequests++;
+    if (result.cachedInputTokens !== undefined && result.uncachedInputTokens !== undefined) {
+      target.cachedInputTokens = (target.cachedInputTokens ?? 0) + result.cachedInputTokens; target.uncachedInputTokens = (target.uncachedInputTokens ?? 0) + result.uncachedInputTokens; target.cacheDetailedRequests = (target.cacheDetailedRequests ?? 0) + 1;
+    }
     if (target.estimatedCost !== null && costDifference !== undefined) target.estimatedCost = Math.max(0, target.estimatedCost + costDifference);
+  }
+}
+/** 只在服务商返回有效明细时记录缓存，未报告不能推定为零。 */
+function cacheUsage(usage: unknown, inputTokens?: number): { cachedInputTokens?: number; uncachedInputTokens?: number } {
+  if (!usage || typeof usage !== "object" || inputTokens === undefined) return {};
+  const value = usage as Record<string, unknown>, details = value.prompt_tokens_details as Record<string, unknown> | undefined;
+  const cached = nonnegative(value.prompt_cache_hit_tokens) ? value.prompt_cache_hit_tokens : nonnegative(details?.cached_tokens) ? details.cached_tokens : undefined;
+  const missed = nonnegative(value.prompt_cache_miss_tokens) ? value.prompt_cache_miss_tokens : cached !== undefined ? inputTokens - cached : undefined;
+  return cached !== undefined && missed !== undefined && nonnegative(missed) && cached + missed === inputTokens ? { cachedInputTokens: cached, uncachedInputTokens: missed } : {};
+}
+export function knowledgeRequestCost(config: KnowledgeConfig, result: Pick<KnowledgeRequestMeasurement, "inputTokens" | "outputTokens" | "cachedInputTokens" | "uncachedInputTokens">, reservation = false): number | null {
+  const { inputPricePerMillion: input, cachedInputPricePerMillion: cached = input, outputPricePerMillion: output } = config.generation;
+  if (input === undefined || output === undefined) return null;
+  const inputCost = result.cachedInputTokens !== undefined && result.uncachedInputTokens !== undefined
+    ? result.cachedInputTokens * cached! + result.uncachedInputTokens * input : result.inputTokens * (reservation ? Math.max(input, cached!) : input);
+  return (inputCost + result.outputTokens * output) / 1_000_000;
+}
+export function applyKnowledgeRequestUsage(usage: KnowledgeUsage, event: KnowledgeRequestEvent): void {
+  if (event.kind === "reserved") reserveCounters(usage, event.purpose, event.measurement.inputTokens, event.measurement.outputTokens, event.measurement.estimatedCost);
+  if (event.kind === "settled") {
+    const result = { ...event.measurement, value: undefined };
+    const difference = event.reservation.estimatedCost !== null && event.measurement.estimatedCost !== null ? event.measurement.estimatedCost - event.reservation.estimatedCost : undefined;
+    settleCounters(usage, event.purpose, event.reservation, result, difference);
   }
 }
 function error(code: string, message: string, status = 400, retryAfterMs?: number): KnowledgeModelError { return new KnowledgeModelError(code, message, status, retryAfterMs); }
@@ -79,7 +107,7 @@ export class KnowledgeGenerationScheduler {
     return this.store.transaction(() => {
       const ledger = this.ledger(), generation = config.generation, outputTokens = generation.outputTokens;
       const priced = generation.inputPricePerMillion !== undefined && generation.outputPricePerMillion !== undefined;
-      const cost = priced ? (inputTokens * generation.inputPricePerMillion! + outputTokens * generation.outputPricePerMillion!) / 1_000_000 : null;
+      const cost = knowledgeRequestCost(config, { inputTokens, outputTokens }, true);
       const used = ledger.knownCost + (priced ? (ledger.unpricedInput * generation.inputPricePerMillion! + ledger.unpricedOutput * generation.outputPricePerMillion!) / 1_000_000 : 0);
       if (generation.dailyBudget !== undefined && (cost === null || used + cost > generation.dailyBudget)) throw error("budget_exceeded", "已达到知识生成的每日预算", 429);
       reserveCounters(ledger.current, purpose, inputTokens, outputTokens, cost);
@@ -94,7 +122,8 @@ export class KnowledgeGenerationScheduler {
       const ledger = this.ledger(), usage = ledger.current.date === reservation.date ? ledger.current : ledger.previous[reservation.date]; if (!usage) return;
       const inputDifference = result.inputTokens - reservation.inputTokens, outputDifference = result.outputTokens - reservation.outputTokens;
       const { inputPricePerMillion: input, outputPricePerMillion: output } = config.generation;
-      const costDifference = input !== undefined && output !== undefined ? (inputDifference * input + outputDifference * output) / 1_000_000 : undefined;
+      const settledCost = knowledgeRequestCost(config, result), reservedCost = knowledgeRequestCost(config, reservation, true);
+      const costDifference = settledCost !== null && reservedCost !== null ? settledCost - reservedCost : undefined;
       settleCounters(usage, purpose, reservation, result, costDifference);
       if (input !== undefined && output !== undefined) {
         const difference = costDifference!;
@@ -103,24 +132,29 @@ export class KnowledgeGenerationScheduler {
       this.store.setState("generation.usage", ledger);
     });
   }
-  execute(config: KnowledgeConfig, messages: ChatMessage[], apiKey?: string, signal?: AbortSignal, meter?: KnowledgeUsage, purpose: KnowledgeUsagePurpose = "extract"): Promise<GenerationResult> {
+  execute(config: KnowledgeConfig, messages: ChatMessage[], apiKey?: string, signal?: AbortSignal, meter?: KnowledgeUsage, purpose: KnowledgeUsagePurpose = "extract", observer?: KnowledgeRequestObserver): Promise<GenerationResult> {
     if (this.closed) return Promise.reject(error("stopped", "知识模型调度已停止", 503));
     if (!config.generation.url || !config.generation.model) return Promise.reject(error("connection_required", "请先配置知识生成模型"));
     if (!fitsRequest(config, messages)) return Promise.reject(error("input_too_long", "请求总预算超过模型上下文，请缩小提示词或增加上下文预算"));
     const frozen = structuredClone(config), request = structuredClone(messages);
-    const operation = this.queue.then(() => this.run(frozen, request, apiKey, signal, meter, purpose));
+    const operation = this.queue.then(() => this.run(frozen, request, apiKey, signal, meter, purpose, observer));
     this.queue = operation.catch(() => undefined); return operation;
   }
-  private async run(config: KnowledgeConfig, messages: ChatMessage[], apiKey?: string, caller?: AbortSignal, meter?: KnowledgeUsage, purpose: KnowledgeUsagePurpose = "extract"): Promise<GenerationResult> {
+  private async run(config: KnowledgeConfig, messages: ChatMessage[], apiKey?: string, caller?: AbortSignal, meter?: KnowledgeUsage, purpose: KnowledgeUsagePurpose = "extract", observer?: KnowledgeRequestObserver): Promise<GenerationResult> {
     const signal = caller ? AbortSignal.any([caller, this.stopping.signal]) : this.stopping.signal;
     for (let attempt = 0;; attempt++) {
       aborted(signal);
       const rpm = config.generation.requestsPerMinute, rate = this.ledger().rate;
       if (rpm > 0 && rate.length >= rpm) await delay(Math.max(1, rate[rate.length - rpm]! + 60_000 - Date.now()), undefined, { signal }).catch(() => aborted(signal));
       aborted(signal);
-      const reservation = this.reserve(config, requestTokens(messages), purpose);
-      const inputPrice = config.generation.inputPricePerMillion, outputPrice = config.generation.outputPricePerMillion;
-      if (meter) reserveCounters(meter, purpose, reservation.inputTokens, reservation.outputTokens, inputPrice !== undefined && outputPrice !== undefined ? (reservation.inputTokens * inputPrice + reservation.outputTokens * outputPrice) / 1_000_000 : null);
+      const requestId = randomUUID(), planned = { inputTokens: requestTokens(messages), outputTokens: config.generation.outputTokens };
+      const measurement: KnowledgeRequestMeasurement = { ...planned, inputTokenUpperBound: requestUpperBound(messages), estimatedCost: knowledgeRequestCost(config, planned, true) };
+      const base = { requestId, purpose, attempt: attempt + 1 };
+      await observer?.({ ...base, kind: "before", at: new Date().toISOString(), measurement });
+      const reservation = this.reserve(config, planned.inputTokens, purpose);
+      const reserved: KnowledgeRequestEvent = { ...base, kind: "reserved", at: new Date().toISOString(), measurement };
+      if (meter) applyKnowledgeRequestUsage(meter, reserved);
+      await observer?.(reserved);
       try {
         const timeout = AbortSignal.timeout(config.generation.timeoutMs), combined = AbortSignal.any([signal, timeout]);
         let response: Response;
@@ -140,20 +174,22 @@ export class KnowledgeGenerationScheduler {
         }
         let payload: unknown;
         try { payload = await readResponse(response); } catch (cause) { aborted(signal); if (timeout.aborted) throw error("timeout", "知识模型响应超时", 504); throw cause; }
-        const body = payload as { choices?: { message?: { content?: unknown }; finish_reason?: string }[]; usage?: { prompt_tokens?: unknown; completion_tokens?: unknown } };
+        const body = payload as { choices?: { message?: { content?: unknown }; finish_reason?: string }[]; usage?: { prompt_tokens?: unknown; completion_tokens?: unknown; prompt_cache_hit_tokens?: unknown; prompt_cache_miss_tokens?: unknown; prompt_tokens_details?: { cached_tokens?: unknown } } };
         const choice = body?.choices?.[0], content = choice?.message?.content;
         const result: GenerationResult = { value: undefined, inputTokens: nonnegative(body?.usage?.prompt_tokens) ? body.usage.prompt_tokens : reservation.inputTokens, outputTokens: nonnegative(body?.usage?.completion_tokens) ? body.usage.completion_tokens : typeof content === "string" && content.trim() && choice?.finish_reason !== "length" ? estimateKnowledgeTokens(content) : reservation.outputTokens, actualInputTokens: nonnegative(body?.usage?.prompt_tokens) ? body.usage.prompt_tokens : undefined, actualOutputTokens: nonnegative(body?.usage?.completion_tokens) ? body.usage.completion_tokens : undefined };
+        Object.assign(result, cacheUsage(body?.usage, result.actualInputTokens));
         // 返回格式不合格或输出截断仍可能已经收费，用量与候选是否有效分别记录。
         this.settle(config, reservation, result, purpose);
-        if (meter) {
-          const inputDifference = result.inputTokens - reservation.inputTokens, outputDifference = result.outputTokens - reservation.outputTokens;
-          settleCounters(meter, purpose, reservation, result, inputPrice !== undefined && outputPrice !== undefined ? (inputDifference * inputPrice + outputDifference * outputPrice) / 1_000_000 : undefined);
-        }
+        const settled: KnowledgeRequestEvent = { ...base, kind: "settled", at: new Date().toISOString(), reservation: measurement, measurement: { ...result, estimatedCost: knowledgeRequestCost(config, result) } };
+        if (meter) applyKnowledgeRequestUsage(meter, settled);
+        await observer?.(settled);
         if (choice?.finish_reason === "length") throw error("output_truncated", "模型输出达到上限，未保存不完整结果", 502);
         if (typeof content !== "string" || !content.trim()) throw error("response_invalid", "模型没有返回结构化内容", 502);
         try { result.value = JSON.parse(content.trim()); } catch { throw error("response_invalid", "模型内容不是有效 JSON", 502); }
         return result;
       } catch (cause) {
+        const failure = cause instanceof KnowledgeModelError ? cause : error("network", "知识模型请求失败", 502);
+        await observer?.({ ...base, kind: "failed", at: new Date().toISOString(), error: failure.code, errorDescriptor: failure.messageDescriptor });
         aborted(signal);
         if (!transient(cause) || attempt >= config.generation.retries) throw cause;
         // 失败请求可能已经产生服务端费用，保留预留；退避和重试也逐次计入速率与预算。

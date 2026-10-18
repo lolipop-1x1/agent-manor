@@ -73,7 +73,8 @@ export function validateKnowledgeConfig(value: unknown): KnowledgeConfig {
       reasoningEffort: generation.reasoningEffort as KnowledgeConfig["generation"]["reasoningEffort"],
       outputTokens: number(generation.outputTokens, "generation.outputTokens", 128, 65_536), timeoutMs: number(generation.timeoutMs, "generation.timeoutMs", 100, 600_000),
       retries: number(generation.retries, "generation.retries", 0, 5), requestsPerMinute: number(generation.requestsPerMinute, "generation.requestsPerMinute", 0, 1_000_000),
-      inputPricePerMillion: optionalNumber(generation.inputPricePerMillion, "generation.inputPricePerMillion", 1_000_000), outputPricePerMillion: optionalNumber(generation.outputPricePerMillion, "generation.outputPricePerMillion", 1_000_000), dailyBudget: optionalNumber(generation.dailyBudget, "generation.dailyBudget", 1_000_000_000),
+      inputPricePerMillion: optionalNumber(generation.inputPricePerMillion, "generation.inputPricePerMillion", 1_000_000), cachedInputPricePerMillion: optionalNumber(generation.cachedInputPricePerMillion, "generation.cachedInputPricePerMillion", 1_000_000),
+      taskInputTokenBudget: generation.taskInputTokenBudget === undefined || generation.taskInputTokenBudget === null ? undefined : number(generation.taskInputTokenBudget, "generation.taskInputTokenBudget", 0, 1_000_000_000), taskBudget: optionalNumber(generation.taskBudget, "generation.taskBudget", 1_000_000_000), outputPricePerMillion: optionalNumber(generation.outputPricePerMillion, "generation.outputPricePerMillion", 1_000_000), dailyBudget: optionalNumber(generation.dailyBudget, "generation.dailyBudget", 1_000_000_000),
     },
     outputLanguage, extractionPrompt: string(input.extractionPrompt, "extractionPrompt", 32_768), mergePrompt: string(input.mergePrompt, "mergePrompt", 32_768),
     automatic: { enabled: automatic.enabled, intervalMinutes: number(automatic.intervalMinutes, "automatic.intervalMinutes", 1, 10_080), quietMinutes: number(automatic.quietMinutes, "automatic.quietMinutes", 0, 10_080), scope: validateKnowledgeScope(automatic.scope) },
@@ -81,6 +82,7 @@ export function validateKnowledgeConfig(value: unknown): KnowledgeConfig {
   };
   if (config.generation.outputTokens + 2048 >= config.generation.contextTokens) return invalid("generation.outputTokens");
   if (config.generation.dailyBudget !== undefined && (config.generation.inputPricePerMillion === undefined || config.generation.outputPricePerMillion === undefined)) return invalid("generation.price");
+  if (config.generation.taskBudget !== undefined && (config.generation.inputPricePerMillion === undefined || config.generation.outputPricePerMillion === undefined)) return invalid("generation.price");
   if (config.embedding.dailyBudget !== undefined && config.embedding.pricePerMillion === undefined) return invalid("embedding.pricePerMillion");
   if (config.automatic.enabled && (!url || !config.generation.model || config.automatic.scope.timeRange === "unset" && !config.automatic.scope.sessionIds?.length)) return invalid("automatic.scope");
   if (config.embedding.mode === "independent" && (!connection.url || !connection.model)) return invalid("embedding.connection");
@@ -88,7 +90,7 @@ export function validateKnowledgeConfig(value: unknown): KnowledgeConfig {
 }
 
 export function knowledgeFingerprint(config: KnowledgeConfig): string {
-  return createHash("sha256").update(JSON.stringify({ template: 2, generation: config.generation, outputLanguage: config.outputLanguage, extractionPrompt: config.extractionPrompt, mergePrompt: config.mergePrompt })).digest("hex");
+  return createHash("sha256").update(JSON.stringify({ template: 3, generation: config.generation, outputLanguage: config.outputLanguage, extractionPrompt: config.extractionPrompt, mergePrompt: config.mergePrompt })).digest("hex");
 }
 export async function writeKnowledgeJson(path: string, value: unknown): Promise<void> {
   const temporary = `${path}.${randomUUID()}.tmp`;

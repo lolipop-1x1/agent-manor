@@ -2,19 +2,24 @@ import type { KnowledgeDetail, KnowledgeDraft, KnowledgeExtractionScope, Knowled
 import { semanticQueryScope } from "../sessions/semantic-ui-model";
 
 export interface KnowledgeSessionSelection { id: string; title?: string; totalTurns?: number }
-export type KnowledgePage = "library" | "review" | "tasks" | "settings";
+export type KnowledgePage = "library" | "review" | "new" | "tasks" | "settings";
 export function knowledgeTypeKey(type?: KnowledgeType): string { return `knowledge.type.${type ?? "unclassified"}`; }
 export function restoreKnowledgeFocus(targets: readonly (HTMLElement | null | undefined)[]): void {
   for (const target of targets) if (target?.isConnected && target.getClientRects().length && !target.matches(":disabled, [aria-disabled=true]")) { target.focus({ preventScroll: true }); return; }
 }
-export function readKnowledgeAddress(hash: string): { page: KnowledgePage; id?: string; query: KnowledgeQuery; scope?: KnowledgeExtractionScope; selection?: KnowledgeSessionSelection } {
+export function readKnowledgeAddress(hash: string): { page: KnowledgePage; id?: string; taskId?: string; query: KnowledgeQuery; scope?: KnowledgeExtractionScope; selection?: KnowledgeSessionSelection } {
   const params = new URLSearchParams(hash.split("?")[1]);
   const page = params.get("page");
   const view = params.get("view"), review = params.get("review");
   const query: KnowledgeQuery = { view: view === "personal" || view === "project" || view === "general" ? view : "all", review: review === "pending" || review === "reviewed" || review === "rejected" ? review : "reviewed", availability: "active", q: params.get("q") ?? "", project: params.get("project") ?? undefined, taskId: params.get("taskId") ?? undefined, page: 1, pageSize: 20 };
   const sessionId = params.get("sessionId");
   const scope = sessionId ? { ...semanticQueryScope(), relationship: "all" as const, executionMode: "all" as const, sessionIds: [sessionId], branch: params.get("branch") ?? "current", turnStart: positive(params.get("turnStart")), turnEnd: positive(params.get("turnEnd")) } : undefined;
-  return { page: page === "review" || page === "tasks" || page === "settings" ? page : "library", id: params.get("id") ?? undefined, query, scope, selection: sessionId ? { id: sessionId, title: params.get("sessionTitle") || undefined, totalTurns: positive(params.get("totalTurns")) } : undefined };
+  // 兼容旧会话入口；任务记录只接受 taskId 定位，不自动挑选旧任务。
+  return { page: page === "tasks" && sessionId && !params.has("taskId") ? "new" : page === "review" || page === "new" || page === "tasks" || page === "settings" ? page : "library", id: params.get("id") ?? undefined, taskId: params.get("taskId") ?? undefined, query, scope, selection: sessionId ? { id: sessionId, title: params.get("sessionTitle") || undefined, totalTurns: positive(params.get("totalTurns")) } : undefined };
+}
+export function knowledgeListWidth(viewport: number, preferred?: number): number {
+  const maximum = Math.max(315, viewport - 360);
+  return Math.min(maximum, Math.max(315, preferred ?? Math.min(460, viewport * .4)));
 }
 function positive(value: string | null): number | undefined { const number = Number(value); return Number.isSafeInteger(number) && number > 0 ? number : undefined; }
 export function sourceAddress(source: KnowledgeSource): string | undefined {

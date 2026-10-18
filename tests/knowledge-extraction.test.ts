@@ -141,7 +141,7 @@ test("超长单轮完整分段，所有请求计入结构预算，后续纠正�
     setHandler(request => {
       assert.equal(fitsRequest(settings, request.messages), true);
       const payload = material(request) as Payload;
-      if (payload.later) return knowledge(candidate([...new Set([...(payload.earlier?.references ?? []), ...payload.later.references])].slice(-8), payload.later.body));
+      if (payload.later) return { ...knowledge(candidate([...new Set([...(payload.earlier?.references ?? []), ...payload.later.references])].slice(-8), payload.later.body)), relation: "correction" };
       const evidence = payload.evidence?.filter(item => item.target) ?? []; seen.push(...evidence.map(item => item.text));
       return knowledge(candidate(evidence.map(item => item.reference), evidence.some(item => item.text.includes("FINAL CORRECTION")) ? "Read dynamically; the earlier cache attempt failed. Verified without restart." : "Initial cache attempt remains unverified."));
     });
@@ -157,7 +157,7 @@ test("已有已审知识的后续纠正产生待审修订并沿用原语言", as
   store.review(old.id, { action: "approve", revisionId: old.latestRevisionId });
   setHandler(request => {
     const payload = material(request) as Payload;
-    if (payload.existing?.length) { assert.match(request.messages[0]!.content, /English/); assert.equal(payload.existing[0]!.language, "zh-CN"); return knowledge({ ...candidate(payload.incoming!.references, "每次请求动态读取配置，并验证更新立即生效。"), targetKnowledgeId: payload.existing[0]!.id }); }
+    if (payload.existing?.length) { assert.match(request.messages[0]!.content, /English/); assert.equal(payload.existing[0]!.language, "zh-CN"); return { ...knowledge({ ...candidate(payload.incoming!.references, "每次请求动态读取配置，并验证更新立即生效。"), targetKnowledgeId: payload.existing[0]!.id }), relation: "correction" }; }
     return knowledge(candidate(payload.evidence!.filter(item => item.target).slice(-8).map(item => item.reference)));
   });
   const job = await settle(manager, (await manager.start((await manager.preview(scope())).id)).id); assert.equal(job.status, "complete", job.error); assert.equal(job.updatedEntries, 1); assert.equal(job.createdEntries, 0);
@@ -187,7 +187,7 @@ test("事项解决、时效及其他内容元数据变化不能被正文判重�
     const old = store.create({ title: original.title, body: original.body, type, tags: original.tags, subject: "project", language: "en", scope: { kind: "project", project: "/workspace/demo" } });
     setHandler(request => {
       const payload = material(request), references = payload.incoming?.references ?? payload.evidence!.filter(item => item.target).slice(-1).map(item => item.reference);
-      return knowledge({ ...candidate(references), type, ...change, ...(payload.existing ? { targetKnowledgeId: old.id } : {}) });
+      return { ...knowledge({ ...candidate(references), type, ...change, ...(payload.existing ? { targetKnowledgeId: old.id } : {}) }), ...(payload.existing ? { relation: "complement" } : {}) };
     });
     const job = await settle(manager, (await manager.start((await manager.preview(scope())).id)).id); assert.equal(job.status, "complete", job.error); assert.equal(job.updatedEntries, 1, JSON.stringify(change)); assert.equal(job.duplicates, 0); assert.equal(store.revisions(old.id).length, 2);
     const pending = store.get(old.id, { review: "all", availability: "all" }).revision;
@@ -213,7 +213,7 @@ test("增量可通过旧知识定位早期消息并补读原文，试抽取不�
   let reread = false;
   setHandler(request => {
     const payload = material(request) as Payload & { priorKnowledge?: unknown[]; supplemental?: RecordData[] };
-    if (payload.existing) return knowledge({ ...candidate(payload.incoming!.references), targetKnowledgeId: old.id });
+    if (payload.existing) return { ...knowledge({ ...candidate(payload.incoming!.references), targetKnowledgeId: old.id }), relation: "correction" };
     assert.ok(payload.priorKnowledge?.length);
     if (!payload.supplemental) return { ...noValue, disposition: "needs_context", needsMessageIds: ["message-0"] };
     reread = true; assert.equal(payload.supplemental[0]!.messageId, "message-0"); assert.match(payload.supplemental[0]!.text, /Question 0/);

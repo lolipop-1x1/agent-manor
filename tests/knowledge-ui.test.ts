@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import type { KnowledgeDetail, KnowledgeSource } from "../src/knowledge-contracts.js";
 import { knowledgeTypes } from "../src/knowledge-contracts.js";
 import { i18n, translate, translateMessageOrOriginal } from "../src/i18n/index.js";
-import { editableDraft, emptyDraft, knowledgeTypeKey, readKnowledgeAddress, restoreKnowledgeFocus, sourceAddress } from "../web/features/knowledge/knowledge-model.js";
+import { editableDraft, emptyDraft, knowledgeListWidth, knowledgeTypeKey, readKnowledgeAddress, restoreKnowledgeFocus, sourceAddress } from "../web/features/knowledge/knowledge-model.js";
 import { knowledgeLimitations } from "../src/knowledge/diagnostics.js";
 
 test("来源回查只允许已核验消息，并保留消息、轮次、分支和当前可用版本", () => {
@@ -16,7 +16,7 @@ test("来源回查只允许已核验消息，并保留消息、轮次、分支�
 
 test("会话沉淀链接保留轮次边界，非法位置不会变成有效范围", () => {
   const result = readKnowledgeAddress("#knowledge?page=tasks&sessionId=codex%3Asynthetic&turnStart=2&turnEnd=4&branch=branch%2Fa");
-  assert.equal(result.page, "tasks"); assert.deepEqual(result.scope?.sessionIds, ["codex:synthetic"]); assert.equal(result.scope?.turnStart, 2); assert.equal(result.scope?.turnEnd, 4); assert.equal(result.scope?.branch, "branch/a");
+  assert.equal(result.page, "new"); assert.deepEqual(result.scope?.sessionIds, ["codex:synthetic"]); assert.equal(result.scope?.turnStart, 2); assert.equal(result.scope?.turnEnd, 4); assert.equal(result.scope?.branch, "branch/a");
   assert.equal(readKnowledgeAddress("#knowledge?page=unknown&sessionId=test&turnStart=-2&turnEnd=oops").scope?.turnStart, undefined);
   assert.equal(readKnowledgeAddress("#knowledge?page=unknown").page, "library");
 });
@@ -66,4 +66,28 @@ test("会话入口携带标题和总轮次，界面元信息不会变成后端�
   const result = readKnowledgeAddress("#knowledge?page=tasks&sessionId=synthetic-session&sessionTitle=Timestamp%20parser&totalTurns=20");
   assert.deepEqual(result.selection, { id: "synthetic-session", title: "Timestamp parser", totalTurns: 20 });
   assert.equal(result.scope?.title, ""); assert.equal(result.scope?.turnStart, undefined); assert.equal(result.scope?.turnEnd, undefined);
+});
+
+
+test("新建、任务列表和任务深链分离，旧会话入口继续预填新建", () => {
+  assert.equal(readKnowledgeAddress("#knowledge?page=new").page, "new");
+  const list = readKnowledgeAddress("#knowledge?page=tasks");
+  assert.equal(list.page, "tasks"); assert.equal(list.taskId, undefined); assert.equal(list.scope, undefined);
+  const detail = readKnowledgeAddress("#knowledge?page=tasks&taskId=synthetic-task");
+  assert.equal(detail.page, "tasks"); assert.equal(detail.taskId, "synthetic-task");
+  assert.equal(readKnowledgeAddress("#knowledge?page=new&sessionId=synthetic-session").page, "new");
+  assert.equal(readKnowledgeAddress("#knowledge?page=tasks&sessionId=synthetic-session").page, "new");
+});
+
+test("知识列表调宽保留正文最小空间，窄窗口不改写原宽度偏好", () => {
+  assert.equal(knowledgeListWidth(1200, 500), 500);
+  assert.equal(knowledgeListWidth(1000, 100), 315);
+  assert.equal(knowledgeListWidth(1000, 900), 640);
+  assert.equal(knowledgeListWidth(800, 500), 440);
+  assert.equal(knowledgeListWidth(1200, 500), 500);
+});
+
+test("任务事件、用途及输入优化诊断都具备中英文文案", () => {
+  const keys = [...["queued", "started", "phase", "progress", "request", "error", "paused", "resumed", "retried", "completed"].map(kind => `knowledge.event.${kind}`), ...["extract", "merge", "reread", "try", "test"].map(purpose => `knowledge.purpose.${purpose}`), ...["inputSummarized", "rereadLimit", "topicConflict", "similarityUnavailable"].map(kind => `knowledge.limitation.${kind}`), "knowledge.errors.task_budget_exceeded", "knowledge.errors.task_token_budget_exceeded", "knowledge.betaDescription"];
+  for (const language of ["en", "zh-CN"] as const) for (const key of keys) assert.ok(i18n.exists(key, { lng: language }), key);
 });

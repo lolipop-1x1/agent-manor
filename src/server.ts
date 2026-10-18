@@ -115,7 +115,9 @@ export async function startService(options: ServiceOptions = {}) {
     semanticManager = new SemanticManager(home, library);
     knowledgeStore = new KnowledgeStore(join(home, "knowledge", "knowledge.sqlite"));
     knowledgeSources = new KnowledgeSources(library.dbPath);
-    knowledgeManager = new KnowledgeManager(home, knowledgeStore, knowledgeSources);
+    knowledgeManager = new KnowledgeManager(home, knowledgeStore, knowledgeSources, {
+      similarity: (candidate, others, config, signal) => knowledgeSemantic?.compareCandidates(candidate, others, config, signal) ?? Promise.resolve(undefined),
+    });
     knowledgeSemantic = new KnowledgeSemantic(home, knowledgeStore, knowledgeManager, semanticManager);
     const searches = searchManager;
     const search = async (request: FastifyRequest, reply: FastifyReply, type: SearchOperation, query: SessionQuery & { sessionId?: string }) => {

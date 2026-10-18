@@ -55,7 +55,8 @@ export async function knowledgeFixture() {
       const refs = payload.evidence.map(item => item.reference).filter(Boolean).slice(0, 2);
       result = { disposition: "knowledge", candidates: [{ topic: "synthetic-browser-method", title: "合成会话的可复用验证方法", body: "从实际工具结果核对读取链路，再执行动态切换验证。", type: "procedure", tags: ["浏览器验收"], subject: "project", references: refs }], carry: [], needsMessageIds: [], limitations: [] };
     }
-    response.setHeader("Content-Type", "application/json"); response.end(JSON.stringify({ choices: [{ message: { content: JSON.stringify(result) }, finish_reason: "stop" }], usage: { prompt_tokens: 100, completion_tokens: 80 } }));
+    if (payload.earlier && payload.later) result.relation = "complement";
+    response.setHeader("Content-Type", "application/json"); response.end(JSON.stringify({ choices: [{ message: { content: JSON.stringify(result) }, finish_reason: "stop" }], usage: { prompt_tokens: 100, completion_tokens: 80, prompt_cache_hit_tokens: 60, prompt_cache_miss_tokens: 40 } }));
   });
   await new Promise(resolve => model.listen(0, "127.0.0.1", resolve));
   const config = defaultKnowledgeConfig(); config.generation.url = `http://127.0.0.1:${model.address().port}/v1`; config.generation.model = "synthetic-small-model"; config.generation.retries = 0;

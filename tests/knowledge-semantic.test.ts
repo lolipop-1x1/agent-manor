@@ -1,9 +1,13 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { join } from "node:path";
 import type { KnowledgeDetail, KnowledgeIndexPreview, KnowledgeIndexStatus, KnowledgeList, KnowledgeSettings } from "../src/knowledge-contracts.js";
 import type { SemanticSettings, SemanticStatus } from "../src/semantic-contracts.js";
 import { apiRequest, delay } from "../src/service/runtime.js";
 import { approve, independent, knowledgeDraft, knowledgeFixture, requestError, waitCalls, waitIndex } from "./helpers/knowledge-fixture.js";
+import { KnowledgeSemantic } from "../src/knowledge/semantic.js";
+import { KnowledgeStore } from "../src/knowledge/store.js";
+import { defaultSemanticConfig } from "../src/semantic/config.js";
 
 test("知识语义索引显式构建，待审与已审分别过滤，原文读写与关键词无需模型", async () => knowledgeFixture(async fixture => {
   const { agent, calls } = fixture;
@@ -27,6 +31,22 @@ test("知识语义索引显式构建，待审与已审分别过滤，原文读�
   assert.equal((await agent<KnowledgeList>("/entries")).total, 1); assert.equal((await agent<KnowledgeIndexStatus>("/index/status")).status, "off");
   const direct = await agent<KnowledgeDetail>("/entries", "POST", knowledgeDraft({ title: "离线直接保存" })); assert.equal(direct.revision.review, "pending");
   assert.equal(calls.length, before);
+}));
+
+test("任务候选语义召回无需正式索引，关闭时不调用，短文本按编码配置缓存", async () => knowledgeFixture(async fixture => {
+  const settings = await independent(fixture), store = new KnowledgeStore(join(fixture.home, "knowledge", "knowledge.sqlite"));
+  const semantic = new KnowledgeSemantic(fixture.home, store, { settings: async () => settings, key: async () => "synthetic-embedding-secret" }, { settings: async () => ({ config: defaultSemanticConfig(), hasKey: false, fingerprint: "synthetic" }), key: async () => undefined });
+  try {
+    const candidate = knowledgeDraft(), other = knowledgeDraft({ title: "另一种说法", body: "在请求使用时读取当前配置。" });
+    assert.equal(await semantic.compareCandidates(candidate, [other], { ...settings.config, embedding: { ...settings.config.embedding, mode: "off" } }), undefined);
+    assert.equal(fixture.calls.length, 0);
+    const scores = await semantic.compareCandidates(candidate, [other], settings.config); assert.equal(scores?.length, 1); assert.ok(scores![0]! > 0.99);
+    assert.equal(fixture.calls.length, 1); assert.equal((await semantic.status()).status, "needs_build");
+    await semantic.compareCandidates(candidate, [other], settings.config); assert.equal(fixture.calls.length, 1);
+    const changed = structuredClone(settings.config); changed.embedding.connection.model = "synthetic-new-model";
+    await semantic.compareCandidates(candidate, [other], changed); assert.equal(fixture.calls.length, 2);
+    assert.equal(store.list({ review: "all" }).total, 0);
+  } finally { await semantic.close(); store.close(); }
 }));
 
 test("后台索引失败保留服务端诊断标识与原始错误，状态读取不丢失翻译依据", async () => knowledgeFixture(async fixture => {

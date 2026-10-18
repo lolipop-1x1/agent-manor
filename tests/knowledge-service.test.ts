@@ -73,3 +73,15 @@ test("HTTP 设置脱敏、独立输出语言、默认与空范围校验，保存
   await assert.rejects(agent("/entries", "POST", { ...knowledgeDraft(), review: "reviewed" }), requestError("INVALID_INPUT"));
   assert.equal(calls.length, 0);
 }));
+
+test("已保存知识凭据只能由同源管理页面按需查看，普通设置继续脱敏且响应不可缓存", async () => knowledgeFixture(async ({ agent, web, service, modelUrl }) => {
+  const initial = await agent<KnowledgeSettings>("/settings"); initial.config.generation.url = modelUrl; initial.config.generation.model = "synthetic-model";
+  await agent("/settings", "PUT", { config: initial.config, generationKey: "synthetic-visible-key", embeddingKey: "synthetic-vector-key" });
+  await assert.rejects(agent("/settings/key", "POST", { kind: "generation" }), requestError("FORBIDDEN"));
+  const value = await web<{ key: string }>("/settings/key", { kind: "generation" }); assert.equal(value.key, "synthetic-visible-key");
+  assert.equal((await web<{ key: string }>("/settings/key", { kind: "embedding" })).key, "synthetic-vector-key");
+  await assert.rejects(web("/settings/key", { kind: "unknown" }), requestError("INVALID_INPUT"));
+  const response = await service.app.inject({ method: "POST", url: "/api/v1/knowledge/settings/key", headers: { host: `127.0.0.1:${service.instance.port}`, "sec-fetch-site": "same-origin", origin: `http://127.0.0.1:${service.instance.port}` }, payload: { kind: "generation" } });
+  assert.equal(response.statusCode, 200); assert.equal(response.headers["cache-control"], "no-store");
+  const settings = await agent<KnowledgeSettings>("/settings"); assert.equal(JSON.stringify(settings).includes("synthetic-visible-key"), false);
+}));

@@ -9,7 +9,7 @@ export function SessionExtractButton({ sessionId, sessionTitle, branch, currentT
   const [range, setRange] = useState(false), [start, setStart] = useState(1), [end, setEnd] = useState(1);
   const navigate = (first?: number, last?: number) => {
     if (!sessionId) return;
-    const params = new URLSearchParams({ page: "tasks", sessionId, branch });
+    const params = new URLSearchParams({ page: "new", sessionId, branch });
     if (sessionTitle) params.set("sessionTitle", sessionTitle); if (totalTurns) params.set("totalTurns", String(totalTurns));
     if (first !== undefined) params.set("turnStart", String(first)); if (last !== undefined) params.set("turnEnd", String(last));
     setRange(false); location.hash = `#knowledge?${params}`;
