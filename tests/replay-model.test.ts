@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { ReplayStep } from "../src/replay-contracts.ts";
-import { buildReplayIndex, replayCurrentRange, replayEndIndex, replayNext, replayOriginalTime, replayPathSteps, replayPrevious, replaySimultaneousSteps, ReplayAccumulator } from "../web/features/code-map/replay-model.ts";
+import { buildReplayIndex, replayCurrentRange, replayEndIndex, replayLaneHit, replayNext, replayNextEdit, replayOriginalTime, replayPathSteps, replayPrevious, replayRecentRange, replaySimultaneousSteps, ReplayAccumulator, validReplaySpeed } from "../web/features/code-map/replay-model.ts";
 
 const step = (id: string, trackId: string, time: number | undefined, paths: string[], order = 0): ReplayStep => ({ id, trackId, time, order,
   activities: [{ id: `event-${id}`, tool: "synthetic_tool", kind: "read", status: "success", paths }] });
@@ -80,4 +80,54 @@ test("同轨同时间点完整提供全部调用，不因可视点重叠丢失�
   const index = buildReplayIndex([...simultaneous, child]);
   for (const activity of simultaneous) assert.deepEqual(replaySimultaneousSteps(index, activity), simultaneous);
   assert.deepEqual(replaySimultaneousSteps(index, child), [child]);
+});
+
+test("近期摘要跨越空档保留最后活动，倍速窗口不提前展示未来且限制摘要规模", () => {
+  const steps = Array.from({ length: 100 }, (_, i) => step(String(i), `track-${i % 4}`, i * 100, [`file-${i}.ts`]));
+  const index = buildReplayIndex(steps);
+  assert.deepEqual(replayRecentRange(index, 5000, 10000, 12), [39, 51]);
+  assert.deepEqual(replayRecentRange(index, 15000, 1200), [99, 100]);
+  assert.deepEqual(replayRecentRange(buildReplayIndex([]), 0), [0, 0]);
+  const parallel = buildReplayIndex([step("main", "main", 1000, ["a"]), step("child", "child", 1000, ["b"])]);
+  assert.deepEqual(replayRecentRange(parallel, 6000, 1200), [0, 2]);
+  const [start, end] = replayCurrentRange(index, 5000, 6400);
+  assert.equal(start, 0);
+  assert.equal(end, 51);
+});
+
+test("密集轨道按最近坐标命中并保留同刻所有调用", () => {
+  const steps = Array.from({ length: 500 }, (_, i) => step(String(i), "main", i * 1000, [`file-${i}.ts`]));
+  steps.push(step("overlap", "main", 250000, ["extra.ts"]));
+  const { timed } = buildReplayIndex(steps);
+  assert.deepEqual(replayLaneHit(timed, 250100).map(entry => entry.step.id), ["250", "overlap"]);
+  assert.equal(replayLaneHit(timed, -100)[0]?.step.id, "0");
+  assert.equal(replayLaneHit(timed, 999999)[0]?.step.id, "499");
+  assert.deepEqual(replayLaneHit([], 0), []);
+});
+
+test("超过摘要数量上限的最新同刻组完整保留所有并行轨道，空档中也不丢失", () => {
+  const parallel = Array.from({ length: 60 }, (_, i) => step(`parallel-${i}`, `track-${i}`, 1000, [`src/file-${i}.ts`]));
+  const index = buildReplayIndex([...parallel, step("future", "main", 11000, ["src/future.ts"])]);
+  for (const position of [0, 6000]) {
+    const [start, end] = replayRecentRange(index, position);
+    const shown = index.timed.slice(start, end).map(entry => entry.step);
+    assert.equal(shown.length, 60);
+    assert.equal(new Set(shown.map(value => value.trackId)).size, 60);
+    assert.equal(shown.some(value => value.id === "future"), false);
+  }
+});
+
+test("下一次修改按共享坐标跳转，忽略读取搜索并合并同刻修改", () => {
+  const steps = [step("read", "main", 1000, ["a"]), step("edit-a", "main", 2000, ["a"]), step("edit-b", "child", 2000, ["b"]), step("edit-c", "main", 3000, ["c"])];
+  for (const value of steps.slice(1)) value.activities[0]!.kind = "edit";
+  const index = buildReplayIndex(steps);
+  assert.deepEqual(index.edits, [1000, 2000]);
+  assert.equal(replayNextEdit(index, 0), 1000);
+  assert.equal(replayNextEdit(index, 1000), 2000);
+  assert.equal(replayNextEdit(index, 2000), undefined);
+});
+
+test("自定义倍速允许小数及边界，拒绝空范围、非有限值和越界值", () => {
+  for (const value of [.25, 1.75, 128, 256]) assert.equal(validReplaySpeed(value), true);
+  for (const value of [0, -.5, .24, 257, NaN, Infinity]) assert.equal(validReplaySpeed(value), false);
 });

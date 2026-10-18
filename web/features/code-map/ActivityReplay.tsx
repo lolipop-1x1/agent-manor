@@ -1,5 +1,5 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent, type PointerEvent } from "react";
-import { ArrowClockwise, ArrowSquareOut, CircleNotch, Minus, Pause, Play, Plus, SkipBack, SkipForward, X } from "@phosphor-icons/react";
+import { ArrowClockwise, ArrowSquareOut, CircleNotch, FastForward, Minus, Pause, Play, Plus, SkipBack, SkipForward, X } from "@phosphor-icons/react";
 import type { EvidenceResponse, FileCoverage } from "../../../src/contracts";
 import type { ReplayActivity, ReplayResult, ReplaySessionsResult, ReplayStep, ReplayTrack } from "../../../src/replay-contracts";
 import { ApiError, errorMessage, isAborted, request } from "../../shared/api";
@@ -7,17 +7,16 @@ import { clientLabel, isMessageDescriptorKnown, messageText, useI18n } from "../
 import { dateLabel, fmt } from "../../shared/format";
 import type { Theme } from "../../shared/theme";
 import { ProjectPicker } from "../../shared/ui/ProjectPicker";
-import { FilterSelect } from "../../shared/ui/FilterSelect";
 import { HelpPopover } from "../../shared/ui/HelpPopover";
-import { CodeMap } from "./CodeMap";
+import { ReplayMap } from "./ReplayMap";
+import { ReplaySpeed } from "./ReplaySpeed";
+import { ReplayTimeline, playbackDuration } from "./ReplayTimeline";
 import { repositoryPath } from "./api";
-import { buildReplayIndex, replayCurrentRange, replayEndIndex, replayNext, replayOriginalTime, replayPathSteps, replayPrevious, replaySimultaneousSteps, ReplayAccumulator, upperBound, type PositionedStep, type ReplayIndex } from "./replay-model";
+import { buildReplayIndex, replayCurrentRange, replayEndIndex, replayNext, replayNextEdit, replayOriginalTime, replayPathSteps, replayPrevious, replayRecentRange, replaySimultaneousSteps, ReplayAccumulator, validReplaySpeed } from "./replay-model";
 import "./activity-replay.css";
 
 const kindKey = (kind: string) => `replay.${kind === "search" ? "searchKind" : kind}`;
-const speeds = [.25, .5, 1, 2, 4, 8];
 const distinctPaths = (step: ReplayStep) => [...new Set(step.activities.flatMap(activity => activity.paths))];
-const noBrowse = () => {};
 const ReplaySessionPicker = memo(ProjectPicker);
 interface SavedReplay { version: string; sessionVersion: string; position: number; speed: number; zoom: number }
 const playbackKey = (repositoryId: string, sessionId: string) => `agent-manor-replay:${repositoryId}:${sessionId}`;
@@ -48,6 +47,8 @@ export function ActivityReplay({ repositoryId, active, theme, targetSessionId, o
   const [trackHeight, setTrackHeight] = useState(210);
   const [selectedPath, setSelectedPath] = useState<string | null>(null);
   const [selection, setSelection] = useState<{ steps: ReplayStep[]; activity?: ReplayActivity } | null>(null);
+  const [detailsOpen, setDetailsOpen] = useState(true);
+  const [requestedEvidenceId, setRequestedEvidenceId] = useState<string | null>(null);
   const [evidenceRetry, setEvidenceRetry] = useState(0);
   const [evidence, setEvidence] = useState<EvidenceResponse | null>(null);
   const [evidenceLoading, setEvidenceLoading] = useState(false);
@@ -59,6 +60,11 @@ export function ActivityReplay({ repositoryId, active, theme, targetSessionId, o
   const positionRef = useRef(0);
   const sessionsRepository = useRef<string | null>(null);
   const root = useRef<HTMLElement>(null);
+  const [rootElement, setRootElement] = useState<HTMLElement | null>(null);
+  const [fullscreen, setFullscreen] = useState(false);
+  const [fullscreenError, setFullscreenError] = useState(false);
+  const attachRoot = useCallback((element: HTMLElement | null) => { root.current = element; setRootElement(element); }, []);
+  const container = fullscreen ? rootElement : undefined;
   const resizeStart = useRef<{ y: number; height: number } | null>(null);
   const snapshotRef = useRef<{ repositoryId: string; data: ReplayResult; speed: number; zoom: number } | null>(null);
   if (data && data.repository.id === repositoryId) snapshotRef.current = { repositoryId, data, speed, zoom: timelineZoom };
@@ -95,7 +101,7 @@ export function ActivityReplay({ repositoryId, active, theme, targetSessionId, o
         const saved = readPlayback(repositoryId, result.sessionId);
         const sameVersion = saved?.version === result.version && saved?.sessionVersion === result.sessionVersion;
         setData(result); seek(sameVersion && Number.isFinite(saved.position) ? Math.max(0, Math.min(buildReplayIndex(result.steps).duration, saved.position)) : 0);
-        setSpeed(sameVersion && speeds.includes(saved.speed) ? saved.speed : 1);
+        setSpeed(sameVersion && validReplaySpeed(saved.speed) ? saved.speed : 1);
         setTimelineZoom(sameVersion && [1, 2, 4, 8, 16].includes(saved.zoom) ? saved.zoom : 1);
         setSelectedPath(null); setUntimedLimit(50);
       } })
@@ -115,10 +121,23 @@ export function ActivityReplay({ repositoryId, active, theme, targetSessionId, o
     document.addEventListener("visibilitychange", visibility);
     return () => document.removeEventListener("visibilitychange", visibility);
   }, []);
+  useEffect(() => {
+    const changed = () => { setFullscreen(document.fullscreenElement === root.current); setFullscreenError(false); };
+    document.addEventListener("fullscreenchange", changed);
+    return () => document.removeEventListener("fullscreenchange", changed);
+  }, []);
+  useEffect(() => { if (!active && document.fullscreenElement === root.current) void document.exitFullscreen().catch(() => {}); }, [active]);
+  const toggleFullscreen = () => {
+    setFullscreenError(false);
+    const operation = document.fullscreenElement === root.current ? document.exitFullscreen() : root.current?.requestFullscreen();
+    void operation?.catch(() => setFullscreenError(true));
+  };
   const index = useMemo(() => buildReplayIndex(data?.steps ?? []), [data]);
   const accumulator = useMemo(() => new ReplayAccumulator(index), [index]);
   const endIndex = replayEndIndex(index, position);
-  const [currentStart, currentEnd] = replayCurrentRange(index, position);
+  const [currentStart, currentEnd] = replayCurrentRange(index, position, Math.max(1200, speed * 100));
+  const [recentStart, recentEnd] = replayRecentRange(index, position, Math.max(4000, speed * 100));
+  const recentSteps = useMemo(() => index.timed.slice(recentStart, recentEnd).map(entry => entry.step), [index, recentStart, recentEnd]);
   const trackNumber = useMemo(() => new Map(data?.tracks.map((track, i) => [track.id, i]) ?? []), [data]);
   const displayData = useMemo(() => {
     if (!data) return null;
@@ -169,29 +188,30 @@ export function ActivityReplay({ repositoryId, active, theme, targetSessionId, o
   }, [playing, active, index, speed]);
   const toggle = () => {
     if (loading || error || !index.duration) return;
-    if (!playing && position >= index.duration) seek(0);
+    if (!playing) { if (position >= index.duration) seek(0); setSelection(null); setRequestedEvidenceId(null); setEvidence(null); setSelectedPath(null); setDetailsOpen(true); }
     setPlaying(value => !value);
   };
-  const stepTo = (direction: number) => { setPlaying(false); seek(direction < 0 ? replayPrevious(index, position) : replayNext(index, position)); };
+  const stepTo = (direction: number) => { setPlaying(false); setSelection(null); setRequestedEvidenceId(null); seek(direction < 0 ? replayPrevious(index, position) : replayNext(index, position)); };
   const rememberFocus = () => { returnFocus.current = document.activeElement instanceof HTMLElement ? document.activeElement : null; };
   const openSteps = useCallback((steps: ReplayStep[], activity = steps[0]?.activities[0]) => {
     if (loading || error) return;
-    rememberFocus(); setPlaying(false); setSelection({ steps, activity }); setEvidence(null); setEvidenceError(null); setDetailLimit(50);
+    rememberFocus(); setPlaying(false); setSelection({ steps, activity }); setDetailsOpen(true); setRequestedEvidenceId(null); setEvidence(null); setEvidenceError(null); setDetailLimit(50);
   }, [loading, error]);
-  const pickStep = useCallback((step: ReplayStep) => {
+  const pickStep = useCallback((step: ReplayStep, activity = step.activities[0]) => {
     const item = index.timed.find(item => item.step === step);
     if (item) seek(item.position);
     const simultaneous = replaySimultaneousSteps(index, step);
-    setSelectedPath(distinctPaths(step)[0] ?? null); openSteps(simultaneous, step.activities[0]);
+    setSelectedPath(activity?.paths[0] ?? distinctPaths(step)[0] ?? null); openSteps(simultaneous, activity);
   }, [index, seek, openSteps]);
   const selectFile = useCallback((path: string) => { setSelectedPath(path); openSteps(replayPathSteps(index, path, endIndex)); }, [index, endIndex, openSteps]);
-  const closeDetails = () => { setSelection(null); setEvidence(null); returnFocus.current?.focus(); };
+  const inspectRecent = useCallback((steps: ReplayStep[]) => { setSelectedPath(null); openSteps(steps); }, [openSteps]);
+  const closeDetails = () => { setDetailsOpen(false); setSelection(null); setRequestedEvidenceId(null); setEvidence(null); (returnFocus.current?.isConnected ? returnFocus.current : root.current)?.focus({ preventScroll: true }); };
   useEffect(() => { if (selection) detailRef.current?.focus({ preventScroll: true }); }, [!!selection]);
   const selectedStep = selection?.steps.find(step => step.activities.some(activity => activity.id === selection.activity?.id)) ?? selection?.steps[0];
   const selectedTrack = displayData?.tracks.find(track => track.id === selectedStep?.trackId);
   useEffect(() => {
     const activity = selection?.activity;
-    if (!activity || !data) return;
+    if (!activity || !data || requestedEvidenceId !== activity.id) { setEvidenceLoading(false); return; }
     const controller = new AbortController();
     setEvidence(null); setEvidenceError(null); setEvidenceLoading(true);
     // 原始证据只在显式选中活动后读取；不可用主轨筛选限制子轨证据。
@@ -201,7 +221,7 @@ export function ActivityReplay({ repositoryId, active, theme, targetSessionId, o
       .catch(failure => { if (!isAborted(failure)) { setEvidenceError(failure); setPlaying(false); } })
       .finally(() => { if (!controller.signal.aborted) setEvidenceLoading(false); });
     return () => controller.abort();
-  }, [selection?.activity?.id, data, repositoryId, evidenceRetry]);
+  }, [selection?.activity?.id, requestedEvidenceId, data, repositoryId, evidenceRetry]);
   const keyboard = (event: KeyboardEvent<HTMLElement>) => {
     if (event.target !== event.currentTarget) return;
     if (event.key === " ") { event.preventDefault(); toggle(); }
@@ -221,38 +241,45 @@ export function ActivityReplay({ repositoryId, active, theme, targetSessionId, o
     return steps.length ? <section key={track.id}><h3><span className={`replay-track-number replay-track-${number % 6}`}>{number + 1}</span>{track.title}</h3><div>{steps.slice(0, untimedLimit).map(step => <button key={step.id} className="button subtle" data-step-id={step.id} onClick={() => pickStep(step)}>{step.activities[0]?.tool} · {t("replay.activityCount", { count: step.activities.length })}{step.orderKnown === false ? ` · ${t("replay.orderUnknown")}` : ""}</button>)}{steps.length > untimedLimit && <button className="button subtle" onClick={() => setUntimedLimit(value => value + 100)}>{t("replay.loadMore")}</button>}</div></section> : null;
   }), [displayData, index, untimedLimit, pickStep, language]);
   const currentTime = clock(replayOriginalTime(index, position));
-  const currentSteps = index.timed.slice(currentStart, currentEnd).map(entry => entry.step);
-  const legend = useMemo(() => <div className="replay-legend"><span><i className="replay-symbol read" />{t("replay.read")}</span><span><i className="replay-symbol edit" />{t("replay.edit")}</span><span><i className="replay-symbol search" />{t("replay.searchKind")}</span><span className="replay-legend-trace">{t("replay.visited")}</span></div>, [language]);
+  const nextEdit = replayNextEdit(index, position);
+  const legend = useMemo(() => <div className="replay-legend"><span><i className="replay-symbol read" />{t("replay.read")}</span><span><i className="replay-symbol edit" />{t("replay.edit")}</span><span><i className="replay-symbol search" />{t("replay.searchKind")}</span><span><b className="replay-status-symbol unknown">?</b>{t("replay.unknownMarker")}</span><span><b className="replay-status-symbol failure">!</b>{t("replay.failureMarker")}</span><HelpPopover container={container} label={t("replay.gapLegend")} trigger={<button className="replay-gap-legend"><span aria-hidden="true">//</span>{t("replay.gapLegend")}</button>}><p>{t("replay.gapDescription")}</p><p>{t("replay.trackColors")}</p></HelpPopover><span className="replay-legend-trace">{t("replay.visited")}</span></div>, [language, container]);
   const update = () => { setPlaying(false); setListRetry(value => value + 1); };
-  return <section ref={root} className="activity-replay" style={{ "--replay-track-height": `${trackHeight}px` } as CSSProperties} data-theme={theme} data-playing={playing} data-position={position} data-replay-version={data?.version} tabIndex={0} onKeyDown={keyboard} aria-label={t("replay.map")} aria-busy={loading}>
+  return <section ref={attachRoot} className="activity-replay" style={{ "--replay-track-height": `${trackHeight}px` } as CSSProperties} data-theme={theme} data-playing={playing} data-fullscreen={fullscreen} data-position={position} data-replay-version={data?.version} tabIndex={0} onKeyDown={keyboard} aria-label={t("replay.map")} aria-busy={loading}>
     <div className="replay-session-toolbar">
-      <ReplaySessionPicker value={sessionId} onChange={chooseSession} label={t("replay.session")} placeholder={t("replay.search")} options={options} />
+      <ReplaySessionPicker value={sessionId} onChange={chooseSession} label={t("replay.session")} placeholder={t("replay.search")} options={options} container={container} />
       {(loading || listLoading) && <CircleNotch className="spinning replay-loading-icon" size={16} aria-label={t("replay.loading")} />}
       <button className="button subtle replay-view-session" disabled={!sessionId || loading} onClick={() => onSession({ sessionId, version: data?.sessionVersion })}><ArrowSquareOut size={15} />{t("replay.viewSession")}</button>
-      <HelpPopover label={t("replay.help")}><p>{t("replay.helpClock")}</p><p>{t("replay.helpMap")}</p><p>{t("replay.helpKeyboard")}</p>{data && <p>{t("replay.version", { version: data.version, sessionVersion: data.sessionVersion })}</p>}{data?.missingChildren ? <p>{t("replay.missingChildren", { count: data.missingChildren })}</p> : null}{data?.stale && <p>{t("replay.stale")}</p>}</HelpPopover>
+      {!detailsOpen && data && <button className="button subtle" onClick={() => setDetailsOpen(true)}>{t("replay.followDetails")}</button>}
+      <HelpPopover container={container} label={t("replay.help")}><p>{t("replay.helpClock")}</p><p>{t("replay.helpMap")}</p><p>{t("replay.helpKeyboard")}</p>{data && <p>{t("replay.version", { version: data.version, sessionVersion: data.sessionVersion })}</p>}{data?.missingChildren ? <p>{t("replay.missingChildren", { count: data.missingChildren })}</p> : null}{data?.stale && <p>{t("replay.stale")}</p>}</HelpPopover>
       {data && <button className="icon-button" aria-label={t("replay.update")} disabled={loading} onClick={update}><ArrowClockwise size={16} /></button>}
     </div>
     {!!listError && <div className="replay-error" role="alert">{errorMessage(listError)}<button className="button subtle" onClick={() => setListRetry(value => value + 1)}>{t("common.retry")}</button></div>}
     {!!error && <div className="replay-error" role="alert">{errorMessage(error)}<button className="button subtle" onClick={update}>{t("replay.update")}</button></div>}
+    {fullscreenError && <div className="replay-error" role="alert">{t("replay.fullscreenError")}</div>}
     {!data && !loading && !error && <div className="replay-empty"><Play size={30} /><p>{!listLoading && !sessions?.sessions.length ? t("replay.emptySessions") : t("replay.select")}</p></div>}
     {!data && loading && <div className="replay-empty" role="status"><CircleNotch className="spinning" size={24} /><p>{t("replay.loading")}</p></div>}
     {data && <>
-      <div className={`replay-viewer${selection ? " has-details" : ""}`} data-blocked={loading || !!error}>
+      <div className={`replay-viewer${detailsOpen ? " has-details" : ""}`} data-blocked={loading || !!error}>
         <div className="replay-map-area">
-          <CodeMap files={files} directory="" metric="activity" selected={selectedPath} browse={noBrowse} select={selectFile} scopeKey={`${repositoryId}:${data.version}:${data.sessionId}`} playback={playback} heading={null} legend={legend} />
+          <ReplayMap files={files} steps={data.steps} selected={selectedPath} select={selectFile} scopeKey={`${repositoryId}:${data.version}:${data.sessionVersion}:${data.sessionId}`} playback={playback} legend={legend} fullscreen={fullscreen} onFullscreen={toggleFullscreen} container={container} disabled={loading || !!error} />
         </div>
-        {selection && <aside className="replay-evidence" aria-label={t("replay.details")} ref={detailRef} tabIndex={-1} onKeyDown={event => { if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); closeDetails(); } }}>
-          <div className="replay-evidence-heading"><strong>{t("replay.details")}</strong><button className="icon-button" aria-label={t("replay.closeDetails")} onClick={closeDetails}><X size={16} /></button></div>
+        {detailsOpen && <aside className="replay-evidence" data-mode={selection ? "inspect" : "follow"} aria-label={t(selection ? "replay.details" : "replay.followDetails")} ref={detailRef} tabIndex={-1} onKeyDown={event => { if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); closeDetails(); } }}>
+          <div className="replay-evidence-heading"><strong>{t(selection ? "replay.details" : "replay.followDetails")}</strong><button className="icon-button" aria-label={t("replay.closeDetails")} onClick={closeDetails}><X size={16} /></button></div>
+          {!selection && <ReplayFollowDetails steps={recentSteps} tracks={displayData!.tracks} numbers={trackNumber} clock={clock} inspect={pickStep} inspectAll={inspectRecent} />}
+          {selection && <>
+          <button className="button subtle replay-follow-return" onClick={() => { setSelection(null); setRequestedEvidenceId(null); setSelectedPath(null); setEvidence(null); }}>{t("replay.followPlayback")}</button>
           {selectedPath && <code className="replay-path">{selectedPath}</code>}
           {!selection.steps.length && <p className="muted">{t("replay.noPastActivity")}</p>}
-          {selection.steps.length > 0 && <div className="replay-activity-list">{selection.steps.slice(0, detailLimit).flatMap(step => step.activities.map(activity => <button key={activity.id} className={selection.activity?.id === activity.id ? "selected" : ""} onClick={() => { setSelectedPath(current => current && activity.paths.includes(current) ? current : activity.paths[0] ?? null); setSelection({ ...selection, activity }); }}><i className={`replay-symbol ${activity.kind}`} /><span>{activity.tool}<small>{t(kindKey(activity.kind))} · {t(`codeMap.status.${activity.status}`)} · {step.time === undefined ? t("replay.noTime") : clock(step.time)}</small></span></button>))}{selection.steps.length > detailLimit && <button onClick={() => setDetailLimit(value => value + 100)}>{t("replay.loadMore")}</button>}</div>}
+          {selection.steps.length > 0 && <div className="replay-activity-list">{selection.steps.slice(0, detailLimit).flatMap(step => step.activities.map(activity => <button key={activity.id} className={selection.activity?.id === activity.id ? "selected" : ""} onClick={() => { setSelectedPath(current => current && activity.paths.includes(current) ? current : activity.paths[0] ?? null); setSelection({ ...selection, activity }); setRequestedEvidenceId(null); setEvidence(null); setEvidenceError(null); }}><i className={`replay-symbol ${activity.kind}`} /><span>{activity.tool}<small>{t(kindKey(activity.kind))} · {t(`codeMap.status.${activity.status}`)} · {step.time === undefined ? t("replay.noTime") : clock(step.time)}</small></span></button>))}{selection.steps.length > detailLimit && <button onClick={() => setDetailLimit(value => value + 100)}>{t("replay.loadMore")}</button>}</div>}
           {selectedStep && <div className="replay-evidence-meta"><strong>{selectedTrack?.title}</strong><span>{selectedStep.time === undefined ? t("replay.noTime") : clock(selectedStep.time)}</span><span>{t(`codeMap.status.${selection.activity?.status ?? "unknown"}`)}</span>{selectedStep.orderKnown === false && <span>{t("replay.orderUnknown")}</span>}</div>}
           {selection.activity?.paths.map(path => <button key={path} className="replay-path-link" onClick={() => setSelectedPath(path)}>{path}</button>)}
           {selection.activity?.paths.some(path => !drawablePaths.has(path)) && <p className="muted">{t("replay.noMapFile")}</p>}
           {selectedStep && <button className="button subtle" onClick={() => onSession({ sessionId: selectedStep.trackId, messageId: selection.activity?.messageId, version: data.sessionVersion })}><ArrowSquareOut size={14} />{t("replay.viewSession")}</button>}
+          {selection.activity && requestedEvidenceId !== selection.activity.id && <button className="button subtle" onClick={() => setRequestedEvidenceId(selection.activity!.id)}>{t("replay.readEvidence")}</button>}
           {evidenceLoading && <p className="muted" role="status">{t("replay.evidenceLoading")}</p>}
           {!!evidenceError && <div className="replay-error" role="alert">{errorMessage(evidenceError)}<button className="button subtle" onClick={() => setEvidenceRetry(value => value + 1)}>{t("common.retry")}</button><button className="button subtle" onClick={update}>{t("replay.update")}</button></div>}
           {evidence && <ReplayEvidenceBody evidence={evidence} />}
+          </>}
         </aside>}
       </div>
       <div className="replay-resize" role="separator" aria-label={t("replay.resize")} aria-orientation="horizontal" aria-valuemin={140} aria-valuemax={420} aria-valuenow={trackHeight} tabIndex={0}
@@ -264,17 +291,18 @@ export function ActivityReplay({ repositoryId, active, theme, targetSessionId, o
         <button className="icon-button" aria-label={t("replay.previous")} disabled={disabled || position <= 0} onClick={() => stepTo(-1)}><SkipBack size={17} /></button>
         <button className="button replay-play" aria-label={t(playing ? "replay.pause" : "replay.play")} disabled={disabled} onClick={toggle}>{playing ? <Pause size={19} weight="fill" /> : <Play size={19} weight="fill" />}</button>
         <button className="icon-button" aria-label={t("replay.next")} disabled={disabled || position >= index.duration} onClick={() => stepTo(1)}><SkipForward size={17} /></button>
-        <FilterSelect label={t("replay.speed")} value={String(speed)} options={speeds.map(value => ({ value: String(value), label: `${new Intl.NumberFormat(language).format(value)}×` }))} onChange={value => setSpeed(Number(value))} />
+        <ReplaySpeed value={speed} onChange={setSpeed} container={container} disabled={disabled} />
+        <button className="icon-button" aria-label={t("replay.nextEdit")} disabled={disabled || nextEdit === undefined} onClick={() => { if (nextEdit !== undefined) { setPlaying(false); setSelection(null); setRequestedEvidenceId(null); seek(nextEdit); } }}><FastForward size={17} /></button>
         <output className="replay-clock">{index.duration ? currentTime : "—"}</output>
         <span className="replay-progress-count">{fmt(endIndex)} / {fmt(index.timed.length)}</span>
+        <span className="replay-remaining">{t("replay.remaining", { duration: playbackDuration((index.duration - position) / speed, language) })}</span>
         <div className="replay-timeline-zoom" role="group" aria-label={t("replay.zoom")}><button className="icon-button" aria-label={t("replay.zoomOut")} disabled={timelineZoom <= 1} onClick={() => setTimelineZoom(value => Math.max(1, value / 2))}><Minus size={15} /></button><span>{timelineZoom}×</span><button className="icon-button" aria-label={t("replay.zoomIn")} disabled={timelineZoom >= 16} onClick={() => setTimelineZoom(value => Math.min(16, value * 2))}><Plus size={15} /></button></div>
       </div>
-      <input type="range" className="replay-seek" min="0" max={Math.max(1, index.duration)} step="1" value={position} disabled={disabled} aria-label={t("replay.position")} aria-valuetext={t("replay.positionValue", { time: currentTime, count: endIndex })} onChange={event => { setPlaying(false); seek(Number(event.target.value)); }} />
+      <input type="range" className="replay-seek" min="0" max={Math.max(1, index.duration)} step="1" value={position} disabled={disabled} aria-label={t("replay.position")} aria-valuetext={t("replay.positionValue", { time: currentTime, count: endIndex })} onChange={event => { setPlaying(false); setSelection(null); setRequestedEvidenceId(null); seek(Number(event.target.value)); }} />
       {!data.steps.length && <p className="replay-status">{t("replay.noActivity")}</p>}
       {!!data.steps.length && !index.timed.length && <p className="replay-status">{t("replay.noTimed")}</p>}
-      <ReplayTimeline data={displayData!} index={index} position={position} zoom={timelineZoom} height={trackHeight} clock={clock} select={pickStep} seek={value => { setPlaying(false); seek(value); }} disabled={loading || !!error} />
+      <ReplayTimeline data={displayData!} index={index} position={position} zoom={timelineZoom} height={trackHeight} clock={clock} select={pickStep} seek={value => { setPlaying(false); setSelection(null); setRequestedEvidenceId(null); seek(value); }} disabled={loading || !!error} container={container} />
       {!!untimedCount && <details className="replay-untimed"><summary>{t("replay.untimedCount", { count: untimedCount })}</summary><p className="muted">{t("replay.untimedDescription")}</p>{untimedRows}</details>}
-      <div className="replay-current-summary" aria-live="off">{currentSteps.slice(0, 3).map(step => <button key={step.id} onClick={() => pickStep(step)}><span className={`replay-track-number replay-track-${(trackNumber.get(step.trackId) ?? 0) % 6}`}>{(trackNumber.get(step.trackId) ?? 0) + 1}</span>{step.activities[0]?.tool}<code>{distinctPaths(step).join(", ")}</code></button>)}{currentSteps.length > 3 && <button className="replay-show-current" onClick={() => { setSelectedPath(null); openSteps(currentSteps); }}>{t("replay.allCurrent", { count: currentSteps.length })}</button>}</div>
     </>}
   </section>;
 }
@@ -290,80 +318,27 @@ const ReplayEvidenceBody = memo(function ReplayEvidenceBody({ evidence }: { evid
   </>;
 });
 
-function ReplayTimeline({ data, index, position, zoom, height, clock, select, seek, disabled }: {
-  data: ReplayResult; index: ReplayIndex; position: number; zoom: number; height: number; clock: (time: number) => string;
-  select: (step: ReplayStep) => void; seek: (value: number) => void; disabled: boolean;
+const ReplayFollowDetails = memo(function ReplayFollowDetails({ steps, tracks, numbers, clock, inspect, inspectAll }: {
+  steps: ReplayStep[]; tracks: ReplayTrack[]; numbers: Map<string, number>; clock(time: number): string; inspect(step: ReplayStep, activity?: ReplayActivity): void; inspectAll(steps: ReplayStep[]): void;
 }) {
-  const { t, language } = useI18n();
-  const scroller = useRef<HTMLDivElement>(null);
-  const [width, setWidth] = useState(700);
-  const [viewportHeight, setViewportHeight] = useState(height);
-  const [scrollTop, setScrollTop] = useState(0);
-  useEffect(() => {
-    const observer = new ResizeObserver(entries => {
-      const rect = entries[0]?.contentRect;
-      if (!rect?.width || !rect.height) return;
-      setWidth(Math.max(260, rect.width - 176)); setViewportHeight(rect.height);
-    });
-    if (scroller.current) observer.observe(scroller.current);
-    return () => observer.disconnect();
-  }, []);
-  const timelineWidth = width * zoom;
-  const lanes = useMemo(() => {
-    const lanes = new Map<string, PositionedStep[]>();
-    for (const entry of index.timed) { const lane = lanes.get(entry.step.trackId) ?? []; lane.push(entry); lanes.set(entry.step.trackId, lane); }
-    return lanes;
-  }, [index]);
-  const duration = Math.max(1, index.duration);
-  const x = position / duration * timelineWidth;
-  // 动态层只覆盖滚动视口；通高变换层会使数百轨回放产生巨大的合成区域。
-  const overlayTop = Math.min(scrollTop, Math.max(0, data.tracks.length * 42 + 28 - viewportHeight));
-  const label = (step: ReplayStep, track: ReplayTrack) => t("replay.step", { track: track.title, tool: step.activities.map(activity => `${activity.tool} (${t(`codeMap.status.${activity.status}`)})`).join(", "), time: step.time === undefined ? t("replay.noTime") : clock(step.time), count: distinctPaths(step).length });
-  // 播放头独立推进；轨道、断轴和标尺只在数据、缩放或语言改变时重建。
-  const trackRows = useMemo(() => data.tracks.map((track, number) => <div className="replay-track-row" data-track-id={track.id} key={track.id}>
-    <div className="replay-track-label" title={track.title} style={{ paddingLeft: Math.min(track.depth, 4) * 8 + 8 }}><span className={`replay-track-number replay-track-${number % 6}`}>{number + 1}</span><span>{track.title}<small>{track.depth ? clientLabel(track.client) : t("replay.mainTrack")}{track.untimedCount ? ` · ${t("replay.untimedCount", { count: track.untimedCount })}` : ""}</small></span></div>
-    <TimelineLane entries={lanes.get(track.id) ?? emptyLane} width={timelineWidth} duration={duration} number={number} language={language} disabled={disabled} label={step => label(step, track)} select={select} />
-  </div>), [data.tracks, lanes, timelineWidth, duration, language, disabled, select, clock]);
-  const gapElements = useMemo(() => index.segments.filter(segment => segment.collapsed).map((segment, i) => <div key={i} className="replay-gap" style={{ left: segment.from / duration * timelineWidth, width: Math.max(6, (segment.to - segment.from) / duration * timelineWidth) }}><HelpPopover label={t("replay.gap", { start: clock(segment.start), end: clock(segment.end) })} trigger={<button className="replay-gap-help" aria-label={t("replay.gap", { start: clock(segment.start), end: clock(segment.end) })}>//</button>}><p>{t("replay.gap", { start: clock(segment.start), end: clock(segment.end) })}</p><p>{t("replay.helpClock")}</p></HelpPopover></div>), [index, timelineWidth, duration, clock, language]);
-  const rulerLabels = useMemo(() => (timelineWidth >= 650 ? [0, .25, .5, .75, 1] : [0, .5, 1]).map(fraction => <span key={fraction} style={{ left: `${fraction * 100}%` }}>{index.timed.length ? clock(replayOriginalTime(index, fraction * duration)) : "—"}</span>), [timelineWidth, index, duration, clock]);
-  return <div className="replay-timeline-scroll" ref={scroller} style={{ height }} role="group" aria-label={t("replay.timeline")} data-disabled={disabled} onScroll={event => setScrollTop(event.currentTarget.scrollTop)}>
-    <div className="replay-timeline-content" style={{ width: timelineWidth + 176 }}>
-      <div className="replay-ruler"><div className="replay-track-label">{t("replay.timeline")}</div><div className="replay-ruler-times" style={{ width: timelineWidth }} onClick={event => { if (!disabled) seek(Math.max(0, Math.min(duration, (event.clientX - event.currentTarget.getBoundingClientRect().left) / timelineWidth * duration))); }}>
-        {rulerLabels}
-      </div></div>
-      {trackRows}
-      <div className="replay-timeline-overlay" style={{ left: 176, top: overlayTop, width: timelineWidth, height: viewportHeight }}>
-        {gapElements}
-        <div className="replay-playhead" style={{ transform: `translateX(${x}px)` }} aria-hidden="true" />
-      </div>
-    </div>
+  const { t } = useI18n();
+  const trackMap = useMemo(() => new Map(tracks.map(track => [track.id, track])), [tracks]);
+  const groups = useMemo(() => {
+    const result = new Map<string, ReplayStep[]>();
+    for (const step of [...steps].reverse()) { const values = result.get(step.trackId) ?? []; values.push(step); result.set(step.trackId, values); }
+    return [...result].sort(([a], [b]) => (numbers.get(a) ?? 0) - (numbers.get(b) ?? 0));
+  }, [steps, numbers]);
+  return <div className="replay-follow-details" aria-live="off">
+    {!steps.length && <p className="muted">{t("replay.noPastActivity")}</p>}
+    {groups.map(([trackId, values]) => <section key={trackId} className={`replay-follow-track replay-track-${(numbers.get(trackId) ?? 0) % 6}`}>
+      <h3><span className={`replay-track-number replay-track-${(numbers.get(trackId) ?? 0) % 6}`}>{(numbers.get(trackId) ?? 0) + 1}</span><span>{trackMap.get(trackId)?.title}</span></h3>
+      {values.slice(0, 3).map(step => <div key={step.id} className="replay-follow-step"><time>{step.time === undefined ? t("replay.noTime") : clock(step.time)}</time>
+        {step.activities.map(activity => <button key={activity.id} className="replay-follow-activity" data-activity-id={activity.id} onClick={() => inspect(step, activity)}>
+          <span className="replay-follow-operation"><i className={`replay-symbol ${activity.kind}`} />{t(kindKey(activity.kind))}<small>{t(`codeMap.status.${activity.status}`)}</small></span>
+          {activity.paths.slice(0, 8).map(path => <code key={path}>{path}</code>)}{activity.paths.length > 8 && <small>{t("replay.previewMoreFiles", { count: activity.paths.length - 8 })}</small>}
+        </button>)}
+      </div>)}
+      {values.length > 3 && <button className="button subtle" onClick={() => inspectAll(values)}>{t("replay.recentActivities")}</button>}
+    </section>)}
   </div>;
-}
-
-const emptyLane: PositionedStep[] = [];
-const TimelineLane = memo(function TimelineLane({ entries, width, duration, number, select, label, disabled }: {
-  entries: PositionedStep[]; width: number; duration: number; number: number; language: string; disabled: boolean; select: (step: ReplayStep) => void; label: (step: ReplayStep) => string;
-}) {
-  const paths = useMemo(() => {
-    const kinds = new Map<string, string[]>();
-    for (const entry of entries) {
-      const x = Math.max(5, Math.min(width - 5, entry.position / duration * width));
-      const kind = entry.step.activities.some(activity => activity.kind === "edit") ? "edit" : entry.step.activities[0]?.kind ?? "read";
-      const status = entry.step.activities.some(activity => activity.status === "failure") ? "failure" : entry.step.activities.some(activity => activity.status === "unknown") ? "unknown" : "success";
-      const list = kinds.get(`${kind} ${status}`) ?? [];
-      list.push(kind === "edit" ? `M${x - 3} 17h6v6h-6Z` : kind === "search" ? `M${x} 15l5 5l-5 5l-5 -5Z` : `M${x - 3} 20a3 3 0 1 0 6 0a3 3 0 1 0 -6 0`);
-      kinds.set(`${kind} ${status}`, list);
-    }
-    return [...kinds].map(([kind, parts]) => ({ kind, d: parts.join("") }));
-  }, [entries, width, duration]);
-  return <div className={`replay-lane replay-track-${number % 6}`} style={{ width }}>
-    <svg width={width} height="42" aria-hidden="true" onClick={event => {
-      if (!entries.length || disabled) return;
-      const position = (event.clientX - event.currentTarget.getBoundingClientRect().left) / width * duration;
-      const index = upperBound(entries, position, entry => entry.position);
-      const before = entries[Math.max(0, index - 1)]!, after = entries[Math.min(entries.length - 1, index)]!;
-      select(Math.abs(before.position - position) <= Math.abs(after.position - position) ? before.step : after.step);
-    }}>{paths.map(path => <path key={path.kind} d={path.d} className={`replay-lane-points ${path.kind}`} />)}</svg>
-    {entries.length <= 250 && entries.map(entry => <button key={entry.step.id} tabIndex={-1} disabled={disabled} className="replay-step-hit" data-step-id={entry.step.id} title={label(entry.step)} aria-label={label(entry.step)} style={{ left: Math.max(0, Math.min(width - 16, entry.position / duration * width - 8)) }} onClick={() => select(entry.step)} />)}
-  </div>;
-}, (previous, next) => previous.entries === next.entries && previous.width === next.width && previous.duration === next.duration && previous.number === next.number && previous.language === next.language && previous.disabled === next.disabled && previous.select === next.select);
+});

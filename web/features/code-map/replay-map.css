@@ -1,0 +1,47 @@
+.replay-map-workspace { min-width: 0; min-height: 0; flex: 1; display: flex; flex-direction: column; position: relative; }
+.replay-map-scopebar { display: flex; align-items: center; gap: 8px; min-width: 0; min-height: 34px; margin-bottom: 6px; }
+.replay-map-scopebar > .filter-trigger { flex: 0 0 auto; width: auto; min-width: 134px; }
+.replay-directory-picker { flex: 0 1 200px; min-width: 110px; }
+.replay-directory-picker > .filter-trigger { width: 100%; }
+.replay-map-breadcrumbs { display: flex; align-items: center; flex: 1; gap: 3px; min-width: 0; overflow-x: auto; font-size: 11px; white-space: nowrap; }
+.replay-map-breadcrumbs > span { display: flex; align-items: center; gap: 3px; }
+.replay-map-breadcrumbs button { background: transparent; border: 0; color: var(--muted); display: flex; align-items: center; gap: 5px; padding: 5px 3px; white-space: nowrap; }
+.replay-map-breadcrumbs button[aria-current] { color: var(--text); font-weight: 600; }
+.replay-map-breadcrumbs button:hover { color: var(--accent); }
+.replay-follow-toggle { flex: 0 0 auto; white-space: nowrap; margin-left: auto; }
+.replay-follow-toggle[aria-pressed="true"] { background: var(--accent-soft); color: var(--accent); border-color: var(--accent); }
+.replay-readable-map { display: flex; flex-direction: column; min-height: 0; flex: 1; }
+.replay-readable-map .map-toolbar { flex: 0 0 auto; }
+.replay-map-empty { position: absolute; left: 20px; right: 20px; top: 50%; text-align: center; font-size: 12px; color: var(--muted); pointer-events: none; }
+.replay-map-workspace[data-disabled="true"] .replay-directory-picker { pointer-events: none; opacity: .6; }
+.replay-module { position: absolute; z-index: 2; display: flex; flex-direction: column; align-items: flex-start; justify-content: center; gap: 8px; min-width: 0; overflow: hidden; text-align: left; background: transparent; color: var(--text); border: 1px solid transparent; border-radius: 0; padding: 12px; }
+.replay-module > span { display: flex; align-items: center; gap: 6px; max-width: 100%; font-size: 12px; }
+.replay-module strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.replay-module:hover { border-color: var(--accent); background: var(--accent-soft); }
+.replay-module[data-replay-current="true"] { box-shadow: inset 0 0 0 2px var(--accent); }
+.replay-module .replay-module-current { color: var(--muted); font-size: 11px; flex-wrap: wrap; }
+.replay-module .replay-symbol { color: var(--track-color); }
+.replay-callout-lines { position: absolute; inset: 0; z-index: 5; pointer-events: none; }
+.replay-callout-lines line { stroke: var(--accent); stroke-width: 1.25; opacity: .75; }
+.replay-map-callout { position: absolute; z-index: 6; display: flex; flex-direction: column; justify-content: center; align-items: stretch; gap: 4px; padding: 6px 10px; text-align: left; border: 1px solid var(--border); border-radius: 5px; background: var(--surface); color: var(--text); box-shadow: 0 3px 12px #0002; cursor: pointer; overflow: hidden; }
+.replay-map-callout > span { display: flex; align-items: center; gap: 7px; min-width: 0; }
+.replay-map-callout strong { min-width: 0; font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.replay-map-callout code { font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--muted); }
+.replay-map-callout:hover { border-color: var(--accent); }
+.replay-callout-marker { display: inline-flex; align-items: center; gap: 3px; flex: 0 0 auto; color: var(--track-color); font-size: 10px; }
+.replay-callout-marker > .replay-symbol { color: inherit; }
+.replay-marker-state { font-size: 10px; line-height: 1; font-style: normal; font-weight: 700; }
+.replay-marker-state.failure { color: var(--danger); }
+.replay-marker-state.unknown { color: var(--text); }
+.replay-readable-map .replay-map-marker > :not(text) { fill: var(--track-color); }
+.replay-readable-map .replay-map-marker > .replay-map-status { fill: var(--surface); stroke: var(--text); stroke-width: 1; }
+.replay-map-marker .replay-map-status-label { fill: var(--text); font-size: 9px; }
+.replay-map-marker.failure .replay-map-status-label { fill: var(--danger); }
+@media (max-width: 767px) {
+  .replay-map-scopebar { flex-wrap: wrap; gap: 4px 6px; }
+  .replay-map-scopebar > .filter-trigger { min-width: 116px; }
+  .replay-map-breadcrumbs { order: 3; flex-basis: 100%; min-height: 23px; }
+  .replay-follow-toggle > span { display: none; }
+  .replay-module { padding: 7px; }
+  .replay-map-callout { padding-inline: 8px; }
+}

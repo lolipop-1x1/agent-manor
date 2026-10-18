@@ -19,7 +19,7 @@ const roots = Object.fromEntries(clientIds.map(client => [client, []]));
 roots.codex = join(directory, "codex");
 const browser = async args => {
   const { stdout } = await run("playwright-cli", [`-s=${browserName}`, ...args], {
-    cwd: directory, env: { ...process.env, TMPDIR: "/tmp" }, timeout: 90_000, maxBuffer: 8 * 1024 * 1024,
+    cwd: directory, env: { ...process.env, TMPDIR: "/tmp" }, timeout: 180_000, maxBuffer: 8 * 1024 * 1024,
   });
   if (stdout.includes("### Error")) throw new Error(stdout);
   return stdout;
@@ -45,7 +45,7 @@ const history = (id, title, events, parent) => [
   record({ type: "message", role: "assistant", channel: "final", content: [{ type: "output_text", text: "合成验收任务完成。" }] }, 601),
 ];
 
-async function verifyBrowser(page, fixture) {
+async function verifyBrowser(page, fixture, verifyUsability) {
   const ensure = (condition, message) => { if (!condition) throw new Error(message); };
   page.setDefaultTimeout(20_000);
   const errors = [], failedRequests = [], requests = [], failedResponses = [];
@@ -76,6 +76,16 @@ async function verifyBrowser(page, fixture) {
   await choose("并行主会话");
   ensure(await button("播放").isVisible(), "选中会话后不应自动播放");
   ensure(await page.locator(".replay-track-row[data-track-id]").count() === 4, "主会话和三个子会话未完整分轨");
+  const scopeGeometry = await page.locator(".replay-map-scopebar").evaluate(element => {
+    const describe = target => {
+      const bounds = target.getBoundingClientRect(), style = getComputedStyle(target);
+      return { className: target.className, display: style.display, width: style.width, overflow: style.overflow,
+        flex: style.flex, x: bounds.x, right: bounds.right, height: bounds.height };
+    };
+    return { viewport: innerWidth, parent: describe(element), children: [...element.children].map(describe) };
+  });
+  ensure(scopeGeometry.children.every(child => child.x >= scopeGeometry.parent.x - 1 && child.right <= scopeGeometry.parent.right + 1),
+    `观看范围、面包屑或跟随按钮溢出工具栏：${JSON.stringify(scopeGeometry)}`);
   await snapshot("replay-desktop-start");
   await button("播放").click(); await button("暂停").waitFor();
   const requestsBefore = requests.length;
@@ -111,10 +121,9 @@ async function verifyBrowser(page, fixture) {
   await button("下一活动").click();
   ensure(await page.locator('[data-replay-current="true"]').count() === 2, "同一调用的两个修改文件未同时高亮");
   await button("下一活动").click();
-  await button("查看当前全部 4 个活动").click();
-  ensure(await page.locator(".replay-activity-list").getByRole("button").count() === 4, "四轨同刻活动未全部提供证据入口");
+  ensure(await page.locator('.replay-evidence[data-mode="follow"] .replay-follow-track').count() === 4, "四轨同刻活动未全部按会话分组展示");
+  ensure(await page.locator(".replay-follow-activity").count() >= 4, "四轨同刻活动未全部提供检查入口");
   await snapshot("replay-concurrent");
-  await button("关闭活动证据").click();
   await button("上一活动").click();
   await button("播放").click();
   await tab("活动分布").click(); await tab("活动回放").click();
@@ -137,6 +146,7 @@ async function verifyBrowser(page, fixture) {
   for (const index of [3, 4]) {
     const response = page.waitForResponse(response => response.url().includes(`/evidence/${encodeURIComponent(fixture.overlapActivities[index].id)}`) && response.status() === 200);
     await overlapping.nth(index).click();
+    await button("读取原始证据").click();
     const evidence = await (await response).json();
     ensure(evidence.event.id === fixture.overlapActivities[index].id && evidence.version === fixture.version, "切换第四或第五项没有读取对应同版证据");
     ensure(evidence.records.some(record => record.raw.includes(`overlap-${index}`)), "第四或第五项证据没有对应原始调用记录");
@@ -150,7 +160,7 @@ async function verifyBrowser(page, fixture) {
   const denseGeometry = async () => timeline.evaluate(element => ({
     clientHeight: element.clientHeight, scrollHeight: element.scrollHeight,
     overlayHeight: element.querySelector(".replay-timeline-overlay").getBoundingClientRect().height,
-    gaps: element.querySelectorAll(".replay-gap-help").length,
+    gaps: element.querySelectorAll(".replay-gap").length, gapHelp: element.querySelectorAll(".replay-gap-help").length,
   }));
   const checkDenseGeometry = async () => {
     const geometry = await denseGeometry();
@@ -172,16 +182,22 @@ async function verifyBrowser(page, fixture) {
       const viewport = element.getBoundingClientRect();
       return [...element.querySelectorAll(".replay-gap-help")].findIndex(button => {
         const bounds = button.getBoundingClientRect();
-        return bounds.left >= viewport.left + 176 && bounds.right <= viewport.right && bounds.top >= viewport.top + 28 && bounds.bottom <= viewport.bottom;
+        const hit = document.elementFromPoint(bounds.left + bounds.width / 2, bounds.top + bounds.height / 2);
+        return bounds.left >= viewport.left + 176 && bounds.right <= viewport.right && bounds.top >= viewport.top && bounds.bottom <= viewport.bottom
+          && (hit === button || button.contains(hit));
       });
     });
     ensure(index >= 0, "滚动或缩放后没有位于当前视口的空档帮助入口");
     const gap = timeline.locator(".replay-gap-help").nth(index), label = await gap.getAttribute("aria-label");
-    await gap.focus(); await gap.press("Enter");
+    const before = await position();
+    await gap.click();
     const help = page.getByRole("dialog", { name: label, exact: true }); await help.waitFor();
+    ensure(await position() === before, "空档帮助点击冒泡改变了播放头");
+    ensure((await help.innerText()).includes("无文件活动记录"), "空档帮助没有解释折叠时长或记录边界");
     await page.keyboard.press("Escape"); await help.waitFor({ state: "hidden" });
     await page.waitForFunction(() => document.activeElement?.classList.contains("replay-gap-help"));
     ensure(await gap.evaluate(element => element === document.activeElement), "空档帮助Escape关闭后未恢复键盘焦点");
+    await gap.press("Enter"); await help.waitFor(); await page.keyboard.press("Escape");
   };
   await gapKeyboard();
   await button("放大时间轴").click(); await checkDenseGeometry(); await gapKeyboard();
@@ -189,7 +205,9 @@ async function verifyBrowser(page, fixture) {
   await page.waitForFunction(() => Number.parseFloat(document.querySelector(".replay-timeline-overlay")?.style.top ?? "-1") === 0);
   const denseResult = await checkDenseGeometry(); await gapKeyboard();
   await snapshot("replay-dense-tracks");
+  const usability = await verifyUsability(page, fixture, { requests });
   await choose("并行主会话");
+  await speed.click(); await page.getByRole("option", { name: "4×", exact: true }).click();
   ensure(await page.locator(".replay-track-row[data-track-id]").count() === 4, "离开密集样本后原四轨回放没有恢复");
   await picker().click(); await search().fill("不存在的会话");
   await page.getByText("没有匹配结果", { exact: true }).waitFor();
@@ -249,24 +267,175 @@ async function verifyBrowser(page, fixture) {
   await snapshot("replay-narrow-picker");
   await page.getByRole("combobox", { name: "Search Playback session", exact: true }).press("Escape");
   await page.emulateMedia({ reducedMotion: "reduce" });
-  await button("Next activity").click(); await snapshot("replay-narrow");
+  await button("Next activity").click();
+  await page.evaluate(() => window.scrollTo(0, 0));
+  const narrowHeight = await page.evaluate(() => innerHeight);
+  for (const element of [page.getByRole("slider", { name: "Replay position", exact: true }), page.locator(".replay-transport"), page.locator(".replay-timeline-scroll")]) {
+    const bounds = await element.boundingBox();
+    ensure(bounds.y >= 0 && bounds.y + bounds.height <= narrowHeight + 2, "窄屏进度条、播放控制或时间轴被裁剪到视口外");
+  }
+  await snapshot("replay-narrow");
   ensure(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1), "窄屏整页发生横向溢出");
   ensure(errors.length === 0, "浏览器发生页面异常");
   ensure(failedRequests.length === 0, "浏览器发生非取消网络失败");
   ensure(failedResponses.length === 0, "浏览器 API 返回失败状态");
   return { passed: true, tracks: 4, requests: requests.length, requestsDuringPlayback,
     errors, failedRequests, failedResponses, sameTrackSameTime: { calls: 6, evidenceIndexes: [4, 5] },
-    denseTracks: { tracks: 363, steps: 362, ...denseResult }, keyboard: true, narrow: true, reducedMotion: true, languages: ["zh-CN", "en"] };
+    denseTracks: { tracks: 363, steps: 362, ...denseResult }, usability, keyboard: true, narrow: true, reducedMotion: true, languages: ["zh-CN", "en"] };
+}
+
+async function verifyReplayUsability(page, fixture, observations) {
+  const ensure = (condition, message) => { if (!condition) throw new Error(message); };
+  const button = name => page.getByRole("button", { name, exact: true });
+  const slider = () => page.getByRole("slider", { name: "回放进度", exact: true });
+  const scope = () => page.getByRole("combobox", { name: "观看范围", exact: true });
+  const root = page.locator(".activity-replay");
+  const position = async () => Number(await root.getAttribute("data-position"));
+  const evidenceRequests = () => observations.requests.filter(url => /\/replay\/evidence\//.test(url)).length;
+  const choose = async title => {
+    await button("回放会话").click();
+    await page.getByRole("combobox", { name: "回放会话搜索", exact: true }).fill(title);
+    await page.getByRole("option").filter({ hasText: title }).first().click();
+    await slider().waitFor(); await page.waitForLoadState("networkidle");
+  };
+  const viewing = page.locator("[data-replay-scope]");
+  const chooseScope = async name => { await scope().click(); await page.getByRole("option", { name, exact: true }).click(); };
+  const speed = () => page.getByRole("combobox", { name: "播放速度", exact: true });
+  const setSpeed = async name => { await speed().click(); await page.getByRole("option", { name, exact: true }).click(); };
+  await choose("大仓库小文件回放");
+  ensure(await viewing.getAttribute("data-replay-scope") === "session", "新会话没有默认聚焦本次会话涉及文件");
+  const files = async () => Number(await root.locator("[data-file-count]").first().getAttribute("data-file-count"));
+  const sessionFiles = await files();
+  ensure(sessionFiles === 3, "会话范围混入无关文件或遗漏实际活动文件");
+  const steps = await root.locator("[data-step-id]").count(), start = await position();
+  await chooseScope("整个仓库");
+  ensure(await viewing.getAttribute("data-replay-scope") === "repository" && await files() > 240, "整仓范围没有恢复完整基线");
+  const tinyLabel = root.locator('[data-replay-label="src/modules/tiny.ts"]');
+  await tinyLabel.waitFor();
+  ensure((await tinyLabel.innerText()).includes("tiny.ts"), "极小当前活动文件没有可读名称");
+  const tinyBounds = await tinyLabel.boundingBox();
+  ensure(tinyBounds.width >= 90 && tinyBounds.height >= 18, "当前活动标签仍受极小地图矩形限制");
+  ensure(await root.locator("[data-replay-module]").count() > 0, "密集整仓视图没有提供可识别和下钻的模块层");
+  await button("跟随当前模块").click();
+  ensure(await button("跟随当前模块").getAttribute("aria-pressed") === "true", "无法开启跟随当前模块");
+  await button("放大地图").click();
+  ensure(await button("跟随当前模块").getAttribute("aria-pressed") === "false", "手动调整镜头没有暂停自动跟随");
+  await chooseScope("指定目录");
+  await button("聚焦目录").click();
+  const directorySearch = page.getByPlaceholder("搜索目录名称或路径", { exact: true });
+  await directorySearch.fill("src/modules");
+  await page.getByRole("option").filter({ hasText: "src/modules" }).first().click();
+  ensure(await viewing.getAttribute("data-directory") === "src/modules", "目录选择没有聚焦指定模块");
+  const breadcrumbs = page.getByRole("navigation", { name: "地图目录", exact: true });
+  await breadcrumbs.getByRole("button", { name: "src", exact: true }).click();
+  ensure(await viewing.getAttribute("data-directory") === "src", "目录面包屑无法返回上一级");
+  ensure(await root.locator("[data-step-id]").count() === steps && await position() === start, "观看范围切换改动了完整时间轴或播放头");
+  await chooseScope("会话涉及文件");
+  const beforeFollow = evidenceRequests();
+  await button("播放").click();
+  await page.waitForFunction(() => document.querySelector('.replay-evidence[data-mode="follow"]')?.textContent?.includes("tiny.ts"));
+  await button("暂停").click();
+  const followActivity = root.locator(".replay-follow-activity").first();
+  await followActivity.focus(); await followActivity.press("Enter");
+  await root.locator('.replay-evidence[data-mode="inspect"]').waitFor();
+  await page.keyboard.press("Escape");
+  ensure(await page.evaluate(() => document.activeElement !== document.body && document.activeElement?.isConnected), "关闭检查详情后焦点落到body或已卸载的跟随活动按钮");
+  await button("当前活动").click();
+  await root.locator('[data-replay-label="src/modules/tiny.ts"]').click();
+  await root.locator('.replay-evidence[data-mode="inspect"]').waitFor();
+  ensure(await button("播放").isVisible(), "点击活动文件未暂停播放");
+  ensure(evidenceRequests() === beforeFollow, "仅检查摘要就自动请求原始证据");
+  await setSpeed("16×");
+  await button("播放").click();
+  await root.locator('.replay-evidence[data-mode="follow"]').waitFor();
+  await page.waitForFunction(() => document.querySelector('.replay-evidence[data-mode="follow"]')?.textContent?.includes("src/a.ts"));
+  await button("暂停").click();
+  ensure(evidenceRequests() === beforeFollow, "恢复播放自动请求原始证据");
+  const remaining = root.locator(".replay-remaining");
+  ensure(await remaining.isVisible() && (await remaining.innerText()).length > 0, "缺少按当前倍速计算的剩余观看时长");
+  for (const value of [32, 64, 128]) {
+    await setSpeed(`${value}×`);
+    ensure((await speed().innerText()).includes(String(value)), `${value}倍速未生效`);
+  }
+  await setSpeed("自定义倍速");
+  const custom = page.getByLabel("倍速数值", { exact: true });
+  const apply = button("应用倍速");
+  for (const invalid of ["", "0", "257"]) {
+    await custom.fill(invalid);
+    await apply.click();
+    ensure(await custom.isVisible(), `非法倍速 ${invalid} 被接受`);
+    ensure(await custom.getAttribute("aria-invalid") === "true"
+      && await page.getByRole("alert").filter({ hasText: "请输入 0.25–256 之间的倍速" }).isVisible(), "非法倍速没有显示可访问的范围错误");
+    ensure((await speed().innerText()).includes("128"), "非法倍速改变了播放器速度");
+  }
+  await custom.fill("24"); await apply.click();
+  ensure((await speed().innerText()).includes("24"), "合法自定义倍速未生效");
+  await slider().focus(); await slider().press("Home");
+  await button("下一次修改").click();
+  ensure(await position() > 0 && (await root.locator('.replay-evidence[data-mode="follow"]').innerText()).includes("src/a.ts"), "下一次修改未定位修改活动");
+  // 全屏真实请求覆盖整个播放器，浮层必须属于全屏容器才可交互。
+  await button("全屏查看活动回放").click();
+  await page.waitForFunction(() => document.fullscreenElement?.classList.contains("activity-replay"));
+  ensure(await slider().isVisible() && await root.locator(".replay-timeline-scroll").isVisible()
+    && await root.locator(".replay-evidence").isVisible(), "全屏遗漏进度、轨道或活动详情");
+  const fullscreenViewport = await page.evaluate(() => ({ width: innerWidth, height: innerHeight }));
+  for (const element of [slider(), root.locator(".replay-transport"), root.locator(".replay-timeline-scroll")]) {
+    const bounds = await element.boundingBox();
+    ensure(bounds.y >= 0 && bounds.y + bounds.height <= fullscreenViewport.height + 2, "全屏播放控制或时间轴被裁剪到视口外");
+  }
+  await speed().click();
+  ensure(await page.getByRole("option", { name: "128×", exact: true }).evaluate(element => document.fullscreenElement?.contains(element)), "倍速菜单浮层不在全屏容器内");
+  await page.getByRole("option", { name: "128×", exact: true }).click();
+  await page.screenshot({ path: `${fixture.artifacts}/replay-usability-fullscreen.png` });
+  await button("退出活动回放全屏").click();
+  await page.waitForFunction(() => document.fullscreenElement === null);
+  await choose("密集单轨悬浮回放");
+  const lane = root.locator(".replay-lane").first();
+  ensure(await root.locator(".replay-track-row").count() === 1, "密集单轨样本混入其他轨道");
+  ensure(await lane.locator("[title]").count() === 0, "时间轴仍依赖浏览器原生悬浮提示");
+  const laneBounds = await lane.boundingBox();
+  const preview = page.getByRole("tooltip", { name: "活动预览", exact: true });
+  const hoverPosition = { x: laneBounds.width * fixture.denseOverlapFraction, y: laneBounds.height / 2 };
+  await lane.hover({ position: hoverPosition });
+  await preview.waitFor();
+  const previewText = await preview.innerText();
+  ensure(previewText.includes("src/a.ts") && previewText.includes("src/b.ts") && previewText.includes("src/modules/tiny.ts"), "密集轨道同刻重叠预览遗漏涉及文件");
+  ensure(await button("播放").isVisible(), "悬浮预览改变了播放状态");
+  const previewBounds = await preview.boundingBox(), viewport = page.viewportSize();
+  ensure(previewBounds.x >= 0 && previewBounds.x + previewBounds.width <= viewport.width + 1
+    && previewBounds.y >= 0 && previewBounds.y + previewBounds.height <= viewport.height + 1, "自定义悬浮卡超出视口");
+  await page.screenshot({ path: `${fixture.artifacts}/replay-usability-dense-preview.png` });
+  await lane.click({ position: hoverPosition });
+  await root.locator('.replay-evidence[data-mode="inspect"]').waitFor();
+  ensure(await root.locator(".replay-activity-list").getByRole("button").count() === 7, "密集单轨同刻七项调用不能完整检查");
+  await button("关闭活动证据").click();
+  await lane.focus(); await lane.press("Home"); await lane.press("ArrowRight");
+  await preview.waitFor(); await lane.press("Enter");
+  await root.locator('.replay-evidence[data-mode="inspect"]').waitFor();
+  await button("关闭活动证据").click();
+  ensure((await root.locator(".replay-legend").innerText()).includes("未知"), "图例没有解释未知状态");
+  ensure((await root.locator(".replay-legend").innerText()).includes("失败"), "图例没有解释失败状态");
+  ensure((await root.locator(".replay-legend").innerText()).includes("折叠"), "图例没有解释折叠空档");
+  return { sessionFiles, repositoryFiles: fixture.repositoryFiles, denseLaneSteps: 312, overlapCalls: 7, defaultScope: true,
+    directoryBreadcrumbs: true, readableTinyLabel: true, moduleOverview: true, manualCameraStopsFollow: true, followWithoutRawRequests: true,
+    speeds: [16, 24, 32, 64, 128], invalidSpeeds: ["empty", 0, 257], fullscreenPlayer: true, fullscreenPortal: true,
+    denseHover: true, keyboardPreview: true, inspectFocusRestoration: true, statusAndGapLegend: true };
 }
 
 let service, opened = false;
 try {
-  await mkdir(artifacts, { recursive: true }); await mkdir(roots.codex); await mkdir(join(repository, "src"), { recursive: true });
-  await mkdir(join(repository, "docs")); await run("git", ["init", "-q", repository]);
+  await mkdir(artifacts, { recursive: true });
+  await rm(join(artifacts, "failure.txt"), { force: true }); await rm(join(artifacts, "failure.png"), { force: true });
+  await mkdir(roots.codex); await mkdir(join(repository, "src"), { recursive: true });
+  await mkdir(join(repository, "docs")); await mkdir(join(repository, "src/modules")); await mkdir(join(repository, "src/catalog"));
+  await run("git", ["init", "-q", repository]);
   for (const path of ["src/entry.ts", "src/a.ts", "src/b.ts", "src/c.ts", "docs/guide.md", "settings.json"]) {
     await writeFile(join(repository, path), "alpha\nbeta\ngamma\n");
   }
   await writeFile(join(repository, "src/empty.ts"), "");
+  await writeFile(join(repository, "src/modules/tiny.ts"), "export const tiny = 1;\n");
+  await writeFile(join(repository, "src/catalog/prices.ts"), Array.from({ length: 12_000 }, (_, index) => `export const price${index} = ${index};`).join("\n") + "\n");
+  for (let index = 0; index < 240; index++) await writeFile(join(repository, `src/modules/unit-${index}.ts`), `export const unit${index} = ${index};\n`);
   const fixtures = [
     ["replay-parent", "并行主会话", [
       ...command("parent-read", "cat src/entry.ts", 2, "alpha\nbeta\ngamma\n"),
@@ -297,6 +466,19 @@ try {
     ["replay-overlap", "同轨六项活动", Array.from({ length: 6 }, (_, index) =>
       command(`overlap-${index}`, `cat src/retired-${index}.ts`, 4, `historical evidence ${index}\n`)).flat()],
     ["replay-dense", "密集多轨会话", []],
+    ["replay-large-map", "大仓库小文件回放", [
+      ...command("large-tiny-read", "cat src/modules/tiny.ts", 2, "export const tiny = 1;\n"),
+      ...patch("large-patch", ["src/a.ts"], 8),
+      ...command("large-doc-read", "cat docs/guide.md", 12, "alpha\n"),
+      ...patch("large-tiny-patch", ["src/modules/tiny.ts"], 60),
+    ]],
+    ["replay-dense-lane", "密集单轨悬浮回放", [
+      ...Array.from({ length: 303 }, (_, index) => command(`dense-lane-${index}`, "cat src/modules/tiny.ts", 2 + index * .05, "export const tiny = 1;\n")).flat(),
+      ...Array.from({ length: 6 }, (_, index) => command(`dense-lane-overlap-${index}`, `cat src/${index % 2 ? "a" : "b"}.ts`, 10, "alpha\n")).flat(),
+      ...patch("dense-lane-unknown", ["src/a.ts"], 30, "unknown"),
+      ...command("dense-lane-failed", "cat src/b.ts", 32, "permission denied\n", 1),
+      ...command("dense-lane-late", "cat docs/guide.md", 90, "alpha\n"),
+    ]],
     ...Array.from({ length: 362 }, (_, index) => [`replay-dense-child-${index}`, `密集子会话 ${index + 1}`,
       command(`dense-${index}`, "cat src/entry.ts", index * 60 + 2, "alpha\n"), "replay-dense"]),
     ...Array.from({ length: 38 }, (_, index) => [`replay-extra-${index}`, index < 2 ? "同名候选" : `合成回放候选 ${index}`,
@@ -354,14 +536,25 @@ try {
   const denseTarget = candidates.sessions.find(session => session.clientSessionId === "replay-dense"); assert.ok(denseTarget);
   const dense = await api(`${mapBase}/replay?sessionId=${encodeURIComponent(denseTarget.id)}&version=${coverage.version}&sessionVersion=${list.version}`);
   assert.equal(dense.tracks.length, 363); assert.equal(dense.steps.length, 362); assert.equal(dense.totalActivities, 362);
+  const largeTarget = candidates.sessions.find(session => session.clientSessionId === "replay-large-map"); assert.ok(largeTarget);
+  const largeMap = await api(`${mapBase}/replay?sessionId=${encodeURIComponent(largeTarget.id)}&version=${coverage.version}&sessionVersion=${list.version}`);
+  assert.equal(largeMap.files.filter(file => file.lineCount > 0).length, 248);
+  assert.equal(largeMap.files.find(file => file.path === "src/modules/tiny.ts")?.lineCount, 1);
+  assert.ok(largeMap.files.find(file => file.path === "src/catalog/prices.ts")?.lineCount >= 12_000);
+  const denseLaneTarget = candidates.sessions.find(session => session.clientSessionId === "replay-dense-lane"); assert.ok(denseLaneTarget);
+  const denseLane = await api(`${mapBase}/replay?sessionId=${encodeURIComponent(denseLaneTarget.id)}&version=${coverage.version}&sessionVersion=${list.version}`);
+  assert.equal(denseLane.tracks.length, 1); assert.equal(denseLane.steps.length, 312);
+  assert.equal(denseLane.steps.filter(step => step.time === Date.parse("2026-10-09T00:00:10Z")).length, 7, "密集轨同刻调用样本不完整");
   await writeFile(join(artifacts, "api-result.json"), JSON.stringify({ passed: true, elapsedMs, bytes, candidates: candidates.sessions.length,
     tracks: replay.tracks.length, steps: replay.steps.length, activities: replay.totalActivities, untimed: replay.steps.filter(step => step.time === undefined).length,
-    denseTracks: dense.tracks.length, denseSteps: dense.steps.length }, null, 2));
+    denseTracks: dense.tracks.length, denseSteps: dense.steps.length, largeMapFiles: largeMap.files.length,
+    denseLaneSteps: denseLane.steps.length }, null, 2));
   await writeFile(join(artifacts, "fixture.json"), JSON.stringify({ base, directory, repository, sessionId: primary.id, version: coverage.version, sessionVersion: list.version }, null, 2));
   if (!process.argv.includes("--api-only")) {
     await browser(["open", `${base}/#map`, "--headed", "--browser=chrome"]); opened = true;
     const result = await browser(["run-code", `async page => (${verifyBrowser.toString()})(page, ${JSON.stringify({ artifacts, version: coverage.version,
-      overlapActivities: overlap.steps.map(step => ({ id: step.activities[0].id })) })})`]);
+      overlapActivities: overlap.steps.map(step => ({ id: step.activities[0].id })), denseOverlapFraction: 8_000 / 32_100,
+      repositoryFiles: largeMap.files.filter(file => file.lineCount > 0).length })}, ${verifyReplayUsability.toString()})`]);
     await writeFile(join(artifacts, "browser-result.txt"), result);
   }
   console.log(`会话活动回放验收通过：${replay.tracks.length} 条轨道，${replay.steps.length} 个步骤，API ${elapsedMs}ms，${bytes} 字节。`);
