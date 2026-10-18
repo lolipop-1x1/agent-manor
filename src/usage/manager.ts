@@ -24,6 +24,7 @@ const requestKey = (type: UsageWorkerRequest["type"], query: UsageQuery, extra: 
 /** 主线程只查询版本、传递价格快照并读取页内证据，全量统计由隔离 Worker 承担。 */
 export class UsageManager {
   private worker?: Worker;
+  private readonly initialized = new WeakMap<Worker, Promise<void>>();
   private readonly pending = new Map<number, Pending>();
   private readonly inFlight = new Map<string, Promise<Result | null>>();
   private readonly cache = new UsageResultCache<Result>(16 * 1024 * 1024, 24);
@@ -58,7 +59,10 @@ export class UsageManager {
     const worker = extension === "ts"
       ? new Worker(`import('tsx/esm/api').then(({register}) => { register(); return import(${JSON.stringify(url.href)}); });`, { eval: true, workerData, resourceLimits })
       : new Worker(url, { workerData, resourceLimits });
+    let markInitialized!: () => void;
+    this.initialized.set(worker, new Promise<void>(resolve => { markInitialized = resolve; }));
     worker.on("message", (message: UsageWorkerResponse) => {
+      if (message.type === "ready") { markInitialized(); return; }
       if (this.worker !== worker || this.closed) return;
       if (message.type === "status") { this.update(message.status); return; }
       const request = this.pending.get(message.id);
@@ -68,11 +72,13 @@ export class UsageManager {
       else request.reject(new StoreError(message.error.code, message.error.message, message.error.messageDescriptor));
     });
     worker.on("error", error => {
+      markInitialized();
       if (this.worker !== worker || this.closed) return;
       if ("code" in error && error.code === "ERR_WORKER_OUT_OF_MEMORY") this.failed("用量统计超过内存预算", { key: "diagnostics.usage.worker.memoryCapacity" });
       else this.failed(error.message);
     });
     worker.on("exit", code => {
+      markInitialized();
       if (this.worker === worker && !this.closed) this.failed(`用量统计 Worker 意外停止（${code}）`,
         { key: "diagnostics.usage.worker.unexpectedExit", params: { code } });
     });
@@ -200,7 +206,11 @@ export class UsageManager {
     this.closed = true;
     if (this.timer) clearInterval(this.timer);
     const worker = this.worker; this.worker = undefined;
-    if (worker) await worker.terminate();
+    if (worker) {
+      // 原生数据库加载期间终止线程可能使进程退出，先等初始化或退出握手。
+      await this.initialized.get(worker);
+      await worker.terminate();
+    }
     for (const request of this.pending.values()) request.reject(interrupted());
     this.pending.clear(); this.inFlight.clear(); this.cache.clear(); this.preparations.clear();
   }

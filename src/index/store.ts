@@ -561,6 +561,11 @@ export class AnalysisStore {
       .map((row) => JSON.parse(row.json) as RefreshJob);
   }
 
+  statusCounts(): { repositoryCount: number; jobCount: number } {
+    return this.database.prepare("SELECT (SELECT COUNT(*) FROM repositories) AS repositoryCount,(SELECT COUNT(*) FROM jobs) AS jobCount")
+      .get() as { repositoryCount: number; jobCount: number };
+  }
+
   updateJob(id: string, changes: Partial<RefreshJob>): RefreshJob {
     const job = { ...this.getJob(id), ...changes };
     this.database.prepare("UPDATE jobs SET json=? WHERE id=?").run(JSON.stringify(job), id);

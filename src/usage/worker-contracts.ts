@@ -11,6 +11,7 @@ export interface UsageWorkerRequest {
 }
 export type UsageWorkerResponse = { id: number; type: "result"; result: UsageReport | UsageRequestPage | SessionCostSummary | UsageStatistics | null }
   | { id: number; type: "error"; error: { code: ApiErrorCode; message: string; messageDescriptor?: MessageDescriptor } }
-  | { type: "status"; status: UsagePreparationStatus };
+  | { type: "status"; status: UsagePreparationStatus }
+  | { type: "ready" };
 
 export const preparationKey = (query: UsageQuery): string => JSON.stringify([query.version, query.priceVersion, query.timezone]);

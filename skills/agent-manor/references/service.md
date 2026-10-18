@@ -6,6 +6,8 @@
 - `am stop --json` 等待已核验实例停止，`am restart --help` 查看重启及在途任务约束。只在用户要求或隔离测试收尾时停止，普通查询后不停止用户后台。
 - `am update --help` 查看显式程序更新方式。先核对安装来源、目标版本、在途任务与恢复材料；不在查询时静默升级。
 
+状态默认返回准备进度和关键计数，详细历史诊断使用 `am sessions gaps --page 1 --page-size 20 --json`。自动刷新观察返回无任务时，读取其状态与原因；需要主动同步使用 `sessions refresh`。输入错误应以非零退出码结束，JSON错误从stderr解析；暂停命令加 `--wait` 到达 `paused` 后表示暂停成功。
+
 ## 配套 Skill
 
 `am skills install` 提供交互目标选择；脚本通过参数指定宿主、范围或自定义父目录，例如：

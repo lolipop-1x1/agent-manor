@@ -36,7 +36,7 @@ const commands: [string[], string, string?][] = [
   [["repositories", "gaps", "repo:one"], "/repositories/repo%3Aone/coverage/gaps"],
   [["repositories", "replay-sessions", "repo:one"], "/repositories/repo%3Aone/replay/sessions"],
   [["repositories", "replay", "repo:one", "--session-id", "one"], "/repositories/repo%3Aone/replay"],
-  [["repositories", "replay-evidence", "repo:one", "--event-id", "event:one", "--session-id", "one"], "/repositories/repo%3Aone/replay/evidence/event%3Aone"],
+  [["repositories", "replay-evidence", "repo:one", "--event-id", "event:one", "--session-id", "one", "--version", "v1", "--session-version", "s1"], "/repositories/repo%3Aone/replay/evidence/event%3Aone"],
   [["repositories", "auto-refresh", "repo:one"], "/repositories/repo%3Aone/auto-refresh", "POST"],
   [["usage", "report", "--clients", '["codex"]', "--group-by", "model"], "/usage"],
   [["usage", "status"], "/usage/status"], [["usage", "requests", "--session-id", "one", "--request-page", "2"], "/usage/requests"],

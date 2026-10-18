@@ -371,7 +371,7 @@ export class SemanticManager {
     const latest = await this.settings();
     if (!latest.config.enabled || latest.fingerprint !== fingerprint || configurationEpoch !== this.configurationEpoch) throw new SemanticError("semantic_not_ready", "Search configuration changed");
     const resultEpoch = this.resultEpoch;
-    const resultKey = digest([fingerprint, query.q.trim(), scope, query.sort, query.sessionId, this.sessions.currentVersion()]);
+    const resultKey = digest([fingerprint, query.q.trim(), scope, query.sort, query.sessionId, this.sessions.currentVersion(), query.response]);
     let all = this.results.get(resultKey);
     if (!all) {
       all = await this.reader.call<SemanticSearchResult>("search", vector, { ...query, scope, page: 1, pageSize: 200 }, fingerprint);

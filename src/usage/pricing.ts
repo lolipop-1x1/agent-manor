@@ -207,13 +207,30 @@ export class PricingService {
       error: this.error, errorDescriptor: this.errorDescriptor && { ...this.errorDescriptor } } : {}) };
   }
 
-  configure(configuration: PricingConfiguration): PricingStatus {
+  configurationSummary() {
+    return { ...this.summary(), configuration: structuredClone(this.configuration), priceCount: this.current.status.prices.length,
+      historicalPriceCount: this.current.status.historicalPrices?.length ?? 0 };
+  }
+
+  prices(page: number, pageSize: number, model?: string, version?: string) {
+    const view = version === undefined || version === this.current.status.version ? this.current : this.versions.get(version);
+    if (!view) throw new ServiceError("VERSION_NOT_FOUND", "价格版本已不可用，请重新查询", descriptor("versionMissing"));
+    const needle = model?.toLowerCase();
+    const rows = needle ? view.status.prices.filter(price => price.model.toLowerCase().includes(needle)) : view.status.prices;
+    const offset = (page - 1) * pageSize;
+    return { version: view.status.version, prices: structuredClone(rows.slice(offset, offset + pageSize)), total: rows.length,
+      page, pageSize, hasMore: offset + pageSize < rows.length };
+  }
+
+  configure(configuration: PricingConfiguration): PricingStatus;
+  configure(configuration: PricingConfiguration, summary: true): ReturnType<PricingService["configurationSummary"]>;
+  configure(configuration: PricingConfiguration, summary = false): PricingStatus | ReturnType<PricingService["configurationSummary"]> {
     if (this.closed) throw new ServiceError("INTERNAL_ERROR", "价格服务已关闭", descriptor("closed"));
     const next = validateConfiguration(configuration);
     save(this.home, "usage-pricing.json", next);
     this.configuration = next;
     if (this.errorDescriptor?.key === descriptor("invalidConfiguration").key) { this.error = undefined; this.errorDescriptor = undefined; }
-    this.capture(); return this.status();
+    this.capture(); return summary ? this.configurationSummary() : this.status();
   }
 
   refresh(force = false): Promise<PricingStatus> {

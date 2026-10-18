@@ -53,6 +53,8 @@ AgentManor 是本地优先的 Agent 工作环境管家。会话库、代码地�
 
 - **CLI 与交付：**包和主命令使用 agent-manor，另提供 am 命令；CLI 使用 TypeScript 与 Commander.js，建立独立内部工程，统一产品包同版本交付编译后的 JavaScript、后台、Web 与 Skill。命令覆盖页面业务能力，Skill 按场景与功能组织参考并支持显式安装。首版目标为 macOS arm64/x64、Linux arm64/x64、Windows x64，使用 Node.js 24，实际安装和生命周期验收环境见 [交付验证](docs/validation/npm-cli-distribution.md)。启动按服务就绪返回，数据准备在后台继续，并支持进度及显式等待。完整目标见 [交付设计](docs/design/npm-cli-distribution.md)，交付与启动边界见 [ADR 0020](docs/adr/0020-independent-cli-unified-distribution.md) 和 [ADR 0021](docs/adr/0021-service-readiness-and-data-preparation.md)。
 
+CLI默认提供轻量列表、统计和操作结果，人类格式与JSON使用相同查询范围；完整字段通过 `--full` 显式请求。画像、价格和诊断明细分页读取，长消息保留正文续读位置与版本，原始历史继续完整保留。契约与兼容规则见 [CLI响应约定](docs/design/cli-responses.md)。
+
 豆包工作当前暂不支持：本机缓存不足以稳定还原完整会话与新任务，已停用历史导入、资源盘点和页面入口；研究记录不作为已交付能力。详见 [来源调查](docs/design/doubao-work-sources.md)。
 
 ### 必须保留的边界

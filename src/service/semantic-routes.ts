@@ -4,6 +4,8 @@ import { SemanticManager } from "../semantic/manager.js";
 import { SemanticError } from "../semantic/config.js";
 import { ServiceError, bodyText } from "./input.js";
 import { requireManagement } from "./management.js";
+import { summaryResponse } from "./session-input.js";
+import { searchSummaryResponse } from "./summary-response.js";
 
 function object(value: unknown): Record<string, unknown> {
   if (value === undefined) return {};
@@ -57,13 +59,15 @@ export function registerSemanticRoutes(app: FastifyInstance, semantic: SemanticM
     const cancel = () => { if (!reply.raw.writableFinished) controller.abort(); };
     request.raw.once("aborted", cancel); reply.raw.once("close", cancel);
     try {
-      return await semanticRequest(() => {
+      return await semanticRequest(async () => {
         const body = object(request.body);
         for (const key of ["page", "pageSize"] as const) if (body[key] !== undefined && (!Number.isSafeInteger(body[key]) || Number(body[key]) < 1)) throw new SemanticError("semantic_input_invalid", `Invalid ${key}`);
         if (body.sort !== undefined && !["relevance", "updated"].includes(String(body.sort))) throw new SemanticError("semantic_input_invalid", "Invalid sort");
         if (body.cacheOnly !== undefined && typeof body.cacheOnly !== "boolean") throw new SemanticError("semantic_input_invalid", "Invalid cacheOnly");
         if (body.sessionId !== undefined && typeof body.sessionId !== "string") throw new SemanticError("semantic_input_invalid", "Invalid sessionId");
-        return semantic.search(body as unknown as SemanticSearchQuery, controller.signal);
+        const summary = summaryResponse(body);
+        const result = await semantic.search(body as unknown as SemanticSearchQuery, controller.signal);
+        return summary ? searchSummaryResponse(result) : result;
       });
     } finally { request.raw.removeListener("aborted", cancel); reply.raw.removeListener("close", cancel); }
   });

@@ -278,7 +278,7 @@ agent-manor sessions cacheclear --wait --json
 
 CLI 局部刷新保留其他客户端索引及检查时间，成功后仍发布完整全局结果。CLI 任务结果保留快速复用／内容复用／重新解析／缺失数及回退情况，各客户端成功检查记录独立保存。只有完整依赖已核验的格式才快速跳过，其他格式和缺少检查记录的来源退回内容检查；SQLite/WAL 与相关元信息不能只看主文件。快速检查不能严格排除保留相同变化指示的内容改写，需要核对正文时使用完整校验。
 
-API 为 `GET /api/v1/sessions`、`/sessions/search`、`/sessions/:id/messages`、`/sessions/:id/profile`、`/sessions/status`，刷新用 `POST /sessions/refresh`（可选 JSON `{ "client": "codex", "mode": "full" }`；省略为全部快速检查），清除并重建用 `DELETE /sessions/cache`；会话任务沿用 `/jobs/:id` 查询。`GET /sessions/status?summary=true` 提供轻量状态及 `autoSync` 策略快照；旧 `POST /sessions/auto-refresh` 仅兼容返回可覆盖全局范围的在途任务，关闭策略或没有符合条件的任务时返回空对象，不再触发检查。默认消息每页 50 条，最多 200。查询参数为 `client/project/from/to/q/kinds/page/pageSize/version`；`kinds` 只限定列表匹配与搜索范围，不删减消息上下文；消息另有 `mode/messageId`，画像另有 `includeChildren=true`。
+API 为 `GET /api/v1/sessions`、`/sessions/search`、`/sessions/:id/messages`、`/sessions/:id/profile`、`/sessions/status`，刷新用 `POST /sessions/refresh`（可选 JSON `{ "client": "codex", "mode": "full" }`；省略为全部快速检查），清除并重建用 `DELETE /sessions/cache`；会话任务沿用 `/jobs/:id` 查询。`GET /sessions/status?summary=true` 提供轻量状态及 `autoSync` 策略快照；旧 `POST /sessions/auto-refresh` 仅兼容返回可覆盖全局范围的在途任务，关闭策略或没有符合条件的任务时返回明确的 `job: null`、`status: "skipped"` 及原因，不再触发检查。默认消息每页 50 条，最多 200。查询参数为 `client/project/from/to/q/kinds/page/pageSize/version`；`kinds` 只限定列表匹配与搜索范围，不删减消息上下文；消息另有 `mode/messageId`，画像另有 `includeChildren=true`。
 
 消息 API 可选择 `pageUnit=turn`，此时默认每页 10 轮，返回 `totalTurns`、当前页的 `turns` 元信息和完整消息；`total` 仍为当前视图消息数。`turnPosition` 为当前视图的一基轮次位置，`messageId` 定位优先于轮次位置。初始上下文 `position=0`，随第一页返回且不计入 `totalTurns`。`toolName` 或 `resourceKind/resourceName/resourceServer` 可以定位首条调用／资源证据，返回 `focusMessageId`；过程记录不属于简易模式，需要完整或轨迹模式。未指定 `pageUnit` 时沿用按消息分页，现有 CLI 查询保持原有行为。
 
@@ -308,7 +308,9 @@ API 为 `GET /api/v1/sessions`、`/sessions/search`、`/sessions/:id/messages`�
 | `web` | 打开本地页面；`--no-open` 只打印地址 |
 | `serve` | 前台运行后台，便于诊断启动错误；`--port N` |
 
-全局 `--json` 输出一条 JSON，失败返回非零退出码；API 类错误通过 stderr 输出 `{error:{code,message}}`。刷新任务执行失败时 `--wait` 仍输出失败 job，并返回非零退出码。CLI 语法错误通过 Commander 显示；可先运行 `--help` 核对参数。等待默认 120 秒，可用 `--timeout <seconds>` 指定，最多 3600 秒。
+CLI默认返回轻量列表、统计与操作结果，人类格式显示表格或摘要；全局 `--json` 使用同一范围的稳定JSON。需要原完整响应时显式加 `--full`。列表默认每页20条，画像明细使用 `sessions profile --section steps|context|reports|tools|resources`，价格目录使用 `usage pricing list`；具体选项与正文续读见 [CLI响应约定](design/cli-responses.md)。
+
+失败返回非零退出码；JSON模式的语法与API错误均通过stderr输出可解析的 `{error:{code,message}}`。刷新任务执行失败时 `--wait` 仍输出失败job并返回非零退出码；暂停命令等待到 `paused` 后成功退出。可先运行 `--help` 核对参数。等待默认120秒，可用 `--timeout <seconds>` 指定，最多3600秒。
 
 覆盖、热点、未观察读取、文件、活动、证据和来源查询支持 `--version`、`--client <客户端ID>`、`--from`、`--to`、`--categories`、`--directory`。客户端 ID 包括 `codex`、`claude`、`codeflicker`、`codeflicker-desktop`、`dsh`、`pi`、`workbuddy`、`opencode`、`zcode`、`codebuddy`、`qoder`。省略客户端时查询全部客户端；CLI 帮助、API 校验与 Web 客户端选项共用客户端声明。时间须为 ISO 8601；起止边界均包含，默认全部可用历史。类别为逗号分隔的 `source,config,docs,unknown`，默认 `source`。来源清单描述该版本的采集来源，客户端筛选可缩小清单；时间／目录／类别筛选不改写来源级计数。热点和未观察读取响应的 `files` 已筛选，`summary` 保持所选范围的分母。
 

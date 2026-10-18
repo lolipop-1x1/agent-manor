@@ -14,13 +14,17 @@ const results = [];
 const npmCli = process.env.npm_execpath;
 assert.ok(npmCli?.endsWith(".js"), "请通过 npm run test:cli:installed 执行");
 let cli, instance, environment = { ...process.env, AGENT_MANOR_HOME: home, AGENT_MANOR_PORT: "0", AGENT_MANOR_LANG: "en" };
-let generationCalls = 0, embeddingCalls = 0;
+let generationCalls = 0, embeddingCalls = 0, modelDelayMs = 0, maximumModelInputBytes = 0;
+const payloadBytes = {};
 const model = createServer(async (request, response) => {
   let body = ""; for await (const chunk of request) body += chunk;
   const input = JSON.parse(body);
   const embedding = request.url.endsWith("/embeddings");
   if (embedding) embeddingCalls++; else generationCalls++;
-  assert.ok(Buffer.byteLength(body) < 60_000, "模型输入必须保持有界");
+  maximumModelInputBytes = Math.max(maximumModelInputBytes, Buffer.byteLength(body));
+  assert.ok(maximumModelInputBytes < 60_000, "模型输入必须保持有界");
+  if (modelDelayMs) await new Promise(done => setTimeout(done, modelDelayMs));
+  if (response.destroyed) return;
   response.setHeader("Content-Type", "application/json");
   const value = embedding
     ? { data: input.input.map((_, index) => ({ index, embedding: [1, 0, 0] })), usage: { prompt_tokens: 12 } }
@@ -44,15 +48,28 @@ async function command(args, { input, error } = {}) {
     assert.notEqual(result.code, 0, `${args.join(" ")} 应失败`); assert.equal(result.stdout, "");
     const failure = JSON.parse(result.stderr); assert.equal(failure.error.code, error, result.stderr); return failure.error;
   }
-  assert.equal(result.code, 0, `${args.join(" ")}\n${result.stderr}`);
+  assert.equal(result.code, 0, `${args.join(" ")}\n${result.stderr}\n${result.stdout.slice(0, 4_000)}`);
   return JSON.parse(result.stdout);
 }
 async function api(path, method = "GET", body) {
   const response = await fetch(`http://127.0.0.1:${instance.port}/api/v1${path}`, { method, headers: { "x-agent-manor-instance": instance.id, ...(body === undefined ? {} : { "Content-Type": "application/json" }) }, body: body === undefined ? undefined : JSON.stringify(body) });
   const value = await response.json(); assert.equal(response.ok, true, JSON.stringify(value)); return value;
 }
+async function waitForModel(counter, previous) {
+  const deadline = Date.now() + 10_000;
+  while (counter() <= previous) {
+    assert.ok(Date.now() < deadline, "后台任务必须实际发出本地模型请求");
+    await new Promise(done => setTimeout(done, 25));
+  }
+}
+async function captured(args, { language = "en", json = true } = {}) {
+  const result = await run(process.execPath, [cli, ...args, "--lang", language, ...(json ? ["--json"] : [])]);
+  assert.equal(result.code, 0, `${args.join(" ")}\n${result.stderr}\n${result.stdout.slice(0, 4_000)}`);
+  return { ...result, value: json ? JSON.parse(result.stdout) : undefined, bytes: Buffer.byteLength(result.stdout) };
+}
 async function step(name, action) { await action(); results.push(name); process.stderr.write(`通过：${name}\n`); }
-async function equivalent(args, path) { assert.deepEqual(await command(args), await api(path)); }
+// 完整模式与旧HTTP契约逐项对照；默认轻量响应另有体积与续读断言。
+async function equivalent(args, path) { assert.deepEqual(await command([...args, "--full"]), await api(path)); }
 try {
   await mkdir(outside, { recursive: true });
   const userDirectory = join(sandbox, "synthetic-user");
@@ -137,7 +154,7 @@ try {
     assert.equal((await command(["knowledge", "get", entry.id])).revision.body, draft.body);
     await command(["knowledge", "revise", entry.id, "--data", JSON.stringify({ ...draft, baseRevisionId: entry.latestRevisionId })], { error: "CONTENT_STALE" });
     assert.equal((await command(["knowledge", "revisions", entry.id])).revisions.length, 2);
-    const restored = await command(["knowledge", "restore", entry.id, "--data", JSON.stringify({ revisionId: entry.latestRevisionId, baseRevisionId: revision.latestRevisionId })]); assert.equal(restored.revision.review, "pending"); assert.equal(restored.revision.body, draft.body); revision = restored;
+    const restored = await command(["knowledge", "restore", entry.id, "--data", JSON.stringify({ revisionId: entry.latestRevisionId, baseRevisionId: revision.latestRevisionId })]); assert.equal(restored.revision.review, "pending"); assert.equal((await command(["knowledge", "revision", restored.id, restored.latestRevisionId])).body, draft.body); revision = restored;
   });
   await step("知识废弃与重新启用均需具体授权", async () => {
     for (const state of ["deprecated", "active"]) {
@@ -208,7 +225,145 @@ try {
     assert.equal((await command(["knowledge", "revision", entry.id, entry.latestRevisionId])).body, draft.body);
     const log = await command(["logs"]); assert(!log.text.includes("synthetic-only-secret")); assert(!log.text.includes(draft.body));
   });
-  console.log(JSON.stringify({ platform: process.platform, arch: process.arch, checks: results.length, generationRequests: generationCalls, embeddingRequests: embeddingCalls, cases: results }, null, 2));
+  await step("非法启动和重启参数不改变健康实例，缺值参数返回可解析JSON，关闭策略明确跳过", async () => {
+    const original = (await command(["status"])).instance;
+    await command(["start", "--port", "abc"], { error: "INVALID_INPUT" });
+    await command(["start", "--port", "-1"], { error: "INVALID_INPUT" });
+    await command(["restart", "--port", "abc", "--wait"], { error: "INVALID_INPUT" });
+    const current = await command(["status"]);
+    assert.equal(current.running, true); assert.equal(current.instance.id, original.id);
+    assert.equal(current.instance.pid, original.pid); assert.equal(current.instance.port, original.port);
+    await command(["status", "--home"], { error: "commander.optionMissingArgument" });
+    await command(["version", "--lang"], { error: "commander.optionMissingArgument" });
+    const skipped = await command(["sessions", "auto-refresh", "--wait"]);
+    assert.equal(skipped.status, "skipped"); assert.equal(skipped.reason, "disabled"); assert.equal(skipped.job, null);
+  });
+  await step("真实后台抽取请求在途暂停成功，恢复后完成", async () => {
+    const settings = await command(["knowledge", "settings", "get"]);
+    // 取消在途请求后保留其预算上界，给恢复请求留足预算；实际输入仍限制在本地小样本。
+    settings.config.generation.taskInputTokenBudget = 30_000;
+    await command(["knowledge", "settings", "set", "--data", JSON.stringify({ config: settings.config })]);
+    const scope = { ...settings.config.automatic.scope, timeRange: "all", sessionIds: [sid], turnStart: 1, turnEnd: 1, force: true };
+    const preview = await command(["knowledge", "extraction", "preview", "--data", JSON.stringify({ scope })]);
+    assert.equal(preview.sessionCount, 1); assert(preview.estimatedTokens < 10_000);
+    modelDelayMs = 2_000;
+    const before = generationCalls;
+    const started = await command(["knowledge", "extraction", "start", preview.id]);
+    const id = started.job?.id ?? started.id; assert.ok(id);
+    await waitForModel(() => generationCalls, before);
+    const paused = await command(["knowledge", "extraction", "pause", id, "--wait"]);
+    assert.equal(paused.status, "paused");
+    assert.equal((await command(["knowledge", "extraction", "get", id])).status, "paused");
+    modelDelayMs = 0;
+    const resumed = await command(["knowledge", "extraction", "resume", id, "--wait"]);
+    assert.equal(resumed.status, "complete"); assert.equal(resumed.completedChunks, resumed.totalChunks);
+  });
+  await step("真实后台知识索引模型请求在途暂停成功，恢复后就绪", async () => {
+    const settings = await command(["knowledge", "settings", "get"]);
+    settings.config.embedding.connection.model = "synthetic-embedding-pause";
+    await command(["knowledge", "settings", "set", "--data", JSON.stringify({ config: settings.config })]);
+    const preview = await command(["knowledge", "index", "preview"]); assert(preview.total > 0);
+    modelDelayMs = 2_000;
+    const before = embeddingCalls;
+    await command(["knowledge", "index", "build", preview.id]);
+    await waitForModel(() => embeddingCalls, before);
+    const paused = await command(["knowledge", "index", "pause", "--wait"]); assert.equal(paused.status, "paused");
+    assert.equal((await command(["knowledge", "index", "status"])).status, "paused");
+    modelDelayMs = 0;
+    const resumed = await command(["knowledge", "index", "resume", "--wait"]); assert.equal(resumed.status, "ready");
+  });
+  await step("真实后台会话索引模型请求在途暂停成功，恢复后完成", async () => {
+    const settings = await command(["semantic", "settings", "get"]);
+    settings.config.connection.model = "synthetic-session-embedding-pause";
+    settings.config.scope.projects = [project];
+    await command(["semantic", "settings", "set", "--data", JSON.stringify({ config: settings.config })]);
+    const preview = await command(["semantic", "preview", "--data", JSON.stringify({ scope: settings.config.scope })]);
+    assert.equal(preview.sessionCount, 2); assert(preview.estimatedTokens < 10_000);
+    modelDelayMs = 2_000;
+    const before = embeddingCalls;
+    await command(["semantic", "build", preview.id]);
+    await waitForModel(() => embeddingCalls, before);
+    const paused = await command(["semantic", "pause", "--wait"]); assert.equal(paused.job.status, "paused");
+    assert.equal((await command(["semantic", "status"])).job.status, "paused");
+    modelDelayMs = 0;
+    const resumed = await command(["semantic", "resume", "--wait"]); assert.equal(resumed.job.status, "complete"); assert.equal(resumed.ready, true);
+  });
+  await step("4000快照会话的包外默认响应有界，完整模式与正文续读无损", async () => {
+    // 大会话使用独立项目，已启用的语义策略仍只覆盖前面的两个小会话。
+    const callsBefore = generationCalls + embeddingCalls;
+    const largeProject = join(sandbox, "payload-budget"); await mkdir(largeProject);
+    const body = "Payload budget 中文😀 cache validation. ".repeat(700);
+    const rows = [
+      { type: "session_meta", payload: { id: "synthetic-large", cwd: largeProject } },
+      { type: "turn_context", payload: { model: "synthetic-model" } },
+      { type: "response_item", payload: { type: "message", role: "user", content: [{ type: "input_text", text: "Payload budget cache validation" }] } },
+    ];
+    for (let index = 0; index < 4_000; index++) rows.push({ timestamp: new Date(Date.UTC(2026, 0, 2, 0, 0, index)).toISOString(), type: "event_msg", payload: { type: "token_count", info: {
+      total_token_usage: { input_tokens: 1_000 + index, output_tokens: 20 + index, total_tokens: 1_020 + index * 2 },
+      last_token_usage: { input_tokens: 100, output_tokens: 20, context_tokens: 1_000 + index }, model_context_window: 32_768,
+    } } });
+    rows.push({ type: "response_item", payload: { type: "message", role: "assistant", phase: "final_answer", content: [{ type: "output_text", text: body }] } });
+    await writeFile(join(history, "synthetic-large.jsonl"), rows.map(row => JSON.stringify(row)).join("\n") + "\n");
+    await command(["sessions", "refresh", "--wait"]);
+    const compact = await captured(["sessions", "list", "--project", largeProject, "--page-size", "1"]);
+    const complete = await captured(["sessions", "list", "--project", largeProject, "--page-size", "1", "--full"]);
+    assert.equal(compact.value.total, 1); assert.equal(compact.value.sessions.length, 1);
+    assert.equal(compact.value.sessions[0].contextSnapshots, undefined); assert.equal(compact.value.sessions[0].usageReports, undefined);
+    assert(complete.value.sessions[0].contextSnapshots.length >= 4_000);
+    assert(compact.bytes < 16_000); assert(complete.bytes > compact.bytes * 30);
+    const largeId = compact.value.sessions[0].id, version = compact.value.version;
+    payloadBytes.list = { summary: compact.bytes, full: complete.bytes };
+    for (const name of ["search", "groups"]) {
+      const small = await captured(["sessions", name, "Payload budget", "--project", largeProject]);
+      const full = await captured(["sessions", name, "Payload budget", "--project", largeProject, "--full"]);
+      assert(small.bytes < 24_000); assert(full.bytes > small.bytes * 20);
+      payloadBytes[name] = { summary: small.bytes, full: full.bytes };
+    }
+    const profile = await captured(["sessions", "profile", largeId, "--version", version]);
+    const fullProfile = await captured(["sessions", "profile", largeId, "--version", version, "--full"]);
+    assert(profile.bytes < 32_000); assert.equal(profile.value.contextSnapshots, undefined); assert.equal(profile.value.usageReports, undefined);
+    assert(profile.value.sections.context >= 4_000); assert(fullProfile.value.contextSnapshots.length >= 4_000);
+    assert(fullProfile.bytes > profile.bytes * 20); payloadBytes.profile = { summary: profile.bytes, full: fullProfile.bytes };
+    const contexts = await command(["sessions", "profile", largeId, "--version", version, "--section", "context", "--page-size", "2"]);
+    const nextContexts = await command(["sessions", "profile", largeId, "--version", version, "--section", "context", "--page-size", "2", "--page", "2"]);
+    assert.equal(contexts.items.length, 2); assert(contexts.total >= 4_000); assert.equal(contexts.version, version); assert.equal(contexts.hasMore, true);
+    assert.notDeepEqual(contexts.items, nextContexts.items); assert.equal(nextContexts.page, 2);
+    const messages = await captured(["sessions", "messages", largeId, "--version", version, "--mode", "brief", "--max-text-chars", "201"]);
+    const fullMessages = await captured(["sessions", "messages", largeId, "--version", version, "--mode", "brief", "--full"]);
+    assert(messages.bytes < 16_000); assert(fullMessages.bytes > messages.bytes * 20);
+    assert.equal(messages.value.session.contextSnapshots, undefined);
+    const first = messages.value.messages.find(message => message.kind === "assistant"); assert(first.textTruncated);
+    let text = first.text, offset = first.nextTextOffset;
+    while (offset !== undefined) {
+      const result = await command(["sessions", "messages", largeId, "--version", version, "--mode", "brief", "--message-id", first.id, "--text-offset", String(offset), "--max-text-chars", "5000"]);
+      const message = result.messages.find(item => item.id === first.id);
+      assert.equal(message.textOffset, offset); assert.equal(message.textLength, Array.from(body).length);
+      text += message.text; offset = message.nextTextOffset;
+    }
+    assert.equal(text, body); payloadBytes.messages = { summary: messages.bytes, full: fullMessages.bytes };
+    const status = await captured(["status"]), fullStatus = await captured(["status", "--full"]);
+    assert.equal(status.value.running, true); assert.equal(status.value.sessions, undefined); assert(status.bytes < 16_000);
+    assert.equal(status.value.status.jobs, undefined); assert.equal(typeof status.value.status.jobCount, "number");
+    assert(Array.isArray(fullStatus.value.jobs)); assert(fullStatus.bytes > status.bytes);
+    payloadBytes.status = { summary: status.bytes, full: fullStatus.bytes };
+    const prices = await captured(["usage", "pricing", "get"]), fullPrices = await captured(["usage", "pricing", "get", "--full"]);
+    assert.equal(prices.value.prices, undefined); assert(prices.value.priceCount > 2); assert(prices.bytes < 16_000); assert(fullPrices.bytes > prices.bytes * 20);
+    const pricePage = await command(["usage", "pricing", "list", "--page-size", "2", "--version", prices.value.version]);
+    assert.equal(pricePage.prices.length, 2); assert.equal(pricePage.total, prices.value.priceCount); assert.equal(pricePage.hasMore, true);
+    const priceNext = await command(["usage", "pricing", "list", "--page-size", "2", "--page", "2", "--version", prices.value.version]);
+    assert.notDeepEqual(pricePage.prices, priceNext.prices); assert.equal(priceNext.page, 2);
+    payloadBytes.pricing = { summary: prices.bytes, full: fullPrices.bytes };
+    payloadBytes.human = {};
+    for (const language of ["en", "zh-CN"]) {
+      const readable = await captured(["sessions", "list", "--project", largeProject, "--page-size", "1"], { language, json: false });
+      assert.match(readable.stdout, language === "en" ? /ID\s+Title\s+Client/ : /标识\s+标题\s+客户端/);
+      assert(readable.stdout.includes("Payload budget")); assert(!readable.stdout.trimStart().startsWith("{"));
+      assert(readable.bytes < 4_000); assert(readable.stdout.split("\n").length < 15);
+      payloadBytes.human[language] = readable.bytes;
+    }
+    assert.equal(generationCalls + embeddingCalls, callsBefore, "大会话查询不得触发生成或向量模型调用");
+  });
+  console.log(JSON.stringify({ platform: process.platform, arch: process.arch, checks: results.length, generationRequests: generationCalls, embeddingRequests: embeddingCalls, maximumModelInputBytes, payloadBytes, cases: results }, null, 2));
 } finally {
   if (cli) await run(process.execPath, [cli, "stop", "--wait", "--json"]).catch(() => undefined);
   model.closeAllConnections(); await new Promise(done => model.close(done));

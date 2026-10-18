@@ -11,6 +11,8 @@ export function registerUsage(program: Command, context: CliContext): void {
   }
   const pricing = group.command("pricing").description(context.t("cli.ext.pricing"));
   pricing.command("get").description(context.t("cli.ext.pricing.get")).action(async (_opts, command: Command) => { await context.request(command, "/usage/pricing"); });
+  queryOptions(pricing.command("list").description(context.t("cli.ext.pricing.list")), context, ["page", "pageSize", "model", "version"])
+    .action(async (_opts, command: Command) => { await context.request(command, `/usage/pricing/prices${queryParameters(command, ["page", "pageSize", "model", "version"])}`); });
   pricing.command("refresh").description(context.t("cli.ext.pricing.refresh")).action(async (_opts, command: Command) => { await context.request(command, "/usage/pricing/refresh", "POST", {}); });
   jsonInput(pricing.command("set").description(context.t("cli.ext.pricing.set")), context)
     .action(async (_opts, command: Command) => { await context.request(command, "/usage/pricing", "PUT", await readJsonInput(command)); });

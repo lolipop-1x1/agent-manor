@@ -12,7 +12,7 @@ export function registerSkills(program: Command, context: CliContext): void {
     .action(async (_opts, command: Command) => {
       const opts = command.optsWithGlobals<Options>(); let target = opts.target, scope = opts.scope, directory = opts.directory;
       if (!target && opts.directory) target = "custom";
-      if (!target && process.stdin.isTTY && process.stderr.isTTY) {
+      if (!target && opts.json !== true && process.stdin.isTTY && process.stderr.isTTY) {
         const prompt = createInterface({ input: process.stdin, output: process.stderr });
         try {
           target = (await prompt.question(`${context.t("cli.ext.skillChoose")}\n> `)).trim();
@@ -24,7 +24,7 @@ export function registerSkills(program: Command, context: CliContext): void {
       if (!["codex", "claude", "custom"].includes(String(target))) throw new RequestError("INVALID_INPUT", "Select --target codex|claude|custom", { key: "cli.ext.skillChoose" });
       const options = { target: target as "codex" | "claude" | "custom", scope: (scope ?? "user") as "user" | "project", directory: directory as string | undefined,
         projectDirectory: opts.projectDirectory as string | undefined, overwrite: opts.overwrite === true };
-      process.stderr.write(`${skillTargetPath(options)}\n`);
+      if (!opts.json) process.stderr.write(`${skillTargetPath(options)}\n`);
       const result = await manageSkill(action, options);
       context.output(command, result);
     });

@@ -40,7 +40,7 @@ export async function readInstance(home: string): Promise<ServiceInstance | unde
 export const serviceUrl = (instance: ServiceInstance): string => `http://127.0.0.1:${instance.port}`;
 
 export async function verifiedInstance(home: string): Promise<ServiceInstance | undefined> {
-  return (await serviceStatus(home)).instance;
+  return (await serviceStatus(home, { summary: true })).instance;
 }
 
 export interface LocalServiceStatus {
@@ -53,7 +53,7 @@ export interface LocalServiceStatus {
 }
 
 /** 状态检查不建目录、不获取锁，也不启动服务或后台任务。 */
-export async function serviceStatus(home = dataHome()): Promise<LocalServiceStatus> {
+export async function serviceStatus(home = dataHome(), options: { summary?: boolean } = {}): Promise<LocalServiceStatus> {
   const base = { running: false, logPath: serviceLogPath(home) };
   const instance = await readInstance(home);
   if (!instance || !alive(instance.pid)) {
@@ -66,7 +66,7 @@ export async function serviceStatus(home = dataHome()): Promise<LocalServiceStat
     return { ...base, state: "stopped" };
   }
   try {
-    const response = await fetch(`${serviceUrl(instance)}/api/v1/status?summary=true`, { signal: AbortSignal.timeout(2000) });
+    const response = await fetch(`${serviceUrl(instance)}/api/v1/status?summary=true${options.summary ? "&response=summary" : ""}`, { signal: AbortSignal.timeout(2000) });
     if (!response.ok) return { ...base, state: "unreachable" };
     const status = await response.json() as StatusResponse;
     if (status.instance?.id !== instance.id || status.instance.pid !== instance.pid || status.instance.port !== instance.port
@@ -157,6 +157,12 @@ export async function connectService(autoStart = true, home = dataHome()): Promi
 
 export interface BackgroundOptions { port?: number; waitData?: boolean; timeoutMs?: number }
 
+export function validateServicePort(port?: number): void {
+  const environment = process.env.AGENT_MANOR_PORT;
+  const value = port ?? (environment === undefined ? DEFAULT_SERVICE_PORT : environment.trim() ? Number(environment) : NaN);
+  if (!Number.isInteger(value) || value < 0 || value > 65535) throw new RequestError("INVALID_INPUT", "Port must be an integer from 0 to 65535", { key: "diagnostics.server.m001" });
+}
+
 export async function assertNotUpdating(home: string): Promise<void> {
   try {
     const owner = JSON.parse(await readFile(join(home, "update.lock", "owner.json"), "utf8")) as LockOwner;
@@ -171,12 +177,13 @@ export function assertServiceCompatible(status: StatusResponse): void {
 }
 
 export async function startBackground(home = dataHome(), options: BackgroundOptions = {}): Promise<ServiceInstance> {
+  validateServicePort(options.port);
   await assertNotUpdating(home);
   const reuse = async (): Promise<ServiceInstance | undefined> => {
-    const current = await serviceStatus(home);
+    const current = await serviceStatus(home, { summary: true });
     if (current.running) {
       assertServiceCompatible(current.status!);
-      if (options.waitData) await waitForPreparation(current.instance!, options.timeoutMs);
+      if (options.waitData) await waitForPreparation(current.instance!, options.timeoutMs, { summary: true });
       return current.instance;
     }
     if (current.state === "foreign" || current.state === "unreachable") throw new RequestError("SERVICE_IDENTITY_UNVERIFIED", "已有实例尚未通过身份检查，未启动另一个服务", { key: "diagnostics.service.runtime.identity" });
@@ -216,9 +223,9 @@ export async function startBackground(home = dataHome(), options: BackgroundOpti
       if (failure) throw failure;
       const instance = await verifiedInstance(home);
       if (instance) {
-        const status = await apiRequest<StatusResponse>(instance, "/status?summary=true");
+        const status = await apiRequest<StatusResponse>(instance, "/status?summary=true&response=summary");
         assertServiceCompatible(status);
-        if (options.waitData) await waitForPreparation(instance, options.timeoutMs);
+        if (options.waitData) await waitForPreparation(instance, options.timeoutMs, { summary: true });
         return instance;
       }
       if (exited) throw new DiagnosticError(`本地后台启动失败（${child.exitCode}），日志：${serviceLogPath(home)}`, { key: "diagnostics.service.runtime.startFailed", params: { code: String(child.exitCode), path: serviceLogPath(home) } });
@@ -228,10 +235,10 @@ export async function startBackground(home = dataHome(), options: BackgroundOpti
   } finally { await release(); }
 }
 
-export async function waitForPreparation(instance: ServiceInstance, timeoutMs = 120_000): Promise<StatusResponse> {
+export async function waitForPreparation(instance: ServiceInstance, timeoutMs = 120_000, options: { summary?: boolean } = {}): Promise<StatusResponse> {
   const deadline = Date.now() + timeoutMs;
   for (;;) {
-    const status = await apiRequest<StatusResponse>(instance, "/status?summary=true");
+    const status = await apiRequest<StatusResponse>(instance, `/status?summary=true${options.summary ? "&response=summary" : ""}`);
     assertServiceCompatible(status);
     if (!status.preparation) throw new RequestError("SERVICE_VERSION_MISMATCH", "后台不支持启动准备状态", { key: "diagnostics.service.runtime.versionMismatch", params: { version: status.version, expected: VERSION } });
     if (status.preparation.state === "failed") throw new RequestError("PREPARATION_FAILED", status.preparation.error ?? "启动数据准备失败", { key: "diagnostics.service.runtime.preparationFailed" });
@@ -242,7 +249,7 @@ export async function waitForPreparation(instance: ServiceInstance, timeoutMs = 
 }
 
 export async function stopService(home = dataHome(), options: { timeoutMs?: number; wait?: boolean; allowBusy?: boolean } = {}): Promise<{ stopped: boolean; instance?: ServiceInstance }> {
-  const initial = await serviceStatus(home);
+  const initial = await serviceStatus(home, { summary: true });
   if (!initial.running) {
     if (initial.state !== "stopped") throw new RequestError("SERVICE_IDENTITY_UNVERIFIED", "服务身份尚未核验，未停止任何进程", { key: "diagnostics.service.runtime.identity" });
     return { stopped: false };
@@ -256,7 +263,7 @@ export async function stopService(home = dataHome(), options: { timeoutMs?: numb
     if (!options.wait) throw new RequestError("SERVICE_BUSY", "后台仍有任务运行，请等待任务完成后停止", { key: "diagnostics.service.runtime.busy" });
     if (Date.now() >= deadline) throw new RequestError("WAIT_TIMEOUT", "等待任务结束超时，后台仍继续运行", { key: "diagnostics.service.runtime.waitTimeout" });
     await delay(100);
-    current = await serviceStatus(home);
+    current = await serviceStatus(home, { summary: true });
     if (!current.running || current.instance?.id !== instance.id) throw new RequestError("SERVICE_IDENTITY_UNVERIFIED", "等待期间服务实例发生变化", { key: "diagnostics.service.runtime.identity" });
   }
   await apiRequest(instance, "/stop", "POST", options.allowBusy ? { allowBusy: true } : undefined);

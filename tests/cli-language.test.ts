@@ -136,6 +136,8 @@ test("Commander 和语言值错误按稳定码翻译语境，原始详情及 JSO
     assert.equal(JSON.parse(invalid.stderr).error.code, "INVALID_INPUT");
     const invalidEnv = await command(directory, ["--json", "--help"], { AGENT_MANOR_LANG: "unsupported" });
     assert.equal(JSON.parse(invalidEnv.stderr).error.messageDescriptor.params.source, "AGENT_MANOR_LANG");
+    const missingWithEnvironment = await command(directory, ["--home"], { AGENT_MANOR_LANG: "zh-CN" });
+    assert.equal(missingWithEnvironment.code, 1); assert.match(missingWithEnvironment.stderr, /选项缺少参数值/);
     const raw = new Error("第三方原始错误: synthetic");
     assert.match(cliErrorOutput(raw, "en", false), /Original details: 第三方原始错误: synthetic/);
     assert.equal(JSON.parse(cliErrorOutput(Object.assign(raw, { code: "ENOENT" }), "en", true)).error.code, "SERVICE_UNAVAILABLE");
@@ -164,8 +166,16 @@ test("覆盖摘要格式化产品标签、日期与数字，并保留标题、�
   assert.match(english, /key-path must be a JSON array/);
   assert.equal(JSON.stringify(value), original);
   const rawJson = { title: "未命名", message: "原始消息", count: 1234, occurredAt: value.createdAt };
-  assert.equal(humanOutput(rawJson, "en"), humanOutput(rawJson, "zh-CN"));
-  assert.deepEqual(JSON.parse(humanOutput(rawJson, "en")), rawJson);
+  const rawBefore = JSON.stringify(rawJson);
+  for (const language of ["en", "zh-CN"] as const) {
+    const rendered = humanOutput(rawJson, language);
+    assert.ok(rendered.includes(`${translate(language, "cli.field.title")}: 未命名`));
+    assert.ok(rendered.includes(`${translate(language, "cli.field.message")}: ${translate(language, "common.originalDetails")}: 原始消息`));
+    assert.match(rendered, /1,234/); assert.ok(rendered.includes(rawJson.occurredAt));
+    assert.deepEqual(JSON.parse(humanOutput(rawJson, language, true)), rawJson);
+  }
+  assert.equal(humanOutput(rawJson, "en", true), humanOutput(rawJson, "zh-CN", true));
+  assert.equal(JSON.stringify(rawJson), rawBefore);
 });
 
 test("CLI 未知产品描述保留原始错误及缺口详情，JSON 不受语言影响", () => {
@@ -218,7 +228,11 @@ test("CLI status 维护提示求值中英文描述，原始错误和 JSON 契约
       assert.equal(json.code, 0, json.stderr);
       const status = JSON.parse(json.stdout);
       assert.equal(status.running, true);
-      assert.deepEqual(status.status, JSON.parse(before));
+      assert.deepEqual(status.status, { instance, version: VERSION, protocolVersion: 1, indexMaintenance: maintenance, repositoryCount: 0, jobCount: 0 });
+      assert.equal(status.repositories, undefined); assert.equal(status.jobs, undefined);
+      const complete = await command(directory, ["--lang", language, "--json", "--full", "status"]);
+      assert.equal(complete.code, 0, complete.stderr);
+      assert.deepEqual(JSON.parse(complete.stdout).status, JSON.parse(before));
     }
     assert.equal(JSON.stringify(payload()), before);
   } finally {
@@ -254,7 +268,7 @@ test("参数覆盖坏偏好和无效环境仍能自动启动，内部服务启�
   }
 });
 
-test("执行期间语言固定，下次命令读取更新偏好，pretty JSON 和 --json 不随语言改变", async () => {
+test("执行期间语言固定，下次命令读取更新偏好，默认可读标签翻译且完整输出和 JSON 不随语言改变", async () => {
   const directory = await mkdtemp(join(tmpdir(), "manor-cli-fixed-language-"));
   const home = join(directory, "data");
   const value = coverage();
@@ -295,7 +309,15 @@ test("执行期间语言固定，下次命令读取更新偏好，pretty JSON �
     const next = await command(directory, ["coverage", value.repository.id]);
     assert.equal(next.code, 0, next.stderr);
     assert.match(next.stdout, /仓库：原始项目/);
-    for (const args of [["repositories"], ["coverage", value.repository.id, "--json"], ["repositories", "--json"]]) {
+    for (const language of ["en", "zh-CN"] as const) {
+      const human = await command(directory, ["--lang", language, "repositories"]);
+      assert.equal(human.code, 0, human.stderr); assert.equal(human.stderr, "");
+      for (const field of ["id", "name", "path"]) assert.ok(human.stdout.includes(translate(language, `cli.field.${field}`)));
+      assert.ok(human.stdout.includes(translate(language, "cli.human.no")));
+      assert.match(human.stdout, /fixture-repository\t原始项目\t\/workspace\/example/);
+    }
+    for (const args of [["coverage", value.repository.id, "--json"], ["repositories", "--json"],
+      ["repositories", "--full"], ["coverage", value.repository.id, "--full"], ["repositories", "--full", "--json"]]) {
       const english = await command(directory, ["--lang", "en", ...args]);
       const chinese = await command(directory, ["--lang", "zh-CN", ...args]);
       assert.equal(english.code, 0, english.stderr);
@@ -303,7 +325,8 @@ test("执行期间语言固定，下次命令读取更新偏好，pretty JSON �
       assert.equal(english.stdout, chinese.stdout);
       assert.equal(english.stderr, "");
       assert.equal(chinese.stderr, "");
-      assert.doesNotThrow(() => JSON.parse(english.stdout));
+      const parsed = JSON.parse(english.stdout);
+      assert.deepEqual(parsed, args[0] === "repositories" ? { repositories: [value.repository] } : value);
     }
     const errorEn = await command(directory, ["--lang", "en", "coverage", "missing"]);
     const errorZh = await command(directory, ["--lang", "zh-CN", "coverage", "missing"]);

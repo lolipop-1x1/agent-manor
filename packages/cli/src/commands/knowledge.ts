@@ -15,6 +15,7 @@ export function registerKnowledge(program: Command, context: CliContext): void {
       const query = Object.fromEntries(new URLSearchParams(queryParameters(command, [...fields, "mode"]).slice(1)));
       const body: Record<string, unknown> = { ...query, q: text };
       for (const key of ["page", "pageSize"]) if (body[key] !== undefined) body[key] = Number(body[key]);
+      if (body.pageSize === undefined && !command.optsWithGlobals<Options>().full) body.pageSize = 20;
       await context.request(command, "/knowledge/search", "POST", body);
     });
   group.command("facets").description(context.t("cli.ext.facets")).action(async (_opts, command: Command) => { await context.request(command, "/knowledge/facets"); });
@@ -72,7 +73,17 @@ export function registerKnowledge(program: Command, context: CliContext): void {
       const result = await context.fetch(command, "/knowledge/extractions", "POST", { previewId, ...(command.optsWithGlobals<Options>().idempotencyKey ? { idempotencyKey: command.optsWithGlobals<Options>().idempotencyKey } : {}) });
       await finishExtraction(command, context, result);
     });
-  extraction.command("list").description(context.t("cli.ext.extraction.list")).action(async (_opts, command: Command) => { await context.request(command, "/knowledge/extractions"); });
+  queryOptions(extraction.command("list").description(context.t("cli.ext.extraction.list")), context, ["page", "pageSize"])
+    .action(async (_opts, command: Command) => {
+      const query = new URLSearchParams(queryParameters(command, ["page", "pageSize"]).slice(1));
+      for (const key of ["page", "pageSize"]) {
+        const value = query.get(key);
+        if (value !== null && (!/^\d+$/.test(value) || Number(value) < 1 || Number(value) > (key === "pageSize" ? 200 : 1_000_000))) {
+          throw new RequestError("INVALID_INPUT", "Invalid pagination", { key: "cli.error.pagination" });
+        }
+      }
+      await context.request(command, `/knowledge/extractions${query.size ? `?${query}` : ""}`);
+    });
   context.waiting(extraction.command("get <id>").description(context.t("cli.ext.extraction.get")))
     .action(async (id: string, _opts, command: Command) => { await context.request(command, `/knowledge/extractions/${encodeURIComponent(id)}`, "GET", undefined, true, `/knowledge/extractions/${encodeURIComponent(id)}`); });
   for (const action of ["pause", "resume", "retry"]) context.waiting(extraction.command(`${action} <id>`).description(context.t(`cli.ext.${action}`)))

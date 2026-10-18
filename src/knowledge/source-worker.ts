@@ -1,6 +1,7 @@
 import { parentPort, workerData } from "node:worker_threads";
 import type { KnowledgeExtractionScope, KnowledgeSource, KnowledgeTarget } from "../knowledge-contracts.js";
 import { SessionStore } from "../sessions/store.js";
+import { StoreError } from "../index/store.js";
 import { SessionKnowledgeReader } from "./source-reader.js";
 
 const sessions = new SessionStore((workerData as { dbPath: string }).dbPath, { readonly: true });
@@ -11,5 +12,9 @@ parentPort!.on("message", async (message: { id: number; method: string; input: u
       : message.method === "read" ? await reader.read(message.input as KnowledgeTarget)
         : message.method === "verify" ? await reader.verify(message.input as KnowledgeSource) : undefined;
     parentPort!.postMessage({ id: message.id, result });
-  } catch (error) { parentPort!.postMessage({ id: message.id, error: error instanceof Error ? error.message : String(error) }); }
+  } catch (error) {
+    parentPort!.postMessage({ id: message.id, error: error instanceof StoreError
+      ? { code: error.code, message: error.message, messageDescriptor: error.messageDescriptor }
+      : { code: "INTERNAL_ERROR", message: error instanceof Error ? error.message : String(error), messageDescriptor: { key: "diagnostics.server.m003" } } });
+  }
 });

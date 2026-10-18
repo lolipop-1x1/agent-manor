@@ -34,7 +34,8 @@
     "docs/validation/semantic-search.md",
     "docs/design/knowledge-library.md",
     "docs/validation/knowledge-library.md",
-    "docs/validation/npm-cli-distribution.md"
+    "docs/validation/npm-cli-distribution.md",
+    "docs/design/cli-responses.md"
   ],
   "scripts": {
     "check:public": "node scripts/check-public-content.mjs",

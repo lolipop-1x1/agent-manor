@@ -133,7 +133,7 @@ test("编译产物在包外cwd并发按需启动单实例，CLI/API JSON一致�
     const instances = await Promise.all(Array.from({ length: 4 }, () => command<{ instance: StatusResponse["instance"] }>(["start"])));
     assert.equal(new Set(instances.map((status) => status.instance.id)).size, 1);
     assert.equal(new Set(instances.map((status) => status.instance.pid)).size, 1);
-    const firstStatus = (await command<{ status: StatusResponse }>(["status"])).status;
+    const firstStatus = (await command<{ status: StatusResponse }>(["status", "--full"])).status;
     const register = await command<RegisterRepositoryResponse>(["register", repository, "--wait"]);
     assert.equal(register.job.status, "completed", register.job.error);
     const id = register.repository.id;
@@ -190,7 +190,7 @@ test("编译产物在包外cwd并发按需启动单实例，CLI/API JSON一致�
     assert.deepEqual(await command(["stop"]), { stopping: false, running: false, stopped: false });
     assert.equal((await command<{ running: boolean }>(["status"])).running, false);
     await command(["start", "--wait-data"]);
-    const restarted = (await command<{ status: StatusResponse }>(["status"])).status;
+    const restarted = (await command<{ status: StatusResponse }>(["status", "--full"])).status;
     assert.notEqual(restarted.instance.id, instances[0]!.instance.id);
     const startup = restarted.jobs.find((job) => job.repositoryId === id && !firstStatus.jobs.some((before) => before.id === job.id));
     assert.ok(startup);

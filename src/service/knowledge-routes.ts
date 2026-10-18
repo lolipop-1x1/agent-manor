@@ -7,7 +7,9 @@ import { KnowledgeManager } from "../knowledge/manager.js";
 import { defaultKnowledgeConfig, KnowledgeModelError } from "../knowledge/config.js";
 import { KnowledgeSemantic } from "../knowledge/semantic.js";
 import { SemanticError } from "../semantic/config.js";
-import { ServiceError, textValue } from "./input.js";
+import { ServiceError, textValue, integer } from "./input.js";
+import { summaryResponse } from "./session-input.js";
+import { StoreError } from "../index/store.js";
 import { registerManagementRoutes, requireManagement } from "./management.js";
 
 const prefix = "/api/v1/knowledge";
@@ -49,6 +51,7 @@ export async function knowledgeRequest<T>(operation: () => Promise<T> | T): Prom
   try { return await operation(); }
   catch (error) {
     if (error instanceof ServiceError) throw error;
+    if (error instanceof StoreError) throw new ServiceError(error.code, error.message, error.messageDescriptor);
     if (error instanceof KnowledgeError) {
       const code: ApiErrorCode = error.code === "CONFLICT" ? "CONTENT_STALE" : error.code === "NOT_FOUND" ? "SOURCE_NOT_FOUND" : "INVALID_INPUT";
       throw new ServiceError(code, error.message, error.messageDescriptor ?? { key: `knowledge.errors.${error.code.toLowerCase()}` });
@@ -141,13 +144,22 @@ export function registerKnowledgeRoutes(app: FastifyInstance, store: KnowledgeSt
   }));
   app.post(`${prefix}/extractions/preview`, async request => knowledgeRequest(() => manager.preview(object(request.body).scope as KnowledgeExtractionScope)));
   app.get(`${prefix}/extractions/previews/:id`, async request => knowledgeRequest(() => manager.previewById(params(request).id)));
-  app.post(`${prefix}/extractions`, async request => knowledgeRequest(() => {
+  app.post(`${prefix}/extractions`, async request => {
     const body = object(request.body);
-    return manager.start(textValue(body.previewId, "previewId", true)!, textValue(body.idempotencyKey, "idempotencyKey"));
-  }));
-  app.get(`${prefix}/extractions`, async (_request, reply) => { reply.header("Cache-Control", "no-store"); return knowledgeRequest(() => manager.status()); });
-  app.get(`${prefix}/extractions/:id`, async request => knowledgeRequest(() => manager.job(params(request).id)));
-  for (const action of ["pause", "resume", "retry"] as const) app.post(`${prefix}/extractions/:id/${action}`, async request => knowledgeRequest(() => manager.action(params(request).id, action)));
+    const previewId = textValue(body.previewId, "previewId", true)!, idempotencyKey = textValue(body.idempotencyKey, "idempotencyKey");
+    return summaryResponse(object(request.query)) ? knowledgeRequest(() => manager.start(previewId, idempotencyKey, true))
+      : knowledgeRequest(() => manager.start(previewId, idempotencyKey));
+  });
+  app.get(`${prefix}/extractions`, async (request, reply) => {
+    reply.header("Cache-Control", "no-store");
+    const raw = object(request.query);
+    return summaryResponse(raw) ? knowledgeRequest(() => manager.status({ response: "summary", page: integer(raw.page, "page", 1, 1_000_000), pageSize: integer(raw.pageSize, "pageSize", 20, 200) }))
+      : knowledgeRequest(() => manager.status());
+  });
+  app.get(`${prefix}/extractions/:id`, async request => summaryResponse(object(request.query))
+    ? knowledgeRequest(() => manager.job(params(request).id, true)) : knowledgeRequest(() => manager.job(params(request).id)));
+  for (const action of ["pause", "resume", "retry"] as const) app.post(`${prefix}/extractions/:id/${action}`, async request => summaryResponse(object(request.query))
+    ? knowledgeRequest(() => manager.action(params(request).id, action, true)) : knowledgeRequest(() => manager.action(params(request).id, action)));
   app.post(`${prefix}/prompts/try`, async request => knowledgeRequest(() => {
     const body = object(request.body);
     return manager.tryExtract(body.scope as KnowledgeExtractionScope, body.settings as KnowledgeSettingsInput | undefined);

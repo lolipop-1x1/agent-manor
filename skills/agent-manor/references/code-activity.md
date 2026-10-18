@@ -7,6 +7,8 @@
 3. `am file <repositoryId> <relativePath> --version <version> --json` 读取文件结果，`am events <repositoryId> --path <relativePath> --version <version> --json` 找到活动；后续始终带相同范围与数据版本。
 4. `am evidence <repositoryId> <eventId> --version <version> --json` 回读原始证据。热点用 `hotspots`，未观察范围用 `unobserved`，来源与归属用 `sources`；轨迹用 `am repositories replay --help`。
 
+回放证据先通过 `repositories replay-sessions` 和 `repositories replay` 取得实际会话、事件及双版本，再执行 `repositories replay-evidence`；同时提供 `--event-id`、`--session-id`、`--version` 和 `--session-version`，不同分析版本的标识不能混用。
+
 精确读取与修改分别计算，不把近似范围加到精确覆盖率。各状态可能重叠，活动去重总数不能靠各列相加。未观察读取不表示无用或安全可删；搜索命中不等于打开文件，历史改动不自动证明作者归属。
 
 `contentStale` 或内容缺失时，不把旧行范围套在当前源码上。需要刷新时 `am refresh <repositoryId> --wait --json`，成功后重新取得版本；失败保留旧版并说明过期。`evidence.unavailable` 表示来源变化或不可读，不补造原文。

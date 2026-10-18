@@ -20,6 +20,15 @@ export function startupOptions(args: readonly string[]): Options {
   return options;
 }
 
+function validateStartupOptions(args: readonly string[]): void {
+  for (let index = 0; index < args.length && args[index] !== "--"; index++) {
+    const argument = args[index]!;
+    if (argument !== "--home" && argument !== "--lang") continue;
+    if (args[index + 1] === undefined || args[index + 1]!.startsWith("-")) throw new CommanderError(1, "commander.optionMissingArgument", `option '${argument}' argument missing`);
+    index++;
+  }
+}
+
 export function cliErrorOutput(error: unknown, language: Language, json: boolean): string {
   const codes = ["missingArgument", "optionMissingArgument", "missingMandatoryOptionValue", "unknownCommand", "unknownOption", "excessArguments", "invalidArgument", "help"];
   const known = error as { code?: string; messageDescriptor?: MessageDescriptor } | undefined;
@@ -43,7 +52,7 @@ function versionOnly(args: readonly string[]): boolean {
   for (let index = 0; index < args.length; index++) {
     const value = args[index]!;
     if (["--version", "--cli-version", "-V"].includes(value)) { found = true; continue; }
-    if (value === "--json" || value.startsWith("--home=") || value.startsWith("--lang=")) continue;
+    if (value === "--json" || value === "--full" || value.startsWith("--home=") || value.startsWith("--lang=")) continue;
     if ((value === "--home" || value === "--lang") && args[index + 1] !== undefined) { index++; continue; }
     return false;
   }
@@ -53,7 +62,10 @@ function versionOnly(args: readonly string[]): boolean {
 export async function runCli(args: readonly string[] = process.argv.slice(2)): Promise<void> {
   const options = startupOptions(args);
   let language = detectLanguage([[process.env.LC_ALL, process.env.LC_MESSAGES, process.env.LANG].find(value => value?.trim())]);
+  const explicitLanguage = options.lang ?? process.env.AGENT_MANOR_LANG;
+  if (explicitLanguage === "en" || explicitLanguage === "zh-CN") language = explicitLanguage;
   try {
+    validateStartupOptions(args);
     // 先读同一数据目录的偏好，再生成帮助；整次命令不重新解析语言。
     language = await resolveCliLanguage(options);
     const program = createProgram(language);

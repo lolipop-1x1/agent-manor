@@ -258,3 +258,4 @@ async function handle(message: UsageWorkerRequest): Promise<void> {
 
 port.on("message", (message: UsageWorkerRequest) => { void handle(message); });
 port.on("close", () => { revisions.close(); persisted.close(); sessions.close(); });
+send({ type: "ready" });

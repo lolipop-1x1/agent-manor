@@ -172,6 +172,12 @@ export interface KnowledgeTaskEvent {
   measurement?: KnowledgeRequestMeasurement; error?: string; errorDescriptor?: MessageDescriptor;
 }
 export interface KnowledgeTaskStatus { jobs: KnowledgeJob[]; usage: KnowledgeUsage; automatic: { enabled: boolean; lastCheckAt?: string; nextCheckAt?: string; error?: string; errorDescriptor?: MessageDescriptor } }
+export type KnowledgeJobSummary = Omit<KnowledgeJob, "events" | "results" | "failedSessions" | "model"> & {
+  eventCount: number; resultCount: number; failedSessionCount: number;
+};
+export interface KnowledgeTaskSummaryPage extends Omit<KnowledgeTaskStatus, "jobs"> {
+  jobs: KnowledgeJobSummary[]; total: number; page: number; pageSize: number; hasMore: boolean;
+}
 export interface KnowledgeTryResult { candidates: KnowledgeDraft[]; disposition: "knowledge" | "no_value" | "needs_context"; limitations: string[]; limitationDetails?: KnowledgeLimitation[]; usage: KnowledgeUsage }
 export interface KnowledgeIndexStatus { status: "off" | "needs_build" | "running" | "paused" | "ready" | "failed"; total: number; completed: number; fingerprint?: string; error?: string; errorDescriptor?: MessageDescriptor }
 export interface KnowledgeIndexPreview { id: string; total: number; reviewed: number; pending: number; estimatedTokens: number; estimatedCost: number | null; fingerprint: string }

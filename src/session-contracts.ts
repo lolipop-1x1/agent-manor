@@ -24,6 +24,8 @@ export interface SessionMessage {
   /** 有界查询的正文预览；完整正文仍按消息身份读取。 */
   textLength?: number;
   textTruncated?: boolean;
+  textOffset?: number;
+  nextTextOffset?: number;
   /** 仅产品生成的正文附带描述，原始会话正文保持原样。 */
   textDescriptor?: MessageDescriptor;
   occurredAt?: string;
@@ -163,6 +165,7 @@ export interface SessionSummary {
   models: string[];
   usageReports?: NativeUsageReport[];
   contextSnapshots?: SessionContextSnapshot[];
+  gapCount?: number;
   gaps: Gap[];
 }
 export interface SessionSourceMeta extends SessionSummary {
@@ -190,6 +193,8 @@ export interface SessionSearchScope {
 }
 export interface SessionSearchFacets { clients: Client[]; projects: string[]; models: string[] }
 export interface SessionQuery {
+  /** 轻量 API 投影；省略时保持页面读取的完整结构。 */
+  response?: "summary";
   scope?: SessionSearchScope;
   executionMode?: "regular" | "quiet" | "all";
   /** 仅控制列表；搜索与直接访问始终保留子会话。 */
@@ -219,6 +224,7 @@ export interface SessionMessageQuery extends SessionQuery {
   messageLimit?: number;
   messageOffset?: number;
   maxTextChars?: number;
+  textOffset?: number;
 }
 export type SessionCheckMode = "quick" | "full";
 export interface SessionRefreshOptions { client?: Client; mode?: SessionCheckMode }
@@ -321,6 +327,7 @@ export interface SessionTurnDirectory {
   version: string; turns: { id: string; position: number; question: string }[]; total: number; page: number; pageSize: number;
 }
 export interface SessionProfileQuery extends SessionQuery {
+  section?: "summary" | "steps" | "context" | "reports" | "tools" | "resources";
   includeChildren?: boolean;
   summary?: boolean;
   stepOffset?: number;

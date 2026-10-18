@@ -1,4 +1,7 @@
 import { Worker } from "node:worker_threads";
+import type { ApiErrorCode } from "../contracts.js";
+import type { MessageDescriptor } from "../i18n/types.js";
+import { StoreError } from "../index/store.js";
 import type { KnowledgeConversation, KnowledgeExtractionScope, KnowledgeSource, KnowledgeSourceReader, KnowledgeTarget } from "../knowledge-contracts.js";
 
 /** 大型历史库的扫描在只读 Worker 中运行，不占用服务的 HTTP 主线程。 */
@@ -14,11 +17,11 @@ export class KnowledgeSources implements KnowledgeSourceReader {
       const workerData = { dbPath: this.dbPath };
       const worker = extension === "ts" ? new Worker(`import('tsx/esm/api').then(({register}) => { register(); return import(${JSON.stringify(url.href)}); });`, { eval: true, workerData }) : new Worker(url, { workerData });
       this.worker = worker;
-      worker.on("message", (message: { id: number; result?: unknown; error?: string }) => {
+      worker.on("message", (message: { id: number; result?: unknown; error?: { code: ApiErrorCode; message: string; messageDescriptor?: MessageDescriptor } }) => {
         const request = this.pending.get(message.id);
         if (!request) return;
         this.pending.delete(message.id);
-        if (message.error) request.reject(new Error(message.error)); else request.resolve(message.result);
+        if (message.error) request.reject(new StoreError(message.error.code, message.error.message, message.error.messageDescriptor)); else request.resolve(message.result);
       });
       const failed = (error: Error) => {
         if (this.worker !== worker) return;

@@ -106,8 +106,15 @@ test("有界消息、画像与轨迹保持完整统计、定位、正文与搜�
   assert.equal(moved.messageOffset, 40, "显式翻页不被定位消息强制回跳");
   assert.deepEqual(store.messages(id, { mode: "full", pageSize: 1, messageId: "message-905" }).messages[0], messages[905]);
   const nulPreview = store.messages(id, { mode: "full", pageSize: 1, messageId: "message-120", maxTextChars: 120 }).messages[0]!;
-  assert.equal(nulPreview.textTruncated, true, "SQLite NUL 截断必须可见，不能误报正文已完整返回");
+  assert.equal(nulPreview.text, messages[120]!.text, "有界预览需完整返回 NUL 后正文");
+  assert.equal(nulPreview.textTruncated, false, "完整正文小于预览上限，不应标记截断");
   assert.equal(nulPreview.textLength, [...messages[120]!.text].length);
+  const nulStart = store.messages(id, { response: "summary", mode: "full", pageSize: 1, messageId: "message-120", maxTextChars: 7 }).messages[0]!;
+  assert.equal(nulStart.text, [...messages[120]!.text].slice(0, 7).join(""));
+  assert.equal(nulStart.textTruncated, true); assert.equal(nulStart.nextTextOffset, 7);
+  const nulTail = store.messages(id, { response: "summary", version: full.version, mode: "full", pageSize: 1, messageId: "message-120", textOffset: nulStart.nextTextOffset, maxTextChars: 120 }).messages[0]!;
+  assert.equal(nulTail.textOffset, 7); assert.equal(nulTail.nextTextOffset, undefined);
+  assert.equal(nulStart.text + nulTail.text, messages[120]!.text, "按字符位置回读需跨 NUL 无损恢复全文");
   assert.equal(store.messages(id, { mode: "full", pageSize: 1, messageId: "message-120" }).messages[0]!.text, messages[120]!.text);
   const fullProfileStarted = performance.now();
   const profile = store.profile(id);

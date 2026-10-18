@@ -15,7 +15,7 @@ export async function managementRequest(command: Command, context: CliContext, p
   const operation = { method, path, body: body ?? null, confirmation, ...(preview === undefined ? {} : { preview }) };
   const opts = command.optsWithGlobals<Options>();
   let authorization = opts.authorize;
-  if (authorization === undefined && process.stdin.isTTY && process.stderr.isTTY) {
+  if (authorization === undefined && opts.json !== true && process.stdin.isTTY && process.stderr.isTTY) {
     process.stderr.write(`${JSON.stringify(operation, null, 2)}\n`);
     const prompt = createInterface({ input: process.stdin, output: process.stderr });
     try { authorization = await prompt.question(`${context.t("cli.ext.confirmDigest")}\n> `); }

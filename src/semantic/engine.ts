@@ -354,7 +354,7 @@ export class SemanticEngine {
       const pageSize = Math.max(1, Math.min(200, Math.floor(query.pageSize ?? 20))), page = Math.max(1, Math.floor(query.page ?? 1));
       const order = query.sort === "updated" ? "updated_at DESC,session_id" : "distance,session_id";
       const rows = this.database.prepare(`WITH valid AS MATERIALIZED (
-        SELECT p.*,r.json session_json,COALESCE(r.updated_at,r.started_at,'') updated_at FROM semantic_positions p
+        SELECT p.*,${query.response === "summary" ? "json_set(json_remove(r.json,'$.contextSnapshots','$.usageReports','$.gaps'),'$.gaps',json('[]'),'$.gapCount',COALESCE(json_array_length(r.json,'$.gaps'),0))" : "r.json"} session_json,COALESCE(r.updated_at,r.started_at,'') updated_at FROM semantic_positions p
         JOIN source.session_version_sessions s ON s.session_id=p.session_id AND s.revision=p.revision
         JOIN source.session_revisions r ON r.id=s.revision WHERE s.version=?${filter}
       ), distances AS MATERIALIZED (

@@ -8,6 +8,10 @@
 4. 需要行动细节时切换 `--mode full` 或 `--mode trace`，保留同一 version；通过 `am sessions turns --help`、`timeline --help`、`matches --help` 读取轮次和轨迹。按分页读完相关范围。
 5. 需要会话规模及费用时读取 `am sessions profile <sessionId> --version <version> --json` 与 `am sessions cost --help`；导出用 `am sessions export --help`。
 
+列表和搜索默认每页20条摘要，用 `--page`、`--page-size` 缩小需要阅读的范围。消息正文出现 `textTruncated` 时，以同一消息 ID 和版本传入 `--text-offset <nextTextOffset>` 继续读取；通过 `--max-text-chars` 控制每段长度。`--mode full` 选择过程记录范围，仍受正文分页约束；全局 `--full` 才表示请求原完整响应，两者用途不同。
+
+画像的 `--section steps|context|reports|tools|resources` 提供步骤、上下文快照、原始用量报告和资源明细，配合 `--page`、`--page-size`、`--version` 按需回读。只有摘要不足以回答具体问题时才读取这些明细。导出大量对话使用 `am sessions export <sessionId> --version <version> --output dialogue.md --json`，检查文件和导出摘要。
+
 示例场景：“继续上次 Claude Code 的缓存排查”。先搜缓存对象名，筛选实际客户端，再读取用户目标、尝试、工具结果与最终结论，确认尚未解决的部分。代码执行成功必须有结果证据；历史里的计划不表示已完成。
 
 简易模式默认当前分支，完整／轨迹默认全部；`--branch current|all|<branchId>` 控制阅读范围。明确子 Agent 默认不列在普通列表，`--include-subagents` 可展示；搜索与直接 ID 读取仍可定位。跨客户端的会话不能凭相似标题判定为同一次任务。

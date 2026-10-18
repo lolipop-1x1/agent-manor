@@ -4,6 +4,12 @@ import type { Client } from "../clients.js";
 import { coverageQuery, integer, ServiceError, textValue } from "./input.js";
 import { validateSearchScope } from "../sessions/search-scope.js";
 
+export function summaryResponse(raw: Record<string, unknown>): boolean {
+  if (raw.response === undefined) return false;
+  if (raw.response !== "summary") throw new ServiceError("INVALID_INPUT", "未知响应投影", { key: "diagnostics.service.sessionInput.response" });
+  return true;
+}
+
 export function sessionRefreshOptions(body: unknown): SessionRefreshOptions {
   if (body === undefined) return {};
   if (!body || typeof body !== "object" || Array.isArray(body)
@@ -19,8 +25,9 @@ export function sessionRefreshOptions(body: unknown): SessionRefreshOptions {
 
 export function sessionQuery(raw: Record<string, unknown>): SessionQuery {
   const { client, from, to, version } = coverageQuery(raw);
-  const query: SessionQuery = { client, from, to, version, page: integer(raw.page, "page", 1, 1_000_000),
-    pageSize: integer(raw.pageSize, "pageSize", 50, 200) };
+  const summary = summaryResponse(raw);
+  const query: SessionQuery = { client, from, to, version, ...(summary ? { response: "summary" } : {}), page: integer(raw.page, "page", 1, 1_000_000),
+    pageSize: integer(raw.pageSize, "pageSize", summary ? 20 : 50, 200) };
   if (raw.scope !== undefined) {
     try {
       const value = raw.scope;
@@ -69,6 +76,13 @@ export function sessionMessageQuery(raw: Record<string, unknown>): SessionMessag
     if (raw[key] !== undefined) query[key] = integer(raw[key], key, 1, maximum);
   }
   if (raw.messageOffset !== undefined) query.messageOffset = queryOffset(raw.messageOffset, "messageOffset");
+  if (raw.textOffset !== undefined) query.textOffset = queryOffset(raw.textOffset, "textOffset");
+  if (query.response === "summary") {
+    query.maxTextChars ??= 2000;
+    if (query.pageUnit === "turn") query.messageLimit ??= 20;
+    else if (query.messageId) query.pageSize = 1;
+  }
+  if (query.textOffset !== undefined && !query.messageId) throw new ServiceError("INVALID_INPUT", "textOffset 需要指定 messageId", { key: "diagnostics.service.sessionInput.textOffset" });
   return query;
 }
 
@@ -82,6 +96,10 @@ export function sessionProfileQuery(raw: Record<string, unknown>): SessionProfil
   if (raw.summary !== undefined) query.summary = queryBoolean(raw.summary, "summary");
   if (raw.stepLimit !== undefined) query.stepLimit = integer(raw.stepLimit, "stepLimit", 1, 2000);
   if (raw.stepOffset !== undefined) query.stepOffset = queryOffset(raw.stepOffset, "stepOffset");
+  if (raw.section !== undefined) {
+    if (!["summary", "steps", "context", "reports", "tools", "resources"].includes(raw.section as string)) throw new ServiceError("INVALID_INPUT", "未知画像分区", { key: "diagnostics.service.sessionInput.section" });
+    query.section = raw.section as SessionProfileQuery["section"];
+  }
   return query;
 }
 

@@ -3,7 +3,7 @@ import { chmodSync, mkdirSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import Database from "better-sqlite3";
 import { knowledgeTypes } from "../knowledge-contracts.js";
-import type { KnowledgeAudit, KnowledgeAvailability, KnowledgeDetail, KnowledgeDraft, KnowledgeEntry, KnowledgeFacets, KnowledgeList, KnowledgeQuery, KnowledgeReview, KnowledgeReviewInput, KnowledgeRevision, KnowledgeRevisionInput, KnowledgeSource } from "../knowledge-contracts.js";
+import type { KnowledgeAudit, KnowledgeAvailability, KnowledgeDetail, KnowledgeDraft, KnowledgeEntry, KnowledgeFacets, KnowledgeJobSummary, KnowledgeList, KnowledgeQuery, KnowledgeReview, KnowledgeReviewInput, KnowledgeRevision, KnowledgeRevisionInput, KnowledgeSource } from "../knowledge-contracts.js";
 import type { MessageDescriptor } from "../i18n/types.js";
 
 export class KnowledgeError extends Error {
@@ -14,6 +14,13 @@ export class KnowledgeError extends Error {
 interface EntryRow { id: string; created_at: string; updated_at: string; availability: "active" | "deprecated" | "superseded"; reason: string | null; published: string | null; latest: string }
 interface RevisionRow { id: string; knowledge_id: string; version: number; base: string | null; review: KnowledgeReview; created_at: string; payload: string }
 interface SelectedRow extends EntryRow { selected: string }
+interface TaskSummaryRow { json: string | null; title: string | null }
+const taskSummaryColumns = `json_set(json_remove(json_extract(state.json,'$.job'),'$.title','$.events','$.results','$.failedSessions','$.model'),
+  '$.eventCount',COALESCE(json_array_length(state.json,'$.job.events'),0),
+  '$.resultCount',COALESCE(json_array_length(state.json,'$.job.results'),0),
+  '$.failedSessionCount',COALESCE(json_array_length(state.json,'$.job.failedSessions'),0)) AS json,
+  CASE WHEN json_array_length(state.json,'$.preview.targets')=1 THEN COALESCE(json_extract(state.json,'$.job.title'),json_extract(state.json,'$.preview.targets[0].title')) END AS title`;
+const taskSummary = (row: TaskSummaryRow): KnowledgeJobSummary => ({ ...JSON.parse(row.json!) as KnowledgeJobSummary, ...(row.title !== null ? { title: row.title } : {}) });
 const draftKeys = ["title", "body", "summary", "type", "tags", "scope", "subject", "language", "applicability", "validUntil", "occurredAt", "resolved", "sources", "author", "changeReason"];
 const reviewValues = ["pending", "reviewed", "rejected", "all"];
 const availabilityValues = ["active", "deprecated", "expired", "superseded", "resolved", "all"];
@@ -321,6 +328,25 @@ export class KnowledgeStore {
     text(key, "状态键", 256, true);
     const row = this.database.prepare("SELECT json FROM knowledge_state WHERE key=?").get(key) as { json: string } | undefined;
     return row ? JSON.parse(row.json) as T : undefined;
+  }
+
+  extractionJobSummary(id: string): KnowledgeJobSummary | undefined {
+    const key = `extraction.job:${id}`; text(key, "状态键", 256, true);
+    const row = this.database.prepare(`SELECT ${taskSummaryColumns} FROM knowledge_state state WHERE state.key=?`).get(key) as TaskSummaryRow | undefined;
+    return row?.json ? taskSummary(row) : undefined;
+  }
+
+  /** 先按任务身份分页，再在 SQL 中投影；大结果与过程记录不进入解析及深克隆。 */
+  extractionJobSummaries(ids: string[], page: number, pageSize: number): { jobs: KnowledgeJobSummary[]; total: number } {
+    const rows = this.database.prepare(`WITH candidates AS MATERIALIZED (
+      SELECT state.key,CAST(item.key AS INTEGER) AS position FROM json_each(?) item
+      JOIN knowledge_state state ON state.key='extraction.job:'||item.value
+    ), totals AS (SELECT COUNT(*) AS total FROM candidates), selected AS (
+      SELECT key,position FROM candidates ORDER BY position DESC LIMIT ? OFFSET ?
+    ) SELECT totals.total,${taskSummaryColumns} FROM totals LEFT JOIN selected ON 1
+      LEFT JOIN knowledge_state state ON state.key=selected.key ORDER BY selected.position DESC`)
+      .all(JSON.stringify(ids), pageSize, (page - 1) * pageSize) as (TaskSummaryRow & { total: number })[];
+    return { jobs: rows.filter(row => row.json !== null).map(taskSummary), total: rows[0]!.total };
   }
 
   deleteState(key: string): void {

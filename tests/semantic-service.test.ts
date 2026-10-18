@@ -13,7 +13,7 @@ import { isolatedHistoryRoots } from "./helpers/history-roots.js";
 import { SemanticConfigStore } from "../src/semantic/config.js";
 import { managementDigest } from "../src/service/management.js";
 
-async function fixture(run: (context: { service: Awaited<ReturnType<typeof startService>>; calls: string[][]; home: string }) => Promise<void>, options: { text?: string; maxInputChars?: number; modelDelayMs?: number; model?: string } = {}) {
+async function fixture(run: (context: { service: Awaited<ReturnType<typeof startService>>; calls: string[][]; home: string }) => Promise<void>, options: { text?: string; maxInputChars?: number; modelDelayMs?: number; model?: string; snapshots?: number } = {}) {
   const home = await mkdtemp(join(tmpdir(), "manor-semantic-http-"));
   const index = new AnalysisStore(join(home, "index.sqlite")); index.close();
   const sessions = new SessionStore(join(home, "index.sqlite"));
@@ -23,7 +23,8 @@ async function fixture(run: (context: { service: Awaited<ReturnType<typeof start
     revision.sink.message({ id: `${id}:assistant`, sessionId: id, ordinal: 1, recordLine: 2, turnId: `${id}:turn:1`, kind: "assistant", text: "设置超时并限制重试次数。" });
     revision.flush();
     sessions.finishRevision(revision.revision, { id, client: "codex", clientSessionId: id, title: id, titleOrigin: "recorded", path, sourceId: id,
-      messageCount: 2, turnCount: 1, models: ["example"], gaps: [], updatedAt: "2026-01-01T00:00:00Z" });
+      messageCount: 2, turnCount: 1, models: ["example"], gaps: [], updatedAt: "2026-01-01T00:00:00Z",
+      ...(options.snapshots ? { contextSnapshots: Array.from({ length: options.snapshots }, (_, index) => ({ id: `snapshot-${index}`, usedTokens: index })) } : {}) });
     return { path, revision: revision.revision, fingerprint: id };
   });
   sessions.publish(sessions.createJob().id, revisions, []); sessions.close();
@@ -63,6 +64,26 @@ async function complete(service: Awaited<ReturnType<typeof startService>>): Prom
   }
   throw new Error("Semantic build timed out");
 }
+
+test("语义轻量搜索在 SQL 限制快照，完整和摘要缓存互不污染且共享查询向量", async () => fixture(async ({ service, calls }) => {
+  const settings = await apiRequest<SemanticSettings>(service.instance, "/semantic/settings");
+  const preview = await apiRequest<SemanticPreview>(service.instance, "/semantic/preview", "POST", {});
+  await apiRequest(service.instance, "/semantic/build", "POST", { previewId: preview.id }); await complete(service);
+  const query = { q: "合成缓存隔离", scope: settings.config.scope };
+  const full = await apiRequest<SemanticSearchResult>(service.instance, "/semantic/search", "POST", query);
+  assert.equal(full.groups[0]!.session.contextSnapshots?.length, 4000);
+  const before = calls.length;
+  const summary = await apiRequest<any>(service.instance, "/semantic/search", "POST", { ...query, response: "summary", cacheOnly: true });
+  assert.equal("contextSnapshots" in summary.groups[0].session, false);
+  assert.equal("session" in summary.groups[0].hits[0], false);
+  assert.equal(summary.groups[0].hits[0].sessionId, summary.groups[0].session.id);
+  assert.ok(JSON.stringify(summary).length < 5000);
+  const again = await apiRequest<SemanticSearchResult>(service.instance, "/semantic/search", "POST", { ...query, cacheOnly: true });
+  assert.equal(again.groups[0]!.session.contextSnapshots?.length, 4000);
+  assert.equal(calls.length, before);
+  await assert.rejects(apiRequest(service.instance, "/semantic/search", "POST", { ...query, response: "invalid" }), { code: "INVALID_INPUT" });
+  assert.equal(calls.length, before);
+}, { snapshots: 4000 }));
 
 test("模型自动适配贯穿测试、正文构建和查询，保存连接不编码历史", async () => fixture(async ({ service, calls }) => {
   const settings = await apiRequest<SemanticSettings>(service.instance, "/semantic/settings");

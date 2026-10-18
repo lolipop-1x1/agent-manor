@@ -147,7 +147,12 @@ test("npm tarball真实包外安装，原生SQLite与CLI/Worker/Web/Skill无需�
     const asset = html.match(/src="([^"]+\.js)"/)?.[1];
     assert.ok(asset);
     assert.equal((await fetch(new URL(asset, web.url))).status, 200);
-    const status = await command<StatusResponse & { running: boolean; state: string; status: StatusResponse }>(["status"]);
+    const compactStatus = await command<{ running: boolean; state: string; status: { repositoryCount: number; jobCount: number }; repositories?: unknown }>(["status"]);
+    assert.equal(compactStatus.running, true);
+    assert.equal(compactStatus.status.repositoryCount, 1);
+    assert.ok(compactStatus.status.jobCount > 0);
+    assert.equal(compactStatus.repositories, undefined);
+    const status = await command<StatusResponse & { running: boolean; state: string; status: StatusResponse }>(["status", "--full"]);
     assert.equal(status.repositories.length, 1);
     assert.equal(status.running, true);
     assert.equal(status.state, "running");

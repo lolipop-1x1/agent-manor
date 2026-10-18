@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import type { KnowledgeConfig, KnowledgeExtractionScope, KnowledgeJob, KnowledgeLanguage, KnowledgePreview, KnowledgeSettings, KnowledgeSettingsInput, KnowledgeSourceReader, KnowledgeTarget, KnowledgeTaskStatus, KnowledgeTryResult, KnowledgeRequestEvent, KnowledgeTaskEvent } from "../knowledge-contracts.js";
+import type { KnowledgeConfig, KnowledgeExtractionScope, KnowledgeJob, KnowledgeJobSummary, KnowledgeLanguage, KnowledgePreview, KnowledgeSettings, KnowledgeSettingsInput, KnowledgeSourceReader, KnowledgeTarget, KnowledgeTaskStatus, KnowledgeTaskSummaryPage, KnowledgeTryResult, KnowledgeRequestEvent, KnowledgeTaskEvent } from "../knowledge-contracts.js";
 import { KnowledgeConfigStore, KnowledgeModelError, knowledgeFingerprint, validateKnowledgeConfig, validateKnowledgeScope } from "./config.js";
 import { KnowledgeGenerationScheduler, estimateKnowledgeTokens, emptyKnowledgeUsage, applyKnowledgeRequestUsage, knowledgeRequestCost } from "./generation.js";
 import { KnowledgeExtractionPipeline, type PipelineCheckpoint, type PipelineOptions } from "./pipeline.js";
@@ -125,15 +125,17 @@ export class KnowledgeManager {
     this.store.transaction(() => { const state = this.state(); state.previews.push(preview.id); this.store.setState(`extraction.preview:${preview.id}`, { preview, config: settings.config } satisfies PreviewRecord); this.trim(state); this.store.setState(stateKey, state); });
     return structuredClone(preview);
   }
-  start(previewId: string, idempotencyKey?: string): Promise<KnowledgeJob> {
-    const operation = this.starting.then(() => this.begin(previewId, idempotencyKey)); this.starting = operation.catch(() => undefined); return operation;
+  start(previewId: string, idempotencyKey?: string): Promise<KnowledgeJob>;
+  start(previewId: string, idempotencyKey: string | undefined, summary: true): Promise<KnowledgeJobSummary>;
+  start(previewId: string, idempotencyKey?: string, summary = false): Promise<KnowledgeJob | KnowledgeJobSummary> {
+    const operation = this.starting.then(() => this.begin(previewId, idempotencyKey, summary)); this.starting = operation.catch(() => undefined); return operation;
   }
-  private async begin(previewId: string, idempotencyKey?: string): Promise<KnowledgeJob> {
+  private async begin(previewId: string, idempotencyKey?: string, summary = false): Promise<KnowledgeJob | KnowledgeJobSummary> {
     if (this.closed) throw modelError("stopped", "知识后台已停止", 503);
     if (typeof previewId !== "string" || !previewId) throw modelError("preview_stale", "沉淀预览不存在或已失效", 409);
     if (idempotencyKey !== undefined && (typeof idempotencyKey !== "string" || !idempotencyKey || idempotencyKey.length > 512)) throw modelError("request_invalid", "任务幂等键无效");
     const state = this.state(), idempotencyHash = idempotencyKey ? digest(idempotencyKey) : undefined, prior = idempotencyHash ? state.idempotency[idempotencyHash] : undefined;
-    if (prior) { if (prior.previewId !== previewId) throw modelError("conflict", "同一幂等键不能启动不同范围", 409); return this.job(prior.jobId); }
+    if (prior) { if (prior.previewId !== previewId) throw modelError("conflict", "同一幂等键不能启动不同范围", 409); return summary ? this.job(prior.jobId, true) : this.job(prior.jobId); }
     const stored = this.store.getState<PreviewRecord | null>(`extraction.preview:${previewId}`);
     if (!stored || Date.now() - Date.parse(stored.preview.createdAt) > 86_400_000) throw modelError("preview_stale", "沉淀预览不存在或已失效，请重新预览", 409);
     const capture = await this.config.capture(), settings = capture.settings; if (settings.fingerprint !== stored.preview.fingerprint) throw modelError("preview_stale", "生成配置已改变，请重新预览", 409);
@@ -150,20 +152,40 @@ export class KnowledgeManager {
       this.event(record, { kind: "queued", phase: "planning" }); this.save(record); this.trim(current); this.store.setState(stateKey, current);
     });
     await this.config.retainSnapshots(this.state().jobs);
-    this.kick(); return structuredClone(job);
+    this.kick(); return summary ? this.job(id, true) : structuredClone(job);
   }
-  async job(id: string): Promise<KnowledgeJob> { const record = this.record(id); if (!record) throw modelError("task_not_found", "找不到沉淀任务", 404); return structuredClone({ ...record.job, title: jobTitle(record) }); }
+  job(id: string): Promise<KnowledgeJob>;
+  job(id: string, summary: true): Promise<KnowledgeJobSummary>;
+  async job(id: string, summary = false): Promise<KnowledgeJob | KnowledgeJobSummary> {
+    if (summary) {
+      const job = this.store.extractionJobSummary(id); if (!job) throw modelError("task_not_found", "找不到沉淀任务", 404);
+      return structuredClone(job);
+    }
+    const record = this.record(id); if (!record) throw modelError("task_not_found", "找不到沉淀任务", 404);
+    return structuredClone({ ...record.job, title: jobTitle(record) });
+  }
   async previewById(id: string): Promise<KnowledgePreview> {
     const preview = this.store.getState<PreviewRecord | null>(`extraction.preview:${id}`)?.preview ?? this.state().jobs.map(jobId => this.record(jobId)?.preview).find(value => value?.id === id);
     if (!preview) throw modelError("preview_stale", "沉淀预览不存在或已失效", 404);
     return structuredClone(preview);
   }
-  async status(): Promise<KnowledgeTaskStatus> {
+  status(): Promise<KnowledgeTaskStatus>;
+  status(query: { response: "summary"; page?: number; pageSize?: number }): Promise<KnowledgeTaskSummaryPage>;
+  async status(query?: { response: "summary"; page?: number; pageSize?: number }): Promise<KnowledgeTaskStatus | KnowledgeTaskSummaryPage> {
     const settings = await this.settings(), state = this.state();
+    if (query) {
+      const page = query.page ?? 1, pageSize = query.pageSize ?? 20;
+      const result = this.store.extractionJobSummaries(state.jobs, page, pageSize);
+      return { ...structuredClone(result), page, pageSize, hasMore: page * pageSize < result.total, usage: this.scheduler.usage(), automatic: {
+        enabled: settings.config.automatic.enabled, lastCheckAt: state.automatic.lastCheckAt, nextCheckAt: state.automatic.nextCheckAt,
+        error: state.automatic.error, errorDescriptor: state.automatic.errorDescriptor } };
+    }
     const jobs = state.jobs.map(id => this.record(id)).filter((record): record is JobRecord => Boolean(record)).reverse().map(record => { const { events: _events, ...job } = record.job; return structuredClone({ ...job, title: jobTitle(record) }); });
     return { jobs, usage: this.scheduler.usage(), automatic: { enabled: settings.config.automatic.enabled, lastCheckAt: state.automatic.lastCheckAt, nextCheckAt: state.automatic.nextCheckAt, error: state.automatic.error, errorDescriptor: state.automatic.errorDescriptor } };
   }
-  async action(id: string, action: "pause" | "resume" | "retry"): Promise<KnowledgeJob> {
+  action(id: string, action: "pause" | "resume" | "retry"): Promise<KnowledgeJob>;
+  action(id: string, action: "pause" | "resume" | "retry", summary: true): Promise<KnowledgeJobSummary>;
+  async action(id: string, action: "pause" | "resume" | "retry", summary = false): Promise<KnowledgeJob | KnowledgeJobSummary> {
     if (this.closed) throw modelError("stopped", "知识后台已停止", 503);
     const record = this.record(id); if (!record) throw modelError("task_not_found", "找不到沉淀任务", 404);
     if (action !== "pause" && record.preview.fingerprint !== knowledgeFingerprint(record.config)) throw modelError("preview_stale", "输入处理方案已更新，请新建预览后开始沉淀", 409);
@@ -181,7 +203,7 @@ export class KnowledgeManager {
       }
       this.event(record, { kind: "retried", phase: record.job.phase }); record.job.needsContext = 0; record.job.failedSessions = []; record.job.status = "queued"; delete record.job.finishedAt; delete record.job.error; delete record.job.errorDescriptor; record.job.updatedAt = now(); this.save(record); this.kick();
     } else throw modelError("request_invalid", "不支持的任务操作");
-    return this.job(id);
+    return summary ? this.job(id, true) : this.job(id);
   }
   private kick(): void {
     if (this.closed || this.running) return;

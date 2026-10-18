@@ -9,10 +9,11 @@ export function timeoutMilliseconds(value: string | boolean | undefined, fallbac
 interface Task { id?: string; status?: string }
 function task(value: unknown): Task | undefined {
   if (!value || typeof value !== "object") return;
-  const result = value as { job?: Task; status?: string; id?: string };
+  const result = value as { job?: Task | null; status?: string; id?: string };
+  if (result.job === null && result.status === "skipped" && result.id === undefined) return;
   return result.job ?? (typeof result.status === "string" ? result : undefined);
 }
-export async function waitForTask(instance: ServiceInstance, initial: unknown, timeout?: string | boolean, path?: string): Promise<unknown> {
+export async function waitForTask(instance: ServiceInstance, initial: unknown, timeout?: string | boolean, path?: string, successStates?: readonly string[]): Promise<unknown> {
   const deadline = Date.now() + timeoutMilliseconds(timeout);
   let value = initial;
   let current = task(value);
@@ -26,7 +27,7 @@ export async function waitForTask(instance: ServiceInstance, initial: unknown, t
     current = task(value);
   }
   // 知识索引使用 ready 表示发布完成，其他任务仍沿用各自的成功终态。
-  const successful = endpoint === "/knowledge/index/status" ? ["ready"] : ["complete", "completed"];
+  const successful = successStates ?? (endpoint === "/knowledge/index/status" ? ["ready"] : ["complete", "completed"]);
   if (current && !successful.includes(current.status ?? "")) process.exitCode = 1;
   return initial && typeof initial === "object" && value && typeof value === "object" ? { ...initial, ...value } : value;
 }

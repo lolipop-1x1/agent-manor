@@ -62,9 +62,13 @@ export function registerRepositories(program: Command, context: CliContext): voi
     const keys = ["version", "client", "from", "to", "categories", "directory", "sessionVersion", "sessionId", "eventId"];
     queryOptions(group.command(`${name} <id>`).description(t(`cli.ext.repository.${name}`)), context, keys)
       .action(async (id: string, _opts, command: Command) => {
-        const opts = command.optsWithGlobals<Options>();
-        if (name === "replay-evidence" && !opts.eventId) throw new RequestError("INVALID_INPUT", "Provide --event-id", { key: "cli.ext.eventRequired" });
-        const suffix = name === "gaps" ? "coverage/gaps" : name === "replay-sessions" ? "replay/sessions" : name === "replay-evidence" ? `replay/evidence/${encodeURIComponent(String(opts.eventId ?? ""))}` : name;
+        if (name === "replay-evidence") {
+          const query = new URLSearchParams(queryParameters(command, keys).slice(1));
+          if (["eventId", "sessionId", "version", "sessionVersion"].some(key => !query.get(key))) {
+            throw new RequestError("INVALID_INPUT", "Provide --event-id, --session-id, --version and --session-version", { key: "cli.ext.eventRequired" });
+          }
+        }
+        const suffix = name === "gaps" ? "coverage/gaps" : name === "replay-sessions" ? "replay/sessions" : name === "replay-evidence" ? `replay/evidence/${encodeURIComponent(new URLSearchParams(queryParameters(command, keys).slice(1)).get("eventId") ?? "")}` : name;
         await request(command, `${repositoryPath(id)}/${suffix}${queryParameters(command, keys.filter(key => key !== "eventId"))}`);
       });
   }

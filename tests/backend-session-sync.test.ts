@@ -47,13 +47,18 @@ async function fixture(run: (context: { service: Service; home: string; history:
 
 test("后台无页面连接也按完成时间同步；多读者与旧 POST 不创建扫描", async () => fixture(async ({ service, home, history }) => {
   await assert.rejects(apiRequest(service.instance, "/sessions/auto-refresh", "POST", { client: "codex" }), { code: "INVALID_INPUT" });
-  assert.deepEqual(await apiRequest(service.instance, "/sessions/auto-refresh", "POST", {}), {});
+  assert.deepEqual(await apiRequest(service.instance, "/sessions/auto-refresh", "POST", {}), { job: null, status: "skipped", reason: "disabled" });
   assert.equal(jobs(home).length, 0);
   await apiRequest(service.instance, "/preferences", "PUT", { sessionsAutoRefreshInterval: 5_000 });
   const first = await until(() => summary(service), status => successSettled(status) && status.sessionCount === 1);
   assert.equal(jobs(home).length, 1); assert.ok(first.autoSync?.lastSuccessAt);
   assert.equal(Date.parse(first.autoSync!.nextRunAt!) - Date.parse(first.autoSync!.lastSuccessAt!), 5_000);
-  await Promise.all(Array.from({ length: 12 }, (_, i) => i % 2 ? summary(service) : apiRequest(service.instance, "/sessions/auto-refresh", "POST", {})));
+  await Promise.all(Array.from({ length: 12 }, async (_, i) => {
+    if (i % 2) return summary(service);
+    const result = await apiRequest(service.instance, "/sessions/auto-refresh", "POST", {});
+    assert.deepEqual(result, { job: null, status: "skipped", reason: "no_active_job" });
+    return result;
+  }));
   assert.equal(jobs(home).length, 1);
   await writeFile(join(history, "second.jsonl"), source("second", "增加第二份合成历史。"));
   // 这段时间不发送 HTTP 请求，后台必须自己扫描并发布新版本。

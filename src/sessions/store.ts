@@ -63,6 +63,9 @@ const decodeMessage = (row: MessageRow): SessionMessage => ({ ...decodeMessageMe
 const decodePreview = (row: PreviewMessageRow): SessionMessage => ({ ...decodeMessage(row), ...(row.text_length !== undefined
   ? { textLength: row.text_length, textTruncated: row.text_bytes! > Buffer.byteLength(row.text, "utf8") } : {}) });
 const literal = (value: string) => `%${value.replace(/[\\%_]/g, "\\$&")}%`;
+const summaryJson = (column: string, summary?: boolean) => summary
+  ? `json_set(json_remove(${column},'$.contextSnapshots','$.usageReports','$.gaps'),'$.gaps',json('[]'),'$.gapCount',COALESCE(json_array_length(${column},'$.gaps'),0))`
+  : column;
 const paging = (query: SessionQuery) => ({ page: Math.max(1, Math.floor(query.page ?? 1)), pageSize: Math.min(200, Math.max(1, Math.floor(query.pageSize ?? 50))) });
 const kindsOf = (query: SessionQuery) => (query.kinds?.length ? query.kinds : ["user", "assistant"])
   .filter(kind => ["user", "assistant", "tool_call", "tool_result", "thinking", "system", "context", "compression"].includes(kind));
@@ -118,6 +121,15 @@ export class SessionStore {
       let count = 0;
       for (const _character of String(value)) count += 1;
       return count;
+    });
+    this.database.function("session_text_slice", { deterministic: true }, (value, offset, limit) => {
+      let index = 0; let result = "";
+      for (const character of String(value)) {
+        if (index >= Number(offset) + Number(limit)) break;
+        if (index >= Number(offset)) result += character;
+        index += 1;
+      }
+      return result;
     });
     this.database.function("session_user_title", { deterministic: true }, value => userTitle(String(value)));
     this.database.function("session_local_day", { deterministic: true }, (value, timezone) =>
@@ -269,8 +281,14 @@ export class SessionStore {
     return { ...status, gapCount: row.gapCount };
   }
 
-  indexGaps(requestedVersion?: string) {
+  indexGaps(requestedVersion?: string, page?: number, pageSize = 20) {
     const version = this.version(requestedVersion);
+    if (page !== undefined) {
+      const row = this.database.prepare("SELECT COALESCE(json_array_length(gaps),0) AS total FROM session_versions WHERE id=?").get(version) as { total: number };
+      const gaps = this.database.prepare(`SELECT item.value AS json FROM session_versions v,json_each(v.gaps) item WHERE v.id=? ORDER BY CAST(item.key AS INTEGER) LIMIT ? OFFSET ?`)
+        .all(version, pageSize, (page - 1) * pageSize) as JsonRow[];
+      return { version, gaps: gaps.map(row => decode<SessionIndexStatus["gaps"][number]>(row)), total: row.total, page, pageSize, hasMore: page * pageSize < row.total };
+    }
     const row = this.database.prepare("SELECT gaps FROM session_versions WHERE id=?").get(version) as { gaps: string };
     return { version, gaps: JSON.parse(row.gaps) as SessionIndexStatus["gaps"] };
   }
@@ -602,16 +620,16 @@ export class SessionStore {
     return version;
   }
 
-  private session(id: string, version: string): { revision: string; summary: SessionSummary } {
-    const row = this.database.prepare(`SELECT r.id,r.json FROM session_version_sessions v JOIN session_revisions r ON r.id=v.revision
+  private session(id: string, version: string, light = false): { revision: string; summary: SessionSummary } {
+    const row = this.database.prepare(`SELECT r.id,${summaryJson("r.json", light)} AS json FROM session_version_sessions v JOIN session_revisions r ON r.id=v.revision
       WHERE v.version=? AND v.session_id=?`).get(version, id) as RevisionRow | undefined;
     if (!row) throw new StoreError("SOURCE_NOT_FOUND", "会话不存在于当前索引版本", { key: "diagnostics.sessions.store.m011" });
-    return { revision: row.id, summary: this.summary(row, version) };
+    return { revision: row.id, summary: this.summary(row, version, light) };
   }
 
-  private summary(row: JsonRow, version: string): SessionSummary {
+  private summary(row: JsonRow, version: string, light = false): SessionSummary {
     const { path: _path, sourceId: _sourceId, ...summary } = decode<SessionSourceMeta>(row);
-    const relation = this.database.prepare(`SELECT relation.parent,r.json FROM session_version_relations relation
+    const relation = this.database.prepare(`SELECT relation.parent,${summaryJson("r.json", light)} AS json FROM session_version_relations relation
       JOIN session_version_sessions v ON v.version=relation.version AND v.session_id=relation.parent
       JOIN session_revisions r ON r.id=v.revision WHERE relation.version=? AND relation.child=?`)
       .get(version, summary.id) as (JsonRow & { parent: string }) | undefined;
@@ -627,7 +645,7 @@ export class SessionStore {
       summary.parentSessionId = relation.parent; summary.relationship = "child";
       setParentTitle(relation);
     } else if (summary.relationship === "fork" && summary.parentSessionId) {
-      const parent = this.database.prepare(`SELECT r.json FROM session_version_sessions v JOIN session_revisions r ON r.id=v.revision
+      const parent = this.database.prepare(`SELECT ${summaryJson("r.json", light)} AS json FROM session_version_sessions v JOIN session_revisions r ON r.id=v.revision
         WHERE v.version=? AND v.session_id=?`).get(version, summary.parentSessionId) as JsonRow | undefined;
       if (parent) setParentTitle(parent);
     }
@@ -844,9 +862,9 @@ export class SessionStore {
     const rows = this.database.prepare(`WITH matches AS MATERIALIZED (SELECT v.session_id,r.id,COALESCE(r.updated_at,r.started_at,'') AS updated_at ${from}),
       totals AS (SELECT COUNT(*) AS total FROM matches), page AS (
         SELECT * FROM matches ORDER BY updated_at DESC,session_id LIMIT ? OFFSET ?
-      ) SELECT totals.total,r.json FROM totals LEFT JOIN page ON 1 LEFT JOIN session_revisions r ON r.id=page.id
+      ) SELECT totals.total,${summaryJson("r.json", query.response === "summary")} AS json FROM totals LEFT JOIN page ON 1 LEFT JOIN session_revisions r ON r.id=page.id
         ORDER BY page.updated_at DESC,page.session_id`).all(...values, pageSize, (page - 1) * pageSize) as { total: number; json: string | null }[];
-    const sessions = rows.flatMap(row => row.json === null ? [] : [this.summary({ json: row.json }, version)]);
+    const sessions = rows.flatMap(row => row.json === null ? [] : [this.summary({ json: row.json }, version, query.response === "summary")]);
     return { version, sessions, total: rows[0]!.total, page, pageSize };
   }
 
@@ -945,7 +963,7 @@ export class SessionStore {
 
   messages(id: string, query: SessionMessageQuery = {}): SessionMessageResult {
     const version = this.version(query.version);
-    const { revision, summary: session } = this.session(id, version);
+    const { revision, summary: session } = this.session(id, version, query.response === "summary");
     const pagination = paging(query.pageUnit === "turn" ? { ...query, pageSize: query.pageSize ?? 10 } : query);
     const { cte, values } = this.readingScope(revision, session, query);
     const targetParts: string[] = [];
@@ -964,14 +982,22 @@ export class SessionStore {
     const target = targetParts.length ? this.database.prepare(`${cte} SELECT ordinal,id,turn_id,kind,final FROM session_messages
       WHERE revision=? AND id IN (SELECT id FROM scoped) AND ${targetParts.join(" AND ")} ORDER BY ordinal,id LIMIT 1`).get(...values, revision, ...targetValues) as
       { ordinal: number; id: string; turn_id: string; kind: string; final: string | null } | undefined : undefined;
-    if (!target && targetParts.length && (!query.messageId || query.pageUnit === "turn")) throw new StoreError("SOURCE_NOT_FOUND", "定位消息不存在于当前会话", { key: "diagnostics.sessions.store.m013" });
+    if (!target && targetParts.length && (query.response === "summary" || !query.messageId || query.pageUnit === "turn")) throw new StoreError("SOURCE_NOT_FOUND", "定位消息不存在于当前会话", { key: "diagnostics.sessions.store.m013" });
     if (target && !this.database.prepare(`${cte} SELECT 1 FROM visible WHERE id=?`).get(...values, target.id)) {
       throw new StoreError("INVALID_INPUT", "定位消息不在简易视图中，请切换完整或轨迹视图", { key: "diagnostics.sessions.store.m014" });
     }
-    const textColumns = query.maxTextChars ? `substr(text,1,${Math.min(100_000, Math.max(1, Math.floor(query.maxTextChars)))}) AS text,
+    const textOffset = Math.max(0, Math.floor(query.textOffset ?? 0));
+    const textLimit = Math.min(100_000, Math.max(1, Math.floor(query.maxTextChars ?? 2000)));
+    const textColumns = query.maxTextChars ? `CASE WHEN instr(text,char(0))>0 THEN session_text_slice(text,${textOffset},${textLimit}) ELSE substr(text,${textOffset + 1},${textLimit}) END AS text,
       CASE WHEN instr(text,char(0))>0 THEN session_text_length(text) ELSE length(text) END AS text_length,length(CAST(text AS BLOB)) AS text_bytes` : "text";
     const project = (rows: PreviewMessageRow[]) => rows.map(row => {
       const message = decodePreview(row);
+      if (row.text_length !== undefined && query.response === "summary") {
+        const end = textOffset + Array.from(message.text).length;
+        message.textOffset = textOffset;
+        message.textTruncated = textOffset > 0 || end < row.text_length;
+        if (end < row.text_length) message.nextTextOffset = end;
+      }
       return query.mode === "brief" && message.kind === "assistant" && !message.final ? { ...message, unconfirmed: true } : message;
     });
     if (query.pageUnit === "turn") {
@@ -1004,7 +1030,7 @@ export class SessionStore {
         WHERE revision=? AND id IN (SELECT id FROM visible WHERE turn_id IN (${turnIds.map(() => "?").join(",")})) ORDER BY ordinal,id${bounded ? " LIMIT ? OFFSET ?" : ""}`)
         .all(...values, revision, ...turnIds, ...(bounded ? [messageLimit, messageOffset] : [])) as PreviewMessageRow[]) : [];
       const pageMessagesTotal = turns.reduce((sum, turn) => sum + turn.messageCount, 0);
-      const usages = bounded ? this.usagesForTurns(revision, id, turnIds) : undefined;
+      const usages = bounded && query.response !== "summary" ? this.usagesForTurns(revision, id, turnIds) : undefined;
       return { version, session, messages, total, ...pagination, pageUnit: "turn", totalTurns, turns, focusMessageId: target?.id,
         ...(bounded ? { messageOffset, messageLimit, hasMoreMessages: messageOffset + messages.length < pageMessagesTotal, usages,
           ...this.messageToolPairs(revision, session, query, messages, textColumns) } : {}) };
@@ -1698,7 +1724,7 @@ export class SessionStore {
       SELECT matches.*,selected.match_count,ROW_NUMBER() OVER (PARTITION BY matches.session_id ORDER BY ordinal,message_id) AS rank
       FROM matches JOIN selected ON selected.session_id=matches.session_id
     ), bodies AS MATERIALIZED (
-      SELECT ranked.*,r.json,CASE WHEN message_id IS NULL THEN r.title ELSE m.text END AS body FROM ranked
+      SELECT ranked.*,${summaryJson("r.json", query.response === "summary")} AS json,CASE WHEN message_id IS NULL THEN r.title ELSE m.text END AS body FROM ranked
         JOIN session_revisions r ON r.id=ranked.revision LEFT JOIN session_messages m ON m.revision=ranked.revision AND m.id=ranked.message_id WHERE rank<=3
     ) SELECT totals.total,totals.hitCount,bodies.session_id,message_id,turn_id,kind,revision,json,match_count,
       substr(body,MAX(1,instr(lower(body),lower(?))-70),240) AS text,
@@ -1712,7 +1738,7 @@ export class SessionStore {
     const groups: SessionGroupedSearchResult["groups"] = [];
     for (const row of rows) {
       let group = groups.find(item => item.session.id === row.session_id);
-      if (!group) { group = { session: this.summary(row, version), matchCount: row.match_count, hits: [] }; groups.push(group); }
+      if (!group) { group = { session: this.summary(row, version, query.response === "summary"), matchCount: row.match_count, hits: [] }; groups.push(group); }
       group.hits.push({ session: group.session, messageId: row.message_id ?? undefined, turnId: row.turn_id ?? undefined, kind: row.kind,
         ...(row.message_id ? { briefVisible: briefVisible.get(row.revision)?.has(row.message_id) ?? false } : {}),
         snippet: (row.text_start > 1 ? "…" : "") + row.text + (row.text_length > row.text_start - 1 + 240 ? "…" : "") });
@@ -1728,7 +1754,7 @@ export class SessionStore {
     const result = this.database.prepare(`WITH matches AS MATERIALIZED (${union}), totals AS (SELECT COUNT(*) AS total FROM matches), page AS (
       SELECT * FROM matches ORDER BY updated_at DESC,session_id,ordinal,message_id LIMIT ? OFFSET ?
     ), bodies AS MATERIALIZED (
-      SELECT page.*,r.json,CASE WHEN page.message_id IS NULL THEN r.title ELSE m.text END AS body FROM page
+      SELECT page.*,${summaryJson("r.json", query.response === "summary")} AS json,CASE WHEN page.message_id IS NULL THEN r.title ELSE m.text END AS body FROM page
         JOIN session_revisions r ON r.id=page.revision LEFT JOIN session_messages m ON m.revision=page.revision AND m.id=page.message_id
     ) SELECT totals.total,bodies.session_id,message_id,turn_id,kind,revision,json,
       substr(body,MAX(1,instr(lower(body),lower(?))-70),240) AS text,length(body) AS text_length,
@@ -1739,7 +1765,7 @@ export class SessionStore {
     const rows = result.filter(row => row.session_id !== null);
     const briefVisible = this.searchBriefVisible(rows, version);
     const hits = rows.map(row => {
-      const session = this.summary(row, version);
+      const session = this.summary(row, version, query.response === "summary");
       return { session, messageId: row.message_id ?? undefined, turnId: row.turn_id ?? undefined, kind: row.kind,
         ...(row.message_id ? { briefVisible: briefVisible.get(row.revision)?.has(row.message_id) ?? false } : {}),
         snippet: (row.text_start > 1 ? "…" : "") + row.text + (row.text_length > row.text_start - 1 + 240 ? "…" : "") };
@@ -1778,7 +1804,7 @@ export class SessionStore {
       const limit = Math.min(2000, Math.max(1, Math.floor(query.stepLimit ?? 200)));
       return { ...summary, steps: this.profileSteps(summary, stepsOffset, limit), stepsOffset };
     }
-    const root = this.session(id, version);
+    const root = this.session(id, version, query.response === "summary");
     const members = this.database.prepare(`WITH RECURSIVE included(session_id) AS (
       SELECT ? UNION SELECT child FROM session_version_relations relation JOIN included ON relation.parent=included.session_id
       WHERE relation.version=? AND (? OR relation.parent=?)
@@ -1786,7 +1812,7 @@ export class SessionStore {
       WHERE relation.version=v.version AND relation.child=v.session_id) AS parent FROM included JOIN session_version_sessions v ON v.session_id=included.session_id
       WHERE v.version=? ORDER BY v.session_id`).all(id, version, query.includeChildren ? 1 : 0, id, version);
     // 摘要绑定不可变修订及关系成员；其他会话更新不让相同摘要失效。
-    const key = JSON.stringify([root.revision, Boolean(query.includeChildren), members]);
+    const key = JSON.stringify([root.revision, Boolean(query.includeChildren), members, query.response]);
     const cached = query.summary ? this.profileSummaries.get(key) : undefined;
     if (cached) return { ...structuredClone(cached), version };
     const profile = this.buildProfile(id, { ...query, version });
@@ -1798,6 +1824,34 @@ export class SessionStore {
       this.profileSummaries.set(key, structuredClone(result));
     }
     return result;
+  }
+
+  /** 摘要和明细使用同一发布版本；数组只在明确读取相应页时离开数据库。 */
+  profileSection(id: string, query: SessionProfileQuery = {}) {
+    const profile = this.profile(id, { ...query, response: "summary", summary: true });
+    const section = query.section ?? "summary";
+    const { page, pageSize } = paging(query);
+    const offset = (page - 1) * pageSize;
+    const arrayCount = (field: "contextSnapshots" | "usageReports" | "gaps") => (this.database.prepare(`SELECT COALESCE(SUM(json_array_length(r.json,'$.${field}')),0) AS total
+      FROM session_version_sessions v JOIN session_revisions r ON r.id=v.revision
+      WHERE v.version=? AND v.session_id IN (SELECT value FROM json_each(?))`).get(profile.version, JSON.stringify(profile.sessionIds)) as { total: number }).total;
+    const sections = { steps: profile.stepsTotal ?? 0, context: arrayCount("contextSnapshots"), reports: arrayCount("usageReports"), tools: profile.tools.length, resources: profile.resources.length };
+    if (section === "summary") {
+      const { steps: _steps, contextSnapshots: _context, usageReports: _reports, tools: _tools, resources: _resources, children, gaps, ...summary } = profile;
+      return { ...summary, sections, childrenCount: children.length, gapCount: gaps.length + arrayCount("gaps") };
+    }
+    let items: unknown[];
+    if (section === "context" || section === "reports") {
+      const field = section === "context" ? "contextSnapshots" : "usageReports";
+      const rows = this.database.prepare(`SELECT json_set(item.value,'$.sessionId',v.session_id) AS json
+        FROM session_version_sessions v JOIN session_revisions r ON r.id=v.revision,json_each(r.json,'$.${field}') item
+        WHERE v.version=? AND v.session_id IN (SELECT value FROM json_each(?))
+        ORDER BY v.session_id,CAST(item.key AS INTEGER) LIMIT ? OFFSET ?`)
+        .all(profile.version, JSON.stringify(profile.sessionIds), pageSize, offset) as JsonRow[];
+      items = rows.map(row => decode<unknown>(row));
+    } else if (section === "steps") items = this.profileSteps(profile, offset, pageSize);
+    else items = profile[section].slice(offset, offset + pageSize);
+    return { version: profile.version, section, sessionIds: profile.sessionIds, items, total: sections[section], page, pageSize, hasMore: offset + items.length < sections[section] };
   }
 
   private profileSteps(profile: SessionProfile, requestedOffset: number, limit: number): SessionProfile["steps"] {
@@ -1851,11 +1905,15 @@ export class SessionStore {
 
   private buildProfile(id: string, query: SessionQuery & { includeChildren?: boolean }): SessionProfile {
     const version = this.version(query.version);
-    const root = this.session(id, version);
-    const getChildren = (parent: string) => (this.database.prepare(`SELECT r.json FROM session_version_relations relation
+    const light = query.response === "summary";
+    const root = this.session(id, version, light);
+    // 投影省略诊断正文，但轮次推断仍以原始修订的完整性为准。
+    const completeSource = light ? completeRoundSource(JSON.parse((this.database.prepare("SELECT COALESCE(json_extract(json,'$.gaps'),'[]') AS gaps FROM session_revisions WHERE id=?")
+      .get(root.revision) as { gaps: string }).gaps) as Gap[]) : completeRoundSource(root.summary.gaps);
+    const getChildren = (parent: string) => (this.database.prepare(`SELECT ${summaryJson("r.json", light)} AS json FROM session_version_relations relation
       JOIN session_version_sessions v ON v.version=relation.version AND v.session_id=relation.child JOIN session_revisions r ON r.id=v.revision
       WHERE relation.version=? AND relation.parent=? ORDER BY v.session_id`)
-      .all(version, parent) as JsonRow[]).map(row => this.summary(row, version));
+      .all(version, parent) as JsonRow[]).map(row => this.summary(row, version, light));
     const directChildren = getChildren(id);
     const included = new Set([id]);
     if (query.includeChildren) {
@@ -1885,7 +1943,7 @@ export class SessionStore {
       }
     };
     for (const sessionId of included) {
-      const { revision, summary } = this.session(sessionId, version);
+      const { revision, summary } = this.session(sessionId, version, light);
       if (summary.usageReports?.length) (profile.usageReports ??= []).push(...summary.usageReports.map(report => ({ ...report, sessionId })));
       if (summary.contextSnapshots?.length) (profile.contextSnapshots ??= []).push(...summary.contextSnapshots.map(snapshot => ({ ...snapshot, sessionId })));
       if (sessionId !== id) profile.gaps.push(...summary.gaps);
@@ -1967,7 +2025,7 @@ export class SessionStore {
     }
     profile.outputSpeed = summarizeRequestSpeed(profile.steps);
     if (operations.size) profile.operations = [...operations.values()];
-    profile.roundMetrics = summarizeRoundMetrics(roundMessages, profile.steps.filter(step => step.sessionId === id), completeRoundSource(root.summary.gaps));
+    profile.roundMetrics = summarizeRoundMetrics(roundMessages, profile.steps.filter(step => step.sessionId === id), completeSource);
     profile.turnCount = turns.size;
     profile.usage.cacheReadRatio = pairedInput > 0 ? pairedCache / pairedInput : null;
     profile.models = [...models].map(([model, count]) => ({ model, count })).sort((left, right) => right.count - left.count || left.model.localeCompare(right.model));

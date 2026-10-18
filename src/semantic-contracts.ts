@@ -80,7 +80,7 @@ export interface SemanticStatus {
   job?: SemanticJob;
   usage: SemanticUsage;
 }
-export interface SemanticSearchQuery { q: string; scope: SemanticScope; sort?: "relevance" | "updated"; page?: number; pageSize?: number; sessionId?: string; cacheOnly?: boolean }
+export interface SemanticSearchQuery { q: string; scope: SemanticScope; sort?: "relevance" | "updated"; page?: number; pageSize?: number; sessionId?: string; cacheOnly?: boolean; response?: "summary" }
 export interface SemanticSearchResult extends SessionGroupedSearchResult { mode: "semantic"; limited: boolean; coveredSessions: number }
 export interface SemanticInput { key: string; text: string; estimatedTokens: number }
 export interface SemanticVector { key: string; values: number[] }

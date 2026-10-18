@@ -36,7 +36,7 @@ am knowledge revise <entryId> --input revision.json --json
 
 修订提交包含完整正文与元数据，并附 `baseRevisionId`，值取最近一次读取的 `latestRevisionId`。重复提交可附稳定 `idempotencyKey`；同一键只用于同一份内容。来源只填写已核验的 `sessionId`、`messageId`、`sourceVersion`、`excerpt` 等字段，不能编造 ID 或默认标记来源可用。
 
-直接写入不调用生成模型重复提炼。提交后读取返回修订，核对内容与来源，报告待审状态；普通 Agent 写入不直接变成人工审阅通过。
+直接写入不调用生成模型重复提炼。提交结果保留条目和修订身份；随后使用 `knowledge get <entryId> --review all --json` 或 `knowledge revision` 读取具体修订，核对正文与来源，报告待审状态。普通 Agent 写入不直接变成人工审阅通过。
 
 需要历史恢复时用 `am knowledge restore <entryId> --help`，恢复形成新的待审修订。
 
@@ -46,6 +46,8 @@ am knowledge revise <entryId> --input revision.json --json
 2. 用户授权该次模型调用后，`am knowledge extraction start <previewId> --json` 创建任务。
 3. `am knowledge extraction get <jobId> --json` 查看阶段、过程、用量与结果；历史用 `list`，控制用 `pause <jobId>`、`resume <jobId>`、`retry <jobId>`。
 4. 读取实际产出的知识和来源，确认没有价值的信息可以不产出知识。模型输出和过程摘要不等同于原始执行证据。
+
+任务历史 `extraction list` 默认每页20条，使用 `--page`、`--page-size` 翻页。任务 `get` 默认提供阶段、统计和事件／结果数量；需要检查完整运行记录或逐条结果时显式加 `--full`。`pause --wait` 只等待暂停生效，后续 `resume --wait` 才继续等待完成。
 
 ## 人工审阅与有效性
 

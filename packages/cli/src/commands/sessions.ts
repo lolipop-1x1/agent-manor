@@ -20,7 +20,7 @@ export function registerSessions(program: Command, context: CliContext): void {
   const sessionQueryString = (command: Command, extra: Record<string, string | undefined> = {}) => {
     const opts = command.optsWithGlobals<Options>();
     const params = new URLSearchParams(queryParameters(command, []).slice(1));
-    for (const key of ["client", "project", "from", "to", "version", "page", "kinds", "q", "mode", "messageId", "sessionId", "executionMode", "branch", "sort", "pageUnit", "turnPosition", "toolName", "resourceName", "resourceServer", "resourceKind", "messageLimit", "maxTextChars", "messageOffset", "summary", "stepLimit", "stepOffset", "priceVersion"]) {
+    for (const key of ["client", "project", "from", "to", "version", "page", "kinds", "q", "mode", "messageId", "sessionId", "executionMode", "branch", "sort", "pageUnit", "turnPosition", "toolName", "resourceName", "resourceServer", "resourceKind", "messageLimit", "maxTextChars", "messageOffset", "summary", "stepLimit", "stepOffset", "priceVersion", "section", "textOffset"]) {
       if (typeof opts[key] === "string") params.set(key, opts[key] as string);
     }
     if (typeof opts.pageSize === "string") params.set("pageSize", opts.pageSize);
@@ -47,6 +47,7 @@ export function registerSessions(program: Command, context: CliContext): void {
     .action(async (id: string, _options: Options, command: Command) => { await request(command, `/sessions/${encodeURIComponent(id)}/messages${sessionQueryString(command)}`); });
   sessionFilters(sessions.command("profile <id>").description(t("cli.profile")))
     .option("--include-children", t("cli.includeChildren"))
+    .option("--section <section>", t("cli.profileSection"))
     .action(async (id: string, _options: Options, command: Command) => { await request(command, `/sessions/${encodeURIComponent(id)}/profile${sessionQueryString(command, { includeChildren: command.optsWithGlobals<Options>().includeChildren ? "true" : undefined })}`); });
   waiting(sessions.command("refresh").description(t("cli.sessionRefresh")))
     .option("--client <client>", t("cli.refreshClient", { clients: clientIds.join(", ") }))
@@ -64,11 +65,14 @@ export function registerSessions(program: Command, context: CliContext): void {
   }
   for (const name of ["messages", "profile"]) {
     const command = sessions.commands.find(item => item.name() === name)!;
-    const fields = name === "messages" ? ["pageUnit", "turnPosition", "toolName", "resourceName", "resourceServer", "resourceKind", "messageLimit", "maxTextChars", "messageOffset"] : ["summary", "stepLimit", "stepOffset"];
+    const fields = name === "messages" ? ["pageUnit", "turnPosition", "toolName", "resourceName", "resourceServer", "resourceKind", "messageLimit", "maxTextChars", "messageOffset", "textOffset"] : ["summary", "stepLimit", "stepOffset"];
     for (const key of fields) command.option(`--${key.replace(/[A-Z]/g, character => `-${character.toLowerCase()}`)} <value>`, t("cli.ext.option", { name: key }));
   }
-  for (const name of ["facets", "gaps"]) queryOptions(sessions.command(name).description(t(`cli.ext.${name}`)), context, ["version"])
-    .action(async (_opts, command: Command) => { await request(command, `/sessions/${name}${queryParameters(command, ["version"])}`); });
+  for (const name of ["facets", "gaps"]) {
+    const keys = name === "gaps" ? ["version", "page", "pageSize", "client", "kind"] : ["version"];
+    queryOptions(sessions.command(name).description(t(`cli.ext.${name}`)), context, keys)
+      .action(async (_opts, command: Command) => { await request(command, `/sessions/${name}${queryParameters(command, keys)}`); });
+  }
   const fields = ["client", "project", "from", "to", "version", "page", "pageSize", "kinds", "q", "mode", "executionMode", "includeSubagents", "branch", "pageUnit", "turnPosition", "messageId"];
   queryOptions(sessions.command("groups <text>").description(t("cli.ext.sessionGroups")), context, fields)
     .action(async (q: string, _opts, command: Command) => { await request(command, `/sessions/search/groups${queryParameters(command, fields, { q })}`); });
@@ -87,8 +91,8 @@ export function registerSessions(program: Command, context: CliContext): void {
     .action(async (id: string, _opts, command: Command) => {
       const opts = command.optsWithGlobals<Options>();
       const extra = { mode: "brief", pageUnit: "message", pageSize: 200 };
-      const first = await context.fetch(command, `/sessions/${encodeURIComponent(id)}/messages${queryParameters(command, ["version", "branch"], { ...extra, page: 1 })}`) as SessionMessageResult;
-      const messages = await collectDialogue(async page => page === 1 ? first : await context.fetch(command, `/sessions/${encodeURIComponent(id)}/messages${queryParameters(command, ["branch"], { ...extra, version: first.version, page })}`) as SessionMessageResult, first.version);
+      const first = await context.fetch(command, `/sessions/${encodeURIComponent(id)}/messages${queryParameters(command, ["version", "branch"], { ...extra, page: 1 })}`, "GET", undefined, undefined, true) as SessionMessageResult;
+      const messages = await collectDialogue(async page => page === 1 ? first : await context.fetch(command, `/sessions/${encodeURIComponent(id)}/messages${queryParameters(command, ["branch"], { ...extra, version: first.version, page })}`, "GET", undefined, undefined, true) as SessionMessageResult, first.version);
       const markdown = dialogueMarkdown(messages, context.language);
       if (typeof opts.output === "string") {
         await writeFile(opts.output, markdown + "\n", "utf8");

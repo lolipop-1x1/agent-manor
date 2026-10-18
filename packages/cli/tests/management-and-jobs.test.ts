@@ -91,6 +91,12 @@ test("等待任务保留初始响应元信息并按最终成功、失败、暂�
     await assert.rejects(waitForTask(instance, initial, "0.01"), { code: "WAIT_TIMEOUT" });
     assert.ok(requests >= 5);
     assert.deepEqual(await waitForTask(instance, { job: null }, "1"), { job: null });
+    process.exitCode = undefined;
+    const beforeSkipped = requests, skipped = { job: null, status: "skipped", reason: "disabled" };
+    assert.deepEqual(await waitForTask(instance, skipped, "1"), skipped);
+    assert.equal(process.exitCode, undefined); assert.equal(requests, beforeSkipped);
+    await waitForTask(instance, { id: "synthetic-skipped-job", status: "skipped" }, "1");
+    assert.equal(process.exitCode, 1, "真实任务不能借用无任务跳过的成功语义");
   } finally { process.exitCode = exitCode; await new Promise<void>(done => server.close(() => done())); }
 });
 

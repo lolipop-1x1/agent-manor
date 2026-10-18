@@ -18,7 +18,8 @@ import { bodyText, emptyBody, integer, ServiceError } from "./service/input.js";
 import { acquireLock, assertNotUpdating, dataHome, DEFAULT_SERVICE_PORT, delay, removeInstance, SERVICE_PROTOCOL_VERSION, writeInstance } from "./service/runtime.js";
 import { serviceLog } from "./service/logging.js";
 import { SessionStore } from "./sessions/store.js";
-import { queryBoolean, sessionMessageQuery, sessionProfileQuery, sessionQuery, sessionRefreshOptions, sessionTimelineQuery } from "./service/session-input.js";
+import { queryBoolean, sessionMessageQuery, sessionProfileQuery, sessionQuery, sessionRefreshOptions, sessionTimelineQuery, summaryResponse } from "./service/session-input.js";
+import { searchSummaryResponse, sessionSummaryResponse, sessionStatusSummaryResponse } from "./service/summary-response.js";
 import { textValue } from "./service/input.js";
 import { clientIds } from "./clients.js";
 import type { Client } from "./contracts.js";
@@ -128,7 +129,7 @@ export async function startService(options: ServiceOptions = {}) {
         relationship: queryBoolean(raw.includeSubagents, "includeSubagents") ? "all" as const : "exclude_children" as const, ...query.scope };
       const sort = textValue(raw.sort, "sort");
       if (sort && sort !== "relevance" && sort !== "updated") throw new ServiceError("INVALID_INPUT", "Unknown semantic sort");
-      return { q: query.q ?? "", scope, page: query.page, pageSize: query.pageSize, sort: sort as SemanticSearchQuery["sort"], sessionId: textValue(raw.sessionId, "sessionId") };
+      return { q: query.q ?? "", scope, page: query.page, pageSize: query.pageSize, sort: sort as SemanticSearchQuery["sort"], sessionId: textValue(raw.sessionId, "sessionId"), response: query.response };
     };
     searchManager = new SessionSearchManager(library);
     replayManager = new ReplayManager(index, library);
@@ -146,7 +147,10 @@ export async function startService(options: ServiceOptions = {}) {
       const cancel = () => { if (!reply.raw.writableFinished) controller.abort(); };
       request.raw.once("aborted", cancel); reply.raw.once("close", cancel);
       if (request.raw.aborted || reply.raw.destroyed) controller.abort();
-      try { return await searches.execute(type, query, controller.signal); }
+      try {
+        const result = await searches.execute(type, query, controller.signal);
+        return query.response === "summary" ? searchSummaryResponse(result) : result;
+      }
       finally { request.raw.removeListener("aborted", cancel); reply.raw.removeListener("close", cancel); }
     };
     const worker = manager;
@@ -256,9 +260,14 @@ export async function startService(options: ServiceOptions = {}) {
       }
     });
     registerPreferenceRoutes(app, home);
-    app.get<{ Querystring: Record<string, unknown> }>("/api/v1/status", async request => ({ instance, version: VERSION, protocolVersion: SERVICE_PROTOCOL_VERSION,
-      preparation: { ...preparation, jobIds: [...preparation.jobIds] }, activeTasks: activeTasks(), repositories: index.listRepositories(), jobs: index.listJobs(),
-      sessions: sessionStatus(queryBoolean(request.query.summary, "summary")), indexMaintenance, indexReclaim: worker.reclaimStatus }));
+    app.get<{ Querystring: Record<string, unknown> }>("/api/v1/status", async request => {
+      const summary = summaryResponse(request.query);
+      const legacySummary = queryBoolean(request.query.summary, "summary");
+      return { instance, version: VERSION, protocolVersion: SERVICE_PROTOCOL_VERSION,
+        preparation: { ...preparation, jobIds: [...preparation.jobIds] }, activeTasks: activeTasks(),
+        ...(summary ? index.statusCounts() : { repositories: index.listRepositories(), jobs: index.listJobs() }),
+        sessions: summary ? sessionStatusSummaryResponse(sessionStatus(true)) : sessionStatus(legacySummary), indexMaintenance, indexReclaim: worker.reclaimStatus };
+    });
     app.post("/api/v1/stop", async (request, reply) => {
       const body = request.body as { allowBusy?: unknown } | undefined;
       if (body !== undefined && (!body || typeof body !== "object" || Array.isArray(body) || Object.keys(body).some(key => key !== "allowBusy") || typeof body.allowBusy !== "boolean")) throw new ServiceError("INVALID_INPUT", "无效停止参数", { key: "diagnostics.service.runtime.stopInput" });
@@ -282,15 +291,26 @@ export async function startService(options: ServiceOptions = {}) {
       worker.deleteRepository(request.params.id);
       return { repositoryId: request.params.id };
     });
-    app.get<{ Querystring: Query }>("/api/v1/sessions/status", async request => sessionStatus(queryBoolean(request.query.summary, "summary")));
+    app.get<{ Querystring: Query }>("/api/v1/sessions/status", async request => {
+      const summary = summaryResponse(request.query);
+      const result = sessionStatus(queryBoolean(request.query.summary, "summary") || summary);
+      return summary ? sessionStatusSummaryResponse(result) : result;
+    });
     app.get("/api/v1/sessions/facets", async () => library.searchFacets());
-    app.get<{ Querystring: Query }>("/api/v1/sessions/gaps", async request => library.indexGaps(textValue(request.query.version, "version")));
+    app.get<{ Querystring: Query }>("/api/v1/sessions/gaps", async request => summaryResponse(request.query)
+      ? library.indexGaps(textValue(request.query.version, "version"), integer(request.query.page, "page", 1, 1_000_000), integer(request.query.pageSize, "pageSize", 20, 200))
+      : library.indexGaps(textValue(request.query.version, "version")));
     app.get<{ Querystring: Query }>("/api/v1/sessions", async (request, reply) => {
       const query = sessionQuery(request.query);
-      return query.q?.trim() ? search(request, reply, "list", query) : library.list(query);
+      if (query.q?.trim()) return search(request, reply, "list", query);
+      const result = library.list(query);
+      return query.response === "summary" ? searchSummaryResponse(result) : result;
     });
-    app.get<{ Querystring: Query }>("/api/v1/sessions/search/groups", async (request, reply) => request.query.mode === "semantic"
-      ? semanticRequest(() => semanticManager!.search(semanticQuery(request.query))) : search(request, reply, "groups", sessionQuery(request.query)));
+    app.get<{ Querystring: Query }>("/api/v1/sessions/search/groups", async (request, reply) => {
+      if (request.query.mode !== "semantic") return search(request, reply, "groups", sessionQuery(request.query));
+      const result = await semanticRequest(() => semanticManager!.search(semanticQuery(request.query)));
+      return summaryResponse(request.query) ? searchSummaryResponse(result) : result;
+    });
     app.get<{ Params: { id: string }; Querystring: Query }>("/api/v1/sessions/:id/turns", async request => library.turnDirectory(request.params.id, sessionMessageQuery(request.query)));
     app.get<{ Params: { id: string }; Querystring: Query }>("/api/v1/sessions/:id/matches", async (request, reply) => search(request, reply, "matches", { ...sessionQuery(request.query), sessionId: request.params.id }));
     app.get<{ Querystring: Query }>("/api/v1/sessions/search", async (request, reply) => {
@@ -298,7 +318,8 @@ export async function startService(options: ServiceOptions = {}) {
       if (!query.q) throw new ServiceError("INVALID_INPUT", "搜索需要 q", { key: "diagnostics.server.m014" });
       if (request.query.mode === "semantic") {
         const result = await semanticRequest(() => semanticManager!.search(semanticQuery(request.query)));
-        return { ...result, hits: result.groups.flatMap(group => group.hits) };
+        const records = { ...result, hits: result.groups.flatMap(group => group.hits) };
+        return summaryResponse(request.query) ? searchSummaryResponse(records) : records;
       }
       if (request.query.mode !== undefined && request.query.mode !== "keyword") throw new ServiceError("INVALID_INPUT", "Unknown search mode");
       return search(request, reply, "records", { ...query, sessionId: textValue(request.query.sessionId, "sessionId") });
@@ -312,13 +333,23 @@ export async function startService(options: ServiceOptions = {}) {
         callId: textValue(request.query.callId, "callId") });
       return { target };
     });
-    app.get<{ Params: { id: string }; Querystring: Query }>("/api/v1/sessions/:id/messages", async request => library.messages(request.params.id, sessionMessageQuery(request.query)));
+    app.get<{ Params: { id: string }; Querystring: Query }>("/api/v1/sessions/:id/messages", async request => {
+      const query = sessionMessageQuery(request.query);
+      const result = library.messages(request.params.id, query);
+      return query.response === "summary" ? { ...result, session: sessionSummaryResponse(result.session),
+        hasMore: result.page * result.pageSize < (result.totalTurns ?? result.total) } : result;
+    });
     app.get<{ Params: { id: string }; Querystring: Query }>("/api/v1/sessions/:id/timeline", async request => library.timeline(request.params.id, sessionTimelineQuery(request.query)));
-    app.get<{ Params: { id: string }; Querystring: Query }>("/api/v1/sessions/:id/profile", async request => library.profile(request.params.id, sessionProfileQuery(request.query)));
+    app.get<{ Params: { id: string }; Querystring: Query }>("/api/v1/sessions/:id/profile", async request => {
+      const query = sessionProfileQuery(request.query);
+      return query.response === "summary" || query.section ? library.profileSection(request.params.id, query) : library.profile(request.params.id, query);
+    });
     app.post("/api/v1/sessions/refresh", async request => ({ job: worker.refreshSessions(false, sessionRefreshOptions(request.body)) }));
     app.post("/api/v1/sessions/auto-refresh", async request => {
       emptyBody(request.body);
-      return { job: worker.autoRefreshSessions(Date.now(), sync.status().intervalMs) };
+      const interval = sync.status().intervalMs;
+      const job = worker.autoRefreshSessions(Date.now(), interval);
+      return job ? { job } : { job: null, status: "skipped", reason: interval ? "no_active_job" : "disabled" };
     });
     registerResourceRoutes(app, resources);
     app.delete("/api/v1/sessions/cache", async request => { emptyBody(request.body); return { job: worker.refreshSessions(true) }; });
@@ -334,7 +365,8 @@ export async function startService(options: ServiceOptions = {}) {
     app.post<{ Params: RepositoryParams }>(`${base}/auto-refresh`, async request => {
       emptyBody(request.body);
       const { mapAutoRefreshInterval } = await readPreferences(home);
-      return { job: worker.autoRefreshRepository(request.params.id, Date.now(), mapAutoRefreshInterval) };
+      const job = worker.autoRefreshRepository(request.params.id, Date.now(), mapAutoRefreshInterval);
+      return job ? { job } : { job: null, status: "skipped", reason: mapAutoRefreshInterval ? "not_due" : "disabled" };
     });
     app.delete<{ Params: RepositoryParams }>(`${base}/cache`, async (request) => {
       emptyBody(request.body);

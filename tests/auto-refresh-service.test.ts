@@ -60,7 +60,7 @@ test("HTTP 旧自动接口只观察后台任务，策略默认关闭且关闭后
   const service = await startService({ home: directory, roots: isolatedHistoryRoots(), startupRefresh: false });
   try {
     await assert.rejects(apiRequest(service.instance, "/sessions/auto-refresh", "POST", { client: "codex" }), { code: "INVALID_INPUT" });
-    assert.deepEqual(await apiRequest(service.instance, "/sessions/auto-refresh", "POST", {}), {});
+    assert.deepEqual(await apiRequest(service.instance, "/sessions/auto-refresh", "POST", {}), { job: null, status: "skipped", reason: "disabled" });
     await apiRequest(service.instance, "/preferences", "PUT", { sessionsAutoRefreshInterval: 5000 });
     const status = await apiRequest<SessionIndexSummary>(service.instance, "/sessions/status?summary=true");
     assert.equal(status.autoSync?.intervalMs, 5_000);
@@ -70,7 +70,7 @@ test("HTTP 旧自动接口只观察后台任务，策略默认关闭且关闭后
     assert.ok(!first.job || first.job.id === status.autoSync?.job?.id);
     assert.ok(!second.job || second.job.id === first.job?.id);
     await apiRequest(service.instance, "/preferences", "PUT", { sessionsAutoRefreshInterval: 0 });
-    assert.deepEqual(await apiRequest(service.instance, "/sessions/auto-refresh", "POST", {}), {});
+    assert.deepEqual(await apiRequest(service.instance, "/sessions/auto-refresh", "POST", {}), { job: null, status: "skipped", reason: "disabled" });
     // 关闭自动策略不终止已提交的全局检查；完成后局部手动请求应照常执行。
     for (let attempt = 0; attempt < 200; attempt++) {
       const current = await apiRequest<SessionIndexSummary>(service.instance, "/sessions/status?summary=true");
@@ -93,16 +93,16 @@ test("会话库与代码地图的持久刷新开关互不影响，手动地图�
     const registration = await apiRequest<{ repository: { id: string }; job: { id: string } }>(service.instance, "/repositories", "POST", { path: repo });
     const mapRoute = `/repositories/${registration.repository.id}`;
     await apiRequest(service.instance, "/preferences", "PUT", { sessionsAutoRefreshInterval: 5_000 });
-    assert.deepEqual(await apiRequest(service.instance, `${mapRoute}/auto-refresh`, "POST", {}), {});
+    assert.deepEqual(await apiRequest(service.instance, `${mapRoute}/auto-refresh`, "POST", {}), { job: null, status: "skipped", reason: "disabled" });
     assert.equal((await apiRequest<SessionIndexSummary>(service.instance, "/sessions/status?summary=true")).autoSync?.intervalMs, 5_000);
     await apiRequest(service.instance, "/preferences", "PUT", { sessionsAutoRefreshInterval: 0, mapAutoRefreshInterval: 5_000 });
-    assert.deepEqual(await apiRequest(service.instance, "/sessions/auto-refresh", "POST", {}), {});
+    assert.deepEqual(await apiRequest(service.instance, "/sessions/auto-refresh", "POST", {}), { job: null, status: "skipped", reason: "disabled" });
     // 登记仓库也会记入检查时间；等待最短间隔后，地图独立创建新任务。
     await delay(5_010);
     const map = await apiRequest<{ job?: { id: string } }>(service.instance, `${mapRoute}/auto-refresh`, "POST", {});
     assert.ok(map.job); assert.notEqual(map.job.id, registration.job.id);
     await apiRequest(service.instance, "/preferences", "PUT", { mapAutoRefreshInterval: 0 });
-    assert.deepEqual(await apiRequest(service.instance, `${mapRoute}/auto-refresh`, "POST", {}), {});
+    assert.deepEqual(await apiRequest(service.instance, `${mapRoute}/auto-refresh`, "POST", {}), { job: null, status: "skipped", reason: "disabled" });
     assert.ok((await apiRequest<{ job: unknown }>(service.instance, `${mapRoute}/refresh`, "POST", {})).job);
   } finally { await service.close(); await rm(directory, { recursive: true, force: true }); }
 });
