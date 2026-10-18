@@ -52,8 +52,8 @@ try {
   for (const client of clientIds) environment[`AGENT_MANOR_${client.toUpperCase().replaceAll("-", "_")}_DIR`] = join(sandbox, "history", client);
   assert.equal(metadata.license, "MIT");
   assert.equal(metadata.bin.am, metadata.bin["agent-manor"]);
-  assert.equal(existsSync(join(install, "node_modules", "typescript")), false);
-  assert.equal(existsSync(join(install, "node_modules", "@agent-manor", "cli")), false);
+  assert.equal(existsSync(join(packageRoot, "node_modules", "typescript")), false);
+  assert.equal(existsSync(join(packageRoot, "node_modules", "@agent-manor", "cli")), false);
   cli = join(packageRoot, "dist/cli.js");
   const command = args => JSON.parse(run(process.execPath, [cli, ...args, "--json"]).stdout);
   const bindir = process.platform === "win32" ? install : join(install, "bin");
