@@ -39,25 +39,42 @@ try {
       const a = indicator.getBoundingClientRect(), b = selected.getBoundingClientRect();
       return Math.abs(a.left - b.left) < 1 && Math.abs(a.width - b.width) < 1 && !indicator.getAnimations().some(animation => animation.playState === "running");
     }, selector);
-    await page.evaluate(() => {
-      window.motionDurations = [];
+    await page.addInitScript(() => {
+      window.motionDurations = []; window.viewEntries = []; window.panelEntries = [];
       const original = Element.prototype.animate;
       Element.prototype.animate = function(frames, options) {
-        if (this.classList.contains("selection-indicator")) window.motionDurations.push(typeof options === "number" ? options : options?.duration);
+        const duration = typeof options === "number" ? options : options?.duration;
+        if (this.classList.contains("selection-indicator")) window.motionDurations.push(duration);
+        if (this.classList.contains("product-view")) window.viewEntries.push({ duration, frames });
+        if (this.id === "file-details-content") window.panelEntries.push({ duration, frames });
         return original.call(this, frames, options);
       };
     });
     await page.emulateMedia({ reducedMotion: "no-preference" });
     await page.setViewportSize({ width: 1440, height: 1000 });
+    await page.reload();
     await page.locator('.overview-results[aria-busy="false"]').waitFor();
     await page.locator('.weekly-review[aria-busy="false"] .weekly-review-groups').waitFor();
     ensure(await page.locator("html").evaluate(el => parseFloat(getComputedStyle(el).getPropertyValue("--motion-state"))) > 0, "动效复用共享时长");
+    ensure(await page.evaluate(() => window.viewEntries.length === 0), "首次打开不播放切页动效");
     await aligned(".product-nav");
     for (const name of ["会话库", "代码地图", "用量统计", "资源管理", "总览"]) await button(name).click();
     await aligned(".product-nav"); ensure(await page.locator('.product-nav [aria-current="page"]').innerText() === "总览", "连续导航最终选择与底板对齐");
-    ensure(await page.evaluate(() => window.motionDurations.includes(170)), "生产压缩后的时间单位仍产生170ms动态过渡");
+    ensure(await page.evaluate(() => window.motionDurations.includes(240)), "生产压缩后的时间单位仍产生240ms导航过渡");
+    ensure(await page.evaluate(() => window.viewEntries.length === 5 && window.viewEntries.every(entry => entry.duration === 160 && entry.frames.every(frame => Object.keys(frame).every(key => key === "opacity")))), "主动切页每次只播放一次160ms透明度衔接");
+    ensure(await page.locator(".product-view[hidden]").evaluateAll(elements => elements.every(el => el.getAnimations().length === 0)), "快速切页取消旧页面动画");
+    await button("会话库").click();
+    await page.locator('.product-view:not([hidden])').evaluate(el => el.getAnimations().forEach(animation => { animation.pause(); animation.currentTime = 0; }));
+    await page.getByRole("textbox", { name: "搜索会话标题和消息", exact: true }).click();
+    ensure(await page.locator('.product-view:not([hidden])').evaluate(el => el.getAnimations().length === 0) && await page.getByRole("textbox", { name: "搜索会话标题和消息", exact: true }).evaluate(el => el === document.activeElement), "切页过渡中控件立即响应并停止过渡");
+    await button("总览").click(); await page.locator('.overview-results[aria-busy="false"]').waitFor();
+    const entries = await page.evaluate(() => window.viewEntries.length);
+    await button("总览").click(); await button("更新总览").click();
+    await page.locator('.overview-results[aria-busy="false"]').waitFor(); await page.waitForLoadState("networkidle");
+    ensure(await page.evaluate(() => window.viewEntries.length) === entries, "同页导航和数据刷新不重播切页动效");
     await page.getByRole("combobox", { name: "日期范围", exact: true }).click();
     ensure(await page.getByRole("listbox").evaluate(el => getComputedStyle(el).animationName) === "motion-menu-in", "共享筛选菜单使用短入场");
+    ensure(await page.getByRole("listbox").evaluate(el => getComputedStyle(el).animationDuration === "0.23s" && Math.abs(parseFloat(getComputedStyle(el).getPropertyValue("--motion-enter-y"))) === 8), "菜单以230ms和8px位移清楚展开");
     await page.keyboard.press("Escape"); await page.getByRole("listbox").waitFor({ state: "hidden" });
     ensure(await page.evaluate(() => document.activeElement?.getAttribute("aria-label")) === "日期范围", "菜单退出后焦点恢复");
     await page.locator(".weekly-review-metric").filter({ has: page.getByText("平均模型步骤", { exact: true }) }).click();
@@ -70,6 +87,7 @@ try {
     await page.emulateMedia({ reducedMotion: "no-preference" });
     await button("代码地图").click(); await page.locator(".map-file").first().waitFor(); await aligned(".code-map-tabs");
     const file = page.locator(".map-file").first(); await file.click();
+    ensure(await page.evaluate(() => window.panelEntries.some(entry => entry.duration === 280 && entry.frames[0].translate === "16px 0")), "侧栏内容以280ms和16px位移展开");
     const fitScale = Number(await page.locator(".code-map").getAttribute("data-scale"));
     await button("缩小地图").evaluate(button => button.addEventListener("click", () => {
       const map = document.querySelector(".code-map"), matrix = new DOMMatrix(getComputedStyle(map.querySelector(".map-scene")).transform);
@@ -114,7 +132,7 @@ try {
     await page.getByRole("combobox", { name: "日期范围", exact: true }).click();
     ensure(await page.getByRole("listbox").evaluate(el => getComputedStyle(el).animationName) === "none", "减少动态效果下菜单直接显示");
     await page.keyboard.press("Escape"); await page.getByRole("listbox").waitFor({ state: "hidden" });
-    await button("显示语言").click(); await page.getByRole("menuitemradio", { name: "English", exact: true }).click(); await aligned(".product-nav");
+    await button("显示语言").click(); await page.getByRole("menuitemradio", { name: "English", exact: true }).click(); await button("Overview").waitFor(); await aligned(".product-nav");
     ensure(await page.locator('.product-nav [aria-current="page"]').innerText() === "Overview", "英文导航字宽变化后重新对齐");
     await page.emulateMedia({ reducedMotion: "no-preference" }); await page.setViewportSize({ width: 390, height: 844 }); await aligned(".product-nav");
     await button("Appearance").click(); await page.getByRole("combobox", { name: "Display mode", exact: true }).click(); await page.getByRole("option", { name: "Dark", exact: true }).click(); await page.keyboard.press("Escape");
@@ -122,10 +140,12 @@ try {
     await button("Sessions").click(); await page.locator(".session-compact-actions button").first().click();
     await page.locator(".session-list-item").first().waitFor(); await aligned(".product-nav");
     ensure(await page.locator(".session-sidebar").evaluate(el => getComputedStyle(el).animationName) === "motion-drawer-left", "窄屏会话清单沿左侧展开");
+    ensure(await page.locator(".session-sidebar").evaluate(el => getComputedStyle(el).opacity === "1"), "窄屏抽屉侧滑时保持表面不透明");
     await page.screenshot({ path: `${artifacts}/motion-mobile-en-dark.png`, fullPage: true });
     await page.emulateMedia({ reducedMotion: "reduce" }); await page.setViewportSize({ width: 1440, height: 1000 });
     for (const name of ["Code map", "Resources", "Usage", "Overview"]) await button(name).click();
     await aligned(".product-nav"); ensure(await page.locator(".selection-indicator").first().evaluate(el => el.getAnimations().length === 0), "减少动态效果下连续导航没有残留动画");
+    ensure(await page.locator('.product-view:not([hidden])').evaluate(el => el.getAnimations().length === 0), "减少动态效果下功能页立即到位");
     ensure(errors.length === 0, "浏览器没有运行错误"); return { passed: true, checks, errors };
   };
   const output = await browser(["run-code", `async page => (${verify.toString()})(page, ${JSON.stringify(artifacts)})`]);

@@ -28,7 +28,7 @@ export function SelectionIndicator({ value, selector = '[aria-selected="true"]',
         animation = animateSurface(node, [
           { transform: `translate(${previous.left - parent.left + group.scrollLeft - group.clientLeft}px, ${previous.top - parent.top + group.scrollTop - group.clientTop}px) scaleX(${previous.width / box.width})` },
           { transform: `translate(${x}px, ${y}px) scaleX(1)` },
-        ]);
+        ], "--motion-navigation");
       }
     };
     refresh.current = update;

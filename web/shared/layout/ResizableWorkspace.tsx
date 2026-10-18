@@ -42,7 +42,7 @@ export function ResizableWorkspace({ sidebarCollapsed, detailsCollapsed, childre
       if (previousCollapsed.current[side] && !collapsed) {
         const content = document.getElementById(panelSemantics(side, semantics).controls);
         if (content && workspace.current?.contains(content)) {
-          const animation = animateSurface(content, [{ opacity: .75, translate: `${side === "sidebar" ? -6 : 6}px 0` }, { opacity: 1, translate: "0 0" }], "--motion-panel");
+          const animation = animateSurface(content, [{ opacity: .6, translate: `${side === "sidebar" ? -16 : 16}px 0` }, { opacity: 1, translate: "0 0" }], "--motion-panel");
           if (animation) animations.push(animation);
         }
       }

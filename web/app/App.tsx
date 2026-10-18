@@ -18,6 +18,7 @@ import { AppearanceMenu } from "../shared/ui/AppearanceMenu";
 import { AutoRefreshControl } from "../shared/ui/AutoRefreshControl";
 import { Hint } from "../shared/ui/Hint";
 import { SelectionIndicator } from "../shared/ui/SelectionIndicator";
+import { animateSurface } from "../shared/motion";
 import "./navigation.css";
 
 export function App() {
@@ -48,7 +49,23 @@ export function App() {
     activeView.current = next;
     setView(next);
   }, []);
-  useLayoutEffect(() => { globalThis.scrollTo(0, viewScroll.current[view]); }, [view]);
+  const previousView = useRef(view);
+  useLayoutEffect(() => {
+    globalThis.scrollTo(0, viewScroll.current[view]);
+    if (previousView.current === view) return;
+    previousView.current = view;
+    const content = document.querySelector<HTMLElement>(".product-view:not([hidden])");
+    if (!content) return;
+    // 仅主动切页做轻微明度衔接，不改变固定面板参照，也不等待数据或动画再交互。
+    const motion = animateSurface(content, [{ opacity: .78 }, { opacity: 1 }], "--motion-view");
+    if (!motion) return;
+    const stop = () => motion.cancel();
+    const inputs = ["pointerdown", "keydown", "wheel"] as const;
+    for (const input of inputs) content.addEventListener(input, stop, { capture: true, passive: true });
+    const clean = () => { for (const input of inputs) content.removeEventListener(input, stop, true); };
+    void motion.finished.then(clean, clean);
+    return () => { clean(); motion.cancel(); };
+  }, [view]);
   useEffect(() => { document.title = `AgentManor · ${t({ overview: "overview.title", map: "codeMap.title", sessions: "codeMap.navigation.sessions", resources: "codeMap.navigation.resources", usage: "usage.title" }[view])}`; }, [view, language]);
   const [sessionTarget, setSessionTarget] = useState<{ sessionId: string; messageId?: string; version?: string; mode?: "brief" | "full" | "trace"; page?: number; turnPosition?: number; branch?: string }>();
   useEffect(() => {

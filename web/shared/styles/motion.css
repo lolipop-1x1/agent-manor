@@ -1,10 +1,13 @@
 :root {
   --motion-feedback: 110ms;
   --motion-state: 170ms;
-  --motion-panel: 210ms;
+  --motion-navigation: 240ms;
+  --motion-menu: 230ms;
+  --motion-panel: 280ms;
+  --motion-view: 160ms;
   --motion-exit: 100ms;
   --motion-focus: 550ms;
-  --motion-ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --motion-ease-out: cubic-bezier(0.2, 0.75, 0.25, 1);
 }
 
 /* 反馈只影响操作对象；数据区域、布局尺寸和焦点轮廓保持即时。 */
@@ -34,13 +37,13 @@
 
 /* Radix 的 Presence 保持退场节点；独立 translate 不覆盖弹窗自身的居中 transform。 */
 :where(.filter-menu, .appearance-menu, .resource-tools-menu, .dropdown-content) {
-  --motion-enter-x: 0px; --motion-enter-y: -3px;
+  --motion-enter-x: 0px; --motion-enter-y: -8px;
   transform-origin: var(--radix-popover-content-transform-origin, var(--radix-select-content-transform-origin, var(--radix-dropdown-menu-content-transform-origin, center top)));
 }
-:where(.filter-menu, .appearance-menu, .resource-tools-menu, .dropdown-content)[data-side="top"] { --motion-enter-y: 3px; }
-:where(.filter-menu, .appearance-menu, .resource-tools-menu, .dropdown-content)[data-side="left"] { --motion-enter-x: 3px; --motion-enter-y: 0px; }
-:where(.filter-menu, .appearance-menu, .resource-tools-menu, .dropdown-content)[data-side="right"] { --motion-enter-x: -3px; --motion-enter-y: 0px; }
-:where(.filter-menu, .appearance-menu, .resource-tools-menu, .dropdown-content)[data-state="open"] { animation: motion-menu-in var(--motion-state) var(--motion-ease-out); }
+:where(.filter-menu, .appearance-menu, .resource-tools-menu, .dropdown-content)[data-side="top"] { --motion-enter-y: 8px; }
+:where(.filter-menu, .appearance-menu, .resource-tools-menu, .dropdown-content)[data-side="left"] { --motion-enter-x: 8px; --motion-enter-y: 0px; }
+:where(.filter-menu, .appearance-menu, .resource-tools-menu, .dropdown-content)[data-side="right"] { --motion-enter-x: -8px; --motion-enter-y: 0px; }
+:where(.filter-menu, .appearance-menu, .resource-tools-menu, .dropdown-content)[data-state="open"] { animation: motion-menu-in var(--motion-menu) var(--motion-ease-out); }
 :where(.filter-menu, .appearance-menu, .resource-tools-menu, .dropdown-content)[data-state="closed"] { animation: motion-menu-out var(--motion-exit) ease-out; pointer-events: none; }
 /* 选择后的下一次键盘动作立即交还外层，不让退出节点占住 Radix 的顶层焦点。 */
 :is(.filter-menu, .dropdown-content, .resource-tools-menu):is([role="listbox"], [role="menu"], .project-picker-menu)[data-state="closed"] { animation: none; }
@@ -50,11 +53,11 @@
 :where(.dialog-content, .overview-investigation, .usage-request-dialog, .pricing-workspace)[data-state="closed"] { animation: motion-panel-out var(--motion-exit) ease-out; pointer-events: none; }
 :where(.tooltip, .chart-tooltip, .map-hover-hint, .replay-timeline-preview) { animation: motion-hint-in 80ms ease-out; }
 
-@keyframes motion-menu-in { from { opacity: .6; translate: var(--motion-enter-x) var(--motion-enter-y); } to { opacity: 1; translate: 0 0; } }
+@keyframes motion-menu-in { from { opacity: .4; translate: var(--motion-enter-x) var(--motion-enter-y); } to { opacity: 1; translate: 0 0; } }
 @keyframes motion-menu-out { from { opacity: 1; } to { opacity: 0; translate: var(--motion-enter-x) var(--motion-enter-y); } }
 @keyframes motion-overlay-in { from { opacity: 0; } to { opacity: 1; } }
 @keyframes motion-overlay-out { from { opacity: 1; } to { opacity: 0; } }
-@keyframes motion-panel-in { from { opacity: .7; translate: 0 8px; } to { opacity: 1; translate: 0 0; } }
+@keyframes motion-panel-in { from { opacity: .55; translate: 0 10px; } to { opacity: 1; translate: 0 0; } }
 @keyframes motion-panel-out { from { opacity: 1; translate: 0 0; } to { opacity: 0; translate: 0 3px; } }
 @keyframes motion-hint-in { from { opacity: .65; } to { opacity: 1; } }
 
@@ -70,11 +73,11 @@
   .sessions-shell[data-compact-panel="profile"] .session-profile { animation: motion-drawer-right var(--motion-panel) var(--motion-ease-out); }
   .session-mobile-backdrop { animation: motion-overlay-in var(--motion-state) ease-out; }
 }
-@keyframes motion-drawer-left { from { opacity: .75; translate: -12px 0; } to { opacity: 1; translate: 0 0; } }
-@keyframes motion-drawer-right { from { opacity: .75; translate: 12px 0; } to { opacity: 1; translate: 0 0; } }
+@keyframes motion-drawer-left { from { translate: -20px 0; } to { translate: 0 0; } }
+@keyframes motion-drawer-right { from { translate: 20px 0; } to { translate: 0 0; } }
 
 @media (prefers-reduced-motion: reduce) {
-  :root { --motion-feedback: 0ms; --motion-state: 0ms; --motion-panel: 0ms; --motion-exit: 0ms; --motion-focus: 0ms; }
+  :root { --motion-feedback: 0ms; --motion-state: 0ms; --motion-navigation: 0ms; --motion-menu: 0ms; --motion-panel: 0ms; --motion-view: 0ms; --motion-exit: 0ms; --motion-focus: 0ms; }
   :where(.filter-menu, .appearance-menu, .resource-tools-menu, .dropdown-content, .dialog-overlay, .overview-dialog-overlay,
     .usage-dialog-overlay, .dialog-content, .overview-investigation, .usage-request-dialog, .pricing-workspace,
     .tooltip, .chart-tooltip, .map-hover-hint, .replay-timeline-preview, .replay-current-outline,
