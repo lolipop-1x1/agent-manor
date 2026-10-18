@@ -9,7 +9,7 @@ import { createServer } from "node:net";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 const root = fileURLToPath(new URL("../", import.meta.url));
-const sandbox = await mkdtemp(join(tmpdir(), "agent-manor-installed-"));
+const sandbox = await mkdtemp(join(tmpdir(), "agent-manor-installed space-"));
 const install = join(sandbox, "installation");
 const outside = join(sandbox, "outside");
 const home = join(sandbox, "data");
@@ -62,7 +62,8 @@ try {
     const executable = join(bindir, `${name}${process.platform === "win32" ? ".cmd" : ""}`);
     if (process.platform !== "win32") return run(executable, args);
     const quote = value => `"${String(value).replaceAll('"', '""')}"`;
-    return run(process.env.ComSpec ?? "cmd.exe", ["/d", "/s", "/c", `"${[executable, ...args].map(quote).join(" ")}"`]);
+    // cmd 自己解释这层引号，禁止 Node 再按普通 Windows 程序参数转义。
+    return run(process.env.ComSpec ?? "cmd.exe", ["/d", "/s", "/c", `"${[executable, ...args].map(quote).join(" ")}"`], { windowsVerbatimArguments: true });
   }
   assert.equal(bin("am", ["--version"]).stdout.trim(), metadata.version);
   assert.equal(bin("agent-manor", ["--version"]).stdout.trim(), metadata.version);
