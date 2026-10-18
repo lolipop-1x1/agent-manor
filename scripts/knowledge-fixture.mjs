@@ -24,22 +24,23 @@ export async function knowledgeFixture() {
       ["tool_result", "发现静态快照，动态切换验证已通过", { callId: `synthetic-call-${turn}`, status: "success" }], ["assistant", "已核对读取链路并验证动态切换", { final: "explicit" }],
     ]) {
       const message = { id: `${id}:message:${ordinal}`, sessionId: id, ordinal, recordLine: ordinal + 1, turnId: `${id}:turn:${turn}`, kind, text, occurredAt: new Date(Date.now() - 86_400_000 + ordinal * 1000).toISOString(), ...extra };
-      if (index === 0 && ordinal === 2) firstMessages.push(message);
+      if (index === 0 && (ordinal === 2 || ordinal === 3)) firstMessages.push(message);
       pending.sink.message(message); ordinal++;
     }
-    pending.flush(); sessions.finishRevision(pending.revision, { id, client: index === 2 ? "claude" : "codex", clientSessionId: id, path, sourceId: id, title: `合成排障会话 ${index + 1}`, titleOrigin: "recorded", project: `/synthetic/projects/${index === 2 ? "beta" : "atlas"}`, messageCount: ordinal, turnCount: 4, models: ["synthetic-model"], gaps: [], startedAt: new Date(Date.now() - 86_400_000).toISOString(), updatedAt: new Date(Date.now() - 3_600_000).toISOString() });
+    pending.flush(); sessions.finishRevision(pending.revision, { id, client: index === 2 ? "claude" : "codex", clientSessionId: id, path, sourceId: id, title: `合成排障会话 ${index + 1}`, titleOrigin: "recorded", project: `/synthetic/projects/${index === 2 ? "knowledge-platform-with-a-very-long-project-name" : "atlas"}`, messageCount: ordinal, turnCount: 4, models: ["synthetic-model"], gaps: [], startedAt: new Date(Date.now() - 86_400_000).toISOString(), updatedAt: new Date(Date.now() - 3_600_000).toISOString() });
     revisions.push({ path, revision: pending.revision, fingerprint: "synthetic" });
   }
   const version = sessions.publish(sessions.createJob().id, revisions, []); sessions.close();
   const store = new KnowledgeStore(join(home, "knowledge", "knowledge.sqlite"));
   const source = { kind: "extraction", client: "codex", sessionId: "knowledge-session-0", sessionTitle: "合成排障会话 1", sourceVersion: version, branch: "current", messageId: firstMessages[0].id, turnId: firstMessages[0].turnId, turnPosition: 1, ordinal: 2, hash: knowledgeMessageHash(firstMessages[0]), excerpt: firstMessages[0].text };
-  const main = store.create({ title: "配置更新后仍读取旧值", body: "## 适用场景\n服务端配置已更新，客户端仍读取旧值。\n\n## 排查方法\n先检查静态快照，再检查缓存。\n\n## 验证\n动态切换配置，核对客户端新值。", type: "procedure", subject: "project", scope: { kind: "project", project: "/synthetic/projects/atlas" }, language: "zh-CN", tags: ["动态配置", "排障"], sources: [source] });
+  const limitationDetails = [{ message: "Synthetic internal bounded input diagnostic", messageDescriptor: { key: "knowledge.limitation.inputSummarized" } }];
+  const main = store.create({ title: "配置更新后仍读取旧值", body: "## 适用场景\n服务端配置已更新，客户端仍读取旧值。\n\n## 排查方法\n先检查静态快照，再检查缓存。\n\n## 验证\n动态切换配置，核对客户端新值。", type: "procedure", subject: "project", scope: { kind: "project", project: "/synthetic/projects/atlas" }, language: "zh-CN", tags: ["动态配置", "排障"], sources: [{ ...source, limitationDetails }, { ...source, messageId: firstMessages[1].id, ordinal: 3, hash: knowledgeMessageHash(firstMessages[1]), excerpt: firstMessages[1].text, limitationDetails }] });
   store.review(main.id, { revisionId: main.revision.id, action: "approve" });
   const { id: _id, knowledgeId: _knowledgeId, version: _version, createdAt: _created, review: _review, ...content } = main.revision;
   store.revise(main.id, { ...content, baseRevisionId: main.revision.id, body: `${content.body}\n\n## 新增验证\n覆盖断线重连后的配置恢复。`, changeReason: "补充断线重连验证" });
   for (let index = 0; index < 13; index++) {
     const personal = index % 4 === 1, general = index % 4 === 2;
-    const entry = store.create({ title: ["代码评审保留证据", "按用途组织项目文档", "排障时先建立最小复现", "缓存失效的验证方法"][index % 4] + ` ${index + 1}`, body: "保留适用条件、验证方法与必要例外，依据实际结果修正结论。\n\n" + "人工合成知识正文。\n".repeat(3), type: ["constraint", "preference", "lesson", "fact"][index % 4], subject: personal ? "personal" : general ? "general" : "project", scope: personal || general ? { kind: "global" } : { kind: "project", project: `/synthetic/projects/${index % 2 ? "beta" : "atlas"}` }, language: "zh-CN", tags: [index % 2 ? "开发约定" : "验证"], sources: [{ kind: "manual", client: index % 2 ? "claude" : "codex" }] });
+    const entry = store.create({ title: ["代码评审保留证据", "按用途组织项目文档", "排障时先建立最小复现", "缓存失效的验证方法"][index % 4] + ` ${index + 1}`, body: "保留适用条件、验证方法与必要例外，依据实际结果修正结论。\n\n" + "人工合成知识正文。\n".repeat(3), type: ["constraint", "preference", "lesson", "fact"][index % 4], subject: personal ? "personal" : general ? "general" : "project", scope: personal || general ? { kind: "global" } : { kind: "project", project: `/synthetic/projects/${index % 2 ? "knowledge-platform-with-a-very-long-project-name" : "atlas"}` }, language: "zh-CN", tags: [index % 2 ? "开发约定" : "验证"], sources: [{ kind: "manual", client: index % 2 ? "claude" : "codex" }] });
     store.review(entry.id, { revisionId: entry.revision.id, action: "approve" });
   }
   store.close();

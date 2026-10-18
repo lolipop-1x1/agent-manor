@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import type { KnowledgeDetail, KnowledgeSource } from "../src/knowledge-contracts.js";
 import { knowledgeTypes } from "../src/knowledge-contracts.js";
 import { i18n, translate, translateMessageOrOriginal } from "../src/i18n/index.js";
-import { editableDraft, emptyDraft, knowledgeListWidth, knowledgeTypeKey, readKnowledgeAddress, restoreKnowledgeFocus, sourceAddress } from "../web/features/knowledge/knowledge-model.js";
+import { editableDraft, emptyDraft, knowledgeListWidth, knowledgeNavigationWidth, knowledgeSourceGroups, knowledgeTypeKey, readKnowledgeAddress, restoreKnowledgeFocus, sourceAddress } from "../web/features/knowledge/knowledge-model.js";
 import { knowledgeLimitations } from "../src/knowledge/diagnostics.js";
 
 test("来源回查只允许已核验消息，并保留消息、轮次、分支和当前可用版本", () => {
@@ -85,6 +85,42 @@ test("知识列表调宽保留正文最小空间，窄窗口不改写原宽度�
   assert.equal(knowledgeListWidth(1000, 900), 640);
   assert.equal(knowledgeListWidth(800, 500), 440);
   assert.equal(knowledgeListWidth(1200, 500), 500);
+});
+
+test("知识导航调宽独立约束，并为列表和正文保留空间", () => {
+  assert.equal(knowledgeNavigationWidth(1536), 192);
+  assert.equal(knowledgeNavigationWidth(1536, 100), 176);
+  assert.equal(knowledgeNavigationWidth(1536, 500), 360);
+  assert.equal(knowledgeNavigationWidth(1024, 360), 349);
+  assert.equal(knowledgeNavigationWidth(1536, 360), 360);
+});
+
+test("来源按会话分支和输入版本分组，不丢弃相同内容的不同消息", () => {
+  const base: KnowledgeSource = { kind: "extraction", client: "codex", sessionId: "synthetic-session", branch: "current", sourceVersion: "v1", excerpt: "Same evidence", status: "available" };
+  const sources = [{ ...base, messageId: "m1" }, { ...base, messageId: "m2" }, { ...base, branch: "alternative", messageId: "m3" }, { ...base, sourceVersion: "v2", messageId: "m4" }, { ...base, sessionId: "another-session", messageId: "m5" }];
+  const result = knowledgeSourceGroups(sources);
+  assert.equal(result.groups.length, 4); assert.equal(result.groups[0]!.sources.length, 2);
+  assert.deepEqual(result.groups.flatMap(group => group.sources.map(source => source.messageId)), ["m1", "m2", "m3", "m4", "m5"]);
+  assert.deepEqual(result.groups[0]!.sources.map(sourceAddress), sources.slice(0, 2).map(sourceAddress));
+});
+
+test("重复常规说明折叠归集，冲突和未知原文继续作为重要限制保留", () => {
+  const routine = { message: "Synthetic original diagnostic", messageDescriptor: { key: "knowledge.limitation.inputSummarized" } };
+  const conflict = { message: "Conflicting source evidence", messageDescriptor: { key: "knowledge.limitation.topicConflict" } };
+  const base: KnowledgeSource = { kind: "extraction", sessionId: "synthetic-session", limitationDetails: [routine, conflict] };
+  const sources = [base, { ...base, messageId: "m2", limitationDetails: [{ ...routine, message: "Alternative original wording" }, conflict] }, { ...base, messageId: "m3", limitationDetails: undefined, limitation: "Unknown external diagnostic" }];
+  const snapshot = structuredClone(sources), result = knowledgeSourceGroups(sources);
+  assert.equal(result.notes.length, 1); assert.equal(result.groups[0]!.warnings.length, 2);
+  assert.equal(result.groups[0]!.warnings[1]!.message, "Unknown external diagnostic");
+  assert.deepEqual(sources, snapshot, "展示归集不能改写快照或原始诊断");
+});
+
+test("无会话身份的提交不混合来源，覆盖缺失和未读取媒体保持显式提示", () => {
+  const sources: KnowledgeSource[] = [{ kind: "agent", taskId: "run-a", excerpt: "A" }, { kind: "agent", taskId: "run-b", excerpt: "B" }, { kind: "manual", excerpt: "C" }, { kind: "manual", excerpt: "D" }];
+  assert.equal(knowledgeSourceGroups(sources).groups.length, 4);
+  const limitations = ["missingTime", "mediaOmitted"].map(key => ({ message: `Synthetic ${key}`, messageDescriptor: { key: `knowledge.limitation.${key}` } }));
+  const result = knowledgeSourceGroups([{ kind: "extraction", sessionId: "synthetic-session", limitationDetails: limitations }]);
+  assert.equal(result.notes.length, 0); assert.deepEqual(result.groups[0]!.warnings, limitations);
 });
 
 test("任务事件、用途及输入优化诊断都具备中英文文案", () => {

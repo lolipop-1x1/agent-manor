@@ -34,6 +34,16 @@ try {
       await open(`#knowledge?view=all&id=${config.mainId}`); await settled();
       await button("外观").click(); await select("显示模式", "明亮"); await page.keyboard.press("Escape"); await page.keyboard.press("Escape"); await page.locator(".appearance-menu").waitFor({ state: "hidden" });
       ensure((await page.getByRole("heading", { name: "配置更新后仍读取旧值", exact: true }).count()) === 1, "主界面显示当前发布正文");
+      const navigationSeparator = page.getByRole("separator", { name: "调节知识导航宽度", exact: true }), navigationPane = page.locator("#knowledge-navigation-pane");
+      const initialNavigationWidth = (await navigationPane.boundingBox()).width; await navigationSeparator.focus(); await navigationSeparator.press("ArrowRight");
+      ensure(Math.abs((await navigationPane.boundingBox()).width - initialNavigationWidth - 10) < 2, "项目导航支持键盘调宽");
+      const navigationHandle = await navigationSeparator.boundingBox(); await page.mouse.move(navigationHandle.x + 4, navigationHandle.y + 50); await page.mouse.down(); await page.mouse.move(navigationHandle.x + 64, navigationHandle.y + 50); await page.mouse.up();
+      const navigationWidth = (await navigationPane.boundingBox()).width; ensure(navigationWidth > initialNavigationWidth + 40, "项目导航支持鼠标拖宽");
+      await page.reload(); await settled(); ensure(Math.abs((await navigationPane.boundingBox()).width - navigationWidth) < 2, "项目导航宽度刷新后独立保留");
+      const longProject = navigationPane.getByRole("button", { name: "knowledge-platform-with-a-very-long-project-name", exact: true }); await longProject.focus();
+      await page.getByRole("tooltip").filter({ hasText: "/synthetic/projects/knowledge-platform-with-a-very-long-project-name" }).waitFor();
+      ensure(await longProject.locator("span").evaluate(el => getComputedStyle(el).textOverflow === "ellipsis" && el.getBoundingClientRect().right <= el.parentElement.getBoundingClientRect().right), "长项目名正确省略且键盘聚焦可看完整路径");
+      await page.keyboard.press("Escape"); await navigationSeparator.focus(); await navigationSeparator.press("Home");
       const separator = page.getByRole("separator", { name: "调节知识列表宽度", exact: true });
       const firstWidth = (await page.locator(".knowledge-list-pane").boundingBox()).width; await separator.focus(); await separator.press("ArrowRight");
       ensure(Math.abs((await page.locator(".knowledge-list-pane").boundingBox()).width - firstWidth - 10) < 2, "列表分隔线支持键盘调宽");
@@ -81,6 +91,7 @@ try {
     await group("review", async () => {
       await open(`#knowledge?page=review&view=all&review=pending&id=${config.mainId}`); await settled();
       await page.getByRole("heading", { name: "审阅修改", exact: true }).waitFor();
+      ensure(await page.locator(".knowledge-comparison > section").count() === 2, "已有发布版本的修改保留双栏对比");
       ensure(await page.locator(".knowledge-diff.added").count() > 0, "审阅显示正文差异"); await shot("02-review-zh-light");
       await button("拒绝建议").click(); await confirm("拒绝此建议");
       ensure((await api(`/entries/${config.mainId}?review=all&availability=all`)).revisions[0].review === "rejected", "拒绝仅处理候选");
@@ -97,7 +108,13 @@ try {
       await button("更多操作").click(); await page.getByRole("menuitem", { name: "恢复有效", exact: true }).click(); await confirm("恢复有效");
       ensure((await api("/entries")).items.some(item => item.id === config.mainId), "明确恢复有效");
       await open(`#knowledge?view=all&id=${config.mainId}`); await settled();
-      await page.getByRole("tab", { name: "来源", exact: true }).click(); await page.getByRole("link", { name: "查看原始对话", exact: true }).first().click();
+      await page.getByRole("tab", { name: "来源", exact: true }).click();
+      ensure(await page.locator(".knowledge-source-group").count() === 1 && await page.locator(".knowledge-source-evidence > li").count() === 2, "同会话来源只展示一次标题并保留不同消息");
+      const notes = page.locator(".knowledge-extraction-notes"); ensure(await notes.count() === 1 && await notes.getAttribute("open") === null, "重复输入精简提示合并并默认折叠");
+      await notes.locator("summary").click(); ensure(await notes.locator(".knowledge-diagnostic").count() === 1 && await notes.getByText("原始详情", { exact: true }).count() === 0 && !(await notes.innerText()).includes("Synthetic internal bounded input diagnostic"), "内置提示只展示本地化说明不重复英文原文");
+      await page.locator(".knowledge-source-evidence > li").nth(1).locator("summary").click();
+      ensure((await page.locator(".knowledge-source-evidence > li").nth(1).getByRole("link", { name: "查看原始对话", exact: true }).getAttribute("href")).includes("message%3A3"), "分组后的每条依据仍精确定位原始消息");
+      await page.getByRole("link", { name: "查看原始对话", exact: true }).first().click();
       await page.waitForURL(/#sessions/); await page.locator(".trace-ledger,.session-message").first().waitFor(); ensure(true, "来源定位回到原始对话过程");
     });
     await group("tasks", async () => {
@@ -121,7 +138,19 @@ try {
       await shot("03-tasks-zh-light"); await button("继续").click();
       await page.getByText("已完成", { exact: true }).first().waitFor({ timeout: 30_000 });
       const status = await api("/extractions"); ensure(status.jobs[0].status === "complete" && status.jobs[0].results.length > 0, "恢复后完成并保存待审结果");
-      await page.getByRole("tab", { name: "结果", exact: true }).click(); await button("查看待审结果").click(); await page.getByRole("heading", { name: "审阅修改", exact: true }).waitFor(); ensure(true, "任务结果进入审阅闭环");
+      await page.getByRole("tab", { name: "结果", exact: true }).click(); await button("查看待审结果").click(); await page.getByRole("heading", { name: "审阅新知识", exact: true }).waitFor(); ensure(true, "任务结果进入审阅闭环");
+      ensure(await page.locator(".knowledge-comparison").count() === 0 && await page.locator(".knowledge-new-review .knowledge-diff").count() === 0, "新知识单栏正常阅读不保留空旧版或全量高亮");
+      await shot("03c-review-new-zh-light");
+    });
+    await group("review-limitations", async () => {
+      await open(); await settled();
+      const created = await page.evaluate(async () => (await fetch("/api/v1/knowledge/entries", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ title: "合成冲突审阅", body: "两项证据仍需人工判断。", scope: { kind: "global" }, sources: [{ kind: "manual", limitationDetails: [{ message: "Synthetic conflict diagnostic", messageDescriptor: { key: "knowledge.limitation.topicConflict" } }] }, { kind: "manual", limitation: "Synthetic unknown external diagnostic" }] }) })).json());
+      await open(`#knowledge?page=review&review=pending&id=${created.id}`); await settled(); await page.getByRole("heading", { name: "审阅新知识", exact: true }).waitFor();
+      ensure(await page.getByText("同主题证据存在冲突，相关内容已保留并等待审阅。", { exact: true }).isVisible(), "冲突限制仍在对应来源显式显示");
+      ensure(await page.getByText("Synthetic unknown external diagnostic", { exact: true }).isVisible() && await page.getByText("原始详情", { exact: true }).isVisible(), "未知来源诊断保留原文与明确标识");
+      ensure(await button("确认并发布").isEnabled() && await button("编辑建议").isEnabled(), "单栏审阅保留编辑和确认操作");
+      await button("确认并发布").click(); await page.getByRole("dialog", { name: "确认发布此版本", exact: true }).getByRole("button", { name: "确认并发布", exact: true }).click();
+      ensure((await api(`/entries/${created.id}`)).revision.review === "reviewed", "单栏审阅可明确确认发布");
     });
     await group("task-history-and-picker", async () => {
       await open("#knowledge?page=tasks"); await page.getByRole("heading", { name: "任务记录", exact: true }).waitFor();
@@ -171,6 +200,11 @@ try {
       ensure(await button("Start extraction").isEnabled() && await page.getByRole("combobox", { name: "Extraction range", exact: true }).innerText() === "Entire conversation", "英文窄屏自动预览和整会话选择可用");
       ensure(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), "390px 英文深色预览无全局横向溢出");
       await shot("06-mobile-preview-en-dark");
+      const pendingItem = (await api("/entries?review=pending")).items.find(item => item.revision.title === "浏览器直接整理的知识");
+      await page.goto(`${config.base}/#knowledge?page=review&review=pending&id=${pendingItem.id}`); await page.getByRole("heading", { name: "Review new knowledge", exact: true }).waitFor(); await page.locator('.knowledge-reader[aria-busy="false"]').waitFor();
+      ensure(await page.locator(".knowledge-comparison").count() === 0 && await button("Approve and publish").isVisible(), "英文窄屏新知识单栏审阅和发布操作可用");
+      ensure(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth) && await page.getByRole("separator", { name: "Resize knowledge navigation", exact: true }).isVisible() === false, "窄屏隐藏导航分隔线且审阅无全局溢出");
+      await shot("07-mobile-review-en-dark");
     });
     if (errors.length) failures.push({ group: "runtime", message: errors.join("\n") }); else checks.push("浏览器无未处理运行错误");
     return { passed: failures.length === 0 && errors.length === 0, checks, failures, errors, screenshots };

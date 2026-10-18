@@ -12,7 +12,8 @@ import { restoreKnowledgeFocus } from "./knowledge-model";
 
 export function KnowledgeDiagnostic({ original, descriptor }: { original: string; descriptor?: MessageDescriptor }) {
   const { t } = useI18n(), recognized = isMessageDescriptorKnown(descriptor);
-  return <div className="knowledge-diagnostic">{recognized && <span>{messageText(descriptor, original)}</span>}<details className="knowledge-details"><summary>{t("common.originalDetails")}</summary><p>{original}</p></details></div>;
+  if (recognized && descriptor?.key.startsWith("knowledge.limitation.")) return <div className="knowledge-diagnostic">{messageText(descriptor, original)}</div>;
+  return <div className="knowledge-diagnostic">{recognized ? <><span>{messageText(descriptor, original)}</span><details className="knowledge-details"><summary>{t("knowledge.diagnosticDetails")}</summary><p>{original}</p></details></> : <><span className="knowledge-meta">{t("common.originalDetails")}</span><p>{original}</p></>}</div>;
 }
 export function KnowledgeLimitations({ originals = [], details = [] }: { originals?: string[]; details?: KnowledgeLimitation[] }) {
   const seen = new Set(details.map(detail => detail.message)), items: KnowledgeLimitation[] = [...details, ...originals.filter(message => !seen.has(message)).map(message => ({ message }))];

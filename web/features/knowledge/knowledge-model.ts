@@ -1,4 +1,4 @@
-import type { KnowledgeDetail, KnowledgeDraft, KnowledgeExtractionScope, KnowledgeQuery, KnowledgeSource, KnowledgeType } from "../../../src/knowledge-contracts";
+import type { KnowledgeDetail, KnowledgeDraft, KnowledgeExtractionScope, KnowledgeLimitation, KnowledgeQuery, KnowledgeSource, KnowledgeType } from "../../../src/knowledge-contracts";
 import { semanticQueryScope } from "../sessions/semantic-ui-model";
 
 export interface KnowledgeSessionSelection { id: string; title?: string; totalTurns?: number }
@@ -20,6 +20,28 @@ export function readKnowledgeAddress(hash: string): { page: KnowledgePage; id?: 
 export function knowledgeListWidth(viewport: number, preferred?: number): number {
   const maximum = Math.max(315, viewport - 360);
   return Math.min(maximum, Math.max(315, preferred ?? Math.min(460, viewport * .4)));
+}
+export function knowledgeNavigationWidth(viewport: number, preferred = 192): number {
+  return Math.min(Math.max(176, Math.min(360, viewport - 675)), Math.max(176, preferred));
+}
+const routineLimitations = new Set(["knowledge.limitation.inputSummarized", "knowledge.limitation.similarityUnavailable"]);
+export function knowledgeSourceGroups(sources: readonly KnowledgeSource[]) {
+  const groups = new Map<string, { key: string; sources: KnowledgeSource[]; warnings: KnowledgeLimitation[] }>();
+  const notes = new Map<string, KnowledgeLimitation>();
+  const identity = (item: KnowledgeLimitation) => item.messageDescriptor ? JSON.stringify([item.messageDescriptor.key, Object.entries(item.messageDescriptor.params ?? {}).sort(([left], [right]) => left.localeCompare(right))]) : item.message;
+  for (const [index, source] of sources.entries()) {
+    // 不跨会话、分支或输入版本合并证据；原始引用与摘录完整保留。
+    const key = source.sessionId ? JSON.stringify([source.kind, source.client, source.sessionId, source.branch, source.sourceVersion ?? source.currentVersion]) : `unlinked:${index}`;
+    let group = groups.get(key);
+    if (!group) { group = { key, sources: [], warnings: [] }; groups.set(key, group); }
+    group.sources.push(source);
+    const limitations = source.limitationDetails?.length ? source.limitationDetails : source.limitation ? [{ message: source.limitation }] : [];
+    for (const item of limitations) {
+      if (routineLimitations.has(item.messageDescriptor?.key ?? "")) notes.set(identity(item), item);
+      else if (!group.warnings.some(prior => identity(prior) === identity(item))) group.warnings.push(item);
+    }
+  }
+  return { groups: [...groups.values()], notes: [...notes.values()] };
 }
 function positive(value: string | null): number | undefined { const number = Number(value); return Number.isSafeInteger(number) && number > 0 ? number : undefined; }
 export function sourceAddress(source: KnowledgeSource): string | undefined {

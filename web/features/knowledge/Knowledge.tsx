@@ -7,6 +7,7 @@ import { knowledgeTypes } from "../../../src/knowledge-contracts";
 import { isAborted } from "../../shared/api";
 import { useI18n } from "../../shared/i18n";
 import { FilterSelect } from "../../shared/ui/FilterSelect";
+import { Hint } from "../../shared/ui/Hint";
 import { DatePicker } from "../../shared/ui/DatePicker";
 import { ProjectPicker } from "../../shared/ui/ProjectPicker";
 import { ResourcePagination } from "../../shared/ui/ResourcePagination";
@@ -15,7 +16,7 @@ import { KnowledgeBusy, KnowledgeError } from "./KnowledgeCommon";
 import { KnowledgeDetail } from "./KnowledgeDetail";
 import { KnowledgeEditor } from "./KnowledgeEditor";
 import { KnowledgeTasks } from "./KnowledgeTasks";
-import { KnowledgeSplit } from "./KnowledgeSplit";
+import { KnowledgeSplit, KnowledgeWorkspace } from "./KnowledgeSplit";
 import { KnowledgeSettings } from "./KnowledgeSettings";
 import { knowledgeRequest } from "./knowledge-api";
 import { knowledgeTypeKey, readKnowledgeAddress, type KnowledgePage } from "./knowledge-model";
@@ -106,7 +107,7 @@ export default function Knowledge({ active }: { active: boolean }) {
   const pageVisible = page === "library" || page === "review";
   const railContent = <>
 <header><h2>{t("knowledge.title")}<span className="knowledge-beta" title={t("knowledge.betaHelp")}>{t("knowledge.beta")}</span></h2><button className="icon-button knowledge-mobile-back" aria-label={t("knowledge.close")} onClick={() => setRailOpen(false)}><X size={17} /></button></header><nav aria-label={t("knowledge.views")}><SelectionIndicator value={query.view ?? "all"} selector='[aria-current="page"]' />{(["all", "personal", "project", "general"] as const).map(value => { const Icon = viewIcons[value]; return <button key={value} aria-current={pageVisible && query.view === value ? "page" : undefined} onClick={() => { changeQuery({ view: value, taskId: undefined }); navigate("library", { fresh: true }); }}><Icon size={18} aria-hidden="true" />{t(`knowledge.view.${value}`)}</button>; })}</nav>
-      <div className="knowledge-rail-projects"><h3>{t("knowledge.project")}</h3>{facets.projects.slice(0, 12).map(project => <button key={project} title={project} aria-pressed={query.project === project} onClick={() => { changeQuery({ view: "project", project }); navigate("library", { fresh: true }); }}><FolderSimple size={17} /><span>{project.split(/[\\/]/).filter(Boolean).at(-1) ?? project}</span></button>)}</div>
+      <div className="knowledge-rail-projects"><h3>{t("knowledge.project")}</h3>{facets.projects.slice(0, 12).map(project => <Hint key={project} label={project}><button aria-label={project.split(/[\\/]/).filter(Boolean).at(-1) ?? project} aria-pressed={query.project === project} onClick={() => { changeQuery({ view: "project", project }); navigate("library", { fresh: true }); }}><FolderSimple size={17} /><span>{project.split(/[\\/]/).filter(Boolean).at(-1) ?? project}</span></button></Hint>)}</div>
       <button className="knowledge-rail-review" onClick={() => { changeQuery({ review: "pending", taskId: undefined }); navigate("review"); }}>{t("knowledge.reviewQueue")}</button>
 
   </>;
@@ -114,8 +115,8 @@ export default function Knowledge({ active }: { active: boolean }) {
     setQuery(current => ({ ...(editing === "new" ? { view: "all", pageSize: 20 } : current), review: next.revision.review === "reviewed" ? "reviewed" : "pending", availability: "all", taskId: undefined, page: 1 }));
     setMobileReader(true); update(next);
   };
-  return <Dialog.Root open={railOpen} onOpenChange={setRailOpen}><div data-knowledge-focus-fallback tabIndex={-1} className={`knowledge-workspace${railOpen ? " rail-open" : ""}${mobileReader ? " reader-open" : ""}`}>
-    <aside className="knowledge-rail knowledge-rail-desktop" aria-label={t("knowledge.title")}>{railContent}</aside>
+  return <Dialog.Root open={railOpen} onOpenChange={setRailOpen}><KnowledgeWorkspace className={`knowledge-workspace${railOpen ? " rail-open" : ""}${mobileReader ? " reader-open" : ""}`}>
+    <aside id="knowledge-navigation-pane" className="knowledge-rail knowledge-rail-desktop" aria-label={t("knowledge.title")}>{railContent}</aside>
     <main className="knowledge-main">
       <Dialog.Trigger asChild><button className="button subtle knowledge-rail-toggle"><List size={17} />{t("knowledge.views")}</button></Dialog.Trigger>
       <div hidden={!pageVisible}><KnowledgeSplit reader={mobileReader}>
@@ -135,5 +136,5 @@ export default function Knowledge({ active }: { active: boolean }) {
       <div hidden={page !== "settings"}><KnowledgeSettings active={active && page === "settings"} onBack={() => navigate("library")} onSaved={() => setReload(value => value + 1)} onTasks={nextScope => { navigate("new"); setScope(nextScope); }} /></div>
     </main>
     {editing && <KnowledgeEditor detail={editing === "edit" ? currentDetail : undefined} projects={facets.projects} onClose={() => setEditing(undefined)} onSaved={saveEditor} />}
-  </div><Dialog.Portal><Dialog.Overlay className="dialog-overlay knowledge-rail-overlay" /><Dialog.Content className="knowledge-rail knowledge-rail-mobile" aria-describedby={undefined}><Dialog.Title className="sr-only">{t("knowledge.views")}</Dialog.Title>{railContent}</Dialog.Content></Dialog.Portal></Dialog.Root>;
+  </KnowledgeWorkspace><Dialog.Portal><Dialog.Overlay className="dialog-overlay knowledge-rail-overlay" /><Dialog.Content className="knowledge-rail knowledge-rail-mobile" aria-describedby={undefined}><Dialog.Title className="sr-only">{t("knowledge.views")}</Dialog.Title>{railContent}</Dialog.Content></Dialog.Portal></Dialog.Root>;
 }
