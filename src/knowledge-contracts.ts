@@ -111,9 +111,9 @@ export interface KnowledgeConfig {
 }
 export interface KnowledgeSettings { config: KnowledgeConfig; hasGenerationKey: boolean; hasEmbeddingKey: boolean; fingerprint: string }
 export interface KnowledgeSettingsInput { config: KnowledgeConfig; generationKey?: string | null; embeddingKey?: string | null }
-export interface KnowledgeInputMessage extends SessionMessage { turnPosition: number; hash: string; target: boolean }
+export interface KnowledgeInputMessage extends SessionMessage { turnPosition: number; hash: string; target: boolean; omittedMedia?: number }
 export interface KnowledgeConversation { session: SessionSummary; version: string; branch: string; messages: KnowledgeInputMessage[]; limitations: string[]; limitationDetails?: KnowledgeLimitation[] }
-export interface KnowledgeTarget { sessionId: string; title: string; client: string; project?: string; updatedAt?: string; version: string; branch: string; messageIds: string[]; hashes: string[]; turnCount: number; inputTokens: number; contextTokens: number; limitations: string[]; limitationDetails?: KnowledgeLimitation[] }
+export interface KnowledgeTarget { sessionId: string; title: string; client: string; project?: string; updatedAt?: string; version: string; branch: string; messageIds: string[]; hashes: string[]; turnCount: number; inputTokens: number; contextTokens: number; plannedChunks?: number; limitations: string[]; limitationDetails?: KnowledgeLimitation[] }
 export interface KnowledgeSourceReader {
   plan(scope: KnowledgeExtractionScope): Promise<KnowledgeTarget[]>;
   read(target: KnowledgeTarget): Promise<KnowledgeConversation>;
@@ -124,6 +124,7 @@ export interface KnowledgePreview {
   targets: KnowledgeTarget[]; sessionCount: number; turnCount: number;
   estimatedTokens: number; contextTokens: number; skippedMessages: number; pendingMessages: number;
   estimatedCost: number | null; limitations: string[];
+  plannedChunks?: number; estimatedOutputTokens?: number; sourceBytes?: number; textBytes?: number; omittedMedia?: number;
   limitationDetails?: KnowledgeLimitation[];
 }
 export type KnowledgeJobStatus = "queued" | "running" | "paused" | "complete" | "partial" | "failed" | "budget_stopped";

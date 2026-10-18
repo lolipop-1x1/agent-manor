@@ -723,7 +723,7 @@ export default function Sessions({ active, target, onMap, onReplay, onHistoryRea
               </div>
               <div className="session-heading-actions">
                 <span className="session-pane-progress" role={messageLoading && selectedMessageData ? "status" : undefined} aria-label={messageLoading && selectedMessageData ? t("sessions.reading.loadingMessages", { mode: t(modeLabels[mode]) }) : undefined}>{messageLoading && selectedMessageData && <ArrowClockwise size={14} className="is-spinning" aria-hidden="true" />}</span>
-                <SessionExtractButton sessionId={selectedSession?.id} branch={branch ?? (mode === "brief" ? "current" : "all")} currentTurn={currentTurn} totalTurns={selectedMessageData?.totalTurns ?? 0} disabled={messageLoading || !selectedMessageData} />
+                <SessionExtractButton sessionId={selectedSession?.id} sessionTitle={selectedSession?.title} branch={branch ?? (mode === "brief" ? "current" : "all")} currentTurn={currentTurn} totalTurns={selectedMessageData?.totalTurns ?? 0} disabled={messageLoading || !selectedMessageData} />
                 <button className="button subtle session-map-button" onClick={() => mapForSession(undefined, selectedSession?.project)} disabled={!selectedSession?.project}><MapTrifold size={16} />{t("sessions.reading.map")}</button>
                 {onReplay && <button className="button subtle session-map-button session-replay-button" onClick={() => selectedSession && onReplay(selectedSession)} disabled={!selectedSession?.project}><Play size={16} aria-hidden="true" /><span>{t("replay.title")}</span></button>}
                 <Tooltip.Root><Tooltip.Trigger asChild>

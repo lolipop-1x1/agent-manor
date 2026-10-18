@@ -60,3 +60,10 @@ test("知识动态类型、状态和服务诊断具备中英文文案", () => {
   const keys = [...knowledgeTypes.map(type => `knowledge.type.${type}`), "knowledge.type.unclassified", "knowledge.errors.index_failed", ...["compressedOnly", "compressionSummary", "missingTime", "oldEvidenceUnavailable"].map(key => `knowledge.limitation.${key}`), ...errors.map(code => `knowledge.errors.${code}`), ...["active", "deprecated", "expired", "superseded", "resolved"].map(state => `knowledge.availability.${state}`), ...["queued", "running", "paused", "complete", "partial", "failed", "budget_stopped"].map(state => `knowledge.status.${state}`)];
   for (const language of ["en", "zh-CN"] as const) for (const key of keys) { assert.ok(i18n.exists(key, { lng: language }), key); assert.notEqual(translate(language, key), translate(language, "common.translationUnavailable")); }
 });
+
+
+test("会话入口携带标题和总轮次，界面元信息不会变成后端标题过滤条件", () => {
+  const result = readKnowledgeAddress("#knowledge?page=tasks&sessionId=synthetic-session&sessionTitle=Timestamp%20parser&totalTurns=20");
+  assert.deepEqual(result.selection, { id: "synthetic-session", title: "Timestamp parser", totalTurns: 20 });
+  assert.equal(result.scope?.title, ""); assert.equal(result.scope?.turnStart, undefined); assert.equal(result.scope?.turnEnd, undefined);
+});

@@ -2,9 +2,10 @@ import { createHash } from "node:crypto";
 import type { KnowledgeConfig, KnowledgeConversation, KnowledgeDraft, KnowledgeEntry, KnowledgeInputMessage, KnowledgeLanguage, KnowledgeLimitation, KnowledgeSource, KnowledgeSourceReader, KnowledgeUsage } from "../knowledge-contracts.js";
 import { knowledgeTypes } from "../knowledge-contracts.js";
 import { KnowledgeModelError } from "./config.js";
-import { conservativeTokens, fitsRequest, type ChatMessage, KnowledgeGenerationScheduler } from "./generation.js";
+import { textByteBudget, estimateKnowledgeTokens, fitsRequest, requestTokens, requestUpperBound, type ChatMessage, KnowledgeGenerationScheduler } from "./generation.js";
 import type { KnowledgeStore } from "./store.js";
 import { knowledgeLimitations } from "./diagnostics.js";
+import { projectKnowledgeConversation } from "./input.js";
 
 interface Evidence { reference: string; message: KnowledgeInputMessage; text: string }
 interface Candidate extends KnowledgeDraft { topic: string; references: string[]; targetKnowledgeId?: string; baseRevisionId?: string }
@@ -90,44 +91,80 @@ function sameCandidate(a: KnowledgeDraft, b: KnowledgeDraft): boolean {
 
 export class KnowledgeExtractionPipeline {
   constructor(private readonly scheduler: KnowledgeGenerationScheduler, private readonly store: KnowledgeStore, private readonly reader: KnowledgeSourceReader) {}
+  private payload(conversation: KnowledgeConversation, config: KnowledgeConfig, evidence: Evidence[], index: number, total: number, carry: Carry[] = []): { data: Record<string, unknown>; context: Evidence[] } {
+    const data: Record<string, unknown> = { session: { title: conversation.session.title, project: conversation.session.project }, segment: index + 1, segments: total, evidence: evidence.map(evidencePayload), carry, limitations: conversation.limitations, context: [] };
+    const firstTarget = evidence.find(item => item.message.target)?.message.ordinal ?? Infinity;
+    const earlier = conversation.messages.filter(message => !message.target && message.ordinal < firstTarget && ["user", "assistant", "compression"].includes(message.kind));
+    const selected = [...new Map([...earlier.slice(0, 1), ...earlier.slice(-2)].map(message => [message.id, message])).values()];
+    const context: Evidence[] = [];
+    for (const message of selected) {
+      const item = { reference: `context:${message.id}`, message, text: message.text };
+      const trial = { ...data, context: [...context, item].map(evidencePayload) };
+      if (fitsRequest(config, messages(config, "extract", trial))) { context.push(item); data.context = context.map(evidencePayload); }
+    }
+    return { data, context };
+  }
   private segments(conversation: KnowledgeConversation, config: KnowledgeConfig): Evidence[][] {
-    const targetRounds = new Set(conversation.messages.filter(message => message.target).map(message => message.turnId));
-    const complete = conversation.messages.filter(message => targetRounds.has(message.turnId)).map((message, index) => ({ reference: `e${index}`, message, text: message.text }));
+    const targets = conversation.messages.filter(message => message.target);
+    const complete = targets.map((message, index) => ({ reference: `e${index}`, message, text: message.text }));
     if (complete.some(item => item.message.textTruncated)) throw new KnowledgeModelError("source_changed", "来源正文仍被截断，无法完成沉淀", 409);
-    const single = { session: { title: conversation.session.title, project: conversation.session.project }, segment: 1, segments: 1, evidence: complete.map(evidencePayload), carry: [], limitations: conversation.limitations, context: [] };
-    // 完整目标本就可容纳时保留跨轮次连贯性；只有真实总预算超限才进入分段。
-    if (complete.length && fitsRequest(config, messages(config, "extract", single))) return [complete];
     const base = messages(config, "extract", { session: { title: conversation.session.title, project: conversation.session.project }, evidence: [], carry: [] });
-    const available = config.generation.contextTokens - config.generation.outputTokens - conservativeTokens(JSON.stringify(base)) - 1536;
+    const available = config.generation.contextTokens - config.generation.outputTokens - requestUpperBound(base) - 1536;
     if (available < 256) throw new KnowledgeModelError("input_too_long", "提示词与输出预留占满模型上下文");
-    // 为跨段线索、回读和序列化预留约一半；超长消息沿 Unicode 边界继续拆分。
-    const maximum = Math.max(128, Math.floor(available * 0.45)), groups: Evidence[][] = [];
-    let current: Evidence[] = [], size = 0;
+    // 先按片段预算判断，避免为了试装一个请求而序列化整场超长会话。
+    let completeSize = 0;
+    for (const item of complete) { completeSize += textByteBudget(JSON.stringify(evidencePayload(item))) + 1; if (completeSize > available) break; }
+    if (complete.length && completeSize <= available && fitsRequest(config, messages(config, "extract", this.payload(conversation, config, complete, 0, 1).data))) return [complete];
+    // 为动态线索与回读保留空间，片段本身按实际 JSON 转义后的字节上界切分。
+    const maximum = Math.max(128, Math.floor(available * 0.7)), groups: Evidence[][] = [];
+    let current: Evidence[] = [], size = 0, sequence = 0;
     const flush = () => { if (current.length) groups.push(current); current = []; size = 0; };
     const rounds = new Map<string, KnowledgeInputMessage[]>();
-    for (const message of conversation.messages) { const key = message.turnId || `${message.turnPosition}`; const round = rounds.get(key) ?? []; round.push(message); rounds.set(key, round); }
-    let sequence = 0;
+    for (const message of targets) { const key = message.turnId || `${message.turnPosition}`; const round = rounds.get(key) ?? []; round.push(message); rounds.set(key, round); }
     for (const round of rounds.values()) {
       if (!round.some(message => message.target)) continue;
       const fragments: Evidence[] = [];
       for (const message of round) {
-        if (message.textTruncated) throw new KnowledgeModelError("source_changed", "来源正文仍被截断，无法完成沉淀", 409);
-        const points = Array.from(message.text); let start = 0;
-        while (start < points.length || !points.length && start === 0) {
-          let end = Math.min(points.length, start + maximum);
-          while (end > start + 1 && conservativeTokens(points.slice(start, end).join("")) + 400 > maximum) end = start + Math.max(1, Math.floor((end - start) * 0.7));
-          const text = points.slice(start, end).join(""); fragments.push({ reference: `e${sequence++}`, message, text }); if (!points.length) break; start = end;
-        }
+        let start = 0;
+        do {
+          const reference = `e${sequence++}`;
+          const boundary = (end: number) => end > start && end < message.text.length && /[\uD800-\uDBFF]/.test(message.text[end - 1]!) && /[\uDC00-\uDFFF]/.test(message.text[end]!) ? end - 1 : end;
+          let low = start, high = Math.min(message.text.length, start + maximum), end = start;
+          while (low <= high) {
+            const middle = Math.floor((low + high) / 2), candidateEnd = boundary(middle);
+            const candidate = { reference, message, text: message.text.slice(start, candidateEnd) };
+            if (textByteBudget(JSON.stringify(evidencePayload(candidate))) + 1 <= maximum) { end = Math.max(end, candidateEnd); low = middle + 1; } else high = middle - 1;
+          }
+          if (end === start && message.text.length) throw new KnowledgeModelError("input_too_long", "单条消息的身份字段超过分片预算");
+          fragments.push({ reference, message, text: message.text.slice(start, end) }); start = end;
+        } while (start < message.text.length);
       }
-      const roundSize = fragments.reduce((sum, item) => sum + conservativeTokens(JSON.stringify(evidencePayload(item))), 0);
+      const cost = (item: Evidence) => textByteBudget(JSON.stringify(evidencePayload(item))) + 1;
+      const roundSize = fragments.reduce((sum, item) => sum + cost(item), 0);
       if (roundSize <= maximum) { if (size + roundSize > maximum) flush(); current.push(...fragments); size += roundSize; }
-      else { flush(); for (const fragment of fragments) { const cost = conservativeTokens(JSON.stringify(evidencePayload(fragment))); if (size + cost > maximum) flush(); current.push(fragment); size += cost; } flush(); }
+      else { flush(); for (const fragment of fragments) { const amount = cost(fragment); if (size + amount > maximum) flush(); current.push(fragment); size += amount; } flush(); }
     }
     flush(); return groups;
   }
+  plan(raw: KnowledgeConversation, config: KnowledgeConfig) {
+    const conversation = projectKnowledgeConversation(raw), segments = this.segments(conversation, config);
+    let estimatedTokens = 0, contextTokens = 0;
+    segments.forEach((segment, index) => {
+      const payload = this.payload(conversation, config, segment, index, segments.length);
+      const request = messages(config, "extract", payload.data);
+      if (!fitsRequest(config, request)) throw new KnowledgeModelError("input_too_long", "分片请求超过模型上下文预算");
+      estimatedTokens += requestTokens(request); contextTokens += payload.context.reduce((sum, item) => sum + estimateKnowledgeTokens(item.text), 0);
+    });
+    return { conversation, segments, plannedChunks: segments.length, estimatedTokens, contextTokens,
+      estimatedOutputTokens: segments.length * config.generation.outputTokens,
+      sourceBytes: raw.messages.filter(message => message.target).reduce((sum, message) => sum + Buffer.byteLength(message.text), 0),
+      textBytes: conversation.messages.filter(message => message.target).reduce((sum, message) => sum + Buffer.byteLength(message.text), 0),
+      omittedMedia: conversation.messages.filter(message => message.target).reduce((sum, message) => sum + (message.omittedMedia ?? 0), 0) };
+  }
   async run(conversation: KnowledgeConversation, config: KnowledgeConfig, apiKey: string | undefined, checkpoint: PipelineCheckpoint | undefined, hooks: PipelineHooks): Promise<PipelineResult> {
-    const segments = this.segments(conversation, config), scope: KnowledgeDraft["scope"] = conversation.session.project ? { kind: "project", project: conversation.session.project } : { kind: "global" };
-    const identity = createHash("sha256").update(JSON.stringify({ version: conversation.version, branch: conversation.branch, messages: conversation.messages.map(message => [message.id, message.hash, message.target]), config, recipe: 1 })).digest("hex");
+    const plan = this.plan(conversation, config); conversation = plan.conversation;
+    const segments = plan.segments, scope: KnowledgeDraft["scope"] = conversation.session.project ? { kind: "project", project: conversation.session.project } : { kind: "global" };
+    const identity = createHash("sha256").update(JSON.stringify({ version: conversation.version, branch: conversation.branch, messages: conversation.messages.map(message => [message.id, message.hash, message.target]), config, recipe: 2 })).digest("hex");
     const state: PipelineCheckpoint = checkpoint ? structuredClone(checkpoint) : { identity, next: 0, candidates: [], carry: [], noValue: 0, needsContext: false, limitations: [...conversation.limitations] };
     if (state.identity !== identity) throw new KnowledgeModelError("source_changed", "任务来源或分段方案变化，请重新预览", 409);
     const allowed = new Map<string, KnowledgeSource>();
@@ -154,18 +191,8 @@ export class KnowledgeExtractionPipeline {
       const carries = state.carry.slice(-8).map(carry => ({ ...carry, summary: carry.summary.slice(0, 512) }));
       for (const item of evidence) known.set(item.reference, allowed.get(item.reference)!);
       for (const carry of carries) for (const reference of carry.references) if (allowed.has(reference)) known.set(reference, allowed.get(reference)!);
-      const payload: Record<string, unknown> = { session: { title: conversation.session.title, project: conversation.session.project }, segment: state.next + 1, segments: segments.length, evidence: evidence.map(evidencePayload), carry: carries, limitations: conversation.limitations };
-      // 较早完整原文按需作为上下文，不将回读材料纳入本次目标覆盖。
-      const firstTarget = evidence.find(item => item.message.target)?.message.ordinal ?? Infinity;
-      const earlierMessages = conversation.messages.filter(message => !message.target && message.ordinal < firstTarget && ["user", "assistant", "compression"].includes(message.kind));
-      const earlier = [...new Map([...earlierMessages.slice(0, 1), ...earlierMessages.slice(-2)].map(message => [message.id, message])).values()];
-      const context: unknown[] = [];
-      for (const message of earlier) {
-        const reference = `context:${message.id}`, item = { reference, message, text: message.text };
-        const trial = { ...payload, context: [...context, evidencePayload(item)] };
-        if (fitsRequest(config, messages(config, "extract", trial))) { context.push(evidencePayload(item)); known.set(reference, source(conversation, message, message.text)); allowed.set(reference, source(conversation, message, message.text)); }
-      }
-      payload.context = context;
+      const planned = this.payload(conversation, config, evidence, state.next, segments.length, carries), payload = planned.data;
+      for (const item of planned.context) { const value = source(conversation, item.message, item.text); known.set(item.reference, value); allowed.set(item.reference, value); }
       const anchors: unknown[] = [];
       for (const entry of prior) {
         const anchorsForEntry = (entry.revision.sources ?? []).filter(item => item.sessionId === conversation.session.id).slice(0, 4).map(item => {

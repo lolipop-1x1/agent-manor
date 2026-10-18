@@ -93,7 +93,18 @@ try {
     await group("tasks", async () => {
       await open("#sessions?id=knowledge-session-1&mode=trace"); await page.locator(".trace-ledger,.session-message").first().waitFor();
       await button("沉淀此会话").click(); await page.getByRole("menuitem", { name: "沉淀当前轮次", exact: true }).click();
-      await page.getByRole("heading", { name: "沉淀任务", exact: true }).waitFor(); await button("预览沉淀范围").click(); await button("开始沉淀").waitFor();
+      await page.getByRole("heading", { name: "沉淀任务", exact: true }).waitFor();
+      await page.locator('.knowledge-preview[aria-busy="false"]').waitFor();
+      ensure((await page.locator(".knowledge-selected-title").innerText()) === "合成排障会话 2", "会话入口直接显示所选标题");
+      ensure(await button("开始沉淀").isEnabled(), "会话入口自动完成预览并提供开始动作");
+      const beforeStart = await api("/extractions"); ensure(beforeStart.usage.requests === 0 && beforeStart.jobs.length === 0, "自动预览不调用生成模型或创建任务");
+      await shot("03a-preview-zh-light");
+      await select("沉淀范围", "整段会话"); await page.getByText("1 个会话 · 4 轮", { exact: true }).waitFor(); await page.locator('.knowledge-preview[aria-busy="false"]').waitFor();
+      ensure(await page.getByRole("spinbutton", { name: "起始轮次", exact: true }).count() === 0, "整会话范围隐藏不必要的空轮次框");
+      await select("沉淀范围", "指定轮次"); const firstTurn = page.getByRole("spinbutton", { name: "起始轮次", exact: true }), lastTurn = page.getByRole("spinbutton", { name: "结束轮次", exact: true });
+      await firstTurn.fill("2"); await lastTurn.fill("3"); await firstTurn.fill("1"); await lastTurn.fill("1");
+      await page.locator('.knowledge-preview[aria-busy="false"]').waitFor(); await page.getByText("1 个会话 · 1 轮", { exact: true }).waitFor();
+      ensure(await button("开始沉淀").isEnabled(), "快速修改轮次只采用最后一次完整预览");
       ensure(await page.getByText("1 个会话 · 1 轮", { exact: true }).count() === 1, "会话轮次入口固定范围预览");
       await button("开始沉淀").click(); await button("暂停").click(); await button("继续").waitFor(); ensure(true, "后台任务可暂停");
       await shot("03-tasks-zh-light"); await button("继续").click();
@@ -124,6 +135,11 @@ try {
       await button("Browse views").click(); const drawer = page.getByRole("dialog"); await drawer.waitFor(); await page.keyboard.press("Escape"); await drawer.waitFor({ state: "hidden" });
       ensure(await button("Browse views").evaluate(el => el === document.activeElement), "窄屏抽屉 Escape 恢复触发焦点");
       ensure((await api("/settings")).config.outputLanguage === "en", "界面语言切换保留知识输出语言");
+      await page.goto(`${config.base}/#knowledge?page=tasks&sessionId=knowledge-session-2&sessionTitle=Selected%20conversation&totalTurns=4`);
+      await page.getByRole("heading", { name: "Extraction tasks", exact: true }).waitFor(); await page.locator('.knowledge-preview[aria-busy="false"]').waitFor();
+      ensure(await button("Start extraction").isEnabled() && await page.getByRole("combobox", { name: "Extraction range", exact: true }).innerText() === "Entire conversation", "英文窄屏自动预览和整会话选择可用");
+      ensure(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), "390px 英文深色预览无全局横向溢出");
+      await shot("06-mobile-preview-en-dark");
     });
     if (errors.length) failures.push({ group: "runtime", message: errors.join("\n") }); else checks.push("浏览器无未处理运行错误");
     return { passed: failures.length === 0 && errors.length === 0, checks, failures, errors, screenshots };

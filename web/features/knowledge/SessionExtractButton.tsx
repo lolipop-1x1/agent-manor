@@ -4,12 +4,13 @@ import { BookOpen } from "@phosphor-icons/react";
 import { useI18n } from "../../shared/i18n";
 import { KnowledgeDialog } from "./KnowledgeCommon";
 
-export function SessionExtractButton({ sessionId, branch, currentTurn, totalTurns, disabled }: { sessionId?: string; branch: string; currentTurn: number; totalTurns: number; disabled?: boolean }) {
+export function SessionExtractButton({ sessionId, sessionTitle, branch, currentTurn, totalTurns, disabled }: { sessionId?: string; sessionTitle?: string; branch: string; currentTurn: number; totalTurns: number; disabled?: boolean }) {
   const { t } = useI18n();
   const [range, setRange] = useState(false), [start, setStart] = useState(1), [end, setEnd] = useState(1);
   const navigate = (first?: number, last?: number) => {
     if (!sessionId) return;
     const params = new URLSearchParams({ page: "tasks", sessionId, branch });
+    if (sessionTitle) params.set("sessionTitle", sessionTitle); if (totalTurns) params.set("totalTurns", String(totalTurns));
     if (first !== undefined) params.set("turnStart", String(first)); if (last !== undefined) params.set("turnEnd", String(last));
     setRange(false); location.hash = `#knowledge?${params}`;
   };

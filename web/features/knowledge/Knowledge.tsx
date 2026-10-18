@@ -32,6 +32,7 @@ export default function Knowledge({ active }: { active: boolean }) {
   const [listError, setListError] = useState<unknown>(), [detailError, setDetailError] = useState<unknown>();
   const [reload, setReload] = useState(0), [editing, setEditing] = useState<"new" | "edit">();
   const [scope, setScope] = useState<KnowledgeExtractionScope | undefined>(initial.scope);
+  const [selection, setSelection] = useState(initial.selection);
   const [railOpen, setRailOpen] = useState(false), [more, setMore] = useState(false), [mobileReader, setMobileReader] = useState(!!initial.id);
   const [index, setIndex] = useState<KnowledgeIndexStatus>();
   const listScroll = useRef<HTMLDivElement>(null);
@@ -43,7 +44,7 @@ export default function Knowledge({ active }: { active: boolean }) {
       if (!location.hash.startsWith("#knowledge")) return;
       const next = readKnowledgeAddress(location.hash);
       setPage(next.page); if (next.id) { initialTarget.current = true; setSelectedId(next.id); setMobileReader(true); }
-      if (next.scope) setScope(next.scope);
+      if (next.scope) { setScope(next.scope); setSelection(next.selection); }
       const params = new URLSearchParams(location.hash.split("?")[1]);
       if (params.has("review") || params.has("taskId") || params.has("view")) { setQuery(next.query); setInput(next.query.q ?? ""); }
       setRailOpen(false);
@@ -125,7 +126,7 @@ export default function Knowledge({ active }: { active: boolean }) {
         </section>
         <div className="knowledge-detail-slot"><KnowledgeError error={detailError} retry={() => setReload(value => value + 1)} />{currentDetail ? <KnowledgeDetail key={currentDetail.id} detail={currentDetail} reviewing={page === "review"} busy={detailBusy || listBusy} onEdit={() => setEditing("edit")} onChanged={update} onBack={() => setMobileReader(false)} /> : <div className="knowledge-empty"><KnowledgeBusy busy={detailBusy} /><BookOpen size={28} /><h2>{t("knowledge.noSelection")}</h2></div>}</div>
       </div>
-      <div hidden={page !== "tasks"}><KnowledgeTasks active={active && page === "tasks"} initialScope={scope} onResults={taskId => { changeQuery({ review: "pending", availability: "all", taskId }); navigate("review", { taskId }); }} onBack={() => navigate("library")} onSettings={() => navigate("settings")} /></div>
+      <div hidden={page !== "tasks"}><KnowledgeTasks active={active && page === "tasks"} initialScope={scope} initialSession={selection} onResults={taskId => { changeQuery({ review: "pending", availability: "all", taskId }); navigate("review", { taskId }); }} onBack={() => navigate("library")} onSettings={() => navigate("settings")} /></div>
       <div hidden={page !== "settings"}><KnowledgeSettings active={active && page === "settings"} onBack={() => navigate("library")} onSaved={() => setReload(value => value + 1)} onTasks={nextScope => { setScope(nextScope); navigate("tasks"); }} /></div>
     </main>
     {editing && <KnowledgeEditor detail={editing === "edit" ? currentDetail : undefined} projects={facets.projects} onClose={() => setEditing(undefined)} onSaved={saveEditor} />}

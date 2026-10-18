@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import type { KnowledgeConfig, KnowledgeExtractionScope, KnowledgeJob, KnowledgeLanguage, KnowledgePreview, KnowledgeSettings, KnowledgeSettingsInput, KnowledgeSourceReader, KnowledgeTarget, KnowledgeTaskStatus, KnowledgeTryResult } from "../knowledge-contracts.js";
-import { KnowledgeConfigStore, KnowledgeModelError, validateKnowledgeConfig, validateKnowledgeScope } from "./config.js";
-import { KnowledgeGenerationScheduler, conservativeTokens, emptyKnowledgeUsage } from "./generation.js";
+import { KnowledgeConfigStore, KnowledgeModelError, knowledgeFingerprint, validateKnowledgeConfig, validateKnowledgeScope } from "./config.js";
+import { KnowledgeGenerationScheduler, estimateKnowledgeTokens, emptyKnowledgeUsage } from "./generation.js";
 import { KnowledgeExtractionPipeline, type PipelineCheckpoint } from "./pipeline.js";
 import type { KnowledgeStore } from "./store.js";
 import { knowledgeLimitations } from "./diagnostics.js";
@@ -63,32 +63,27 @@ export class KnowledgeManager {
     const scope = validateKnowledgeScope(input);
     if (scope.timeRange === "unset" && !scope.sessionIds?.length) throw modelError("scope_required", "请先选择沉淀范围");
     const settings = await this.settings(), planned = await this.sources.plan(scope);
-    let skippedMessages = 0; const targets: KnowledgeTarget[] = [];
+    let skippedMessages = 0, estimatedTokens = 0, contextTokens = 0, plannedChunks = 0, estimatedOutputTokens = 0, sourceBytes = 0, textBytes = 0, omittedMedia = 0;
+    const targets: KnowledgeTarget[] = [];
     for (const target of planned) {
       const coverage = this.store.getState<Coverage>(this.coverageKey(target));
       const indexes = target.messageIds.map((id, index) => ({ id, index })).filter(({ id, index }) => scope.force || coverage?.messages[id]?.hash !== target.hashes[index]);
       skippedMessages += target.messageIds.length - indexes.length;
       if (!indexes.length) continue;
-      const ratio = indexes.length / target.messageIds.length;
-      const next: KnowledgeTarget = { ...target, messageIds: indexes.map(item => item.id), hashes: indexes.map(item => target.hashes[item.index]!), inputTokens: Math.ceil(target.inputTokens * ratio), contextTokens: target.contextTokens + Math.ceil(target.inputTokens * (1 - ratio)) };
-      if (indexes.length !== target.messageIds.length) {
-        let conversation;
-        try { conversation = await this.sources.read(next); } catch (cause) { throw modelError("source_changed", `来源已变化，请重新预览：${diagnostic(cause)}`, 409); }
-        const pending = conversation.messages.filter(message => message.target);
-        next.inputTokens = pending.reduce((sum, message) => sum + conservativeTokens(message.text), 0); next.contextTokens = conversation.messages.filter(message => !message.target).reduce((sum, message) => sum + conservativeTokens(message.text), 0);
-        next.turnCount = new Set(pending.map(message => message.turnId)).size;
-      }
-      targets.push(next);
+      const next: KnowledgeTarget = { ...target, messageIds: indexes.map(item => item.id), hashes: indexes.map(item => target.hashes[item.index]!) };
+      let conversation;
+      try { conversation = await this.sources.read(next); } catch (cause) { throw modelError("source_changed", `来源已变化，请重新预览：${diagnostic(cause)}`, 409); }
+      const plan = this.pipeline.plan(conversation, settings.config), pending = plan.conversation.messages.filter(message => message.target);
+      next.inputTokens = pending.reduce((sum, message) => sum + estimateKnowledgeTokens(message.text), 0); next.contextTokens = plan.contextTokens;
+      next.turnCount = new Set(pending.map(message => message.turnId)).size; next.plannedChunks = plan.plannedChunks;
+      next.limitations = plan.conversation.limitations; next.limitationDetails = plan.conversation.limitationDetails;
+      estimatedTokens += plan.estimatedTokens; contextTokens += plan.contextTokens; plannedChunks += plan.plannedChunks; estimatedOutputTokens += plan.estimatedOutputTokens;
+      sourceBytes += plan.sourceBytes; textBytes += plan.textBytes; omittedMedia += plan.omittedMedia; targets.push(next);
     }
-    const pendingMessages = targets.reduce((sum, target) => sum + target.messageIds.length, 0), raw = targets.reduce((sum, target) => sum + target.inputTokens, 0), contextTokens = targets.reduce((sum, target) => sum + target.contextTokens, 0);
-    // 预览将分段及归并的结构、提示词、输出预留计入规模；这是估算，不伪装成账单。
-    const overhead = conservativeTokens(settings.config.extractionPrompt + settings.config.mergePrompt) + 3200;
-    const capacity = Math.max(128, Math.floor((settings.config.generation.contextTokens - settings.config.generation.outputTokens - overhead) * 0.45));
-    const calls = targets.reduce((sum, target) => sum + Math.max(1, Math.ceil(target.inputTokens / capacity)) * 2, 0);
-    const estimatedTokens = raw + Math.min(contextTokens, calls * capacity) + calls * (overhead + settings.config.generation.outputTokens);
-    const generation = settings.config.generation, estimatedCost = generation.inputPricePerMillion !== undefined && generation.outputPricePerMillion !== undefined
-      ? ((estimatedTokens - calls * generation.outputTokens) * generation.inputPricePerMillion + calls * generation.outputTokens * generation.outputPricePerMillion) / 1_000_000 : null;
-    const preview: KnowledgePreview = { id: randomUUID(), createdAt: now(), fingerprint: settings.fingerprint, scope, targets, sessionCount: new Set(targets.map(target => target.sessionId)).size, turnCount: targets.reduce((sum, target) => sum + target.turnCount, 0), estimatedTokens, contextTokens, skippedMessages, pendingMessages, estimatedCost, limitations: [...new Set(targets.flatMap(target => target.limitations))] };
+    const pendingMessages = targets.reduce((sum, target) => sum + target.messageIds.length, 0), generation = settings.config.generation;
+    const estimatedCost = generation.inputPricePerMillion !== undefined && generation.outputPricePerMillion !== undefined
+      ? (estimatedTokens * generation.inputPricePerMillion + estimatedOutputTokens * generation.outputPricePerMillion) / 1_000_000 : null;
+    const preview: KnowledgePreview = { id: randomUUID(), createdAt: now(), fingerprint: settings.fingerprint, scope, targets, sessionCount: new Set(targets.map(target => target.sessionId)).size, turnCount: targets.reduce((sum, target) => sum + target.turnCount, 0), estimatedTokens, contextTokens, skippedMessages, pendingMessages, estimatedCost, plannedChunks, estimatedOutputTokens, sourceBytes, textBytes, omittedMedia, limitations: [...new Set(targets.flatMap(target => target.limitations))] };
     preview.limitationDetails = knowledgeLimitations(preview.limitations, targets.flatMap(target => target.limitationDetails ?? []));
     if (Buffer.byteLength(JSON.stringify(preview)) > 6_000_000) throw modelError("input_too_long", "预览目标过大，请缩小时间或会话范围");
     this.store.transaction(() => { const state = this.state(); state.previews.push(preview.id); this.store.setState(`extraction.preview:${preview.id}`, { preview, config: settings.config } satisfies PreviewRecord); this.trim(state); this.store.setState(stateKey, state); });
@@ -112,8 +107,8 @@ export class KnowledgeManager {
       try { await this.sources.read(target); } catch (cause) { throw modelError("source_changed", `来源已变化，请重新预览：${diagnostic(cause)}`, 409); }
     }
     const id = randomUUID(), key = capture.generationKey; await this.config.snapshot(id, key);
-    const job: KnowledgeJob = { id, previewId, status: "queued", phase: "planning", createdAt: now(), updatedAt: now(), totalSessions: stored.preview.sessionCount, completedSessions: 0, totalChunks: 0, completedChunks: 0, createdEntries: 0, updatedEntries: 0, duplicates: 0, noValue: 0, needsContext: 0, failedSessions: [], results: [], outputLanguage: stored.config.outputLanguage, fingerprint: stored.preview.fingerprint };
-    const record: JobRecord = { job, preview: stored.preview, config: stored.config, order: stored.preview.targets.map((_target, index) => index), cursor: 0, successful: [], failureIndexes: [], chunks: {}, keySnapshot: key !== undefined };
+    const job: KnowledgeJob = { id, previewId, status: "queued", phase: "planning", createdAt: now(), updatedAt: now(), totalSessions: stored.preview.sessionCount, completedSessions: 0, totalChunks: stored.preview.plannedChunks ?? 0, completedChunks: 0, createdEntries: 0, updatedEntries: 0, duplicates: 0, noValue: 0, needsContext: 0, failedSessions: [], results: [], outputLanguage: stored.config.outputLanguage, fingerprint: stored.preview.fingerprint };
+    const record: JobRecord = { job, preview: stored.preview, config: stored.config, order: stored.preview.targets.map((_target, index) => index), cursor: 0, successful: [], failureIndexes: [], chunks: Object.fromEntries(stored.preview.targets.map((target, index) => [String(index), { total: target.plannedChunks ?? 0, completed: 0 }])), keySnapshot: key !== undefined };
     this.store.transaction(() => {
       const current = this.state(); current.jobs.push(id); if (idempotencyHash) current.idempotency[idempotencyHash] = { previewId, jobId: id };
       this.save(record); this.trim(current); this.store.setState(stateKey, current);
@@ -134,6 +129,7 @@ export class KnowledgeManager {
   async action(id: string, action: "pause" | "resume" | "retry"): Promise<KnowledgeJob> {
     if (this.closed) throw modelError("stopped", "知识后台已停止", 503);
     const record = this.record(id); if (!record) throw modelError("task_not_found", "找不到沉淀任务", 404);
+    if (action !== "pause" && record.preview.fingerprint !== knowledgeFingerprint(record.config)) throw modelError("preview_stale", "输入处理方案已更新，请新建预览后开始沉淀", 409);
     if (action === "pause") {
       if (["queued", "running"].includes(record.job.status)) { record.job.status = "paused"; record.job.updatedAt = now(); this.save(record); this.controllers.get(id)?.abort(); }
     } else if (action === "resume") {

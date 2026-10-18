@@ -6,9 +6,12 @@ import { KnowledgeModelError, normalizeGenerationUrl } from "./config.js";
 export interface ChatMessage { role: "system" | "user"; content: string }
 export interface GenerationResult { value: unknown; inputTokens: number; outputTokens: number; actualInputTokens?: number; actualOutputTokens?: number }
 interface Ledger { current: KnowledgeUsage; previous: Record<string, KnowledgeUsage>; rate: number[]; knownCost: number; unpricedInput: number; unpricedOutput: number }
-export function conservativeTokens(text: string): number { return Math.ceil(Buffer.byteLength(text, "utf8")); }
-export function requestTokens(messages: readonly ChatMessage[]): number { return conservativeTokens(JSON.stringify(messages)) + 64; }
-export function fitsRequest(config: KnowledgeConfig, messages: readonly ChatMessage[]): boolean { return requestTokens(messages) + config.generation.outputTokens + 256 <= config.generation.contextTokens; }
+/** 无模型 tokenizer 时沿用本地文本粗估；字节上界单独用于窗口保护。 */
+export function estimateKnowledgeTokens(text: string): number { return Math.ceil(Buffer.byteLength(text, "utf8") / 3); }
+export function textByteBudget(text: string): number { return Buffer.byteLength(text, "utf8"); }
+export function requestTokens(messages: readonly ChatMessage[]): number { return messages.reduce((sum, message) => sum + estimateKnowledgeTokens(message.content) + 8, 32); }
+export function requestUpperBound(messages: readonly ChatMessage[]): number { return messages.reduce((sum, message) => sum + textByteBudget(message.content) + 16, 64); }
+export function fitsRequest(config: KnowledgeConfig, messages: readonly ChatMessage[]): boolean { return requestUpperBound(messages) + config.generation.outputTokens + 256 <= config.generation.contextTokens; }
 function today(): string { const date = new Date(); return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`; }
 function emptyCounters(): KnowledgeUsageCounters { return { requests: 0, inputTokens: 0, outputTokens: 0, estimatedCost: 0, estimatedInputTokens: 0, estimatedOutputTokens: 0, actualInputTokens: 0, actualOutputTokens: 0, actualRequests: 0 }; }
 export function emptyKnowledgeUsage(date = today()): KnowledgeUsage { return { ...emptyCounters(), date, byPurpose: { extract: emptyCounters(), merge: emptyCounters(), try: emptyCounters(), test: emptyCounters() } }; }
@@ -139,7 +142,7 @@ export class KnowledgeGenerationScheduler {
         try { payload = await readResponse(response); } catch (cause) { aborted(signal); if (timeout.aborted) throw error("timeout", "知识模型响应超时", 504); throw cause; }
         const body = payload as { choices?: { message?: { content?: unknown }; finish_reason?: string }[]; usage?: { prompt_tokens?: unknown; completion_tokens?: unknown } };
         const choice = body?.choices?.[0], content = choice?.message?.content;
-        const result: GenerationResult = { value: undefined, inputTokens: nonnegative(body?.usage?.prompt_tokens) ? body.usage.prompt_tokens : reservation.inputTokens, outputTokens: nonnegative(body?.usage?.completion_tokens) ? body.usage.completion_tokens : typeof content === "string" && content.trim() && choice?.finish_reason !== "length" ? conservativeTokens(content) : reservation.outputTokens, actualInputTokens: nonnegative(body?.usage?.prompt_tokens) ? body.usage.prompt_tokens : undefined, actualOutputTokens: nonnegative(body?.usage?.completion_tokens) ? body.usage.completion_tokens : undefined };
+        const result: GenerationResult = { value: undefined, inputTokens: nonnegative(body?.usage?.prompt_tokens) ? body.usage.prompt_tokens : reservation.inputTokens, outputTokens: nonnegative(body?.usage?.completion_tokens) ? body.usage.completion_tokens : typeof content === "string" && content.trim() && choice?.finish_reason !== "length" ? estimateKnowledgeTokens(content) : reservation.outputTokens, actualInputTokens: nonnegative(body?.usage?.prompt_tokens) ? body.usage.prompt_tokens : undefined, actualOutputTokens: nonnegative(body?.usage?.completion_tokens) ? body.usage.completion_tokens : undefined };
         // 返回格式不合格或输出截断仍可能已经收费，用量与候选是否有效分别记录。
         this.settle(config, reservation, result, purpose);
         if (meter) {

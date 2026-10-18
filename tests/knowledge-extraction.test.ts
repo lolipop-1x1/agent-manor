@@ -102,10 +102,10 @@ test("reasoning_effort仅在明确配置时发送，试抽取用量不混入并�
 test("无usage响应保留估算依据，有usage响应单独统计实测并按用途聚合", async () => fixture(async ({ manager, setHandler }) => {
   setHandler((_request, response) => { response.setHeader("content-type", "application/json"); response.end(JSON.stringify({ choices: [{ message: { content: '{"ok":true}' }, finish_reason: "stop" }] })); });
   await manager.test(); const estimated = (await manager.status()).usage;
-  assert.equal(estimated.actualRequests, 0); assert.equal(estimated.actualInputTokens, 0); assert.equal(estimated.actualOutputTokens, 0); assert.ok(estimated.estimatedInputTokens! > 0); assert.equal(estimated.estimatedOutputTokens, 11);
+  assert.equal(estimated.actualRequests, 0); assert.equal(estimated.actualInputTokens, 0); assert.equal(estimated.actualOutputTokens, 0); assert.ok(estimated.estimatedInputTokens! > 0); assert.equal(estimated.estimatedOutputTokens, 4);
   assert.equal(estimated.byPurpose?.test.requests, 1); assert.equal(estimated.byPurpose?.test.actualRequests, 0); assert.equal(estimated.estimatedCost, null);
   setHandler(() => ({ ok: true })); await manager.test(); const measured = (await manager.status()).usage;
-  assert.equal(measured.actualRequests, 1); assert.equal(measured.actualInputTokens, 100); assert.equal(measured.actualOutputTokens, 20); assert.equal(measured.estimatedInputTokens, estimated.estimatedInputTokens); assert.equal(measured.estimatedOutputTokens, 11);
+  assert.equal(measured.actualRequests, 1); assert.equal(measured.actualInputTokens, 100); assert.equal(measured.actualOutputTokens, 20); assert.equal(measured.estimatedInputTokens, estimated.estimatedInputTokens); assert.equal(measured.estimatedOutputTokens, 4);
   assert.equal(measured.inputTokens, measured.estimatedInputTokens! + measured.actualInputTokens!); assert.equal(measured.outputTokens, measured.estimatedOutputTokens! + measured.actualOutputTokens!); assert.equal(measured.byPurpose?.test.requests, 2); assert.equal(measured.byPurpose?.extract.requests, 0);
 }));
 
@@ -239,7 +239,8 @@ test("来源预览后改写会阻止启动，提示词超预算不会发送请�
   await assert.rejects(manager.start(preview.id), (cause: unknown) => cause instanceof KnowledgeModelError && cause.code === "source_changed");
   assert.equal(requests.length, 0);
   const config = (await manager.settings()).config; config.generation.contextTokens = 4096; config.generation.outputTokens = 512; config.extractionPrompt = "Large custom extraction requirement. ".repeat(400); await manager.saveSettings({ config });
-  const job = await settle(manager, (await manager.start((await manager.preview(scope())).id)).id); assert.equal(job.status, "failed"); assert.equal(requests.length, 0); assert.equal((await manager.preview(scope())).pendingMessages, 12);
+  await assert.rejects(manager.preview(scope()), (cause: unknown) => cause instanceof KnowledgeModelError && cause.code === "input_too_long"); assert.equal(requests.length, 0);
+  config.extractionPrompt = defaultKnowledgeConfig().extractionPrompt; config.generation.contextTokens = 32768; await manager.saveSettings({ config }); assert.equal((await manager.preview(scope())).pendingMessages, 12);
 }));
 
 test("超时和非JSON响应不重试成知识，失败不覆盖来源", async () => fixture(async ({ manager, setHandler, requests }) => {
@@ -283,7 +284,7 @@ test("后台增量默认关闭，定时检查仅处理已知静默会话，未�
 test("同会话多个分支独立提交与恢复，会话总数与完成数不伪装成分支数量", async () => fixture(async ({ manager, source }) => {
   const plan = source.plan.bind(source), read = source.read.bind(source); let rightReads = 0, fail = true;
   source.plan = async input => (await plan(input)).flatMap(target => [{ ...target, branch: "left" }, { ...target, branch: "right" }]);
-  source.read = async target => { if (target.branch === "right") { rightReads++; if (rightReads > 1 && fail) throw new Error("synthetic branch unavailable"); } return read(target); };
+  source.read = async target => { if (target.branch === "right") { rightReads++; if (rightReads > 2 && fail) throw new Error("synthetic branch unavailable"); } return read(target); };
   const preview = await manager.preview(scope({ branch: "all" })); assert.equal(preview.targets.length, 2); assert.equal(preview.sessionCount, 1);
   const id = (await manager.start(preview.id)).id, partial = await settle(manager, id); assert.equal(partial.status, "partial"); assert.equal(partial.totalSessions, 1); assert.equal(partial.completedSessions, 0);
   fail = false; await manager.action(id, "retry"); const done = await settle(manager, id); assert.equal(done.status, "complete"); assert.equal(done.completedSessions, 1); assert.equal(done.totalSessions, 1); assert.equal((await manager.preview(scope({ branch: "all" }))).pendingMessages, 0);
@@ -302,5 +303,57 @@ test("启动后固定提示词、输出语言和凭据；暂停重启从安全�
     setHandler(request => { assert.match(request.messages[0]!.content, /FROZEN-PROMPT/); assert.match(request.messages[0]!.content, /English/); return noValue; });
     await manager.action(id, "resume"); const done = await settle(manager, id); assert.equal(done.status, "complete", done.error); assert.equal(done.outputLanguage, "en"); assert.ok(headers.every(value => value === "Bearer old-synthetic-key"));
     assert.equal(store.list({ review: "all" }).total, 0); assert.equal((await manager.preview(scope())).pendingMessages, 0);
+  }, records);
+});
+
+
+test("富媒体预览只计算文本，计划分片与执行一致，来源哈希和覆盖不受投影影响", async () => {
+  const encoded = "a".repeat(2_000_000), raw = JSON.stringify([{ type: "input_text", text: "Exit code: 1. Keep the failed test as evidence." }, { type: "input_image", image_url: `data:image/png;base64,${encoded}` }]);
+  const records = messages(1); records.splice(1, 0, { ...records[1]!, id: "synthetic-media", ordinal: 1.5, kind: "tool_result", text: raw, hash: hash(raw) });
+  await fixture(async ({ manager, source, requests }) => {
+    const preview = await manager.preview(scope()); assert.equal(preview.plannedChunks, 1); assert.equal(preview.omittedMedia, 1); assert.ok(preview.sourceBytes! > 2_000_000); assert.ok(preview.textBytes! < 1000); assert.ok(preview.estimatedTokens < 5000); assert.equal(preview.estimatedOutputTokens, 2048);
+    const job = await settle(manager, (await manager.start(preview.id)).id); assert.equal(job.status, "complete"); assert.equal(job.totalChunks, preview.plannedChunks); assert.equal(requests.length, 1);
+    assert.equal(requests[0]!.messages.some(message => message.content.includes(encoded)), false); assert.ok(requests[0]!.messages[1]!.content.includes("Keep the failed test")); assert.ok(preview.limitationDetails?.some(detail => detail.messageDescriptor?.key === "knowledge.limitation.mediaOmitted"));
+    assert.equal(source.records[1]!.text, raw); assert.equal(source.records[1]!.hash, hash(raw)); assert.equal((await manager.preview(scope())).pendingMessages, 0);
+  }, records);
+});
+
+test("大量JSON转义和Unicode按最终请求预算切分，预览与任务片数相同且正文不丢失", async () => {
+  const text = '\\"\n中文🙂'.repeat(5000), records = messages(1); records[1] = { ...records[1]!, text, hash: hash(text) };
+  await fixture(async ({ manager, requests }) => {
+    const config = (await manager.settings()).config; config.generation.contextTokens = 12_000; config.generation.outputTokens = 512; await manager.saveSettings({ config });
+    const preview = await manager.preview(scope()); assert.ok(preview.plannedChunks! > 1);
+    const job = await settle(manager, (await manager.start(preview.id)).id); assert.equal(job.status, "complete"); assert.equal(job.totalChunks, preview.plannedChunks); assert.equal(requests.length, preview.plannedChunks);
+    assert.ok(requests.every(request => fitsRequest(config, request.messages)));
+    const fragments = requests.flatMap(request => material(request).evidence ?? []).filter(item => item.messageId === records[1]!.id).map(item => item.text); assert.equal(fragments.join(""), text); assert.ok(fragments.every(fragment => !/^[\uDC00-\uDFFF]|[\uD800-\uDBFF]$/.test(fragment)));
+  }, records);
+});
+
+
+test("旧输入方案的暂停任务要求新建预览，不能继续发送旧分片", async () => fixture(async ({ manager, store, setHandler, requests }) => {
+  setHandler(async () => { await new Promise(resolve => setTimeout(resolve, 100)); return noValue; });
+  const preview = await manager.preview(scope()), job = await manager.start(preview.id); await manager.action(job.id, "pause");
+  const record = store.getState<{ preview: { fingerprint: string } }>(`extraction.job:${job.id}`)!; record.preview.fingerprint = "synthetic-old-input-recipe"; store.setState(`extraction.job:${job.id}`, record);
+  const before = requests.length; await assert.rejects(manager.action(job.id, "resume"), (cause: unknown) => cause instanceof KnowledgeModelError && cause.code === "preview_stale");
+  assert.equal((await manager.job(job.id)).status, "paused"); assert.equal(requests.length, before);
+}));
+
+test("同一轮中的非目标工具记录不进入分片和候选证据", async () => {
+  const records = messages(1), excluded = "EXCLUDED-COPIED-TOOL-OUTPUT ".repeat(2000);
+  records.splice(1, 0, { ...records[1]!, id: "copied-tool", ordinal: 1.5, kind: "tool_result", copied: true, text: excluded, hash: hash(excluded) });
+  await fixture(async ({ manager, source, requests }) => {
+    const original = source.plan.bind(source);
+    source.plan = async scope => (await original(scope)).map(target => {
+      const indexes = target.messageIds.flatMap((id, index) => id === "copied-tool" ? [] : [index]);
+      return { ...target, messageIds: indexes.map(index => target.messageIds[index]!), hashes: indexes.map(index => target.hashes[index]!) };
+    });
+    for (const contextTokens of [32768, 12000]) {
+      if (contextTokens === 12000) { source.records[2]!.text = "Long target text. ".repeat(2000); source.records[2]!.hash = hash(source.records[2]!.text); }
+      const before = requests.length, config = (await manager.settings()).config; config.generation.contextTokens = contextTokens; await manager.saveSettings({ config });
+      const preview = await manager.preview(scope({ force: true })); assert.equal(preview.plannedChunks! > 1, contextTokens === 12000); assert.equal(preview.pendingMessages, 2);
+      const done = await settle(manager, (await manager.start(preview.id)).id); assert.equal(done.status, "complete");
+      const sent = requests.slice(before), evidence = sent.flatMap(request => material(request).evidence!); assert.deepEqual([...new Set(evidence.map(item => item.messageId))], ["message-0", "message-1"]);
+      assert.equal(sent.some(request => request.messages.some(message => message.content.includes("EXCLUDED-COPIED-TOOL-OUTPUT"))), false);
+    }
   }, records);
 });

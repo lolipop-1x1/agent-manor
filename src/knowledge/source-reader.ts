@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import type { KnowledgeConversation, KnowledgeExtractionScope, KnowledgeInputMessage, KnowledgeSource, KnowledgeSourceReader, KnowledgeTarget } from "../knowledge-contracts.js";
 import type { SessionMessage, SessionSearchScope } from "../session-contracts.js";
 import { SessionStore } from "../sessions/store.js";
+import { estimateKnowledgeTokens } from "./generation.js";
 import { knowledgeLimitations } from "./diagnostics.js";
 
 export const knowledgeMessageHash = (message: SessionMessage): string => createHash("sha256").update(JSON.stringify({
@@ -93,8 +94,8 @@ export class SessionKnowledgeReader implements KnowledgeSourceReader {
           targets.push({ sessionId: session.id, title: session.title, client: session.client, project: session.project, updatedAt: activity, version, branch,
             messageIds: selectedMessages.map(message => message.id), hashes: selectedMessages.map(message => message.hash),
             turnCount: new Set(selectedMessages.map(message => message.turnId)).size,
-            inputTokens: selectedMessages.reduce((sum, message) => sum + Buffer.byteLength(message.text, "utf8"), 0),
-            contextTokens: context.reduce((sum, message) => sum + Buffer.byteLength(message.text, "utf8"), 0), limitations, limitationDetails });
+            inputTokens: selectedMessages.reduce((sum, message) => sum + estimateKnowledgeTokens(message.text), 0),
+            contextTokens: context.reduce((sum, message) => sum + estimateKnowledgeTokens(message.text), 0), limitations, limitationDetails });
         }
       }
       if (page * result.pageSize >= result.total) break;

@@ -208,3 +208,6 @@
 .knowledge-review-fields dt { color: var(--muted); font-size: 11px; margin-bottom: 5px; }
 .knowledge-review-fields dd { margin: 0; overflow-wrap: anywhere; }
 .knowledge-reader a[aria-disabled="true"] { color: var(--muted); opacity: .65; cursor: wait; }
+
+.knowledge-selected-title { overflow-wrap: anywhere; font-size: 16px; line-height: 1.5; }
+.knowledge-scope-fields > .knowledge-field { margin: 18px 0; }

@@ -88,7 +88,7 @@ export function validateKnowledgeConfig(value: unknown): KnowledgeConfig {
 }
 
 export function knowledgeFingerprint(config: KnowledgeConfig): string {
-  return createHash("sha256").update(JSON.stringify({ template: 1, generation: config.generation, outputLanguage: config.outputLanguage, extractionPrompt: config.extractionPrompt, mergePrompt: config.mergePrompt })).digest("hex");
+  return createHash("sha256").update(JSON.stringify({ template: 2, generation: config.generation, outputLanguage: config.outputLanguage, extractionPrompt: config.extractionPrompt, mergePrompt: config.mergePrompt })).digest("hex");
 }
 export async function writeKnowledgeJson(path: string, value: unknown): Promise<void> {
   const temporary = `${path}.${randomUUID()}.tmp`;
