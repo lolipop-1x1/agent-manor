@@ -1,4 +1,5 @@
 import { lazy, memo, Suspense, useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode, type RefObject } from "react";
+import { SelectionIndicator } from "../../shared/ui/SelectionIndicator";
 import * as Dialog from "@radix-ui/react-dialog";
 import * as Dropdown from "@radix-ui/react-dropdown-menu";
 import { ArrowClockwise, ArrowSquareOut, CaretDown, CaretLeft, CaretRight, CaretUp, Check, CircleNotch, Code, FileCode, Folder, MagnifyingGlass, MapTrifold, Plus, Trash, WarningCircle, X } from "@phosphor-icons/react";
@@ -545,7 +546,7 @@ export function useCodeMapPage({ active, theme, onSession }: {
     <section className="product-view code-map-page" hidden={!active} aria-label={t("codeMap.view.map")}>
     <div className="code-map-toolbar"><h1>{t("codeMap.title")}</h1>
       {repository && <div className="repository-picker"><Dropdown.Root><Dropdown.Trigger ref={repositoryTrigger} className="repository-trigger" aria-label={t("codeMap.repository.choose")}><Folder size={19} weight="duotone" /><strong>{repository.name}</strong><CaretDown size={14} /></Dropdown.Trigger><Dropdown.Portal><Dropdown.Content className="dropdown-content" sideOffset={6}>{repositories.map(repo => <Dropdown.Item key={repo.id} className="dropdown-item" onSelect={() => selectRepository(repo.id)}>{repo.id === repoId && <Check size={14} />}<span>{repo.name}<small>{repo.path}</small></span></Dropdown.Item>)}<Dropdown.Separator className="dropdown-separator" /><Dropdown.Item className="dropdown-item" onSelect={() => { setRegisterError(null); setRegisterOpen(true); }}><Plus size={15} />{t("codeMap.repository.register")}</Dropdown.Item><Dropdown.Separator className="dropdown-separator" /><Dropdown.Item className="dropdown-item repository-delete-action" onSelect={() => { setDeleteError(null); setDeleteTarget({ ...repository }); }}><Trash size={15} />{t("codeMap.repository.deleteCurrent")}</Dropdown.Item></Dropdown.Content></Dropdown.Portal></Dropdown.Root></div>}
-      <div className="code-map-tabs" role="tablist" aria-label={t("codeMap.view.tabs")}>
+      <div className="code-map-tabs" role="tablist" aria-label={t("codeMap.view.tabs")}><SelectionIndicator value={mapTab} line />
         {(["distribution", "replay"] as const).map((tab, index) => <button key={tab} id={`code-map-tab-${tab}`} role="tab" aria-selected={mapTab === tab} aria-controls={`code-map-panel-${tab}`} tabIndex={mapTab === tab ? 0 : -1} onClick={() => switchMapTab(tab)} onKeyDown={event => {
           if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
           event.preventDefault();

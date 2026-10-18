@@ -57,6 +57,7 @@ try {
       await saved;
       await page.waitForFunction(dark => document.documentElement.dataset.theme === (dark ? "dark" : "light"), dark);
       await page.keyboard.press("Escape");
+      await page.locator(".appearance-menu").waitFor({ state: "hidden" });
     };
     const map = page.getByRole("group", { name: "文件行数决定面积的代码活动地图" });
     const selectedDirectory = async () => page.locator(".directory-select[aria-current=location]").getAttribute("aria-label");

@@ -1,0 +1,93 @@
+:root {
+  --motion-feedback: 110ms;
+  --motion-state: 170ms;
+  --motion-panel: 210ms;
+  --motion-exit: 100ms;
+  --motion-focus: 550ms;
+  --motion-ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+/* 反馈只影响操作对象；数据区域、布局尺寸和焦点轮廓保持即时。 */
+:where(.button, .icon-button, .text-button, .filter-trigger, .filter-option, .help-trigger,
+  .repository-trigger, .directory-row, .session-list-item, .session-mode-tabs button,
+  .session-profile-tabs button, .resource-kind-tabs button, .resource-view-tabs button,
+  .resource-detail-tabs button, .resource-display-switch button, .resource-quick-filters button,
+  .overview-segmented button, .weekly-review-metric, .usage-segmented button,
+  .trace-detail-tabs button, .semantic-settings-tabs button, .resource-tools-item, .map-tool-button) {
+  transition: background-color var(--motion-feedback) ease-out, border-color var(--motion-feedback) ease-out,
+    color var(--motion-feedback) ease-out, box-shadow var(--motion-feedback) ease-out;
+}
+.button.primary { transition: background-color var(--motion-feedback) ease-out, transform var(--motion-feedback) var(--motion-ease-out); }
+.button.primary:active:not(:disabled) { transform: scale(.99); }
+.filter-trigger > svg, .filter-trigger [data-state] svg, .session-turn > summary > svg {
+  transition: transform var(--motion-state) var(--motion-ease-out);
+}
+.resource-favorite svg { transition: color var(--motion-feedback) ease-out, scale var(--motion-state) var(--motion-ease-out); }
+.resource-favorite:active:not([aria-disabled="true"]) svg { scale: .9; }
+
+.product-nav, .code-map-tabs { position: relative; isolation: isolate; }
+.selection-indicator { position: absolute; top: 0; left: 0; pointer-events: none; z-index: -1; border-radius: 6px; background: var(--accent-soft); transform-origin: left top; }
+.selection-indicator.is-line { border-radius: 1px; background: var(--accent); }
+.product-nav:has(.selection-indicator:not([hidden])) button[aria-current="page"] { background: transparent; }
+.product-nav button { transition: color var(--motion-feedback) ease-out, background-color var(--motion-feedback) ease-out; }
+.code-map-tabs:has(.selection-indicator:not([hidden])) [aria-selected="true"] { border-bottom-color: transparent; }
+
+/* Radix 的 Presence 保持退场节点；独立 translate 不覆盖弹窗自身的居中 transform。 */
+:where(.filter-menu, .appearance-menu, .resource-tools-menu, .dropdown-content) {
+  --motion-enter-x: 0px; --motion-enter-y: -3px;
+  transform-origin: var(--radix-popover-content-transform-origin, var(--radix-select-content-transform-origin, var(--radix-dropdown-menu-content-transform-origin, center top)));
+}
+:where(.filter-menu, .appearance-menu, .resource-tools-menu, .dropdown-content)[data-side="top"] { --motion-enter-y: 3px; }
+:where(.filter-menu, .appearance-menu, .resource-tools-menu, .dropdown-content)[data-side="left"] { --motion-enter-x: 3px; --motion-enter-y: 0px; }
+:where(.filter-menu, .appearance-menu, .resource-tools-menu, .dropdown-content)[data-side="right"] { --motion-enter-x: -3px; --motion-enter-y: 0px; }
+:where(.filter-menu, .appearance-menu, .resource-tools-menu, .dropdown-content)[data-state="open"] { animation: motion-menu-in var(--motion-state) var(--motion-ease-out); }
+:where(.filter-menu, .appearance-menu, .resource-tools-menu, .dropdown-content)[data-state="closed"] { animation: motion-menu-out var(--motion-exit) ease-out; pointer-events: none; }
+/* 选择后的下一次键盘动作立即交还外层，不让退出节点占住 Radix 的顶层焦点。 */
+:is(.filter-menu, .dropdown-content, .resource-tools-menu):is([role="listbox"], [role="menu"], .project-picker-menu)[data-state="closed"] { animation: none; }
+:where(.dialog-overlay, .overview-dialog-overlay, .usage-dialog-overlay)[data-state="open"] { animation: motion-overlay-in var(--motion-state) ease-out; }
+:where(.dialog-overlay, .overview-dialog-overlay, .usage-dialog-overlay)[data-state="closed"] { animation: motion-overlay-out var(--motion-exit) ease-out; pointer-events: none; }
+:where(.dialog-content, .overview-investigation, .usage-request-dialog, .pricing-workspace)[data-state="open"] { animation: motion-panel-in var(--motion-panel) var(--motion-ease-out); }
+:where(.dialog-content, .overview-investigation, .usage-request-dialog, .pricing-workspace)[data-state="closed"] { animation: motion-panel-out var(--motion-exit) ease-out; pointer-events: none; }
+:where(.tooltip, .chart-tooltip, .map-hover-hint, .replay-timeline-preview) { animation: motion-hint-in 80ms ease-out; }
+
+@keyframes motion-menu-in { from { opacity: .6; translate: var(--motion-enter-x) var(--motion-enter-y); } to { opacity: 1; translate: 0 0; } }
+@keyframes motion-menu-out { from { opacity: 1; } to { opacity: 0; translate: var(--motion-enter-x) var(--motion-enter-y); } }
+@keyframes motion-overlay-in { from { opacity: 0; } to { opacity: 1; } }
+@keyframes motion-overlay-out { from { opacity: 1; } to { opacity: 0; } }
+@keyframes motion-panel-in { from { opacity: .7; translate: 0 8px; } to { opacity: 1; translate: 0 0; } }
+@keyframes motion-panel-out { from { opacity: 1; translate: 0 0; } to { opacity: 0; translate: 0 3px; } }
+@keyframes motion-hint-in { from { opacity: .65; } to { opacity: 1; } }
+
+/* 拖动始终即时；播放器时钟只平滑独立的播放头，不插值事件或地图方块。 */
+.activity-replay[data-playing="true"] .replay-playhead { transition: transform 50ms linear; }
+.replay-current-outline { animation: motion-hint-in var(--motion-state) ease-out; }
+.activity-replay[data-motion-detail="reduced"] .replay-current-outline { animation: none; }
+.map-scene { position: absolute; inset: 0; transform-origin: 0 0; }
+.map-focus-context { pointer-events: none; }
+
+@media (max-width: 1023px) {
+  .sessions-shell[data-compact-panel="list"] .session-sidebar { animation: motion-drawer-left var(--motion-panel) var(--motion-ease-out); }
+  .sessions-shell[data-compact-panel="profile"] .session-profile { animation: motion-drawer-right var(--motion-panel) var(--motion-ease-out); }
+  .session-mobile-backdrop { animation: motion-overlay-in var(--motion-state) ease-out; }
+}
+@keyframes motion-drawer-left { from { opacity: .75; translate: -12px 0; } to { opacity: 1; translate: 0 0; } }
+@keyframes motion-drawer-right { from { opacity: .75; translate: 12px 0; } to { opacity: 1; translate: 0 0; } }
+
+@media (prefers-reduced-motion: reduce) {
+  :root { --motion-feedback: 0ms; --motion-state: 0ms; --motion-panel: 0ms; --motion-exit: 0ms; --motion-focus: 0ms; }
+  :where(.filter-menu, .appearance-menu, .resource-tools-menu, .dropdown-content, .dialog-overlay, .overview-dialog-overlay,
+    .usage-dialog-overlay, .dialog-content, .overview-investigation, .usage-request-dialog, .pricing-workspace,
+    .tooltip, .chart-tooltip, .map-hover-hint, .replay-timeline-preview, .replay-current-outline,
+    .session-mobile-backdrop, .sessions-shell[data-compact-panel] .session-sidebar,
+    .sessions-shell[data-compact-panel] .session-profile) { animation: none; }
+  :where(.filter-menu, .appearance-menu, .resource-tools-menu, .dropdown-content, .dialog-overlay,
+    .overview-dialog-overlay, .usage-dialog-overlay, .dialog-content, .overview-investigation,
+    .usage-request-dialog, .pricing-workspace)[data-state] { animation: none; }
+  /* 保留退出动画名称并立刻完成，避免偏好切换取消动画后 Presence 等不到结束。 */
+  :where(.filter-menu, .appearance-menu, .resource-tools-menu, .dropdown-content)[data-state="closed"] { animation: motion-menu-out 0ms; }
+  :where(.dialog-overlay, .overview-dialog-overlay, .usage-dialog-overlay)[data-state="closed"] { animation: motion-overlay-out 0ms; }
+  :where(.dialog-content, .overview-investigation, .usage-request-dialog, .pricing-workspace)[data-state="closed"] { animation: motion-panel-out 0ms; }
+  .activity-replay[data-playing="true"] .replay-playhead { transition: none; }
+  .sessions-shell[data-compact-panel="list"] .session-sidebar, .sessions-shell[data-compact-panel="profile"] .session-profile, .replay-current-outline { animation: none; }
+  .button.primary:active:not(:disabled), .resource-favorite:active:not([aria-disabled="true"]) svg { transform: none; scale: none; }
+}

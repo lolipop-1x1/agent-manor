@@ -1,5 +1,6 @@
-import { memo, useEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent, type PointerEvent, type ReactNode } from "react";
+import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent, type PointerEvent, type ReactNode } from "react";
 import { ArrowsIn, ArrowsOut, CaretRight, Crosshair, Folder, Minus, Plus, Resize } from "@phosphor-icons/react";
+import { animateSurface } from "../../shared/motion";
 import { t, useI18n } from "../../shared/i18n";
 import { HelpPopover } from "../../shared/ui/HelpPopover";
 import type { FileCoverage } from "../../../src/contracts";
@@ -33,6 +34,10 @@ export function CodeMap(props: CodeMapProps) {
 const MapCanvas = memo(function MapCanvas({ files, directory, metric, selected, browse, select, heading, legend, scopeKey = directory, language, playback, replayReadable, replayGroupModules, fullscreenControl, onManualCamera, followDirectory }: CodeMapProps & { language: string }) {
   const explorer = useRef<HTMLElement>(null);
   const host = useRef<HTMLDivElement>(null);
+  const scene = useRef<HTMLDivElement>(null);
+  const focusMotion = useRef<Animation | undefined>(undefined);
+  const focusFrom = useRef<MapCamera | null>(null);
+  const focusContext = useRef<{ node: HTMLElement; transform: string } | null>(null);
   const layout = useMemo(() => layoutMap(files, directory), [files, directory]);
   const [size, setSize] = useState({ width: 700, height: 450 });
   const sizeRef = useRef(size);
@@ -50,14 +55,50 @@ const MapCanvas = memo(function MapCanvas({ files, directory, metric, selected, 
   const manualCamera = useRef(onManualCamera);
   manualCamera.current = onManualCamera;
   const fit = fitCamera(layout.bounds, size);
-  const updateCamera = (next: MapCamera) => {
+  const visualCamera = () => {
+    const current = cameraRef.current;
+    if (focusMotion.current?.playState !== "running" || !scene.current) return current;
+    const matrix = new DOMMatrix(getComputedStyle(scene.current).transform);
+    return { scale: current.scale * matrix.a, x: current.x * matrix.a + matrix.e, y: current.y * matrix.a + matrix.f };
+  };
+  const interruptFocus = () => {
+    const current = visualCamera();
+    focusMotion.current?.cancel(); focusFrom.current = null;
+    focusContext.current?.node.remove(); focusContext.current = null;
+    cameraRef.current = current;
+    return current;
+  };
+  const updateCamera = (next: MapCamera, animate = false) => {
+    const previous = interruptFocus();
+    focusFrom.current = animate ? previous : null;
     cameraRef.current = next;
     if (frame.current === null) frame.current = requestAnimationFrame(() => {
       frame.current = null;
       setCamera(cameraRef.current);
     });
   };
-  useEffect(() => {
+  useLayoutEffect(() => {
+    const previous = focusFrom.current;
+    focusFrom.current = null;
+    if (!previous || !scene.current) return;
+    const ratio = previous.scale / camera.scale;
+    // 相机只提交最终布局，过渡由独立场景层合成，避免每帧重绘大量文件。
+    focusMotion.current = animateSurface(scene.current, [
+      { transform: `translate(${previous.x - camera.x * ratio}px, ${previous.y - camera.y * ratio}px) scale(${ratio})` },
+      { transform: "none" },
+    ], "--motion-panel");
+    const context = focusContext.current;
+    if (context) {
+      // 保留旧视口的有限快照，避免目标裁剪让周围文件提前消失。
+      const motion = animateSurface(context.node, [{ opacity: 1 }, { opacity: 0 }], "--motion-panel");
+      const remove = () => { context.node.remove(); if (focusContext.current === context) focusContext.current = null; };
+      if (motion) void motion.finished.then(remove, remove); else remove();
+    }
+    return () => { focusMotion.current?.cancel(); context?.node.remove(); };
+  }, [camera]);
+  useLayoutEffect(() => {
+    focusMotion.current?.cancel(); focusFrom.current = null;
+    focusContext.current?.node.remove(); focusContext.current = null;
     const element = host.current!;
     const previous = previousLayout.current;
     const reset = previous.scopeKey === scopeKey ? refreshCamera(cameraRef.current, previous.layout, layout, sizeRef.current) : fitCamera(layout.bounds, sizeRef.current);
@@ -82,7 +123,7 @@ const MapCanvas = memo(function MapCanvas({ files, directory, metric, selected, 
       const bounds = element.getBoundingClientRect();
       const delta = event.deltaY * (event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? bounds.height : 1);
       const factor = Math.exp(-Math.max(-500, Math.min(500, delta)) * .002);
-      updateCamera(zoomCamera(cameraRef.current, factor, { x: event.clientX - bounds.left, y: event.clientY - bounds.top }, fitCamera(layout.bounds, sizeRef.current).scale, layout.maxScale));
+      updateCamera(zoomCamera(interruptFocus(), factor, { x: event.clientX - bounds.left, y: event.clientY - bounds.top }, fitCamera(layout.bounds, sizeRef.current).scale, layout.maxScale));
     };
     element.addEventListener("wheel", wheel, { passive: false });
     return () => { observer.disconnect(); element.removeEventListener("wheel", wheel); if (frame.current !== null) cancelAnimationFrame(frame.current); frame.current = null; };
@@ -144,13 +185,14 @@ const MapCanvas = memo(function MapCanvas({ files, directory, metric, selected, 
     return { x: event.clientX - bounds.left, y: event.clientY - bounds.top };
   };
   const tileAt = (point: MapPoint) => {
-    const current = cameraRef.current;
+    const current = visualCamera();
     const x = (point.x - current.x) / current.scale;
     const y = (point.y - current.y) / current.scale;
     return layout.files.find(tile => x >= tile.x && x <= tile.x + tile.width && y >= tile.y && y <= tile.y + tile.height);
   };
   const startPointer = (event: PointerEvent<HTMLDivElement>) => {
     if (event.button !== 0) return;
+    updateCamera(interruptFocus());
     const point = localPoint(event);
     pointers.current.set(event.pointerId, point);
     // 目录按钮的普通单击保持原目标；超过相同的拖动阈值后再捕获指针。
@@ -196,11 +238,20 @@ const MapCanvas = memo(function MapCanvas({ files, directory, metric, selected, 
     setDragging(false);
     if (moved || event.type === "pointercancel") { suppressClick.current = true; setTimeout(() => { suppressClick.current = false; }, 0); }
   };
-  const zoom = (factor: number) => { manualCamera.current?.(); setHint(null); updateCamera(zoomCamera(cameraRef.current, factor, { x: size.width / 2, y: size.height / 2 }, fit.scale, layout.maxScale)); };
+  const zoom = (factor: number) => { manualCamera.current?.(); setHint(null); updateCamera(zoomCamera(interruptFocus(), factor, { x: size.width / 2, y: size.height / 2 }, fit.scale, layout.maxScale)); };
   const reset = () => { manualCamera.current?.(); setHint(null); updateCamera(fit); };
   const locate = () => {
     const tile = layout.files.find(file => file.path === selected);
-    if (tile) { manualCamera.current?.(); setHint(null); updateCamera(locateCamera(tile, size, fit.scale, layout.maxScale)); }
+    if (tile) {
+      const context = scene.current && !matchMedia("(prefers-reduced-motion: reduce)").matches ? {
+        node: scene.current.cloneNode(true) as HTMLElement, transform: getComputedStyle(scene.current).transform,
+      } : null;
+      manualCamera.current?.(); setHint(null); updateCamera(locateCamera(tile, size, fit.scale, layout.maxScale), true);
+      if (context) {
+        context.node.inert = true; context.node.setAttribute("aria-hidden", "true"); context.node.classList.add("map-focus-context");
+        context.node.style.transform = context.transform; host.current?.append(context.node); focusContext.current = context;
+      }
+    }
   };
   const keyboard = (event: KeyboardEvent<HTMLDivElement>) => {
     if (event.target !== event.currentTarget) return;
@@ -209,7 +260,7 @@ const MapCanvas = memo(function MapCanvas({ files, directory, metric, selected, 
     else if (event.key === "0") { event.preventDefault(); reset(); }
     else if (["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(event.key)) {
       event.preventDefault(); setHint(null); manualCamera.current?.();
-      updateCamera(panCamera(cameraRef.current, { x: event.key === "ArrowLeft" ? 60 : event.key === "ArrowRight" ? -60 : 0, y: event.key === "ArrowUp" ? 60 : event.key === "ArrowDown" ? -60 : 0 }));
+      updateCamera(panCamera(interruptFocus(), { x: event.key === "ArrowLeft" ? 60 : event.key === "ArrowRight" ? -60 : 0, y: event.key === "ArrowUp" ? 60 : event.key === "ArrowDown" ? -60 : 0 }));
     }
   };
   const selectedTile = layout.files.some(tile => tile.path === selected);
@@ -233,6 +284,7 @@ const MapCanvas = memo(function MapCanvas({ files, directory, metric, selected, 
       }} onKeyDown={keyboard}
       onClickCapture={event => { if (suppressClick.current) { event.preventDefault(); event.stopPropagation(); } }}
       onClick={event => { if (!(event.target as HTMLElement).closest("button") && event.detail !== 0) { const tile = tileAt(localPoint(event)); if (tile) { select(tile.path); setHint(null); } } }}>
+      <div ref={scene} className="map-scene">
       <MapTileLayer className="map-colors" tiles={colorTiles} size={size} />
       {moduleActivity.map(({ directory: node, rect, activity }) => <button key={node.path} className="replay-module" style={position(rect)} data-replay-module={node.path} data-replay-current={!!activity?.files || undefined} onClick={() => browse(node.path)} aria-label={t("codeMap.map.enterDirectory", { path: node.path })}>
         <span><Folder size={16} /><strong>{node.name}</strong><CaretRight size={13} /></span>
@@ -264,6 +316,7 @@ const MapCanvas = memo(function MapCanvas({ files, directory, metric, selected, 
         <span>{markers.slice(0, 3).map(marker => <span key={`${marker.track}-${marker.kind}-${marker.status}`} className={`replay-callout-marker replay-track-${marker.track % 6}`}><i className={`replay-symbol ${marker.kind}`} /><b>{marker.track + 1}</b>{marker.status === "failure" && <em className="replay-marker-state failure" aria-label={t("codeMap.status.failure")}>!</em>}</span>)}<strong>{tile.name}</strong></span>
         <code>{tile.path}</code>
       </button>)}
+      </div>
       {hint && !dragging && <div className="map-hover-hint" role="tooltip" style={{ left: Math.max(4, Math.min(hint.point.x + 12, size.width - Math.min(310, size.width - 8))), top: Math.max(4, Math.min(hint.point.y + 16, size.height - 78)), maxWidth: Math.min(310, size.width - 8) }}><span>{hint.tile.path}</span>{!playback && <strong>{metricNames[metric]} {valueLabel(hint.tile.file, metric)}</strong>}<small>{t("codeMap.line.count", { count: hint.tile.file.lineCount })}</small></div>}
     </div>
     {legend}

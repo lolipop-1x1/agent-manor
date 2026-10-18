@@ -1,6 +1,7 @@
 import { clientLabel, getLanguage, isMessageDescriptorKnown, messageText, t, useI18n } from "../../shared/i18n";
 import { formatDateTime, formatNumber } from "../../../src/i18n";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { animateSurface } from "../../shared/motion";
 import { SessionSearchGroups, Highlight } from "./SessionSearchGroups";
 import { SemanticSearchPanel } from "./SemanticSearchPanel";
 import { semanticQueryScope, searchScopeInvalid, sharedSessionSearchScope } from "./semantic-ui-model";
@@ -170,6 +171,18 @@ export default function Sessions({ active, target, onMap, onReplay, onHistoryRea
   const localSearchInput = useRef<HTMLInputElement>(null);
   const localSearchResults = useRef<HTMLDivElement>(null);
   const readingPane = useRef<HTMLDivElement>(null);
+  const landingMotion = useRef<Animation | undefined>(undefined);
+  const stopFocusScroll = useRef<() => void>(() => undefined);
+  useLayoutEffect(() => () => { stopFocusScroll.current(); landingMotion.current?.cancel(); }, [active, selectedSessionId]);
+  useEffect(() => {
+    const pane = readingPane.current;
+    if (!active || !pane) return;
+    const interrupt = () => stopFocusScroll.current();
+    pane.addEventListener("wheel", interrupt, { passive: true });
+    pane.addEventListener("pointerdown", interrupt, { passive: true });
+    pane.addEventListener("keydown", interrupt);
+    return () => { pane.removeEventListener("wheel", interrupt); pane.removeEventListener("pointerdown", interrupt); pane.removeEventListener("keydown", interrupt); };
+  }, [active]);
   const tracePane = useRef<HTMLDivElement>(null);
   const readingPositions = useRef(new Map<string, ReadingPosition>());
   const readingLoaded = useRef(false);
@@ -395,6 +408,7 @@ export default function Sessions({ active, target, onMap, onReplay, onHistoryRea
     if (!active || !messageData || messageData.session.id !== selectedSessionId || messageDataKey !== `${selectedSessionId}${messageQuery}` || !readingPane.current) return;
     if (refreshAnchor.current?.sessionId === selectedSessionId && mode === "trace") refreshAnchor.current = undefined;
     if (refreshAnchor.current?.sessionId === selectedSessionId && mode !== "trace") {
+      stopFocusScroll.current(); landingMotion.current?.cancel();
       const anchor = refreshAnchor.current, pane = readingPane.current;
       const node = anchor.messageId && document.getElementById(`session-message-${anchor.messageId}`);
       pane.scrollTop = anchor.atEnd ? pane.scrollHeight : node ? pane.scrollTop + node.getBoundingClientRect().top - pane.getBoundingClientRect().top - anchor.offset : anchor.scroll;
@@ -402,6 +416,7 @@ export default function Sessions({ active, target, onMap, onReplay, onHistoryRea
     }
     if (restoreScroll.current !== undefined) {
       if (readyScrollRestore.current) {
+        stopFocusScroll.current(); landingMotion.current?.cancel();
         const pane = readingPane.current, anchor = restoreReadingAnchor.current;
         const node = anchor && document.getElementById(`session-message-${anchor.messageId}`);
         pane.scrollTop = node && anchor ? pane.scrollTop + node.getBoundingClientRect().top - pane.getBoundingClientRect().top - anchor.offset : restoreScroll.current;
@@ -411,15 +426,30 @@ export default function Sessions({ active, target, onMap, onReplay, onHistoryRea
     }
     if (!pageScroll.current) return;
     if (mode === "trace") { pageScroll.current = false; return; }
+    const focus = (target: HTMLElement, offset: number) => {
+      stopFocusScroll.current(); landingMotion.current?.cancel();
+      const pane = readingPane.current!, distance = target.getBoundingClientRect().top - pane.getBoundingClientRect().top - offset;
+      const reduced = matchMedia("(prefers-reduced-motion: reduce)"), top = pane.scrollTop + distance;
+      const gentle = !reduced.matches && Math.abs(distance) < pane.clientHeight;
+      if (gentle) {
+        const finish = () => { clearTimeout(timer); reduced.removeEventListener("change", reduce); pane.removeEventListener("scrollend", finish); };
+        const reduce = () => { if (reduced.matches) { pane.scrollTo({ top, behavior: "instant" }); finish(); } };
+        const timer = setTimeout(finish, 1000);
+        reduced.addEventListener("change", reduce); pane.addEventListener("scrollend", finish, { once: true });
+        stopFocusScroll.current = () => { pane.scrollTo({ top: pane.scrollTop, behavior: "instant" }); finish(); };
+      }
+      pane.scrollTo({ top, behavior: gentle ? "smooth" : "instant" });
+      const landing = target.querySelector<HTMLElement>("summary") ?? target;
+      landingMotion.current = animateSurface(landing, [{ boxShadow: "inset 0 0 0 2px var(--accent)" }, { boxShadow: getComputedStyle(landing).boxShadow }], "--motion-focus");
+    };
     const node = focusMessageId && document.getElementById(`session-message-${focusMessageId}`);
     if (node && expandedTurns.has(messageData.messages.find(message => message.id === focusMessageId)?.turnId || "unknown")) {
-      const pane = readingPane.current;
-      pane.scrollTop += node.getBoundingClientRect().top - pane.getBoundingClientRect().top - 16;
+      focus(node, 16);
       pageScroll.current = false;
     } else if (turnPosition && messageData.turns?.some(turn => turn.position === turnPosition)) {
       const turn = messageData.turns.find(turn => turn.position === turnPosition)!;
       const target = document.getElementById(`session-turn-${turn.id}`);
-      if (target) readingPane.current.scrollTop += target.getBoundingClientRect().top - readingPane.current.getBoundingClientRect().top - 10;
+      if (target) focus(target, 10);
       pageScroll.current = false;
     } else if (pageScroll.current) { readingPane.current.scrollTop = 0; pageScroll.current = false; }
   }, [active, focusMessageId, messageData, messageDataKey, messageQuery, expandedTurns, selectedSessionId, turnPosition, mode, traceFocusRequest]);
@@ -599,6 +629,7 @@ export default function Sessions({ active, target, onMap, onReplay, onHistoryRea
     if (selectedSessionId) updateAddress(selectedSessionId, { mode, position: bounded });
   };
   const changeMode = (next: Mode) => {
+    stopFocusScroll.current(); landingMotion.current?.cancel();
     setMessageOffset(undefined);
     const current = selectedMessageData?.messages.find(message => message.id === (mode === "trace" ? traceSelection ?? focusMessageId : focusMessageId));
     const activeTurn = current?.turnId ?? selectedMessageData?.turns?.find(turn => turn.position === currentTurn)?.id;

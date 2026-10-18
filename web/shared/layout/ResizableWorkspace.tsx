@@ -1,6 +1,7 @@
-import { useEffect, useRef, useState, type CSSProperties, type KeyboardEvent, type PointerEvent, type ReactNode } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type KeyboardEvent, type PointerEvent, type ReactNode } from "react";
 import { useI18n } from "../i18n";
 import { panelSemantics, panelWidthRange, workspaceWidths, type PanelSemantics, type PanelSide, type PanelWidths, type WorkspaceVariant } from "./workspace-layout";
+import { animateSurface } from "../motion";
 
 export function ResizableWorkspace({ sidebarCollapsed, detailsCollapsed, children, semantics, variant = "map" }: {
   sidebarCollapsed: boolean; detailsCollapsed: boolean; children: ReactNode; semantics?: PanelSemantics; variant?: WorkspaceVariant;
@@ -32,6 +33,23 @@ export function ResizableWorkspace({ sidebarCollapsed, detailsCollapsed, childre
     if (resizing) document.body.classList.add("resizing-panels");
     return () => document.body.classList.remove("resizing-panels");
   }, [resizing]);
+
+  const previousCollapsed = useRef({ sidebar: sidebarCollapsed, details: detailsCollapsed });
+  useLayoutEffect(() => {
+    const animations: Animation[] = [];
+    for (const side of ["sidebar", "details"] as const) {
+      const collapsed = side === "sidebar" ? sidebarCollapsed : detailsCollapsed;
+      if (previousCollapsed.current[side] && !collapsed) {
+        const content = document.getElementById(panelSemantics(side, semantics).controls);
+        if (content && workspace.current?.contains(content)) {
+          const animation = animateSurface(content, [{ opacity: .75, translate: `${side === "sidebar" ? -6 : 6}px 0` }, { opacity: 1, translate: "0 0" }], "--motion-panel");
+          if (animation) animations.push(animation);
+        }
+      }
+      previousCollapsed.current[side] = collapsed;
+    }
+    return () => { for (const animation of animations) animation.cancel(); };
+  }, [sidebarCollapsed, detailsCollapsed]);
 
   const adjust = (side: PanelSide, value: number) => {
     const range = panelWidthRange(side, viewport, widths);

@@ -59,17 +59,31 @@ try {
     const pane = page.locator(".session-message-scroll");
     const text = value => pane.locator(".session-message").getByText(value, { exact: true });
     const idle = () => page.waitForLoadState("networkidle");
+    const scrollSettled = () => pane.evaluate(element => new Promise(resolve => {
+      let previous = element.scrollTop, stable = 0, frames = 0;
+      const sample = () => {
+        stable = Math.abs(element.scrollTop - previous) < .5 ? stable + 1 : 0; previous = element.scrollTop;
+        if (stable >= 4 || ++frames >= 90) resolve(); else requestAnimationFrame(sample);
+      };
+      requestAnimationFrame(sample);
+    }));
     const boundary = direction => page.locator(`.session-reading-boundary[data-direction="${direction}"] button`);
     await page.setViewportSize({ width: 1560, height: 1000 });
     await page.getByRole("button", { name: /^连续阅读验收 Codex/ }).click();
     await text("连续问题 1").waitFor();
     await page.locator(".session-turn-position").click(); await b("末轮").click();
-    await text("连续问题 21").waitFor(); await text("连续问题 20").waitFor(); await idle();
+    await text("连续问题 21").waitFor(); await text("连续问题 20").waitFor(); await idle(); await scrollSettled();
     ensure(await page.locator(".session-turn-position").getAttribute("data-turn") === "21", "末轮预载前文后仍定位21轮");
-    await pane.evaluate(element => { element.scrollTop = 150; }); await idle();
-    const before = await text("连续问题 11").boundingBox();
-    await pane.hover(); await page.mouse.wheel(0, -50); await text("连续问题 1").waitFor(); await idle();
+    await pane.hover();
+    // 设置边界与采集原锚点在同一帧完成，不让补载先于基准矩形发生。
+    const before = await pane.evaluate(element => {
+      element.scrollTop = 150;
+      const node = [...element.querySelectorAll(".session-message p")].find(node => node.textContent === "连续问题 11");
+      const rect = node?.getBoundingClientRect(); return rect?.width ? { y: rect.y } : null;
+    });
+    await page.mouse.wheel(0, -50); await text("连续问题 1").waitFor(); await idle(); await scrollSettled();
     const after = await text("连续问题 11").boundingBox();
+    ensure(before && after, "上滑补载前后阅读锚点均可见");
     ensure(Math.abs(after.y - before.y - 50) <= 2, "上滑自动补入前文并保持可见消息位置");
     ensure(await text("连续问题 10").count() === 1 && await text("连续问题 20").count() === 1, "21轮跨页不重复不缺失");
     await pane.hover(); await page.mouse.wheel(0, -100000); await idle();
