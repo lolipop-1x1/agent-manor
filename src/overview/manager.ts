@@ -43,7 +43,7 @@ export class OverviewManager {
   private createWorker(lane: Lane): Worker {
     const extension = import.meta.url.endsWith(".ts") ? "ts" : "js";
     const url = new URL(`./worker.${extension}`, import.meta.url), workerData = { dbPath: this.sessions.dbPath, preparesFacts: lane === "core", reviewOnly: lane === "review" };
-    const resourceLimits = { maxOldGenerationSizeMb: lane === "repositories" ? 192 : 512, maxYoungGenerationSizeMb: 32 };
+    const resourceLimits = { maxOldGenerationSizeMb: 512, maxYoungGenerationSizeMb: 32 };
     const worker = extension === "ts"
       ? new Worker(`import('tsx/esm/api').then(({register}) => { register(); return import(${JSON.stringify(url.href)}); });`, { eval: true, workerData, resourceLimits })
       : new Worker(url, { workerData, resourceLimits });
