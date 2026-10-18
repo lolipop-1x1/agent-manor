@@ -252,6 +252,8 @@ async function verifyBrowser(page, fixture, verifyUsability) {
   await button("显示语言").click(); await page.getByRole("menuitemradio", { name: "English", exact: true }).click();
   await tab("Activity replay").waitFor();
   ensure((await button("Playback session").innerText()).includes("并行主会话"), "语言切换丢失当前会话");
+  ensure(await page.getByRole("group", { name: "Presentation", exact: true }).isVisible(), "英文展示方式没有本地化");
+  ensure(await button("File details").getAttribute("aria-pressed") === "true", "刷新后没有默认使用文件明细");
   await button("Playback session").click();
   const englishSearch = page.getByRole("combobox", { name: "Search Playback session", exact: true });
   await englishSearch.fill("同名候选");
@@ -261,6 +263,14 @@ async function verifyBrowser(page, fixture, verifyUsability) {
   await snapshot("replay-english");
   await page.setViewportSize({ width: 390, height: 844 });
   ensure(await tab("Activity distribution").isVisible() && await tab("Activity replay").isVisible(), "窄屏功能 Tab 不可达");
+  for (const name of ["File details", "Module overview"]) {
+    const modeButton = button(name);
+    await modeButton.focus(); await modeButton.press("Enter");
+    ensure(await modeButton.getAttribute("aria-pressed") === "true", "窄屏键盘无法切换展示方式");
+    const rect = await modeButton.boundingBox();
+    ensure(rect.x >= 0 && rect.x + rect.width <= 391, "窄屏展示切换超出视口");
+  }
+  await button("File details").click();
   await button("Playback session").click();
   const menu = await page.locator(".project-picker-menu").boundingBox();
   ensure(menu.x >= 8 && menu.x + menu.width <= 382 && menu.y >= 8 && menu.y + menu.height <= 836, "窄屏会话选择器超出视口");
@@ -300,22 +310,45 @@ async function verifyReplayUsability(page, fixture, observations) {
   };
   const viewing = page.locator("[data-replay-scope]");
   const chooseScope = async name => { await scope().click(); await page.getByRole("option", { name, exact: true }).click(); };
+  const drawnRectangles = () => root.locator(".map-colors path:not(.map-boundary)").evaluateAll(elements => elements.reduce((sum, element) => sum + (element.getAttribute("d")?.match(/M/g)?.length ?? 0), 0));
+  const mapView = () => root.locator(".code-map").evaluate(element => ({ scale: Number(element.dataset.scale), width: element.getBoundingClientRect().width, height: element.getBoundingClientRect().height }));
   const speed = () => page.getByRole("combobox", { name: "播放速度", exact: true });
   const setSpeed = async name => { await speed().click(); await page.getByRole("option", { name, exact: true }).click(); };
   await choose("大仓库小文件回放");
   ensure(await viewing.getAttribute("data-replay-scope") === "session", "新会话没有默认聚焦本次会话涉及文件");
+  ensure(await button("文件明细").getAttribute("aria-pressed") === "true", "默认展示方式不是文件明细");
   const files = async () => Number(await root.locator("[data-file-count]").first().getAttribute("data-file-count"));
   const sessionFiles = await files();
   ensure(sessionFiles === 3, "会话范围混入无关文件或遗漏实际活动文件");
   const steps = await root.locator("[data-step-id]").count(), start = await position();
   await chooseScope("整个仓库");
   ensure(await viewing.getAttribute("data-replay-scope") === "repository" && await files() > 240, "整仓范围没有恢复完整基线");
+  ensure(await root.locator("[data-replay-module]").count() === 0, "文件明细仍自动聚合为目录块");
+  ensure(await drawnRectangles() === await files(), "整仓文件明细没有绘制全部文件矩形");
+  await page.screenshot({ path: `${fixture.artifacts}/replay-presentation-files.png` });
   const tinyLabel = root.locator('[data-replay-label="src/modules/tiny.ts"]');
   await tinyLabel.waitFor();
   ensure((await tinyLabel.innerText()).includes("tiny.ts"), "极小当前活动文件没有可读名称");
   const tinyBounds = await tinyLabel.boundingBox();
   ensure(tinyBounds.width >= 90 && tinyBounds.height >= 18, "当前活动标签仍受极小地图矩形限制");
-  ensure(await root.locator("[data-replay-module]").count() > 0, "密集整仓视图没有提供可识别和下钻的模块层");
+  const beforePresentation = await mapView();
+  const versionBeforePresentation = await root.getAttribute("data-replay-version");
+  await button("模块概览").click();
+  ensure(await button("模块概览").getAttribute("aria-pressed") === "true" && await root.locator("[data-replay-module]").count() > 0, "模块概览没有提供可识别和下钻的模块层");
+  ensure(await drawnRectangles() < await files(), "模块概览没有聚合密集文件");
+  ensure(JSON.stringify(await mapView()) === JSON.stringify(beforePresentation), "展示切换改变了地图镜头或尺寸");
+  ensure(await root.locator("[data-step-id]").count() === steps && await position() === start, "展示切换改变了时间轴或播放头");
+  ensure(await root.getAttribute("data-replay-version") === versionBeforePresentation, "展示切换改变了固定数据版本");
+  await page.screenshot({ path: `${fixture.artifacts}/replay-presentation-modules.png` });
+  const moduleEntry = root.locator("[data-replay-module]").first();
+  const modulePath = await moduleEntry.getAttribute("data-replay-module");
+  await moduleEntry.click();
+  ensure(await viewing.getAttribute("data-directory") === modulePath, "模块概览不能点击进入目录");
+  ensure(await button("模块概览").getAttribute("aria-pressed") === "true", "模块下钻丢失展示方式");
+  await page.getByRole("navigation", { name: "地图目录", exact: true }).getByRole("button", { name: "整个仓库", exact: true }).click();
+  await button("文件明细").click();
+  ensure(await drawnRectangles() === await files() && await root.locator("[data-replay-module]").count() === 0, "切回文件明细没有恢复整仓文件");
+  await button("模块概览").click();
   await button("跟随当前模块").click();
   ensure(await button("跟随当前模块").getAttribute("aria-pressed") === "true", "无法开启跟随当前模块");
   await button("放大地图").click();
@@ -331,6 +364,8 @@ async function verifyReplayUsability(page, fixture, observations) {
   ensure(await viewing.getAttribute("data-directory") === "src", "目录面包屑无法返回上一级");
   ensure(await root.locator("[data-step-id]").count() === steps && await position() === start, "观看范围切换改动了完整时间轴或播放头");
   await chooseScope("会话涉及文件");
+  ensure(await button("模块概览").getAttribute("aria-pressed") === "true", "观看范围切换重置了展示方式");
+  await button("文件明细").click();
   const beforeFollow = evidenceRequests();
   await button("播放").click();
   await page.waitForFunction(() => document.querySelector('.replay-evidence[data-mode="follow"]')?.textContent?.includes("tiny.ts"));
@@ -349,6 +384,8 @@ async function verifyReplayUsability(page, fixture, observations) {
   await button("播放").click();
   await root.locator('.replay-evidence[data-mode="follow"]').waitFor();
   await page.waitForFunction(() => document.querySelector('.replay-evidence[data-mode="follow"]')?.textContent?.includes("src/a.ts"));
+  await button("模块概览").click(); await button("文件明细").click();
+  ensure(await root.getAttribute("data-playing") === "true", "切换展示方式打断了播放");
   await button("暂停").click();
   ensure(evidenceRequests() === beforeFollow, "恢复播放自动请求原始证据");
   const remaining = root.locator(".replay-remaining");
@@ -379,6 +416,8 @@ async function verifyReplayUsability(page, fixture, observations) {
   ensure(await slider().isVisible() && await root.locator(".replay-timeline-scroll").isVisible()
     && await root.locator(".replay-evidence").isVisible(), "全屏遗漏进度、轨道或活动详情");
   const fullscreenViewport = await page.evaluate(() => ({ width: innerWidth, height: innerHeight }));
+  await button("模块概览").click(); await button("文件明细").click();
+  ensure(await button("文件明细").getAttribute("aria-pressed") === "true", "全屏无法切换展示方式");
   for (const element of [slider(), root.locator(".replay-transport"), root.locator(".replay-timeline-scroll")]) {
     const bounds = await element.boundingBox();
     ensure(bounds.y >= 0 && bounds.y + bounds.height <= fullscreenViewport.height + 2, "全屏播放控制或时间轴被裁剪到视口外");
@@ -445,7 +484,8 @@ async function verifyReplayUsability(page, fixture, observations) {
   return { sessionFiles, repositoryFiles: fixture.repositoryFiles, denseLaneSteps: 312, overlapCalls: 7, defaultScope: true,
     directoryBreadcrumbs: true, readableTinyLabel: true, moduleOverview: true, manualCameraStopsFollow: true, followWithoutRawRequests: true,
     speeds: [16, 24, 32, 64, 128], invalidSpeeds: ["empty", 0, 257], fullscreenPlayer: true, fullscreenPortal: true,
-    denseHover: true, keyboardPreview: true, inspectFocusRestoration: true, statusAndGapLegend: true, stableMapGeometry: true, alignedEvidenceActions: true, unknownDetailsPreserved: true };
+    denseHover: true, keyboardPreview: true, inspectFocusRestoration: true, statusAndGapLegend: true, stableMapGeometry: true, alignedEvidenceActions: true, unknownDetailsPreserved: true,
+    defaultFilePresentation: true, allFileRectangles: true, independentPresentation: true, presentationPreservesPlayback: true };
 }
 
 let service, opened = false;

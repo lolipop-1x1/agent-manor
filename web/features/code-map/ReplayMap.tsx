@@ -19,6 +19,7 @@ interface ReplayMapProps {
 export function ReplayMap({ files, steps, playback, selected, select, scopeKey, legend, fullscreen, onFullscreen, container, disabled }: ReplayMapProps) {
   const { t } = useI18n();
   const [scope, setScope] = useState("session");
+  const [presentation, setPresentation] = useState<"files" | "modules">("files");
   const [directory, setDirectory] = useState("");
   const [follow, setFollow] = useState(false);
   useEffect(() => { setScope("session"); setDirectory(""); setFollow(false); }, [scopeKey]);
@@ -33,11 +34,14 @@ export function ReplayMap({ files, steps, playback, selected, select, scopeKey, 
   const followDirectory = follow ? replayFollowDirectory([...playback.current.keys()].filter(path => path === "." || includedPaths.has(path)), directorySet) : null;
   const stopFollowing = useCallback(() => setFollow(false), []);
   const browse = useCallback((path: string) => { if (!disabled) { setDirectory(path); setFollow(false); } }, [disabled]);
-  return <div className="replay-map-workspace" data-replay-scope={scope} data-directory={directory} data-following={follow} data-session-fallback={sessionFallback || undefined} data-disabled={disabled || undefined}>
+  return <div className="replay-map-workspace" data-replay-scope={scope} data-replay-presentation={presentation} data-directory={directory} data-following={follow} data-session-fallback={sessionFallback || undefined} data-disabled={disabled || undefined}>
     <div className="replay-map-scopebar">
       <FilterSelect label={t("replay.range")} value={scope} disabled={disabled} container={container} options={[
         { value: "session", label: t("replay.rangeSession") }, { value: "repository", label: t("replay.rangeRepository") }, { value: "directory", label: t("replay.rangeDirectory") },
       ]} onChange={value => { setScope(value); setDirectory(""); setFollow(false); }} />
+      <div className="metric-picker replay-presentation" role="group" aria-label={t("replay.presentation")}>
+        {(["files", "modules"] as const).map(value => <button key={value} type="button" disabled={disabled} aria-pressed={presentation === value} className={presentation === value ? "active" : ""} onClick={() => setPresentation(value)}>{t(`replay.presentation.${value}`)}</button>)}
+      </div>
       {sessionFallback && <HelpPopover label={t("replay.rangeHelp")} container={container}><p>{t("replay.rangeFallback")}</p></HelpPopover>}
       {scope === "directory" && <div className="replay-directory-picker" inert={disabled}><ProjectPicker value={directory} onChange={browse} options={options} label={t("replay.focusDirectory")} placeholder={t("replay.searchDirectory")} container={container} /></div>}
       <nav className="replay-map-breadcrumbs" aria-label={t("replay.directoryBreadcrumb")}>
@@ -48,7 +52,7 @@ export function ReplayMap({ files, steps, playback, selected, select, scopeKey, 
     </div>
     <CodeMap files={included} directory={directory} metric="activity" selected={selected} browse={browse} select={select}
       scopeKey={`${scopeKey}:${scope}:${directory}`} playback={playback} heading={null} legend={legend}
-      replayReadable fullscreenControl={{ active: fullscreen, toggle: onFullscreen, container }} onManualCamera={stopFollowing} followDirectory={followDirectory} />
+      replayReadable replayGroupModules={presentation === "modules"} fullscreenControl={{ active: fullscreen, toggle: onFullscreen, container }} onManualCamera={stopFollowing} followDirectory={followDirectory} />
     {!included.some(file => file.lineCount > 0 && (!directory || file.path.startsWith(`${directory}/`))) && <p className="replay-map-empty" role="status">{t("replay.emptyMapRange")}</p>}
   </div>;
 }

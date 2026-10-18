@@ -1,6 +1,8 @@
 .replay-map-workspace { min-width: 0; min-height: 0; flex: 1; display: flex; flex-direction: column; position: relative; }
 .replay-map-scopebar { display: flex; align-items: center; gap: 8px; min-width: 0; min-height: 34px; margin-bottom: 6px; }
 .replay-map-scopebar > .filter-trigger { flex: 0 0 auto; width: auto; min-width: 134px; }
+.replay-map-scopebar > .replay-presentation { flex: 0 0 auto; width: auto; min-height: 34px; align-items: stretch; white-space: nowrap; }
+.replay-presentation > button { font-size: 12px; padding: 5px 8px; }
 .replay-directory-picker { flex: 0 1 200px; min-width: 110px; }
 .replay-directory-picker > .filter-trigger { width: 100%; }
 .replay-map-breadcrumbs { display: flex; align-items: center; flex: 1; gap: 3px; min-width: 0; overflow-x: auto; font-size: 11px; white-space: nowrap; }

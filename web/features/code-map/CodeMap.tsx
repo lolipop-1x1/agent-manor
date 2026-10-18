@@ -20,6 +20,7 @@ interface CodeMapProps {
   browse: (directory: string) => void; select: (path: string) => void; heading: ReactNode; legend: ReactNode; scopeKey?: string;
   playback?: { visited: ReadonlyMap<string, number>; current: ReadonlyMap<string, { track: number; kind: string; status: string }[]> };
   replayReadable?: boolean;
+  replayGroupModules?: boolean;
   fullscreenControl?: { active: boolean; toggle(): void; container?: HTMLElement | null };
   onManualCamera?: () => void;
   followDirectory?: string | null;
@@ -29,7 +30,7 @@ export function CodeMap(props: CodeMapProps) {
   // 仅传递绘制所需的语言，其他偏好更新不重绘大型结果。
   return <MapCanvas {...props} language={language} />;
 }
-const MapCanvas = memo(function MapCanvas({ files, directory, metric, selected, browse, select, heading, legend, scopeKey = directory, language, playback, replayReadable, fullscreenControl, onManualCamera, followDirectory }: CodeMapProps & { language: string }) {
+const MapCanvas = memo(function MapCanvas({ files, directory, metric, selected, browse, select, heading, legend, scopeKey = directory, language, playback, replayReadable, replayGroupModules, fullscreenControl, onManualCamera, followDirectory }: CodeMapProps & { language: string }) {
   const explorer = useRef<HTMLElement>(null);
   const host = useRef<HTMLDivElement>(null);
   const layout = useMemo(() => layoutMap(files, directory), [files, directory]);
@@ -112,7 +113,7 @@ const MapCanvas = memo(function MapCanvas({ files, directory, metric, selected, 
     } catch { setFullscreenError("codeMap.map.fullscreenEnterError"); }
   };
   const visible = useMemo(() => visibleTiles(layout.files, camera, size), [layout, camera, size]);
-  const modules = useMemo(() => replayReadable ? replayCollapsedModules(layout, camera, size) : [], [replayReadable, layout, camera, size]);
+  const modules = useMemo(() => replayReadable && replayGroupModules ? replayCollapsedModules(layout, camera, size) : [], [replayReadable, replayGroupModules, layout, camera, size]);
   const collapsedPaths = useMemo(() => new Set(modules.flatMap(module => module.children.map(tile => tile.path))), [modules]);
   const moduleActivity = useMemo(() => modules.map(module => ({ ...module, activity: playback ? replayModuleActivity(module.directory.path, playback) : undefined })), [modules, playback]);
   const callouts = useMemo(() => replayReadable && playback ? replayCallouts(visible, playback, size, selected) : [], [replayReadable, visible, playback, size, selected]);
