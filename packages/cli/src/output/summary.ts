@@ -1,4 +1,6 @@
-import { sessionStatusSummaryResponse } from "../../../../src/service/summary-response.js";
+import { searchSummaryResponse, sessionSummaryResponse, sessionStatusSummaryResponse } from "../../../../src/service/summary-response.js";
+import type { SessionSummary } from "../../../../src/session-contracts.js";
+import { coreResponse, coreResponsePath } from "../../../../src/service/core-response.js";
 
 /** CLI 只在已支持的接口请求摘要，Web 默认契约继续保留。 */
 export function summaryRequestPath(path: string, full: boolean, method = "GET"): string {
@@ -8,7 +10,9 @@ export function summaryRequestPath(path: string, full: boolean, method = "GET"):
   const supported = ["/status", "/sessions", "/sessions/search", "/sessions/search/groups", "/sessions/status", "/sessions/gaps", "/usage", "/usage/pricing", "/usage/pricing/refresh", "/usage/pricing/prices"].includes(name)
     || /^\/sessions\/[^/]+\/(messages|profile)$/.test(name)
     || /^\/knowledge\/extractions(?:\/[^/]+(?:\/(?:pause|resume|retry))?)?$/.test(name);
-  if (supported) url.searchParams.set("response", "summary");
+  // 人工授权绑定精确路径，审批写入保持授权路径，仅在 CLI 投影返回结果。
+  const authorizedWrite = method === "POST" && /^\/knowledge\/entries\/[^/]+\/(reviews|availability)$/.test(name);
+  if ((supported || coreResponsePath(name)) && !authorizedWrite) url.searchParams.set("response", "summary");
   const paged = ["/sessions", "/sessions/search", "/sessions/search/groups", "/sessions/gaps", "/usage", "/usage/pricing/prices", "/resources/overview", "/resources/usage", "/resources/local", "/resources/archives", "/resources/operations", "/knowledge/entries", "/knowledge/extractions"].includes(name)
     || /^\/sessions\/[^/]+\/(messages|turns|matches|profile)$/.test(name) || /^\/resources\/usage\/[^/]+\/evidence$/.test(name);
   if (paged && method === "GET" && !url.searchParams.has("pageSize")) url.searchParams.set("pageSize", "20");
@@ -35,41 +39,17 @@ export function summarizeStatus(value: unknown): unknown {
     ...(Array.isArray(result.jobs) ? { jobCount: result.jobs.length } : {}) };
 }
 
-function revisionSummary(value: unknown): unknown {
-  const revision = object(value);
-  return revision ? pick(revision, ["id", "knowledgeId", "version", "baseRevisionId", "review", "title", "type", "scope", "subject", "language", "createdAt", "summary", "tags"]) : value;
-}
-
 /** 写操作返回操作定位，不重复历史正文；授权前的具体内容仍由原始 fetch 读取。 */
 export function summarizeResponse(path: string, method: string, value: unknown, body?: unknown): unknown {
+  if (coreResponsePath(path.split("?")[0]!)) return coreResponse(path, method, value, body);
   const result = object(value);
   if (!result) return value;
-  const input = object(body);
   const name = path.split("?")[0]!;
   if (name === "/status") return summarizeStatus(result);
-  if (method !== "GET" && /^\/knowledge\/entries(?:\/[^/]+(?:\/(revisions|restore|reviews|availability))?)?$/.test(name) && result.latestRevisionId) {
-    return { ...pick(result, ["id", "createdAt", "updatedAt", "availability", "availabilityReason", "publishedRevisionId", "latestRevisionId"]),
-      ...(result.revision ? { revision: revisionSummary(result.revision) } : {}),
-      ...(result.pendingRevision ? { pendingRevision: revisionSummary(result.pendingRevision) } : {}) };
-  }
-  if (method !== "GET" && name === "/resources/favorites" && Array.isArray(result.favoriteIds) && input) {
-    return { id: input.id, favorite: result.favoriteIds.includes(input.id), favoriteCount: result.favoriteIds.length };
-  }
-  if ((name === "/resources/refresh" || /^\/resources\/sources(?:\/[^/]+)?$/.test(name)) && method !== "GET" && Array.isArray(result.manualSources)) {
-    return { observedAt: result.observedAt, sourceCount: Array.isArray(result.sources) ? result.sources.length : undefined,
-      gapCount: Array.isArray(result.gaps) ? result.gaps.length : undefined, manualSourceCount: result.manualSources.length,
-      ...(method === "DELETE" ? { sourceId: decodeURIComponent(name.split("/").at(-1)!), removed: true } : {}),
-      ...(input?.path ? { source: result.manualSources.find(source => object(source)?.path === input.path) } : {}) };
-  }
+  if (["/sessions", "/sessions/search", "/sessions/search/groups"].includes(name)) return searchSummaryResponse(result);
+  if (/^\/sessions\/[^/]+\/messages$/.test(name) && result.session) return { ...result, session: sessionSummaryResponse(result.session as SessionSummary) };
   if (method === "PUT" && ["/knowledge/settings", "/semantic/settings"].includes(name) && result.config) {
     return { ...pick(result, ["fingerprint", "hasGenerationKey", "hasEmbeddingKey", "hasKey"]), saved: true };
-  }
-  if ((name === "/knowledge/entries" && method === "GET" || name === "/knowledge/search" && method === "POST") && Array.isArray(result.items)) {
-    return { ...result, items: result.items.map(item => {
-      const entry = object(item);
-      return entry ? { ...pick(entry, ["id", "createdAt", "updatedAt", "availability", "publishedRevisionId", "latestRevisionId", "score", "snippet"]),
-        revision: revisionSummary(entry.revision), ...(entry.pendingRevision ? { pendingRevision: revisionSummary(entry.pendingRevision) } : {}) } : item;
-    }) };
   }
   if (/^\/knowledge\/extractions\/(preview|previews\/[^/]+)$/.test(name) && Array.isArray(result.targets)) {
     return { ...result, targets: result.targets.map(target => {

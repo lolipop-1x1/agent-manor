@@ -54,14 +54,17 @@ test("服务状态不重复完整业务数据并保留必要错误与任务定�
   assert.equal("jobs" in result, false);
 });
 
-test("写入知识保留当前修订定位，删除历史正文；确认预览未经投影", () => {
+test("知识写入只返回修订定位，单条读取保留正文并省略历史；授权预览单独读取全量", () => {
   const revision = { id: "r2", knowledgeId: "k", version: 2, review: "pending", title: "Title", body: "body", sources: [{ excerpt: "source" }] };
   const detail = { id: "k", latestRevisionId: "r2", publishedRevisionId: "r1", revision, revisions: [revision], audit: [{ id: "a" }], availability: "active" };
   const result = summarizeResponse("/knowledge/entries/k/revisions", "POST", detail) as Record<string, unknown>;
   assert.equal(result.latestRevisionId, "r2");
-  assert.deepEqual(result.revision, { id: "r2", knowledgeId: "k", version: 2, review: "pending", title: "Title" });
+  assert.deepEqual(result.revision, { id: "r2", version: 2, review: "pending" });
   assert.equal("revisions" in result, false);
-  assert.deepEqual(summarizeResponse("/knowledge/entries/k", "GET", detail), detail);
+  const read = summarizeResponse("/knowledge/entries/k", "GET", detail) as { revision: Record<string, unknown>; revisions?: unknown; audit?: unknown };
+  assert.equal(read.revision.body, "body");
+  assert.equal(read.revision.sourceCount, 1);
+  assert.equal(read.revisions, undefined); assert.equal(read.audit, undefined);
 });
 
 test("业务人读输出保留中英文标题、未知和估算语义，full仍可读取完整对象", () => {

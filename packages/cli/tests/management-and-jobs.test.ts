@@ -28,6 +28,7 @@ test("管理命令先展示具体修订与已发布正文，精确授权后才�
       response.end(JSON.stringify({ id: "one", latestRevisionId: "r2", publishedRevisionId: "r1", revisions: [{ id: "r1", body: "previous" }, { id: "r2", body: "corrected", review: "pending" }] }));
     } else if (path === "/management/authorizations") { grants++; response.end(JSON.stringify({ token: "synthetic-one-use-token" })); }
     else {
+      if (path.endsWith("/reviews")) assert.equal(new URL(request.url!, "http://127.0.0.1").search, "", "审批授权路径不附加投影参数");
       assert.equal(request.headers["x-agent-manor-management"], "synthetic-one-use-token");
       assert.equal(request.headers["sec-fetch-site"], undefined);
       changes++; response.end(JSON.stringify({ approved: true }));

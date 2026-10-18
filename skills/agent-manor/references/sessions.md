@@ -2,6 +2,8 @@
 
 当用户在当前 Agent 继续另一客户端的任务、询问旧结论的原因，或需要核对中间过程时使用。
 
+会话列表默认只提供 ID、标题、客户端、项目和更新时间，供定位目标。轮次、模型、上下文和来源属于详情，按实际问题读取画像或使用 `--full`，不要为寻找会话先拉完整对象。
+
 1. `am sessions status --json` 查看历史准备状态。需要同步时执行 `am sessions refresh --wait --json` 并核对任务成功；首次准备中不当作没有历史。
 2. `am sessions search "目标问题或对象名" --json` 检索全部索引。默认标题及用户／AI 正文；工具过程显式用 `--kinds user,assistant,tool_call,tool_result`，思考内容按需要加 `thinking`。也可用 `am sessions list --json` 按客户端、项目和日期筛选，具体选项见命令帮助。
 3. 使用返回的会话 ID、version 与命中消息 ID，执行 `am sessions messages <sessionId> --version <version> --mode brief --message-id <messageId> --json`。阅读命中附近的连续对话，不能仅根据一条搜索摘要恢复决策。

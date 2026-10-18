@@ -37,7 +37,7 @@ export function registerKnowledge(program: Command, context: CliContext): void {
     .action(async (id: string, revisionId: string, action: string, _opts, command: Command) => {
       const opts = command.optsWithGlobals<Options>();
       if (!["approve", "reject"].includes(action)) throw new RequestError("INVALID_INPUT", "Review action must be approve or reject", { key: "cli.ext.reviewAction" });
-      const detail = await context.fetch(command, `${entryPath(id)}?review=all&availability=all`) as KnowledgeDetail;
+      const detail = await context.fetch(command, `${entryPath(id)}?review=all&availability=all`, "GET", undefined, undefined, true) as KnowledgeDetail;
       if (detail.latestRevisionId !== revisionId || opts.baseRevisionId !== undefined && opts.baseRevisionId !== detail.latestRevisionId) throw new RequestError("CONTENT_STALE", "The target revision is no longer the latest revision", { key: "cli.ext.reviewStale" });
       const targetRevision = detail.revisions.find(revision => revision.id === revisionId);
       const publishedRevision = detail.revisions.find(revision => revision.id === detail.publishedRevisionId) ?? null;
@@ -50,7 +50,7 @@ export function registerKnowledge(program: Command, context: CliContext): void {
     .action(async (id: string, availability: string, _opts, command: Command) => {
       const opts = command.optsWithGlobals<Options>();
       if (!["active", "deprecated", "superseded"].includes(availability)) throw new RequestError("INVALID_INPUT", "Invalid availability", { key: "cli.ext.availabilityInvalid" });
-      const preview = await context.fetch(command, `${entryPath(id)}?review=all&availability=all`);
+      const preview = await context.fetch(command, `${entryPath(id)}?review=all&availability=all`, "GET", undefined, undefined, true);
       await managementRequest(command, context, `${entryPath(id)}/availability`, "POST", { availability, baseRevisionId: (preview as { latestRevisionId: string }).latestRevisionId, ...(opts.reason ? { reason: opts.reason } : {}) }, preview);
     });
   const settings = group.command("settings").description(context.t("cli.ext.settings"));

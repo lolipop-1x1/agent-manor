@@ -60,6 +60,7 @@ test("CLI 摘要限制大字段，正文与画像明细按固定版本分页回�
   const full = await api("/sessions?pageSize=1");
   assert.equal(full.sessions[0].contextSnapshots.length, 4000);
   const list = await api("/sessions?response=summary&pageSize=1");
+  assert.deepEqual(Object.keys(list.sessions[0]).sort(), ["id", "title", "client"].sort());
   assert.equal("contextSnapshots" in list.sessions[0], false);
   assert.ok(JSON.stringify(list).length < 3000);
   const groups = await api("/sessions/search/groups?q=合成摘要测试&response=summary");

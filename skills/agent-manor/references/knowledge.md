@@ -5,8 +5,8 @@
 ## 读取
 
 1. `am knowledge search "问题、对象或关键词" --json` 搜索；按命令帮助指定项目、归属、标签、审阅状态及关键词／语义模式。语义配置是可选增强，关键词搜索可独立使用。
-2. 从结果取得实际 ID，`am knowledge get <entryId> --json` 读取正文、状态、适用条件及来源。默认优先使用人工已审阅且当前有效的知识；待审内容作为候选依据。
-3. 有疑问时读取 `am knowledge revisions <entryId> --json` 和 `am knowledge revision <entryId> <revisionId> --json`，再按来源回到原会话核对。废弃、冲突或仅特定版本适用的结论不能当作当前通用规则。
+2. 从结果取得实际 ID，`am knowledge get <entryId> --json` 读取当前正文、状态、适用条件及来源会话／消息位置；原文摘录等完整来源字段使用 `--full --json`。默认优先使用人工已审阅且当前有效的知识；待审内容作为候选依据。
+3. 有疑问时读取 `am knowledge revisions <entryId> --json` 的版本目录，再用 `am knowledge revision <entryId> <revisionId> --json` 读取指定正文。需要来源明细时加 `--full`，再回到原会话核对。废弃、冲突或仅特定版本适用的结论不能当作当前通用规则。
 
 ## 当前 Agent 直接写入
 

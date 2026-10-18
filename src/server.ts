@@ -20,6 +20,7 @@ import { serviceLog } from "./service/logging.js";
 import { SessionStore } from "./sessions/store.js";
 import { queryBoolean, sessionMessageQuery, sessionProfileQuery, sessionQuery, sessionRefreshOptions, sessionTimelineQuery, summaryResponse } from "./service/session-input.js";
 import { searchSummaryResponse, sessionSummaryResponse, sessionStatusSummaryResponse } from "./service/summary-response.js";
+import { coreResponse, coreResponsePath } from "./service/core-response.js";
 import { textValue } from "./service/input.js";
 import { clientIds } from "./clients.js";
 import type { Client } from "./contracts.js";
@@ -110,6 +111,15 @@ export async function startService(options: ServiceOptions = {}) {
   let autoSync: SessionAutoSyncScheduler | undefined;
   let unsubscribePreferences: (() => void) | undefined;
   const app = Fastify({ logger: false, bodyLimit: 65_536, forceCloseConnections: true });
+  app.addHook("preValidation", async request => {
+    const path = request.url.split("?")[0]!.replace(/^\/api\/v1/, "");
+    if (coreResponsePath(path)) summaryResponse(request.query as Record<string, unknown>);
+  });
+  app.addHook("preSerialization", async (request, reply, payload) => {
+    const path = request.url.split("?")[0]!.replace(/^\/api\/v1/, "");
+    if (reply.statusCode >= 400 || !coreResponsePath(path) || !summaryResponse(request.query as Record<string, unknown>)) return payload;
+    return coreResponse(path, request.method, payload, request.body);
+  });
   const instance: ServiceInstance = { id: randomUUID(), pid: process.pid, host: "127.0.0.1", port: requestedPort, startedAt: new Date().toISOString(), version: VERSION, protocolVersion: SERVICE_PROTOCOL_VERSION };
   const preparation: ServicePreparation = { state: options.startupRefresh === false ? "skipped" : "pending", phase: "history", startedAt: instance.startedAt, jobIds: [] };
   let closing = false;

@@ -1,4 +1,5 @@
 import type { SessionSummary } from "../session-contracts.js";
+import type { MessageDescriptor } from "../i18n/types.js";
 
 /** 状态只携带计数、进度与必要错误；完整诊断通过独立分页读取。 */
 export function sessionStatusSummaryResponse(value: unknown): Record<string, unknown> | undefined {
@@ -19,8 +20,12 @@ export function sessionStatusSummaryResponse(value: unknown): Record<string, unk
 }
 
 export function sessionSummaryResponse(session: SessionSummary) {
-  const { contextSnapshots: _context, usageReports: _reports, gaps, ...summary } = session;
-  return { ...summary, gapCount: summary.gapCount ?? gaps.length };
+  const keys = ["id", "title", "client", "project", "updatedAt"] as const;
+  const titleDescriptor = (session as SessionSummary & { titleDescriptor?: MessageDescriptor }).titleDescriptor
+    ?? (session.titleOrigin === "fallback" ? { key: session.relationship === "child" ? "sessions.title.childFallback" : "sessions.title.unnamed",
+      ...(session.relationship === "child" ? { params: { id: session.clientSessionId.slice(-8) } } : {}) } : undefined);
+  return { ...Object.fromEntries(keys.filter(key => session[key] !== undefined).map(key => [key, session[key]])),
+    ...(titleDescriptor ? { titleDescriptor } : {}) };
 }
 
 /** 分组只保留一次会话元信息，命中项用稳定身份关联。 */
@@ -35,11 +40,12 @@ export function searchSummaryResponse(value: unknown) {
   const groups = result.groups as { session: SessionSummary; hits: unknown[] }[] | undefined;
   if (groups) return { ...result, hasMore, groups: groups.map(group => ({ ...group, session: sessionSummaryResponse(group.session), hits: group.hits.map(hit) })),
     ...(Array.isArray(result.hits) ? { hits: result.hits.map(hit) } : {}) };
-  const hits = result.hits as { session: SessionSummary }[] | undefined;
+  const hits = result.hits as { session?: SessionSummary }[] | undefined;
   if (!hits) {
     const sessions = result.sessions as SessionSummary[] | undefined;
     return sessions ? { ...result, sessions: sessions.map(sessionSummaryResponse), hasMore } : value;
   }
-  const sessions = [...new Map(hits.map(row => [row.session.id, sessionSummaryResponse(row.session)])).values()];
+  const candidates = result.sessions as SessionSummary[] | undefined ?? hits.flatMap(row => row.session ? [row.session] : []);
+  const sessions = [...new Map(candidates.map(session => [session.id, sessionSummaryResponse(session)])).values()];
   return { ...result, hasMore, sessions, hits: hits.map(hit) };
 }

@@ -3,7 +3,7 @@
 用于找本地 Skill／MCP、核查实际使用来源，以及管理可恢复的入口。
 
 1. `am resources overview --json` 查询清单，`am resources usage --json` 查询使用，`am resources local --json` 查询本地位置。通过命令帮助指定 kind、客户端、日期和关键词。
-2. 用返回 ID 读取详情、位置和证据；`am resources map --help` 取得地图数据。名称汇总不表示同一物理文件；共享位置和独立注册项分别处理。
+2. 默认清单提供身份、核心统计、保护状态和位置数量。用返回的 `body.id` 执行 `am resources detail <id> --view local --json` 读取具体入口，再用入口 ID 预览管理；使用记录的 `identity.id` 用于详情与证据。完整清单字段也可通过 `--full` 读取。`am resources map --help` 取得地图数据。名称汇总不表示同一物理文件；共享位置和独立注册项分别处理。
 3. 需要修改时先用 `am resources preview --help` 预览目标、范围、冲突、恢复方式。把预览交给用户核对，按已授权操作调用 `apply`，不按名称批量操作所有位置。
 4. 使用 `archives` 和 `operations` 查看回收及操作记录；恢复同样先预览并核对冲突。
 

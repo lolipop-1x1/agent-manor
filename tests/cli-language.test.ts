@@ -286,7 +286,7 @@ test("执行期间语言固定，下次命令读取更新偏好，默认可读�
         messageDescriptor: { key: "cli.error.view" } } }));
     }
     else {
-      const finish = () => response.end(JSON.stringify(request.url === "/api/v1/repositories" ? { repositories: [value.repository] } : value));
+      const finish = () => response.end(JSON.stringify(request.url?.split("?")[0] === "/api/v1/repositories" ? { repositories: [value.repository] } : value));
       if (hold) { completeResponse = finish; requested(); } else finish();
     }
   });
@@ -326,7 +326,8 @@ test("执行期间语言固定，下次命令读取更新偏好，默认可读�
       assert.equal(english.stderr, "");
       assert.equal(chinese.stderr, "");
       const parsed = JSON.parse(english.stdout);
-      assert.deepEqual(parsed, args[0] === "repositories" ? { repositories: [value.repository] } : value);
+      const repository = args.includes("--full") ? value.repository : { id: value.repository.id, name: value.repository.name, path: value.repository.path, stale: value.repository.stale };
+      assert.deepEqual(parsed, args[0] === "repositories" ? { repositories: [repository] } : value);
     }
     const errorEn = await command(directory, ["--lang", "en", "coverage", "missing"]);
     const errorZh = await command(directory, ["--lang", "zh-CN", "coverage", "missing"]);

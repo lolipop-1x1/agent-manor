@@ -339,7 +339,9 @@ test("真实 CLI 通过同一服务查询、收藏、预览与确认，不另写
   const command = async (args: string[]) => JSON.parse((await run(process.execPath,
     ["--import", "tsx", cli, "--home", context.home, "--json", "resources", ...args], { timeout: 30_000, maxBuffer: 2 * 1024 * 1024 })).stdout);
   const usage = await command(["usage", "--kind", "skill"]);
-  assert.equal(usage.stats.successfulReads, 1);
+  assert.equal(usage.resources[0].stats.successfulReads, 1);
+  assert.equal(usage.stats, undefined);
+  assert.equal((await command(["usage", "--kind", "skill", "--full"])).stats.successfulReads, 1);
   const overview = await command(["overview", "--q", "guide", "--order", "asc"]);
   assert.equal(overview.total, 1);
   assert.equal(overview.resources[0].stats.successfulReads, 1);
@@ -352,7 +354,8 @@ test("真实 CLI 通过同一服务查询、收藏、预览与确认，不另写
   assert.equal((await command(["evidence", mcpId, "--kind", "mcp", "--tool", "lookup"])).total, 1);
   const local = await command(["local", "--kind", "skill", "--q", "guide"]);
   assert.equal(local.total, 1);
-  const entry = local.rows[0].entries[0];
+  assert.equal(local.rows[0].entries, undefined);
+  const entry = (await command(["detail", local.rows[0].body.id, "--view", "local"])).row.entries[0];
   await command(["favorite", local.rows[0].body.id]);
   assert.ok((await apiRequest<ResourceStatus>(service.instance, "/resources/status")).favoriteIds.includes(local.rows[0].body.id));
   const preview = await command(["preview", "standby", "--entry-id", entry.id]);

@@ -46,6 +46,7 @@ test("真实CLI默认响应有界，完整模式与快照分页仍可回读原�
     const complete = await invoke(["sessions", "list", "--page-size", "1", "--full"]);
     assert.equal(compact.value.total, 1);
     assert.equal(compact.value.sessions.length, 1);
+    assert.deepEqual(Object.keys(compact.value.sessions[0]).filter(key => !["id", "title", "client", "project", "updatedAt", "titleDescriptor"].includes(key)), []);
     assert.equal(compact.value.sessions[0].contextSnapshots, undefined);
     assert.equal(compact.value.sessions[0].usageReports, undefined);
     assert.ok(complete.value.sessions[0].contextSnapshots.length >= 4_000);
