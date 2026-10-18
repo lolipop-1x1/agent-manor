@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import type { KnowledgeDetail, KnowledgeSource } from "../src/knowledge-contracts.js";
 import { knowledgeTypes } from "../src/knowledge-contracts.js";
 import { i18n, translate, translateMessageOrOriginal } from "../src/i18n/index.js";
-import { editableDraft, emptyDraft, knowledgeListWidth, knowledgeNavigationWidth, knowledgeSourceGroups, knowledgeTypeKey, readKnowledgeAddress, restoreKnowledgeFocus, sourceAddress } from "../web/features/knowledge/knowledge-model.js";
+import { editableDraft, emptyDraft, knowledgeCollectionAddress, knowledgeCollectionQuery, knowledgeListWidth, knowledgeNavigationWidth, knowledgeSourceGroups, knowledgeTypeKey, readKnowledgeAddress, restoreKnowledgeFocus, sourceAddress } from "../web/features/knowledge/knowledge-model.js";
 import { knowledgeLimitations } from "../src/knowledge/diagnostics.js";
 
 test("来源回查只允许已核验消息，并保留消息、轮次、分支和当前可用版本", () => {
@@ -77,6 +77,25 @@ test("新建、任务列表和任务深链分离，旧会话入口继续预填�
   assert.equal(detail.page, "tasks"); assert.equal(detail.taskId, "synthetic-task");
   assert.equal(readKnowledgeAddress("#knowledge?page=new&sessionId=synthetic-session").page, "new");
   assert.equal(readKnowledgeAddress("#knowledge?page=tasks&sessionId=synthetic-session").page, "new");
+});
+
+test("侧栏切换清理视图自带条件，保留用户手动筛选且回到第一页", () => {
+  const pending = { view: "project" as const, project: "/synthetic/atlas", review: "pending" as const, availability: "all" as const, taskId: "synthetic-task", q: "configuration", client: "codex", type: "procedure" as const, page: 4, pageSize: 50 };
+  for (const collection of ["all", "personal", "project", "general"] as const) {
+    const next = knowledgeCollectionQuery(pending, collection);
+    assert.equal(next.project, undefined); assert.equal(next.review, "reviewed"); assert.equal(next.availability, "active"); assert.equal(next.taskId, undefined); assert.equal(next.page, 1);
+    assert.equal(next.view, collection); assert.equal(next.q, pending.q); assert.equal(next.client, pending.client); assert.equal(next.type, pending.type); assert.equal(next.pageSize, 50);
+  }
+  const project = knowledgeCollectionQuery(pending, "project", "/synthetic/another"); assert.equal(project.project, "/synthetic/another"); assert.equal(project.review, "reviewed");
+  const review = knowledgeCollectionQuery(project, "review"); assert.equal(review.project, undefined); assert.equal(review.view, "all"); assert.equal(review.taskId, undefined); assert.equal(review.review, "pending"); assert.equal(review.availability, "all");
+});
+
+test("菜单与返回地址完整保留查询，显式全库地址不继承旧项目和任务", () => {
+  const query = { view: "project" as const, project: "/synthetic/project with spaces", client: "codex", review: "all" as const, availability: "deprecated" as const, type: "procedure" as const, tag: "configuration", q: "a&b", from: "2026-10-01", to: "2026-10-19", page: 3, pageSize: 50 };
+  assert.deepEqual(readKnowledgeAddress(knowledgeCollectionAddress("library", query)).query, { ...query, taskId: undefined });
+  const next = readKnowledgeAddress(knowledgeCollectionAddress("library", knowledgeCollectionQuery({ ...query, taskId: "old-task" }, "all")));
+  assert.equal(next.page, "library"); assert.equal(next.query.project, undefined); assert.equal(next.taskId, undefined); assert.equal(next.query.review, "reviewed");
+  const review = readKnowledgeAddress("#knowledge?page=review&taskId=synthetic-task"); assert.equal(review.query.review, "pending"); assert.equal(review.query.availability, "all");
 });
 
 test("知识列表调宽保留正文最小空间，窄窗口不改写原宽度偏好", () => {

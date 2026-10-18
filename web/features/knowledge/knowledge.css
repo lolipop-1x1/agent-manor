@@ -15,6 +15,7 @@
 .knowledge-rail-projects > button span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .knowledge-rail-projects svg { flex-shrink: 0; }
 .knowledge-rail-review { margin-top: 24px; width: 100%; padding: 10px; border: 0; color: var(--accent); background: transparent; text-align: left; font-size: 14px; }
+.knowledge-rail-review[aria-current="page"] { background: var(--accent-soft); border-radius: 5px; }
 .knowledge-main { min-width: 0; min-height: 0; overflow: hidden; }
 .knowledge-main > div:not([hidden]) { height: 100%; }
 .knowledge-library { display: grid; grid-template-columns: minmax(315px, 37%) minmax(0, 1fr); height: 100%; }

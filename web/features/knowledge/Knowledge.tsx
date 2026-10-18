@@ -19,7 +19,7 @@ import { KnowledgeTasks } from "./KnowledgeTasks";
 import { KnowledgeSplit, KnowledgeWorkspace } from "./KnowledgeSplit";
 import { KnowledgeSettings } from "./KnowledgeSettings";
 import { knowledgeRequest } from "./knowledge-api";
-import { knowledgeTypeKey, readKnowledgeAddress, type KnowledgePage } from "./knowledge-model";
+import { knowledgeCollectionAddress, knowledgeCollectionQuery, knowledgeTypeKey, readKnowledgeAddress, type KnowledgeCollection, type KnowledgePage } from "./knowledge-model";
 import "./knowledge.css";
 
 const viewIcons = { all: BookOpen, personal: User, project: FolderSimple, general: Globe };
@@ -44,32 +44,44 @@ export default function Knowledge({ active }: { active: boolean }) {
   const initialTarget = useRef(Boolean(initial.id));
   const reviewReturn = useRef<{ query: KnowledgeQuery; input: string; mode: "keyword" | "semantic"; id?: string; scroll: number } | undefined>(undefined);
   useEffect(() => {
-    const navigate = () => {
-      if (!location.hash.startsWith("#knowledge")) return;
-      if (ownHash.current === location.hash) { ownHash.current = undefined; return; }
-      const next = readKnowledgeAddress(location.hash);
+    const navigate = (event: HashChangeEvent) => {
+      const hash = new URL(event.newURL).hash;
+      if (hash !== location.hash) return;
+      if (ownHash.current === hash) { ownHash.current = undefined; return; }
+      ownHash.current = undefined; reviewReturn.current = undefined;
+      if (!hash.startsWith("#knowledge")) return;
+      const next = readKnowledgeAddress(hash);
       setPage(next.page); setTaskId(next.taskId); if (next.page === "new") { setScope(next.scope); setSelection(next.selection); setNewEntry(value => value + 1); } if (next.id) { initialTarget.current = true; setSelectedId(next.id); setMobileReader(true); }
 
-      const params = new URLSearchParams(location.hash.split("?")[1]);
-      if ((next.page === "library" || next.page === "review") && (params.has("review") || params.has("taskId") || params.has("view"))) { setQuery(next.query); setInput(next.query.q ?? ""); }
+      const params = new URLSearchParams(hash.split("?")[1]);
+      if (next.page === "review" || (next.page === "library" && (params.has("review") || params.has("taskId") || params.has("view")))) { setQuery(next.query); setInput(next.query.q ?? ""); }
       setRailOpen(false);
     };
     globalThis.addEventListener("hashchange", navigate); return () => globalThis.removeEventListener("hashchange", navigate);
   }, []);
-  const navigate = (next: KnowledgePage, options: { id?: string; taskId?: string; fresh?: boolean } = {}) => {
+  const navigate = (next: KnowledgePage, options: { id?: string; taskId?: string; fresh?: boolean; query?: KnowledgeQuery } = {}) => {
+    let addressQuery = options.query;
     if (next === "review" && page !== "review") reviewReturn.current = { query, input, mode, id: selectedId, scroll: listScroll.current?.scrollTop ?? preserveScroll.current };
-    if (next === "library" && page === "review" && !options.fresh && reviewReturn.current) {
-      const previous = reviewReturn.current; setQuery(previous.query); setInput(previous.input); setMode(previous.mode); setSelectedId(previous.id); preserveScroll.current = previous.scroll; reviewReturn.current = undefined;
+    if (next === "library" && !options.fresh && reviewReturn.current) {
+      const previous = reviewReturn.current; setQuery(previous.query); addressQuery = previous.query; setInput(previous.input); setMode(previous.mode); setSelectedId(previous.id); preserveScroll.current = previous.scroll; reviewReturn.current = undefined;
+    } else if (next === "library" && page === "review" && !options.query) {
+      addressQuery = knowledgeCollectionQuery({}, "all"); setQuery(addressQuery); setInput("");
     }
+    if (options.fresh) reviewReturn.current = undefined;
     setPage(next); setTaskId(options.taskId); setRailOpen(false);
     if (next === "new") { setScope(undefined); setSelection(undefined); setNewEntry(value => value + 1); }
     const params = new URLSearchParams(); if (next !== "library") params.set("page", next);
     if (options.id) params.set("id", options.id);
     if (next === "review") params.set("review", "pending");
     if (options.taskId) params.set("taskId", options.taskId);
-    const hash = params.size ? `#knowledge?${params}` : "#knowledge"; ownHash.current = hash; location.hash = hash;
+    const hash = addressQuery && (next === "library" || next === "review") ? knowledgeCollectionAddress(next, addressQuery, options.id) : params.size ? `#knowledge?${params}` : "#knowledge";
+    if (location.hash !== hash) { ownHash.current = hash; location.hash = hash; }
   };
   const changeQuery = (patch: Partial<KnowledgeQuery>) => { initialTarget.current = false; preserveScroll.current = 0; setQuery(current => ({ ...current, ...patch, page: patch.page ?? 1 })); };
+  const openCollection = (collection: KnowledgeCollection, project?: string) => {
+    const nextQuery = knowledgeCollectionQuery(query, collection, project);
+    changeQuery(nextQuery); setMobileReader(false); navigate(collection === "review" ? "review" : "library", { fresh: collection !== "review", query: nextQuery });
+  };
   useEffect(() => {
     if (!active || page === "settings" || page === "tasks" || page === "new") return;
     const controller = new AbortController();
@@ -106,9 +118,9 @@ export default function Knowledge({ active }: { active: boolean }) {
   const select = (entry: KnowledgeEntry) => { preserveScroll.current = listScroll.current?.scrollTop ?? 0; setSelectedId(entry.id); setMobileReader(true); };
   const pageVisible = page === "library" || page === "review";
   const railContent = <>
-<header><h2>{t("knowledge.title")}<span className="knowledge-beta" title={t("knowledge.betaHelp")}>{t("knowledge.beta")}</span></h2><button className="icon-button knowledge-mobile-back" aria-label={t("knowledge.close")} onClick={() => setRailOpen(false)}><X size={17} /></button></header><nav aria-label={t("knowledge.views")}><SelectionIndicator value={query.view ?? "all"} selector='[aria-current="page"]' />{(["all", "personal", "project", "general"] as const).map(value => { const Icon = viewIcons[value]; return <button key={value} aria-current={pageVisible && query.view === value ? "page" : undefined} onClick={() => { changeQuery({ view: value, taskId: undefined }); navigate("library", { fresh: true }); }}><Icon size={18} aria-hidden="true" />{t(`knowledge.view.${value}`)}</button>; })}</nav>
-      <div className="knowledge-rail-projects"><h3>{t("knowledge.project")}</h3>{facets.projects.slice(0, 12).map(project => <Hint key={project} label={project}><button aria-label={project.split(/[\\/]/).filter(Boolean).at(-1) ?? project} aria-pressed={query.project === project} onClick={() => { changeQuery({ view: "project", project }); navigate("library", { fresh: true }); }}><FolderSimple size={17} /><span>{project.split(/[\\/]/).filter(Boolean).at(-1) ?? project}</span></button></Hint>)}</div>
-      <button className="knowledge-rail-review" onClick={() => { changeQuery({ review: "pending", taskId: undefined }); navigate("review"); }}>{t("knowledge.reviewQueue")}</button>
+<header><h2>{t("knowledge.title")}<span className="knowledge-beta" title={t("knowledge.betaHelp")}>{t("knowledge.beta")}</span></h2><button className="icon-button knowledge-mobile-back" aria-label={t("knowledge.close")} onClick={() => setRailOpen(false)}><X size={17} /></button></header><nav aria-label={t("knowledge.views")}><SelectionIndicator value={page === "review" ? "review" : query.project ?? query.view ?? "all"} selector='[aria-current="page"]' />{(["all", "personal", "project", "general"] as const).map(value => { const Icon = viewIcons[value]; return <button key={value} aria-current={page === "library" && query.view === value && !(value === "project" && query.project) ? "page" : undefined} onClick={() => openCollection(value)}><Icon size={18} aria-hidden="true" />{t(`knowledge.view.${value}`)}</button>; })}</nav>
+      <div className="knowledge-rail-projects"><h3>{t("knowledge.project")}</h3>{facets.projects.slice(0, 12).map(project => <Hint key={project} label={project}><button aria-label={project.split(/[\\/]/).filter(Boolean).at(-1) ?? project} aria-pressed={page === "library" && query.view === "project" && query.project === project} onClick={() => openCollection("project", project)}><FolderSimple size={17} /><span>{project.split(/[\\/]/).filter(Boolean).at(-1) ?? project}</span></button></Hint>)}</div>
+      <button className="knowledge-rail-review" aria-current={page === "review" ? "page" : undefined} onClick={() => openCollection("review")}>{t("knowledge.reviewQueue")}</button>
 
   </>;
   const saveEditor = (next: Detail) => {
@@ -132,7 +144,7 @@ export default function Knowledge({ active }: { active: boolean }) {
         </section>
         <div className="knowledge-detail-slot"><KnowledgeError error={detailError} retry={() => setReload(value => value + 1)} />{currentDetail ? <KnowledgeDetail key={currentDetail.id} detail={currentDetail} reviewing={page === "review"} busy={detailBusy || listBusy} onEdit={() => setEditing("edit")} onChanged={update} onBack={() => setMobileReader(false)} /> : <div className="knowledge-empty"><KnowledgeBusy busy={detailBusy} /><BookOpen size={28} /><h2>{t("knowledge.noSelection")}</h2></div>}</div>
       </KnowledgeSplit></div>
-      <div hidden={page !== "tasks" && page !== "new"}><KnowledgeTasks active={active && (page === "tasks" || page === "new")} mode={page === "new" ? "new" : "tasks"} entryKey={newEntry} taskId={taskId} onSelectTask={id => navigate("tasks", { taskId: id })} onNew={() => navigate("new")} initialScope={scope} initialSession={selection} onResults={taskId => { changeQuery({ review: "pending", availability: "all", taskId }); navigate("review", { taskId }); }} onBack={() => navigate("library")} onSettings={() => navigate("settings")} /></div>
+      <div hidden={page !== "tasks" && page !== "new"}><KnowledgeTasks active={active && (page === "tasks" || page === "new")} mode={page === "new" ? "new" : "tasks"} entryKey={newEntry} taskId={taskId} onSelectTask={id => navigate("tasks", { taskId: id })} onNew={() => navigate("new")} initialScope={scope} initialSession={selection} onResults={taskId => { const nextQuery = { ...knowledgeCollectionQuery({}, "review"), taskId, pageSize: query.pageSize }; initialTarget.current = false; preserveScroll.current = 0; setQuery(nextQuery); setInput(""); navigate("review", { taskId, query: nextQuery }); }} onBack={() => navigate("library")} onSettings={() => navigate("settings")} /></div>
       <div hidden={page !== "settings"}><KnowledgeSettings active={active && page === "settings"} onBack={() => navigate("library")} onSaved={() => setReload(value => value + 1)} onTasks={nextScope => { navigate("new"); setScope(nextScope); }} /></div>
     </main>
     {editing && <KnowledgeEditor detail={editing === "edit" ? currentDetail : undefined} projects={facets.projects} onClose={() => setEditing(undefined)} onSaved={saveEditor} />}

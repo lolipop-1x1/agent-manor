@@ -69,6 +69,46 @@ try {
       const before = await page.locator(".knowledge-entry-list").boundingBox(); await button("刷新知识").click(); await settled(); const after = await page.locator(".knowledge-entry-list").boundingBox();
       ensure(before.height === after.height && before.width === after.width, "刷新保留稳定布局");
     });
+    await group("navigation-filters", async () => {
+      await open(); await settled();
+      const rail = page.locator(".knowledge-rail-desktop"), reviewFilter = page.getByRole("combobox", { name: "审阅状态", exact: true });
+      const collectionSettled = async () => { await page.locator('.knowledge-entry-list[aria-busy="false"]').waitFor(); await page.waitForLoadState("networkidle"); };
+      await rail.getByRole("button", { name: "待审队列", exact: true }).click(); await collectionSettled();
+      ensure(await reviewFilter.innerText() === "待审阅" && !await reviewFilter.isEnabled() && await rail.getByRole("button", { name: "全部知识", exact: true }).getAttribute("aria-current") === null, "待审队列状态固定且不误标全部知识");
+      await rail.getByRole("button", { name: "全部知识", exact: true }).click(); await collectionSettled();
+      ensure(await reviewFilter.innerText() === "已审阅" && await button("项目").innerText() === "全部项目", "待审队列切全部知识清理待审和项目条件");
+      await rail.getByRole("button", { name: "atlas", exact: true }).click(); await collectionSettled();
+      ensure(await button("项目").innerText() === "atlas" && await rail.getByRole("button", { name: "项目记忆", exact: true }).getAttribute("aria-current") === null, "具体项目独立选中且不误标父菜单");
+      for (const name of ["个人记忆", "通用经验", "项目记忆", "全部知识"]) {
+        await rail.getByRole("button", { name: name === "个人记忆" ? name : "atlas", exact: true }).click(); await collectionSettled();
+        if (name !== "个人记忆") { await rail.getByRole("button", { name, exact: true }).click(); await collectionSettled(); }
+        ensure(await button("项目").innerText() === "全部项目" && await reviewFilter.innerText() === "已审阅", `具体项目切${name}恢复该视图默认范围`);
+      }
+      await rail.getByRole("button", { name: "atlas", exact: true }).click(); await collectionSettled(); await select("来源客户端", "codex"); await select("审阅状态", "全部"); await collectionSettled();
+      await rail.getByRole("button", { name: "待审队列", exact: true }).click(); await collectionSettled();
+      ensure(await button("项目").innerText() === "全部项目", "项目进入待审队列不限制旧项目");
+      await button("返回知识库").click(); await collectionSettled();
+      ensure(await button("项目").innerText() === "atlas" && await reviewFilter.innerText() === "全部" && await page.getByRole("combobox", { name: "来源客户端", exact: true }).innerText() === "codex", "显式审阅返回恢复用户原项目和手动状态");
+      await page.reload(); await collectionSettled(); ensure(await button("项目").innerText() === "atlas" && await reviewFilter.innerText() === "全部", "返回地址刷新后仍保留明确筛选");
+      await rail.getByRole("button", { name: "全部知识", exact: true }).click(); await collectionSettled();
+      ensure(await reviewFilter.innerText() === "已审阅" && await page.getByRole("combobox", { name: "来源客户端", exact: true }).innerText() === "codex", "主动换菜单重置视图条件但保留手动客户端");
+      await rail.getByRole("button", { name: "待审队列", exact: true }).click(); await collectionSettled(); await button("知识库设置").click(); await page.getByRole("heading", { name: "知识库设置", exact: true }).waitFor(); await button("返回知识库").click(); await collectionSettled();
+      ensure(await reviewFilter.innerText() === "已审阅" && await button("项目").innerText() === "全部项目", "审阅经设置返回仍恢复进入审阅前的列表");
+      await rail.getByRole("button", { name: "atlas", exact: true }).click(); await collectionSettled();
+      await rail.getByRole("button", { name: "通用经验", exact: true }).click(); await collectionSettled();
+      await rail.getByRole("button", { name: "通用经验", exact: true }).click(); await collectionSettled();
+      await page.goBack(); await collectionSettled();
+      ensure(await button("项目").innerText() === "atlas", "重复点击当前菜单后浏览器后退恢复项目");
+      await page.goForward(); await collectionSettled();
+      ensure(await button("项目").innerText() === "全部项目" && await rail.getByRole("button", { name: "通用经验", exact: true }).getAttribute("aria-current") === "page", "重复点击当前菜单后浏览器前进与地址一致");
+      await rail.getByRole("button", { name: "atlas", exact: true }).click(); await collectionSettled();
+      await rail.getByRole("button", { name: "待审队列", exact: true }).click(); await collectionSettled();
+      await page.evaluate(() => { location.hash = "#sessions"; }); await page.waitForURL(/#sessions$/);
+      await page.evaluate(() => { location.hash = "#knowledge?page=review&view=all&review=pending"; }); await page.waitForURL(/#knowledge/); await collectionSettled();
+      await button("返回知识库").click(); await collectionSettled();
+      ensure(await button("项目").innerText() === "全部项目" && await reviewFilter.innerText() === "已审阅", "外部待审深链返回不会复用更早的项目快照");
+      await shot("01b-navigation-filters-zh-light");
+    });
     await group("write", async () => {
       await open(); await settled(); await button("新建知识").click();
       let editor = page.getByRole("dialog", { name: "新建知识", exact: true });
@@ -138,7 +178,10 @@ try {
       await shot("03-tasks-zh-light"); await button("继续").click();
       await page.getByText("已完成", { exact: true }).first().waitFor({ timeout: 30_000 });
       const status = await api("/extractions"); ensure(status.jobs[0].status === "complete" && status.jobs[0].results.length > 0, "恢复后完成并保存待审结果");
-      await page.getByRole("tab", { name: "结果", exact: true }).click(); await button("查看待审结果").click(); await page.getByRole("heading", { name: "审阅新知识", exact: true }).waitFor(); ensure(true, "任务结果进入审阅闭环");
+      await page.locator(".knowledge-rail-desktop").getByRole("button", { name: "全部知识", exact: true }).click(); await page.locator('.knowledge-entry-list[aria-busy="false"]').waitFor();
+      await page.getByRole("textbox", { name: "搜索知识", exact: true }).fill("no-matching-task-result"); await page.getByRole("textbox", { name: "搜索知识", exact: true }).press("Enter"); await select("来源客户端", "claude"); await page.locator('.knowledge-entry-list[aria-busy="false"]').waitFor();
+      await button("任务记录").click(); await page.locator(".knowledge-task-list button").first().click(); await page.getByRole("tab", { name: "结果", exact: true }).click(); await button("查看待审结果").click(); await page.getByRole("heading", { name: "审阅新知识", exact: true }).waitFor(); ensure(true, "任务结果进入审阅闭环");
+      ensure(await page.getByRole("textbox", { name: "搜索知识", exact: true }).inputValue() === "" && await page.getByRole("combobox", { name: "来源客户端", exact: true }).innerText() === "全部客户端" && await button("项目").innerText() === "全部项目", "任务结果仅按本次任务筛选不继承旧搜索和客户端");
       ensure(await page.locator(".knowledge-comparison").count() === 0 && await page.locator(".knowledge-new-review .knowledge-diff").count() === 0, "新知识单栏正常阅读不保留空旧版或全量高亮");
       await shot("03c-review-new-zh-light");
     });
@@ -194,6 +237,16 @@ try {
       await page.locator(".knowledge-entry").first().click(); await page.locator(".knowledge-reader").waitFor(); await shot("05-mobile-en-dark");
       await button("Browse views").click(); const drawer = page.getByRole("dialog"); await drawer.waitFor(); await page.keyboard.press("Escape"); await drawer.waitFor({ state: "hidden" });
       ensure(await button("Browse views").evaluate(el => el === document.activeElement), "窄屏抽屉 Escape 恢复触发焦点");
+      await button("Browse views").click(); await drawer.getByRole("button", { name: "Review queue", exact: true }).click(); await drawer.waitFor({ state: "hidden" });
+      await page.locator('.knowledge-entry-list[aria-busy="false"]').waitFor(); await page.waitForLoadState("networkidle");
+      await button("Browse views").click(); await drawer.getByRole("button", { name: "Personal memory", exact: true }).click(); await drawer.waitFor({ state: "hidden" });
+      await page.locator('.knowledge-entry-list[aria-busy="false"]').waitFor(); await page.waitForLoadState("networkidle");
+      ensure(await page.getByRole("combobox", { name: "Review state", exact: true }).innerText() === "Reviewed", "英文窄屏从待审切个人记忆恢复已审状态");
+      await button("Browse views").click(); await drawer.getByRole("button", { name: "atlas", exact: true }).click(); await drawer.waitFor({ state: "hidden" });
+      await page.locator('.knowledge-entry-list[aria-busy="false"]').waitFor(); await page.waitForLoadState("networkidle");
+      await button("Browse views").click(); await drawer.getByRole("button", { name: "General experience", exact: true }).click(); await drawer.waitFor({ state: "hidden" });
+      await page.locator('.knowledge-entry-list[aria-busy="false"]').waitFor(); await page.waitForLoadState("networkidle");
+      ensure(await button("Project").innerText() === "All projects", "英文窄屏从具体项目切通用经验清除项目条件");
       ensure((await api("/settings")).config.outputLanguage === "en", "界面语言切换保留知识输出语言");
       await page.goto(`${config.base}/#knowledge?page=new&sessionId=knowledge-session-2&sessionTitle=Selected%20conversation&totalTurns=4`);
       await page.getByRole("heading", { name: "Extract knowledge", exact: true }).waitFor(); await page.locator('.knowledge-preview[aria-busy="false"]').waitFor();
