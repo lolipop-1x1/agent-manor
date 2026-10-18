@@ -69,7 +69,7 @@ test("管理命令先展示具体修订与已发布正文，精确授权后才�
 
 test("等待任务保留初始响应元信息并按最终成功、失败、暂停、预算和超时返回", async () => {
   let status = "completed", requests = 0;
-  const server = createServer((_request, response) => { requests++; response.setHeader("Content-Type", "application/json"); response.end(JSON.stringify({ job: { id: "job1", status } })); });
+  const server = createServer((request, response) => { requests++; response.setHeader("Content-Type", "application/json"); response.end(JSON.stringify(request.url === "/api/v1/knowledge/index/status" ? { status } : { job: { id: "job1", status } })); });
   await new Promise<void>(done => server.listen(0, "127.0.0.1", done));
   const address = server.address(); assert.ok(address && typeof address !== "string");
   const instance: ServiceInstance = { id: "synthetic-job-service-identity", pid: process.pid, host: "127.0.0.1", port: address.port, startedAt: new Date().toISOString() };
@@ -82,6 +82,11 @@ test("等待任务保留初始响应元信息并按最终成功、失败、暂�
       await waitForTask(instance, initial, "1");
       assert.equal(process.exitCode, 1, status);
     }
+    status = "ready"; process.exitCode = undefined;
+    assert.deepEqual(await waitForTask(instance, { status: "running" }, "1", "/knowledge/index/status"), { status: "ready" });
+    assert.equal(process.exitCode, undefined, "知识索引 ready 是成功终态");
+    await waitForTask(instance, initial, "1");
+    assert.equal(process.exitCode, 1, "其他任务不能借用知识索引的成功终态");
     status = "running";
     await assert.rejects(waitForTask(instance, initial, "0.01"), { code: "WAIT_TIMEOUT" });
     assert.ok(requests >= 5);

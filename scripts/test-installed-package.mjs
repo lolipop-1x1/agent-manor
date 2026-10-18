@@ -5,6 +5,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { createRequire } from "node:module";
+import { createServer } from "node:net";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 const root = fileURLToPath(new URL("../", import.meta.url));
@@ -31,15 +32,22 @@ function npm(args, options = {}) { return run(process.execPath, [npmCli, ...args
 let cli;
 let tarball;
 let started = false;
+let occupiedPort;
 try {
   await mkdir(outside, { recursive: true });
+  const userDirectory = join(sandbox, "synthetic-user");
+  await mkdir(userDirectory);
+  const isolation = join(sandbox, "isolate-user.mjs");
+  await writeFile(isolation, `import os from "node:os"; import { syncBuiltinESMExports } from "node:module"; os.homedir = () => ${JSON.stringify(userDirectory)}; syncBuiltinESMExports();`);
+  environment.NODE_OPTIONS = `--import=${pathToFileURL(isolation).href}`;
+  for (const key of ["CODEX_HOME", "CLAUDE_CONFIG_DIR", "DSH_HOME", "DSH_AGENTS_HOME", "PI_CONFIG_DIR", "PI_CODING_AGENT_DIR", "GEMINI_CLI_HOME", "QWEN_HOME", "KIMI_CODE_HOME", "CODEWHALE_CONFIG_PATH", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "APPDATA", "LOCALAPPDATA"]) delete environment[key];
   if (process.argv[2]) tarball = resolve(process.argv[2]);
   else {
     const output = npm(["pack", "--json", "--ignore-scripts", "--pack-destination", sandbox], { cwd: root });
     tarball = join(sandbox, JSON.parse(output.stdout)[0].filename);
   }
-  npm(["install", "--prefix", install, "--omit=dev", "--no-audit", "--no-fund", "--registry=https://registry.npmjs.org/", tarball], { env: { ...environment, npm_config_engine_strict: "true" } });
-  const packageRoot = join(install, "node_modules", "agent-manor");
+  npm(["install", "--global", "--prefix", install, "--omit=dev", "--no-audit", "--no-fund", "--registry=https://registry.npmjs.org/", tarball], { env: { ...environment, npm_config_engine_strict: "true" } });
+  const packageRoot = join(install, process.platform === "win32" ? "node_modules" : "lib/node_modules", "agent-manor");
   const metadata = JSON.parse(await readFile(join(packageRoot, "package.json"), "utf8"));
   const { clientIds } = await import(pathToFileURL(join(packageRoot, "dist/clients.js")).href);
   for (const client of clientIds) environment[`AGENT_MANOR_${client.toUpperCase().replaceAll("-", "_")}_DIR`] = join(sandbox, "history", client);
@@ -49,7 +57,7 @@ try {
   assert.equal(existsSync(join(install, "node_modules", "@agent-manor", "cli")), false);
   cli = join(packageRoot, "dist/cli.js");
   const command = args => JSON.parse(run(process.execPath, [cli, ...args, "--json"]).stdout);
-  const bindir = join(install, "node_modules/.bin");
+  const bindir = process.platform === "win32" ? install : join(install, "bin");
   function bin(name, args) {
     const executable = join(bindir, `${name}${process.platform === "win32" ? ".cmd" : ""}`);
     if (process.platform !== "win32") return run(executable, args);
@@ -79,7 +87,17 @@ try {
   const updatedSkill = command(["skills", "update", "--target", "custom", "--directory", skillDirectory, "--overwrite"]);
   assert.equal(updatedSkill.status, "updated");
   assert.equal(await readFile(join(updatedSkill.backupPath, "SKILL.md"), "utf8"), "User edited skill\n");
-  command(["start", "--wait-data"]);
+  occupiedPort = createServer();
+  await new Promise((resolve, reject) => {
+    occupiedPort.once("error", error => error.code === "EADDRINUSE" ? resolve() : reject(error));
+    occupiedPort.listen(16666, "127.0.0.1", resolve);
+  });
+  const automaticPort = { ...environment }; delete automaticPort.AGENT_MANOR_PORT;
+  const portConflict = spawnSync(process.execPath, [cli, "start", "--port", "16666", "--home", join(sandbox, "conflicting-data"), "--json"], { cwd: outside, env: automaticPort, encoding: "utf8", timeout: 120_000 });
+  assert.equal(portConflict.error, undefined, `固定端口失败命令未正常退出：${portConflict.stderr}`);
+  assert.equal(portConflict.status, 1, "显式端口占用时必须明确失败");
+  const start = JSON.parse(run(process.execPath, [cli, "start", "--wait-data", "--json"], { env: automaticPort }).stdout);
+  assert(start.instance.port > 16666 && start.instance.port <= 16765, "默认端口占用后必须在约定范围内顺延");
   started = true;
   const status = command(["status"]);
   assert.equal(status.running, true);
@@ -98,9 +116,14 @@ try {
   assert.equal(existsSync(join(home, "service.json")), false);
   started = false;
   assert.equal(command(["skills", "remove", "--target", "custom", "--directory", skillDirectory]).status, "removed");
-  const evidence = { platform: process.platform, architecture: process.arch, node: process.version, sqlite, libc: process.report?.getReport().header.glibcVersionRuntime ?? null, version: metadata.version, checks: ["both-bins", "read-only-status", "native-sqlite-vector", "skill-install-conflict-backup-remove", "background-start-worker-web-stop"] };
+  const evidence = { platform: process.platform, architecture: process.arch, node: process.version, sqlite, libc: process.report?.getReport().header.glibcVersionRuntime ?? null, version: metadata.version, checks: ["both-bins", "read-only-status", "native-sqlite-vector", "skill-install-conflict-backup-remove", "default-port-fallback-and-explicit-conflict", "background-start-worker-web-stop"] };
   console.log(JSON.stringify(evidence, null, 2));
+} catch (error) {
+  console.error(error);
+  throw error;
 } finally {
   if (started && cli) spawnSync(process.execPath, [cli, "stop", "--json"], { cwd: outside, env: environment, timeout: 30_000 });
-  await rm(sandbox, { recursive: true, force: true });
+  if (cli) spawnSync(process.execPath, [cli, "stop", "--home", join(sandbox, "conflicting-data"), "--json"], { cwd: outside, env: environment, timeout: 30_000 });
+  if (occupiedPort?.listening) await new Promise(resolve => occupiedPort.close(resolve));
+  await rm(sandbox, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
 }

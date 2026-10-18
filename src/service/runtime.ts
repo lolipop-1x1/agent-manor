@@ -9,6 +9,7 @@ import { fileURLToPath } from "node:url";
 import type { ApiErrorResponse, ServiceInstance, StatusResponse } from "../contracts.js";
 import { activeIndexMaintenance } from "../index/maintenance.js";
 import { VERSION } from "../version.js";
+import { acquireInstallationOperation, assertInstalledVersion, installationContext, registerInstallationService } from "./installation.js";
 import { serviceLog, serviceLogPath } from "./logging.js";
 
 export { serviceLogPath } from "./logging.js";
@@ -192,12 +193,23 @@ export async function startBackground(home = dataHome(), options: BackgroundOpti
     const cliPath = fileURLToPath(new URL(`../cli.${extension}`, import.meta.url));
     const args = extension === "ts" ? ["--import", fileURLToPath(import.meta.resolve("tsx/esm")), cliPath, "--lang", "auto", "serve"] : [cliPath, "--lang", "auto", "serve"];
     if (options.port !== undefined) args.push("--port", String(options.port));
-    serviceLog(home, "background.start", { version: VERSION, port: options.port ?? DEFAULT_SERVICE_PORT });
-    const child = spawn(process.execPath, args, { detached: true, stdio: "ignore", cwd: dirname(cliPath), env: { ...process.env, AGENT_MANOR_HOME: home } });
+    const installation = await installationContext();
+    const releaseInstallation = await acquireInstallationOperation(installation);
+    let reservation: Awaited<ReturnType<typeof registerInstallationService>> | undefined;
+    let child: ReturnType<typeof spawn>;
     let failure: Error | undefined;
     let exited = false;
-    child.once("error", (error) => { failure = error; });
-    child.once("exit", () => { exited = true; });
+    try {
+      await assertInstalledVersion(installation);
+      reservation = await registerInstallationService(installation, home);
+      serviceLog(home, "background.start", { version: VERSION, port: options.port ?? DEFAULT_SERVICE_PORT });
+      child = spawn(process.execPath, args, { detached: true, stdio: "ignore", cwd: dirname(cliPath), env: { ...process.env, AGENT_MANOR_HOME: home, AGENT_MANOR_INSTALLATION_RESERVATION: reservation.nonce } });
+      child.once("error", error => { failure = error; });
+      child.once("exit", () => { exited = true; });
+      if (child.pid !== undefined) await reservation.transfer(child.pid);
+      else await reservation.remove();
+    } catch (error) { await reservation?.remove(); throw error; }
+    finally { await releaseInstallation(); }
     child.unref();
     const deadline = Date.now() + (options.timeoutMs ?? 20_000);
     while (Date.now() < deadline || await activeIndexMaintenance(home, child.pid)) {

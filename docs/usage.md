@@ -39,7 +39,7 @@ am doctor --json
 
 `am skills install --target codex --scope user` 安装完整 Skill；`--target claude`、`--scope project --project-directory <path>` 和 `--target custom --directory <path>` 选择其他目标。`skills status/update/remove` 复用同一目标参数。同版跳过，用户修改与外来同名目录先报告冲突，明确 `--overwrite` 前保存备份。npm 安装不会自行写宿主配置。
 
-`am update --check` 只检查公共 registry 版本，`am update --to <version>` 显式更新。持久的全局／本地 npm 安装支持更新；源码和临时运行环境提供诊断，不直接覆盖。运行中服务先核验在途任务，必要时使用 `--wait`；停止后备份数据，安装成功后仅恢复原本运行的服务。失败保留恢复材料，不自动降级数据或删除数据库。公共发布前没有可供在线更新的版本。
+`am update --check` 只检查公共 registry 版本，`am update --to <version>` 显式更新。持久的全局／本地 npm 安装支持更新；源码和临时运行环境提供诊断，不直接覆盖。同一安装还有其他数据目录的后台运行或正在启动时，更新会拒绝并列出目标，需先显式停止这些实例。当前服务先核验在途任务，必要时使用 `--wait`；停止后备份数据，安装成功后仅恢复原本运行的服务。失败保留恢复材料，不自动降级数据或删除数据库。公共发布前没有可供在线更新的版本。
 
 ## 登记、查询和版本
 

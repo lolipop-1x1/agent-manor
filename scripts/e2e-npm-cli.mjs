@@ -14,14 +14,15 @@ const results = [];
 const npmCli = process.env.npm_execpath;
 assert.ok(npmCli?.endsWith(".js"), "请通过 npm run test:cli:installed 执行");
 let cli, instance, environment = { ...process.env, AGENT_MANOR_HOME: home, AGENT_MANOR_PORT: "0", AGENT_MANOR_LANG: "en" };
-let generationCalls = 0;
+let generationCalls = 0, embeddingCalls = 0;
 const model = createServer(async (request, response) => {
   let body = ""; for await (const chunk of request) body += chunk;
   const input = JSON.parse(body);
-  generationCalls++;
+  const embedding = request.url.endsWith("/embeddings");
+  if (embedding) embeddingCalls++; else generationCalls++;
   assert.ok(Buffer.byteLength(body) < 60_000, "模型输入必须保持有界");
   response.setHeader("Content-Type", "application/json");
-  const value = request.url.endsWith("/embeddings")
+  const value = embedding
     ? { data: input.input.map((_, index) => ({ index, embedding: [1, 0, 0] })), usage: { prompt_tokens: 12 } }
     : { choices: [{ message: { content: JSON.stringify({ disposition: "no_value", candidates: [], carry: [], needsMessageIds: [], limitations: [] }) } }], usage: { prompt_tokens: 120, completion_tokens: 20 } };
   response.end(JSON.stringify(value));
@@ -54,6 +55,12 @@ async function step(name, action) { await action(); results.push(name); process.
 async function equivalent(args, path) { assert.deepEqual(await command(args), await api(path)); }
 try {
   await mkdir(outside, { recursive: true });
+  const userDirectory = join(sandbox, "synthetic-user");
+  await mkdir(userDirectory);
+  const isolation = join(sandbox, "isolate-user.mjs");
+  await writeFile(isolation, `import os from "node:os"; import { syncBuiltinESMExports } from "node:module"; os.homedir = () => ${JSON.stringify(userDirectory)}; syncBuiltinESMExports();`);
+  environment.NODE_OPTIONS = `--import=${pathToFileURL(isolation).href}`;
+  for (const key of ["CODEX_HOME", "CLAUDE_CONFIG_DIR", "DSH_HOME", "DSH_AGENTS_HOME", "PI_CONFIG_DIR", "PI_CODING_AGENT_DIR", "GEMINI_CLI_HOME", "QWEN_HOME", "KIMI_CODE_HOME", "CODEWHALE_CONFIG_PATH", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "APPDATA", "LOCALAPPDATA"]) delete environment[key];
   const tarball = resolve(process.argv[2]);
   const installed = await run(process.execPath, [npmCli, "install", "--prefix", prefix, "--omit=dev", "--no-audit", "--no-fund", "--registry=https://registry.npmjs.org/", tarball]);
   assert.equal(installed.code, 0, installed.stderr);
@@ -166,9 +173,32 @@ try {
     await command(["repositories", "remove", id]); assert.equal(await readFile(join(project, "README.md"), "utf8"), "# Synthetic Atlas\n");
   });
   await step("资源查询、语义状态与关闭模式不隐式调用模型", async () => {
-    const before = generationCalls;
+    const before = generationCalls + embeddingCalls;
     for (const [args, path] of [[["resources", "status"], "/resources/status"], [["resources", "map"], "/resources/map"], [["semantic", "status"], "/semantic/status"], [["knowledge", "index", "status"], "/knowledge/index/status"]]) await equivalent(args, path);
-    assert.equal(generationCalls, before);
+    assert.equal(generationCalls + embeddingCalls, before);
+  });
+  await step("知识与会话向量构建等待成功、语义检索和查询缓存", async () => {
+    const url = `http://127.0.0.1:${model.address().port}/v1`;
+    const connection = { url, model: "synthetic-embedding", dimensions: 3, documentPrefix: "passage: ", queryPrefix: "query: " };
+    const knowledge = await command(["knowledge", "settings", "get"]);
+    Object.assign(knowledge.config.embedding, { mode: "independent", connection, requestsPerMinute: 600, retries: 0 });
+    await command(["knowledge", "settings", "set", "--data", JSON.stringify({ config: knowledge.config, embeddingKey: "synthetic-vector-secret" })]);
+    const knowledgePreview = await command(["knowledge", "index", "preview"]);
+    assert(knowledgePreview.total >= 1);
+    const knowledgeIndex = await command(["knowledge", "index", "build", knowledgePreview.id, "--wait"]);
+    assert.equal(knowledgeIndex.status, "ready");
+    assert.equal((await command(["knowledge", "search", "cache procedure", "--mode", "semantic"])).items[0].id, entry.id);
+    const semantic = await command(["semantic", "settings", "get"]);
+    Object.assign(semantic.config, { enabled: true, connection });
+    semantic.config.scope.timeRange = "all"; semantic.config.strategy.requestsPerMinute = 600; semantic.config.strategy.retries = 0;
+    await command(["semantic", "settings", "set", "--data", JSON.stringify({ config: semantic.config, apiKey: "synthetic-session-vector" })]);
+    const preview = await command(["semantic", "preview", "--data", JSON.stringify({ scope: semantic.config.scope })]);
+    assert.equal(preview.sessionCount, 2);
+    const built = await command(["semantic", "build", preview.id, "--wait"]); assert.equal(built.job.status, "complete"); assert.equal(built.ready, true);
+    const args = ["sessions", "search", "Atlas cache policy", "--mode", "semantic"];
+    assert((await command(args)).groups.some(group => group.session.id === sid));
+    const calls = embeddingCalls;
+    await command(args); assert.equal(embeddingCalls, calls, "重复语义查询应复用缓存");
   });
   await step("停止等待、重启后知识与偏好仍在，日志无凭据正文", async () => {
     assert.equal((await command(["stop", "--wait"])).stopped, true);
@@ -178,7 +208,7 @@ try {
     assert.equal((await command(["knowledge", "revision", entry.id, entry.latestRevisionId])).body, draft.body);
     const log = await command(["logs"]); assert(!log.text.includes("synthetic-only-secret")); assert(!log.text.includes(draft.body));
   });
-  console.log(JSON.stringify({ platform: process.platform, arch: process.arch, checks: results.length, generationRequests: generationCalls, cases: results }, null, 2));
+  console.log(JSON.stringify({ platform: process.platform, arch: process.arch, checks: results.length, generationRequests: generationCalls, embeddingRequests: embeddingCalls, cases: results }, null, 2));
 } finally {
   if (cli) await run(process.execPath, [cli, "stop", "--wait", "--json"]).catch(() => undefined);
   model.closeAllConnections(); await new Promise(done => model.close(done));

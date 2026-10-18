@@ -25,6 +25,8 @@ export async function waitForTask(instance: ServiceInstance, initial: unknown, t
     value = await apiRequest(instance, endpoint);
     current = task(value);
   }
-  if (current && !["complete", "completed"].includes(current.status ?? "")) process.exitCode = 1;
+  // 知识索引使用 ready 表示发布完成，其他任务仍沿用各自的成功终态。
+  const successful = endpoint === "/knowledge/index/status" ? ["ready"] : ["complete", "completed"];
+  if (current && !successful.includes(current.status ?? "")) process.exitCode = 1;
   return initial && typeof initial === "object" && value && typeof value === "object" ? { ...initial, ...value } : value;
 }

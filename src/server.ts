@@ -1,3 +1,4 @@
+import { acquireInstallationOperation, assertInstalledVersion, installationContext, registerInstallationService } from "./service/installation.js";
 import { DiagnosticError } from "./i18n/diagnostics.js";
 import Fastify from "fastify";
 import type { FastifyRequest, FastifyReply } from "fastify";
@@ -74,12 +75,20 @@ export async function startService(options: ServiceOptions = {}) {
   const requestedPort = options.port ?? (process.env.AGENT_MANOR_PORT !== undefined ? Number(process.env.AGENT_MANOR_PORT) : DEFAULT_SERVICE_PORT);
   if (!Number.isInteger(requestedPort) || requestedPort < 0 || requestedPort > 65535) throw new DiagnosticError("端口必须是 0 到 65535 的整数", { key: "diagnostics.server.m001" });
   serviceLog(home, "startup.lock", { version: VERSION });
-  const release = await acquireLock(home, "service.lock").catch(error => {
+  const installation = await installationContext();
+  const releaseInstallation = await acquireInstallationOperation(installation);
+  let registration: Awaited<ReturnType<typeof registerInstallationService>> | undefined;
+  let release: (() => Promise<void>) | undefined;
+  try {
+    await assertInstalledVersion(installation);
+    registration = await registerInstallationService(installation, home, process.env.AGENT_MANOR_INSTALLATION_RESERVATION);
+    release = await acquireLock(home, "service.lock");
+    await assertNotUpdating(home);
+  } catch (error) {
+    await registration?.remove(); await release?.();
     serviceLog(home, "startup.failed", { phase: "lock", code: (error as NodeJS.ErrnoException).code ?? "LOCK_BUSY" });
     throw error;
-  });
-  try { await assertNotUpdating(home); }
-  catch (error) { await release(); throw error; }
+  } finally { await releaseInstallation(); }
   serviceLog(home, "startup.database", { version: VERSION });
   let store: AnalysisStore | undefined;
   let manager: WorkerManager | undefined;
@@ -174,27 +183,32 @@ export async function startService(options: ServiceOptions = {}) {
     app.addHook("onClose", async () => {
       closing = true;
       serviceLog(home, "service.stopping", { instanceId: instance.id });
-      unsubscribePreferences?.();
-      sync.close();
-      await knowledgeSemantic?.close();
-      await knowledgeManager?.close();
-      await knowledgeSources?.close();
-      knowledgeStore?.close();
-      await semanticManager?.close();
-      await searchManager?.close();
-      await replayManager?.close();
-      await mapQueryManager?.close();
-      await resourceHistory?.close();
-      await overviewManager?.close();
-      await usageManager?.close();
-      await worker.close();
-      index.close();
-      library.close();
-      management.close();
-      pricing?.close();
-      await removeInstance(home, instance);
-      await release();
-      serviceLog(home, "service.stopped", { instanceId: instance.id });
+      try {
+        unsubscribePreferences?.();
+        sync.close();
+        await knowledgeSemantic?.close();
+        await knowledgeManager?.close();
+        await knowledgeSources?.close();
+        knowledgeStore?.close();
+        await semanticManager?.close();
+        await searchManager?.close();
+        await replayManager?.close();
+        await mapQueryManager?.close();
+        await resourceHistory?.close();
+        await overviewManager?.close();
+        await usageManager?.close();
+        await worker.close();
+        index.close();
+        library.close();
+        management.close();
+        pricing?.close();
+      } finally {
+        // 日志或某个组件关闭失败时仍回收实例登记与锁，不留下可被误复用的记录。
+        const cleanup = await Promise.allSettled([removeInstance(home, instance), release?.(), registration?.remove()]);
+        serviceLog(home, "service.stopped", { instanceId: instance.id });
+        const failed = cleanup.find(result => result.status === "rejected");
+        if (failed?.status === "rejected") throw failed.reason;
+      }
     });
     app.setErrorHandler((error, _request, reply) => {
       const known = error instanceof StoreError || error instanceof ServiceError;
@@ -358,6 +372,7 @@ export async function startService(options: ServiceOptions = {}) {
     if (!address || typeof address === "string") throw new DiagnosticError("未取得本地监听端口", { key: "diagnostics.server.m019" });
     instance.port = address.port;
     await writeInstance(home, instance);
+    await registration!.running(instance);
     serviceLog(home, "service.ready", { instanceId: instance.id, port: instance.port, version: VERSION });
     usageManager.start();
     if (options.startupRefresh !== false) {
@@ -423,8 +438,8 @@ export async function startService(options: ServiceOptions = {}) {
     try { store?.close(); } catch { /* 初始化失败时可能已关闭。 */ }
     try { sessions?.close(); } catch { /* 初始化失败时可能已关闭。 */ }
     try { resourceManager?.close(); } catch { /* 初始化失败时可能已关闭。 */ }
-    pricing?.close();
-    await release();
+    try { pricing?.close(); } catch { /* 初始化失败时可能已关闭。 */ }
+    await Promise.allSettled([removeInstance(home, instance), release?.(), registration?.remove()]);
     throw error;
   }
 }

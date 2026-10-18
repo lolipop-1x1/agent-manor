@@ -1,8 +1,8 @@
 # 包外实际命令验收与双轴审查
 
 Type: task
-Status: ready-for-agent
-Blocked by: 01, 02, 03, 04
+Status: resolved
+Blocked by: none
 
 规格：[整体方案](../../../docs/design/npm-cli-distribution.md)，[能力覆盖清单](../capability-matrix.md)。
 
@@ -15,3 +15,7 @@ scripts/e2e-npm-cli.mjs、验证记录、集成修复
 全量类型/翻译/测试/构建；干净包外安装实际 tarball，检查启停端口冲突、JSON/退出码、会话搜索/消息/导出、知识写读审阅/冲突、Skill 安装与恢复等数据；双轴审查并修复，推送后读回远端。
 
 管理写入与运行验收使用隔离的合成数据，禁止改变真实数据目录、模型 Key 或正在使用的服务。
+
+## Answer
+
+类型、翻译与打包检查通过，源码 1638 项及 CLI workspace 18 项通过；实际 tarball 全局安装冒烟与本地安装 16 组业务命令通过。核对了 CLI 和 HTTP 结果、知识审阅／冲突／恢复、任务等待与索引、端口冲突及停止清理。两个独立审查轴的四项问题均由同一实施者修复并复验。五个平台在 CI 安装同一构建包；最终交付须核对该提交的 CI 及远端 SHA。公开 npm 发布、真实在线升级及模型质量评估保持未验收边界，详见交付验证记录。

@@ -5,6 +5,7 @@ import { delimiter, dirname, join, parse, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { VERSION } from "../../../../src/version.js";
+import { acquireInstallationOperation, assertInstalledVersion, assertNoOtherInstallationService, canonicalHome, installationContext, listInstallationServices } from "../../../../src/service/installation.js";
 import { acquireLock, RequestError, serviceStatus, stopService } from "../../../../src/service/runtime.js";
 
 const run = promisify(execFile);
@@ -79,14 +80,27 @@ export async function updateProduct(options: UpdateOptions, dependencies: Update
   const result = { currentVersion: VERSION, targetVersion: metadata.version, updateAvailable: metadata.version !== VERSION, installation };
   if (options.check || !result.updateAvailable) return result;
   if (installation.kind === "source" || installation.kind === "ephemeral") throw new RequestError("INSTALLATION_UNSUPPORTED", "Install a persistent npm package before using self-update", { key: "cli.update.persistentRequired" });
-  const release = await acquireLock(options.home, "update.lock");
+  const context = await installationContext(root);
+  const releaseInstallation = await acquireInstallationOperation(context);
+  let release: (() => Promise<void>) | undefined;
   let releaseStartup: (() => Promise<void>) | undefined;
   let releaseService: (() => Promise<void>) | undefined;
   let backup: string | undefined;
   let stopped = false;
   try {
-    releaseStartup = await acquireLock(options.home, "startup.lock", 20_000);
+    await assertInstalledVersion(context);
+    await assertNoOtherInstallationService(context, options.home);
+    release = await acquireLock(options.home, "update.lock");
+    const selectedBeforeLock = await canonicalHome(options.home);
+    if ((await listInstallationServices(context)).some(item => item.home === selectedBeforeLock && item.state === "starting")) throw new RequestError("SERVICE_BUSY", "This installation has a service still starting", { key: "diagnostics.service.runtime.busy" });
+    // 安装锁内不等待 startup.lock，避免启动父进程等待 child 登记时发生反向互等。
+    try { releaseStartup = await acquireLock(options.home, "startup.lock"); }
+    catch { throw new RequestError("SERVICE_BUSY", "A service is starting from this data directory", { key: "diagnostics.service.runtime.busy" }); }
     const status = await (dependencies.status ?? serviceStatus)(options.home);
+    const selectedHome = await canonicalHome(options.home);
+    const registered = (await listInstallationServices(context)).filter(item => item.home === selectedHome);
+    if (registered.some(item => item.state === "starting")) throw new RequestError("SERVICE_BUSY", "This installation has a service still starting", { key: "diagnostics.service.runtime.busy" });
+    if (registered.some(item => !status.running || item.instance?.id !== status.instance?.id)) throw new RequestError("SERVICE_IDENTITY_UNVERIFIED", "A registered service identity cannot be verified", { key: "diagnostics.service.runtime.identity" });
     if (!status.running && ["unreachable", "foreign"].includes(status.state)) throw new RequestError("SERVICE_IDENTITY_UNVERIFIED", "Cannot verify that the existing service is stopped", { key: "diagnostics.service.runtime.identity" });
     if (status.running) {
       await (dependencies.stop ?? stopService)(options.home, { wait: options.wait, timeoutMs: options.timeoutMs });
@@ -102,7 +116,8 @@ export async function updateProduct(options: UpdateOptions, dependencies: Update
     if (installed.version !== metadata.version) throw new Error("Installed version does not match the requested release");
     await releaseService();
     await releaseStartup();
-    await release();
+    await release?.();
+    await releaseInstallation();
     let service: unknown;
     if (stopped) {
       if (dependencies.restart) service = await dependencies.restart(root, options.home);
@@ -115,5 +130,5 @@ export async function updateProduct(options: UpdateOptions, dependencies: Update
   } catch (error) {
     if (error instanceof RequestError && !stopped && !backup) throw error;
     throw new RequestError("UPDATE_FAILED", `Update did not complete. Recovery data: ${backup ?? "not created"}. ${error instanceof Error ? error.message : String(error)}`, { key: "cli.update.failed", params: { backup: backup ?? "—" } });
-  } finally { await releaseService?.(); await releaseStartup?.(); await release(); }
+  } finally { await releaseService?.(); await releaseStartup?.(); await release?.(); await releaseInstallation(); }
 }

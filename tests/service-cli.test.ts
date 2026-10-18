@@ -108,7 +108,7 @@ test("编译产物在包外cwd并发按需启动单实例，CLI/API JSON一致�
   await mkdir(repository);
   await mkdir(history);
   await symlink(join(repositoryRoot, "node_modules"), join(directory, "node_modules"), "dir");
-  await writeFile(join(directory, "package.json"), '{"type":"module"}');
+  await writeFile(join(directory, "package.json"), '{"name":"agent-manor","version":"0.1.0","type":"module"}');
   const compiler = join(dirname(fileURLToPath(import.meta.resolve("typescript/package.json"))), "bin/tsc");
   await run(process.execPath, [compiler, "-p", join(repositoryRoot, "tsconfig.server.json"), "--outDir", build, "--declaration", "false", "--sourceMap", "false"], { cwd: repositoryRoot });
   await mkdir(join(build, "web"));
