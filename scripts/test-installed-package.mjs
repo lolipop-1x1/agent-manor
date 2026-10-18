@@ -4,7 +4,6 @@ import { existsSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { createRequire } from "node:module";
 import { createServer } from "node:net";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
@@ -70,14 +69,18 @@ try {
   run(process.execPath, ["--input-type=module", "-e", `process.argv[1] = "nonexistent-entry"; await import(${JSON.stringify(pathToFileURL(cli).href)});`]);
   assert.equal(command(["status"]).running, false);
   assert.equal(existsSync(home), false, "版本、导入和未运行状态不得创建后台或数据目录");
-  const require = createRequire(join(packageRoot, "package.json"));
-  const Database = require("better-sqlite3");
-  const vector = require("sqlite-vec");
-  const db = new Database(":memory:");
-  vector.load(db);
-  assert.equal(db.prepare("SELECT vec_distance_cosine('[1,0]', '[0,1]') AS distance").get().distance, 1);
-  const sqlite = db.prepare("SELECT sqlite_version() AS version").get().version;
-  db.close();
+  // 原生扩展在独立进程验证并卸载，避免 Windows 清理时仍映射安装包里的 DLL。
+  const native = JSON.parse(run(process.execPath, ["--input-type=module", "-e", `
+    import { createRequire } from "node:module";
+    const require = createRequire(${JSON.stringify(join(packageRoot, "package.json"))});
+    const Database = require("better-sqlite3"), vector = require("sqlite-vec");
+    const db = new Database(":memory:"); vector.load(db);
+    const result = { sqlite: db.prepare("SELECT sqlite_version() AS version").get().version,
+      distance: db.prepare("SELECT vec_distance_cosine('[1,0]', '[0,1]') AS distance").get().distance };
+    db.close(); console.log(JSON.stringify(result));
+  `]).stdout);
+  assert.equal(native.distance, 1);
+  const sqlite = native.sqlite;
   const installedSkill = command(["skills", "install", "--target", "custom", "--directory", skillDirectory]);
   assert.equal(installedSkill.status, "installed");
   assert.ok(existsSync(join(installedSkill.targetPath, "references/sessions.md")));
