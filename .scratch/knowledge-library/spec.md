@@ -1,8 +1,8 @@
 # 知识库需求规格
 
-Status: needs-info
+Status: claimed
 
-十八项访谈决策已逐项确认，整版设计已整理，当前等待整体审阅。本文只记录需求范围及交付状态，不表示已授权功能实现。
+用户已确认完整设计与四张界面效果图，并明确授权实现和测试，直接在 main 开发。本文记录需求范围及交付状态。
 
 完整行为、页面、字段、接口、存储和验收统一见 [知识库设计方案](../../docs/design/knowledge-library.md)。讨论过程见 [map.md](map.md)，领域术语见 [CONTEXT.md](../../CONTEXT.md)。
 
@@ -52,4 +52,4 @@ Status: needs-info
 
 CLI、Skill、MCP Server、具名 Agent 身份管理和自动注入不作为本次实现前提。实现顺序不缩减已确认首版范围。
 
-十八项产品行为问题已确认。整版设计中新增的页面、字段、路由、存储和实现组织建议待整体审阅；尚未创建实施任务、实现功能、运行知识抽取或进行效果实验。
+实施任务 00—06 已完成，依赖关系见各任务的 Blocked by。最终测试、模型核读、浏览器验收及支持边界见 docs/validation/knowledge-library.md。

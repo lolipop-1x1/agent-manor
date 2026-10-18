@@ -12,6 +12,7 @@ import Resources from "../features/resources/Resources";
 import Overview from "../features/overview/Overview";
 import type { OverviewMapTarget, OverviewSessionTarget } from "../features/overview/Investigation";
 import Usage from "../features/usage/Usage";
+import Knowledge from "../features/knowledge/Knowledge";
 import { LanguageMenu, LanguageNotice, messageText, t, useI18n } from "../shared/i18n";
 import { useTheme } from "../shared/theme";
 import { AppearanceMenu } from "../shared/ui/AppearanceMenu";
@@ -34,14 +35,15 @@ export function App() {
     observer.observe(frame);
     return () => { observer.disconnect(); document.documentElement.style.removeProperty("--app-header-height"); };
   }, []);
-  type ProductView = "overview" | "map" | "sessions" | "resources" | "usage";
-  const hashView = (): ProductView => location.hash.startsWith("#sessions") ? "sessions" : location.hash.startsWith("#resources") ? "resources" : location.hash.startsWith("#usage") ? "usage" : location.hash.startsWith("#map") ? "map" : "overview";
+  type ProductView = "overview" | "map" | "sessions" | "resources" | "usage" | "knowledge";
+  const hashView = (): ProductView => location.hash.startsWith("#knowledge") ? "knowledge" : location.hash.startsWith("#sessions") ? "sessions" : location.hash.startsWith("#resources") ? "resources" : location.hash.startsWith("#usage") ? "usage" : location.hash.startsWith("#map") ? "map" : "overview";
   const [view, setView] = useState<ProductView>(hashView);
-  const viewScroll = useRef({ overview: 0, map: 0, sessions: 0, resources: 0, usage: 0 });
+  const viewScroll = useRef({ overview: 0, map: 0, sessions: 0, resources: 0, usage: 0, knowledge: 0 });
   const overviewAddress = useRef(location.hash.startsWith("#overview") ? location.hash : "#overview");
   const mapAddress = useRef(location.hash.startsWith("#map") ? location.hash : "#map");
   const sessionAddress = useRef(location.hash.startsWith("#sessions") ? location.hash : "#sessions");
   const resourceAddress = useRef(location.hash.startsWith("#resources") ? location.hash : "#resources");
+  const knowledgeAddress = useRef(location.hash.startsWith("#knowledge") ? location.hash : "#knowledge");
   const usageAddress = useRef(location.hash.startsWith("#usage") ? location.hash : "#usage");
   const activeView = useRef(view);
   const activateView = useCallback((next: ProductView) => {
@@ -66,7 +68,7 @@ export function App() {
     void motion.finished.then(clean, clean);
     return () => { clean(); motion.cancel(); };
   }, [view]);
-  useEffect(() => { document.title = `AgentManor · ${t({ overview: "overview.title", map: "codeMap.title", sessions: "codeMap.navigation.sessions", resources: "codeMap.navigation.resources", usage: "usage.title" }[view])}`; }, [view, language]);
+  useEffect(() => { document.title = `AgentManor · ${t({ overview: "overview.title", map: "codeMap.title", sessions: "codeMap.navigation.sessions", resources: "codeMap.navigation.resources", usage: "usage.title", knowledge: "knowledge.title" }[view])}`; }, [view, language]);
   const [sessionTarget, setSessionTarget] = useState<{ sessionId: string; messageId?: string; version?: string; mode?: "brief" | "full" | "trace"; page?: number; turnPosition?: number; branch?: string }>();
   useEffect(() => {
     const navigate = () => {
@@ -98,7 +100,8 @@ export function App() {
     if (location.hash.startsWith("#resources")) resourceAddress.current = location.hash;
     if (location.hash.startsWith("#sessions")) sessionAddress.current = location.hash;
     if (location.hash.startsWith("#usage")) usageAddress.current = location.hash;
-    activateView(next); location.hash = next === "overview" ? overviewAddress.current : next === "resources" ? resourceAddress.current : next === "sessions" ? sessionAddress.current : next === "usage" ? usageAddress.current : next === "map" ? mapAddress.current : next;
+    if (location.hash.startsWith("#knowledge")) knowledgeAddress.current = location.hash;
+    activateView(next); location.hash = next === "knowledge" ? knowledgeAddress.current : next === "overview" ? overviewAddress.current : next === "resources" ? resourceAddress.current : next === "sessions" ? sessionAddress.current : next === "usage" ? usageAddress.current : next === "map" ? mapAddress.current : next;
   };
   const openResourceSession = (target: { sessionId: string; messageId: string }) => {
     resourceAddress.current = location.hash;
@@ -143,7 +146,7 @@ export function App() {
   };
   return <Tooltip.Provider delayDuration={350}>
     <div ref={headerFrame}>
-    <header className="app-header"><a className="brand" href="/" aria-label={t("codeMap.navigation.home")}><svg width="30" height="20" viewBox="8 16 48 32" fill="currentColor" aria-hidden="true" focusable="false"><path d="M14 18a3 3 0 0 0-4 2.8v22.4a3 3 0 0 0 4 2.8l10-6a2 2 0 0 0 1-1.8V25.8a2 2 0 0 0-1-1.8z" /><rect x="28" y="27" width="8" height="10" rx="2" /><path d="M14 18a3 3 0 0 0-4 2.8v22.4a3 3 0 0 0 4 2.8l10-6a2 2 0 0 0 1-1.8V25.8a2 2 0 0 0-1-1.8z" transform="translate(64 0) scale(-1 1)" /></svg><span>Agent<strong>Manor</strong></span></a><span className="header-divider" /><nav className="product-nav" aria-label={t("codeMap.navigation.title")}><SelectionIndicator value={view} selector='[aria-current="page"]' /><button aria-current={view === "overview" ? "page" : undefined} onClick={() => switchView("overview")}>{t("overview.title")}</button><button aria-current={view === "sessions" ? "page" : undefined} onClick={() => switchView("sessions")}>{t("codeMap.navigation.sessions")}</button><button aria-current={view === "map" ? "page" : undefined} onClick={() => switchView("map")}>{t("codeMap.navigation.map")}</button><button aria-current={view === "usage" ? "page" : undefined} onClick={() => switchView("usage")}>{t("usage.title")}</button><button aria-current={view === "resources" ? "page" : undefined} onClick={() => switchView("resources")}>{t("codeMap.navigation.resources")}</button></nav>
+    <header className="app-header"><a className="brand" href="/" aria-label={t("codeMap.navigation.home")}><svg width="30" height="20" viewBox="8 16 48 32" fill="currentColor" aria-hidden="true" focusable="false"><path d="M14 18a3 3 0 0 0-4 2.8v22.4a3 3 0 0 0 4 2.8l10-6a2 2 0 0 0 1-1.8V25.8a2 2 0 0 0-1-1.8z" /><rect x="28" y="27" width="8" height="10" rx="2" /><path d="M14 18a3 3 0 0 0-4 2.8v22.4a3 3 0 0 0 4 2.8l10-6a2 2 0 0 0 1-1.8V25.8a2 2 0 0 0-1-1.8z" transform="translate(64 0) scale(-1 1)" /></svg><span>Agent<strong>Manor</strong></span></a><span className="header-divider" /><nav className="product-nav" aria-label={t("codeMap.navigation.title")}><SelectionIndicator value={view} selector='[aria-current="page"]' /><button aria-current={view === "overview" ? "page" : undefined} onClick={() => switchView("overview")}>{t("overview.title")}</button><button aria-current={view === "sessions" ? "page" : undefined} onClick={() => switchView("sessions")}>{t("codeMap.navigation.sessions")}</button><button aria-current={view === "knowledge" ? "page" : undefined} onClick={() => switchView("knowledge")}>{t("knowledge.title")}</button><button aria-current={view === "map" ? "page" : undefined} onClick={() => switchView("map")}>{t("codeMap.navigation.map")}</button><button aria-current={view === "usage" ? "page" : undefined} onClick={() => switchView("usage")}>{t("usage.title")}</button><button aria-current={view === "resources" ? "page" : undefined} onClick={() => switchView("resources")}>{t("codeMap.navigation.resources")}</button></nav>
       <div className="header-actions">
         <AutoRefreshControl scope="sessions" />
         <HistoryRefreshControl busy={history.updating} starting={history.starting} onRetry={history.retry}
@@ -160,6 +163,7 @@ export function App() {
     {map.maintenanceNotice}
     </div>
     <section className="product-view" hidden={view !== "overview"} aria-label={t("overview.title")}><Overview historyRevision={history.revision} active={view === "overview"} onSession={openOverviewSession} onUsage={openOverviewUsage} onMap={openOverviewMap} /></section>
+    <section className="product-view" hidden={view !== "knowledge"} aria-label={t("knowledge.title")}><Knowledge active={view === "knowledge"} /></section>
     {map.page}
     <section className="product-view" hidden={view !== "sessions"} aria-label={t("codeMap.view.sessions")}><Sessions historyRevision={history.revision} historyUpdating={history.updating} onHistoryRefresh={options => void history.refresh(options)} active={view === "sessions"} target={sessionTarget} onMap={openMap} onReplay={openReplay} /></section>
     <section className="product-view" hidden={view !== "resources"} aria-label={t("codeMap.view.resources")}><Resources historyRevision={history.revision} active={view === "resources"} onSession={openResourceSession} /></section>

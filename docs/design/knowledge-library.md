@@ -5,9 +5,9 @@ date: 2026-10-18
 
 # 知识库设计方案
 
-产品需求与关键行为已逐项确认；本文将其与页面、数据、接口、存储和验收建议整理为一份完整设计，供整体审阅。本文不表示功能已经实现，也不构成功能实施授权。
+产品需求与关键行为已逐项确认；本文将其与页面、数据、接口、存储和验收建议整理为一份完整设计，供整体审阅。完整方案与界面设计已获确认并授权实施；功能与验证状态见文末及验证记录。
 
-需求范围见 [需求规格](../../.scratch/knowledge-library/spec.md)，讨论记录见 [设计访谈](../../.scratch/knowledge-library/map.md)，术语见 [CONTEXT.md](../../CONTEXT.md)。知识独立保留与修订快照遵循 [ADR 0018](../adr/0018-persistent-knowledge-and-evidence.md)、[ADR 0019](../adr/0019-knowledge-revision-snapshots.md)。
+需求范围与已确认决策已整合到本文。术语见 [CONTEXT.md](https://github.com/lolipop-1x1/agent-manor/blob/main/CONTEXT.md)。知识独立保留与修订快照遵循 [ADR 0018](https://github.com/lolipop-1x1/agent-manor/blob/main/docs/adr/0018-persistent-knowledge-and-evidence.md)、[ADR 0019](https://github.com/lolipop-1x1/agent-manor/blob/main/docs/adr/0019-knowledge-revision-snapshots.md)。
 
 ## 目标
 
@@ -34,11 +34,13 @@ date: 2026-10-18
 
 ## 现有基础与新增范围
 
+以下记录本轮实施前的基础，新增功能及验证进展见 [知识库验证记录](../validation/knowledge-library.md)。
+
 - 会话库已有会话、轮次、消息和执行轨迹的阅读与来源定位能力，尚无知识抽取入口。
 - 本地后台已有 HTTP 路由与写操作约束，尚无知识条目读写接口，也没有本产品提供的 MCP Server。
 - 现有语义搜索只有一个当前 Embedding 连接；没有通用生成模型连接或多用途模型连接库。
 - 语义搜索已有范围预览、构建、暂停、增量维护和调用策略，但不是通用的多规则定时任务系统。
-- 原始历史及其可重建索引遵循原有生命周期。知识正文、人工修改、审阅记录和必要证据独立保留，边界见 [ADR 0018](../adr/0018-persistent-knowledge-and-evidence.md)。
+- 原始历史及其可重建索引遵循原有生命周期。知识正文、人工修改、审阅记录和必要证据独立保留，边界见 [ADR 0018](https://github.com/lolipop-1x1/agent-manor/blob/main/docs/adr/0018-persistent-knowledge-and-evidence.md)。
 
 ## 首版行为边界
 
@@ -295,7 +297,7 @@ flowchart TD
 
 ## 版本历史与当前可用知识
 
-每项知识具有稳定身份，多次保存形成内容修订；每个修订保留标题、摘要、正文、类型、标签、适用范围、适用条件、有效时间和该版来源引用。以完整内容快照保存每个修订，明确保存时形成修订，不为每次键盘输入制造版本。版本存储选择见 [ADR 0019](../adr/0019-knowledge-revision-snapshots.md)。
+每项知识具有稳定身份，多次保存形成内容修订；每个修订保留标题、摘要、正文、类型、标签、适用范围、适用条件、有效时间和该版来源引用。以完整内容快照保存每个修订，明确保存时形成修订，不为每次键盘输入制造版本。版本存储选择见 [ADR 0019](https://github.com/lolipop-1x1/agent-manor/blob/main/docs/adr/0019-knowledge-revision-snapshots.md)。
 
 知识详情提供当前内容、来源和版本历史。历史列表显示版本、时间、修改主体、变更说明、审阅及发布记录，支持读取完整旧版和比较差异。恢复旧内容会形成新修订，不改写历史，也不绕过新版本确认。
 
@@ -437,7 +439,7 @@ Keep source quotations, file paths, commands, identifiers and error messages unc
 
 ## 验收要求
 
-以下为实施完成前需要实际验证的标准，本次设计未运行抽取或召回效果实验。
+以下为首版验收标准，实际检查、模型效果与未覆盖边界统一见知识库验证记录。
 
 1. 无生成模型、无 Embedding 时，用户和 Agent 均可直接保存知识，人工确认后可关键词查询。
 2. 三种写入路径形成一致的知识、来源和审阅记录；Agent 提交不能自行形成已审状态。
@@ -467,4 +469,4 @@ Keep source quotations, file paths, commands, identifiers and error messages unc
 
 ## 设计与交付状态
 
-已完成需求访谈和整版方案整理。关键产品行为已确认，本文新增的页面、字段、接口、存储和实施组织建议仍待整版审阅；当前没有功能实现、模型运行或效果验收结论。
+已完成首版实现、四屏界面与隔离验证，审查发现已修复并关闭。当前代码和运行验收的具体结果统一记录于 [知识库验证记录](../validation/knowledge-library.md)，不以设计描述代替效果或生产使用结论。

@@ -31,7 +31,9 @@
     "docs/design/codeflicker-resource-sources.md",
     "docs/design/resource-history-parsing.md",
     "docs/design/semantic-search.md",
-    "docs/validation/semantic-search.md"
+    "docs/validation/semantic-search.md",
+    "docs/design/knowledge-library.md",
+    "docs/validation/knowledge-library.md"
   ],
   "scripts": {
     "check:public": "node scripts/check-public-content.mjs",

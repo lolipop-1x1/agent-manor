@@ -41,6 +41,11 @@ import { registerReplayRoutes } from "./service/replay-routes.js";
 import { ReplayManager } from "./replay/manager.js";
 import { MapQueryManager } from "./analysis/query-manager.js";
 import { registerMapQueryRoutes } from "./service/map-query-routes.js";
+import { KnowledgeStore } from "./knowledge/store.js";
+import { KnowledgeManager } from "./knowledge/manager.js";
+import { KnowledgeSources } from "./knowledge/sources.js";
+import { KnowledgeSemantic } from "./knowledge/semantic.js";
+import { registerKnowledgeRoutes } from "./service/knowledge-routes.js";
 
 export interface ServiceOptions {
   home?: string;
@@ -78,6 +83,10 @@ export async function startService(options: ServiceOptions = {}) {
   let replayManager: ReplayManager | undefined;
   let mapQueryManager: MapQueryManager | undefined;
   let semanticManager: SemanticManager | undefined;
+  let knowledgeStore: KnowledgeStore | undefined;
+  let knowledgeManager: KnowledgeManager | undefined;
+  let knowledgeSources: KnowledgeSources | undefined;
+  let knowledgeSemantic: KnowledgeSemantic | undefined;
   let autoSync: SessionAutoSyncScheduler | undefined;
   let unsubscribePreferences: (() => void) | undefined;
   const app = Fastify({ logger: false, bodyLimit: 65_536, forceCloseConnections: true });
@@ -104,6 +113,10 @@ export async function startService(options: ServiceOptions = {}) {
     replayManager = new ReplayManager(index, library);
     mapQueryManager = new MapQueryManager(index);
     semanticManager = new SemanticManager(home, library);
+    knowledgeStore = new KnowledgeStore(join(home, "knowledge", "knowledge.sqlite"));
+    knowledgeSources = new KnowledgeSources(library.dbPath);
+    knowledgeManager = new KnowledgeManager(home, knowledgeStore, knowledgeSources);
+    knowledgeSemantic = new KnowledgeSemantic(home, knowledgeStore, knowledgeManager, semanticManager);
     const searches = searchManager;
     const search = async (request: FastifyRequest, reply: FastifyReply, type: SearchOperation, query: SessionQuery & { sessionId?: string }) => {
       const controller = new AbortController();
@@ -140,6 +153,10 @@ export async function startService(options: ServiceOptions = {}) {
     app.addHook("onClose", async () => {
       unsubscribePreferences?.();
       sync.close();
+      await knowledgeSemantic?.close();
+      await knowledgeManager?.close();
+      await knowledgeSources?.close();
+      knowledgeStore?.close();
       await semanticManager?.close();
       await searchManager?.close();
       await replayManager?.close();
@@ -168,6 +185,7 @@ export async function startService(options: ServiceOptions = {}) {
     registerSemanticRoutes(app, semanticManager);
     registerReplayRoutes(app, replayManager);
     registerMapQueryRoutes(app, mapQueryManager);
+    registerKnowledgeRoutes(app, knowledgeStore, knowledgeManager, knowledgeSources, knowledgeSemantic);
     app.addHook("onRequest", async (request) => {
       let host: URL;
       try { host = new URL(`http://${request.headers.host ?? ""}`); } catch { throw new ServiceError("FORBIDDEN", "无效 Host", { key: "diagnostics.server.m005" }); }
@@ -319,6 +337,11 @@ export async function startService(options: ServiceOptions = {}) {
     unsubscribePreferences?.();
     autoSync?.close();
     await app.close().catch(() => undefined);
+    await knowledgeSemantic?.close().catch(() => undefined);
+    await knowledgeManager?.close().catch(() => undefined);
+    await knowledgeSources?.close().catch(() => undefined);
+    try { knowledgeStore?.close(); } catch { /* 初始化失败时可能已关闭。 */ }
+    await semanticManager?.close().catch(() => undefined);
     await manager?.close().catch(() => undefined);
     await searchManager?.close().catch(() => undefined);
     await replayManager?.close().catch(() => undefined);

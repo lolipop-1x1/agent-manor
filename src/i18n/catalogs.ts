@@ -18,9 +18,11 @@ import zhOverview from "./locales/zh-CN/overview.js";
 import zhUsage from "./locales/zh-CN/usage.js";
 import zhSite from "./locales/zh-CN/site.js";
 import zhReplay from "./locales/zh-CN/replay.js";
+import enKnowledge from "./locales/en/knowledge.js";
+import zhKnowledge from "./locales/zh-CN/knowledge.js";
 import type { LanguageCatalogs } from "./types.js";
 
 export const catalogs: LanguageCatalogs = {
-  en: { common: enCommon, codeMap: enCodeMap, sessions: enSessions, resources: enResources, usage: enUsage, overview: enOverview, diagnostics: enDiagnostics, cli: enCli, site: enSite, replay: enReplay },
-  "zh-CN": { common: zhCommon, codeMap: zhCodeMap, sessions: zhSessions, resources: zhResources, usage: zhUsage, overview: zhOverview, diagnostics: zhDiagnostics, cli: zhCli, site: zhSite, replay: zhReplay },
+  en: { common: enCommon, codeMap: enCodeMap, sessions: enSessions, resources: enResources, usage: enUsage, overview: enOverview, diagnostics: enDiagnostics, cli: enCli, site: enSite, replay: enReplay, knowledge: enKnowledge },
+  "zh-CN": { common: zhCommon, codeMap: zhCodeMap, sessions: zhSessions, resources: zhResources, usage: zhUsage, overview: zhOverview, diagnostics: zhDiagnostics, cli: zhCli, site: zhSite, replay: zhReplay, knowledge: zhKnowledge },
 };

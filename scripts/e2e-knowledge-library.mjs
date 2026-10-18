@@ -1,0 +1,136 @@
+import assert from "node:assert/strict";
+import { execFile } from "node:child_process";
+import { mkdir, writeFile } from "node:fs/promises";
+import { fileURLToPath } from "node:url";
+import { join } from "node:path";
+import { promisify } from "node:util";
+import { knowledgeFixture } from "./knowledge-fixture.mjs";
+
+const run = promisify(execFile), fixture = await knowledgeFixture(), session = `knowledge-${process.pid}`;
+const artifacts = fileURLToPath(new URL("../.local/knowledge-library-e2e/", import.meta.url));
+const browser = async args => {
+  const { stdout } = await run("playwright-cli", [`-s=${session}`, ...args], { cwd: fixture.directory, env: { ...process.env, TMPDIR: "/tmp" }, timeout: 180_000, maxBuffer: 8 * 1024 * 1024 });
+  if (stdout.includes("### Error")) throw new Error(stdout); return stdout;
+};
+let opened = false;
+try {
+  await mkdir(artifacts, { recursive: true });
+  await browser(["open", `${fixture.base}/#knowledge`, "--headed", "--browser=chrome"]); opened = true;
+  const verify = async (page, config) => {
+    const checks = [], failures = [], errors = [], screenshots = []; let navigation = 0;
+    page.setDefaultTimeout(10_000); page.on("pageerror", error => errors.push(error.message));
+    const ensure = (value, name) => { if (!value) throw new Error(name); checks.push(name); };
+    const button = name => page.getByRole("button", { name, exact: true });
+    const shot = async name => { const path = `${config.artifacts}/${name}.png`; await page.screenshot({ path, fullPage: true }); screenshots.push(path); };
+    const group = async (name, action) => { try { await action(); } catch (error) { failures.push({ group: name, message: error.message }); await shot(`failed-${name}`).catch(() => undefined); } };
+    const open = async (hash = "#knowledge?view=all") => { await page.goto(`${config.base}/?knowledge-e2e=${++navigation}${hash}`); await page.getByRole("button", { name: "知识库", exact: true }).waitFor(); };
+    const settled = async () => { await page.locator('.knowledge-entry-list[aria-busy="false"]').waitFor(); await page.locator('.knowledge-reader[aria-busy="false"]').waitFor(); await page.waitForLoadState("networkidle"); };
+    const select = async (label, option) => { await page.getByRole("combobox", { name: label, exact: true }).click(); await page.getByRole("option", { name: option, exact: true }).click(); };
+    const confirm = async title => { const dialog = page.getByRole("dialog", { name: title, exact: true }); await dialog.waitFor(); await dialog.getByRole("button", { name: "确认", exact: true }).click(); await dialog.waitFor({ state: "hidden" }); };
+    const api = async path => page.evaluate(async path => (await fetch(`/api/v1/knowledge${path}`)).json(), path);
+    const count = async expected => page.waitForFunction(expected => document.querySelectorAll(".knowledge-entry").length === expected && document.querySelector('.knowledge-entry-list')?.getAttribute("aria-busy") === "false", expected);
+    await page.setViewportSize({ width: 1536, height: 1000 });
+    await group("library", async () => {
+      await open(`#knowledge?view=all&id=${config.mainId}`); await settled();
+      await button("外观").click(); await select("显示模式", "明亮"); await page.keyboard.press("Escape"); await page.keyboard.press("Escape"); await page.locator(".appearance-menu").waitFor({ state: "hidden" });
+      ensure((await page.getByRole("heading", { name: "配置更新后仍读取旧值", exact: true }).count()) === 1, "主界面显示当前发布正文");
+      await shot("01-library-zh-light");
+      const search = page.getByRole("textbox", { name: "搜索知识", exact: true });
+      await search.fill("配置更新"); await search.press("Enter"); await count(1); await settled(); ensure(await page.locator(".knowledge-entry").count() === 1, "关键词搜索");
+      await search.fill("synthetic-no-matching-knowledge"); await search.press("Enter"); await page.getByRole("heading", { name: "还没有符合条件的知识" }).waitFor(); ensure(true, "空结果保持清晰状态");
+      await search.fill(""); await search.press("Enter"); await count(14); await settled();
+      const review = page.getByRole("combobox", { name: "审阅状态", exact: true }); await review.click(); await page.keyboard.press("ArrowDown"); await page.keyboard.press("Escape");
+      await page.getByRole("listbox").waitFor({ state: "hidden" }); await page.waitForFunction(() => document.activeElement?.getAttribute("aria-label") === "审阅状态");
+      ensure(await review.evaluate(el => el === document.activeElement), "筛选 Escape 恢复键盘焦点");
+      await select("来源客户端", "claude"); await count(6); await settled(); ensure(await page.locator(".knowledge-entry").count() === 6, "来源客户端筛选");
+      await select("来源客户端", "全部客户端"); await count(14); await settled();
+      await button("项目").click(); await page.getByRole("combobox", { name: "项目搜索", exact: true }).fill("atlas"); await page.getByRole("option", { name: /atlas/ }).click(); await count(5); await settled(); ensure(await page.locator(".knowledge-entry").count() === 5, "项目搜索与筛选");
+      await button("更多筛选").click(); await select("知识类型", "方法与流程"); await page.keyboard.press("Escape"); await count(1); await settled(); ensure(await page.locator(".knowledge-entry").count() === 1, "类型筛选");
+      const before = await page.locator(".knowledge-entry-list").boundingBox(); await button("刷新知识").click(); await settled(); const after = await page.locator(".knowledge-entry-list").boundingBox();
+      ensure(before.height === after.height && before.width === after.width, "刷新保留稳定布局");
+    });
+    await group("write", async () => {
+      await open(); await settled(); await button("新建知识").click();
+      let editor = page.getByRole("dialog", { name: "新建知识", exact: true });
+      await editor.waitFor(); await page.keyboard.press("Escape"); await editor.waitFor({ state: "hidden" });
+      await page.waitForFunction(() => document.activeElement?.getAttribute("aria-label") === "新建知识" || document.activeElement?.textContent === "新建知识");
+      ensure(await button("新建知识").evaluate(el => el === document.activeElement), "编辑弹窗 Escape 恢复打开按钮焦点");
+      await button("新建知识").click(); await editor.waitFor();
+      await editor.getByRole("textbox", { name: "标题", exact: true }).fill("浏览器直接整理的知识"); await editor.getByRole("textbox", { name: "正文", exact: true }).fill("人工整理时记录适用条件和验证方法。");
+      await editor.getByRole("button", { name: "保存待审", exact: true }).click(); await editor.waitFor({ state: "hidden" }); await settled();
+      ensure((await api("/entries?review=pending")).items.some(item => item.revision.title === "浏览器直接整理的知识"), "手动保存进入待审");
+      await button("新建知识").click(); editor = page.getByRole("dialog", { name: "新建知识", exact: true });
+      await editor.getByRole("textbox", { name: "标题", exact: true }).fill("浏览器确认发布的知识"); await editor.getByRole("textbox", { name: "正文", exact: true }).fill("已经人工核对的知识正文。");
+      await editor.getByRole("button", { name: "保存并确认发布", exact: true }).click();
+      const dialog = page.getByRole("dialog", { name: "确认发布此版本" }); await dialog.waitFor(); await page.keyboard.press("Escape"); await dialog.waitFor({ state: "hidden" });
+      await page.waitForFunction(() => document.activeElement?.textContent === "保存并确认发布");
+      ensure(await editor.getByRole("button", { name: "保存并确认发布", exact: true }).evaluate(el => el === document.activeElement), "二次确认取消后恢复编辑弹窗焦点");
+      await editor.getByRole("button", { name: "保存并确认发布", exact: true }).click(); await dialog.getByRole("button", { name: "确认并发布", exact: true }).click(); await editor.waitFor({ state: "hidden" });
+      ensure((await api("/entries")).items.some(item => item.revision.title === "浏览器确认发布的知识"), "明确确认后发布");
+    });
+    await group("review", async () => {
+      await open(`#knowledge?page=review&view=all&review=pending&id=${config.mainId}`); await settled();
+      await page.getByRole("heading", { name: "审阅修改", exact: true }).waitFor();
+      ensure(await page.locator(".knowledge-diff.added").count() > 0, "审阅显示正文差异"); await shot("02-review-zh-light");
+      await button("拒绝建议").click(); await confirm("拒绝此建议");
+      ensure((await api(`/entries/${config.mainId}?review=all&availability=all`)).revisions[0].review === "rejected", "拒绝仅处理候选");
+      await open(`#knowledge?view=all&id=${config.mainId}`); await settled(); await page.getByRole("tab", { name: "版本", exact: true }).click();
+      await page.getByRole("button", { name: /^版本 1/ }).click(); await button("恢复为待审新版本").click(); await confirm("恢复历史版本");
+      ensure((await api(`/entries/${config.mainId}?review=all&availability=all`)).revisions[0].review === "pending", "历史恢复形成待审新版本");
+    });
+    await group("availability-source", async () => {
+      await open(`#knowledge?view=all&id=${config.mainId}`); await settled();
+      await button("更多操作").click(); await page.getByRole("menuitem", { name: "废弃知识", exact: true }).click(); await confirm("废弃知识");
+      ensure((await api("/entries")).items.every(item => item.id !== config.mainId), "废弃知识退出默认结果");
+      await button("更多筛选").click(); await select("可用性", "已废弃"); await page.keyboard.press("Escape"); await settled();
+      await page.getByRole("button", { name: /配置更新后仍读取旧值/ }).click(); await settled();
+      await button("更多操作").click(); await page.getByRole("menuitem", { name: "恢复有效", exact: true }).click(); await confirm("恢复有效");
+      ensure((await api("/entries")).items.some(item => item.id === config.mainId), "明确恢复有效");
+      await open(`#knowledge?view=all&id=${config.mainId}`); await settled();
+      await page.getByRole("tab", { name: "来源", exact: true }).click(); await page.getByRole("link", { name: "查看原始对话", exact: true }).first().click();
+      await page.waitForURL(/#sessions/); await page.locator(".trace-ledger,.session-message").first().waitFor(); ensure(true, "来源定位回到原始对话过程");
+    });
+    await group("tasks", async () => {
+      await open("#sessions?id=knowledge-session-1&mode=trace"); await page.locator(".trace-ledger,.session-message").first().waitFor();
+      await button("沉淀此会话").click(); await page.getByRole("menuitem", { name: "沉淀当前轮次", exact: true }).click();
+      await page.getByRole("heading", { name: "沉淀任务", exact: true }).waitFor(); await button("预览沉淀范围").click(); await button("开始沉淀").waitFor();
+      ensure(await page.getByText("1 个会话 · 1 轮", { exact: true }).count() === 1, "会话轮次入口固定范围预览");
+      await button("开始沉淀").click(); await button("暂停").click(); await button("继续").waitFor(); ensure(true, "后台任务可暂停");
+      await shot("03-tasks-zh-light"); await button("继续").click();
+      await page.getByText("已完成", { exact: true }).first().waitFor({ timeout: 30_000 });
+      const status = await api("/extractions"); ensure(status.jobs[0].status === "complete" && status.jobs[0].results.length > 0, "恢复后完成并保存待审结果");
+      await button("查看待审结果").click(); await page.getByRole("heading", { name: "审阅修改", exact: true }).waitFor(); ensure(true, "任务结果进入审阅闭环");
+    });
+    await group("settings", async () => {
+      await open("#knowledge?page=settings"); await page.getByRole("heading", { name: "知识库设置", exact: true }).waitFor();
+      // password 控件没有隐式 textbox role，使用明确可访问名称定位。
+      await page.getByLabel("生成模型 API Key", { exact: true }).fill("synthetic-new-browser-key");
+      await select("输出语言", "English"); await button("保存设置").click(); await page.getByText("已保存", { exact: true }).waitFor();
+      ensure((await api("/settings")).config.outputLanguage === "en", "中文界面可独立生成英文知识");
+      ensure(await page.getByLabel("生成模型 API Key", { exact: true }).inputValue() === "", "凭据保存后不回填明文");
+      await shot("04-settings-zh-light");
+      await page.getByRole("tab", { name: "高级提示词", exact: true }).click(); await page.getByRole("textbox", { name: "抽取要求", exact: true }).fill("Temporary synthetic requirements");
+      await button("恢复默认提示词").click(); await page.waitForFunction(() => [...document.querySelectorAll("textarea")].some(el => el.value.includes("Prioritize reusable")));
+      ensure((await page.getByRole("textbox", { name: "抽取要求", exact: true }).inputValue()).includes("Prioritize reusable"), "高级提示词恢复默认");
+      if (await button("保存设置").isEnabled()) { await button("保存设置").click(); await page.getByText("已保存", { exact: true }).waitFor(); }
+      await page.getByRole("tab", { name: "自动沉淀", exact: true }).click(); ensure(await page.getByRole("checkbox", { name: "启用自动沉淀", exact: true }).isChecked() === false, "自动策略默认关闭且可配置范围");
+    });
+    await group("mobile-en-dark", async () => {
+      await open(); await settled(); await button("显示语言").click(); await page.getByRole("menuitemradio", { name: "English", exact: true }).click();
+      await button("Knowledge").waitFor(); await page.setViewportSize({ width: 390, height: 844 });
+      await button("Appearance").click(); await select("Display mode", "Dark"); await page.keyboard.press("Escape"); await page.keyboard.press("Escape"); await page.locator(".appearance-menu").waitFor({ state: "hidden" });
+      ensure(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), "390px 英文深色无全局横向溢出");
+      await page.locator(".knowledge-entry").first().click(); await page.locator(".knowledge-reader").waitFor(); await shot("05-mobile-en-dark");
+      await button("Browse views").click(); const drawer = page.getByRole("dialog"); await drawer.waitFor(); await page.keyboard.press("Escape"); await drawer.waitFor({ state: "hidden" });
+      ensure(await button("Browse views").evaluate(el => el === document.activeElement), "窄屏抽屉 Escape 恢复触发焦点");
+      ensure((await api("/settings")).config.outputLanguage === "en", "界面语言切换保留知识输出语言");
+    });
+    if (errors.length) failures.push({ group: "runtime", message: errors.join("\n") }); else checks.push("浏览器无未处理运行错误");
+    return { passed: failures.length === 0 && errors.length === 0, checks, failures, errors, screenshots };
+  };
+  const output = await browser(["run-code", `async page => (${verify.toString()})(page, ${JSON.stringify({ base: fixture.base, mainId: fixture.mainId, artifacts })})`]);
+  await writeFile(join(artifacts, "result.txt"), output);
+  const result = JSON.parse(output.match(/### Result\s*\n([^\n]+)/)?.[1] ?? "{}");
+  await writeFile(join(artifacts, "result.json"), JSON.stringify(result, null, 2)); console.log(JSON.stringify(result, null, 2));
+  assert.equal(result.passed, true, "知识库浏览器分组验收失败，详情见本地 result.json");
+} finally { if (opened) await browser(["close"]).catch(() => undefined); await fixture.close(); }
