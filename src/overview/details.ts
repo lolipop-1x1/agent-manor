@@ -330,30 +330,18 @@ export function factProcess(store: OverviewFactStore, snapshot: OverviewSnapshot
   const leading = factDetail(store, snapshot, { view: "ranking", dimension: "tool", pageSize: candidates ? 1 : 5 }, now, { toolCandidates: candidates, toolFailures: !candidates });
   const tools = new Map((leading.rows as OverviewToolRow[]).filter(row => row.results.failure > 0).map(row => [row.key, row]));
   if (candidates) return { process: { tools: [...tools.values()], categories: [], results: counts(0, 0, 0), failures: 0 } satisfies OverviewProcess, counts: { tools: leading.total } };
-  const summary = store.readRows<{ calls: number; success: number; failure: number }>(`SELECT
-    SUM(CASE WHEN f.kind='tool_call' THEN 1 ELSE 0 END) AS calls,SUM(CASE WHEN f.kind='tool_call' AND f.status='success' THEN 1 ELSE 0 END) AS success,
-    SUM(CASE WHEN f.kind='tool_call' AND f.status='failure' THEN 1 ELSE 0 END) AS failure FROM overview_fact_events f
-    WHERE f.revision IN (SELECT value FROM json_each(?)) AND f.active=1 AND f.kind='tool_call' AND ${where}`, values)[0]!;
-  const categoryRows = store.readRows<{ tool: string | null; resourceKind: string | null; calls: number; success: number; failure: number }>(`SELECT f.tool,
-    json_extract(f.json,'$.resource.kind') AS resourceKind,COUNT(*) AS calls,SUM(CASE WHEN f.status='success' THEN 1 ELSE 0 END) AS success,
-    SUM(CASE WHEN f.status='failure' THEN 1 ELSE 0 END) AS failure FROM overview_fact_events f WHERE f.revision IN (SELECT value FROM json_each(?))
-    AND f.active=1 AND f.kind='tool_call' AND ${where} GROUP BY f.tool,json_extract(f.json,'$.resource.kind')`, values);
-  const categories = new Map<string, OverviewCountRow>();
-  for (const row of categoryRows) {
-    const key = toolCategory(row.tool ?? undefined, row.resourceKind === "mcp" ? { kind: "mcp", name: "" } : undefined);
-    const category = categories.get(key) ?? { key, name: key, count: 0, sessions: 0, results: counts(0, 0, 0) };
-    category.count += row.calls; category.results = counts(category.count, category.results!.success + row.success, category.results!.failure + row.failure); categories.set(key, category);
-  }
-  // 分类会话身份去重只扫描标量，不构造调用对象。
-  const categorySessions = new Map<string, Set<string>>();
-  for (const row of store.iterateRows<{ session_id: string; tool: string | null; resourceKind: string | null }>(`SELECT DISTINCT r.session_id,f.tool,
-    json_extract(f.json,'$.resource.kind') AS resourceKind FROM overview_fact_events f JOIN overview_fact_revisions r ON r.revision=f.revision
-    WHERE f.revision IN (SELECT value FROM json_each(?)) AND f.active=1 AND f.kind='tool_call' AND ${where}`, values)) {
-    const key = toolCategory(row.tool ?? undefined, row.resourceKind === "mcp" ? { kind: "mcp", name: "" } : undefined), ids = categorySessions.get(key) ?? new Set<string>(); ids.add(row.session_id); categorySessions.set(key, ids);
-  }
-  for (const row of categories.values()) row.sessions = categorySessions.get(row.key)?.size ?? 0;
-  const process: OverviewProcess = { tools: [...tools.values()], categories: [...categories.values()].sort((a, b) => b.count - a.count || a.key.localeCompare(b.key)),
-    results: counts(summary.calls ?? 0, summary.success ?? 0, summary.failure ?? 0), failures: summary.failure ?? 0 };
+  // 次数、结果与分类会话数在同一次聚合中完成，不重复扫描全部工具历史。
+  const categories = store.readRows<{ key: string; count: number; sessions: number; success: number; failure: number }>(`SELECT
+    overview_tool_category(f.tool,json_extract(f.json,'$.resource.kind')) AS key,COUNT(*) AS count,
+    COUNT(DISTINCT r.session_id) AS sessions,SUM(f.status='success') AS success,SUM(f.status='failure') AS failure
+    FROM overview_fact_events f JOIN overview_fact_revisions r ON r.revision=f.revision
+    WHERE f.revision IN (SELECT value FROM json_each(?)) AND f.active=1 AND f.kind='tool_call' AND ${where} GROUP BY key`, values)
+    .map(row => ({ key: row.key, name: row.key, count: row.count, sessions: row.sessions,
+      results: counts(row.count, row.success ?? 0, row.failure ?? 0) })).sort((a, b) => b.count - a.count || a.key.localeCompare(b.key));
+  const summary = categories.reduce((sum, row) => ({ calls: sum.calls + row.count,
+    success: sum.success + row.results.success, failure: sum.failure + row.results.failure }), { calls: 0, success: 0, failure: 0 });
+  const process: OverviewProcess = { tools: [...tools.values()], categories,
+    results: counts(summary.calls, summary.success, summary.failure), failures: summary.failure };
   return { process, counts: { tools: leading.total } };
 }
 

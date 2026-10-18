@@ -21,7 +21,11 @@ try {
   assert.equal(review.sessions.active, 4); assert.equal(review.sessions.compressions, 1);
   assert.equal(review.sessions.roundsPerSession.average, 42); assert.equal(review.sessions.roundsPerSession.samples, 4);
   assert.equal(review.rounds.completed, 168); assert.equal(review.rounds.inferredIncluded, 7); assert.equal(review.cache.requests, 336);
-  assert.equal(review.extensions.children.sessions, 1); assert.ok(review.rounds.steps.average > 0);
+  assert.equal("children" in review.extensions, false); assert.equal("projects" in review.extensions, false); assert.ok(review.rounds.steps.average > 0);
+  for (const kind of ["projects", "delegation"]) {
+    const removed = await fetch(`${fixture.base}/api/v1/overview/review/detail?detail=${encodeURIComponent(JSON.stringify({ kind }))}`);
+    assert.equal(removed.status, 400, `已移除的 ${kind} 调查不再接受请求`);
+  }
   assert.ok(review.rounds.durationMs.average > 0); assert.ok(review.preferences.promptCharacters.average > 0);
   assert.equal(review.preferences.agents.length, 2); assert.equal(review.preferences.reasoning.length, 2);
   await mkdir(artifacts, { recursive: true });
@@ -36,6 +40,7 @@ try {
     const metric = name => page.locator(".weekly-review-metric").filter({ has: page.getByText(name, { exact: true }) });
     const detailReady = async () => { await page.locator(".weekly-review-dialog .overview-investigation-body[aria-busy='false']").waitFor(); };
     await page.setViewportSize({ width: 1440, height: 1000 }); await ready();
+    ensure(await button("项目投入").count() === 0 && await button("子 Agent 投入").count() === 0, "总览移除项目投入与子Agent投入入口");
     let releaseSnapshot; const snapshotGate = new Promise(resolve => { releaseSnapshot = resolve; });
     await page.route("**/api/v1/overview/snapshot?**", async route => { await snapshotGate; await route.continue(); });
     await page.goto(`${options.base}/?review-cold=1#overview?window=all`);
@@ -133,10 +138,10 @@ try {
     ensure(await page.locator(".weekly-review-activity [tabindex='0']").getAttribute("aria-label") !== null, "图表支持方向键定位和可访问数值");
     await choose("洞察视图", "缓存请求"); await detailReady(); await choose("记录筛选", "缓存未知"); await detailReady();
     ensure((await page.locator(".weekly-review-records tbody tr").first().innerText()).includes("—"), "缺缓存字段保留未知而非零");
-    await choose("洞察视图", "项目投入"); await detailReady();
-    ensure(await page.locator(".weekly-review-ranks tbody tr").count() === 2, "项目投入有可下钻排行");
-    await choose("洞察视图", "子 Agent 投入"); await detailReady();
-    ensure(await page.locator(".weekly-review-records tbody tr").count() > 0, "子Agent投入单独可回查");
+    await page.getByRole("combobox", { name: "洞察视图", exact: true }).click();
+    ensure(await page.getByRole("option", { name: "项目投入", exact: true }).count() === 0, "详情菜单已移除项目投入");
+    ensure(await page.getByRole("option", { name: "子 Agent 投入", exact: true }).count() === 0, "详情菜单已移除子Agent投入");
+    await page.keyboard.press("Escape");
     await choose("洞察视图", "工具负担"); await detailReady(); await button("记录").click();
     ensure(await page.locator(".weekly-review-records tbody tr").count() > 0, "工具明确失败可回查");
     ensure(await page.getByText("同工具后续调用", { exact: true }).count() === 0, "七天工具摘要和记录均移除后续调用指标");
@@ -217,6 +222,7 @@ try {
     await page.keyboard.press("Escape");
     await button("显示语言").click(); await page.getByRole("menuitemradio", { name: "English", exact: true }).click();
     await page.getByRole("heading", { name: "Last 7 days insights", exact: true }).waitFor();
+    ensure(await button("Investment by project").count() === 0 && await button("Subagent investment").count() === 0, "英文窄屏移除两项投入调查入口");
     ensure(await button("Later calls in the same turn").count() === 0, "英文总览移除后续调用入口");
     ensure((await metric("Average turns per session").innerText()).includes("42.0 turns"), "英文会话平均轮次单位完整");
     await metric("Average turns per session").click(); await detailReady();

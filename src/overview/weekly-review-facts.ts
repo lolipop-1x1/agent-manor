@@ -177,7 +177,8 @@ export class WeeklyReviewFactStore {
     const includeRounds = session.relationship !== "child";
     const cached = this.processSource(sourceRevision, session.id, bounds, includeRounds, days, processMetadata());
     const source = this.sessions.weeklyReviewRevisionFacts(sourceRevision, session.id,
-      { ...bounds, client: session.client, timezone, dayBounds: days.bounds, includeRounds, ...cached });
+      { ...bounds, client: session.client, timezone, dayBounds: days.bounds, includeRounds, ...cached,
+        ...(!includeRounds ? { requestFacts: () => [] } : {}) });
     const calls = new Map(pairToolCalls(source.events).map(event => [event.id, event]));
     const events = source.events.filter(event => isActivityEvent(event) && event.kind !== "tool_result")
       .map(event => ({ ...event, ...(calls.get(event.id) ?? {}) }));
@@ -237,8 +238,9 @@ export class WeeklyReviewFactStore {
           this.prepare(revision, sourceRevision, session, bounds, timezone, days, processMetadata);
           const metadata = JSON.parse((this.database.prepare("SELECT json FROM weekly_revisions WHERE revision=?").get(revision) as { json: string }).json) as Omit<WeeklySessionFacts, "session" | "events" | "requests" | "rounds">;
           const events = (eventsQuery.all(revision, low, high) as { json: string }[]).map(row => JSON.parse(row.json) as WeeklyReviewEvent).filter(event => inRange(event.occurredAt));
-          const requests = (requestsQuery.all(revision, low, high) as { json: string }[]).map(row => JSON.parse(row.json) as OverviewRequest).filter(request => inRange(request.usage.occurredAt));
-          const rounds = (roundsQuery.all(revision, low, high, low, high) as { json: string }[]).map(row => JSON.parse(row.json) as WeeklyRoundFact)
+          // 子 Agent 仅保留排除计数所需的活动，不再恢复已移除投入调查的请求和轮次。
+          const requests = session.relationship === "child" ? [] : (requestsQuery.all(revision, low, high) as { json: string }[]).map(row => JSON.parse(row.json) as OverviewRequest).filter(request => inRange(request.usage.occurredAt));
+          const rounds = session.relationship === "child" ? [] : (roundsQuery.all(revision, low, high, low, high) as { json: string }[]).map(row => JSON.parse(row.json) as WeeklyRoundFact)
             .filter(round => inRange(round.endedAt) || inRange(round.startedAt));
           facts.push({ session, events, requests, rounds, ...metadata });
         }

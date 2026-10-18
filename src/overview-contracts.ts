@@ -83,16 +83,13 @@ export interface WeeklyReview {
     promptCharacters: WeeklyReviewDistribution; promptInputs: number; promptMixedInputs: number | null;
     hours: { hour: number; messages: number }[]; weekdays: { weekday: number; messages: number }[];
     weekdayHours: { weekday: number; hour: number; messages: number }[]; busiestHour: number | null; userMessages: number };
-  extensions: { projects: WeeklyReviewRank[]; compressionLeaders: WeeklyReviewRecord[];
-    children: { sessions: number; requests: number; tokens: number | null; estimatedCost: number | null;
-      requestShare: number | null; tokenShare: number | null; costShare: number | null; costCoverage: RequestCost["coverage"];
-      tokenSamples: number; tokenMissing: number; userTokenSamples: number; userTokenMissing: number };
+  extensions: { compressionLeaders: WeeklyReviewRecord[];
     tools: { calls: number; failures: number; failedRounds: number; unknownResults: number } };
   coverage: { gaps: Gap[]; gapCount: number; missingTimeEvents: number; missingTimeRequests: number;
     unassignedRequests: number; excludedChildUserInputs: number; triggerIdentity: "unclassified";
     automaticSessions: number | null; unknownTriggerSessions: number; unsupportedCompressionSessions: number; unknownForkSessions: number };
 }
-export type WeeklyReviewDetailKind = "sessions" | "sessionRounds" | "rounds" | "cache" | "compressions" | "projects" | "delegation" | "tools"
+export type WeeklyReviewDetailKind = "sessions" | "sessionRounds" | "rounds" | "cache" | "compressions" | "tools"
   | "agents" | "models" | "reasoning" | "prompts" | "activity" | "uncompressed";
 export interface WeeklyReviewDetailQuery {
   kind: WeeklyReviewDetailKind;

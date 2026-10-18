@@ -114,6 +114,11 @@ export class OverviewFactStore {
     removeStoredRequestTiming(this.database, "overview_fact_requests");
     const pageSize = this.database.pragma("page_size", { simple: true }) as number;
     this.database.pragma(`max_page_count=${Math.max(1, Math.floor(this.maxBytes / pageSize))}`);
+    // 只索引活跃用户轮次和工具日期，避免归属检查与日期筛选反复扫描整段历史。
+    this.database.exec(`CREATE INDEX IF NOT EXISTS overview_fact_user_turn ON overview_fact_events(revision,turn_id)
+      WHERE active=1 AND kind='user';
+      CREATE INDEX IF NOT EXISTS overview_fact_tool_time ON overview_fact_events(revision,time_ms)
+      WHERE active=1 AND kind='tool_call'`);
   }
 
   /** 固定查询复用原生语句，避免按修订编译后等待 GC 才释放大量 SQLite 内存。 */

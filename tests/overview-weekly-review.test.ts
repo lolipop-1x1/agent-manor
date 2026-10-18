@@ -182,8 +182,6 @@ test("七天复盘口径：完整跨周轮次、缓存档位、压缩支持、�
     assert.equal(partial.cost!.appliedContextThreshold, 200);
     assert.equal(partial.hypotheticalPremium, 150 * (20 - 4) / 1_000_000);
     assert.equal(report.cache.premiumMissing, 2, "缓存字段缺失或非Codex缺缓存写入分项，不冒充价差样本");
-    assert.equal(report.extensions.children.requests, 1);
-    assert.equal(report.extensions.children.tokens, 55);
     assert.equal(report.extensions.tools.failures, 1);
     assert.equal("subsequentCalls" in report.extensions.tools, false);
     assert.equal(report.extensions.tools.failedRounds, 1);
@@ -217,7 +215,7 @@ test("复盘范围固定完整本地日期，跨DST不取过去168小时，详�
   assert.equal(weeklyReviewDetailQuery(JSON.stringify({ kind: "cache", filter: "unknown", pageSize: 10 })).filter, "unknown");
   assert.equal(weeklyReviewDetailQuery(JSON.stringify({ kind: "sessionRounds", sort: "rounds" })).sort, "rounds");
   assert.equal(weeklyReviewDetailQuery(JSON.stringify({ kind: "sessionRounds", sort: "recent" })).sort, "recent");
-  for (const value of [{ kind: "nope" }, { kind: "rounds", filter: "zero" }, { kind: "cache", pageSize: 101 }, { kind: "prompts", key: "x" },
+  for (const value of [{ kind: "nope" }, { kind: "projects" }, { kind: "delegation" }, { kind: "rounds", filter: "zero" }, { kind: "cache", pageSize: 101 }, { kind: "prompts", key: "x" },
     { kind: "sessionRounds", filter: "ended" }, { kind: "sessionRounds", key: "x" }, { kind: "sessionRounds", sort: "tokens" }, { kind: "rounds", sort: "rounds" }])
     assert.throws(() => weeklyReviewDetailQuery(JSON.stringify(value)));
 });
@@ -298,8 +296,6 @@ test("正文隐藏不否定用量与压缩支持，留存缺口和未知fork边�
     assert.equal(data.review.sessions.uncompressedPeakInput.average, 123, "只使用输入事实，不复用混合语义contextTokens");
     assert.equal(data.review.coverage.unknownForkSessions, 1);
     assert.equal(data.review.coverage.unsupportedCompressionSessions, 1);
-    assert.equal(weeklyReviewDetail(data, { kind: "projects", key: "/workspace/project" }).total, 2);
-    assert.equal(data.ranks.projects![0]!.count, 2);
   } finally { factsStore.close(); }
 }));
 
@@ -326,7 +322,7 @@ test("后台复盘跳过年范围准备，重复和重启缓存复用，价格�
     const persisted = new Database(join(directory, "overview-results.sqlite"));
     try {
       const cached = persisted.prepare("SELECT key,json FROM overview_results WHERE json_extract(key,'$[1]')='review'").get() as { key: string; json: string };
-      assert.equal(JSON.parse(cached.key)[0], "weekly-review-v16");
+      assert.equal(JSON.parse(cached.key)[0], "weekly-review-v17");
       const incomplete = JSON.parse(cached.json); delete incomplete.sessions.roundsPerSession;
       persisted.prepare("UPDATE overview_results SET json=? WHERE key=?").run(JSON.stringify(incomplete), cached.key);
     } finally { persisted.close(); }
@@ -478,7 +474,7 @@ test("可选窄缓存的工具JSON损坏时退回源事实，不改变失败与�
   } finally { cached.close(); }
 }));
 
-test("纯子Agent活动与用量仍可统计，同一来源在新版本恢复用户身份时不复用子Agent省略的轮次", async () => fixture(async (store, directory) => {
+test("子Agent保持用户样本排除，同一来源恢复用户身份后不复用省略的轮次", async () => fixture(async (store, directory) => {
   const parent = revision(store, "parent", [], [], { childSessionIds: ["role"] });
   const child = revision(store, "role", [message("role", "user", 1, "2026-10-07T01:00:00Z"),
     message("role", "final", 2, "2026-10-07T01:01:00Z", { kind: "assistant", final: "explicit" })],
@@ -492,15 +488,12 @@ test("纯子Agent活动与用量仍可统计，同一来源在新版本恢复用
   try {
     const source = await cache.source(query, now), report = buildWeeklyReview(source.facts, query, pricing, now).review;
     assert.equal(report.rounds.completed, 0);
-    assert.equal(report.extensions.children.sessions, 2);
-    assert.equal(report.extensions.children.requests, 1);
     assert.deepEqual(source.facts.find(row => row.session.id === "only-thinking")!.activityDays, ["2026-10-08"]);
     const independent = store.publish(store.createJob().id, [child], []);
     const next = buildWeeklyReview((await cache.source({ ...query, version: independent }, now)).facts, { ...query, version: independent }, pricing, now).review;
     assert.equal(next.rounds.completed, 1);
     assert.equal(next.rounds.steps.average, 1);
     assert.equal(next.preferences.promptCharacters.average, 4);
-    assert.equal(next.extensions.children.sessions, 0);
   } finally { cache.close(); }
 }));
 
@@ -564,7 +557,7 @@ test("工具失败保留MCP服务器身份，Codex短标题复用既有请求提
   } finally { factsStore.close(); }
 }));
 
-test("子Agent与排行完整Token小计占比保留双方请求样本，缺输出的大输入不冒充完整分母", async () => fixture(async store => {
+test("移除投入调查后，保留排行完整Token小计及子会话排除边界", async () => fixture(async store => {
   const parent = revision(store, "coverage-main", [message("coverage-main", "user", 1, "2026-10-07T01:00:00Z")],
     [usage("complete", "2026-10-07T01:00:01Z", { inputTokens: 5, outputTokens: 5 }),
       usage("unknown-output", "2026-10-07T01:00:02Z", { inputTokens: 1_000_000, outputTokens: undefined })]);
@@ -574,15 +567,11 @@ test("子Agent与排行完整Token小计占比保留双方请求样本，缺输�
   const version = store.publish(store.createJob().id, [parent, child], []), factsStore = new WeeklyReviewFactStore(store);
   try {
     const query = { version, timezone: "UTC" }, data = buildWeeklyReview((await factsStore.source(query, now)).facts, query, pricing, now);
-    const children = data.review.extensions.children;
-    assert.equal(children.tokens, 55);
-    assert.equal(children.tokenShare, 55 / 65);
-    assert.deepEqual([children.tokenSamples, children.tokenMissing, children.userTokenSamples, children.userTokenMissing], [1, 0, 1, 1]);
+    assert.equal("children" in data.review.extensions, false);
     const model = data.review.preferences.models[0]!;
     assert.equal(model.tokens, 10);
     assert.deepEqual([model.tokenSamples, model.tokenMissing], [1, 1]);
-    const project = data.review.extensions.projects[0]!;
-    assert.deepEqual([project.tokenSamples, project.tokenMissing], [1, 1]);
+    assert.equal("projects" in data.review.extensions, false);
   } finally { factsStore.close(); }
 }));
 

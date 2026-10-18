@@ -71,6 +71,21 @@ function normalizedActivity(activity: ReturnType<typeof buildOverviewReport>["ac
   return { ...activity, weekdayHours: [...activity.weekdayHours].sort((a, b) => a.weekday - b.weekday || a.hour - b.hour) };
 }
 
+test("资源轮次归属按修订和轮次定位，避免每条资源重复扫描会话事件", async () => fixture(async (store, path) => {
+  history(store); const facts = new OverviewFactStore(store, { path });
+  try {
+    await facts.prepare({ window: "365", timezone: "UTC" }, now);
+    const plan = facts.readRows<{ detail: string }>(`EXPLAIN QUERY PLAN SELECT COUNT(*) FROM overview_fact_resources f
+      WHERE f.valid=1 AND NOT EXISTS (SELECT 1 FROM overview_fact_events e WHERE e.revision=f.revision
+        AND e.active=1 AND e.kind='user' AND e.turn_id!='' AND e.turn_id=f.turn_id)`, []);
+    assert.ok(plan.some(row => /SEARCH e .*\(revision=\? AND turn_id=\?\)/.test(row.detail)), JSON.stringify(plan));
+    const tools = facts.readRows<{ detail: string }>(`EXPLAIN QUERY PLAN SELECT COUNT(*) FROM overview_fact_events
+      WHERE revision IN (SELECT value FROM json_each(?)) AND active=1 AND kind='tool_call' AND time_ms>=? AND time_ms<?`,
+    ["[]", 0, 1]);
+    assert.ok(tools.some(row => /SEARCH overview_fact_events .*\(revision=\? AND time_ms>\? AND time_ms<\?\)/.test(row.detail)), JSON.stringify(tools));
+  } finally { facts.close(); }
+}));
+
 for (const timezone of ["UTC", "Asia/Shanghai", "America/New_York", "Pacific/Kiritimati"]) {
   test(`持久核心与旧完整聚合等价：${timezone} 的日期、复制、父子、未知及节奏`, async () => fixture(async (store, path) => {
     history(store); const facts = new OverviewFactStore(store, { path });

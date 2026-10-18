@@ -142,7 +142,7 @@ test("压缩排行保留产品标题描述，英文不展示存储的中文兜�
   assert.equal(translateMessageOrOriginal("en", undefined, "原始会话标题"), "原始会话标题");
   const details = readFileSync(new URL("../web/features/overview/WeeklyReviewDetails.tsx", import.meta.url), "utf8");
   assert.match(details, /title=\{message\(row.nameDescriptor, row.name\)\}/);
-  assert.match(details, /shortName\(row.name\) : message\(row.nameDescriptor, row.name\)/);
+  assert.match(details, /message\(row.nameDescriptor, row.name\)/);
 });
 
 
@@ -154,25 +154,20 @@ test("缓存配对分母存在缺失时主标签明确已记录范围", () => {
 });
 
 
-test("排行与子Agent部分Token覆盖不冒充全量，双方缺失样本按需展示", () => {
+test("排行部分Token覆盖不冒充全量，缺失样本按需展示", () => {
   const partial: WeeklyReviewRank = { key: "example-model", name: "example-model", count: 3, share: 1, sessions: 1,
     requests: 3, tokens: 55, tokenSamples: 2, tokenMissing: 1, estimatedCost: null, costCoverage: "missing" };
   assert.equal(partial.tokens, 55);
   assert.equal(partial.tokenSamples + partial.tokenMissing, partial.requests);
   assert.equal(translate("zh-CN", "overview.review.tokenSubtotal"), "已记录 Token 小计");
   assert.equal(translate("en", "overview.review.tokenSubtotal"), "Recorded token subtotal");
-  assert.equal(translate("zh-CN", "overview.review.recordedTokenShare"), "已记录 Token 占比");
-  assert.equal(translate("en", "overview.review.recordedTokenShare"), "Recorded token share");
-  for (const language of ["en", "zh-CN"] as const) for (const label of ["tokenSamples", "tokenMissing", "childTokenSamples", "childTokenMissing", "userTokenSamples", "userTokenMissing", "help.tokenSubtotal"]) {
+  for (const language of ["en", "zh-CN"] as const) for (const label of ["tokenSamples", "tokenMissing", "help.tokenSubtotal"]) {
     const key = `overview.review.${label}`;
     assert.notEqual(translate(language, key), key);
   }
   const source = readFileSync(new URL("../web/features/overview/WeeklyReviewDetails.tsx", import.meta.url), "utf8");
   assert.match(source, /const rankColumns = \["count", "share", "sessionCount"/);
   assert.match(source, /\["tokenSubtotal", "cost"\]/);
-  assert.match(source, /\["tokenSubtotal", review.extensions.children.tokens\]/);
-  assert.match(source, /\["recordedTokenShare", review.extensions.children.tokenShare, "share"\]/);
-  for (const field of ["tokenSamples", "tokenMissing", "userTokenSamples", "userTokenMissing"]) assert.ok(source.includes(`review.extensions.children.${field}`));
   assert.match(source, /<details className="weekly-review-source">[\s\S]*n\(row.tokenSamples\)[\s\S]*n\(row.tokenMissing\)[\s\S]*<\/details>/);
   assert.doesNotMatch(source, /\["recordTokens", review.extensions.children.tokens\]|\["tokenShare", review.extensions.children.tokenShare/);
 });

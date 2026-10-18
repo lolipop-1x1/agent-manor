@@ -98,7 +98,30 @@ test("总览覆盖快照在 SQL 中移除正文，计数与映射覆盖保持一
   assert.deepEqual([...eventParts.keys()], full.events.map(event => event.id));
   assert.deepEqual(store.getSnapshotEvents(repositoryId, version, eventParts), full.events);
   assert.deepEqual(store.getSnapshotEvents(repositoryId, version, new Map()), []);
+  assert.deepEqual(buildCoverage(store.getOverviewSnapshot(repositoryId, version)), buildCoverage(full));
   assert.throws(() => store.getCoverageSnapshot(repositoryId, "missing"), error => error instanceof StoreError && error.code === "VERSION_NOT_FOUND");
+  assert.throws(() => store.getOverviewSnapshot(repositoryId, "missing"), error => error instanceof StoreError && error.code === "VERSION_NOT_FOUND");
+}));
+
+test("总览不恢复重复来源副本，保留首来源诊断及完整覆盖统计", async () => fixture(async ({ repositoryPath, sourcePath, store, repositoryId, refresh }) => {
+  await writeFile(sourcePath, encode([meta(repositoryPath), call(repositoryPath, "read"), output("read")]));
+  const version = await refresh(), full = store.getSnapshot(repositoryId, version);
+  const database = new Database(store.dbPath);
+  try {
+    const rows = database.prepare("SELECT part,json FROM payload_parts WHERE repository_id=? AND kind='coverage-v1' AND owner=? AND field='snapshot.events'")
+      .all(repositoryId, version) as { part: number; json: string }[];
+    for (const row of rows) {
+      const events = JSON.parse(row.json) as typeof full.events;
+      for (const event of events) event.sources = Array.from({ length: 128 }, () => ({ ...event.sources[0]!, path: `/workspace/history/${"synthetic-duplicate".repeat(1024)}.jsonl` }));
+      database.prepare("UPDATE payload_parts SET json=? WHERE repository_id=? AND kind='coverage-v1' AND owner=? AND field='snapshot.events' AND part=?")
+        .run(JSON.stringify(events), repositoryId, version, row.part);
+    }
+    const narrow = store.getOverviewSnapshot(repositoryId, version);
+    assert.ok(narrow.events.every(event => event.sources.length === 1));
+    assert.deepEqual(buildCoverage(narrow), buildCoverage(full));
+    assert.equal(store.getCoverageSnapshot(repositoryId, version).events[0]!.sources.length, 128);
+    assert.deepEqual(store.getSnapshot(repositoryId, version), full, "原始证据与发布版本保持不变");
+  } finally { database.close(); }
 }));
 
 test("紧凑覆盖缓存随版本发布，旧数据按需补齐，重开只读查询不恢复原始正文", async () => fixture(async ({ repositoryPath, sourcePath, store, repositoryId, refresh }) => {
@@ -113,6 +136,7 @@ test("紧凑覆盖缓存随版本发布，旧数据按需补齐，重开只读�
   const readonly = new AnalysisStore(store.dbPath, { readonly: true });
   try {
     assert.deepEqual(buildCoverage(readonly.getCoverageSnapshot(repositoryId, version)), expected);
+    assert.deepEqual(buildCoverage(readonly.getOverviewSnapshot(repositoryId, version)), expected);
     assert.equal(cached(), 0, "只读消费者不能补写缓存");
     assert.deepEqual(buildCoverage(store.getCoverageSnapshot(repositoryId, version)), expected);
     assert.ok(cached() > 0);

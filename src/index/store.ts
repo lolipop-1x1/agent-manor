@@ -325,6 +325,40 @@ export class AnalysisStore {
     return snapshot;
   }
 
+  /** 仓库摘要只需活动身份、路径与首来源；不能恢复用于证据的全部来源副本及正文。 */
+  getOverviewSnapshot(repositoryId: string, version?: string): AnalysisSnapshot {
+    return this.database.transaction(() => {
+      const selected = this.analysisVersion(repositoryId, version), repository = this.getRepository(repositoryId);
+      const row = this.database.prepare("SELECT snapshot AS json FROM versions WHERE repository_id=? AND version=?")
+        .get(repositoryId, selected) as JsonRow;
+      const snapshot = (JSON.parse(row.json) as { value: AnalysisSnapshot }).value;
+      const cached = this.database.prepare("SELECT 1 FROM payload_parts WHERE repository_id=? AND kind='coverage-v1' AND owner=? AND field='$header'")
+        .get(repositoryId, selected);
+      const prefix = cached ? "snapshot." : "", kind = cached ? "coverage-v1" : "snapshot";
+      const fields = ["baseline.files", "events", "sources", "mappings", "gaps"].map(field => prefix + field);
+      const rows = this.database.prepare(`SELECT replace(field,?,'') AS field,CASE
+        WHEN field=? THEN (SELECT json_group_array(json_object('path',json_extract(value,'$.path'),
+          'category',json_extract(value,'$.category'),'lineCount',json_extract(value,'$.lineCount'),'hash',json_extract(value,'$.hash'),'content','')) FROM jsonb_each(p.json))
+        WHEN field=? THEN (SELECT json_group_array(json_object('id',json_extract(e.value,'$.id'),'client',json_extract(e.value,'$.client'),
+          'sessionId',json_extract(e.value,'$.sessionId'),'tool',json_extract(e.value,'$.tool'),'kind',json_extract(e.value,'$.kind'),
+          'status',json_extract(e.value,'$.status'),'occurredAt',json_extract(e.value,'$.occurredAt'),
+          'cwd',json_extract(e.value,'$.cwd'),'path',json_extract(e.value,'$.path'),
+          'sources',json(CASE WHEN json_array_length(e.value,'$.sources')>0 THEN json_array(json_extract(e.value,'$.sources[0]')) ELSE '[]' END),
+          'fragments',json(COALESCE((SELECT json_group_array(json_object('content','','kind',json_extract(f.value,'$.kind'),
+            'path',json_extract(f.value,'$.path'),'historicalStart',json_extract(f.value,'$.historicalStart'),
+            'completeLines',json(f.value -> '$.completeLines'))) FROM jsonb_each(e.value,'$.fragments') f),'[]')))) FROM jsonb_each(p.json) e)
+        ELSE json END AS json FROM payload_parts p WHERE repository_id=? AND kind=? AND owner=?
+          AND field IN (SELECT value FROM json_each(?)) ORDER BY field,part`)
+        .iterate(prefix, prefix + "baseline.files", prefix + "events", repositoryId, kind, selected, JSON.stringify(fields)) as Iterable<{ field: string; json: string }>;
+      for (const part of rows) {
+        const values = JSON.parse(part.json) as unknown[];
+        const target = part.field === "baseline.files" ? snapshot.baseline.files : snapshot[part.field as "events" | "sources" | "mappings" | "gaps"];
+        for (const value of values) target.push(value as never);
+      }
+      return this.normalizeSnapshot(snapshot, repository, selected);
+    }).deferred();
+  }
+
   private coverageMetadata(snapshot: AnalysisSnapshot): AnalysisSnapshot {
     return { ...snapshot, baseline: { ...snapshot.baseline, files: snapshot.baseline.files.map(file => ({ ...file, content: "" })) },
       sources: snapshot.sources.map(source => this.sourceMetadata(source)), events: snapshot.events.map(event => {

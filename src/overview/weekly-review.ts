@@ -126,7 +126,6 @@ export function buildWeeklyReview(facts: WeeklySessionFacts[], query: OverviewQu
     const titles = new Map(fact.rounds.map(round => [round.turnId, round.title]));
     return fact.requests.map(request => requestRecord(fact.session, request, pricing, request.usage.turnId ? titles.get(request.usage.turnId) : undefined, prices));
   });
-  const childRows = childFacts.flatMap(fact => fact.requests.map(request => requestRecord(fact.session, request, pricing, undefined, prices)));
   const compressionEvents = activeFacts.flatMap(fact => fact.events.filter(event => event.kind === "compression").map(event => record(fact.session,
     { id: JSON.stringify([fact.session.id, event.id]), messageId: event.id, turnId: event.turnId, occurredAt: event.occurredAt, compressions: 1 })));
   const observable = activeFacts.filter(fact => fact.compressionSupported && fact.compressionComplete);
@@ -167,16 +166,7 @@ export function buildWeeklyReview(facts: WeeklySessionFacts[], query: OverviewQu
     group.rows.push(request); group.sessions.add(request.sessionId); agentsGroups.set(key, group);
   }
   const agents = rank(agentsGroups), models = groupedRank(requestRows, row => row.model ?? "unknown"), reasoning = groupedRank(requestRows, row => row.reasoningEffort ?? "unknown");
-  const projectGroups = new Map<string, { count: number; rows: WeeklyReviewRecord[]; sessions: Set<string>; name: string }>();
-  for (const round of endedRounds) {
-    const key = round.project ?? "unknown", group = projectGroups.get(key) ?? { count: 0, rows: [], sessions: new Set<string>(), name: key };
-    group.count += 1; group.sessions.add(round.sessionId); projectGroups.set(key, group);
-  }
-  for (const request of requestRows) {
-    const key = request.project ?? "unknown", group = projectGroups.get(key) ?? { count: 0, rows: [], sessions: new Set<string>(), name: key };
-    group.rows.push(request); group.sessions.add(request.sessionId); projectGroups.set(key, group);
-  }
-  const projects = rank(projectGroups), calls = userFacts.flatMap(fact => fact.events.filter(event => event.kind === "tool_call")
+  const calls = userFacts.flatMap(fact => fact.events.filter(event => event.kind === "tool_call")
     .map(event => ({ fact, event })));
   const toolRows = calls.filter(({ event }) => event.status === "failure").map(({ fact, event }) => record(fact.session,
     { id: JSON.stringify([fact.session.id, event.id]), messageId: event.id, turnId: event.turnId,
@@ -185,8 +175,7 @@ export function buildWeeklyReview(facts: WeeklySessionFacts[], query: OverviewQu
   const pairInput = sumKnown(pairedInputs.map(row => row.inputTokens)), pairRead = sumKnown(pairedInputs.map(row => row.cachedInputTokens));
   const premiumValues = requestRows.flatMap(row => row.hypotheticalPremium === null || row.hypotheticalPremium === undefined ? [] : [row.hypotheticalPremium]);
   const tokenValues = endedRounds.flatMap(row => row.tokens === null || row.tokens === undefined ? [] : [row.tokens]).sort((a, b) => b - a);
-  const tokenTotal = tokenValues.reduce((sum, tokens) => sum + tokens, 0), childTokens = sumKnown(childRows.map(row => row.tokens)), userTokens = sumKnown(requestRows.map(row => row.tokens));
-  const childCost = sumKnown(childRows.map(row => row.cost?.amount)), userCost = sumKnown(requestRows.map(row => row.cost?.amount));
+  const tokenTotal = tokenValues.reduce((sum, tokens) => sum + tokens, 0);
   const gaps = [...activeFacts, ...unknownForks].flatMap(fact => fact.session.gaps), completed = endedRounds.length;
   const sessionsRows = activeFacts.map(fact => record(fact.session, { compressions: fact.events.filter(event => event.kind === "compression").length,
     occurredAt: [...fact.events.map(event => event.occurredAt), ...fact.requests.map(request => request.usage.occurredAt)].filter((time): time is string => !!time).sort().at(-1) }));
@@ -213,13 +202,7 @@ export function buildWeeklyReview(facts: WeeklySessionFacts[], query: OverviewQu
       promptCharacters: weeklyDistribution(prompts.map(row => row.promptCharacters)), promptInputs: prompts.length, promptMixedInputs: null,
       hours, weekdays, weekdayHours: [...weekdayHours.values()].sort((a, b) => a.weekday - b.weekday || a.hour - b.hour),
       busiestHour: prompts.length ? [...hours].sort((a, b) => b.messages - a.messages || a.hour - b.hour)[0]!.hour : null, userMessages: prompts.length },
-    extensions: { projects: projects.slice(0, 8), compressionLeaders: compressionLeaders.slice(0, 3), children: { sessions: childFacts.filter(hasActivity).length,
-      requests: childRows.length, tokens: childTokens, estimatedCost: childCost,
-      requestShare: requestRows.length + childRows.length ? childRows.length / (requestRows.length + childRows.length) : null,
-      tokenShare: childTokens !== null && userTokens !== null && childTokens + userTokens > 0 ? childTokens / (childTokens + userTokens) : null,
-      costShare: childCost !== null && userCost !== null && childCost + userCost > 0 ? childCost / (childCost + userCost) : null, costCoverage: costCoverage(childRows),
-      tokenSamples: childRows.filter(row => row.tokens != null).length, tokenMissing: childRows.filter(row => row.tokens == null).length,
-      userTokenSamples: requestRows.filter(row => row.tokens != null).length, userTokenMissing: requestRows.filter(row => row.tokens == null).length },
+    extensions: { compressionLeaders: compressionLeaders.slice(0, 3),
       tools: { calls: calls.length, failures: toolRows.length, failedRounds: new Set(toolRows.map(row => JSON.stringify([row.sessionId, row.turnId]))).size,
         unknownResults: calls.filter(({ event }) => event.status !== "success" && event.status !== "failure").length } },
     coverage: { gaps: gaps.slice(0, 100), gapCount: gaps.length, missingTimeEvents: userFacts.reduce((sum, fact) => sum + fact.missingTimeEvents, 0),
@@ -229,9 +212,9 @@ export function buildWeeklyReview(facts: WeeklySessionFacts[], query: OverviewQu
       unsupportedCompressionSessions: activeFacts.filter(fact => !fact.compressionSupported || !fact.compressionComplete).length,
       unknownForkSessions: unknownForks.filter(hasActivity).length } };
   return { review, rows: { sessions: sessionsRows, sessionRounds, rounds: [...endedRounds, ...inferredRounds.filter(row => !row.eligible), ...unconfirmedRounds, ...missingEndTime], cache: requestRows,
-    compressions: compressionEvents, projects: endedRounds, delegation: childRows, tools: toolRows, agents: startedRounds,
+    compressions: compressionEvents, tools: toolRows, agents: startedRounds,
     models: requestRows, reasoning: requestRows, prompts, activity: prompts, uncompressed },
-    ranks: { agents, models, reasoning, projects, tools: groupedRank(toolRows,
+    ranks: { agents, models, reasoning, tools: groupedRank(toolRows,
       row => JSON.stringify([row.tool ?? "unknown", row.server ?? null]), key => { const [tool, server] = JSON.parse(key) as [string, string | null]; return server ? `${server} · ${tool}` : tool; }),
       compressions: groupedRank(compressionEvents, row => row.sessionId, key => facts.find(fact => fact.session.id === key)?.session.title ?? key)
         .map(row => {
@@ -244,7 +227,7 @@ export function buildWeeklyReview(facts: WeeklySessionFacts[], query: OverviewQu
 export function weeklyReviewDetail(data: WeeklyReviewData, detail: WeeklyReviewDetailQuery): WeeklyReviewDetailPage {
   let rows = data.rows[detail.kind];
   if (detail.key !== undefined) rows = rows.filter(row => (detail.kind === "agents" ? row.client : detail.kind === "models" ? row.model
-    : detail.kind === "reasoning" ? row.reasoningEffort : detail.kind === "projects" ? row.project : detail.kind === "compressions" ? row.sessionId : JSON.stringify([row.tool ?? "unknown", row.server ?? null]))
+    : detail.kind === "reasoning" ? row.reasoningEffort : detail.kind === "compressions" ? row.sessionId : JSON.stringify([row.tool ?? "unknown", row.server ?? null]))
     === (detail.key === "unknown" ? undefined : detail.key));
   if (detail.filter) rows = rows.filter(row => detail.kind === "cache" ? (row as RequestRecord).state === detail.filter : detail.filter === "ended" ? row.eligible : row.completion === detail.filter);
   const sort = detail.sort ?? (detail.kind === "cache" ? "fresh" : detail.kind === "sessionRounds" ? "rounds" : "recent");
