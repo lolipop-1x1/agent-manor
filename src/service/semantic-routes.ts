@@ -3,6 +3,7 @@ import type { SemanticConnection, SemanticScope, SemanticSearchQuery, SemanticSe
 import { SemanticManager } from "../semantic/manager.js";
 import { SemanticError } from "../semantic/config.js";
 import { ServiceError, bodyText } from "./input.js";
+import { requireManagement } from "./management.js";
 
 function object(value: unknown): Record<string, unknown> {
   if (value === undefined) return {};
@@ -33,7 +34,8 @@ export function registerSemanticRoutes(app: FastifyInstance, semantic: SemanticM
     if (body.apiKey !== undefined && body.apiKey !== null && typeof body.apiKey !== "string") throw new SemanticError("semantic_input_invalid", "API key must be a string or null");
     return semantic.save(body as unknown as SemanticSettingsInput);
   }));
-  app.get("/api/v1/semantic/key", async (_request, reply) => {
+  app.get("/api/v1/semantic/key", async (request, reply) => {
+    requireManagement(request);
     reply.header("Cache-Control", "no-store");
     return semanticRequest(async () => ({ apiKey: await semantic.key() ?? null }));
   });

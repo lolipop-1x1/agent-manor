@@ -1,8 +1,8 @@
 # 使用指南
 
-当前支持 macOS，已在 Apple Silicon 完成验收；暂未兼容 Windows。Linux 尚未完成验收，不在当前支持范围内。
+首版安装矩阵为 macOS arm64/x64、Linux arm64/x64、Windows x64；实际验收环境与边界见 [CLI 交付验证](validation/npm-cli-distribution.md)。Windows ARM64 暂不在本轮矩阵中。
 
-需要 Node.js 24、Git 和浏览器。下文使用 `agent-manor`；本地安装时可以换成安装目录中的 `node_modules/.bin/agent-manor`，也可直接 `node /absolute/install/node_modules/agent-manor/dist/cli.js`。所有命令都可以在仓库外的工作目录运行。
+需要 Node.js 24、Git 和浏览器。`agent-manor` 与 `am` 使用相同参数、输出和数据目录。下文使用 `agent-manor`；本地安装时可以换成安装目录中的 `node_modules/.bin/agent-manor`，也可直接 `node /absolute/install/node_modules/agent-manor/dist/cli.js`。所有命令都可以在仓库外的工作目录运行。
 
 ## 从交付包安装
 
@@ -14,6 +14,32 @@ npm install /absolute/path/agent-manor-0.1.0.tgz
 ```
 
 tarball 包含 CLI、后台、长期 Worker、Web 静态资源与 Agent Skill，无需安装 TypeScript／Vite 或再次构建。当前没有 npm 公共发布；不要用同名 registry 包替代本地交付包。`better-sqlite3` 安装使用预编译原生扩展；没有兼容预编译包时可能需要 Python、C/C++ 编译工具链。安装错误与 Node 版本、平台和网络情况需要分别核对。
+
+全局安装使用 `npm install -g /absolute/path/agent-manor-0.1.0.tgz`。正式公共发布后的包仍使用 npm 官方公共 registry；程序与数据目录分离，更新不会将知识和偏好写到 npm 安装目录中。
+
+## 服务与完整 CLI
+
+```sh
+am start
+am start --wait-data
+am status --json
+am ready --timeout 120 --json
+am web --no-open --json
+am logs --lines 50
+am stop --wait
+am restart --wait --wait-data
+am doctor --json
+```
+
+`start` 复用同一数据目录的健康实例，或启动可脱离终端的后台。默认监听 `127.0.0.1:16666`，占用时顺延，最多尝试 100 个候选；指定 `--port` 则固定使用该值，冲突直接失败。实际地址、PID、版本和日志位置由返回结果及本地实例记录给出，不按端口范围接管其他程序。
+
+服务就绪和数据准备分别表达：HTTP 可用后继续检查历史、用量和默认总览，`--wait-data`／`ready` 等待这一轮本地准备；状态包含阶段和失败信息。已有完整结果保持可读，准备失败不替换成空结果。普通业务查询按需启动；`status`、帮助、版本、诊断和日志保持只读。`stop` 遇到在途任务明确拒绝，`--wait` 等待完成后再停止；等待超时不终止后台。
+
+业务命令按 `sessions`、`overview`、`repositories`、`usage`、`resources`、`knowledge`、`semantic` 和 `preferences` 分组，旧版顶层代码活动命令继续兼容。查询提供常用具名参数及 `--query <json>`；写入支持 `--input <file>`、`--input -` 从 stdin 读取，或 `--data <json>`。使用 `--help` 查看具体命令；稳定字段、标识和 JSON 不随显示语言改变，进度与错误写 stderr，`--json` 的 stdout 仅包含结果。`logs --follow --json` 使用逐行增量事件。
+
+`am skills install --target codex --scope user` 安装完整 Skill；`--target claude`、`--scope project --project-directory <path>` 和 `--target custom --directory <path>` 选择其他目标。`skills status/update/remove` 复用同一目标参数。同版跳过，用户修改与外来同名目录先报告冲突，明确 `--overwrite` 前保存备份。npm 安装不会自行写宿主配置。
+
+`am update --check` 只检查公共 registry 版本，`am update --to <version>` 显式更新。持久的全局／本地 npm 安装支持更新；源码和临时运行环境提供诊断，不直接覆盖。运行中服务先核验在途任务，必要时使用 `--wait`；停止后备份数据，安装成功后仅恢复原本运行的服务。失败保留恢复材料，不自动降级数据或删除数据库。公共发布前没有可供在线更新的版本。
 
 ## 登记、查询和版本
 
@@ -73,7 +99,7 @@ agent-manor evidence <repositoryId> <eventId> --version <analysisVersion> --clie
 
 在知识设置中配置生成服务地址、模型及可选凭据。支持 OpenAI 兼容 Chat Completions 的 JSON 输出，模型仍需满足设置的上下文和输出预算；格式错误、输出截断及无效来源引用不会保存为知识。高级参数中的思考强度默认采用模型服务默认值，仅在服务支持时显式选择；本地思考模型可选择关闭，避免将有限输出预算全部用于思考。
 
-凭据默认隐藏，可按需查看、复制或清除已保存的 Key；查看不会当作修改保存，隐藏、离开设置或切换设置标签后会清除本次读取的明文。普通配置接口不回传 Key，专用读取端点仅允许本机同源 Web 管理动作且禁止缓存。
+凭据默认隐藏，可按需查看、复制或清除已保存的 Key；查看不会当作修改保存，隐藏、离开设置或切换设置标签后会清除本次读取的明文。普通配置接口不回传 Key；专用读取端点允许本机同源 Web 或已明确授权的 CLI 管理动作，响应禁止缓存。
 
 知识输出语言独立支持简体中文和英文。首次显式进入设置时按当前界面语言初始化，之后切换界面不改写此设置或既有正文。新知识使用任务固定的语言；补充旧知识沿用旧版语言。原始引用、代码、路径及错误串保持原文，直接提交不自动翻译。
 
@@ -91,9 +117,26 @@ agent-manor evidence <repositoryId> <eventId> --version <analysisVersion> --clie
 
 首次编码或更换不兼容的 Embedding 连接后，先预览知识规模再启动构建。待审和已审有效修订分别编码，查询仍遵守审阅、项目和可用性筛选。尚未编码的条目可以关键词查询；旧向量不会使废弃、过期或已替代正文重新进入默认结果。跨语言召回取决于所配置 Embedding 模型，不隐式调用生成模型翻译查询。
 
+### 知识 CLI 与明确确认
+
+```sh
+am knowledge write --input knowledge.json --json
+am knowledge list --review pending --json
+am knowledge get <knowledgeId> --review all --json
+am knowledge search "配置缓存" --json
+am knowledge review <knowledgeId> <revisionId> approve
+am knowledge extraction preview --input scope.json --json
+am knowledge extraction start <previewId> --wait --json
+am knowledge extraction list --json
+```
+
+直接写入无需生成模型，保存为待审修订。审阅先读取最新修订、当前已发布正文和核对内容，再确认具体操作；旧修订会被拒绝。交互终端显示操作并要求输入确认摘要。非交互调用先返回 `CONFIRMATION_REQUIRED` 和 `details.confirmation`，用户核对并明确授予该次操作后，使用 `--authorize <digest>` 重试；普通 `--yes` 不构成审阅授权。短期令牌绑定实例、路径和完整请求内容，仅能使用一次。可用性修改也绑定最新修订，内容变化后需重新核对；终端类型与本机进程身份不被宣称为人工证明。
+
+`knowledge settings key <generation|embedding>` 与 `semantic settings key` 采用同样的按需授权；默认设置输出保持脱敏。抽取、知识编码和会话语义编码分别使用自己的任务状态入口，`--wait` 只在完成时成功，失败、暂停、预算停止、部分完成或超时不会伪装为成功。
+
 ### 本机 HTTP 接口
 
-实际地址和端口从数据目录的 `service.json` 读取，不硬编码端口。接口前缀为 `/api/v1/knowledge`；普通 Agent 请求沿用当前服务的实例身份头 `x-agent-manor-instance`，写入使用 JSON。实例头标识本地服务，不构成人工审阅证明。审阅与可用性修改由同源 Web 管理动作处理；本功能没有引入账号或远程角色系统。
+实际地址和端口从数据目录的 `service.json` 读取，不硬编码端口。接口前缀为 `/api/v1/knowledge`；普通 Agent 请求沿用当前服务的实例身份头 `x-agent-manor-instance`，写入使用 JSON。实例头标识本地服务，不构成人工审阅证明。审阅与可用性修改由同源 Web 或明确授权的 CLI 管理动作处理；本功能没有引入账号或远程角色系统。
 
 | 方法与路径 | 用途 |
 | --- | --- |
@@ -102,13 +145,13 @@ agent-manor evidence <repositoryId> <eventId> --version <analysisVersion> --clie
 | `GET /entries/:id` | 读取当前默认内容，或显式指定修订和状态 |
 | `POST /entries/:id/revisions` | 基于最新修订提交待审修改 |
 | `GET /entries/:id/revisions`、`GET /entries/:id/revisions/:revisionId` | 读取完整历史修订与该版来源 |
-| `POST /entries/:id/reviews`、`POST /entries/:id/availability` | 页面确认／拒绝及废弃／恢复 |
+| `POST /entries/:id/reviews`、`POST /entries/:id/availability` | 明确授权后确认／拒绝及废弃／恢复 |
 | `POST /entries/:id/restore` | 从旧版形成新的待审修订 |
 | `POST /extractions/preview`、`POST /extractions` | 预览固定范围、显式启动任务 |
 | `GET /extractions`、`GET /extractions/:id` | 任务状态、结果和实际进度 |
 | `POST /extractions/:id/pause`、`resume`、`retry` | 暂停、继续与重试失败范围 |
 | `GET /settings`、`PUT /settings`、`POST /prompts/try` | 配置与不入库试抽取 |
-| `POST /settings/key` | 同源 Web 按需查看指定种类的已保存凭据，禁止缓存 |
+| `POST /settings/key` | 管理动作按需查看指定种类的已保存凭据，禁止缓存 |
 | `POST /index/preview`、`POST /index/build` | 显式预览及构建知识向量 |
 
 直接提交的最小正文示例：

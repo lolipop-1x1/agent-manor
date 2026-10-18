@@ -8,6 +8,7 @@ import { defaultKnowledgeConfig, KnowledgeModelError } from "../knowledge/config
 import { KnowledgeSemantic } from "../knowledge/semantic.js";
 import { SemanticError } from "../semantic/config.js";
 import { ServiceError, textValue } from "./input.js";
+import { registerManagementRoutes, requireManagement } from "./management.js";
 
 const prefix = "/api/v1/knowledge";
 function object(value: unknown): Record<string, unknown> {
@@ -44,13 +45,6 @@ function query(input: unknown): KnowledgeQuery {
   return result;
 }
 
-/** 审阅属于页面明确的管理动作，普通 Agent 实例调用不能自报人工确认。 */
-function management(request: FastifyRequest): void {
-  if (request.headers["x-agent-manor-instance"] !== undefined || request.headers["sec-fetch-site"] !== "same-origin") {
-    throw new ServiceError("FORBIDDEN", "Review and availability changes require the local management page", { key: "knowledge.errors.management_required" });
-  }
-}
-
 export async function knowledgeRequest<T>(operation: () => Promise<T> | T): Promise<T> {
   try { return await operation(); }
   catch (error) {
@@ -68,6 +62,7 @@ export async function knowledgeRequest<T>(operation: () => Promise<T> | T): Prom
 }
 
 export function registerKnowledgeRoutes(app: FastifyInstance, store: KnowledgeStore, manager: KnowledgeManager, sources: KnowledgeSourceReader, semantic: KnowledgeSemantic): void {
+  registerManagementRoutes(app);
   const params = (request: FastifyRequest) => request.params as { id: string; revisionId?: string };
   const verified = async (detail: KnowledgeDetail): Promise<KnowledgeDetail> => {
     const revisions = new Map(detail.revisions.map(revision => [revision.id, revision]));
@@ -110,8 +105,16 @@ export function registerKnowledgeRoutes(app: FastifyInstance, store: KnowledgeSt
     const detail = await verified(store.get(params(request).id, { revisionId: params(request).revisionId, review: "all", availability: "all" }));
     return detail.revision;
   }));
-  app.post(`${prefix}/entries/:id/reviews`, async request => knowledgeRequest(() => { management(request); return store.review(params(request).id, object(request.body) as unknown as KnowledgeReviewInput); }));
-  app.post(`${prefix}/entries/:id/availability`, async request => knowledgeRequest(() => { management(request); return store.setAvailability(params(request).id, object(request.body) as unknown as { availability: "active" | "deprecated" | "superseded"; reason?: string }); }));
+  app.post(`${prefix}/entries/:id/reviews`, async request => knowledgeRequest(() => { requireManagement(request); return store.review(params(request).id, object(request.body) as unknown as KnowledgeReviewInput); }));
+  app.post(`${prefix}/entries/:id/availability`, async request => knowledgeRequest(() => {
+    requireManagement(request);
+    const { baseRevisionId, ...input } = object(request.body);
+    if (request.headers["x-agent-manor-instance"] !== undefined || baseRevisionId !== undefined) {
+      const current = store.get(params(request).id, { review: "all", availability: "all" });
+      if (baseRevisionId !== current.latestRevisionId) throw new ServiceError("CONTENT_STALE", "Knowledge changed; review the current revision again", { key: "knowledge.errors.conflict" });
+    }
+    return store.setAvailability(params(request).id, input as unknown as { availability: "active" | "deprecated" | "superseded"; reason?: string });
+  }));
   app.post(`${prefix}/entries/:id/restore`, async request => knowledgeRequest(() => {
     const body = object(request.body);
     return store.restore(params(request).id, textValue(body.revisionId, "revisionId", true)!, textValue(body.baseRevisionId, "baseRevisionId", true)!, textValue(body.idempotencyKey, "idempotencyKey"));
@@ -125,7 +128,7 @@ export function registerKnowledgeRoutes(app: FastifyInstance, store: KnowledgeSt
     return knowledgeRequest(() => manager.settings(enumeration(object(request.query).language, ["zh-CN", "en"], "language")));
   });
   app.post(`${prefix}/settings/key`, async (request, reply) => knowledgeRequest(async () => {
-    management(request);
+    requireManagement(request);
     reply.header("Cache-Control", "no-store");
     const kind = enumeration(object(request.body).kind, ["generation", "embedding"], "kind");
     if (!kind) throw new ServiceError("INVALID_INPUT", "A credential kind is required", { key: "knowledge.errors.request_invalid" });

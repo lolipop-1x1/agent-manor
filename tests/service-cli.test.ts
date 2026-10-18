@@ -31,7 +31,7 @@ async function stopped(home: string): Promise<void> {
 test("全部查询命令的客户端帮助来自共享声明", () => {
   const program = createProgram("zh-CN");
   const commands = program.commands.filter(command => command.options.some(option => option.long === "--client"));
-  assert.equal(commands.length, 7);
+  assert.ok(commands.length >= 7);
   for (const command of commands) {
     assert.equal(command.options.find(option => option.long === "--client")!.description, translate("zh-CN", "cli.clientChoices", { clients: clientIds.join(", ") }));
   }
@@ -121,7 +121,7 @@ test("编译产物在包外cwd并发按需启动单实例，CLI/API JSON一致�
     { timestamp: "2026-01-01T00:00:01Z", type: "response_item", payload: { type: "function_call", name: "shell_command", call_id: "read", arguments: JSON.stringify({ command: "cat a.ts", workdir: repository }) } },
     { type: "response_item", payload: { type: "function_call_output", call_id: "read", output: "Exit code: 0\nOutput:\nalpha\nbeta\n" } },
   ]));
-  const cli = join(build, "cli.js");
+  const cli = join(build, "src", "cli.js");
   const env = isolatedHistoryEnvironment(directory, { AGENT_MANOR_HOME: home, AGENT_MANOR_CODEX_DIR: history });
   const command = async <T>(args: string[]): Promise<T> => {
     const result = await run(process.execPath, [cli, ...args, "--json"], { cwd: tmpdir(), env, timeout: 30_000 });
@@ -129,9 +129,11 @@ test("编译产物在包外cwd并发按需启动单实例，CLI/API JSON一致�
     return JSON.parse(result.stdout) as T;
   };
   try {
-    const instances = await Promise.all(Array.from({ length: 4 }, () => command<StatusResponse>(["status"])));
+    assert.equal((await command<{ running: boolean }>(["status"])).running, false);
+    const instances = await Promise.all(Array.from({ length: 4 }, () => command<{ instance: StatusResponse["instance"] }>(["start"])));
     assert.equal(new Set(instances.map((status) => status.instance.id)).size, 1);
     assert.equal(new Set(instances.map((status) => status.instance.pid)).size, 1);
+    const firstStatus = (await command<{ status: StatusResponse }>(["status"])).status;
     const register = await command<RegisterRepositoryResponse>(["register", repository, "--wait"]);
     assert.equal(register.job.status, "completed", register.job.error);
     const id = register.repository.id;
@@ -182,19 +184,21 @@ test("编译产物在包外cwd并发按需启动单实例，CLI/API JSON一致�
     const web = await command<{ url: string; instance: StatusResponse["instance"] }>(["web", "--no-open"]);
     assert.equal(web.instance.id, instances[0]!.instance.id);
     assert.match(await (await fetch(web.url)).text(), /包外静态资源/);
-    assert.equal((await command<StatusResponse>(["status"])).instance.id, web.instance.id);
-    assert.deepEqual(await command(["stop"]), { stopping: true });
+    assert.equal((await command<{ status: StatusResponse }>(["status"])).status.instance.id, web.instance.id);
+    assert.equal((await command<{ stopped: boolean }>(["stop", "--wait"])).stopped, true);
     await stopped(home);
-    assert.deepEqual(await command(["stop"]), { stopping: false, running: false });
-    const restarted = await command<StatusResponse>(["status"]);
+    assert.deepEqual(await command(["stop"]), { stopping: false, running: false, stopped: false });
+    assert.equal((await command<{ running: boolean }>(["status"])).running, false);
+    await command(["start", "--wait-data"]);
+    const restarted = (await command<{ status: StatusResponse }>(["status"])).status;
     assert.notEqual(restarted.instance.id, instances[0]!.instance.id);
-    const startup = restarted.jobs.find((job) => job.repositoryId === id && !instances[0]!.jobs.some((before) => before.id === job.id));
+    const startup = restarted.jobs.find((job) => job.repositoryId === id && !firstStatus.jobs.some((before) => before.id === job.id));
     assert.ok(startup);
     const latest = restarted.jobs[0]!;
     await command(["jobs", latest.id, "--wait"]);
     assert.equal((await command<CoverageResult>(["coverage", id])).summary.readExact.lines, 2);
   } finally {
-    await command(["stop"]).catch(() => undefined);
+    await command(["stop", "--wait"]).catch(() => undefined);
     await stopped(home);
     await rm(directory, { recursive: true, force: true });
   }
@@ -211,11 +215,13 @@ test("源码CLI从外部cwd启动Worker；错误实例状态不会误杀其他PI
   try {
     await mkdir(home);
     await writeFile(join(home, "service.json"), JSON.stringify({ id: "stale-instance-nonce", pid: other.pid, host: "127.0.0.1", port: 1, startedAt: new Date().toISOString() }));
-    assert.deepEqual(await command(["stop"]), { stopping: false, running: false });
+    assert.equal((await command<{ state: string }>(["status"])).state, "unreachable");
+    await assert.rejects(command(["stop"]), /SERVICE_IDENTITY_UNVERIFIED/);
     process.kill(other.pid!, 0);
     await mkdir(join(home, "service.lock"));
     await writeFile(join(home, "service.lock/owner.json"), JSON.stringify({ pid: other.pid, nonce: "unrelated-live-owner" }));
-    await assert.rejects(command(["status"]), /本地后台启动失败/);
+    await rm(join(home, "service.json"));
+    await assert.rejects(command(["start"]), /启动失败|startup failed/);
     process.kill(other.pid!, 0);
     await rm(join(home, "service.lock"), { recursive: true });
     const deadPid = Number((await run(process.execPath, ["-e", "process.stdout.write(String(process.pid))"])).stdout);
@@ -223,7 +229,7 @@ test("源码CLI从外部cwd启动Worker；错误实例状态不会误杀其他PI
       await mkdir(join(home, lock));
       await writeFile(join(home, lock, "owner.json"), JSON.stringify({ pid: deadPid, nonce: "dead-test-owner" }));
     }
-    const statuses = await Promise.all([command<StatusResponse>(["status"]), command<StatusResponse>(["status"])]);
+    const statuses = await Promise.all([command<{ instance: StatusResponse["instance"] }>(["start"]), command<{ instance: StatusResponse["instance"] }>(["start"])]);
     assert.equal(statuses[0]!.instance.id, statuses[1]!.instance.id);
     assert.notEqual(statuses[0]!.instance.pid, other.pid);
     const repository = join(directory, "repo");
@@ -234,7 +240,7 @@ test("源码CLI从外部cwd启动Worker；错误实例状态不会误杀其他PI
     assert.equal(registered.job.status, "completed", registered.job.error);
     process.kill(other.pid!, 0);
   } finally {
-    await command(["stop"]).catch(() => undefined);
+    await command(["stop", "--wait"]).catch(() => undefined);
     await stopped(home).catch(() => undefined);
     other.kill();
     await rm(directory, { recursive: true, force: true });

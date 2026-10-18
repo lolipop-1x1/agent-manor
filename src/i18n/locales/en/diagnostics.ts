@@ -1,6 +1,16 @@
 import type { MessageCatalog } from "../../types.js";
 
 export default {
+  "diagnostics.service.runtime.versionMismatch": "Background version {{version}} does not match this installation ({{expected}}). Explicitly restart or update the background service.",
+  "diagnostics.service.runtime.identity": "The existing service identity could not be verified. No other process was started or stopped.",
+  "diagnostics.service.runtime.startFailed": "Background startup failed ({{code}}). Read the local log: {{path}}",
+  "diagnostics.service.runtime.preparationFailed": "Startup data preparation failed. The previous complete data remains available; inspect service status and logs.",
+  "diagnostics.service.runtime.waitTimeout": "Waiting timed out. The background service continues running.",
+  "diagnostics.service.runtime.busy": "Background tasks are still running. Wait for completion before stopping or updating.",
+  "diagnostics.service.runtime.stopTimeout": "The service is still stopping. Inspect its status and logs.",
+  "diagnostics.service.runtime.logLines": "Log lines must be an integer between 1 and 10000.",
+  "diagnostics.service.runtime.stopInput": "Invalid stop parameters.",
+  "diagnostics.service.runtime.updating": "This installation is being updated. Retry the query or startup after the update completes.",
   "diagnostics.resources.history.busy": "The resource statistics queue is full. Try again shortly.",
   "diagnostics.resources.history.stopped": "The resource statistics worker has stopped.",
   "diagnostics.sessions.search.stopped": "The search worker has stopped.",

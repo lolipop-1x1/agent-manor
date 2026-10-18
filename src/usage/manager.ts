@@ -188,6 +188,13 @@ export class UsageManager {
     check(); this.timer = setInterval(check, 2000); this.timer.unref();
   }
 
+  /** 显式启动等待只绑定这一次完整历史版本，不等待后续自动更新。 */
+  async prepare(query: UsageQuery = {}): Promise<UsagePreparationStatus> {
+    const fixed = this.fixed(query);
+    await this.execute("prepare", fixed);
+    return this.status(fixed);
+  }
+
   async close(): Promise<void> {
     if (this.closed) return;
     this.closed = true;

@@ -373,5 +373,6 @@ const messages: MessageCatalog = {
   "knowledge.estimatedInputUsage": "未报告时估算输入 Token",
   "knowledge.budgetHelp": "预算与计价说明",
   "knowledge.budgetHelpBody": "单任务输入上限包含提炼、归并、回读及重试。请求发送前按保守输入上界预留；返回实际用量后结算。失败请求保留预留，避免重试超支。费用预算须先配置输入和输出单价；未报告缓存命中时不假定享受缓存价。",
+  "knowledge.errors.management_confirmation": "需要明确确认本次操作的具体内容；内容变化后请重新核对。",
 };
 export default messages;

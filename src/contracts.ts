@@ -295,11 +295,32 @@ export interface ServiceInstance {
   host: "127.0.0.1";
   port: number;
   startedAt: string;
+  version?: string;
+  protocolVersion?: number;
+}
+
+export interface ServicePreparation {
+  state: "pending" | "running" | "ready" | "failed" | "skipped";
+  phase: "history" | "usage" | "overview" | "complete";
+  startedAt: string;
+  finishedAt?: string;
+  sourceVersion?: string;
+  jobIds: string[];
+  error?: string;
+}
+
+export interface ServiceActiveTask {
+  id: string;
+  kind: "sessions" | "repository" | "knowledge" | "semantic";
+  status: string;
 }
 
 export interface StatusResponse {
   instance: ServiceInstance;
   version: string;
+  protocolVersion?: number;
+  preparation?: ServicePreparation;
+  activeTasks?: ServiceActiveTask[];
   repositories: Repository[];
   jobs: Job[];
   indexMaintenance?: IndexMaintenanceResult;

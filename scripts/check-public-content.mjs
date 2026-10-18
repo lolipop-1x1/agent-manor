@@ -41,7 +41,11 @@ for (const path of files) {
   if (path === "package-lock.json") {
     const lock = JSON.parse(content);
     for (const entry of Object.values(lock.packages)) {
-      if (entry.resolved && new URL(entry.resolved).origin !== "https://registry.npmjs.org") findings.push({ path, line: 0, rule: "非公开 npm registry" });
+      // 内部 CLI workspace 是仓库内链接，发布依赖仍必须来自公共 registry。
+      if (!entry.resolved || entry.link === true && entry.resolved === "packages/cli") continue;
+      try {
+        if (new URL(entry.resolved).origin !== "https://registry.npmjs.org") findings.push({ path, line: 0, rule: "非公开 npm registry" });
+      } catch { findings.push({ path, line: 0, rule: "非公开 npm registry" }); }
     }
   }
 }

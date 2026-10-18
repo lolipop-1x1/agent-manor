@@ -68,6 +68,10 @@ class EngineClient {
 }
 
 export class SemanticManager {
+  activeJob(): Pick<SemanticJob, "id" | "status"> | undefined {
+    const job = this.state.job;
+    return job?.status === "running" ? { id: job.id, status: job.status } : undefined;
+  }
   private readonly configStore: SemanticConfigStore;
   private readonly scheduler: EmbeddingScheduler;
   private readonly writer: EngineClient;

@@ -8,11 +8,21 @@
 
 首版提供目录代码地图、文件与行覆盖率、活动和原始证据回查，以及共用一个本地后台的 Web、CLI 和 Agent Skill。精确对应与近似对应分别展示；不能确定的范围保留采集缺口。
 
-当前是 `0.1.0` 本地交付版本，npm 包保持 `private`，尚未发布到 npm。运行目标为 Node.js 24 和 Git。**当前支持 macOS，已在 Apple Silicon 完成验收；暂未兼容 Windows。** Linux 尚未完成验收，不在当前支持范围内。许可证尚未选定。
+当前是 `0.1.0` 交付版本，采用 MIT 许可证，尚未发布到 npm。运行需要 Node.js 24 和 Git。首版安装矩阵为 macOS arm64/x64、Linux arm64/x64、Windows x64；实际验收环境与边界见 [CLI 交付验证](docs/validation/npm-cli-distribution.md)。
 
 ## 安装与启动
 
-取得构建好的 `agent-manor-0.1.0.tgz` 后，可安装到独立目录：
+取得构建好的 `agent-manor-0.1.0.tgz` 后，可全局安装，获得 `agent-manor` 和 `am` 两个等价命令：
+
+```sh
+npm install -g /absolute/path/agent-manor-0.1.0.tgz
+am start --wait-data
+am web
+am status --json
+am stop --wait
+```
+
+也可安装到独立目录：
 
 ```sh
 mkdir -p ~/agent-manor-local
@@ -38,7 +48,7 @@ agent-manor status --json
 agent-manor stop --json
 ```
 
-`agent-manor` 需在 PATH 中，或换成安装目录的 `./node_modules/.bin/agent-manor`。第一次需要服务时自动启动后台；关闭网页后后台继续提供查询，`stop` 显式停止。
+`agent-manor`／`am` 需在 PATH 中，或换成安装目录的 `./node_modules/.bin/am`。普通数据查询按需启动后台；版本、帮助、`status`、`doctor` 和 `logs` 不启动服务。后台关闭终端后继续运行，默认端口 `16666`，占用时顺延并记录实际地址；`start` 等待服务就绪，`--wait-data` 进一步等待启动数据准备。`stop --wait` 等在途任务结束后停止。
 
 ## 会话库
 
@@ -50,7 +60,14 @@ agent-manor stop --json
 
 网页顶部“知识库”管理个人记忆、项目记忆和通用经验。可以直接填写知识，也可以从会话整篇、选定轮次或时间范围沉淀；抽取及 Agent 提交先保存待审建议，人工确认后才成为默认搜索结果。知识保留完整版本、标签和来源证据，支持废弃、过期及历史恢复。
 
-关键词搜索无需模型。会话抽取使用单独配置的 OpenAI 兼容生成服务，知识语义搜索可关闭、复用会话 Embedding 连接或独立配置，首次编码需预览后启动。后台自动沉淀默认关闭，开启后按范围、静默时间和调用预算增量处理。Web 与本机 HTTP 接口共用同一口径，本阶段不增加知识 CLI、Skill 或自动注入。详见 [使用指南](docs/usage.md#知识库)。
+关键词搜索无需模型。会话抽取使用单独配置的 OpenAI 兼容生成服务，知识语义搜索可关闭、复用会话 Embedding 连接或独立配置，首次编码需预览后启动。后台自动沉淀默认关闭，开启后按范围、静默时间和调用预算增量处理。Web、CLI 和本机 HTTP 接口共用同一口径；CLI 支持直接提交、搜索、修订、来源、人工审阅、沉淀任务和配置。详见 [使用指南](docs/usage.md#知识库)。
+
+```sh
+am knowledge write --input knowledge.json --json
+am knowledge list --review pending --json
+am knowledge search "配置缓存" --json
+am knowledge extraction list --json
+```
 
 ## 数据与统计
 
@@ -73,4 +90,4 @@ agent-manor stop --json
 | 精确／近似对应与覆盖口径 | [匹配规则](docs/design/matching-rules.md) |
 | 产品规格、领域术语与架构决定 | [源码仓库](https://github.com/lolipop-1x1/agent-manor) |
 
-包内 Skill 位于 `node_modules/agent-manor/skills/agent-manor/`。按所用客户端的 Skill 安装方式引用或复制该目录；包安装不会自动修改客户端配置。
+包内 Skill 按任务场景引导查询、跨客户端回查、知识复用与直接写入，参考文件随目录完整安装。可执行 `am skills install --target codex --scope user`，或选择 `claude`、项目级及自定义目录。安装状态、更新和移除均有对应命令，修改或同名外来目录默认保护，明确覆盖前保留备份；npm 安装本身不会写入宿主 Skill 目录。完整参数见 `am skills --help`。

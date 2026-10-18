@@ -1,6 +1,16 @@
 import type { MessageCatalog } from "../../types.js";
 
 export default {
+  "diagnostics.service.runtime.versionMismatch": "后台版本 {{version}} 与当前安装版本 {{expected}} 不同，请显式重启或更新后台。",
+  "diagnostics.service.runtime.identity": "已有服务身份尚未通过核验，未启动或停止其他进程。",
+  "diagnostics.service.runtime.startFailed": "后台启动失败（{{code}}），请查看本地日志：{{path}}",
+  "diagnostics.service.runtime.preparationFailed": "启动数据准备失败，之前的完整数据仍可读取，请查看服务状态和日志。",
+  "diagnostics.service.runtime.waitTimeout": "等待超时，后台服务仍继续运行。",
+  "diagnostics.service.runtime.busy": "后台任务仍在运行，请等待完成后停止或更新。",
+  "diagnostics.service.runtime.stopTimeout": "服务仍在停止，请查看状态和日志。",
+  "diagnostics.service.runtime.logLines": "日志行数必须是 1 到 10000 的整数。",
+  "diagnostics.service.runtime.stopInput": "无效停止参数。",
+  "diagnostics.service.runtime.updating": "程序正在更新，请等待更新完成后再执行查询或启动。",
   "diagnostics.resources.history.busy": "资源统计队列已满，请稍后重试。",
   "diagnostics.resources.history.stopped": "资源统计后台已停止。",
   "diagnostics.sessions.search.stopped": "搜索后台已停止。",

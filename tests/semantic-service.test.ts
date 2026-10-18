@@ -11,6 +11,7 @@ import { apiRequest, delay, RequestError } from "../src/service/runtime.js";
 import type { SemanticPreview, SemanticSettings, SemanticStatus, SemanticSearchResult } from "../src/semantic-contracts.js";
 import { isolatedHistoryRoots } from "./helpers/history-roots.js";
 import { SemanticConfigStore } from "../src/semantic/config.js";
+import { managementDigest } from "../src/service/management.js";
 
 async function fixture(run: (context: { service: Awaited<ReturnType<typeof startService>>; calls: string[][]; home: string }) => Promise<void>, options: { text?: string; maxInputChars?: number; modelDelayMs?: number; model?: string } = {}) {
   const home = await mkdtemp(join(tmpdir(), "manor-semantic-http-"));
@@ -100,7 +101,10 @@ test("语义HTTP完整闭环：显式构建、重复正文复用、查询缓存�
   assert.equal(initial.ready, false); assert.equal(initial.enabled, false);
   const settings = await apiRequest<SemanticSettings>(service.instance, "/semantic/settings");
   assert.equal(settings.hasKey, true); assert(!JSON.stringify(settings).includes("example-local-key"));
-  const key = await apiRequest<{ apiKey: string }>(service.instance, "/semantic/key"); assert.equal(key.apiKey, "example-local-key");
+  await assert.rejects(apiRequest(service.instance, "/semantic/key"), (error: unknown) => error instanceof RequestError && error.code === "FORBIDDEN");
+  const operation = { method: "GET", path: "/semantic/key" };
+  const grant = await apiRequest<{ token: string }>(service.instance, "/management/authorizations", "POST", { ...operation, confirmation: managementDigest(operation) });
+  const key = await apiRequest<{ apiKey: string }>(service.instance, "/semantic/key", "GET", undefined, { "x-agent-manor-management": grant.token }); assert.equal(key.apiKey, "example-local-key");
   const preview = await apiRequest<SemanticPreview>(service.instance, "/semantic/preview", "POST", {});
   assert.equal(preview.sessionCount, 2); assert.equal(preview.uniqueInputs, 1); assert.equal(calls.length, 1);
   await apiRequest(service.instance, "/semantic/build", "POST", { previewId: preview.id });

@@ -9,12 +9,13 @@ import { randomUUID } from "node:crypto";
 import { existsSync, lstatSync, realpathSync } from "node:fs";
 import { join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
-import type { ApiErrorCode, DeleteRepositoryResponse, RegisterRepositoryResponse, ServiceInstance } from "./contracts.js";
+import type { ApiErrorCode, DeleteRepositoryResponse, RegisterRepositoryResponse, ServiceActiveTask, ServiceInstance, ServicePreparation } from "./contracts.js";
 import type { DiscoverRoots } from "./history/index.js";
 import { AnalysisStore, StoreError, WorkerManager } from "./index/index.js";
 import { VERSION } from "./version.js";
 import { bodyText, emptyBody, integer, ServiceError } from "./service/input.js";
-import { acquireLock, dataHome, removeInstance, writeInstance } from "./service/runtime.js";
+import { acquireLock, assertNotUpdating, dataHome, DEFAULT_SERVICE_PORT, delay, removeInstance, SERVICE_PROTOCOL_VERSION, writeInstance } from "./service/runtime.js";
+import { serviceLog } from "./service/logging.js";
 import { SessionStore } from "./sessions/store.js";
 import { queryBoolean, sessionMessageQuery, sessionProfileQuery, sessionQuery, sessionRefreshOptions, sessionTimelineQuery } from "./service/session-input.js";
 import { textValue } from "./service/input.js";
@@ -68,9 +69,18 @@ function statusCode(code: ApiErrorCode): number {
 
 export async function startService(options: ServiceOptions = {}) {
   const home = dataHome(options.home);
-  const requestedPort = options.port ?? (process.env.AGENT_MANOR_PORT ? Number(process.env.AGENT_MANOR_PORT) : 0);
+  await assertNotUpdating(home);
+  const explicitPort = options.port !== undefined || process.env.AGENT_MANOR_PORT !== undefined;
+  const requestedPort = options.port ?? (process.env.AGENT_MANOR_PORT !== undefined ? Number(process.env.AGENT_MANOR_PORT) : DEFAULT_SERVICE_PORT);
   if (!Number.isInteger(requestedPort) || requestedPort < 0 || requestedPort > 65535) throw new DiagnosticError("端口必须是 0 到 65535 的整数", { key: "diagnostics.server.m001" });
-  const release = await acquireLock(home, "service.lock");
+  serviceLog(home, "startup.lock", { version: VERSION });
+  const release = await acquireLock(home, "service.lock").catch(error => {
+    serviceLog(home, "startup.failed", { phase: "lock", code: (error as NodeJS.ErrnoException).code ?? "LOCK_BUSY" });
+    throw error;
+  });
+  try { await assertNotUpdating(home); }
+  catch (error) { await release(); throw error; }
+  serviceLog(home, "startup.database", { version: VERSION });
   let store: AnalysisStore | undefined;
   let manager: WorkerManager | undefined;
   let sessions: SessionStore | undefined;
@@ -90,7 +100,9 @@ export async function startService(options: ServiceOptions = {}) {
   let autoSync: SessionAutoSyncScheduler | undefined;
   let unsubscribePreferences: (() => void) | undefined;
   const app = Fastify({ logger: false, bodyLimit: 65_536, forceCloseConnections: true });
-  const instance: ServiceInstance = { id: randomUUID(), pid: process.pid, host: "127.0.0.1", port: requestedPort, startedAt: new Date().toISOString() };
+  const instance: ServiceInstance = { id: randomUUID(), pid: process.pid, host: "127.0.0.1", port: requestedPort, startedAt: new Date().toISOString(), version: VERSION, protocolVersion: SERVICE_PROTOCOL_VERSION };
+  const preparation: ServicePreparation = { state: options.startupRefresh === false ? "skipped" : "pending", phase: "history", startedAt: instance.startedAt, jobIds: [] };
+  let closing = false;
   try {
     const indexMaintenance = await compactIndexAtStartup(home);
     store = new AnalysisStore(join(home, "index.sqlite"));
@@ -152,7 +164,16 @@ export async function startService(options: ServiceOptions = {}) {
     resourceHistory = new ResourceUsageManager(library);
     const resources = new ResourceService(library, management, options.resourceInventory ?? { environment: process.env }, () =>
       [...new Set([...index.listRepositories().map(repository => repository.path), ...library.status().projects])], resourceHistory);
+    const activeTasks = (): ServiceActiveTask[] => [
+      ...worker.activeSessionJobs().filter(job => ["queued", "running"].includes(job.status)).map(job => ({ id: job.id, kind: "sessions" as const, status: job.status })),
+      ...index.listJobs().filter(job => ["queued", "running"].includes(job.status)).map(job => ({ id: job.id, kind: "repository" as const, status: job.status })),
+      ...knowledgeManager!.activeJobs().map(job => ({ ...job, kind: "knowledge" as const })),
+      ...(semanticManager!.activeJob() ? [{ ...semanticManager!.activeJob()!, kind: "semantic" as const }] : []),
+      ...(knowledgeSemantic!.busy ? [{ id: "knowledge-index", kind: "semantic" as const, status: "running" }] : []),
+    ];
     app.addHook("onClose", async () => {
+      closing = true;
+      serviceLog(home, "service.stopping", { instanceId: instance.id });
       unsubscribePreferences?.();
       sync.close();
       await knowledgeSemantic?.close();
@@ -173,6 +194,7 @@ export async function startService(options: ServiceOptions = {}) {
       pricing?.close();
       await removeInstance(home, instance);
       await release();
+      serviceLog(home, "service.stopped", { instanceId: instance.id });
     });
     app.setErrorHandler((error, _request, reply) => {
       const known = error instanceof StoreError || error instanceof ServiceError;
@@ -220,10 +242,13 @@ export async function startService(options: ServiceOptions = {}) {
       }
     });
     registerPreferenceRoutes(app, home);
-    app.get<{ Querystring: Record<string, unknown> }>("/api/v1/status", async request => ({ instance, version: VERSION, repositories: index.listRepositories(), jobs: index.listJobs(),
+    app.get<{ Querystring: Record<string, unknown> }>("/api/v1/status", async request => ({ instance, version: VERSION, protocolVersion: SERVICE_PROTOCOL_VERSION,
+      preparation: { ...preparation, jobIds: [...preparation.jobIds] }, activeTasks: activeTasks(), repositories: index.listRepositories(), jobs: index.listJobs(),
       sessions: sessionStatus(queryBoolean(request.query.summary, "summary")), indexMaintenance, indexReclaim: worker.reclaimStatus }));
     app.post("/api/v1/stop", async (request, reply) => {
-      emptyBody(request.body);
+      const body = request.body as { allowBusy?: unknown } | undefined;
+      if (body !== undefined && (!body || typeof body !== "object" || Array.isArray(body) || Object.keys(body).some(key => key !== "allowBusy") || typeof body.allowBusy !== "boolean")) throw new ServiceError("INVALID_INPUT", "无效停止参数", { key: "diagnostics.service.runtime.stopInput" });
+      if (!body?.allowBusy && (activeTasks().length || ["pending", "running"].includes(preparation.state))) throw new ServiceError("CONTENT_STALE", "后台任务仍在运行", { key: "diagnostics.service.runtime.busy" });
       reply.send({ stopping: true });
       setImmediate(() => { void app.close(); });
     });
@@ -307,7 +332,7 @@ export async function startService(options: ServiceOptions = {}) {
       catch (error) { if (!(error instanceof StoreError) || error.code !== "JOB_NOT_FOUND") throw error; }
       return { job: library.getJob(request.params.id) };
     });
-    const staticRoot = resolve(options.staticRoot ?? fileURLToPath(new URL("./web/", import.meta.url)));
+    const staticRoot = resolve(options.staticRoot ?? fileURLToPath(new URL(import.meta.url.endsWith(".ts") ? "./web/" : "../web/", import.meta.url)));
     if (existsSync(staticRoot)) {
       await app.register(fastifyStatic, { root: staticRoot, allowedPath: (path) => {
         try {
@@ -323,19 +348,63 @@ export async function startService(options: ServiceOptions = {}) {
         } catch { return false; }
       } });
     }
-    await app.listen({ host: "127.0.0.1", port: requestedPort });
+    for (let attempt = 0; ; attempt++) {
+      try { await app.listen({ host: "127.0.0.1", port: requestedPort + attempt }); break; }
+      catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "EADDRINUSE" || explicitPort || attempt >= 99 || requestedPort + attempt >= 65535) throw error;
+      }
+    }
     const address = app.server.address();
     if (!address || typeof address === "string") throw new DiagnosticError("未取得本地监听端口", { key: "diagnostics.server.m019" });
     instance.port = address.port;
     await writeInstance(home, instance);
+    serviceLog(home, "service.ready", { instanceId: instance.id, port: instance.port, version: VERSION });
     usageManager.start();
     if (options.startupRefresh !== false) {
-      worker.refreshSessions();
-      for (const repository of index.listRepositories()) worker.refresh(repository.id);
+      // 先发布 HTTP 就绪，再安排一次绑定启动范围的数据准备；不包含模型抽取或编码任务。
+      setImmediate(() => { void (async () => {
+        if (closing) return;
+        preparation.state = "running";
+        const history = worker.refreshSessions();
+        const maps = index.listRepositories().map(repository => worker.refresh(repository.id));
+        preparation.jobIds = [history.id, ...maps.map(job => job.id)];
+        serviceLog(home, "preparation.history", { jobIds: preparation.jobIds });
+        while (!closing) {
+          const job = library.getJob(history.id);
+          const jobs = maps.map(item => index.getJob(item.id));
+          const failure = [job, ...jobs].find(item => item.status === "failed" || item.status === "cancelled");
+          if (failure) throw new Error(failure.error ?? "startup_history_failed");
+          if (job.status === "complete" && jobs.every(item => item.status === "completed")) break;
+          await delay(100);
+        }
+        if (closing) return;
+        const version = library.currentVersion();
+        if (!version) throw new Error("startup_history_missing_version");
+        preparation.sourceVersion = version;
+        preparation.phase = "usage";
+        serviceLog(home, "preparation.usage", { version });
+        await usageManager!.prepare({ version });
+        if (closing) return;
+        preparation.phase = "overview";
+        serviceLog(home, "preparation.overview", { version });
+        const query = { version, window: "365" as const };
+        await overviewManager!.snapshot(query);
+        await overviewManager!.panel(query, "core");
+        if (closing) return;
+        preparation.state = "ready"; preparation.phase = "complete"; preparation.finishedAt = new Date().toISOString();
+        serviceLog(home, "preparation.ready", { version });
+      })().catch(error => {
+        if (closing) return;
+        preparation.state = "failed"; preparation.error = error instanceof Error ? error.message : String(error); preparation.finishedAt = new Date().toISOString();
+        // 原始错误保留在状态中按需读取，常规日志只记录阶段，避免带入正文或凭据。
+        serviceLog(home, "preparation.failed", { phase: preparation.phase });
+      }); });
     }
     sync.updateInterval(syncInterval);
     return { app, instance, close: () => app.close() };
   } catch (error) {
+    closing = true;
+    serviceLog(home, "startup.failed", { code: (error as NodeJS.ErrnoException).code ?? "STARTUP_FAILED" });
     unsubscribePreferences?.();
     autoSync?.close();
     await app.close().catch(() => undefined);

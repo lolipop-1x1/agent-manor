@@ -10,13 +10,15 @@ import { reclaimIndexBatch } from "./index/maintenance.js";
 
 if (!parentPort) throw new DiagnosticError("分析入口必须由 Worker 启动", { key: "diagnostics.worker.m001" });
 const port = parentPort;
-const options = workerData as { dbPath: string; roots?: DiscoverRoots };
+const options = workerData as { dbPath: string; roots?: DiscoverRoots; lifecycleHandshake?: boolean };
 const store = new AnalysisStore(options.dbPath);
 const sessions = new SessionStore(options.dbPath);
 let queue = Promise.resolve();
 let pending = 0;
 const cancelled = new Set<string>();
 const queued = new Set<string>();
+// 主线程停止服务时可以避开原生模块尚未初始化完成的窗口。
+if (options.lifecycleHandshake) port.postMessage({ ready: true });
 
 // 回收和解析共用串行 Worker，短批次之间让出执行权以接收新任务。
 const reclaimTimer = setInterval(() => {

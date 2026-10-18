@@ -37,6 +37,7 @@ function chunkText(revision: KnowledgeRevision, connection: SemanticConnection):
 
 /** 知识编码独立于会话索引；缓存命中也必须重新核对修订、范围和当前可用性。 */
 export class KnowledgeSemantic {
+  get busy(): boolean { return Boolean(this.runner) || this.checking; }
   private readonly db: Database.Database;
   private readonly scheduler: EmbeddingScheduler;
   private runner?: Promise<void>;

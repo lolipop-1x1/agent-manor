@@ -19,6 +19,9 @@ function diagnostic(error: unknown): string { return (error instanceof Error ? e
 function jobTitle(record: JobRecord): string | undefined { return record.preview.targets.length === 1 ? record.job.title ?? record.preview.targets[0]?.title : undefined; }
 
 export class KnowledgeManager {
+  activeJobs(): Pick<KnowledgeJob, "id" | "status">[] {
+    return this.state().jobs.map(id => this.record(id)?.job).filter((job): job is KnowledgeJob => Boolean(job && ["queued", "running"].includes(job.status))).map(job => ({ id: job.id, status: job.status }));
+  }
   private readonly config: KnowledgeConfigStore;
   private readonly scheduler: KnowledgeGenerationScheduler;
   private readonly pipeline: KnowledgeExtractionPipeline;

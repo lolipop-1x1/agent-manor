@@ -2,12 +2,18 @@ import { DiagnosticError } from "../i18n/diagnostics.js";
 import type { MessageDescriptor } from "../i18n/types.js";
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, open, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ApiErrorResponse, ServiceInstance, StatusResponse } from "../contracts.js";
 import { activeIndexMaintenance } from "../index/maintenance.js";
+import { VERSION } from "../version.js";
+import { serviceLog, serviceLogPath } from "./logging.js";
+
+export { serviceLogPath } from "./logging.js";
+export const SERVICE_PROTOCOL_VERSION = 1;
+export const DEFAULT_SERVICE_PORT = 16666;
 
 export const delay = (milliseconds: number): Promise<void> => new Promise((done) => setTimeout(done, milliseconds));
 export const dataHome = (home?: string): string => resolve(home ?? process.env.AGENT_MANOR_HOME ?? join(homedir(), ".agent-manor"));
@@ -33,15 +39,39 @@ export async function readInstance(home: string): Promise<ServiceInstance | unde
 export const serviceUrl = (instance: ServiceInstance): string => `http://127.0.0.1:${instance.port}`;
 
 export async function verifiedInstance(home: string): Promise<ServiceInstance | undefined> {
+  return (await serviceStatus(home)).instance;
+}
+
+export interface LocalServiceStatus {
+  running: boolean;
+  state: "running" | "stopped" | "starting" | "unreachable" | "foreign";
+  instance?: ServiceInstance;
+  status?: StatusResponse;
+  logPath: string;
+  stage?: string;
+}
+
+/** 状态检查不建目录、不获取锁，也不启动服务或后台任务。 */
+export async function serviceStatus(home = dataHome()): Promise<LocalServiceStatus> {
+  const base = { running: false, logPath: serviceLogPath(home) };
   const instance = await readInstance(home);
-  if (!instance || !alive(instance.pid)) return undefined;
+  if (!instance || !alive(instance.pid)) {
+    for (const name of ["startup.lock", "service.lock"]) {
+      try {
+        const owner = JSON.parse(await readFile(join(home, name, "owner.json"), "utf8")) as LockOwner;
+        if (alive(owner.pid)) return { ...base, state: "starting" };
+      } catch { /* 不存在或失效的锁不表示正在启动。 */ }
+    }
+    return { ...base, state: "stopped" };
+  }
   try {
-    const response = await fetch(`${serviceUrl(instance)}/api/v1/status`, { signal: AbortSignal.timeout(1000) });
-    if (!response.ok) return undefined;
+    const response = await fetch(`${serviceUrl(instance)}/api/v1/status?summary=true`, { signal: AbortSignal.timeout(2000) });
+    if (!response.ok) return { ...base, state: "unreachable" };
     const status = await response.json() as StatusResponse;
-    return status.instance.id === instance.id && status.instance.pid === instance.pid
-      && status.instance.port === instance.port && status.instance.host === instance.host ? instance : undefined;
-  } catch { return undefined; }
+    if (status.instance?.id !== instance.id || status.instance.pid !== instance.pid || status.instance.port !== instance.port
+      || status.instance.host !== instance.host) return { ...base, state: "foreign" };
+    return { ...base, running: true, state: "running", instance: { ...instance, version: status.version, protocolVersion: status.protocolVersion }, status };
+  } catch { return { ...base, state: "unreachable" }; }
 }
 
 /** 锁只凭死亡的 owner 或已过期的未初始化目录回收，从不终止锁中 PID。 */
@@ -120,38 +150,136 @@ export async function removeInstance(home: string, instance: ServiceInstance): P
 }
 
 export async function connectService(autoStart = true, home = dataHome()): Promise<ServiceInstance | undefined> {
-  const existing = await verifiedInstance(home);
-  if (existing || !autoStart) return existing;
+  if (!autoStart) return verifiedInstance(home);
+  return startBackground(home);
+}
+
+export interface BackgroundOptions { port?: number; waitData?: boolean; timeoutMs?: number }
+
+export async function assertNotUpdating(home: string): Promise<void> {
+  try {
+    const owner = JSON.parse(await readFile(join(home, "update.lock", "owner.json"), "utf8")) as LockOwner;
+    if (alive(owner.pid)) throw new RequestError("SERVICE_BUSY", "程序正在更新，请稍后再执行查询或启动", { key: "diagnostics.service.runtime.updating" });
+  } catch (error) { if (error instanceof RequestError) throw error; }
+}
+
+export function assertServiceCompatible(status: StatusResponse): void {
+  if (status.version !== VERSION || status.protocolVersion !== SERVICE_PROTOCOL_VERSION) {
+    throw new RequestError("SERVICE_VERSION_MISMATCH", "后台版本与当前程序不同，请显式重启或更新后台", { key: "diagnostics.service.runtime.versionMismatch", params: { version: status.version, expected: VERSION } });
+  }
+}
+
+export async function startBackground(home = dataHome(), options: BackgroundOptions = {}): Promise<ServiceInstance> {
+  await assertNotUpdating(home);
+  const reuse = async (): Promise<ServiceInstance | undefined> => {
+    const current = await serviceStatus(home);
+    if (current.running) {
+      assertServiceCompatible(current.status!);
+      if (options.waitData) await waitForPreparation(current.instance!, options.timeoutMs);
+      return current.instance;
+    }
+    if (current.state === "foreign" || current.state === "unreachable") throw new RequestError("SERVICE_IDENTITY_UNVERIFIED", "已有实例尚未通过身份检查，未启动另一个服务", { key: "diagnostics.service.runtime.identity" });
+    return undefined;
+  };
+  const existing = await reuse();
+  if (existing) return existing;
   const release = await acquireLock(home, "startup.lock", 20_000);
   try {
-    const ready = await verifiedInstance(home);
+    await assertNotUpdating(home);
+    const ready = await reuse();
     if (ready) return ready;
     const extension = import.meta.url.endsWith(".ts") ? "ts" : "js";
     const cliPath = fileURLToPath(new URL(`../cli.${extension}`, import.meta.url));
     const args = extension === "ts" ? ["--import", fileURLToPath(import.meta.resolve("tsx/esm")), cliPath, "--lang", "auto", "serve"] : [cliPath, "--lang", "auto", "serve"];
+    if (options.port !== undefined) args.push("--port", String(options.port));
+    serviceLog(home, "background.start", { version: VERSION, port: options.port ?? DEFAULT_SERVICE_PORT });
     const child = spawn(process.execPath, args, { detached: true, stdio: "ignore", cwd: dirname(cliPath), env: { ...process.env, AGENT_MANOR_HOME: home } });
     let failure: Error | undefined;
+    let exited = false;
     child.once("error", (error) => { failure = error; });
+    child.once("exit", () => { exited = true; });
     child.unref();
-    const deadline = Date.now() + 20_000;
+    const deadline = Date.now() + (options.timeoutMs ?? 20_000);
     while (Date.now() < deadline || await activeIndexMaintenance(home, child.pid)) {
       if (failure) throw failure;
       const instance = await verifiedInstance(home);
-      if (instance) return instance;
-      if (child.exitCode !== null) throw new DiagnosticError(`本地后台启动失败（${child.exitCode}）`, { key: "diagnostics.service.runtime.m003", params: { p0: String(child.exitCode) } });
+      if (instance) {
+        const status = await apiRequest<StatusResponse>(instance, "/status?summary=true");
+        assertServiceCompatible(status);
+        if (options.waitData) await waitForPreparation(instance, options.timeoutMs);
+        return instance;
+      }
+      if (exited) throw new DiagnosticError(`本地后台启动失败（${child.exitCode}），日志：${serviceLogPath(home)}`, { key: "diagnostics.service.runtime.startFailed", params: { code: String(child.exitCode), path: serviceLogPath(home) } });
       await delay(100);
     }
     throw new DiagnosticError("本地后台启动超时，请运行 agent-manor serve 查看错误", { key: "diagnostics.service.runtime.m004" });
   } finally { await release(); }
 }
 
+export async function waitForPreparation(instance: ServiceInstance, timeoutMs = 120_000): Promise<StatusResponse> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const status = await apiRequest<StatusResponse>(instance, "/status?summary=true");
+    assertServiceCompatible(status);
+    if (!status.preparation) throw new RequestError("SERVICE_VERSION_MISMATCH", "后台不支持启动准备状态", { key: "diagnostics.service.runtime.versionMismatch", params: { version: status.version, expected: VERSION } });
+    if (status.preparation.state === "failed") throw new RequestError("PREPARATION_FAILED", status.preparation.error ?? "启动数据准备失败", { key: "diagnostics.service.runtime.preparationFailed" });
+    if (["ready", "skipped"].includes(status.preparation.state)) return status;
+    if (Date.now() >= deadline) throw new RequestError("WAIT_TIMEOUT", "等待数据准备超时，后台仍继续运行", { key: "diagnostics.service.runtime.waitTimeout" });
+    await delay(100);
+  }
+}
+
+export async function stopService(home = dataHome(), options: { timeoutMs?: number; wait?: boolean; allowBusy?: boolean } = {}): Promise<{ stopped: boolean; instance?: ServiceInstance }> {
+  const initial = await serviceStatus(home);
+  if (!initial.running) {
+    if (initial.state !== "stopped") throw new RequestError("SERVICE_IDENTITY_UNVERIFIED", "服务身份尚未核验，未停止任何进程", { key: "diagnostics.service.runtime.identity" });
+    return { stopped: false };
+  }
+  const instance = initial.instance!;
+  if (initial.status!.protocolVersion !== SERVICE_PROTOCOL_VERSION) throw new RequestError("SERVICE_VERSION_MISMATCH", "旧后台不支持安全停止协议", { key: "diagnostics.service.runtime.versionMismatch", params: { version: initial.status!.version, expected: VERSION } });
+  const deadline = Date.now() + (options.timeoutMs ?? 30_000);
+  let current = initial;
+  while (current.status?.activeTasks?.length || ["pending", "running"].includes(current.status?.preparation?.state ?? "")) {
+    if (options.allowBusy) break;
+    if (!options.wait) throw new RequestError("SERVICE_BUSY", "后台仍有任务运行，请等待任务完成后停止", { key: "diagnostics.service.runtime.busy" });
+    if (Date.now() >= deadline) throw new RequestError("WAIT_TIMEOUT", "等待任务结束超时，后台仍继续运行", { key: "diagnostics.service.runtime.waitTimeout" });
+    await delay(100);
+    current = await serviceStatus(home);
+    if (!current.running || current.instance?.id !== instance.id) throw new RequestError("SERVICE_IDENTITY_UNVERIFIED", "等待期间服务实例发生变化", { key: "diagnostics.service.runtime.identity" });
+  }
+  await apiRequest(instance, "/stop", "POST", options.allowBusy ? { allowBusy: true } : undefined);
+  for (;;) {
+    // HTTP 完全关闭且实例记录移除后，才向调用者报告停止完成。
+    const record = await readInstance(home);
+    if (record?.id !== instance.id) return { stopped: true, instance };
+    if (!alive(instance.pid)) { await removeInstance(home, instance); return { stopped: true, instance }; }
+    if (Date.now() >= deadline) throw new RequestError("STOP_TIMEOUT", "服务仍在停止，请查看状态和日志", { key: "diagnostics.service.runtime.stopTimeout" });
+    await delay(100);
+  }
+}
+
+export async function readServiceLogs(home = dataHome(), options: { lines?: number } = {}): Promise<{ path: string; text: string }> {
+  const path = serviceLogPath(home), lines = options.lines ?? 100;
+  if (!Number.isSafeInteger(lines) || lines < 1 || lines > 10000) throw new RequestError("INVALID_INPUT", "日志行数必须是 1 到 10000 的整数", { key: "diagnostics.service.runtime.logLines" });
+  let file;
+  try { file = await open(path, "r"); }
+  catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return { path, text: "" }; throw error; }
+  try {
+    const size = (await file.stat()).size, length = Math.min(size, 2 * 1024 * 1024), buffer = Buffer.alloc(length);
+    await file.read(buffer, 0, length, size - length);
+    const rows = buffer.toString("utf8").trimEnd().split("\n");
+    if (length < size) rows.shift();
+    return { path, text: rows.slice(-lines).join("\n") };
+  } finally { await file.close(); }
+}
+
 export class RequestError extends Error {
   constructor(readonly code: string, message: string, readonly messageDescriptor?: MessageDescriptor) { super(message); }
 }
 
-export async function apiRequest<T>(instance: ServiceInstance, path: string, method = "GET", body?: unknown): Promise<T> {
+export async function apiRequest<T>(instance: ServiceInstance, path: string, method = "GET", body?: unknown, headers: Record<string, string> = {}): Promise<T> {
   const response = await fetch(`${serviceUrl(instance)}/api/v1${path}`, {
-    method, headers: { "x-agent-manor-instance": instance.id, ...(body === undefined ? {} : { "Content-Type": "application/json" }) },
+    method, headers: { ...headers, "x-agent-manor-instance": instance.id, ...(body === undefined ? {} : { "Content-Type": "application/json" }) },
     body: body === undefined ? undefined : JSON.stringify(body), signal: AbortSignal.timeout(30_000),
   });
   const data = await response.json() as T | ApiErrorResponse;

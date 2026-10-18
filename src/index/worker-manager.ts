@@ -23,7 +23,8 @@ export function sessionRequestCovers(existing: SessionWorkerRequest, requested: 
 
 /** 一个长期 Worker 串行分析全部仓库，主线程只登记任务和查询完整版本。 */
 export class WorkerManager {
-  private worker: Worker;
+  private worker?: Worker;
+  private workerReady?: Promise<void>;
   private readonly pending = new Map<string, ((job: Job) => void)[]>();
   private readonly cancelled = new Map<string, Job>();
   private readonly active = new Set<string>();
@@ -38,7 +39,8 @@ export class WorkerManager {
   constructor(private readonly store: AnalysisStore, private readonly options: WorkerManagerOptions = {}, private readonly sessions?: SessionStore) {
     store.recoverJobs();
     sessions?.recoverJobs();
-    this.worker = this.createWorker();
+    // 注入的自定义 Worker 可以在任务前完成控制握手；默认原生 Worker 按首次任务启动。
+    if (options.workerUrl) this.worker = this.createWorker();
   }
 
   private createWorker(): Worker {
@@ -47,8 +49,16 @@ export class WorkerManager {
     const workerUrl = options.workerUrl ?? new URL(`../worker.${extension}`, import.meta.url);
     // tsx 的源码入口需要在 Worker 自己的隔离环境中安装 ESM 解析钩子。
     const worker = extension === "ts" && !options.workerUrl
-      ? new Worker(`import('tsx/esm/api').then(({register}) => { register(); return import(${JSON.stringify(workerUrl.href)}); });`, { eval: true, workerData: { dbPath: store.dbPath, roots: options.roots } })
-      : new Worker(workerUrl, { workerData: { dbPath: store.dbPath, roots: options.roots } });
+      ? new Worker(`import('tsx/esm/api').then(({register}) => { register(); return import(${JSON.stringify(workerUrl.href)}); });`, { eval: true, workerData: { dbPath: store.dbPath, roots: options.roots, lifecycleHandshake: true } })
+      : new Worker(workerUrl, { workerData: { dbPath: store.dbPath, roots: options.roots, lifecycleHandshake: !options.workerUrl } });
+    if (!options.workerUrl) {
+      this.workerReady = new Promise(resolve => {
+        const ready = () => { worker.removeListener("message", message); resolve(); };
+        const message = (value: { ready?: boolean }) => { if (value.ready) ready(); };
+        worker.on("message", message);
+        worker.once("error", ready); worker.once("exit", ready);
+      });
+    }
     worker.on("message", (message: { jobId?: string; reclaim?: IndexMaintenanceResult }) => {
       if (this.worker !== worker) return;
       if (message.reclaim) this.reclaimStatus = message.reclaim;
@@ -63,7 +73,7 @@ export class WorkerManager {
 
   private enqueue(repositoryId: string, clearCache: boolean): Job {
     if (this.closed) throw new DiagnosticError("分析 Worker 已关闭", { key: "diagnostics.index.workerManager.m001" });
-    if (this.failure) {
+    if (!this.worker || this.failure) {
       // 失败任务保持失败；仅在下一次明确刷新时重建，避免自动重试同一溢出任务。
       this.worker = this.createWorker();
       this.failure = undefined;
@@ -97,7 +107,7 @@ export class WorkerManager {
       this.pending.delete(job.id);
     }
     this.lastMapChecks.delete(repositoryId);
-    if (!this.closed && !this.failure && jobIds.length) this.worker.postMessage({ type: "cancel", jobIds });
+    if (!this.closed && !this.failure && jobIds.length) this.worker?.postMessage({ type: "cancel", jobIds });
     this.changed();
   }
 
@@ -148,7 +158,7 @@ export class WorkerManager {
     const request: SessionRefreshOptions = clearCache ? { mode: "full" } : { client: options.client, mode: options.mode ?? "quick" };
     const existing = this.coveringSessionJob(clearCache, request);
     if (existing) return existing;
-    if (this.failure) { this.worker = this.createWorker(); this.failure = undefined; }
+    if (!this.worker || this.failure) { this.worker = this.createWorker(); this.failure = undefined; }
     const job = this.sessions.createJob(request);
     this.sessionActive.add(job.id);
     this.sessionRequests.set(job.id, { ...request, clearCache });
@@ -204,7 +214,15 @@ export class WorkerManager {
   async close(): Promise<void> {
     if (this.closed) return;
     this.closed = true;
-    await this.worker.terminate();
+    if (this.worker) {
+      // 原生 SQLite 模块正在初始化时先等待就绪，避免在 N-API 注册中途强制终止线程。
+      if (this.workerReady) {
+        let timer: NodeJS.Timeout | undefined;
+        try { await Promise.race([this.workerReady, new Promise<void>(resolve => { timer = setTimeout(resolve, 5000); timer.unref(); })]); }
+        finally { if (timer) clearTimeout(timer); }
+      }
+      await this.worker.terminate();
+    }
     this.failed("后台停止时刷新尚未完成", { key: "diagnostics.index.workerManager.interrupted" });
   }
 }

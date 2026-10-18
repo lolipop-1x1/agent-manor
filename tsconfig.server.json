@@ -3,12 +3,17 @@
   "compilerOptions": {
     "module": "NodeNext",
     "moduleResolution": "NodeNext",
-    "types": ["node"],
-    "rootDir": "src",
+    "types": [
+      "node"
+    ],
+    "rootDir": ".",
     "outDir": "dist",
     "declaration": true,
     "sourceMap": true,
     "noEmitOnError": true
   },
-  "include": ["src/**/*.ts"]
+  "include": [
+    "src/**/*.ts",
+    "packages/cli/src/**/*.ts"
+  ]
 }

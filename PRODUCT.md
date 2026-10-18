@@ -66,8 +66,8 @@ AgentManor 是本地优先的 Agent 工作环境管家。会话库、代码地�
 
 - 总览中的任务实际用时、快速模式、推理强度和成果评价仍缺少统一数据依据，保留为后续支持项；总览当前展示有记录依据的轮次经过时间、用量峰值和使用偏好。
 - 配置同步、安装市场、多机器同步和多 Agent 调度仍是早期候选，尚未成为本次确认的实施范围。
-- 按当前仓库发布状态，提供本地交付包，npm 包保持 `private`，尚未公共发布；已确认正式交付采用 MIT，当前许可文件与包元数据仍待实施。后续发布和平台扩展须完成对应验收。
-- 已确认 npm 交付、完整 CLI 与配套 Skill 的后续范围：包和主命令使用 agent-manor，另提供 am 命令；CLI 使用 TypeScript 与 Commander.js，建立独立内部工程，统一产品包同版本交付编译后的 JavaScript、后台、Web 与 Skill。命令覆盖页面业务能力，Skill 按场景与功能组织参考并支持显式安装。首版目标为 macOS arm64/x64、Linux arm64/x64、Windows x64，使用 Node.js 24，均须完成安装和生命周期验收；当前已实现的平台边界仍以 README 为准。启动按服务就绪返回，数据准备在后台继续，并支持进度及显式等待。完整目标见 [交付设计](docs/design/npm-cli-distribution.md)，交付与启动边界见 [ADR 0020](docs/adr/0020-independent-cli-unified-distribution.md) 和 [ADR 0021](docs/adr/0021-service-readiness-and-data-preparation.md)。
+- 按当前仓库发布状态，提供本地交付包，npm 包尚未公共发布；MIT 许可、公共 registry 元数据与两个命令入口已配置。平台验收范围见交付验证记录，公共发布单独执行。
+- npm 交付、完整 CLI 与配套 Skill 已按确认方案实现：包和主命令使用 agent-manor，另提供 am 命令；CLI 使用 TypeScript 与 Commander.js，建立独立内部工程，统一产品包同版本交付编译后的 JavaScript、后台、Web 与 Skill。命令覆盖页面业务能力，Skill 按场景与功能组织参考并支持显式安装。首版目标为 macOS arm64/x64、Linux arm64/x64、Windows x64，使用 Node.js 24，实际安装和生命周期验收环境见 [交付验证](docs/validation/npm-cli-distribution.md)。启动按服务就绪返回，数据准备在后台继续，并支持进度及显式等待。完整目标见 [交付设计](docs/design/npm-cli-distribution.md)，交付与启动边界见 [ADR 0020](docs/adr/0020-independent-cli-unified-distribution.md) 和 [ADR 0021](docs/adr/0021-service-readiness-and-data-preparation.md)。
 
 ## Brand Commitments
 

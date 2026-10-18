@@ -7,6 +7,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import test from "node:test";
+import { VERSION } from "../src/version.js";
 import type { CoverageResult, ServiceInstance } from "../src/contracts.js";
 import { cliErrorOutput, createProgram, humanOutput, resolveCliLanguage } from "../src/cli.js";
 import { formatDateTime, translate } from "../src/i18n/index.js";
@@ -193,7 +194,7 @@ test("CLI status 维护提示求值中英文描述，原始错误和 JSON 契约
   const home = join(directory, "data");
   let instance: ServiceInstance;
   const maintenance = { status: "failed", reason: "error", messageDescriptor: { key: "diagnostics.index.maintenance.error" }, details: "synthetic external disk failure" };
-  const payload = () => ({ instance, version: "fixture-version", repositories: [], jobs: [], indexMaintenance: maintenance });
+  const payload = () => ({ instance, version: VERSION, protocolVersion: 1, repositories: [], jobs: [], indexMaintenance: maintenance });
   const server = createServer((_request, response) => {
     response.setHeader("Content-Type", "application/json");
     response.end(JSON.stringify(payload()));
@@ -202,7 +203,7 @@ test("CLI status 维护提示求值中英文描述，原始错误和 JSON 契约
     await new Promise<void>(done => server.listen(0, "127.0.0.1", done));
     const address = server.address();
     assert.ok(address && typeof address !== "string");
-    instance = { id: "fixture-maintenance-service-identity", pid: process.pid, host: "127.0.0.1", port: address.port, startedAt: "2026-01-01T00:00:00Z" };
+    instance = { id: "fixture-maintenance-service-identity", version: VERSION, protocolVersion: 1, pid: process.pid, host: "127.0.0.1", port: address.port, startedAt: "2026-01-01T00:00:00Z" };
     await mkdir(home);
     await writeFile(join(home, "service.json"), JSON.stringify(instance));
     const before = JSON.stringify(payload());
@@ -215,7 +216,9 @@ test("CLI status 维护提示求值中英文描述，原始错误和 JSON 契约
       assert.doesNotMatch(human.stdout, /diagnostics\.index\.maintenance\.error/);
       const json = await command(directory, ["--lang", language, "--json", "status"]);
       assert.equal(json.code, 0, json.stderr);
-      assert.equal(json.stdout.trim(), before);
+      const status = JSON.parse(json.stdout);
+      assert.equal(status.running, true);
+      assert.deepEqual(status.status, JSON.parse(before));
     }
     assert.equal(JSON.stringify(payload()), before);
   } finally {
@@ -232,16 +235,16 @@ test("参数覆盖坏偏好和无效环境仍能自动启动，内部服务启�
   try {
     await mkdir(home);
     await writeFile(preferencesPath(home), original);
-    const result = await command(directory, ["--lang", "en", "status", "--json"], overrides);
+    const result = await command(directory, ["--lang", "en", "start", "--json"], overrides);
     assert.equal(result.code, 0, result.stderr);
     assert.equal(result.stderr, "");
     assert.equal(JSON.parse(result.stdout).instance.host, "127.0.0.1");
     assert.equal(await readFile(preferencesPath(home), "utf8"), original);
-    const stopped = await command(directory, ["--lang", "auto", "stop", "--json"], overrides);
+    const stopped = await command(directory, ["--lang", "auto", "stop", "--wait", "--json"], overrides);
     assert.equal(stopped.code, 0, stopped.stderr);
-    assert.deepEqual(JSON.parse(stopped.stdout), { stopping: true });
+    assert.equal(JSON.parse(stopped.stdout).stopped, true);
   } finally {
-    await command(directory, ["--lang", "auto", "stop", "--json"], overrides);
+    await command(directory, ["--lang", "auto", "stop", "--wait", "--json"], overrides);
     for (let attempt = 0; attempt < 100; attempt++) {
       try { await readFile(join(home, "service.json")); } catch { break; }
       await delay(50);
@@ -262,7 +265,7 @@ test("执行期间语言固定，下次命令读取更新偏好，pretty JSON �
   let hold = true;
   const server = createServer((request, response) => {
     response.setHeader("Content-Type", "application/json");
-    if (request.url === "/api/v1/status") response.end(JSON.stringify({ instance }));
+    if (request.url?.split("?")[0] === "/api/v1/status") response.end(JSON.stringify({ instance, version: VERSION, protocolVersion: 1 }));
     else if (request.url === "/api/v1/repositories/missing/coverage") {
       response.statusCode = 404;
       response.end(JSON.stringify({ error: { code: "REPOSITORY_NOT_FOUND", message: "原始服务产品错误",
@@ -278,7 +281,7 @@ test("执行期间语言固定，下次命令读取更新偏好，pretty JSON �
     await new Promise<void>(done => server.listen(0, "127.0.0.1", done));
     const address = server.address();
     assert.ok(address && typeof address !== "string");
-    instance = { id: "fixture-service-language-identity", pid: process.pid, host: "127.0.0.1", port: address.port, startedAt: "2026-01-01T00:00:00Z" };
+    instance = { id: "fixture-service-language-identity", version: VERSION, protocolVersion: 1, pid: process.pid, host: "127.0.0.1", port: address.port, startedAt: "2026-01-01T00:00:00Z" };
     await mkdir(home, { recursive: true });
     await writeFile(join(home, "service.json"), JSON.stringify(instance));
     const running = command(directory, ["coverage", value.repository.id]);

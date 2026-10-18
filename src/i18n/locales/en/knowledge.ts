@@ -376,5 +376,6 @@ const messages: MessageCatalog = {
   "knowledge.estimatedInputUsage": "Estimated input tokens without reported usage",
   "knowledge.budgetHelp": "Budget and pricing help",
   "knowledge.budgetHelpBody": "Task input limits include extraction, merging, rereads, and retries. Requests reserve a conservative input bound before sending and settle reported usage afterward. Failed requests retain reservations to prevent retry overspending. Cost budgets require input and output prices; unreported cache hits do not receive an assumed discount.",
+  "knowledge.errors.management_confirmation": "Explicit confirmation of the exact operation is required; review it again if the contents changed.",
 };
 export default messages;

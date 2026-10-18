@@ -1,15 +1,15 @@
 {
   "name": "agent-manor",
   "version": "0.1.0",
-  "private": true,
   "description": "本地优先的 Agent 历史与仓库代码活动分析工具",
   "type": "module",
-  "license": "UNLICENSED",
+  "license": "MIT",
   "engines": {
     "node": ">=24.0.0 <25"
   },
   "bin": {
-    "agent-manor": "dist/cli.js"
+    "agent-manor": "dist/cli.js",
+    "am": "dist/cli.js"
   },
   "files": [
     "dist/",
@@ -33,12 +33,13 @@
     "docs/design/semantic-search.md",
     "docs/validation/semantic-search.md",
     "docs/design/knowledge-library.md",
-    "docs/validation/knowledge-library.md"
+    "docs/validation/knowledge-library.md",
+    "docs/validation/npm-cli-distribution.md"
   ],
   "scripts": {
     "check:public": "node scripts/check-public-content.mjs",
     "build": "npm run build:server && npm run build:web",
-    "build:server": "tsc -p tsconfig.server.json",
+    "build:server": "tsc -p tsconfig.server.json && node scripts/package-entries.mjs",
     "build:web": "vite build",
     "build:site": "vite build --config site/vite.config.ts",
     "dev:site": "vite --config site/vite.config.ts",
@@ -54,7 +55,11 @@
     "test:sqlite": "node scripts/check-sqlite.mjs",
     "dev:web": "vite",
     "prepack": "npm run check:public && npm run build && node scripts/check-package.mjs",
-    "check:i18n": "node --import tsx scripts/check-i18n.mjs"
+    "check:i18n": "node --import tsx scripts/check-i18n.mjs",
+    "check:cli": "npm run check --workspace @agent-manor/cli",
+    "test:cli": "npm run test --workspace @agent-manor/cli",
+    "test:package": "node scripts/test-installed-package.mjs",
+    "test:cli:installed": "node scripts/e2e-npm-cli.mjs"
   },
   "dependencies": {
     "@fastify/static": "10.1.5",
@@ -102,5 +107,27 @@
     "typescript": "7.0.2",
     "unified": "11.0.5",
     "vite": "8.3.2"
-  }
+  },
+  "workspaces": [
+    "packages/cli"
+  ],
+  "publishConfig": {
+    "registry": "https://registry.npmjs.org/",
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/lolipop-1x1/agent-manor.git"
+  },
+  "homepage": "https://github.com/lolipop-1x1/agent-manor#readme",
+  "bugs": {
+    "url": "https://github.com/lolipop-1x1/agent-manor/issues"
+  },
+  "keywords": [
+    "agent",
+    "cli",
+    "local-first",
+    "session-history",
+    "knowledge"
+  ]
 }
