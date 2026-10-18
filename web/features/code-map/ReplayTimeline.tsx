@@ -105,18 +105,17 @@ const TimelineLane = memo(function TimelineLane({ entries, width, duration, numb
   const { t } = useI18n();
   const [focused, setFocused] = useState(0);
   const paths = useMemo(() => {
-    const groups = new Map<string, string[]>(), markers = { unknown: [] as string[], failure: [] as string[] };
+    const groups = new Map<string, string[]>(), failures: string[] = [];
     for (const entry of entries) {
       const x = Math.max(5, Math.min(width - 5, entry.position / duration * width));
       const kind = entry.step.activities.some(activity => activity.kind === "edit") ? "edit" : entry.step.activities[0]?.kind ?? "read";
       const list = groups.get(kind) ?? [];
       list.push(kind === "edit" ? `M${x - 3} 17h6v6h-6Z` : kind === "search" ? `M${x} 15l5 5l-5 5l-5 -5Z` : `M${x - 3} 20a3 3 0 1 0 6 0a3 3 0 1 0 -6 0`);
       groups.set(kind, list);
-      // 状态独立于轨道填充：问号表示未知，感叹号表示失败。
-      if (entry.step.activities.some(activity => activity.status === "failure")) markers.failure.push(`M${x + 5} 10v5m0 2v1`);
-      else if (entry.step.activities.some(activity => activity.status === "unknown")) markers.unknown.push(`M${x + 3} 11c0-3 5-3 5 0c0 2-2.5 1-2.5 4m0 2v1`);
+      // 失败单独标记；未知结果在预览和详情中按需查看，避免密集问号遮挡轨迹。
+      if (entry.step.activities.some(activity => activity.status === "failure")) failures.push(`M${x + 5} 10v5m0 2v1`);
     }
-    return { groups: [...groups].map(([kind, parts]) => ({ kind, d: parts.join("") })), markers };
+    return { groups: [...groups].map(([kind, parts]) => ({ kind, d: parts.join("") })), failures: failures.join("") };
   }, [entries, width, duration]);
   const show = (values: PositionedStep[], element: HTMLElement | SVGSVGElement, pointer?: { clientX: number; clientY: number }) => {
     const rect = element.getBoundingClientRect(), entry = values[0];
@@ -143,7 +142,7 @@ const TimelineLane = memo(function TimelineLane({ entries, width, duration, numb
       else if (event.key === "Escape") { event.stopPropagation(); preview([], track, number, 0, 0); }
     }}>
     <svg width={width} height="42" aria-hidden="true">{paths.groups.map(path => <path key={path.kind} d={path.d} className={`replay-lane-points ${path.kind}`} />)}
-      {Object.entries(paths.markers).map(([status, parts]) => <path key={status} d={parts.join("")} className={`replay-lane-status ${status}`} />)}</svg>
+      {paths.failures && <path d={paths.failures} className="replay-lane-status failure" />}</svg>
     {entries.length <= 250 && entries.map(entry => <button key={entry.step.id} tabIndex={-1} disabled={disabled} className="replay-step-hit" data-step-id={entry.step.id} aria-label={label(entry.step)} style={{ left: Math.max(0, Math.min(width - 16, entry.position / duration * width - 8)) }}
       onClick={event => { event.stopPropagation(); preview([], track, number, 0, 0); select(entry.step); }} />)}
   </div>;

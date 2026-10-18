@@ -32,7 +32,6 @@
 .replay-callout-marker > .replay-symbol { color: inherit; }
 .replay-marker-state { font-size: 10px; line-height: 1; font-style: normal; font-weight: 700; }
 .replay-marker-state.failure { color: var(--danger); }
-.replay-marker-state.unknown { color: var(--text); }
 .replay-readable-map .replay-map-marker > :not(text) { fill: var(--track-color); }
 .replay-readable-map .replay-map-marker > .replay-map-status { fill: var(--surface); stroke: var(--text); stroke-width: 1; }
 .replay-map-marker .replay-map-status-label { fill: var(--text); font-size: 9px; }

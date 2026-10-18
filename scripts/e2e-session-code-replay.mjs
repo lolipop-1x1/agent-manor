@@ -413,13 +413,39 @@ async function verifyReplayUsability(page, fixture, observations) {
   await preview.waitFor(); await lane.press("Enter");
   await root.locator('.replay-evidence[data-mode="inspect"]').waitFor();
   await button("关闭活动证据").click();
-  ensure((await root.locator(".replay-legend").innerText()).includes("未知"), "图例没有解释未知状态");
+  ensure(await root.locator(".replay-lane-status.unknown,.replay-marker-state.unknown,.replay-status-symbol.unknown").count() === 0, "地图或时间轴仍生成密集未知问号");
+  ensure(!(await root.locator(".replay-legend").innerText()).includes("未知"), "图例仍常驻未知问号");
   ensure((await root.locator(".replay-legend").innerText()).includes("失败"), "图例没有解释失败状态");
   ensure((await root.locator(".replay-legend").innerText()).includes("折叠"), "图例没有解释折叠空档");
+  await choose("布局稳定回放");
+  if (!await root.locator(".replay-evidence").count()) await button("当前活动").click();
+  const measurements = [];
+  const measure = async () => {
+    await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+    measurements.push(await root.locator(".code-map").evaluate(element => ({ width: element.getBoundingClientRect().width, height: element.getBoundingClientRect().height, scale: Number(element.dataset.scale) })));
+  };
+  await measure();
+  for (let i = 0; i < 4; i++) { await button("下一活动").click(); await measure(); }
+  for (const key of ["width", "height", "scale"]) ensure(Math.max(...measurements.map(value => value[key])) - Math.min(...measurements.map(value => value[key])) < (key === "scale" ? 1e-8 : 1), "右侧摘要内容变化导致地图尺寸或镜头跳变");
+  await root.locator(".replay-follow-activity").first().click();
+  const pane = root.locator('.replay-evidence[data-mode="inspect"]');
+  const viewSession = pane.getByRole("button", { name: "查看会话", exact: true });
+  const loadEvidence = pane.getByRole("button", { name: "读取原始证据", exact: true });
+  const [viewRect, evidenceRect] = await Promise.all([viewSession.boundingBox(), loadEvidence.boundingBox()]);
+  ensure(Math.abs(viewRect.y - evidenceRect.y) < .5 && Math.abs(viewRect.height - evidenceRect.height) < .5, "右侧证据动作没有对齐");
+  await button("关闭活动证据").click();
+  await root.locator(".replay-lane").first().focus();
+  await root.locator(".replay-lane").first().press("Home");
+  await root.locator(".replay-lane").first().press("ArrowRight");
+  await root.locator(".replay-lane").first().press("ArrowRight");
+  await root.locator(".replay-lane").first().press("ArrowRight");
+  const unknownPreview = page.getByRole("tooltip", { name: "活动预览", exact: true });
+  ensure((await unknownPreview.innerText()).includes("结果未知"), "移除问号后丢失真实未知状态文字");
+  await root.locator(".replay-lane").first().press("Escape");
   return { sessionFiles, repositoryFiles: fixture.repositoryFiles, denseLaneSteps: 312, overlapCalls: 7, defaultScope: true,
     directoryBreadcrumbs: true, readableTinyLabel: true, moduleOverview: true, manualCameraStopsFollow: true, followWithoutRawRequests: true,
     speeds: [16, 24, 32, 64, 128], invalidSpeeds: ["empty", 0, 257], fullscreenPlayer: true, fullscreenPortal: true,
-    denseHover: true, keyboardPreview: true, inspectFocusRestoration: true, statusAndGapLegend: true };
+    denseHover: true, keyboardPreview: true, inspectFocusRestoration: true, statusAndGapLegend: true, stableMapGeometry: true, alignedEvidenceActions: true, unknownDetailsPreserved: true };
 }
 
 let service, opened = false;
@@ -471,6 +497,13 @@ try {
       ...patch("large-patch", ["src/a.ts"], 8),
       ...command("large-doc-read", "cat docs/guide.md", 12, "alpha\n"),
       ...patch("large-tiny-patch", ["src/modules/tiny.ts"], 60),
+    ]],
+    ["replay-layout", "布局稳定回放", [
+      ...command("layout-first", "cat src/a.ts", 2, "alpha\n"),
+      ...patch("layout-batch", Array.from({ length: 40 }, (_, index) => `src/modules/unit-${index}.ts`), 4),
+      ...command("layout-single", "cat docs/guide.md", 6, "alpha\n"),
+      ...patch("layout-unknown", Array.from({ length: 40 }, (_, index) => `src/modules/unit-${index}.ts`), 8, "unknown"),
+      ...command("layout-last", "cat src/a.ts", 14, "alpha\n"),
     ]],
     ["replay-dense-lane", "密集单轨悬浮回放", [
       ...Array.from({ length: 303 }, (_, index) => command(`dense-lane-${index}`, "cat src/modules/tiny.ts", 2 + index * .05, "export const tiny = 1;\n")).flat(),
