@@ -36,27 +36,29 @@ export function registerSearchFunctions(database: Database.Database): void {
   });
 }
 
-/** 正文仍由会话表唯一保存，两类 FTS 只保存词项和显式消息键。 */
+/** 对话用精确三字候选，全过程保留字符词项；原始正文只在会话表保存。 */
 export function initializeSearchIndex(database: Database.Database): void {
   registerSearchFunctions(database);
   database.exec(`
-    CREATE VIRTUAL TABLE IF NOT EXISTS session_message_search USING fts5(
+    CREATE VIRTUAL TABLE IF NOT EXISTS session_dialogue_search USING fts5(
       text, tokenize='trigram', content='', contentless_delete=1, detail=none);
-    CREATE TABLE IF NOT EXISTS session_search_state (id INTEGER PRIMARY KEY CHECK(id=1), cursor INTEGER NOT NULL, complete INTEGER NOT NULL);
-    INSERT OR IGNORE INTO session_search_state VALUES(1,0,NOT EXISTS(SELECT 1 FROM session_messages LIMIT 1));
-    CREATE TRIGGER IF NOT EXISTS session_search_insert AFTER INSERT ON session_messages BEGIN
-      INSERT INTO session_message_search(rowid,text) VALUES(new.message_key,new.text);
+    CREATE TABLE IF NOT EXISTS session_dialogue_search_state (id INTEGER PRIMARY KEY CHECK(id=1), cursor INTEGER NOT NULL, complete INTEGER NOT NULL);
+    INSERT OR IGNORE INTO session_dialogue_search_state VALUES(1,0,NOT EXISTS(SELECT 1 FROM session_messages WHERE kind IN ('user','assistant') LIMIT 1));
+    CREATE TRIGGER IF NOT EXISTS session_dialogue_insert AFTER INSERT ON session_messages WHEN new.kind IN ('user','assistant') BEGIN
+      INSERT INTO session_dialogue_search(rowid,text) VALUES(new.message_key,new.text);
     END;
-    CREATE TRIGGER IF NOT EXISTS session_search_update AFTER UPDATE OF text ON session_messages WHEN old.text<>new.text BEGIN
-      INSERT OR REPLACE INTO session_message_search(rowid,text) VALUES(new.message_key,new.text);
+    CREATE TRIGGER IF NOT EXISTS session_dialogue_update AFTER UPDATE OF text,kind ON session_messages
+      WHEN (old.kind IN ('user','assistant') OR new.kind IN ('user','assistant')) AND (old.text<>new.text OR old.kind<>new.kind) BEGIN
+      DELETE FROM session_dialogue_search WHERE rowid=old.message_key;
+      INSERT INTO session_dialogue_search(rowid,text) SELECT new.message_key,new.text WHERE new.kind IN ('user','assistant');
     END;
-    CREATE TRIGGER IF NOT EXISTS session_search_delete AFTER DELETE ON session_messages BEGIN
-      DELETE FROM session_message_search WHERE rowid=old.message_key;
+    CREATE TRIGGER IF NOT EXISTS session_dialogue_delete AFTER DELETE ON session_messages WHEN old.kind IN ('user','assistant') BEGIN
+      DELETE FROM session_dialogue_search WHERE rowid=old.message_key;
     END;
     CREATE VIRTUAL TABLE IF NOT EXISTS session_character_search USING fts5(
       terms, content='', contentless_delete=1, detail=none);
     CREATE TABLE IF NOT EXISTS session_character_search_state (id INTEGER PRIMARY KEY CHECK(id=1), cursor INTEGER NOT NULL, complete INTEGER NOT NULL);
-    INSERT OR IGNORE INTO session_character_search_state VALUES(1,0,NOT EXISTS(SELECT 1 FROM session_messages LIMIT 1));
+    INSERT OR IGNORE INTO session_character_search_state(id,cursor,complete) VALUES(1,0,NOT EXISTS(SELECT 1 FROM session_messages LIMIT 1));
     CREATE TRIGGER IF NOT EXISTS session_character_insert AFTER INSERT ON session_messages BEGIN
       INSERT INTO session_character_search(rowid,terms) VALUES(new.message_key,session_character_terms(new.text));
     END;
@@ -76,15 +78,15 @@ export async function prepareSearchIndex(database: Database.Database, onProgress
   // 旧库的类型索引也在刷新 Worker 建设，不把首次全表读取放到服务初始化中。
   database.exec("CREATE INDEX IF NOT EXISTS session_message_search_kind ON session_messages(kind,message_key)");
   const indexes = [
-    { table: "session_message_search", state: "session_search_state", column: "text", value: "text" },
-    { table: "session_character_search", state: "session_character_search_state", column: "terms", value: "session_character_terms(text)" },
+    { table: "session_dialogue_search", state: "session_dialogue_search_state", column: "text", value: "text", scope: " AND kind IN ('user','assistant')" },
+    { table: "session_character_search", state: "session_character_search_state", column: "terms", value: "session_character_terms(text)", scope: "" },
   ];
   for (const [position, index] of indexes.entries()) {
     if ((database.prepare(`SELECT complete FROM ${index.state} WHERE id=1`).get() as { complete: number }).complete) continue;
-    const maximum = (database.prepare("SELECT COALESCE(MAX(message_key),0) AS maximum FROM session_messages").get() as { maximum: number }).maximum;
-    const next = database.prepare("SELECT message_key AS rowid FROM session_messages WHERE message_key>? AND message_key<=? ORDER BY message_key LIMIT 200");
+    const maximum = (database.prepare(`SELECT COALESCE(MAX(message_key),0) AS maximum FROM session_messages WHERE 1=1${index.scope}`).get() as { maximum: number }).maximum;
+    const next = database.prepare(`SELECT message_key AS rowid FROM session_messages WHERE message_key>? AND message_key<=? ${index.scope} ORDER BY message_key LIMIT 200`);
     const insert = database.prepare(`INSERT OR REPLACE INTO ${index.table}(rowid,${index.column})
-      SELECT message_key,${index.value} FROM session_messages WHERE message_key>? AND message_key<=?`);
+      SELECT message_key,${index.value} FROM session_messages WHERE message_key>? AND message_key<=?${index.scope}`);
     const update = database.prepare(`UPDATE ${index.state} SET cursor=?,complete=? WHERE id=1`);
     const batch = database.transaction(() => {
       const { cursor, complete } = database.prepare(`SELECT cursor,complete FROM ${index.state} WHERE id=1`).get() as { cursor: number; complete: number };
@@ -104,14 +106,20 @@ export async function prepareSearchIndex(database: Database.Database, onProgress
       await setImmediate();
     }
   }
+  // 新索引已完整；旧全记录 trigram 在此之前继续供查询使用，不在主线程抢先清理。
+  database.transaction(() => {
+    database.exec(`DROP TRIGGER IF EXISTS session_search_insert; DROP TRIGGER IF EXISTS session_search_update;
+      DROP TRIGGER IF EXISTS session_search_delete; DROP TABLE IF EXISTS session_message_search; DROP TABLE IF EXISTS session_search_state`);
+  }).immediate();
   onProgress?.(1);
 }
 
 /** 分别匹配有界数量的三字符词项，再由原字面 LIKE 验证完整内容及顺序。 */
-export function searchMatch(database: Database.Database, needle: string): string | undefined {
+export function searchMatch(database: Database.Database, needle: string, state = "session_dialogue_search_state"): string | undefined {
   const characters = Array.from(needle);
   if (characters.length < 3 || needle.includes("\0")) return undefined;
-  if (!(database.prepare("SELECT complete FROM session_search_state WHERE id=1").get() as { complete: number }).complete) return undefined;
+  if (!database.prepare("SELECT 1 FROM sqlite_master WHERE name=?").get(state)
+    || !(database.prepare(`SELECT complete FROM ${state} WHERE id=1`).get() as { complete: number }).complete) return undefined;
   const terms = new Set<string>();
   for (let sample = 0; sample < Math.min(8, characters.length - 2); sample += 1) {
     const index = Math.floor(sample * (characters.length - 3) / Math.max(1, Math.min(7, characters.length - 3)));
@@ -121,16 +129,26 @@ export function searchMatch(database: Database.Database, needle: string): string
 }
 
 /** 短词词项本身即精确字面判定；长词仍只是候选，调用方必须核验完整正文。 */
-export function searchCandidateIndex(database: Database.Database, needle: string): { table: string; match: string; exact: boolean } | undefined {
+export function searchCandidateIndex(database: Database.Database, needle: string, kinds: readonly string[] = ["user", "assistant"]): { table: string; match: string; exact: boolean } | undefined {
   const characters = Array.from(needle.toWellFormed());
   if (!characters.length || needle.includes("\0")) return undefined;
   if (characters.length >= 3) {
-    const match = searchMatch(database, needle);
-    return match ? { table: "session_message_search", match, exact: false } : undefined;
+    const match = kinds.every(kind => kind === "user" || kind === "assistant") ? searchMatch(database, needle) : undefined;
+    if (match) return { table: "session_dialogue_search", match, exact: false };
+    const legacy = searchMatch(database, needle, "session_search_state");
+    if (legacy) return { table: "session_message_search", match: legacy, exact: false };
   }
   // 旧只读库不创建表；未完成补建时仍以正文扫描提供完整结果。
   if (!database.prepare("SELECT 1 FROM sqlite_master WHERE name='session_character_search_state'").get()
     || !(database.prepare("SELECT complete FROM session_character_search_state WHERE id=1").get() as { complete: number }).complete) return undefined;
-  const terms = characterTerms(needle).split(" ");
-  return { table: "session_character_search", match: characters.length === 1 ? terms[0]! : terms.at(-1)!, exact: true };
+  if (characters.length < 3) {
+    const terms = characterTerms(needle).split(" ");
+    return { table: "session_character_search", match: characters.length === 1 ? terms[0]! : terms.at(-1)!, exact: true };
+  }
+  const terms = new Set<string>(), count = Math.min(8, characters.length - 1);
+  for (let sample = 0; sample < count; sample += 1) {
+    const position = Math.floor(sample * (characters.length - 2) / Math.max(1, count - 1));
+    terms.add(characterTerms(characters[position]! + characters[position + 1]!).split(" ").at(-1)!);
+  }
+  return { table: "session_character_search", match: [...terms].join(" AND "), exact: false };
 }

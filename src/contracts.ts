@@ -1,5 +1,6 @@
 import type { MessageDescriptor } from "./i18n/types.js";
 import type { Client } from "./clients.js";
+import type { SessionIndexSummary } from "./session-contracts.js";
 export type { Client } from "./clients.js";
 export type FileCategory = "source" | "config" | "docs" | "unknown";
 export type EventKind = "read" | "edit" | "search" | "other";
@@ -307,6 +308,10 @@ export interface ServicePreparation {
   sourceVersion?: string;
   jobIds: string[];
   error?: string;
+  initial?: boolean;
+  step?: string;
+  completed?: number;
+  total?: number;
 }
 
 export interface ServiceActiveTask {
@@ -321,6 +326,7 @@ export interface StatusResponse {
   protocolVersion?: number;
   preparation?: ServicePreparation;
   activeTasks?: ServiceActiveTask[];
+  sessions?: SessionIndexSummary;
   repositories: Repository[];
   jobs: Job[];
   indexMaintenance?: IndexMaintenanceResult;

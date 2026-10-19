@@ -627,4 +627,5 @@ export default {
   "diagnostics.history.adapters.doubaoWork.cacheLimit": "豆包工作本机缓存读取失败：缓存超过有界读取或解码上限",
   "diagnostics.history.adapters.doubaoWork.cacheDependencyMissing": "豆包工作本机缓存读取失败：活动文件或外置值缺失或已改变",
   "diagnostics.history.adapters.doubaoWork.cacheChanged": "豆包工作本机缓存读取失败：取得快照期间缓存发生变化",
+  "diagnostics.service.runtime.preparationFailedDetails": "启动数据准备失败（{{phase}}）：{{reason}}",
 } satisfies MessageCatalog;

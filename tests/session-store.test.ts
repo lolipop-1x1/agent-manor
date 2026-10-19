@@ -212,7 +212,7 @@ test("显式消息键在更新、删除空洞、重新插入和 VACUUM 后保持
     assert.deepEqual(store.search({ q: "更新搜索词" }), before);
     assert.equal(store.search({ q: "准备删除词" }).total, 0);
     assert.equal(store.search({ q: "新增搜索词" }).total, 1);
-    assert.equal((database.prepare("SELECT COUNT(*) AS count FROM session_message_search s LEFT JOIN session_messages m ON m.message_key=s.rowid WHERE m.message_key IS NULL").get() as { count: number }).count, 0);
+    assert.equal((database.prepare("SELECT COUNT(*) AS count FROM session_dialogue_search s LEFT JOIN session_messages m ON m.message_key=s.rowid WHERE m.message_key IS NULL").get() as { count: number }).count, 0);
   } finally { database.close(); }
 }));
 
@@ -364,18 +364,18 @@ test("搜索索引保留字面匹配、筛选、分页和短词语义，不保�
   const database = new Database(path);
   registerSearchFunctions(database);
   try {
-    assert.equal(database.prepare("SELECT text FROM session_message_search LIMIT 1").get()?.text, null);
+    assert.equal(database.prepare("SELECT text FROM session_dialogue_search LIMIT 1").get()?.text, null);
     for (const q of ["防小偷", "甲乙丙丁", "50%_", "\\path", '"Quoted"', "alpha", "😄中文", "防小", "防", "中文隐藏过程", "不存在的关键词"]) {
       for (const options of [{}, { client: "codex" as const, project: "/workspace/demo", page: 2, pageSize: 1 },
         { kinds: ["tool_result"] as const, sessionId: "search-a" }, { from: "2026-01-03T00:00:00Z" }]) {
         const query = { ...options, kinds: options.kinds ? [...options.kinds] : undefined, q };
-        database.prepare("UPDATE session_search_state SET complete=0").run();
+        database.prepare("UPDATE session_dialogue_search_state SET complete=0").run();
         const scanned = { search: store.search(query), list: store.list(query) };
-        database.prepare("UPDATE session_search_state SET complete=1").run();
+        database.prepare("UPDATE session_dialogue_search_state SET complete=1").run();
         assert.deepEqual({ search: store.search(query), list: store.list(query) }, scanned, q);
       }
     }
-    const plan = database.prepare("EXPLAIN QUERY PLAN SELECT rowid FROM session_message_search WHERE session_message_search MATCH ?").all('"防小偷"') as { detail: string }[];
+    const plan = database.prepare("EXPLAIN QUERY PLAN SELECT rowid FROM session_dialogue_search WHERE session_dialogue_search MATCH ?").all('"防小偷"') as { detail: string }[];
     assert.ok(plan.some(row => row.detail.includes("VIRTUAL TABLE INDEX")));
   } finally { database.close(); }
 }));
@@ -427,14 +427,14 @@ test("当前结构后台补索引可中断续建，修改删除及历史版本�
   const version = store.publish(store.createJob().id, [first], []);
   const database = new Database(path);
   registerSearchFunctions(database);
-  database.exec(`DROP TRIGGER session_search_insert; DROP TRIGGER session_search_update; DROP TRIGGER session_search_delete;
-    DROP TABLE session_message_search; DROP TABLE session_search_state;`);
+  database.exec(`DROP TRIGGER session_dialogue_insert; DROP TRIGGER session_dialogue_update; DROP TRIGGER session_dialogue_delete;
+    DROP TABLE session_dialogue_search; DROP TABLE session_dialogue_search_state;`);
   const migrated = new SessionStore(path);
   try {
     const expected = migrated.search({ q: "防小偷" });
     await assert.rejects(migrated.prepareSearchIndex(() => { throw new Error("合成中断"); }), /合成中断/);
     assert.deepEqual(migrated.search({ q: "防小偷" }), expected, "未完成时继续使用完整扫描，不能漏结果");
-    const cursor = (database.prepare("SELECT cursor FROM session_search_state").get() as { cursor: number }).cursor;
+    const cursor = (database.prepare("SELECT cursor FROM session_dialogue_search_state").get() as { cursor: number }).cursor;
     assert.ok(cursor > 0 && cursor < 450);
     await migrated.prepareSearchIndex();
     assert.deepEqual(migrated.search({ q: "防小偷" }), expected);
@@ -446,7 +446,7 @@ test("当前结构后台补索引可中断续建，修改删除及历史版本�
     assert.equal(migrated.search({ q: "防小偷" }).total, 0);
     assert.equal(migrated.search({ q: "防小偷", version }).total, 449);
     migrated.publish(migrated.createJob().id, [], []);
-    assert.equal(database.prepare('SELECT count(*) AS count FROM session_message_search WHERE session_message_search MATCH ?').get('"防小偷"')?.count, 0);
+    assert.equal(database.prepare('SELECT count(*) AS count FROM session_dialogue_search WHERE session_dialogue_search MATCH ?').get('"防小偷"')?.count, 0);
   } finally { migrated.close(); database.close(); }
 }));
 
@@ -456,8 +456,8 @@ test("后台补搜索索引与主连接登记任务并发时不会发生读事�
   store.publish(store.createJob().id, [current], []);
   const database = new Database(path);
   registerSearchFunctions(database);
-  database.exec(`DROP TRIGGER session_search_insert; DROP TRIGGER session_search_update; DROP TRIGGER session_search_delete;
-    DROP TABLE session_message_search; DROP TABLE session_search_state;`);
+  database.exec(`DROP TRIGGER session_dialogue_insert; DROP TRIGGER session_dialogue_update; DROP TRIGGER session_dialogue_delete;
+    DROP TABLE session_dialogue_search; DROP TABLE session_dialogue_search_state;`);
   const worker = new Worker(`
     const {parentPort,workerData}=require('node:worker_threads');
     import('tsx/esm/api').then(async ({register})=>{
@@ -481,7 +481,7 @@ test("后台补搜索索引与主连接登记任务并发时不会发生读事�
       }
     })()]);
     assert.equal(store.search({ q: "合成并发索引内容" }).total, 10_000);
-    assert.equal((database.prepare("SELECT complete FROM session_search_state").get() as { complete: number }).complete, 1);
+    assert.equal((database.prepare("SELECT complete FROM session_dialogue_search_state").get() as { complete: number }).complete, 1);
   } finally { await worker.terminate(); database.close(); }
 }));
 
@@ -1346,9 +1346,9 @@ test("单字双字候选与扫描保持完整结果，计数、分页、存在�
     for (const q of ["锁", "事务", "的", "a", "AA", "go", "你好", "🔒", "🔒🔑", "%", "%_", "\\", "/", "é", "É", "é", "重复", "i", "ı", "İ", "不在", "ab\0"])
       for (const scope of [{}, { kinds: ["tool_result"] as SessionMessage["kind"][] }, { sessionId: "characters", page: 2, pageSize: 1 }, { client: "claude" as const }, { page: 99, pageSize: 1 }]) {
         const query = { ...scope, q };
-        database.exec("UPDATE session_search_state SET complete=0; UPDATE session_character_search_state SET complete=0");
+        database.exec("UPDATE session_dialogue_search_state SET complete=0; UPDATE session_character_search_state SET complete=0");
         const expected = { records: store.search(query), groups: store.groupedSearch(query), list: store.list(query), matches: store.matches("characters", query) };
-        database.exec("UPDATE session_search_state SET complete=1; UPDATE session_character_search_state SET complete=1");
+        database.exec("UPDATE session_dialogue_search_state SET complete=1; UPDATE session_character_search_state SET complete=1");
         assert.deepEqual({ records: store.search(query), groups: store.groupedSearch(query), list: store.list(query), matches: store.matches("characters", query) }, expected, q);
       }
     assert.equal(searchCandidateIndex(database, "锁")?.table, "session_character_search");

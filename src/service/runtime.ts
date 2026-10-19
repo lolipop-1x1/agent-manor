@@ -155,7 +155,12 @@ export async function connectService(autoStart = true, home = dataHome()): Promi
   return startBackground(home);
 }
 
-export interface BackgroundOptions { port?: number; waitData?: boolean; timeoutMs?: number }
+export interface BackgroundOptions {
+  port?: number;
+  waitData?: boolean | "initial";
+  timeoutMs?: number;
+  onProgress?: (status: StatusResponse) => void;
+}
 
 export function validateServicePort(port?: number): void {
   const environment = process.env.AGENT_MANOR_PORT;
@@ -179,11 +184,20 @@ export function assertServiceCompatible(status: StatusResponse): void {
 export async function startBackground(home = dataHome(), options: BackgroundOptions = {}): Promise<ServiceInstance> {
   validateServicePort(options.port);
   await assertNotUpdating(home);
+  let startupRelease: (() => Promise<void>) | undefined;
+  const prepare = async (instance: ServiceInstance, status: StatusResponse) => {
+    // 监听地址和身份已确认，后续长时间数据等待不能继续占用启动锁。
+    await startupRelease?.(); startupRelease = undefined;
+    const initial = status.preparation?.initial ?? !status.sessions?.version;
+    if (options.waitData === true || options.waitData === "initial" && initial) {
+      await waitForPreparation(instance, options.timeoutMs ?? (initial ? Infinity : 120_000), { summary: true, onProgress: options.onProgress });
+    }
+  };
   const reuse = async (): Promise<ServiceInstance | undefined> => {
     const current = await serviceStatus(home, { summary: true });
     if (current.running) {
       assertServiceCompatible(current.status!);
-      if (options.waitData) await waitForPreparation(current.instance!, options.timeoutMs, { summary: true });
+      await prepare(current.instance!, current.status!);
       return current.instance;
     }
     if (current.state === "foreign" || current.state === "unreachable") throw new RequestError("SERVICE_IDENTITY_UNVERIFIED", "已有实例尚未通过身份检查，未启动另一个服务", { key: "diagnostics.service.runtime.identity" });
@@ -192,6 +206,7 @@ export async function startBackground(home = dataHome(), options: BackgroundOpti
   const existing = await reuse();
   if (existing) return existing;
   const release = await acquireLock(home, "startup.lock", 20_000);
+  startupRelease = release;
   try {
     await assertNotUpdating(home);
     const ready = await reuse();
@@ -225,7 +240,7 @@ export async function startBackground(home = dataHome(), options: BackgroundOpti
       if (instance) {
         const status = await apiRequest<StatusResponse>(instance, "/status?summary=true&response=summary");
         assertServiceCompatible(status);
-        if (options.waitData) await waitForPreparation(instance, options.timeoutMs, { summary: true });
+        await prepare(instance, status);
         return instance;
       }
       if (exited) throw new DiagnosticError(`本地后台启动失败（${child.exitCode}），日志：${serviceLogPath(home)}`, { key: "diagnostics.service.runtime.startFailed", params: { code: String(child.exitCode), path: serviceLogPath(home) } });
@@ -235,13 +250,16 @@ export async function startBackground(home = dataHome(), options: BackgroundOpti
   } finally { await release(); }
 }
 
-export async function waitForPreparation(instance: ServiceInstance, timeoutMs = 120_000, options: { summary?: boolean } = {}): Promise<StatusResponse> {
+export async function waitForPreparation(instance: ServiceInstance, timeoutMs = 120_000, options: { summary?: boolean; onProgress?: (status: StatusResponse) => void } = {}): Promise<StatusResponse> {
   const deadline = Date.now() + timeoutMs;
   for (;;) {
     const status = await apiRequest<StatusResponse>(instance, `/status?summary=true${options.summary ? "&response=summary" : ""}`);
     assertServiceCompatible(status);
     if (!status.preparation) throw new RequestError("SERVICE_VERSION_MISMATCH", "后台不支持启动准备状态", { key: "diagnostics.service.runtime.versionMismatch", params: { version: status.version, expected: VERSION } });
-    if (status.preparation.state === "failed") throw new RequestError("PREPARATION_FAILED", status.preparation.error ?? "启动数据准备失败", { key: "diagnostics.service.runtime.preparationFailed" });
+    options.onProgress?.(status);
+    if (status.preparation.state === "failed") throw new RequestError("PREPARATION_FAILED", status.preparation.error ?? "启动数据准备失败", {
+      key: "diagnostics.service.runtime.preparationFailedDetails", params: { phase: status.preparation.phase, reason: status.preparation.error ?? "unknown" },
+    });
     if (["ready", "skipped"].includes(status.preparation.state)) return status;
     if (Date.now() >= deadline) throw new RequestError("WAIT_TIMEOUT", "等待数据准备超时，后台仍继续运行", { key: "diagnostics.service.runtime.waitTimeout" });
     await delay(100);

@@ -51,7 +51,7 @@ AgentManor 是本地优先的 Agent 工作环境管家。会话库、代码地�
 - **资源管理：**Skill／MCP 采用统一名称清单与可调宽三栏，查看使用统计、资源地图、本地位置、收藏和管理记录；本地位置筛选与历史范围独立。详情按概览、文件／配置位置和使用记录组织，管理在具体位置预览精确字段或路径的变化与恢复方式。不检测客户端安装状态，不展示理论兼容关系；启停须有现有配置的明确依据，控制作用范围独立于资源文件位置。左侧常驻资源清单、恢复中心和操作记录，恢复中心统一收纳尚未撤销的配置、文件、链接和注册变更，各视图独立保留浏览状态。已核验入口支持预览后停用、回收及恢复；受保护或未适配入口保留只读原因，支持范围见 [资源来源支持矩阵](docs/design/resource-support.md)。
 - **显示语言：**当前支持简体中文和英文。产品文案、数字、日期及可访问名称本地化；原始会话、资源正文、路径、模型／工具名称及配置值保持原文，CLI JSON 的稳定字段不随显示语言改变。
 
-- **CLI 与交付：**包和主命令使用 agent-manor，另提供 am 命令；CLI 使用 TypeScript 与 Commander.js，建立独立内部工程，统一产品包同版本交付编译后的 JavaScript、后台、Web 与 Skill。命令覆盖页面业务能力，Skill 按场景与功能组织参考并支持显式安装。首版目标为 macOS arm64/x64、Linux arm64/x64、Windows x64，使用 Node.js 24，实际安装和生命周期验收环境见 [交付验证](docs/validation/npm-cli-distribution.md)。启动按服务就绪返回，数据准备在后台继续，并支持进度及显式等待。完整目标见 [交付设计](docs/design/npm-cli-distribution.md)，交付与启动边界见 [ADR 0020](docs/adr/0020-independent-cli-unified-distribution.md) 和 [ADR 0021](docs/adr/0021-service-readiness-and-data-preparation.md)。
+- **CLI 与交付：**包和主命令使用 agent-manor，另提供 am 命令；CLI 使用 TypeScript 与 Commander.js，建立独立内部工程，统一产品包同版本交付编译后的 JavaScript、后台、Web 与 Skill。命令覆盖页面业务能力，Skill 按场景与功能组织参考并支持显式安装。首版目标为 macOS arm64/x64、Linux arm64/x64、Windows x64，使用 Node.js 24，实际安装和生命周期验收环境见 [交付验证](docs/validation/npm-cli-distribution.md)。首次启动在终端显示进度，等待完整历史、索引、用量与默认总览首屏缓存后返回或打开网页；已有完整初始化结果时快速进入，后台继续增量准备，并支持显式等待。完整目标见 [交付设计](docs/design/npm-cli-distribution.md)，交付与启动边界见 [ADR 0020](docs/adr/0020-independent-cli-unified-distribution.md) 和 [ADR 0021](docs/adr/0021-service-readiness-and-data-preparation.md)。
 
 CLI默认提供轻量列表、统计和操作结果，人类格式与JSON使用相同查询范围；完整字段通过 `--full` 显式请求。画像、价格和诊断明细分页读取，长消息保留正文续读位置与版本，原始历史继续完整保留。契约与兼容规则见 [CLI响应约定](docs/design/cli-responses.md)。
 

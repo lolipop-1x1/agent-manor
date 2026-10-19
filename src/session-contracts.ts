@@ -275,6 +275,9 @@ export interface SessionJob {
   client?: Client;
   mode?: SessionCheckMode;
   counts?: SessionRefreshCounts;
+  processedSources?: number;
+  totalSources?: number;
+  parserConcurrency?: number;
 }
 export interface SessionListResult {
   version: string;

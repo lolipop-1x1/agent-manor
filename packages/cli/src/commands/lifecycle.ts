@@ -4,6 +4,7 @@ import { startService } from "../../../../src/server.js";
 import { connectService, dataHome, serviceUrl, startBackground, stopService, serviceStatus, waitForPreparation, serviceLogPath, readServiceLogs, delay, validateServicePort } from "../../../../src/service/runtime.js";
 import { VERSION, API_VERSION } from "../../../../src/version.js";
 import { logDelta } from "../output/logs.js";
+import { startupProgress } from "../output/startup-progress.js";
 import { timeoutMilliseconds } from "../api/tasks.js";
 import type { CliContext, Options } from "../context.js";
 import { installationChecks } from "../runtime/doctor.js";
@@ -16,13 +17,18 @@ function portFor(options: Options): number | undefined {
   return port;
 }
 export function registerLifecycle(program: Command, context: CliContext): void {
-  for (const name of ["start", "restart"]) context.waiting(program.command(name).description(context.t(`cli.ext.${name}`)))
+  const startupWaiting = (command: Command) => command.option("--wait", context.t("cli.ext.waitData"))
+    .option("--timeout <seconds>", context.t("cli.startup.timeout"));
+  for (const name of ["start", "restart"]) startupWaiting(program.command(name).description(context.t(`cli.ext.${name}`)))
     .option("--port <number>", context.t("cli.port")).option("--wait-data", context.t("cli.ext.waitData"))
     .action(async (_opts, command: Command) => {
-      const opts = command.optsWithGlobals<Options>(), home = homeFor(command), port = portFor(opts), timeoutMs = timeoutMilliseconds(opts.timeout);
+      const opts = command.optsWithGlobals<Options>(), home = homeFor(command), port = portFor(opts), timeoutMs = opts.timeout === undefined ? undefined : timeoutMilliseconds(opts.timeout);
       if (name === "restart") await stopService(home, { wait: opts.wait === true, timeoutMs });
-      const instance = await startBackground(home, { port, waitData: opts.waitData === true, timeoutMs });
-      context.output(command, { instance, version: instance.version ?? VERSION, url: serviceUrl(instance), logPath: serviceLogPath(home) });
+      const progress = opts.json ? undefined : startupProgress(context.language);
+      try {
+        const instance = await startBackground(home, { port, waitData: opts.waitData === true || opts.wait === true ? true : "initial", timeoutMs, onProgress: progress?.update });
+        context.output(command, { instance, version: instance.version ?? VERSION, url: serviceUrl(instance), logPath: serviceLogPath(home) });
+      } finally { progress?.close(); }
     });
   program.command("serve").description(context.t("cli.serve")).option("--port <number>", context.t("cli.port"))
     .action(async (_opts, command: Command) => {
@@ -47,8 +53,11 @@ export function registerLifecycle(program: Command, context: CliContext): void {
     .action(async (_opts, command: Command) => {
       const opts = command.optsWithGlobals<Options>(), timeoutMs = timeoutMilliseconds(opts.timeout);
       const instance = await connectService(true, homeFor(command));
-      const value = await waitForPreparation(instance!, timeoutMs, { summary: opts.full !== true });
-      context.output(command, opts.full ? value : summarizeReady(value));
+      const progress = opts.json ? undefined : startupProgress(context.language);
+      try {
+        const value = await waitForPreparation(instance!, timeoutMs, { summary: opts.full !== true, onProgress: progress?.update });
+        context.output(command, opts.full ? value : summarizeReady(value));
+      } finally { progress?.close(); }
     });
   program.command("version").description(context.t("cli.version")).action((_opts, command: Command) => { context.output(command, { version: VERSION, apiVersion: API_VERSION, node: process.versions.node, platform: process.platform, arch: process.arch }); });
   context.waiting(program.command("update").description(context.t("cli.ext.update"))).option("--check", context.t("cli.ext.updateCheck")).option("--to <version>", context.t("cli.ext.updateTo"))
@@ -74,9 +83,15 @@ export function registerLifecycle(program: Command, context: CliContext): void {
         await delay(500);
       }
     });
-  program.command("web").description(context.t("cli.web")).option("--no-open", context.t("cli.noOpen"))
+  startupWaiting(program.command("web").description(context.t("cli.web"))).option("--no-open", context.t("cli.noOpen"))
+    .option("--wait-data", context.t("cli.ext.waitData"))
     .action(async (_opts, command: Command) => {
-      const opts = command.optsWithGlobals<Options>(), instance = (await connectService(true, homeFor(command)))!, url = serviceUrl(instance);
+      const opts = command.optsWithGlobals<Options>(), timeoutMs = opts.timeout === undefined ? undefined : timeoutMilliseconds(opts.timeout);
+      const progress = opts.json ? undefined : startupProgress(context.language);
+      let instance;
+      try { instance = await startBackground(homeFor(command), { waitData: opts.waitData === true || opts.wait === true ? true : "initial", timeoutMs, onProgress: progress?.update }); }
+      finally { progress?.close(); }
+      const url = serviceUrl(instance);
       if (opts.open !== false) {
         const application = process.platform === "darwin" ? "open" : process.platform === "win32" ? "explorer" : "xdg-open";
         const child = spawn(application, [url], { stdio: "ignore", detached: true });

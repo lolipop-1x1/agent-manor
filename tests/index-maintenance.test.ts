@@ -40,7 +40,7 @@ function rows(path: string) {
   const database = new Database(path, { readonly: true });
   try {
     return { messages: database.prepare("SELECT * FROM session_messages ORDER BY message_key").all(),
-      hits: database.prepare("SELECT m.message_key,m.text FROM session_message_search f JOIN session_messages m ON m.message_key=f.rowid WHERE session_message_search MATCH ? ORDER BY m.message_key").all('"防小偷"') };
+      hits: database.prepare("SELECT m.message_key,m.text FROM session_character_search f JOIN session_messages m ON m.message_key=f.rowid WHERE session_character_search MATCH ? ORDER BY m.message_key").all("b9632x5c0f AND b5c0fx5077") };
   } finally { database.close(); }
 }
 
@@ -156,7 +156,7 @@ test("维护信号消失后启动锁恢复有界等待", async () => {
 
 test("整理前补齐已记录的未完成 FTS，避免把缺失搜索词项记为成功", async () => fixture(async (home, path) => {
   const database = new Database(path);
-  database.exec("DELETE FROM session_message_search WHERE rowid=6; UPDATE session_search_state SET cursor=0,complete=0 WHERE id=1");
+  database.exec("DELETE FROM session_character_search WHERE rowid=6; UPDATE session_character_search_state SET cursor=0,complete=0 WHERE id=1");
   database.close();
   const response = await compactIndexAtStartup(home, { decision: () => "compact" });
   assert.equal(response.status, "completed", response.details);
@@ -165,7 +165,7 @@ test("整理前补齐已记录的未完成 FTS，避免把缺失搜索词项记�
 
 test("声称完整但缺失 FTS 文档的索引阻止正常启动，不吞成环境跳过", async () => fixture(async (home, path) => {
   const database = new Database(path);
-  database.exec("DELETE FROM session_message_search WHERE rowid=6");
+  database.exec("DELETE FROM session_character_search WHERE rowid=6");
   database.close();
   const before = rows(path);
   await assert.rejects(compactIndexAtStartup(home, { decision: () => "compact" }), error =>

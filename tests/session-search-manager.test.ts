@@ -60,7 +60,7 @@ test("共享取消标志在 SQLite 步进期间被读取，查询退出后连接
     await once(worker, "message");
     sessions.setSearchCancellation(cancellation);
     const database = new Database(sessions.dbPath);
-    try { database.exec("UPDATE session_search_state SET complete=0; UPDATE session_character_search_state SET complete=0"); }
+    try { database.exec("UPDATE session_character_search_state SET complete=0"); }
     finally { database.close(); }
     // 在 SQL 真正进入检查点时唤醒另一线程，避免仅测试执行前取消。
     const internal = sessions as unknown as { database: Database.Database };

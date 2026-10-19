@@ -627,4 +627,5 @@ export default {
   "diagnostics.history.adapters.doubaoWork.cacheLimit": "Unable to read the Doubao Work local cache: the cache exceeds its bounded read or decoding limit",
   "diagnostics.history.adapters.doubaoWork.cacheDependencyMissing": "Unable to read the Doubao Work local cache: an active file or external value is missing or changed",
   "diagnostics.history.adapters.doubaoWork.cacheChanged": "Unable to read the Doubao Work local cache: the cache changed while taking a snapshot",
+  "diagnostics.service.runtime.preparationFailedDetails": "Startup data preparation failed ({{phase}}): {{reason}}",
 } satisfies MessageCatalog;

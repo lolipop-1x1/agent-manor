@@ -13,13 +13,13 @@ am stop --wait --json
 
 | 命令／参数 | 意义与返回值 |
 |---|---|
-| start / restart | 启动或重启后台，返回 instance、version、url、logPath；start 复用健康实例，restart 会停止后再起 |
+| start / restart | 启动或重启后台，返回 instance、version、url、logPath；首次自动等待完整历史、索引、用量及默认总览缓存，已有完整初始化结果时快速返回；start 复用健康实例，restart 会停止后再起 |
 | `--port <number>` | 默认从16666尝试，冲突递增；0 用系统分配。以返回 url/instance.port 为准，不自行猜端口 |
-| `--wait-data` | start/restart 等待数据准备；HTTP 服务可先就绪，历史／索引准备继续后台执行 |
+| `--wait-data` | start/restart/web 显式等待本轮启动准备；首次本来就自动等待，已有数据时可用此参数等待后台增量检查 |
 | ready | 按需连接服务并等准备完成，返回 preparation、activeTasks 等；timeout 默认120秒，最大3600 |
 | status | 不启动后台；running=false 不足以认定已停止，结合 state 区分 stopped/starting/unreachable/foreign；instance 表示发现的实例记录，身份可用性仍看 state；嵌套 status 含 preparation/activeTasks/关键计数 |
 | serve | 前台运行，终端关闭会受影响；后台持续运行用 start |
-| web / `--no-open` | 取得真实 URL；默认打开浏览器，no-open 只返回地址 |
+| web / `--no-open` | 首次准备完成后取得真实 URL；默认打开浏览器，no-open 只返回地址，仍遵循首次等待规则 |
 | stop / `--wait` | 用户要求关闭时执行；stopped=true 表示已停止，false 表示没有可停止实例，不等于失败 |
 | logs / `--lines` / `--follow` | 默认100行，follow 持续读；JSON 为 path/text 或增量对象，避免把日志导入公共资料 |
 | version / `--cli-version` | 命令返回 version/apiVersion/node/platform/arch；开关仅显示软件版本，与业务快照无关 |
@@ -27,6 +27,8 @@ am stop --wait --json
 | update `--check` / `--to <version>` | 显式检查／升级公共 npm 版本；实际升级前核对目标、在途任务及恢复材料，按用户要求执行 |
 
 start 关闭终端后仍运行；status、version、help、doctor、logs 不会隐式启动。`preparation.state` 的准备状态与 HTTP 可连接分开，已有数据可继续查询。自动刷新返回 skipped/disabled 无任务时不是执行失败；要主动同步用 `sessions refresh --mode quick --wait`。
+
+首次 `start`/`web` 默认不限数据等待时间，显式 `--timeout <seconds>` 可以缩短；`ready` 默认120秒。人读模式持续显示进度；JSON 模式保持单个结果，不输出人类进度。`preparation.initial=true` 表示尚未完成首次准备，已有会话版本也可能处于此阶段。失败或超时先检查状态及日志，不反复重建；终端结束等待不停止后台。空目录没有登记仓库，不需要先配置代码地图。
 
 ## 配套 Skill 的目标与覆盖
 

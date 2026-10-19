@@ -17,6 +17,7 @@ import { VERSION } from "./version.js";
 import { bodyText, emptyBody, integer, ServiceError } from "./service/input.js";
 import { acquireLock, assertNotUpdating, dataHome, DEFAULT_SERVICE_PORT, delay, removeInstance, SERVICE_PROTOCOL_VERSION, writeInstance } from "./service/runtime.js";
 import { serviceLog } from "./service/logging.js";
+import { startupPrepared, completeStartupPreparation } from "./service/preparation.js";
 import { SessionStore } from "./sessions/store.js";
 import { queryBoolean, sessionMessageQuery, sessionProfileQuery, sessionQuery, sessionRefreshOptions, sessionTimelineQuery, summaryResponse } from "./service/session-input.js";
 import { searchSummaryResponse, sessionSummaryResponse, sessionStatusSummaryResponse } from "./service/summary-response.js";
@@ -127,6 +128,7 @@ export async function startService(options: ServiceOptions = {}) {
     const indexMaintenance = await compactIndexAtStartup(home);
     store = new AnalysisStore(join(home, "index.sqlite"));
     sessions = new SessionStore(store.dbPath);
+    preparation.initial = !sessions.currentVersion() || !await startupPrepared(home);
     manager = new WorkerManager(store, { roots: options.roots }, sessions);
     const index = store;
     const library = sessions;
@@ -446,8 +448,20 @@ export async function startService(options: ServiceOptions = {}) {
         serviceLog(home, "preparation.overview", { version });
         const query = { version, window: "365" as const };
         await overviewManager!.snapshot(query);
-        await overviewManager!.panel(query, "core");
+        // 与默认首页请求范围一致；逐区域复用事实及缓存，避免同时放大统计内存。
+        const panels = ["core", "usage", "resources", "process", "repositories", "facets", "distribution"] as const;
+        preparation.completed = 0; preparation.total = panels.length + 1;
+        for (const panel of panels) {
+          if (closing) return;
+          preparation.step = panel;
+          await overviewManager!.panel(query, panel, panel === "distribution" ? "project" : undefined);
+          preparation.completed += 1;
+        }
+        preparation.step = "review";
+        await overviewManager!.review({ version });
+        preparation.completed += 1;
         if (closing) return;
+        await completeStartupPreparation(home, version);
         preparation.state = "ready"; preparation.phase = "complete"; preparation.finishedAt = new Date().toISOString();
         serviceLog(home, "preparation.ready", { version });
       })().catch(error => {

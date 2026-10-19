@@ -213,10 +213,10 @@ export class SessionStore {
 
   prepareSearchIndex(onProgress?: (progress: number) => void): Promise<void> { return prepareSearchIndex(this.database, onProgress); }
 
-  /** 空库没有可查询版本，辅助索引统一后建；唯一约束、外键与全文索引始终保留。 */
+  /** 空库没有可查询版本，辅助索引统一后建；唯一约束、外键与搜索词项触发器始终保留。 */
   beginInitialImport(): void {
     if (this.currentVersion()) return;
-    const names = [...sessionQueryIndexes.matchAll(/CREATE INDEX IF NOT EXISTS (\w+)/g)].map(match => match[1]!);
+    const names = [...sessionQueryIndexes.matchAll(/CREATE INDEX IF NOT EXISTS (\w+)/g)].map(match => match[1]!).concat("session_message_search_kind");
     this.database.transaction(() => {
       for (const name of names) this.database.exec(`DROP INDEX IF EXISTS ${name}`);
     })();
@@ -427,10 +427,12 @@ export class SessionStore {
       turn_id=excluded.turn_id,kind=excluded.kind,final=excluded.final,call_id=excluded.call_id,copied=excluded.copied,text=excluded.text,json=excluded.json`);
     const usage = this.database.prepare(`INSERT INTO session_usage(revision,id,message_id,turn_id,json) VALUES(?,?,?,?,?)
       ON CONFLICT(revision,id) DO UPDATE SET message_id=excluded.message_id,turn_id=excluded.turn_id,json=excluded.json`);
-    let pending: ({ type: "message"; value: SessionMessage } | { type: "usage"; value: SessionUsage })[] = [];
+    type PendingItem = { type: "message"; value: SessionMessage } | { type: "usage"; value: SessionUsage };
+    const pending = new Map<string, { item: PendingItem; bytes: number }>();
     let bytes = 0;
     const flush = this.database.transaction(() => {
-      for (const item of pending) {
+      // 同一批内的工具状态和最终消息只写最后一份；Map 保留首次身份的插入顺序。
+      for (const { item } of pending.values()) {
         if (item.type === "message") {
           const value = item.value;
           const { id: _id, ordinal: _ordinal, recordLine: _recordLine, turnId: _turnId, kind: _kind,
@@ -442,13 +444,14 @@ export class SessionStore {
           usage.run(revision, value.id, value.messageId ?? null, value.turnId ?? null, JSON.stringify(value));
         }
       }
-      pending = [];
-      bytes = 0;
+      pending.clear(); bytes = 0;
     });
-    const sink: SessionSink = {
-      message: value => { pending.push({ type: "message", value }); bytes += value.text.length * 2; if (pending.length >= (bulk ? 1000 : 200) || bytes >= (bulk ? 8_000_000 : 2_000_000)) flush(); },
-      usage: value => { pending.push({ type: "usage", value }); if (pending.length >= (bulk ? 1000 : 200)) flush(); },
+    const put = (item: PendingItem) => {
+      const key = `${item.type}:${item.value.id}`, size = item.type === "message" ? item.value.text.length * 2 : 1024;
+      bytes += size - (pending.get(key)?.bytes ?? 0); pending.set(key, { item, bytes: size });
+      if (pending.size >= (bulk ? 1000 : 200) || bytes >= (bulk ? 8_000_000 : 2_000_000)) flush();
     };
+    const sink: SessionSink = { message: value => put({ type: "message", value }), usage: value => put({ type: "usage", value }) };
     return { revision, sink, flush };
   }
 
@@ -840,7 +843,7 @@ export class SessionStore {
       AND NOT EXISTS (SELECT 1 FROM session_version_relations relation WHERE relation.version=v.version AND relation.child=v.session_id)`;
     if (query.q?.trim()) {
       const kinds = kindsOf(query);
-      const candidate = searchCandidateIndex(this.database, (query.q ?? "").trim());
+      const candidate = searchCandidateIndex(this.database, (query.q ?? "").trim(), kinds);
       const match = candidate?.match;
       const filterKinds = candidate?.table === "session_character_search";
       const candidates = match ? `m.rowid IN (SELECT rowid FROM ${candidate!.table} WHERE ${candidate!.table} MATCH ?${this.searchGuard}${filterKinds ? `
@@ -1674,7 +1677,7 @@ export class SessionStore {
     const selectedKinds = kindsOf(query);
     const common = `FROM session_version_sessions v JOIN session_revisions r ON r.id=v.revision WHERE v.version=?${filter.sql}${this.searchGuard}`;
     const pattern = literal((query.q ?? "").trim());
-    const candidate = existence ? undefined : searchCandidateIndex(this.database, (query.q ?? "").trim());
+    const candidate = existence ? undefined : searchCandidateIndex(this.database, (query.q ?? "").trim(), selectedKinds);
     const match = candidate?.match;
     const filterKinds = candidate?.table === "session_character_search";
     const candidates = match ? ` AND m.rowid IN (SELECT rowid FROM ${candidate!.table} WHERE ${candidate!.table} MATCH ?${this.searchGuard}${filterKinds ? `

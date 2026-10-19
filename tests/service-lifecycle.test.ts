@@ -3,18 +3,20 @@ import { createServer } from "node:http";
 import { mkdtemp, readFile, readdir, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { existsSync } from "node:fs";
 import test from "node:test";
 import { randomUUID } from "node:crypto";
 import { startService } from "../src/server.js";
 import type { ServiceInstance, StatusResponse } from "../src/contracts.js";
-import { acquireLock, apiRequest, connectService, DEFAULT_SERVICE_PORT, readServiceLogs, serviceStatus, SERVICE_PROTOCOL_VERSION, stopService, waitForPreparation, writeInstance } from "../src/service/runtime.js";
+import { acquireLock, apiRequest, connectService, DEFAULT_SERVICE_PORT, readServiceLogs, serviceStatus, SERVICE_PROTOCOL_VERSION, startBackground, stopService, waitForPreparation, writeInstance } from "../src/service/runtime.js";
 import { serviceLog, serviceLogPath } from "../src/service/logging.js";
 import { VERSION } from "../src/version.js";
-import { isolatedHistoryRoots } from "./helpers/history-roots.js";
+import { isolatedHistoryRoots, isolatedHistoryEnvironment } from "./helpers/history-roots.js";
 import { UsageManager } from "../src/usage/manager.js";
 import { WorkerManager } from "../src/index/worker-manager.js";
 import { AnalysisStore } from "../src/index/store.js";
 import { SessionStore } from "../src/sessions/store.js";
+import { OverviewManager } from "../src/overview/manager.js";
 
 test("status 和日志读取在未运行时保持纯读，不创建数据目录", async () => {
   const directory = await mkdtemp(join(tmpdir(), "manor-readonly-")), home = join(directory, "absent");
@@ -74,6 +76,35 @@ test("启动先发布 HTTP，再准备绑定版本的历史、用量和默认总
   } finally { await service.close(); await rm(home, { recursive: true, force: true }); }
 });
 
+test("首次准备覆盖默认总览全部面板与周复盘，完成标记在结果就绪后持久化", async () => {
+  const home = await mkdtemp(join(tmpdir(), "manor-complete-startup-"));
+  const panel = OverviewManager.prototype.panel, review = OverviewManager.prototype.review;
+  const calls: string[] = [];
+  OverviewManager.prototype.panel = async function(query, name, dimension) {
+    calls.push(`${name}:${dimension ?? ""}`);
+    return panel.call(this, query, name, dimension);
+  };
+  OverviewManager.prototype.review = async function(query) { calls.push("review"); return review.call(this, query); };
+  const service = await startService({ home, port: 0, roots: isolatedHistoryRoots() });
+  try {
+    const prepared = await waitForPreparation(service.instance, 30_000);
+    for (const name of ["core:", "usage:", "resources:", "process:", "repositories:", "facets:", "distribution:project", "review"]) {
+      assert.ok(calls.includes(name), `默认首屏缺少 ${name}`);
+    }
+    assert.equal(prepared.preparation?.jobIds.length, 1, "空目录只导入历史，不创建仓库任务");
+    assert.equal(prepared.preparation?.initial, true);
+    const marker = JSON.parse(await readFile(join(home, "startup-prepared.json"), "utf8"));
+    assert.equal(marker.sourceVersion, prepared.preparation?.sourceVersion);
+    await service.close();
+    const next = await startService({ home, port: 0, roots: isolatedHistoryRoots() });
+    try { assert.equal((await apiRequest<StatusResponse>(next.instance, "/status?summary=true")).preparation?.initial, false); }
+    finally { await next.close(); }
+  } finally {
+    OverviewManager.prototype.panel = panel; OverviewManager.prototype.review = review;
+    await service.close(); await rm(home, { recursive: true, force: true });
+  }
+});
+
 test("数据准备失败仍保留已发布历史和 HTTP，不把失败标成完成", async () => {
   const home = await mkdtemp(join(tmpdir(), "manor-preparation-failure-"));
   const original = UsageManager.prototype.prepare;
@@ -83,9 +114,37 @@ test("数据准备失败仍保留已发布历史和 HTTP，不把失败标成完
     await assert.rejects(waitForPreparation(service.instance, 20_000), { code: "PREPARATION_FAILED" });
     const status = await apiRequest<StatusResponse>(service.instance, "/status?summary=true");
     assert.equal(status.preparation?.state, "failed");
+    assert.equal(status.preparation?.initial, true);
+    assert.equal(existsSync(join(home, "startup-prepared.json")), false);
     assert.equal((await apiRequest<{ total: number }>(service.instance, "/sessions")).total, 0);
     assert.equal((await serviceStatus(home)).running, true);
   } finally { UsageManager.prototype.prepare = original; await service.close(); await rm(home, { recursive: true, force: true }); }
+});
+
+test("真实后台首次准备的长等待不占用启动锁，并发启动复用同一实例", async () => {
+  const home = await mkdtemp(join(tmpdir(), "manor-startup-unlock-"));
+  const before = { ...process.env };
+  Object.assign(process.env, isolatedHistoryEnvironment(home));
+  let observed = false;
+  try {
+    const first = startBackground(home, { port: 0, waitData: "initial", timeoutMs: 30_000, onProgress(status) {
+      assert.equal(existsSync(join(home, "startup.lock")), false);
+      if (status.preparation?.state === "running") observed = true;
+    } });
+    let instance: ServiceInstance | undefined;
+    for (let attempt = 0; attempt < 200 && !instance; attempt += 1) {
+      instance = (await serviceStatus(home, { summary: true })).instance;
+      if (!instance) await new Promise(resolve => setTimeout(resolve, 20));
+    }
+    assert.ok(instance);
+    const second = await startBackground(home, { waitData: "initial", timeoutMs: 30_000 });
+    assert.equal((await first).id, second.id);
+    assert.ok(observed);
+  } finally {
+    await stopService(home, { allowBusy: true }).catch(() => undefined);
+    for (const key of Object.keys(process.env)) if (!(key in before)) delete process.env[key];
+    Object.assign(process.env, before); await rm(home, { recursive: true, force: true });
+  }
 });
 
 test("地址上的其他进程、PID 复用和不同版本不会被误用或误停", async () => {

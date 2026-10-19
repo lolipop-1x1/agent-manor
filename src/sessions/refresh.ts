@@ -21,6 +21,7 @@ import { historyAdapter, historyClient } from "../history/adapters/index.js";
 import type { NormalizedSnapshot } from "../history/adapters/normalized.js";
 import { sourceQuickStamp } from "./quick-check.js";
 import { SessionImportPool } from "./import-pool.js";
+import { importConcurrency } from "./import-concurrency.js";
 import type { SourceLocation } from "../history/types.js";
 
 // 会话规范化规则升级时使来源缓存失效，独立于地图索引迁移。
@@ -65,7 +66,7 @@ export async function refreshSessions(store: SessionStore, jobId: string, roots?
   store.updateJob(jobId, { status: "running", phase: "discover", phaseDescriptor: { key: "diagnostics.sessions.refresh.m004" }, progress: 0, client, mode, counts });
   let pool: SessionImportPool | undefined;
   try {
-    await store.prepareSearchIndex(progress => store.updateJob(jobId, { phase: "建立搜索索引", phaseDescriptor: { key: "diagnostics.sessions.refresh.m005" }, progress }));
+    if (store.currentVersion()) await store.prepareSearchIndex(progress => store.updateJob(jobId, { phase: "search", phaseDescriptor: { key: "diagnostics.sessions.refresh.m005" }, progress }));
     store.beginInitialImport();
     store.updateJob(jobId, { phase: "discover", phaseDescriptor: { key: "diagnostics.sessions.refresh.m004" }, progress: 0 });
     const selected = [...cached.values()].filter(item => !client || item.client === client);
@@ -74,6 +75,7 @@ export async function refreshSessions(store: SessionStore, jobId: string, roots?
       .flatMap(item => item.location && item.quickFingerprint ? [{ location: item.location, stamp: item.quickFingerprint }] : []);
     const sources = await discoverSources(roots, { clients: client ? [client] : undefined, cachedSources: mode === "quick" ? cachedSources : undefined });
     counts.discovered = sources.length;
+    store.updateJob(jobId, { processedSources: 0, totalSources: sources.length });
     const codexTitles = sources.some(source => source.client === "codex") ? await loadCodexTitles(roots) : new Map<string, string>();
     const codeflickerProjects = await loadCodeFlickerProjects(sources);
     const desktopTitles = await loadDesktopTitles(sources);
@@ -88,12 +90,13 @@ export async function refreshSessions(store: SessionStore, jobId: string, roots?
       missing.add(previous.path);
     }
     store.pruneImportCheckpoints(discovered, client);
-    const concurrency = options.concurrency ?? (sources.length >= 8 ? 2 : 1);
+    const concurrency = options.concurrency ?? importConcurrency(sources.length);
     if (!Number.isInteger(concurrency) || concurrency < 1 || concurrency > 4) throw new RangeError("解析并发数必须介于 1 和 4 之间");
+    store.updateJob(jobId, { parserConcurrency: concurrency });
     if (concurrency > 1) pool = new SessionImportPool(concurrency);
     let completed = 0;
     const processSource = async (source: SourceLocation & { discoveryQuickStamp?: string }) => {
-      store.updateJob(jobId, { phase: "index", phaseDescriptor: { key: "diagnostics.sessions.refresh.m006" }, progress: completed / sources.length, counts });
+      store.updateJob(jobId, { phase: "index", phaseDescriptor: { key: "diagnostics.sessions.refresh.m006" }, progress: completed / sources.length, processedSources: completed, counts });
       const { discoveryQuickStamp, ...location } = source;
       const sourceKey = sourceLocationKey(source);
       const previous = checkpoints.get(sourceKey) ?? cached.get(sourceKey);
@@ -230,7 +233,7 @@ export async function refreshSessions(store: SessionStore, jobId: string, roots?
       const recordFailure = (error: unknown) => { failure ??= error instanceof Error ? error : new Error(String(error)); };
       const task = processSource(source).catch(recordFailure).then(() => {
         completed += 1;
-        store.updateJob(jobId, { phase: "index", phaseDescriptor: { key: "diagnostics.sessions.refresh.m006" }, progress: completed / sources.length, counts });
+        store.updateJob(jobId, { phase: "index", phaseDescriptor: { key: "diagnostics.sessions.refresh.m006" }, progress: completed / sources.length, processedSources: completed, counts });
       }).catch(recordFailure).finally(() => { active.delete(task); });
       active.add(task);
       if (active.size >= concurrency) await Promise.race(active);
@@ -240,6 +243,7 @@ export async function refreshSessions(store: SessionStore, jobId: string, roots?
     await pool?.close(); pool = undefined;
     counts.missing = missing.size;
     if (counts.missing) gaps.push({ kind: "source_missing", message: "已有来源已删除或移走，新版统计已排除；上一版保留供对照", messageDescriptor: { key: "diagnostics.sessions.refresh.m009" }, count: counts.missing });
+    await store.prepareSearchIndex(progress => store.updateJob(jobId, { phase: "search", phaseDescriptor: { key: "diagnostics.sessions.refresh.m005" }, progress }));
     store.updateJob(jobId, { phase: "publish", phaseDescriptor: { key: "diagnostics.sessions.refresh.m010" }, progress: 0.99, counts });
     store.publish(jobId, current, gaps);
   } catch (error) {
