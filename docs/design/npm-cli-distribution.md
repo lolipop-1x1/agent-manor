@@ -7,6 +7,8 @@ date: 2026-10-19
 
 本文记录已确认的目标方案，包括 Commander.js 选型、工程与交付边界、功能范围、启动策略、人工审阅和平台矩阵。命令及 API 对照见 [实施结果](../../.scratch/npm-cli-distribution/cli-engineering-results.md)，实际测试环境与完成边界见 [交付验证](../validation/npm-cli-distribution.md)。本文定义交付契约，不表示已经公共发布。
 
+维护者打包、验收及手动发布的具体步骤见 [npm 发布指南](../releasing.md)。
+
 ## 交付与命名
 
 - npm 包名为 `agent-manor`，主命令为 `agent-manor`，缩写为 `am`。两个 bin 指向相同 CLI 实现，参数、输出、退出码及数据目录完全一致。
