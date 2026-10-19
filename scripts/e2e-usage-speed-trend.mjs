@@ -266,7 +266,7 @@ try {
     await page.locator(".usage-results[aria-busy='true']").waitFor();
     ensure(await picker.innerText() === oldLabel && await chart.innerHTML() === oldChart, "等待期间图与真实分组不一致");
     ensure(await page.locator(".usage-report-body").getAttribute("inert") !== null, "等待期间旧图仍可交互");
-    ensure(await page.locator(".usage-query-feedback .is-spinning").count() > 0, "等待期间缺固定进度图标");
+    ensure(await page.locator(".usage-query-feedback .loading--inline").count() > 0, "等待期间缺固定进度图标");
     while (!release) await page.waitForTimeout(25); release(); await ready(); await page.unroute("**/api/v1/usage?*");
     const confirmedLabel = await picker.innerText(), confirmedChart = await chart.innerHTML();
     await page.route("**/api/v1/usage?*", route => route.fulfill({ status: 503, contentType: "application/json", body: JSON.stringify({ error: { code: "INTERNAL_ERROR", message: "synthetic failure", messageDescriptor: { key: "common.error.http", params: { status: 503 } } } }) }));

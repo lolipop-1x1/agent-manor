@@ -1,7 +1,8 @@
+import { Loading } from "../../shared/ui/Loading";
 import { getLanguage, t, useI18n } from "../../shared/i18n";
 import { formatNumber, formatTime } from "../../../src/i18n";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type RefObject } from "react";
-import { ArrowsOut, ArrowLeft, CaretDown, CaretLeft, CaretRight, CircleNotch, X } from "@phosphor-icons/react";
+import { ArrowsOut, ArrowLeft, CaretDown, CaretLeft, CaretRight, X } from "@phosphor-icons/react";
 import type { SessionMessage, SessionMessageResult, SessionProfile, SessionTimelineEvent, SessionTimelineResult } from "../../../src/session-contracts";
 import { MessageBody, kindLabels, resourceLabels } from "./SessionMessage";
 import { TraceTimeline } from "./TraceTimeline";
@@ -177,7 +178,7 @@ export function SessionTrace({ messages, steps, focusMessageId, focusRequest, fo
     <div ref={split} className="trace-split" style={{ "--trace-detail-percent": detailPercent } as CSSProperties}>
     <div className="trace-upper" inert={expanded && !!selected}>
     <div className="trace-toolbar"><span><strong>{t("sessions.trace.nodeCount", { count: records.length })}</strong> <small>· {t("sessions.trace.pageRecords", { count: messages.length })}</small></span>
-      {reading.loading && <span className="trace-reading-progress" role="status" aria-label={t("common.loading")}><CircleNotch size={14} className="is-spinning" aria-hidden="true" /></span>}
+      {reading.loading && <span className="trace-reading-progress" role="status" aria-label={t("common.loading")}><Loading variant="inline" size={14} /></span>}
       <div><HelpPopover iconOnly label={t("sessions.trace.help")}><dl><div><dt>{t("sessions.trace.overview")}</dt><dd>{t("sessions.trace.overviewHelp")}</dd></div>
         <div><dt>{t("sessions.trace.nodes")}</dt><dd>{t("sessions.trace.nodesHelp")}</dd></div>
         <div><dt>{t("sessions.trace.contextRecords")}</dt><dd>{t("sessions.trace.contextHelp")}</dd></div></dl></HelpPopover><button className="text-button" onClick={() => setCollapsed(new Set())}>{t("sessions.trace.expandAll")}</button><button className="text-button" onClick={() => setCollapsed(new Set(turns.map(turn => turn.id)))}>{t("sessions.trace.collapseAll")}</button></div></div>
@@ -288,7 +289,7 @@ export function SessionTrace({ messages, steps, focusMessageId, focusRequest, fo
           {selectedMessage.resource && <div>{t(resourceLabels[selectedMessage.resource.kind])} · {sessionResourceName(selectedMessage.resource)}</div>}
         </details>
         {!!selected.usage.length && <div className="trace-usage">{selected.usage.map(usage => <div key={usage.id}>{usage.model && <strong>{t("sessions.trace.usageModel", { model: usage.model })}</strong>}{tokenFields.filter(([key]) => usage[key] !== undefined).map(([key, label]) => <span key={key}>{t(label)} <b>{displayRecorded(usage[key])}</b></span>)}</div>)}</div>}
-        {detailLoading && <p role="status">{t("sessions.body.loading")}</p>}
+        {detailLoading && <p role="status"><Loading variant="inline" size={16} />{t("sessions.body.loading")}</p>}
         {detailError && <p role="alert"><SessionError error={detailError} /> <button className="text-button" onClick={() => setDetailRetry(value => value + 1)}>{t("common.retry")}</button></p>}
         <article id={`session-message-${selectedMessage.id}`} className={`trace-detail-body kind-${selectedMessage.kind}`} data-message-id={selectedMessage.id}>
           {selectedMessage.operation?.label && <p className="session-operation-title">{selectedMessage.operation.label}</p>}

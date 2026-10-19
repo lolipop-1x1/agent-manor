@@ -1,4 +1,4 @@
-import { ArrowClockwise } from "@phosphor-icons/react";
+import { Loading } from "../../shared/ui/Loading";
 import type { SemanticStatus } from "../../../src/semantic-contracts";
 import { semanticErrorDescriptor } from "../../../src/semantic/messages";
 import { messageText, useI18n } from "../../shared/i18n";
@@ -14,7 +14,7 @@ export function SemanticBuildProgress({ status }: { status?: SemanticStatus }) {
   const usage = status?.usage.byPurpose.build;
   const seconds = job ? Math.max(0, Math.floor((new Date(job.finishedAt ?? Date.now()).getTime() - new Date(job.createdAt).getTime()) / 1000)) : 0;
   return <section className="semantic-build-progress" aria-label={t("sessions.semantic.build.progress")}>
-    <div className="semantic-progress-heading"><strong>{t(semanticStatusKey(status))}</strong>{job?.status === "running" && <ArrowClockwise size={15} className="is-spinning" aria-hidden="true" />}</div>
+    <div className="semantic-progress-heading"><strong>{t(semanticStatusKey(status))}</strong>{job?.status === "running" && <Loading variant="inline" size={15} />}</div>
     {job && <>
       <div className="semantic-progress-track" role="progressbar" aria-label={t(`sessions.semantic.phase.${job.phase}`)} aria-valuemin={0} aria-valuemax={100} aria-valuenow={progress}><span style={{ width: progress === undefined ? "20%" : `${progress}%` }} className={progress === undefined ? "is-indeterminate" : undefined} /></div>
       <div className="semantic-progress-meta"><span>{t(`sessions.semantic.phase.${job.phase}`)}</span><span>{job.totalInputs ? t("sessions.semantic.build.completed", { done: job.completedInputs, total: job.totalInputs }) : "—"}</span><span>{t("sessions.semantic.build.elapsed", { minutes: Math.floor(seconds / 60), seconds: seconds % 60 })}</span></div>

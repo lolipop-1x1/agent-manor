@@ -1,3 +1,4 @@
+import { Loading } from "../../shared/ui/Loading";
 import { useRef, useState, type RefObject } from "react";
 import * as Dialog from "@radix-ui/react-dialog";
 import { ArrowSquareOut, WarningCircle, X } from "@phosphor-icons/react";
@@ -29,7 +30,7 @@ export function UsageRequestDialog({ active, session, requests, loading, error, 
           {session && <p>{sessionDisplayTitle(session.session, language)}</p>}</div>
           <div className="usage-request-actions"><HelpPopover container={container} label={t("usage.pricing.help")} iconOnly><p>{t("usage.help.cost")}</p>{session && <><p>{t("usage.coverage.cost", { complete: session.totals.pricedRequests, partial: session.totals.partiallyPricedRequests, missing: session.totals.unpricedRequests })}</p><p>{t("usage.coverage.priceBasis", { historical: session.totals.historicalPricedRequests, snapshot: session.totals.currentSnapshotPricedRequests, manual: session.totals.manualPricedRequests })}</p></>}</HelpPopover><Dialog.Close className="icon-button" aria-label={t("common.closeNamed", { label: t("usage.sessions.requests") })}><X size={20} /></Dialog.Close></div></header>
         <div className="usage-request-body">
-          {loading && <div role="status" className="usage-loading">{t("usage.loading")}</div>}
+          {loading && <div role="status" className="usage-loading"><Loading variant="inline" /><span>{t("usage.loading")}</span></div>}
           {error && <div role="alert" className="usage-notice danger">{errorMessage(error)}<button className="text-button" onClick={onRetry}>{t("usage.retry")}</button></div>}
           {requests && <div className="usage-table-scroll"><table className="usage-table usage-request-table"><thead><tr>
             <th>{t("usage.sessions.requestTime")}</th><th>{t("usage.sessions.model")}</th><th>{t("usage.tokens.input")}</th><th>{t("usage.tokens.output")}</th>

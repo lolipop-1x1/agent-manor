@@ -3,6 +3,7 @@ import { ArrowClockwise, CheckCircle, Clock, WarningCircle } from "@phosphor-ico
 import { HelpPopover } from "./HelpPopover";
 import { useI18n } from "../i18n";
 import "./refresh-controls.css";
+import { Loading } from "./Loading";
 
 export function RefreshControl({ label, busy = false, busyLabel, progress, disabled = false, onRefresh, completedAt, error, details, menu, statusLabel, showStatus = true }: {
   label: string; busy?: boolean; disabled?: boolean; onRefresh: () => void; completedAt?: string;
@@ -16,7 +17,7 @@ export function RefreshControl({ label, busy = false, busyLabel, progress, disab
     <div className="refresh-action">
       <button className="button refresh-button" aria-label={label} aria-busy={busy} title={stateLabel}
         disabled={disabled || busy} onClick={onRefresh}>
-        {error && !busy ? <WarningCircle size={16} className="refresh-error-icon" aria-hidden="true" /> : <ArrowClockwise size={16} className={busy ? "is-spinning" : undefined} aria-hidden="true" />}<span className="refresh-label">{busy ? busyLabel ?? label : label}</span>
+        {busy ? <Loading variant="inline" size={16} /> : error ? <WarningCircle size={16} className="refresh-error-icon" aria-hidden="true" /> : <ArrowClockwise size={16} aria-hidden="true" />}<span className="refresh-label">{busy ? busyLabel ?? label : label}</span>
       </button>
       {busy && progress !== undefined && <progress className="refresh-button-progress" max="1" value={progress ?? undefined} aria-label={statusLabel ?? t("common.refresh.status", { action: label })} aria-valuetext={busyLabel} />}
     </div>

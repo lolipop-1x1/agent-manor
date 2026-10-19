@@ -1,5 +1,6 @@
+import { Loading } from "../../shared/ui/Loading";
 import { memo, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent, type PointerEvent } from "react";
-import { ArrowClockwise, ArrowSquareOut, CircleNotch, FastForward, Minus, Pause, Play, Plus, SkipBack, SkipForward, X } from "@phosphor-icons/react";
+import { ArrowClockwise, ArrowSquareOut, FastForward, Minus, Pause, Play, Plus, SkipBack, SkipForward, X } from "@phosphor-icons/react";
 import type { EvidenceResponse, FileCoverage } from "../../../src/contracts";
 import type { ReplayActivity, ReplayResult, ReplaySessionsResult, ReplayStep, ReplayTrack } from "../../../src/replay-contracts";
 import { ApiError, errorMessage, isAborted, request } from "../../shared/api";
@@ -247,7 +248,7 @@ export function ActivityReplay({ repositoryId, active, theme, targetSessionId, o
   return <section ref={attachRoot} className="activity-replay" style={{ "--replay-track-height": `${trackHeight}px` } as CSSProperties} data-theme={theme} data-playing={playing} data-motion-detail={speed >= 16 ? "reduced" : "full"} data-fullscreen={fullscreen} data-position={position} data-replay-version={data?.version} tabIndex={0} onKeyDown={keyboard} aria-label={t("replay.map")} aria-busy={loading}>
     <div className="replay-session-toolbar">
       <ReplaySessionPicker value={sessionId} onChange={chooseSession} label={t("replay.session")} placeholder={t("replay.search")} options={options} container={container} />
-      {(loading || listLoading) && <CircleNotch className="spinning replay-loading-icon" size={16} aria-label={t("replay.loading")} />}
+      {(loading || listLoading) && <Loading variant="inline" size={16} label={t("replay.loading")} />}
       <button className="button subtle replay-view-session" disabled={!sessionId || loading} onClick={() => onSession({ sessionId, version: data?.sessionVersion })}><ArrowSquareOut size={15} />{t("replay.viewSession")}</button>
       {!detailsOpen && data && <button className="button subtle" onClick={() => setDetailsOpen(true)}>{t("replay.followDetails")}</button>}
       <HelpPopover container={container} label={t("replay.help")}><p>{t("replay.helpClock")}</p><p>{t("replay.helpMap")}</p><p>{t("replay.helpKeyboard")}</p>{data && <p>{t("replay.version", { version: data.version, sessionVersion: data.sessionVersion })}</p>}{data?.missingChildren ? <p>{t("replay.missingChildren", { count: data.missingChildren })}</p> : null}{data?.stale && <p>{t("replay.stale")}</p>}</HelpPopover>
@@ -257,7 +258,7 @@ export function ActivityReplay({ repositoryId, active, theme, targetSessionId, o
     {!!error && <div className="replay-error" role="alert">{errorMessage(error)}<button className="button subtle" onClick={update}>{t("replay.update")}</button></div>}
     {fullscreenError && <div className="replay-error" role="alert">{t("replay.fullscreenError")}</div>}
     {!data && !loading && !error && <div className="replay-empty"><Play size={30} /><p>{!listLoading && !sessions?.sessions.length ? t("replay.emptySessions") : t("replay.select")}</p></div>}
-    {!data && loading && <div className="replay-empty" role="status"><CircleNotch className="spinning" size={24} /><p>{t("replay.loading")}</p></div>}
+    {!data && loading && <div className="replay-empty" role="status"><Loading /><p>{t("replay.loading")}</p></div>}
     {data && <>
       <div className={`replay-viewer${detailsOpen ? " has-details" : ""}`} data-blocked={loading || !!error}>
         <div className="replay-map-area">
@@ -277,7 +278,7 @@ export function ActivityReplay({ repositoryId, active, theme, targetSessionId, o
             {selectedStep && <button className="button subtle" onClick={() => onSession({ sessionId: selectedStep.trackId, messageId: selection.activity?.messageId, version: data.sessionVersion })}><ArrowSquareOut size={14} />{t("replay.viewSession")}</button>}
             {selection.activity && requestedEvidenceId !== selection.activity.id && <button className="button subtle" onClick={() => setRequestedEvidenceId(selection.activity!.id)}>{t("replay.readEvidence")}</button>}
           </div>
-          {evidenceLoading && <p className="muted" role="status">{t("replay.evidenceLoading")}</p>}
+          {evidenceLoading && <p className="muted" role="status"><Loading variant="inline" size={16} />{t("replay.evidenceLoading")}</p>}
           {!!evidenceError && <div className="replay-error" role="alert">{errorMessage(evidenceError)}<button className="button subtle" onClick={() => setEvidenceRetry(value => value + 1)}>{t("common.retry")}</button><button className="button subtle" onClick={update}>{t("replay.update")}</button></div>}
           {evidence && <ReplayEvidenceBody evidence={evidence} />}
           </>}

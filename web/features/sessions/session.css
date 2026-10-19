@@ -272,8 +272,6 @@
 .session-main-heading .button { font-size: 10px; }
 .session-map-button:disabled { opacity: .5; }
 .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; clip-path: inset(50%); }
-.is-spinning { animation: session-spin 1.1s linear infinite; }
-@keyframes session-spin { to { transform: rotate(360deg); } }
 
 @media (max-width: 1250px) {
   .sessions-main { padding: 18px 16px 0; }
@@ -304,7 +302,6 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .is-spinning { animation: none; }
   .session-turn > summary > svg { transition: none; }
 }
 
@@ -381,3 +378,5 @@
 .session-usage-coverage p { display: flex; flex-wrap: wrap; gap: 2px 8px; margin: 0 0 6px; font-size: 10px; line-height: 1.6; }
 .session-usage-coverage span { color: var(--muted); }
 .session-usage-coverage strong { color: var(--near); font-size: inherit; font-weight: 500; white-space: nowrap; }
+
+.session-list-loading, .session-message-loading { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; }

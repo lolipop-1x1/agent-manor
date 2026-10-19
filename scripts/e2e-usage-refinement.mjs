@@ -38,7 +38,7 @@ try {
     await page.route("**/api/v1/usage?*", async route => { await new Promise(resolve => { release = resolve; }); await route.continue(); });
     await button("估算费用").click(); await page.locator(".usage-results[aria-busy='true']").waitFor();
     ensure(JSON.stringify(await controlGaps()) === JSON.stringify(gaps), "loading改变控件间距");
-    ensure(await page.locator(".usage-group-switch .is-spinning").isVisible(), "分组进度没有保留");
+    ensure(await page.locator(".usage-group-switch .loading--inline").isVisible(), "分组进度没有保留");
     ensure(await page.locator(".usage-report-body").evaluate(element => getComputedStyle(element, "::before").content === "none"), "刷新蓝线仍存在");
     while (!release) await page.waitForTimeout(20); release(); await ready(); await page.unroute("**/api/v1/usage?*");
     await page.locator(".usage-attribution-map").scrollIntoViewIfNeeded();

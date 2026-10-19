@@ -78,12 +78,12 @@ try {
     await hit.press("Enter"); await page.keyboard.press("Escape"); ensure(await page.locator(".usage-time-popover").count() === 0, "Escape 未关闭时间浮层");
     let release; await page.route("**/api/v1/usage?*", async route => { await new Promise(resolve => { release = resolve; }); await route.continue(); });
     await button("估算费用").click(); await page.locator(".usage-results[aria-busy='true']").waitFor();
-    ensure(await page.locator(".usage-query-feedback .is-spinning").count() === 3, "指标切换没有立即显示固定loading");
+    ensure(await page.locator(".usage-query-feedback .loading--inline").count() === 3, "指标切换没有立即显示固定loading");
     ensure(await page.locator(".usage-metric-overview").innerText() === values, "等待期间清空原数据");
     while (!release) await page.waitForTimeout(25); release(); await ready(); await page.unroute("**/api/v1/usage?*");
     await page.route("**/api/v1/usage?*", async route => { await new Promise(resolve => { release = resolve; }); await route.continue(); }); release = undefined;
     await page.getByRole("combobox", { name: "归因维度", exact: true }).click(); await page.getByRole("option", { name: "项目", exact: true }).click(); await page.locator(".usage-results[aria-busy='true']").waitFor();
-    ensure(await page.locator(".usage-group-switch .is-spinning").isVisible(), "分组切换缺就近loading");
+    ensure(await page.locator(".usage-group-switch .loading--inline").isVisible(), "分组切换缺就近loading");
     while (!release) await page.waitForTimeout(25); release(); await ready(); await page.unroute("**/api/v1/usage?*");
     ensure((await page.locator(".usage-attribution-map").innerText()).includes("atlas"), "分组返回后归因未更新");
     ensure(!(await page.locator(".usage-attribution-map").innerText()).includes("/synthetic/"), "矩形显示完整长路径");
@@ -107,6 +107,8 @@ try {
     ensure((await page.locator(".usage-secondary-metrics").innerText()).includes("Daily average cost"), "英文新增指标缺失");
     ensure((await page.locator(".usage-metrics").innerText()).includes("M"), "英文Token没有百万单位");
     await page.setViewportSize({ width: 390, height: 844 });
+    // 等待图表的 ResizeObserver 完成窄屏重测，再检查页面宽度。
+    await page.waitForFunction(() => document.documentElement.scrollWidth <= innerWidth);
     ensure(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), "窄屏页面溢出");
     await page.getByRole("slider").press("Home"); const popup = page.getByRole("dialog", { name: "Interval details", exact: true }); await popup.waitFor();
     const bounds = await popup.boundingBox(); ensure(bounds.x >= 0 && bounds.x + bounds.width <= 390, "窄屏时间浮层溢出");

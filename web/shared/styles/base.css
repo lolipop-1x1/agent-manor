@@ -114,9 +114,6 @@ progress::-moz-progress-bar { background: var(--accent); border-radius: 3px; }
 .map-heading-tools { display: flex; align-items: center; gap: 8px; }
 .map-query-progress { display: flex; align-items: center; justify-content: center; width: 20px; height: 20px; }
 .map-query-loading { display: inline-flex; color: var(--accent); }
-.map-query-loading svg { animation: map-query-spin 1s linear infinite; }
-@keyframes map-query-spin { to { transform: rotate(360deg); } }
-@media (prefers-reduced-motion: reduce) { .map-query-loading svg { animation: none; } }
 .select-field { display: inline-flex; align-items: center; gap: 7px; font-size: 11px; }
 .select-field > span { color: var(--muted); }
 .map-session-filter { min-width: 0; max-width: 100%; }
@@ -195,7 +192,7 @@ input::placeholder { color: var(--muted); }
 .empty-state p { color: var(--muted); font-size: 12px; line-height: 1.8; max-width: 470px; }
 .empty-actions { display: flex; gap: 8px; }
 .first-register { display: flex; justify-content: center; margin-top: -26px; }
-.query-loading { padding: 60px 0; min-height: 460px; text-align: center; color: var(--muted); font-size: 12px; }
+.query-loading { padding: 60px 0; min-height: 460px; text-align: center; color: var(--muted); font-size: 12px; display: flex; flex-direction: column; align-items: center; gap: 12px; }
 .file-table { font-size: 11px; margin: 17px 0; }
 .file-table summary { color: var(--muted); cursor: pointer; padding: 6px 0; }
 .file-table-scroll { overflow: auto; max-height: 350px; margin-top: 7px; }
@@ -278,8 +275,6 @@ input[type="checkbox"] { accent-color: var(--accent); }
 .code-viewer { border: 1px solid var(--border); border-radius: 5px; overflow: hidden; }
 .code-viewer .cm-editor { height: min(57dvh, 620px); }
 .code-viewer .cm-scroller { overflow: auto; }
-.spinning { animation: spin 1.4s linear infinite; }
-@keyframes spin { to { transform: rotate(360deg); } }
 @media (max-width: 1250px) {
   .map-main { padding: 18px; }
   .evidence-pane { padding: 16px; }
@@ -360,7 +355,7 @@ input[type="checkbox"] { accent-color: var(--accent); }
   .code-toolbar { flex-direction: column; align-items: flex-start; }
   .raw-record pre { padding: 11px; font-size: 10px; }
 }
-@media (prefers-reduced-motion: reduce) { .spinning { animation: none; } .map-file { transition: none; } }
+@media (prefers-reduced-motion: reduce) { .map-file { transition: none; } }
 
 .code-map-page h1 { font-size: 22px; letter-spacing: -.5px; }
 .code-map-page .select-field > span { display: none; }

@@ -1,3 +1,4 @@
+import { Loading } from "./ui/Loading";
 import { defaultAppearance, isAppearance, type Appearance } from "../../src/appearance";
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import * as Dropdown from "@radix-ui/react-dropdown-menu";
@@ -126,7 +127,7 @@ export function I18nProvider({ children }: { children: ReactNode }) {
     };
   }, []);
   const value = useMemo(() => ({ appearance, setAppearance, language, preference: preference ?? "auto", setPreference, refreshIntervals, setAutoRefreshInterval, beginSessionIntervalObservation, saving, error }), [appearance, setAppearance, language, preference, setPreference, refreshIntervals, setAutoRefreshInterval, beginSessionIntervalObservation, saving, error]);
-  if (preference === null) return <div className="query-loading" role="status">{t("common.loading")}</div>;
+  if (preference === null) return <div className="query-loading" role="status"><Loading /><span>{t("common.loading")}</span></div>;
   return <I18nContext.Provider value={value}>{children}</I18nContext.Provider>;
 }
 

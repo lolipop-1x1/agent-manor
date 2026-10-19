@@ -1,6 +1,7 @@
+import { Loading } from "../../shared/ui/Loading";
 import { useId, useRef, type ReactNode } from "react";
 import * as Dialog from "@radix-ui/react-dialog";
-import { ArrowClockwise, X } from "@phosphor-icons/react";
+import { X } from "@phosphor-icons/react";
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { errorMessage } from "../../shared/api";
@@ -26,7 +27,7 @@ export function KnowledgeError({ error, retry }: { error: unknown; retry?: () =>
 }
 export function KnowledgeBusy({ busy }: { busy: boolean }) {
   const { t } = useI18n();
-  return <span className="knowledge-busy" role={busy ? "status" : undefined} aria-label={busy ? t("knowledge.loading") : undefined}>{busy && <ArrowClockwise size={15} className="is-spinning" aria-hidden="true" />}</span>;
+  return <span className="knowledge-busy" role={busy ? "status" : undefined} aria-label={busy ? t("knowledge.loading") : undefined}>{busy && <Loading variant="inline" size={15} />}</span>;
 }
 export function KnowledgeTabs({ value, options, onChange, label, panelId }: { panelId?: string; value: string; options: { value: string; label: string }[]; onChange: (value: string) => void; label: string }) {
   return <div className="knowledge-tabs" role="tablist" aria-label={label}><SelectionIndicator value={value} selector='[aria-selected="true"]' line />{options.map((option, index) => <button key={option.value} role="tab" id={panelId ? `${panelId}-${option.value}-tab` : undefined} aria-controls={panelId} aria-selected={option.value === value} tabIndex={option.value === value ? 0 : -1} onClick={() => onChange(option.value)} onKeyDown={event => {
