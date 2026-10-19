@@ -6,6 +6,7 @@ import { promisify } from "node:util";
 import { setTimeout as delay } from "node:timers/promises";
 import type { InstallationKind } from "../updates/contracts.js";
 import { RequestError } from "./runtime.js";
+import { WINDOWS_DESCENDANTS_MARKER, WINDOWS_MISSING_COMMAND_MARKER, windowsInstallLaunch } from "./windows-install.js";
 
 const run = promisify(execFile);
 export interface CommandResult { stdout: string; stderr: string }
@@ -36,7 +37,9 @@ async function waitForGroup(pid: number): Promise<void> {
 /** 中断安装时先收束整棵进程树，再将失败交还持有安装锁的调用方。 */
 export async function runInstallProcess(command: string, args: string[], options: InstallProcessOptions = {}): Promise<CommandResult> {
   options.signal?.throwIfAborted();
-  const child = spawn(command, args, { cwd: options.cwd, detached: process.platform !== "win32", windowsHide: true, stdio: ["ignore", "pipe", "pipe"] });
+  const launch = process.platform === "win32" ? windowsInstallLaunch(command, args, options.cwd) : { command, args, env: process.env };
+  const child = spawn(launch.command, launch.args, { cwd: options.cwd, env: launch.env, detached: process.platform !== "win32", windowsHide: true, stdio: [process.platform === "win32" ? "pipe" : "ignore", "pipe", "pipe"] });
+  child.stdin?.on("error", () => {});
   const maximum = options.maxBuffer ?? 4_194_304;
   const output: Record<"stdout" | "stderr", Buffer[]> = { stdout: [], stderr: [] };
   const sizes = { stdout: 0, stderr: 0 };
@@ -47,8 +50,8 @@ export async function runInstallProcess(command: string, args: string[], options
     termination ??= (async () => {
       if (!child.pid) return;
       if (process.platform === "win32") {
-        // 参数独立传递，路径和 PID 都不经过 shell 解释。
-        await run("taskkill.exe", ["/PID", String(child.pid), "/T", "/F"], { windowsHide: true, timeout: 30_000, maxBuffer: 4_194_304 });
+        // wrapper 在 Job 外等待 ActiveProcesses 归零后退出；关闭句柄只承担异常兜底。
+        child.stdin?.end("abort\n");
       } else {
         signalGroup(child.pid, "SIGTERM");
         const deadline = Date.now() + (options.killGrace ?? 500);
@@ -66,8 +69,8 @@ export async function runInstallProcess(command: string, args: string[], options
     sizes[stream] += data.length;
     if (sizes[stream] > maximum) terminate(Object.assign(new Error(`Installation ${stream} exceeded its output limit`), { code: "ERR_CHILD_PROCESS_STDIO_MAXBUFFER" }));
   };
-  child.stdout.on("data", data => collect("stdout", Buffer.from(data)));
-  child.stderr.on("data", data => collect("stderr", Buffer.from(data)));
+  child.stdout!.on("data", data => collect("stdout", Buffer.from(data)));
+  child.stderr!.on("data", data => collect("stderr", Buffer.from(data)));
   const aborted = () => terminate(Object.assign(new Error("Installation was aborted"), { name: "AbortError", code: "ABORT_ERR", cause: options.signal?.reason }));
   options.signal?.addEventListener("abort", aborted, { once: true });
   if (options.signal?.aborted) aborted();
@@ -86,6 +89,8 @@ export async function runInstallProcess(command: string, args: string[], options
       catch (cause) { failure = new Error(`Could not finish stopping the installation process tree: ${cause instanceof Error ? cause.message : String(cause)}`, { cause: failure }); }
     }
     const result = { stdout: Buffer.concat(output.stdout).toString("utf8"), stderr: Buffer.concat(output.stderr).toString("utf8") };
+    if (!failure && process.platform === "win32" && code === 125 && result.stderr.includes(WINDOWS_DESCENDANTS_MARKER)) failure = Object.assign(new Error("Installation left child processes running"), { code: "INSTALL_PROCESS_DESCENDANTS_RUNNING" });
+    if (!failure && process.platform === "win32" && code === 127 && result.stderr.includes(WINDOWS_MISSING_COMMAND_MARKER)) failure = Object.assign(new Error("Installation command was not found"), { code: "ENOENT" });
     if (failure || code !== 0) throw Object.assign(failure ?? new Error(`Installation exited with ${signal ?? code}`), result, { ...(failure ? {} : { code, signal }) });
     return result;
   } finally { clearTimeout(timer); options.signal?.removeEventListener("abort", aborted); }

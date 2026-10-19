@@ -6,6 +6,9 @@ import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import test from "node:test";
 import { runInstallProcess } from "../src/service/product-installation.js";
+import { WINDOWS_INSTALL_PAYLOAD, windowsArgument, windowsInstallLaunch } from "../src/service/windows-install.js";
+
+const processTimeout = process.platform === "win32" ? 45_000 : 4000;
 
 async function fixture(t: { after(callback: () => Promise<void>): void }) {
   const directory = await mkdtemp(join(tmpdir(), "manor-install-process-"));
@@ -13,7 +16,7 @@ async function fixture(t: { after(callback: () => Promise<void>): void }) {
   return { directory, marker: join(directory, "worker.pid"), output: join(directory, "writes.txt") };
 }
 async function ready(path: string): Promise<void> {
-  for (let attempt = 0; attempt < 200; attempt++) {
+  for (let attempt = 0; attempt < (process.platform === "win32" ? 3000 : 200); attempt++) {
     try { if ((await stat(path)).size) return; } catch { /* 合成后代仍在启动。 */ }
     await delay(10);
   }
@@ -56,6 +59,41 @@ test("安装进程成功和非零退出都保留各自标准输出与错误输�
   });
 });
 
+test("Windows原生参数引用覆盖空值、空格、引号与末尾反斜杠", () => {
+  assert.equal(windowsArgument(""), '""');
+  assert.equal(windowsArgument("plain"), '"plain"');
+  assert.equal(windowsArgument("two words"), '"two words"');
+  assert.equal(windowsArgument('a"b'), '"a\\"b"');
+  assert.equal(windowsArgument("C:\\space dir\\"), '"C:\\space dir\\\\"');
+  assert.equal(windowsArgument('\\"'), '"' + "\\".repeat(3) + '""');
+});
+
+test("Windows wrapper代码与命令参数分离编码，在建立Job之后才启动安装器", () => {
+  const command = "C:\\Program Files\\Node\\node.exe", args = ["", "space value", 'quote"value', "中文", "$(Write-Output injected); '&"], cwd = "C:\\test data\\中文";
+  const environment = { SystemRoot: "C:\\Windows", SYNTHETIC: "preserved" };
+  const launch = windowsInstallLaunch(command, args, cwd, environment);
+  assert.equal(launch.command, "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe");
+  assert.deepEqual(launch.args.slice(0, -1), ["-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand"]);
+  assert.ok(launch.command.length + launch.args.join(" ").length < 32767, "固定wrapper必须保留在Windows命令行长度限制内");
+  const script = Buffer.from(launch.args.at(-1)!, "base64").toString("utf16le");
+  assert.ok(!script.includes(command) && !script.includes(cwd) && !script.includes("Write-Output injected"));
+  assert.ok(script.includes("SetLimits(job, 0x00002000)") && script.includes("0x08000004"));
+  assert.ok(script.indexOf("AssignProcessToJobObject(job, child.Process)") < script.indexOf("ResumeThread(child.Thread)"));
+  assert.ok(script.includes("while (Active(job) != 0) Thread.Sleep(10)") && script.includes('line == "abort"'));
+  assert.ok(!script.includes("GetCurrentProcess()"));
+  const payload = JSON.parse(Buffer.from(launch.env[WINDOWS_INSTALL_PAYLOAD]!, "base64").toString("utf8"));
+  assert.deepEqual(payload, { command, arguments: [command, ...args].map(windowsArgument).join(" "), cwd });
+  assert.equal(launch.env.SYNTHETIC, "preserved");
+  assert.equal(Object.hasOwn(environment, WINDOWS_INSTALL_PAYLOAD), false);
+  assert.equal(windowsInstallLaunch("different.exe", ["other"]).args.at(-1), launch.args.at(-1));
+});
+
+test("实际安装执行保留复杂argv，不把引号或PowerShell表达式当作代码", async () => {
+  const args = ["", "space value", 'embedded"quote', "C:\\folder\\", "中文", "$(Write-Output injected); '&", "line\nvalue"];
+  const result = await runInstallProcess(process.execPath, ["-e", "process.stdout.write(JSON.stringify(process.argv.slice(1)))", ...args]);
+  assert.deepEqual(JSON.parse(result.stdout), args);
+});
+
 test("找不到可执行文件时正确结束，预先取消不启动安装进程", async t => {
   const f = await fixture(t);
   await assert.rejects(runInstallProcess(join(f.directory, "missing-command"), []), { code: "ENOENT" });
@@ -69,7 +107,7 @@ test("取消会终止整个安装进程组，忽略SIGTERM的生命周期后代�
   const f = await fixture(t);
   const controller = new AbortController();
   t.after(async () => controller.abort());
-  const operation = runInstallProcess(process.execPath, scripts(f.marker, f.output), { signal: controller.signal, killGrace: 40, timeout: 4000 });
+  const operation = runInstallProcess(process.execPath, scripts(f.marker, f.output), { signal: controller.signal, killGrace: 40, timeout: processTimeout });
   const rejected = assert.rejects(operation, error => {
     assert.equal((error as { code?: string }).code, "ABORT_ERR", String(error));
     assert.match((error as { stdout: string }).stdout, /synthetic install started/);
@@ -85,7 +123,7 @@ test("取消会终止整个安装进程组，忽略SIGTERM的生命周期后代�
 
 test("安装超时先停止后代再返回ETIMEDOUT，不留下继续写入的生命周期脚本", async t => {
   const f = await fixture(t);
-  const operation = runInstallProcess(process.execPath, scripts(f.marker, f.output), { timeout: 750, killGrace: 40 });
+  const operation = runInstallProcess(process.execPath, scripts(f.marker, f.output), { timeout: process.platform === "win32" ? 35_000 : 750, killGrace: 40 });
   const rejected = assert.rejects(operation, { code: "ETIMEDOUT" });
   await ready(f.marker);
   await rejected;
@@ -95,7 +133,7 @@ test("安装超时先停止后代再返回ETIMEDOUT，不留下继续写入的�
 for (const stream of ["stdout", "stderr"] as const) {
   test(`安装${stream}溢出时保留有界日志，停止整组后代`, async t => {
     const f = await fixture(t);
-    await assert.rejects(runInstallProcess(process.execPath, scripts(f.marker, f.output, stream), { maxBuffer: 1024, killGrace: 40, timeout: 4000 }), error => {
+    await assert.rejects(runInstallProcess(process.execPath, scripts(f.marker, f.output, stream), { maxBuffer: 1024, killGrace: 40, timeout: processTimeout }), error => {
       assert.equal((error as { code?: string }).code, "ERR_CHILD_PROCESS_STDIO_MAXBUFFER");
       assert.ok(Buffer.byteLength((error as unknown as Record<string, string>)[stream]!) <= 1024);
       return true;
@@ -104,8 +142,8 @@ for (const stream of ["stdout", "stderr"] as const) {
   });
 }
 
-test("直接安装进程结束后若仍有活动后代，先收束后代并拒绝误报安装完成", { skip: process.platform === "win32" }, async t => {
+test("直接安装进程结束后若仍有活动后代，先收束后代并拒绝误报安装完成", async t => {
   const f = await fixture(t);
-  await assert.rejects(runInstallProcess(process.execPath, scripts(f.marker, f.output, "exit"), { killGrace: 40, timeout: 4000 }), { code: "INSTALL_PROCESS_DESCENDANTS_RUNNING" });
+  await assert.rejects(runInstallProcess(process.execPath, scripts(f.marker, f.output, "exit"), { killGrace: 40, timeout: processTimeout }), { code: "INSTALL_PROCESS_DESCENDANTS_RUNNING" });
   await writesStopped(f.output);
 });

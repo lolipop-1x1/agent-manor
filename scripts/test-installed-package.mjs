@@ -74,6 +74,29 @@ try {
   assert.equal(releases.selfUpdateSupported, true);
   assert.equal(releases.updateAvailable, null, "只读安装验收不能发起发布检查");
   assert.equal(existsSync(home), false, "版本、导入和未运行状态不得创建后台或数据目录");
+  // 从实际安装产物加载受控执行器，三个系统的安装矩阵都核验取消与遗留后代。
+  run(process.execPath, ["--input-type=module", "-e", `
+    import assert from "node:assert/strict";
+    import { readFile, writeFile } from "node:fs/promises";
+    import { setTimeout as pause } from "node:timers/promises";
+    import { runInstallProcess } from ${JSON.stringify(pathToFileURL(join(packageRoot, "dist/service/product-installation.js")).href)};
+    const directory = ${JSON.stringify(sandbox)};
+    for (const mode of ["abort", "orphan"]) {
+      const marker = directory + "/process-" + mode + ".txt";
+      const child = "const fs=require('node:fs');process.on('SIGTERM',()=>{});fs.writeFileSync("+JSON.stringify(marker)+",'ready');setInterval(()=>fs.appendFileSync("+JSON.stringify(marker)+",'x'),10);";
+      const parent = "const{spawn}=require('node:child_process');spawn(process.execPath,['-e',"+JSON.stringify(child)+"],{stdio:'ignore'});" + (mode === "orphan" ? "const fs=require('node:fs');const t=setInterval(()=>{if(fs.existsSync("+JSON.stringify(marker)+")){clearInterval(t);process.exit(0)}},10);" : "setInterval(()=>{},1000);");
+      const controller = new AbortController();
+      const result = runInstallProcess(process.execPath, ["-e", parent], { signal: controller.signal, timeout: 45000 });
+      const rejected = assert.rejects(result, error => mode === "abort" ? error.code === "ABORT_ERR" : error.code === "INSTALL_PROCESS_DESCENDANTS_RUNNING");
+      let ready = false;
+      for (let i=0; i<3000; i++) { try { await readFile(marker); ready=true; break; } catch {} await pause(10); }
+      assert.equal(ready,true,"合成安装后代未启动");
+      if (mode === "abort") controller.abort();
+      await rejected;
+      const before = await readFile(marker,"utf8"); await pause(100);
+      assert.equal(await readFile(marker,"utf8"),before,"受控安装返回后，后代仍在写入");
+    }
+  `]);
   // 原生扩展在独立进程验证并卸载，避免 Windows 清理时仍映射安装包里的 DLL。
   const native = JSON.parse(run(process.execPath, ["--input-type=module", "-e", `
     import { createRequire } from "node:module";
@@ -125,7 +148,7 @@ try {
   assert.equal(existsSync(join(home, "service.json")), false);
   started = false;
   assert.equal(command(["skills", "remove", "--target", "custom", "--directory", skillDirectory]).status, "removed");
-  const evidence = { platform: process.platform, architecture: process.arch, node: process.version, sqlite, libc: process.report?.getReport().header.glibcVersionRuntime ?? null, version: metadata.version, checks: ["both-bins", "read-only-status", "native-sqlite-vector", "skill-install-conflict-backup-remove", "default-port-fallback-and-explicit-conflict", "background-start-worker-web-stop"] };
+  const evidence = { platform: process.platform, architecture: process.arch, node: process.version, sqlite, libc: process.report?.getReport().header.glibcVersionRuntime ?? null, version: metadata.version, checks: ["both-bins", "read-only-status", "release-status-custom-prefix", "install-process-tree-abort-and-orphan", "native-sqlite-vector", "skill-install-conflict-backup-remove", "default-port-fallback-and-explicit-conflict", "background-start-worker-web-stop"] };
   console.log(JSON.stringify(evidence, null, 2));
 } catch (error) {
   console.error(error);
