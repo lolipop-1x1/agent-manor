@@ -73,3 +73,70 @@ test("终端进度提供双语阶段和实际计数，重复轮询不刷屏", ()
     }
   } finally { process.stderr.write = write; }
 });
+
+test("仓库进度显示完成数、名称、翻译后的阶段及百分比，切换立即更新", () => {
+  const write = process.stderr.write; let output = "";
+  process.stderr.write = ((chunk: unknown) => { output += String(chunk); return true; }) as typeof process.stderr.write;
+  try {
+    for (const language of ["en", "zh-CN"] as const) {
+      output = "";
+      const progress = startupProgress(language);
+      const preparation = { state: "running", phase: "maps", jobIds: ["history", "map1", "map2", "map3"], completed: 1, total: 3,
+        repository: { id: "sample-alpha", name: "sample-alpha", phase: "旧中文阶段", phaseDescriptor: { key: "diagnostics.index.refresh.m007" }, progress: 0.65 } };
+      try {
+        progress.update({ preparation } as StatusResponse);
+        assert.match(output, /1 \/ 3/); assert.match(output, /sample-alpha/); assert.match(output, /65%/);
+        assert.doesNotMatch(output, /旧中文阶段/);
+        assert.match(output, language === "en" ? /Publishing/ : /发布完整结果/);
+        let previous = output;
+        progress.update({ preparation: { ...preparation, completed: 2,
+          repository: { id: "sample-beta", name: "sample-beta", phase: "等待分析", phaseDescriptor: { key: "diagnostics.index.store.m006" }, progress: 0 } } } as StatusResponse);
+        assert.match(output.slice(previous.length), /2 \/ 3/);
+        assert.match(output.slice(previous.length), language === "en" ? /Waiting for analysis/ : /等待分析/);
+        previous = output;
+        progress.update({ preparation: { ...preparation, completed: 2,
+          repository: { ...preparation.repository, id: "sample-beta", name: "sample-beta", progress: 0.95 } } } as StatusResponse);
+        assert.match(output.slice(previous.length), /2 \/ 3/); assert.match(output.slice(previous.length), /sample-beta/);
+        assert.match(output.slice(previous.length), /95%/);
+      } finally { progress.close(); }
+    }
+  } finally { process.stderr.write = write; }
+});
+
+test("终端保留来源扫描结果和客户端汇总，导入显示复用与当前来源且不重复刷屏", () => {
+  const write = process.stderr.write, now = Date.now;
+  let output = "", time = now();
+  Date.now = () => time;
+  process.stderr.write = ((chunk: unknown) => { output += String(chunk); return true; }) as typeof process.stderr.write;
+  try {
+    for (const language of ["en", "zh-CN"] as const) {
+      output = "";
+      const progress = startupProgress(language);
+      const status = { preparation: { state: "running", phase: "history" }, sessions: { job: { id: "synthetic-import", phase: "discover",
+        discovery: [{ client: "codex", path: "/synthetic/sessions", sourceCount: 0, complete: false }] } } } as StatusResponse;
+      try {
+        progress.update(status);
+        assert.match(output, /Codex/); assert.match(output, /\/synthetic\/sessions/);
+        const complete = { ...status, sessions: { job: { ...status.sessions!.job!, discovery: [
+          { client: "codex", path: "/synthetic/sessions", sourceCount: 9, complete: true },
+          { client: "codeflicker-desktop", path: "/synthetic/desktop", sourceCount: 2, complete: true }],
+          sourceCounts: [{ client: "codex", count: 9 }, { client: "codeflicker-desktop", count: 2 }] } } } as StatusResponse;
+        progress.update(complete);
+        assert.match(output, language === "en" ? /9 candidate sources/ : /9 个候选来源/);
+        assert.match(output, language === "en" ? /CodeFlicker Desktop: 2/ : /CodeFlicker 桌面版：2/);
+        const index = { ...complete, sessions: { job: { ...complete.sessions!.job!, phase: "index", processedSources: 5, totalSources: 11,
+          parserConcurrency: 2, counts: { parsed: 2, quickReused: 2, verifiedReused: 1 },
+          activeSources: [{ client: "codex", path: "/synthetic/sessions/active.jsonl" }] } } } as StatusResponse;
+        progress.update(index);
+        assert.match(output, /5 \/ 11/);
+        assert.match(output, language === "en" ? /parsed 2 · reused 3 · 2 workers/ : /已解析 2 · 已复用 3 · 2 个解析线程/);
+        assert.match(output, /active\.jsonl/);
+        const previous = output;
+        progress.update(index); assert.equal(output, previous);
+        time += 6000;
+        progress.update(index);
+        assert.equal(output.split("active.jsonl").length, 2);
+      } finally { progress.close(); }
+    }
+  } finally { process.stderr.write = write; Date.now = now; }
+});

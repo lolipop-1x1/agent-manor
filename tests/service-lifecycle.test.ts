@@ -4,6 +4,7 @@ import { mkdtemp, readFile, readdir, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { existsSync } from "node:fs";
+import { execFileSync } from "node:child_process";
 import test from "node:test";
 import { randomUUID } from "node:crypto";
 import { startService } from "../src/server.js";
@@ -115,10 +116,95 @@ test("数据准备失败仍保留已发布历史和 HTTP，不把失败标成完
     const status = await apiRequest<StatusResponse>(service.instance, "/status?summary=true");
     assert.equal(status.preparation?.state, "failed");
     assert.equal(status.preparation?.initial, true);
-    assert.equal(existsSync(join(home, "startup-prepared.json")), false);
+    assert.equal(JSON.parse(await readFile(join(home, "startup-prepared.json"), "utf8")).state, "pending");
     assert.equal((await apiRequest<{ total: number }>(service.instance, "/sessions")).total, 0);
     assert.equal((await serviceStatus(home)).running, true);
   } finally { UsageManager.prototype.prepare = original; await service.close(); await rm(home, { recursive: true, force: true }); }
+});
+
+test("旧目录已有历史但没有初始化标记时快速复用，显式等待仍等待后台准备", async () => {
+  const home = await mkdtemp(join(tmpdir(), "manor-existing-startup-"));
+  const index = new AnalysisStore(join(home, "index.sqlite")), sessions = new SessionStore(index.dbPath);
+  const version = sessions.publish(sessions.createJob().id, [], []);
+  sessions.close(); index.close();
+  const original = WorkerManager.prototype.refreshSessions;
+  WorkerManager.prototype.refreshSessions = function() { return (this as unknown as { sessions: SessionStore }).sessions.createJob(); };
+  const service = await startService({ home, port: 0, roots: isolatedHistoryRoots() });
+  try {
+    const status = await apiRequest<StatusResponse>(service.instance, "/status?summary=true&response=summary");
+    assert.equal(status.preparation?.initial, false);
+    assert.equal(status.sessions?.version, version);
+    assert.equal((await startBackground(home, { waitData: "initial", timeoutMs: 0 })).id, service.instance.id);
+    await assert.rejects(startBackground(home, { waitData: true, timeoutMs: 0 }), { code: "WAIT_TIMEOUT" });
+  } finally { WorkerManager.prototype.refreshSessions = original; await service.close(); await rm(home, { recursive: true, force: true }); }
+});
+
+test("首次历史已发布但缓存失败后，重启仍等待完整准备", async () => {
+  const home = await mkdtemp(join(tmpdir(), "manor-pending-startup-"));
+  const original = UsageManager.prototype.prepare;
+  UsageManager.prototype.prepare = async () => { throw new Error("synthetic preparation failure"); };
+  let service: Awaited<ReturnType<typeof startService>> | undefined;
+  try {
+    service = await startService({ home, port: 0, roots: isolatedHistoryRoots() });
+    await assert.rejects(waitForPreparation(service.instance, 20_000), { code: "PREPARATION_FAILED" });
+    assert.ok((await apiRequest<StatusResponse>(service.instance, "/status?summary=true")).sessions?.version);
+    await service.close();
+    service = await startService({ home, port: 0, roots: isolatedHistoryRoots() });
+    assert.equal((await apiRequest<StatusResponse>(service.instance, "/status?summary=true")).preparation?.initial, true);
+  } finally { UsageManager.prototype.prepare = original; await service?.close(); await rm(home, { recursive: true, force: true }); }
+});
+
+test("启动精简状态显示仓库完成数、当前任务和阶段进度，任务切换后清理旧信息", async () => {
+  const home = await mkdtemp(join(tmpdir(), "manor-startup-map-progress-"));
+  const index = new AnalysisStore(join(home, "index.sqlite"));
+  for (const name of ["sample-alpha", "sample-beta", "sample-gamma"]) {
+    const path = join(home, name);
+    execFileSync("git", ["init", "--quiet", path]);
+    await index.registerRepository(path);
+  }
+  index.close();
+  const original = WorkerManager.prototype.refresh;
+  const tasks: { store: AnalysisStore; id: string; name: string }[] = [];
+  WorkerManager.prototype.refresh = function(repositoryId: string) {
+    const store = (this as unknown as { store: AnalysisStore }).store, job = store.createJob(repositoryId);
+    const position = tasks.length;
+    store.updateJob(job.id, { status: position === 0 ? "completed" : position === 1 ? "running" : "queued",
+      phase: position === 2 ? "等待分析" : "对应当前源码",
+      phaseDescriptor: { key: position === 2 ? "diagnostics.index.store.m006" : "diagnostics.index.refresh.m006" },
+      progress: position === 0 ? 1 : position === 1 ? 0.65 : 0 });
+    tasks.push({ store, id: job.id, name: store.getRepository(repositoryId).name });
+    return store.getJob(job.id);
+  };
+  const service = await startService({ home, port: 0, roots: isolatedHistoryRoots() });
+  const progress = async (completed: number, expectedProgress?: number) => {
+    const deadline = Date.now() + 20_000;
+    for (;;) {
+      const status = await apiRequest<StatusResponse>(service.instance, "/status?summary=true&response=summary");
+      if (status.preparation?.phase === "maps" && status.preparation.completed === completed
+        && (expectedProgress === undefined || status.preparation.repository?.progress === expectedProgress)) return status;
+      if (Date.now() > deadline) { assert.fail("仓库准备状态未推进"); }
+      await new Promise(resolve => setTimeout(resolve, 20));
+    }
+  };
+  try {
+    let status = await progress(1);
+    assert.equal(status.preparation?.total, 3);
+    assert.equal(status.preparation?.repository?.name, tasks[1]!.name);
+    assert.equal(status.preparation?.repository?.progress, 0.65);
+    assert.equal(status.preparation?.repository?.phaseDescriptor?.key, "diagnostics.index.refresh.m006");
+    assert.equal(status.jobs, undefined);
+    assert.equal(JSON.stringify(status.preparation).includes(home), false);
+    tasks[1]!.store.updateJob(tasks[1]!.id, { status: "completed", progress: 1 });
+    status = await progress(2, 0);
+    assert.equal(status.preparation?.repository?.name, tasks[2]!.name);
+    assert.equal(status.preparation?.repository?.phaseDescriptor?.key, "diagnostics.index.store.m006");
+    tasks[2]!.store.updateJob(tasks[2]!.id, { status: "running", phase: "发布完整结果", phaseDescriptor: { key: "diagnostics.index.refresh.m007" }, progress: 0.95 });
+    status = await progress(2, 0.95);
+    assert.equal(status.preparation?.repository?.name, tasks[2]!.name);
+    assert.equal(status.preparation?.repository?.progress, 0.95);
+    tasks[2]!.store.updateJob(tasks[2]!.id, { status: "completed", progress: 1 });
+    assert.equal((await waitForPreparation(service.instance, 30_000)).preparation?.repository, undefined);
+  } finally { WorkerManager.prototype.refresh = original; await service.close(); await rm(home, { recursive: true, force: true }); }
 });
 
 test("真实后台首次准备的长等待不占用启动锁，并发启动复用同一实例", async () => {

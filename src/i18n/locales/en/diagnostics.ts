@@ -281,6 +281,7 @@ export default {
   "diagnostics.sessions.refresh.m002": "The session source was truncated during parsing; refresh again",
   "diagnostics.sessions.refresh.m003": "The session source was truncated during checking; refresh again",
   "diagnostics.sessions.refresh.m004": "Discovering session sources",
+  "diagnostics.sessions.refresh.metadata": "Reading session titles and project metadata",
   "diagnostics.sessions.refresh.m005": "Building search index",
   "diagnostics.sessions.refresh.m006": "Indexing sessions",
   "diagnostics.sessions.refresh.m007": "Native supplementary model logs exceed the bounded read limit; some model information was not associated",

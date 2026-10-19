@@ -46,6 +46,9 @@ test("HTTP 与 CLI 支持范围和完整校验，未传参数兼容全部快速�
     const initial = await wait((await apiRequest<{ job: SessionJob }>(service.instance, "/sessions/refresh", "POST")).job);
     assert.equal(initial.mode, "quick");
     assert.equal(initial.client, undefined);
+    assert.deepEqual(initial.sourceCounts, [{ client: "codex", count: 1 }, { client: "claude", count: 1 }]);
+    assert.equal(initial.discovery, undefined);
+    assert.equal(initial.activeSources, undefined);
     const before = await apiRequest<SessionListResult>(service.instance, "/sessions");
     const status = await apiRequest<SessionIndexStatus>(service.instance, "/sessions/status");
     const claudeBefore = status.clientChecks?.find(check => check.client === "claude");

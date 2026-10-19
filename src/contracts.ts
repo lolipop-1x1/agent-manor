@@ -302,7 +302,7 @@ export interface ServiceInstance {
 
 export interface ServicePreparation {
   state: "pending" | "running" | "ready" | "failed" | "skipped";
-  phase: "history" | "usage" | "overview" | "complete";
+  phase: "history" | "maps" | "usage" | "overview" | "complete";
   startedAt: string;
   finishedAt?: string;
   sourceVersion?: string;
@@ -312,6 +312,7 @@ export interface ServicePreparation {
   step?: string;
   completed?: number;
   total?: number;
+  repository?: Pick<Job, "id" | "phase" | "phaseDescriptor" | "progress"> & { name: string };
 }
 
 export interface ServiceActiveTask {

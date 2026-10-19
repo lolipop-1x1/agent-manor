@@ -33,10 +33,18 @@ export const sourceLocationKey = (source: { path: string; selector?: string }): 
 
 export type DiscoverRoots = Partial<Record<Client, string | string[]>>;
 
+export interface DiscoveryProgress {
+  client: Client;
+  path: string;
+  sourceCount: number;
+  complete: boolean;
+}
+
 export interface DiscoverOptions {
   clients?: readonly Client[];
   /** 同一来源文件的完整发现结果；只在适配器依赖标记未变化时复用。 */
   cachedSources?: readonly { location: SourceLocation; stamp: string }[];
+  onProgress?: (progress: DiscoveryProgress) => void;
 }
 
 export interface HistoryRelationship {

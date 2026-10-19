@@ -6,8 +6,13 @@ export function sessionStatusSummaryResponse(value: unknown): Record<string, unk
   if (!value || typeof value !== "object" || Array.isArray(value)) return;
   const source = value as Record<string, unknown>;
   const fields = (input: Record<string, unknown>, keys: string[]) => Object.fromEntries(keys.filter(key => input[key] !== undefined).map(key => [key, input[key]]));
-  const job = (value: unknown) => value && typeof value === "object" && !Array.isArray(value)
-    ? fields(value as Record<string, unknown>, ["id", "status", "phase", "phaseDescriptor", "progress", "createdAt", "startedAt", "finishedAt", "error", "errorDescriptor", "message", "messageDescriptor", "processedSources", "totalSources"]) : value;
+  const job = (value: unknown) => {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return value;
+    const row = value as Record<string, unknown>;
+    const result = fields(row, ["id", "status", "phase", "phaseDescriptor", "progress", "createdAt", "startedAt", "finishedAt", "error", "errorDescriptor", "message", "messageDescriptor", "processedSources", "totalSources", "parserConcurrency", "discovery", "sourceCounts", "activeSources"]);
+    if (row.counts && typeof row.counts === "object") result.counts = fields(row.counts as Record<string, unknown>, ["discovered", "parsed", "quickReused", "verifiedReused", "missing"]);
+    return result;
+  };
   const result = fields(source, ["version", "previousVersion", "createdAt", "stale", "sessionCount", "sourceCount", "gapCount", "error", "errorDescriptor"]);
   if (result.gapCount === undefined && Array.isArray(source.gaps)) result.gapCount = source.gaps.length;
   if (source.job !== undefined) result.job = job(source.job);

@@ -8,7 +8,7 @@ import { sourceLocationKey } from "../history/types.js";
 import { DESKTOP_FORMAT } from "../history/adapters/codeflicker-desktop.js";
 import { IDE_FORMAT, readIdeSnapshot } from "../history/adapters/codeflicker-ide.js";
 import type { IdeSnapshot } from "../history/adapters/codeflicker-ide.js";
-import type { DiscoverRoots } from "../history/types.js";
+import type { DiscoverRoots, DiscoveryProgress } from "../history/types.js";
 import type { Gap } from "../contracts.js";
 import type { SessionRefreshCounts } from "../session-contracts.js";
 import { parseSessionSource } from "./parser.js";
@@ -73,9 +73,23 @@ export async function refreshSessions(store: SessionStore, jobId: string, roots?
     const discoveryCache = new Map([...selected, ...checkpoints.values()].map(item => [item.path, item]));
     const cachedSources = [...discoveryCache.values()].filter(item => !client || item.client === client)
       .flatMap(item => item.location && item.quickFingerprint ? [{ location: item.location, stamp: item.quickFingerprint }] : []);
-    const sources = await discoverSources(roots, { clients: client ? [client] : undefined, cachedSources: mode === "quick" ? cachedSources : undefined });
+    const discovery = new Map<string, DiscoveryProgress>();
+    let reportedAt = 0;
+    const sources = await discoverSources(roots, { clients: client ? [client] : undefined, cachedSources: mode === "quick" ? cachedSources : undefined,
+      onProgress(value) {
+        const key = JSON.stringify([value.client, value.path]), first = !discovery.has(key);
+        discovery.set(key, value);
+        // 保留每个目录的最终结果，让较慢的轮询也能看到扫描过程；文件增量合并写入。
+        if (first || value.complete || Date.now() - reportedAt >= 250) {
+          store.updateJob(jobId, { discovery: [...discovery.values()] });
+          reportedAt = Date.now();
+        }
+      } });
     counts.discovered = sources.length;
-    store.updateJob(jobId, { processedSources: 0, totalSources: sources.length });
+    const sourceCounts = new Map<SourceLocation["client"], number>();
+    for (const source of sources) sourceCounts.set(source.client, (sourceCounts.get(source.client) ?? 0) + 1);
+    store.updateJob(jobId, { phase: "metadata", phaseDescriptor: { key: "diagnostics.sessions.refresh.metadata" }, counts, processedSources: 0, totalSources: sources.length,
+      sourceCounts: [...sourceCounts].map(([client, count]) => ({ client, count })) });
     const codexTitles = sources.some(source => source.client === "codex") ? await loadCodexTitles(roots) : new Map<string, string>();
     const codeflickerProjects = await loadCodeFlickerProjects(sources);
     const desktopTitles = await loadDesktopTitles(sources);
@@ -95,8 +109,11 @@ export async function refreshSessions(store: SessionStore, jobId: string, roots?
     store.updateJob(jobId, { parserConcurrency: concurrency });
     if (concurrency > 1) pool = new SessionImportPool(concurrency);
     let completed = 0;
+    const activeSources = new Map<string, { client: SourceLocation["client"]; path: string }>();
     const processSource = async (source: SourceLocation & { discoveryQuickStamp?: string }) => {
-      store.updateJob(jobId, { phase: "index", phaseDescriptor: { key: "diagnostics.sessions.refresh.m006" }, progress: completed / sources.length, processedSources: completed, counts });
+      activeSources.set(sourceLocationKey(source), { client: source.client, path: source.path });
+      store.updateJob(jobId, { phase: "index", phaseDescriptor: { key: "diagnostics.sessions.refresh.m006" }, progress: completed / sources.length, processedSources: completed, counts,
+        activeSources: [...activeSources.values()] });
       const { discoveryQuickStamp, ...location } = source;
       const sourceKey = sourceLocationKey(source);
       const previous = checkpoints.get(sourceKey) ?? cached.get(sourceKey);
@@ -233,7 +250,9 @@ export async function refreshSessions(store: SessionStore, jobId: string, roots?
       const recordFailure = (error: unknown) => { failure ??= error instanceof Error ? error : new Error(String(error)); };
       const task = processSource(source).catch(recordFailure).then(() => {
         completed += 1;
-        store.updateJob(jobId, { phase: "index", phaseDescriptor: { key: "diagnostics.sessions.refresh.m006" }, progress: completed / sources.length, processedSources: completed, counts });
+        activeSources.delete(sourceLocationKey(source));
+        store.updateJob(jobId, { phase: "index", phaseDescriptor: { key: "diagnostics.sessions.refresh.m006" }, progress: completed / sources.length, processedSources: completed, counts,
+          activeSources: [...activeSources.values()] });
       }).catch(recordFailure).finally(() => { active.delete(task); });
       active.add(task);
       if (active.size >= concurrency) await Promise.race(active);
@@ -243,6 +262,7 @@ export async function refreshSessions(store: SessionStore, jobId: string, roots?
     await pool?.close(); pool = undefined;
     counts.missing = missing.size;
     if (counts.missing) gaps.push({ kind: "source_missing", message: "已有来源已删除或移走，新版统计已排除；上一版保留供对照", messageDescriptor: { key: "diagnostics.sessions.refresh.m009" }, count: counts.missing });
+    store.updateJob(jobId, { discovery: undefined, activeSources: undefined });
     await store.prepareSearchIndex(progress => store.updateJob(jobId, { phase: "search", phaseDescriptor: { key: "diagnostics.sessions.refresh.m005" }, progress }));
     store.updateJob(jobId, { phase: "publish", phaseDescriptor: { key: "diagnostics.sessions.refresh.m010" }, progress: 0.99, counts });
     store.publish(jobId, current, gaps);

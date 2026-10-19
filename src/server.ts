@@ -17,7 +17,7 @@ import { VERSION } from "./version.js";
 import { bodyText, emptyBody, integer, ServiceError } from "./service/input.js";
 import { acquireLock, assertNotUpdating, dataHome, DEFAULT_SERVICE_PORT, delay, removeInstance, SERVICE_PROTOCOL_VERSION, writeInstance } from "./service/runtime.js";
 import { serviceLog } from "./service/logging.js";
-import { startupPrepared, completeStartupPreparation } from "./service/preparation.js";
+import { beginStartupPreparation, completeStartupPreparation } from "./service/preparation.js";
 import { SessionStore } from "./sessions/store.js";
 import { queryBoolean, sessionMessageQuery, sessionProfileQuery, sessionQuery, sessionRefreshOptions, sessionTimelineQuery, summaryResponse } from "./service/session-input.js";
 import { searchSummaryResponse, sessionSummaryResponse, sessionStatusSummaryResponse } from "./service/summary-response.js";
@@ -128,7 +128,7 @@ export async function startService(options: ServiceOptions = {}) {
     const indexMaintenance = await compactIndexAtStartup(home);
     store = new AnalysisStore(join(home, "index.sqlite"));
     sessions = new SessionStore(store.dbPath);
-    preparation.initial = !sessions.currentVersion() || !await startupPrepared(home);
+    preparation.initial = await beginStartupPreparation(home, Boolean(sessions.currentVersion()));
     manager = new WorkerManager(store, { roots: options.roots }, sessions);
     const index = store;
     const library = sessions;
@@ -433,6 +433,14 @@ export async function startService(options: ServiceOptions = {}) {
           const jobs = maps.map(item => index.getJob(item.id));
           const failure = [job, ...jobs].find(item => item.status === "failed" || item.status === "cancelled");
           if (failure) throw new Error(failure.error ?? "startup_history_failed");
+          if (job.status === "complete" && jobs.length) {
+            preparation.phase = "maps";
+            preparation.completed = jobs.filter(item => item.status === "completed").length;
+            preparation.total = jobs.length;
+            const current = jobs.find(item => item.status === "running") ?? jobs.find(item => item.status === "queued");
+            preparation.repository = current ? { id: current.id, name: index.getRepository(current.repositoryId).name,
+              phase: current.phase, phaseDescriptor: current.phaseDescriptor, progress: current.progress } : undefined;
+          }
           if (job.status === "complete" && jobs.every(item => item.status === "completed")) break;
           await delay(100);
         }
@@ -441,6 +449,7 @@ export async function startService(options: ServiceOptions = {}) {
         if (!version) throw new Error("startup_history_missing_version");
         preparation.sourceVersion = version;
         preparation.phase = "usage";
+        delete preparation.completed; delete preparation.total; delete preparation.repository;
         serviceLog(home, "preparation.usage", { version });
         await usageManager!.prepare({ version });
         if (closing) return;

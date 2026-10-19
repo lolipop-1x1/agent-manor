@@ -281,6 +281,7 @@ export default {
   "diagnostics.sessions.refresh.m002": "会话来源在解析期间被截短，请重新刷新",
   "diagnostics.sessions.refresh.m003": "会话来源在检查期间被截短，请重新刷新",
   "diagnostics.sessions.refresh.m004": "发现会话来源",
+  "diagnostics.sessions.refresh.metadata": "读取会话标题与项目元信息",
   "diagnostics.sessions.refresh.m005": "建立搜索索引",
   "diagnostics.sessions.refresh.m006": "索引会话",
   "diagnostics.sessions.refresh.m007": "原生模型旁路日志超过有界读取上限，部分模型信息未关联",

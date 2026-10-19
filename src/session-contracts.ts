@@ -2,6 +2,7 @@ import type { MessageDescriptor } from "./i18n/types.js";
 import type { Client } from "./clients.js";
 import type { Gap } from "./contracts.js";
 import type { RequestSpeedSummary } from "./session-speed.js";
+import type { DiscoveryProgress } from "./history/types.js";
 
 export type MessageKind = "user" | "assistant" | "thinking" | "tool_call" | "tool_result" | "system" | "context" | "compression";
 export interface SessionResource { kind: "mcp" | "skill_call" | "skill_read"; name: string; nameDescriptor?: MessageDescriptor; server?: string; path?: string }
@@ -278,6 +279,9 @@ export interface SessionJob {
   processedSources?: number;
   totalSources?: number;
   parserConcurrency?: number;
+  discovery?: DiscoveryProgress[];
+  sourceCounts?: { client: Client; count: number }[];
+  activeSources?: { client: Client; path: string }[];
 }
 export interface SessionListResult {
   version: string;

@@ -13,7 +13,7 @@ am stop --wait --json
 
 | 命令／参数 | 意义与返回值 |
 |---|---|
-| start / restart | 启动或重启后台，返回 instance、version、url、logPath；首次自动等待完整历史、索引、用量及默认总览缓存，已有完整初始化结果时快速返回；start 复用健康实例，restart 会停止后再起 |
+| start / restart | 启动或重启后台，返回 instance、version、url、logPath；首次自动等待完整历史、索引、用量及默认总览缓存，已有可查询历史的旧目录快速返回；start 复用健康实例，restart 会停止后再起 |
 | `--port <number>` | 默认从16666尝试，冲突递增；0 用系统分配。以返回 url/instance.port 为准，不自行猜端口 |
 | `--wait-data` | start/restart/web 显式等待本轮启动准备；首次本来就自动等待，已有数据时可用此参数等待后台增量检查 |
 | ready | 按需连接服务并等准备完成，返回 preparation、activeTasks 等；timeout 默认120秒，最大3600 |
@@ -28,7 +28,7 @@ am stop --wait --json
 
 start 关闭终端后仍运行；status、version、help、doctor、logs 不会隐式启动。`preparation.state` 的准备状态与 HTTP 可连接分开，已有数据可继续查询。自动刷新返回 skipped/disabled 无任务时不是执行失败；要主动同步用 `sessions refresh --mode quick --wait`。
 
-首次 `start`/`web` 默认不限数据等待时间，显式 `--timeout <seconds>` 可以缩短；`ready` 默认120秒。人读模式持续显示进度；JSON 模式保持单个结果，不输出人类进度。`preparation.initial=true` 表示尚未完成首次准备，已有会话版本也可能处于此阶段。失败或超时先检查状态及日志，不反复重建；终端结束等待不停止后台。空目录没有登记仓库，不需要先配置代码地图。
+空库首次 `start`/`web` 默认不限数据等待时间，显式 `--timeout <seconds>` 可以缩短；`ready` 默认120秒。已有可查询历史的旧目录即使没有新标记也快速返回；首次初始化中断留下准备中标记时，仍等待全部结果。人读模式持续显示进度：按客户端列出扫描目录及候选来源数，汇总最终选中数；导入展示当前来源、已解析与复用数及解析线程数，仓库阶段包括完成数、当前名称、阶段及阶段进度；JSON 模式保持单个结果，不输出人类进度。`preparation.initial=true` 表示尚未完成首次准备，已有会话版本也可能处于此阶段。失败或超时先检查状态及日志，不反复重建；终端结束等待不停止后台。空目录没有登记仓库，不需要先配置代码地图。
 
 ## 配套 Skill 的目标与覆盖
 

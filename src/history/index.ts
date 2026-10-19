@@ -30,6 +30,10 @@ export async function discoverSources(roots: DiscoverRoots = {}, options: Discov
   const found: SourceLocation[] = [];
   const paths = new Set<string>();
   const selected = options.clients ? new Set(options.clients) : undefined;
+  let scanning: { client: Client; path: string; start: number } | undefined;
+  const report = (complete = false) => {
+    if (scanning) options.onProgress?.({ client: scanning.client, path: scanning.path, sourceCount: found.length - scanning.start, complete });
+  };
   const cachedByFile = new Map<string, NonNullable<DiscoverOptions["cachedSources"]>[number][]>();
   const cacheKey = (client: Client, format: string, path: string) => JSON.stringify([client, format, resolve(path)]);
   for (const cached of options.cachedSources ?? []) {
@@ -45,6 +49,7 @@ export async function discoverSources(roots: DiscoverRoots = {}, options: Discov
       if (!stamp || stamp !== value.stamp) return false;
     }
     found.push(...cached.map(value => ({ ...structuredClone(value.location), discoveryQuickStamp: value.stamp })));
+    report();
     return true;
   }
   async function discoverFile(location: SourceLocation, read: () => Promise<SourceLocation[]>): Promise<void> {
@@ -55,6 +60,7 @@ export async function discoverSources(roots: DiscoverRoots = {}, options: Discov
       // 标记覆盖头部和旁路读取；其间变化不能把旧元信息绑定到新依赖标记。
       found.push({ ...source, discoveryQuickStamp: before && after?.dependencies === before.dependencies ? after.stamp : undefined });
     }
+    report();
   }
   async function walk(path: string, declaration: HistoryClient): Promise<void> {
     let entries;
@@ -101,7 +107,12 @@ export async function discoverSources(roots: DiscoverRoots = {}, options: Discov
     const clientHome = declaration.homeEnvironmentVariable ? process.env[declaration.homeEnvironmentVariable] : undefined;
     const configured = roots[declaration.client] ?? (environment ? [environment] : declaration.resolveNativeRoots ? declaration.resolveNativeRoots(homedir(), process.env)
       : clientHome ? [join(clientHome, "sessions"), ...declaration.defaultRoots.slice(1).map(path => join(homedir(), path))] : declaration.defaultRoots.map(path => join(homedir(), path)));
-    for (const root of typeof configured === "string" ? [configured] : configured) await walk(resolve(root), declaration);
+    for (const root of typeof configured === "string" ? [configured] : configured) {
+      scanning = { client: declaration.client, path: resolve(root), start: found.length };
+      report();
+      await walk(scanning.path, declaration);
+      report(true);
+    }
   }
   return bindCodexPrefixes(HISTORY_ADAPTERS.reduce((sources, adapter) => adapter.selectSources?.(sources) ?? sources, found));
 }
