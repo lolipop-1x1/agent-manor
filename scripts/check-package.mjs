@@ -2,6 +2,7 @@ import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { dirname, isAbsolute, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { VERSION } from "../dist/version.js";
+import { checkThirdPartyNotices } from "./third-party-notices.mjs";
 
 const root = fileURLToPath(new URL("../", import.meta.url));
 const requiredFiles = ["dist/cli.js", "dist/server.js", "dist/worker.js", "dist/semantic/worker.js", "dist/src/server.js", "dist/packages/cli/src/entry.js", "dist/packages/cli/src/program.js", "dist/web/index.html", "skills/agent-manor/SKILL.md", "LICENSE"];
@@ -30,4 +31,5 @@ function verifySkill(directory) {
   }
 }
 verifySkill(resolve(root, "skills/agent-manor"));
-console.log(`agent-manor ${VERSION} 的后台、Worker、CLI、Web、Skill 与 MIT 交付入口已就绪`);
+const noticeCount = checkThirdPartyNotices(root);
+console.log(`agent-manor ${VERSION} 的后台、Worker、CLI、Web、Skill 与 MIT 交付入口及 ${noticeCount} 项第三方许可已就绪`);

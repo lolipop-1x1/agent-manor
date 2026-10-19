@@ -51,6 +51,10 @@ try {
   const { clientIds } = await import(pathToFileURL(join(packageRoot, "dist/clients.js")).href);
   for (const client of clientIds) environment[`AGENT_MANOR_${client.toUpperCase().replaceAll("-", "_")}_DIR`] = join(sandbox, "history", client);
   assert.equal(metadata.license, "MIT");
+  const notices = await readFile(join(packageRoot, "THIRD_PARTY_NOTICES.txt"), "utf8");
+  for (const text of ["react@", "@fontsource-variable/geist@", "Permission is hereby granted, free of charge", "SIL OPEN FONT LICENSE", "https://raw.githubusercontent.com/theKashey/react-remove-scroll-bar/8ca9ba5ea52de03308fe8ced94f7b159a44d28ff/LICENSE"]) {
+    assert.ok(notices.includes(text), `安装包缺少第三方许可：${text}`);
+  }
   assert.equal(metadata.bin.am, metadata.bin["agent-manor"]);
   assert.equal(existsSync(join(packageRoot, "node_modules", "typescript")), false);
   assert.equal(existsSync(join(packageRoot, "node_modules", "@agent-manor", "cli")), false);

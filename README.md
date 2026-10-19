@@ -22,7 +22,7 @@ npm install -g agent-manor
 am web
 ```
 
-`am web` starts the local service and opens the web app. On first launch, the service checks available histories in the background. It keeps running when you close the browser or terminal. The default port is `16666`; if it is occupied, the service tries the next port. Use the address printed by the command.
+`am web` starts the local background service. With an empty data directory, it shows progress in the terminal and waits for history import, search indexes, usage data, and overview caches before opening the web app. Later launches reuse the prepared data. The service keeps running when you close the browser or terminal. The default port is `16666`; if it is occupied, the service tries the next port. Use the address printed by the command.
 
 `am` and `agent-manor` are equivalent. The package includes the backend, web app, and Skill, so no build step is needed. See the [installation guide](docs/usage.md#安装与首次使用) for platform support, local tarballs, and native dependency requirements.
 

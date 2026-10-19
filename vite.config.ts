@@ -8,6 +8,7 @@ export default defineConfig({
   build: {
     outDir: fileURLToPath(new URL("./dist/web", import.meta.url)),
     emptyOutDir: true,
+    license: { fileName: ".vite/third-party-licenses.json" },
   },
   server: { host: "127.0.0.1" },
   preview: { host: "127.0.0.1" },

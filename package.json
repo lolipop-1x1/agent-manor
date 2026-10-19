@@ -13,6 +13,7 @@
   },
   "files": [
     "dist/",
+    "THIRD_PARTY_NOTICES.txt",
     "skills/",
     "docs/usage.md",
     "docs/assets/readme/agent-manor-banner-sketch-garden-wide.png",
@@ -55,9 +56,9 @@
   ],
   "scripts": {
     "check:public": "node scripts/check-public-content.mjs",
-    "build": "npm run build:server && npm run build:web",
+    "build": "node scripts/clean-dist.mjs && npm run build:server && npm run build:web",
     "build:server": "tsc -p tsconfig.server.json && node scripts/package-entries.mjs",
-    "build:web": "vite build",
+    "build:web": "vite build && node scripts/third-party-notices.mjs",
     "build:site": "vite build --config site/vite.config.ts",
     "dev:site": "vite --config site/vite.config.ts",
     "preview:site": "vite preview --config site/vite.config.ts",
@@ -71,7 +72,7 @@
     "test": "node --import tsx --test tests/*.test.ts",
     "test:sqlite": "node scripts/check-sqlite.mjs",
     "dev:web": "vite",
-    "prepack": "npm run check:public && npm run build && node scripts/check-package.mjs",
+    "prepack": "npm run build && npm run check:public && node scripts/check-package.mjs",
     "check:i18n": "node --import tsx scripts/check-i18n.mjs",
     "check:cli": "npm run check --workspace @agent-manor/cli",
     "test:cli": "npm run test --workspace @agent-manor/cli",

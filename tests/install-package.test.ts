@@ -44,14 +44,14 @@ test("npm tarball真实包外安装，原生SQLite与CLI/Worker/Web/Skill无需�
   };
   try {
     for (const path of [install, cwd, join(repository, "src"), codex, claude, codeflicker]) await mkdir(path, { recursive: true });
-    const packed = await run(npm, ["pack", "--json", "--pack-destination", directory, "--cache", cache], { cwd: root, timeout: 60_000, maxBuffer: 5 * 1024 * 1024 });
-    // prepack 的构建日志也可能写入 stdout，最终独立数组才是 npm pack 元数据。
+    // 使用测试前已完成的构建，避免并行测试中 prepack 清理其他用例正在使用的 dist。
+    const packed = await run(npm, ["pack", "--json", "--ignore-scripts", "--pack-destination", directory, "--cache", cache], { cwd: root, timeout: 60_000, maxBuffer: 5 * 1024 * 1024 });
     const metadataStart = packed.stdout.search(/^\[\s*$/m);
     assert.ok(metadataStart >= 0, "npm pack 未返回 JSON 元数据");
     const [pack] = JSON.parse(packed.stdout.slice(metadataStart)) as { filename: string; files: { path: string }[]; integrity: string; size: number }[];
     assert.ok(pack);
     const paths = new Set(pack.files.map((file) => file.path));
-    for (const file of ["dist/cli.js", "dist/server.js", "dist/worker.js", "dist/semantic/worker.js", "dist/clients.js", "dist/history/adapters/codeflicker.js", "dist/web/index.html", "skills/agent-manor/SKILL.md", "docs/usage.md", "docs/design/semantic-search.md", "docs/validation/semantic-search.md",
+    for (const file of ["THIRD_PARTY_NOTICES.txt", "dist/cli.js", "dist/server.js", "dist/worker.js", "dist/semantic/worker.js", "dist/clients.js", "dist/history/adapters/codeflicker.js", "dist/web/index.html", "skills/agent-manor/SKILL.md", "docs/usage.md", "docs/design/semantic-search.md", "docs/validation/semantic-search.md",
       "docs/design/native-client-sources.md", ...["gemini", "qwen", "kimi", "omp", "grok", "reasonix", "codewhale"].map(client => `dist/history/adapters/${client}.js`)]) assert.ok(paths.has(file), file);
     assert.ok([...paths].some((path) => path.startsWith("dist/web/assets/") && path.endsWith(".js")));
     assert.ok(![...paths].some((path) => path.startsWith("src/") || path.startsWith("tests/") || path.startsWith(".scratch/")));
