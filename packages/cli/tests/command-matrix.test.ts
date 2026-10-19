@@ -93,7 +93,7 @@ test("全部新增业务命令路由、HTTP方法、查询和JSON结果均保持
   try {
     for (const [args, path, method = "GET"] of commands) {
       output = "";
-      await createProgram("en").parseAsync(["--home", directory, "--json", ...args], { from: "user" });
+      await createProgram("en").parseAsync(["--home", directory, "--json", "--full", ...args], { from: "user" });
       const result = JSON.parse(output);
       assert.equal(result.path, path, args.join(" ")); assert.equal(result.method, method, args.join(" "));
       assert.doesNotMatch(output, /Translation unavailable/);

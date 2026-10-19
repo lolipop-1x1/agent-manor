@@ -25,8 +25,8 @@ export function humanOutput(value: unknown, language: Language, full = false): s
       t("cli.summary.edit", { exactFiles: summary.editExact.files, exactLines: summary.editExact.lines, nearFiles: summary.editNear.files, nearLines: summary.editNear.lines }),
       t("cli.summary.columns"),
       ...result.files.map((file) => `${file.path}\t${number(file.lineCount)}\t${number(file.readExactLines)}/${number(file.readNearLines)}\t${number(file.editExactLines)}/${number(file.editNearLines)}\t${number(file.activityCount)}`),
-      t("cli.summary.gaps", { count: result.gaps.length }),
-      ...result.gaps.map(gap => [
+      t("cli.summary.gaps", { count: result.gapCount ?? result.gaps?.length ?? 0 }),
+      ...(result.gaps ?? []).map(gap => [
         `${gap.kind}: ${isMessageDescriptorKnown(gap.messageDescriptor) ? translateMessage(language, gap.messageDescriptor) : t("common.originalDetails")}`,
         ...(gap.details ?? []).filter(isMessageDescriptorKnown).map(detail => translateMessage(language, detail)),
         `${t("common.originalDetails")}: ${gap.message}`,

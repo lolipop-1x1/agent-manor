@@ -104,6 +104,13 @@ try {
     assert.equal((await command(["status"])).running, false);
   });
   await step("后台启动、实际地址与准备等待", async () => { instance = (await command(["start", "--wait-data"])).instance; assert(instance.port > 0); assert.equal((await command(["status"])).running, true); });
+  await step("ready只回答准备结果，偏好写入仅回显实际变更", async () => {
+    const ready = await command(["ready"]), full = await command(["ready", "--full"]);
+    assert.equal(ready.preparation.state, "ready"); assert.equal(ready.repositoryCount, undefined); assert.equal(ready.sessions, undefined);
+    assert.ok(Array.isArray(full.repositories));
+    assert.deepEqual(await command(["preferences", "set", "--data", JSON.stringify({ language: "en" })]), { saved: true, language: "en" });
+    assert.equal((await command(["preferences", "get"])).sessionsAutoRefreshInterval, 0);
+  });
   const sessions = await command(["sessions", "list", "--client", "codex"]);
   const session = sessions.sessions?.find(item => item.clientSessionId === "synthetic-cache") ?? sessions.sessions?.[0];
   assert.ok(session?.id, JSON.stringify(sessions));
@@ -127,7 +134,16 @@ try {
     const content = await readFile(destination, "utf8"); assert(content.includes("cache invalidation")); assert(content.includes("Invalidate cached snapshots")); assert.equal(result.messages, 2);
   });
   await step("用量、总览与面板复用同一 API 数据", async () => {
-    for (const [args, path] of [[["usage", "status"], "/usage/status"], [["usage", "report"], "/usage"], [["usage", "requests", "--session-id", sid], `/usage/requests?sessionId=${encoded}`], [["overview", "snapshot", "--window", "all"], "/overview/snapshot?window=all"], [["overview", "panel", "--window", "all", "--panel", "facets"], "/overview/panel?window=all&panel=facets"], [["overview", "review", "--window", "all"], "/overview/review?window=all"]]) await equivalent(args, path);
+    for (const [args, path] of [[["usage", "report"], "/usage"], [["usage", "requests", "--session-id", sid], `/usage/requests?sessionId=${encoded}`], [["overview", "snapshot", "--window", "all"], "/overview/snapshot?window=all"], [["overview", "panel", "--window", "all", "--panel", "facets"], "/overview/panel?window=all&panel=facets"], [["overview", "review", "--window", "all"], "/overview/review?window=all"]]) await equivalent(args, path);
+    const status = await command(["usage", "status"]);
+    assert.equal(status.state, "ready"); assert.equal(status.version, sessions.version);
+    assert.equal(status.preparedSessions, 2); assert.equal(status.totalSessions, 2);
+  });
+  await step("用量默认报告保留趋势与总数，完整模式保留筛选目录及旧每日字段", async () => {
+    const report = await command(["usage", "report"]), full = await command(["usage", "report", "--full"]);
+    assert.equal(report.days, undefined); assert.equal(report.facets, undefined);
+    assert.deepEqual(report.buckets, full.buckets); assert.deepEqual(report.totals, full.totals);
+    assert.ok(Array.isArray(full.days)); assert.ok(full.facets);
   });
   let entry, revision;
   const draft = { title: "Atlas cache procedure", body: "Invalidate snapshots after configuration updates; verify a new read.", type: "procedure", language: "en", tags: ["cache", "atlas"], scope: { kind: "project", project }, subject: "project", sources: [{ kind: "agent", client: "codex", sessionId: sid }] };
@@ -178,6 +194,12 @@ try {
     assert.equal((await command([...keyArgs, "--authorize", challenge.details.confirmation])).key, "synthetic-only-secret");
     const scope = { ...settings.config.automatic.scope, timeRange: "all", sessionIds: [sid], turnStart: 1, turnEnd: 1 };
     const preview = await command(["knowledge", "extraction", "preview", "--data", JSON.stringify({ scope })]); assert.equal(preview.sessionCount, 1); assert(preview.estimatedTokens < 10_000);
+    assert.equal(preview.scope.sessionIds, undefined); assert.equal(preview.scope.selectedSessionCount, 1); assert.equal(preview.targetCount, 1);
+    assert.equal(preview.targets[0].hashes, undefined); assert.equal(preview.targets[0].messageIds, undefined);
+    const previewFull = await command(["knowledge", "extraction", "preview-get", preview.id, "--full"]);
+    assert.deepEqual(previewFull.scope.sessionIds, [sid]); assert.ok(previewFull.targets[0].hashes.length > 0);
+    assert.equal((await command(["knowledge", "extraction", "preview-get", preview.id])).estimatedTokens, previewFull.estimatedTokens);
+    assert.deepEqual(await api(`/knowledge/extractions/previews/${preview.id}?response=summary`), preview);
     const job = await command(["knowledge", "extraction", "start", preview.id, "--wait"]); assert.equal(job.status, "complete"); assert.equal(job.createdEntries, 0); assert(job.noValue >= 1); assert.equal(job.completedChunks, job.totalChunks); assert(generationCalls > 0);
     assert((await command(["knowledge", "extraction", "list"])).jobs.some(item => item.id === job.id));
     await equivalent(["knowledge", "extraction", "get", job.id], `/knowledge/extractions/${job.id}`);
@@ -218,7 +240,9 @@ try {
     await command(args); assert.equal(embeddingCalls, calls, "重复语义查询应复用缓存");
   });
   await step("停止等待、重启后知识与偏好仍在，日志无凭据正文", async () => {
-    assert.equal((await command(["stop", "--wait"])).stopped, true);
+    const stopped = await command(["stop", "--wait"]);
+    assert.equal(stopped.stopped, true); assert.equal(stopped.stopping, undefined);
+    assert.deepEqual(await command(["stop"]), { stopped: false });
     assert.equal((await command(["status"])).running, false);
     instance = (await command(["start", "--wait-data"])).instance;
     assert.equal((await command(["preferences", "get"])).language, "zh-CN");
@@ -362,6 +386,47 @@ try {
       payloadBytes.human[language] = readable.bytes;
     }
     assert.equal(generationCalls + embeddingCalls, callsBefore, "大会话查询不得触发生成或向量模型调用");
+  });
+  await step("活动列表省略大调用正文，源码与原始证据可按同版回读，轮次及时间线有界", async () => {
+    const target = join(sandbox, "scenario-audit"), question = "Scenario audit 中文😀 ".repeat(80), content = "export const scenario = 1;\n", toolBody = content + "Synthetic tool output\n".repeat(20_000);
+    await mkdir(target); await run("git", ["init", "-q", target]); await writeFile(join(target, "example.ts"), content);
+    const rows = [
+      { type: "session_meta", payload: { id: "synthetic-scenario", cwd: target } },
+      { type: "response_item", payload: { type: "message", role: "user", content: [{ type: "input_text", text: question }] } },
+      ...Array.from({ length: 300 }, (_, index) => ({ type: "response_item", payload: { type: "message", role: "assistant", phase: "commentary", content: [{ type: "output_text", text: `Synthetic step ${index}` }] } })),
+      { type: "response_item", payload: { type: "function_call", call_id: "synthetic-read", name: "exec_command", arguments: JSON.stringify({ cmd: "cat example.ts", workdir: target }) } },
+      { type: "response_item", payload: { type: "function_call_output", call_id: "synthetic-read", output: toolBody } },
+      { type: "response_item", payload: { type: "message", role: "assistant", phase: "final_answer", content: [{ type: "output_text", text: "Synthetic conclusion" }] } },
+    ];
+    await writeFile(join(history, "synthetic-scenario.jsonl"), rows.map(row => JSON.stringify(row)).join("\n") + "\n");
+    await command(["sessions", "refresh", "--wait"]);
+    const session = (await command(["sessions", "list", "--project", target])).sessions[0]; assert.ok(session);
+    const turns = await command(["sessions", "turns", session.id]), fullTurns = await command(["sessions", "turns", session.id, "--full"]);
+    assert.equal(Array.from(turns.turns[0].question).length, 240); assert.equal(turns.turns[0].questionTruncated, true);
+    assert.equal(fullTurns.turns[0].question, question);
+    const timeline = await command(["sessions", "timeline", session.id]), fullTimeline = await command(["sessions", "timeline", session.id, "--full"]);
+    assert.ok(fullTimeline.events.length > 300); assert.ok(timeline.events.length <= 200); assert.equal(timeline.total, fullTimeline.events.length);
+    const registered = await command(["register", target, "--wait"]), repo = registered.repository.id;
+    const events = await captured(["events", repo]), fullEvents = await captured(["events", repo, "--full"]);
+    assert.equal(events.value.pageSize, 20); assert.ok(events.value.events.length > 0); assert.equal(events.value.events[0].output, undefined);
+    assert.deepEqual(await api(`/repositories/${repo}/events?response=summary&pageSize=20`), events.value);
+    assert.equal(events.value.events[0].fragments, undefined); assert.ok(fullEvents.bytes > events.bytes * 20);
+    payloadBytes.events = { summary: events.bytes, full: fullEvents.bytes };
+    const evidence = await command(["evidence", repo, events.value.events[0].id, "--version", events.value.version]);
+    assert.equal(evidence.event.output.result, toolBody);
+    assert.ok(evidence.records.some(record => record.raw.includes(JSON.stringify(toolBody))));
+    const file = await command(["file", repo, "example.ts", "--version", events.value.version]);
+    assert.equal(file.content, content); assert.equal(file.events[0].output, undefined); assert.equal(file.events[0].fragments, undefined);
+    for (const name of ["coverage", "hotspots", "unobserved"]) {
+      const value = await command([name, repo]); assert.equal(value.repository.commonDir, undefined); assert.equal(value.gaps, undefined);
+      assert.ok(typeof value.gapCount === "number"); assert.ok(value.files.every(file => file.hash === undefined));
+    }
+    const fullCoverage = await command(["coverage", repo, "--full"]); assert.ok(fullCoverage.repository.commonDir); assert.ok(fullCoverage.files[0].hash);
+    for (const language of ["en", "zh-CN"]) {
+      const value = await captured(["sessions", "turns", session.id], { language, json: false });
+      assert.match(value.stdout, language === "en" ? /Question preview truncated/ : /问题预览已截短/);
+    }
+    await command(["repositories", "remove", repo]);
   });
   console.log(JSON.stringify({ platform: process.platform, arch: process.arch, checks: results.length, generationRequests: generationCalls, embeddingRequests: embeddingCalls, maximumModelInputBytes, payloadBytes, cases: results }, null, 2));
 } finally {

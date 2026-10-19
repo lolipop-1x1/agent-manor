@@ -280,7 +280,7 @@ test("执行期间语言固定，下次命令读取更新偏好，默认可读�
   const server = createServer((request, response) => {
     response.setHeader("Content-Type", "application/json");
     if (request.url?.split("?")[0] === "/api/v1/status") response.end(JSON.stringify({ instance, version: VERSION, protocolVersion: 1 }));
-    else if (request.url === "/api/v1/repositories/missing/coverage") {
+    else if (request.url?.split("?")[0] === "/api/v1/repositories/missing/coverage") {
       response.statusCode = 404;
       response.end(JSON.stringify({ error: { code: "REPOSITORY_NOT_FOUND", message: "原始服务产品错误",
         messageDescriptor: { key: "cli.error.view" } } }));
@@ -327,7 +327,13 @@ test("执行期间语言固定，下次命令读取更新偏好，默认可读�
       assert.equal(chinese.stderr, "");
       const parsed = JSON.parse(english.stdout);
       const repository = args.includes("--full") ? value.repository : { id: value.repository.id, name: value.repository.name, path: value.repository.path, stale: value.repository.stale };
-      assert.deepEqual(parsed, args[0] === "repositories" ? { repositories: [repository] } : value);
+      if (args[0] === "repositories") assert.deepEqual(parsed, { repositories: [repository] });
+      else if (args.includes("--full")) assert.deepEqual(parsed, value);
+      else {
+        assert.deepEqual(parsed.repository, repository); assert.deepEqual(parsed.summary, value.summary);
+        assert.equal(parsed.gaps, undefined); assert.equal(parsed.gapCount, value.gaps.length);
+        assert.ok(parsed.files.every((file: Record<string, unknown>) => file.hash === undefined));
+      }
     }
     const errorEn = await command(directory, ["--lang", "en", "coverage", "missing"]);
     const errorZh = await command(directory, ["--lang", "zh-CN", "coverage", "missing"]);

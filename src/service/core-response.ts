@@ -1,3 +1,5 @@
+import { scenarioResponse, scenarioResponsePath } from "./scenario-response.js";
+
 type Row = Record<string, unknown>;
 const object = (value: unknown): Row => value && typeof value === "object" && !Array.isArray(value) ? value as Row : {};
 const rows = (value: unknown): Row[] => Array.isArray(value) ? value.map(object) : [];
@@ -10,9 +12,9 @@ const entryKeys = ["id", "updatedAt", "availability", "availabilityReason", "lat
 const revisionKeys = ["id", "version", "title", "type", "scope", "review", "tags"];
 const resourceKeys = ["id", "name", "kind", "client", "scope", "project", "entryPath", "readState", "nativeState", "managementState", "protected", "capabilities"];
 
-/** 仅为列表及 CRUD 选择核心字段，预览、授权和显式证据命令保留原语义。 */
+/** 按 CLI 场景选择核心字段，人工授权材料与显式原始证据保留完整内容。 */
 export function coreResponsePath(path: string): boolean {
-  return /^\/repositories(?:\/[^/]+)?$/.test(path)
+  return scenarioResponsePath(path) || /^\/repositories(?:\/[^/]+)?$/.test(path)
     || /^\/knowledge\/(?:search|entries(?:\/[^/]+(?:\/(?:revisions(?:\/[^/]+)?|restore|reviews|availability))?)?)$/.test(path)
     || /^\/resources\/(?:status|refresh|favorites|sources(?:\/[^/]+)?|overview|usage|local|archives|operations|apply)$/.test(path);
 }
@@ -50,6 +52,7 @@ function resourceRow(value: unknown): Row {
 export function coreResponse(path: string, method: string, value: unknown, body?: unknown): unknown {
   const name = path.split("?")[0]!;
   if (!coreResponsePath(name)) return value;
+  if (scenarioResponsePath(name)) return scenarioResponse(name, method, value, body);
   const result = object(value);
   if (name === "/repositories") {
     const repository = (row: unknown) => pick(row, ["id", "name", "path", "version", "stale"]);
@@ -89,6 +92,6 @@ export function coreResponse(path: string, method: string, value: unknown, body?
     ...pick(row, ["id", "operationId", "state", "createdAt", "restorable", "operationStatus", "target"]), entry: pick(row.entry, resourceKeys) })) };
   const operation = (row: unknown) => pick(row, ["id", "previewId", "action", "entryId", "name", "resource", "status", "message", "messageDescriptor", "createdAt", "archiveId", "localState", "clientEffect"]);
   if (name === "/resources/operations" && Array.isArray(result.operations)) return { ...pick(result, pageKeys), operations: result.operations.map(operation) };
-  if (name === "/resources/apply" && result.status) return operation(result);
+  if (name === "/resources/apply" && result.status) return { ...operation(result), ...pick(result, ["details", "target", "affectedEntries", "link"]) };
   return value;
 }

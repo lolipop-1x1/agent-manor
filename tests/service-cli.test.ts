@@ -74,24 +74,34 @@ test("CodeFlicker 的 CLI 与 API 使用同一分析版本、覆盖、来源及�
     const key = `version=${snapshot.version}&client=codeflicker&directory=src`;
     const base = `/repositories/${id}`;
     const coverage = await command<CoverageResult>(["coverage", id, ...query]);
-    assert.deepEqual(coverage, await apiRequest(service.instance, `${base}/coverage?${key}`));
+    assert.deepEqual(coverage, await apiRequest(service.instance, `${base}/coverage?${key}&response=summary`));
+    assert.deepEqual(await command(["coverage", id, ...query, "--full"]), await apiRequest(service.instance, `${base}/coverage?${key}`));
+    const webCoverage = await apiRequest<CoverageResult>(service.instance, `${base}/coverage?${key}`);
+    assert.ok(webCoverage.repository.commonDir); assert.ok(webCoverage.files.every(file => file.hash));
+    assert.deepEqual(await apiRequest(service.instance, `${base}/coverage?${key}&summary=true`), { ...webCoverage, gaps: [], gapCount: webCoverage.gaps.length },
+      "Web 的 summary=true 仍保留地图范围与逐文件哈希");
     assert.deepEqual(coverage.summary.readExact, { files: 1, lines: 2 });
     assert.deepEqual(coverage.summary.editExact, { files: 1, lines: 1 });
     const events = await command<EventsResponse>(["events", id, ...query]);
-    assert.deepEqual(events, await apiRequest(service.instance, `${base}/events?${key}`));
+    assert.deepEqual(events, await apiRequest(service.instance, `${base}/events?${key}&response=summary&pageSize=20`));
     assert.equal(events.total, 2);
     assert.ok(events.events.every(event => event.client === "codeflicker"));
+    const webEvents = await apiRequest<EventsResponse>(service.instance, `${base}/events?${key}`);
+    assert.deepEqual(webEvents.events, snapshot.events.filter(event => event.client === "codeflicker"), "Web 默认请求保留完整活动及源码片段");
     const evidence = await command<EvidenceResponse>(["evidence", id, events.events[0]!.id, ...query]);
     assert.deepEqual(evidence, await apiRequest(service.instance, `${base}/evidence/${events.events[0]!.id}?${key}`));
     assert.equal(evidence.records.length, 1);
     assert.equal(evidence.unavailable.length, 0);
     const file = await command<FileDetail>(["file", id, "src/a.ts", ...query]);
-    assert.deepEqual(file, await apiRequest(service.instance, `${base}/file?path=src/a.ts&${key}`));
+    assert.deepEqual(file, await apiRequest(service.instance, `${base}/file?path=src/a.ts&${key}&response=summary`));
+    const webFile = await apiRequest<FileDetail>(service.instance, `${base}/file?path=src/a.ts&${key}`);
+    assert.equal(file.content, webFile.content); assert.equal(file.contentStale, webFile.contentStale);
+    assert.ok(webFile.events.every(event => event.fragments[0]!.content.length > 0));
     const sources = await command<SourcesResponse>(["sources", id, ...query]);
     assert.deepEqual(sources, await apiRequest(service.instance, `${base}/sources?${key}`));
     assert.deepEqual(sources.sources.map(source => source.client), ["codeflicker"]);
     for (const name of ["hotspots", "unobserved"]) {
-      assert.deepEqual(await command([name, id, ...query]), await apiRequest(service.instance, `${base}/${name}?${key}`));
+      assert.deepEqual(await command([name, id, ...query]), await apiRequest(service.instance, `${base}/${name}?${key}&response=summary`));
     }
   } finally {
     await service.close();
@@ -141,7 +151,7 @@ test("编译产物在包外cwd并发按需启动单实例，CLI/API JSON一致�
     const query = ["--version", version, "--client", "codex", "--categories", "source", "--from", "2026-01-01T00:00:00Z"];
     const coverage = await command<CoverageResult>(["coverage", id, ...query]);
     const url = `http://127.0.0.1:${instances[0]!.instance.port}`;
-    const response = await fetch(`${url}/api/v1/repositories/${id}/coverage?version=${version}&client=codex&categories=source&from=2026-01-01T00%3A00%3A00Z`);
+    const response = await fetch(`${url}/api/v1/repositories/${id}/coverage?version=${version}&client=codex&categories=source&from=2026-01-01T00%3A00%3A00Z&response=summary`);
     assert.deepEqual(coverage, await response.json());
     assert.deepEqual(coverage.summary.readExact, { files: 1, lines: 2 });
     const events = await command<EventsResponse>(["events", id, "--path", "a.ts", "--page-size", "1", ...query]);
@@ -187,7 +197,7 @@ test("编译产物在包外cwd并发按需启动单实例，CLI/API JSON一致�
     assert.equal((await command<{ status: StatusResponse }>(["status"])).status.instance.id, web.instance.id);
     assert.equal((await command<{ stopped: boolean }>(["stop", "--wait"])).stopped, true);
     await stopped(home);
-    assert.deepEqual(await command(["stop"]), { stopping: false, running: false, stopped: false });
+    assert.deepEqual(await command(["stop"]), { stopped: false });
     assert.equal((await command<{ running: boolean }>(["status"])).running, false);
     await command(["start", "--wait-data"]);
     const restarted = (await command<{ status: StatusResponse }>(["status", "--full"])).status;

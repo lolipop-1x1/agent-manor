@@ -9,7 +9,7 @@ import { VERSION } from "../../../src/version.js";
 import { createProgram } from "../src/program.js";
 import { serviceStatus, startBackground, stopService, verifiedInstance } from "../../../src/service/runtime.js";
 
-test("status完整模式保留旧字段，默认只返回状态摘要，stop继续保留停止标记", async () => {
+test("status完整模式保留旧字段，ready聚焦准备结果，stop如实返回已完成状态", async () => {
   const home = await mkdtemp(join(tmpdir(), "manor-cli-lifecycle-compat-"));
   let instance: ServiceInstance;
   const payload = () => ({ instance, version: VERSION, protocolVersion: 1,
@@ -40,12 +40,16 @@ test("status完整模式保留旧字段，默认只返回状态摘要，stop继�
     const summary = await execute("status");
     assert.equal(summary.running, true); assert.equal(summary.status.repositoryCount, 1); assert.equal(summary.status.jobCount, 1);
     assert.equal(summary.repositories, undefined); assert.equal(summary.status.repositories, undefined); assert.equal(summary.status.jobs, undefined);
+    const ready = await execute("ready");
+    assert.equal(ready.preparation.state, "ready"); assert.equal(ready.instance.id, instance.id);
+    assert.equal(ready.repositoryCount, undefined); assert.equal(ready.jobCount, undefined);
+    assert.equal((await execute("ready", "--full")).repositories.length, 1);
     const started = await execute("start");
     assert.equal(started.version, VERSION); assert.equal(started.instance.id, instance.id);
     const stopped = await execute("stop");
-    assert.equal(stopped.stopping, true); assert.equal(stopped.running, false); assert.equal(stopped.stopped, true);
+    assert.equal(stopped.stopping, undefined); assert.equal(stopped.running, undefined); assert.equal(stopped.stopped, true);
     assert.equal(stopped.instance.id, instance.id); assert.equal(stops, 1);
-    assert.deepEqual(await execute("stop"), { stopping: false, running: false, stopped: false });
+    assert.deepEqual(await execute("stop"), { stopped: false });
     const inactive = await execute("status"); assert.equal(inactive.running, false); assert.equal(inactive.state, "stopped");
     assert.equal(stops, 1, "未运行的stop不得再次调用后端");
   } finally { process.stdout.write = oldWrite; await new Promise<void>(done => server.close(() => done())); await rm(home, { recursive: true, force: true }); }

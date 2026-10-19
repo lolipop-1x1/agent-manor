@@ -8,7 +8,7 @@ import { timeoutMilliseconds } from "../api/tasks.js";
 import type { CliContext, Options } from "../context.js";
 import { installationChecks } from "../runtime/doctor.js";
 import { updateProduct } from "../runtime/update.js";
-import { summarizeStatus } from "../output/summary.js";
+import { summarizeReady, summarizeStatus } from "../output/summary.js";
 const homeFor = (command: Command) => dataHome(command.optsWithGlobals<Options>().home as string | undefined);
 function portFor(options: Options): number | undefined {
   const port = options.port === undefined ? undefined : typeof options.port === "string" && !options.port.trim() ? NaN : Number(options.port);
@@ -41,14 +41,14 @@ export function registerLifecycle(program: Command, context: CliContext): void {
     .action(async (_opts, command: Command) => {
       const opts = command.optsWithGlobals<Options>();
       const result = await stopService(homeFor(command), { wait: opts.wait === true, timeoutMs: timeoutMilliseconds(opts.timeout) });
-      context.output(command, { stopping: result.stopped, running: false, ...result });
+      context.output(command, opts.full ? { running: false, ...result } : result);
     });
   context.waiting(program.command("ready").description(context.t("cli.ext.ready")))
     .action(async (_opts, command: Command) => {
       const opts = command.optsWithGlobals<Options>(), timeoutMs = timeoutMilliseconds(opts.timeout);
       const instance = await connectService(true, homeFor(command));
       const value = await waitForPreparation(instance!, timeoutMs, { summary: opts.full !== true });
-      context.output(command, opts.full ? value : summarizeStatus(value));
+      context.output(command, opts.full ? value : summarizeReady(value));
     });
   program.command("version").description(context.t("cli.version")).action((_opts, command: Command) => { context.output(command, { version: VERSION, apiVersion: API_VERSION, node: process.versions.node, platform: process.platform, arch: process.arch }); });
   context.waiting(program.command("update").description(context.t("cli.ext.update"))).option("--check", context.t("cli.ext.updateCheck")).option("--to <version>", context.t("cli.ext.updateTo"))

@@ -43,7 +43,7 @@ am knowledge revise <entryId> --input revision.json --json
 ## 从历史会话提炼
 
 1. `am knowledge extraction preview --help`，通过 `--input` 提交 `{ "scope": ... }`，指定实际 `sessionIds`、可选的 `turnStart`／`turnEnd`，并保留完整范围字段：`timeRange`、`recentDays`、`clients`、`projects`、`relationship`、`executionMode`、`models`、`title`、`branch`。默认范围从已保存的知识设置读取，明确替换选中的会话，不自行扩大为全部历史。读取预览的会话、输入估算、分片与预算。
-2. 用户授权该次模型调用后，`am knowledge extraction start <previewId> --json` 创建任务。
+2. 预览的 `targetCount`、`sessionCount` 和预算针对完整范围，默认只列最多20个目标；`targetsTruncated` 时用 `am knowledge extraction preview-get <previewId> --full --json` 核对其余目标。用户授权完整范围的该次模型调用后，`am knowledge extraction start <previewId> --json` 创建任务。
 3. `am knowledge extraction get <jobId> --json` 查看阶段、过程、用量与结果；历史用 `list`，控制用 `pause <jobId>`、`resume <jobId>`、`retry <jobId>`。
 4. 读取实际产出的知识和来源，确认没有价值的信息可以不产出知识。模型输出和过程摘要不等同于原始执行证据。
 

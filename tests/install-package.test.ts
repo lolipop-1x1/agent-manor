@@ -159,14 +159,14 @@ test("npm tarball真实包外安装，原生SQLite与CLI/Worker/Web/Skill无需�
     assert.equal(status.version, status.status.version);
     assert.deepEqual(status.repositories, status.status.repositories);
     assert.deepEqual(status.jobs, status.status.jobs);
-    const stop = await command<{ stopping: boolean; stopped: boolean; running: boolean; instance: StatusResponse["instance"] }>(["stop", "--wait"]);
-    assert.equal(stop.stopping, true);
+    const stop = await command<{ stopping?: boolean; stopped: boolean; running?: boolean; instance: StatusResponse["instance"] }>(["stop", "--wait"]);
+    assert.equal(stop.stopping, undefined);
     assert.equal(stop.stopped, true);
-    assert.equal(stop.running, false);
+    assert.equal(stop.running, undefined);
     assert.equal(stop.instance.id, status.instance.id);
     for (let attempt = 0; attempt < 100 && existsSync(join(home, "service.json")); attempt++) await pause(50);
     assert.equal(existsSync(join(home, "service.json")), false);
-    assert.deepEqual(await command(["stop"]), { stopping: false, running: false, stopped: false });
+    assert.deepEqual(await command(["stop"]), { stopped: false });
     assert.deepEqual(await readFile(codexSource), sourceBytes[0]);
     assert.deepEqual(await readFile(claudeSource), sourceBytes[1]);
     assert.deepEqual(await readFile(codeflickerSource), sourceBytes[2]);

@@ -14,6 +14,8 @@
 
 画像的 `--section steps|context|reports|tools|resources` 提供步骤、上下文快照、原始用量报告和资源明细，配合 `--page`、`--page-size`、`--version` 按需回读。只有摘要不足以回答具体问题时才读取这些明细。导出大量对话使用 `am sessions export <sessionId> --version <version> --output dialogue.md --json`，检查文件和导出摘要。
 
+`turns` 的 question 是240字符预览；`questionTruncated` 时按该 position 使用 `messages --page-unit turn --turn-position <position>` 及正文续读读取。`timeline` 默认最多200个表示项，`aggregated` 时用 count 和区间理解密度，不当作全部原始步骤；需要其他粒度传 `--max-events`，精确定位后回读消息。
+
 示例场景：“继续上次 Claude Code 的缓存排查”。先搜缓存对象名，筛选实际客户端，再读取用户目标、尝试、工具结果与最终结论，确认尚未解决的部分。代码执行成功必须有结果证据；历史里的计划不表示已完成。
 
 简易模式默认当前分支，完整／轨迹默认全部；`--branch current|all|<branchId>` 控制阅读范围。明确子 Agent 默认不列在普通列表，`--include-subagents` 可展示；搜索与直接 ID 读取仍可定位。跨客户端的会话不能凭相似标题判定为同一次任务。

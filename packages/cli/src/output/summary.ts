@@ -16,6 +16,8 @@ export function summaryRequestPath(path: string, full: boolean, method = "GET"):
   const paged = ["/sessions", "/sessions/search", "/sessions/search/groups", "/sessions/gaps", "/usage", "/usage/pricing/prices", "/resources/overview", "/resources/usage", "/resources/local", "/resources/archives", "/resources/operations", "/knowledge/entries", "/knowledge/extractions"].includes(name)
     || /^\/sessions\/[^/]+\/(messages|turns|matches|profile)$/.test(name) || /^\/resources\/usage\/[^/]+\/evidence$/.test(name);
   if (paged && method === "GET" && !url.searchParams.has("pageSize")) url.searchParams.set("pageSize", "20");
+  if (/^\/repositories\/[^/]+\/events$/.test(name) && !url.searchParams.has("pageSize")) url.searchParams.set("pageSize", "20");
+  if (/^\/sessions\/[^/]+\/timeline$/.test(name) && !url.searchParams.has("maxEvents")) url.searchParams.set("maxEvents", "200");
   return `${name}${url.search}`;
 }
 
@@ -39,6 +41,12 @@ export function summarizeStatus(value: unknown): unknown {
     ...(Array.isArray(result.jobs) ? { jobCount: result.jobs.length } : {}) };
 }
 
+/** ready 只回答数据准备结果，其他业务计数由 status 查询。 */
+export function summarizeReady(value: unknown): unknown {
+  const result = object(value);
+  return result ? pick(result, ["instance", "version", "protocolVersion", "preparation", "activeTasks", "error", "errorDescriptor"]) : value;
+}
+
 /** 写操作返回操作定位，不重复历史正文；授权前的具体内容仍由原始 fetch 读取。 */
 export function summarizeResponse(path: string, method: string, value: unknown, body?: unknown): unknown {
   if (coreResponsePath(path.split("?")[0]!)) return coreResponse(path, method, value, body);
@@ -50,14 +58,6 @@ export function summarizeResponse(path: string, method: string, value: unknown, 
   if (/^\/sessions\/[^/]+\/messages$/.test(name) && result.session) return { ...result, session: sessionSummaryResponse(result.session as SessionSummary) };
   if (method === "PUT" && ["/knowledge/settings", "/semantic/settings"].includes(name) && result.config) {
     return { ...pick(result, ["fingerprint", "hasGenerationKey", "hasEmbeddingKey", "hasKey"]), saved: true };
-  }
-  if (/^\/knowledge\/extractions\/(preview|previews\/[^/]+)$/.test(name) && Array.isArray(result.targets)) {
-    return { ...result, targets: result.targets.map(target => {
-      const entry = object(target);
-      if (!entry) return target;
-      const { messageIds, hashes: _hashes, ...summary } = entry;
-      return { ...summary, messageCount: Array.isArray(messageIds) ? messageIds.length : undefined };
-    }) };
   }
   if (name === "/knowledge/extractions" && method === "GET" && Array.isArray(result.jobs)) {
     return { ...result, jobs: result.jobs.map(jobSummary) };

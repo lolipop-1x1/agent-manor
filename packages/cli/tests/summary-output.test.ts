@@ -40,7 +40,7 @@ test("默认请求只选择轻量视图，full与显式导出保持原接口", (
   assert.equal(summaryRequestPath("/sessions?page=2", false), "/sessions?page=2&response=summary&pageSize=20");
   assert.equal(summaryRequestPath("/sessions?pageSize=3", false), "/sessions?pageSize=3&response=summary");
   assert.equal(summaryRequestPath("/sessions", true), "/sessions");
-  assert.equal(summaryRequestPath("/resources/usage/one", false), "/resources/usage/one");
+  assert.equal(summaryRequestPath("/resources/usage/one", false), "/resources/usage/one?response=summary");
   assert.match(summaryRequestPath("/sessions/one/messages?messageId=m1&textOffset=100", false), /textOffset=100/);
 });
 
