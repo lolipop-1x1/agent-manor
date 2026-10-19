@@ -68,7 +68,10 @@ try {
     page.setDefaultTimeout(15_000);
     await page.context().grantPermissions(["clipboard-read", "clipboard-write"], { origin: fixture.base });
     const button = name => page.getByRole("button", { name, exact: true });
-    const screenshot = async name => { await page.screenshot({ path: `${fixture.artifacts}/${name}.png` }); screenshots.push(`${name}.png`); };
+    const screenshot = async name => {
+      await page.evaluate(() => Promise.all(document.getAnimations().filter(animation => animation.effect?.getTiming().iterations !== Infinity).map(animation => animation.finished.catch(() => {}))));
+      await page.screenshot({ path: `${fixture.artifacts}/${name}.png` }); screenshots.push(`${name}.png`);
+    };
     const setRelease = data => page.request.post(fixture.controlUrl, { data });
     const calls = async () => (await (await page.request.get(fixture.controlUrl)).json()).calls;
     const waitSaved = async action => { await Promise.all([page.waitForResponse(response => response.url().endsWith("/update/settings") && response.request().method() === "PATCH"), action()]); await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))); };

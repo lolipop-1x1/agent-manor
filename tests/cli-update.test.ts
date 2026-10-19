@@ -6,7 +6,10 @@ import test from "node:test";
 import { updateProduct, type UpdateDependencies, type UpdatePreview, updateStopCommand } from "../packages/cli/src/runtime/update.js";
 import { allowsUpdateNotice, cachedUpdateNotice } from "../packages/cli/src/runtime/update-notice.js";
 import { ReleaseService } from "../src/service/releases.js";
-import { RequestError, serviceStatus, stopService } from "../src/service/runtime.js";
+import { RequestError, serviceStatus, stopService, acquireLock } from "../src/service/runtime.js";
+import type { StatusResponse } from "../src/contracts.js";
+import { startupProgress } from "../packages/cli/src/output/startup-progress.js";
+import { humanOutput } from "../packages/cli/src/output/format.js";
 import { VERSION } from "../src/version.js";
 
 async function fixture(operation: (context: { root: string; home: string; commands: string[][]; dependencies: UpdateDependencies }) => Promise<void>) {
@@ -234,4 +237,129 @@ test("本地清单和锁文件保留恢复副本，npm不得改动无关清单�
   });
   assert.equal(JSON.parse(await readFile(join(backup!, "installation-files", "package.json"), "utf8")).name, "example-project");
   assert.equal(await readFile(join(backup!, "installation-files", "package-lock.json"), "utf8"), '{"lockfileVersion":3}');
+}));
+
+test("冷服务升级使用真实状态探测，不把更新持有的启动锁误判为实例变化", async () => fixture(async ({ root, home, commands, dependencies }) => {
+  dependencies.status = undefined;
+  assert.equal((await serviceStatus(home)).state, "stopped");
+  const result = await updateProduct({ home, yes: true }, dependencies) as { updated: boolean; serviceState: string };
+  assert.equal(result.updated, true); assert.equal(result.serviceState, "not_running");
+  assert.ok(commands.some(args => args[0] === "install"));
+  assert.equal((await serviceStatus(home)).state, "stopped");
+  assert.equal(JSON.parse(await readFile(join(root, "package.json"), "utf8")).version, "0.2.0");
+}));
+
+test("冷服务确认后存在另一服务锁时仍拒绝安装，不放宽真正启动保护", async () => fixture(async ({ home, commands, dependencies }) => {
+  dependencies.status = undefined;
+  let releaseService: (() => Promise<void>) | undefined;
+  dependencies.confirm = async () => { releaseService = await acquireLock(home, "service.lock"); return true; };
+  try { await assert.rejects(updateProduct({ home }, dependencies), { code: "SERVICE_BUSY" }); }
+  finally { await releaseService?.(); }
+  assert.equal(commands.some(args => args[0] === "install"), false);
+}));
+
+test("冷服务确认后真实来源变成foreign仍拒绝，不按自有启动锁归一", async () => fixture(async ({ home, commands, dependencies }) => {
+  let reads = 0;
+  dependencies.status = (async () => ++reads === 1 ? { running: false, state: "stopped" } : { running: false, state: "foreign" }) as typeof serviceStatus;
+  await assert.rejects(updateProduct({ home, yes: true }, dependencies), { code: "UPDATE_PREVIEW_CHANGED" });
+  assert.equal(commands.some(args => args[0] === "install"), false);
+}));
+
+test("实际start返回instance形状的升级摘要中英文均如实显示后台运行", async () => {
+  const value = { currentVersion: VERSION, targetVersion: "0.2.0", updateAvailable: true, updated: true,
+    service: { instance: runningStatus().instance, version: "0.2.0", url: "http://127.0.0.1:16669" },
+    installationState: "installed", serviceState: "ready", preparationState: "ready" };
+  assert.match(humanOutput(value, "zh-CN"), /目标后台正在运行: 是/);
+  assert.match(humanOutput(value, "en"), /Selected service running: Yes/);
+  const withoutState = { ...value, serviceState: undefined };
+  assert.match(humanOutput(withoutState, "zh-CN"), /目标后台正在运行: 是/);
+  assert.match(humanOutput(withoutState, "en"), /Selected service running: Yes/);
+  assert.match(humanOutput({ ...value, serviceState: "not_running" }, "en"), /Selected service running: No/);
+});
+
+function npmLock(version: string, lockfileVersion = 3, rootRange = `^${version}`): string {
+  return JSON.stringify({ name: "example-project", lockfileVersion,
+    packages: { "": { name: "example-project", dependencies: { "agent-manor": rootRange } }, "node_modules/agent-manor": { version } },
+    ...(lockfileVersion === 2 ? { dependencies: { "agent-manor": { version } } } : {}),
+  });
+}
+
+test("有效v2/v3 package-lock和shrinkwrap核验固定版本及根清单后成功", async () => {
+  for (const lockfileVersion of [2, 3]) for (const name of ["package-lock.json", "npm-shrinkwrap.json"]) await fixture(async ({ root, home, dependencies }) => {
+    const path = join(dirname(dirname(root)), name); await writeFile(path, npmLock(VERSION, lockfileVersion, VERSION));
+    const original = dependencies.command!;
+    dependencies.command = async (args, cwd, signal) => {
+      const result = await original(args, cwd, signal); if (args[0] === "install") await writeFile(path, npmLock("0.2.0", lockfileVersion)); return result;
+    };
+    const result = await updateProduct({ home, yes: true }, dependencies) as { updated: boolean; backup: string };
+    assert.equal(result.updated, true);
+    assert.equal(await readFile(join(result.backup, "installation-files", name), "utf8"), npmLock(VERSION, lockfileVersion, VERSION));
+  });
+});
+
+test("仍旧、损坏或与根清单不一致的lock失败并保留旧文件和诊断", async () => {
+  const cases = [npmLock(VERSION, 3, VERSION), "{invalid-lock", npmLock("0.2.0", 3, VERSION),
+    JSON.stringify({ ...JSON.parse(npmLock("0.2.0", 2)), dependencies: { "agent-manor": { version: VERSION } } })];
+  for (const after of cases) await fixture(async ({ root, home, dependencies }) => {
+    const path = join(dirname(dirname(root)), "package-lock.json"), before = npmLock(VERSION, 3, VERSION); await writeFile(path, before);
+    const original = dependencies.command!;
+    dependencies.command = async (args, cwd, signal) => { const result = await original(args, cwd, signal); if (args[0] === "install") await writeFile(path, after); return result; };
+    let recovery: { backup: string; logPath: string } | undefined;
+    await assert.rejects(updateProduct({ home, yes: true }, dependencies), error => {
+      assert.equal((error as RequestError).code, "UPDATE_FAILED"); recovery = (error as unknown as { details: typeof recovery }).details; return true;
+    });
+    assert.equal(await readFile(join(recovery!.backup, "installation-files", "package-lock.json"), "utf8"), before);
+    assert.match(await readFile(recovery!.logPath, "utf8"), /Synthetic npm output/);
+    assert.ok((await readFile(recovery!.logPath, "utf8")).trim().split("\n").length > 1);
+  });
+});
+
+function restartedStatus(completed: number): Awaited<ReturnType<typeof serviceStatus>> {
+  return { running: true, state: "running", logPath: "/workspace/example-data/logs/service.log",
+    instance: { ...runningStatus().instance, id: "synthetic-restarted-instance", version: "0.2.0" },
+    status: { preparation: { state: "running", phase: "overview", startedAt: "2026-01-01T00:00:00Z", jobIds: [], completed,
+      total: 2, step: completed === 1 ? "core" : "usage" } } as unknown as StatusResponse,
+  };
+}
+
+test("重启父进程回读新实例实际准备计数，共享终端进度可见且默认等待120秒", async () => fixture(async ({ home, dependencies }) => {
+  let reads = 0; dependencies.status = (async () => ++reads <= 2 ? runningStatus() : restartedStatus(Math.min(reads - 2, 2))) as typeof serviceStatus;
+  dependencies.stop = async () => ({ stopped: true });
+  dependencies.restartCommand = async (args, options) => {
+    assert.equal(args[args.indexOf("--timeout") + 1], "120"); assert.equal(options.timeout, 125_000);
+    assert.ok(args.includes("--wait-data")); await new Promise(resolve => setTimeout(resolve, 300));
+    return { stdout: JSON.stringify({ instance: restartedStatus(2).instance, version: "0.2.0", url: "http://127.0.0.1:16669" }), stderr: "" };
+  };
+  let output = ""; const originalWrite = process.stderr.write;
+  process.stderr.write = ((chunk: string | Uint8Array) => { output += String(chunk); return true; }) as typeof process.stderr.write;
+  const progress = startupProgress("zh-CN"), counts: number[] = [];
+  dependencies.progress = (_phase, status) => { if (status) { counts.push(status.preparation!.completed!); progress.update(status); } };
+  try { assert.equal((await updateProduct({ home, yes: true }, dependencies) as { updated: boolean }).updated, true); }
+  finally { progress.close(); process.stderr.write = originalWrite; }
+  assert.deepEqual(counts, [1, 2]); assert.match(output, /1 \/ 2/); assert.match(output, /2 \/ 2/);
+}));
+
+test("JSON路径不注册进度回调不输出stderr，显式重启期限与子进程一致", async () => fixture(async ({ home, dependencies }) => {
+  dependencies.status = (async () => runningStatus()) as typeof serviceStatus; dependencies.stop = async () => ({ stopped: true });
+  dependencies.restartCommand = async (args, options) => {
+    assert.equal(args[args.indexOf("--timeout") + 1], "0.7"); assert.equal(options.timeout, 5700);
+    return { stdout: JSON.stringify({ instance: restartedStatus(2).instance, version: "0.2.0", url: "http://127.0.0.1:16669" }), stderr: "" };
+  };
+  let output = ""; const originalWrite = process.stderr.write;
+  process.stderr.write = ((chunk: string | Uint8Array) => { output += String(chunk); return true; }) as typeof process.stderr.write;
+  try {
+    const result = await updateProduct({ home, yes: true, timeoutMs: 700 }, dependencies) as { updated: boolean; preparationState: string };
+    assert.equal(result.updated, true); assert.equal(result.preparationState, "ready"); assert.equal(output, "");
+  } finally { process.stderr.write = originalWrite; }
+}));
+
+test("新后台准备超时报告实际running准备状态和恢复材料，不误报完成", async () => fixture(async ({ home, dependencies }) => {
+  let reads = 0; dependencies.status = (async () => ++reads <= 2 ? runningStatus() : restartedStatus(1)) as typeof serviceStatus;
+  dependencies.stop = async () => ({ stopped: true });
+  dependencies.restartCommand = async () => { throw new Error("Synthetic restart preparation timeout"); };
+  await assert.rejects(updateProduct({ home, yes: true, timeoutMs: 700 }, dependencies), error => {
+    assert.equal((error as RequestError).code, "UPDATE_FAILED");
+    const details = (error as { details: { serviceState: string; preparationState: string; backup: string } }).details;
+    assert.equal(details.serviceState, "running"); assert.equal(details.preparationState, "running"); assert.ok(details.backup); return true;
+  });
 }));

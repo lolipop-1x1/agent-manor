@@ -53,7 +53,20 @@ am doctor --json
 
 `am skills install --target codex --scope user` 安装完整 Skill；`--target claude`、`--scope project --project-directory <path>` 和 `--target custom --directory <path>` 选择其他目标。`skills status/update/remove` 复用同一目标参数。同版跳过，用户修改与外来同名目录先报告冲突，明确 `--overwrite` 前保存备份。npm 安装不会自行写宿主配置。
 
-`am update --check` 只检查公共 registry 版本，`am update --to <version>` 显式更新。持久的全局／本地 npm 安装支持更新；源码和临时运行环境提供诊断，不直接覆盖。同一安装还有其他数据目录的后台运行或正在启动时，更新会拒绝并列出目标，需先显式停止这些实例。当前服务先核验在途任务，必要时使用 `--wait`；停止后备份数据，安装成功后仅恢复原本运行的服务。失败保留恢复材料，不自动降级数据或删除数据库。
+后台会异步检查公共 npm 稳定版，同一安装每 24 小时最多自动检查一次。CLI 低频提醒，Web 页头的“版本与更新”可以检查、忽略版本、设置自动检查和复制命令；实际安装在终端执行。同一安装的多个数据目录共用设置和缓存，切换 `--home` 不会重复联网。
+
+```bash
+am update status --json
+am update --check
+am update --dry-run
+am update
+am update --to 0.2.0
+am update settings set --data '{"autoCheck":false}'
+```
+
+`status` 只读缓存，`--check` 立即检查，`--dry-run` 只预览。安装先展示版本、后台和备份位置，再要求确认；脚本或 JSON 模式需要显式 `--yes`，JSON 本身不表示同意。`--to` 接受精确稳定版本，首版拒绝降级。`--no-update-check` 或 `AGENT_MANOR_NO_UPDATE_CHECK=1` 仅关闭本次进程的自动检查和提醒，手动检查仍可使用。
+
+持久的全局／普通本地 npm 安装支持升级；源码、临时运行和依赖归属不明确的 workspace 不直接覆盖。同一安装还有其他数据目录的后台运行或正在启动时，升级会拒绝并列出停止命令。当前服务先核验在途任务，必要时使用 `--wait`；停止后备份数据，安装成功后仅恢复原本运行的服务和端口，并分别报告程序、后台与数据准备状态。失败保留备份和安装日志，不自动降级数据或删除数据库。配套 Skill 副本继续通过 `skills update` 显式更新。
 
 ## CLI 参数与返回值
 

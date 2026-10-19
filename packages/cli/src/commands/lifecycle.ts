@@ -76,11 +76,17 @@ export function registerLifecycle(program: Command, context: CliContext): void {
         try { return /^(y|yes)$/i.test((await prompt.question(`${context.t("cli.update.confirm")} [y/N] `)).trim()); }
         finally { prompt.close(); }
       };
-      context.output(command, await updateProduct({ home: homeFor(command), target: opts.to as string | undefined,
-        check: opts.check === true, dryRun: opts.dryRun === true, yes: opts.yes === true, wait: opts.wait === true,
-        timeoutMs: timeoutMilliseconds(opts.timeout), noUpdateCheck: noUpdateCheck(opts) }, { confirm,
-        progress: opts.json ? undefined : phase => { process.stderr.write(`${context.t(`cli.update.phase.${phase}`)}\n`); },
-      }));
+      let preparation: ReturnType<typeof startupProgress> | undefined;
+      try {
+        context.output(command, await updateProduct({ home: homeFor(command), target: opts.to as string | undefined,
+          check: opts.check === true, dryRun: opts.dryRun === true, yes: opts.yes === true, wait: opts.wait === true,
+          timeoutMs: timeoutMilliseconds(opts.timeout), noUpdateCheck: noUpdateCheck(opts) }, { confirm,
+          progress: opts.json ? undefined : (phase, status) => {
+            if (status) { preparation ??= startupProgress(context.language); preparation.update(status); }
+            else { preparation?.close(); preparation = undefined; process.stderr.write(`${context.t(`cli.update.phase.${phase}`)}\n`); }
+          },
+        }));
+      } finally { preparation?.close(); }
     });
   update.command("status").description(context.t("cli.update.status")).action(async (_opts, command: Command) => {
     context.output(command, await new ReleaseService({ home: homeFor(command) }).status());

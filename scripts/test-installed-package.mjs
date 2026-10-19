@@ -68,6 +68,11 @@ try {
   assert.equal(bin("agent-manor", ["--version"]).stdout.trim(), metadata.version);
   run(process.execPath, ["--input-type=module", "-e", `process.argv[1] = "nonexistent-entry"; await import(${JSON.stringify(pathToFileURL(cli).href)});`]);
   assert.equal(command(["status"]).running, false);
+  const releases = command(["update", "status"]);
+  assert.equal(releases.currentVersion, metadata.version);
+  assert.equal(releases.installationKind, "global", "自定义全局 prefix 也应识别真实安装范围");
+  assert.equal(releases.selfUpdateSupported, true);
+  assert.equal(releases.updateAvailable, null, "只读安装验收不能发起发布检查");
   assert.equal(existsSync(home), false, "版本、导入和未运行状态不得创建后台或数据目录");
   // 原生扩展在独立进程验证并卸载，避免 Windows 清理时仍映射安装包里的 DLL。
   const native = JSON.parse(run(process.execPath, ["--input-type=module", "-e", `

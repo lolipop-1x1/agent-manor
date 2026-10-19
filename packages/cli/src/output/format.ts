@@ -70,12 +70,14 @@ function managedOutput(value: unknown, language: Language): string | undefined {
   }
   if (typeof result.currentVersion === "string" && typeof result.targetVersion === "string") {
     const installation = result.installation as { kind?: string; root?: string } | undefined;
+    const service = result.service as { running?: boolean; instance?: unknown } | undefined;
+    const serviceRunning = result.serviceState !== undefined ? result.serviceState === "ready" : service?.running ?? !!service?.instance;
     return [t(result.cancelled ? "cli.update.cancelled" : result.updated ? "cli.human.updateComplete" : result.updateAvailable ? "cli.human.updateAvailable" : "cli.human.updateCurrent"),
       ...line("currentVersion", result.currentVersion), ...line("targetVersion", result.targetVersion),
       ...line("installation", installation?.kind ? t(`cli.human.installation.${installation.kind}`) : undefined),
       ...line("target", installation?.root), ...line("backup", result.backup),
       ...(result.estimatedBackupBytes !== undefined ? [`${t("cli.update.backupBytes")}: ${formatNumber(language, Number(result.estimatedBackupBytes))}`, `${t("cli.update.freeBytes")}: ${formatNumber(language, Number(result.availableBytes))}`] : []),
-      ...(result.service && typeof result.service === "object" ? [`${t("cli.update.selectedService")}: ${t((result.service as { running?: boolean }).running ? "cli.human.yes" : "cli.human.no")}`] : []),
+      ...(service && typeof service === "object" ? [`${t("cli.update.selectedService")}: ${t(serviceRunning ? "cli.human.yes" : "cli.human.no")}`] : []),
       ...(Array.isArray(result.dependencyFiles) && result.dependencyFiles.length ? [`${t("cli.update.dependencyFiles")}: ${result.dependencyFiles.join(", ")}`] : []),
       ...(Array.isArray(result.otherServices) ? result.otherServices.map(item => String((item as { stopCommand: string }).stopCommand)) : []),
       ...(Array.isArray(result.blockers) ? result.blockers.map(item => translateMessage(language, (item as { messageDescriptor: MessageDescriptor }).messageDescriptor)) : []),

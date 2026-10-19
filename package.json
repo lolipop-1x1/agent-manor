@@ -50,6 +50,7 @@
     "docs/design/knowledge-library.md",
     "docs/validation/knowledge-library.md",
     "docs/validation/npm-cli-distribution.md",
+    "docs/validation/software-updates.md",
     "docs/design/cli-responses.md"
   ],
   "scripts": {

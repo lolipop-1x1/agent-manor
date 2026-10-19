@@ -1,15 +1,16 @@
 import { execFile } from "node:child_process";
-import { cp, lstat, mkdir, readFile, readdir, statfs, writeFile } from "node:fs/promises";
+import { appendFile, cp, lstat, mkdir, readFile, readdir, statfs, writeFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { dirname, join, sep } from "node:path";
 import { isDeepStrictEqual, promisify } from "node:util";
 import { satisfies } from "semver";
 import { VERSION } from "../../../../src/version.js";
+import type { StatusResponse } from "../../../../src/contracts.js";
 import { acquireInstallationOperation, assertInstalledVersion, canonicalHome, installationContext, listInstallationServices } from "../../../../src/service/installation.js";
 import { detectInstallation, npmCommand, productRoot, type Installation, type CommandResult } from "../../../../src/service/product-installation.js";
 import { ReleaseService, compareVersions, stableVersion } from "../../../../src/service/releases.js";
 import type { ReleaseStatus } from "../../../../src/updates/contracts.js";
-import { acquireLock, RequestError, serviceStatus, stopService } from "../../../../src/service/runtime.js";
+import { acquireLock, delay, RequestError, serviceStatus, stopService } from "../../../../src/service/runtime.js";
 
 export { detectInstallation, productRoot } from "../../../../src/service/product-installation.js";
 export type { Installation } from "../../../../src/service/product-installation.js";
@@ -29,10 +30,11 @@ export interface UpdateDependencies {
   command?: (args: string[], cwd?: string, signal?: AbortSignal) => Promise<CommandResult>;
   status?: typeof serviceStatus; stop?: typeof stopService;
   restart?: (root: string, home: string, options?: { port?: number; noUpdateCheck?: boolean; waitData: true }) => Promise<unknown>;
+  restartCommand?: (args: string[], options: { timeout: number; signal: AbortSignal }) => Promise<CommandResult>;
   backup?: (home: string, target: string, destination: string) => Promise<string>;
   space?: (directory: string) => Promise<number>;
   confirm?: (preview: UpdatePreview) => Promise<boolean>;
-  progress?: (phase: UpdatePhase) => void;
+  progress?: (phase: UpdatePhase, status?: StatusResponse) => void;
   signal?: AbortSignal;
 }
 export interface UpdateResult extends Omit<UpdatePreview, "service"> {
@@ -83,6 +85,19 @@ function assertProductDependency(text: string, version: string): void {
   const manifest = JSON.parse(text) as Record<string, Record<string, unknown> | undefined>;
   const ranges = ["dependencies", "devDependencies", "optionalDependencies"].flatMap(group => typeof manifest[group]?.["agent-manor"] === "string" ? [manifest[group]!["agent-manor"] as string] : []);
   if (!ranges.length || ranges.some(range => !satisfies(version, range))) throw new Error("The local package manifest does not select the confirmed product version");
+}
+function object(value: unknown): value is Record<string, unknown> { return !!value && typeof value === "object" && !Array.isArray(value); }
+function assertLockFile(text: string, manifestText: string, version: string): void {
+  const lock: unknown = JSON.parse(text), manifest = JSON.parse(manifestText) as Record<string, unknown>;
+  if (!object(lock) || lock.lockfileVersion !== 2 && lock.lockfileVersion !== 3 || !object(lock.packages)
+    || !object(lock.packages[""]) || !object(lock.packages["node_modules/agent-manor"])) throw new Error("The local npm lock file has an unsupported or incomplete structure");
+  const root = lock.packages[""], product = lock.packages["node_modules/agent-manor"];
+  if (product.version !== version || product.link === true) throw new Error("The local npm lock file does not pin the confirmed product version");
+  for (const key of ["name", "version"]) if (manifest[key] !== undefined && (root[key] !== manifest[key] || lock[key] !== undefined && lock[key] !== manifest[key])) throw new Error("The local npm lock file root does not match the project manifest");
+  for (const key of ["dependencies", "devDependencies", "optionalDependencies"]) {
+    if (!isDeepStrictEqual(root[key] ?? {}, manifest[key] ?? {})) throw new Error("The local npm lock file dependencies do not match the project manifest");
+  }
+  if (lock.lockfileVersion === 2 && (!object(lock.dependencies) || !object(lock.dependencies["agent-manor"]) || lock.dependencies["agent-manor"].version !== version)) throw new Error("The legacy npm lock index does not pin the confirmed product version");
 }
 function statusFingerprint(status: Awaited<ReturnType<typeof serviceStatus>>): string {
   return JSON.stringify({ running: status.running, state: status.state, id: status.instance?.id, port: status.instance?.port });
@@ -148,8 +163,21 @@ export async function updateProduct(options: UpdateOptions, dependencies: Update
   const restart = async () => {
     const restartOptions = { port: status.instance?.port, noUpdateCheck: options.noUpdateCheck, waitData: true as const };
     if (dependencies.restart) return dependencies.restart(root, options.home, restartOptions);
-    const args = [join(root, "dist", "cli.js"), "start", "--home", options.home, "--json", "--wait-data", "--timeout", String((options.timeoutMs ?? 120_000) / 1000), ...(status.instance?.port ? ["--port", String(status.instance.port)] : []), ...(options.noUpdateCheck ? ["--no-update-check"] : [])];
-    return JSON.parse((await run(process.execPath, args, { timeout: options.timeoutMs ?? 60_000, maxBuffer: 1_048_576 })).stdout) as unknown;
+    const timeout = options.timeoutMs ?? 120_000;
+    const args = [join(root, "dist", "cli.js"), "start", "--home", options.home, "--json", "--wait-data", "--timeout", String(timeout / 1000), ...(status.instance?.port ? ["--port", String(status.instance.port)] : []), ...(options.noUpdateCheck ? ["--no-update-check"] : [])];
+    // 子进程负责完整准备期限；父进程留出退出宽限，避免先于子进程终止等待。
+    const childOptions = { timeout: timeout + 5000, signal: cancellation.signal };
+    const child = dependencies.restartCommand ? dependencies.restartCommand(args, childOptions) : run(process.execPath, args, { ...childOptions, maxBuffer: 1_048_576 });
+    if (dependencies.progress) {
+      let settled = false;
+      const completion = child.then(() => { settled = true; }, () => { settled = true; });
+      while (!settled) {
+        const current = await Promise.resolve((dependencies.status ?? serviceStatus)(options.home, { summary: true })).catch(() => null);
+        if (current?.running && current.status && current.instance?.id !== status.instance?.id) dependencies.progress("restart", current.status);
+        if (!settled) await Promise.race([completion, delay(250)]);
+      }
+    }
+    return JSON.parse((await child).stdout) as unknown;
   };
   try {
     cancellation.signal.throwIfAborted();
@@ -169,11 +197,18 @@ export async function updateProduct(options: UpdateOptions, dependencies: Update
     }
     releaseUpdate = await acquireLock(options.home, "update.lock");
     try { releaseStartup = await acquireLock(options.home, "startup.lock"); } catch { throw failure("SERVICE_BUSY", "The selected service is starting", "diagnostics.service.runtime.busy"); }
-    const current = await (dependencies.status ?? serviceStatus)(options.home);
+    let current = await (dependencies.status ?? serviceStatus)(options.home);
+    if (!status.running && status.state === "stopped" && !current.running && current.state === "starting" && !current.instance) {
+      // startup.lock 已由本次更新持有；同时取得服务锁后，才可排除其他实例正在启动。
+      try { releaseService = await acquireLock(options.home, "service.lock"); }
+      catch { throw failure("SERVICE_BUSY", "Another service is starting or stopping", "diagnostics.service.runtime.busy"); }
+      current = await (dependencies.status ?? serviceStatus)(options.home);
+      if (!current.running && current.state === "starting" && !current.instance) current = { ...current, state: "stopped" };
+    }
     if (statusFingerprint(current) !== statusFingerprint(status)) throw failure("UPDATE_PREVIEW_CHANGED", "Service identity changed after confirmation; review a fresh preview", "cli.update.previewChanged");
     if (registered.some(item => item.home === selectedHome && (item.state === "starting" || !current.running || item.instance?.id !== current.instance?.id))) throw failure("SERVICE_IDENTITY_UNVERIFIED", "A registered service identity cannot be verified", "diagnostics.service.runtime.identity");
     if (current.running) { await (dependencies.stop ?? stopService)(options.home, { wait: options.wait, timeoutMs: options.timeoutMs }); stopped = true; }
-    try { releaseService = await acquireLock(options.home, "service.lock"); } catch { throw failure("SERVICE_BUSY", "Another service is starting or stopping", "diagnostics.service.runtime.busy"); }
+    if (!releaseService) try { releaseService = await acquireLock(options.home, "service.lock"); } catch { throw failure("SERVICE_BUSY", "Another service is starting or stopping", "diagnostics.service.runtime.busy"); }
     if (await (dependencies.space ?? availableBytes)(dirname(options.home)) < await backupBytes(options.home)) throw failure("UPDATE_SPACE_INSUFFICIENT", "Insufficient space for the data backup", "cli.update.spaceInsufficient");
     dependencies.progress?.("backup");
     savedBackup = await (dependencies.backup ?? backupData)(options.home, version, backup);
@@ -199,6 +234,14 @@ export async function updateProduct(options: UpdateOptions, dependencies: Update
       const path = join(installation.prefix!, "package.json"), before = dependencySnapshots.get(path)!, after = await readFile(path, "utf8");
       assertProductDependency(after, version);
       if (!isDeepStrictEqual(manifestExceptProduct(before), manifestExceptProduct(after))) throw new Error("npm changed unrelated local package manifest fields; inspect the saved installation files");
+      for (const name of ["package-lock.json", "npm-shrinkwrap.json"]) {
+        const lockPath = join(installation.prefix!, name);
+        let contents: string | undefined;
+        try { contents = await readFile(lockPath, "utf8"); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+        if (contents === undefined) {
+          if (dependencySnapshots.has(lockPath)) throw new Error("npm removed a previously existing local lock file");
+        } else assertLockFile(contents, after, version);
+      }
     }
     await unlock();
     let service: unknown;
@@ -206,6 +249,7 @@ export async function updateProduct(options: UpdateOptions, dependencies: Update
     dependencies.progress?.("complete");
     return { ...preview, updated: true, backup: savedBackup, logPath, installationState: "installed", serviceState: stopped ? "ready" : "not_running", preparationState: stopped ? "ready" : "not_started", ...(service ? { service } : {}) };
   } catch (error) {
+    if (installStarted && logPath) await appendFile(logPath, `\n${error instanceof Error ? error.message : String(error)}\n`).catch(() => { /* 原错误与恢复材料仍由返回值保留。 */ });
     await unlock();
     let recoveryService: unknown;
     if (stopped && !installStarted) {

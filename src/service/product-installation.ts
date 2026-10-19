@@ -1,14 +1,96 @@
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { access, readFile, realpath } from "node:fs/promises";
-import { delimiter, dirname, join, parse, resolve, sep } from "node:path";
+import { basename, delimiter, dirname, join, parse, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
+import { setTimeout as delay } from "node:timers/promises";
 import type { InstallationKind } from "../updates/contracts.js";
 import { RequestError } from "./runtime.js";
 
 const run = promisify(execFile);
 export interface CommandResult { stdout: string; stderr: string }
 export interface Installation { kind: InstallationKind; root: string; prefix?: string }
+interface InstallProcessOptions { cwd?: string; signal?: AbortSignal; timeout?: number; maxBuffer?: number; killGrace?: number }
+
+function groupExists(pid: number): boolean {
+  try { process.kill(-pid, 0); return true; }
+  catch (error) { if ((error as NodeJS.ErrnoException).code === "ESRCH") return false; if ((error as NodeJS.ErrnoException).code === "EPERM") return true; throw error; }
+}
+function signalGroup(pid: number, signal: NodeJS.Signals): void {
+  try { process.kill(-pid, signal); }
+  catch (error) { if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw new Error(`Could not send ${signal} to install group: ${String(error)}`, { cause: error }); }
+}
+async function waitForGroup(pid: number): Promise<void> {
+  let attempts = 0;
+  while (groupExists(pid)) {
+    // 无 init 回收的容器可能保留僵尸进程；它们已不能再执行安装写入。
+    if (++attempts % 10 === 0) {
+      const listing = await run("ps", ["-A", "-o", "pgid=,stat="], { timeout: 2000, maxBuffer: 4_194_304 });
+      const states = listing.stdout.split("\n").map(line => line.trim().split(/\s+/)).filter(parts => parts[0] === String(pid)).map(parts => parts[1]!);
+      if (!states.length || states.every(state => state.startsWith("Z"))) return;
+    }
+    await delay(20);
+  }
+}
+
+/** 中断安装时先收束整棵进程树，再将失败交还持有安装锁的调用方。 */
+export async function runInstallProcess(command: string, args: string[], options: InstallProcessOptions = {}): Promise<CommandResult> {
+  options.signal?.throwIfAborted();
+  const child = spawn(command, args, { cwd: options.cwd, detached: process.platform !== "win32", windowsHide: true, stdio: ["ignore", "pipe", "pipe"] });
+  const maximum = options.maxBuffer ?? 4_194_304;
+  const output: Record<"stdout" | "stderr", Buffer[]> = { stdout: [], stderr: [] };
+  const sizes = { stdout: 0, stderr: 0 };
+  let failure: Error | undefined;
+  let termination: Promise<void> | undefined;
+  const terminate = (cause: Error) => {
+    failure ??= cause;
+    termination ??= (async () => {
+      if (!child.pid) return;
+      if (process.platform === "win32") {
+        // 参数独立传递，路径和 PID 都不经过 shell 解释。
+        await run("taskkill.exe", ["/PID", String(child.pid), "/T", "/F"], { windowsHide: true, timeout: 30_000, maxBuffer: 4_194_304 });
+      } else {
+        signalGroup(child.pid, "SIGTERM");
+        const deadline = Date.now() + (options.killGrace ?? 500);
+        while (groupExists(child.pid) && Date.now() < deadline) await delay(20);
+        signalGroup(child.pid, "SIGKILL");
+        await waitForGroup(child.pid);
+      }
+    })();
+    // close 事件之前终止失败也不会产生未处理拒绝；下方仍会等待并报告错误。
+    void termination.catch(() => {});
+  };
+  const collect = (stream: "stdout" | "stderr", data: Buffer) => {
+    const remaining = Math.max(0, maximum - sizes[stream]);
+    if (remaining) output[stream].push(data.subarray(0, remaining));
+    sizes[stream] += data.length;
+    if (sizes[stream] > maximum) terminate(Object.assign(new Error(`Installation ${stream} exceeded its output limit`), { code: "ERR_CHILD_PROCESS_STDIO_MAXBUFFER" }));
+  };
+  child.stdout.on("data", data => collect("stdout", Buffer.from(data)));
+  child.stderr.on("data", data => collect("stderr", Buffer.from(data)));
+  const aborted = () => terminate(Object.assign(new Error("Installation was aborted"), { name: "AbortError", code: "ABORT_ERR", cause: options.signal?.reason }));
+  options.signal?.addEventListener("abort", aborted, { once: true });
+  if (options.signal?.aborted) aborted();
+  const timer = setTimeout(() => terminate(Object.assign(new Error("Installation timed out"), { code: "ETIMEDOUT" })), options.timeout ?? 300_000);
+  let code: number | null = null, signal: NodeJS.Signals | null = null;
+  try {
+    await new Promise<void>(done => {
+      child.once("error", cause => { failure ??= cause; });
+      child.once("close", (exitCode, exitSignal) => { code = exitCode; signal = exitSignal; done(); });
+    });
+    if (!termination && child.pid && process.platform !== "win32" && groupExists(child.pid)) {
+      terminate(Object.assign(new Error("Installation left child processes running"), { code: "INSTALL_PROCESS_DESCENDANTS_RUNNING" }));
+    }
+    if (termination) {
+      try { await termination; }
+      catch (cause) { failure = new Error(`Could not finish stopping the installation process tree: ${cause instanceof Error ? cause.message : String(cause)}`, { cause: failure }); }
+    }
+    const result = { stdout: Buffer.concat(output.stdout).toString("utf8"), stderr: Buffer.concat(output.stderr).toString("utf8") };
+    if (failure || code !== 0) throw Object.assign(failure ?? new Error(`Installation exited with ${signal ?? code}`), result, { ...(failure ? {} : { code, signal }) });
+    return result;
+  } finally { clearTimeout(timer); options.signal?.removeEventListener("abort", aborted); }
+}
+
 export async function productRoot(start = dirname(fileURLToPath(import.meta.url))): Promise<string> {
   for (let directory = resolve(start); ; directory = dirname(directory)) {
     try {
@@ -21,12 +103,12 @@ export async function productRoot(start = dirname(fileURLToPath(import.meta.url)
 
 /** Windows 直接运行 npm 的 JS 入口，避免通过 shell 拼接安装路径。 */
 export async function npmCommand(args: string[], cwd?: string, signal?: AbortSignal): Promise<CommandResult> {
-  if (process.platform !== "win32") return run("npm", args, { cwd, timeout: 300_000, maxBuffer: 4_194_304, signal });
+  if (process.platform !== "win32") return args[0] === "install" ? runInstallProcess("npm", args, { cwd, signal }) : run("npm", args, { cwd, timeout: 300_000, maxBuffer: 4_194_304, signal });
   const candidates = [process.env.npm_execpath, ...[dirname(process.execPath), ...(process.env.PATH ?? "").split(delimiter)].map(path => join(path, "node_modules", "npm", "bin", "npm-cli.js"))];
   for (const candidate of candidates) {
     if (!candidate?.endsWith(".js")) continue;
     try { await access(candidate); } catch { continue; }
-    return run(process.execPath, [candidate, ...args], { cwd, timeout: 300_000, maxBuffer: 4_194_304, signal });
+    return args[0] === "install" ? runInstallProcess(process.execPath, [candidate, ...args], { cwd, signal }) : run(process.execPath, [candidate, ...args], { cwd, timeout: 300_000, maxBuffer: 4_194_304, signal });
   }
   throw new RequestError("INSTALLATION_UNKNOWN", "Cannot locate npm's JavaScript entry point", { key: "cli.update.installationUnknown" });
 }
@@ -41,6 +123,22 @@ export async function detectInstallation(root: string, command = npmCommand): Pr
   try {
     if (await realpath(join(global, "agent-manor")) === current) return { kind: "global", root: current, prefix: (await command(["prefix", "--global"])).stdout.trim() };
   } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+  // 自定义全局 prefix 不一定等于 npm 当前配置；同时核验两个安装入口，不能只凭目录名判断。
+  const parent = dirname(dirname(current));
+  const customPrefix = process.platform === "win32" ? parent : basename(parent) === "lib" ? dirname(parent) : undefined;
+  if (customPrefix) {
+    try {
+      let project = false;
+      try { await access(join(customPrefix, "package.json")); project = true; } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+      if (!project) {
+        const bin = process.platform === "win32" ? customPrefix : join(customPrefix, "bin");
+        const owned = await Promise.all(["am", "agent-manor"].map(async name => process.platform === "win32"
+          ? (await readFile(join(bin, `${name}.cmd`), "utf8")).replaceAll("\\", "/").includes("node_modules/agent-manor/dist/cli.js")
+          : await realpath(join(bin, name)) === await realpath(join(current, "dist", "cli.js"))));
+        if (owned.every(Boolean)) return { kind: "global", root: current, prefix: customPrefix };
+      }
+    } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+  }
   if (dirname(current).split(sep).at(-1) === "node_modules") {
     const prefix = dirname(dirname(current));
     try {

@@ -34,6 +34,8 @@ import {promisify} from 'node:util';
 import {syncBuiltinESMExports} from 'node:module';
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import {EventEmitter} from 'node:events';
+import {PassThrough} from 'node:stream';
 const stateFile=${JSON.stringify(stateFile)}, root=${JSON.stringify(root)}, prefix=${JSON.stringify(prefix)};
 const original=cp.execFile, originalAsync=promisify(original);
 async function command(file,args,options){
@@ -54,7 +56,19 @@ async function command(file,args,options){
   throw new Error('Unexpected npm command');
 }
 const replacement=function(...args){return original(...args)}; replacement[promisify.custom]=command;
-cp.execFile=replacement; syncBuiltinESMExports();
+cp.execFile=replacement;
+const originalSpawn=cp.spawn;
+cp.spawn=(file,args,options)=>{
+ if(file!=='npm')return originalSpawn(file,args,options);
+ const child=new EventEmitter(); child.stdout=new PassThrough(); child.stderr=new PassThrough();
+ void command(file,args,options).then(result=>{
+  child.stdout.end(result.stdout); child.stderr.end(result.stderr); child.emit('close',0,null);
+ },error=>{
+  child.stdout.end(); child.stderr.end(error.message); child.emit('error',error); child.emit('close',1,null);
+ });
+ return child;
+};
+syncBuiltinESMExports();
 const originalFetch=globalThis.fetch;
 globalThis.fetch=async (url,options)=>{
  if(String(url).startsWith('https://registry.npmjs.org/agent-manor/')) {
