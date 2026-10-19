@@ -13,6 +13,7 @@ import Overview from "../features/overview/Overview";
 import type { OverviewMapTarget, OverviewSessionTarget } from "../features/overview/Investigation";
 import Usage from "../features/usage/Usage";
 import Knowledge from "../features/knowledge/Knowledge";
+import { SoftwareUpdates } from "../features/updates/SoftwareUpdates";
 import { LanguageMenu, LanguageNotice, messageText, t, useI18n } from "../shared/i18n";
 import { useTheme } from "../shared/theme";
 import { AppearanceMenu } from "../shared/ui/AppearanceMenu";
@@ -152,6 +153,7 @@ export function App() {
         <HistoryRefreshControl busy={history.updating} starting={history.starting} onRetry={history.retry}
           job={history.job} autoSync={history.status?.autoSync} error={history.error} onRefresh={options => void history.refresh(options)} />
         <div className="header-display-actions">
+          <SoftwareUpdates />
           <LanguageMenu />
           <AppearanceMenu />
           <Hint label={t("common.github.project")}><a className="icon-button header-github" href="https://github.com/lolipop-1x1/agent-manor" target="_blank" rel="noreferrer" aria-label={t("common.github.project")}><GithubLogo size={19} aria-hidden="true" /></a></Hint>

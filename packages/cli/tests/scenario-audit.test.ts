@@ -18,5 +18,5 @@ test("场景审计覆盖每个实际注册命令及根默认动作，新增命�
   const audited = [...document.matchAll(/^\| `am ([^`]+)` \|/gm)].map(match => match[1]!);
   assert.equal(new Set(audited).size, audited.length);
   assert.deepEqual(audited.sort(), registered.sort());
-  assert.equal(registered.length, 126);
+  assert.equal(registered.length, 129);
 });

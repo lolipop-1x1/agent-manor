@@ -56,12 +56,31 @@ function managedOutput(value: unknown, language: Language): string | undefined {
       ...line("target", result.targetPath), ...line("version", result.installedVersion ?? result.version), ...line("backup", result.backupPath),
       ...(Array.isArray(result.conflicts) && result.conflicts.length ? [t("cli.human.conflicts"), ...result.conflicts.map(String)] : [])].join("\n");
   }
+  if (typeof result.currentVersion === "string" && "latestVersion" in result) {
+    const compatibility = result.compatibility as { compatible: boolean; reason?: string; messageDescriptor?: MessageDescriptor };
+    return [t(`cli.update.state.${result.checkState}`),
+      ...line("currentVersion", result.currentVersion), ...line("targetVersion", result.latestVersion ?? "—"),
+      `${t("cli.update.lastCheck")}: ${typeof result.checkedAt === "string" ? formatDateTime(language, result.checkedAt) : "—"}`,
+      `${t("cli.update.autoCheck")}: ${t(result.autoCheck ? "cli.human.yes" : "cli.human.no")}`,
+      ...(result.stale ? [t("cli.update.stale")] : []),
+      ...(result.versionRelation === "ahead" ? [t("cli.update.ahead")] : []),
+      ...(!compatibility.compatible ? [compatibility.messageDescriptor ? translateMessage(language, compatibility.messageDescriptor) : t("cli.update.incompatible")] : []),
+      ...(result.ignoredVersion ? [`${t("cli.update.ignoredVersion")}: ${result.ignoredVersion}`] : []),
+      ...(result.updateAvailable ? [String(result.updateCommand)] : [])].join("\n");
+  }
   if (typeof result.currentVersion === "string" && typeof result.targetVersion === "string") {
     const installation = result.installation as { kind?: string; root?: string } | undefined;
-    return [t(result.updated ? "cli.human.updateComplete" : result.updateAvailable ? "cli.human.updateAvailable" : "cli.human.updateCurrent"),
+    return [t(result.cancelled ? "cli.update.cancelled" : result.updated ? "cli.human.updateComplete" : result.updateAvailable ? "cli.human.updateAvailable" : "cli.human.updateCurrent"),
       ...line("currentVersion", result.currentVersion), ...line("targetVersion", result.targetVersion),
       ...line("installation", installation?.kind ? t(`cli.human.installation.${installation.kind}`) : undefined),
-      ...line("target", installation?.root), ...line("backup", result.backup)].join("\n");
+      ...line("target", installation?.root), ...line("backup", result.backup),
+      ...(result.estimatedBackupBytes !== undefined ? [`${t("cli.update.backupBytes")}: ${formatNumber(language, Number(result.estimatedBackupBytes))}`, `${t("cli.update.freeBytes")}: ${formatNumber(language, Number(result.availableBytes))}`] : []),
+      ...(result.service && typeof result.service === "object" ? [`${t("cli.update.selectedService")}: ${t((result.service as { running?: boolean }).running ? "cli.human.yes" : "cli.human.no")}`] : []),
+      ...(Array.isArray(result.dependencyFiles) && result.dependencyFiles.length ? [`${t("cli.update.dependencyFiles")}: ${result.dependencyFiles.join(", ")}`] : []),
+      ...(Array.isArray(result.otherServices) ? result.otherServices.map(item => String((item as { stopCommand: string }).stopCommand)) : []),
+      ...(Array.isArray(result.blockers) ? result.blockers.map(item => translateMessage(language, (item as { messageDescriptor: MessageDescriptor }).messageDescriptor)) : []),
+      ...line("log", result.logPath),
+      ...[["installationState", "programState"], ["serviceState", "backendState"], ["preparationState", "preparationState"]].flatMap(([key, label]) => typeof result[key!] === "string" ? [`${t(`cli.update.${label}`)}: ${t(`cli.update.result.${result[key!]}`)}`] : [])].join("\n");
   }
   if (Array.isArray(result.checks) && result.service && typeof result.service === "object") {
     return [t("cli.human.diagnostics"), ...line("version", result.version), ...line("dataDirectory", result.home),

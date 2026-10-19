@@ -14,18 +14,19 @@ test("同一安装的其他home运行或仍在启动时拒绝更新，绝不停�
   const root = join(directory, "node_modules", "agent-manor"), a = join(directory, "home-a"), b = join(directory, "home-b");
   await mkdir(root, { recursive: true }); await mkdir(a); await mkdir(b);
   await writeFile(join(root, "package.json"), JSON.stringify({ name: "agent-manor", version: VERSION }));
+  await writeFile(join(directory, "package.json"), JSON.stringify({ name: "synthetic-project", dependencies: { "agent-manor": VERSION } }));
   const context = await installationContext(root);
   const release = await acquireInstallationOperation(context);
   const registration = await registerInstallationService(context, b); await release();
   let installed = false, stopped = false;
-  const dependencies: UpdateDependencies = { root,
+  const dependencies: UpdateDependencies = { root, configBase: join(directory, "configuration"),
     fetch: async () => new Response(JSON.stringify({ name: "agent-manor", version: "0.2.0" })),
     command: async args => { if (args[0] === "install") installed = true; return { stdout: join(directory, "global"), stderr: "" }; },
     status: (async () => ({ running: false, state: "stopped" })) as typeof serviceStatus,
     stop: async () => { stopped = true; return { stopped: true }; },
   };
   try {
-    await assert.rejects(updateProduct({ home: a }, dependencies), error => {
+    await assert.rejects(updateProduct({ home: a, yes: true }, dependencies), error => {
       assert.equal((error as { code?: string }).code, "SERVICE_BUSY");
       const details = (error as { details: { services: { home: string; state: string; pid: number }[] } }).details;
       assert.ok(details.services[0]!.home.endsWith("home-b")); assert.equal(details.services[0]!.state, "starting"); assert.equal(details.services[0]!.pid, process.pid);
@@ -33,21 +34,21 @@ test("同一安装的其他home运行或仍在启动时拒绝更新，绝不停�
     });
     assert.equal(installed, false); assert.equal(stopped, false);
     await registration.running({ id: "synthetic-service-identity-b", pid: process.pid, host: "127.0.0.1", port: 1, startedAt: new Date().toISOString() });
-    await assert.rejects(updateProduct({ home: a, wait: true }, dependencies), { code: "SERVICE_BUSY" });
+    await assert.rejects(updateProduct({ home: a, yes: true, wait: true }, dependencies), { code: "SERVICE_BUSY" });
     assert.equal(installed, false); assert.equal(stopped, false);
     assert.equal(JSON.parse(await readFile(join(root, "package.json"), "utf8")).version, VERSION);
     assert.equal((await listInstallationServices(context))[0]!.home.endsWith("home-b"), true);
     await registration.remove();
     const releaseStartup = await acquireLock(a, "startup.lock");
     const start = Date.now();
-    try { await assert.rejects(updateProduct({ home: a }, dependencies), { code: "SERVICE_BUSY" }); }
+    try { await assert.rejects(updateProduct({ home: a, yes: true }, dependencies), { code: "SERVICE_BUSY" }); }
     finally { await releaseStartup(); }
     assert.ok(Date.now() - start < 1000, "更新不持安装锁等待启动父进程，避免锁顺序互等");
     const current = await registerInstallationService(context, a);
     try {
-      await assert.rejects(updateProduct({ home: a }, dependencies), { code: "SERVICE_BUSY" });
+      await assert.rejects(updateProduct({ home: a, yes: true }, dependencies), { code: "SERVICE_BUSY" });
       await current.running({ id: "synthetic-unverified-service-a", pid: process.pid, host: "127.0.0.1", port: 1, startedAt: new Date().toISOString() });
-      await assert.rejects(updateProduct({ home: a }, dependencies), { code: "SERVICE_IDENTITY_UNVERIFIED" });
+      await assert.rejects(updateProduct({ home: a, yes: true }, dependencies), { code: "SERVICE_IDENTITY_UNVERIFIED" });
       assert.equal(installed, false); assert.equal(stopped, false);
     } finally { await current.remove(); }
   } finally { await registration.remove(); await rm(directory, { recursive: true, force: true }); }

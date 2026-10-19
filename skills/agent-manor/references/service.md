@@ -53,3 +53,36 @@ am skills remove --target custom --directory /workspace/skills --json
 Codex 用户级为用户 skills/agent-manor，项目级为 `.agents/skills/agent-manor`；Claude 对应 `.claude/skills/agent-manor`。复制整个目录，references 与 examples 一起可用。相同内容副本跳过；修改副本或外来同名目录默认冲突。remove 只允许有效产品安装记录，不把任意同名目录删掉。
 
 完成条件：核实真实服务地址／状态或安装副本内容；升级后区分 CLI 版本、运行后台版本和已打开页面是否已刷新。测试必须用隔离 home、合成客户端历史、临时 Skill 目录，不能关闭或覆盖用户的真实后台。
+
+## 版本检查、提醒与升级
+
+版本检查查询产品发布元信息，不会同步会话或重建索引。`--home` 选择本次管理的后台与备份数据；自动检查开关、忽略版本和检查缓存则属于同一产品安装，各数据目录共用。
+
+```sh
+am update status --json
+am update --check --json
+am update settings get --json
+am update settings set --data '{"autoCheck":false}' --json
+am update settings set --data '{"ignoredVersion":"0.2.0"}' --json
+am update settings set --data '{"ignoredVersion":null}' --json
+am --home /workspace/example-data update --dry-run --json
+```
+
+| 命令／字段 | 含义与后续动作 |
+|---|---|
+| `update status` | 只读缓存，不联网、不启动后台；`checkState=unknown` 表示尚无结果，不能推断已是最新版 |
+| `update --check` | 立即查询官方稳定版，失败退出非零；有／无更新都保存结果。`--to 0.2.0` 只检查该精确稳定版本，不改默认渠道 |
+| `currentVersion/latestVersion` | 当前进程版本与目标发布；latestVersion 可空。`versionRelation` 为 unknown/current/ahead/behind；`updateAvailable=null` 表示未知，不等于无更新 |
+| `checkedAt/stale/checkState` | 上次成功检查时间、是否过期和检查状态；failed 后可能仍保留旧元信息，不能按旧结果宣称最新 |
+| `compatibility/selfUpdateSupported` | 运行环境是否兼容，以及当前安装能否自行升级；发现新版不代表当前 Node、系统或安装方式可升级 |
+| `autoCheck/ignoredVersion` | 安装级自动开关与忽略的精确版本；忽略只关自动提醒，仍能手动检查和安装，更高版本重新提醒 |
+| `update --dry-run` | 只预览，不停止后台、不安装。核对 targetVersion、home、installation、service、otherServices、blockers、backup、estimatedBackupBytes、availableBytes 与 dependencyFiles |
+| `blockers/otherServices` | 阻断原因和其他目录后台的停止命令；不要擅自执行停止命令。仅目标后台任务可由 `--wait --timeout 300` 等待 |
+| `update --to 0.2.0` | 交互展示预览并确认，拒绝降级与预发布；用户取消则返回 cancelled=true |
+| `update --yes --wait --json` | 明确授权后安装；JSON 和非交互本身不表示同意，缺少 --yes 返回 CONFIRMATION_REQUIRED 与具体预览。仅用户要求安装后才能传 --yes |
+| `updated/installationState/serviceState/preparationState` | 分别表示程序是否安装成功、安装状态、后台状态和数据准备状态；仅升级前在运行的后台才恢复，并保留原端口及等待本次准备完成 |
+| `backup/logPath` | 数据及本地依赖文件恢复副本、npm 安装日志。失败保留材料，不承诺程序或数据库自动回滚；不要将本机日志复制到公开资料 |
+
+默认每24小时最多一次自动联网；CLI 对同一目标版本每24小时最多一行提醒，仅用缓存，不影响业务返回或退出码。JSON、CI、非交互、帮助和纯状态不加提醒。`--no-update-check` 或 `AGENT_MANOR_NO_UPDATE_CHECK=1` 只关闭本次进程的自动行为；已有后台的周期任务须通过安装级设置关闭。
+
+源码、临时运行及无法确认依赖归属的 workspace 支持检查，不自行覆盖程序。npm 升级前锁定精确目标、重新核验实例及本地清单，备份后才安装；确认期间目标后台或依赖文件变化会返回 UPDATE_PREVIEW_CHANGED，重新预览。UPDATE_FAILED/UPDATE_INTERRUPTED 后先读取错误 details、status 和 logs，核实当前安装、后台及准备状态，不盲目重试。升级产品不会静默覆盖复制到宿主的 Skill；需要更新副本时另按 `skills update` 的冲突保护流程执行。

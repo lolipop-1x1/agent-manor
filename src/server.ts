@@ -51,6 +51,8 @@ import { KnowledgeManager } from "./knowledge/manager.js";
 import { KnowledgeSources } from "./knowledge/sources.js";
 import { KnowledgeSemantic } from "./knowledge/semantic.js";
 import { registerKnowledgeRoutes } from "./service/knowledge-routes.js";
+import { ReleaseService } from "./service/releases.js";
+import { registerUpdateRoutes } from "./service/update-routes.js";
 
 export interface ServiceOptions {
   home?: string;
@@ -61,6 +63,8 @@ export interface ServiceOptions {
   sessionsAutoSyncClock?: SessionAutoSyncClock;
   resourceInventory?: ResourceInventoryOptions;
   usagePricing?: { fetch?: typeof globalThis.fetch; now?: () => Date };
+  noUpdateCheck?: boolean;
+  releaseChecks?: ConstructorParameters<typeof ReleaseService>[0];
 }
 
 function statusCode(code: ApiErrorCode): number {
@@ -111,6 +115,7 @@ export async function startService(options: ServiceOptions = {}) {
   let knowledgeSemantic: KnowledgeSemantic | undefined;
   let autoSync: SessionAutoSyncScheduler | undefined;
   let unsubscribePreferences: (() => void) | undefined;
+  let stopReleaseChecks: (() => void) | undefined;
   const app = Fastify({ logger: false, bodyLimit: 65_536, forceCloseConnections: true });
   app.addHook("preValidation", async request => {
     const path = request.url.split("?")[0]!.replace(/^\/api\/v1/, "");
@@ -201,6 +206,7 @@ export async function startService(options: ServiceOptions = {}) {
       serviceLog(home, "service.stopping", { instanceId: instance.id });
       try {
         unsubscribePreferences?.();
+        stopReleaseChecks?.();
         sync.close();
         await knowledgeSemantic?.close();
         await knowledgeManager?.close();
@@ -272,6 +278,9 @@ export async function startService(options: ServiceOptions = {}) {
       }
     });
     registerPreferenceRoutes(app, home);
+    const releases = new ReleaseService({ ...options.releaseChecks, root: options.releaseChecks?.root ?? installation.root, home,
+      disableAutomatic: options.noUpdateCheck || process.env.AGENT_MANOR_NO_UPDATE_CHECK === "1" || options.releaseChecks?.disableAutomatic });
+    registerUpdateRoutes(app, releases);
     app.get<{ Querystring: Record<string, unknown> }>("/api/v1/status", async request => {
       const summary = summaryResponse(request.query);
       const legacySummary = queryBoolean(request.query.summary, "summary");
@@ -418,6 +427,7 @@ export async function startService(options: ServiceOptions = {}) {
     await writeInstance(home, instance);
     await registration!.running(instance);
     serviceLog(home, "service.ready", { instanceId: instance.id, port: instance.port, version: VERSION });
+    stopReleaseChecks = releases.startAutoChecks();
     usageManager.start();
     if (options.startupRefresh !== false) {
       // 先发布 HTTP 就绪，再安排一次绑定启动范围的数据准备；不包含模型抽取或编码任务。
@@ -486,6 +496,7 @@ export async function startService(options: ServiceOptions = {}) {
     closing = true;
     serviceLog(home, "startup.failed", { code: (error as NodeJS.ErrnoException).code ?? "STARTUP_FAILED" });
     unsubscribePreferences?.();
+    stopReleaseChecks?.();
     autoSync?.close();
     await app.close().catch(() => undefined);
     await knowledgeSemantic?.close().catch(() => undefined);

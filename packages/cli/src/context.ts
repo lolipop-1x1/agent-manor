@@ -24,7 +24,7 @@ export function createContext(language: Language): CliContext {
   const fetchValue = async (command: Command, path: string, method = "GET", body?: unknown, headers?: Record<string, string>, fullResponse = false): Promise<unknown> => {
     const opts = command.optsWithGlobals<Options>();
     if (opts.wait) timeoutMilliseconds(opts.timeout);
-    const instance = await connectService(true, dataHome(typeof opts.home === "string" ? opts.home : undefined));
+    const instance = await connectService(true, dataHome(typeof opts.home === "string" ? opts.home : undefined), { noUpdateCheck: opts.updateCheck === false || process.env.AGENT_MANOR_NO_UPDATE_CHECK === "1" });
     if (!instance) throw new RequestError("SERVICE_UNAVAILABLE", "Service did not start");
     const result = await apiRequest(instance, summaryRequestPath(path, fullResponse || opts.full === true, method), method, body, headers);
     return fullResponse || opts.full ? result : summarizeResponse(path, method, result, body);
@@ -33,7 +33,7 @@ export function createContext(language: Language): CliContext {
     async request(command, path, method = "GET", body, autoStart = true, waitPath) {
       const opts = command.optsWithGlobals<Options>();
       if (opts.wait) timeoutMilliseconds(opts.timeout);
-      const instance = await connectService(autoStart, dataHome(typeof opts.home === "string" ? opts.home : undefined));
+      const instance = await connectService(autoStart, dataHome(typeof opts.home === "string" ? opts.home : undefined), { noUpdateCheck: opts.updateCheck === false || process.env.AGENT_MANOR_NO_UPDATE_CHECK === "1" });
       if (!instance) { const result = { running: false }; output(command, result); return result; }
       let result = await apiRequest<unknown>(instance, summaryRequestPath(path, opts.full === true, method), method, body);
       if (opts.wait) {

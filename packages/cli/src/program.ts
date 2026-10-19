@@ -20,6 +20,7 @@ export function createProgram(language: Language = "en"): Command {
   const program = new Command().name("agent-manor").description(t("cli.description"))
     .version(VERSION, "-V, --cli-version", t("cli.version")).option("--json", t("cli.json"))
     .option("--full", t("cli.full"))
+    .option("--no-update-check", t("cli.update.noCheck"))
     .option("--home <path>", t("cli.home")).option("--lang <language>", t("cli.lang"))
     .exitOverride().configureOutput({ outputError: () => {}, writeErr: text => {
       if (!program.opts<Options>().json) process.stderr.write(text);

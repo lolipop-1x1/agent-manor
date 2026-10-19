@@ -17,6 +17,8 @@ export function configureGuidance(program: Command, context: CliContext): void {
 }
 
 const guides: Record<string, { key: string; examples: string[] }> = {
+  "update": { key: "update", examples: ["update --check --json", "update --dry-run --json", "update --to 0.2.0 --yes --wait --json"] },
+  "update settings set": { key: "update", examples: ["update settings set --data '{\"autoCheck\":false}' --json", "update settings set --data '{\"ignoredVersion\":null}' --json"] },
   "sessions list": { key: "sessions", examples: ["sessions list --client codex --page-size 5 --json"] },
   "sessions search": { key: "sessions", examples: ['sessions search "cache" --mode keyword --page-size 5 --json'] },
   "sessions messages": { key: "messages", examples: ["sessions messages <sessionId> --version <version> --mode brief --page-size 5 --json", "sessions messages <sessionId> --version <version> --mode full --message-id <messageId> --text-offset <nextTextOffset> --json"] },

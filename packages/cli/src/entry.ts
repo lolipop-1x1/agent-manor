@@ -6,12 +6,14 @@ import { VERSION } from "../../../src/version.js";
 import type { Options } from "./context.js";
 import { resolveCliLanguage } from "./output/language.js";
 import { createProgram } from "./program.js";
+import { cachedUpdateNotice } from "./runtime/update-notice.js";
 
 export function startupOptions(args: readonly string[]): Options {
   const options: Options = {};
   for (let index = 0; index < args.length && args[index] !== "--"; index++) {
     const argument = args[index]!;
     if (argument === "--json") options.json = true;
+    if (argument === "--no-update-check") options.updateCheck = false;
     for (const name of ["home", "lang"]) {
       if (argument.startsWith(`--${name}=`)) options[name] = argument.slice(name.length + 3);
       else if (argument === `--${name}` && args[index + 1] !== undefined && !args[index + 1]!.startsWith("-")) options[name] = args[++index];
@@ -52,7 +54,7 @@ function versionOnly(args: readonly string[]): boolean {
   for (let index = 0; index < args.length; index++) {
     const value = args[index]!;
     if (["--version", "--cli-version", "-V"].includes(value)) { found = true; continue; }
-    if (value === "--json" || value === "--full" || value.startsWith("--home=") || value.startsWith("--lang=")) continue;
+    if (value === "--json" || value === "--full" || value === "--no-update-check" || value.startsWith("--home=") || value.startsWith("--lang=")) continue;
     if ((value === "--home" || value === "--lang") && args[index + 1] !== undefined) { index++; continue; }
     return false;
   }
@@ -70,7 +72,11 @@ export async function runCli(args: readonly string[] = process.argv.slice(2)): P
     language = await resolveCliLanguage(options);
     const program = createProgram(language);
     if (versionOnly(args)) process.stdout.write(`${options.json ? JSON.stringify({ version: VERSION }) : VERSION}\n`);
-    else await program.parseAsync([...args], { from: "user" });
+    else {
+      await program.parseAsync([...args], { from: "user" });
+      const notice = await cachedUpdateNotice(args, language);
+      if (notice) process.stderr.write(`${notice}\n`);
+    }
   } catch (error) {
     if (error instanceof CommanderError && error.exitCode === 0) return;
     process.stderr.write(`${cliErrorOutput(error, language, options.json === true)}\n`);

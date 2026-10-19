@@ -127,6 +127,9 @@
 | `am ready` | 等待准备 | 已优化 | 实例/协议、准备阶段、完成时间和错误；不重复会话/仓库计数。 |
 | `am version` | 版本查询 | 保留 | 产品、API、Node 及平台版本信息。 |
 | `am update` | 更新产品 | 保留 | 检查/安装结果、版本、安装位置和回滚定位。 |
+| `am update status` | 读取安装级缓存，不联网不启动后台；返回版本关系、兼容性和设置 | — | — |
+| `am update settings get` | 读取安装级自动检查和忽略版本设置 | — | — |
+| `am update settings set` | 修改 autoCheck/ignoredVersion 并返回合并后设置 | — | — |
 | `am doctor` | 诊断 | 显式读取 | 环境、安装与服务诊断；不作为普通查找命令裁剪。 |
 | `am logs` | 日志读取 | 显式读取 | 有界日志或增量 follow 文本，保留日志路径和轮换提示。 |
 | `am web` | 打开页面 | 保留 | 实例与实际地址。 |

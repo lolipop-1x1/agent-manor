@@ -150,9 +150,9 @@ export async function removeInstance(home: string, instance: ServiceInstance): P
   if ((await readInstance(home))?.id === instance.id) await rm(runtimePath(home), { force: true });
 }
 
-export async function connectService(autoStart = true, home = dataHome()): Promise<ServiceInstance | undefined> {
+export async function connectService(autoStart = true, home = dataHome(), options: { noUpdateCheck?: boolean } = {}): Promise<ServiceInstance | undefined> {
   if (!autoStart) return verifiedInstance(home);
-  return startBackground(home);
+  return startBackground(home, options);
 }
 
 export interface BackgroundOptions {
@@ -160,6 +160,7 @@ export interface BackgroundOptions {
   waitData?: boolean | "initial";
   timeoutMs?: number;
   onProgress?: (status: StatusResponse) => void;
+  noUpdateCheck?: boolean;
 }
 
 export function validateServicePort(port?: number): void {
@@ -215,6 +216,7 @@ export async function startBackground(home = dataHome(), options: BackgroundOpti
     const cliPath = fileURLToPath(new URL(`../cli.${extension}`, import.meta.url));
     const args = extension === "ts" ? ["--import", fileURLToPath(import.meta.resolve("tsx/esm")), cliPath, "--lang", "auto", "serve"] : [cliPath, "--lang", "auto", "serve"];
     if (options.port !== undefined) args.push("--port", String(options.port));
+    if (options.noUpdateCheck) args.push("--no-update-check");
     const installation = await installationContext();
     const releaseInstallation = await acquireInstallationOperation(installation);
     let reservation: Awaited<ReturnType<typeof registerInstallationService>> | undefined;

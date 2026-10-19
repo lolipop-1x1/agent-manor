@@ -1,134 +1,225 @@
 import { execFile } from "node:child_process";
-import { access, cp, mkdir, readFile, realpath, writeFile } from "node:fs/promises";
+import { cp, lstat, mkdir, readFile, readdir, statfs, writeFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
-import { delimiter, dirname, join, parse, resolve, sep } from "node:path";
-import { fileURLToPath } from "node:url";
-import { promisify } from "node:util";
+import { dirname, join, sep } from "node:path";
+import { isDeepStrictEqual, promisify } from "node:util";
+import { satisfies } from "semver";
 import { VERSION } from "../../../../src/version.js";
-import { acquireInstallationOperation, assertInstalledVersion, assertNoOtherInstallationService, canonicalHome, installationContext, listInstallationServices } from "../../../../src/service/installation.js";
+import { acquireInstallationOperation, assertInstalledVersion, canonicalHome, installationContext, listInstallationServices } from "../../../../src/service/installation.js";
+import { detectInstallation, npmCommand, productRoot, type Installation, type CommandResult } from "../../../../src/service/product-installation.js";
+import { ReleaseService, compareVersions, stableVersion } from "../../../../src/service/releases.js";
+import type { ReleaseStatus } from "../../../../src/updates/contracts.js";
 import { acquireLock, RequestError, serviceStatus, stopService } from "../../../../src/service/runtime.js";
 
-const run = promisify(execFile);
-const registry = "https://registry.npmjs.org/";
-export interface UpdateOptions { home: string; target?: string; check?: boolean; wait?: boolean; timeoutMs?: number }
-export interface Installation { kind: "global" | "local" | "ephemeral" | "source"; root: string; prefix?: string }
-interface CommandResult { stdout: string; stderr: string }
+export { detectInstallation, productRoot } from "../../../../src/service/product-installation.js";
+export type { Installation } from "../../../../src/service/product-installation.js";
+const run = promisify(execFile), registry = "https://registry.npmjs.org/";
+export type UpdatePhase = "preflight" | "backup" | "install" | "restart" | "complete";
+export interface UpdateOptions { home: string; target?: string; check?: boolean; dryRun?: boolean; yes?: boolean; wait?: boolean; timeoutMs?: number; noUpdateCheck?: boolean }
+export interface UpdatePreview {
+  cancelled?: boolean;
+  currentVersion: string; targetVersion: string; updateAvailable: boolean; installation: Installation;
+  home: string; backup: string; estimatedBackupBytes: number; availableBytes: number;
+  service: { running: boolean; port?: number; activeTasks: number }; otherServices: { home: string; pid: number; state: string; stopCommand: string }[];
+  blockers: { code: string; message: string; messageDescriptor: { key: string } }[];
+  dependencyFiles: string[];
+}
 export interface UpdateDependencies {
-  root?: string;
-  fetch?: typeof globalThis.fetch;
-  command?: (args: string[], cwd?: string) => Promise<CommandResult>;
-  status?: typeof serviceStatus;
-  stop?: typeof stopService;
-  restart?: (root: string, home: string) => Promise<unknown>;
+  root?: string; configBase?: string; fetch?: typeof globalThis.fetch;
+  command?: (args: string[], cwd?: string, signal?: AbortSignal) => Promise<CommandResult>;
+  status?: typeof serviceStatus; stop?: typeof stopService;
+  restart?: (root: string, home: string, options?: { port?: number; noUpdateCheck?: boolean; waitData: true }) => Promise<unknown>;
+  backup?: (home: string, target: string, destination: string) => Promise<string>;
+  space?: (directory: string) => Promise<number>;
+  confirm?: (preview: UpdatePreview) => Promise<boolean>;
+  progress?: (phase: UpdatePhase) => void;
+  signal?: AbortSignal;
 }
-
-export async function productRoot(start = dirname(fileURLToPath(import.meta.url))): Promise<string> {
-  for (let directory = resolve(start); ; directory = dirname(directory)) {
-    try {
-      const metadata = JSON.parse(await readFile(join(directory, "package.json"), "utf8")) as { name?: string };
-      if (metadata.name === "agent-manor") return directory;
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-    }
-    if (directory === parse(directory).root) throw new RequestError("INSTALLATION_UNKNOWN", "Cannot locate the installed product package", { key: "cli.update.installationUnknown" });
+export interface UpdateResult extends Omit<UpdatePreview, "service"> {
+  updated: boolean; logPath?: string; service?: unknown;
+  installationState: "installed"; serviceState: "ready" | "not_running"; preparationState: "ready" | "not_started";
+}
+const exclusions = ["service.json", "service.lock", "startup.lock", "update.lock", "logs"];
+async function backupBytes(directory: string, top = true): Promise<number> {
+  let names: string[];
+  try { names = await readdir(directory); } catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return 0; throw error; }
+  let total = 0;
+  for (const name of names) {
+    if (top && exclusions.includes(name)) continue;
+    const path = join(directory, name), entry = await lstat(path);
+    total += entry.isDirectory() ? await backupBytes(path, false) : entry.size;
   }
+  return total;
 }
-
-/** Windows 直接运行 npm 的 JS 入口，避免通过 shell 拼接安装路径。 */
-async function npmCommand(args: string[], cwd?: string): Promise<CommandResult> {
-  if (process.platform !== "win32") return run("npm", args, { cwd, timeout: 300_000, maxBuffer: 4_194_304 });
-  const candidates = [process.env.npm_execpath, ...[dirname(process.execPath), ...(process.env.PATH ?? "").split(delimiter)].map(path => join(path, "node_modules", "npm", "bin", "npm-cli.js"))];
-  for (const candidate of candidates) {
-    if (!candidate?.endsWith(".js")) continue;
-    try { await access(candidate); } catch { continue; }
-    return run(process.execPath, [candidate, ...args], { cwd, timeout: 300_000, maxBuffer: 4_194_304 });
-  }
-  throw new RequestError("INSTALLATION_UNKNOWN", "Cannot locate npm's JavaScript entry point", { key: "cli.update.installationUnknown" });
+async function availableBytes(directory: string): Promise<number> {
+  const space = await statfs(directory); return space.bavail * space.bsize;
 }
-
-export async function detectInstallation(root: string, command = npmCommand): Promise<Installation> {
-  const current = await realpath(root);
-  if (current.split(sep).includes("_npx")) return { kind: "ephemeral", root: current };
-  const global = (await command(["root", "--global"])).stdout.trim();
-  try {
-    if (await realpath(join(global, "agent-manor")) === current) {
-      return { kind: "global", root: current, prefix: (await command(["prefix", "--global"])).stdout.trim() };
-    }
-  } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
-  if (dirname(current).split(sep).at(-1) === "node_modules") return { kind: "local", root: current, prefix: dirname(dirname(current)) };
-  return { kind: "source", root: current };
-}
-
-async function backupData(home: string, target: string): Promise<string> {
-  const backup = `${home}.backups/update-${Date.now()}-${randomUUID()}`;
+async function backupData(home: string, target: string, backup: string): Promise<string> {
   await mkdir(backup, { recursive: true, mode: 0o700 });
-  await cp(home, join(backup, "data"), { recursive: true, verbatimSymlinks: true, filter: source => !["service.json", "service.lock", "startup.lock", "update.lock", "logs"].includes(source.slice(home.length + 1).split(sep)[0] ?? "") });
+  let exists = true;
+  try { await lstat(home); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; exists = false; }
+  if (exists) await cp(home, join(backup, "data"), { recursive: true, verbatimSymlinks: true, filter: source => !exclusions.includes(source.slice(home.length + 1).split(sep)[0] ?? "") });
+  else await mkdir(join(backup, "data"), { recursive: true, mode: 0o700 });
   await writeFile(join(backup, "manifest.json"), JSON.stringify({ fromVersion: VERSION, targetVersion: target, createdAt: new Date().toISOString() }), { mode: 0o600 });
   return backup;
 }
-
-export async function updateProduct(options: UpdateOptions, dependencies: UpdateDependencies = {}): Promise<unknown> {
+function failure(code: string, message: string, key: string, details?: unknown): RequestError {
+  const error = new RequestError(code, message, { key }); if (details) Object.assign(error, { details }); return error;
+}
+export function updateStopCommand(home: string, platform = process.platform): string {
+  return `am --home '${home.replaceAll("'", platform === "win32" ? "''" : "'\\''")}' stop`;
+}
+function manifestExceptProduct(text: string): Record<string, unknown> {
+  const result = JSON.parse(text) as Record<string, unknown>;
+  for (const group of ["dependencies", "devDependencies", "optionalDependencies"]) {
+    if (result[group] && typeof result[group] === "object") {
+      const dependencies = { ...result[group] as Record<string, unknown> }; delete dependencies["agent-manor"];
+      result[group] = dependencies;
+    }
+  }
+  return result;
+}
+function assertProductDependency(text: string, version: string): void {
+  const manifest = JSON.parse(text) as Record<string, Record<string, unknown> | undefined>;
+  const ranges = ["dependencies", "devDependencies", "optionalDependencies"].flatMap(group => typeof manifest[group]?.["agent-manor"] === "string" ? [manifest[group]!["agent-manor"] as string] : []);
+  if (!ranges.length || ranges.some(range => !satisfies(version, range))) throw new Error("The local package manifest does not select the confirmed product version");
+}
+function statusFingerprint(status: Awaited<ReturnType<typeof serviceStatus>>): string {
+  return JSON.stringify({ running: status.running, state: status.state, id: status.instance?.id, port: status.instance?.port });
+}
+function releaseError(status: ReleaseStatus): never {
+  const error = status.error;
+  throw new RequestError(error?.code ?? "UPDATE_UNAVAILABLE", error?.message ?? "No valid release metadata", error?.messageDescriptor ?? { key: "cli.update.unavailable" });
+}
+export async function updateProduct(options: UpdateOptions, dependencies: UpdateDependencies = {}): Promise<ReleaseStatus | UpdatePreview | UpdateResult> {
   const target = options.target ?? "latest";
-  if (target !== "latest" && !/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(target)) throw new RequestError("INVALID_INPUT", "Expected an exact version or latest", { key: "cli.update.invalidVersion" });
-  const root = dependencies.root ?? await productRoot();
-  const command = dependencies.command ?? npmCommand;
+  if (target !== "latest" && !stableVersion(target)) throw failure("INVALID_INPUT", "Expected an exact stable version or latest", "cli.update.invalidVersion");
+  const root = dependencies.root ?? await productRoot(), command = dependencies.command ?? npmCommand;
   const installation = await detectInstallation(root, command);
-  const response = await (dependencies.fetch ?? fetch)(`${registry}agent-manor/${encodeURIComponent(target)}`, { signal: AbortSignal.timeout(15_000) });
-  if (!response.ok) throw new RequestError("UPDATE_UNAVAILABLE", `The public registry returned HTTP ${response.status}`, { key: "cli.update.unavailable" });
-  const metadata = await response.json() as { name?: string; version?: string };
-  if (metadata.name !== "agent-manor" || typeof metadata.version !== "string" || !/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(metadata.version)) throw new RequestError("UPDATE_UNAVAILABLE", "Invalid product release metadata", { key: "cli.update.unavailable" });
-  const result = { currentVersion: VERSION, targetVersion: metadata.version, updateAvailable: metadata.version !== VERSION, installation };
-  if (options.check || !result.updateAvailable) return result;
-  if (installation.kind === "source" || installation.kind === "ephemeral") throw new RequestError("INSTALLATION_UNSUPPORTED", "Install a persistent npm package before using self-update", { key: "cli.update.persistentRequired" });
-  const context = await installationContext(root);
+  const releases = new ReleaseService({ root, home: options.home, configBase: dependencies.configBase, fetch: dependencies.fetch, installation });
+  const checked = await releases.check({ target });
+  if (checked.checkState !== "ready" || !checked.latestVersion) releaseError(checked);
+  if (options.check) return checked;
+  const version = checked.latestVersion;
+  if (compareVersions(version, VERSION) < 0) throw failure("DOWNGRADE_UNSUPPORTED", "Downgrades are not supported", "cli.update.downgrade");
+  const context = await installationContext(root), status = await (dependencies.status ?? serviceStatus)(options.home);
+  const selectedHome = await canonicalHome(options.home);
+  const registrations = await listInstallationServices(context);
+  const others = registrations.filter(item => item.home !== selectedHome);
+  const backup = `${options.home}.backups/update-${Date.now()}-${randomUUID()}`;
+  const estimatedBackupBytes = await backupBytes(options.home);
+  const free = await (dependencies.space ?? availableBytes)(dirname(options.home));
+  const blockers: UpdatePreview["blockers"] = [];
+  const block = (code: string, message: string, key: string) => blockers.push({ code, message, messageDescriptor: { key } });
+  if (!checked.selfUpdateSupported) block("INSTALLATION_UNSUPPORTED", "A persistent npm installation is required", "cli.update.persistentRequired");
+  if (!checked.compatibility.compatible) block("UPDATE_INCOMPATIBLE", checked.compatibility.reason ?? "Release is incompatible", "cli.update.incompatible");
+  if (others.length) block("SERVICE_BUSY", "Other data directories are using this installation", "diagnostics.service.runtime.busy");
+  if (status.state === "starting" || registrations.some(item => item.home === selectedHome && item.state === "starting")) block("SERVICE_BUSY", "The selected service is starting", "diagnostics.service.runtime.busy");
+  if (!status.running && ["unreachable", "foreign"].includes(status.state)) block("SERVICE_IDENTITY_UNVERIFIED", "The selected service identity cannot be verified", "diagnostics.service.runtime.identity");
+  const activeTasks = (status.status?.activeTasks?.length ?? 0) + (["pending", "running"].includes(status.status?.preparation?.state ?? "") ? 1 : 0);
+  if (activeTasks && !options.wait) block("SERVICE_BUSY", "The selected service has active tasks; pass --wait to wait", "diagnostics.service.runtime.busy");
+  if (free < estimatedBackupBytes) block("UPDATE_SPACE_INSUFFICIENT", "Insufficient space for the data backup", "cli.update.spaceInsufficient");
+  const dependencyFiles: string[] = [];
+  const dependencySnapshots = new Map<string, string>();
+  if (installation.kind === "local") for (const name of ["package.json", "package-lock.json", "npm-shrinkwrap.json"]) {
+    const path = join(installation.prefix!, name);
+    try { const contents = await readFile(path, "utf8"); dependencyFiles.push(path); dependencySnapshots.set(path, contents); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+  }
+  const preview: UpdatePreview = { currentVersion: VERSION, targetVersion: version, updateAvailable: compareVersions(version, VERSION) > 0,
+    installation, home: options.home, backup, estimatedBackupBytes, availableBytes: free,
+    service: { running: status.running, ...(status.instance?.port ? { port: status.instance.port } : {}), activeTasks },
+    otherServices: others.map(item => ({ home: item.home, pid: item.pid, state: item.state, stopCommand: updateStopCommand(item.home) })), blockers, dependencyFiles };
+  if (options.dryRun || !preview.updateAvailable) return preview;
+  if (blockers.length) { const first = blockers[0]!; throw failure(first.code, first.message, first.messageDescriptor.key, { preview, services: preview.otherServices }); }
+  if (!options.yes) {
+    if (!dependencies.confirm) throw failure("CONFIRMATION_REQUIRED", "Review the update preview and explicitly confirm installation", "cli.update.confirmationRequired", { preview });
+    if (!await dependencies.confirm(preview)) return { ...preview, cancelled: true };
+  }
+  dependencies.progress?.("preflight");
   const releaseInstallation = await acquireInstallationOperation(context);
-  let release: (() => Promise<void>) | undefined;
-  let releaseStartup: (() => Promise<void>) | undefined;
-  let releaseService: (() => Promise<void>) | undefined;
-  let backup: string | undefined;
-  let stopped = false;
+  const cancellation = new AbortController();
+  const interrupt = () => { cancellation.abort(); };
+  dependencies.signal?.addEventListener("abort", interrupt, { once: true });
+  process.on("SIGINT", interrupt); process.on("SIGTERM", interrupt);
+  if (dependencies.signal?.aborted) interrupt();
+  let releaseUpdate: (() => Promise<void>) | undefined, releaseStartup: (() => Promise<void>) | undefined, releaseService: (() => Promise<void>) | undefined;
+  let stopped = false, installStarted = false, savedBackup: string | undefined, logPath: string | undefined;
+  const unlock = async () => { await releaseService?.(); releaseService = undefined; await releaseStartup?.(); releaseStartup = undefined; await releaseUpdate?.(); releaseUpdate = undefined; await releaseInstallation(); };
+  const restart = async () => {
+    const restartOptions = { port: status.instance?.port, noUpdateCheck: options.noUpdateCheck, waitData: true as const };
+    if (dependencies.restart) return dependencies.restart(root, options.home, restartOptions);
+    const args = [join(root, "dist", "cli.js"), "start", "--home", options.home, "--json", "--wait-data", "--timeout", String((options.timeoutMs ?? 120_000) / 1000), ...(status.instance?.port ? ["--port", String(status.instance.port)] : []), ...(options.noUpdateCheck ? ["--no-update-check"] : [])];
+    return JSON.parse((await run(process.execPath, args, { timeout: options.timeoutMs ?? 60_000, maxBuffer: 1_048_576 })).stdout) as unknown;
+  };
   try {
+    cancellation.signal.throwIfAborted();
     await assertInstalledVersion(context);
-    await assertNoOtherInstallationService(context, options.home);
-    release = await acquireLock(options.home, "update.lock");
-    const selectedBeforeLock = await canonicalHome(options.home);
-    if ((await listInstallationServices(context)).some(item => item.home === selectedBeforeLock && item.state === "starting")) throw new RequestError("SERVICE_BUSY", "This installation has a service still starting", { key: "diagnostics.service.runtime.busy" });
-    // 安装锁内不等待 startup.lock，避免启动父进程等待 child 登记时发生反向互等。
-    try { releaseStartup = await acquireLock(options.home, "startup.lock"); }
-    catch { throw new RequestError("SERVICE_BUSY", "A service is starting from this data directory", { key: "diagnostics.service.runtime.busy" }); }
-    const status = await (dependencies.status ?? serviceStatus)(options.home);
-    const selectedHome = await canonicalHome(options.home);
-    const registered = (await listInstallationServices(context)).filter(item => item.home === selectedHome);
-    if (registered.some(item => item.state === "starting")) throw new RequestError("SERVICE_BUSY", "This installation has a service still starting", { key: "diagnostics.service.runtime.busy" });
-    if (registered.some(item => !status.running || item.instance?.id !== status.instance?.id)) throw new RequestError("SERVICE_IDENTITY_UNVERIFIED", "A registered service identity cannot be verified", { key: "diagnostics.service.runtime.identity" });
-    if (!status.running && ["unreachable", "foreign"].includes(status.state)) throw new RequestError("SERVICE_IDENTITY_UNVERIFIED", "Cannot verify that the existing service is stopped", { key: "diagnostics.service.runtime.identity" });
-    if (status.running) {
-      await (dependencies.stop ?? stopService)(options.home, { wait: options.wait, timeoutMs: options.timeoutMs });
-      stopped = true;
+    const fixed = await releases.check({ target: version });
+    if (fixed.checkState !== "ready" || fixed.latestVersion !== version) releaseError(fixed);
+    if (!fixed.compatibility.compatible) throw failure("UPDATE_INCOMPATIBLE", fixed.compatibility.reason ?? "Release is incompatible", "cli.update.incompatible");
+    const registered = await listInstallationServices(context);
+    if (registered.some(item => item.home !== selectedHome)) throw failure("SERVICE_BUSY", "Other services appeared after confirmation", "diagnostics.service.runtime.busy", { services: registered.filter(item => item.home !== selectedHome).map(item => ({ ...item, stopCommand: updateStopCommand(item.home) })) });
+    const freshInstallation = await detectInstallation(root, command);
+    if (freshInstallation.kind !== installation.kind || freshInstallation.prefix !== installation.prefix) throw failure("UPDATE_PREVIEW_CHANGED", "Installation ownership changed after confirmation", "cli.update.previewChanged");
+    for (const name of ["package.json", "package-lock.json", "npm-shrinkwrap.json"]) if (installation.kind === "local") {
+      const path = join(installation.prefix!, name);
+      let contents: string | undefined;
+      try { contents = await readFile(path, "utf8"); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+      if (contents !== dependencySnapshots.get(path)) throw failure("UPDATE_PREVIEW_CHANGED", "Local dependency files changed after confirmation", "cli.update.previewChanged");
     }
-    // 持有服务锁后才覆盖程序和备份，阻止尚在初始化的前台实例被误判为已停止。
-    try { releaseService = await acquireLock(options.home, "service.lock"); }
-    catch { throw new RequestError("SERVICE_BUSY", "Another service is starting or stopping", { key: "diagnostics.service.runtime.busy" }); }
-    backup = await backupData(options.home, metadata.version);
-    const args = ["install", ...(installation.kind === "global" ? ["--global"] : []), "--prefix", installation.prefix!, "--engine-strict", "--registry", registry, `agent-manor@${metadata.version}`];
-    await command(args, installation.prefix);
+    releaseUpdate = await acquireLock(options.home, "update.lock");
+    try { releaseStartup = await acquireLock(options.home, "startup.lock"); } catch { throw failure("SERVICE_BUSY", "The selected service is starting", "diagnostics.service.runtime.busy"); }
+    const current = await (dependencies.status ?? serviceStatus)(options.home);
+    if (statusFingerprint(current) !== statusFingerprint(status)) throw failure("UPDATE_PREVIEW_CHANGED", "Service identity changed after confirmation; review a fresh preview", "cli.update.previewChanged");
+    if (registered.some(item => item.home === selectedHome && (item.state === "starting" || !current.running || item.instance?.id !== current.instance?.id))) throw failure("SERVICE_IDENTITY_UNVERIFIED", "A registered service identity cannot be verified", "diagnostics.service.runtime.identity");
+    if (current.running) { await (dependencies.stop ?? stopService)(options.home, { wait: options.wait, timeoutMs: options.timeoutMs }); stopped = true; }
+    try { releaseService = await acquireLock(options.home, "service.lock"); } catch { throw failure("SERVICE_BUSY", "Another service is starting or stopping", "diagnostics.service.runtime.busy"); }
+    if (await (dependencies.space ?? availableBytes)(dirname(options.home)) < await backupBytes(options.home)) throw failure("UPDATE_SPACE_INSUFFICIENT", "Insufficient space for the data backup", "cli.update.spaceInsufficient");
+    dependencies.progress?.("backup");
+    savedBackup = await (dependencies.backup ?? backupData)(options.home, version, backup);
+    if (dependencySnapshots.size) {
+      const directory = join(savedBackup, "installation-files"); await mkdir(directory, { recursive: true, mode: 0o700 });
+      for (const [path, contents] of dependencySnapshots) await writeFile(join(directory, path.slice(installation.prefix!.length + 1)), contents, { mode: 0o600 });
+    }
+    cancellation.signal.throwIfAborted();
+    logPath = join(savedBackup, "installation.log");
+    dependencies.progress?.("install"); installStarted = true;
+    try {
+      const result = await command(["install", ...(installation.kind === "global" ? ["--global"] : []), "--prefix", installation.prefix!, "--engine-strict", "--registry", registry, `agent-manor@${version}`], installation.prefix, cancellation.signal);
+      await writeFile(logPath, `${result.stdout}\n${result.stderr}`, { mode: 0o600 });
+    } catch (error) {
+      const output = error as { stdout?: string; stderr?: string };
+      await writeFile(logPath, `${output.stdout ?? ""}\n${output.stderr ?? ""}\n${error instanceof Error ? error.message : String(error)}`, { mode: 0o600 });
+      throw error;
+    }
     const installed = JSON.parse(await readFile(join(root, "package.json"), "utf8")) as { version?: string };
-    if (installed.version !== metadata.version) throw new Error("Installed version does not match the requested release");
-    await releaseService();
-    await releaseStartup();
-    await release?.();
-    await releaseInstallation();
-    let service: unknown;
-    if (stopped) {
-      if (dependencies.restart) service = await dependencies.restart(root, options.home);
-      else {
-        const restarted = await run(process.execPath, [join(root, "dist", "cli.js"), "start", "--home", options.home, "--json"], { timeout: options.timeoutMs ?? 60_000, maxBuffer: 1_048_576 });
-        service = JSON.parse(restarted.stdout);
-      }
+    cancellation.signal.throwIfAborted();
+    if (installed.version !== version) throw new Error("Installed version does not match the confirmed release");
+    if (installation.kind === "local") {
+      const path = join(installation.prefix!, "package.json"), before = dependencySnapshots.get(path)!, after = await readFile(path, "utf8");
+      assertProductDependency(after, version);
+      if (!isDeepStrictEqual(manifestExceptProduct(before), manifestExceptProduct(after))) throw new Error("npm changed unrelated local package manifest fields; inspect the saved installation files");
     }
-    return { ...result, updated: true, backup, service };
+    await unlock();
+    let service: unknown;
+    if (stopped) { dependencies.progress?.("restart"); service = await restart(); }
+    dependencies.progress?.("complete");
+    return { ...preview, updated: true, backup: savedBackup, logPath, installationState: "installed", serviceState: stopped ? "ready" : "not_running", preparationState: stopped ? "ready" : "not_started", ...(service ? { service } : {}) };
   } catch (error) {
-    if (error instanceof RequestError && !stopped && !backup) throw error;
-    throw new RequestError("UPDATE_FAILED", `Update did not complete. Recovery data: ${backup ?? "not created"}. ${error instanceof Error ? error.message : String(error)}`, { key: "cli.update.failed", params: { backup: backup ?? "—" } });
-  } finally { await releaseService?.(); await releaseStartup?.(); await release?.(); await releaseInstallation(); }
+    await unlock();
+    let recoveryService: unknown;
+    if (stopped && !installStarted) {
+      try { await assertInstalledVersion(context); recoveryService = await restart(); }
+      catch (recoveryError) { recoveryService = { restored: false, error: recoveryError instanceof Error ? recoveryError.message : String(recoveryError) }; }
+    }
+    if (error instanceof RequestError && !stopped && !savedBackup) throw error;
+    const current = await Promise.resolve((dependencies.status ?? serviceStatus)(options.home)).catch(() => null);
+    throw failure(cancellation.signal.aborted ? "UPDATE_INTERRUPTED" : "UPDATE_FAILED", `Update did not complete. ${error instanceof Error ? error.message : String(error)}`, "cli.update.failed", {
+      backup: savedBackup ?? null, logPath: logPath ?? null, installStarted, recoveryService: recoveryService ?? null,
+      installationState: installStarted ? "unverified" : "unchanged", serviceState: current?.state ?? "unknown", preparationState: current?.status?.preparation?.state ?? "unknown",
+    });
+  } finally {
+    process.off("SIGINT", interrupt); process.off("SIGTERM", interrupt); dependencies.signal?.removeEventListener("abort", interrupt);
+    await unlock();
+  }
 }

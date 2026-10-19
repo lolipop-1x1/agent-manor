@@ -13,9 +13,9 @@ async function checkReferences(directory) {
     if (entry.isDirectory()) { if (entry.name !== "locales") await checkReferences(file); continue; }
     if (!/\.tsx?$/.test(entry.name)) continue;
     const source = await readFile(file, "utf8");
-    for (const match of source.matchAll(/(["'`])((?:common|codeMap|sessions|resources|usage|overview|diagnostics|cli|site|replay)\.[\w.-]+)\1/g)) {
+    for (const match of source.matchAll(/(["'`])((?:common|codeMap|sessions|resources|usage|overview|diagnostics|cli|site|replay|updates|updateUi)\.[\w.-]+)\1/g)) {
       // 数据库／原生文件名和 wire 类型可能使用相同前缀，不属于文案。
-      if (match[2].endsWith(".sqlite") || ["usage.json", "usage.record"].includes(match[2])) continue;
+      if (match[2].endsWith(".sqlite") || ["usage.json", "usage.record", "updates.jsonl"].includes(match[2])) continue;
       if (!keys.has(logicalKey(match[2]))) errors.push(`${file.pathname}: 未定义文案 ${match[2]}`);
     }
   }

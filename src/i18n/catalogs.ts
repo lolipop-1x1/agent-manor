@@ -20,9 +20,13 @@ import zhSite from "./locales/zh-CN/site.js";
 import zhReplay from "./locales/zh-CN/replay.js";
 import enKnowledge from "./locales/en/knowledge.js";
 import zhKnowledge from "./locales/zh-CN/knowledge.js";
+import enUpdates from "./locales/en/updates.js";
+import zhUpdates from "./locales/zh-CN/updates.js";
+import { updateUi as enUpdateUi } from "./locales/en/update-ui.js";
+import { updateUi as zhUpdateUi } from "./locales/zh-CN/update-ui.js";
 import type { LanguageCatalogs } from "./types.js";
 
 export const catalogs: LanguageCatalogs = {
-  en: { common: enCommon, codeMap: enCodeMap, sessions: enSessions, resources: enResources, usage: enUsage, overview: enOverview, diagnostics: enDiagnostics, cli: enCli, site: enSite, replay: enReplay, knowledge: enKnowledge },
-  "zh-CN": { common: zhCommon, codeMap: zhCodeMap, sessions: zhSessions, resources: zhResources, usage: zhUsage, overview: zhOverview, diagnostics: zhDiagnostics, cli: zhCli, site: zhSite, replay: zhReplay, knowledge: zhKnowledge },
+  en: { common: enCommon, codeMap: enCodeMap, sessions: enSessions, resources: enResources, usage: enUsage, overview: enOverview, diagnostics: enDiagnostics, cli: enCli, site: enSite, replay: enReplay, knowledge: enKnowledge, updates: enUpdates, updateUi: enUpdateUi },
+  "zh-CN": { common: zhCommon, codeMap: zhCodeMap, sessions: zhSessions, resources: zhResources, usage: zhUsage, overview: zhOverview, diagnostics: zhDiagnostics, cli: zhCli, site: zhSite, replay: zhReplay, knowledge: zhKnowledge, updates: zhUpdates, updateUi: zhUpdateUi },
 };
