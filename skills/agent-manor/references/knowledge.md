@@ -1,56 +1,49 @@
-# 知识读取、写入与沉淀
+# 知识读取与来源核查
 
-当用户希望复用规则、偏好、经验，或把已确认结论留给下一次任务时使用。
+用于查项目规则、个人偏好或经验；普通读取不顺带记录新知识。参数及错误共用[公共契约](output.md)。
 
-## 读取
-
-1. `am knowledge search "问题、对象或关键词" --json` 搜索；按命令帮助指定项目、归属、标签、审阅状态及关键词／语义模式。语义配置是可选增强，关键词搜索可独立使用。
-2. 从结果取得实际 ID，`am knowledge get <entryId> --json` 读取当前正文、状态、适用条件及来源会话／消息位置；原文摘录等完整来源字段使用 `--full --json`。默认优先使用人工已审阅且当前有效的知识；待审内容作为候选依据。
-3. 有疑问时读取 `am knowledge revisions <entryId> --json` 的版本目录，再用 `am knowledge revision <entryId> <revisionId> --json` 读取指定正文。需要来源明细时加 `--full`，再回到原会话核对。废弃、冲突或仅特定版本适用的结论不能当作当前通用规则。
-
-## 当前 Agent 直接写入
-
-先 `am knowledge write --help` 核对 JSON 契约，将标题、正文、知识类型、归属、适用项目／条件、语言、标签和可核查来源放入 JSON 文件，再执行：
+## 搜索 → 正文 → 来源
 
 ```sh
-am knowledge write --input knowledge.json --json
-am knowledge revise <entryId> --input revision.json --json
+am knowledge facets --json
+am knowledge search "缓存失效" --mode keyword --review reviewed --availability active --page-size 5 --json
+am knowledge get <entryId> --json
+am knowledge revisions <entryId> --json
+am knowledge revision <entryId> <revisionId> --json
 ```
 
-输入也可用 `--input -` 从 stdin 读取。最小必填字段是 `title`、`body`、`scope`；下面是合成的结构示例，执行时填写任务的真实结论：
+从 search 的 `items[].id` 取得 entryId；`revision.id` 是修订 ID，不能代替 entryId。默认 list/search/get 选择已审阅且有效内容；查待审使用 `--review pending`，查全部版本状态使用 `--review all --availability all`。
 
-```json
-{
-  "title": "配置更新后的验证步骤",
-  "body": "验证配置更新时，同时检查服务端新值与客户端实际读取值，并记录验证结果。",
-  "type": "procedure",
-  "scope": { "kind": "global" },
-  "subject": "general",
-  "language": "zh-CN",
-  "tags": ["配置", "验证"],
-  "sources": [{ "kind": "agent" }]
-}
-```
+| 参数 | 值、默认及用途 |
+|---|---|
+| search `<text>` / list `--q` | 关键词文本；search 为必填位置参数，list 可无搜索词 |
+| `--mode` | keyword（默认）或 semantic；后者须配置并构建知识向量索引，不会自动退回关键词 |
+| `--view` | all（默认）、personal、project、general；描述知识归属 |
+| `--project` | 单个完整项目标识，优先从 facets.projects 取得，不用目录名猜测 |
+| `--client` / `--tag` / `--type` | 单个客户端／标签／知识类型，按来源或元数据筛选 |
+| `--review` | reviewed（默认）、pending、rejected、all |
+| `--availability` | active（默认）、deprecated、expired、superseded、resolved、all |
+| `--from` / `--to` | 可解析日期／时间；限制知识更新时间，不是来源消息轮次 |
+| `--task-id` | 限定某个抽取任务的产物，值为 extraction 的 job.id |
+| `--page` / `--page-size` | 从1开始，默认每页20；pageSize 最大200 |
+| get `--revision-id` | 指定快照修订；可直接使用 revision 子命令避免与默认审阅筛选混淆 |
 
-项目知识的 `scope` 改为 `{ "kind": "project", "project": "<实际项目标识>" }`，`subject` 为 `project`；个人偏好使用 `subject: "personal"`。`type` 支持 `fact`、`preference`、`constraint`、`decision`、`procedure`、`lesson`、`event`、`open_question`。`language` 为 `zh-CN` 或 `en`，正文保持用户所需语言。
+知识类型：fact事实、preference偏好、constraint约束、decision决策、procedure方法、lesson教训、event事件、open_question未决事项。标签可跨类型使用。
 
-修订提交包含完整正文与元数据，并附 `baseRevisionId`，值取最近一次读取的 `latestRevisionId`。重复提交可附稳定 `idempotencyKey`；同一键只用于同一份内容。来源只填写已核验的 `sessionId`、`messageId`、`sourceVersion`、`excerpt` 等字段，不能编造 ID 或默认标记来源可用。
+## 核心返回字段
 
-直接写入不调用生成模型重复提炼。提交结果保留条目和修订身份；随后使用 `knowledge get <entryId> --review all --json` 或 `knowledge revision` 读取具体修订，核对正文与来源，报告待审状态。普通 Agent 写入不直接变成人工审阅通过。
+| 字段 | 含义 |
+|---|---|
+| `items`、`total`、`page`、`pageSize` | 命中条目与分页；列表只供挑选，不含正文 |
+| `id`、`latestRevisionId`、`publishedRevisionId` | 条目／最新提交／最近人工通过的修订；后两者可能不同 |
+| `revision` | 当前查询选出的版本；reviewed 查询可继续显示旧的已审阅内容 |
+| `pendingRevision` | 另有待审版本时的简短身份，不表示已生效 |
+| `revision.body`、`applicability`、`scope` | 正文、适用条件和项目／全局范围 |
+| `revision.review` / `availability` | 人工核对状态与条目有效性，互相独立 |
+| `revision.sources[]` | 来源类型、sessionId/messageId/sourceVersion/branch、可用状态 |
+| `sourceCount`、`changedSourceCount`、`missingSourceCount` | 来源总数／已变化／缺失数量；来源可读不代表结论已验证 |
+| `score` / `snippet` | 搜索相关性／命中摘要，可能不提供；不等于可信度 |
 
-需要历史恢复时用 `am knowledge restore <entryId> --help`，恢复形成新的待审修订。
+来源指向会话时，使用 `sessionId` → `sessions messages`，带 `sourceVersion`、`messageId` 和 branch 回查；需要完整 excerpt、hash、来源限制时对知识 get/revision 加 `--full`。如果版本失效或 source.status=changed/missing，重新查可用历史并说明差异，不能假称看过当时证据。
 
-## 从历史会话提炼
-
-1. `am knowledge extraction preview --help`，通过 `--input` 提交 `{ "scope": ... }`，指定实际 `sessionIds`、可选的 `turnStart`／`turnEnd`，并保留完整范围字段：`timeRange`、`recentDays`、`clients`、`projects`、`relationship`、`executionMode`、`models`、`title`、`branch`。默认范围从已保存的知识设置读取，明确替换选中的会话，不自行扩大为全部历史。读取预览的会话、输入估算、分片与预算。
-2. 预览的 `targetCount`、`sessionCount` 和预算针对完整范围，默认只列最多20个目标；`targetsTruncated` 时用 `am knowledge extraction preview-get <previewId> --full --json` 核对其余目标。用户授权完整范围的该次模型调用后，`am knowledge extraction start <previewId> --json` 创建任务。
-3. `am knowledge extraction get <jobId> --json` 查看阶段、过程、用量与结果；历史用 `list`，控制用 `pause <jobId>`、`resume <jobId>`、`retry <jobId>`。
-4. 读取实际产出的知识和来源，确认没有价值的信息可以不产出知识。模型输出和过程摘要不等同于原始执行证据。
-
-任务历史 `extraction list` 默认每页20条，使用 `--page`、`--page-size` 翻页。任务 `get` 默认提供阶段、统计和事件／结果数量；需要检查完整运行记录或逐条结果时显式加 `--full`。`pause --wait` 只等待暂停生效，后续 `resume --wait` 才继续等待完成。
-
-## 人工审阅与有效性
-
-`am knowledge review <entryId> <revisionId> <approve|reject>` 绑定具体修订。CLI 返回的操作摘要需由用户实际核对并明确授权；用户授权后才使用 `--authorize <digest>` 提交。`am knowledge availability <entryId> <active|deprecated|superseded>` 遵循同样流程。
-
-不得把用户一般的“帮我沉淀”解释为批准所有修订，也不自行复用旧摘要授权另一项操作。未取得该次授权时，报告候选结果并等待用户审阅。
+完成条件：给出适用结论、具体 entryId/revisionId 和来源；待审、过期、冲突或仅特定版本适用的内容须明确标记。结果为0时先检查默认 reviewed/active 筛选，不直接断定知识库没有记录。

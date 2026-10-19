@@ -15,12 +15,13 @@ const npmCli = process.env.npm_execpath;
 assert.ok(npmCli?.endsWith(".js"), "请通过 npm run test:cli:installed 执行");
 let cli, instance, environment = { ...process.env, AGENT_MANOR_HOME: home, AGENT_MANOR_PORT: "0", AGENT_MANOR_LANG: "en" };
 let generationCalls = 0, embeddingCalls = 0, modelDelayMs = 0, maximumModelInputBytes = 0;
+let lastEmbeddingModel;
 const payloadBytes = {};
 const model = createServer(async (request, response) => {
   let body = ""; for await (const chunk of request) body += chunk;
   const input = JSON.parse(body);
   const embedding = request.url.endsWith("/embeddings");
-  if (embedding) embeddingCalls++; else generationCalls++;
+  if (embedding) { embeddingCalls++; lastEmbeddingModel = input.model; } else generationCalls++;
   maximumModelInputBytes = Math.max(maximumModelInputBytes, Buffer.byteLength(body));
   assert.ok(maximumModelInputBytes < 60_000, "模型输入必须保持有界");
   if (modelDelayMs) await new Promise(done => setTimeout(done, modelDelayMs));
@@ -427,6 +428,53 @@ try {
       assert.match(value.stdout, language === "en" ? /Question preview truncated/ : /问题预览已截短/);
     }
     await command(["repositories", "remove", repo]);
+  });
+  await step("安装后的Skill样例可在包外完成写入、修订、来源回读与抽取预览", async () => {
+    const installedSkill = await command(["skills", "install", "--target", "custom", "--directory", join(sandbox, "guide-skills")]);
+    const example = async name => JSON.parse(await readFile(join(installedSkill.targetPath, "examples", name), "utf8"));
+    const before = generationCalls;
+    const createFile = join(installedSkill.targetPath, "examples/knowledge-create.json"), create = await example("knowledge-create.json");
+    const created = await command(["knowledge", "write", "--input", createFile]);
+    const stored = await command(["knowledge", "revision", created.id, created.latestRevisionId]);
+    assert.equal(stored.review, "pending"); assert.equal(stored.body, create.body);
+    assert.deepEqual(stored.scope, create.scope); assert.deepEqual(stored.tags, create.tags); assert.equal(stored.language, create.language);
+    assert.equal((await command(["knowledge", "get", created.id, "--review", "all", "--availability", "all"])).revision.id, created.latestRevisionId);
+    const revision = await example("knowledge-revise.json"); revision.baseRevisionId = created.latestRevisionId;
+    const revisionFile = join(outside, "guide-revision.json"); await writeFile(revisionFile, JSON.stringify(revision));
+    const revised = await command(["knowledge", "revise", created.id, "--input", revisionFile]);
+    assert.equal((await command(["knowledge", "revision", created.id, revised.latestRevisionId])).body, revision.body);
+    await command(["knowledge", "revise", created.id, "--input", revisionFile], { error: "CONTENT_STALE" });
+    const matches = await command(["knowledge", "search", "缓存", "--mode", "keyword", "--review", "pending", "--tag", "verification", "--page-size", "5"]);
+    assert.ok(matches.items.some(item => item.id === created.id));
+    assert.equal((await command(["knowledge", "revisions", created.id])).revisions.length, 2);
+    const previewBody = await example("extraction-preview.json"); previewBody.scope.sessionIds = [sid]; previewBody.scope.force = true;
+    const previewFile = join(outside, "guide-preview.json"); await writeFile(previewFile, JSON.stringify(previewBody));
+    const preview = await command(["knowledge", "extraction", "preview", "--input", previewFile]);
+    assert.equal(preview.sessionCount, 1); assert.equal(preview.turnCount, 1); assert.equal(preview.targets[0].sessionId, sid);
+    assert.equal((await command(["knowledge", "extraction", "preview-get", preview.id, "--full"])).scope.turnEnd, 1);
+    assert.equal(generationCalls, before, "直接写入与预览不得调用生成模型");
+    await command(["knowledge", "write", "--input", createFile, "--data", "{}"], { error: "INVALID_INPUT" });
+    const search = await example("semantic-search.json"); search.scope.timeRange = "all"; search.scope.projects = [project];
+    const semantic = await command(["semantic", "search", "--input", "-"], { input: JSON.stringify(search) });
+    assert.ok(semantic.groups.some(group => group.session.id === sid));
+    const priceVersion = (await command(["usage", "pricing", "get"])).version;
+    const usage = await command(["usage", "requests", "--session-id", sid, "--version", (await command(["sessions", "list"])).version, "--price-version", priceVersion, "--request-page", "1", "--request-page-size", "1"]);
+    assert.equal(usage.page, 1); assert.equal(usage.pageSize, 1); assert.equal(usage.sessionId, sid);
+    assert.equal(usage.priceVersion, priceVersion);
+    assert.ok(usage.total >= 1); assert.ok(usage.requests[0].usage); assert.ok(usage.requests[0].cost);
+    await command(["usage", "requests"], { error: "INVALID_INPUT" });
+    const savedConnection = (await command(["semantic", "settings", "get"])).config.connection;
+    const testConnection = { ...savedConnection, model: "synthetic-guide-connection" };
+    const tested = await command(["semantic", "test", "--data", JSON.stringify({ connection: testConnection, apiKey: "synthetic-guide-key" })]);
+    assert.equal(tested.dimensions, 3); assert.equal(lastEmbeddingModel, testConnection.model);
+    assert.deepEqual((await command(["semantic", "settings", "get"])).config.connection, savedConnection);
+    const pricingFile = join(installedSkill.targetPath, "examples/pricing.json");
+    await command(["usage", "pricing", "set", "--input", pricingFile]);
+    assert.deepEqual((await command(["usage", "pricing", "get"])).configuration, await example("pricing.json"));
+    for (const language of ["en", "zh-CN"]) {
+      const help = await captured(["knowledge", "write", "--help"], { language, json: false });
+      assert.match(help.stdout, /latestRevisionId/); assert.match(help.stdout, /scope/);
+    }
   });
   console.log(JSON.stringify({ platform: process.platform, arch: process.arch, checks: results.length, generationRequests: generationCalls, embeddingRequests: embeddingCalls, maximumModelInputBytes, payloadBytes, cases: results }, null, 2));
 } finally {

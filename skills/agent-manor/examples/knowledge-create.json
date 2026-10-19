@@ -1,0 +1,11 @@
+{
+  "title": "配置更新后的缓存验证",
+  "body": "配置更新后重新读取实际值，验证缓存失效；不要仅以写入成功作为生效依据。",
+  "type": "procedure",
+  "scope": { "kind": "project", "project": "/workspace/example" },
+  "subject": "project",
+  "language": "zh-CN",
+  "applicability": "适用于在启动后仍可变化的动态配置。",
+  "tags": ["cache", "verification"],
+  "sources": [{ "kind": "agent" }]
+}

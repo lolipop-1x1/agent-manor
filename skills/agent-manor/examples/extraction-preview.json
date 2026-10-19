@@ -1,0 +1,17 @@
+{
+  "scope": {
+    "timeRange": "all",
+    "recentDays": 30,
+    "clients": [],
+    "projects": [],
+    "relationship": "exclude_children",
+    "executionMode": "exclude_quiet",
+    "models": [],
+    "title": "",
+    "branch": "current",
+    "sessionIds": ["REPLACE_WITH_SESSION_ID"],
+    "turnStart": 1,
+    "turnEnd": 1,
+    "force": false
+  }
+}

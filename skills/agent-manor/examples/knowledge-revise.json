@@ -1,0 +1,13 @@
+{
+  "baseRevisionId": "REPLACE_WITH_LATEST_REVISION_ID",
+  "title": "配置更新后的缓存验证",
+  "body": "配置更新后在已有连接和新连接中分别读取实际值，验证缓存失效，并记录结果。",
+  "type": "procedure",
+  "scope": { "kind": "project", "project": "/workspace/example" },
+  "subject": "project",
+  "language": "zh-CN",
+  "applicability": "适用于在启动后仍可变化的动态配置。",
+  "tags": ["cache", "verification"],
+  "sources": [{ "kind": "agent" }],
+  "changeReason": "补充已有连接与新连接的验证边界"
+}

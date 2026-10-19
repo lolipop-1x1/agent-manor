@@ -1,0 +1,4 @@
+{
+  "overrides": [{ "provider": "example-provider", "model": "example-model", "input": 1.25, "output": 5 }],
+  "mappings": []
+}

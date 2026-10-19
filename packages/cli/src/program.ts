@@ -13,6 +13,7 @@ import { registerPreferences } from "./commands/preferences.js";
 import { registerLifecycle } from "./commands/lifecycle.js";
 import { registerSkills } from "./commands/skills.js";
 import type { Options } from "./context.js";
+import { configureGuidance } from "./help.js";
 
 export function createProgram(language: Language = "en"): Command {
   const context = createContext(language), { t } = context;
@@ -30,5 +31,6 @@ export function createProgram(language: Language = "en"): Command {
     } });
   for (const register of [registerSessions, registerResources, registerRepositories, registerOverview, registerUsage,
     registerKnowledge, registerSemantic, registerPreferences, registerLifecycle, registerSkills]) register(program, context);
+  configureGuidance(program, context);
   return program;
 }

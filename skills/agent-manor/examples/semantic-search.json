@@ -1,0 +1,17 @@
+{
+  "q": "配置更新后如何验证缓存失效",
+  "scope": {
+    "timeRange": "recent",
+    "recentDays": 30,
+    "clients": [],
+    "projects": [],
+    "relationship": "exclude_children",
+    "executionMode": "exclude_quiet",
+    "models": [],
+    "title": "",
+    "branch": "all"
+  },
+  "page": 1,
+  "pageSize": 5,
+  "sort": "relevance"
+}
