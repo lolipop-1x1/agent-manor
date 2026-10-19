@@ -2,9 +2,23 @@
 
 首版安装矩阵为 macOS arm64/x64、Linux arm64/x64、Windows x64；实际验收环境与边界见 [CLI 交付验证](validation/npm-cli-distribution.md)。Windows ARM64 暂不在本轮矩阵中。
 
-需要 Node.js 24、Git 和浏览器。`agent-manor` 与 `am` 使用相同参数、输出和数据目录。下文使用 `agent-manor`；本地安装时可以换成安装目录中的 `node_modules/.bin/agent-manor`，也可直接 `node /absolute/install/node_modules/agent-manor/dist/cli.js`。所有命令都可以在仓库外的工作目录运行。
+运行需要 Node.js 24；登记和分析仓库时需要 Git，使用 Web 时需要浏览器。`agent-manor` 与 `am` 使用相同参数、输出和数据目录；下文两种写法等价。所有命令都可以在仓库外的工作目录运行。
 
-## 从交付包安装
+## 安装与首次使用
+
+```sh
+npm install -g agent-manor
+am --version
+am web
+```
+
+`am web` 按需启动本地后台并打开网页；关闭终端后后台继续运行。首次启动会在后台检查可发现的会话历史，无需先登记仓库；可先浏览会话库、知识库、用量统计与资源管理。代码地图需要另外登记 Git 仓库。查看启动数据准备进度使用 `am status --json`，需要等待则运行 `am ready --timeout 120 --json`。
+
+安装包包含 CLI、后台、长期 Worker、Web 静态资源与 Agent Skill，无需安装 TypeScript／Vite 或再次构建。程序与数据目录分离，更新不会将知识和偏好写到 npm 安装目录中。`better-sqlite3` 安装使用预编译原生扩展；没有兼容预编译包时可能需要 Python、C/C++ 编译工具链。安装错误与 Node 版本、平台和网络情况需要分别核对。
+
+### 使用本地交付包
+
+已有构建好的 tarball 时，也可安装到独立目录：
 
 ```sh
 mkdir -p ~/agent-manor-local
@@ -13,9 +27,7 @@ npm install /absolute/path/agent-manor-0.1.0.tgz
 ./node_modules/.bin/agent-manor --version
 ```
 
-tarball 包含 CLI、后台、长期 Worker、Web 静态资源与 Agent Skill，无需安装 TypeScript／Vite 或再次构建。当前没有 npm 公共发布；不要用同名 registry 包替代本地交付包。`better-sqlite3` 安装使用预编译原生扩展；没有兼容预编译包时可能需要 Python、C/C++ 编译工具链。安装错误与 Node 版本、平台和网络情况需要分别核对。
-
-全局安装使用 `npm install -g /absolute/path/agent-manor-0.1.0.tgz`。正式公共发布后的包仍使用 npm 官方公共 registry；程序与数据目录分离，更新不会将知识和偏好写到 npm 安装目录中。
+本地安装时，将下文命令换成安装目录中的 `node_modules/.bin/am`，也可直接 `node /absolute/install/node_modules/agent-manor/dist/cli.js`。需要全局安装 tarball 时使用 `npm install -g /absolute/path/agent-manor-0.1.0.tgz`。
 
 ## 服务与完整 CLI
 
@@ -39,7 +51,26 @@ am doctor --json
 
 `am skills install --target codex --scope user` 安装完整 Skill；`--target claude`、`--scope project --project-directory <path>` 和 `--target custom --directory <path>` 选择其他目标。`skills status/update/remove` 复用同一目标参数。同版跳过，用户修改与外来同名目录先报告冲突，明确 `--overwrite` 前保存备份。npm 安装不会自行写宿主配置。
 
-`am update --check` 只检查公共 registry 版本，`am update --to <version>` 显式更新。持久的全局／本地 npm 安装支持更新；源码和临时运行环境提供诊断，不直接覆盖。同一安装还有其他数据目录的后台运行或正在启动时，更新会拒绝并列出目标，需先显式停止这些实例。当前服务先核验在途任务，必要时使用 `--wait`；停止后备份数据，安装成功后仅恢复原本运行的服务。失败保留恢复材料，不自动降级数据或删除数据库。公共发布前没有可供在线更新的版本。
+`am update --check` 只检查公共 registry 版本，`am update --to <version>` 显式更新。持久的全局／本地 npm 安装支持更新；源码和临时运行环境提供诊断，不直接覆盖。同一安装还有其他数据目录的后台运行或正在启动时，更新会拒绝并列出目标，需先显式停止这些实例。当前服务先核验在途任务，必要时使用 `--wait`；停止后备份数据，安装成功后仅恢复原本运行的服务。失败保留恢复材料，不自动降级数据或删除数据库。
+
+## CLI 参数与返回值
+
+默认输出完成当前操作所需的表格或摘要；查询范围与输出格式分别控制：
+
+| 用法 | 返回内容 |
+| --- | --- |
+| `am sessions list` | 一页会话摘要，默认20条，不展开消息和画像 |
+| `am sessions list --json` | 同一摘要范围的稳定JSON字段，适合脚本和Agent读取 |
+| `am sessions list --json --full` | 完整字段，仍遵守端点分页与筛选，不等于导出全部历史 |
+| `am sessions messages <sessionId> --mode brief --json` | 指定会话的对话正文，长正文默认分段返回 |
+
+`<sessionId>`等是占位符，执行时替换为实际返回的ID，不要把尖括号传给shell。`version`表示结果快照，翻页、消息和证据下钻沿用同一版本；软件版本使用`am --version`。`null`或摘要中未提供的字段不表示零、免费或没有证据。
+
+普通摘要列表默认每页20条，分页使用`--page`和`--page-size`；`--full`不再注入摘要的默认页大小，未指定时采用端点默认值。消息正文续读使用`--message-id`、`--text-offset`和`--max-text-chars`。当`textTruncated=true`时，保持会话、版本、阅读模式和消息身份，使用返回的`nextTextOffset`继续读取；它与下一页消息是不同的操作。`--full`可能返回很长的正文，按需要显式使用。
+
+具名参数优先于`--query '<JSON对象>'`中的同名字段，后者使用API的camelCase键名。写入正文通过`--input <file>`、`--input -`或`--data '<JSON对象>'`提供；复杂正文和Windows命令行优先使用UTF-8 JSON文件，避免shell转义差异。布尔开关不带值，要求`<value>`的选项须提供值，以该命令的`--help`为准。
+
+详细字段、分页和完整响应边界见[CLI响应约定](design/cli-responses.md)；逐功能参数、返回值及续读示例见[配套Skill](../skills/agent-manor/SKILL.md)及其按场景拆分的reference。
 
 ## 登记、查询和版本
 
@@ -56,7 +87,7 @@ Web 登记弹窗可以从全局会话库选择项目，按名称或完整路径�
 
 仓库下拉菜单的“删除当前仓库”先展示名称、完整路径和清理范围。确认后删除该仓库登记、分析版本、来源与映射缓存、任务记录和手动关联，保留本地 Git 目录、原始历史、全局会话库及资源数据；删除后会话项目仍可用于重新登记。分析中也可删除：排队任务跳过，运行任务在检查点退出，旧结果不能写回。重新登记会重建分析，不恢复已删除的任务历史和手动关联。删除后切换到剩余仓库，全部删除后回到登记空状态。
 
-覆盖率返回 `version`、`baselineHash`、`createdAt`、`stale`、`filters`、`summary`、`files` 和 `gaps`。将返回的版本与相同筛选带入文件、活动和证据查询，避免把不同刷新结果混在一起：
+覆盖率默认返回 `version`、`baselineHash`、`createdAt`、`stale`、`filters`、`summary`、`files` 和 `gapCount`；缺口正文通过 `am repositories gaps <repositoryId> --version <analysisVersion> --json` 按需读取，`--full`保留完整字段。将返回的版本与相同筛选带入文件、活动和证据查询，避免把不同刷新结果混在一起：
 
 ```sh
 agent-manor coverage <repositoryId> --client codex --categories source --directory src --json
@@ -91,7 +122,7 @@ agent-manor evidence <repositoryId> <eventId> --version <analysisVersion> --clie
 
 用户和助手正文连续保留；长工具结果采用最多 2,048 字符的有界文本视图，保留头尾、关键错误或验证行和省略标记，工具调用及系统上下文视图最多 1,024 字符，重复记录以定位引用代替正文。原始消息及哈希不改变。模型可以按消息和字符位置补读；每段最多两次、每会话最多四次且合计不超过 16KiB，暂停恢复不重置额度。省略标记或工具的普通成功状态不证明测试结论，证据不足仍可能需要重新选范围或人工核查。
 
-后续分片获得少量已有主题卡片，包含程序生成的稳定 ID、名称及摘要。模型可选择已有主题或提出新主题，再区分重复、补充、纠正、冲突、相关和独立。关键词及可选向量只召回候选，不直接决定合并；冲突保留为独立待审内容，不因出现较晚就覆盖旧结论。
+后续分片获得本任务前序分片归纳的少量主题卡片，包含程序生成的 ID、名称及摘要；ID 只在本任务内保持稳定，不是知识库中跨任务复用的主题分类。模型可选择已有主题或提出新主题，再区分重复、补充、纠正、冲突、相关和独立。分片完成后再与已存知识比较；关键词及可选向量只召回候选，不直接决定合并。冲突保留为独立待审内容，不因出现较晚就覆盖旧结论。
 
 增量按消息身份和内容校验记录实际覆盖，不以最大轮次冒充全部历史都已处理。已处理片段、没有新增知识的结果和待审状态分别管理。新消息可结合早期证据提出更正；来源旧版本已经无法核验时，需要重新预览。来源失效不删除知识及已保存摘录，也不跳转到相近记录冒充原始证据。
 
@@ -173,7 +204,7 @@ am knowledge extraction list --json
 
 ### 保存与备份
 
-知识正文、修订快照、审阅与状态记录、必要证据和任务覆盖保存在数据目录的 `knowledge/knowledge.sqlite`。模型设置与本机凭据位于同目录的独立文件，知识向量是可重建派生数据。清除会话索引或重建向量不删除人工知识。备份时先停止后台，再备份 `knowledge/` 中的权威数据库、配置及凭据；不能只保存向量索引来恢复知识。
+知识正文、修订快照、审阅与状态记录、必要证据和任务覆盖保存在数据目录的 `knowledge/knowledge.sqlite`。模型设置位于同目录的 `config.json`，本机凭据位于 `credentials.json`，不要提交或上传这些私有配置。知识向量是可重建派生数据。清除会话索引或重建向量不删除人工知识。备份时先停止后台，再备份 `knowledge/` 中的权威数据库、配置及凭据；不能只保存向量索引来恢复知识。
 
 ## 显示语言
 
@@ -217,6 +248,8 @@ agent-manor --home /absolute/path/to/data --lang auto --help
 指标、时间趋势、Token 组成、用量归因、日历热力图与会话明细使用同一范围。Token 使用 M（百万）单位，悬停数值查看完整记录值；摘要包含总输入、总输出、日均费用、每日峰值费用及日期、项目数、原始模型数和活跃天数。日均费用按所选日历天数计算，空白日也纳入分母，无时间请求不计入每日指标。
 
 趋势可切换 Token／估算费用／请求数，按小时、日、周或月查看，支持柱状和折线；悬停查看时间明细，点击或 Enter 保留浮层，Escape 关闭，日期范围通过顶部控件设置。用量归因默认矩形占比，颜色随占比增强，可切换横条排行；悬停或键盘聚焦方块查看完整名称、数值与占比，点击具体分组追加筛选。会话与请求表分页不改变图表范围；请求明细可以定位已有消息，缺定位依据时打开所属会话。
+
+趋势也可选择“吐字速度”，按模型与客户端比较合格请求的输出Token／耗时。响应区间、输出阶段以及原生计时、历史估算分别标注，不混成同一计时口径；历史估算保留近似标记，没有合格样本的日期保留未知，不补成零。曲线值由同一批请求的输出Token总和除以耗时总和，详细样本条件与覆盖可在帮助和区间明细查看。
 
 “管理模型价格”可给任意模型设置输入、输出、缓存读取与缓存写入单价，也可把原模型映射到明确的服务商和计价模型。列表可按未匹配、自动匹配、手动映射、用户定价筛选，并与搜索组合；点击名称、定价依据或单价表头切换升降序，排序覆盖完整筛选结果，缺失单价始终排在末尾。用户价格始终优先，联网更新不覆盖手动设置。自动目录网络优先，失败沿用最近成功缓存和随包价格；缺价格显示未定价。金额使用 USD／百万 Token 单价重估，页面显示获取时间与估价覆盖，不表示实际账单或订阅支出。
 
@@ -274,7 +307,7 @@ agent-manor sessions cacheclear --wait --json
 
 刷新默认采用快速检查。Web 顶部的“同步历史”在所有页面可用，始终检查全部客户端的新增或变化记录，页面筛选只影响浏览范围。日常界面仅保留这一个历史同步操作，不需要选择检查范围或方式。CLI 用 `sessions refresh --client <client>` 指定范围，`--mode full` 重新读取内容核对；不指定参数时检查全部客户端。内容核对适合排查普通更新后仍与原始历史不一致的情况，耗时可能更长；未变索引仍可复用，与 `sessions cacheclear` 的全局重建不同。
 
-历史同步成功后，总览、会话库、用量统计和资源使用记录按当前页面重新读取完整结果，隐藏页面切回时更新；筛选、阅读位置和地图视野保留。各页自己的更新总览／刷新统计只重新读取报告；代码地图的刷新分析只更新当前仓库，资源刷新清单只执行本地盘点。语言、主题与项目 GitHub 链接位于全局页头右端。“自动同步”在五页顶栏直接显示，与“同步历史”同排，切换页面沿用同一设置，始终检查全部客户端。开启后由本地后台按周期检查全部历史，关闭所有网页仍继续，后台显式停止或系统睡眠期间不运行；本轮不增加系统登录自启。下一周期从成功的全局检查完成后计算，首次开启立即检查，重启复用已有启动检查，睡眠恢复到期只补一次，不积压每个错过的周期。关闭设置撤销未来周期和未提交补查，已提交任务正常收尾；局部检查不能替代全局范围。整项失败从完成时开始退避，等待不短于当前间隔且按 30 秒起逐次加倍、最多 10 分钟计算，手动可立即重试。网页只读观察状态，运行时约每 1.1 秒、空闲时约每 5 秒读取，隐藏时暂停观察，恢复可见立即读取；多页共享后端策略，不各自提交周期检查。页面报告仍在读取时合并更新通知，本次读取完成后接续最新版本，后台检查不等待页面。无变化自动检查仅更新同步状态；新版本发布后当前页面更新，隐藏页面切回时更新。代码地图自动刷新仍独立设置，只在地图页面可见时分析当前仓库；同步历史不自动重做仓库分析或本地资源盘点。同步按钮原位显示阶段或百分比及细进度条；旁边的状态弹层显示最近全局成功检查及下次检查或重试时间，运行时可查看实际任务客户端范围、处理数量与已用时间，失败时可重试。发现与发布阶段显示不确定进度，处理阶段按历史来源数量计算比例，不估算剩余时间。其他页面的更新时间与范围仍通过各自更新状态入口查看。
+历史同步成功后，总览、会话库、用量统计和资源使用记录按当前页面重新读取完整结果，隐藏页面切回时更新；筛选、阅读位置和地图视野保留。各页自己的更新总览／刷新统计只重新读取报告；代码地图的刷新分析只更新当前仓库，资源刷新清单只执行本地盘点。语言、主题与项目 GitHub 链接位于全局页头右端。“自动同步”在各页顶栏直接显示，与“同步历史”同排，切换页面沿用同一设置，始终检查全部客户端。开启后由本地后台按周期检查全部历史，关闭所有网页仍继续，后台显式停止或系统睡眠期间不运行；本轮不增加系统登录自启。下一周期从成功的全局检查完成后计算，首次开启立即检查，重启复用已有启动检查，睡眠恢复到期只补一次，不积压每个错过的周期。关闭设置撤销未来周期和未提交补查，已提交任务正常收尾；局部检查不能替代全局范围。整项失败从完成时开始退避，等待不短于当前间隔且按 30 秒起逐次加倍、最多 10 分钟计算，手动可立即重试。网页只读观察状态，运行时约每 1.1 秒、空闲时约每 5 秒读取，隐藏时暂停观察，恢复可见立即读取；多页共享后端策略，不各自提交周期检查。页面报告仍在读取时合并更新通知，本次读取完成后接续最新版本，后台检查不等待页面。无变化自动检查仅更新同步状态；新版本发布后当前页面更新，隐藏页面切回时更新。代码地图自动刷新仍独立设置，只在地图页面可见时分析当前仓库；同步历史不自动重做仓库分析或本地资源盘点。同步按钮原位显示阶段或百分比及细进度条；旁边的状态弹层显示最近全局成功检查及下次检查或重试时间，运行时可查看实际任务客户端范围、处理数量与已用时间，失败时可重试。发现与发布阶段显示不确定进度，处理阶段按历史来源数量计算比例，不估算剩余时间。其他页面的更新时间与范围仍通过各自更新状态入口查看。
 
 CLI 局部刷新保留其他客户端索引及检查时间，成功后仍发布完整全局结果。CLI 任务结果保留快速复用／内容复用／重新解析／缺失数及回退情况，各客户端成功检查记录独立保存。只有完整依赖已核验的格式才快速跳过，其他格式和缺少检查记录的来源退回内容检查；SQLite/WAL 与相关元信息不能只看主文件。快速检查不能严格排除保留相同变化指示的内容改写，需要核对正文时使用完整校验。
 
@@ -287,6 +320,19 @@ API 为 `GET /api/v1/sessions`、`/sessions/search`、`/sessions/:id/messages`�
 ## 代码地图命令
 
 地图页面集中展示覆盖率、文件活动与证据回查，不在页头展示来源诊断入口或缺口数量。维护诊断通过 CLI／API 查询；未证实归属当前仓库的来源不计入该仓库诊断，仍可使用来源查询和手动关联命令处理。原始历史缺失或无法唯一定位的范围保持未知，不补造为完整覆盖。
+
+仓库管理提供`am repositories list`、`register <path>`和`remove <repositoryId>`；删除会改变登记及派生分析，按前文所述清理范围执行。下表保留兼容的顶层代码活动命令，回放和补充查询使用`repositories`子命令：
+
+```sh
+am repositories list --json
+am repositories sessions <repositoryId> --version <analysisVersion> --json
+am repositories gaps <repositoryId> --version <analysisVersion> --json
+am repositories replay-sessions <repositoryId> --version <analysisVersion> --json
+am repositories replay <repositoryId> --session-id <sessionId> --version <analysisVersion> --session-version <sessionVersion> --json
+am repositories replay-evidence <repositoryId> --session-id <sessionId> --event-id <eventId> --version <analysisVersion> --session-version <sessionVersion> --json
+```
+
+`replay-sessions`返回可选会话及`sessionVersion`；选择后沿用仓库`version`、`sessionVersion`和`sessionId`读取回放及单条证据，不能用两种版本互相替代。`replay-evidence`的四个定位参数均必填。
 
 | 命令 | 结果与常用选项 |
 | --- | --- |
@@ -308,11 +354,11 @@ API 为 `GET /api/v1/sessions`、`/sessions/search`、`/sessions/:id/messages`�
 | `web` | 打开本地页面；`--no-open` 只打印地址 |
 | `serve` | 前台运行后台，便于诊断启动错误；`--port N` |
 
-CLI默认返回轻量列表、统计与操作结果，人类格式显示表格或摘要；全局 `--json` 使用同一范围的稳定JSON。需要原完整响应时显式加 `--full`。列表默认每页20条，画像明细使用 `sessions profile --section steps|context|reports|tools|resources`，价格目录使用 `usage pricing list`；具体选项与正文续读见 [CLI响应约定](design/cli-responses.md)。
+CLI默认返回轻量列表、统计与操作结果，人类格式显示表格或摘要；全局 `--json` 使用同一范围的稳定JSON。需要原完整响应时显式加 `--full`。普通摘要列表默认每页20条，画像明细使用 `sessions profile --section steps|context|reports|tools|resources`，价格目录使用 `usage pricing list`；完整字段模式仍分页，具体选项与正文续读见[CLI参数与返回值](#cli-参数与返回值)。
 
 失败返回非零退出码；JSON模式的语法与API错误均通过stderr输出可解析的 `{error:{code,message}}`。刷新任务执行失败时 `--wait` 仍输出失败job并返回非零退出码；暂停命令等待到 `paused` 后成功退出。可先运行 `--help` 核对参数。等待默认120秒，可用 `--timeout <seconds>` 指定，最多3600秒。
 
-覆盖、热点、未观察读取、文件、活动、证据和来源查询支持 `--version`、`--client <客户端ID>`、`--from`、`--to`、`--categories`、`--directory`。客户端 ID 包括 `codex`、`claude`、`codeflicker`、`codeflicker-desktop`、`dsh`、`pi`、`workbuddy`、`opencode`、`zcode`、`codebuddy`、`qoder`。省略客户端时查询全部客户端；CLI 帮助、API 校验与 Web 客户端选项共用客户端声明。时间须为 ISO 8601；起止边界均包含，默认全部可用历史。类别为逗号分隔的 `source,config,docs,unknown`，默认 `source`。来源清单描述该版本的采集来源，客户端筛选可缩小清单；时间／目录／类别筛选不改写来源级计数。热点和未观察读取响应的 `files` 已筛选，`summary` 保持所选范围的分母。
+覆盖、热点、未观察读取、文件、活动、证据和来源查询支持 `--version`、`--client <客户端ID>`、`--from`、`--to`、`--categories`、`--directory`。客户端 ID 包括 `codex`、`claude`、`codeflicker`、`codeflicker-desktop`、`dsh`、`pi`、`workbuddy`、`opencode`、`zcode`、`codebuddy`、`qoder`、`gemini`、`qwen`、`kimi`、`omp`、`grok`、`reasonix`、`codewhale`。最新可用值以对应命令的`--help`为准；新增来源的格式与原生运行验收边界见[历史支持矩阵](design/history-support.md)。省略客户端时查询全部客户端；CLI 帮助、API 校验与 Web 客户端选项共用客户端声明。时间须为 ISO 8601；起止边界均包含，默认全部可用历史。类别为逗号分隔的 `source,config,docs,unknown`，默认 `source`。来源清单描述该版本的采集来源，客户端筛选可缩小清单；时间／目录／类别筛选不改写来源级计数。热点和未观察读取响应的 `files` 已筛选，`summary` 保持所选范围的分母。
 
 CodeFlicker CLI 使用 `--client codeflicker`，Web 中选择 CodeFlicker CLI，API 使用 `client=codeflicker`。例如 `agent-manor coverage <repositoryId> --client codeflicker --json`；后续文件、活动、证据查询沿用返回的 `version` 和相同筛选。历史范围为 `~/.codeflicker/projects` 中的主会话及能够确认关系的子会话；`requests/` 中的请求重放不作为独立活动来源。旧 IDE 的 SQLite 历史使用独立的桌面版身份。
 
@@ -334,7 +380,9 @@ Web 代码地图提供可搜索的会话筛选，支持按标题或原生会话 
 
 代码地图顶部的“活动分布／活动回放”切换两种工作方式，仓库选择共享，其他筛选与观看位置独立。在“活动回放”选择一个会话，也可从会话库的“活动回放”快捷进入。所选会话及明确关联的子会话各占一轨；复制分叉历史沿用原归属，不将无关会话拼成轨道。会话自身没有文件活动、只有子会话活动时仍可选择。
 
-回放包含该仓库已纳入分析的文本文件读取、修改和搜索。同次调用涉及多个文件时同时高亮，已有活动保留淡色痕迹。共享原始时间轴统一折叠所有轨道都没有文件活动的长空档，倍速作用于整段观看时间；最后一步的展示停留不代表真实工具耗时。播放／暂停、上一／下一活动、拖动进度和 0.25× 至 8× 倍速可组合使用。点击文件或活动自动暂停，右侧查看状态、原始证据，并返回所属会话消息。切换 Tab、离开页面、隐藏网页或到达终点均暂停。
+回放包含该仓库已纳入分析的文本文件读取、修改和搜索。同次调用涉及多个文件时同时高亮，已有活动保留淡色痕迹。共享原始时间轴统一折叠所有轨道都没有文件活动的长空档，倍速作用于整段观看时间；最后一步的展示停留不代表真实工具耗时。播放／暂停、上一／下一活动、下一次修改及拖动进度可组合使用；预设倍速为 0.25× 至 128×，也可自定义 0.25× 至 256×。剩余时间是预计观看时长，不是Agent任务耗时。点击文件或活动自动暂停，右侧查看状态；原始证据按需读取，可返回所属会话消息。切换 Tab、离开页面、隐藏网页或到达终点均暂停。
+
+默认地图只展示当前会话明确涉及的文件，可改为整个仓库或指定目录；观看范围不截断其他轨道和基线外证据。文件明细与模块概览独立切换，支持跟随当前模块、手动移动镜头及整个播放器全屏，时间轴高度可拖动调整。切换展示保留播放位置及固定版本，手动操作镜头会停止模块跟随。
 
 缺少可靠时间的活动在所属轨道的“未定时活动”单独查看，不编造并行时间；无法确认顺序会明确标注。目录搜索显示范围，不能当作命中文件或读取成功。已删除、零行和基线外路径保留在活动证据中。地图始终是固定分析版本的文件布局，不逐步还原过去的文件内容。回放冻结仓库分析和会话索引两份版本；版本淘汰后需要显式更新回放。接口及边界见 [会话代码活动回放](design/session-code-replay.md)。
 
@@ -350,7 +398,7 @@ Web 代码地图提供可搜索的会话筛选，支持按标题或原生会话 
 
 | 环境变量／选项 | 默认与用途 |
 | --- | --- |
-| `AGENT_MANOR_HOME` 或全局 `--home <path>` | `~/.agent-manor`；SQLite 索引、实例信息与锁 |
+| `AGENT_MANOR_HOME` 或全局 `--home <path>` | `~/.agent-manor`；索引、知识、配置、偏好、管理记录、恢复材料及后台运行信息 |
 | `AGENT_MANOR_CODEX_DIR` | 覆盖默认 `~/.codex/sessions` 和 `~/.codex/archived_sessions` |
 | `AGENT_MANOR_CLAUDE_DIR` | 覆盖默认 `~/.claude/projects` |
 | `AGENT_MANOR_CODEFLICKER_DIR` | CodeFlicker CLI 来源，覆盖默认 `~/.codeflicker/projects`；仍排除 `requests/` |
@@ -370,7 +418,7 @@ Web 代码地图提供可搜索的会话筛选，支持按标题或原生会话 
 | `AGENT_MANOR_GROK_DIR` | Grok Build，默认 `~/.grok/sessions`，读取 updates 及必要旁路 |
 | `AGENT_MANOR_REASONIX_DIR` | Reasonix，默认 state 中 sessions／projects／archive，保留事件旁路 |
 | `AGENT_MANOR_CODEWHALE_DIR` | Codewhale，默认 `~/.codewhale/sessions`，读取 canonical JSON journal |
-| `AGENT_MANOR_PORT` 或 `serve --port N` | 默认随机空闲端口；仅绑定 `127.0.0.1` |
+| `AGENT_MANOR_PORT` 或 `start/restart/serve --port N` | 默认从 `16666` 顺延尝试；显式指定时固定端口，冲突失败；`0` 由系统分配空闲端口。仅绑定 `127.0.0.1` |
 
 历史目录环境变量须在后台启动前设置；已有后台使用它启动时的环境。需要切换时先显式 `stop`，再以新环境启动。隔离测试应使用独立 `AGENT_MANOR_HOME`，并把所有客户端的历史目录环境变量指向测试目录或空目录，防止连接日常后台或读取本机历史。
 
@@ -382,7 +430,7 @@ agent-manor cacheclear <repositoryId> --wait --json
 agent-manor stop --json
 ```
 
-清缓存不会删除原始历史，也不抹去仓库登记或手动关联。分析缓存中包含所需历史源码片段，应按本机敏感数据保管；原始会话只读。服务没有开机启动或持续文件监听，关闭网页后继续运行；需要释放进程时显式停止。分析不上传日志、不调用模型。浏览器仅允许同服务 Origin，API 限制 Host 和写入类型，不提供任意绝对路径读取接口。
+清缓存不会删除原始历史，也不抹去仓库登记或手动关联；知识、偏好和资源恢复材料独立保留。分析缓存中包含所需历史源码片段，应按本机敏感数据保管；原始会话只读。服务没有开机启动或持续文件监听，关闭网页后继续运行；需要释放进程时显式停止。浏览、统计和关键词搜索不调用模型；显式启用的知识提炼、自动沉淀和语义索引／查询会按配置使用本地或远端模型，远端服务会接收相应输入。浏览器仅允许同服务 Origin，API 限制 Host 和写入类型，不提供任意绝对路径读取接口。
 
 每个仓库保留最近两个成功发布的代码地图版本；查询已淘汰版本返回 `VERSION_NOT_FOUND`，不会改为返回当前版本。会话正文、工具参数与结果、思考、上下文和用量保持原有范围，消息元数据只保存一份，读取时组装完整对象。会话与地图仍保留各自需要的解析缓存。
 
@@ -392,7 +440,19 @@ SQLite 删除旧版本后可以复用空闲页，文件不一定立即缩小。�
 
 ## 将查询能力交给 Agent
 
-包内 `skills/agent-manor/SKILL.md` 给出固定版本的 JSON 查询、文件与证据回读流程。将整个 `skills/agent-manor/` 目录按客户端约定复制或引用到 Skill 发现目录，并保证 `agent-manor` 命令或安装后的 CLI 绝对路径可用。安装包不会自动改写客户端 Skill／MCP 配置。
+先将配套Skill安装到所用客户端，命令须在PATH中可用：
+
+```sh
+am skills install --target codex --scope user
+am skills install --target claude --scope user
+am skills install --target codex --scope project --project-directory /workspace/example
+am skills install --target custom --directory /workspace/example-skills
+am skills status --target codex --scope user --json
+```
+
+按实际宿主选择一条安装命令即可。Skill引导Agent按场景读取reference：跨Agent恢复会话、检查工具结果、搜索知识、回查代码活动、分析用量或管理资源；同时说明参数类型、返回字段、分页、正文续读与失败处理。仅在用户明确要求记录或沉淀时写入知识，默认形成待审修订，查询不会自行积累知识或代替人工批准。
+
+入口见[agent-manor Skill](../skills/agent-manor/SKILL.md)，reference与示例随目录完整安装。也可手动复制或引用整个`skills/agent-manor/`目录；不要只复制`SKILL.md`。npm安装本身不会自动改写宿主Skill／MCP配置。检查、更新、移除和覆盖保护见[服务与完整CLI](#服务与完整-cli)。
 
 ## 资源管理
 
@@ -406,11 +466,11 @@ SQLite 删除旧版本后可以复用空闲页，文件不一定立即缩小。�
 
 地图只绘制当前指标具有正值的资源，不再附加“其他资源”列表；零值与未知资源保留在统一清单。预览复用盘点并定向核验目标及依赖；执行前仍重新核验内容、引用和保护，写入完成后失效缓存，由下一次读取更新盘点。
 
-“已停用”“回收区”“操作记录”“扫描详情与设置”收进标题右侧的更多菜单。返回资源清单保留原来的筛选、选择与地图范围。扫描设置按需读取；默认目录缺失、已删除项目、待适配来源等采集边界不作为日常待办，实际不可读、格式或引用问题按位置归并展示，手动添加来源也放在这里。页面不检测客户端是否安装，也不由目录或配置存在推断客户端已加载。历史客户端筛选仅来自历史使用记录。
+左侧常驻“资源清单”“恢复中心”和“操作记录”，各视图独立保留筛选与浏览状态；返回资源清单保留选择与地图范围。“恢复中心”统一查看尚未撤销的配置停用、入口回收及注册移除等变更，可预览恢复或另行确认永久清除。标题右侧更多菜单提供“扫描详情与设置”；扫描设置按需读取，手动来源也在这里添加。默认目录缺失、已删除项目、待适配来源等采集边界不作为日常待办，实际不可读、格式或引用问题按位置归并展示。页面不检测客户端是否安装，也不由目录或配置存在推断客户端已加载。历史客户端筛选仅来自历史使用记录。
 
 主列表提供全部／已使用／未发现使用与收藏筛选，计数对应当前历史条件、位置条件及搜索范围。低频按正使用会话数不超过阈值判断，默认 2；长期未用按最后一次已记录使用距今达到阈值判断，默认 90 天。新发现的本地资源没有使用记录，也立即进入未发现使用。收藏与受管理资源照常分类，管理动作仍受保护；表格支持升降排序和每页 20／50／100 条。名称收藏保留原来的本体收藏保护，位置详情可取消旧位置收藏，取消名称收藏不会暗中删除位置收藏。
 
-Skill／MCP 总览可切换列表或地图，首次使用列表，随后保留视图选择。地图按当前完整筛选结果绘制，默认面积为调用次数，可切换使用会话数；面积保持线性比例。Skill 调用次数包括显式调用和成功正文读取，原始证据类型保留在详情。颜色表示任何已记录调用或成功读取的最近日期，与面积指标无关。零指标资源列在可折叠、独立分页的区域，零调用不表示从未使用。没有确认数值的资源保留未知状态，不显示为零；界面不再单列待检查。
+Skill／MCP 总览可切换列表或地图，首次使用列表，随后保留视图选择。地图按当前完整筛选结果中的正值资源绘制，默认面积为调用次数，可切换使用会话数；面积保持线性比例。Skill 调用次数包括显式调用和成功正文读取，原始证据类型保留在详情。颜色表示任何已记录调用或成功读取的最近日期，与面积指标无关。零值与未知资源通过统一清单查看，零调用不表示从未使用。没有确认数值的资源保留未知状态，不显示为零；界面不再单列待检查。
 
 地图支持滚轮缩放、拖动、全屏、适应窗口和定位所选；定位资源支持名称搜索，缩放只改变视野。悬停或键盘聚焦查看名称、数值、占比、最近使用和保护状态，点击打开详情及具体本地入口；全屏选择资源时退出全屏以展示详情。使用证据跳转返回同一范围时保留缩放与平移位置。地图的指标上限只筛选已知数值，切换指标清空上限，切回列表沿用列表范围；搜索与历史／位置／状态筛选同时作用于两种视图。数值口径和交互说明可通过地图帮助查看。
 
@@ -422,7 +482,7 @@ agent-manor resources overview --candidate unused --page 1 --page-size 50
 agent-manor resources overview --kind mcp --client codex --page-size 50
 agent-manor resources usage --kind skill --sort sessions --json
 agent-manor resources usage --kind mcp --client codex --json
-agent-manor resources local --candidate review --json
+agent-manor resources local --json
 agent-manor resources detail <historyResourceId> --json
 agent-manor resources evidence <historyResourceId> --page 2 --json
 agent-manor resources favorite <resourceId> --json

@@ -8,21 +8,21 @@
 
 首版提供目录代码地图、文件与行覆盖率、活动和原始证据回查，以及共用一个本地后台的 Web、CLI 和 Agent Skill。精确对应与近似对应分别展示；不能确定的范围保留采集缺口。
 
-当前是 `0.1.0` 交付版本，采用 MIT 许可证，尚未发布到 npm。运行需要 Node.js 24 和 Git。首版安装矩阵为 macOS arm64/x64、Linux arm64/x64、Windows x64；实际验收环境与边界见 [CLI 交付验证](docs/validation/npm-cli-distribution.md)。
+采用 MIT 许可证，运行需要 Node.js 24，登记和分析仓库需要 Git。首版安装矩阵为 macOS arm64/x64、Linux arm64/x64、Windows x64；实际验收环境与边界见 [CLI 交付验证](docs/validation/npm-cli-distribution.md)。
 
 ## 安装与启动
 
-取得构建好的 `agent-manor-0.1.0.tgz` 后，可全局安装，获得 `agent-manor` 和 `am` 两个等价命令：
+通过 npm 全局安装，获得 `agent-manor` 和 `am` 两个等价命令：
 
 ```sh
-npm install -g /absolute/path/agent-manor-0.1.0.tgz
-am start --wait-data
+npm install -g agent-manor
 am web
 am status --json
+am ready --timeout 120 --json
 am stop --wait
 ```
 
-也可安装到独立目录：
+`am web` 启动后台并打开网页；首次历史检查在后台继续，`ready`可显式等待。已有本地交付包时，也可安装到独立目录：
 
 ```sh
 mkdir -p ~/agent-manor-local
