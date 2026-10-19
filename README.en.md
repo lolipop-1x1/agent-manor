@@ -6,6 +6,8 @@
 
 AgentManor brings conversations from multiple coding agents into one local workspace. Find an earlier conversation and its tool calls, see which files an agent read or changed, and save useful knowledge with source references when available.
 
+The name combines Agent and Manor. Think of a manor for your coding agents, with a robot butler in a blue bow tie to keep their conversations, knowledge, and tools in order.
+
 [![Node.js 24](https://img.shields.io/badge/Node.js-24-417e38?logo=nodedotjs&logoColor=white)](https://nodejs.org/)
 [![MIT License](https://img.shields.io/badge/license-MIT-3267d2)](LICENSE)
 
@@ -134,22 +136,6 @@ The detailed guides and Skill references are currently in Chinese.
 | Summaries, complete fields, pagination, and body continuation | [CLI response contract](docs/design/cli-responses.md) |
 | Client records and tool parsing support | [History support matrix](docs/design/history-support.md) |
 | Code coverage denominators and matching rules | [Baseline rules](docs/design/baseline-rules.md), [matching rules](docs/design/matching-rules.md) |
-
-## Contributing
-
-Issues and pull requests are welcome. Include the CLI version, client, and reproduction steps in bug reports. Use sanitized examples; do not upload real conversations, databases, keys, or proprietary source code.
-
-With Node.js 24:
-
-```sh
-npm ci
-npm run check
-npm test
-npm run build
-npm run check:public
-```
-
-The public-content check does not inspect images or the full Git history. Review those before submitting. See the [public-content policy](docs/agents/public-content.md).
 
 ## License
 

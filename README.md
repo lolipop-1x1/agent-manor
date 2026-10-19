@@ -6,6 +6,8 @@
 
 AgentManor 把多个 AI 编程客户端的会话放在同一个本地工作台里。你可以找回原来的对话和工具调用，查看 Agent 读过、改过哪些代码，也可以把有用的经验记下来，按需附上来源。
 
+名字来自 Agent（智能体）和 Manor（庄园）。我们把 Agent 的工作环境比作一座庄园，戴蓝领结的机器人就是这里的管家，帮你整理会话、知识和工具。
+
 [![Node.js 24](https://img.shields.io/badge/Node.js-24-417e38?logo=nodedotjs&logoColor=white)](https://nodejs.org/)
 [![MIT License](https://img.shields.io/badge/license-MIT-3267d2)](LICENSE)
 
@@ -132,22 +134,6 @@ Skill 支持项目级与自定义目录，参考文件随目录完整安装。�
 | 摘要、完整字段、分页与正文续读 | [CLI 响应约定](docs/design/cli-responses.md) |
 | 客户端记录与工具解析范围 | [历史支持矩阵](docs/design/history-support.md) |
 | 代码覆盖的分母和匹配规则 | [基线规则](docs/design/baseline-rules.md)、[匹配规则](docs/design/matching-rules.md) |
-
-## 参与开发
-
-欢迎提交 Issue 或 PR。报告问题时，请附 CLI 版本、客户端和复现步骤，样例先脱敏；不要上传真实会话、数据库、Key 或业务源码。
-
-在 Node.js 24 环境中运行：
-
-```sh
-npm ci
-npm run check
-npm test
-npm run build
-npm run check:public
-```
-
-公开内容检查不检查图片和完整 Git 历史，提交前仍需人工确认。具体要求见[公开内容约定](docs/agents/public-content.md)。
 
 ## 许可证
 
