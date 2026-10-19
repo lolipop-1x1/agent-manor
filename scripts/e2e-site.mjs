@@ -163,14 +163,15 @@ async function verify(page, fixture) {
     await nextFrames();
   }
   async function checkFeatureImages(language) {
-    const names = language === "zh" ? ["总览", "会话库", "代码地图", "资源管理"] : ["Overview", "Sessions", "Code map", "Resources"];
-    const keys = ["overview", "sessions", "code-map", "resources"];
+    const names = language === "zh" ? ["总览", "会话库", "知识库", "代码地图", "用量统计", "资源管理"] : ["Overview", "Sessions", "Knowledge", "Code map", "Usage", "Resources"];
+    const keys = ["overview", "sessions", "knowledge", "code-map", "usage", "resources"];
     for (let index = 0; index < keys.length; index += 1) {
       const tab = page.getByRole("tab", { name: names[index], exact: true });
       await tab.click();
       ensure(await tab.getAttribute("aria-selected") === "true", `${names[index]}未被选中。`);
       const panel = page.getByRole("tabpanel", { name: names[index], exact: true });
       await panel.waitFor({ state: "visible" });
+      if (keys[index] === "code-map") await panel.getByRole("button", { name: language === "zh" ? "活动分布" : "Activity map", exact: true }).click();
       const image = panel.getByRole("img");
       await image.scrollIntoViewIfNeeded();
       const asset = await image.evaluate(async element => {
@@ -182,6 +183,15 @@ async function verify(page, fixture) {
       ensure(asset.src.includes(fixture.base), "产品截图没有沿用 GitHub Pages 项目路径。");
       ensure(asset.alt.length > 15, "产品截图缺少有意义的替代文本。");
       images.push({ feature: keys[index], language, width: asset.width, height: asset.height });
+      if (keys[index] === "code-map") {
+        await panel.getByRole("button", { name: language === "zh" ? "活动回放" : "Activity replay", exact: true }).click();
+        const replay = await image.evaluate(async element => {
+          await element.decode();
+          return { src: element.currentSrc, width: element.naturalWidth, height: element.naturalHeight, alt: element.alt };
+        });
+        ensure(replay.src.endsWith(`/previews/replay-${language}.png`) && replay.width === 1440 && replay.height === 1000 && replay.alt.length > 15, "回放预览或语言不正确。");
+        images.push({ feature: "replay", language, width: replay.width, height: replay.height });
+      }
     }
   }
 
@@ -256,7 +266,7 @@ async function verify(page, fixture) {
     await page.waitForFunction(before => Number(document.querySelector(".manor-renderer")?.getAttribute("data-scene-time")) > before + .05, pausedTime);
   });
 
-  await step("开始使用推进镜头、复制规划命令、Escape还原", async () => {
+  await step("开始使用推进镜头、复制安装和网页命令、Escape还原", async () => {
     const before = await camera();
     const opener = page.locator(".hero-actions").getByRole("button", { name: "开始使用", exact: true });
     await opener.click();
@@ -265,9 +275,8 @@ async function verify(page, fixture) {
     await changedCamera(before);
     await settledCamera();
     ensure(await host.getAttribute("data-view") === "installation", "安装没有进入近景状态。");
-    ensure((await dialog.innerText()).includes("规划占位"), "安装面板没有明确规划占位。");
-    ensure((await dialog.innerText()).includes("尚未公共发布"), "安装面板误导用户以为已发布。");
-    for (const [name, command] of [["复制安装命令", "npm install -g agent-manor"], ["复制启动命令", "agent-manor start"]]) {
+    ensure(!/规划占位|尚未公共发布|macOS|Windows|Linux/.test(await dialog.innerText()), "安装面板保留了占位或平台说明。");
+    for (const [name, command] of [["复制安装命令", "npm install -g agent-manor"], ["复制打开网页命令", "am web"]]) {
       await dialog.getByRole("button", { name, exact: true }).click();
       await page.waitForFunction(label => {
         const control = Array.from(document.querySelectorAll(".copy-button")).find(element => element.getAttribute("aria-label") === label);
@@ -335,7 +344,7 @@ async function verify(page, fixture) {
     ensure(frameSample.frames === 30 && frameSample.drawCalls > 0 && frameSample.triangles > 0, "没有取得有效帧采样。");
   });
 
-  await step("中英四个产品Tab与八张真实界面预览", async () => {
+  await step("中英六个产品Tab与十四张真实界面预览", async () => {
     await checkFeatureImages("zh");
     const resources = page.getByRole("tab", { name: "资源管理", exact: true });
     await resources.focus();
@@ -357,10 +366,36 @@ async function verify(page, fixture) {
     await screenshot("05-estate-en");
     await checkFeatureImages("en");
     await screenshot("06-product-en");
-    ensure(images.length === 8, "没有验收全部中英产品预览。");
+    ensure(images.length === 14, "没有验收全部中英产品预览。");
     await top();
     await button("切换为简体中文").click();
     await button("播放动效").click();
+  });
+
+  await step("CLI与Skill示例复制、宿主切换及中英文保持", async () => {
+    const section = page.locator(".cli-section");
+    await section.scrollIntoViewIfNeeded();
+    for (const [label, command] of [["复制会话搜索命令", 'am sessions search "cache" --json'], ["复制知识搜索命令", 'am knowledge search "cache" --json'], ["复制 Skill 安装命令", "am skills install --target codex --scope user"]]) {
+      await section.getByRole("button", { name: label, exact: true }).click();
+      await page.waitForFunction(expected => navigator.clipboard.readText().then(value => value === expected), command);
+    }
+    await section.getByRole("button", { name: "Claude Code", exact: true }).click();
+    await section.getByRole("button", { name: "复制 Skill 安装命令", exact: true }).click();
+    await page.waitForFunction(() => navigator.clipboard.readText().then(value => value === "am skills install --target claude --scope user"));
+    const before = await section.boundingBox();
+    await button("切换为 English").click();
+    await page.waitForFunction(() => document.documentElement.lang === "en");
+    ensure(await section.getByRole("button", { name: "Claude Code", exact: true }).getAttribute("aria-pressed") === "true", "切换语言丢失Skill宿主选择。");
+    await section.getByRole("button", { name: "Copy Skill installation command", exact: true }).click();
+    ensure(await page.evaluate(() => navigator.clipboard.readText()) === "am skills install --target claude --scope user", "英文Skill安装复制内容不正确。");
+    for (const width of [900, 1440]) {
+      await page.setViewportSize({ width, height: 1000 });
+      ensure(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), "CLI或功能区域发生页面横向溢出。");
+    }
+    await section.scrollIntoViewIfNeeded();
+    await screenshot("07-cli-skill-en");
+    await button("切换为简体中文").click();
+    ensure(before?.width > 0, "CLI区域未能展示。");
   });
 
   await step("页尾可达、离屏暂停及底部CTA滚动恢复", async () => {
@@ -454,7 +489,7 @@ async function verify(page, fixture) {
       await fallback.locator(".hero-actions").getByRole("button", { name: "开始使用", exact: true }).click();
       const dialog = fallback.getByRole("dialog", { name: "欢迎来到庄园" });
       await dialog.waitFor({ state: "visible" });
-      ensure((await dialog.innerText()).includes("agent-manor start"), "WebGL不可用时丢失安装步骤。");
+      ensure((await dialog.innerText()).includes("am web"), "WebGL不可用时丢失安装步骤。");
       await fallback.keyboard.press("Escape");
       await dialog.waitFor({ state: "hidden" });
       await screenshot("08-webgl-fallback", fallback);

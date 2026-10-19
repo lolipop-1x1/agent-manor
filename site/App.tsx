@@ -10,11 +10,11 @@ import { useSiteLanguage } from "./i18n";
 
 const github = "https://github.com/lolipop-1x1/agent-manor";
 const guide = `${github}/blob/main/docs/usage.md`;
-const features = ["overview", "sessions", "code-map", "resources"] as const;
+const features = ["overview", "sessions", "knowledge", "code-map", "usage", "resources"] as const;
 type Feature = typeof features[number];
 const commandSteps = [
   { key: "install", command: "npm install -g agent-manor" },
-  { key: "launch", command: "agent-manor start" },
+  { key: "launch", command: "am web" },
 ] as const;
 
 function prefersReducedMotion() {
@@ -38,6 +38,8 @@ export function App() {
   const [ready, setReady] = useState(false);
   const [sceneFailed, setSceneFailed] = useState(false);
   const [feature, setFeature] = useState<Feature>("overview");
+  const [mapPreview, setMapPreview] = useState<"code-map" | "replay">("code-map");
+  const [skillTarget, setSkillTarget] = useState<"codex" | "claude">("codex");
   const [copyState, setCopyState] = useState<{ key: string; status: "copied" | "failed" } | null>(null);
   const heroRef = useRef<HTMLElement>(null);
   const productRef = useRef<HTMLElement>(null);
@@ -93,6 +95,15 @@ export function App() {
   }
 
   const screenshotLanguage = language === "zh-CN" ? "zh" : "en";
+  const skillCommand = `am skills install --target ${skillTarget} --scope user`;
+  const commandBlock = (key: string, command: string, label: string) => <>
+    <div className="command-block"><TerminalWindow size={18} aria-hidden="true" /><code>{command}</code>
+      <button type="button" className="copy-button" onClick={() => { void copyCommand(key, command); }} aria-label={label}>
+        {copyState?.key === key && copyState.status === "copied" ? <Check size={18} aria-hidden="true" /> : <Copy size={18} aria-hidden="true" />}
+      </button>
+    </div>
+    <div className="copy-status" role="status">{copyState?.key === key ? t(copyState.status === "copied" ? "site.install.copied" : "site.install.copyFailed") : ""}</div>
+  </>;
 
   return <Dialog.Root open={installationOpen} onOpenChange={setInstallationOpen}>
     <a className="skip-link" href="#product">{t("site.skip")}</a>
@@ -155,9 +166,10 @@ export function App() {
         </div>
         <div className="feature-tabs" role="tablist" aria-label={t("site.product.tabs")}>
           {features.map((item, index) => <button type="button" role="tab" id={`tab-${item}`} aria-selected={feature === item}
+            aria-description={item === "knowledge" ? t("site.product.knowledge.beta") : undefined}
             aria-controls={`feature-${item}`} tabIndex={feature === item ? 0 : -1} key={item}
             ref={element => { tabRefs.current[index] = element; }} onClick={() => setFeature(item)} onKeyDown={event => onTabKeyDown(event, index)}>
-            {t(`site.product.${item}.name`)}
+            {t(`site.product.${item}.name`)}{item === "knowledge" && <span className="feature-beta" aria-hidden="true">Beta</span>}
           </button>)}
         </div>
         {features.map(item => <div className="feature-panel" role="tabpanel" id={`feature-${item}`} aria-labelledby={`tab-${item}`} hidden={feature !== item} key={item} tabIndex={0}>
@@ -167,11 +179,29 @@ export function App() {
             <a className="text-link" href={guide} target="_blank" rel="noreferrer">{t("site.product.guide")}<ArrowUpRight size={16} aria-hidden="true" /></a>
           </div>
           <figure className="product-preview">
-            <div className="preview-image-frame"><img src={`${import.meta.env.BASE_URL}previews/${item}-${screenshotLanguage}.png`}
-              alt={t(`site.product.${item}.alt`)} width="1440" height="1000" loading="lazy" decoding="async" /></div>
+            {item === "code-map" && <div className="preview-switch" role="group" aria-label={t("site.product.code-map.views")}>
+              {(["code-map", "replay"] as const).map(view => <button type="button" aria-pressed={mapPreview === view} onClick={() => setMapPreview(view)} key={view}>{t(`site.product.${view}.view`)}</button>)}
+            </div>}
+            <div className="preview-image-frame"><img src={`${import.meta.env.BASE_URL}previews/${item === "code-map" ? mapPreview : item}-${screenshotLanguage}.png`}
+              alt={t(`site.product.${item === "code-map" ? mapPreview : item}.alt`)} width="1440" height="1000" loading="lazy" decoding="async" /></div>
             <figcaption>{t("site.product.demo")}</figcaption>
           </figure>
         </div>)}
+      </section>
+
+      <section className="cli-section content-width" aria-labelledby="cli-title">
+        <div className="cli-copy"><h2 id="cli-title">{t("site.cli.title")}</h2><p>{t("site.cli.description")}</p>
+          <ul>{["sessions", "knowledge", "write"].map(key => <li key={key}>{t(`site.cli.${key}`)}</li>)}</ul>
+          <a className="text-link" href={`${github}/blob/main/skills/agent-manor/SKILL.md`} target="_blank" rel="noreferrer">{t("site.cli.guide")}<ArrowUpRight size={16} aria-hidden="true" /></a>
+        </div>
+        <div className="cli-commands">
+          {commandBlock("cli-sessions", 'am sessions search "cache" --json', t("site.cli.copySessions"))}
+          {commandBlock("cli-knowledge", 'am knowledge search "cache" --json', t("site.cli.copyKnowledge"))}
+          <div className="skill-heading"><h3>{t("site.cli.installSkill")}</h3><div className="preview-switch" role="group" aria-label={t("site.cli.target")}>
+            {(["codex", "claude"] as const).map(target => <button type="button" aria-pressed={skillTarget === target} onClick={() => { setSkillTarget(target); setCopyState(null); }} key={target}>{target === "codex" ? "Codex" : "Claude Code"}</button>)}
+          </div></div>
+          {commandBlock("skill-install", skillCommand, t("site.cli.copySkill"))}
+        </div>
       </section>
 
       <section className="principles-section content-width">
@@ -215,19 +245,12 @@ export function App() {
       }}>
         <div className="install-top"><Brand /><Dialog.Close className="close-button" aria-label={t("site.install.close")}><X size={20} aria-hidden="true" /></Dialog.Close></div>
         <div className="install-heading"><Dialog.Title>{t("site.install.title")}</Dialog.Title><Dialog.Description>{t("site.install.description")}</Dialog.Description></div>
-        <div className="install-planning"><span>{t("site.install.planned")}</span><p>{t("site.install.notice")}</p></div>
         <ol className="install-steps">
           {commandSteps.map(({ key, command }) => <li key={key}>
             <h3>{t(`site.install.${key}`)}</h3>
-            <div className="command-block"><TerminalWindow size={18} aria-hidden="true" /><code>{command}</code>
-              <button type="button" className="copy-button" onClick={() => { void copyCommand(key, command); }} aria-label={t("site.install.copy", { step: t(`site.install.${key}`) })}>
-                {copyState?.key === key && copyState.status === "copied" ? <Check size={18} aria-hidden="true" /> : <Copy size={18} aria-hidden="true" />}
-              </button>
-            </div>
-            <div className="copy-status" role="status">{copyState?.key === key ? t(copyState.status === "copied" ? "site.install.copied" : "site.install.copyFailed") : ""}</div>
+            {commandBlock(key, command, t("site.install.copy", { step: t(`site.install.${key}`) }))}
           </li>)}
         </ol>
-        <p className="install-support">{t("site.install.support")}</p>
         <a className="button install-guide" href={guide} target="_blank" rel="noreferrer">{t("site.install.guide")}<ArrowUpRight size={17} aria-hidden="true" /></a>
         <Dialog.Close className="install-return text-link"><ArrowLeft size={16} aria-hidden="true" />{t("site.install.return")}</Dialog.Close>
       </Dialog.Content>

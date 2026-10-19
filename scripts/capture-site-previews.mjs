@@ -35,15 +35,31 @@ try {
       }
       for (const [name, hash, selector] of [
         ["overview", "overview", ".weekly-review[aria-busy='false'] .weekly-review-groups"],
-        ["sessions", "sessions", ".session-list"],
+        ["sessions", `sessions?id=${options.dialogueSessionId}&mode=brief`, ".session-list"],
         ["code-map", "map", ".code-map"],
-        ["resources", "resources", ".resources-shell"],
+        ["resources", "resources", ".resource-list-scroll[aria-busy='false'] .resource-overview-table tbody tr"],
+        ["knowledge", `knowledge?view=all&review=all&id=${options.knowledge[language === "zh" ? "zh-CN" : "en"]}`, ".knowledge-entry-list[aria-busy='false']"],
+        ["usage", "usage", ".usage-results[aria-busy='false']"],
+        ["replay", `map?view=replay&repository=${options.repositoryId}&session=${options.replaySessionId}`, ".activity-replay[data-position]"],
       ]) {
         await page.goto(`${options.base}/#${hash}`);
         await page.locator(selector).first().waitFor();
         if (name === "sessions") {
-          await page.locator(".session-list-item").first().click();
           await page.locator(".session-profile").waitFor();
+          await page.locator(".session-cost[data-price-version] .session-cost-value").waitFor();
+        }
+        if (name === "knowledge") await page.locator(".knowledge-reader[aria-busy='false'] h1").waitFor();
+        if (name === "resources") {
+          await page.locator(".resource-overview-table tbody tr").first().click();
+          await page.locator(".resource-detail-body[aria-busy='false']").waitFor();
+        }
+        if (name === "replay") {
+          const slider = page.getByRole("slider", { name: language === "zh" ? "回放进度" : "Replay position", exact: true });
+          await slider.waitFor();
+          await slider.focus();
+          await page.keyboard.press("Home");
+          await page.getByRole("button", { name: language === "zh" ? "下一次修改" : "Next modification", exact: true }).click();
+          await page.locator(".replay-track-row").nth(1).waitFor();
         }
         await ready();
         const text = await page.locator("body").innerText();
@@ -56,9 +72,9 @@ try {
     if (errors.length) throw new Error(JSON.stringify(errors));
     return summaries;
   };
-  const result = await browser(["run-code", `page => (${capture.toString()})(page, ${JSON.stringify({ base: fixture.base, output })})`]);
+  const result = await browser(["run-code", `page => (${capture.toString()})(page, ${JSON.stringify({ base: fixture.base, output, knowledge: fixture.knowledge, repositoryId: fixture.repositoryId, replaySessionId: fixture.replaySessionId, dialogueSessionId: fixture.dialogueSessionId })})`]);
   await writeFile(join(diagnostics, "capture-report.txt"), result);
-  console.log("Captured eight 1440 × 1000 product previews from isolated synthetic data.");
+  console.log("Captured fourteen 1440 × 1000 product previews from isolated synthetic data.");
 } catch (error) {
   await browser(["screenshot", `--filename=${join(diagnostics, "failure.png")}`]).catch(() => {});
   const state = await browser(["run-code", "async page => ({ url: page.url(), text: await page.locator('body').innerText() })"]).catch(() => "No browser state");

@@ -5,6 +5,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { startService } from "../dist/server.js";
 import { clientIds } from "../dist/clients.js";
+import { managementDigest } from "../dist/service/management.js";
 
 // 官网素材只使用此处生成的项目、历史和资源；每个发现入口均显式隔离。
 export async function sitePreviewFixture() {
@@ -96,6 +97,36 @@ export async function sitePreviewFixture() {
         await writeFile(join(codexHistory, `${id}.jsonl`), records.map(record => JSON.stringify(record)).join("\n") + "\n");
       }
     }
+    // 回放使用独立的合成父子会话，读写事件和当前工作区内容保持一致。
+    const replayPath = "src/domain/workspace.ts", original = contents.get(replayPath);
+    const edited = original.replace("example4Value1 = 1", "example4Value1 = 2");
+    const replayTime = new Date(midnight); replayTime.setDate(replayTime.getDate() - 1); replayTime.setHours(16, 0, 0, 0);
+    const replayRecord = (payload, seconds) => ({ type: "response_item", timestamp: new Date(replayTime.getTime() + seconds * 1000).toISOString(), payload });
+    const replayId = "example-workspace-replay";
+    const replayHistory = (id, title, events, parent) => [
+      { type: "session_meta", timestamp: replayTime.toISOString(), payload: { id, cwd: project, title, ...(parent ? { source: { subagent: { thread_spawn: { parent_thread_id: parent, agent_path: "/root/verification", agent_nickname: "Verification" } } } } : {}) } },
+      { type: "turn_context", payload: { model: "gpt-5" } },
+      replayRecord({ type: "message", role: "user", content: [{ type: "input_text", text: title }] }, 0),
+      ...events,
+      replayRecord({ type: "message", role: "assistant", phase: "final_answer", content: [{ type: "output_text", text: "Reviewed the workspace change and verified its scope. The example checks pass." }] }, 90),
+      { type: "event_msg", timestamp: new Date(replayTime.getTime() + 91_000).toISOString(), payload: { type: "task_complete" } },
+    ].map(record => JSON.stringify(record)).join("\n") + "\n";
+    const read = (id, path, seconds) => [
+      replayRecord({ type: "function_call", call_id: id, name: "shell_command", arguments: JSON.stringify({ command: `cat ${path}`, workdir: project }) }, seconds),
+      replayRecord({ type: "function_call_output", call_id: id, output: `Exit code: 0\nOutput:\n${contents.get(path)}` }, seconds + 2),
+    ];
+    const patch = `*** Begin Patch\n*** Update File: ${replayPath}\n@@\n-export const example4Value1 = 1;\n+export const example4Value1 = 2;\n*** End Patch`;
+    await writeFile(join(codexHistory, "example-replay.jsonl"), replayHistory(replayId, "Review a workspace change with a verification agent", [
+      ...read("example-replay-read", replayPath, 5),
+      replayRecord({ type: "custom_tool_call", call_id: "example-replay-edit", name: "apply_patch", input: patch }, 25),
+      replayRecord({ type: "custom_tool_call_output", call_id: "example-replay-edit", output: `Success. Updated the following files:\nM ${replayPath}` }, 27),
+      ...read("example-replay-check", "tests/sessions.test.ts", 50),
+    ]));
+    await writeFile(join(codexHistory, "example-replay-child.jsonl"), replayHistory("example-workspace-verification", "Verify the workspace change", [
+      ...read("example-child-read", "src/domain/session.ts", 14),
+      ...read("example-child-tests", "tests/search.test.ts", 38),
+    ], replayId));
+    await writeFile(join(project, replayPath), edited);
     service = await startService({
       home, roots: { ...Object.fromEntries(clientIds.map(client => [client, []])), codex: codexHistory, claude: claudeHistory },
       resourceInventory: { userHome, environment: {} }, startupRefresh: true,
@@ -106,8 +137,8 @@ export async function sitePreviewFixture() {
       } } }) },
     });
     const base = `http://127.0.0.1:${service.instance.port}`;
-    const api = async (path, method = "GET", body) => {
-      const response = await fetch(`${base}/api/v1${path}`, { method, headers: { "x-agent-manor-instance": service.instance.id, "Content-Type": "application/json" }, body: body ? JSON.stringify(body) : undefined });
+    const api = async (path, method = "GET", body, headers = {}) => {
+      const response = await fetch(`${base}/api/v1${path}`, { method, headers: { "x-agent-manor-instance": service.instance.id, "Content-Type": "application/json", ...headers }, body: body ? JSON.stringify(body) : undefined });
       const result = await response.json(); if (!response.ok) throw new Error(JSON.stringify(result)); return result;
     };
     await api("/preferences", "PUT", { language: "zh-CN", appearance: { mode: "light", preset: "blue" } });
@@ -126,7 +157,34 @@ export async function sitePreviewFixture() {
     await waitFor(() => api("/sessions/status"), value => value.version && value.job?.status !== "running", "session indexing");
     await api("/resources/refresh", "POST", {});
     await api("/usage/pricing/refresh", "POST", {});
-    return { directory, project, base, api, close: async () => { await service.close(); await rm(directory, { recursive: true, force: true }); } };
+    const sessions = await api("/sessions?pageSize=100&client=codex");
+    const replaySession = sessions.sessions.find(session => session.clientSessionId === replayId);
+    const dialogueSession = sessions.sessions.find(session => session.clientSessionId === "example-session-1-0");
+    if (!replaySession) throw new Error("Synthetic replay session was not indexed");
+    if (!dialogueSession) throw new Error("Synthetic dialogue session was not indexed");
+    const messages = await api(`/sessions/${encodeURIComponent(replaySession.id)}/messages?mode=brief&pageSize=2`);
+    const source = { kind: "agent", client: "codex", sessionId: replaySession.id, sessionTitle: replaySession.title, sourceVersion: sessions.version, messageId: messages.messages[0].id };
+    const knowledge = {};
+    for (const language of ["zh-CN", "en"]) {
+      const chinese = language === "zh-CN";
+      const entries = [
+        { title: chinese ? "配置更新后的缓存验证流程" : "Validate caches after configuration updates", type: "procedure", tags: ["cache", "verification"], body: chinese
+          ? "## 适用场景\n\n配置已更新，但已有连接仍可能读取缓存。\n\n## 验证步骤\n\n1. 核对服务端新值和更新时间。\n2. 在已有连接与新连接中分别读取实际值。\n3. 确认缓存失效与监听回调生效。\n4. 记录测试范围和结果，再判断配置是否生效。\n\n写入成功只能证明配置已保存，不能代替客户端验证。"
+          : "## When to use\n\nConfiguration changed, but existing connections may still read cached values.\n\n## Verification\n\n1. Check the new server value and update time.\n2. Read the value from both existing and new connections.\n3. Verify cache invalidation and change callbacks.\n4. Record the scope and results before declaring the update effective.\n\nA successful write confirms persistence, not client behavior." },
+        { title: chinese ? "回放活动时保留并行会话的边界" : "Keep parallel session boundaries in activity replay", type: "lesson", tags: ["replay", "evidence"], body: chinese ? "主会话与验证 Agent 使用独立轨道。只有原始记录明确支持时才推断执行顺序；读取与修改分别核对来源。" : "Keep the main session and verification agent on separate tracks. Infer execution order only when the original records support it, and inspect reads and edits separately." },
+        { title: chinese ? "项目接口优先返回当前任务所需字段" : "Return the fields needed by the current task", type: "decision", tags: ["api", "workflow"], body: chinese ? "列表返回核心字段，正文和原始证据按稳定标识读取。分页与下钻沿用同一结果版本。" : "Return core fields in lists and fetch bodies and original evidence by stable ID. Keep the same result version for pagination and drill-down." },
+      ];
+      for (const [index, entry] of entries.entries()) {
+        const created = await api("/knowledge/entries", "POST", { ...entry, scope: { kind: "project", project }, subject: "project", language, applicability: chinese ? "用于示例项目的开发、排查与审阅。" : "For development, investigation, and review in the example project.", sources: [source] });
+        if (index < 2) {
+          const path = `/knowledge/entries/${created.id}/reviews`, body = { revisionId: created.latestRevisionId, baseRevisionId: created.latestRevisionId, action: "approve" };
+          const grant = await api("/management/authorizations", "POST", { method: "POST", path, body, confirmation: managementDigest({ method: "POST", path, body }) });
+          await api(path, "POST", body, { "x-agent-manor-management": grant.token });
+        }
+        if (!index) knowledge[language] = created.id;
+      }
+    }
+    return { directory, project, base, api, knowledge, repositoryId: registration.repository.id, replaySessionId: replaySession.id, dialogueSessionId: dialogueSession.id, close: async () => { await service.close(); await rm(directory, { recursive: true, force: true }); } };
   } catch (error) {
     await service?.close(); await rm(directory, { recursive: true, force: true }); throw error;
   }
