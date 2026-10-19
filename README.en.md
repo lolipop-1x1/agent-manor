@@ -2,11 +2,11 @@
 
 [简体中文](README.md) · **English**
 
-![A robot butler wearing a blue bow tie, with a manor house and gardens behind it](docs/assets/readme/agent-manor-banner.png)
+![Line drawing of a robot butler welcoming visitors to a manor garden](docs/assets/readme/agent-manor-banner-sketch-garden-wide.png)
+
+A home for your agents’ work. While the agents write code, the butler keeps the records in order. When it’s time to pick things up again, ask: “Where did we leave off?”
 
 AgentManor brings conversations from multiple coding agents into one local workspace. Find an earlier conversation and its tool calls, see which files an agent read or changed, and save useful knowledge with source references when available.
-
-The name combines Agent and Manor. Think of a manor for your coding agents, with a robot butler in a blue bow tie to keep their conversations, knowledge, and tools in order.
 
 [![Node.js 24](https://img.shields.io/badge/Node.js-24-417e38?logo=nodedotjs&logoColor=white)](https://nodejs.org/)
 [![MIT License](https://img.shields.io/badge/license-MIT-3267d2)](LICENSE)
@@ -43,16 +43,9 @@ am stop --wait                   # Stop after in-flight tasks finish
 | [Usage](docs/usage.md#全局用量统计) | Inspect tokens, requests, estimated costs, and output speeds where timing evidence exists. Filter by model, project, and date. |
 | [Resources](docs/usage.md#资源管理) | Inventory local Skills and MCP servers, inspect usage, and preview supported disable, trash, or restore operations. |
 
-<details>
-<summary>Supported clients</summary>
+### Supported clients
 
-Codex, Claude Code, CodeFlicker CLI and Desktop, DeepSeek Harness, Pi, WorkBuddy, OpenCode, ZCode, CodeBuddy, Qoder, Gemini CLI, Qwen Code, Kimi Code CLI, Oh My Pi, Grok Build, Reasonix, and Codewhale.
-
-Each adapter can only show records the client actually saved. Gemini CLI, Qwen Code, Kimi Code CLI, Oh My Pi, Grok Build, Reasonix, and Codewhale have been checked against pinned source versions and synthetic fixtures; native client runs have not yet been verified. See the [history support matrix](docs/design/history-support.md) for formats and missing fields.
-
-Doubao Work is currently unsupported. The [source investigation](docs/design/doubao-work-sources.md) explains the limitations and what would be needed to support it.
-
-</details>
+Codex, Claude Code, CodeFlicker, DeepSeek Harness, Pi, WorkBuddy, OpenCode, ZCode, CodeBuddy, Qoder, Gemini CLI, Qwen Code, Kimi Code CLI, Oh My Pi, Grok Build, Reasonix, and Codewhale.
 
 ## Screenshots
 

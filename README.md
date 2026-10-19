@@ -2,11 +2,11 @@
 
 **简体中文** · [English](README.en.md)
 
-![戴蓝色领结的机器人管家，身后是庄园与花园](docs/assets/readme/agent-manor-banner.png)
+![机器人管家与庄园花园的简笔画](docs/assets/readme/agent-manor-banner-sketch-garden-wide.png)
 
-AgentManor 把多个 AI 编程客户端的会话放在同一个本地工作台里。你可以找回原来的对话和工具调用，查看 Agent 读过、改过哪些代码，也可以把有用的经验记下来，按需附上来源。
+AgentManor，给 Agent 的工作记录安个家。Agent 们忙着写代码，管家在庄园里整理档案。下次接着干，先问问管家：“上回咱们做到哪儿了？”
 
-名字来自 Agent（智能体）和 Manor（庄园）。我们把 Agent 的工作环境比作一座庄园，戴蓝领结的机器人就是这里的管家，帮你整理会话、知识和工具。
+它把多个 AI 编程客户端的会话放在同一个本地工作台里。你可以找回原来的对话和工具调用，查看 Agent 读过、改过哪些代码，也可以把有用的经验记下来，按需附上来源。
 
 [![Node.js 24](https://img.shields.io/badge/Node.js-24-417e38?logo=nodedotjs&logoColor=white)](https://nodejs.org/)
 [![MIT License](https://img.shields.io/badge/license-MIT-3267d2)](LICENSE)
@@ -43,16 +43,9 @@ am stop --wait                   # 等在途任务结束后停止后台
 | [用量统计](docs/usage.md#全局用量统计) | 查看 Token、请求、估算费用及有计时依据的吐字速度，按模型、项目和日期筛选。 |
 | [资源管理](docs/usage.md#资源管理) | 盘点本地 Skill 与 MCP，查看使用记录；对支持的入口先预览，再停用、回收或恢复。 |
 
-<details>
-<summary>已接入的客户端</summary>
+### 已接入的客户端
 
-Codex、Claude Code、CodeFlicker CLI／桌面版、DeepSeek Harness、Pi、WorkBuddy、OpenCode、ZCode、CodeBuddy、Qoder、Gemini CLI、Qwen Code、Kimi Code CLI、Oh My Pi、Grok Build、Reasonix、Codewhale。
-
-各来源只能展示实际留存的记录。Gemini CLI、Qwen Code、Kimi Code CLI、Oh My Pi、Grok Build、Reasonix 和 Codewhale 的适配已通过固定源码与合成样例验证，尚未完成原生客户端运行验证。具体格式和缺失字段见[历史支持矩阵](docs/design/history-support.md)。
-
-豆包工作暂不支持；原因和恢复支持的前提见[来源调查](docs/design/doubao-work-sources.md)。
-
-</details>
+Codex、Claude Code、CodeFlicker、DeepSeek Harness、Pi、WorkBuddy、OpenCode、ZCode、CodeBuddy、Qoder、Gemini CLI、Qwen Code、Kimi Code CLI、Oh My Pi、Grok Build、Reasonix、Codewhale。
 
 ## 界面预览
 
