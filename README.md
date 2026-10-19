@@ -1,93 +1,154 @@
 # AgentManor
 
-在本机浏览和搜索 Code Agent 历史，查看代码活动，并将可复用的知识保存、审阅和检索。
+**简体中文** · [English](README.en.md)
 
-支持 Codex、Claude Code、CodeFlicker CLI／桌面版、DeepSeek Harness、Pi、WorkBuddy、OpenCode、ZCode、CodeBuddy、Qoder，以及 Gemini CLI、Qwen Code、新版 Kimi Code CLI、Oh My Pi、Grok Build、Reasonix、Codewhale。各来源按实际留存记录展示消息、工具与用量；缺失数据明确标注，格式边界见 [历史支持矩阵](docs/design/history-support.md)。新增七个客户端按固定源码版本及合成来源验收，原生客户端运行仍待验证。
+![戴蓝色领结的机器人管家，身后是庄园与花园](docs/assets/readme/agent-manor-banner.png)
 
-豆包工作目前**暂不支持**，已停用数据导入、资源盘点和页面入口。本机缓存只有部分摘要和消息片段，无法稳定还原完整会话与新增任务；调查结论与恢复支持前提见 [豆包工作来源调查](docs/design/doubao-work-sources.md)。
+AgentManor 把多个 AI 编程客户端的会话放在同一个本地工作台里。你可以找回原来的对话和工具调用，查看 Agent 读过、改过哪些代码，也可以把有用的经验记下来，按需附上来源。
 
-首版提供目录代码地图、文件与行覆盖率、活动和原始证据回查，以及共用一个本地后台的 Web、CLI 和 Agent Skill。精确对应与近似对应分别展示；不能确定的范围保留采集缺口。
+[![Node.js 24](https://img.shields.io/badge/Node.js-24-417e38?logo=nodedotjs&logoColor=white)](https://nodejs.org/)
+[![MIT License](https://img.shields.io/badge/license-MIT-3267d2)](LICENSE)
 
-采用 MIT 许可证，运行需要 Node.js 24，登记和分析仓库需要 Git。首版安装矩阵为 macOS arm64/x64、Linux arm64/x64、Windows x64；实际验收环境与边界见 [CLI 交付验证](docs/validation/npm-cli-distribution.md)。
+[快速开始](#快速开始) · [界面预览](#界面预览) · [CLI 与 Agent Skill](#cli-与-agent-skill) · [使用指南](docs/usage.md)
 
-## 安装与启动
+## 快速开始
 
-通过 npm 全局安装，获得 `agent-manor` 和 `am` 两个等价命令：
+需要 Node.js 24。代码地图还需要 Git；浏览会话和知识不要求先登记仓库。
 
 ```sh
 npm install -g agent-manor
 am web
-am status --json
-am ready --timeout 120 --json
-am stop --wait
 ```
 
-`am web` 启动后台并打开网页；首次历史检查在后台继续，`ready`可显式等待。已有本地交付包时，也可安装到独立目录：
+`am web` 会启动本地后台并打开网页，首次启动时在后台检查可发现的历史。关闭网页或终端后，后台仍会运行。默认从端口 `16666` 开始，已占用时顺延；实际地址以命令输出为准。
+
+`am` 和 `agent-manor` 是同一个命令。安装包已包含后台、Web 和 Skill，不需要另行构建。平台范围、本地压缩包安装及原生依赖问题见[安装说明](docs/usage.md#安装与首次使用)。
 
 ```sh
-mkdir -p ~/agent-manor-local
-cd ~/agent-manor-local
-npm install /absolute/path/agent-manor-0.1.0.tgz
-./node_modules/.bin/agent-manor register /absolute/path/to/repository --wait --json
-./node_modules/.bin/agent-manor web
+am status --json                  # 查看后台与数据准备状态
+am ready --timeout 120 --json     # 等待本轮启动数据准备
+am stop --wait                   # 等在途任务结束后停止后台
 ```
 
-安装产物包含编译后的 CLI、后台、Worker、Web 和 Skill，安装用户无需再构建。SQLite 依赖 `better-sqlite3` 原生扩展：若目标平台没有可用预编译包，安装过程可能需要本机编译工具链。
+## 能做什么
 
-开发者在源码仓库使用 Node 24 执行 `npm ci`、`npm run check`、`npm test`、`npm pack`；`npm pack` 会先构建并检查交付入口。
-
-贡献前执行 `npm run check:public`，公开示例使用人工合成数据。个人与业务资料、真实历史和数据库不得提交；详细边界及本地禁用词配置见 [公开内容约定](docs/agents/public-content.md)。
-
-登记成功后，将 JSON 中的 `repository.id` 用于后续查询：
-
-```sh
-agent-manor coverage <repositoryId> --json
-agent-manor file <repositoryId> src/example.ts --version <analysisVersion> --json
-agent-manor refresh <repositoryId> --wait --json
-agent-manor status --json
-agent-manor stop --json
-```
-
-`agent-manor`／`am` 需在 PATH 中，或换成安装目录的 `./node_modules/.bin/am`。普通数据查询按需启动后台；版本、帮助、`status`、`doctor` 和 `logs` 不启动服务。后台关闭终端后继续运行，默认端口 `16666`，占用时顺延并记录实际地址；`start` 等待服务就绪，`--wait-data` 进一步等待启动数据准备。`stop --wait` 等在途任务结束后停止。
-
-## 会话库
-
-网页顶部“会话库”可浏览全部可发现历史，搜索标题与正文，连续阅读对话与全部记录、按轮次定位，并查看执行轨迹及模型、Token、缓存和 Tool／Skill／MCP 画像。无需先登记仓库。CLI 使用 `agent-manor sessions refresh --wait --json` 与 `agent-manor sessions list --json`；更多入口见 [使用指南](docs/usage.md#全局会话库)。
-
-会话库也提供默认关闭的语义搜索：在搜索设置中配置本地或远端 OpenAI 兼容 Embedding 服务，选择范围，预览规模与估算费用后显式构建。页面提供构建进度、暂停／继续、内容复用和调用预算；查询通过 Enter 或搜索按钮提交。CLI 使用 `agent-manor sessions search "描述要找的对话" --mode semantic --json`，复用相同设置和索引。模型服务由用户提供，实际资源边界见 [语义搜索](docs/design/semantic-search.md)。
-
-## 知识库
-
-网页顶部“知识库”管理个人记忆、项目记忆和通用经验。可以直接填写知识，也可以从会话整篇、选定轮次或时间范围沉淀；抽取及 Agent 提交先保存待审建议，人工确认后才成为默认搜索结果。知识保留完整版本、标签和来源证据，支持废弃、过期及历史恢复。
-
-关键词搜索无需模型。会话抽取使用单独配置的 OpenAI 兼容生成服务，知识语义搜索可关闭、复用会话 Embedding 连接或独立配置，首次编码需预览后启动。后台自动沉淀默认关闭，开启后按范围、静默时间和调用预算增量处理。Web、CLI 和本机 HTTP 接口共用同一口径；CLI 支持直接提交、搜索、修订、来源、人工审阅、沉淀任务和配置。详见 [使用指南](docs/usage.md#知识库)。
-
-```sh
-am knowledge write --input knowledge.json --json
-am knowledge list --review pending --json
-am knowledge search "配置缓存" --json
-am knowledge extraction list --json
-```
-
-## 数据与统计
-
-- 默认发现已注册客户端的本机历史目录，完整目录与覆盖配置见 [使用指南](docs/usage.md#数据目录后台与缓存)；无法可靠归属的来源单独列出，可手动关联。
-- 默认统计当前工作区源码，包含未提交修改；配置与文档可切换。行数包括注释和空白行，依赖、生成物、二进制及链接目标默认排除。
-- 成功读取且内容、范围可对应时进入覆盖；搜索、失败、缺失结果和未知范围单列。历史编辑次数不等于最终 Git diff。
-- 分析索引默认在 `~/.agent-manor`。原始历史只读，会话索引保存浏览及搜索所需正文，代码地图索引保存所需历史源码片段；浏览、统计与关键词搜索在本机完成。主动启用语义搜索后，构建正文及未缓存查询发送至用户配置的模型服务，向量匹配仍在本地完成；远端模型服务会接收相应文本。
-- 代码地图每个仓库保留最近两个成功版本；会话内容保持完整。数据库空间整理只在服务启动时按空闲空间及时间阈值执行，详见 [数据目录与缓存](docs/usage.md#数据目录后台与缓存)。
-- 所有下钻保持同一分析结果版本和筛选。当前代码改变时返回过期状态，刷新后再查看对应范围。
-- 知识、修订快照、审阅和必要证据独立保存在数据目录的 `knowledge/`，清除会话或派生索引不会删除它们；备份须包含该目录的权威数据和配置。
-
-## 文档与 Agent 使用
-
-| 内容 | 入口 |
+| 功能 | 用途 |
 | --- | --- |
-| 完整 CLI、筛选、数据目录、停止与缓存重建 | [使用指南](docs/usage.md) |
-| Agent 的 JSON 查询与证据回查流程 | [agent-manor Skill](skills/agent-manor/SKILL.md) |
-| 历史格式与 Shell 支持边界 | [历史支持矩阵](docs/design/history-support.md) |
-| 文件分母、分类与排除规则 | [仓库基线规则](docs/design/baseline-rules.md) |
-| 精确／近似对应与覆盖口径 | [匹配规则](docs/design/matching-rules.md) |
-| 产品规格、领域术语与架构决定 | [源码仓库](https://github.com/lolipop-1x1/agent-manor) |
+| [会话库](docs/usage.md#全局会话库) | 跨客户端搜索对话，按轮次阅读正文、工具调用和执行轨迹，回查当时的结果。 |
+| [知识库 Beta](docs/usage.md#知识库) | 手工记录或从会话提炼知识，保留来源、标签、版本和审阅状态；用关键词或可选语义搜索查找。 |
+| [代码地图](docs/usage.md#正确解释结果) | 查看仓库文件与代码行的读取、修改活动，沿时间线回放一次任务及关联子会话。 |
+| [总览](docs/usage.md#总览) | 按项目和客户端查看最近的会话、代码活动、用量与资源使用，再进入具体记录。 |
+| [用量统计](docs/usage.md#全局用量统计) | 查看 Token、请求、估算费用及有计时依据的吐字速度，按模型、项目和日期筛选。 |
+| [资源管理](docs/usage.md#资源管理) | 盘点本地 Skill 与 MCP，查看使用记录；对支持的入口先预览，再停用、回收或恢复。 |
 
-包内 Skill 按任务场景引导查询、跨客户端回查、知识复用与直接写入，参考文件随目录完整安装。可执行 `am skills install --target codex --scope user`，或选择 `claude`、项目级及自定义目录。安装状态、更新和移除均有对应命令，修改或同名外来目录默认保护，明确覆盖前保留备份；npm 安装本身不会写入宿主 Skill 目录。完整参数见 `am skills --help`。
+<details>
+<summary>已接入的客户端</summary>
+
+Codex、Claude Code、CodeFlicker CLI／桌面版、DeepSeek Harness、Pi、WorkBuddy、OpenCode、ZCode、CodeBuddy、Qoder、Gemini CLI、Qwen Code、Kimi Code CLI、Oh My Pi、Grok Build、Reasonix、Codewhale。
+
+各来源只能展示实际留存的记录。Gemini CLI、Qwen Code、Kimi Code CLI、Oh My Pi、Grok Build、Reasonix 和 Codewhale 的适配已通过固定源码与合成样例验证，尚未完成原生客户端运行验证。具体格式和缺失字段见[历史支持矩阵](docs/design/history-support.md)。
+
+豆包工作暂不支持；原因和恢复支持的前提见[来源调查](docs/design/doubao-work-sources.md)。
+
+</details>
+
+## 界面预览
+
+以下截图均来自隔离的合成数据。
+
+### 会话库
+
+![会话库：左侧查找会话，中间阅读对话，右侧查看模型与用量](site/public/previews/sessions-zh.png)
+
+### 知识库
+
+![知识库：按项目和审阅状态筛选，阅读带标签与来源的知识](site/public/previews/knowledge-zh.png)
+
+<details>
+<summary>查看总览、代码地图、活动回放、用量和资源管理</summary>
+
+### 总览
+
+![总览：活动日历、近期工作与用量分布](site/public/previews/overview-zh.png)
+
+### 代码地图
+
+![代码地图：文件读取与修改活动分布](site/public/previews/code-map-zh.png)
+
+### 活动回放
+
+![活动回放：沿时间线查看主会话和子会话的文件活动](site/public/previews/replay-zh.png)
+
+### 用量统计
+
+![用量统计：模型趋势、Token 组成与估算费用](site/public/previews/usage-zh.png)
+
+### 资源管理
+
+![资源管理：Skill 和 MCP 清单、本地位置与使用记录](site/public/previews/resources-zh.png)
+
+</details>
+
+## CLI 与 Agent Skill
+
+Web、CLI 和配套 Skill 共用同一个本地后台。常用查询可以直接在终端执行：
+
+```sh
+am sessions search "缓存" --page-size 5 --json
+am sessions messages <sessionId> --version <version> --mode brief --json
+am knowledge search "配置缓存" --json
+am register /workspace/example --wait --json
+am coverage <repositoryId> --json
+```
+
+`<sessionId>`、`<version>` 和 `<repositoryId>` 要替换为上一步返回的实际值。默认结果只带当前操作需要的字段；`--json` 选择输出格式，`--full` 取得完整字段，仍遵守分页。长正文可以按返回位置续读。完整用法见[CLI 参数与返回值](docs/usage.md#cli-参数与返回值)。
+
+安装配套 Skill 后，Agent 可以按任务查历史、读知识和核对证据。选择你使用的客户端安装：
+
+```sh
+am skills install --target codex --scope user
+am skills install --target claude --scope user
+```
+
+例如，你可以让 Agent “找一下上次处理配置缓存的对话，读完相关工具结果后接着做”，或者“查这个项目已经审阅过的知识”。只有你明确要求记录或沉淀时，Skill 才会写入知识；写入默认待审，人工批准是单独的操作。
+
+Skill 支持项目级与自定义目录，参考文件随目录完整安装。见[Skill 使用说明](skills/agent-manor/SKILL.md)和[安装选项](docs/usage.md#将查询能力交给-agent)。
+
+## 数据与模型
+
+- 原始客户端历史只读。AgentManor 的索引、知识、配置和恢复材料默认保存在 `~/.agent-manor/`；可以用 `--home` 指定其他目录。
+- 浏览、统计和关键词搜索在本机完成，不需要模型。会话提炼和语义搜索按配置使用本地或远端模型；使用远端服务时，相应文本会发送给该服务。
+- 抽取和 Agent 提交的知识先保存为待审修订。默认检索已审阅且有效的内容，旧版本和来源引用会保留，原始记录仍可用时可以回查；自动沉淀默认关闭。
+- 代码活动以已发现的证据为准。未观察到读取不表示文件没用，估算费用不等于账单；停用或回收资源前，需要核对具体入口和预览。
+
+备份、模型设置和数据范围见[使用指南](docs/usage.md)。
+
+## 文档
+
+| 想了解什么 | 文档 |
+| --- | --- |
+| Web 操作、完整 CLI、配置与备份 | [使用指南](docs/usage.md) |
+| Agent 如何选择命令、传参数、读返回值 | [配套 Skill](skills/agent-manor/SKILL.md) |
+| 摘要、完整字段、分页与正文续读 | [CLI 响应约定](docs/design/cli-responses.md) |
+| 客户端记录与工具解析范围 | [历史支持矩阵](docs/design/history-support.md) |
+| 代码覆盖的分母和匹配规则 | [基线规则](docs/design/baseline-rules.md)、[匹配规则](docs/design/matching-rules.md) |
+
+## 参与开发
+
+欢迎提交 Issue 或 PR。报告问题时，请附 CLI 版本、客户端和复现步骤，样例先脱敏；不要上传真实会话、数据库、Key 或业务源码。
+
+在 Node.js 24 环境中运行：
+
+```sh
+npm ci
+npm run check
+npm test
+npm run build
+npm run check:public
+```
+
+公开内容检查不检查图片和完整 Git 历史，提交前仍需人工确认。具体要求见[公开内容约定](docs/agents/public-content.md)。
+
+## 许可证
+
+[MIT](LICENSE)
