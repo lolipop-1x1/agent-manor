@@ -77,10 +77,14 @@ try {
   // 从实际安装产物加载受控执行器，三个系统的安装矩阵都核验取消与遗留后代。
   run(process.execPath, ["--input-type=module", "-e", `
     import assert from "node:assert/strict";
-    import { readFile, writeFile } from "node:fs/promises";
+    import { readFile, realpath, writeFile } from "node:fs/promises";
     import { setTimeout as pause } from "node:timers/promises";
     import { runInstallProcess } from ${JSON.stringify(pathToFileURL(join(packageRoot, "dist/service/product-installation.js")).href)};
     const directory = ${JSON.stringify(sandbox)};
+    for (const cwd of [undefined, "", directory]) {
+      const result = await runInstallProcess(process.execPath, ["-e", "process.stdout.write(JSON.stringify(process.cwd()))"], { cwd, timeout: 45000 });
+      assert.equal(await realpath(JSON.parse(result.stdout)), await realpath(cwd || process.cwd()));
+    }
     for (const mode of ["abort", "orphan"]) {
       const marker = directory + "/process-" + mode + ".txt";
       const child = "const fs=require('node:fs');process.on('SIGTERM',()=>{});fs.writeFileSync("+JSON.stringify(marker)+",'ready');setInterval(()=>fs.appendFileSync("+JSON.stringify(marker)+",'x'),10);";
@@ -148,7 +152,7 @@ try {
   assert.equal(existsSync(join(home, "service.json")), false);
   started = false;
   assert.equal(command(["skills", "remove", "--target", "custom", "--directory", skillDirectory]).status, "removed");
-  const evidence = { platform: process.platform, architecture: process.arch, node: process.version, sqlite, libc: process.report?.getReport().header.glibcVersionRuntime ?? null, version: metadata.version, checks: ["both-bins", "read-only-status", "release-status-custom-prefix", "install-process-tree-abort-and-orphan", "native-sqlite-vector", "skill-install-conflict-backup-remove", "default-port-fallback-and-explicit-conflict", "background-start-worker-web-stop"] };
+  const evidence = { platform: process.platform, architecture: process.arch, node: process.version, sqlite, libc: process.report?.getReport().header.glibcVersionRuntime ?? null, version: metadata.version, checks: ["both-bins", "read-only-status", "release-status-custom-prefix", "install-process-default-empty-and-explicit-cwd", "install-process-tree-abort-and-orphan", "native-sqlite-vector", "skill-install-conflict-backup-remove", "default-port-fallback-and-explicit-conflict", "background-start-worker-web-stop"] };
   console.log(JSON.stringify(evidence, null, 2));
 } catch (error) {
   console.error(error);

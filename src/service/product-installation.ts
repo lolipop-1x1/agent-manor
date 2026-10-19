@@ -38,7 +38,7 @@ async function waitForGroup(pid: number): Promise<void> {
 export async function runInstallProcess(command: string, args: string[], options: InstallProcessOptions = {}): Promise<CommandResult> {
   options.signal?.throwIfAborted();
   const launch = process.platform === "win32" ? windowsInstallLaunch(command, args, options.cwd) : { command, args, env: process.env };
-  const child = spawn(launch.command, launch.args, { cwd: options.cwd, env: launch.env, detached: process.platform !== "win32", windowsHide: true, stdio: [process.platform === "win32" ? "pipe" : "ignore", "pipe", "pipe"] });
+  const child = spawn(launch.command, launch.args, { cwd: options.cwd || undefined, env: launch.env, detached: process.platform !== "win32", windowsHide: true, stdio: [process.platform === "win32" ? "pipe" : "ignore", "pipe", "pipe"] });
   child.stdin?.on("error", () => {});
   const maximum = options.maxBuffer ?? 4_194_304;
   const output: Record<"stdout" | "stderr", Buffer[]> = { stdout: [], stderr: [] };

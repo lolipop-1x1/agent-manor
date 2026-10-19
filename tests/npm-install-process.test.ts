@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { getEventListeners } from "node:events";
-import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
+import { mkdtemp, readFile, realpath, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
@@ -59,6 +59,14 @@ test("安装进程成功和非零退出都保留各自标准输出与错误输�
   });
 });
 
+test("安装进程缺省或空cwd继承当前目录，明确cwd使用指定目录", async t => {
+  const f = await fixture(t);
+  for (const cwd of [undefined, "", f.directory]) {
+    const result = await runInstallProcess(process.execPath, ["-e", "process.stdout.write(JSON.stringify(process.cwd()))"], { cwd, timeout: processTimeout });
+    assert.equal(await realpath(JSON.parse(result.stdout)), await realpath(cwd || process.cwd()));
+  }
+});
+
 test("Windows原生参数引用覆盖空值、空格、引号与末尾反斜杠", () => {
   assert.equal(windowsArgument(""), '""');
   assert.equal(windowsArgument("plain"), '"plain"');
@@ -80,6 +88,7 @@ test("Windows wrapper代码与命令参数分离编码，在建立Job之后才�
   assert.ok(script.includes("SetLimits(job, 0x00002000)") && script.includes("0x08000004"));
   assert.ok(script.indexOf("AssignProcessToJobObject(job, child.Process)") < script.indexOf("ResumeThread(child.Thread)"));
   assert.ok(script.includes("while (Active(job) != 0) Thread.Sleep(10)") && script.includes('line == "abort"'));
+  assert.ok(script.includes("directory = string.IsNullOrEmpty(directory) ? null : directory;"));
   assert.ok(!script.includes("GetCurrentProcess()"));
   const payload = JSON.parse(Buffer.from(launch.env[WINDOWS_INSTALL_PAYLOAD]!, "base64").toString("utf8"));
   assert.deepEqual(payload, { command, arguments: [command, ...args].map(windowsArgument).join(" "), cwd });
@@ -96,7 +105,11 @@ test("实际安装执行保留复杂argv，不把引号或PowerShell表达式当
 
 test("找不到可执行文件时正确结束，预先取消不启动安装进程", async t => {
   const f = await fixture(t);
-  await assert.rejects(runInstallProcess(join(f.directory, "missing-command"), []), { code: "ENOENT" });
+  await assert.rejects(runInstallProcess(join(f.directory, "missing-command"), []), error => {
+    assert.equal((error as { code?: string }).code, "ENOENT");
+    if (process.platform === "win32") assert.match((error as { stderr: string }).stderr, /CreateProcessW \(Win32 [23]\)/);
+    return true;
+  });
   const controller = new AbortController();
   controller.abort();
   await assert.rejects(runInstallProcess(process.execPath, scripts(f.marker, f.output), { signal: controller.signal }), { name: "AbortError" });

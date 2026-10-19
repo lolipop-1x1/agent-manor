@@ -18,6 +18,7 @@ export function windowsArgument(value: string): string {
 // wrapper 留在 Job 外；安装器先挂起创建、加入 Job，再恢复执行，后代默认继承 Job。
 const wrapper = String.raw`
 $ErrorActionPreference = 'Stop'
+$ProgressPreference = 'SilentlyContinue'
 [Console]::OutputEncoding = New-Object Text.UTF8Encoding($false)
 try {
   $payload = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($env:AGENT_MANOR_INSTALL_PROCESS)) | ConvertFrom-Json
@@ -79,6 +80,10 @@ public static class ManorInstallJob {
   [DllImport("kernel32.dll", SetLastError=true)] static extern uint WaitForSingleObject(IntPtr handle, uint milliseconds);
   [DllImport("kernel32.dll", SetLastError=true)] static extern bool GetExitCodeProcess(IntPtr process, out uint code);
   [DllImport("kernel32.dll", SetLastError=true)] static extern bool TerminateProcess(IntPtr process, uint code);
+  static Win32Exception NativeError(string stage) {
+    int code = Marshal.GetLastWin32Error();
+    return new Win32Exception(code, stage + " (Win32 " + code + "): " + new Win32Exception(code).Message);
+  }
   static void SetLimits(IntPtr job, uint flags) {
     ExtendedLimits limits = new ExtendedLimits();
     limits.Basic.Flags = flags;
@@ -86,12 +91,12 @@ public static class ManorInstallJob {
     IntPtr memory = Marshal.AllocHGlobal(size);
     try {
       Marshal.StructureToPtr(limits, memory, false);
-      if (!SetInformationJobObject(job, 9, memory, (uint)size)) throw new Win32Exception(Marshal.GetLastWin32Error());
+      if (!SetInformationJobObject(job, 9, memory, (uint)size)) throw NativeError("SetInformationJobObject");
     } finally { Marshal.FreeHGlobal(memory); }
   }
   static IntPtr Create() {
     IntPtr job = CreateJobObject(IntPtr.Zero, null);
-    if (job == IntPtr.Zero) throw new Win32Exception(Marshal.GetLastWin32Error());
+    if (job == IntPtr.Zero) throw NativeError("CreateJobObjectW");
     try {
       // 句柄异常关闭时终止成员；不允许后代脱离 Job。
       SetLimits(job, 0x00002000);
@@ -100,20 +105,22 @@ public static class ManorInstallJob {
   }
   static uint Active(IntPtr job) {
     Accounting info;
-    if (!QueryInformationJobObject(job, 1, out info, (uint)Marshal.SizeOf(typeof(Accounting)), IntPtr.Zero)) throw new Win32Exception(Marshal.GetLastWin32Error());
+    if (!QueryInformationJobObject(job, 1, out info, (uint)Marshal.SizeOf(typeof(Accounting)), IntPtr.Zero)) throw NativeError("QueryInformationJobObject");
     return info.ActiveProcesses;
   }
   static void Stop(IntPtr job, ref IntPtr process, bool assigned, uint code) {
     if (process != IntPtr.Zero && !assigned) TerminateProcess(process, code);
-    if (!TerminateJobObject(job, code)) throw new Win32Exception(Marshal.GetLastWin32Error());
+    if (!TerminateJobObject(job, code)) throw NativeError("TerminateJobObject");
     if (process != IntPtr.Zero) {
-      WaitForSingleObject(process, 0xffffffff);
+      if (WaitForSingleObject(process, 0xffffffff) != 0) throw NativeError("WaitForSingleObject(stop)");
       CloseHandle(process);
       process = IntPtr.Zero;
     }
     while (Active(job) != 0) Thread.Sleep(10);
   }
   public static int Run(string application, string arguments, string directory) {
+    // PowerShell 将 $null 绑定为 string 时可能得到空串，原生工作目录只接受 null 或有效路径。
+    directory = string.IsNullOrEmpty(directory) ? null : directory;
     IntPtr job = Create();
     IntPtr input = IntPtr.Zero;
     ProcessInfo child = new ProcessInfo();
@@ -135,32 +142,33 @@ public static class ManorInstallJob {
       security.Length = Marshal.SizeOf(typeof(SecurityAttributes));
       security.Inherit = true;
       input = CreateFile("NUL", 0x80000000, 3, ref security, 3, 0x80, IntPtr.Zero);
-      if (input == new IntPtr(-1)) throw new Win32Exception(Marshal.GetLastWin32Error());
+      if (input == new IntPtr(-1)) throw NativeError("CreateFileW(NUL)");
       StartupInfo startup = new StartupInfo();
       startup.Size = (uint)Marshal.SizeOf(typeof(StartupInfo));
       startup.Flags = 0x100;
       startup.Input = input;
       startup.Output = GetStdHandle(-11);
       startup.Error = GetStdHandle(-12);
-      if (!SetHandleInformation(startup.Output, 1, 1) || !SetHandleInformation(startup.Error, 1, 1)
-          || !SetHandleInformation(GetStdHandle(-10), 1, 0)) throw new Win32Exception(Marshal.GetLastWin32Error());
+      if (!SetHandleInformation(startup.Output, 1, 1)) throw NativeError("SetHandleInformation(stdout)");
+      if (!SetHandleInformation(startup.Error, 1, 1)) throw NativeError("SetHandleInformation(stderr)");
+      if (!SetHandleInformation(GetStdHandle(-10), 1, 0)) throw NativeError("SetHandleInformation(stdin)");
       if (Interlocked.CompareExchange(ref cancelled, 0, 0) != 0) { Stop(job, ref child.Process, assigned, 130); return 130; }
       // 挂起创建且不新建控制台；加入 Job 之前不会执行安装代码。
-      if (!CreateProcess(application, new StringBuilder(arguments), IntPtr.Zero, IntPtr.Zero, true, 0x08000004, IntPtr.Zero, directory, ref startup, out child)) throw new Win32Exception(Marshal.GetLastWin32Error());
-      if (!AssignProcessToJobObject(job, child.Process)) throw new Win32Exception(Marshal.GetLastWin32Error());
+      if (!CreateProcess(application, new StringBuilder(arguments), IntPtr.Zero, IntPtr.Zero, true, 0x08000004, IntPtr.Zero, directory, ref startup, out child)) throw NativeError("CreateProcessW");
+      if (!AssignProcessToJobObject(job, child.Process)) throw NativeError("AssignProcessToJobObject");
       assigned = true;
       if (Interlocked.CompareExchange(ref cancelled, 0, 0) != 0) { Stop(job, ref child.Process, assigned, 130); return 130; }
-      if (ResumeThread(child.Thread) == 0xffffffff) throw new Win32Exception(Marshal.GetLastWin32Error());
+      if (ResumeThread(child.Thread) == 0xffffffff) throw NativeError("ResumeThread");
       CloseHandle(child.Thread);
       child.Thread = IntPtr.Zero;
       for (;;) {
         if (Interlocked.CompareExchange(ref cancelled, 0, 0) != 0) { Stop(job, ref child.Process, assigned, 130); return 130; }
         uint state = WaitForSingleObject(child.Process, 20);
         if (state == 0) break;
-        if (state != 258) throw new Win32Exception(Marshal.GetLastWin32Error());
+        if (state != 258) throw NativeError("WaitForSingleObject(install)");
       }
       uint code;
-      if (!GetExitCodeProcess(child.Process, out code)) throw new Win32Exception(Marshal.GetLastWin32Error());
+      if (!GetExitCodeProcess(child.Process, out code)) throw NativeError("GetExitCodeProcess");
       // 释放根进程句柄后再读取活动计数，避免完成进程的句柄延迟 Job 计数归零。
       CloseHandle(child.Process);
       child.Process = IntPtr.Zero;
