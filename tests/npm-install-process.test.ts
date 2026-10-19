@@ -33,7 +33,8 @@ function scripts(marker: string, output: string, mode: "hold" | "stdout" | "stde
   const root = `
     const fs = require('node:fs');
     const { spawn } = require('node:child_process');
-    spawn(process.execPath, ['-e', ${JSON.stringify(worker)}], {stdio:'ignore'});
+    // Windows 的普通 Node 后代随 Node 自有 Job 退出；detached 才能独立检验外层安装 Job。
+    spawn(process.execPath, ['-e', ${JSON.stringify(worker)}], {stdio:'ignore', detached:${process.platform === "win32"}});
     process.stdout.write('synthetic install started\\n');
     process.stderr.write('synthetic lifecycle log\\n');
     setInterval(() => {

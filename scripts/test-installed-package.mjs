@@ -85,13 +85,15 @@ try {
       const result = await runInstallProcess(process.execPath, ["-e", "process.stdout.write(JSON.stringify(process.cwd()))"], { cwd, timeout: 45000 });
       assert.equal(await realpath(JSON.parse(result.stdout)), await realpath(cwd || process.cwd()));
     }
+    await assert.rejects(runInstallProcess(process.execPath, ["-e", "process.exit(3)"], { timeout: 45000 }), { code: 3 });
     for (const mode of ["abort", "orphan"]) {
       const marker = directory + "/process-" + mode + ".txt";
       const child = "const fs=require('node:fs');process.on('SIGTERM',()=>{});fs.writeFileSync("+JSON.stringify(marker)+",'ready');setInterval(()=>fs.appendFileSync("+JSON.stringify(marker)+",'x'),10);";
-      const parent = "const{spawn}=require('node:child_process');spawn(process.execPath,['-e',"+JSON.stringify(child)+"],{stdio:'ignore'});" + (mode === "orphan" ? "const fs=require('node:fs');const t=setInterval(()=>{if(fs.existsSync("+JSON.stringify(marker)+")){clearInterval(t);process.exit(0)}},10);" : "setInterval(()=>{},1000);");
+      // Windows 的合成后代脱离 Node 自身 Job，仍留在产品的外层 Job 中，确保真正形成遗留后代。
+      const parent = "const{spawn}=require('node:child_process');spawn(process.execPath,['-e',"+JSON.stringify(child)+"],{stdio:'ignore',detached:process.platform==='win32'});" + (mode === "orphan" ? "const fs=require('node:fs');const t=setInterval(()=>{if(fs.existsSync("+JSON.stringify(marker)+")){clearInterval(t);process.exit(0)}},10);" : "setInterval(()=>{},1000);");
       const controller = new AbortController();
       const result = runInstallProcess(process.execPath, ["-e", parent], { signal: controller.signal, timeout: 45000 });
-      const rejected = assert.rejects(result, error => mode === "abort" ? error.code === "ABORT_ERR" : error.code === "INSTALL_PROCESS_DESCENDANTS_RUNNING");
+      const rejected = assert.rejects(result, error => mode === "abort" ? error.code === "ABORT_ERR" : error.code === "INSTALL_PROCESS_DESCENDANTS_RUNNING", "安装进程树场景: " + mode);
       let ready = false;
       for (let i=0; i<3000; i++) { try { await readFile(marker); ready=true; break; } catch {} await pause(10); }
       assert.equal(ready,true,"合成安装后代未启动");
