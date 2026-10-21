@@ -38,7 +38,7 @@ try {
     await page.route("**/api/v1/usage?*", async route => { await new Promise(resolve => { release = resolve; }); await route.continue(); });
     await button("估算费用").click(); await page.locator(".usage-results[aria-busy='true']").waitFor();
     ensure(JSON.stringify(await controlGaps()) === JSON.stringify(gaps), "loading改变控件间距");
-    ensure(await page.locator(".usage-group-switch .loading--inline").isVisible(), "分组进度没有保留");
+    ensure(await page.locator(".usage-page .loading--inline").count() === 1, "用量更新应合并为一个进度图形");
     ensure(await page.locator(".usage-report-body").evaluate(element => getComputedStyle(element, "::before").content === "none"), "刷新蓝线仍存在");
     while (!release) await page.waitForTimeout(20); release(); await ready(); await page.unroute("**/api/v1/usage?*");
     await page.locator(".usage-attribution-map").scrollIntoViewIfNeeded();
@@ -49,14 +49,19 @@ try {
     const tinyIndex = await tiles.evaluateAll(elements => elements.findIndex(element => element.getBoundingClientRect().width < 38 || element.getBoundingClientRect().height < 28));
     ensure(tinyIndex >= 0, "合成样本缺少微小方块");
     const tiny = tiles.nth(tinyIndex), fullLabel = await tiny.getAttribute("aria-label");
-    await tiny.hover(); const tooltip = page.locator(".usage-attribution-tooltip"); await tooltip.waitFor({ timeout: 3000 }); ensure(await tooltip.count() === 1, `悬浮未打开：${JSON.stringify(await tiny.boundingBox())} ${fullLabel}`);
-    ensure((await tooltip.innerText()).startsWith(fullLabel), "小方块悬浮信息不完整");
-    ensure(fullLabel.includes("$") && fullLabel.includes("%"), "悬浮缺少金额与占比");
-    await page.mouse.move(0, 0); await tiny.press("Shift+Tab"); await page.keyboard.press("Tab"); await page.locator(".usage-attribution-tooltip").waitFor({ timeout: 3000 });
-    ensure((await page.locator(".usage-attribution-tooltip").innerText()).startsWith(fullLabel), "键盘焦点没有展示详情");
+    const tooltip = page.locator(".usage-attribution-tooltip:not([data-state='closed'])");
+    // 亚像素小块无法可靠落下鼠标，先验证普通方块悬停，再用键盘回查小块。
+    const pointerTile = tiles.first(), pointerLabel = await pointerTile.getAttribute("aria-label");
+    await pointerTile.hover(); await tooltip.waitFor({ timeout: 3000 });
+    ensure((await tooltip.innerText()).startsWith(pointerLabel), "方块悬浮信息不完整");
+    await page.mouse.move(0, 0); await pointerTile.press("Escape"); await tiny.focus();
+    await tooltip.waitFor({ timeout: 3000 });
+    ensure((await tooltip.innerText()).startsWith(fullLabel), "小方块键盘信息不完整");
+    ensure(fullLabel.includes("$") && fullLabel.includes("%"), "详情缺少金额与占比");
+    ensure(await tiny.evaluate(element => element === document.activeElement), "小方块没有键盘焦点");
     await page.keyboard.press("Escape");
     const other = page.locator(".usage-attribution-tile[aria-disabled='true']");
-    if (await other.count()) { const hash = await page.evaluate(() => location.hash); await other.hover(); await page.locator(".usage-attribution-tooltip").waitFor({ timeout: 3000 }); ensure((await page.locator(".usage-attribution-tooltip").innerText()).includes("其余合计"), "合计方块不能查看详情"); await other.dispatchEvent("click"); ensure(await page.evaluate(() => location.hash) === hash, "合计方块误追加筛选"); }
+    if (await other.count()) { const hash = await page.evaluate(() => location.hash); await other.focus(); await tooltip.waitFor({ timeout: 3000 }); ensure((await tooltip.innerText()).includes("其余合计"), "合计方块不能查看详情"); await other.dispatchEvent("click"); ensure(await page.evaluate(() => location.hash) === hash, "合计方块误追加筛选"); }
     await page.mouse.move(0, 0); await button("管理模型价格").click();
     const dialog = page.getByRole("dialog", { name: "模型价格", exact: true });
     const filter = dialog.getByRole("combobox", { name: "定价状态", exact: true });
@@ -89,6 +94,7 @@ try {
     const inside = await info.evaluate(el => { const a = el.getBoundingClientRect(), b = el.closest(".pricing-workspace").getBoundingClientRect(); return a.left >= b.left && a.right <= b.right && a.top >= b.top && a.bottom <= b.bottom; });
     ensure(inside, "价格帮助弹层被对话框裁剪");
     await page.keyboard.press("Escape");
+    await page.waitForFunction(() => document.activeElement?.getAttribute("aria-label") === "查看价格规则");
     ensure(await priceRow.getByRole("button", { name: "查看价格规则", exact: true }).evaluate(el => el === document.activeElement), "关闭价格规则没有恢复焦点");
     await page.screenshot({ path: `${options.artifacts}/zh-price-filter-sort.png` });
     await button("关闭模型价格").click(); await button("外观").click(); await page.getByRole("combobox", { name: "显示模式", exact: true }).click(); await page.getByRole("option", { name: "深色", exact: true }).click(); await page.keyboard.press("Escape");

@@ -23,11 +23,9 @@ export function Loading({ variant = "scene", label, size, className }: LoadingPr
   return <span ref={root} className={`loading loading--${variant}${className ? ` ${className}` : ""}`}
     role={label ? "status" : undefined} aria-label={label} aria-hidden={label ? undefined : true} data-paused={paused}
     style={size === undefined ? undefined : { width: size, height: variant === "inline" ? size : size * .8 }}>
-    {variant === "inline" ? <svg className="loading-art" viewBox="0 0 48 48" aria-hidden="true">
-      <path className="loading-compact-steam loading-animated" d="M19 21c-6-5 4-8 0-12" />
-      <path className="loading-compact-steam loading-second loading-animated" d="M28 21c-6-5 4-8 0-12" />
-      <g className="loading-line"><path className="loading-face" d="M34 27q12-3 10 4-1 7-11 5" /><path className="loading-face" d="M10 26h25l-2 10q-2 6-10 6-8 0-10-6Z" /><path d="M8 44h31" fill="none" /></g>
-      <path d="M16 29h13" stroke="var(--loading-tea)" strokeWidth="2" strokeLinecap="round" />
+    {variant === "inline" ? <svg className="loading-art" viewBox="0 0 24 24" aria-hidden="true">
+      <path className="loading-compact-steam loading-animated" d="M11 8c-4-3 3-4 0-7" />
+      <path className="loading-compact-cup" d="M5 11h12v5a6 6 0 0 1-12 0Zm12 1h1a3 3 0 0 1 0 6h-1" />
     </svg> : <svg className="loading-art loading-animated" viewBox="0 0 400 320" aria-hidden="true">
         <ellipse className="loading-ground" cx="181" cy="291" rx="121" ry="4" opacity=".8"/>
 

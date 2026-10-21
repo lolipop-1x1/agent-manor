@@ -528,7 +528,7 @@ export default {
   "sessions.profile.overview": "Overview",
   "sessions.profile.calls": "Calls",
   "sessions.profile.usage": "Usage",
-  "sessions.profile.loading": "Calculating profile…",
+  "sessions.profile.loading": "Loading profile…",
   "sessions.profile.select": "Select a session to view its profile",
   "sessions.profile.models": "Model records",
   "sessions.usage.summary": "Token usage",

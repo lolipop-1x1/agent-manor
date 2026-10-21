@@ -519,7 +519,7 @@ export default {
   "sessions.profile.overview": "概览",
   "sessions.profile.calls": "调用",
   "sessions.profile.usage": "用量",
-  "sessions.profile.loading": "正在计算画像…",
+  "sessions.profile.loading": "加载会话画像…",
   "sessions.profile.select": "选择会话查看画像",
   "sessions.profile.models": "模型记录",
   "sessions.usage.summary": "Token 用量",

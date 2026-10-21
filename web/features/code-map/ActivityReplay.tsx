@@ -278,7 +278,7 @@ export function ActivityReplay({ repositoryId, active, theme, targetSessionId, o
             {selectedStep && <button className="button subtle" onClick={() => onSession({ sessionId: selectedStep.trackId, messageId: selection.activity?.messageId, version: data.sessionVersion })}><ArrowSquareOut size={14} />{t("replay.viewSession")}</button>}
             {selection.activity && requestedEvidenceId !== selection.activity.id && <button className="button subtle" onClick={() => setRequestedEvidenceId(selection.activity!.id)}>{t("replay.readEvidence")}</button>}
           </div>
-          {evidenceLoading && <p className="muted" role="status"><Loading variant="inline" size={16} />{t("replay.evidenceLoading")}</p>}
+          {evidenceLoading && <p className="muted loading-status" role="status"><Loading variant="inline" size={16} />{t("replay.evidenceLoading")}</p>}
           {!!evidenceError && <div className="replay-error" role="alert">{errorMessage(evidenceError)}<button className="button subtle" onClick={() => setEvidenceRetry(value => value + 1)}>{t("common.retry")}</button><button className="button subtle" onClick={update}>{t("replay.update")}</button></div>}
           {evidence && <ReplayEvidenceBody evidence={evidence} />}
           </>}

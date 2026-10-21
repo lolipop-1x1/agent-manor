@@ -146,7 +146,7 @@ function HistoryGaps({ detail, query }: { detail: ResourceUsageDetailSummary; qu
     <summary>{t("resources.source.gapCount", { count: detail.coverage.gapCount })}</summary>
     {open && (error ? <div role="alert"><ResourceErrorText error={error} /><button className="text-button" onClick={() => setRetry(value => value + 1)}>{t("common.retry")}</button></div>
       : gaps ? <div className="resource-source-gaps">{gaps.map((gap, index) => <div key={index}><ResourceMessage descriptor={gap.messageDescriptor} original={gap.message} details={gap.details} />{gap.sourceId && <p className="resource-path">{gap.sourceId}</p>}</div>)}</div>
-      : <p role="status"><Loading variant="inline" size={16} />{t("common.loading")}</p>)}
+      : <p className="loading-status" role="status"><Loading variant="inline" size={16} />{t("common.loading")}</p>)}
   </details>;
 }
 
@@ -718,7 +718,7 @@ export default function Resources({ active, onSession, onHistoryReading, history
           return <ManagementBody key={row.key ?? row.body.id} row={row} index={index} onManage={input => void showManagement(input)} legacyFavorite={!!legacyIds.length} onClearFavorite={() => { for (const id of legacyIds) void favorite(id, true); }} />;
         }) : <ResourceEmpty>{t("resources.management.historyOnly")}</ResourceEmpty>}
       </div> : route.detail === "history" ? <div aria-busy={evidenceLoading}>
-        {evidenceLoading && !usageDetail && <p role="status"><Loading variant="inline" size={16} />{t("resources.loading.evidence")}</p>}
+        {evidenceLoading && !usageDetail && <p className="loading-status" role="status"><Loading variant="inline" size={16} />{t("resources.loading.evidence")}</p>}
         <div inert={evidenceLoading || !!evidenceError}>
         <Stats stats={usageDetail?.resource.stats ?? selectedResource.stats} kind={route.kind} />
         {usageDetail ? <>

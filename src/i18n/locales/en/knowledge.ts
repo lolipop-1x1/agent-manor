@@ -65,6 +65,7 @@ const messages: MessageCatalog = {
   "knowledge.refresh": "Refresh knowledge",
   "knowledge.retry": "Retry",
   "knowledge.loading": "Updating",
+  "knowledge.loadingContent": "Loading knowledge…",
   "knowledge.noSources": "No linked conversation sources",
   "knowledge.source.manual": "Manual entry",
   "knowledge.source.agent": "Agent submission",

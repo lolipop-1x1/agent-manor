@@ -7,6 +7,7 @@
 .session-search-field:focus-within { border-color: var(--accent); box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 16%, transparent); }
 .session-search-field input { width: 100%; min-width: 0; border: 0; outline: 0; padding: 0; background: transparent; color: var(--text); font-size: 11px; }
 .session-search-field button { border: 0; background: transparent; color: var(--muted); padding: 1px 3px; font-size: 17px; line-height: 1; }
+.session-search-progress { display: inline-flex; width: 16px; height: 16px; flex: none; }
 .session-process-toggle { display: grid; grid-template-columns: 14px 1fr; align-items: center; gap: 1px 7px; margin: 9px 0 10px; color: var(--text); font-size: 10px; }
 .session-process-toggle input { accent-color: var(--accent); }
 .session-list-meta { display: flex; align-items: center; justify-content: space-between; padding: 12px 3px 5px; color: var(--muted); font-size: 10px; }
@@ -35,7 +36,7 @@
 .session-search-empty p { font-size: 11px; }
 .session-pager { display: flex; align-items: center; justify-content: center; gap: 9px; padding: 9px 2px; color: var(--muted); font-size: 10px; }
 .session-pager .icon-button { width: 27px; min-height: 27px; padding: 3px; }
-.session-list-loading, .session-message-loading { margin: 5px 0; color: var(--muted); font-size: 11px; }
+.session-message-loading { margin: 5px 0; color: var(--muted); font-size: 11px; }
 .sessions-main { display: flex; flex-direction: column; min-width: 0; min-height: 0; padding: 16px 22px 0; overflow: hidden; }
 .session-reading-header { padding-bottom: 12px; }
 .sessions-main-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
@@ -379,4 +380,4 @@
 .session-usage-coverage span { color: var(--muted); }
 .session-usage-coverage strong { color: var(--near); font-size: inherit; font-weight: 500; white-space: nowrap; }
 
-.session-list-loading, .session-message-loading { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; }
+.session-message-loading { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; }

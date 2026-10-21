@@ -65,6 +65,7 @@ const messages: MessageCatalog = {
   "knowledge.refresh": "刷新知识",
   "knowledge.retry": "重试",
   "knowledge.loading": "正在更新",
+  "knowledge.loadingContent": "加载知识…",
   "knowledge.noSources": "没有关联的对话来源",
   "knowledge.source.manual": "手动录入",
   "knowledge.source.agent": "Agent 提交",

@@ -177,11 +177,7 @@
 .usage-secondary-metrics strong { font-size: 19px; font-weight: 600; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .usage-secondary-metrics time { display: block; margin-top: 5px; font-size: 12px; color: var(--muted); }
 .usage-metric-switch, .usage-group-switch { display: flex; align-items: center; gap: 8px; }
-.usage-group-switch { position: relative; gap: 0; }
-.usage-group-switch .usage-query-feedback { position: absolute; right: 8px; pointer-events: none; }
-.usage-group-switch:has(.loading--inline) .filter-trigger > span:last-child { visibility: hidden; }
 .usage-range { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
-.usage-query-feedback { width: 20px; height: 20px; display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0; color: var(--accent); }
 .usage-session-table { min-width: 1040px; }
 .usage-session-table th:nth-child(3), .usage-session-table th:nth-child(4), .usage-request-table th:nth-child(7) { padding-right: 36px; }
 .usage-session-table td:nth-child(2), .usage-session-table td:nth-child(6) { text-align: left; }

@@ -289,7 +289,7 @@ export function SessionTrace({ messages, steps, focusMessageId, focusRequest, fo
           {selectedMessage.resource && <div>{t(resourceLabels[selectedMessage.resource.kind])} · {sessionResourceName(selectedMessage.resource)}</div>}
         </details>
         {!!selected.usage.length && <div className="trace-usage">{selected.usage.map(usage => <div key={usage.id}>{usage.model && <strong>{t("sessions.trace.usageModel", { model: usage.model })}</strong>}{tokenFields.filter(([key]) => usage[key] !== undefined).map(([key, label]) => <span key={key}>{t(label)} <b>{displayRecorded(usage[key])}</b></span>)}</div>)}</div>}
-        {detailLoading && <p role="status"><Loading variant="inline" size={16} />{t("sessions.body.loading")}</p>}
+        {detailLoading && <p className="loading-status" role="status"><Loading variant="inline" size={16} />{t("sessions.body.loading")}</p>}
         {detailError && <p role="alert"><SessionError error={detailError} /> <button className="text-button" onClick={() => setDetailRetry(value => value + 1)}>{t("common.retry")}</button></p>}
         <article id={`session-message-${selectedMessage.id}`} className={`trace-detail-body kind-${selectedMessage.kind}`} data-message-id={selectedMessage.id}>
           {selectedMessage.operation?.label && <p className="session-operation-title">{selectedMessage.operation.label}</p>}

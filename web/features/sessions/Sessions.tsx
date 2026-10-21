@@ -1,4 +1,5 @@
 import { Loading } from "../../shared/ui/Loading";
+import { LoadingSkeleton } from "../../shared/ui/LoadingSkeleton";
 import { clientLabel, getLanguage, isMessageDescriptorKnown, messageText, t, useI18n } from "../../shared/i18n";
 import { formatDateTime, formatNumber } from "../../../src/i18n";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
@@ -685,15 +686,14 @@ export default function Sessions({ active, target, onMap, onReplay, onHistoryRea
         <div id="session-list-content" className="sidebar-content" hidden={leftCollapsed}>
           <SemanticSearchPanel active={active} historyVersion={status?.version} mode={searchMode} onModeChange={setSearchMode} query={globalQuery} onQueryChange={setGlobalQuery} selectedSessionId={selectedSessionId} onSelect={selectHit}
             scope={searchScope} onScopeChange={setSearchScope} includeProcess={includeProcess} onIncludeProcessChange={setIncludeProcess}
-            keywordControls={<label className="session-search-field"><span className="session-search-icon" role={keywordUpdating ? "status" : undefined} aria-label={keywordUpdating ? t("sessions.search.loadingHistory") : undefined}>{keywordUpdating ? <Loading variant="inline" size={16} /> : <MagnifyingGlass size={16} aria-hidden="true" />}</span><input aria-label={t("sessions.search.globalLabel")} value={globalQuery} onChange={event => setGlobalQuery(event.target.value)} placeholder={t("sessions.search.globalPlaceholder")} />{globalQuery && <button type="button" aria-label={t("sessions.search.clear")} onClick={() => setGlobalQuery("")}><X size={14} /></button>}</label>}
+            keywordControls={<label className="session-search-field"><span className="session-search-icon"><MagnifyingGlass size={16} aria-hidden="true" /></span><input aria-label={t("sessions.search.globalLabel")} value={globalQuery} onChange={event => setGlobalQuery(event.target.value)} placeholder={t("sessions.search.globalPlaceholder")} /><span className="session-search-progress" role={keywordUpdating ? "status" : undefined} aria-label={keywordUpdating ? t("sessions.search.loadingHistory") : undefined}>{keywordUpdating && <Loading variant="inline" size={16} />}</span>{globalQuery && <button type="button" aria-label={t("sessions.search.clear")} onClick={() => setGlobalQuery("")}><X size={14} /></button>}</label>}
             keywordFallback={globalSearch ? <SessionSearchGroups data={globalSearch} query={displayedGlobalQuery} params={globalSearchKey} selectedSessionId={selectedSessionId} onPage={setGlobalSearchPage} onSelect={selectHit} /> : undefined}>
           <div className="session-list-meta"><span>{debouncedGlobalQuery ? visibleGlobalSearch ? t("sessions.list.count", { count: visibleGlobalSearch.total }) : t("sessions.search.history") : sessionList ? t("sessions.list.count", { count: sessionList.total }) : t("sessions.list.title")}</span>
           </div>
 
           {status?.stale && <Notice>{t("sessions.status.stale")}</Notice>}
           {statusError && <Notice danger action={<button className="text-button" onClick={() => setReload(value => value + 1)}>{t("common.retry")}</button>}><SessionError error={statusError} /></Notice>}
-          {statusLoading && !status && <p className="muted" role="status"><Loading variant="inline" size={16} />{t("sessions.status.loading")}</p>}
-          {listLoading && !sessionList && <p className="session-list-loading" role="status"><Loading /><span>{t("sessions.list.loading")}</span></p>}
+          {!sessionList && !statusError && !listError && (statusLoading || listLoading) && <LoadingSkeleton label={t("sessions.list.loading")} />}
           {listError && <Notice danger action={<button className="text-button" onClick={() => setReload(value => value + 1)}>{t("common.retry")}</button>}><SessionError error={listError} /></Notice>}
           <div className="session-list" aria-label={t("sessions.list.results")} aria-busy={keywordUpdating} inert={keywordUpdating || invalidDates || undefined}>
             {globalSearchError && <Notice danger><SessionError error={globalSearchError} /></Notice>}
@@ -791,7 +791,7 @@ export default function Sessions({ active, target, onMap, onReplay, onHistoryRea
             {mode !== "trace" && continuous.earlier && <div className="session-reading-boundary" data-direction="earlier">
               {continuous.error && continuous.errorDirection === "earlier" && <span role="alert"><SessionError error={continuous.error} /></span>}
               <button className="text-button" disabled={!!continuous.loading || messageLoading} onClick={() => void continuous.load("earlier")}>{t(continuous.error && continuous.errorDirection === "earlier" ? "common.retry" : "sessions.reading.loadEarlier")}</button>
-              {continuous.loading === "earlier" && <span role="status"><Loading variant="inline" size={16} />{t("common.loading")}</span>}
+              {continuous.loading === "earlier" && <span className="loading-status" role="status"><Loading variant="inline" size={16} />{t("common.loading")}</span>}
             </div>}
             {selectedMessageData && <>
               {!selectedMessageData.messages.length && !messageLoading ? <div className="session-message-empty">
@@ -814,7 +814,7 @@ export default function Sessions({ active, target, onMap, onReplay, onHistoryRea
             {mode !== "trace" && continuous.later && <div className="session-reading-boundary" data-direction="later">
               {continuous.error && continuous.errorDirection === "later" && <span role="alert"><SessionError error={continuous.error} /></span>}
               <button className="text-button" disabled={!!continuous.loading || messageLoading} onClick={() => void continuous.load("later")}>{t(continuous.error && continuous.errorDirection === "later" ? "common.retry" : "sessions.reading.loadLater")}</button>
-              {continuous.loading === "later" && <span role="status"><Loading variant="inline" size={16} />{t("common.loading")}</span>}
+              {continuous.loading === "later" && <span className="loading-status" role="status"><Loading variant="inline" size={16} />{t("common.loading")}</span>}
             </div>}
             {currentMessage && <span className="sr-only" aria-live="polite">{t("sessions.reading.located", { kind: currentMessage.operation ? sessionOperationLabel(currentMessage.operation) : t(kindLabels[currentMessage.kind]) })}</span>}
           </> : <div className="session-message-empty"><ChatCircle size={30} aria-hidden="true" /><h2>{t("sessions.reading.select")}</h2><p className="muted">{t("sessions.reading.selectHelp")}</p></div>}
