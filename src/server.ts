@@ -53,6 +53,7 @@ import { KnowledgeSemantic } from "./knowledge/semantic.js";
 import { registerKnowledgeRoutes } from "./service/knowledge-routes.js";
 import { ReleaseService } from "./service/releases.js";
 import { registerUpdateRoutes } from "./service/update-routes.js";
+import { startServiceControl } from "./service/control.js";
 
 export interface ServiceOptions {
   home?: string;
@@ -64,6 +65,7 @@ export interface ServiceOptions {
   resourceInventory?: ResourceInventoryOptions;
   usagePricing?: { fetch?: typeof globalThis.fetch; now?: () => Date };
   noUpdateCheck?: boolean;
+  exitOnStop?: boolean;
   releaseChecks?: ConstructorParameters<typeof ReleaseService>[0];
 }
 
@@ -116,6 +118,7 @@ export async function startService(options: ServiceOptions = {}) {
   let autoSync: SessionAutoSyncScheduler | undefined;
   let unsubscribePreferences: (() => void) | undefined;
   let stopReleaseChecks: (() => void) | undefined;
+  let control: Awaited<ReturnType<typeof startServiceControl>> | undefined;
   const app = Fastify({ logger: false, bodyLimit: 65_536, forceCloseConnections: true });
   app.addHook("preValidation", async request => {
     const path = request.url.split("?")[0]!.replace(/^\/api\/v1/, "");
@@ -208,26 +211,24 @@ export async function startService(options: ServiceOptions = {}) {
         unsubscribePreferences?.();
         stopReleaseChecks?.();
         sync.close();
-        await knowledgeSemantic?.close();
-        await knowledgeManager?.close();
-        await knowledgeSources?.close();
+        const shutdown = await Promise.allSettled([
+          knowledgeSemantic?.close(), knowledgeManager?.close(), knowledgeSources?.close(), semanticManager?.close(),
+          searchManager?.close(), replayManager?.close(), mapQueryManager?.close(), resourceHistory?.close(),
+          overviewManager?.close(), usageManager?.close(), worker.close(),
+        ]);
         knowledgeStore?.close();
-        await semanticManager?.close();
-        await searchManager?.close();
-        await replayManager?.close();
-        await mapQueryManager?.close();
-        await resourceHistory?.close();
-        await overviewManager?.close();
-        await usageManager?.close();
-        await worker.close();
         index.close();
         library.close();
         management.close();
         pricing?.close();
+        const failure = shutdown.find(result => result.status === "rejected");
+        if (failure?.status === "rejected") throw failure.reason;
       } finally {
         // 日志或某个组件关闭失败时仍回收实例登记与锁，不留下可被误复用的记录。
-        const cleanup = await Promise.allSettled([removeInstance(home, instance), release?.(), registration?.remove()]);
+        const cleanup = await Promise.allSettled([release?.(), registration?.remove()]);
+        cleanup.push(...await Promise.allSettled([removeInstance(home, instance)]));
         serviceLog(home, "service.stopped", { instanceId: instance.id });
+        await control?.close();
         const failed = cleanup.find(result => result.status === "rejected");
         if (failed?.status === "rejected") throw failed.reason;
       }
@@ -294,6 +295,7 @@ export async function startService(options: ServiceOptions = {}) {
       if (body !== undefined && (!body || typeof body !== "object" || Array.isArray(body) || Object.keys(body).some(key => key !== "allowBusy") || typeof body.allowBusy !== "boolean")) throw new ServiceError("INVALID_INPUT", "无效停止参数", { key: "diagnostics.service.runtime.stopInput" });
       if (!body?.allowBusy && (activeTasks().length || ["pending", "running"].includes(preparation.state))) throw new ServiceError("CONTENT_STALE", "后台任务仍在运行", { key: "diagnostics.service.runtime.busy" });
       reply.send({ stopping: true });
+      control?.stop();
       setImmediate(() => { void app.close(); });
     });
     app.get("/api/v1/repositories", async () => ({ repositories: index.listRepositories() }));
@@ -424,6 +426,14 @@ export async function startService(options: ServiceOptions = {}) {
     const address = app.server.address();
     if (!address || typeof address === "string") throw new DiagnosticError("未取得本地监听端口", { key: "diagnostics.server.m019" });
     instance.port = address.port;
+    if (options.exitOnStop) {
+      control = await startServiceControl(instance, () => {
+        closing = true;
+        sync.close(); stopReleaseChecks?.();
+        void app.close().catch(() => undefined);
+      });
+      instance.controlPort = control.port;
+    }
     await writeInstance(home, instance);
     await registration!.running(instance);
     serviceLog(home, "service.ready", { instanceId: instance.id, port: instance.port, version: VERSION });
@@ -498,6 +508,7 @@ export async function startService(options: ServiceOptions = {}) {
     unsubscribePreferences?.();
     stopReleaseChecks?.();
     autoSync?.close();
+    await control?.close();
     await app.close().catch(() => undefined);
     await knowledgeSemantic?.close().catch(() => undefined);
     await knowledgeManager?.close().catch(() => undefined);

@@ -29,7 +29,7 @@ am web
 ```sh
 am status --json                  # 查看后台与数据准备状态
 am ready --timeout 120 --json     # 等待本轮启动数据准备
-am stop --wait                   # 等在途任务结束后停止后台
+am stop                          # 取消后台任务并停止服务
 ```
 
 ## 能做什么

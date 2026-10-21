@@ -451,9 +451,10 @@ export class SemanticManager {
     this.cancelQueries();
     this.scheduler.cancelQueued();
     if (this.timer) clearInterval(this.timer);
+    const schedulerClosing = this.scheduler.close();
     await this.initialized.catch(() => undefined);
     try { await this.pause(); }
     catch (error) { if (this.state.job) this.failJob(this.state.job, error); }
-    finally { await Promise.allSettled([this.scheduler.close(), this.writer.close(), this.reader.close()]); }
+    finally { await Promise.allSettled([schedulerClosing, this.writer.close(), this.reader.close()]); }
   }
 }

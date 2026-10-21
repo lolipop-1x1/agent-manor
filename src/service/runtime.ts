@@ -33,6 +33,7 @@ export async function readInstance(home: string): Promise<ServiceInstance | unde
     const value = JSON.parse(await readFile(runtimePath(home), "utf8")) as ServiceInstance;
     if (!value || typeof value.id !== "string" || value.id.length < 16 || value.host !== "127.0.0.1"
       || !Number.isSafeInteger(value.port) || value.port < 1 || value.port > 65535 || !Number.isSafeInteger(value.pid)) return undefined;
+    if (value.controlPort !== undefined && (!Number.isSafeInteger(value.controlPort) || value.controlPort < 1 || value.controlPort > 65535)) return undefined;
     return value;
   } catch { return undefined; }
 }
@@ -268,31 +269,72 @@ export async function waitForPreparation(instance: ServiceInstance, timeoutMs = 
   }
 }
 
+async function serviceControl(instance: ServiceInstance, path: "/status" | "/stop"): Promise<ServiceInstance> {
+  try {
+    const response = await fetch(`http://127.0.0.1:${instance.controlPort}${path}`, {
+      method: path === "/stop" ? "POST" : "GET", headers: { "x-agent-manor-instance": instance.id }, signal: AbortSignal.timeout(1000),
+    });
+    const result = await response.json() as { instance?: ServiceInstance };
+    const verified = result.instance;
+    if (!response.ok || !verified || verified.id !== instance.id || verified.pid !== instance.pid || verified.host !== instance.host
+      || verified.port !== instance.port || verified.startedAt !== instance.startedAt) throw new Error("Service control identity mismatch");
+    return verified;
+  } catch { throw new RequestError("SERVICE_IDENTITY_UNVERIFIED", "服务身份尚未核验，未停止任何进程", { key: "diagnostics.service.runtime.identity" }); }
+}
+
 export async function stopService(home = dataHome(), options: { timeoutMs?: number; wait?: boolean; allowBusy?: boolean } = {}): Promise<{ stopped: boolean; instance?: ServiceInstance }> {
-  const initial = await serviceStatus(home, { summary: true });
-  if (!initial.running) {
-    if (initial.state !== "stopped") throw new RequestError("SERVICE_IDENTITY_UNVERIFIED", "服务身份尚未核验，未停止任何进程", { key: "diagnostics.service.runtime.identity" });
-    return { stopped: false };
+  const allowBusy = options.allowBusy ?? !options.wait;
+  const deadline = Date.now() + (options.timeoutMs ?? (allowBusy ? 5000 : 30_000));
+  const recorded = await readInstance(home);
+  let controlled: ServiceInstance | undefined;
+  if (allowBusy && recorded?.controlPort && alive(recorded.pid)) {
+    try { controlled = await serviceControl(recorded, "/status"); }
+    catch { /* 控制线程失联时只能通过主 HTTP 重新核验身份，不能据磁盘记录终止进程。 */ }
   }
-  const instance = initial.instance!;
-  if (initial.status!.protocolVersion !== SERVICE_PROTOCOL_VERSION) throw new RequestError("SERVICE_VERSION_MISMATCH", "旧后台不支持安全停止协议", { key: "diagnostics.service.runtime.versionMismatch", params: { version: initial.status!.version, expected: VERSION } });
-  const deadline = Date.now() + (options.timeoutMs ?? 30_000);
-  let current = initial;
-  while (current.status?.activeTasks?.length || ["pending", "running"].includes(current.status?.preparation?.state ?? "")) {
-    if (options.allowBusy) break;
-    if (!options.wait) throw new RequestError("SERVICE_BUSY", "后台仍有任务运行，请等待任务完成后停止", { key: "diagnostics.service.runtime.busy" });
-    if (Date.now() >= deadline) throw new RequestError("WAIT_TIMEOUT", "等待任务结束超时，后台仍继续运行", { key: "diagnostics.service.runtime.waitTimeout" });
-    await delay(100);
-    current = await serviceStatus(home, { summary: true });
-    if (!current.running || current.instance?.id !== instance.id) throw new RequestError("SERVICE_IDENTITY_UNVERIFIED", "等待期间服务实例发生变化", { key: "diagnostics.service.runtime.identity" });
+  let instance: ServiceInstance;
+  if (controlled) {
+    instance = { ...recorded!, version: controlled.version, protocolVersion: controlled.protocolVersion };
+  } else {
+    const initial = await serviceStatus(home, { summary: true });
+    if (!initial.running) {
+      if (initial.state !== "stopped") throw new RequestError("SERVICE_IDENTITY_UNVERIFIED", "服务身份尚未核验，未停止任何进程", { key: "diagnostics.service.runtime.identity" });
+      return { stopped: false };
+    }
+    instance = initial.instance!;
+    let current = initial;
+    while (!allowBusy && (current.status?.activeTasks?.length || ["pending", "running"].includes(current.status?.preparation?.state ?? ""))) {
+      if (!options.wait) throw new RequestError("SERVICE_BUSY", "后台仍有任务运行，请等待任务完成后停止", { key: "diagnostics.service.runtime.busy" });
+      if (Date.now() >= deadline) throw new RequestError("WAIT_TIMEOUT", "等待任务结束超时，后台仍继续运行", { key: "diagnostics.service.runtime.waitTimeout" });
+      await delay(100);
+      current = await serviceStatus(home, { summary: true });
+      if (!current.running || current.instance?.id !== instance.id) throw new RequestError("SERVICE_IDENTITY_UNVERIFIED", "等待期间服务实例发生变化", { key: "diagnostics.service.runtime.identity" });
+    }
   }
-  await apiRequest(instance, "/stop", "POST", options.allowBusy ? { allowBusy: true } : undefined);
+  if (instance.protocolVersion !== SERVICE_PROTOCOL_VERSION) throw new RequestError("SERVICE_VERSION_MISMATCH", "旧后台不支持安全停止协议", { key: "diagnostics.service.runtime.versionMismatch", params: { version: instance.version ?? "unknown", expected: VERSION } });
+  const stopHttp = (target: ServiceInstance) => apiRequest(target, "/stop", "POST", allowBusy ? { allowBusy: true } : undefined,
+    {}, AbortSignal.timeout(Math.max(1, deadline - Date.now())));
+  let stopFailure: unknown;
+  try {
+    if (controlled) {
+      try { await serviceControl(instance, "/stop"); }
+      catch (error) {
+        if (!alive(instance.pid)) { await removeInstance(home, instance); return { stopped: true, instance }; }
+        const current = await serviceStatus(home, { summary: true });
+        if (!current.running || current.instance?.id !== instance.id) throw error;
+        await stopHttp(current.instance);
+      }
+    } else await stopHttp(instance);
+  } catch (error) {
+    if (error instanceof RequestError && error.code !== "SERVICE_IDENTITY_UNVERIFIED") throw error;
+    // 并发停止可能先关闭连接；只有确认目标已退出后才把连接中断视为停止成功。
+    stopFailure = error;
+  }
   for (;;) {
     // HTTP 完全关闭且实例记录移除后，才向调用者报告停止完成。
     const record = await readInstance(home);
-    if (record?.id !== instance.id) return { stopped: true, instance };
+    if (record?.id !== instance.id && !instance.controlPort) return { stopped: true, instance };
     if (!alive(instance.pid)) { await removeInstance(home, instance); return { stopped: true, instance }; }
-    if (Date.now() >= deadline) throw new RequestError("STOP_TIMEOUT", "服务仍在停止，请查看状态和日志", { key: "diagnostics.service.runtime.stopTimeout" });
+    if (Date.now() >= deadline) throw stopFailure ?? new RequestError("STOP_TIMEOUT", "服务仍在停止，请查看状态和日志", { key: "diagnostics.service.runtime.stopTimeout" });
     await delay(100);
   }
 }
@@ -316,10 +358,10 @@ export class RequestError extends Error {
   constructor(readonly code: string, message: string, readonly messageDescriptor?: MessageDescriptor) { super(message); }
 }
 
-export async function apiRequest<T>(instance: ServiceInstance, path: string, method = "GET", body?: unknown, headers: Record<string, string> = {}): Promise<T> {
+export async function apiRequest<T>(instance: ServiceInstance, path: string, method = "GET", body?: unknown, headers: Record<string, string> = {}, signal?: AbortSignal): Promise<T> {
   const response = await fetch(`${serviceUrl(instance)}/api/v1${path}`, {
     method, headers: { ...headers, "x-agent-manor-instance": instance.id, ...(body === undefined ? {} : { "Content-Type": "application/json" }) },
-    body: body === undefined ? undefined : JSON.stringify(body), signal: AbortSignal.timeout(30_000),
+    body: body === undefined ? undefined : JSON.stringify(body), signal: signal ?? AbortSignal.timeout(30_000),
   });
   const data = await response.json() as T | ApiErrorResponse;
   if (!response.ok) {

@@ -29,7 +29,7 @@ am web
 ```sh
 am status --json                  # Inspect service and data preparation status
 am ready --timeout 120 --json     # Wait for the current startup preparation
-am stop --wait                   # Stop after in-flight tasks finish
+am stop                          # Cancel background tasks and stop the service
 ```
 
 ## What you can do

@@ -295,6 +295,7 @@ export interface ServiceInstance {
   pid: number;
   host: "127.0.0.1";
   port: number;
+  controlPort?: number;
   startedAt: string;
   version?: string;
   protocolVersion?: number;

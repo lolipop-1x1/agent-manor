@@ -63,7 +63,7 @@ test("启动先发布 HTTP，再准备绑定版本的历史、用量和默认总
     const status = await apiRequest<StatusResponse>(service.instance, "/status?summary=true");
     assert.ok(["pending", "running"].includes(status.preparation!.state));
     await assert.rejects(waitForPreparation(service.instance, 0), { code: "WAIT_TIMEOUT" });
-    await assert.rejects(stopService(home), { code: "SERVICE_BUSY" });
+    await assert.rejects(stopService(home, { allowBusy: false }), { code: "SERVICE_BUSY" });
     assert.equal((await serviceStatus(home)).running, true);
     const prepared = await waitForPreparation(service.instance, 20_000);
     assert.equal(prepared.preparation?.state, "ready");

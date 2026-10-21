@@ -207,7 +207,7 @@ export async function updateProduct(options: UpdateOptions, dependencies: Update
     }
     if (statusFingerprint(current) !== statusFingerprint(status)) throw failure("UPDATE_PREVIEW_CHANGED", "Service identity changed after confirmation; review a fresh preview", "cli.update.previewChanged");
     if (registered.some(item => item.home === selectedHome && (item.state === "starting" || !current.running || item.instance?.id !== current.instance?.id))) throw failure("SERVICE_IDENTITY_UNVERIFIED", "A registered service identity cannot be verified", "diagnostics.service.runtime.identity");
-    if (current.running) { await (dependencies.stop ?? stopService)(options.home, { wait: options.wait, timeoutMs: options.timeoutMs }); stopped = true; }
+    if (current.running) { await (dependencies.stop ?? stopService)(options.home, { wait: options.wait, timeoutMs: options.timeoutMs, allowBusy: false }); stopped = true; }
     if (!releaseService) try { releaseService = await acquireLock(options.home, "service.lock"); } catch { throw failure("SERVICE_BUSY", "Another service is starting or stopping", "diagnostics.service.runtime.busy"); }
     if (await (dependencies.space ?? availableBytes)(dirname(options.home)) < await backupBytes(options.home)) throw failure("UPDATE_SPACE_INSUFFICIENT", "Insufficient space for the data backup", "cli.update.spaceInsufficient");
     dependencies.progress?.("backup");

@@ -38,7 +38,7 @@ export function registerLifecycle(program: Command, context: CliContext): void {
   program.command("serve").description(context.t("cli.serve")).option("--port <number>", context.t("cli.port"))
     .action(async (_opts, command: Command) => {
       const opts = command.optsWithGlobals<Options>();
-      const service = await startService({ home: homeFor(command), port: portFor(opts), noUpdateCheck: noUpdateCheck(opts) });
+      const service = await startService({ home: homeFor(command), port: portFor(opts), noUpdateCheck: noUpdateCheck(opts), exitOnStop: true });
       context.output(command, { instance: service.instance, url: serviceUrl(service.instance) });
       const shutdown = () => { void service.close(); };
       process.once("SIGINT", shutdown); process.once("SIGTERM", shutdown);
@@ -48,10 +48,12 @@ export function registerLifecycle(program: Command, context: CliContext): void {
     // 完整模式保留旧脚本字段，日常查询只保留一份状态摘要。
     context.output(command, opts.full ? opts.json ? { ...value.status, ...value } : value : summarizeStatus(value));
   });
-  context.waiting(program.command("stop").description(context.t("cli.stop")))
+  program.command("stop").description(context.t("cli.stop"))
+    .option("--wait", context.t("cli.stop.wait"))
+    .option("--timeout <seconds>", context.t("cli.stop.timeout"))
     .action(async (_opts, command: Command) => {
       const opts = command.optsWithGlobals<Options>();
-      const result = await stopService(homeFor(command), { wait: opts.wait === true, timeoutMs: timeoutMilliseconds(opts.timeout) });
+      const result = await stopService(homeFor(command), { wait: opts.wait === true, timeoutMs: opts.timeout === undefined ? undefined : timeoutMilliseconds(opts.timeout) });
       context.output(command, opts.full ? { running: false, ...result } : result);
     });
   context.waiting(program.command("ready").description(context.t("cli.ext.ready")))
