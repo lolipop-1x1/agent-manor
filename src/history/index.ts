@@ -1,4 +1,3 @@
-import { DiagnosticError } from "../i18n/diagnostics.js";
 import type { MessageDescriptor } from "../i18n/types.js";
 import { createHash } from "node:crypto";
 import { lstat, readFile, readdir, realpath } from "node:fs/promises";
@@ -13,6 +12,7 @@ import { normalizeHistoryPath } from "./adapters/common.js";
 import { HISTORY_ADAPTERS, HISTORY_CLIENTS, historyAdapter, historyClient } from "./adapters/index.js";
 import type { HistoryAdapterContext, HistoryClient } from "./adapters/types.js";
 import { historyHead, historyBytes, compressedHistory } from "./stream.js";
+import { historyRecords } from "./records.js";
 import { bindCodexPrefixes } from "./codex-prefix.js";
 import { sourceQuickCheck, sourceQuickStamp } from "./quick-check.js";
 
@@ -234,35 +234,13 @@ export async function parseSource(path: string, client: Client, previous?: Parse
   let position = cursor.completeBytes;
   let incomplete = false;
   async function* sourceRecords() {
-    if (container) { yield* container.records; return; }
-    if (!compressed) {
-      while (position < bytes.length) {
-        const newline = bytes.indexOf(10, position);
-        if (newline < 0) { incomplete = true; break; }
-        const raw = bytes.subarray(position, newline).toString("utf8");
-        position = newline + 1;
-        yield { raw, line: cursor.recordLine + 1, record: undefined };
-      }
-      return;
+    if (container) { for (const item of container.records) yield { ...item, oversized: false }; return; }
+    const chunks = compressed ? historyBytes(absolutePath, { onRead: chunk => { compressedHash.update(chunk); } }) : [bytes.subarray(position)];
+    for await (const item of historyRecords(chunks, { line: cursor.recordLine, offset: position })) {
+      if (!item.complete) { incomplete = true; break; }
+      position = item.end;
+      yield { raw: item.raw ?? "", line: item.line, oversized: item.oversized, record: undefined };
     }
-    let parts: Buffer[] = [], size = 0, line = 0;
-    for await (const chunk of historyBytes(absolutePath, { onRead: chunk => { compressedHash.update(chunk); } })) {
-      let start = 0;
-      while (start < chunk.length) {
-        const newline = chunk.indexOf(10, start), end = newline < 0 ? chunk.length : newline;
-        const part = chunk.subarray(start, end);
-        size += part.length;
-        if (size > 16 * 1024 * 1024) throw new DiagnosticError("压缩历史单条记录超过 16 MiB", { key: "diagnostics.history.compressed.recordBudget" });
-        parts.push(part);
-        if (newline < 0) break;
-        const raw = Buffer.concat(parts, size).toString("utf8");
-        position += size + 1;
-        parts = []; size = 0;
-        yield { raw, line: ++line, record: undefined };
-        start = newline + 1;
-      }
-    }
-    incomplete = size > 0;
   }
   for await (const item of sourceRecords()) {
     const { raw } = item;
@@ -270,6 +248,10 @@ export async function parseSource(path: string, client: Client, previous?: Parse
     cursor.parsedRecords += 1;
     if (!container && !compressed) cursor.recordEnds.push(position);
     const row = cursor.recordLine;
+    if (item.oversized) {
+      gap("budget_exceeded", `第 ${row} 条历史记录超过 16 MiB，该条正文未参与地图分析`, { key: "diagnostics.history.index.recordBudget", params: { line: row } });
+      continue;
+    }
     let record: Record<string, unknown>;
     try { record = item.record ?? object(JSON.parse(raw)); }
     catch { gap("parse_error", `物理记录 ${row} 不是有效 JSON`, { key: "diagnostics.history.index.m005", params: { p0: row } }); continue; }

@@ -3,6 +3,7 @@ import { constants } from "node:fs";
 import { lstat, open, realpath } from "node:fs/promises";
 import { resolve } from "node:path";
 import { historyBytes } from "../stream.js";
+import { MAX_HISTORY_RECORD_BYTES } from "../records.js";
 import type { EvidenceRecord, SourceReference } from "../../contracts.js";
 
 /** 引用完全来自已发布事件；只读取被引用的物理记录并核对记录哈希。 */
@@ -27,7 +28,7 @@ export async function readJsonlEvidence(source: SourceReference): Promise<Eviden
           if (bytes[end] !== 10) continue;
           if (line === source.recordLine) {
             size += end - start;
-            if (size > 16 * 1024 * 1024) return undefined;
+            if (size > MAX_HISTORY_RECORD_BYTES) return undefined;
             record.push(bytes.subarray(start, end));
             const raw = Buffer.concat(record).toString("utf8");
             return createHash("sha256").update(raw).digest("hex") === source.hash && await realpath(filename) === canonical ? { source, raw } : undefined;
@@ -38,7 +39,7 @@ export async function readJsonlEvidence(source: SourceReference): Promise<Eviden
         if (line === source.recordLine) {
           const remaining = bytes.subarray(start);
           size += remaining.length;
-          if (size > 16 * 1024 * 1024) return undefined;
+          if (size > MAX_HISTORY_RECORD_BYTES) return undefined;
           record.push(remaining);
         }
       }

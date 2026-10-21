@@ -11,6 +11,7 @@ import { RequestTimingParser } from "./parser-timing.js";
 import { projectFromToolPaths } from "./parser-project.js";
 import { sessionTitle, userTitle } from "./title.js";
 import { compressedHistory, historyBytes } from "../history/stream.js";
+import { historyRecords } from "../history/records.js";
 import { historyPrefixBytes, verifyCodexPrefix } from "../history/codex-prefix.js";
 import { codexContext } from "./codex-context.js";
 import { DESKTOP_FORMAT, desktopCalls, desktopIdentity, desktopResult, desktopTimestamp } from "../history/adapters/codeflicker-desktop.js";
@@ -25,7 +26,6 @@ import { codexSkillInstructions, CliSkillInstructions } from "./native-skills.js
 import { callResource, successfulSkillRead } from "./resources.js";
 
 const digest = (value: string) => createHash("sha256").update(value).digest("hex").slice(0, 24);
-const MAX_RECORD_BYTES = 16 * 1024 * 1024;
 const MAX_PENDING_BYTES = 32 * 1024 * 1024;
 export const sessionKey = (client: Client, rawId: string): string => `${client}:${digest(rawId)}`;
 
@@ -33,31 +33,15 @@ export const sessionKey = (client: Client, rawId: string): string => `${client}:
 async function* records(path: string, gap: (kind: GapKind, message: string, messageDescriptor?: MessageDescriptor) => void, byteLimit?: number,
   onRead?: (chunk: Uint8Array) => void, prefix?: SourceLocation["historyPrefix"]) {
   if (byteLimit === 0 && !compressedHistory(path)) return;
-  let parts: Buffer[] = [];
-  let length = 0;
-  let line = 0;
-  let oversized = false;
-  for await (const chunk of prefix ? historyPrefixBytes(prefix) : historyBytes(path, { byteLimit, onRead })) {
-    let start = 0;
-    while (start < chunk.length) {
-      const newline = chunk.indexOf(10, start);
-      const end = newline < 0 ? chunk.length : newline;
-      const part = chunk.subarray(start, end);
-      length += part.length;
-      if (!oversized && length <= MAX_RECORD_BYTES) parts.push(part);
-      else { oversized = true; parts = []; }
-      if (newline < 0) break;
-      line += 1;
-      if (oversized) gap("budget_exceeded", "单条历史记录超过 16 MiB，正文未索引", { key: "diagnostics.sessions.parser.m001" });
-      else if (length) {
-        const raw = Buffer.concat(parts, length).toString("utf8");
-        try { yield { record: object(JSON.parse(raw)), line }; }
-        catch { gap("parse_error", "历史存在无效 JSON 记录，已跳过并保留缺口", { key: "diagnostics.sessions.parser.m002" }); }
-      }
-      parts = []; length = 0; oversized = false; start = newline + 1;
+  const chunks = prefix ? historyPrefixBytes(prefix) : historyBytes(path, { byteLimit, onRead });
+  for await (const item of historyRecords(chunks)) {
+    if (!item.complete) gap("incomplete_record", "历史末尾尚无完整 JSONL 换行，等待来源追加", { key: "diagnostics.sessions.parser.m003" });
+    else if (item.oversized) gap("budget_exceeded", "单条历史记录超过 16 MiB，正文未索引", { key: "diagnostics.sessions.parser.m001" });
+    else if (item.raw) {
+      try { yield { record: object(JSON.parse(item.raw)), line: item.line }; }
+      catch { gap("parse_error", "历史存在无效 JSON 记录，已跳过并保留缺口", { key: "diagnostics.sessions.parser.m002" }); }
     }
   }
-  if (length || oversized) gap("incomplete_record", "历史末尾尚无完整 JSONL 换行，等待来源追加", { key: "diagnostics.sessions.parser.m003" });
 }
 
 function text(value: unknown): string {

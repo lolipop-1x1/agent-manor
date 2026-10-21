@@ -10,6 +10,7 @@ import { CLIENTS } from "../../../src/clients";
 import { ApiError, errorMessage, isAborted, request } from "../../shared/api";
 import { queryString, repositoryPath } from "./api";
 import { CodeMap } from "./CodeMap";
+import { AnalysisInfo } from "./AnalysisInfo";
 import { Hint } from "../../shared/ui/Hint";
 import { DirectoryTree } from "./DirectoryTree";
 import { ResizableWorkspace } from "../../shared/layout/ResizableWorkspace";
@@ -603,7 +604,7 @@ export function useCodeMapPage({ active, theme, onSession }: {
           {visible.some(file => file.lineCount > 0) ? <CodeMap files={visible} directory={directory} metric={metric} selected={selected} browse={browse} select={selectFile} heading={mapHeading} legend={mapLegend} scopeKey={`${repoId}:${filterKey}:${search}`} /> : <>{mapHeading}<Empty title={visible.length ? t("codeMap.empty.emptyFiles") : t("codeMap.empty.noFiles")} action={<button className="button subtle" onClick={clearFilters}>{t("codeMap.filter.reset")}</button>}>{visible.length ? t("codeMap.empty.emptyFilesDescription") : t("codeMap.empty.noFilesDescription")}</Empty>{mapLegend}</>}
           {search && <p className="muted small">{t("codeMap.filter.searchScope")}</p>}
           <MapFileTable files={visible} selected={selected} metric={metric} search={search} select={selectFile} language={language} />
-          <details className="baseline-note"><summary>{t("codeMap.analysis.info", { date: dateLabel(coverage!.createdAt) })}</summary><p>{t("codeMap.analysis.version", { version: coverage!.version })}<br />{t("codeMap.analysis.baseline", { hash: coverage!.baselineHash })}{coverage!.previousVersion && <>{t("codeMap.analysis.previous", { version: coverage!.previousVersion })}</>}</p></details>
+          <AnalysisInfo coverage={coverage!} active={distributionActive} />
         </>}
       </main>
       <FilePane repoId={repoId} detail={detail} loading={detailLoading} error={detailError} retry={() => setDetailRetry(value => value + 1)} collapsed={detailsCollapsed} toggle={() => setDetailsCollapsed(value => !value)} metric={metric} theme={theme} query={query} sessions={availableMapSessions} openSession={event => void openSession(event)} />

@@ -225,6 +225,8 @@ export default {
   "codeMap.directory.collapse": "折叠目录 {{path}}",
   "codeMap.directory.select": "选择目录 {{path}}",
   "codeMap.analysis.info": "分析信息 · {{date}}",
+  "codeMap.analysis.gaps_other": "{{count, number}} 条采集缺口",
+  "codeMap.analysis.partial": "统计仅覆盖可解析的已保存活动；以下缺口可能影响活动计数与覆盖率。原始历史保持不变。",
   "codeMap.analysis.version": "结果版本 {{version}}",
   "codeMap.analysis.baseline": "基线 {{hash}}",
   "codeMap.analysis.previous": " · 上一版 {{version}}",

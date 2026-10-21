@@ -98,6 +98,7 @@ export default {
   "diagnostics.history.compressed.prefix": "无法唯一核验 Codex 分段历史的前缀及边界",
   "diagnostics.history.compressed.budget": "Zstandard 历史解压超过字节预算",
   "diagnostics.history.compressed.recordBudget": "压缩历史单条记录超过 16 MiB",
+  "diagnostics.history.index.recordBudget": "第 {{line}} 条历史记录超过 16 MiB，该条正文未参与地图分析",
   "diagnostics.history.adapters.dsh.m001": "DSH Zstandard 末尾帧不完整",
   "diagnostics.history.adapters.dsh.m002": "DSH Zstandard 帧结构无效，后续字节无法安全定位",
   "diagnostics.history.adapters.dsh.m003": "range_unknown: DSH read 执行失败",

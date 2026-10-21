@@ -98,6 +98,7 @@ export default {
   "diagnostics.history.compressed.prefix": "The prefix and boundary of segmented Codex history could not be uniquely verified",
   "diagnostics.history.compressed.budget": "The decoded Zstandard history exceeds the byte budget",
   "diagnostics.history.compressed.recordBudget": "A compressed history record exceeds 16 MiB",
+  "diagnostics.history.index.recordBudget": "History record {{line}} exceeds 16 MiB; its content was not included in map analysis",
   "diagnostics.history.adapters.dsh.m001": "The final DSH Zstandard frame is incomplete",
   "diagnostics.history.adapters.dsh.m002": "The DSH Zstandard frame structure is invalid; subsequent bytes cannot be located safely",
   "diagnostics.history.adapters.dsh.m003": "range_unknown: DSH read failed",
