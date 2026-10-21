@@ -1,3 +1,4 @@
+import { releaseIndexWrite } from "../index/write-gate.js";
 import { Worker } from "node:worker_threads";
 import type { MessageDescriptor } from "../i18n/types.js";
 import { StoreError } from "../index/store.js";
@@ -34,7 +35,7 @@ export class UsageManager {
   private timer?: NodeJS.Timeout;
   private lastPreparation?: string;
 
-  constructor(private readonly sessions: SessionStore, private readonly pricing: PricingService, private readonly cachePath: string) {}
+  constructor(private readonly sessions: SessionStore, private readonly pricing: PricingService, private readonly cachePath: string, private readonly writeGate?: SharedArrayBuffer) {}
 
   private fixed(query: UsageQuery): UsageQuery {
     if (this.closed) throw interrupted();
@@ -53,12 +54,13 @@ export class UsageManager {
   private createWorker(): Worker {
     const extension = import.meta.url.endsWith(".ts") ? "ts" : "js";
     const url = new URL(`./worker.${extension}`, import.meta.url);
-    const workerData = { dbPath: this.sessions.dbPath, cachePath: this.cachePath };
+    const workerData = { dbPath: this.sessions.dbPath, cachePath: this.cachePath, writeGate: this.writeGate };
     const resourceLimits = { maxOldGenerationSizeMb: 512, maxYoungGenerationSizeMb: 32 };
     // 源码运行时在 Worker 内注册 tsx，不依赖主线程的模块解析钩子。
     const worker = extension === "ts"
       ? new Worker(`import('tsx/esm/api').then(({register}) => { register(); return import(${JSON.stringify(url.href)}); });`, { eval: true, workerData, resourceLimits })
       : new Worker(url, { workerData, resourceLimits });
+    const workerOwner = worker.threadId + 1;
     let markInitialized!: () => void;
     this.initialized.set(worker, new Promise<void>(resolve => { markInitialized = resolve; }));
     worker.on("message", (message: UsageWorkerResponse) => {
@@ -78,6 +80,7 @@ export class UsageManager {
       else this.failed(error.message);
     });
     worker.on("exit", code => {
+      releaseIndexWrite(this.writeGate, workerOwner);
       markInitialized();
       if (this.worker === worker && !this.closed) this.failed(`用量统计 Worker 意外停止（${code}）`,
         { key: "diagnostics.usage.worker.unexpectedExit", params: { code } });

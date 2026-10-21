@@ -1,3 +1,4 @@
+import { errorDescriptor } from "../i18n/diagnostics.js";
 import type { SessionAutoSyncStatus, SessionJob, SessionRefreshOptions } from "../session-contracts.js";
 
 export interface SessionAutoSyncClock {
@@ -8,9 +9,10 @@ export interface SessionAutoSyncClock {
 
 export interface SessionAutoSyncWorker {
   readonly busy: boolean;
+  readonly sessionsBusy?: boolean;
   activeSessionJobs(): SessionJob[];
   coveringSessionJob(clearCache?: boolean, options?: SessionRefreshOptions): SessionJob | undefined;
-  refreshSessions(clearCache?: boolean, options?: SessionRefreshOptions): SessionJob;
+  refreshSessions(clearCache?: boolean, options?: SessionRefreshOptions): SessionJob | Promise<SessionJob>;
   subscribeChanges(listener: (jobs: SessionJob[]) => void): () => void;
 }
 
@@ -41,6 +43,7 @@ export class SessionAutoSyncScheduler {
   private lastSuccessAt?: string;
   private lastFinished?: SessionJob;
   private consecutiveFailures: number;
+  private submissionError?: Pick<SessionJob, "error" | "errorDescriptor">;
 
   constructor(private readonly worker: SessionAutoSyncWorker, history: SessionGlobalCheckState, private readonly clock = systemClock) {
     this.lastSuccessAt = history.lastSuccessAt;
@@ -65,13 +68,13 @@ export class SessionAutoSyncScheduler {
   /** 状态观察不触发检查，也不修改调度截止时间。 */
   status(): SessionAutoSyncStatus {
     const covering = this.worker.coveringSessionJob();
-    const state: SessionAutoSyncStatus["state"] = !this.intervalMs ? "disabled" : covering ? "running" : this.pending ? "pending"
+    const state: SessionAutoSyncStatus["state"] = !this.intervalMs ? "disabled" : covering ? "running" : this.pending || this.driving ? "pending"
       : this.consecutiveFailures ? "backoff" : "waiting";
     return { intervalMs: this.intervalMs, state, consecutiveFailures: this.consecutiveFailures,
       ...(this.lastSuccessAt ? { lastSuccessAt: this.lastSuccessAt } : {}),
       ...(covering ? { job: covering } : {}),
       ...(this.intervalMs && !covering && !this.pending && this.nextRun !== undefined ? { nextRunAt: new Date(this.nextRun).toISOString() } : {}),
-      ...(this.lastFinished?.status === "failed" ? { error: this.lastFinished.error, errorDescriptor: this.lastFinished.errorDescriptor } : {}) };
+      ...(this.submissionError ?? (this.lastFinished?.status === "failed" ? { error: this.lastFinished.error, errorDescriptor: this.lastFinished.errorDescriptor } : {})) };
   }
 
   private settle(job: SessionJob): void {
@@ -79,6 +82,7 @@ export class SessionAutoSyncScheduler {
     this.settled.add(job.id);
     if (this.settled.size > 128) this.settled.delete(this.settled.values().next().value!);
     this.lastFinished = job;
+    this.submissionError = undefined;
     if (job.status === "complete") {
       this.lastSuccessAt = job.finishedAt;
       this.consecutiveFailures = 0;
@@ -107,12 +111,24 @@ export class SessionAutoSyncScheduler {
       this.cancelTimer = this.clock.setTimeout(() => { this.cancelTimer = undefined; this.drive(); }, Math.min(remaining, 5_000));
       return;
     }
-    if (this.worker.busy) { this.pending = true; return; }
+    if (this.worker.sessionsBusy ?? this.worker.busy) { this.pending = true; return; }
     this.pending = false;
     this.nextRun = undefined;
     this.driving = true;
-    try { this.worker.refreshSessions(); }
-    finally { this.driving = false; }
+    const failed = (error: unknown) => {
+      this.consecutiveFailures += 1;
+      this.submissionError = { error: error instanceof Error ? error.message : String(error), errorDescriptor: errorDescriptor(error) };
+      this.nextRun = this.clock.now() + Math.max(this.intervalMs, Math.min(30_000 * 2 ** Math.min(this.consecutiveFailures - 1, 5), 600_000));
+    };
+    try {
+      const result = this.worker.refreshSessions();
+      if (result instanceof Promise) {
+        void result.catch(failed).finally(() => { this.driving = false; this.drive(); });
+        return;
+      }
+    } catch (error) { failed(error); }
+    this.driving = false;
+    if (this.submissionError) this.drive();
   }
 
   close(): void {

@@ -37,7 +37,7 @@ parentPort.on('message', message => {
 `);
   const store = new AnalysisStore(join(directory, "index.sqlite"));
   const library = new SessionStore(store.dbPath);
-  const worker = new WorkerManager(store, { workerUrl: pathToFileURL(script) }, library);
+  const worker = new WorkerManager(store, { sessionWorkerUrl: pathToFileURL(script) }, library);
   return { directory, library, worker, release: () => writeFile(release, "ready"), notify: () => writeFile(notice, "ready"), close: async () => {
     await worker.close(); library.close(); store.close(); await rm(directory, { recursive: true, force: true });
   } };

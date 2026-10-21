@@ -1,3 +1,4 @@
+import { releaseIndexWrite } from "../index/write-gate.js";
 import { Worker } from "node:worker_threads";
 import type { ApiErrorCode } from "../contracts.js";
 import type { MessageDescriptor } from "../i18n/types.js";
@@ -25,7 +26,7 @@ export class MapQueryManager {
   private nextId = 0;
   private closed = false;
 
-  constructor(private readonly analysis: AnalysisStore, private readonly maxQueued = 16) {}
+  constructor(private readonly analysis: AnalysisStore, private readonly maxQueued = 16, private readonly writeGate?: SharedArrayBuffer) {}
 
   execute(type: MapOperation, query: MapQuery, signal?: AbortSignal): Promise<MapWorkerResult> {
     if (this.closed) return Promise.reject(stopped());
@@ -72,7 +73,7 @@ export class MapQueryManager {
   private createWorker(): Worker {
     const extension = import.meta.url.endsWith(".ts") ? "ts" : "js";
     const url = new URL(`./query-worker.${extension}`, import.meta.url);
-    const workerData = { dbPath: this.analysis.dbPath };
+    const workerData = { dbPath: this.analysis.dbPath, writeGate: this.writeGate };
     const worker = extension === "ts"
       ? new Worker(`import('tsx/esm/api').then(({register}) => { register(); return import(${JSON.stringify(url.href)}); });`, { eval: true, workerData })
       : new Worker(url, { workerData });
@@ -81,6 +82,7 @@ export class MapQueryManager {
   }
 
   private observe(worker: Worker): void {
+    const workerOwner = worker.threadId + 1;
     worker.on("message", (message: MapWorkerResponse) => {
       if (this.worker !== worker || message.id !== this.active?.id) return;
       const job = this.active; this.active = undefined;
@@ -93,7 +95,7 @@ export class MapQueryManager {
       this.dispatch();
     });
     worker.on("error", error => { if (this.worker === worker) this.failed(internalError(error)); });
-    worker.on("exit", () => { if (this.worker === worker && !this.closed) this.failed(stopped()); });
+    worker.on("exit", () => { releaseIndexWrite(this.writeGate, workerOwner); if (this.worker === worker && !this.closed) this.failed(stopped()); });
   }
 
   private failed(error: Error): void {

@@ -1,3 +1,4 @@
+import { withIndexWrite } from "../index/write-gate.js";
 import { parentPort, workerData } from "node:worker_threads";
 import { AnalysisStore, StoreError } from "../index/store.js";
 import { SessionStore } from "../sessions/store.js";
@@ -5,9 +6,9 @@ import { ServiceError } from "../service/input.js";
 import { MapQueryService } from "./query-service.js";
 import type { MapWorkerRequest, MapWorkerResponse } from "./query-manager.js";
 
-const { dbPath } = workerData as { dbPath: string };
+const { dbPath, writeGate } = workerData as { dbPath: string; writeGate?: SharedArrayBuffer };
 // 仅补齐已发布版本的紧凑派生缓存，不修改原始历史或分析版本。
-const analysis = new AnalysisStore(dbPath);
+const analysis = withIndexWrite(writeGate, () => new AnalysisStore(dbPath, { writeGate }));
 const sessions = new SessionStore(dbPath, { readonly: true });
 const service = new MapQueryService(analysis, sessions);
 parentPort!.on("message", async ({ id, type, query }: MapWorkerRequest) => {

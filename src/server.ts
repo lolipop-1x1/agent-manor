@@ -2,6 +2,7 @@ import { acquireInstallationOperation, assertInstalledVersion, installationConte
 import { DiagnosticError } from "./i18n/diagnostics.js";
 import Fastify from "fastify";
 import type { FastifyRequest, FastifyReply } from "fastify";
+import { IndexTaskManager } from "./index/task-manager.js";
 import { SessionSearchManager } from "./sessions/search-manager.js";
 import type { SearchOperation } from "./sessions/search-manager.js";
 import type { SessionQuery } from "./session-contracts.js";
@@ -12,7 +13,7 @@ import { join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ApiErrorCode, DeleteRepositoryResponse, RegisterRepositoryResponse, ServiceActiveTask, ServiceInstance, ServicePreparation } from "./contracts.js";
 import type { DiscoverRoots } from "./history/index.js";
-import { AnalysisStore, StoreError, WorkerManager } from "./index/index.js";
+import { AnalysisStore, StoreError } from "./index/index.js";
 import { VERSION } from "./version.js";
 import { bodyText, emptyBody, integer, ServiceError } from "./service/input.js";
 import { acquireLock, assertNotUpdating, dataHome, DEFAULT_SERVICE_PORT, delay, removeInstance, SERVICE_PROTOCOL_VERSION, writeInstance } from "./service/runtime.js";
@@ -100,7 +101,7 @@ export async function startService(options: ServiceOptions = {}) {
   } finally { await releaseInstallation(); }
   serviceLog(home, "startup.database", { version: VERSION });
   let store: AnalysisStore | undefined;
-  let manager: WorkerManager | undefined;
+  let manager: IndexTaskManager | undefined;
   let sessions: SessionStore | undefined;
   let resourceManager: ResourceManager | undefined;
   let resourceHistory: ResourceUsageManager | undefined;
@@ -137,7 +138,11 @@ export async function startService(options: ServiceOptions = {}) {
     store = new AnalysisStore(join(home, "index.sqlite"));
     sessions = new SessionStore(store.dbPath);
     preparation.initial = await beginStartupPreparation(home, Boolean(sessions.currentVersion()));
-    manager = new WorkerManager(store, { roots: options.roots }, sessions);
+    const indexWriteGate = new SharedArrayBuffer(4);
+    manager = new IndexTaskManager(store.dbPath, options.roots, sessions, indexWriteGate, error => {
+      serviceLog(home, "index.commands.failed", { error: error.message });
+    });
+    await manager.ready;
     const index = store;
     const library = sessions;
     const semanticQuery = (raw: Record<string, unknown>): SemanticSearchQuery => {
@@ -153,7 +158,7 @@ export async function startService(options: ServiceOptions = {}) {
     };
     searchManager = new SessionSearchManager(library);
     replayManager = new ReplayManager(index, library);
-    mapQueryManager = new MapQueryManager(index);
+    mapQueryManager = new MapQueryManager(index, 16, indexWriteGate);
     semanticManager = new SemanticManager(home, library);
     knowledgeStore = new KnowledgeStore(join(home, "knowledge", "knowledge.sqlite"));
     knowledgeSources = new KnowledgeSources(library.dbPath);
@@ -191,7 +196,7 @@ export async function startService(options: ServiceOptions = {}) {
     };
     resourceManager = new ResourceManager(home);
     pricing = new PricingService(home, options.usagePricing);
-    usageManager = new UsageManager(library, pricing, join(home, "usage-rollups.sqlite"));
+    usageManager = new UsageManager(library, pricing, join(home, "usage-rollups.sqlite"), indexWriteGate);
     overviewManager = new OverviewManager(library, pricing, () => index.listRepositories(), undefined, usageManager);
     const management = resourceManager;
     resourceHistory = new ResourceUsageManager(library);
@@ -302,16 +307,16 @@ export async function startService(options: ServiceOptions = {}) {
     app.post("/api/v1/repositories", async (request): Promise<RegisterRepositoryResponse> => {
       const path = bodyText(request.body, "path");
       let result;
-      try { result = await index.registerRepositoryResult(path); }
+      try { result = await worker.registerRepository(path); }
       catch { throw new ServiceError("INVALID_INPUT", "path 必须是可读取的 Git 仓库", { key: "diagnostics.server.m013" }); }
-      return result.created ? { repository: result.repository, job: worker.refresh(result.repository.id) } : { repository: result.repository };
+      return result;
     });
     const base = "/api/v1/repositories/:id";
     type RepositoryParams = { id: string };
     type Query = Record<string, unknown>;
     app.delete<{ Params: RepositoryParams }>(base, async (request): Promise<DeleteRepositoryResponse> => {
       emptyBody(request.body);
-      worker.deleteRepository(request.params.id);
+      await worker.deleteRepository(request.params.id);
       return { repositoryId: request.params.id };
     });
     app.get<{ Querystring: Query }>("/api/v1/sessions/status", async request => {
@@ -367,7 +372,7 @@ export async function startService(options: ServiceOptions = {}) {
       const query = sessionProfileQuery(request.query);
       return query.response === "summary" || query.section ? library.profileSection(request.params.id, query) : library.profile(request.params.id, query);
     });
-    app.post("/api/v1/sessions/refresh", async request => ({ job: worker.refreshSessions(false, sessionRefreshOptions(request.body)) }));
+    app.post("/api/v1/sessions/refresh", async request => ({ job: await worker.refreshSessions(false, sessionRefreshOptions(request.body)) }));
     app.post("/api/v1/sessions/auto-refresh", async request => {
       emptyBody(request.body);
       const interval = sync.status().intervalMs;
@@ -375,26 +380,25 @@ export async function startService(options: ServiceOptions = {}) {
       return job ? { job } : { job: null, status: "skipped", reason: interval ? "no_active_job" : "disabled" };
     });
     registerResourceRoutes(app, resources);
-    app.delete("/api/v1/sessions/cache", async request => { emptyBody(request.body); return { job: worker.refreshSessions(true) }; });
+    app.delete("/api/v1/sessions/cache", async request => { emptyBody(request.body); return { job: await worker.refreshSessions(true) }; });
     app.post<{ Params: RepositoryParams }>(`${base}/associations`, async (request) => {
-      index.associateSource(request.params.id, bodyText(request.body, "sourceId"));
-      return { job: worker.refresh(request.params.id) };
+      return { job: await worker.associateSource(request.params.id, bodyText(request.body, "sourceId")) };
     });
     app.post<{ Params: RepositoryParams }>(`${base}/refresh`, async (request) => {
       emptyBody(request.body);
       index.getRepository(request.params.id);
-      return { job: worker.refresh(request.params.id) };
+      return { job: await worker.refresh(request.params.id) };
     });
     app.post<{ Params: RepositoryParams }>(`${base}/auto-refresh`, async request => {
       emptyBody(request.body);
       const { mapAutoRefreshInterval } = await readPreferences(home);
-      const job = worker.autoRefreshRepository(request.params.id, Date.now(), mapAutoRefreshInterval);
+      const job = await worker.autoRefreshRepository(request.params.id, Date.now(), mapAutoRefreshInterval);
       return job ? { job } : { job: null, status: "skipped", reason: mapAutoRefreshInterval ? "not_due" : "disabled" };
     });
     app.delete<{ Params: RepositoryParams }>(`${base}/cache`, async (request) => {
       emptyBody(request.body);
       index.getRepository(request.params.id);
-      return { job: worker.clearCache(request.params.id) };
+      return { job: await worker.clearCache(request.params.id) };
     });
     app.get<{ Params: { id: string } }>("/api/v1/jobs/:id", async request => {
       try { return { job: index.getJob(request.params.id) }; }
@@ -444,11 +448,12 @@ export async function startService(options: ServiceOptions = {}) {
       setImmediate(() => { void (async () => {
         if (closing) return;
         preparation.state = "running";
-        const history = worker.refreshSessions();
-        const maps = index.listRepositories().map(repository => worker.refresh(repository.id));
+        const history = await worker.refreshSessions();
+        const maps = await Promise.all(index.listRepositories().map(repository => worker.refresh(repository.id)));
         preparation.jobIds = [history.id, ...maps.map(job => job.id)];
         serviceLog(home, "preparation.history", { jobIds: preparation.jobIds });
         while (!closing) {
+          worker.assertHealthy();
           const job = library.getJob(history.id);
           const jobs = maps.map(item => index.getJob(item.id));
           const failure = [job, ...jobs].find(item => item.status === "failed" || item.status === "cancelled");

@@ -13,7 +13,7 @@ import { isolatedHistoryRoots } from "./helpers/history-roots.js";
 import { SemanticConfigStore } from "../src/semantic/config.js";
 import { managementDigest } from "../src/service/management.js";
 
-async function fixture(run: (context: { service: Awaited<ReturnType<typeof startService>>; calls: string[][]; home: string }) => Promise<void>, options: { text?: string; maxInputChars?: number; modelDelayMs?: number; model?: string; snapshots?: number } = {}) {
+async function fixture(run: (context: { service: Awaited<ReturnType<typeof startService>>; calls: string[][]; home: string }) => Promise<void>, options: { text?: string; maxInputChars?: number; modelDelayMs?: number; model?: string; snapshots?: number; beforeResponse?: () => Promise<void> } = {}) {
   const home = await mkdtemp(join(tmpdir(), "manor-semantic-http-"));
   const index = new AnalysisStore(join(home, "index.sqlite")); index.close();
   const sessions = new SessionStore(join(home, "index.sqlite"));
@@ -34,6 +34,7 @@ async function fixture(run: (context: { service: Awaited<ReturnType<typeof start
     for await (const chunk of request) chunks.push(Buffer.from(chunk));
     const body = JSON.parse(Buffer.concat(chunks).toString()) as { input: string[] };
     calls.push(body.input);
+    await options.beforeResponse?.();
     await delay(options.modelDelayMs ?? 15);
     if (options.maxInputChars && body.input.some(text => Array.from(text).length > options.maxInputChars!)) {
       response.writeHead(400, { "Content-Type": "application/json" }); response.end(JSON.stringify({ error: { code: "context_length_exceeded", message: "example-private-input" } })); return;
@@ -171,20 +172,28 @@ test("HTTP 400 上下文过长会缩小输入并完成构建，不原样重试�
   assert.ok(calls.some(batch => batch.length > 1 && batch.every(text => Array.from(text).length <= 300)));
 }, { text: "测试正文".repeat(100), maxInputChars: 300 }));
 
-test("状态写盘失败保留内存错误且服务关闭仍收尾 Worker", async () => fixture(async ({ service, home }) => {
-  const preview = await apiRequest<SemanticPreview>(service.instance, "/semantic/preview", "POST", {});
-  await apiRequest(service.instance, "/semantic/build", "POST", { previewId: preview.id });
-  const state = join(home, "semantic", "state.json"); await rm(state); await mkdir(state);
-  let failed: SemanticStatus | undefined;
-  for (let i = 0; i < 100; i++) {
-    failed = await apiRequest<SemanticStatus>(service.instance, "/semantic/status");
-    if (failed.job?.errorCode === "semantic_persistence_failed") break;
-    await delay(20);
-  }
-  assert.equal(failed?.job?.status, "failed"); assert.equal(failed?.job?.errorCode, "semantic_persistence_failed");
-  assert.equal(failed?.job?.errorDescriptor?.key, "sessions.semantic.errors.persistence");
-  await service.close();
-}, { modelDelayMs: 150 }));
+test("状态写盘失败保留内存错误且服务关闭仍收尾 Worker", async () => {
+  let block = false, release!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  await fixture(async ({ service, home }) => {
+    const preview = await apiRequest<SemanticPreview>(service.instance, "/semantic/preview", "POST", {});
+    block = true;
+    try {
+      await apiRequest(service.instance, "/semantic/build", "POST", { previewId: preview.id });
+      // 写盘故障就位后才允许模型返回，避免并行测试负载影响固定延时。
+      const state = join(home, "semantic", "state.json"); await rm(state); await mkdir(state);
+    } finally { release(); }
+    let failed: SemanticStatus | undefined;
+    for (let i = 0; i < 100; i++) {
+      failed = await apiRequest<SemanticStatus>(service.instance, "/semantic/status");
+      if (failed.job?.errorCode === "semantic_persistence_failed") break;
+      await delay(20);
+    }
+    assert.equal(failed?.job?.status, "failed"); assert.equal(failed?.job?.errorCode, "semantic_persistence_failed");
+    assert.equal(failed?.job?.errorDescriptor?.key, "sessions.semantic.errors.persistence");
+    await service.close();
+  }, { beforeResponse: () => block ? gate : Promise.resolve() });
+});
 
 test("共享查询取消一个订阅者仍完成，全部取消的排队查询不调用模型", async () => fixture(async ({ service, calls }) => {
   const preview = await apiRequest<SemanticPreview>(service.instance, "/semantic/preview", "POST", {});

@@ -5,7 +5,7 @@ import { VERSION } from "../dist/version.js";
 import { checkThirdPartyNotices } from "./third-party-notices.mjs";
 
 const root = fileURLToPath(new URL("../", import.meta.url));
-const requiredFiles = ["dist/cli.js", "dist/server.js", "dist/worker.js", "dist/semantic/worker.js", "dist/src/server.js", "dist/packages/cli/src/entry.js", "dist/packages/cli/src/program.js", "dist/web/index.html", "skills/agent-manor/SKILL.md", "LICENSE"];
+const requiredFiles = ["dist/cli.js", "dist/server.js", "dist/worker.js", "dist/src/index/task-worker.js", "dist/src/index/write-gate.js", "dist/src/index/task-manager.js", "dist/semantic/worker.js", "dist/src/server.js", "dist/packages/cli/src/entry.js", "dist/packages/cli/src/program.js", "dist/web/index.html", "skills/agent-manor/SKILL.md", "LICENSE"];
 for (const path of requiredFiles) if (!existsSync(resolve(root, path))) throw new Error(`缺少交付入口：${path}`);
 const manifest = JSON.parse(readFileSync(resolve(root, "package.json"), "utf8"));
 const cliManifest = JSON.parse(readFileSync(resolve(root, "packages/cli/package.json"), "utf8"));

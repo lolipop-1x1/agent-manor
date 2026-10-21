@@ -1,3 +1,4 @@
+import { withIndexWrite } from "../index/write-gate.js";
 import { setImmediate as nextTurn } from "node:timers/promises";
 import { parentPort, workerData } from "node:worker_threads";
 import Database from "better-sqlite3";
@@ -16,8 +17,8 @@ import { preparationKey } from "./worker-contracts.js";
 import type { UsageWorkerRequest, UsageWorkerResponse } from "./worker-contracts.js";
 
 const port = parentPort!;
-const { dbPath, cachePath } = workerData as { dbPath: string; cachePath: string };
-const sessions = new SessionStore(dbPath), persisted = new UsageRollupStore(cachePath);
+const { dbPath, cachePath, writeGate } = workerData as { dbPath: string; cachePath: string; writeGate?: SharedArrayBuffer };
+const sessions = withIndexWrite(writeGate, () => new SessionStore(dbPath, { writeGate })), persisted = new UsageRollupStore(cachePath);
 const revisions = new Database(dbPath, { readonly: true });
 const combined = new UsageResultCache<UsageRollup>(128 * 1024 * 1024, 2);
 const compactSources = new UsageResultCache<UsageSource>(64 * 1024 * 1024, 1);

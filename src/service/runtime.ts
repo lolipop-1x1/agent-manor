@@ -297,6 +297,15 @@ export async function stopService(home = dataHome(), options: { timeoutMs?: numb
   } else {
     const initial = await serviceStatus(home, { summary: true });
     if (!initial.running) {
+      // 并发停止可能已关闭 HTTP，但进程仍在收尾；只观察退出，不向未核验进程发送信号。
+      if (allowBusy && recorded && initial.state === "unreachable") {
+        while (alive(recorded.pid) && Date.now() < deadline) {
+          const current = await readInstance(home);
+          if (current && current.id !== recorded.id) break;
+          await delay(50);
+        }
+        if (!alive(recorded.pid)) { await removeInstance(home, recorded); return { stopped: true, instance: recorded }; }
+      }
       if (initial.state !== "stopped") throw new RequestError("SERVICE_IDENTITY_UNVERIFIED", "服务身份尚未核验，未停止任何进程", { key: "diagnostics.service.runtime.identity" });
       return { stopped: false };
     }

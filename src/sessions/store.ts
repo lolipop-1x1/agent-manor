@@ -1,3 +1,4 @@
+import { coordinateIndexWrites } from "../index/write-gate.js";
 import type { MessageDescriptor } from "../i18n/types.js";
 import Database from "better-sqlite3";
 import { randomUUID } from "node:crypto";
@@ -104,13 +105,14 @@ export class SessionStore {
   private statusMetadata?: Pick<SessionIndexStatus, "version" | "sessionCount" | "sourceCount" | "projects" | "clients">;
   private resourceClientMetadata?: { version: string; clients: Record<ResourceKind, Client[]> };
 
-  constructor(dbPath: string, options: { readonly?: boolean } = {}) {
+  constructor(dbPath: string, options: { readonly?: boolean; writeGate?: SharedArrayBuffer } = {}) {
     this.dbPath = resolve(dbPath);
     if (!options.readonly) mkdirSync(dirname(this.dbPath), { recursive: true });
     this.database = new Database(this.dbPath, options.readonly ? { readonly: true, fileMustExist: true } : {});
     if (!options.readonly) this.database.pragma("journal_mode = WAL");
     this.database.pragma("foreign_keys = ON");
     this.database.pragma("busy_timeout = 5000");
+    if (!options.readonly) coordinateIndexWrites(this.database, options.writeGate);
     registerSearchFunctions(this.database);
     this.database.function("session_search_active", () => {
       if (this.searchCancellation && Atomics.load(this.searchCancellation, 0)) throw new Error("Search cancelled");

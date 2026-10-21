@@ -61,6 +61,48 @@ function fixture(history: SessionGlobalCheckState = { consecutiveFailures: 0 }) 
   return { clock, worker, sync };
 }
 
+test("异步任务登记只提交一次，等待锁时不重复补查；完成后仍按完成时间计时", async () => {
+  const clock = new Clock(), worker = new Worker(clock);
+  let release!: () => void, submissions = 0;
+  const asyncWorker: SessionAutoSyncWorker = {
+    get busy() { return worker.busy; }, get sessionsBusy() { return worker.jobs.size > 0; },
+    activeSessionJobs: () => worker.activeSessionJobs(), coveringSessionJob: () => worker.coveringSessionJob(),
+    subscribeChanges: listener => worker.subscribeChanges(listener),
+    refreshSessions: () => { submissions++; return new Promise<SessionJob>(resolve => { release = () => resolve(worker.refreshSessions()); }); },
+  };
+  const sync = new SessionAutoSyncScheduler(asyncWorker, { consecutiveFailures: 0 }, clock);
+  try {
+    worker.mapBusy = true;
+    sync.updateInterval(5000);
+    assert.equal(sync.status().state, "pending");
+    for (let index = 0; index < 20; index++) { worker.emit(); clock.advance(5000); }
+    assert.equal(submissions, 1);
+    release(); await new Promise<void>(resolve => setImmediate(resolve));
+    assert.equal(sync.status().state, "running");
+    worker.finish(); assert.equal(sync.status().state, "waiting");
+    clock.advance(5000); assert.equal(submissions, 2);
+    sync.updateInterval(0); release(); await new Promise<void>(resolve => setImmediate(resolve));
+    worker.finish(); assert.equal(sync.status().state, "disabled");
+    assert.equal(clock.timers.size, 0);
+  } finally { sync.close(); }
+});
+
+test("异步登记失败进入退避，关闭时撤销唤醒，不留下未处理的拒绝", async () => {
+  const clock = new Clock(), worker = new Worker(clock);
+  const asyncWorker: SessionAutoSyncWorker = {
+    busy: false, activeSessionJobs: () => [], coveringSessionJob: () => undefined,
+    subscribeChanges: listener => worker.subscribeChanges(listener),
+    refreshSessions: async () => { throw new Error("synthetic write failure"); },
+  };
+  const sync = new SessionAutoSyncScheduler(asyncWorker, { consecutiveFailures: 0 }, clock);
+  sync.updateInterval(5000);
+  await new Promise<void>(resolve => setImmediate(resolve));
+  assert.equal(sync.status().state, "backoff");
+  assert.equal(sync.status().error, "synthetic write failure");
+  assert.equal(Date.parse(sync.status().nextRunAt!) - clock.now(), 30_000);
+  sync.close(); assert.equal(clock.timers.size, 0);
+});
+
 test("首次开启立即检查；长任务完成后计时，无变化版本和重复通知不改变基准", () => {
   const { clock, worker, sync } = fixture();
   try {

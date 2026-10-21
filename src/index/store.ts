@@ -1,3 +1,4 @@
+import { coordinateIndexWrites } from "./write-gate.js";
 import type { MessageDescriptor } from "../i18n/types.js";
 import Database from "better-sqlite3";
 import { randomUUID } from "node:crypto";
@@ -58,7 +59,7 @@ export class AnalysisStore {
   private readonly database: Database.Database;
   private readonly readOnly: boolean;
 
-  constructor(dbPath: string, options: { readonly?: boolean } = {}) {
+  constructor(dbPath: string, options: { readonly?: boolean; writeGate?: SharedArrayBuffer } = {}) {
     this.readOnly = options.readonly ?? false;
     this.dbPath = resolve(dbPath);
     if (!options.readonly) mkdirSync(dirname(this.dbPath), { recursive: true });
@@ -66,6 +67,7 @@ export class AnalysisStore {
     if (!options.readonly) this.database.pragma("journal_mode = WAL");
     this.database.pragma("foreign_keys = ON");
     this.database.pragma("busy_timeout = 5000");
+    if (!options.readonly) coordinateIndexWrites(this.database, options.writeGate);
     try {
       if (options.readonly) {
         const version = this.database.pragma("user_version", { simple: true }) as number;

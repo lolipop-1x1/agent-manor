@@ -236,8 +236,13 @@ test("HTTP 准备状态与报告绑定同一身份，非法参数失败且服务
     const report = await fetch(`${base}?${identity}`);
     assert.equal(report.status, 200);
     assert.equal((await report.json()).totals.requests, 1);
-    const ready = await fetch(`${base}/status?${identity}`);
-    assert.equal((await ready.json()).state, "ready");
+    let ready;
+    for (let count = 0; count < 100; count++) {
+      ready = await (await fetch(`${base}/status?${identity}`)).json();
+      if (ready.state === "ready") break;
+      await new Promise(resolve => setTimeout(resolve, 20));
+    }
+    assert.equal(ready.state, "ready");
     const invalid = await fetch(`${base}/status?timezone=invalid`);
     assert.equal(invalid.status, 400);
     const absent = await fetch(`${base}/status?version=missing`);

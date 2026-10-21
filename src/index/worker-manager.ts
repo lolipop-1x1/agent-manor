@@ -1,3 +1,4 @@
+import { releaseIndexWrite, withIndexWriteAsync } from "./write-gate.js";
 import type { MessageDescriptor } from "../i18n/types.js";
 import { DiagnosticError } from "../i18n/diagnostics.js";
 import { Worker } from "node:worker_threads";
@@ -10,6 +11,8 @@ import type { SessionJob, SessionRefreshOptions } from "../session-contracts.js"
 export interface WorkerManagerOptions {
   roots?: DiscoverRoots;
   workerUrl?: URL;
+  sessionWorkerUrl?: URL;
+  writeGate?: SharedArrayBuffer;
 }
 
 export interface SessionWorkerRequest extends SessionRefreshOptions { clearCache: boolean }
@@ -21,10 +24,13 @@ export function sessionRequestCovers(existing: SessionWorkerRequest, requested: 
     && ((existing.mode ?? "quick") === "full" || (requested.mode ?? "quick") === "quick");
 }
 
-/** 一个长期 Worker 串行分析全部仓库，主线程只登记任务和查询完整版本。 */
+/** 地图和会话各自串行执行，分别恢复失败，避免长任务跨域排队。 */
 export class WorkerManager {
   private worker?: Worker;
   private workerReady?: Promise<void>;
+  private sessionWorker?: Worker;
+  private sessionWorkerReady?: Promise<void>;
+  private sessionFailure?: string;
   private readonly pending = new Map<string, ((job: Job) => void)[]>();
   private readonly cancelled = new Map<string, Job>();
   private readonly active = new Set<string>();
@@ -43,30 +49,42 @@ export class WorkerManager {
     if (options.workerUrl) this.worker = this.createWorker();
   }
 
-  private createWorker(): Worker {
+  private createWorker(kind: "maps" | "sessions" = "maps"): Worker {
     const { store, options } = this;
     const extension = import.meta.url.endsWith(".ts") ? "ts" : "js";
-    const workerUrl = options.workerUrl ?? new URL(`../worker.${extension}`, import.meta.url);
+    const customUrl = kind === "maps" ? options.workerUrl : options.sessionWorkerUrl;
+    const workerUrl = customUrl ?? new URL(`../worker.${extension}`, import.meta.url);
+    const workerData = { dbPath: store.dbPath, roots: options.roots, writeGate: options.writeGate, kind, lifecycleHandshake: !customUrl };
     // tsx 的源码入口需要在 Worker 自己的隔离环境中安装 ESM 解析钩子。
-    const worker = extension === "ts" && !options.workerUrl
-      ? new Worker(`import('tsx/esm/api').then(({register}) => { register(); return import(${JSON.stringify(workerUrl.href)}); });`, { eval: true, workerData: { dbPath: store.dbPath, roots: options.roots, lifecycleHandshake: true } })
-      : new Worker(workerUrl, { workerData: { dbPath: store.dbPath, roots: options.roots, lifecycleHandshake: !options.workerUrl } });
-    if (!options.workerUrl) {
-      this.workerReady = new Promise(resolve => {
+    const worker = extension === "ts" && !customUrl
+      ? new Worker(`import('tsx/esm/api').then(({register}) => { register(); return import(${JSON.stringify(workerUrl.href)}); });`, { eval: true, workerData })
+      : new Worker(workerUrl, { workerData });
+    if (!customUrl) {
+      const readyPromise = new Promise<void>(resolve => {
         const ready = () => { worker.removeListener("message", message); resolve(); };
         const message = (value: { ready?: boolean }) => { if (value.ready) ready(); };
         worker.on("message", message);
         worker.once("error", ready); worker.once("exit", ready);
       });
+      if (kind === "maps") this.workerReady = readyPromise;
+      else this.sessionWorkerReady = readyPromise;
     }
+    const workerOwner = worker.threadId + 1;
+    const current = () => (kind === "maps" ? this.worker : this.sessionWorker) === worker;
     worker.on("message", (message: { jobId?: string; reclaim?: IndexMaintenanceResult }) => {
-      if (this.worker !== worker) return;
-      if (message.reclaim) this.reclaimStatus = message.reclaim;
+      if (!current()) return;
+      if (message.reclaim) { this.reclaimStatus = message.reclaim; this.changed(); }
       if (message.jobId) this.finished(message.jobId);
     });
-    worker.on("error", (error) => { if (this.worker === worker && !this.closed) this.failed(error.message); });
-    worker.on("exit", (code) => {
-      if (this.worker === worker && !this.closed) this.failed(`分析 Worker 意外停止（${code}）`, { key: "diagnostics.index.workerManager.unexpectedExit", params: { code } });
+    const fail = (error: string, descriptor?: MessageDescriptor) => {
+      if (!current() || this.closed || (kind === "maps" ? this.failure : this.sessionFailure)) return;
+      void this.failed(kind, error, descriptor);
+    };
+    let error: Error | undefined;
+    worker.on("error", failure => { error = failure; });
+    worker.on("exit", code => {
+      releaseIndexWrite(options.writeGate, workerOwner);
+      fail(error?.message ?? `分析 Worker 意外停止（${code}）`, error ? undefined : { key: "diagnostics.index.workerManager.unexpectedExit", params: { code } });
     });
     return worker;
   }
@@ -132,7 +150,12 @@ export class WorkerManager {
     return this.coveringSessionJob(false);
   }
 
-  get busy(): boolean { return this.active.size > 0 || this.sessionActive.size > 0; }
+  get busy(): boolean { return this.active.size > 0 || this.sessionsBusy; }
+  get sessionsBusy(): boolean { return this.sessionActive.size > 0; }
+
+  sessionState(): { job: SessionJob; request: SessionWorkerRequest }[] {
+    return [...this.sessionActive].map(id => ({ job: this.sessions!.getJob(id), request: this.sessionRequests.get(id)! }));
+  }
 
   activeSessionJobs(): SessionJob[] { return [...this.sessionActive].map(id => this.sessions!.getJob(id)); }
 
@@ -158,11 +181,11 @@ export class WorkerManager {
     const request: SessionRefreshOptions = clearCache ? { mode: "full" } : { client: options.client, mode: options.mode ?? "quick" };
     const existing = this.coveringSessionJob(clearCache, request);
     if (existing) return existing;
-    if (!this.worker || this.failure) { this.worker = this.createWorker(); this.failure = undefined; }
+    if (!this.sessionWorker || this.sessionFailure) { this.sessionWorker = this.createWorker("sessions"); this.sessionFailure = undefined; }
     const job = this.sessions.createJob(request);
     this.sessionActive.add(job.id);
     this.sessionRequests.set(job.id, { ...request, clearCache });
-    this.worker.postMessage({ type: "sessions", jobId: job.id, clearCache });
+    this.sessionWorker.postMessage({ type: "sessions", jobId: job.id, clearCache });
     this.changed([job]);
     return job;
   }
@@ -192,37 +215,55 @@ export class WorkerManager {
     if (notify) this.changed();
   }
 
-  private failed(error: string, errorDescriptor?: MessageDescriptor): void {
-    this.failure = error;
+  private async failed(kind: "maps" | "sessions", error: string, errorDescriptor?: MessageDescriptor, closing = false): Promise<void> {
+    if (kind === "maps") this.failure = error;
+    else this.sessionFailure = error;
+    // 只结算本次故障已有的任务，重试期间新增的任务由新 Worker 负责。
+    const sessionIds = kind === "sessions" ? [...this.sessionActive] : [];
+    const mapIds = kind === "maps" ? [...this.active] : [];
     const sessionJobs: SessionJob[] = [];
-    for (const id of [...this.sessionActive]) {
-      const job = this.sessions!.getJob(id);
-      if (job.status !== "complete" && job.status !== "failed") this.sessions!.failJob(id, error, errorDescriptor);
-      this.sessionActive.delete(id);
-      this.sessionRequests.delete(id);
-      sessionJobs.push(this.sessions!.getJob(id));
+    for (;;) {
+      if (this.closed && !closing) return;
+      try {
+        await withIndexWriteAsync(this.options.writeGate, () => {
+          if (this.closed && !closing) return;
+          for (const id of sessionIds) {
+            if (!this.sessionActive.has(id)) continue;
+            const job = this.sessions!.getJob(id);
+            if (job.status !== "complete" && job.status !== "failed") this.sessions!.failJob(id, error, errorDescriptor);
+            this.sessionActive.delete(id);
+            this.sessionRequests.delete(id);
+            sessionJobs.push(this.sessions!.getJob(id));
+          }
+          for (const id of mapIds) {
+            if (!this.active.has(id)) continue;
+            const job = this.store.findJob(id);
+            if (job && job.status !== "completed" && job.status !== "failed") this.store.failJob(id, error, errorDescriptor);
+            this.finished(id, false);
+          }
+          if (kind === "maps") this.cancelled.clear();
+          this.changed(sessionJobs);
+        });
+        return;
+      } catch (failure) {
+        // 失败状态也需要写锁；暂时冲突不能从错误回调抛出并终止整个管理线程。
+        if (!(failure && typeof failure === "object" && "code" in failure && ["SQLITE_BUSY", "SQLITE_LOCKED"].includes(String(failure.code)))) throw failure;
+        await new Promise<void>(resolve => { setTimeout(resolve, 50); });
+      }
     }
-    for (const id of [...this.active]) {
-      const job = this.store.findJob(id);
-      if (job && job.status !== "completed" && job.status !== "failed") this.store.failJob(id, error, errorDescriptor);
-      this.finished(id, false);
-    }
-    this.cancelled.clear();
-    this.changed(sessionJobs);
   }
 
   async close(): Promise<void> {
     if (this.closed) return;
     this.closed = true;
-    if (this.worker) {
-      // 原生 SQLite 模块正在初始化时先等待就绪，避免在 N-API 注册中途强制终止线程。
-      if (this.workerReady) {
-        let timer: NodeJS.Timeout | undefined;
-        try { await Promise.race([this.workerReady, new Promise<void>(resolve => { timer = setTimeout(resolve, 5000); timer.unref(); })]); }
-        finally { if (timer) clearTimeout(timer); }
-      }
-      await this.worker.terminate();
-    }
-    this.failed("后台停止时刷新尚未完成", { key: "diagnostics.index.workerManager.interrupted" });
+    await Promise.all(([[this.worker, this.workerReady], [this.sessionWorker, this.sessionWorkerReady]] as const).map(async ([worker, ready]) => {
+      if (!worker) return;
+      // 原生 SQLite 模块初始化完成后再终止，避免打断 N-API 注册。
+      let timer: NodeJS.Timeout | undefined;
+      try { if (ready) await Promise.race([ready, new Promise<void>(resolve => { timer = setTimeout(resolve, 5000); timer.unref(); })]); }
+      finally { if (timer) clearTimeout(timer); }
+      await worker.terminate();
+    }));
+    await Promise.all((["maps", "sessions"] as const).map(kind => this.failed(kind, "后台停止时刷新尚未完成", { key: "diagnostics.index.workerManager.interrupted" }, true)));
   }
 }
