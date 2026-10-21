@@ -30,10 +30,11 @@ try {
     const ensure = (value, description) => { if (!value) throw new Error(description); checks.push(description); };
     await page.setViewportSize({ width: options.width, height: 950 });
     await page.emulateMedia({ reducedMotion: "no-preference" });
-    const hold = async pattern => {
+    const hold = async (pattern, pass = () => false) => {
       let release;
       const gate = new Promise(resolve => { release = resolve; });
       await page.route(pattern, async route => {
+        if (pass(route.request())) { await route.continue(); return; }
         const response = await route.fetch(); await gate;
         if (!route.request().failure()) await route.fulfill({ response }).catch(error => {
           if (!String(error).includes("Route is already handled")) throw error;
@@ -60,6 +61,7 @@ try {
         if (name === "sessions" && options.width >= 1024) ensure(await page.locator(".session-profile .loading-skeleton--profile").isVisible(), "会话画像首次加载保留指标结构");
         await screenshot(`${name}-loading`);
         if (name === "overview") {
+          ensure(await page.locator(".overview-skeleton-chart .overview-loading-label").innerText() === options.loadingLabel, "首页首屏管家显示当前语言的加载文案");
           await page.setViewportSize({ width: options.width, height: 360 });
           await page.evaluate(() => window.scrollTo(0, 0));
           await page.waitForFunction(selector => document.querySelector(selector)?.dataset.paused === "true", scene);
@@ -108,6 +110,7 @@ try {
         ensure(JSON.stringify(refreshedContent.map(value => value.text)) === JSON.stringify(content.map(value => value.text)), `${name} 刷新保留旧完整结果`);
         ensure(refreshedContent.length === content.length && refreshedContent.every((value, index) => Math.abs(value.height - content[index].height) < 1), `${name} 刷新保持区域高度`);
         ensure(await page.locator(body).locator(".loading--scene").count() === 0, `${name} 刷新不覆盖图表`);
+        if (name === "overview") ensure(await page.locator(".overview-loading-label").count() === 0, "首页已有结果更新不重放管家文案");
         ensure(await page.locator(indicator).first().evaluate(element => element.getBoundingClientRect().height <= 20), `${name} 紧凑茶杯不扩大固定槽位`);
         if (name === "usage") {
           ensure(await page.locator(".usage-page .loading--inline").count() === 1, "用量更新只有一个主要进度图形");
@@ -120,6 +123,22 @@ try {
     };
     await cold({ name: "overview", hash: "overview", pattern: "**/api/v1/overview/snapshot?**",
       scene: ".overview-loading .loading--scene", ready: ".overview-results[aria-busy='false']" });
+    const releasePanels = await hold("**/api/v1/overview/panel?**", request => /[?&]panel=core(?:&|$)/.test(request.url()));
+    try {
+      await page.goto(`${options.base}/?loading-preview=overview-panels#overview`);
+      await page.waitForFunction(() => document.querySelectorAll(".overview-panel-placeholder").length >= 5);
+      await page.locator(".weekly-review-groups").waitFor({ state: "attached" });
+      const placeholders = page.locator(".overview-panel-placeholder");
+      const captions = await placeholders.locator(".overview-loading-label").allTextContents();
+      ensure(captions.length === await placeholders.count() && captions.every(text => text === options.loadingLabel), "首页所有等待分区的管家均有本地化文案");
+      ensure(await placeholders.evaluateAll(elements => elements.every(element => getComputedStyle(element).rowGap === "8px" && getComputedStyle(element.querySelector(".overview-loading-label")).fontSize === "12px")), "首页加载文字使用统一字号与间距");
+      await placeholders.first().scrollIntoViewIfNeeded();
+      await visibleScene(".overview-panel-placeholder .loading--scene");
+      await screenshot("overview-panels-loading");
+      ensure(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), "首页多分区等待无横向溢出");
+    } finally { await releasePanels(); }
+    await page.waitForFunction(() => !document.querySelector(".overview-loading-label") && !document.querySelector(".overview-range .loading--inline"));
+    ensure(await page.locator(".overview-loading-label").count() === 0, "首页各分区就绪后移除加载文案");
     await refresh({ name: "overview", pattern: "**/api/v1/overview/snapshot?**", button: options.overviewRefresh,
       results: ".overview-results", body: ".overview-report-body", indicator: ".overview-range .loading--inline" });
     await cold({ name: "usage", hash: "usage", pattern: "**/api/v1/usage?**",
@@ -219,6 +238,7 @@ try {
       sessionProfile: translate(language, "sessions.reading.stats"), noKnowledge: translate(language, "knowledge.noSelection"), knowledgeId: knowledge.id,
       clientFilter: translate(language, "sessions.filter.client"), knowledgeRefresh: translate(language, "knowledge.refresh"), knowledgeBack: translate(language, "knowledge.back"), knowledgeRetry: translate(language, "knowledge.retry"),
       apply: translate(language, "common.picker.apply"),
+      loadingLabel: translate(language, "common.loading"),
     })})`, "--raw"]);
     reports.push(JSON.parse(result.trim()));
     console.log(result);
