@@ -24,9 +24,10 @@ export function WeeklyReview({ active, clients, projects, revision, onSession }:
   const trigger = useRef<HTMLElement | null>(null);
   const parameters = weeklyReviewParameters({ clients, projects });
   const key = `${parameters}:${revision}:${retry}`;
-  const pending = loading || Boolean(result && result.key !== key);
+  const stale = Boolean(result && result.key !== key);
+  const pending = loading || stale && !error;
   const review = result?.review;
-  useEffect(() => { setSelection(null); }, [key]);
+  useEffect(() => { setSelection(null); }, [parameters]);
   useEffect(() => {
     if (!active) return;
     const controller = new AbortController(); setLoading(true); setError(null);
@@ -61,7 +62,7 @@ export function WeeklyReview({ active, clients, projects, revision, onSession }:
     <div className="overview-section-heading"><div><h2 id="weekly-review-title">{t("overview.review.title")}</h2><HelpPopover label={t("overview.review.help")} iconOnly><p>{t("overview.review.help.global")}</p><p>{t("overview.review.help.rounds")}</p>{review && <p>{t("overview.review.help.estimatedSteps", { count: review.rounds.steps.estimatedSamples ?? 0 })}</p>}<p>{t("overview.review.help.averageRounds")}</p>{review && <p>{t("overview.review.help.inferred", { count: review.rounds.inferredIncluded ?? 0 })}</p>}<p>{t("overview.review.help.cache")}</p></HelpPopover></div><div><span className="weekly-review-range">{review ? t("overview.review.range", { from: date(overviewCalendarDate(review.range.from)), to: date(overviewCalendarDate(review.range.to)) }) : null}</span><span className="overview-progress" role="status" aria-label={pending ? t("overview.loading") : undefined}>{pending && <Loading variant="inline" size={16} />}</span></div></div>
     {error && <div className="overview-error" role="alert"><WarningCircle size={17} /><span>{errorMessage(error)}</span><button className="text-button" onClick={() => setRetry(value => value + 1)}>{t("overview.retry")}</button></div>}
     {!review && !error && <div className="weekly-review-skeleton" aria-label={t("overview.loading")} role="status">{Array.from({ length: 4 }, (_, index) => <div key={index}>{Array.from({ length: 5 }, (_, row) => <i key={row} />)}</div>)}</div>}
-    {review && <div inert={pending}>
+    {review && <div inert={pending || stale}>
       <div className="weekly-review-groups">
         <div className="weekly-review-group"><h3>{t("overview.review.group.sessions")}</h3>{metric("active", n(review.sessions.active), "sessions", undefined, true)}{metric("completed", n(review.rounds.completed), "rounds")}{metric("averageRounds", review.sessions.roundsPerSession.average == null ? "—" : t("overview.review.roundsValue", { count: review.sessions.roundsPerSession.average, value: number(review.sessions.roundsPerSession.average, { minimumFractionDigits: 1, maximumFractionDigits: 1 }) }), "sessionRounds", "rounds")}{metric("compressionSessions", n(review.sessions.compressionSessions), "compressions")}{metric("compressions", n(review.sessions.compressions), "compressions")}</div>
         <div className="weekly-review-group"><h3>{t("overview.review.group.rounds")}</h3>{metric("duration", duration(review.rounds.durationMs.average, review.rounds.durationMs.inferredSamples), "rounds", "duration", true)}{metric("steps", n(review.rounds.steps.average, (review.rounds.steps.inferredSamples ?? 0) + (review.rounds.steps.estimatedSamples ?? 0)), "rounds", "steps")}{metric("toolCalls", n(review.rounds.toolCalls.average, review.rounds.toolCalls.inferredSamples), "rounds")}{metric("tokens", tokens(review.rounds.tokens.average, review.rounds.tokens.inferredSamples), "rounds", "tokens")}{more("tools", "tools")}</div>
@@ -74,6 +75,6 @@ export function WeeklyReview({ active, clients, projects, revision, onSession }:
       </div>
 
     </div>}
-    {review && <WeeklyReviewDetails active={active} review={review} selection={selection} pending={pending} focusMetric={focusMetric} returnFocus={trigger} onSelect={value => { if (value.kind !== selection?.kind) setFocusMetric(undefined); setSelection(value); }} onClose={() => setSelection(null)} onReload={() => setRetry(value => value + 1)} onSession={onSession} />}
+    {review && <WeeklyReviewDetails active={active} review={review} selection={selection} pending={pending || stale} refreshError={error} focusMetric={focusMetric} returnFocus={trigger} onSelect={value => { if (value.kind !== selection?.kind) setFocusMetric(undefined); setSelection(value); }} onClose={() => setSelection(null)} onReload={() => setRetry(value => value + 1)} onSession={onSession} />}
   </section>;
 }

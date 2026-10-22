@@ -3,6 +3,7 @@ import type { OverviewQuery, OverviewRequest, WeeklyReview, WeeklyReviewDetailPa
 import type { SessionSummary } from "../session-contracts.js";
 import type { PricingView } from "../usage/pricing.js";
 import { clientName } from "../clients.js";
+import { usageDimensionKey, usageDimensionValue } from "../usage/dimensions.js";
 import { activityTime, inPeriod, resolveTimezone } from "./dates.js";
 import { weeklyReviewRange, type WeeklyRoundFact, type WeeklySessionFacts } from "./weekly-review-facts.js";
 
@@ -165,7 +166,10 @@ export function buildWeeklyReview(facts: WeeklySessionFacts[], query: OverviewQu
     const key = request.client, group = agentsGroups.get(key) ?? { count: 0, rows: [], sessions: new Set<string>(), name: clientName(key as SessionSummary["client"]) };
     group.rows.push(request); group.sessions.add(request.sessionId); agentsGroups.set(key, group);
   }
-  const agents = rank(agentsGroups), models = groupedRank(requestRows, row => row.model ?? "unknown"), reasoning = groupedRank(requestRows, row => row.reasoningEffort ?? "unknown");
+  const dimensionRank = (valueOf: (row: WeeklyReviewRecord) => string | undefined) => groupedRank(requestRows,
+    row => usageDimensionKey(valueOf(row)), key => usageDimensionValue(key) ?? "unknown")
+    .map(row => row.key === "unknown" ? { ...row, nameDescriptor: { key: "overview.review.unknown" } } : row);
+  const agents = rank(agentsGroups), models = dimensionRank(row => row.model), reasoning = dimensionRank(row => row.reasoningEffort);
   const calls = userFacts.flatMap(fact => fact.events.filter(event => event.kind === "tool_call")
     .map(event => ({ fact, event })));
   const toolRows = calls.filter(({ event }) => event.status === "failure").map(({ fact, event }) => record(fact.session,
@@ -226,9 +230,9 @@ export function buildWeeklyReview(facts: WeeklySessionFacts[], query: OverviewQu
 
 export function weeklyReviewDetail(data: WeeklyReviewData, detail: WeeklyReviewDetailQuery): WeeklyReviewDetailPage {
   let rows = data.rows[detail.kind];
-  if (detail.key !== undefined) rows = rows.filter(row => (detail.kind === "agents" ? row.client : detail.kind === "models" ? row.model
-    : detail.kind === "reasoning" ? row.reasoningEffort : detail.kind === "compressions" ? row.sessionId : JSON.stringify([row.tool ?? "unknown", row.server ?? null]))
-    === (detail.key === "unknown" ? undefined : detail.key));
+  if (detail.key !== undefined) rows = rows.filter(row => (detail.kind === "agents" ? row.client : detail.kind === "models" ? usageDimensionKey(row.model)
+    : detail.kind === "reasoning" ? usageDimensionKey(row.reasoningEffort) : detail.kind === "compressions" ? row.sessionId : JSON.stringify([row.tool ?? "unknown", row.server ?? null]))
+    === detail.key);
   if (detail.filter) rows = rows.filter(row => detail.kind === "cache" ? (row as RequestRecord).state === detail.filter : detail.filter === "ended" ? row.eligible : row.completion === detail.filter);
   const sort = detail.sort ?? (detail.kind === "cache" ? "fresh" : detail.kind === "sessionRounds" ? "rounds" : "recent");
   rows = [...rows].sort((a, b) => sort === "recent" ? (b.occurredAt ?? "").localeCompare(a.occurredAt ?? "") || a.id.localeCompare(b.id)

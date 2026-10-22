@@ -46,6 +46,32 @@ async function fixture(run: (store: SessionStore, directory: string) => Promise<
   finally { store.close(); await rm(directory, { recursive: true, force: true }); }
 }
 
+test("周复盘维度身份区分缺失、unknown及literal前缀，排行与明细一致", async () => fixture(async store => {
+  const values = [{ value: undefined, key: "unknown" }, { value: "unknown", key: "literal:unknown" },
+    { value: "literal:unknown", key: "literal:literal:unknown" }, { value: "literal:literal:unknown", key: "literal:literal:literal:unknown" },
+    { value: "synthetic-model", key: "synthetic-model" }];
+  const source = revision(store, "dimension-identities", [message("dimension-identities", "user", 0, "2026-10-07T01:00:00Z")],
+    values.map(({ value }, index) => usage(`dimension-${index}`, "2026-10-07T01:00:01Z", { model: value, reasoningEffort: value })));
+  const version = store.publish(store.createJob().id, [source], []), query = { version, timezone: "UTC", anchorDay: "2026-10-12" };
+  const facts = new WeeklyReviewFactStore(store);
+  try {
+    const data = buildWeeklyReview((await facts.source(query, now)).facts, query, pricing, now);
+    for (const kind of ["models", "reasoning"] as const) {
+      assert.equal(data.ranks[kind]!.length, values.length);
+      for (const [index, { value, key }] of values.entries()) {
+        const rank = data.ranks[kind]!.find(row => row.key === key)!;
+        assert.equal(rank.name, value ?? "unknown");
+        assert.equal(rank.count, 1);
+        assert.equal(rank.nameDescriptor?.key, value === undefined ? "overview.review.unknown" : undefined);
+        const detail = weeklyReviewDetail(data, { kind, key });
+        assert.equal(detail.total, rank.count);
+        assert.equal(detail.rows[0]!.requestId, `dimension-${index}`);
+        assert.equal(kind === "models" ? detail.rows[0]!.model : detail.rows[0]!.reasoningEffort, value);
+      }
+    }
+  } finally { facts.close(); }
+}));
+
 test("CLI 原始省略零缓存经解析和周复盘计算零命中、普通输入和价差，零输入不算满命中", async () => fixture(async (store, directory) => {
   const path = join(directory, "serialized-cache.jsonl"), at = "2026-10-07T01:00:00Z";
   const assistant = (uuid: string, usage: object) => ({ type: "message", sessionId: "cache-fixture", uuid, role: "assistant", timestamp: at,
@@ -322,13 +348,23 @@ test("后台复盘跳过年范围准备，重复和重启缓存复用，价格�
     const persisted = new Database(join(directory, "overview-results.sqlite"));
     try {
       const cached = persisted.prepare("SELECT key,json FROM overview_results WHERE json_extract(key,'$[1]')='review'").get() as { key: string; json: string };
-      assert.equal(JSON.parse(cached.key)[0], "weekly-review-v17");
+      assert.equal(JSON.parse(cached.key)[0], "weekly-review-v18");
       const incomplete = JSON.parse(cached.json); delete incomplete.sessions.roundsPerSession;
       persisted.prepare("UPDATE overview_results SET json=? WHERE key=?").run(JSON.stringify(incomplete), cached.key);
     } finally { persisted.close(); }
     restart = new OverviewManager(store, prices, () => [], () => now);
     assert.deepEqual(await restart.review(query), first);
     assert.equal((restart as unknown as { nextId: number }).nextId, 1, "缺新增指标的持久结果必须重算，不能进入界面");
+    await restart.close();
+    const previous = new Database(join(directory, "overview-results.sqlite"));
+    try {
+      const cached = previous.prepare("SELECT key,json FROM overview_results WHERE json_extract(key,'$[1]')='review'").get() as { key: string; json: string };
+      const key = JSON.parse(cached.key), outdated = JSON.parse(cached.json); key[0] = "weekly-review-v17"; outdated.sessions.active = 999;
+      previous.prepare("UPDATE overview_results SET key=?,json=? WHERE key=?").run(JSON.stringify(key), JSON.stringify(outdated), cached.key);
+    } finally { previous.close(); }
+    restart = new OverviewManager(store, prices, () => [], () => now);
+    assert.deepEqual(await restart.review(query), first);
+    assert.equal((restart as unknown as { nextId: number }).nextId, 1, "旧维度身份规则的持久结果必须重算");
   } finally { await manager.close(); await restart?.close(); }
 }));
 

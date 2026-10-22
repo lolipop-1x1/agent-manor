@@ -80,7 +80,7 @@ test("四组原始指标及扩展视图的动态文案完整", () => {
   }
   const source = readFileSync(new URL("../web/features/overview/WeeklyReview.tsx", import.meta.url), "utf8");
   assert.match(source, /\[active, key\]/); assert.doesNotMatch(source, /route\.window|route\.from|route\.models/);
-  assert.match(source, /<div inert=\{pending\}>/);
+  assert.match(source, /<div inert=\{pending \|\| stale\}>/);
 });
 
 test("会话平均轮次单位支持中英文及复数，详情排序沿用固定快照", () => {

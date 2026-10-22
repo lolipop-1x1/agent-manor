@@ -8,7 +8,7 @@ import { clientIds } from "../dist/clients.js";
 import { writePreferences } from "../dist/service/preferences.js";
 
 // 用户需求、时间、项目、价格和缺口均为隔离合成记录。
-export async function weeklyReviewFixture() {
+export async function weeklyReviewFixture({ dimensionIdentities = false } = {}) {
   const directory = await realpath(await mkdtemp(join(tmpdir(), "manor-weekly-review-")));
   const home = join(directory, "data"); await mkdir(home);
   const path = join(home, "index.sqlite"); new AnalysisStore(path).close();
@@ -46,6 +46,8 @@ export async function weeklyReviewFixture() {
           pending.sink.usage({ id: `${id}:usage:${turn}:${step}`, messageId, turnId: turn, occurredAt: at.toISOString(),
             model: round % 2 ? "review-large" : "review-fast", reasoningEffort: round % 3 ? "high" : "medium",
             inputTokens: input, outputTokens: 100 + step * 20,
+            ...(dimensionIdentities && sessionIndex === 0 && day === 1 && step === 0 && round < 3
+              ? { model: ["unknown", undefined, "literal:unknown"][round], reasoningEffort: ["unknown", undefined, "literal:unknown"][round] } : {}),
             ...(round === 4 ? {} : { cachedInputTokens: round === 0 ? 0 : round === 1 ? input : Math.round(input * .7) }), cacheWriteTokens: 0 });
         }
         if (sessionIndex === 1 && day === 4 && round === 3) message(turn, "compression", "合成压缩事件", new Date(start.getTime() + 8_000));
