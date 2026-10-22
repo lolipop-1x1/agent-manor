@@ -40,6 +40,7 @@ export class WorkerManager {
   private closed = false;
   private failure?: string;
   private readonly lastMapChecks = new Map<string, number>();
+  private readonly pausedMapRepositories = new Set<string>();
   reclaimStatus?: IndexMaintenanceResult;
 
   constructor(private readonly store: AnalysisStore, private readonly options: WorkerManagerOptions = {}, private readonly sessions?: SessionStore) {
@@ -125,6 +126,7 @@ export class WorkerManager {
       this.pending.delete(job.id);
     }
     this.lastMapChecks.delete(repositoryId);
+    this.pausedMapRepositories.delete(repositoryId);
     if (!this.closed && !this.failure && jobIds.length) this.worker?.postMessage({ type: "cancel", jobIds });
     this.changed();
   }
@@ -137,6 +139,7 @@ export class WorkerManager {
       const job = this.store.findJob(id);
       if (job?.repositoryId === repositoryId) return job;
     }
+    if (this.pausedMapRepositories.has(repositoryId)) return undefined;
     if (now - (this.lastMapChecks.get(repositoryId) ?? -Infinity) < interval) return undefined;
     const job = this.refresh(repositoryId);
     this.lastMapChecks.set(repositoryId, now);
@@ -210,6 +213,8 @@ export class WorkerManager {
     const job = this.cancelled.get(jobId) ?? this.store.findJob(jobId);
     this.cancelled.delete(jobId);
     if (!job) return;
+    if (job.status === "completed") this.pausedMapRepositories.delete(job.repositoryId);
+    else if (job.status === "failed" && job.startedAt) this.pausedMapRepositories.add(job.repositoryId);
     for (const resolve of this.pending.get(jobId) ?? []) resolve(job);
     this.pending.delete(jobId);
     if (notify) this.changed();
@@ -235,9 +240,12 @@ export class WorkerManager {
             this.sessionRequests.delete(id);
             sessionJobs.push(this.sessions!.getJob(id));
           }
+          const mapJobs = mapIds.map(id => this.store.findJob(id));
+          const interrupted = mapJobs.find(job => job?.status === "running") ?? mapJobs.find(job => job?.status === "queued");
           for (const id of mapIds) {
             if (!this.active.has(id)) continue;
             const job = this.store.findJob(id);
+            if (job && job.repositoryId === interrupted?.repositoryId) this.pausedMapRepositories.add(job.repositoryId);
             if (job && job.status !== "completed" && job.status !== "failed") this.store.failJob(id, error, errorDescriptor);
             this.finished(id, false);
           }

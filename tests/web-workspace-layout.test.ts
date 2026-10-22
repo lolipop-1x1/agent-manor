@@ -53,3 +53,11 @@ test("超出上下限的宽度被约束，四种收起组合均不挤压地图",
     if (details) assert.equal(widths.details, 44);
   }
 });
+
+test("断点沿用窗口宽度，滚动条占用只减少面板可用预算", () => {
+  const widths = workspaceWidths(1024, { sidebar: 480, details: 320 }, expanded, "map", 1009);
+  assert.ok(1009 - widths.sidebar - widths.details >= 360 - 1e-7);
+  assert.equal(panelWidthRange("sidebar", 1024, { sidebar: 200, details: 320 }, 1009).max, 329);
+  const collapsed = workspaceWidths(768, { sidebar: 480 }, { sidebar: false, details: true }, "map", 753);
+  assert.equal(collapsed.sidebar, 349);
+});

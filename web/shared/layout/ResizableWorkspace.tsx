@@ -10,19 +10,22 @@ export function ResizableWorkspace({ sidebarCollapsed, detailsCollapsed, childre
   const workspace = useRef<HTMLDivElement>(null);
   const drag = useRef<{ side: PanelSide; x: number; width: number; pointerId: number } | null>(null);
   const [viewport, setViewport] = useState(() => window.innerWidth);
+  const [availableWidth, setAvailableWidth] = useState(() => window.innerWidth);
   const [preferred, setPreferred] = useState<Partial<PanelWidths>>({});
   const [pinned, setPinned] = useState<{ viewport: number; side: PanelSide; width: number } | null>(null);
   const [resizing, setResizing] = useState<PanelSide | null>(null);
   // 在当前窗口内固定另一侧的显示宽度，避免拖动联动；窗口变化后恢复它原有的偏好。
   const display = pinned?.viewport === viewport ? { ...preferred, [pinned.side]: pinned.width } : preferred;
-  const widths = workspaceWidths(viewport, display, { sidebar: sidebarCollapsed, details: detailsCollapsed }, variant);
+  const widths = workspaceWidths(viewport, display, { sidebar: sidebarCollapsed, details: detailsCollapsed }, variant, availableWidth);
 
   useEffect(() => {
     const observer = new ResizeObserver(entries => {
       const entry = entries[0];
       if (entry && entry.contentRect.width > 0) {
-        setViewport(entry.contentRect.width);
-        setPinned(current => current?.viewport === entry.contentRect.width ? current : null);
+        // CSS 断点使用窗口宽度，拖动预算扣除滚动条等实际占用。
+        setViewport(window.innerWidth);
+        setAvailableWidth(entry.contentRect.width);
+        setPinned(current => current?.viewport === window.innerWidth ? current : null);
       }
     });
     if (workspace.current) observer.observe(workspace.current);
@@ -52,7 +55,7 @@ export function ResizableWorkspace({ sidebarCollapsed, detailsCollapsed, childre
   }, [sidebarCollapsed, detailsCollapsed]);
 
   const adjust = (side: PanelSide, value: number) => {
-    const range = panelWidthRange(side, viewport, widths);
+    const range = panelWidthRange(side, viewport, widths, availableWidth);
     const opposite = side === "sidebar" ? "details" : "sidebar";
     const oppositeCollapsed = opposite === "sidebar" ? sidebarCollapsed : detailsCollapsed;
     setPinned(oppositeCollapsed || opposite === "details" && viewport < 1024 ? null : { viewport, side: opposite, width: widths[opposite] });
@@ -80,7 +83,7 @@ export function ResizableWorkspace({ sidebarCollapsed, detailsCollapsed, childre
   const key = (event: KeyboardEvent<HTMLDivElement>, side: PanelSide) => {
     if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
     event.preventDefault();
-    const range = panelWidthRange(side, viewport, widths);
+    const range = panelWidthRange(side, viewport, widths, availableWidth);
     const step = (event.shiftKey ? 40 : 10) * (side === "sidebar" ? 1 : -1);
     adjust(side, event.key === "Home" ? range.min : event.key === "End" ? range.max : widths[side] + (event.key === "ArrowRight" ? step : -step));
   };
@@ -90,7 +93,7 @@ export function ResizableWorkspace({ sidebarCollapsed, detailsCollapsed, childre
     {children}
     {(["sidebar", "details"] as const).map(side => {
       const hidden = side === "sidebar" ? sidebarCollapsed || viewport < 768 : detailsCollapsed || viewport < 1024;
-      const range = panelWidthRange(side, viewport, widths);
+      const range = panelWidthRange(side, viewport, widths, availableWidth);
       const accessible = panelSemantics(side, semantics);
       return <div key={side} className={`panel-resizer ${side}-resizer`} role="separator" tabIndex={0} hidden={hidden}
         aria-label={accessible.label} aria-orientation="vertical" aria-controls={accessible.controls}

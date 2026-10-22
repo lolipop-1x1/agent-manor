@@ -78,7 +78,7 @@ function Modal({ open, onOpenChange, title, description, children, wide = false,
     onEscapeKeyDown={event => { if (busy) event.preventDefault(); }} onInteractOutside={event => { if (busy) event.preventDefault(); }}
     onOpenAutoFocus={() => { returnFocus.current = document.activeElement instanceof HTMLElement ? document.activeElement : null; }}
     onCloseAutoFocus={event => {
-      const target = returnFocus.current?.isConnected && returnFocus.current !== document.body ? returnFocus.current : fallbackFocus?.current;
+      const target = returnFocus.current?.isConnected && returnFocus.current !== document.body && !returnFocus.current.closest("[inert]") ? returnFocus.current : fallbackFocus?.current;
       if (target?.isConnected) { event.preventDefault(); target.focus(); }
     }}>
     <Dialog.Title>{title}</Dialog.Title><Dialog.Description className="dialog-description">{description}</Dialog.Description>
@@ -86,7 +86,7 @@ function Modal({ open, onOpenChange, title, description, children, wide = false,
   </Dialog.Content></Dialog.Portal></Dialog.Root>;
 }
 
-function EvidenceDialog({ repoId, event, query, open, onOpenChange }: { repoId: string; event: HistoryEvent | null; query: CoverageQuery; open: boolean; onOpenChange: (open: boolean) => void }) {
+function EvidenceDialog({ repoId, event, query, open, onOpenChange, fallbackFocus }: { repoId: string; event: HistoryEvent | null; query: CoverageQuery; open: boolean; onOpenChange: (open: boolean) => void; fallbackFocus?: RefObject<HTMLElement | null> }) {
   useI18n();
   const [data, setData] = useState<EvidenceResponse | null>(null);
   const [error, setError] = useState<unknown>(null);
@@ -103,7 +103,7 @@ function EvidenceDialog({ repoId, event, query, open, onOpenChange }: { repoId: 
       .finally(() => { if (!controller.signal.aborted) setLoading(false); });
     return () => controller.abort();
   }, [open, event?.id, repoId, key, query.version, retry]);
-  return <Modal open={open} onOpenChange={onOpenChange} title={t("codeMap.evidence.title")} description={t("codeMap.evidence.description")} wide>
+  return <Modal open={open} onOpenChange={onOpenChange} title={t("codeMap.evidence.title")} description={t("codeMap.evidence.description")} fallbackFocus={fallbackFocus} wide>
     {loading && <p role="status" className="muted">{t("codeMap.evidence.loading")}</p>}
     {!!error && <Notice danger action={<button className="button subtle" onClick={() => setRetry(value => value + 1)}>{t("common.retry")}</button>}><ErrorDetails error={error} /></Notice>}
     {data && <>
@@ -130,9 +130,9 @@ function EventDetails({ event, openEvidence, openCode, openSession, stale, sessi
   </div>;
 }
 
-function FilePane({ repoId, detail, loading, error, retry, collapsed, toggle, metric, theme, query, openSession, sessions }: {
+function FilePane({ repoId, detail, loading, error, retry, collapsed, toggle, metric, theme, query, openSession, sessions, blocked }: {
   repoId: string; detail: FileDetail | null; loading: boolean; error: unknown; retry: () => void; collapsed: boolean; toggle: () => void;
-  metric: Metric; theme: Theme; query?: CoverageQuery; openSession: (event: HistoryEvent) => void; sessions: MapSession[];
+  metric: Metric; theme: Theme; query?: CoverageQuery; openSession: (event: HistoryEvent) => void; sessions: MapSession[]; blocked: boolean;
 }) {
   useI18n();
   const [selectedEvent, setSelectedEvent] = useState<string | null>(null);
@@ -142,15 +142,18 @@ function FilePane({ repoId, detail, loading, error, retry, collapsed, toggle, me
   const [jumpLine, setJumpLine] = useState<number | undefined>();
   const [lineInput, setLineInput] = useState("1");
   const [eventLimit, setEventLimit] = useState(30);
+  const toggleButton = useRef<HTMLButtonElement>(null);
   useEffect(() => { setSelectedEvent(null); setCodeOpen(false); setRawOpen(false); setEventLimit(30); setJumpLine(undefined); }, [detail?.file.path, detail?.version]);
+  useEffect(() => { if (blocked) { setRawOpen(false); setCodeOpen(false); } }, [blocked]);
   const highlights = useMemo(() => detail ? fileHighlights(detail, metric, showNear) : { exact: [], near: [] }, [detail, metric, showNear]);
   const active = detail?.events.find(event => event.id === selectedEvent) ?? detail?.events[0] ?? null;
   const activeSession = active ? sessions.find(item => item.client === active.client && item.clientSessionId === active.sessionId) : undefined;
   const openCode = (line?: number) => { setJumpLine(line); if (line) setLineInput(String(line)); setCodeOpen(true); };
   return <aside className={`evidence-pane${collapsed ? " panel-collapsed" : ""}`} aria-label={t("codeMap.file.title")}>
-    <div className="pane-heading"><span>{t("codeMap.file.title")}</span><Hint label={collapsed ? t("codeMap.file.expand") : t("codeMap.file.collapse")}><button className="icon-button panel-toggle" aria-label={collapsed ? t("codeMap.file.expand") : t("codeMap.file.collapse")} aria-expanded={!collapsed} aria-controls="file-details-content" onClick={toggle}>{collapsed ? <CaretLeft size={17} /> : <CaretRight size={17} />}</button></Hint></div>
-    <div id="file-details-content" hidden={collapsed}>
-    {loading ? <p className="muted loading-status" role="status"><Loading variant="inline" size={16} />{t("codeMap.file.loading")}</p> : error ? <Notice danger action={<button className="button subtle" onClick={retry}>{t("common.retry")}</button>}><ErrorDetails error={error} /></Notice> : !detail ? <div className="no-selection"><FileCode size={30} /><h2>{t("codeMap.file.select")}</h2></div> : <>
+    <div className="pane-heading"><span>{t("codeMap.file.title")}</span><Hint label={collapsed ? t("codeMap.file.expand") : t("codeMap.file.collapse")}><button ref={toggleButton} className="icon-button panel-toggle" aria-label={collapsed ? t("codeMap.file.expand") : t("codeMap.file.collapse")} aria-expanded={!collapsed} aria-controls="file-details-content" onClick={toggle}>{collapsed ? <CaretLeft size={17} /> : <CaretRight size={17} />}</button></Hint></div>
+    {!!error && detail && <Notice danger action={<button className="button subtle" onClick={retry}>{t("common.retry")}</button>}><ErrorDetails error={error} /></Notice>}
+    <div id="file-details-content" hidden={collapsed} aria-busy={loading} inert={!!detail && (blocked || loading || !!error)}>
+    {loading && !detail ? <p className="muted loading-status" role="status"><Loading variant="inline" size={16} />{t("codeMap.file.loading")}</p> : error && !detail ? <Notice danger action={<button className="button subtle" onClick={retry}>{t("common.retry")}</button>}><ErrorDetails error={error} /></Notice> : !detail ? <div className="no-selection"><FileCode size={30} /><h2>{t("codeMap.file.select")}</h2></div> : <>
       <h2>{filename(detail.file.path)}</h2><p className="file-path">{detail.file.path}</p>
       <div className="file-stats"><div><strong>{percent(detail.file.readExactLines, detail.file.lineCount)}</strong><span>{t("codeMap.metric.read")}</span></div><div><strong>{fmt(detail.file.readNearLines)}</strong><span>{t("codeMap.metric.readNearLines")}</span></div><div><strong>{fmt(detail.file.editExactLines)}</strong><span>{t("codeMap.metric.editExactLines")}</span></div></div>
       <p className="muted small">{t("codeMap.file.summary", { near: fmt(detail.file.editNearLines), lines: fmt(detail.file.lineCount), category: categoryNames[detail.file.category] })}</p>
@@ -165,8 +168,8 @@ function FilePane({ repoId, detail, loading, error, retry, collapsed, toggle, me
       </button>)}</div>
       {eventLimit < detail.events.length && <button className="button subtle" onClick={() => setEventLimit(value => value + 30)}>{t("codeMap.file.moreActivity")}</button>}
       {active && <EventDetails event={active} sessionTitle={activeSession ? mapSessionTitle(activeSession) : undefined} stale={detail.contentStale || detail.content === null} openCode={openCode} openEvidence={() => setRawOpen(true)} openSession={() => openSession(active)} />}
-      {query && <EvidenceDialog repoId={repoId} event={active} query={query} open={rawOpen} onOpenChange={setRawOpen} />}
-      <Modal open={codeOpen} onOpenChange={setCodeOpen} title={detail.file.path} description={t("codeMap.code.description", { count: detail.file.lineCount })} wide>
+      {query && <EvidenceDialog repoId={repoId} event={active} query={query} open={rawOpen} onOpenChange={setRawOpen} fallbackFocus={toggleButton} />}
+      <Modal open={codeOpen} onOpenChange={setCodeOpen} title={detail.file.path} description={t("codeMap.code.description", { count: detail.file.lineCount })} fallbackFocus={toggleButton} wide>
         {detail.contentStale && <Notice>{t("codeMap.code.stale")}</Notice>}
         <div className="code-toolbar"><div className="code-legend"><span><i className="exact-key" />{metric === "edit" ? t("codeMap.metric.editExact") : t("codeMap.metric.read")}</span><label><input type="checkbox" checked={showNear} onChange={event => setShowNear(event.target.checked)} /><i className="near-key" />{t("codeMap.metric.near")}</label></div><form onSubmit={event => { event.preventDefault(); setJumpLine(Number(lineInput)); }}><label>{t("codeMap.code.jumpLine")}<input type="number" min="1" max={Math.max(1, detail.file.lineCount)} value={lineInput} onChange={event => setLineInput(event.target.value)} required /></label><button className="button subtle" type="submit">{t("codeMap.code.go")}</button></form></div>
         {detail.content !== null && <Suspense fallback={<p className="muted loading-status" role="status"><Loading variant="inline" size={16} />{t("codeMap.code.loading")}</p>}><CodeViewer path={detail.file.path} content={detail.content} exact={highlights.exact} near={highlights.near} theme={theme} jumpLine={jumpLine} /></Suspense>}
@@ -249,6 +252,9 @@ export function useCodeMapPage({ active, theme, onSession }: {
   const [detailLoading, setDetailLoading] = useState(false);
   const [detailError, setDetailError] = useState<unknown>(null);
   const [detailRetry, setDetailRetry] = useState(0);
+  const loadedDetail = useRef("");
+  const selectedFile = useRef(selected);
+  selectedFile.current = selected;
   const [job, setJob] = useState<Job | null>(null);
   const [actionError, setActionError] = useState<unknown>(null);
   const [actionPending, setActionPending] = useState(false);
@@ -263,7 +269,15 @@ export function useCodeMapPage({ active, theme, onSession }: {
   }), [client, mapSession?.client, mapSession?.clientSessionId, window, from, to, timeAnchor, category, directory]);
   const filterKey = queryString(filters);
   const invalidTime = window === "custom" && from && to && from > to;
-  const query = coverage ? boundQuery(filters, coverage.version) : undefined;
+  const query = coverage ? boundQuery(coverage.filters, coverage.version) : undefined;
+  const detailQueryKey = query ? queryString(query) : "";
+  const requestedCoverageKey = `${repoId}:${filterKey}:${reload}`;
+  const requestIdentity = `${requestedCoverageKey}:${version ?? ""}`;
+  const currentCoverageRequest = useRef(requestIdentity);
+  currentCoverageRequest.current = requestIdentity;
+  const coverageBlocked = !!coverage && (coverageLoading || coverageKey !== filterKey || coverage.version !== version
+    || loadedCoverage.current !== requestedCoverageKey || !!coverageError || !!invalidTime);
+  const displayedDirectory = coverage?.filters.directory ?? "";
   const chooseRepo = useCallback((id: string, reset = false) => {
     if (id === currentRepoId.current && !reset) return;
     pageEpoch.current += 1; currentRepoId.current = id;
@@ -271,6 +285,7 @@ export function useCodeMapPage({ active, theme, onSession }: {
     setRepoId(id); setMapSession(undefined); setMapSessionList(undefined); setVersion(undefined); setDirectory(""); setSelected(null); setDetail(null); setCoverage(null); setRootCoverage(null); setActionError(null);
     setJob(null); setCoverageError(null); setDetailError(null); setMapSessionsError(null); setCoverageLoading(false); setDetailLoading(false); setMapSessionsLoading(false);
     loadedCoverage.current = "";
+    loadedDetail.current = "";
     if (reset) setReload(value => value + 1);
     if (id) localStorage.setItem("agent-manor-repository", id); else localStorage.removeItem("agent-manor-repository");
   }, []);
@@ -357,9 +372,9 @@ export function useCodeMapPage({ active, theme, onSession }: {
     setJob(latest ?? null);
   }, [repoId, jobs]);
   useEffect(() => {
-    if (!distributionActive || !repoId || invalidTime) return;
+    if (!distributionActive || !repoId || invalidTime) { setCoverageLoading(false); return; }
     const requestKey = `${repoId}:${filterKey}:${reload}`;
-    if (coverage?.version === version && loadedCoverage.current === requestKey) return;
+    if (coverage?.version === version && loadedCoverage.current === requestKey) { setCoverageError(null); setCoverageLoading(false); return; }
     const controller = new AbortController();
     const epoch = pageEpoch.current;
     setCoverageLoading(true); setCoverageError(null);
@@ -369,13 +384,20 @@ export function useCodeMapPage({ active, theme, onSession }: {
       if (version && root.version !== version) throw new ApiError("VERSION_MISMATCH", "统计结果版本已变化，请刷新后重试。", { key: "codeMap.error.versionCoverage" });
       const scoped = directory ? await request<CoverageResult>(`${repositoryPath(repoId)}/coverage${queryString(boundQuery(filters, root.version), { summary: "true" })}`, { signal: controller.signal }) : root;
       if (scoped.version !== root.version) throw new ApiError("VERSION_MISMATCH", "目录统计与仓库结果版本不一致，请刷新后重试。", { key: "codeMap.error.versionDirectory" });
-      if (controller.signal.aborted || epoch !== pageEpoch.current) return;
+      if (controller.signal.aborted || epoch !== pageEpoch.current || currentCoverageRequest.current !== requestIdentity) return;
+      const nextSelected = scoped.files.some(file => file.path === selectedFile.current) ? selectedFile.current : null;
+      const nextQuery = boundQuery(scoped.filters, scoped.version);
+      const nextDetail = nextSelected ? await request<FileDetail>(`${repositoryPath(repoId)}/file${queryString(nextQuery, { path: nextSelected })}`, { signal: controller.signal }) : null;
+      if (nextDetail && nextDetail.version !== scoped.version) throw new ApiError("VERSION_MISMATCH", "文件详情与地图结果版本不一致，请刷新后重试。", { key: "codeMap.error.versionFile" });
+      if (controller.signal.aborted || epoch !== pageEpoch.current || currentCoverageRequest.current !== requestIdentity) return;
+      // 统计、目录和已选文件同版就绪后一起替换，等待或失败不拆开旧展示快照。
       loadedCoverage.current = requestKey;
+      loadedDetail.current = nextSelected ? `${repoId}:${queryString(nextQuery)}:${nextSelected}` : "";
       setCoverageKey(filterKey); setRootCoverage(root); setCoverage(scoped); setVersion(root.version);
-      setSelected(current => scoped.files.some(file => file.path === current) ? current : null);
+      setSelected(nextSelected); setDetail(nextDetail); setDetailError(null); setDetailLoading(false); setCoverageLoading(false);
       setRepositories(current => current.map(repo => repo.id === repoId ? scoped.repository : repo));
-    })().catch(failure => { if (!controller.signal.aborted && epoch === pageEpoch.current && !isAborted(failure) && !recoverMissingRepository(failure)) { setCoverageError(failure); setCoverage(current => current?.repository.id === repoId && coverageKey === filterKey ? current : null); } })
-      .finally(() => { if (!controller.signal.aborted && epoch === pageEpoch.current) setCoverageLoading(false); });
+    })().catch(failure => { if (!controller.signal.aborted && epoch === pageEpoch.current && currentCoverageRequest.current === requestIdentity && !isAborted(failure) && !recoverMissingRepository(failure)) setCoverageError(failure); })
+      .finally(() => { if (!controller.signal.aborted && epoch === pageEpoch.current && currentCoverageRequest.current === requestIdentity) setCoverageLoading(false); });
     return () => controller.abort();
   }, [distributionActive, repoId, filterKey, version, reload, invalidTime]);
   useEffect(() => {
@@ -398,16 +420,19 @@ export function useCodeMapPage({ active, theme, onSession }: {
   }, [active, repoId, coverage?.version, mapSessionList, client]);
   useEffect(() => {
     if (!distributionActive) return;
-    if (!repoId || !selected || !coverage || !query || coverageLoading || invalidTime) { setDetail(null); setDetailLoading(false); setDetailError(null); return; }
+    if (!repoId || !selected || !coverage || !query) { loadedDetail.current = ""; setDetail(null); setDetailLoading(false); setDetailError(null); return; }
+    if (coverageBlocked) { setDetailLoading(false); return; }
+    const key = `${repoId}:${detailQueryKey}:${selected}`;
+    if (loadedDetail.current === key) return;
     const controller = new AbortController();
     const epoch = pageEpoch.current;
-    setDetailLoading(true); setDetailError(null); setDetail(null);
+    setDetailLoading(true); setDetailError(null);
     void request<FileDetail>(`${repositoryPath(repoId)}/file${queryString(query, { path: selected })}`, { signal: controller.signal })
-      .then(result => { if (controller.signal.aborted || epoch !== pageEpoch.current) return; if (result.version !== query.version) throw new ApiError("VERSION_MISMATCH", "文件详情与地图结果版本不一致，请刷新后重试。", { key: "codeMap.error.versionFile" }); setDetail(result); })
+      .then(result => { if (controller.signal.aborted || epoch !== pageEpoch.current) return; if (result.version !== query.version) throw new ApiError("VERSION_MISMATCH", "文件详情与地图结果版本不一致，请刷新后重试。", { key: "codeMap.error.versionFile" }); loadedDetail.current = key; setDetail(result); })
       .catch(failure => { if (!controller.signal.aborted && epoch === pageEpoch.current && !isAborted(failure) && !recoverMissingRepository(failure)) setDetailError(failure); })
       .finally(() => { if (!controller.signal.aborted && epoch === pageEpoch.current) setDetailLoading(false); });
     return () => controller.abort();
-  }, [distributionActive, repoId, selected, coverage?.version, filterKey, detailRetry, coverageLoading, invalidTime]);
+  }, [distributionActive, repoId, selected, detailQueryKey, detailRetry, coverageBlocked]);
   useEffect(() => {
     if (!job || !jobActive(job)) return;
     let cancelled = false;
@@ -472,9 +497,9 @@ export function useCodeMapPage({ active, theme, onSession }: {
     chooseRepo(repo.id); setReplayTarget(session.id);
     return mapAddress("replay", repo.id, session.id);
   };
-  const browse = useCallback((path: string) => { setDirectory(path); setSelected(null); }, []);
+  const browse = useCallback((path: string) => { setDirectory(path); }, []);
   const selectFile = useCallback((path: string) => { setSelected(path); setDetailsCollapsed(false); }, []);
-  const clearFilters = () => { setClient("all"); setMapSession(undefined); setWindow("all"); setCategory("source"); setDirectory(""); setSearch(""); setSelected(null); };
+  const clearFilters = () => { setClient("all"); setMapSession(undefined); setWindow("all"); setCategory("source"); setDirectory(""); setSearch(""); };
   const availableMapSessions = mapSessionList?.version === coverage?.version ? mapSessionList?.sessions ?? [] : [];
   const mapSessionOptions = useMemo(() => {
     const options = availableMapSessions.filter(session => client === "all" || session.client === client).map(session => ({
@@ -531,11 +556,11 @@ export function useCodeMapPage({ active, theme, onSession }: {
   }));
   const visible = useMemo(() => coverage?.files.filter(file => file.path.toLocaleLowerCase().includes(search.toLocaleLowerCase())) ?? [], [coverage?.files, search]);
   const s = coverage?.summary;
-  const retainedCoverageLoading = coverageLoading && coverage?.repository.id === repoId && coverageKey === filterKey;
+  const retainedCoverageLoading = coverageLoading && coverage?.repository.id === repoId;
   const editing = metric === "edit";
   const exact = s ? editing ? s.editExact : s.readExact : null;
   const near = s ? editing ? s.editNear : s.readNear : null;
-  const mapHeading = useMemo(() => repository ? <div className="map-heading"><div className="breadcrumbs"><button onClick={() => browse("")}><Folder size={16} />{repository.name}</button>{directory.split("/").filter(Boolean).map((part, i, parts) => <span key={i}><CaretRight size={12} /><button onClick={() => browse(parts.slice(0, i + 1).join("/"))}>{part}</button></span>)}<small>{t("codeMap.file.count", { count: visible.length })}</small></div><div className="metric-picker" role="group" aria-label={t("codeMap.colorMetric")}>{(["read", "edit", "activity"] as const).map(value => <button key={value} aria-pressed={metric === value} className={metric === value ? "active" : ""} onClick={() => setMetric(value)}>{metricNames[value]}</button>)}</div></div> : null, [repository, directory, visible.length, metric, browse, language]);
+  const mapHeading = useMemo(() => repository ? <div className="map-heading"><div className="breadcrumbs"><button onClick={() => browse("")}><Folder size={16} />{repository.name}</button>{displayedDirectory.split("/").filter(Boolean).map((part, i, parts) => <span key={i}><CaretRight size={12} /><button onClick={() => browse(parts.slice(0, i + 1).join("/"))}>{part}</button></span>)}<small>{t("codeMap.file.count", { count: visible.length })}</small></div><div className="metric-picker" role="group" aria-label={t("codeMap.colorMetric")}>{(["read", "edit", "activity"] as const).map(value => <button key={value} aria-pressed={metric === value} className={metric === value ? "active" : ""} onClick={() => setMetric(value)}>{metricNames[value]}</button>)}</div></div> : null, [repository, displayedDirectory, visible.length, metric, browse, language]);
   const mapLegend = useMemo(() => <div className="map-legend"><span>{metric === "activity" ? t("codeMap.metric.activity") : t("codeMap.exactCoverage")}</span><span className="legend-scale">{[0, 1, 2, 3, 4].map(tone => <i key={tone} className={`tone-${tone}`} />)}</span><span>{metric === "activity" ? t("codeMap.activity.range", { count: visible.reduce((max, file) => Math.max(max, metricValue(file, metric)), 0) }) : "0 → 100%"}</span><span className="near-key legend-near" /><span>{t("codeMap.near")}</span><small>{t("codeMap.area")}</small></div>, [metric, visible, language]);
   return {
     openMap,
@@ -557,7 +582,7 @@ export function useCodeMapPage({ active, theme, onSession }: {
         }}>{t(`codeMap.view.${tab}`)}</button>)}
       </div>
       <div className="map-heading-tools map-page-actions">
-        <span className="map-query-progress">{(mapSessionsLoading || retainedCoverageLoading) && <span className="map-query-loading" role="status" aria-label={t(retainedCoverageLoading ? "codeMap.coverage.loading" : "codeMap.session.loading")} title={t(retainedCoverageLoading ? "codeMap.coverage.loading" : "codeMap.session.loading")}><Loading variant="inline" size={17} /></span>}</span>
+        <span className="map-query-progress">{(mapSessionsLoading || retainedCoverageLoading || detailLoading) && <span className="map-query-loading" role="status" aria-label={t(retainedCoverageLoading ? "codeMap.coverage.loading" : detailLoading ? "codeMap.file.loading" : "codeMap.session.loading")} title={t(retainedCoverageLoading ? "codeMap.coverage.loading" : detailLoading ? "codeMap.file.loading" : "codeMap.session.loading")}><Loading variant="inline" size={17} /></span>}</span>
         <AutoRefreshControl scope="map" />
         <RefreshControl label={t("codeMap.refresh.action")} onRefresh={() => void runRefresh()} busy={actionPending || jobActive(job)} disabled={!repository}
           error={!!actionError || job?.status === "failed"} completedAt={job?.status === "completed" ? job.finishedAt : coverage?.createdAt}
@@ -578,11 +603,11 @@ export function useCodeMapPage({ active, theme, onSession }: {
     {mapTab === "distribution" && coverage?.stale && !jobActive(job) && job?.status !== "failed" && <Notice action={<button className="text-button" onClick={() => void runRefresh()}>{t("codeMap.refresh.action")}</button>}>{t("codeMap.refresh.stale", { date: dateLabel(coverage.createdAt) })}</Notice>}
     {initialLoading && !repository ? <div className="query-loading" role="status"><Loading /><span>{t("codeMap.empty.loading")}</span></div> : !repository ? !initialError && <Empty title={t("codeMap.empty.start")}>{t("codeMap.empty.register")}<br />{t("codeMap.empty.local")}</Empty> : <><div id="code-map-panel-distribution" role="tabpanel" aria-labelledby="code-map-tab-distribution" hidden={mapTab !== "distribution"}><ResizableWorkspace sidebarCollapsed={navigationCollapsed} detailsCollapsed={detailsCollapsed}>
       <aside className={`sidebar${navigationCollapsed ? " panel-collapsed" : ""}`} aria-label={t("codeMap.repository.navigation")}>
-        {narrow ? <button className="repository-navigation-toggle" aria-label={t(navigationCollapsed ? "codeMap.repository.expandScope" : "codeMap.repository.collapseScope", { repository: repository.name, directory: directory || t("codeMap.directory.root") })} aria-expanded={!navigationCollapsed} aria-controls="repository-navigation-content" onClick={() => setNavigationOpen(value => !value)}>
-          <Folder size={18} aria-hidden="true" /><span><strong>{repository.name}</strong><small title={directory || repository.path}>{directory || t("codeMap.directory.root")}</small></span>{navigationCollapsed ? <CaretDown size={17} aria-hidden="true" /> : <CaretUp size={17} aria-hidden="true" />}
+        {narrow ? <button className="repository-navigation-toggle" aria-label={t(navigationCollapsed ? "codeMap.repository.expandScope" : "codeMap.repository.collapseScope", { repository: repository.name, directory: displayedDirectory || t("codeMap.directory.root") })} aria-expanded={!navigationCollapsed} aria-controls="repository-navigation-content" onClick={() => setNavigationOpen(value => !value)}>
+          <Folder size={18} aria-hidden="true" /><span><strong>{repository.name}</strong><small title={displayedDirectory || repository.path}>{displayedDirectory || t("codeMap.directory.root")}</small></span>{navigationCollapsed ? <CaretDown size={17} aria-hidden="true" /> : <CaretUp size={17} aria-hidden="true" />}
         </button> : <div className="pane-heading"><span>{t("codeMap.repository.navigation")}</span><Hint label={navigationCollapsed ? t("codeMap.repository.expand") : t("codeMap.repository.collapse")}><button className="icon-button panel-toggle" aria-label={navigationCollapsed ? t("codeMap.repository.expand") : t("codeMap.repository.collapse")} aria-expanded={!navigationCollapsed} aria-controls="repository-navigation-content" onClick={() => setSidebarCollapsed(value => !value)}>{navigationCollapsed ? <CaretRight size={17} /> : <CaretLeft size={17} />}</button></Hint></div>}
-        <div id="repository-navigation-content" className="sidebar-content" hidden={navigationCollapsed}>
-        <div className="sidebar-label">{t("codeMap.repository.directories")}</div><DirectoryTree key={repoId} files={rootCoverage?.files ?? []} selected={directory} browse={browse} />
+        <div id="repository-navigation-content" className="sidebar-content" hidden={navigationCollapsed} inert={coverageBlocked}>
+        <div className="sidebar-label">{t("codeMap.repository.directories")}</div><DirectoryTree key={repoId} files={rootCoverage?.files ?? []} selected={displayedDirectory} browse={browse} />
         <div className="sidebar-bottom"><button className="text-button" onClick={() => { setRegisterError(null); setRegisterOpen(true); }}><Plus size={14} />{t("codeMap.repository.other")}</button></div></div>
       </aside>
       <main className="map-main">
@@ -591,23 +616,23 @@ export function useCodeMapPage({ active, theme, onSession }: {
             {mapSession && <Hint label={t("codeMap.session.clear")}><button className="icon-button" aria-label={t("codeMap.session.clear")} onClick={() => setMapSession(undefined)}><X size={14} /></button></Hint>}
           </div>
           <div className="select-field"><span>{t("codeMap.filter.time")}</span><FilterSelect label={t("codeMap.filter.timeLabel")} value={window} options={[{ value: "all", label: t("codeMap.filter.allHistory") }, { value: "7", label: t("codeMap.filter.week") }, { value: "30", label: t("codeMap.filter.month") }, { value: "custom", label: t("codeMap.filter.custom") }]} onChange={value => { setWindow(value); setTimeAnchor(Date.now()); }} /></div>
-          <div className="select-field"><span>{t("codeMap.filter.file")}</span><FilterSelect label={t("codeMap.filter.categoryLabel")} value={category} options={[{ value: "source", label: t("common.category.source") }, { value: "config", label: t("common.category.config") }, { value: "docs", label: t("common.category.docs") }, { value: "unknown", label: t("common.category.unknown") }, { value: "all", label: t("codeMap.filter.allText") }]} onChange={value => { setCategory(value as FileCategory | "all"); setSelected(null); }} /></div>
+          <div className="select-field"><span>{t("codeMap.filter.file")}</span><FilterSelect label={t("codeMap.filter.categoryLabel")} value={category} options={[{ value: "source", label: t("common.category.source") }, { value: "config", label: t("common.category.config") }, { value: "docs", label: t("common.category.docs") }, { value: "unknown", label: t("common.category.unknown") }, { value: "all", label: t("codeMap.filter.allText") }]} onChange={value => setCategory(value as FileCategory | "all")} /></div>
           <label className="search-box"><MagnifyingGlass size={17} /><input aria-label={t("codeMap.filter.search")} placeholder={t("codeMap.filter.search")} value={search} onChange={event => setSearch(event.target.value)} />{search && <button aria-label={t("codeMap.filter.clearSearch")} onClick={() => setSearch("")}><X size={14} /></button>}</label>
         </div>
         {!!mapSessionsError && <Notice danger action={<button className="text-button" onClick={() => setMapSessionsRetry(value => value + 1)}>{t("common.retry")}</button>}><ErrorDetails error={mapSessionsError} /></Notice>}
         {window === "custom" && <div className="date-range"><span>{t("codeMap.filter.startDate")}</span><DatePicker label={t("codeMap.filter.startDateLabel")} value={from} onChange={setFrom} /><span>{t("codeMap.filter.to")}</span><DatePicker label={t("codeMap.filter.endDateLabel")} value={to} onChange={setTo} /></div>}
         {invalidTime && <Notice danger>{t("codeMap.filter.invalidTime")}</Notice>}
-        {!!coverageError && coverage?.repository.id === repoId && coverageKey === filterKey && <Notice danger action={<button className="text-button" onClick={() => setReload(value => value + 1)}>{t("common.retry")}</button>}><ErrorDetails error={coverageError} /></Notice>}
-        {coverageLoading && !(coverage?.repository.id === repoId && coverageKey === filterKey) ? <div className="query-loading" role="status"><Loading /><span>{t("codeMap.coverage.loading")}</span></div> : coverageError && !(coverage?.repository.id === repoId && coverageKey === filterKey) ? <Empty title={t("codeMap.coverage.unavailable")} action={<div className="empty-actions"><button className="button" onClick={() => { setVersion(undefined); setReload(value => value + 1); }}>{t("codeMap.coverage.latest")}</button><button className="button subtle" onClick={() => void runRefresh()} disabled={jobActive(job)}>{t("codeMap.refresh.action")}</button></div>}><ErrorDetails error={coverageError} /></Empty> : s && exact && near && !invalidTime && <>
-          {mapSession && !coverage!.files.some(file => file.activityCount > 0) && <Notice>{t("codeMap.session.noActivity")}</Notice>}
+        {!!coverageError && coverage?.repository.id === repoId && <Notice danger action={<button className="text-button" onClick={() => setReload(value => value + 1)}>{t("common.retry")}</button>}><ErrorDetails error={coverageError} /></Notice>}
+        {coverageLoading && !coverage ? <div className="query-loading" role="status"><Loading /><span>{t("codeMap.coverage.loading")}</span></div> : coverageError && !coverage ? <Empty title={t("codeMap.coverage.unavailable")} action={<div className="empty-actions"><button className="button" onClick={() => { setVersion(undefined); setReload(value => value + 1); }}>{t("codeMap.coverage.latest")}</button><button className="button subtle" onClick={() => void runRefresh()} disabled={jobActive(job)}>{t("codeMap.refresh.action")}</button></div>}><ErrorDetails error={coverageError} /></Empty> : s && exact && near && <div className="map-results" aria-busy={coverageLoading} inert={coverageBlocked}>
+          {coverage!.filters.clientSessionId && !coverage!.files.some(file => file.activityCount > 0) && <Notice>{t("codeMap.session.noActivity")}</Notice>}
           <div className="metrics"><div className="metric-primary"><span>{editing ? t("codeMap.coverage.editLines") : t("codeMap.coverage.readLines")}</span><strong>{percent(exact.lines, s.lineCount)}</strong><small>{t("codeMap.coverage.lineFraction", { covered: fmt(exact.lines), count: s.lineCount })}</small></div><div><span>{editing ? t("codeMap.coverage.editFiles") : t("codeMap.coverage.readFiles")}</span><strong>{percent(exact.files, s.fileCount)}</strong><small>{t("codeMap.coverage.fileFraction", { covered: fmt(exact.files), count: s.fileCount })}</small></div><div className="metric-context"><span>{t("codeMap.coverage.moreNear")}</span><strong>{t("codeMap.line.count", { count: near.lines })}</strong><small>{t("codeMap.coverage.nearFiles", { count: near.files })}</small></div></div>
-          {visible.some(file => file.lineCount > 0) ? <CodeMap files={visible} directory={directory} metric={metric} selected={selected} browse={browse} select={selectFile} heading={mapHeading} legend={mapLegend} scopeKey={`${repoId}:${filterKey}:${search}`} /> : <>{mapHeading}<Empty title={visible.length ? t("codeMap.empty.emptyFiles") : t("codeMap.empty.noFiles")} action={<button className="button subtle" onClick={clearFilters}>{t("codeMap.filter.reset")}</button>}>{visible.length ? t("codeMap.empty.emptyFilesDescription") : t("codeMap.empty.noFilesDescription")}</Empty>{mapLegend}</>}
+          {visible.some(file => file.lineCount > 0) ? <CodeMap files={visible} directory={displayedDirectory} metric={metric} selected={selected} browse={browse} select={selectFile} heading={mapHeading} legend={mapLegend} scopeKey={`${repoId}:${coverageKey}:${search}`} /> : <>{mapHeading}<Empty title={visible.length ? t("codeMap.empty.emptyFiles") : t("codeMap.empty.noFiles")} action={<button className="button subtle" onClick={clearFilters}>{t("codeMap.filter.reset")}</button>}>{visible.length ? t("codeMap.empty.emptyFilesDescription") : t("codeMap.empty.noFilesDescription")}</Empty>{mapLegend}</>}
           {search && <p className="muted small">{t("codeMap.filter.searchScope")}</p>}
           <MapFileTable files={visible} selected={selected} metric={metric} search={search} select={selectFile} language={language} />
-          <AnalysisInfo coverage={coverage!} active={distributionActive} />
-        </>}
+          <AnalysisInfo coverage={coverage!} active={distributionActive && !coverageBlocked} />
+        </div>}
       </main>
-      <FilePane repoId={repoId} detail={detail} loading={detailLoading} error={detailError} retry={() => setDetailRetry(value => value + 1)} collapsed={detailsCollapsed} toggle={() => setDetailsCollapsed(value => !value)} metric={metric} theme={theme} query={query} sessions={availableMapSessions} openSession={event => void openSession(event)} />
+      <FilePane repoId={repoId} detail={detail} loading={detailLoading} error={detailError} retry={() => setDetailRetry(value => value + 1)} collapsed={detailsCollapsed} toggle={() => setDetailsCollapsed(value => !value)} metric={metric} theme={theme} query={query} sessions={availableMapSessions} openSession={event => void openSession(event)} blocked={coverageBlocked} />
     </ResizableWorkspace></div>
       <div id="code-map-panel-replay" role="tabpanel" aria-labelledby="code-map-tab-replay" hidden={mapTab !== "replay"}>
         {replayVisited && <Suspense fallback={<div className="query-loading" role="status"><Loading /><span>{t("replay.loading")}</span></div>}><ActivityReplay key={repoId} repositoryId={repoId} active={active && mapTab === "replay"} theme={theme} targetSessionId={replayTarget} onSession={onSession} onTargetChange={sessionId => {

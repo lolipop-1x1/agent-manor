@@ -11,6 +11,34 @@ import { isolatedHistoryEnvironment, isolatedHistoryRoots } from "./helpers/hist
 
 const git = promisify(execFile);
 
+test("大量已关联工具输出分批处理，受限堆仍保留完整证据和增量缓存", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "manor-related-worker-memory-test-"));
+  const repository = join(directory, "repo"), history = join(directory, "history");
+  try {
+    await mkdir(repository); await mkdir(history);
+    await git("git", ["init", "-q", repository]);
+    await writeFile(join(repository, "a.ts"), "alpha\n");
+    for (let index = 0; index < 60; index++) {
+      const records: unknown[] = [{ type: "session_meta", payload: { id: `synthetic-${index}`, cwd: repository } }];
+      for (let call = 0; call < 8; call++) records.push(
+        { type: "response_item", payload: { type: "function_call", name: "synthetic_dump", call_id: `dump-${call}`,
+          arguments: JSON.stringify({ marker: "synthetic-payload" }) } },
+        { type: "response_item", payload: { type: "function_call_output", call_id: `dump-${call}`, output: "x".repeat(256 * 1024) } },
+      );
+      if (index === 0) records.push(
+        { type: "response_item", payload: { type: "function_call", name: "shell_command", call_id: "read", arguments: JSON.stringify({ command: "cat a.ts", workdir: repository }) } },
+        { type: "response_item", payload: { type: "function_call_output", call_id: "read", output: "Exit code: 0\nOutput:\nalpha\n" } },
+      );
+      await writeFile(join(history, `source-${index}.jsonl`), records.map(record => JSON.stringify(record)).join("\n") + "\n");
+    }
+    const helper = new URL("./fixtures/worker-related-memory.ts", import.meta.url).pathname;
+    const result = await git(process.execPath, ["--max-old-space-size=96", "--import", "tsx", helper, repository, history, directory], {
+      timeout: 60_000, env: isolatedHistoryEnvironment(directory), maxBuffer: 1024 * 1024,
+    });
+    assert.match(result.stdout, /关联历史首次与增量分析通过/);
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});
+
 test("大量无 cwd 外部返回不占满 Worker 堆，相关范围和未关联来源完整保留", async () => {
   const directory = await mkdtemp(join(tmpdir(), "manor-worker-memory-test-"));
   const repository = join(directory, "repo");
@@ -66,20 +94,33 @@ const { register } = await import(${JSON.stringify(import.meta.resolve("tsx/esm/
 register();
 await import(${JSON.stringify(workerUrl)});
 `);
+  const otherPath = join(directory, "other"); await mkdir(otherPath);
+  await git("git", ["init", "-q", otherPath]);
+  await writeFile(join(otherPath, "b.ts"), "beta\n");
+  const other = await store.registerRepository(otherPath);
   const manager = new WorkerManager(store, { roots, workerUrl: new URL(`file://${script}`) });
   try {
     const first = manager.refresh(repository.id);
     const queued = manager.refresh(repository.id);
+    const otherQueued = manager.refresh(other.id);
     assert.equal((await manager.waitForJob(first.id)).status, "failed");
     assert.equal((await manager.waitForJob(queued.id)).status, "failed");
+    assert.equal((await manager.waitForJob(otherQueued.id)).status, "failed");
     assert.equal(store.getSnapshot(repository.id).version, version);
     assert.equal(store.getSnapshot(repository.id).repository.stale, true);
+    const now = Date.now();
+    assert.equal(manager.autoRefreshRepository(repository.id, now + 60_000), undefined, "崩溃仓库不得由周期重提");
+    const otherJob = manager.autoRefreshRepository(other.id, now + 60_000)!;
+    assert.equal((await manager.waitForJob(otherJob.id)).status, "completed", "其他仓库仍可自动分析");
+    assert.equal(manager.autoRefreshRepository(repository.id, now + 120_000), undefined, "其他仓库恢复 Worker 不解除失败仓库暂停");
     const retry = await manager.waitForJob(manager.refresh(repository.id).id);
     assert.equal(retry.status, "completed", retry.error);
     assert.equal(retry.version, version, "未变化的成功重试沿用旧完整版");
     assert.equal(store.getSnapshot(repository.id).repository.stale, false);
     assert.equal(store.getJob(first.id).status, "failed");
     assert.equal(store.getJob(queued.id).status, "failed");
+    const automatic = manager.autoRefreshRepository(repository.id, now + 180_000)!;
+    assert.equal((await manager.waitForJob(automatic.id)).status, "completed", "显式重试成功后恢复周期");
   } finally {
     await manager.close();
     store.close();

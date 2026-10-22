@@ -12,6 +12,7 @@ import { AnalysisStore, JobCancelledError } from "./store.js";
 import type { RefreshStats } from "./store.js";
 import { sourceQuickStamp } from "../history/quick-check.js";
 import { PARSER_RULE_VERSION } from "../version.js";
+import { RefreshPayloads } from "./refresh-payloads.js";
 
 const missing = (error: unknown) => (error as NodeJS.ErrnoException).code === "ENOENT";
 
@@ -45,6 +46,7 @@ function eventsBySource(events: HistoryEvent[]): Map<string, HistoryEvent[]> {
 export async function refreshRepository(store: AnalysisStore, jobId: string, roots?: DiscoverRoots, clearCache = false, isCancelled: () => boolean = () => false): Promise<void> {
   const job = store.findJob(jobId);
   if (!job || job.status !== "queued") return;
+  const payloads = new RefreshPayloads();
   const checkpoint = async () => {
     // 同步映射批次之间接收撤销消息，同时以数据库中的旧任务身份兜底。
     await setImmediate();
@@ -124,7 +126,7 @@ export async function refreshRepository(store: AnalysisStore, jobId: string, roo
         && Boolean((retained.cursor as { associationOnly?: boolean } | undefined)?.associationOnly) === Boolean(oldCursor?.associationOnly)) {
         reusedParsed.add(JSON.stringify([source.sourceId, source.path]));
       }
-      return retained;
+      return payloads.retain(retained);
     }
 
     async function possible(location: SourceLocation): Promise<boolean> {
@@ -229,6 +231,7 @@ export async function refreshRepository(store: AnalysisStore, jobId: string, roo
           parsed[index]!.cursor = { ...cursor, quickStamp: after === before ? before : undefined } as ParsedHistorySource["cursor"];
         }
         metadataPaths.delete(sourceLocationKey(source));
+        payloads.retain(parsed[index]!);
         hydrated = true;
         stats.parsedRecords += (parsed[index]!.cursor as { parsedRecords?: number } | undefined)?.parsedRecords ?? 0;
       }
@@ -313,5 +316,5 @@ export async function refreshRepository(store: AnalysisStore, jobId: string, roo
   } catch (error) {
     if (error instanceof JobCancelledError || !store.findJob(jobId)) return;
     store.failJob(jobId, error instanceof Error ? error.message : String(error), errorDescriptor(error));
-  }
+  } finally { payloads.close(); }
 }

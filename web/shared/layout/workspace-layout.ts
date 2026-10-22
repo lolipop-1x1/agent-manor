@@ -20,7 +20,7 @@ const mapMinimum = 360;
 const railWidth = 44;
 const clamp = (value: number, min: number, max: number) => Math.max(min, Math.min(max, value));
 
-export function workspaceWidths(viewport: number, preferred: Partial<PanelWidths>, collapsed: CollapsedPanels, variant: WorkspaceVariant = "map"): PanelWidths {
+export function workspaceWidths(viewport: number, preferred: Partial<PanelWidths>, collapsed: CollapsedPanels, variant: WorkspaceVariant = "map", availableWidth = viewport): PanelWidths {
   const defaults = variant === "sessions" ? { sidebar: viewport > 1250 ? 300 : 280, details: 260 }
     : variant === "resources" ? { sidebar: 220, details: viewport > 1600 ? 440 : viewport > 1250 ? 400 : 360 }
     : { sidebar: viewport > 1250 ? 200 : viewport >= 1024 ? 175 : 170, details: viewport > 1250 ? 320 : 285 };
@@ -29,7 +29,7 @@ export function workspaceWidths(viewport: number, preferred: Partial<PanelWidths
     details: collapsed.details ? railWidth : clamp(preferred.details ?? defaults.details, limits.details.min, limits.details.max),
   };
   if (viewport < 768) return widths;
-  const budget = viewport - mapMinimum - (viewport < 1024 && collapsed.details ? railWidth : 0);
+  const budget = availableWidth - mapMinimum - (viewport < 1024 && collapsed.details ? railWidth : 0);
   if (viewport < 1024) {
     if (!collapsed.sidebar) widths.sidebar = Math.min(widths.sidebar, budget);
     return widths;
@@ -48,8 +48,8 @@ export function workspaceWidths(viewport: number, preferred: Partial<PanelWidths
   return widths;
 }
 
-export function panelWidthRange(side: PanelSide, viewport: number, widths: PanelWidths) {
+export function panelWidthRange(side: PanelSide, viewport: number, widths: PanelWidths, availableWidth = viewport) {
   const opposite = side === "sidebar" ? widths.details : widths.sidebar;
-  const available = viewport - mapMinimum - (viewport >= 1024 || side === "details" || opposite === railWidth ? opposite : 0);
+  const available = availableWidth - mapMinimum - (viewport >= 1024 || side === "details" || opposite === railWidth ? opposite : 0);
   return { min: limits[side].min, max: Math.max(limits[side].min, Math.min(limits[side].max, available)) };
 }
