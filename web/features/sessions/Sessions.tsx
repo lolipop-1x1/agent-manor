@@ -137,6 +137,7 @@ export default function Sessions({ active, target, onMap, onReplay, onHistoryRea
   const [timelineRetry, setTimelineRetry] = useState(0);
   const [messageData, setMessageData] = useState<SessionMessageResult | null>(null);
   const [messageDataKey, setMessageDataKey] = useState("");
+  const [messageDataContext, setMessageDataContext] = useState("");
   const [messageLoading, setMessageLoading] = useState(false);
   const [messageError, setMessageError] = useState<Error | null>(null);
   const [globalSearch, setGlobalSearch] = useState<SessionGroupedSearchResult | null>(null);
@@ -289,7 +290,12 @@ export default function Sessions({ active, target, onMap, onReplay, onHistoryRea
     setListLoading(true);
     setListError(null);
     void request<SessionListResult>(`/sessions${listQuery}`, { signal: controller.signal })
-      .then(result => setSessionList(result))
+      .then(result => {
+        if (controller.signal.aborted) return;
+        const lastPage = Math.max(1, Math.ceil(result.total / result.pageSize));
+        if (result.page > lastPage) { setListPage(lastPage); return; }
+        setSessionList(result);
+      })
       .catch(error => { if (!isAborted(error)) setListError(error instanceof Error ? error : new Error(String(error))); })
       .finally(() => { if (!controller.signal.aborted) setListLoading(false); });
     return () => controller.abort();
@@ -313,7 +319,12 @@ export default function Sessions({ active, target, onMap, onReplay, onHistoryRea
     setGlobalSearchLoading(true);
     setGlobalSearchError(null);
     void request<SessionGroupedSearchResult>(`/sessions/search/groups${globalSearchQuery}`, { signal: controller.signal })
-      .then(result => { if (controller.signal.aborted) return; setGlobalSearch(result); setGlobalSearchKey(globalSearchQuery); })
+      .then(result => {
+        if (controller.signal.aborted) return;
+        const lastPage = Math.max(1, Math.ceil(result.total / result.pageSize));
+        if (result.page > lastPage) { setGlobalSearchPage(lastPage); return; }
+        setGlobalSearch(result); setGlobalSearchKey(globalSearchQuery);
+      })
       .catch(error => { if (!isAborted(error)) setGlobalSearchError(error instanceof Error ? error : new Error(String(error))); })
       .finally(() => { if (!controller.signal.aborted) setGlobalSearchLoading(false); });
     return () => controller.abort();
@@ -344,20 +355,18 @@ export default function Sessions({ active, target, onMap, onReplay, onHistoryRea
     messageId: focusMessageId,
     messageLimit: 300, messageOffset, maxTextChars: 6000,
   }), [readingVersion, focusMessageId, messagePage, mode, turnPosition, branch, messageOffset]);
+  const messageContext = JSON.stringify([selectedSessionId, mode, branch ?? (mode === "brief" ? "current" : "all")]);
   useEffect(() => {
     if (!active || !selectedSessionId) { setMessageLoading(false); return; }
     if (!indexReady) return;
     const controller = new AbortController();
     setMessageLoading(true);
     setMessageError(null);
-    setProfileLoading(true); setProfileError(null);
-    if (mode === "trace") { setTimelineLoading(true); setTimelineError(undefined); }
     const anchor = messageData?.session.id === selectedSessionId && messageData.version !== readingVersion ? captureRefreshAnchor.current() : undefined;
     const id = encodeURIComponent(selectedSessionId), version = readingVersion;
     const fetchMessages = (query: string) => request<SessionMessageResult>(`/sessions/${id}/messages${query}`, { signal: controller.signal });
     const anchored = anchor?.messageId && !anchor.atEnd ? sessionParams({ ...Object.fromEntries(new URLSearchParams(messageQuery)), messageId: anchor.messageId, turnPosition: undefined, messageOffset: undefined }) : messageQuery;
-    void Promise.all([
-      fetchMessages(anchored).catch(error => {
+    void fetchMessages(anchored).catch(error => {
         if (anchor?.messageId && error instanceof ApiError && error.code === "SOURCE_NOT_FOUND") return fetchMessages(sessionParams({ version, mode, branch, pageUnit: "turn", page: messagePage, pageSize: TURN_PAGE_SIZE, messageLimit: 300, maxTextChars: 6000 }));
         throw error;
       }).then(async result => {
@@ -366,18 +375,15 @@ export default function Sessions({ active, target, onMap, onReplay, onHistoryRea
           ? await fetchMessages(sessionParams({ version, pageUnit: "turn", pageSize: TURN_PAGE_SIZE, turnPosition: result.totalTurns, mode, branch, messageLimit: 300, maxTextChars: 6000 })) : result;
         const offset = Math.floor(Math.max(0, (tail.turns?.reduce((count, turn) => count + turn.messageCount, 0) ?? 0) - 1) / 300) * 300;
         return offset > (tail.messageOffset ?? 0) ? fetchMessages(sessionParams({ version, pageUnit: "turn", pageSize: TURN_PAGE_SIZE, turnPosition: tail.totalTurns, mode, branch, messageLimit: 300, messageOffset: offset, maxTextChars: 6000 })) : tail;
-      }),
-      request<SessionProfile>(`/sessions/${id}/profile${sessionParams({ version, includeChildren, summary: true })}`, { signal: controller.signal }),
-      mode === "trace" ? request<SessionTimelineResult>(`/sessions/${id}/timeline${sessionParams({ version, maxEvents: 1800, messageId: anchor?.messageId ?? traceSelection ?? focusMessageId })}`, { signal: controller.signal }) : Promise.resolve(undefined),
-    ]).then(([result, nextProfile, nextTimeline]) => {
+      }).then(result => {
         if (controller.signal.aborted) return;
-        if (result.version !== version || nextProfile.version !== version || nextTimeline && nextTimeline.version !== version) throw new ApiError("VERSION_MISMATCH", "结果版本发生变化，请重试。", { key: "sessions.reading.versionChanged" });
+        if (result.version !== version) throw new ApiError("VERSION_MISMATCH", "结果版本发生变化，请重试。", { key: "sessions.reading.versionChanged" });
         refreshAnchor.current = anchor;
-        setProfile(nextProfile); setTimeline(nextTimeline ? { sessionId: selectedSessionId, data: nextTimeline } : undefined);
         setAnchorMissing(!!anchor?.messageId && !anchor.atEnd && !result.messages.some(message => message.id === anchor.messageId));
         readyScrollRestore.current = restoreScroll.current !== undefined;
         setMessageData(result);
         setMessageDataKey(`${selectedSessionId}${messageQuery}`);
+        setMessageDataContext(messageContext);
         if (!anchor) setMessagePage(result.page);
         const current = result.turns?.find(turn => turn.position === turnPosition || !!focusMessageId && turn.id === (result.messages.find(message => message.id === focusMessageId)?.turnId || "unknown"));
         setCurrentTurn(current?.position ?? result.turns?.[0]?.position ?? 1);
@@ -390,14 +396,45 @@ export default function Sessions({ active, target, onMap, onReplay, onHistoryRea
           setExpandedTurns(current => new Set(current).add(turnId || "unknown"));
         }
       })
-      .catch(error => { if (!isAborted(error)) setMessageError(error instanceof Error ? error : new Error(String(error))); })
-      .finally(() => { if (!controller.signal.aborted) { setMessageLoading(false); setProfileLoading(false); setTimelineLoading(false); } });
+      .catch(error => { if (!controller.signal.aborted && !isAborted(error)) setMessageError(error instanceof Error ? error : new Error(String(error))); })
+      .finally(() => { if (!controller.signal.aborted) setMessageLoading(false); });
     return () => controller.abort();
-  }, [active, indexReady, selectedSessionId, messageQuery, focusMessageId, reload, messageRetry, profileRetry, includeChildren, timelineRetry]);
+  }, [active, indexReady, selectedSessionId, messageQuery, focusMessageId, reload, messageRetry]);
+
+  useEffect(() => {
+    if (!active || !selectedSessionId || !indexReady) { setProfileLoading(false); return; }
+    const controller = new AbortController(), version = readingVersion;
+    setProfileLoading(true); setProfileError(null);
+    void request<SessionProfile>(`/sessions/${encodeURIComponent(selectedSessionId)}/profile${sessionParams({ version, includeChildren, summary: true })}`, { signal: controller.signal })
+      .then(result => {
+        if (controller.signal.aborted) return;
+        if (result.version !== version) throw new ApiError("VERSION_MISMATCH", "结果版本发生变化，请重试。", { key: "sessions.reading.versionChanged" });
+        setProfile(result);
+      })
+      .catch(error => { if (!controller.signal.aborted && !isAborted(error)) setProfileError(error instanceof Error ? error : new Error(String(error))); })
+      .finally(() => { if (!controller.signal.aborted) setProfileLoading(false); });
+    return () => controller.abort();
+  }, [active, indexReady, selectedSessionId, readingVersion, includeChildren, profileRetry, reload]);
+
+  useEffect(() => {
+    if (!active || !selectedSessionId || !indexReady || mode !== "trace") { setTimelineLoading(false); return; }
+    const controller = new AbortController(), version = readingVersion;
+    setTimelineLoading(true); setTimelineError(undefined);
+    const messageId = focusMessageId ?? captureRefreshAnchor.current()?.messageId;
+    void request<SessionTimelineResult>(`/sessions/${encodeURIComponent(selectedSessionId)}/timeline${sessionParams({ version, maxEvents: 1800, messageId })}`, { signal: controller.signal })
+      .then(result => {
+        if (controller.signal.aborted) return;
+        if (result.version !== version) throw new ApiError("VERSION_MISMATCH", "结果版本发生变化，请重试。", { key: "sessions.reading.versionChanged" });
+        setTimeline({ sessionId: selectedSessionId, data: result });
+      })
+      .catch(error => { if (!controller.signal.aborted && !isAborted(error)) setTimelineError(error instanceof Error ? error : new Error(String(error))); })
+      .finally(() => { if (!controller.signal.aborted) setTimelineLoading(false); });
+    return () => controller.abort();
+  }, [active, indexReady, selectedSessionId, readingVersion, mode, focusMessageId, timelineRetry, reload]);
 
   const continuous = useContinuousReading({
     enabled: active && !messageLoading && messageDataKey === `${selectedSessionId}${messageQuery}`,
-    base: messageData?.session.id === selectedSessionId ? messageData : undefined,
+    base: messageDataContext === messageContext ? messageData : undefined,
     context: `${selectedSessionId}${messageQuery}:${traceFocusRequest}`, pane: mode === "trace" ? tracePane : readingPane, mode, branch,
     onLoaded: (messages, resident) => setExpandedTurns(current => {
       const residentTurns = new Set(resident.map(message => message.turnId || "unknown"));
@@ -500,7 +537,7 @@ export default function Sessions({ active, target, onMap, onReplay, onHistoryRea
 
   const selectedMessageData = continuous.data;
   const traceSegment = continuous.segments.find(segment => segment.messages.some(message => message.id === traceVisibleMessage)) ?? continuous.segments[0] ?? selectedMessageData;
-  const selectedProfile = profile && profile.version === selectedMessageData?.version && profile.sessionIds[0] === selectedSessionId ? profile : null;
+  const selectedProfile = profile && profile.version === (selectedMessageData?.version ?? readingVersion) && profile.sessionIds[0] === selectedSessionId ? profile : null;
   const selectedSession = selectedMessageData?.session ?? selectedSummary ?? sessionList?.sessions.find(session => session.id === selectedSessionId);
   const mapForSession = (path?: string, project?: string) => onMap(path, project, selectedSession);
   const turns = useMemo(() => groupedTurns(selectedMessageData?.messages ?? []), [selectedMessageData]);
@@ -632,6 +669,7 @@ export default function Sessions({ active, target, onMap, onReplay, onHistoryRea
     if (selectedSessionId) updateAddress(selectedSessionId, { mode, position: bounded });
   };
   const changeMode = (next: Mode) => {
+    if (next === mode) return;
     stopFocusScroll.current(); landingMotion.current?.cancel();
     setMessageOffset(undefined);
     const current = selectedMessageData?.messages.find(message => message.id === (mode === "trace" ? traceSelection ?? focusMessageId : focusMessageId));
@@ -804,7 +842,7 @@ export default function Sessions({ active, target, onMap, onReplay, onHistoryRea
                 {mode === "trace" && traceSegment && (traceSegment.turns?.reduce((total, turn) => total + turn.messageCount, 0) ?? 0) > 300 && <Pager page={Math.floor((traceSegment.messageOffset ?? 0) / 300) + 1} pageSize={300} total={traceSegment.turns!.reduce((total, turn) => total + turn.messageCount, 0)} label={t("sessions.reading.recordPagination")} onChange={page => {
                   setFocusMessageId(undefined); setTraceSelection(undefined); setTurnPosition(undefined); setMessagePage(traceSegment.page); setMessageOffset((page - 1) * 300); pageScroll.current = true;
                 }} showEnds />}
-                {mode === "trace" ? <SessionTrace key={`${selectedMessageData.session.id}:${messageDataKey}`} pane={tracePane} reading={continuous} version={selectedMessageData.version} branch={branch} turnDirectory={selectedMessageData.turns} messages={selectedMessageData.messages} toolPairs={selectedMessageData.toolPairs} relatedMessages={selectedMessageData.relatedMessages} steps={readingSteps} speed={speed} onFocusStep={focusStep} focusMessageId={focusMessageId} focusRequest={traceFocusRequest} focusTurnId={selectedMessageData.turns?.find(turn => turn.position === turnPosition)?.id}
+                {mode === "trace" ? <SessionTrace key={messageContext} pane={tracePane} reading={continuous} version={selectedMessageData.version} branch={branch} turnDirectory={selectedMessageData.turns} messages={selectedMessageData.messages} toolPairs={selectedMessageData.toolPairs} relatedMessages={selectedMessageData.relatedMessages} steps={readingSteps} speed={speed} onFocusStep={focusStep} focusMessageId={focusMessageId} focusRequest={traceFocusRequest} focusTurnId={selectedMessageData.turns?.find(turn => turn.position === turnPosition)?.id}
                   timeline={timeline?.sessionId === selectedMessageData.session.id && timeline.data.version === selectedMessageData.version ? timeline.data : undefined} timelineLoading={timelineLoading} timelineError={timelineError} onRetryTimeline={() => setTimelineRetry(value => value + 1)} onTimelineSelect={event => focusStep({ id: event.id, sessionId: event.sessionId, messageId: event.id })}
                   query={debouncedLocalQuery || (searchMode === "keyword" ? debouncedGlobalQuery : "")} project={selectedMessageData.session.project} onMap={mapForSession} onInspect={inspectTrace} onViewTurn={trackTraceTurn} /> :
                   <div className="session-turns">{turns.map((turn, index) => <TurnTimeline key={turn.id} turn={turn} position={selectedMessageData.turns?.find(item => item.id === turn.id)?.position ?? index + 1} count={selectedMessageData.turns?.find(item => item.id === turn.id)?.messageCount} mode={mode} focusMessageId={focusMessageId} project={selectedMessageData.session.project}

@@ -9,7 +9,7 @@ import { SessionStore } from "../src/sessions/store.js";
 import { startService } from "../src/server.js";
 import { apiRequest, RequestError } from "../src/service/runtime.js";
 import { isolatedHistoryRoots } from "./helpers/history-roots.js";
-import type { SessionGroupedSearchResult, SessionListResult } from "../src/session-contracts.js";
+import type { SessionGroupedSearchResult, SessionListResult, SessionSearchResult } from "../src/session-contracts.js";
 import { validateSearchScope } from "../src/sessions/search-scope.js";
 import { sessionQuery } from "../src/service/session-input.js";
 import { readSessionSearchScope, writeSessionSearchFilters } from "../web/features/sessions/session-address.js";
@@ -54,6 +54,44 @@ test("共同范围的多选、元数据与数量条件同时约束列表和关�
   check({ relationship: "exclude_children", executionMode: "exclude_quiet" }, ["alpha", "fork", "orphan"]);
   check({ from: "2026-01-11T12:00:00+08:00", to: "2026-01-14T00:00:00Z" }, ["alpha", "beta", "child", "fork", "orphan"]);
 }));
+
+test("旧日期参数与共同范围按实际时刻筛选，HTTP 列表和两种搜索保持一致", async () => {
+  const home = await mkdtemp(join(tmpdir(), "manor-session-dates-")), path = join(home, "index.sqlite");
+  new AnalysisStore(path).close();
+  const store = new SessionStore(path);
+  let service: Awaited<ReturnType<typeof startService>> | undefined;
+  try {
+    const revisions = [
+      ["after", "2026-01-01T23:30:00-02:00"],
+      ["before", "2026-01-02T01:00:00+02:00"],
+      ["same-offset", "2026-01-02T08:00:00+08:00"],
+      ["same-utc", "2026-01-02T00:00:00.000Z"],
+      ["unknown", undefined],
+    ].map(([id, time]) => {
+      const source = `/synthetic/${id}.jsonl`, pending = store.createRevision(source, id!);
+      pending.sink.message({ id: `${id}-user`, sessionId: id!, ordinal: 0, recordLine: 1, turnId: "turn-one", kind: "user", text: "共同日期标记" });
+      pending.flush();
+      store.finishRevision(pending.revision, { id: id!, client: "codex", clientSessionId: id!, title: id!, titleOrigin: "recorded", path: source, sourceId: id!,
+        startedAt: time, updatedAt: time, messageCount: 1, turnCount: 1, models: [], gaps: [] });
+      return { path: source, revision: pending.revision, fingerprint: id! };
+    });
+    store.publish(store.createJob().id, revisions, []);
+    service = await startService({ home, startupRefresh: false, roots: isolatedHistoryRoots(), resourceInventory: { userHome: join(home, "isolated"), environment: {} } });
+    for (const [field, expected] of [["from", ["after", "same-offset", "same-utc"]], ["to", ["before", "same-offset", "same-utc"]]] as const) {
+      for (const scoped of [false, true]) {
+        const date = { [field]: "2026-01-02T00:00:00Z" };
+        const scope = validateSearchScope({ ...date, relationship: "all", executionMode: "all" });
+        const params = new URLSearchParams(scoped ? { scope: JSON.stringify(scope) } : date);
+        for (const route of ["/sessions", "/sessions/search", "/sessions/search/groups"]) {
+          if (route !== "/sessions") params.set("q", "共同日期标记");
+          const result = await apiRequest<SessionListResult | SessionGroupedSearchResult | SessionSearchResult>(service.instance, `${route}?${params}`);
+          const ids = "sessions" in result ? result.sessions.map(session => session.id) : "groups" in result ? result.groups.map(group => group.session.id) : result.hits.map(hit => hit.session.id);
+          assert.deepEqual(ids.sort(), expected, `${route} ${scoped ? "scope" : "旧参数"} ${field}`);
+        }
+      }
+    }
+  } finally { await service?.close(); store.close(); await rm(home, { recursive: true, force: true }); }
+});
 
 test("共同筛选通过 HTTP 与搜索 Worker 生效，不依赖语义模型配置", async () => fixture(async (_store, home) => {
   const service = await startService({ home, startupRefresh: false, roots: isolatedHistoryRoots({}), resourceInventory: { userHome: join(home, "isolated"), environment: {} } });

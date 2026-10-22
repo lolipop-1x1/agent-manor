@@ -74,6 +74,7 @@ try {
         selected: selected ? selected.getBoundingClientRect().left + 4 - bounds.left : undefined };
     });
     const visibleSelection = async () => {
+      await page.waitForLoadState("networkidle");
       await page.waitForFunction(() => {
         const viewport = document.querySelector(".trace-timeline-viewport"), mark = viewport?.querySelector(".trace-mark-selection");
         if (!mark) return false;
@@ -83,8 +84,8 @@ try {
     };
     await page.setViewportSize({ width: 1440, height: 900 });
     await timeline.waitFor(); await button("放大轨迹图").waitFor();
-    await page.getByText("全会话 · 3,281 个节点", { exact: true }).waitFor();
-    ensure((await page.locator(".trace-timeline").innerText()).includes("3,281 个节点"), "长会话节点总数变化");
+    await page.waitForFunction(() => document.querySelector('.trace-timeline')?.textContent.includes('聚合显示'));
+    ensure((await page.locator(".trace-timeline").innerText()).includes("4,881 条记录"), "长会话原始记录总数变化");
     ensure(!(await button("缩小轨迹图").isEnabled()), "适应窗口后仍可继续缩小");
     const initial = await measure();
     ensure(initial.total === initial.width && initial.height === 66, "初始总览不是适应窗口");
@@ -97,6 +98,7 @@ try {
     await timeline.press("End"); await visibleSelection();
     ensure((await page.locator(".trace-inspector").innerText()).includes("没有时间的合成问题"), "末节点没有联动详情");
     const atEnd = await measure(); ensure(atEnd.scroll >= atEnd.total - atEnd.width - 5, "末节点没有自动进入可见区");
+    ensure(Math.abs(atEnd.total / atEnd.width - 16) < 0.01, "跨页定位重建了时间线并丢失缩放");
     await timeline.press("Home"); await visibleSelection();
     ensure((await page.locator(".trace-inspector").innerText()).includes("合成问题 1"), "首节点没有联动详情");
     await timeline.press("ArrowRight"); await page.getByRole("tab", { name: "返回结果", exact: true }).waitFor();
@@ -105,9 +107,16 @@ try {
     await page.locator(".trace-timeline-viewport").evaluate(element => { element.scrollLeft = element.scrollWidth / 2; });
     await button("定位所选轨迹节点").click(); await visibleSelection();
     ensure((await measure()).scroll < 100, "定位按钮没有找回首轮所选工具");
-    await page.locator(".trace-timeline .trace-mark.kind-tool_call").first().hover();
+    // 密集标记可以重叠；由 SVG 按指针位置选择最近事件。
+    const toolMark = await page.locator(".trace-timeline .trace-mark.kind-tool_call").evaluateAll(nodes => {
+      const viewport = document.querySelector('.trace-timeline-viewport').getBoundingClientRect();
+      const rect = nodes.map(node => node.getBoundingClientRect()).find(rect => rect.left > viewport.left + 12 && rect.right < viewport.right - 12);
+      if (!rect) throw new Error('可见范围缺少工具标记');
+      return { x: rect.x + rect.width / 2, y: rect.y + rect.height / 2 };
+    });
+    await page.mouse.move(toolMark.x, toolMark.y);
     await page.locator(".trace-timeline-tooltip").filter({ hasText: "shell_command" }).waitFor();
-    await page.locator(".trace-timeline .trace-mark.kind-tool_call").first().click(); await visibleSelection();
+    await page.mouse.click(toolMark.x, toolMark.y); await visibleSelection();
     ensure(await page.getByRole("tab", { name: "返回结果", exact: true }).isVisible(), "放大后的点击选错节点");
     await page.locator(".trace-timeline-viewport").evaluate(element => { element.scrollLeft = element.scrollWidth / 3; });
     const beforeWheel = await measure(), bounds = await page.locator(".trace-timeline-viewport").boundingBox();
@@ -129,9 +138,10 @@ try {
     ensure((await page.locator(".trace-timeline").innerText()).includes("1 个节点时间未记录"), "时间缺失状态不再可见");
     ensure(!(await button("定位所选轨迹节点").isEnabled()), "缺失时间的选中节点仍可定位");
     await timeline.press("End"); await visibleSelection();
+    await page.locator(".trace-inspector").getByText("合成回复 80 / 20", { exact: true }).waitFor();
     ensure((await page.locator(".trace-inspector").innerText()).includes("合成回复 80 / 20"), "时间投影的末节点错误");
     await timeline.press("Home"); await visibleSelection();
-    await timeline.press("+"); await timeline.press("+");
+    for (let step = 0; step < 10 && await button("放大轨迹图").isEnabled(); step++) await timeline.press("+");
     ensure(!(await button("放大轨迹图").isEnabled()), "最大倍率没有限制");
     await timeline.press("-"); ensure(await button("放大轨迹图").isEnabled(), "键盘缩小失效");
     await timeline.press("0");
@@ -152,7 +162,7 @@ try {
     for (let index = 0; index < 4; index++) await button("放大轨迹图").click();
     await button("定位所选轨迹节点").click();
     await page.screenshot({ path: ARTIFACTS + "/desktop-zoom.png" });
-    await button("切换主题").click();
+    await button("外观").click(); await page.getByRole("combobox", { name: "显示模式", exact: true }).click(); await page.getByRole("option", { name: "深色", exact: true }).click(); await page.keyboard.press("Escape");
     await button("显示语言").click(); await page.getByRole("menuitemradio", { name: "English", exact: true }).click();
     await button("Zoom in trace timeline").waitFor();
     ensure(await page.getByRole("status", { name: "Trace timeline zoom level" }).innerText() === "1,600%", "语言切换丢失缩放状态");
@@ -174,7 +184,7 @@ try {
     ensure((await measure()).scroll > touchBefore.scroll, "触屏横向浏览失效");
     await button("Fit full trace timeline").click();
     ensure((await measure()).total === (await measure()).width, "窄屏恢复全会话失效");
-    return { checks, nodes: 3281, zoom: true, anchor: true, culling: true, selection: true, modes: true, keyboard: true, wheel: true, resize: true, touch: true, language: true, mobile: true };
+    return { checks, records: 4881, zoom: true, anchor: true, culling: true, selection: true, modes: true, keyboard: true, wheel: true, resize: true, touch: true, language: true, mobile: true };
   };
   const output = await browser(["run-code", verify.toString().replaceAll("ARTIFACTS", JSON.stringify(artifacts))]);
   await writeFile(join(artifacts, "report.txt"), output);

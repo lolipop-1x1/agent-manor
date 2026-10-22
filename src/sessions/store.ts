@@ -669,8 +669,8 @@ export class SessionStore {
       if (column === "r.project" && value === "none") parts.push("r.project IS NULL");
       else if (value !== undefined) { parts.push(`${column}=?`); values.push(value); }
     }
-    if (query.from) { parts.push("COALESCE(r.updated_at,r.started_at,'')>=?"); values.push(query.from); }
-    if (query.to) { parts.push("COALESCE(r.started_at,r.updated_at,'')<=?"); values.push(query.to); }
+    if (query.from) { parts.push("julianday(COALESCE(r.updated_at,r.started_at))>=julianday(?)"); values.push(query.from); }
+    if (query.to) { parts.push("julianday(COALESCE(r.started_at,r.updated_at))<=julianday(?)"); values.push(query.to); }
     if (query.executionMode === "quiet") parts.push("json_extract(r.json,'$.executionMode')='quiet'");
     if (query.executionMode === "regular") parts.push("COALESCE(json_extract(r.json,'$.executionMode'),'')<>'quiet'");
     return { sql: parts.length ? " AND " + parts.join(" AND ") : "", values };

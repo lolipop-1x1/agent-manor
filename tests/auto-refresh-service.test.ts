@@ -62,9 +62,14 @@ test("HTTP 旧自动接口只观察后台任务，策略默认关闭且关闭后
     await assert.rejects(apiRequest(service.instance, "/sessions/auto-refresh", "POST", { client: "codex" }), { code: "INVALID_INPUT" });
     assert.deepEqual(await apiRequest(service.instance, "/sessions/auto-refresh", "POST", {}), { job: null, status: "skipped", reason: "disabled" });
     await apiRequest(service.instance, "/preferences", "PUT", { sessionsAutoRefreshInterval: 5000 });
-    const status = await apiRequest<SessionIndexSummary>(service.instance, "/sessions/status?summary=true");
-    assert.equal(status.autoSync?.intervalMs, 5_000);
-    assert.ok(status.autoSync?.job || status.autoSync?.lastSuccessAt);
+    let status: SessionIndexSummary | undefined;
+    for (let attempt = 0; attempt < 200; attempt++) {
+      status = await apiRequest<SessionIndexSummary>(service.instance, "/sessions/status?summary=true");
+      if (status.autoSync?.job || status.autoSync?.lastSuccessAt) break;
+      await delay(20);
+    }
+    assert.equal(status?.autoSync?.intervalMs, 5_000);
+    assert.ok(status?.autoSync?.job || status?.autoSync?.lastSuccessAt);
     const first = await apiRequest<{ job?: SessionJob }>(service.instance, "/sessions/auto-refresh", "POST");
     const second = await apiRequest<{ job?: SessionJob }>(service.instance, "/sessions/auto-refresh", "POST", {});
     assert.ok(!first.job || first.job.id === status.autoSync?.job?.id);

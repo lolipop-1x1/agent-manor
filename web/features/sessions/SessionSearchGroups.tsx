@@ -23,7 +23,10 @@ export function Highlight({ text, query }: { text: string; query: string }): Rea
 }
 function SearchGroup({ group, query, params, selected, onSelect }: { selected: boolean; group: SessionSearchGroup; query: string; params: string; onSelect: (hit: SessionSearchHit) => void }) {
   const [open, setOpen] = useState(false);
-  const [page, setPage] = useState(1);
+  const [pagination, setPagination] = useState({ params, page: 1 });
+  if (pagination.params !== params) setPagination({ params, page: 1 });
+  const page = pagination.params === params ? pagination.page : 1;
+  const setPage = (next: number) => setPagination({ params, page: next });
   const [data, setData] = useState<SessionSearchResult>();
   const [error, setError] = useState<Error>();
   const [loading, setLoading] = useState(false);
@@ -33,7 +36,7 @@ function SearchGroup({ group, query, params, selected, onSelect }: { selected: b
     const scope = new URLSearchParams(params);
     scope.set("sessionId", group.session.id); scope.set("page", String(page)); scope.set("pageSize", "12");
     setLoading(true); setError(undefined); setData(undefined);
-    void request<SessionSearchResult>(`/sessions/search?${scope}`, { signal: controller.signal }).then(setData)
+    void request<SessionSearchResult>(`/sessions/search?${scope}`, { signal: controller.signal }).then(result => { if (!controller.signal.aborted) setData(result); })
       .catch(failure => { if (!isAborted(failure)) setError(failure); }).finally(() => { if (!controller.signal.aborted) setLoading(false); });
     return () => controller.abort();
   }, [open, page, params, group.session.id]);
