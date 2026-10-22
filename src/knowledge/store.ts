@@ -87,9 +87,11 @@ function source(value: unknown): KnowledgeSource {
   }
   return output as unknown as KnowledgeSource;
 }
-function searchText(content: KnowledgeDraft): string {
-  return [content.title, content.summary, content.body, content.applicability, ...(content.tags ?? []), ...(content.sources ?? []).flatMap(item => [item.client, item.sessionTitle, item.excerpt])].filter(Boolean).join("\n").toLocaleLowerCase();
+function searchFields(content: KnowledgeDraft): [NonNullable<KnowledgeEntry["snippetField"]>, string | undefined][] {
+  return [["title", content.title], ["summary", content.summary], ["body", content.body], ["applicability", content.applicability],
+    ["tags", content.tags?.join("\n")], ["source", content.sources?.flatMap(item => [item.client, item.sessionTitle, item.excerpt]).filter(Boolean).join("\n")]];
 }
+function searchText(content: KnowledgeDraft): string { return searchFields(content).map(([, value]) => value).filter(Boolean).join("\n").toLocaleLowerCase(); }
 function draft(value: unknown, revision = false): KnowledgeDraft {
   const input = object(value, revision ? [...draftKeys, "baseRevisionId"] : draftKeys, "知识");
   const scope = object(input.scope, ["kind", "project"], "适用范围");
@@ -259,9 +261,14 @@ export class KnowledgeStore {
     }
     if (type) { filters.push("json_extract(r.payload,'$.type')=?"); values.push(type); }
     const from = date(query.from, "起始时间"), to = date(query.to, "结束时间");
-    if (from && to && Date.parse(from) > Date.parse(to)) invalid("起始时间不能晚于结束时间");
-    if (from) { filters.push("julianday(e.updated_at)>=julianday(?)"); values.push(from); }
-    if (to) { filters.push(to.length === 10 ? "julianday(e.updated_at)<julianday(?,'+1 day')" : "julianday(e.updated_at)<=julianday(?)"); values.push(to); }
+    if (from?.length === 10 && to?.length === 10 && from > to) invalid("起始时间不能晚于结束时间");
+    const fromTime = from ? new Date(from.length === 10 ? `${from}T00:00:00` : from) : undefined;
+    const toTime = to ? new Date(to.length === 10 ? `${to}T00:00:00` : to) : undefined;
+    // 本机日历日期先转换为时间边界；次日使用日历加一天，保留夏令时的 23/25 小时日。
+    if (to?.length === 10) toTime!.setDate(toTime!.getDate() + 1);
+    if (fromTime && toTime && fromTime > toTime) invalid("起始时间不能晚于结束时间");
+    if (fromTime) { filters.push("julianday(e.updated_at)>=julianday(?)"); values.push(fromTime.toISOString()); }
+    if (toTime) { filters.push(to!.length === 10 ? "julianday(e.updated_at)<julianday(?)" : "julianday(e.updated_at)<=julianday(?)"); values.push(toTime.toISOString()); }
     const keywords = text(query.q, "关键词", 512)?.trim().toLocaleLowerCase().split(/\s+/).filter(Boolean) ?? [];
     if (keywords.length > 20) invalid("关键词过多");
     // 三字及以上先用可重建的三元组索引缩小候选；短中文词仍按正文扫描，避免丢失结果。
@@ -276,7 +283,7 @@ export class KnowledgeStore {
     const rows = this.database.prepare(`SELECT e.*,r.id selected ${fromSql} ORDER BY e.updated_at DESC,e.id LIMIT ? OFFSET ?`).all(...values, pageSize, (page - 1) * pageSize) as SelectedRow[];
     return { items: rows.map(row => {
       const result = this.entry(row, this.revisionRow(row.id, row.selected), review !== "reviewed");
-      if (keywords.length) result.snippet = this.snippet(result.revision, keywords);
+      if (keywords.length) Object.assign(result, this.snippet(result.revision, keywords));
       return result;
     }), total: count.total, page, pageSize };
   }
@@ -424,9 +431,11 @@ export class KnowledgeStore {
     if (!Number.isSafeInteger(value) || (value as number) < 1 || (value as number) > max) invalid(`分页数值必须为 1 到 ${max} 的整数`);
     return value as number;
   }
-  private snippet(content: KnowledgeDraft, keywords: string[]): string {
-    const body = [content.title, content.summary, content.body].filter(Boolean).join("\n"), lower = body.toLocaleLowerCase();
+  private snippet(content: KnowledgeDraft, keywords: string[]): Pick<KnowledgeEntry, "snippet" | "snippetField"> {
+    const [snippetField, matched = ""] = searchFields(content).find(([, value]) => value && keywords.some(keyword => value.toLocaleLowerCase().includes(keyword))) ?? ["body", content.body];
+    const body = ["title", "summary", "body"].includes(snippetField) ? [content.title, content.summary, content.body].filter(Boolean).join("\n") : matched;
+    const lower = body.toLocaleLowerCase();
     const positions = keywords.map(keyword => lower.indexOf(keyword)).filter(position => position >= 0), start = Math.max(0, (positions.length ? Math.min(...positions) : 0) - 60);
-    return `${start ? "…" : ""}${body.slice(start, start + 240)}${body.length > start + 240 ? "…" : ""}`;
+    return { snippetField, snippet: `${start ? "…" : ""}${body.slice(start, start + 240)}${body.length > start + 240 ? "…" : ""}` };
   }
 }

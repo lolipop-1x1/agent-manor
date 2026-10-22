@@ -98,6 +98,16 @@ test("菜单与返回地址完整保留查询，显式全库地址不继承旧�
   const review = readKnowledgeAddress("#knowledge?page=review&taskId=synthetic-task"); assert.equal(review.query.review, "pending"); assert.equal(review.query.availability, "all");
 });
 
+test("查询地址保留语义模式和选中知识，旧链接默认关键词且模式不进入查询字段", () => {
+  const query = { view: "all" as const, q: "a&b", page: 2, pageSize: 10 };
+  const restored = readKnowledgeAddress(knowledgeCollectionAddress("library", query, "synthetic knowledge", "semantic"));
+  assert.equal(restored.mode, "semantic"); assert.equal(restored.id, "synthetic knowledge"); assert.equal(restored.query.q, "a&b");
+  assert.equal("mode" in restored.query, false); assert.equal(readKnowledgeAddress("#knowledge").mode, "keyword");
+  for (const key of ["knowledge.estimatedTotalCost", "knowledge.additionalCost", "knowledge.costUnknown", "knowledge.snippet.applicability", "knowledge.snippet.tags", "knowledge.snippet.source"]) {
+    for (const language of ["en", "zh-CN"] as const) assert.ok(i18n.exists(key, { lng: language }), key);
+  }
+});
+
 test("知识列表调宽保留正文最小空间，窄窗口不改写原宽度偏好", () => {
   assert.equal(knowledgeListWidth(1200, 500), 500);
   assert.equal(knowledgeListWidth(1000, 100), 315);

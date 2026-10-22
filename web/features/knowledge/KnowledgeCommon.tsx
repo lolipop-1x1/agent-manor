@@ -1,5 +1,5 @@
 import { Loading } from "../../shared/ui/Loading";
-import { useId, useRef, type ReactNode } from "react";
+import { useCallback, useId, useRef, type ReactNode } from "react";
 import * as Dialog from "@radix-ui/react-dialog";
 import { X } from "@phosphor-icons/react";
 import Markdown from "react-markdown";
@@ -10,6 +10,8 @@ import { SelectionIndicator } from "../../shared/ui/SelectionIndicator";
 import type { KnowledgeLimitation } from "../../../src/knowledge-contracts";
 import type { MessageDescriptor } from "../../../src/i18n/types";
 import { restoreKnowledgeFocus } from "./knowledge-model";
+
+const dialogClosers = new WeakMap<HTMLElement, () => void>();
 
 export function KnowledgeDiagnostic({ original, descriptor }: { original: string; descriptor?: MessageDescriptor }) {
   const { t } = useI18n(), recognized = isMessageDescriptorKnown(descriptor);
@@ -43,8 +45,16 @@ export function KnowledgeMarkdown({ body }: { body: string }) {
 export function KnowledgeDialog({ title, children, open, onClose, footer, wide = false, description }: { title: string; children: ReactNode; open: boolean; onClose: () => void; footer?: ReactNode; wide?: boolean; description?: string }) {
   const { t } = useI18n();
   const descriptionId = useId(), returnFocus = useRef<HTMLElement | null>(null), content = useRef<HTMLDivElement | null>(null);
-  return <Dialog.Root open={open} onOpenChange={next => { if (!next) onClose(); }}><Dialog.Portal><Dialog.Overlay className="dialog-overlay" /><Dialog.Content ref={content} data-knowledge-dialog className={`knowledge-dialog dialog-content${wide ? " is-wide" : ""}`} aria-describedby={description ? descriptionId : undefined} onPointerDownOutside={event => event.preventDefault()}
-    onEscapeKeyDown={event => { event.stopImmediatePropagation(); }}
+  const close = useRef(onClose); close.current = onClose;
+  const bindContent = useCallback((element: HTMLDivElement | null) => { content.current = element; if (element) dialogClosers.set(element, () => close.current()); }, []);
+  return <Dialog.Root open={open} onOpenChange={next => { if (!next) onClose(); }}><Dialog.Portal><Dialog.Overlay className="dialog-overlay" /><Dialog.Content ref={bindContent} data-knowledge-dialog className={`knowledge-dialog dialog-content${wide ? " is-wide" : ""}`} aria-describedby={description ? descriptionId : undefined} onPointerDownOutside={event => event.preventDefault()}
+    onEscapeKeyDown={event => {
+      event.preventDefault();
+      const dialogs = document.querySelectorAll('[data-knowledge-dialog][data-state="open"]');
+      // 入场初期可能仍由父层接收按键，交给实际打开的最上层弹窗关闭。
+      const dismiss = dialogClosers.get(dialogs[dialogs.length - 1] as HTMLElement);
+      if (dismiss) { event.stopImmediatePropagation(); dismiss(); }
+    }}
     onOpenAutoFocus={() => { returnFocus.current = document.activeElement instanceof HTMLElement ? document.activeElement : null; }}
     onCloseAutoFocus={event => {
       event.preventDefault();

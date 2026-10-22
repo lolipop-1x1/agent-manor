@@ -117,9 +117,11 @@ export class KnowledgeManager {
       sourceBytes += plan.sourceBytes; textBytes += plan.textBytes; omittedMedia += plan.omittedMedia; targets.push(next);
     }
     const pendingMessages = targets.reduce((sum, target) => sum + target.messageIds.length, 0), generation = settings.config.generation;
-    const estimatedCost = generation.inputPricePerMillion !== undefined && generation.outputPricePerMillion !== undefined
+    const estimatedExtractionCost = !plannedChunks ? 0 : generation.inputPricePerMillion !== undefined && generation.outputPricePerMillion !== undefined
       ? (estimatedTokens * generation.inputPricePerMillion + estimatedOutputTokens * generation.outputPricePerMillion) / 1_000_000 : null;
-    const preview: KnowledgePreview = { id: randomUUID(), createdAt: now(), fingerprint: settings.fingerprint, scope, targets, sessionCount: new Set(targets.map(target => target.sessionId)).size, turnCount: targets.reduce((sum, target) => sum + target.turnCount, 0), estimatedTokens, contextTokens, skippedMessages, pendingMessages, estimatedCost, plannedChunks, estimatedOutputTokens, sourceBytes, textBytes, omittedMedia, limitations: [...new Set(targets.flatMap(target => target.limitations))] };
+    // 归并与回读次数取决于生成结果，提炼估算不能作为整项任务费用。
+    const estimatedCost = plannedChunks ? null : 0;
+    const preview: KnowledgePreview = { id: randomUUID(), createdAt: now(), fingerprint: settings.fingerprint, scope, targets, sessionCount: new Set(targets.map(target => target.sessionId)).size, turnCount: targets.reduce((sum, target) => sum + target.turnCount, 0), estimatedTokens, contextTokens, skippedMessages, pendingMessages, estimatedCost, estimatedExtractionCost, plannedChunks, estimatedOutputTokens, sourceBytes, textBytes, omittedMedia, limitations: [...new Set(targets.flatMap(target => target.limitations))] };
     preview.limitationDetails = knowledgeLimitations(preview.limitations, targets.flatMap(target => target.limitationDetails ?? []));
     if (Buffer.byteLength(JSON.stringify(preview)) > 6_000_000) throw modelError("input_too_long", "预览目标过大，请缩小时间或会话范围");
     this.store.transaction(() => { const state = this.state(); state.previews.push(preview.id); this.store.setState(`extraction.preview:${preview.id}`, { preview, config: settings.config } satisfies PreviewRecord); this.trim(state); this.store.setState(stateKey, state); });
@@ -300,8 +302,9 @@ export class KnowledgeManager {
     const scope = validateKnowledgeScope(input);
     if (scope.timeRange === "unset" && !scope.sessionIds?.length) throw modelError("scope_required", "请先选择试抽取范围");
     const { config, key } = await this.overrides(settings), targets = await this.sources.plan(scope);
-    if (targets.length !== 1 || targets[0]!.messageIds.length > 100 || targets[0]!.inputTokens > 100_000) throw modelError("request_invalid", "试抽取请选择一个会话中不超过 100 条消息的小范围");
+    if (targets.length !== 1 || targets[0]!.messageIds.length > 100) throw modelError("request_invalid", "试抽取请选择一个会话中不超过 100 条消息的小范围");
     const conversation = await this.sources.read(targets[0]!), controller = new AbortController();
+    if (this.pipeline.plan(conversation, config).estimatedTokens > 100_000) throw modelError("request_invalid", "试抽取请选择一个会话中不超过 100 条消息的小范围");
     const usage = emptyKnowledgeUsage(this.scheduler.usage().date);
     const result = await this.pipeline.run(conversation, config, key, undefined, { signal: controller.signal, phase: () => undefined, checkpoint: async () => undefined, usage, purpose: "try" });
     return { candidates: result.candidates.map(({ targetKnowledgeId: _id, baseRevisionId: _base, ...draft }) => draft), disposition: result.needsContext ? "needs_context" : result.candidates.length ? "knowledge" : "no_value", limitations: result.limitations, limitationDetails: result.limitationDetails, usage };

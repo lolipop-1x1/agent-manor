@@ -546,7 +546,7 @@ export default {
   "cli.guide.read": "默认 reviewed + active；查看待审使用 --review pending/all。条目 ID 与修订 ID 不同；关键词模式不依赖 embedding。",
   "cli.guide.review": "action 为 approve/reject，目标必须为最新修订。JSON 模式首次返回 CONFIRMATION_REQUIRED 及具体预览／摘要；只有用户明确核对此次操作后才传 --authorize。",
   "cli.guide.availability": "state 为 active/deprecated/superseded；审阅与有效性相互独立，须核对并授权本次具体操作。",
-  "cli.guide.extraction": "JSON：{scope:{timeRange:\"all\",recentDays:30,clients:[],projects:[],relationship:\"exclude_children\",executionMode:\"exclude_quiet\",models:[],title:\"\",branch:\"current\",sessionIds:[\"<sessionId>\"],turnStart:1,turnEnd:1}}。整段会话去掉轮次边界；预览不调用生成模型，start 前核对 estimatedTokens/plannedChunks/estimatedCost。配套 Skill 含 examples/extraction-preview.json。",
+  "cli.guide.extraction": "JSON：{scope:{timeRange:\"all\",recentDays:30,clients:[],projects:[],relationship:\"exclude_children\",executionMode:\"exclude_quiet\",models:[],title:\"\",branch:\"current\",sessionIds:[\"<sessionId>\"],turnStart:1,turnEnd:1}}。整段会话去掉轮次边界；预览不调用生成模型，start 前核对 estimatedTokens/plannedChunks/estimatedExtractionCost/estimatedCost。estimatedExtractionCost 是提炼估算，estimatedCost 是总费用；归并与回读未定时总费用为 null，表示未知，不代表缺少单价或免费。配套 Skill 含 examples/extraction-preview.json。",
   "cli.guide.startExtraction": "previewId 取 preview.id，不是 sessionId；会调用生成模型，同次重试沿用 idempotency key。等待超时不取消后台任务。",
   "cli.guide.job": "id 为 start 返回的任务 ID。默认返回进度／计数，--full 包含 events/results/failedSessions；完成且产出0条可以是正常结果。",
   "cli.guide.knowledgeSettings": "JSON：{config:<settings get 返回的完整 config>,generationKey?:string|null,embeddingKey?:string|null}。省略凭据保留，null 清除；不要把 fingerprint/hasKey 标志当作 config 提交。",

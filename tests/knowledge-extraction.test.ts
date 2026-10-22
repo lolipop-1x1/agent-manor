@@ -78,6 +78,29 @@ test("知识模型配置独立保存语言、凭据不回传且权限为0600", a
   assert.throws(() => validateKnowledgeConfig(broken), (cause: unknown) => cause instanceof KnowledgeModelError && cause.code === "config_invalid");
 }));
 
+test("试抽取按去除媒体后的请求大小校验，超长纯文本与过多消息仍被拒绝", async () => {
+  const records = messages(1); records[0] = { ...records[0]!, kind: "tool_result", text: JSON.stringify([{ type: "image", data: "A".repeat(400_000), mimeType: "image/png" }, { type: "text", text: "合成工具结果" }]) };
+  await fixture(async ({ manager, requests, source }) => {
+    const result = await manager.tryExtract(scope()); assert.equal(result.disposition, "no_value"); assert.equal(requests.length, 1);
+    assert.ok(!JSON.stringify(requests).includes("A".repeat(1000))); assert.ok(result.limitationDetails?.some(item => item.messageDescriptor?.key === "knowledge.limitation.mediaOmitted"));
+    source.records[0] = { ...source.records[0]!, kind: "user", text: "long text ".repeat(100_000) };
+    await assert.rejects(manager.tryExtract(scope()), (cause: unknown) => cause instanceof KnowledgeModelError && cause.code === "request_invalid");
+    source.records.splice(0, source.records.length, ...messages(51));
+    await assert.rejects(manager.tryExtract(scope()), (cause: unknown) => cause instanceof KnowledgeModelError && cause.code === "request_invalid");
+    assert.equal(requests.length, 1, "被拒绝的试抽取不能调用模型");
+  }, records);
+});
+
+test("预览将可计算的提炼费用与未知归并总费用分开，无待处理输入时总费用为零", async () => fixture(async ({ manager }) => {
+  const config = (await manager.settings()).config; config.generation.inputPricePerMillion = 1; config.generation.outputPricePerMillion = 2;
+  await manager.saveSettings({ config });
+  const preview = await manager.preview(scope());
+  assert.equal(preview.estimatedExtractionCost, (preview.estimatedTokens + preview.estimatedOutputTokens! * 2) / 1_000_000);
+  assert.equal(preview.estimatedCost, null, "归并与回读依赖模型结果，不能把提炼费用冒充总费用");
+  await settle(manager, (await manager.start(preview.id)).id);
+  const empty = await manager.preview(scope()); assert.equal(empty.sessionCount, 0); assert.equal(empty.estimatedCost, 0);
+}));
+
 test("首次输出语言独立持久化，配置保存不使旧覆盖失效且旧预览不能误用新配置", async () => fixture(async ({ manager, directory }) => {
   const isolated = new KnowledgeConfigStore(join(directory, "isolated"));
   assert.equal((await isolated.read()).config.outputLanguage, "zh-CN"); await assert.rejects(readFile(join(directory, "isolated", "knowledge", "config.json")), { code: "ENOENT" });

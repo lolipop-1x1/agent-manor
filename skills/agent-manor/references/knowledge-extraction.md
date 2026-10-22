@@ -32,9 +32,10 @@ am knowledge extraction preview-get <previewId> --full --json
 |---|---|
 | `id` / `fingerprint` | 冻结的预览身份及设置指纹；start 使用此 id，不传 sessionId |
 | `sessionCount` / `turnCount` | 完整待处理范围，不是本页数量 |
-| `estimatedTokens` / `estimatedOutputTokens` | 预计输入／输出，含规划和归并开销；不是历史客户端累计用量 |
+| `estimatedTokens` / `estimatedOutputTokens` | 提炼请求的预计输入／输出，输入包含提示词和引用上下文；归并与回读依赖结果，不是历史客户端累计用量 |
 | `contextTokens` / `plannedChunks` | 上下文估算／预计提炼分片数；一轮可能有多条消息并产生多片 |
-| `estimatedCost` | 依据配置单价估算；null 表示未计价，不代表免费 |
+| `estimatedCost` | 总费用估算；有待处理输入时，归并与回读未定，总费用为 null，不代表未配置价格或免费；无待处理输入为零 |
+| `estimatedExtractionCost` | 按配置单价计算的提炼费用估算；null 表示提炼未计价。旧预览缺少此字段时，其 estimatedCost 仍是原提炼估算 |
 | `pendingMessages` / `skippedMessages` | 待处理／已覆盖而跳过消息数；force 会改变覆盖处理 |
 | `targetCount` / `targetsTruncated` | 所有目标数／默认最多20个目标是否截断；审阅完整清单加 full |
 | `targets[]` | 各会话标题、ID、版本、轮数、分片估算；完整模式还含 messageIds、hashes |

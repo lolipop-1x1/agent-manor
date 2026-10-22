@@ -50,7 +50,8 @@ test("实际帮助展示依赖、正文契约和下一步，补充说明不改�
     output = "";
     capture(find(program, "knowledge extraction preview")).outputHelp();
     assert.match(output, /sessionIds.*turnStart.*turnEnd/);
-    assert.match(output, /estimatedTokens\/plannedChunks\/estimatedCost/);
+    assert.match(output, /estimatedTokens\/plannedChunks\/estimatedExtractionCost\/estimatedCost/);
+    assert.match(output, language === "en" ? /total null \(unknown\)/ : /总费用为 null，表示未知/);
     assert.doesNotMatch(output, /cli\.guide\./);
     output = "";
     capture(find(program, "semantic test")).outputHelp();

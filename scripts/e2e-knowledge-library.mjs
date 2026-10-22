@@ -7,7 +7,7 @@ import { promisify } from "node:util";
 import { knowledgeFixture } from "./knowledge-fixture.mjs";
 
 const run = promisify(execFile), fixture = await knowledgeFixture(), session = `knowledge-${process.pid}`;
-const artifacts = fileURLToPath(new URL("../.local/knowledge-library-e2e/", import.meta.url));
+const artifacts = process.env.KNOWLEDGE_E2E_ARTIFACTS ?? fileURLToPath(new URL("../.local/knowledge-library-e2e/", import.meta.url));
 const browser = async args => {
   const { stdout } = await run("playwright-cli", [`-s=${session}`, ...args], { cwd: fixture.directory, env: { ...process.env, TMPDIR: "/tmp" }, timeout: 180_000, maxBuffer: 8 * 1024 * 1024 });
   if (stdout.includes("### Error")) throw new Error(stdout); return stdout;
@@ -69,6 +69,42 @@ try {
       const before = await page.locator(".knowledge-entry-list").boundingBox(); await button("刷新知识").click(); await settled(); const after = await page.locator(".knowledge-entry-list").boundingBox();
       ensure(before.height === after.height && before.width === after.width, "刷新保留稳定布局");
     });
+    await group("snippet-fields", async () => {
+      await open(); await settled(); const search = page.getByRole("textbox", { name: "搜索知识", exact: true });
+      await search.fill("synthetic-applicability-marker"); await search.press("Enter"); await count(1); await settled();
+      ensure((await page.locator(".knowledge-entry-snippet").innerText()).includes("适用条件: synthetic-applicability-marker"), "适用条件命中展示实际片段与字段名称");
+      await shot("10-snippet-field-zh-light");
+    });
+    await group("address-state", async () => {
+      await open(); await settled();
+      const search = page.getByRole("textbox", { name: "搜索知识", exact: true });
+      await search.fill("配置更新"); await search.press("Enter"); await count(1); await select("来源客户端", "codex"); await settled();
+      await page.locator(".knowledge-entry").click(); await settled();
+      const address = await page.evaluate(() => location.hash);
+      ensure(address.includes("q=") && address.includes("client=codex") && address.includes(`id=${config.mainId}`), "搜索、客户端和选中知识同步地址");
+      await page.reload(); await settled();
+      ensure(await search.inputValue() === "配置更新" && await page.getByRole("combobox", { name: "来源客户端", exact: true }).innerText() === "codex" && await page.getByRole("heading", { name: "配置更新后仍读取旧值", exact: true }).count() === 1, "刷新恢复查询条件与选中正文");
+      await shot("08-address-restored-zh-light");
+      await search.fill("synthetic-no-match"); await search.press("Enter"); await count(0); await page.goBack(); await count(1); await settled();
+      ensure(await search.inputValue() === "配置更新", "浏览器后退恢复上次搜索");
+      await page.goForward(); await count(0); ensure(await search.inputValue() === "synthetic-no-match", "浏览器前进恢复下一次搜索");
+      await page.locator(".knowledge-rail-desktop").getByRole("button", { name: "待审队列", exact: true }).click(); await count(0);
+      await search.fill(""); await search.press("Enter"); await count(1); await settled(); await button("返回知识库").click(); await count(0);
+      ensure(!(await page.evaluate(() => location.hash)).includes("id="), "空结果进入审阅再返回不泄漏审阅选中项");
+      await page.reload(); await count(0); ensure(await search.inputValue() === "synthetic-no-match", "空结果审阅返回刷新保持原查询且没有错误正文");
+      await open(); await settled(); await page.getByRole("button", { name: /^代码评审保留证据 1 v/ }).click(); await settled();
+      const retainedId = await page.evaluate(() => new URLSearchParams(location.hash.split("?")[1]).get("id"));
+      await select("来源客户端", "codex"); await settled(); await page.reload(); await settled();
+      ensure(await page.evaluate(() => new URLSearchParams(location.hash.split("?")[1]).get("id")) === retainedId && await page.getByRole("heading", { name: "代码评审保留证据 1", exact: true }).count() === 1, "已有非首项选择在筛选后仍匹配时保留地址与阅读位置");
+      await open(); await settled(); await select("知识库每页条数", "50 条／页"); await settled(); await page.reload(); await settled();
+      ensure(await page.getByRole("combobox", { name: "知识库每页条数", exact: true }).innerText() === "50 条／页", "刷新恢复控件修改的每页条数");
+      await open("#knowledge?view=all&pageSize=10"); await settled(); await count(10); await button("知识库下一页").click(); await count(4);
+      await page.locator(".knowledge-entry").first().click(); await settled(); const selectedTitle = await page.locator(".knowledge-reader h1").innerText();
+      await page.reload(); await settled();
+      ensure((await page.evaluate(() => location.hash)).includes("pageNumber=2") && await page.locator(".knowledge-entry").count() === 4 && await page.locator(".knowledge-reader h1").innerText() === selectedTitle, "刷新恢复分页、每页条数和选中知识");
+      await open("#knowledge?view=all&mode=semantic"); await settled(); await page.reload(); await settled();
+      ensure(await page.getByRole("combobox", { name: "搜索方式", exact: true }).innerText() === "语义", "刷新恢复语义搜索方式");
+    });
     await group("navigation-filters", async () => {
       await open(); await settled();
       const rail = page.locator(".knowledge-rail-desktop"), reviewFilter = page.getByRole("combobox", { name: "审阅状态", exact: true });
@@ -125,6 +161,14 @@ try {
       const dialog = page.getByRole("dialog", { name: "确认发布此版本" }); await dialog.waitFor(); await page.keyboard.press("Escape"); await dialog.waitFor({ state: "hidden" });
       await page.waitForFunction(() => document.activeElement?.textContent === "保存并确认发布");
       ensure(await editor.getByRole("button", { name: "保存并确认发布", exact: true }).evaluate(el => el === document.activeElement), "二次确认取消后恢复编辑弹窗焦点");
+      for (let attempt = 0; attempt < 25; attempt++) {
+        if (attempt === 20) await page.emulateMedia({ reducedMotion: "reduce" });
+        await editor.getByRole("button", { name: "保存并确认发布", exact: true }).click(); await dialog.waitFor(); await page.keyboard.press("Escape"); await dialog.waitFor({ state: "hidden" });
+        await page.waitForFunction(() => document.activeElement?.textContent === "保存并确认发布");
+        ensure(!await page.getByRole("dialog", { name: "放弃修改", exact: true }).isVisible() && await editor.getByRole("textbox", { name: "正文", exact: true }).inputValue() === "已经人工核对的知识正文。", `连续取消发布确认 ${attempt + 1} 保留正文和焦点`);
+      }
+      await page.emulateMedia({ reducedMotion: "no-preference" });
+      await shot("09-editor-escape-fixed-zh-light");
       await editor.getByRole("button", { name: "保存并确认发布", exact: true }).click(); await dialog.getByRole("button", { name: "确认并发布", exact: true }).click(); await editor.waitFor({ state: "hidden" });
       ensure((await api("/entries")).items.some(item => item.revision.title === "浏览器确认发布的知识"), "明确确认后发布");
     });
@@ -165,6 +209,9 @@ try {
       ensure((await page.locator(".knowledge-selected-title").innerText()) === "合成排障会话 2", "会话入口直接显示所选标题");
       ensure(await button("开始沉淀").isEnabled(), "会话入口自动完成预览并提供开始动作");
       const beforeStart = await api("/extractions"); ensure(beforeStart.usage.requests === 0 && beforeStart.jobs.length === 0, "自动预览不调用生成模型或创建任务");
+      await page.getByText("输入明细", { exact: true }).click();
+      const costPreview = page.locator(".knowledge-preview");
+      ensure(await costPreview.getByText("总费用估算", { exact: true }).count() === 1 && await costPreview.getByText("归并与回读费用", { exact: true }).count() === 1 && await costPreview.getByText("未知", { exact: true }).count() === 2 && await costPreview.getByText("提炼费用估算", { exact: true }).count() === 1, "预览分别显示提炼估算与未知附加及总费用");
       await shot("03a-preview-zh-light");
       await select("沉淀范围", "整段会话"); await page.getByText("1 个会话 · 4 轮", { exact: true }).waitFor(); await page.locator('.knowledge-preview[aria-busy="false"]').waitFor();
       ensure(await page.getByRole("spinbutton", { name: "起始轮次", exact: true }).count() === 0, "整会话范围隐藏不必要的空轮次框");

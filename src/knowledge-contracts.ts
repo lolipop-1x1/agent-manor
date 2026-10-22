@@ -66,6 +66,7 @@ export interface KnowledgeEntry {
   pendingRevision?: KnowledgeRevision;
   score?: number;
   snippet?: string;
+  snippetField?: "title" | "summary" | "body" | "applicability" | "tags" | "source";
 }
 export interface KnowledgeAudit { id: string; knowledgeId: string; revisionId?: string; action: string; reason?: string; createdAt: string }
 export interface KnowledgeDetail extends KnowledgeEntry { revisions: KnowledgeRevision[]; audit: KnowledgeAudit[] }
@@ -124,7 +125,7 @@ export interface KnowledgePreview {
   id: string; createdAt: string; fingerprint: string; scope: KnowledgeExtractionScope;
   targets: KnowledgeTarget[]; sessionCount: number; turnCount: number;
   estimatedTokens: number; contextTokens: number; skippedMessages: number; pendingMessages: number;
-  estimatedCost: number | null; limitations: string[];
+  estimatedCost: number | null; estimatedExtractionCost?: number | null; limitations: string[];
   plannedChunks?: number; estimatedOutputTokens?: number; sourceBytes?: number; textBytes?: number; omittedMedia?: number;
   limitationDetails?: KnowledgeLimitation[];
 }

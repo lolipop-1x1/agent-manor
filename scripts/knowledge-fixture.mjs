@@ -34,7 +34,7 @@ export async function knowledgeFixture() {
   const store = new KnowledgeStore(join(home, "knowledge", "knowledge.sqlite"));
   const source = { kind: "extraction", client: "codex", sessionId: "knowledge-session-0", sessionTitle: "合成排障会话 1", sourceVersion: version, branch: "current", messageId: firstMessages[0].id, turnId: firstMessages[0].turnId, turnPosition: 1, ordinal: 2, hash: knowledgeMessageHash(firstMessages[0]), excerpt: firstMessages[0].text };
   const limitationDetails = [{ message: "Synthetic internal bounded input diagnostic", messageDescriptor: { key: "knowledge.limitation.inputSummarized" } }];
-  const main = store.create({ title: "配置更新后仍读取旧值", body: "## 适用场景\n服务端配置已更新，客户端仍读取旧值。\n\n## 排查方法\n先检查静态快照，再检查缓存。\n\n## 验证\n动态切换配置，核对客户端新值。", type: "procedure", subject: "project", scope: { kind: "project", project: "/synthetic/projects/atlas" }, language: "zh-CN", tags: ["动态配置", "排障"], sources: [{ ...source, limitationDetails }, { ...source, messageId: firstMessages[1].id, ordinal: 3, hash: knowledgeMessageHash(firstMessages[1]), excerpt: firstMessages[1].text, limitationDetails }] });
+  const main = store.create({ title: "配置更新后仍读取旧值", body: "## 适用场景\n服务端配置已更新，客户端仍读取旧值。\n\n## 排查方法\n先检查静态快照，再检查缓存。\n\n## 验证\n动态切换配置，核对客户端新值。", type: "procedure", subject: "project", scope: { kind: "project", project: "/synthetic/projects/atlas" }, language: "zh-CN", applicability: "synthetic-applicability-marker", tags: ["动态配置", "排障"], sources: [{ ...source, limitationDetails }, { ...source, messageId: firstMessages[1].id, ordinal: 3, hash: knowledgeMessageHash(firstMessages[1]), excerpt: firstMessages[1].text, limitationDetails }] });
   store.review(main.id, { revisionId: main.revision.id, action: "approve" });
   const { id: _id, knowledgeId: _knowledgeId, version: _version, createdAt: _created, review: _review, ...content } = main.revision;
   store.revise(main.id, { ...content, baseRevisionId: main.revision.id, body: `${content.body}\n\n## 新增验证\n覆盖断线重连后的配置恢复。`, changeReason: "补充断线重连验证" });
@@ -61,6 +61,7 @@ export async function knowledgeFixture() {
   });
   await new Promise(resolve => model.listen(0, "127.0.0.1", resolve));
   const config = defaultKnowledgeConfig(); config.generation.url = `http://127.0.0.1:${model.address().port}/v1`; config.generation.model = "synthetic-small-model"; config.generation.retries = 0;
+  config.generation.inputPricePerMillion = 1; config.generation.outputPricePerMillion = 2;
   await new KnowledgeConfigStore(home).save({ config, generationKey: "synthetic-browser-key" });
   await writePreferences(home, "zh-CN");
   const service = await startService({ home, startupRefresh: false, roots: Object.fromEntries(clientIds.map(client => [client, []])), resourceInventory: { userHome: join(directory, "isolated"), environment: {} } });

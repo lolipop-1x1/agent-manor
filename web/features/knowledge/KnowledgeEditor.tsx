@@ -24,7 +24,7 @@ export function KnowledgeEditor({ detail, projects, onClose, onSaved }: { detail
   const [savedPending, setSavedPending] = useState<KnowledgeDetail>();
   const [preview, setPreview] = useState(false);
   const changed = JSON.stringify(draft) !== JSON.stringify(initial) || tags !== (initial.tags?.join(", ") ?? "");
-  const close = () => { if (busy) return; if (changed && !savedPending) setDiscard(true); else onClose(); };
+  const close = () => { if (busy || publish || discard) return; if (changed && !savedPending) setDiscard(true); else onClose(); };
   const change = <K extends keyof KnowledgeDraft>(key: K, value: KnowledgeDraft[K]) => { setDraft(current => ({ ...current, [key]: value })); setSavedPending(undefined); };
   const submit = async (approve: boolean) => {
     setBusy(true); setError(undefined);

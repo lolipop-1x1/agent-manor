@@ -23,6 +23,37 @@ function error(code: KnowledgeError["code"]): (error: unknown) => boolean {
 }
 const management = { review: "all", availability: "all" } as const;
 
+test("日期筛选按本机完整日期处理，夏令时日与带时区时间戳保留边界", t => {
+  const { store, path } = fixture(t), database = new Database(path), timezone = process.env.TZ;
+  try {
+    const entry = store.create(sample()); store.review(entry.id, { revisionId: entry.revision.id, action: "approve" });
+    for (const [zone, day, start, end] of [
+      ["Asia/Shanghai", "2026-12-31", "2026-12-30T16:00:00Z", "2026-12-31T16:00:00Z"],
+      ["America/New_York", "2026-03-08", "2026-03-08T05:00:00Z", "2026-03-09T04:00:00Z"],
+      ["America/New_York", "2026-11-01", "2026-11-01T04:00:00Z", "2026-11-02T05:00:00Z"],
+    ]) {
+      process.env.TZ = zone;
+      for (const [time, expected] of [[Date.parse(start!) - 1, 0], [Date.parse(start!), 1], [Date.parse(end!) - 1, 1], [Date.parse(end!), 0]] as const) {
+        database.prepare("UPDATE knowledge_entries SET updated_at=? WHERE id=?").run(new Date(time).toISOString(), entry.id);
+        assert.equal(store.list({ from: day, to: day }).total, expected, `${zone} ${time}`);
+      }
+    }
+    database.prepare("UPDATE knowledge_entries SET updated_at=? WHERE id=?").run("2026-10-22T02:00:00.000Z", entry.id);
+    assert.equal(store.list({ from: "2026-10-22T02:00:00Z", to: "2026-10-22T02:00:00Z" }).total, 1);
+    assert.equal(store.list({ from: "2026-10-22T02:00:00.001Z" }).total, 0);
+  } finally { database.close(); if (timezone === undefined) delete process.env.TZ; else process.env.TZ = timezone; }
+});
+
+test("关键词片段解释适用条件、标签与来源命中，正文命中仍保留上下文", t => {
+  const { store } = fixture(t), created = store.create(sample({ applicability: "ApplicabilityNeedle", tags: ["TagNeedle"], sources: [{ kind: "agent", excerpt: "SourceNeedle" }] }));
+  store.review(created.id, { revisionId: created.revision.id, action: "approve" });
+  for (const [q, field] of [["ApplicabilityNeedle", "applicability"], ["TagNeedle", "tags"], ["SourceNeedle", "source"], ["静态快照", "body"]]) {
+    const result = store.list({ q }); assert.equal(result.total, 1); assert.ok(result.items[0]!.snippet!.includes(q!)); assert.equal(result.items[0]!.snippetField, field);
+  }
+  const combined = store.list({ q: "动态配置缓存排查 静态快照" }).items[0]!.snippet!;
+  assert.ok(combined.includes("动态配置缓存排查") && combined.includes("静态快照"), "保留标题、摘要及正文的联合命中上下文");
+});
+
 test("新建永远待审，默认查询和读取不泄露候选，发布后修订仍保留旧有效内容", t => {
   const { store } = fixture(t), created = store.create(sample());
   assert.equal(created.revision.review, "pending"); assert.equal(store.list().total, 0);

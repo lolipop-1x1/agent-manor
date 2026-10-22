@@ -4,6 +4,7 @@ import { semanticQueryScope } from "../sessions/semantic-ui-model";
 
 export interface KnowledgeSessionSelection { id: string; title?: string; totalTurns?: number }
 export type KnowledgePage = "library" | "review" | "new" | "tasks" | "settings";
+export type KnowledgeSearchMode = "keyword" | "semantic";
 export type KnowledgeCollection = NonNullable<KnowledgeQuery["view"]> | "review";
 export function knowledgeCollectionQuery(current: KnowledgeQuery, collection: KnowledgeCollection, project?: string): KnowledgeQuery {
   return { ...current, view: collection === "review" ? "all" : collection, project: collection === "project" ? project : undefined, review: collection === "review" ? "pending" : "reviewed", availability: collection === "review" ? "all" : "active", taskId: undefined, page: 1 };
@@ -12,7 +13,7 @@ export function knowledgeTypeKey(type?: KnowledgeType): string { return `knowled
 export function restoreKnowledgeFocus(targets: readonly (HTMLElement | null | undefined)[]): void {
   for (const target of targets) if (target?.isConnected && target.getClientRects().length && !target.matches(":disabled, [aria-disabled=true]")) { target.focus({ preventScroll: true }); return; }
 }
-export function readKnowledgeAddress(hash: string): { page: KnowledgePage; id?: string; taskId?: string; query: KnowledgeQuery; scope?: KnowledgeExtractionScope; selection?: KnowledgeSessionSelection } {
+export function readKnowledgeAddress(hash: string): { page: KnowledgePage; mode: KnowledgeSearchMode; id?: string; taskId?: string; query: KnowledgeQuery; scope?: KnowledgeExtractionScope; selection?: KnowledgeSessionSelection } {
   const params = new URLSearchParams(hash.split("?")[1]);
   const page = params.get("page");
   const view = params.get("view"), review = params.get("review"), availability = params.get("availability"), type = params.get("type");
@@ -22,13 +23,14 @@ export function readKnowledgeAddress(hash: string): { page: KnowledgePage; id?: 
   const sessionId = params.get("sessionId");
   const scope = sessionId ? { ...semanticQueryScope(), relationship: "all" as const, executionMode: "all" as const, sessionIds: [sessionId], branch: params.get("branch") ?? "current", turnStart: positive(params.get("turnStart")), turnEnd: positive(params.get("turnEnd")) } : undefined;
   // 兼容旧会话入口；任务记录只接受 taskId 定位，不自动挑选旧任务。
-  return { page: page === "tasks" && sessionId && !params.has("taskId") ? "new" : page === "review" || page === "new" || page === "tasks" || page === "settings" ? page : "library", id: params.get("id") ?? undefined, taskId: params.get("taskId") ?? undefined, query, scope, selection: sessionId ? { id: sessionId, title: params.get("sessionTitle") || undefined, totalTurns: positive(params.get("totalTurns")) } : undefined };
+  return { page: page === "tasks" && sessionId && !params.has("taskId") ? "new" : page === "review" || page === "new" || page === "tasks" || page === "settings" ? page : "library", mode: params.get("mode") === "semantic" ? "semantic" : "keyword", id: params.get("id") ?? undefined, taskId: params.get("taskId") ?? undefined, query, scope, selection: sessionId ? { id: sessionId, title: params.get("sessionTitle") || undefined, totalTurns: positive(params.get("totalTurns")) } : undefined };
 }
-export function knowledgeCollectionAddress(page: "library" | "review", query: KnowledgeQuery, id?: string): string {
+export function knowledgeCollectionAddress(page: "library" | "review", query: KnowledgeQuery, id?: string, mode: KnowledgeSearchMode = "keyword"): string {
   const params = new URLSearchParams();
   if (page === "review") params.set("page", page);
   for (const [key, value] of Object.entries(query)) if (value !== undefined && value !== "") params.set(key === "page" ? "pageNumber" : key, String(value));
   if (id) params.set("id", id);
+  if (mode === "semantic") params.set("mode", mode);
   return `#knowledge?${params}`;
 }
 export function knowledgeListWidth(viewport: number, preferred?: number): number {
