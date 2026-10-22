@@ -1,4 +1,6 @@
 import { Worker } from "node:worker_threads";
+import { dirname } from "node:path";
+import { serviceErrorDetails, serviceLog } from "../service/logging.js";
 import type { ApiErrorCode } from "../contracts.js";
 import type { MessageDescriptor } from "../i18n/types.js";
 import { StoreError } from "../index/store.js";
@@ -12,9 +14,9 @@ interface Results { overview: Overview; detail: ResourceUsageDetail; summary: Re
 type Result = Results[keyof Results];
 export interface ResourceHistoryRequest { id: number; operation: keyof Results; resourceId?: string; identity?: ResourceUsageIdentity; query: ResourceUsageEvidenceQuery; entries: readonly ResourceInventoryEntry[] }
 export type ResourceHistoryResponse = { id: number; result: Result } | {
-  id: number; error: { code: ApiErrorCode; message: string; messageDescriptor?: MessageDescriptor };
+  id: number; error: { code: ApiErrorCode; message: string; messageDescriptor?: MessageDescriptor }; diagnostic?: Record<string, unknown>;
 };
-interface Job { id: number; key: string; promise: Promise<Result>; resolve(value: Result): void; reject(error: Error): void }
+interface Job { id: number; key: string; operation: keyof Results; promise: Promise<Result>; resolve(value: Result): void; reject(error: Error): void }
 
 /** 资源历史通过独立只读连接计算，缓存未命中也不占用 HTTP 主线程。 */
 export class ResourceUsageManager implements ResourceHistoryReader {
@@ -49,7 +51,7 @@ export class ResourceUsageManager implements ResourceHistoryReader {
     if (this.jobs.size >= 16) return Promise.reject(new StoreError("ANALYSIS_NOT_READY", "资源统计队列已满，请稍后重试", { key: "diagnostics.resources.history.busy" }));
     let resolve!: Job["resolve"], reject!: Job["reject"];
     const promise = new Promise<Result>((success, failure) => { resolve = success; reject = failure; });
-    const job: Job = { id: ++this.nextId, key, promise, resolve, reject };
+    const job: Job = { id: ++this.nextId, key, operation, promise, resolve, reject };
     this.jobs.set(job.id, job); this.pending.set(key, job);
     try { this.worker ??= this.createWorker(); this.worker.postMessage({ id: job.id, operation, resourceId, identity, query: fixed, entries } satisfies ResourceHistoryRequest); }
     catch (error) { this.failed(error instanceof Error ? error : new Error(String(error))); }
@@ -68,7 +70,11 @@ export class ResourceUsageManager implements ResourceHistoryReader {
       if (this.worker !== worker) return;
       const job = this.jobs.get(message.id); if (!job) return;
       this.jobs.delete(job.id); this.pending.delete(job.key);
-      if ("error" in message) job.reject(new StoreError(message.error.code, message.error.message, message.error.messageDescriptor));
+      if ("error" in message) {
+        if (message.error.code === "INTERNAL_ERROR") serviceLog(dirname(this.sessions.dbPath), "resource.history.failed", {
+          operation: job.operation, jobId: job.id, error: message.diagnostic });
+        job.reject(new StoreError(message.error.code, message.error.message, message.error.messageDescriptor));
+      }
       else job.resolve(message.result);
     });
     worker.on("error", error => { if (this.worker === worker) this.failed(error); });
@@ -77,7 +83,10 @@ export class ResourceUsageManager implements ResourceHistoryReader {
   }
   private failed(error: Error): void {
     const worker = this.worker; this.worker = undefined;
-    for (const job of this.jobs.values()) job.reject(error);
+    for (const job of this.jobs.values()) {
+      serviceLog(dirname(this.sessions.dbPath), "resource.history.failed", { operation: job.operation, jobId: job.id, error: serviceErrorDetails(error) });
+      job.reject(error);
+    }
     this.jobs.clear(); this.pending.clear();
     if (worker) void worker.terminate();
   }

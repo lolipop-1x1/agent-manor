@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { chmod, lstat, mkdir, mkdtemp, readFile, readlink, realpath, rename, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { chmod, cp, lstat, mkdir, mkdtemp, readFile, readlink, realpath, rename, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, relative, sep } from "node:path";
 import test from "node:test";
@@ -29,6 +29,66 @@ function snapshot(entries: ResourceInventoryEntry[], observedAt = "2026-01-01T00
       origin: "manual", readState: "ok", observedAt, verified: true }] };
 }
 async function skill(path: string): Promise<void> { await mkdir(path, { recursive: true }); await writeFile(join(path, "SKILL.md"), "# 人工合成 Skill\n"); }
+
+test("恢复材料越界或属于其他操作时拒绝预览和执行，不删除外部目录", async () => fixture(async (manager, directory) => {
+  const path = join(directory, "skills", "guide"); await skill(path);
+  const initial = snapshot([entry(path)]);
+  const trash = await manager.preview({ entryId: "synthetic-entry", action: "trash" }, initial);
+  assert.equal((await manager.apply(trash.id, true, initial)).status, "success");
+  const archive = manager.archives("trash")[0]!;
+  const outside = join(directory, "unrelated");
+  await mkdir(outside); await cp(archive.storedPath!, join(outside, "material"), { recursive: true });
+  const database = new Database(manager.dbPath);
+  try {
+    const row = database.prepare("SELECT json FROM resource_archives WHERE id=?").get(archive.id) as { json: string };
+    const changePath = (path: string) => {
+      const value = JSON.parse(row.json); value.public.storedPath = path;
+      database.prepare("UPDATE resource_archives SET json=? WHERE id=?").run(JSON.stringify(value), archive.id);
+    };
+    for (const action of ["restore", "purge"] as const) {
+      changePath(join(outside, "material"));
+      await assert.rejects(manager.preview({ operationId: archive.operationId, action }, snapshot([])));
+    }
+    changePath(archive.storedPath!);
+    const purge = await manager.preview({ operationId: archive.operationId, action: "purge" }, snapshot([]));
+    changePath(join(outside, "material"));
+    assert.equal((await manager.apply(purge.id, true, snapshot([]))).status, "conflict");
+    assert.ok((await stat(outside)).isDirectory());
+    assert.ok((await stat(archive.storedPath!)).isDirectory());
+    const another = join(dirname(dirname(archive.storedPath!)), "another-operation", "material");
+    await mkdir(dirname(another)); await cp(archive.storedPath!, another, { recursive: true });
+    changePath(another);
+    await assert.rejects(manager.preview({ operationId: archive.operationId, action: "purge" }, snapshot([])));
+    changePath(`${dirname(archive.storedPath!)}/../${relative(dirname(dirname(archive.storedPath!)), dirname(archive.storedPath!))}/material`);
+    await assert.rejects(manager.preview({ operationId: archive.operationId, action: "purge" }, snapshot([])));
+  } finally { database.close(); }
+}));
+
+test("恢复材料祖先变为链接后拒绝清除，保留链接目标及材料", async () => fixture(async (manager, directory) => {
+  const path = join(directory, "skills", "guide"); await skill(path);
+  const initial = snapshot([entry(path)]);
+  const trash = await manager.preview({ entryId: "synthetic-entry", action: "trash" }, initial);
+  await manager.apply(trash.id, true, initial);
+  const archive = manager.archives("trash")[0]!;
+  const purge = await manager.preview({ operationId: archive.operationId, action: "purge" }, snapshot([]));
+  const parent = dirname(dirname(archive.storedPath!)), outside = join(directory, "outside-materials");
+  await rename(parent, outside); await symlink(outside, parent, "dir");
+  assert.equal((await manager.apply(purge.id, true, snapshot([]))).status, "conflict");
+  assert.ok((await stat(join(outside, ...relative(parent, archive.storedPath!).split(sep)))).isDirectory());
+}));
+
+test("恢复材料父目录缺失时保留档案并返回材料冲突", async () => fixture(async (manager, directory) => {
+  const path = join(directory, "skills", "guide"); await skill(path);
+  const initial = snapshot([entry(path)]);
+  const trash = await manager.preview({ entryId: "synthetic-entry", action: "trash" }, initial);
+  await manager.apply(trash.id, true, initial);
+  const archive = manager.archives("trash")[0]!;
+  await rm(dirname(archive.storedPath!), { recursive: true });
+  for (const action of ["restore", "purge"] as const) await assert.rejects(
+    manager.preview({ operationId: archive.operationId, action }, snapshot([])),
+    error => error instanceof ServiceError && error.code === "CONTENT_STALE");
+  assert.equal(manager.archives("recoverable").length, 1);
+}));
 function mcp(path: string, format: "json" | "jsonc" | "toml" = "json", extra: Partial<ResourceInventoryEntry> = {}): ResourceInventoryEntry {
   return entry(path, { kind: "mcp", name: "selected", server: "selected", entryType: "registration", sourceFormat: format,
     locator: { type: "mcp", format, configPath: path, keyPath: [format === "toml" ? "mcp_servers" : "mcpServers", "selected"],

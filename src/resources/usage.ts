@@ -459,14 +459,41 @@ export function resourceUsageEvidence(store: SessionStore, id: string, query: Re
   const { page, pageSize } = paging(query);
   const events: ResourceUsageEvent[] = [];
   const offset = (page - 1) * pageSize;
+  const recent = query.sort === "recent", limit = offset + pageSize;
+  const compare = (left: ResourceUsageEvent, right: ResourceUsageEvent) => {
+    const a = timestamp(left), b = timestamp(right);
+    return (a === undefined ? b === undefined ? 0 : 1 : b === undefined ? -1
+      : (query.order === "asc" ? a - b : b - a)) || left.id.localeCompare(right.id);
+  };
+  // 最近记录只保留所需页之前的候选，堆顶为最差候选，不收集整份历史。
+  const retain = (event: ResourceUsageEvent) => {
+    if (events.length < limit) {
+      let index = events.push(event) - 1;
+      while (index > 0) {
+        const parent = Math.floor((index - 1) / 2);
+        if (compare(events[parent]!, events[index]!) >= 0) break;
+        [events[parent], events[index]] = [events[index]!, events[parent]!]; index = parent;
+      }
+    } else if (compare(event, events[0]!) < 0) {
+      events[0] = event;
+      let index = 0;
+      while (index * 2 + 1 < events.length) {
+        let child = index * 2 + 1;
+        if (child + 1 < events.length && compare(events[child + 1]!, events[child]!) > 0) child++;
+        if (compare(events[index]!, events[child]!) >= 0) break;
+        [events[index], events[child]] = [events[child]!, events[index]!]; index = child;
+      }
+    }
+  };
   let total = 0;
   let missingTimeEvents = 0;
   for (const event of stream.events) {
     if (!matches(event, identity) || !selected(event, query, range)
       || query.evidenceKind && event.kind !== query.evidenceKind || query.tool && event.name !== query.tool && event.tool !== query.tool) continue;
     if (timestamp(event) === undefined) { missingTimeEvents += 1; if (range.dated) continue; }
-    if (total >= offset && events.length < pageSize) events.push(event);
+    if (recent) retain(event);
+    else if (total >= offset && events.length < pageSize) events.push(event);
     total += 1;
   }
-  return { version: stream.version, identity, events, total, page, pageSize, missingTimeEvents };
+  return { version: stream.version, identity, events: recent ? events.sort(compare).slice(offset) : events, total, page, pageSize, missingTimeEvents };
 }

@@ -163,7 +163,7 @@ try {
     const help = await run(process.execPath, [cliPath, "--home", fixture.home, "--lang", language, "resources", "overview", "--help"]);
     assert.ok(!/\breview\b/.test(help.stdout), "CLI 帮助仍推荐待检查分类");
     for (const kind of ["skill", "mcp"]) {
-      const result = await run(process.execPath, [cliPath, "--home", fixture.home, "--lang", language, "resources", "overview", "--kind", kind, "--q", "map-", "--candidate", "review", "--json"]);
+      const result = await run(process.execPath, [cliPath, "--home", fixture.home, "--lang", language, "resources", "overview", "--kind", kind, "--q", "map-", "--candidate", "review", "--json", "--full"]);
       const legacy = JSON.parse(result.stdout);
       assert.equal(legacy.counts.review, 0);
       assert.equal(legacy.total, maps[kind].total);
@@ -404,6 +404,7 @@ try {
     const selectedDetail=page.getByRole('complementary',{name:'资源详情',exact:true});
     if(!await selectedDetail.getByRole('heading',{name:'map-skill-001',exact:true}).isVisible()) await page.getByRole('button',{name:'查看map-skill-001的使用详情',exact:true}).click();
     await selectedDetail.getByRole('heading',{name:'map-skill-001',exact:true}).waitFor();
+    await selectedDetail.locator('.resource-detail-tabs').getByRole('button',{name:'使用记录',exact:true}).click();
     const evidence=page.locator('.resource-evidence a'); await evidence.first().waitFor();
     const stage=page.locator('[data-scale]');
     const initialScale=Number(await stage.getAttribute('data-scale'));

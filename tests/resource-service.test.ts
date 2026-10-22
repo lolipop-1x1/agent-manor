@@ -14,11 +14,30 @@ import { createProgram } from "../src/cli.js";
 import type { ResourceLocalResult, ResourceMapResult, ResourceMapSummary, ResourceOverviewDetail, ResourceOverviewResult, ResourceOverviewSummary, ResourceStatus, ResourceStatusSummary } from "../src/resource-service-contracts.js";
 import type { ResourceUsageDetail, ResourceUsageDetailSummary, ResourceUsageEvidenceResult, ResourceUsageResult } from "../src/resource-contracts.js";
 import { resourceHistoryIdentity } from "../src/resources/usage.js";
+import { ResourceService } from "../src/resources/service.js";
+import { serviceLogPath } from "../src/service/logging.js";
 import type { ResourceManagementOperation, ResourceManagementPreview } from "../src/resource-management-contracts.js";
 import type { SessionIndexStatus, SessionIndexSummary, SessionJob } from "../src/session-contracts.js";
 import { isolatedHistoryRoots } from "./helpers/history-roots.js";
 
 const run = promisify(execFile);
+test("资源接口异常记录路由模板和调用位置，不记录查询、请求头或异常消息中的秘密", async context => {
+  const secret = "synthetic-query-secret";
+  context.mock.method(ResourceService.prototype, "map", async () => { throw new TypeError(secret); });
+  await fixture(async (fixture, service) => {
+    const response = await fetch(`http://127.0.0.1:${service.instance.port}/api/v1/resources/map?q=${secret}`, {
+      headers: { "x-synthetic-secret": secret },
+    });
+    assert.equal(response.status, 500);
+    assert.ok(!(await response.text()).includes(secret));
+    const logs = await readFile(serviceLogPath(fixture.home), "utf8");
+    const event = logs.split("\n").filter(Boolean).map(line => JSON.parse(line)).find(row => row.event === "resource.request.failed");
+    assert.equal(event.route, "/api/v1/resources/map");
+    assert.equal(event.error.name, "TypeError");
+    assert.ok(event.error.stack.includes("at "));
+    assert.ok(!JSON.stringify(event).includes(secret));
+  });
+});
 async function fixture(callback: (context: Awaited<ReturnType<typeof resourceFixture>>, service: Awaited<ReturnType<typeof startService>>) => Promise<void>) {
   const directory = await mkdtemp(join(tmpdir(), "manor-resource-http-"));
   const context = await resourceFixture(directory);

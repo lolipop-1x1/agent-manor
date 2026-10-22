@@ -300,6 +300,21 @@ export class ResourceManager {
     const row = this.database.prepare("SELECT json FROM resource_archives WHERE operation_id=? AND phase<>'prepared'").get(operationId) as JsonRow | undefined;
     if (!row) throw new ServiceError("SOURCE_NOT_FOUND", "恢复材料不存在", { key: "diagnostics.resources.management.m005" }); return decode(row);
   }
+  private async validateMaterial(archive: PrivateArchive): Promise<void> {
+    const row = this.database.prepare("SELECT json FROM resource_operations WHERE id=?").get(archive.public.operationId) as JsonRow | undefined;
+    const operation = row ? decode<ResourceManagementOperation>(row) : undefined;
+    const action = operation?.action === "disable" ? "disable" : "trash";
+    const ids = [archive.public.operationId, operation?.previewId].filter((id): id is string => Boolean(id));
+    const paths = ids.flatMap(id => [resourceMaterialPath(this.vaultPath, action, archive.public.entry, id), join(this.vaultPath, id, "material")]);
+    const material = archive.public.storedPath;
+    const invalid = () => stale("恢复材料路径无法核验，请检查材料是否缺失、越界或包含链接", { key: "diagnostics.resources.management.materialPathInvalid" });
+    if (!material || !paths.includes(material)) invalid();
+    let current = this.vaultPath;
+    for (const part of ["", ...relative(this.vaultPath, dirname(material!)).split(sep)]) {
+      current = join(current, part);
+      if (!(await lstat(current).catch(() => undefined))?.isDirectory()) invalid();
+    }
+  }
   async preview(input: ResourceManagementInput, snapshot: ResourceInventorySnapshot): Promise<ResourceManagementPreview> {
     if (!input || !["disable", "standby", "trash", "restore", "purge"].includes(input.action)
       || (input.action === "restore" || input.action === "purge" ? !input.operationId || !!input.entryId : !input.entryId || !!input.operationId)) {
@@ -333,6 +348,7 @@ export class ResourceManager {
     let sourcePath = entry.entryPath; let destinationPath: string | undefined;
     let method: ResourceManagementPreview["method"] = input.action === "disable" ? "native_toggle" : entry.kind === "mcp" ? "registration_remove" : "entry_isolation";
     if (archive) {
+      await this.validateMaterial(archive);
       sourcePath = archive.public.storedPath!; method = input.action === "restore" ? "restore" : "permanent_purge";
       await check(sourcePath);
       if ((await inspectOnce(sourcePath)).contentHash !== archive.backupHash) stale("恢复材料已变化，请检查操作记录", { key: "diagnostics.resources.management.m011" });
@@ -458,6 +474,8 @@ export class ResourceManager {
         for (const dependency of plan.dependencies) if ((await inspect(dependency.path)).hash !== dependency.hash) stale();
         if (plan.archiveId) {
           saved = this.archive(preview.operationId!);
+          await this.validateMaterial(saved);
+          if (saved.public.storedPath !== preview.sourcePath) stale();
           if (preview.action === "restore" ? !saved.public.restorable : !saved.public.storedPath || saved.public.state === "purged") stale("该恢复记录已变化，请重新生成预览", { key: "diagnostics.resources.management.m029" });
           this.saveOperation(operation);
           mutationStarted = true;

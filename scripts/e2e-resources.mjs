@@ -95,6 +95,41 @@ try {
     expect(await page.locator('.resource-management-body').count()>=3,'不同文件被合并为一个写入对象');expect(!(await page.locator('.resource-location-list').innerText()).includes('Oh My Pi'),'兼容目录产生虚构客户端');expect(!(await page.locator('.resource-location-list').innerText()).includes('Reasonix'),'兼容目录产生虚构客户端');
     ${tab('概览')}
   `);
+  const recentGuide = (await api(`/resources/usage/${encodeURIComponent(guide.identity.id)}/evidence?kind=skill&pageSize=200`)).events
+    .sort((left, right) => Date.parse(right.occurredAt) - Date.parse(left.occurredAt) || left.id.localeCompare(right.id)).slice(0, 3);
+  await step('概览最近记录独立于使用记录分页，按发生时间取最新三条',`
+    ${ready}
+    const links=await page.locator('.resource-evidence a').evaluateAll(nodes=>nodes.map(node=>new URLSearchParams(node.getAttribute('href').split('?')[1]).get('message')));
+    expect(JSON.stringify(links)===${JSON.stringify(JSON.stringify(recentGuide.map(event=>event.messageId)))},'最近记录没有按跨会话时间倒序');
+    ${snap('evidence-recent-latest.png')}
+  `);
+  await step('概览历史范围变化后整体替换统计和同版最近证据',`
+    await page.locator('.resource-more-filters > summary').click();${select('使用客户端','Claude Code')}
+    expect(await page.locator('.resource-evidence a').count()===1,'客户端筛选后保留了旧证据');
+    expect((await page.locator('.resource-overview-stats strong').allTextContents()).slice(0,2).join('|')==='1|1','新证据与概览统计范围不同');
+    expect((await page.locator('.resource-evidence a').first().getAttribute('href')).includes('id=claude'),'仍能打开旧客户端证据');
+    ${snap('evidence-client-filter.png')}
+    ${select('使用客户端','全部客户端')}
+    expect(await page.locator('.resource-evidence a').count()===3,'恢复全部范围后最近证据未更新');
+    await page.locator('.resource-more-filters > summary').click();
+  `);
+  await step('最近证据更新等待期间保留完整概览，失败后阻止旧证据跳转并可重试',`
+    const body=page.locator('.resource-detail-body'),before=await body.innerText();
+    let release;const gate=new Promise(resolve=>release=resolve);
+    await page.route('**/api/v1/resources/usage/**/evidence?**',async route=>{await gate;await route.fulfill({status:503,contentType:'application/json',body:JSON.stringify({error:{code:'TEST_FAILURE',message:'人工最近证据失败'}})})});
+    await page.locator('.resource-more-filters > summary').click();
+    await page.getByRole('combobox',{name:'使用客户端',exact:true}).click();await page.getByRole('option',{name:'Claude Code',exact:true}).click();
+    await page.locator('.resource-detail-body[aria-busy="true"]').waitFor();
+    expect(await body.innerText()===before,'新最近证据未就绪时替换了部分概览');expect(await body.getAttribute('inert')!==null,'旧证据仍可跳转');
+    release();await page.getByRole('alert').filter({hasText:'人工最近证据失败'}).waitFor();
+    expect(await body.getAttribute('inert')!==null,'证据更新失败后旧链接仍可点击');
+    await page.unroute('**/api/v1/resources/usage/**/evidence?**');
+    const retried=page.waitForResponse(response=>response.url().includes('/evidence?')&&response.url().includes('sort=recent')&&response.ok());
+    await page.getByRole('alert').filter({hasText:'人工最近证据失败'}).getByRole('button',{name:'重试',exact:true}).click();await(await retried).finished();${ready}
+    await page.waitForFunction(()=>document.querySelectorAll('.resource-evidence a').length===1);
+    expect(await page.locator('.resource-evidence a').count()===1,'证据重试没有更新');
+    ${select('使用客户端','全部客户端')}await page.locator('.resource-more-filters > summary').click();
+  `);
   for (const [kind, target] of [['skill',guide],['mcp',sample]]) {
     const trend=(await api(`/resources/overview/${encodeURIComponent(target.identity.id)}?kind=${kind}`)).history.trend;
     const first=trend[0],last=trend.at(-1);
@@ -278,8 +313,10 @@ try {
     const text=await ${preview}.innerText();expect(text.includes(${JSON.stringify(fixture.broken)})&&text.includes('目标不存在'),'恢复原位置或目标状态缺失');
     expect(!text.includes('关联的其他文件位置')&&!text.includes('resource-vault'),'自身或内部路径误列');
     await page.setViewportSize({width:390,height:844});
+    await page.getByRole('dialog',{name:'资源详情',exact:true}).waitFor();
+    await ${preview}.getByRole('button',{name:/^(撤销停用|还原配置|还原链接|还原文件)$/,exact:true}).waitFor();
     expect(await ${preview}.getByRole('button',{name:/^(撤销停用|还原配置|还原链接|还原文件)$/,exact:true}).isVisible(),'窄屏确认入口不可达');${snap('broken-link-restore-mobile.png')}
-    await page.setViewportSize({width:1920,height:1000});${snap('broken-link-restore.png')}
+    await page.setViewportSize({width:1920,height:1000});await page.getByRole('dialog',{name:'资源详情',exact:true}).waitFor({state:'hidden'});${snap('broken-link-restore.png')}
   `);
   await api('/preferences','PUT',{language:'en',appearance:{mode:'dark',preset:'blue'}});
   await step('英文深色断链预览保持原位置和缺失含义',`
@@ -434,6 +471,7 @@ try {
     const nav=page.getByRole('navigation',{name:'资源导航',exact:true});await nav.getByRole('button',{name:'恢复中心',exact:true}).waitFor();
     expect(await nav.getByRole('button').count()===3,'窄屏缺少直接导航');
     expect(await page.getByRole('button',{name:'打开资源筛选',exact:true}).count()===0,'记录页仍有清单筛选按钮');
+    await page.waitForFunction(()=>document.documentElement.scrollWidth<=innerWidth+1);
     expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1),'窄屏记录页横向溢出');${snap('recovery-center-mobile.png')}
     await nav.getByRole('button',{name:'操作记录',exact:true}).click();${ready}
     expect(await nav.getByRole('button',{name:'操作记录',exact:true}).getAttribute('aria-current')==='page','移动导航未切换');

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { appendFile, mkdtemp, rm } from "node:fs/promises";
+import { appendFile, mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -11,6 +11,8 @@ import { ResourceUsageCache } from "../src/resources/usage-cache.js";
 import { resourceHistoryIdentity, resourceUsageDetail, resourceUsageEvidence } from "../src/resources/usage.js";
 import { parseSessionSource } from "../src/sessions/parser.js";
 import { SessionStore } from "../src/sessions/store.js";
+import Database from "better-sqlite3";
+import { serviceLogPath } from "../src/service/logging.js";
 
 async function fixture(run: (service: ResourceService, library: SessionStore, manager: ResourceManager,
   context: Awaited<ReturnType<typeof resourceFixture>>, publish: () => void) => Promise<void>) {
@@ -29,6 +31,25 @@ async function fixture(run: (service: ResourceService, library: SessionStore, ma
     await run(service, library, manager, context, publish);
   } finally { manager.close(); library.close(); await rm(directory, { recursive: true, force: true }); }
 }
+
+test("资源 Worker 查询失败保留操作诊断，客户端收到通用错误且后台可重试", async () => fixture(async (_service, library, _manager, context) => {
+  const database = new Database(library.dbPath);
+  const index = database.prepare("SELECT sql FROM sqlite_master WHERE type='index' AND name='session_message_resource_event_v3'").get() as { sql: string };
+  const manager = new ResourceUsageManager(library);
+  try {
+    database.exec("DROP INDEX session_message_resource_event_v3");
+    await assert.rejects(manager.overview({ kind: "skill" }, []), error => error instanceof Error
+      && error.message === "本地服务处理失败");
+    const logs = (await readFile(serviceLogPath(context.home), "utf8")).split("\n").filter(Boolean).map(line => JSON.parse(line));
+    const failed = logs.find(row => row.event === "resource.history.failed");
+    assert.equal(failed.operation, "overview");
+    assert.equal(failed.error.code, "SQLITE_ERROR");
+    assert.ok(failed.error.stack.includes("at "));
+    assert.equal(failed.query, undefined);
+    database.exec(index.sql);
+    assert.ok((await manager.overview({ kind: "skill" }, [])).history.total > 0);
+  } finally { await manager.close(); database.close(); }
+}));
 
 test("总览只读取一次事件流，Skill／MCP 切换、分页和地图复用各自统计", async () => fixture(async (service, library, manager) => {
   let reads = 0, decorations = 0;

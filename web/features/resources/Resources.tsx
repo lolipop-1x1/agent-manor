@@ -267,7 +267,9 @@ export default function Resources({ active, onSession, onHistoryReading, history
   const [map, setMap] = useState<ResourceMapSummary | null>(null);
   const mapLoadedQuery = useRef("");
   const [overviewDetail, setOverviewDetail] = useState<FavoriteResult<ResourceOverviewDetail> | null>(null);
+  const [overviewScope, setOverviewScope] = useState<ResourceUsageFilters | null>(null);
   const [usageDetail, setUsageDetail] = useState<FavoriteResult<ResourceUsageDetailSummary> | null>(null);
+  const [recentEvidence, setRecentEvidence] = useState<ResourceUsageEvidenceResult | null>(null);
   const [evidence, setEvidence] = useState<ResourceUsageEvidenceResult | null>(null);
   const [archives, setArchives] = useState<ResourceArchiveResult | null>(null);
   const [operations, setOperations] = useState<ResourceManagementOperations | null>(null);
@@ -484,6 +486,7 @@ export default function Resources({ active, onSession, onHistoryReading, history
     void task.catch(failure => { if (!isAborted(failure)) setError(failure instanceof Error ? failure : new Error(errorMessage(failure))); }).finally(() => { if (!controller.signal.aborted) setListLoading(false); });
     return () => controller.abort();
   }, [active, route.tab, managementQuery, reload, managementReload]);
+  const overviewSection = route.detail === "overview";
   useEffect(() => {
     if (!active) return;
     if (!route.id || invalidTime || route.tab !== "usage") { setUsageDetail(null); setOverviewDetail(null); setDetailLoading(false); setDetailError(null); setEvidenceError(null); detailTarget.current = ""; usageLoaded.current = ""; return; }
@@ -492,14 +495,16 @@ export default function Resources({ active, onSession, onHistoryReading, history
     detailTarget.current = target;
     const controller = new AbortController(); setDetailLoading(true); setDetailError(null); setEvidenceError(null);
     const revision = favoriteRevision.current;
-    const task = resourceApi.overviewDetail(route.id, { ...scopeQuery, ...positionQuery, lowSessions: route.low, inactiveDays: route.inactive }, controller.signal).then(result => {
+    const task = resourceApi.overviewDetail(route.id, { ...scopeQuery, ...positionQuery, lowSessions: route.low, inactiveDays: route.inactive }, controller.signal).then(async result => {
+      const recent = overviewSection && result.resource.hasHistory && result.version
+        ? await resourceApi.evidence(result.resource.identity.id, { ...scopeQuery, version: result.version, sort: "recent", order: "desc", page: 1, pageSize: 3 }, controller.signal) : null;
       if (controller.signal.aborted) return;
       if (result.favoriteIds) acceptFavoriteIds(result.favoriteIds, revision);
-      setOverviewDetail(result); syncFavorites();
+      setOverviewDetail(result); setOverviewScope(scopeQuery); setRecentEvidence(recent); syncFavorites();
     });
     void task.catch(failure => { if (!isAborted(failure)) setDetailError(failure instanceof Error ? failure : new Error(errorMessage(failure))); }).finally(() => { if (!controller.signal.aborted) setDetailLoading(false); });
     return () => controller.abort();
-  }, [active, route.id, route.tab, scopeQuery, positionQuery, overviewRanking, route.low, route.inactive, reload, historyReload, managementReload, invalidTime]);
+  }, [active, route.id, route.tab, scopeQuery, positionQuery, overviewRanking, overviewSection, route.low, route.inactive, reload, historyReload, managementReload, invalidTime]);
   const evidenceId = overviewDetail?.resource.identity.id;
   const usageRequestKey = JSON.stringify([scopeQuery, overviewDetail?.version, evidenceId, reload, historyReload, managementReload]);
   useEffect(() => {
@@ -672,10 +677,10 @@ export default function Resources({ active, onSession, onHistoryReading, history
   const selectedResource = overviewDetail?.resource;
   const locations = useMemo(() => resourceLocationGroups(overviewDetail?.local ?? [], route.kind), [overviewDetail?.local, route.kind]);
   const hasDetailData = !!overviewDetail;
-  const evidenceLinks = (limit?: number) => evidence?.events.length ? <>
-    <div className="resource-evidence">{evidence.events.slice(0, limit).map(event => <a key={event.id} href={`#sessions?${new URLSearchParams({ id: event.sessionId, mode: "trace", message: event.messageId, branch: "all" })}`} onClick={click => { if (!click.metaKey && !click.ctrlKey && !click.shiftKey && click.button === 0) { click.preventDefault(); savedScroll.current = listScroll.current?.scrollTop ?? 0; savedDetailScroll.current = (compact ? detailDialogScroll.current : detailScroll.current)?.scrollTop ?? 0; returnFromEvidence.current = true; onSession({ sessionId: event.sessionId, messageId: event.messageId }); } }}>
+  const evidenceLinks = (limit?: number, records = evidence) => records?.events.length ? <>
+    <div className="resource-evidence">{records.events.slice(0, limit).map(event => <a key={event.id} href={`#sessions?${new URLSearchParams({ id: event.sessionId, mode: "trace", message: event.messageId, branch: "all" })}`} onClick={click => { if (!click.metaKey && !click.ctrlKey && !click.shiftKey && click.button === 0) { click.preventDefault(); savedScroll.current = listScroll.current?.scrollTop ?? 0; savedDetailScroll.current = (compact ? detailDialogScroll.current : detailScroll.current)?.scrollTop ?? 0; returnFromEvidence.current = true; onSession({ sessionId: event.sessionId, messageId: event.messageId }); } }}>
       <div><strong>{event.tool ?? t(evidenceNames[event.kind])}</strong><span className={`resource-result is-${event.status}`}>{t(resultNames[event.status])}</span><ArrowSquareOut size={14} /></div><span>{t(evidenceNames[event.kind])} · {dateLabel(event.occurredAt)}</span>{event.pairing === "ambiguous" && <span className="resource-result is-unknown">{t("resources.evidence.pairingAmbiguous")}</span>}
-    </a>)}</div>{!limit && <ResourcePagination page={evidence.page} total={evidence.total} pageSize={evidence.pageSize} label={t("resources.evidence.title")} onChange={page => update({ evidencePage: page })} />}
+    </a>)}</div>{!limit && <ResourcePagination page={records.page} total={records.total} pageSize={records.pageSize} label={t("resources.evidence.title")} onChange={page => update({ evidencePage: page })} />}
   </> : <ResourceEmpty>{t("resources.evidence.empty")}</ResourceEmpty>;
   const knownAffected = [...new Map((preview?.affectedEntries ?? []).map(entry => [entry.entryPath, entry])).values()];
   const relatedLocations = knownAffected.filter(entry => entry.entryPath !== (preview?.originalPath ?? preview?.destinationPath ?? preview?.sourcePath));
@@ -729,12 +734,12 @@ export default function Resources({ active, onSession, onHistoryReading, history
         {route.kind === "mcp" && <section className="resource-detail-section"><header><h3>{t("resources.stat.toolCalls")}</h3></header><div className="resource-tool-list">{usageDetail.tools.map(tool => <button key={tool.name} className={route.tool === tool.name ? "is-selected" : ""} aria-pressed={route.tool === tool.name} onClick={() => update({ tool: route.tool === tool.name ? "" : tool.name, evidencePage: 1 })}><strong>{tool.name}</strong><span>{t("resources.callCount", { count: tool.stats.mcpCalls })}</span><small>{t("resources.toolResults", { failure: tool.stats.results.failure, unknown: tool.stats.results.unknown, duration: tool.stats.duration.samples ? t("resources.durationSamples", { duration: Math.round(tool.stats.duration.averageMs!), count: tool.stats.duration.samples }) : t("resources.evidence.durationMissing") })}</small></button>)}</div></section>}
         <section className="resource-detail-section"><header><h3>{route.tool ? t("resources.toolEvidence", { name: route.tool }) : t("resources.evidence.title")}</h3>{route.tool && <button className="text-button" onClick={() => update({ tool: "", evidencePage: 1 })}>{t("resources.evidence.allTools")}</button>}</header>{evidenceLinks()}</section>
       </> : !evidenceLoading && <ResourceEmpty>{t("resources.evidence.empty")}</ResourceEmpty>}</div></div> : <>
-        <p className="resource-history-scope">{t("resources.workspace.historyScope", { client: route.client === "all" ? t("resources.client.all") : clientLabel(route.client as Client), project: route.project === "all" ? t("resources.project.all") : shortPath(route.project) })}</p>
+        <p className="resource-history-scope">{t("resources.workspace.historyScope", { client: overviewScope?.client ? clientLabel(overviewScope.client) : t("resources.client.all"), project: overviewScope?.project ? shortPath(overviewScope.project) : t("resources.project.all") })}</p>
         <div className="resource-overview-stats"><div><span>{usageMetricLabel(route.kind)}</span><strong>{selectedResource.stats ? fmt(selectedResource.stats.events) : "—"}</strong></div><div><span>{t("resources.column.sessions")}</span><strong>{selectedResource.stats ? fmt(selectedResource.stats.sessions) : "—"}</strong></div><div><span>{t("resources.column.recent")}</span><strong className="resource-overview-date">{selectedResource.stats?.lastUsedAt ? dateLabel(selectedResource.stats.lastUsedAt) : "—"}</strong></div></div>
         <section className="resource-detail-section"><header><h3>{t(route.kind === "skill" ? "resources.workspace.fileLocations" : "resources.workspace.configLocations")}</h3><button className="text-button" onClick={() => update({ detail: "locations" })}>{t("resources.workspace.viewLocations")}<CaretRight size={14} /></button></header>
           {locations.length ? locations.map(row => <button className="resource-location-link" key={row.key ?? row.body.id} onClick={() => update({ detail: "locations" })}><span>{formatList(resourceLocationScopes(row.entries).map(scope => t(scope === "user" ? "resources.scope.user" : "resources.scope.project")))}</span><code>{row.body.targetPath ?? row.entries[0]?.entryPath}</code></button>) : <p className="resource-management-note">{t(selectedResource.localSummary?.presence === "unknown" ? "resources.workspace.presenceUnknown" : "resources.management.historyOnly")}</p>}
         </section>
-        {usageDetail && <section className="resource-detail-section"><header><h3>{t("resources.workspace.recentUsage")}</h3><button className="text-button" onClick={() => update({ detail: "history" })}>{t("resources.workspace.allRecords")}<CaretRight size={14} /></button></header>{evidenceLinks(3)}</section>}
+        {recentEvidence && <section className="resource-detail-section"><header><h3>{t("resources.workspace.recentUsage")}</h3><button className="text-button" onClick={() => update({ detail: "history" })}>{t("resources.workspace.allRecords")}<CaretRight size={14} /></button></header>{evidenceLinks(3, recentEvidence)}</section>}
       </>}
     </> : selectedArchive && !historyView && route.tab !== "operations" ? <>
       <div className="resource-detail-heading"><div><h2>{selectedArchive.entry.name}</h2></div></div>

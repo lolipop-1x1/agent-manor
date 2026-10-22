@@ -17,7 +17,7 @@ import { AnalysisStore, StoreError } from "./index/index.js";
 import { VERSION } from "./version.js";
 import { bodyText, emptyBody, integer, ServiceError } from "./service/input.js";
 import { acquireLock, assertNotUpdating, dataHome, DEFAULT_SERVICE_PORT, delay, removeInstance, SERVICE_PROTOCOL_VERSION, writeInstance } from "./service/runtime.js";
-import { serviceLog } from "./service/logging.js";
+import { serviceErrorDetails, serviceLog } from "./service/logging.js";
 import { beginStartupPreparation, completeStartupPreparation } from "./service/preparation.js";
 import { SessionStore } from "./sessions/store.js";
 import { queryBoolean, sessionMessageQuery, sessionProfileQuery, sessionQuery, sessionRefreshOptions, sessionTimelineQuery, summaryResponse } from "./service/session-input.js";
@@ -238,11 +238,15 @@ export async function startService(options: ServiceOptions = {}) {
         if (failed?.status === "rejected") throw failed.reason;
       }
     });
-    app.setErrorHandler((error, _request, reply) => {
+    app.setErrorHandler((error, request, reply) => {
       const known = error instanceof StoreError || error instanceof ServiceError;
       const malformed = !known && typeof error === "object" && error !== null && "statusCode" in error
         && Number(error.statusCode) >= 400 && Number(error.statusCode) < 500;
       const code: ApiErrorCode = known ? error.code : malformed ? "INVALID_INPUT" : "INTERNAL_ERROR";
+      if (code === "INTERNAL_ERROR" && request.routeOptions.url?.startsWith("/api/v1/resources/")) {
+        serviceLog(home, "resource.request.failed", { requestId: request.id, method: request.method,
+          route: request.routeOptions.url, error: serviceErrorDetails(error) });
+      }
       reply.code(statusCode(code)).send({ error: { code, message: known ? error.message : malformed ? "无效 HTTP 请求" : "本地服务处理失败", messageDescriptor: known ? error.messageDescriptor : malformed ? { key: "diagnostics.server.m002" } : { key: "diagnostics.server.m003" } } });
     });
     app.setNotFoundHandler((_request, reply) => { reply.code(404).send({ error: { code: "FILE_NOT_FOUND", message: "资源不存在", messageDescriptor: { key: "diagnostics.server.m004" } } }); });

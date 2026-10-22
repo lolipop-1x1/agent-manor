@@ -3,6 +3,13 @@ import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 
 export const serviceLogPath = (home: string): string => join(home, "logs", "service.log");
+/** 异常消息可能带有查询或配置内容；只保留错误身份和不含消息首行的调用位置。 */
+export function serviceErrorDetails(error: unknown): Record<string, unknown> {
+  if (!(error instanceof Error)) return { name: "UnknownError" };
+  const code = "code" in error && typeof error.code === "string" && /^[A-Z0-9_]{1,64}$/.test(error.code) ? error.code : undefined;
+  return { name: /^[\w.]{1,80}$/.test(error.name) ? error.name : "Error", code,
+    stack: error.stack?.split("\n").filter(line => /^\s+at /.test(line)).slice(0, 8).join("\n").slice(0, 4000) };
+}
 const sleeper = new Int32Array(new SharedArrayBuffer(4));
 function alive(pid: number): boolean {
   if (!Number.isSafeInteger(pid) || pid < 1) return false;
@@ -48,7 +55,7 @@ function renameIfPresent(from: string, to: string): void {
   catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
 }
 
-/** 日志只接受生命周期元信息，不传入会话正文、请求体或模型凭据。 */
+/** 日志只接受运行元信息和受限异常位置，不传入会话正文、请求体或模型凭据。 */
 export function serviceLog(home: string, event: string, details: Record<string, unknown> = {}, maxBytes = 10 * 1024 * 1024): void {
   let release: (() => void) | undefined;
   try {

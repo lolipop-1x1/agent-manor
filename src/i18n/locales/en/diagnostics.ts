@@ -443,6 +443,7 @@ export default {
   "diagnostics.resources.management.m032": "These recovery materials were permanently cleared",
   "diagnostics.resources.management.m033": "Local changes are complete",
   "diagnostics.resources.management.m034": "The local operation did not complete, and client activation is unconfirmed; inspect the source and recovery materials",
+  "diagnostics.resources.management.materialPathInvalid": "The recovery material path could not be verified; check for missing materials, paths outside this operation, or linked directories",
   "diagnostics.resources.configEditor.m001": "Preserving this configuration syntax during edits is not supported yet; this entry is read-only",
   "diagnostics.resources.configEditor.m002": "The resource is already disabled; no new local changes were made",
   "diagnostics.resources.configEditor.m003": "The selected configuration item has changed; restoration will not overwrite its current value",

@@ -443,6 +443,7 @@ export default {
   "diagnostics.resources.management.m032": "本次恢复材料已永久清除",
   "diagnostics.resources.management.m033": "本地修改完成",
   "diagnostics.resources.management.m034": "本地操作未完成；未确认客户端生效，请检查来源及恢复材料",
+  "diagnostics.resources.management.materialPathInvalid": "恢复材料路径无法核验，请检查材料是否缺失、越界或包含链接",
   "diagnostics.resources.configEditor.m001": "当前配置写法未完成保留编辑适配，只读",
   "diagnostics.resources.configEditor.m002": "资源已停用，没有新的本地修改",
   "diagnostics.resources.configEditor.m003": "所选配置项已变化，恢复不会覆盖当前值",

@@ -39,6 +39,31 @@ function source(store: SessionStore, summary: SessionSourceMeta, messages: Sessi
   return { path: summary.path, revision: pending.revision, fingerprint: "synthetic-fingerprint" };
 }
 
+test("最近证据跨会话按事件时间排序，分页稳定且缺失时间不冒充最近", async () => fixture(store => {
+  const resource = { kind: "skill_call", name: "guide" } as const;
+  const revisions = [
+    source(store, meta("a-old"), [message("a-old", 0, { resource, occurredAt: "2026-01-02T00:00:00Z" }),
+      message("a-old", 1, { resource, occurredAt: undefined })]),
+    source(store, meta("z-new"), [message("z-new", 0, { resource, occurredAt: "2026-01-06T00:00:00Z" }),
+      message("z-new", 1, { resource, occurredAt: "2026-01-05T01:00:00+01:00" }),
+      message("z-new", 2, { resource, occurredAt: "2026-01-05T00:00:00Z" })]),
+  ];
+  store.publish(store.createJob().id, revisions, []);
+  const id = listResourceUsage(store).resources[0]!.identity.id;
+  const query = { sort: "recent" as const, order: "desc" as const, pageSize: 2 };
+  const first = resourceUsageEvidence(store, id, query);
+  const second = resourceUsageEvidence(store, id, { ...query, page: 2 });
+  assert.equal(first.total, 5);
+  assert.equal(first.missingTimeEvents, 1);
+  assert.deepEqual(first.events.map(event => Date.parse(event.occurredAt!)),
+    [Date.parse("2026-01-06T00:00:00Z"), Date.parse("2026-01-05T00:00:00Z")]);
+  assert.deepEqual(second.events.map(event => Date.parse(event.occurredAt!)),
+    [Date.parse("2026-01-05T00:00:00Z"), Date.parse("2026-01-02T00:00:00Z")]);
+  assert.equal(new Set([...first.events, ...second.events].map(event => event.id)).size, 4);
+  assert.equal(resourceUsageEvidence(store, id, { ...query, page: 3 }).events[0]?.occurredAt, undefined);
+  assert.deepEqual(resourceUsageEvidence(store, id, { ...query, page: 9 }).events, []);
+}));
+
 test("Skill 原生展开证据参与排行，工具结果不使画像和排行双计数", async () => fixture(store => {
   const summary = meta("native-resource", { client: "pi", messageCount: 3, turnCount: 1 });
   const expanded = message(summary.id, 1, { kind: "user", callId: undefined, status: "success", text: "synthetic expanded Skill",
