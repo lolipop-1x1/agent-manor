@@ -11,8 +11,8 @@ import { sessionDisplayTitle } from "../sessions/session-model";
 import { TokenAmount } from "./TokenAmount";
 import { PriceDetails } from "./PriceDetails";
 
-export function UsageRequestDialog({ active, session, requests, loading, error, returnFocus, onClose, onPage, onRetry, onSession }: {
-  active: boolean; session?: UsageSessionRow; requests: UsageRequestPage | null; loading: boolean; error: Error | null;
+export function UsageRequestDialog({ active, session, requests, loading, pending, error, returnFocus, onClose, onPage, onRetry, onSession }: {
+  active: boolean; session?: UsageSessionRow; requests: UsageRequestPage | null; loading: boolean; pending: boolean; error: Error | null;
   returnFocus: RefObject<HTMLElement | null>; onClose: () => void; onPage: (page: number) => void;
   onRetry: () => void; onSession: (sessionId: string, messageId?: string) => void;
 }) {
@@ -28,11 +28,11 @@ export function UsageRequestDialog({ active, session, requests, loading, error, 
         onCloseAutoFocus={event => { event.preventDefault(); if (active && returnFocus.current?.isConnected) returnFocus.current.focus({ preventScroll: true }); }}>
         <header className="usage-request-header"><div><Dialog.Title ref={title} tabIndex={-1}>{t("usage.sessions.requests")}</Dialog.Title>
           {session && <p>{sessionDisplayTitle(session.session, language)}</p>}</div>
-          <div className="usage-request-actions"><HelpPopover container={container} label={t("usage.pricing.help")} iconOnly><p>{t("usage.help.cost")}</p>{session && <><p>{t("usage.coverage.cost", { complete: session.totals.pricedRequests, partial: session.totals.partiallyPricedRequests, missing: session.totals.unpricedRequests })}</p><p>{t("usage.coverage.priceBasis", { historical: session.totals.historicalPricedRequests, snapshot: session.totals.currentSnapshotPricedRequests, manual: session.totals.manualPricedRequests })}</p></>}</HelpPopover><Dialog.Close className="icon-button" aria-label={t("common.closeNamed", { label: t("usage.sessions.requests") })}><X size={20} /></Dialog.Close></div></header>
-        <div className="usage-request-body">
-          {loading && <div role="status" className="usage-loading"><Loading variant="inline" /><span>{t("usage.loading")}</span></div>}
+          <div className="usage-request-actions"><span className="usage-request-progress" role="status" aria-label={loading && requests ? t("usage.updating") : undefined}>{loading && requests && <Loading variant="inline" size={16} />}</span><HelpPopover container={container} label={t("usage.pricing.help")} iconOnly><p>{t("usage.help.cost")}</p>{session && <><p>{t("usage.coverage.cost", { complete: session.totals.pricedRequests, partial: session.totals.partiallyPricedRequests, missing: session.totals.unpricedRequests })}</p><p>{t("usage.coverage.priceBasis", { historical: session.totals.historicalPricedRequests, snapshot: session.totals.currentSnapshotPricedRequests, manual: session.totals.manualPricedRequests })}</p></>}</HelpPopover><Dialog.Close className="icon-button" aria-label={t("common.closeNamed", { label: t("usage.sessions.requests") })}><X size={20} /></Dialog.Close></div></header>
+        <div className="usage-request-body" aria-busy={loading}>
+          {loading && !requests && <div role="status" className="usage-loading"><Loading variant="inline" /><span>{t("usage.loading")}</span></div>}
           {error && <div role="alert" className="usage-notice danger">{errorMessage(error)}<button className="text-button" onClick={onRetry}>{t("usage.retry")}</button></div>}
-          {requests && <div className="usage-table-scroll"><table className="usage-table usage-request-table"><thead><tr>
+          {requests && <div className="usage-table-scroll" inert={pending}><table className="usage-table usage-request-table"><thead><tr>
             <th>{t("usage.sessions.requestTime")}</th><th>{t("usage.sessions.model")}</th><th>{t("usage.tokens.input")}</th><th>{t("usage.tokens.output")}</th>
             <th>{t("usage.composition.cacheRead")}</th><th>{t("usage.composition.cacheWrite")}</th><th>{t("usage.metric.cost")}</th><th>{t("usage.pricing.effective")}</th><th aria-label={t("usage.sessions.open")} />
           </tr></thead><tbody>{requests.requests.map(item => <tr key={item.usage.id}>

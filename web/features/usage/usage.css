@@ -156,7 +156,8 @@
   .usage-page-heading > div { gap: 6px; }
 }
 
-.usage-request-actions { display: flex; align-items: flex-start; gap: 12px; }
+.usage-request-actions { position: relative; display: flex; align-items: flex-start; gap: 12px; }
+.usage-request-progress { position: absolute; inset-inline-start: -28px; top: 0; display: grid; place-items: center; width: 20px; height: 34px; }
 .usage-request-table td { padding-block: 12px; text-align: left; }
 .usage-request-table td.usage-number { text-align: right; }
 .usage-request-table td:first-child, .usage-request-table td:last-child { vertical-align: middle; }

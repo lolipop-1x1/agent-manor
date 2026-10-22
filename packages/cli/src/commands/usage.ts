@@ -1,13 +1,17 @@
 import type { Command } from "commander";
 import type { CliContext } from "../context.js";
 import { jsonInput, readJsonInput, queryOptions, queryParameters } from "../api/input.js";
+import { usageReadRequest } from "../../../../src/usage/query-request.js";
 const keys = ["version", "priceVersion", "timezone", "from", "to", "clients", "excludeClients", "projects", "excludeProjects", "models", "excludeModels", "speedGroups", "relationship", "sessionType", "coverage", "pricing", "metric", "groupBy", "interval", "sort", "direction", "includeSpeed", "speedGroup", "page", "pageSize", "minTokens", "maxTokens", "minCost", "maxCost"];
 export function registerUsage(program: Command, context: CliContext): void {
   const group = program.command("usage").description(context.t("cli.ext.usage"));
   for (const [name, suffix] of [["report", ""], ["status", "/status"], ["requests", "/requests"]]) {
     const fields = name === "requests" ? [...keys, "sessionId", "requestPage", "requestPageSize"] : keys;
     queryOptions(group.command(name!).description(context.t(`cli.ext.usage.${name}`)), context, fields)
-      .action(async (_options, command: Command) => { await context.request(command, `/usage${suffix}${queryParameters(command, fields)}`); });
+      .action(async (_options, command: Command) => {
+        const read = usageReadRequest(`/usage${suffix}`, queryParameters(command, fields));
+        await context.request(command, read.path, read.method, read.body);
+      });
   }
   const pricing = group.command("pricing").description(context.t("cli.ext.pricing"));
   pricing.command("get").description(context.t("cli.ext.pricing.get")).action(async (_opts, command: Command) => { await context.request(command, "/usage/pricing"); });

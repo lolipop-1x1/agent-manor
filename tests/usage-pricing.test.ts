@@ -138,6 +138,10 @@ test("解析口径升级改变价格版本，避免复用旧的未定价持久�
   assert.notEqual(status.version, legacy);
   assert.equal(new PricingService(home).version(), status.version);
   assert.throws(() => pricing.view(legacy), { code: "VERSION_NOT_FOUND" });
+  const beforeReasoningFix = createHash("sha256").update(JSON.stringify({ prices: priceContentVersion(status.prices),
+    history: priceContentVersion(status.historicalPrices ?? []), mappings: status.configuration.mappings, resolution: 7 })).digest("hex").slice(0, 24);
+  assert.notEqual(status.version, beforeReasoningFix);
+  assert.throws(() => pricing.view(beforeReasoningFix), { code: "VERSION_NOT_FOUND" });
 });
 
 test("网络更新逐模型保留旧缓存与随包兜底，并记录各自日期", async t => {
@@ -250,6 +254,26 @@ test("推理独立单价只作用于已知推理分项；音频无分项时显�
   assert.equal(pricing.estimate(request()).coverage, "partial");
   pricing.configure({ overrides: [{ model: "example-model", input: 2, output: 5, inputAudio: 10, cacheRead: 0.1, cacheWrite: 1 }], mappings: [] });
   const audio = pricing.estimate(request()); assert.equal(audio.amount, 50 / 1_000_000); assert.equal(audio.reason, "semantics_unknown");
+});
+
+test("总输出未知时保留已知推理费用小计，不补造普通输出或重复计费", t => {
+  const pricing = new PricingService(workspace(t));
+  pricing.configure({ overrides: [{ model: "example-model", input: 1, output: 1, reasoning: 5 }], mappings: [] });
+  for (const inputTokens of [0, undefined]) {
+    const partial = pricing.estimate(request({ inputTokens, outputTokens: undefined, reasoningOutputTokens: 1_000_000,
+      cachedInputTokens: undefined, cacheWriteTokens: undefined }));
+    assert.equal(partial.amount, 5);
+    assert.equal(partial.coverage, "partial"); assert.equal(partial.reason, "tokens_missing");
+  }
+  const zero = pricing.estimate(request({ inputTokens: undefined, outputTokens: undefined, reasoningOutputTokens: 0,
+    cachedInputTokens: undefined, cacheWriteTokens: undefined }));
+  assert.equal(zero.amount, 0); assert.equal(zero.coverage, "partial");
+  const complete = pricing.estimate(request({ inputTokens: 0, outputTokens: 1_000_010, reasoningOutputTokens: 1_000_000,
+    cachedInputTokens: 0, cacheWriteTokens: 0 }));
+  assert.equal(complete.amount, 5.00001); assert.equal(complete.coverage, "complete");
+  const conflict = pricing.estimate(request({ inputTokens: 0, outputTokens: 10, reasoningOutputTokens: 20,
+    cachedInputTokens: 0, cacheWriteTokens: 0 }));
+  assert.equal(conflict.amount, 0); assert.equal(conflict.reason, "semantics_unknown");
 });
 
 test("非法配置拒绝并保持有效设置，损坏本地文件有明确状态且不阻止兜底", t => {

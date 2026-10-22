@@ -36,7 +36,10 @@ try {
     }, params);
     const address = () => page.evaluate(() => location.hash);
     const parameter = name => page.evaluate(name => new URLSearchParams(location.hash.split("?")[1]).get(name), name);
-    const selectedGroups = async () => JSON.parse(await parameter("speedGroups") ?? "[]");
+    const selectedGroups = async () => {
+      const explicit = await parameter("speedGroups");
+      return explicit === null ? page.locator(".usage-speed-legend-item").evaluateAll(items => items.map(item => item.getAttribute("data-group"))) : JSON.parse(explicit);
+    };
     const addressState = () => page.evaluate(() => JSON.stringify([...new URLSearchParams(location.hash.split("?")[1])].sort(([left], [right]) => left.localeCompare(right))));
     const navigate = async values => {
       await change(() => page.evaluate(values => { location.hash = `usage?${new URLSearchParams(values)}`; }, values));
@@ -57,7 +60,7 @@ try {
     ensure(await button("日历热力图").count() === 0 && await button("柱状").count() === 0, "速度仍显示日历或柱状切换");
     const speedAddress = await address();
     const allGroups = await selectedGroups();
-    ensure(allGroups.length > 3 && speedAddress.includes("trendMetric=speed"), "速度或默认全部分组没有同步地址");
+    ensure(allGroups.length > 3 && speedAddress.includes("trendMetric=speed") && !speedAddress.includes("speedGroups="), "默认全部分组没有保持隐式选择");
     const report = await api({ timezone: "Asia/Shanghai", includeSpeed: "true", speedGroups: JSON.stringify(allGroups) });
     const defaults = report.speed.groups.filter(group => group.client === "claude" && group.eligibleRequests > 0).slice(0, 3).map(group => group.key);
     ensure(JSON.stringify(report.speed.selectedGroups) === JSON.stringify(allGroups) && report.speed.series.length === report.speed.groups.length, "默认没有选择全部可选分组");
@@ -121,7 +124,9 @@ try {
     ensure(await chart.innerHTML() === originalTrend, "会话分页改变完整速度曲线");
     await change(() => pager.getByRole("button", { name: "会话明细首页", exact: true }).click());
 
-    await slider.scrollIntoViewIfNeeded(); const plotBounds = await slider.boundingBox();
+    await slider.scrollIntoViewIfNeeded();
+    await page.waitForFunction(() => document.getAnimations().every(animation => animation.effect?.getComputedTiming().iterations === Infinity || animation.playState !== "running"));
+    const plotBounds = await slider.boundingBox();
     const before = await page.locator(".usage-session-section").boundingBox();
     await page.mouse.move(plotBounds.x + plotBounds.width * .25, plotBounds.y + plotBounds.height / 2);
     const popup = page.getByRole("dialog", { name: "速度区间明细", exact: true }); await popup.waitFor();
@@ -266,7 +271,7 @@ try {
     await page.locator(".usage-results[aria-busy='true']").waitFor();
     ensure(await picker.innerText() === oldLabel && await chart.innerHTML() === oldChart, "等待期间图与真实分组不一致");
     ensure(await page.locator(".usage-report-body").getAttribute("inert") !== null, "等待期间旧图仍可交互");
-    ensure(await page.locator(".usage-query-feedback .loading--inline").count() > 0, "等待期间缺固定进度图标");
+    ensure(await page.locator(".usage-page-heading .loading--inline").count() > 0, "等待期间缺固定进度图标");
     while (!release) await page.waitForTimeout(25); release(); await ready(); await page.unroute("**/api/v1/usage?*");
     const confirmedLabel = await picker.innerText(), confirmedChart = await chart.innerHTML();
     await page.route("**/api/v1/usage?*", route => route.fulfill({ status: 503, contentType: "application/json", body: JSON.stringify({ error: { code: "INTERNAL_ERROR", message: "synthetic failure", messageDescriptor: { key: "common.error.http", params: { status: 503 } } } }) }));
@@ -315,6 +320,7 @@ try {
       await page.getByRole("option", { name: theme, exact: true }).click(); await page.keyboard.press("Escape");
       await page.waitForFunction(() => document.activeElement?.getAttribute("aria-label") === "外观", undefined, { timeout: 3000 });
       await page.setViewportSize({ width: 390, height: 844 });
+      await page.waitForFunction(() => document.documentElement.scrollWidth <= innerWidth);
       ensure(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), "速度窄屏横向溢出");
       await slider.press("Home"); await popup.waitFor();
       const bounds = await popup.boundingBox(); ensure(bounds.x >= 0 && bounds.x + bounds.width <= 390 && bounds.y >= 0 && bounds.y + bounds.height <= 844, "速度窄屏浮层越界");

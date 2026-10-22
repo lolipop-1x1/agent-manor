@@ -2,7 +2,7 @@ import type { ModelPrice, PriceResolutionReason, PricingConfiguration } from "..
 
 const key = (provider: string, model: string) => `${provider}\0${model}`;
 // 解析口径变化必须使持久费用汇总失效，Token 事实仍可复用。
-export const PRICE_RESOLUTION_VERSION = 7;
+export const PRICE_RESOLUTION_VERSION = 8;
 
 // 渠道前缀和免费标记不改变 API 估算基准；版本、日期和功能变体仍参与匹配。
 function modelSignature(model: string): string {

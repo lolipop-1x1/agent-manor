@@ -10,7 +10,7 @@ import { historicalPriceSourceUrl } from "../dist/usage/historical-prices.js";
 import { priceSourceUrl } from "../dist/usage/price-catalog.js";
 
 // 全部为隔离合成数据，价格写入只影响临时数据目录。
-export async function usageFixture({ failHistoricalPrices = false, matchingCandidates = false, speedTiming = false, days = 28, now = new Date() } = {}) {
+export async function usageFixture({ failHistoricalPrices = false, matchingCandidates = false, speedTiming = false, extraSpeedModels = 0, days = 28, now = new Date() } = {}) {
   const directory = await realpath(await mkdtemp(join(tmpdir(), "manor-usage-e2e-")));
   const home = join(directory, "data"); await mkdir(home);
   const path = join(home, "index.sqlite"); new AnalysisStore(path).close();
@@ -62,6 +62,13 @@ export async function usageFixture({ failHistoricalPrices = false, matchingCandi
       pending.sink.usage({ id: `${id}:undated`, model: "fixture-unpriced", inputTokens: 500, outputTokens: 50 });
       pending.sink.usage({ id: `${id}:known-unknown`, model: "unknown", inputTokens: 100, outputTokens: 50, cachedInputTokens: 0, cacheWriteTokens: 0 });
       pending.sink.usage({ id: `${id}:missing-model`, inputTokens: 100, cachedInputTokens: 0, cacheWriteTokens: 0 });
+    }
+    if (sessionIndex === 0) for (let index = 0; index < extraSpeedModels; index++) {
+      const model = `synthetic-speed-${index}-${"variant-".repeat(12)}`;
+      summary.models.push(model);
+      pending.sink.usage({ id: `${id}:extra-speed:${index}`, model, occurredAt: now.toISOString(),
+        inputTokens: 1000, outputTokens: 1000, cachedInputTokens: 0, cacheWriteTokens: 0,
+        timing: { basis: "estimated", window: "response", method: "codex_event_boundary", completion: "explicit", durationMs: 2000 } });
     }
     pending.flush(); store.finishRevision(pending.revision, summary);
     sources.push({ path: summary.path, revision: pending.revision, fingerprint: "synthetic" });

@@ -6,6 +6,7 @@ import type { SessionIndexSummary } from "../../../src/session-contracts";
 import type { PricingStatus, UsageGroup, UsageInterval, UsageMetric, UsagePreparationStatus, UsageQuery, UsageReport, UsageRequestPage } from "../../../src/usage-contracts";
 import { CLIENTS } from "../../../src/clients";
 import { usageDimensionValue } from "../../../src/usage/dimensions";
+import { usageReadRequest } from "../../../src/usage/query-request";
 import { ApiError, errorMessage, isAborted, request } from "../../shared/api";
 import { clientLabel, useI18n } from "../../shared/i18n";
 import { DatePicker } from "../../shared/ui/DatePicker";
@@ -40,6 +41,7 @@ export default function Usage({ active, onSession, onHistoryReading, historyRevi
   const [error, setError] = useState<Error | null>(null); const [loading, setLoading] = useState(false);
   const [preparation, setPreparation] = useState<{ queryKey: string; status: UsagePreparationStatus } | null>(null);
   const [requests, setRequests] = useState<UsageRequestPage | null>(null); const [requestError, setRequestError] = useState<Error | null>(null); const [requestLoading, setRequestLoading] = useState(false);
+  const loadedRequestQuery = useRef("");
   const [pricesOpen, setPricesOpen] = useState(false);
   const [requestRevision, setRequestRevision] = useState(0);
   const requestTrigger = useRef<HTMLElement | null>(null);
@@ -107,7 +109,8 @@ export default function Usage({ active, onSession, onHistoryReading, historyRevi
     };
     // 轻量查询不轮询；报告仍在等待时才检查相同版本的后台准备状态。
     timer = globalThis.setTimeout(() => { void pollPreparation(); }, 1000);
-    void request<UsageReport>(`/usage?${queryKey}`, { signal: controller.signal }).then(result => {
+    const read = usageReadRequest("/usage", queryKey);
+    void request<UsageReport>(read.path, { method: read.method, body: read.body, signal: controller.signal }).then(result => {
       if (controller.signal.aborted) return;
       stopPreparation(); setPreparation(null);
       loadedQuery.current = queryKey;
@@ -131,10 +134,11 @@ export default function Usage({ active, onSession, onHistoryReading, historyRevi
   }, [active, pricing]);
   const requestQueryKey = route.selectedSession && report ? usageParameters({ ...report.query, sessionId: route.selectedSession, requestPage: route.requestPage ?? 1, requestPageSize: 20 }) : "";
   useEffect(() => {
-    setRequests(null); setRequestError(null);
+    setRequests(current => current?.sessionId === route.selectedSession ? current : null); setRequestError(null);
     if (!active || !requestQueryKey) { setRequestLoading(false); return; }
     const controller = new AbortController(); setRequestLoading(true);
-    void request<UsageRequestPage>(`/usage/requests?${requestQueryKey}`, { signal: controller.signal }).then(result => { if (!controller.signal.aborted) { setRequests(result); setRequestLoading(false); } }).catch(failure => { if (!isAborted(failure)) { setRequestError(failure instanceof Error ? failure : new ApiError("QUERY_FAILED", "", { key: "common.error.query" })); setRequestLoading(false); } });
+    const read = usageReadRequest("/usage/requests", requestQueryKey);
+    void request<UsageRequestPage>(read.path, { method: read.method, body: read.body, signal: controller.signal }).then(result => { if (!controller.signal.aborted) { loadedRequestQuery.current = requestQueryKey; setRequests(result); setRequestLoading(false); } }).catch(failure => { if (!controller.signal.aborted && !isAborted(failure)) { setRequestError(failure instanceof Error ? failure : new ApiError("QUERY_FAILED", "", { key: "common.error.query" })); setRequestLoading(false); } });
     return () => controller.abort();
   }, [active, requestQueryKey, requestRevision]);
   const updatePrice = useCallback((value: PricingStatus) => { setPricing(value); setVersions(current => current ? { ...current, price: value.version } : current); }, []);
@@ -164,6 +168,9 @@ export default function Usage({ active, onSession, onHistoryReading, historyRevi
   const rangeLabel = (value?: string) => value ? value.includes("T") ? dateTime(value, { timeZone: report!.timezone, year: "numeric", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }) : date(`${value}T00:00:00`) : t("common.timeUnknown");
   const priceHistory = report && loadedQuery.current === queryKey ? report.pricing.history : pricing?.history;
   const pending = loading || loadedQuery.current !== queryKey || invalid;
+  const visibleRequests = requests && report && requests.sessionId === route.selectedSession && requests.version === report.version && requests.priceVersion === report.priceVersion ? requests : null;
+  const requestPending = pending || loadedRequestQuery.current !== requestQueryKey || requestLoading || !!requestError;
+  const requestWaiting = !!requestQueryKey && !requestError && (requestLoading || loadedRequestQuery.current !== requestQueryKey);
   const preparing = preparation?.queryKey === queryKey ? preparation.status : null;
   const inspectSession = (sessionId: string, trigger: HTMLElement) => { requestTrigger.current = trigger; patch({ selectedSession: sessionId, requestPage: 1 }, false); };
   const coverageIndicator = (row: UsageReport["sessions"][number], cost = false) => {
@@ -219,7 +226,7 @@ export default function Usage({ active, onSession, onHistoryReading, historyRevi
       </section></div>
 
     </div>}
-    <UsageRequestDialog active={active} session={selectedSession} requests={requests} loading={requestLoading} error={requestError} returnFocus={requestTrigger}
+    <UsageRequestDialog active={active} session={selectedSession} requests={visibleRequests} loading={requestWaiting} pending={requestPending} error={requestError} returnFocus={requestTrigger}
       onClose={() => patch({ selectedSession: undefined }, false)} onPage={requestPage => patch({ requestPage }, false)} onRetry={() => setRequestRevision(current => current + 1)} onSession={openSession} />
     {pricing && <PricingManager status={pricing} models={facets.models.flatMap(model => { const original = usageDimensionValue(model); return original === undefined ? [] : [original]; })} onChange={updatePrice} open={pricesOpen} onOpenChange={setPricesOpen} />}
   </main>;

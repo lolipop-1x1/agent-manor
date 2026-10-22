@@ -78,6 +78,7 @@ try {
     await hit.press("Enter"); await page.keyboard.press("Escape"); ensure(await page.locator(".usage-time-popover").count() === 0, "Escape 未关闭时间浮层");
     let release; await page.route("**/api/v1/usage?*", async route => { await new Promise(resolve => { release = resolve; }); await route.continue(); });
     await button("估算费用").click(); await page.locator(".usage-results[aria-busy='true']").waitFor();
+    await page.locator(".usage-page-heading .loading--inline").waitFor();
     ensure(await page.locator(".usage-page .loading--inline").count() === 1, "指标切换应只显示一个固定loading");
     ensure(await page.locator(".usage-metric-overview").innerText() === values, "等待期间清空原数据");
     while (!release) await page.waitForTimeout(25); release(); await ready(); await page.unroute("**/api/v1/usage?*");

@@ -154,7 +154,7 @@ test("空数据范围不把默认或原非空选择误存为显式清空，返�
   assert.equal(speedSelectionToSync([], []), undefined);
   assert.equal(speedSelectionToSync([], ["a"]), undefined);
   assert.equal(speedSelectionToSync(["a"], ["a"]), undefined);
-  assert.deepEqual(speedSelectionToSync(undefined, ["a", "b", "c"]), ["a", "b", "c"]);
+  assert.equal(speedSelectionToSync(undefined, ["a", "b", "c"]), undefined);
   assert.deepEqual(speedSelectionToSync(["old", "a"], ["a"]), ["a"]);
   assert.deepEqual(speedSelectionToSync(["old"], ["a", "b", "c"]), ["a", "b", "c"]);
 });

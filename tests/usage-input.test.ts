@@ -1,7 +1,27 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { pricingConfiguration, usageQuery } from "../src/service/usage-input.js";
+import { pricingConfiguration, usageQuery, usageQueryBody } from "../src/service/usage-input.js";
+import { usageReadRequest } from "../src/usage/query-request.js";
 import { ServiceError } from "../src/service/input.js";
+
+test("长用量查询改用请求体且保留筛选原值，短查询保持 GET 兼容", () => {
+  assert.deepEqual(usageReadRequest("/usage", "?page=2"), { path: "/usage?page=2", method: "GET" });
+  assert.deepEqual(usageReadRequest("/usage", ""), { path: "/usage", method: "GET" });
+  const models = Array.from({ length: 120 }, (_, index) => `synthetic/model-${index}/中文+&?`);
+  const params = new URLSearchParams({ includeSpeed: "true", speedGroups: JSON.stringify(models), minCost: "0" });
+  const read = usageReadRequest("/usage/requests", params.toString());
+  assert.equal(read.path, "/usage/requests"); assert.equal(read.method, "POST");
+  assert.deepEqual(usageQuery(read.body!).speedGroups, models);
+  assert.equal(usageQuery(read.body!).minCost, 0);
+});
+
+test("POST 用量输入复用完整校验，不把未知对象、布尔分页或非字符串身份转成合法参数", () => {
+  const parsed = usageQuery(usageQueryBody({ includeSpeed: true, speedGroups: ["b", "a", "b"], minCost: 0, page: 2 }));
+  assert.deepEqual(parsed.speedGroups, ["b", "a"]); assert.equal(parsed.page, 2); assert.equal(parsed.minCost, 0);
+  for (const body of [null, [], { version: 1 }, { page: true }, { models: [null] }, { minCost: Infinity }, { arbitrary: {} }]) {
+    assert.throws(() => usageQuery(usageQueryBody(body)), (error: unknown) => error instanceof ServiceError && error.code === "INVALID_INPUT");
+  }
+});
 
 test("用量输入保留包含与排除，日期边界、零阈值及分页不混入会话筛选", () => {
   const query = usageQuery({ clients: '["codex","claude","codex"]', excludeProjects: '["unknown"]', models: '["model/a,b"]',

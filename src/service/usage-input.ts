@@ -13,6 +13,18 @@ const enums = {
   sort: ["tokens", "cost", "requests", "recent"], direction: ["asc", "desc"],
 } as const;
 
+/** POST 读取与 GET 共用校验，同时接收 JSON 数组、数字和布尔值。 */
+export function usageQueryBody(body: unknown): Record<string, unknown> {
+  if (!body || typeof body !== "object" || Array.isArray(body)) invalid("query");
+  const raw = { ...body as Record<string, unknown> };
+  for (const field of arrays) if (Array.isArray(raw[field])) raw[field] = JSON.stringify(raw[field]);
+  for (const field of ["page", "pageSize", "requestPage", "requestPageSize", "minTokens", "maxTokens", "minCost", "maxCost"]) {
+    if (typeof raw[field] === "number") raw[field] = String(raw[field]);
+  }
+  if (typeof raw.includeSpeed === "boolean") raw.includeSpeed = String(raw.includeSpeed);
+  return raw;
+}
+
 export function usageQuery(raw: Record<string, unknown>): UsageQuery {
   const allowed = new Set([...arrays, ...Object.keys(enums), "version", "priceVersion", "timezone", "from", "to",
     "includeSpeed", "speedGroup", "page", "pageSize", "minTokens", "maxTokens", "minCost", "maxCost", "sessionId", "requestPage", "requestPageSize"]);

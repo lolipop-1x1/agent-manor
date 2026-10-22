@@ -50,6 +50,9 @@ test("用量 HTTP 固定索引与价格版本，覆盖多页请求、手动价�
     assert.notEqual(custom.version, automatic.version);
     const params = new URLSearchParams({ version, priceVersion: custom.version, timezone: "Asia/Shanghai", from: "2026-10-11", to: "2026-10-11" });
     const report = await api<UsageReport>(`/usage?${params}`);
+    const posted = await api<UsageReport>("/usage", "POST", { version, priceVersion: custom.version, timezone: "Asia/Shanghai",
+      from: "2026-10-11", to: "2026-10-11" });
+    assert.deepEqual(posted, report);
     assert.equal(report.totals.requests, 31);
     assert.equal(report.speed, undefined);
     const speed = await api<UsageReport>(`/usage?${params}&includeSpeed=true`);
@@ -85,6 +88,16 @@ test("用量 HTTP 固定索引与价格版本，覆盖多页请求、手动价�
     const page = await api<UsageRequestPage>(`/usage/requests?${params}&sessionId=${summary.id}&requestPage=2&requestPageSize=12`);
     assert.equal(page.total, 31); assert.equal(page.requests.length, 12);
     assert.equal(page.requests[0]!.usage.id, "synthetic-request-12");
+    const postedPage = await api<UsageRequestPage>("/usage/requests", "POST", { ...Object.fromEntries(params),
+      sessionId: summary.id, requestPage: 2, requestPageSize: 12 });
+    assert.deepEqual(postedPage, page);
+    const postedSummary = await api<Record<string, unknown>>("/usage?response=summary", "POST", Object.fromEntries(params));
+    assert.equal((postedSummary.sessions as Record<string, unknown>[])[0]!.requests, undefined);
+    assert.equal((postedSummary.totals as UsageReport["totals"]).tokens, report.totals.tokens);
+    for (const body of [null, [], { arbitrary: true }, { includeSpeed: true, speedGroups: [null] }, { page: true }, { version: 1 }]) {
+      const invalidPost = await fetch(`${base}/usage`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+      assert.equal(invalidPost.status, 400);
+    }
     networkFail = true;
     const fallback = await api<PricingStatus>("/usage/pricing/refresh", "POST", {});
     assert.deepEqual(fallback.configuration, configuration);

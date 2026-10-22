@@ -56,9 +56,9 @@ export function usageParameters(value: object): string {
   for (const [key, entry] of Object.entries(value)) if (entry !== undefined && entry !== "" && (!Array.isArray(entry) || entry.length || key === "speedGroups")) params.set(key, Array.isArray(entry) ? JSON.stringify(entry) : String(entry));
   return params.toString();
 }
-/** 空数据范围不等于用户清空；仅采纳服务器返回的非空默认或回退选择。 */
+/** 默认全选保持隐式；空数据不等于清空，仅同步已有显式选择的有效回退。 */
 export function speedSelectionToSync(requested: string[] | undefined, selected: string[]): string[] | undefined {
-  if (!selected.length || requested?.length === 0 || JSON.stringify(requested) === JSON.stringify(selected)) return undefined;
+  if (requested === undefined || !selected.length || requested.length === 0 || JSON.stringify(requested) === JSON.stringify(selected)) return undefined;
   return selected;
 }
 export function usageQuery(route: UsageRoute, version: string, priceVersion: string, now = new Date()): UsageQuery {

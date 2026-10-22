@@ -104,6 +104,8 @@ function requestCost(usage: SessionUsage, match: PriceMatch | undefined, client?
   else if (applicable.reasoning !== undefined && applicable.reasoning !== applicable.output) {
     if (output !== undefined && reasoning !== undefined && reasoning <= output) {
       add(output - reasoning, applicable.output); add(reasoning, applicable.reasoning);
+    } else if (output === undefined && reasoning !== undefined) {
+      add(reasoning, applicable.reasoning); missingTokens = true;
     } else if (output === 0) add(0, applicable.output);
     else { missingTokens = true; if (reasoning !== undefined && output !== undefined) ambiguous = true; }
   } else add(output, applicable.output);
