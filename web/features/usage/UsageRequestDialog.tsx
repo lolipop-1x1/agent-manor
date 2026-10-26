@@ -8,13 +8,14 @@ import { useI18n } from "../../shared/i18n";
 import { HelpPopover } from "../../shared/ui/HelpPopover";
 import { ResourcePagination } from "../../shared/ui/ResourcePagination";
 import { sessionDisplayTitle } from "../sessions/session-model";
+import { sessionNavigationAddress, type SessionEvidenceTarget } from "../sessions/session-address";
 import { TokenAmount } from "./TokenAmount";
 import { PriceDetails } from "./PriceDetails";
 
 export function UsageRequestDialog({ active, session, requests, loading, pending, error, returnFocus, onClose, onPage, onRetry, onSession }: {
   active: boolean; session?: UsageSessionRow; requests: UsageRequestPage | null; loading: boolean; pending: boolean; error: Error | null;
   returnFocus: RefObject<HTMLElement | null>; onClose: () => void; onPage: (page: number) => void;
-  onRetry: () => void; onSession: (sessionId: string, messageId?: string) => void;
+  onRetry: () => void; onSession: (target: SessionEvidenceTarget) => void;
 }) {
   const { t, number, dateTime, language } = useI18n();
   const title = useRef<HTMLHeadingElement>(null);
@@ -45,7 +46,7 @@ export function UsageRequestDialog({ active, session, requests, loading, pending
             </HelpPopover>}</div></td>
             <td className="usage-request-price">{item.cost.price ? <div className="usage-price-target"><span>{(item.cost.priceProvider ?? item.cost.price.provider) === "manual" ? t("usage.pricing.globalScope") : item.cost.priceProvider ?? item.cost.price.provider} / {item.cost.price.model}</span>
               <PriceDetails container={container} price={item.cost.price} cost={item.cost} threshold={item.cost.appliedContextThreshold} /></div> : "—"}</td>
-            <td><button className="text-button" onClick={() => session && onSession(session.session.id, item.usage.messageId ?? item.usage.requestMessageIds?.[0])} title={!item.usage.messageId && !item.usage.requestMessageIds?.length ? t("usage.sessions.noLocator") : undefined}><ArrowSquareOut size={15} />{t("usage.sessions.open")}</button></td>
+            <td>{session && <a className="text-button" href={sessionNavigationAddress({ sessionId: session.session.id, version: requests.version, messageId: item.usage.messageId ?? item.usage.requestMessageIds?.[0] })} onClick={event => { if (!event.metaKey && !event.ctrlKey && !event.shiftKey && !event.altKey && event.button === 0) { event.preventDefault(); onSession({ sessionId: session.session.id, version: requests.version, messageId: item.usage.messageId ?? item.usage.requestMessageIds?.[0] }); } }} title={!item.usage.messageId && !item.usage.requestMessageIds?.length ? t("usage.sessions.noLocator") : undefined}><ArrowSquareOut size={15} />{t("usage.sessions.open")}</a>}</td>
           </tr>)}</tbody></table>{!requests.requests.length && <div className="usage-empty">{t("usage.sessions.emptyRequests")}</div>}</div>}
         </div>
         {requests && <footer><ResourcePagination label={t("usage.sessions.requests")} page={requests.page} total={requests.total} pageSize={requests.pageSize} onChange={onPage} /></footer>}

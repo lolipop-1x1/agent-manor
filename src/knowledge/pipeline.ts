@@ -11,8 +11,9 @@ import { knowledgeRelations, knowledgeTopicCards, topicRelevance, type Knowledge
 interface Evidence { reference: string; message: KnowledgeInputMessage; text: string }
 interface Candidate extends TopicCandidate { targetKnowledgeId?: string; baseRevisionId?: string }
 interface Carry { topic: string; topicId?: string; summary: string; references: string[] }
+interface RereadEvidence { reference: string; messageId: string; hash: string; start: number; end: number; segment: number; source: KnowledgeSource }
 interface Envelope { relation?: KnowledgeRelation; disposition: "knowledge" | "no_value" | "needs_context"; candidates: Candidate[]; carry: Carry[]; needsMessageIds: string[]; needsMessageRanges: { messageId: string; start: number; length: number }[]; limitations: string[] }
-export interface PipelineCheckpoint { identity: string; next: number; candidates: Candidate[]; carry: Carry[]; noValue: number; needsContext: boolean; limitations: string[]; nextTopic?: number; nextCandidate?: number; rereadBytes?: number; rereadRequests?: number }
+export interface PipelineCheckpoint { identity: string; next: number; candidates: Candidate[]; carry: Carry[]; noValue: number; needsContext: boolean; limitations: string[]; nextTopic?: number; nextCandidate?: number; rereadBytes?: number; rereadRequests?: number; rereadEvidence?: RereadEvidence[] }
 export interface PipelineResult { candidates: (KnowledgeDraft & { targetKnowledgeId?: string; baseRevisionId?: string })[]; checkpoint: PipelineCheckpoint; duplicates: number; noValue: number; needsContext: boolean; limitations: string[]; limitationDetails?: KnowledgeLimitation[] }
 export interface PipelineHooks { checkpoint: (state: PipelineCheckpoint, chunks: number) => Promise<void>; phase: (phase: "extracting" | "merging") => void; signal: AbortSignal; usage?: KnowledgeUsage; purpose?: "try"; request?: KnowledgeRequestObserver }
 export interface PipelineOptions { similarity?: (candidate: KnowledgeDraft, others: readonly KnowledgeDraft[], config: KnowledgeConfig, signal?: AbortSignal) => Promise<number[] | undefined> }
@@ -188,6 +189,21 @@ export class KnowledgeExtractionPipeline {
     const allowed = new Map<string, KnowledgeSource>();
     for (const evidence of segments.flat()) allowed.set(evidence.reference, source(conversation, evidence.message, evidence.text));
     for (const message of conversation.messages) allowed.set(`context:${message.id}`, source(conversation, message, message.text));
+    for (const evidence of state.rereadEvidence ?? []) {
+      const message = originalMessages.get(evidence.messageId);
+      if (!message || message.hash !== evidence.hash || evidence.source.hash !== evidence.hash
+        || evidence.source.sourceVersion !== conversation.version || evidence.source.sessionId !== conversation.session.id
+        || evidence.reference !== `reread:${message.id}:${evidence.start}` || !Number.isSafeInteger(evidence.start)
+        || !Number.isSafeInteger(evidence.end) || evidence.start < 0 || evidence.end <= evidence.start || evidence.end > message.text.length
+        || evidence.source.excerpt !== message.text.slice(evidence.start, evidence.end).slice(0, 1200)) {
+        throw new KnowledgeModelError("source_changed", "补读证据与固定来源不一致，请重新预览", 409);
+      }
+      allowed.set(evidence.reference, evidence.source);
+    }
+    // 旧检查点没有补读材料时，不能用当前消息的其他摘录替代已经引用的证据。
+    if ([...state.candidates, ...state.carry].some(item => item.references.some(reference => reference.startsWith("reread:") && !allowed.has(reference)))) {
+      throw new KnowledgeModelError("preview_stale", "旧检查点缺少补读证据，请重新预览沉淀范围", 409);
+    }
     const rawMessages = new Map(conversation.messages.map(message => [message.id, message]));
     const prior = this.store.list({ review: "all", availability: "all", project: scope.project, page: 1, pageSize: 100 }).items.filter(entry => sameScope(entry.revision.scope, scope) && entry.revision.sources?.some(item => item.sessionId === conversation.session.id)).slice(0, 4);
     const ask = async (kind: "extract" | "merge", payload: unknown, known: Map<string, KnowledgeSource>, old: KnowledgeEntry[] = [], language?: KnowledgeLanguage, purpose?: "reread", cards: KnowledgeTopicCard[] = []) => {
@@ -225,8 +241,13 @@ export class KnowledgeExtractionPipeline {
       payload.topicCards = cards;
       while (!fitsRequest(config, messages(config, "extract", payload)) && cards.length) cards.pop();
       while (!fitsRequest(config, messages(config, "extract", payload)) && carries.length) { carries.shift(); payload.carry = carries; }
-      let response = await ask("extract", payload, known, [], undefined, undefined, cards);
       const supplemental: unknown[] = [], readRanges = new Set<string>();
+      for (const saved of state.rereadEvidence ?? []) if (saved.segment === state.next) {
+        const message = originalMessages.get(saved.messageId)!, item = { reference: saved.reference, message, text: message.text.slice(saved.start, saved.end) };
+        supplemental.push({ ...(evidencePayload(item) as object), start: saved.start, end: saved.end, bodyComplete: saved.start === 0 && saved.end === message.text.length });
+        readRanges.add(`${message.id}:${saved.start}`); known.set(saved.reference, allowed.get(saved.reference)!);
+      }
+      let response = await ask("extract", supplemental.length ? { ...payload, supplemental } : payload, known, [], undefined, undefined, cards);
       for (let round = 0; round < 2; round++) {
         const required = this.requiredEvidence(response.candidates, known, conversation.messages, originalMessages);
         if (response.disposition !== "needs_context" && !required.length) break;
@@ -249,6 +270,8 @@ export class KnowledgeExtractionPipeline {
           supplemental.push(value); readRanges.add(key); added = true;
           state.rereadBytes = (state.rereadBytes ?? 0) + Buffer.byteLength(excerpt);
           const anchor = source(conversation, message, excerpt); known.set(reference, anchor); allowed.set(reference, anchor);
+          const saved: RereadEvidence = { reference, messageId: message.id, hash: message.hash, start: request.start, end, segment: state.next, source: anchor };
+          state.rereadEvidence = [...(state.rereadEvidence ?? []).filter(item => item.reference !== reference), saved];
         }
         if (!added) break;
         state.rereadRequests = (state.rereadRequests ?? 0) + 1;

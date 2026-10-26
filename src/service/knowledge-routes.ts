@@ -153,7 +153,8 @@ export function registerKnowledgeRoutes(app: FastifyInstance, store: KnowledgeSt
   app.get(`${prefix}/extractions`, async (request, reply) => {
     reply.header("Cache-Control", "no-store");
     const raw = object(request.query);
-    return summaryResponse(raw) ? knowledgeRequest(() => manager.status({ response: "summary", page: integer(raw.page, "page", 1, 1_000_000), pageSize: integer(raw.pageSize, "pageSize", 20, 200) }))
+    return summaryResponse(raw) ? knowledgeRequest(() => manager.status({ response: "summary", page: integer(raw.page, "page", 1, 1_000_000), pageSize: integer(raw.pageSize, "pageSize", 20, 200),
+      status: enumeration(raw.status, ["queued", "running", "paused", "complete", "partial", "failed", "budget_stopped"], "status") }))
       : knowledgeRequest(() => manager.status());
   });
   app.get(`${prefix}/extractions/:id`, async request => summaryResponse(object(request.query))

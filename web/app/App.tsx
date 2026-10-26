@@ -8,6 +8,7 @@ import { useCodeMapPage } from "../features/code-map/CodeMapPage";
 import { useHistoryRefresh } from "../shared/refresh/useHistoryRefresh";
 import { HistoryRefreshControl } from "../features/sessions/SessionRefresh";
 import Sessions from "../features/sessions/Sessions";
+import { sessionNavigationAddress, type SessionEvidenceTarget, type SessionNavigationTarget } from "../features/sessions/session-address";
 import Resources from "../features/resources/Resources";
 import Overview from "../features/overview/Overview";
 import type { OverviewMapTarget, OverviewSessionTarget } from "../features/overview/Investigation";
@@ -104,29 +105,24 @@ export function App() {
     if (location.hash.startsWith("#knowledge")) knowledgeAddress.current = location.hash;
     activateView(next); location.hash = next === "knowledge" ? knowledgeAddress.current : next === "overview" ? overviewAddress.current : next === "resources" ? resourceAddress.current : next === "sessions" ? sessionAddress.current : next === "usage" ? usageAddress.current : next === "map" ? mapAddress.current : next;
   };
-  const openResourceSession = (target: { sessionId: string; messageId: string }) => {
+  const openResourceSession = (target: SessionEvidenceTarget) => {
     resourceAddress.current = location.hash;
     setSessionTarget({ ...target, mode: "trace", branch: "all" }); activateView("sessions");
-    location.hash = `sessions?${new URLSearchParams({ id: target.sessionId, message: target.messageId, mode: "trace", branch: "all" })}`;
+    location.hash = sessionNavigationAddress({ ...target, mode: "trace", branch: "all" });
   };
   const openOverviewSession = (target: OverviewSessionTarget) => {
     overviewAddress.current = location.hash;
     setSessionTarget({ ...target, mode: "trace", branch: "all" }); activateView("sessions");
-    const params = new URLSearchParams({ id: target.sessionId, version: target.version, mode: "trace", branch: "all" });
-    if (target.messageId) params.set("message", target.messageId);
-    location.hash = `sessions?${params}`;
+    location.hash = sessionNavigationAddress({ ...target, mode: "trace", branch: "all" });
   };
   const openOverviewUsage = (hash: string) => { overviewAddress.current = location.hash; activateView("usage"); location.hash = hash; };
   const theme = useTheme(appearance);
   const history = useHistoryRefresh();
-  const openMapSession = (target: { sessionId: string; messageId?: string; version?: string }) => {
+  const openMapSession = (target: SessionNavigationTarget) => {
     if (location.hash.startsWith("#usage")) usageAddress.current = location.hash;
     if (location.hash.startsWith("#map")) mapAddress.current = location.hash;
     setSessionTarget(target); activateView("sessions");
-    const destination = new URLSearchParams({ id: target.sessionId });
-    if (target.messageId) destination.set("message", target.messageId);
-    if (target.version) destination.set("version", target.version);
-    location.hash = `sessions?${destination}`;
+    location.hash = sessionNavigationAddress(target);
   };
   const map = useCodeMapPage({ active: view === "map", theme, onSession: openMapSession });
   const openMap = (path?: string, project?: string, session?: SessionSummary) => {

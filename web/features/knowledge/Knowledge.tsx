@@ -107,6 +107,14 @@ export default function Knowledge({ active }: { active: boolean }) {
     const operation = mode === "semantic" && nextQuery.q?.trim() ? knowledgeRequest<KnowledgeList>("/search", { mode, ...nextQuery }, "POST", controller.signal) : knowledgeRequest<KnowledgeList>(`/entries?${params}`, undefined, undefined, controller.signal);
     void operation.then(next => {
       if (controller.signal.aborted) return;
+      const lastPage = Math.max(1, Math.ceil(next.total / next.pageSize));
+      if (next.page > lastPage) {
+        const corrected = { ...nextQuery, page: lastPage };
+        setQuery(corrected);
+        const addressId = new URLSearchParams(location.hash.split("?")[1]).has("id") ? currentSelection.current : undefined;
+        history.replaceState(history.state, "", knowledgeCollectionAddress(page, corrected, addressId, mode));
+        return;
+      }
       const current = currentSelection.current;
       const nextId = current && (initialTarget.current || next.items.some(entry => entry.id === current)) ? current : next.items[0]?.id;
       setList(next); setSelectedId(nextId);

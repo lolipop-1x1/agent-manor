@@ -220,6 +220,14 @@ for (const boundary of ["running", "publish", "published"] as const) {
       assert.equal((manager as unknown as { cancelled: Map<string, unknown> }).cancelled.size, 0);
       assert.throws(() => manager.waitForJob(running.id), error => error instanceof StoreError && error.code === "JOB_NOT_FOUND");
       assert.throws(() => manager.waitForJob(queued.id), error => error instanceof StoreError && error.code === "JOB_NOT_FOUND");
+      // 历史与地图独立执行，地图结束不能作为历史任务完成的信号。
+      await new Promise<void>(resolve => {
+        const check = () => {
+          if (["complete", "failed"].includes(sessions.getJob(sessionJob.id).status)) { unsubscribe(); resolve(); }
+        };
+        const unsubscribe = manager.subscribeChanges(check);
+        check();
+      });
       assert.equal(sessions.getJob(sessionJob.id).status, "complete");
       assert.equal(sessions.list().total, 1);
       assert.equal(store.findJob(running.id), undefined);

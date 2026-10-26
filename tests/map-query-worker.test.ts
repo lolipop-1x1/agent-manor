@@ -164,4 +164,9 @@ test("大仓库文件下钻按活动索引匹配映射，不逐活动重扫整�
   const result = await service.execute("file", { ...query, path: "a.ts" }) as { events: { id: string }[] };
   assert.deepEqual(result.events.map(event => event.id), ["event-0"]);
   assert.ok(performance.now() - started < 3000, "三万活动下钻应按索引查询，不能进行九亿次映射匹配");
+  const evidence = await service.execute("evidence", { ...query, eventId: "event-0", path: "a.ts", directory: "a.ts" }) as { event: { id: string }; records: unknown[] };
+  assert.equal(evidence.event.id, "event-0");
+  assert.deepEqual(evidence.records, []);
+  await assert.rejects(service.execute("evidence", { ...query, eventId: "event-0", directory: "missing" }), { code: "EVENT_NOT_FOUND" });
+  await assert.rejects(service.execute("evidence", { ...query, eventId: "event-0", kind: "edit" }), { code: "EVENT_NOT_FOUND" });
 }));

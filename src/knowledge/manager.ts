@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import type { KnowledgeConfig, KnowledgeExtractionScope, KnowledgeJob, KnowledgeJobSummary, KnowledgeLanguage, KnowledgePreview, KnowledgeSettings, KnowledgeSettingsInput, KnowledgeSourceReader, KnowledgeTarget, KnowledgeTaskStatus, KnowledgeTaskSummaryPage, KnowledgeTryResult, KnowledgeRequestEvent, KnowledgeTaskEvent } from "../knowledge-contracts.js";
+import type { KnowledgeConfig, KnowledgeExtractionScope, KnowledgeJob, KnowledgeJobSummary, KnowledgeLanguage, KnowledgePreview, KnowledgeSettings, KnowledgeSettingsInput, KnowledgeSourceReader, KnowledgeTarget, KnowledgeTaskStatus, KnowledgeTaskSummaryPage, KnowledgeTaskSummaryQuery, KnowledgeTryResult, KnowledgeRequestEvent, KnowledgeTaskEvent } from "../knowledge-contracts.js";
 import { KnowledgeConfigStore, KnowledgeModelError, knowledgeFingerprint, validateKnowledgeConfig, validateKnowledgeScope } from "./config.js";
 import { KnowledgeGenerationScheduler, estimateKnowledgeTokens, emptyKnowledgeUsage, applyKnowledgeRequestUsage, knowledgeRequestCost } from "./generation.js";
 import { KnowledgeExtractionPipeline, type PipelineCheckpoint, type PipelineOptions } from "./pipeline.js";
@@ -20,7 +20,7 @@ function jobTitle(record: JobRecord): string | undefined { return record.preview
 
 export class KnowledgeManager {
   activeJobs(): Pick<KnowledgeJob, "id" | "status">[] {
-    return this.state().jobs.map(id => this.record(id)?.job).filter((job): job is KnowledgeJob => Boolean(job && ["queued", "running"].includes(job.status))).map(job => ({ id: job.id, status: job.status }));
+    return this.store.extractionActiveJobs(this.state().jobs);
   }
   private readonly config: KnowledgeConfigStore;
   private readonly scheduler: KnowledgeGenerationScheduler;
@@ -172,13 +172,13 @@ export class KnowledgeManager {
     return structuredClone(preview);
   }
   status(): Promise<KnowledgeTaskStatus>;
-  status(query: { response: "summary"; page?: number; pageSize?: number }): Promise<KnowledgeTaskSummaryPage>;
-  async status(query?: { response: "summary"; page?: number; pageSize?: number }): Promise<KnowledgeTaskStatus | KnowledgeTaskSummaryPage> {
+  status(query: KnowledgeTaskSummaryQuery): Promise<KnowledgeTaskSummaryPage>;
+  async status(query?: KnowledgeTaskSummaryQuery): Promise<KnowledgeTaskStatus | KnowledgeTaskSummaryPage> {
     const settings = await this.settings(), state = this.state();
     if (query) {
       const page = query.page ?? 1, pageSize = query.pageSize ?? 20;
-      const result = this.store.extractionJobSummaries(state.jobs, page, pageSize);
-      return { ...structuredClone(result), page, pageSize, hasMore: page * pageSize < result.total, usage: this.scheduler.usage(), automatic: {
+      const result = this.store.extractionJobSummaries(state.jobs, page, pageSize, query.status);
+      return { ...structuredClone(result), page, pageSize, hasMore: page * pageSize < result.total, activeCount: this.store.extractionActiveJobs(state.jobs).length, usage: this.scheduler.usage(), automatic: {
         enabled: settings.config.automatic.enabled, lastCheckAt: state.automatic.lastCheckAt, nextCheckAt: state.automatic.nextCheckAt,
         error: state.automatic.error, errorDescriptor: state.automatic.errorDescriptor } };
     }

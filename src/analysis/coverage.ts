@@ -1,6 +1,6 @@
 import { isAbsolute, relative, resolve, sep } from "node:path";
 import type {
-  AnalysisSnapshot, BaselineFile, CoverageResult, FileCoverage, Filters, Gap, HistoryEvent, HistorySource, Mapping, Repository,
+  AnalysisSnapshot, BaselineFile, CoverageResult, FileCategory, FileCoverage, Filters, Gap, HistoryEvent, HistorySource, Mapping, Repository,
 } from "../contracts.js";
 import { countRangeLines, mergeRanges, subtractRanges } from "./ranges.js";
 import { classifyFile } from "./baseline.js";
@@ -56,36 +56,84 @@ export function filterEvents(snapshot: AnalysisSnapshot, filters: Filters = {}):
   return [...result.values()];
 }
 
+/** 同一完整版本复用路径前缀计数，删除文件和目录活动无需两两扫描路径。 */
+export class HistoricalEventIndex {
+  readonly events = new Map<string, HistoryEvent>();
+  private readonly files: Map<string, FileCategory>;
+  private readonly pathsByEvent: Map<string, string[]>;
+  private readonly paths: string[];
+  private readonly counts: Record<FileCategory, Uint32Array>;
+
+  constructor(private readonly snapshot: AnalysisSnapshot) {
+    this.files = new Map(snapshot.baseline.files.map(file => [file.path, file.category]));
+    this.pathsByEvent = new Map(snapshot.events.map(event => [event.id, eventFilePaths(event, snapshot.repository)]));
+    for (const event of snapshot.events) if (!this.events.has(event.id)) this.events.set(event.id, event);
+    for (const mapping of snapshot.mappings) {
+      const paths = this.pathsByEvent.get(mapping.eventId);
+      if (paths && !paths.includes(mapping.filePath)) paths.push(mapping.filePath);
+    }
+    this.paths = [...new Set([...this.files.keys(), ...[...this.pathsByEvent.values()].flat()])].sort();
+    this.counts = { source: new Uint32Array(this.paths.length + 1), config: new Uint32Array(this.paths.length + 1),
+      docs: new Uint32Array(this.paths.length + 1), unknown: new Uint32Array(this.paths.length + 1) };
+    for (let index = 0; index < this.paths.length; index++) {
+      const category = this.category(this.paths[index]!);
+      for (const key of ["source", "config", "docs", "unknown"] as const) {
+        this.counts[key][index + 1] = this.counts[key][index]! + Number(key === category);
+      }
+    }
+  }
+
+  private category(path: string): FileCategory { return this.files.get(path) ?? classifyFile(path); }
+  private lowerBound(path: string): number {
+    let left = 0, right = this.paths.length;
+    while (left < right) {
+      const middle = Math.floor((left + right) / 2);
+      if (this.paths[middle]! < path) left = middle + 1; else right = middle;
+    }
+    return left;
+  }
+  private descendants(path: string): [number, number] {
+    // '/' 的下一个字符是 '0'，因此此半开区间仅覆盖目录后代，不混入同名前缀。
+    return [this.lowerBound(`${path}/`), this.lowerBound(`${path}0`)];
+  }
+
+  filter(filters: Filters = {}, candidates: Iterable<HistoryEvent> = this.snapshot.events): HistoryEvent[] {
+    const categories = filters.categories ?? ["source"];
+    const directory = filters.directory?.replaceAll("\\", "/").replace(/^\.\//, "").replace(/\/+$/, "");
+    const scoped = Boolean(directory && directory !== ".");
+    const selectedPath = (path: string) => !scoped || path === directory || path.startsWith(`${directory}/`);
+    const [directoryStart, directoryEnd] = scoped ? this.descendants(directory!) : [0, this.paths.length];
+    const directoryIndex = scoped ? this.lowerBound(directory!) : -1;
+    const selectedCount = (start: number, end: number) => categories.some(category =>
+      this.counts[category][end]! > this.counts[category][start]!);
+    const selectedDescendants = (start: number, end: number) => {
+      const left = Math.max(start, directoryStart), right = Math.min(end, directoryEnd);
+      return left < right && selectedCount(left, right)
+        || scoped && directoryIndex >= start && directoryIndex < end && this.paths[directoryIndex] === directory
+          && categories.includes(this.category(directory!));
+    };
+    const result = new Map<string, HistoryEvent>();
+    for (const event of candidates) {
+      if (!selectedEvent(event, filters)) continue;
+      const paths = this.pathsByEvent.get(event.id) ?? [];
+      let selected = paths.some(path => {
+        if (this.files.has(path)) return selectedPath(path) && categories.includes(this.category(path));
+        const [start, end] = this.descendants(path);
+        return start < end ? selectedDescendants(start, end) : selectedPath(path) && categories.includes(this.category(path));
+      });
+      if (!paths.length && !event.path && !event.fragments.some(fragment => fragment.path) && event.cwd && isAbsolute(event.cwd) && categories.includes("unknown")) {
+        const scope = relative(this.snapshot.repository.path, resolve(event.cwd));
+        selected = scope !== ".." && !scope.startsWith(`..${sep}`) && !isAbsolute(scope) && selectedPath(scope.split(sep).join("/"));
+      }
+      if (selected && !result.has(event.id)) result.set(event.id, event);
+    }
+    return [...result.values()];
+  }
+}
+
 /** 历史活动不要求文件仍在分母中；目录搜索按相关文件类别，无路径活动归未知类别。 */
 export function filterHistoricalEvents(snapshot: AnalysisSnapshot, filters: Filters = {}): HistoryEvent[] {
-  const categories = filters.categories ?? ["source"];
-  const directory = filters.directory?.replaceAll("\\", "/").replace(/^\.\//, "").replace(/\/+$/, "");
-  const selectedPath = (path: string) => !directory || directory === "." || path === directory || path.startsWith(`${directory}/`);
-  const files = new Map(snapshot.baseline.files.map(file => [file.path, file.category]));
-  const pathsByEvent = new Map(snapshot.events.map(event => [event.id, eventFilePaths(event, snapshot.repository)]));
-  for (const mapping of snapshot.mappings) {
-    const paths = pathsByEvent.get(mapping.eventId);
-    if (paths && !paths.includes(mapping.filePath)) paths.push(mapping.filePath);
-  }
-  const knownPaths = [...new Set([...files.keys(), ...[...pathsByEvent.values()].flat()])];
-  const selectedCategory = (path: string) => categories.includes(files.get(path) ?? classifyFile(path));
-  const result = new Map<string, HistoryEvent>();
-  for (const event of snapshot.events) {
-    if (!selectedEvent(event, filters)) continue;
-    const paths = pathsByEvent.get(event.id) ?? [];
-    let selected = paths.some(path => {
-      if (files.has(path)) return selectedPath(path) && selectedCategory(path);
-      const descendants = knownPaths.filter(candidate => candidate.startsWith(`${path}/`));
-      return descendants.length ? descendants.some(candidate => selectedPath(candidate) && selectedCategory(candidate))
-        : selectedPath(path) && selectedCategory(path);
-    });
-    if (!paths.length && !event.path && !event.fragments.some(fragment => fragment.path) && event.cwd && isAbsolute(event.cwd) && categories.includes("unknown")) {
-      const scope = relative(snapshot.repository.path, resolve(event.cwd));
-      selected = scope !== ".." && !scope.startsWith(`..${sep}`) && !isAbsolute(scope) && selectedPath(scope.split(sep).join("/"));
-    }
-    if (selected && !result.has(event.id)) result.set(event.id, event);
-  }
-  return [...result.values()];
+  return new HistoricalEventIndex(snapshot).filter(filters);
 }
 
 function emptyCoverage(file: BaselineFile): FileCoverage {

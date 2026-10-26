@@ -68,8 +68,8 @@ export function SemanticSearchPanel({ active, historyVersion, mode, onModeChange
     const timer = setInterval(() => { void semanticRequest<SemanticStatus>("/status", undefined, undefined, controller.signal).then(setStatus).catch(failure => { if (!isAborted(failure)) setLoadError(failure); }); }, status?.job?.status === "running" || open ? 1500 : 15000);
     return () => { clearInterval(timer); controller.abort(); };
   }, [active, settings?.config.connection.model, status?.job?.status, open]);
-  useEffect(() => () => pending.current?.abort(), []);
-  useEffect(() => { if (!active) pending.current?.abort(); }, [active]);
+  useEffect(() => () => { pending.current?.abort(); pending.current = undefined; }, []);
+  useEffect(() => { if (!active) { pending.current?.abort(); pending.current = undefined; setLoading(false); } }, [active]);
   const switchMode = (next: "keyword" | "semantic") => {
     if (next === mode) return;
     if (next === "semantic" && (!status?.enabled || !status.ready)) { openSettings(!settings?.config.connection.model ? "connection" : "build"); return; }
@@ -84,9 +84,9 @@ export function SemanticSearchPanel({ active, historyVersion, mode, onModeChange
     if (!cacheOnly) committedQuery.current = text.trim();
     try {
       const data = await semanticRequest<SemanticSearchResult>("/search", { q: text.trim(), scope: nextScope, sort: nextSort, page, pageSize: 12, cacheOnly }, "POST", controller.signal);
-      if (!controller.signal.aborted) { setResult({ query: text.trim(), data, scope: JSON.stringify(nextScope) }); void refresh().catch(() => {}); }
-    } catch (failure) { if (!isAborted(failure)) setError(failure); }
-    finally { if (!controller.signal.aborted) setLoading(false); }
+      if (pending.current === controller && !controller.signal.aborted) { setResult({ query: text.trim(), data, scope: JSON.stringify(nextScope) }); void refresh().catch(() => {}); }
+    } catch (failure) { if (pending.current === controller && !controller.signal.aborted && !isAborted(failure)) setError(failure); }
+    finally { if (pending.current === controller) { pending.current = undefined; setLoading(false); } }
   };
   const progress = semanticProgress(status);
   const label = settings && !settings.config.connection.model ? t("sessions.semantic.status.unconfigured") : status?.job?.status === "running" && progress !== undefined ? t("sessions.semantic.status.percent", { percent: progress }) : t(semanticStatusKey(status));

@@ -13,10 +13,11 @@ export interface TaskCommands {
   register: { args: [path: string]; result: RegisterRepositoryResponse };
   associate: { args: [repositoryId: string, sourceId: string]; result: Job };
   delete: { args: [repositoryId: string]; result: void };
-  refresh: { args: [repositoryId: string]; result: Job };
+  refresh: { args: [repositoryId: string, retained?: boolean]; result: Job };
   clearCache: { args: [repositoryId: string]; result: Job };
   autoRefresh: { args: [repositoryId: string, now: number, interval: number]; result: Job | undefined };
   sessions: { args: [clearCache: boolean, options: SessionRefreshOptions]; result: SessionJob };
+  retainJobs: { args: [ids: string[], retained: boolean]; result: void };
   close: { args: []; result: void };
 }
 export type TaskCommand = { [K in keyof TaskCommands]: { id: number; type: K; args: TaskCommands[K]["args"] } }[keyof TaskCommands];
@@ -92,7 +93,8 @@ export class IndexTaskManager {
   registerRepository(path: string) { return this.execute("register", path); }
   associateSource(repositoryId: string, sourceId: string) { return this.execute("associate", repositoryId, sourceId); }
   deleteRepository(repositoryId: string) { return this.execute("delete", repositoryId); }
-  refresh(repositoryId: string) { return this.execute("refresh", repositoryId); }
+  refresh(repositoryId: string, retained = false) { return this.execute("refresh", repositoryId, retained); }
+  retainJobs(ids: string[], retained: boolean) { return this.execute("retainJobs", ids, retained); }
   clearCache(repositoryId: string) { return this.execute("clearCache", repositoryId); }
   autoRefreshRepository(repositoryId: string, now: number, interval: number) { return this.execute("autoRefresh", repositoryId, now, interval); }
   refreshSessions(clearCache = false, options: SessionRefreshOptions = {}) {

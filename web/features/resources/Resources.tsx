@@ -10,6 +10,7 @@ import type { ResourceInventoryDiagnostic, ResourceInventoryEntry, ResourceManua
 import type { ResourceManagementAction, ResourceManagementInput, ResourceManagementOperation, ResourceManagementOperations, ResourceManagementPreview } from "../../../src/resource-management-contracts";
 import type { ResourceCandidate, ResourceMapQuery, ResourceMapSummary, ResourceOverviewCandidate, ResourceOverviewDetail, ResourceOverviewQuery, ResourceOverviewSummary, ResourceOverviewRow, ResourceStatus, ResourceStatusSummary } from "../../../src/resource-service-contracts";
 import { ApiError, errorMessage, isAborted } from "../../shared/api";
+import { sessionNavigationAddress, type SessionEvidenceTarget } from "../sessions/session-address";
 import { DatePicker } from "../../shared/ui/DatePicker";
 import { FilterSelect } from "../../shared/ui/FilterSelect";
 import { availableClientOptions } from "../../shared/ui/client-options";
@@ -254,7 +255,7 @@ function UsageHelp({ kind }: { kind: ResourceKind }) {
   </dl></HelpPopover>;
 }
 
-export default function Resources({ active, onSession, onHistoryReading, historyRevision = 0 }: { historyRevision?: number; onHistoryReading?: (reading: boolean) => void; active: boolean; onSession: (target: { sessionId: string; messageId: string }) => void }) {
+export default function Resources({ active, onSession, onHistoryReading, historyRevision = 0 }: { historyRevision?: number; onHistoryReading?: (reading: boolean) => void; active: boolean; onSession: (target: SessionEvidenceTarget) => void }) {
   useI18n();
   const [route, setRoute] = useState<ResourceRoute>(readRoute);
   const [status, setStatus] = useState<ResourceStatusSummary | null>(null);
@@ -678,7 +679,7 @@ export default function Resources({ active, onSession, onHistoryReading, history
   const locations = useMemo(() => resourceLocationGroups(overviewDetail?.local ?? [], route.kind), [overviewDetail?.local, route.kind]);
   const hasDetailData = !!overviewDetail;
   const evidenceLinks = (limit?: number, records = evidence) => records?.events.length ? <>
-    <div className="resource-evidence">{records.events.slice(0, limit).map(event => <a key={event.id} href={`#sessions?${new URLSearchParams({ id: event.sessionId, mode: "trace", message: event.messageId, branch: "all" })}`} onClick={click => { if (!click.metaKey && !click.ctrlKey && !click.shiftKey && click.button === 0) { click.preventDefault(); savedScroll.current = listScroll.current?.scrollTop ?? 0; savedDetailScroll.current = (compact ? detailDialogScroll.current : detailScroll.current)?.scrollTop ?? 0; returnFromEvidence.current = true; onSession({ sessionId: event.sessionId, messageId: event.messageId }); } }}>
+    <div className="resource-evidence">{records.events.slice(0, limit).map(event => <a key={event.id} href={sessionNavigationAddress({ sessionId: event.sessionId, version: records.version, messageId: event.messageId, mode: "trace", branch: "all" })} onClick={click => { if (!click.metaKey && !click.ctrlKey && !click.shiftKey && !click.altKey && click.button === 0) { click.preventDefault(); savedScroll.current = listScroll.current?.scrollTop ?? 0; savedDetailScroll.current = (compact ? detailDialogScroll.current : detailScroll.current)?.scrollTop ?? 0; returnFromEvidence.current = true; onSession({ sessionId: event.sessionId, version: records.version, messageId: event.messageId }); } }}>
       <div><strong>{event.tool ?? t(evidenceNames[event.kind])}</strong><span className={`resource-result is-${event.status}`}>{t(resultNames[event.status])}</span><ArrowSquareOut size={14} /></div><span>{t(evidenceNames[event.kind])} · {dateLabel(event.occurredAt)}</span>{event.pairing === "ambiguous" && <span className="resource-result is-unknown">{t("resources.evidence.pairingAmbiguous")}</span>}
     </a>)}</div>{!limit && <ResourcePagination page={records.page} total={records.total} pageSize={records.pageSize} label={t("resources.evidence.title")} onChange={page => update({ evidencePage: page })} />}
   </> : <ResourceEmpty>{t("resources.evidence.empty")}</ResourceEmpty>;

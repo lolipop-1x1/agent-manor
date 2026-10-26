@@ -215,12 +215,15 @@ export default function Sessions({ active, target, onMap, onReplay, onHistoryRea
     return () => globalThis.removeEventListener("hashchange", restore);
   }, []);
   useEffect(() => {
-    if (!active || globalQuery.trim() !== debouncedGlobalQuery || !location.hash.startsWith("#sessions")) return;
+    if (!active || searchMode === "keyword" && globalQuery.trim() !== debouncedGlobalQuery || !location.hash.startsWith("#sessions")) return;
     const params = new URLSearchParams(location.hash.split("?")[1]);
-    writeSessionSearchFilters(params, searchScope, debouncedGlobalQuery, includeProcess);
+    writeSessionSearchFilters(params, searchScope, searchMode === "semantic" ? globalQuery : debouncedGlobalQuery, includeProcess);
     const hash = `#sessions?${params}`;
-    if (location.hash !== hash) history.pushState(null, "", hash);
-  }, [active, searchScope, debouncedGlobalQuery, includeProcess]);
+    if (location.hash !== hash) {
+      if (searchMode === "semantic") history.replaceState(null, "", hash);
+      else history.pushState(null, "", hash);
+    }
+  }, [active, searchScope, globalQuery, debouncedGlobalQuery, includeProcess, searchMode]);
   const searchBookmark = useRef<ReadingPosition | undefined>(undefined);
   const restoreScroll = useRef<number | undefined>(undefined);
   const restoreReadingAnchor = useRef<ReadingPosition["anchor"]>(undefined);

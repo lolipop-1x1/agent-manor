@@ -16,6 +16,7 @@ import { HelpPopover } from "../../shared/ui/HelpPopover";
 import { MultiFilterPicker } from "../../shared/ui/MultiFilterPicker";
 import { ResourcePagination } from "../../shared/ui/ResourcePagination";
 import { sessionDisplayTitle } from "../sessions/session-model";
+import { sessionNavigationAddress, type SessionEvidenceTarget } from "../sessions/session-address";
 import { activeFilterCount, defaultRoute, incomingUsageRoute, readUsageRoute, speedSelectionToSync, usageAddress, usageParameters, usageQuery, type DateWindow, type UsageRoute } from "./model";
 import { UsageMetrics } from "./UsageMetrics";
 import { TokenAmount } from "./TokenAmount";
@@ -26,7 +27,7 @@ import "./usage.css";
 import { RefreshControl } from "../../shared/ui/RefreshControl";
 import { useHistoryRevision } from "../../shared/refresh/useHistoryRefresh";
 
-export default function Usage({ active, onSession, onHistoryReading, historyRevision = 0 }: { historyRevision?: number; onHistoryReading?: (reading: boolean) => void; active: boolean; onSession: (target: { sessionId: string; messageId?: string }) => void }) {
+export default function Usage({ active, onSession, onHistoryReading, historyRevision = 0 }: { historyRevision?: number; onHistoryReading?: (reading: boolean) => void; active: boolean; onSession: (target: SessionEvidenceTarget) => void }) {
   const { t, number, date, dateTime, message, language } = useI18n();
   const [route, setRoute] = useState(() => readUsageRoute(location.hash));
   const lastAddress = useRef(location.hash), adoptingAddress = useRef(false);
@@ -161,7 +162,6 @@ export default function Usage({ active, onSession, onHistoryReading, historyRevi
   const numberFilters = ["minTokens", "maxTokens", "minCost", "maxCost"] as const;
   const moreCount = moreFilters.filter(item => route[item.key] && route[item.key] !== "all").length + numberFilters.filter(key => route[key] !== undefined).length;
   const filterGroup = (key: string) => { const include = group === "model" ? "models" : group === "project" ? "projects" : "clients"; const exclude = group === "model" ? "excludeModels" : group === "project" ? "excludeProjects" : "excludeClients"; patch({ [include]: [key], [exclude]: [] }); };
-  const openSession = (sessionId: string, messageId?: string) => onSession({ sessionId, ...(messageId ? { messageId } : {}) });
   const selectedSession = report?.sessions.find(row => row.session.id === route.selectedSession);
   const rangeFrom = report?.query.from ?? report?.days[0]?.key;
   const rangeTo = report?.query.to ?? report?.days.at(-1)?.key;
@@ -215,11 +215,11 @@ export default function Usage({ active, onSession, onHistoryReading, historyRevi
       <section className="usage-session-section" aria-labelledby="usage-session-title"><div className="usage-section-title"><h2 id="usage-session-title">{t("usage.sessions.title")}</h2><div><FilterSelect label={t("usage.sessions.sort")} value={route.sort ?? "tokens"} options={["tokens", "cost", "requests", "recent"].map(item => ({ value: item, label: t(item === "recent" ? "usage.sessions.recent" : `usage.metric.${item}`) }))} onChange={sort => patch({ sort: sort as UsageQuery["sort"] })} /><FilterSelect label={t("usage.sessions.direction")} value={route.direction ?? "desc"} options={["desc", "asc"].map(item => ({ value: item, label: t(`usage.sessions.${item}`) }))} onChange={direction => patch({ direction: direction as "asc" | "desc" })} /></div></div>
         <div className="usage-table-scroll"><table className="usage-table usage-session-table"><thead><tr><th>{t("usage.sessions.name")}</th><th>{t("usage.sessions.project")}</th><th>{t("usage.metric.tokens")}</th><th>{t("usage.metric.cost")}</th><th>{t("usage.metric.requests")}</th><th>{t("usage.sessions.time")}</th><th aria-label={t("usage.sessions.actions")} /></tr></thead><tbody>{report.sessions.map(row => <tr key={row.session.id} data-selected={route.selectedSession === row.session.id}
           onClick={event => { if (!(event.target as HTMLElement).closest("button, a, input, summary")) { const trigger = event.currentTarget.querySelector<HTMLButtonElement>(".usage-session-name"); if (trigger) inspectSession(row.session.id, trigger); } }}>
-          <td><button className="usage-session-name" onClick={event => inspectSession(row.session.id, event.currentTarget)}>{sessionDisplayTitle(row.session, language)}</button>{row.session.relationship && <small>{t(row.session.relationship === "child" ? "usage.sessions.child" : "usage.sessions.fork")}</small>}{row.session.parentSessionId && <button className="text-button" onClick={() => openSession(row.session.parentSessionId!)}>{t("usage.sessions.parent")}</button>}</td>
+          <td><button className="usage-session-name" onClick={event => inspectSession(row.session.id, event.currentTarget)}>{sessionDisplayTitle(row.session, language)}</button>{row.session.relationship && <small>{t(row.session.relationship === "child" ? "usage.sessions.child" : "usage.sessions.fork")}</small>}{row.session.parentSessionId && <a className="text-button" href={sessionNavigationAddress({ sessionId: row.session.parentSessionId!, version: report.version })} onClick={event => { if (!event.metaKey && !event.ctrlKey && !event.shiftKey && !event.altKey && event.button === 0) { event.preventDefault(); onSession({ sessionId: row.session.parentSessionId!, version: report.version }); } }}>{t("usage.sessions.parent")}</a>}</td>
           <td><span title={row.session.project}>{row.session.project?.split(/[\\/]/).filter(Boolean).at(-1) ?? t("usage.unknown")}</span><small>{CLIENTS.some(client => client.id === row.session.client) ? clientLabel(row.session.client) : row.session.client}</small></td>
           <td className="usage-number"><div className="usage-value-state"><TokenAmount value={row.totals.tokens} />{coverageIndicator(row)}</div></td><td className="usage-number"><div className="usage-value-state">{value(row.totals.estimatedCost, true)}{coverageIndicator(row, true)}</div></td>
           <td className="usage-number">{value(row.totals.requests)}</td><td>{row.lastOccurredAt ? dateTime(row.lastOccurredAt) : t(row.requestsTotal === 0 ? "usage.sessions.noUsage" : "common.timeUnknown")}</td>
-          <td><div className="usage-session-actions"><button className="text-button" aria-haspopup="dialog" aria-expanded={route.selectedSession === row.session.id} onClick={event => inspectSession(row.session.id, event.currentTarget)}>{t("usage.sessions.inspect")}</button><button className="text-button" onClick={() => openSession(row.session.id)}><ArrowSquareOut size={14} />{t("usage.sessions.open")}</button></div></td>
+          <td><div className="usage-session-actions"><button className="text-button" aria-haspopup="dialog" aria-expanded={route.selectedSession === row.session.id} onClick={event => inspectSession(row.session.id, event.currentTarget)}>{t("usage.sessions.inspect")}</button><a className="text-button" href={sessionNavigationAddress({ sessionId: row.session.id, version: report.version })} onClick={event => { if (!event.metaKey && !event.ctrlKey && !event.shiftKey && !event.altKey && event.button === 0) { event.preventDefault(); onSession({ sessionId: row.session.id, version: report.version }); } }}><ArrowSquareOut size={14} />{t("usage.sessions.open")}</a></div></td>
         </tr>)}</tbody></table></div>
         {!report.sessions.length && <div className="usage-empty">{t("usage.empty")}</div>}
         <ResourcePagination label={t("usage.sessions.title")} page={report.page} total={report.totalSessions} pageSize={report.pageSize} onChange={page => patch({ page, selectedSession: undefined }, false)} onPageSizeChange={pageSize => patch({ pageSize })} />
@@ -227,7 +227,7 @@ export default function Usage({ active, onSession, onHistoryReading, historyRevi
 
     </div>}
     <UsageRequestDialog active={active} session={selectedSession} requests={visibleRequests} loading={requestWaiting} pending={requestPending} error={requestError} returnFocus={requestTrigger}
-      onClose={() => patch({ selectedSession: undefined }, false)} onPage={requestPage => patch({ requestPage }, false)} onRetry={() => setRequestRevision(current => current + 1)} onSession={openSession} />
+      onClose={() => patch({ selectedSession: undefined }, false)} onPage={requestPage => patch({ requestPage }, false)} onRetry={() => setRequestRevision(current => current + 1)} onSession={onSession} />
     {pricing && <PricingManager status={pricing} models={facets.models.flatMap(model => { const original = usageDimensionValue(model); return original === undefined ? [] : [original]; })} onChange={updatePrice} open={pricesOpen} onOpenChange={setPricesOpen} />}
   </main>;
 }

@@ -52,6 +52,8 @@ interface RepositoryRow { json: string; version: string | null; stale: number }
 interface RefreshJob extends Job { refreshStats?: RefreshStats }
 type PayloadKind = "snapshot" | "sources" | "parsed" | "coverage-v1";
 const PART_SIZE = 1024 * 1024;
+export const RETAINED_REPOSITORY_JOBS = 1000;
+const terminalJobs = "json_extract(json,'$.status') IN ('completed','failed','cancelled')";
 
 /** 查询只读取完整已发布版本；可复用缓存与版本发布在同一事务提交。 */
 export class AnalysisStore {
@@ -82,6 +84,9 @@ export class AnalysisStore {
       CREATE TABLE IF NOT EXISTS repositories (id TEXT PRIMARY KEY, json TEXT NOT NULL, version TEXT, stale INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS manual_associations (repository_id TEXT NOT NULL REFERENCES repositories(id), source_id TEXT NOT NULL, PRIMARY KEY(repository_id, source_id));
       CREATE TABLE IF NOT EXISTS jobs (id TEXT PRIMARY KEY, repository_id TEXT NOT NULL REFERENCES repositories(id), json TEXT NOT NULL);
+      CREATE INDEX IF NOT EXISTS jobs_status ON jobs(json_extract(json,'$.status'));
+      CREATE INDEX IF NOT EXISTS jobs_terminal_repository ON jobs(repository_id) WHERE ${terminalJobs};
+      CREATE INDEX IF NOT EXISTS jobs_completed_version ON jobs(repository_id,json_extract(json,'$.version')) WHERE json_extract(json,'$.status')='completed';
       CREATE TABLE IF NOT EXISTS versions (publication INTEGER PRIMARY KEY AUTOINCREMENT, repository_id TEXT NOT NULL REFERENCES repositories(id), version TEXT NOT NULL, snapshot TEXT NOT NULL, sources TEXT NOT NULL, stats TEXT NOT NULL, UNIQUE(repository_id, version));
       CREATE TABLE IF NOT EXISTS source_cache (repository_id TEXT NOT NULL REFERENCES repositories(id), source_id TEXT NOT NULL, path TEXT NOT NULL, json TEXT NOT NULL, PRIMARY KEY(repository_id, source_id, path));
       CREATE INDEX IF NOT EXISTS source_cache_path ON source_cache(repository_id, path);
@@ -436,20 +441,22 @@ export class AnalysisStore {
   }
 
   listSources(repositoryId: string, version?: string): SourcesResponse {
-    const selected = this.selectVersion(repositoryId, version);
-    const row = this.database.prepare("SELECT sources AS json FROM versions WHERE repository_id=? AND version=?")
-      .get(repositoryId, selected) as JsonRow | undefined;
-    if (!row) throw new StoreError("VERSION_NOT_FOUND", "分析结果版本不可用：不存在或已被淘汰", { key: "diagnostics.index.store.m004" });
-    const sources = this.readPayload<Omit<SourcesResponse, "gaps">>(row.json, repositoryId, "sources", selected);
-    const gaps: SourcesResponse["gaps"] = [];
-    // 缺口只在快照保存；这里仅读取该字段分块，不加载事件和代码正文。
-    for (const part of this.database.prepare("SELECT json FROM payload_parts WHERE repository_id=? AND kind='snapshot' AND owner=? AND field='gaps' ORDER BY part")
-      .iterate(repositoryId, selected) as Iterable<JsonRow>) {
-      for (const gap of JSON.parse(part.json) as SourcesResponse["gaps"]) gaps.push(gap);
-    }
-    return { ...sources, sources: sources.sources.filter(source => isSupportedClient(source.client)),
-      unassociated: sources.unassociated.filter(source => isSupportedClient(source.client)),
-      gaps: gaps.filter(gap => !inactiveClientIds.some(client => gap.sourceId?.startsWith(`${client}:`))) };
+    return this.database.transaction(() => {
+      const selected = this.selectVersion(repositoryId, version);
+      const row = this.database.prepare("SELECT sources AS json FROM versions WHERE repository_id=? AND version=?")
+        .get(repositoryId, selected) as JsonRow | undefined;
+      if (!row) throw new StoreError("VERSION_NOT_FOUND", "分析结果版本不可用：不存在或已被淘汰", { key: "diagnostics.index.store.m004" });
+      const sources = this.readPayload<Omit<SourcesResponse, "gaps">>(row.json, repositoryId, "sources", selected);
+      const gaps: SourcesResponse["gaps"] = [];
+      // 缺口只在快照保存；这里仅读取该字段分块，不加载事件和代码正文。
+      for (const part of this.database.prepare("SELECT json FROM payload_parts WHERE repository_id=? AND kind='snapshot' AND owner=? AND field='gaps' ORDER BY part")
+        .iterate(repositoryId, selected) as Iterable<JsonRow>) {
+        for (const gap of JSON.parse(part.json) as SourcesResponse["gaps"]) gaps.push(gap);
+      }
+      return { ...sources, sources: sources.sources.filter(source => isSupportedClient(source.client)),
+        unassociated: sources.unassociated.filter(source => isSupportedClient(source.client)),
+        gaps: gaps.filter(gap => !inactiveClientIds.some(client => gap.sourceId?.startsWith(`${client}:`))) };
+    }).deferred();
   }
 
   associateSource(repositoryId: string, sourceId: string): void {
@@ -563,6 +570,41 @@ export class AnalysisStore {
       .map((row) => JSON.parse(row.json) as RefreshJob);
   }
 
+  /** 高频状态只投影活动身份，不读取历史或任务诊断正文。 */
+  listActiveJobs(): Pick<Job, "id" | "repositoryId" | "status">[] {
+    return this.database.prepare(`SELECT id,repository_id AS repositoryId,json_extract(json,'$.status') AS status
+      FROM jobs WHERE json_extract(json,'$.status') IN ('queued','running') ORDER BY rowid DESC`).all() as Pick<Job, "id" | "repositoryId" | "status">[];
+  }
+
+  jobPage(page = 1, pageSize = 50, repositoryId?: string): { jobs: RefreshJob[]; total: number; page: number; pageSize: number } {
+    const where = repositoryId ? " WHERE repository_id=?" : "";
+    const args = repositoryId ? [repositoryId] : [];
+    const total = (this.database.prepare(`SELECT COUNT(*) AS total FROM jobs${where}`).get(...args) as { total: number }).total;
+    const jobs = (this.database.prepare(`SELECT json FROM jobs${where} ORDER BY rowid DESC LIMIT ? OFFSET ?`)
+      .all(...args, pageSize, (page - 1) * pageSize) as JsonRow[]).map(row => JSON.parse(row.json) as RefreshJob);
+    return { jobs, total, page, pageSize };
+  }
+
+  /** 终态保留最近千条；等待者、启动准备及当前版本最近检查另行保护。 */
+  pruneJobs(protectedIds: readonly string[] = [], limit = 1000): number {
+    return this.database.transaction(() => {
+      const remove = this.database.prepare(`DELETE FROM jobs WHERE id IN (
+        SELECT j.id FROM jobs j WHERE j.repository_id=? AND ${terminalJobs}
+          AND j.rowid<(SELECT rowid FROM jobs WHERE repository_id=? AND ${terminalJobs} ORDER BY rowid DESC LIMIT 1 OFFSET ?)
+          AND j.id NOT IN (SELECT value FROM json_each(?))
+          AND j.rowid NOT IN (SELECT MAX(checks.rowid) FROM versions v JOIN jobs checks ON checks.repository_id=v.repository_id
+            AND json_extract(checks.json,'$.status')='completed' AND json_extract(checks.json,'$.version')=v.version
+            WHERE v.repository_id=? GROUP BY v.version)
+        ORDER BY j.rowid LIMIT ?)`);
+      let removed = 0;
+      for (const row of this.database.prepare("SELECT id FROM repositories").all() as { id: string }[]) {
+        removed += remove.run(row.id, row.id, RETAINED_REPOSITORY_JOBS - 1, JSON.stringify(protectedIds), row.id, limit - removed).changes;
+        if (removed >= limit) break;
+      }
+      return removed;
+    }).immediate();
+  }
+
   statusCounts(): { repositoryCount: number; jobCount: number } {
     return this.database.prepare("SELECT (SELECT COUNT(*) FROM repositories) AS repositoryCount,(SELECT COUNT(*) FROM jobs) AS jobCount")
       .get() as { repositoryCount: number; jobCount: number };
@@ -585,7 +627,7 @@ export class AnalysisStore {
   }
 
   recoverJobs(): void {
-    for (const job of this.listJobs()) {
+    for (const job of this.listActiveJobs()) {
       if (job.status === "queued" || job.status === "running") this.failJob(job.id, "后台上次停止时刷新尚未完成", { key: "diagnostics.index.store.interrupted" });
     }
   }

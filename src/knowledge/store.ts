@@ -161,7 +161,10 @@ export class KnowledgeStore {
         id TEXT PRIMARY KEY, knowledge_id TEXT NOT NULL REFERENCES knowledge_entries(id), revision_id TEXT, action TEXT NOT NULL, reason TEXT, created_at TEXT NOT NULL);
       CREATE INDEX IF NOT EXISTS knowledge_audit_entry ON knowledge_audit(knowledge_id,created_at,id);
       CREATE TABLE IF NOT EXISTS knowledge_idempotency (key TEXT PRIMARY KEY, fingerprint TEXT NOT NULL, knowledge_id TEXT NOT NULL, revision_id TEXT NOT NULL);
-      CREATE TABLE IF NOT EXISTS knowledge_state (key TEXT PRIMARY KEY, json TEXT NOT NULL, bytes INTEGER NOT NULL);`);
+      CREATE TABLE IF NOT EXISTS knowledge_state (key TEXT PRIMARY KEY, json TEXT NOT NULL, bytes INTEGER NOT NULL);
+      CREATE INDEX IF NOT EXISTS knowledge_extraction_status ON knowledge_state(
+        json_extract(json,'$.job.status'),key,json_extract(json,'$.job.id'))
+        WHERE key GLOB 'extraction.job:*';`);
     const hasSearch = this.database.prepare("SELECT 1 FROM sqlite_master WHERE name='knowledge_search'").get();
     this.database.exec(`CREATE VIRTUAL TABLE IF NOT EXISTS knowledge_search USING fts5(search,content='knowledge_revisions',content_rowid='rowid',tokenize='trigram');
       CREATE TRIGGER IF NOT EXISTS knowledge_search_insert AFTER INSERT ON knowledge_revisions BEGIN
@@ -293,6 +296,25 @@ export class KnowledgeStore {
     return (this.database.prepare("SELECT * FROM knowledge_revisions WHERE knowledge_id=? ORDER BY version DESC").all(id) as RevisionRow[]).map(revision);
   }
 
+  /** 内容及人工状态的审计身份独立于任务进度，暖维护无需读取正文。 */
+  semanticGeneration(): string {
+    return (this.database.prepare("SELECT id FROM knowledge_audit ORDER BY rowid DESC LIMIT 1").get() as { id: string } | undefined)?.id ?? "empty";
+  }
+
+  semanticRevisions(): { id: string; review: KnowledgeReview }[] {
+    return this.database.prepare(`SELECT r.id,r.review FROM knowledge_entries e JOIN knowledge_revisions r
+      ON r.id=e.published OR (r.id=e.latest AND r.review='pending')
+      WHERE e.availability='active' AND r.review IN ('reviewed','pending')
+        AND (json_extract(r.payload,'$.validUntil') IS NULL OR julianday(json_extract(r.payload,'$.validUntil'))>julianday('now'))
+        AND COALESCE(json_extract(r.payload,'$.resolved'),0)<>1 ORDER BY r.id`).all() as { id: string; review: KnowledgeReview }[];
+  }
+
+  semanticRevision(id: string): KnowledgeRevision {
+    const row = this.database.prepare("SELECT * FROM knowledge_revisions WHERE id=?").get(id) as RevisionRow | undefined;
+    if (!row) throw new KnowledgeError("NOT_FOUND", "知识修订不存在");
+    return revision(row);
+  }
+
   review(id: string, value: KnowledgeReviewInput): KnowledgeDetail {
     const input = object(value, ["revisionId", "action", "baseRevisionId", "reason"], "审阅");
     const revisionId = text(input.revisionId, "审阅修订", 128, true)!, base = text(input.baseRevisionId, "基础修订", 128);
@@ -344,16 +366,31 @@ export class KnowledgeStore {
   }
 
   /** 先按任务身份分页，再在 SQL 中投影；大结果与过程记录不进入解析及深克隆。 */
-  extractionJobSummaries(ids: string[], page: number, pageSize: number): { jobs: KnowledgeJobSummary[]; total: number } {
+  extractionJobSummaries(ids: string[], page: number, pageSize: number, status?: KnowledgeJobSummary["status"]): { jobs: KnowledgeJobSummary[]; total: number } {
+    const candidates = status === undefined ? `SELECT state.key,CAST(item.key AS INTEGER) AS position FROM json_each(?) item
+      JOIN knowledge_state state ON state.key='extraction.job:'||item.value`
+      : `SELECT state.key,CAST(item.key AS INTEGER) AS position FROM json_each(?) item
+      CROSS JOIN knowledge_state state INDEXED BY knowledge_extraction_status
+      WHERE state.key GLOB 'extraction.job:*' AND json_extract(state.json,'$.job.status')=?
+        AND state.key='extraction.job:'||item.value`;
+    const values = [JSON.stringify(ids), ...(status === undefined ? [] : [status]), pageSize, (page - 1) * pageSize];
     const rows = this.database.prepare(`WITH candidates AS MATERIALIZED (
-      SELECT state.key,CAST(item.key AS INTEGER) AS position FROM json_each(?) item
-      JOIN knowledge_state state ON state.key='extraction.job:'||item.value
+      ${candidates}
     ), totals AS (SELECT COUNT(*) AS total FROM candidates), selected AS (
       SELECT key,position FROM candidates ORDER BY position DESC LIMIT ? OFFSET ?
     ) SELECT totals.total,${taskSummaryColumns} FROM totals LEFT JOIN selected ON 1
       LEFT JOIN knowledge_state state ON state.key=selected.key ORDER BY selected.position DESC`)
-      .all(JSON.stringify(ids), pageSize, (page - 1) * pageSize) as (TaskSummaryRow & { total: number })[];
+      .all(...values) as (TaskSummaryRow & { total: number })[];
     return { jobs: rows.filter(row => row.json !== null).map(taskSummary), total: rows[0]!.total };
+  }
+
+  /** 活动状态不读取任务正文、结果或输入预览。 */
+  extractionActiveJobs(ids: string[]): Pick<KnowledgeJobSummary, "id" | "status">[] {
+    return this.database.prepare(`SELECT json_extract(state.json,'$.job.id') AS id,json_extract(state.json,'$.job.status') AS status
+      FROM knowledge_state state INDEXED BY knowledge_extraction_status CROSS JOIN json_each(?) item
+      WHERE state.key GLOB 'extraction.job:*' AND json_extract(state.json,'$.job.status') IN ('queued','running')
+        AND state.key='extraction.job:'||item.value ORDER BY CAST(item.key AS INTEGER)`)
+      .all(JSON.stringify(ids)) as Pick<KnowledgeJobSummary, "id" | "status">[];
   }
 
   deleteState(key: string): void {

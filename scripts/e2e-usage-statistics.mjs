@@ -259,7 +259,7 @@ try {
     ensure(await page.locator(".usage-request-section tbody tr").count() === 8, "请求后续页未覆盖28条");
     ensure(await metrics() === fullMetrics && await plot() === fullPlot, "请求分页改变统计范围");
     const beforeHash = await hashState();
-    await page.locator(".usage-request-section tbody tr").last().getByRole("button", { name: "进入会话", exact: true }).click();
+    await page.locator(".usage-request-section tbody tr").last().getByRole("link", { name: "进入会话", exact: true }).click();
     await page.locator(".session-message.is-focused, .trace-detail-body").first().waitFor();
     ensure((await page.locator(".session-message.is-focused, .trace-detail-body").first().innerText()).includes("合成请求记录"), "请求没有定位对应消息");
     await button("用量统计").click(); await ready();

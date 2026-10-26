@@ -1,5 +1,5 @@
 import { useEffect, useId, useRef, useState } from "react";
-import type { KnowledgeExtractionScope, KnowledgeJob, KnowledgePreview, KnowledgeTaskStatus } from "../../../src/knowledge-contracts";
+import type { KnowledgeExtractionScope, KnowledgeJob, KnowledgeJobSummary, KnowledgePreview, KnowledgeTaskSummaryPage } from "../../../src/knowledge-contracts";
 import type { SessionSearchFacets } from "../../../src/session-contracts";
 import type { SemanticScope } from "../../../src/semantic-contracts";
 import { isAborted, request } from "../../shared/api";
@@ -36,7 +36,8 @@ export function KnowledgeTasks({ active, mode, entryKey, taskId, initialScope, i
   const [selection, setSelection] = useState(initialSession), [sourceMode, setSourceMode] = useState<"session" | "batch">(initialScope && !initialScope.sessionIds?.length ? "batch" : "session");
   const [preview, setPreview] = useState<KnowledgePreview>(), [previewBusy, setPreviewBusy] = useState(false), [previewScopeKey, setPreviewScopeKey] = useState("");
   const [detailJob, setDetailJob] = useState<KnowledgeJob>(), [detailBusy, setDetailBusy] = useState(false);
-  const [status, setStatus] = useState<KnowledgeTaskStatus>(), [facets, setFacets] = useState<SessionSearchFacets>();
+  const [status, setStatus] = useState<KnowledgeTaskSummaryPage>(), [detailSummary, setDetailSummary] = useState<KnowledgeJobSummary>(), [facets, setFacets] = useState<SessionSearchFacets>();
+  const [listStatus, setListStatus] = useState<KnowledgeTaskSummaryPage>(), [listFilter, setListFilter] = useState("all");
   const [busy, setBusy] = useState(false), [polling, setPolling] = useState(false), [error, setError] = useState<unknown>(), [loadError, setLoadError] = useState<unknown>();
   const [targetPage, setTargetPage] = useState(1), [historyPage, setHistoryPage] = useState(1), [historyStatus, setHistoryStatus] = useState("all"), [detailTab, setDetailTab] = useState("summary");
   const [reload, setReload] = useState(0), [previewReload, setPreviewReload] = useState(0);
@@ -49,22 +50,52 @@ export function KnowledgeTasks({ active, mode, entryKey, taskId, initialScope, i
     if (!active) return;
     const controller = new AbortController();
     void request<SessionSearchFacets>("/sessions/facets", { signal: controller.signal }).then(setFacets).catch(failure => { if (!isAborted(failure)) setLoadError(failure); });
-    let timer: ReturnType<typeof setTimeout>;
-    const poll = async () => {
-      setPolling(true);
-      try { const next = await knowledgeRequest<KnowledgeTaskStatus>("/extractions", undefined, undefined, controller.signal); if (!controller.signal.aborted) { setStatus(next); setLoadError(undefined); } }
-      catch (failure) { if (!isAborted(failure)) setLoadError(failure); }
-      finally { if (!controller.signal.aborted) { setPolling(false); timer = setTimeout(() => void poll(), document.hidden ? 10_000 : 1800); } }
-    };
-    void poll(); return () => { controller.abort(); clearTimeout(timer); };
+    return () => controller.abort();
   }, [active, reload]);
+  useEffect(() => {
+    if (!active) return;
+    const controller = new AbortController();
+    let timer: ReturnType<typeof setTimeout>, pending = false;
+    const listView = mode === "tasks" && !taskId;
+    const poll = async () => {
+      if (pending || controller.signal.aborted) return;
+      clearTimeout(timer); pending = true; setPolling(true);
+      let next: KnowledgeTaskSummaryPage | undefined;
+      try {
+        const params = new URLSearchParams({ response: "summary", page: String(listView ? historyPage : 1), pageSize: String(listView ? 20 : 1) });
+        if (listView && historyStatus !== "all") params.set("status", historyStatus);
+        const [snapshot, selected] = await Promise.all([
+          knowledgeRequest<KnowledgeTaskSummaryPage>(`/extractions?${params}`, undefined, undefined, controller.signal),
+          taskId ? knowledgeRequest<KnowledgeJobSummary>(`/extractions/${encodeURIComponent(taskId)}?response=summary`, undefined, undefined, controller.signal) : Promise.resolve(undefined),
+        ]);
+        if (!controller.signal.aborted) {
+          next = snapshot;
+          const lastPage = Math.max(1, Math.ceil(snapshot.total / snapshot.pageSize));
+          if (listView && historyPage > lastPage) setHistoryPage(lastPage);
+          else { setStatus(snapshot); if (listView) { setListStatus(snapshot); setListFilter(historyStatus); } }
+          setDetailSummary(selected); setLoadError(undefined);
+        }
+      } catch (failure) { if (!controller.signal.aborted && !isAborted(failure)) setLoadError(failure); }
+      finally {
+        pending = false;
+        if (!controller.signal.aborted) {
+          setPolling(false);
+          timer = setTimeout(() => void poll(), document.hidden ? 30_000 : next?.activeCount ? 1800 : 15_000);
+        }
+      }
+    };
+    const visible = () => { if (!document.hidden) void poll(); };
+    document.addEventListener("visibilitychange", visible);
+    void poll();
+    return () => { controller.abort(); clearTimeout(timer); setPolling(false); document.removeEventListener("visibilitychange", visible); };
+  }, [active, reload, mode, taskId, historyPage, historyStatus]);
   useEffect(() => {
     if (lastTaskId.current && !taskId && pageElement.current) pageElement.current.scrollTop = listScroll.current;
     if (taskId !== lastTaskId.current) setDetailTab("summary");
     lastTaskId.current = taskId;
   }, [taskId]);
-  const summaryJob = status?.jobs.find(item => item.id === taskId);
-  const job: KnowledgeJob | undefined = detailJob && detailJob.id === taskId ? { ...detailJob, ...summaryJob, events: detailJob.events } : summaryJob;
+  const summaryJob = detailSummary?.id === taskId ? detailSummary : status?.jobs.find(item => item.id === taskId);
+  const job: KnowledgeJob | undefined = detailJob && detailJob.id === taskId ? { ...detailJob, ...(summaryJob && summaryJob.updatedAt >= detailJob.updatedAt ? summaryJob : undefined), events: detailJob.events } : undefined;
   useEffect(() => {
     if (!active || mode !== "tasks" || !taskId) return;
     const controller = new AbortController(); setDetailBusy(true);
@@ -93,8 +124,8 @@ export function KnowledgeTasks({ active, mode, entryKey, taskId, initialScope, i
     try {
       if (action === "preview") { const value = await knowledgeRequest<KnowledgePreview>("/extractions/preview", { scope }); setPreview(value); setPreviewScopeKey(scopeKey); setTargetPage(1); }
       else {
-        const next = await knowledgeRequest<KnowledgeJob>(action === "start" ? "/extractions" : `/extractions/${encodeURIComponent(job!.id)}/${action}`, action === "start" ? { previewId: preview!.id, idempotencyKey: crypto.randomUUID() } : {});
-        setStatus(current => current ? { ...current, jobs: [next, ...current.jobs.filter(item => item.id !== next.id)] } : { jobs: [next], usage: { requests: 0, inputTokens: 0, outputTokens: 0, estimatedCost: null, date: "" }, automatic: { enabled: false } }); onSelectTask(next.id);
+        const next = await knowledgeRequest<KnowledgeJobSummary>(action === "start" ? "/extractions?response=summary" : `/extractions/${encodeURIComponent(job!.id)}/${action}?response=summary`, action === "start" ? { previewId: preview!.id, idempotencyKey: crypto.randomUUID() } : {});
+        setDetailSummary(next); setReload(value => value + 1); onSelectTask(next.id);
       }
     } catch (failure) { setError(failure); } finally { setBusy(false); }
   };
@@ -102,7 +133,8 @@ export function KnowledgeTasks({ active, mode, entryKey, taskId, initialScope, i
   const changeScope = (next: KnowledgeExtractionScope) => { setScope(next); if (!next.sessionIds?.length) { setSelection(undefined); setPreview(undefined); } };
   const validPreview = mode === "new" ? preview : preview?.id === job?.previewId ? preview : undefined;
   const previewContent = validPreview && <div className="knowledge-preview" aria-busy={previewBusy || mode === "new" && previewScopeKey !== scopeKey}><h3>{t("knowledge.previewCounts", { sessions: validPreview.sessionCount, turns: validPreview.turnCount })}</h3><dl className="knowledge-facts">{validPreview.plannedChunks !== undefined && <div><dt>{t("knowledge.plannedChunks")}</dt><dd>{number(validPreview.plannedChunks)}</dd></div>}<div><dt>{t("knowledge.estimatedTokens")}</dt><dd>{number(validPreview.estimatedTokens)}</dd></div><div><dt>{t(validPreview.estimatedExtractionCost !== undefined ? "knowledge.estimatedTotalCost" : "knowledge.estimatedCost")}</dt><dd>{semanticCost(validPreview.estimatedCost, language) ?? t(validPreview.estimatedExtractionCost !== undefined ? "knowledge.costUnknown" : "knowledge.unknown")}</dd></div></dl><details className="knowledge-details"><summary>{t("knowledge.inputDetails")}</summary><dl className="knowledge-facts">{validPreview.estimatedExtractionCost !== undefined && <><div><dt>{t("knowledge.estimatedCost")}</dt><dd>{semanticCost(validPreview.estimatedExtractionCost, language) ?? t("knowledge.unknown")}</dd></div><div><dt>{t("knowledge.additionalCost")}</dt><dd>{validPreview.sessionCount ? t("knowledge.costUnknown") : semanticCost(0, language)}</dd></div></>}{validPreview.sourceBytes !== undefined && <><div><dt>{t("knowledge.sourceBytes")}</dt><dd>{number(validPreview.sourceBytes)}</dd></div><div><dt>{t("knowledge.textBytes")}</dt><dd>{number(validPreview.textBytes ?? 0)}</dd></div><div><dt>{t("knowledge.omittedMedia")}</dt><dd>{number(validPreview.omittedMedia ?? 0)}</dd></div><div><dt>{t("knowledge.estimatedOutputTokens")}</dt><dd>{number(validPreview.estimatedOutputTokens ?? 0)}</dd></div></>}<div><dt>{t("knowledge.contextTokens")}</dt><dd>{number(validPreview.contextTokens)}</dd></div><div><dt>{t("knowledge.pendingMessages")}</dt><dd>{number(validPreview.pendingMessages)}</dd></div><div><dt>{t("knowledge.skippedMessages")}</dt><dd>{number(validPreview.skippedMessages)}</dd></div></dl></details>{!(validPreview.targets.length === 1 && selectedTitle) && <ol className="knowledge-targets">{validPreview.targets.slice((targetPage - 1) * 20, targetPage * 20).map(target => <li key={`${target.sessionId}:${target.branch}`}><strong>{target.title}</strong><span>{t("knowledge.sourceTurns", { turns: target.turnCount })}</span></li>)}</ol>}{validPreview.targets.length > 20 && <ResourcePagination page={targetPage} pageSize={20} total={validPreview.targets.length} label={t("knowledge.preview")} onChange={setTargetPage} />}{!!validPreview.limitations.length && <details className="knowledge-details"><summary>{t("knowledge.limitations")}</summary><KnowledgeLimitations originals={validPreview.limitations} details={validPreview.limitationDetails} /></details>}</div>;
-  const filteredJobs = status?.jobs.filter(item => historyStatus === "all" || item.status === historyStatus) ?? [];
+  const listedJobs = listStatus?.jobs ?? [];
+  const listPending = polling || listStatus?.page !== historyPage || listFilter !== historyStatus;
   return <section ref={pageElement} className="knowledge-tasks-page" onScroll={event => { if (!taskId && mode === "tasks") listScroll.current = event.currentTarget.scrollTop; }}><header className="knowledge-page-heading"><button className="button subtle" onClick={taskId ? () => onSelectTask() : onBack}>{t(taskId ? "knowledge.backTasks" : "knowledge.back")}</button><h1>{t(mode === "new" ? "knowledge.extract" : taskId ? "knowledge.taskDetail" : "knowledge.tasks")}</h1><KnowledgeBusy busy={busy || polling || previewBusy || detailBusy} /><HelpPopover label={t("knowledge.taskHelp")} iconOnly><p>{t("knowledge.taskHelpBody")}</p></HelpPopover><button className="button" onClick={mode === "new" ? () => onSelectTask() : onNew}>{t(mode === "new" ? "knowledge.tasks" : "knowledge.extract")}</button></header>
     <KnowledgeError error={error ?? loadError} retry={() => setReload(value => value + 1)} />
     {status?.automatic.error && <div className="knowledge-error" role="alert"><KnowledgeDiagnostic descriptor={status.automatic.errorDescriptor} original={status.automatic.error} /></div>}
@@ -110,14 +142,14 @@ export function KnowledgeTasks({ active, mode, entryKey, taskId, initialScope, i
       <fieldset id={sourcePanelId} role="tabpanel" aria-labelledby={`${sourcePanelId}-${sourceMode}-tab`} disabled={busy}>{sourceMode === "session" && !scope.sessionIds?.length ? <KnowledgeSessionPicker active={active && mode === "new"} facets={facets} onSelect={chooseSession} /> : <KnowledgeScopeFields value={scope} facets={facets} selection={{ id: scope.sessionIds?.[0] ?? "", title: selectedTitle, totalTurns: selection?.totalTurns }} onChange={changeScope} />}</fieldset>
     </section><section className="knowledge-task-scope"><div className="knowledge-form-heading"><h2>{t("knowledge.preview")}</h2><KnowledgeBusy busy={previewBusy} /></div>{previewContent ?? <p className="knowledge-empty-inline">{t(scope.sessionIds?.length || sourceMode === "batch" ? "knowledge.previewEmpty" : "knowledge.selectSourceFirst")}</p>}<div className="knowledge-task-start"><button className="button" disabled={busy || previewBusy || invalid} onClick={() => scope.sessionIds?.length ? setPreviewReload(value => value + 1) : void act("preview")}>{t(preview ? "knowledge.refreshPreview" : "knowledge.previewAction")}</button><button className="button primary" disabled={busy || previewBusy || invalid || !preview?.sessionCount || previewScopeKey !== scopeKey} onClick={() => void act("start")}>{t("knowledge.start")}</button></div><button className="text-button" onClick={onSettings}>{t("knowledge.settings")}</button></section></div> : !taskId ? <>
       <div className="knowledge-task-list-controls"><FilterSelect label={t("knowledge.taskStatus")} value={historyStatus} options={["all", "running", "queued", "paused", "complete", "partial", "failed", "budget_stopped"].map(value => ({ value, label: t(value === "all" ? "knowledge.all" : `knowledge.status.${value}`) }))} onChange={value => { setHistoryStatus(value); setHistoryPage(1); }} /></div>
-      <ol className="knowledge-task-list" aria-label={t("knowledge.tasks")}>{filteredJobs.slice((historyPage - 1) * 20, historyPage * 20).map(item => <li key={item.id}><button onClick={() => onSelectTask(item.id)}><div><strong>{item.title || t("knowledge.taskFallback", { count: item.totalSessions })}</strong><span>{t("knowledge.resultsCount", { count: item.createdEntries, updated: item.updatedEntries })}</span></div><time>{dateTime(item.createdAt)}</time><span className="knowledge-task-state" data-state={item.status}>{t(`knowledge.status.${item.status}`)}</span><CaretRight size={17} aria-hidden="true" /></button></li>)}</ol>{status && !filteredJobs.length && <div className="knowledge-empty"><h2>{t("knowledge.noTasks")}</h2><button className="button primary" onClick={onNew}>{t("knowledge.extract")}</button></div>}{filteredJobs.length > 20 && <ResourcePagination page={historyPage} pageSize={20} total={filteredJobs.length} label={t("knowledge.tasks")} onChange={setHistoryPage} />}
+      <ol className="knowledge-task-list" aria-label={t("knowledge.tasks")} aria-busy={listPending} inert={listPending || undefined}>{listedJobs.map(item => <li key={item.id}><button onClick={() => onSelectTask(item.id)}><div><strong>{item.title || t("knowledge.taskFallback", { count: item.totalSessions })}</strong><span>{t("knowledge.resultsCount", { count: item.createdEntries, updated: item.updatedEntries })}</span></div><time>{dateTime(item.createdAt)}</time><span className="knowledge-task-state" data-state={item.status}>{t(`knowledge.status.${item.status}`)}</span><CaretRight size={17} aria-hidden="true" /></button></li>)}</ol>{listStatus && !listedJobs.length && <div className="knowledge-empty"><h2>{t("knowledge.noTasks")}</h2><button className="button primary" onClick={onNew}>{t("knowledge.extract")}</button></div>}{(listStatus?.total ?? 0) > 20 && <ResourcePagination page={listStatus!.page} pageSize={20} total={listStatus!.total} label={t("knowledge.tasks")} onChange={setHistoryPage} />}
     </> : job ? <>
       <div className="knowledge-task-detail-heading"><h2>{job.title || t("knowledge.taskFallback", { count: job.totalSessions })}</h2><div className="knowledge-task-status"><strong>{t(`knowledge.status.${job.status}`)}</strong><time>{dateTime(job.createdAt)}</time>{job.status === "running" || job.status === "queued" ? <button className="button" disabled={busy} onClick={() => void act("pause")}>{t("knowledge.pause")}</button> : job.status !== "complete" && <button className="button" disabled={busy || !validPreview} onClick={() => !job.model || validPreview?.plannedChunks === undefined ? onNew() : void act(job.status === "paused" ? "resume" : "retry")}>{t(!job.model || validPreview?.plannedChunks === undefined ? "knowledge.newPreview" : job.status === "paused" ? "knowledge.resume" : "knowledge.retry")}</button>}</div></div>
       {job.totalChunks > 0 && <div className="knowledge-progress"><progress aria-label={t("knowledge.currentTask")} value={job.completedChunks} max={job.totalChunks} /><span>{t("knowledge.chunks", { completed: job.completedChunks, total: job.totalChunks })}</span></div>}
       {job.error && <div className="knowledge-error" role="alert"><KnowledgeDiagnostic descriptor={job.errorDescriptor} original={job.error} /></div>}
       <KnowledgeTabs panelId={detailPanelId} label={t("knowledge.taskDetail")} value={detailTab} onChange={setDetailTab} options={["summary", "process", "results"].map(value => ({ value, label: t(`knowledge.taskTab.${value}`) }))} />
       <div id={detailPanelId} role="tabpanel" aria-labelledby={`${detailPanelId}-${detailTab}-tab`}>{detailTab === "summary" ? <div className="knowledge-task-columns"><section><h2>{t("knowledge.preview")}</h2>{validPreview && <><p className="knowledge-selected-title">{validPreview.targets.length === 1 ? validPreview.targets[0]?.title : t("knowledge.taskFallback", { count: validPreview.sessionCount })}</p><dl className="knowledge-facts"><div><dt>{t("sessions.semantic.scope.time")}</dt><dd>{t(validPreview.scope.timeRange === "recent" ? "sessions.semantic.scope.summaryRecent" : validPreview.scope.timeRange === "all" ? "sessions.semantic.scope.allHistory" : "sessions.semantic.scope.chooseTime", { days: validPreview.scope.recentDays })}</dd></div>{validPreview.targets.length !== 1 && <><div><dt>{t("knowledge.project")}</dt><dd>{validPreview.scope.projects.length ? formatList(validPreview.scope.projects) : t("knowledge.allProjects")}</dd></div><div><dt>{t("knowledge.client")}</dt><dd>{validPreview.scope.clients.length ? formatList(validPreview.scope.clients) : t("knowledge.allClients")}</dd></div></>}<div><dt>{t("sessions.semantic.scope.branch")}</dt><dd>{validPreview.scope.branch === "all" || validPreview.scope.branch === "current" ? t(`sessions.branch.${validPreview.scope.branch}`) : validPreview.scope.branch}</dd></div>{validPreview.scope.turnStart !== undefined && <div><dt>{t("knowledge.turnStart")}</dt><dd>{number(validPreview.scope.turnStart)}</dd></div>}{validPreview.scope.turnEnd !== undefined && <div><dt>{t("knowledge.turnEnd")}</dt><dd>{number(validPreview.scope.turnEnd)}</dd></div>}</dl></>}{previewContent}</section><section><h2>{t("knowledge.taskUsage")}</h2><KnowledgeTaskUsage job={job} /></section></div> : detailTab === "process" ? detailBusy && detailJob?.id !== job.id ? <KnowledgeBusy busy /> : <KnowledgeTaskEvents job={job} /> : <><div className="knowledge-task-results"><strong>{t("knowledge.resultsCount", { count: job.createdEntries, updated: job.updatedEntries })}</strong><button className="button primary" disabled={!job.results.length} onClick={() => onResults(job.id)}>{t("knowledge.results")}</button></div><dl className="knowledge-facts">{(["duplicates", "noValue", "needsContext"] as const).map(key => <div key={key}><dt>{t(`knowledge.${key}`)}</dt><dd>{number(job[key])}</dd></div>)}</dl>{!!job.failedSessions.length && <section><h2>{t("knowledge.failures")}</h2>{job.failedSessions.map((item, index) => <div key={`${item.sessionId}:${index}`}><strong>{item.title}</strong><KnowledgeDiagnostic descriptor={item.errorDescriptor} original={item.error} /></div>)}</section>}</>}</div>
-    </> : <p className="knowledge-empty-inline">{t(status ? "knowledge.errors.task_not_found" : "knowledge.loading")}</p>}
+    </> : <p className="knowledge-empty-inline">{t(detailBusy || !status ? "knowledge.loading" : "knowledge.errors.task_not_found")}</p>}
   </section>;
 }
 

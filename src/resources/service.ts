@@ -30,6 +30,8 @@ export function summarizeResourceCoverage<T extends ResourceOverviewResult | Res
 /** 共用服务边界：派生盘点可刷新，收藏和恢复材料由独立管理库保留。 */
 export class ResourceService {
   private snapshot?: ResourceInventorySnapshot;
+  private snapshotInput?: string;
+  private inventoryGeneration = 0;
   private pending?: Promise<ResourceInventorySnapshot>;
   private readonly overviewCache = new Map<string, Promise<ReturnType<typeof overviewResourceUsage>>>();
   private overviewGeneration?: string;
@@ -40,14 +42,24 @@ export class ResourceService {
   }
 
   private inventory(): Promise<ResourceInventorySnapshot> {
-    return this.snapshot ? Promise.resolve(this.snapshot) : this.scan();
+    return this.snapshot && this.snapshotInput === this.inventoryInput().key ? Promise.resolve(this.snapshot) : this.scan();
+  }
+  private inventoryInput() {
+    const projects = [...new Set(this.projects())].sort(), manualSources = this.manager.manualSources();
+    return { projects, manualSources, key: JSON.stringify([this.inventoryGeneration, projects, manualSources]) };
   }
   private scan(): Promise<ResourceInventorySnapshot> {
     if (!this.pending) this.pending = (async () => {
-      const snapshot = await scanResourceInventory({ ...this.inventoryOptions, projects: this.projects(), manualSources: this.manager.manualSources() });
-      this.snapshot = this.manager.decorateInventory(snapshot);
-      this.overviewCache.clear();
-      return this.snapshot;
+      // 输入变化后续扫最新配置；同一输入的并发读取仍共用一次扫描。
+      for (;;) {
+        const input = this.inventoryInput();
+        const snapshot = await scanResourceInventory({ ...this.inventoryOptions, projects: input.projects, manualSources: input.manualSources });
+        if (input.key !== this.inventoryInput().key) continue;
+        this.snapshot = this.manager.decorateInventory(snapshot);
+        this.snapshotInput = input.key;
+        this.overviewCache.clear();
+        return this.snapshot;
+      }
     })().finally(() => { this.pending = undefined; });
     return this.pending;
   }
@@ -276,7 +288,7 @@ export class ResourceService {
   async apply(id: string, confirmed: true) {
     const result = await this.manager.apply(id, confirmed, await this.managementInventory(true));
     // 写入完成即可反馈；后续读取共享一次新盘点，避免执行请求再阻塞一次全量扫描。
-    if (result.localState !== "unchanged") { this.snapshot = undefined; this.overviewCache.clear(); }
+    if (result.localState !== "unchanged") { this.inventoryGeneration++; this.snapshot = undefined; this.overviewCache.clear(); }
     return result;
   }
 }

@@ -2,6 +2,21 @@ import { CLIENTS, type Client } from "../../../src/clients";
 import type { SemanticScope } from "../../../src/semantic-contracts";
 import { validateSearchScope } from "../../../src/sessions/search-scope";
 import { localSemanticDate, semanticDateBoundary, semanticQueryScope, sharedSessionSearchScope } from "./semantic-ui-model";
+
+export interface SessionNavigationTarget {
+  sessionId: string; messageId?: string; version?: string; mode?: "brief" | "full" | "trace"; branch?: string;
+}
+export type SessionEvidenceTarget = SessionNavigationTarget & { version: string };
+
+/** 点击跳转和可复制链接共用同一版本与消息定位。 */
+export function sessionNavigationAddress(target: SessionNavigationTarget): string {
+  const params = new URLSearchParams({ id: target.sessionId });
+  if (target.version) params.set("version", target.version);
+  if (target.messageId) params.set("message", target.messageId);
+  if (target.mode) params.set("mode", target.mode);
+  if (target.branch) params.set("branch", target.branch);
+  return `#sessions?${params}`;
+}
 export interface SessionFilters {
   client: Client | "all"; project: string; from: string; to: string; q: string; process: boolean; subagents: boolean; execution: "regular" | "quiet" | "all";
 }

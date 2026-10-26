@@ -37,6 +37,7 @@ port.on("message", (command: TaskCommand) => {
       case "clearCache": result = manager.clearCache(...command.args); break;
       case "autoRefresh": result = manager.autoRefreshRepository(...command.args); break;
       case "sessions": result = manager.refreshSessions(...command.args); break;
+      case "retainJobs": manager.retainJobs(...command.args); break;
       case "close": await manager.close(); sessions.close(); store.close(); break;
     }
     if (command.type !== "close") sendState();

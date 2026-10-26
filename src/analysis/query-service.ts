@@ -2,7 +2,7 @@ import type { AnalysisSnapshot, CoverageQuery, FileDetail, Filters, HistoryEvent
 import { AnalysisStore, StoreError } from "../index/store.js";
 import type { SessionStore } from "../sessions/store.js";
 import { contentHash, readCurrentFile, readEvidence } from "../service/files.js";
-import { buildCoverage, eventFilePaths, filterEvents, filterHistoricalEvents, getHotspots, getUnreadFiles, selectedSource } from "./coverage.js";
+import { buildCoverage, eventFilePaths, filterEvents, HistoricalEventIndex, getHotspots, getUnreadFiles, selectedSource } from "./coverage.js";
 import { mapClientOptions, mapSessions } from "./sessions.js";
 
 export type MapOperation = "coverage" | "gaps" | "sessions" | "hotspots" | "unobserved" | "file" | "events" | "evidence" | "sources";
@@ -10,7 +10,7 @@ export interface MapQuery extends CoverageQuery {
   repositoryId: string; summary?: boolean; path?: string; eventId?: string; kind?: string; page?: number; pageSize?: number;
   metric?: "read" | "edit" | "activity"; limit?: number;
 }
-interface PreparedMap { snapshot: AnalysisSnapshot; eventParts: Map<string, number>; mappedPaths: Map<string, Set<string>> }
+interface PreparedMap { snapshot: AnalysisSnapshot; eventParts: Map<string, number>; mappedPaths: Map<string, Set<string>>; historical: HistoricalEventIndex }
 
 /** 仅缓存去正文元数据，原始工具输入输出在详情请求中按选中活动回读。 */
 export class MapQueryService {
@@ -32,7 +32,9 @@ export class MapQueryService {
     if (type === "sessions") return { version: snapshot.version, clients: mapClientOptions(snapshot),
       sessions: mapSessions(snapshot, this.sessions.summariesByIdentity([...snapshot.sources, ...snapshot.events])) };
     if (type === "events" || type === "evidence") {
-      const selected = filterHistoricalEvents(snapshot, filters).filter(event => (!kind || event.kind === kind)
+      const target = type === "evidence" ? prepared.historical.events.get(eventId!) : undefined;
+      const candidates = type === "evidence" ? target ? [target] : [] : undefined;
+      const selected = prepared.historical.filter(filters, candidates).filter(event => (!kind || event.kind === kind)
         && (!path || this.hasPath(prepared, event, path)));
       if (type === "events") return { version: snapshot.version, events: this.events(prepared, selected.slice((page - 1) * pageSize, page * pageSize)), total: selected.length, page, pageSize };
       const event = selected.find(candidate => candidate.id === eventId);
@@ -79,7 +81,7 @@ export class MapQueryService {
         if (!mappedPaths.has(mapping.eventId)) mappedPaths.set(mapping.eventId, new Set());
         mappedPaths.get(mapping.eventId)!.add(mapping.filePath);
       }
-      prepared = { snapshot, eventParts, mappedPaths };
+      prepared = { snapshot, eventParts, mappedPaths, historical: new HistoricalEventIndex(snapshot) };
       if (this.snapshots.size >= 2) this.snapshots.delete(this.snapshots.keys().next().value!);
       this.snapshots.set(key, prepared);
     }

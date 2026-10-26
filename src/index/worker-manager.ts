@@ -41,11 +41,15 @@ export class WorkerManager {
   private failure?: string;
   private readonly lastMapChecks = new Map<string, number>();
   private readonly pausedMapRepositories = new Set<string>();
+  private readonly retainedJobs = new Set<string>();
+  private pruning?: Promise<void>;
+  private pruneRequested = false;
   reclaimStatus?: IndexMaintenanceResult;
 
   constructor(private readonly store: AnalysisStore, private readonly options: WorkerManagerOptions = {}, private readonly sessions?: SessionStore) {
     store.recoverJobs();
     sessions?.recoverJobs();
+    this.pruneHistory();
     // 注入的自定义 Worker 可以在任务前完成控制握手；默认原生 Worker 按首次任务启动。
     if (options.workerUrl) this.worker = this.createWorker();
   }
@@ -90,7 +94,7 @@ export class WorkerManager {
     return worker;
   }
 
-  private enqueue(repositoryId: string, clearCache: boolean): Job {
+  private enqueue(repositoryId: string, clearCache: boolean, retained = false): Job {
     if (this.closed) throw new DiagnosticError("分析 Worker 已关闭", { key: "diagnostics.index.workerManager.m001" });
     if (!this.worker || this.failure) {
       // 失败任务保持失败；仅在下一次明确刷新时重建，避免自动重试同一溢出任务。
@@ -99,14 +103,15 @@ export class WorkerManager {
     }
     const job = this.store.createJob(repositoryId);
     this.active.add(job.id);
+    if (retained) this.retainedJobs.add(job.id);
     this.worker.postMessage({ type: "refresh", jobId: job.id, clearCache });
     this.changed();
     return job;
   }
 
-  refresh(repositoryId: string): Job {
+  refresh(repositoryId: string, retained = false): Job {
     this.lastMapChecks.set(repositoryId, Date.now());
-    return this.enqueue(repositoryId, false);
+    return this.enqueue(repositoryId, false, retained);
   }
   clearCache(repositoryId: string): Job { return this.enqueue(repositoryId, true); }
 
@@ -115,6 +120,7 @@ export class WorkerManager {
     const jobs = this.store.deleteRepository(repositoryId);
     const jobIds: string[] = [];
     for (const job of jobs) {
+      this.retainedJobs.delete(job.id);
       // 已发布但完成消息还未抵达的任务，也必须收束已有等待者。
       if (job.status !== "queued" && job.status !== "running" && !this.active.has(job.id) && !this.pending.has(job.id)) continue;
       jobIds.push(job.id);
@@ -203,6 +209,30 @@ export class WorkerManager {
     });
   }
 
+  retainJobs(ids: readonly string[], retained: boolean): void {
+    for (const id of ids) if (retained) this.retainedJobs.add(id); else this.retainedJobs.delete(id);
+    if (!retained) this.pruneHistory();
+  }
+
+  private pruneHistory(): void {
+    if (this.closed) return;
+    if (this.pruning) { this.pruneRequested = true; return; }
+    this.pruneRequested = false;
+    this.pruning = (async () => {
+      for (;;) {
+        if (this.closed) return;
+        const removed = await withIndexWriteAsync(this.options.writeGate, () => this.closed ? 0
+          : this.store.pruneJobs([...this.active, ...this.pending.keys(), ...this.retainedJobs]));
+        if (removed < 1000) return;
+        // 分批释放写权限，历史清理不能挡住新任务登记和发布。
+        await new Promise<void>(resolve => setImmediate(resolve));
+      }
+    })().catch(() => { /* 派生作业清理失败保留历史，下次任务完成后再试。 */ }).finally(() => {
+      this.pruning = undefined;
+      if (this.pruneRequested) this.pruneHistory();
+    });
+  }
+
   private finished(jobId: string, notify = true): void {
     if (this.sessionActive.delete(jobId)) {
       this.sessionRequests.delete(jobId);
@@ -217,6 +247,7 @@ export class WorkerManager {
     else if (job.status === "failed" && job.startedAt) this.pausedMapRepositories.add(job.repositoryId);
     for (const resolve of this.pending.get(jobId) ?? []) resolve(job);
     this.pending.delete(jobId);
+    this.pruneHistory();
     if (notify) this.changed();
   }
 
@@ -272,6 +303,7 @@ export class WorkerManager {
       finally { if (timer) clearTimeout(timer); }
       await worker.terminate();
     }));
+    await this.pruning;
     await Promise.all((["maps", "sessions"] as const).map(kind => this.failed(kind, "后台停止时刷新尚未完成", { key: "diagnostics.index.workerManager.interrupted" }, true)));
   }
 }

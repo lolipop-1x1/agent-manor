@@ -204,7 +204,7 @@ export async function startService(options: ServiceOptions = {}) {
       [...new Set([...index.listRepositories().map(repository => repository.path), ...library.status().projects])], resourceHistory);
     const activeTasks = (): ServiceActiveTask[] => [
       ...worker.activeSessionJobs().filter(job => ["queued", "running"].includes(job.status)).map(job => ({ id: job.id, kind: "sessions" as const, status: job.status })),
-      ...index.listJobs().filter(job => ["queued", "running"].includes(job.status)).map(job => ({ id: job.id, kind: "repository" as const, status: job.status })),
+      ...index.listActiveJobs().map(job => ({ id: job.id, kind: "repository" as const, status: job.status })),
       ...knowledgeManager!.activeJobs().map(job => ({ ...job, kind: "knowledge" as const })),
       ...(semanticManager!.activeJob() ? [{ ...semanticManager!.activeJob()!, kind: "semantic" as const }] : []),
       ...(knowledgeSemantic!.busy ? [{ id: "knowledge-index", kind: "semantic" as const, status: "running" }] : []),
@@ -404,6 +404,8 @@ export async function startService(options: ServiceOptions = {}) {
       index.getRepository(request.params.id);
       return { job: await worker.clearCache(request.params.id) };
     });
+    app.get<{ Querystring: Record<string, unknown> }>("/api/v1/jobs", request => index.jobPage(
+      integer(request.query.page, "page", 1, 1_000_000), integer(request.query.pageSize, "pageSize", 50, 200), textValue(request.query.repositoryId, "repositoryId")));
     app.get<{ Params: { id: string } }>("/api/v1/jobs/:id", async request => {
       try { return { job: index.getJob(request.params.id) }; }
       catch (error) { if (!(error instanceof StoreError) || error.code !== "JOB_NOT_FOUND") throw error; }
@@ -453,7 +455,7 @@ export async function startService(options: ServiceOptions = {}) {
         if (closing) return;
         preparation.state = "running";
         const history = await worker.refreshSessions();
-        const maps = await Promise.all(index.listRepositories().map(repository => worker.refresh(repository.id)));
+        const maps = await Promise.all(index.listRepositories().map(repository => worker.refresh(repository.id, true)));
         preparation.jobIds = [history.id, ...maps.map(job => job.id)];
         serviceLog(home, "preparation.history", { jobIds: preparation.jobIds });
         while (!closing) {
@@ -507,6 +509,8 @@ export async function startService(options: ServiceOptions = {}) {
         preparation.state = "failed"; preparation.error = error instanceof Error ? error.message : String(error); preparation.finishedAt = new Date().toISOString();
         // 原始错误保留在状态中按需读取，常规日志只记录阶段，避免带入正文或凭据。
         serviceLog(home, "preparation.failed", { phase: preparation.phase });
+      }).finally(async () => {
+        if (!closing) await worker.retainJobs(preparation.jobIds, false).catch(() => undefined);
       }); });
     }
     sync.updateInterval(syncInterval);
